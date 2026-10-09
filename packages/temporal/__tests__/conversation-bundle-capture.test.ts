@@ -573,6 +573,9 @@ const fakeDb = vi.hoisted(() => {
 		projectContextConversationClaim: claimDelegate,
 		projectContextConversationBundle: bundleDelegate,
 		projectContextPendingVectorCleanup: pendingCleanupDelegate,
+		// The reprocess reads these as point owners; none exist in this store.
+		projectContextUrlPage: { findMany: async () => [] },
+		projectContextSummary: { findMany: async () => [] },
 		// Real rollback semantics: a throwing callback leaves the store as it
 		// was. This is what makes the "failure between claiming and bundling"
 		// scenario a genuine test rather than a restatement of the code — and
@@ -619,7 +622,7 @@ const m = vi.hoisted(() => ({
 	jobStep: vi.fn(),
 	// RAG / provider
 	embedProjectContext: vi.fn(),
-	getSystemRAGProviderConfig: vi.fn(),
+	getSystemEmbeddingRAGProviderConfig: vi.fn(),
 }));
 
 vi.mock("@repo/database/prisma/client", async (importOriginal) => {
@@ -760,6 +763,9 @@ function writePoint(args: {
 	metadata?: Record<string, unknown>;
 }) {
 	const id = `point-${args.contextId}`;
+	// Point ids are deterministic, so a rewrite replaces in place — as a
+	// Qdrant upsert does.
+	vectorStore.points = vectorStore.points.filter((point) => point.id !== id);
 	vectorStore.points.push({
 		id,
 		payload: {
@@ -819,6 +825,12 @@ vi.mock("@qdrant/js-client-rest", () => ({
 		getCollections = async () => ({
 			collections: vectorStore.collections.map((name) => ({ name })),
 		});
+		scroll = async (_collection: string, args: { filter?: unknown }) => ({
+			points: vectorStore.points
+				.filter((point) => filterMatches(point.payload, args.filter))
+				.map((point) => ({ id: point.id, payload: point.payload })),
+			next_page_offset: null,
+		});
 		delete = async (collection: string, args: { filter?: unknown }) => {
 			vectorStore.deleteCalls.push({ collection, filter: args.filter });
 			if (vectorStore.failDelete) {
@@ -838,7 +850,7 @@ vi.mock("@qdrant/js-client-rest", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getSystemRAGProviderConfig: m.getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig: m.getSystemEmbeddingRAGProviderConfig,
 	AIProviderNotConfiguredError: class extends Error {},
 }));
 
@@ -1086,7 +1098,7 @@ beforeEach(() => {
 	m.fetchSlackThreadContext.mockResolvedValue(slackThread(SLACK_MESSAGES));
 	m.markTeamsMessagesAsSeen.mockResolvedValue(undefined);
 	m.markTeamsChatMessagesAsSeen.mockResolvedValue(undefined);
-	m.getSystemRAGProviderConfig.mockResolvedValue({ apiKey: "key" });
+	m.getSystemEmbeddingRAGProviderConfig.mockResolvedValue({ apiKey: "key" });
 	m.embedProjectContext.mockResolvedValue({
 		success: true,
 		qdrantId: "point-1",
@@ -1743,7 +1755,7 @@ describe("embedding is a separately claimable step", () => {
 		expect(m.embedProjectContext.mock.calls[0][0].organizationId).toBe(
 			"org_1",
 		);
-		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemEmbeddingRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org_1" }),
 		);
 	});
@@ -2706,7 +2718,7 @@ describe("recovering bundles whose embedding never completed", () => {
 		loseTheEmbed(orgBundle.bundleId as string);
 		loseTheEmbed(personalBundle.bundleId as string);
 		m.embedProjectContext.mockClear();
-		m.getSystemRAGProviderConfig.mockClear();
+		m.getSystemEmbeddingRAGProviderConfig.mockClear();
 
 		const result = await sweepConversationBundleEmbeddingsActivity();
 		expect(result).toMatchObject({ scanned: 2, embedded: 2 });
@@ -2741,10 +2753,10 @@ describe("recovering bundles whose embedding never completed", () => {
 		).toBe("project-contexts");
 
 		// The provider config is resolved per tenant for the same reason.
-		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemEmbeddingRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: "org_1" }),
 		);
-		expect(m.getSystemRAGProviderConfig).toHaveBeenCalledWith(
+		expect(m.getSystemEmbeddingRAGProviderConfig).toHaveBeenCalledWith(
 			expect.objectContaining({ organizationId: undefined }),
 		);
 		// An organization bundle carries no `userId` of its own, so the tenant
@@ -2983,12 +2995,11 @@ describe("a reprocess of a project that has captured conversations", () => {
 		);
 	}
 
-	it("leaves the bundles it orphaned in the sweep's queue", async () => {
-		// The reprocess clears every point carrying the project id — bundle
-		// points included — but re-embeds only `ProjectContext` rows that are
-		// not INTEGRATION. Nothing in that workflow rebuilds a bundle, so if
-		// the row still claimed `embeddedAt` the recovery sweep could not see
-		// it either and the conversations would go silently unsearchable.
+	it("keeps the bundles' points and queues them for the sweep", async () => {
+		// The re-embed only walks `ProjectContext` rows that are not
+		// INTEGRATION, so bundles reach the new settings through the recovery
+		// sweep. Their points stay until the sweep's embed overwrites them —
+		// a failed sweep must not leave the conversations unsearchable.
 		const captured = await captureChannelConversationBundle(
 			captureParams(),
 		);
@@ -3001,18 +3012,18 @@ describe("a reprocess of a project that has captured conversations", () => {
 			organizationId: "org_1",
 		});
 
-		expect(vectorStore.points).toEqual([]);
+		expect(vectorStore.deleteCalls).toEqual([]);
+		expect(vectorStore.points).toHaveLength(1);
 		// `listConversationBundlesAwaitingEmbedding` IS the sweep's queue —
 		// the same `awaitingEmbeddingWhere` predicate its claim matches on.
 		const awaiting = await listConversationBundlesAwaitingEmbedding();
 		expect(awaiting.map((bundle) => bundle.id)).toEqual([
 			captured.bundleId,
 		]);
-		expect(row?.qdrantId).toBeNull();
+		expect(row?.qdrantId).not.toBeNull();
 		expect(row?.embeddingLeaseAt).toBeNull();
 
-		// And the queue drains: the sweep puts the point back, under the
-		// bundle row's own tenant.
+		// The queue drains, replacing the point rather than adding a second.
 		const run = await sweepConversationBundleEmbeddingsActivity();
 
 		expect(run).toMatchObject({ scanned: 1, embedded: 1, failed: 0 });
@@ -3036,52 +3047,10 @@ describe("a reprocess of a project that has captured conversations", () => {
 		expect(awaiting.map((bundle) => bundle.id)).toEqual([
 			captured.bundleId,
 		]);
-		// The other project's vectors were never cleared, so its stamp must
-		// stand — requeueing it would re-embed a point that is already there.
+		// Another project's bundles are not part of this reprocess, so their
+		// stamps stand.
 		const otherRow = store.bundles.find((b) => b.id === other.bundleId);
 		expect(otherRow?.embeddedAt).not.toBeNull();
 		expect(otherRow?.qdrantId).not.toBeNull();
-	});
-
-	it("requeues nothing when there was no collection to clear", async () => {
-		// Per-organization collections are created lazily. Nothing was
-		// deleted, so nothing was orphaned — and a requeue here would send the
-		// sweep after rows whose points are exactly where they should be.
-		vectorStore.collections = [];
-		const captured = await captureChannelConversationBundle(
-			captureParams(),
-		);
-
-		await deleteProjectContextsFromQdrant({
-			projectId: "proj_1",
-			organizationId: "org_1",
-		});
-
-		expect(vectorStore.deleteCalls).toEqual([]);
-		expect(
-			store.bundles.find((b) => b.id === captured.bundleId)?.embeddedAt,
-		).not.toBeNull();
-		expect(await listConversationBundlesAwaitingEmbedding()).toEqual([]);
-	});
-
-	it("requeues nothing when the clear itself failed", async () => {
-		// The delete throws, the workflow aborts before re-embedding anything,
-		// and the points are still there — so the rows must keep their stamp.
-		const captured = await captureChannelConversationBundle(
-			captureParams(),
-		);
-		vectorStore.failDelete = "Qdrant unavailable";
-
-		await expect(
-			deleteProjectContextsFromQdrant({
-				projectId: "proj_1",
-				organizationId: "org_1",
-			}),
-		).rejects.toThrow("Qdrant unavailable");
-
-		expect(
-			store.bundles.find((b) => b.id === captured.bundleId)?.embeddedAt,
-		).not.toBeNull();
-		expect(await listConversationBundlesAwaitingEmbedding()).toEqual([]);
 	});
 });

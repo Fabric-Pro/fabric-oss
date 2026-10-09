@@ -178,6 +178,10 @@ export const generateProposalsProcedure = tenantProtectedProcedure
 							// Skip the activity's own auto-analyze-flag gate: this is an
 							// explicit user action, not the automatic ingestion path.
 							userInitiated: true,
+							// A person clicked and waits for the proposals: it may run on
+							// their own ChatGPT plan or a shared one serving interactive
+							// work (Fizzy #2770). Cleared on start while impersonating.
+							planEligible: true,
 						},
 					],
 				},

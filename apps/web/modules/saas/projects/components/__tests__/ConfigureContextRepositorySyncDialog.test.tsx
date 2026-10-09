@@ -600,7 +600,7 @@ describe("ConfigureContextRepositorySyncDialog — submit", () => {
 		expect(
 			await screen.findByText(
 				`${NS}.configureDialog.errors.BRANCH_NOT_FOUND${JSON.stringify({
-					path: "",
+					path: "main",
 					withPath: "",
 					managedCount: 0,
 				})}`,
@@ -1333,6 +1333,35 @@ describe("ConfigureContextRepositorySyncDialog — tree outcomes", () => {
 
 		await addPath(user, "docs");
 		expect(within(syncsList()).getByText("docs")).toBeInTheDocument();
+	});
+
+	it("blocks Save and says why while the listing reports the branch missing", async () => {
+		listTreeMock.mockRejectedValue({
+			message: "server message",
+			data: { code: "BRANCH_NOT_FOUND", ref: "main" },
+		});
+		const user = userEvent.setup();
+		renderDialog();
+		await screen.findByText(
+			`${NS}.configureDialog.errors.BRANCH_NOT_FOUND${JSON.stringify({
+				path: "main",
+				withPath: "",
+				managedCount: 0,
+			})}`,
+		);
+
+		await addPath(user, "docs");
+
+		expect(saveButton()).toBeDisabled();
+		expect(
+			screen.getByText(
+				`${NS}.configureDialog.saveBlocked.branchMissing${JSON.stringify(
+					{
+						ref: "main",
+					},
+				)}`,
+			),
+		).toBeInTheDocument();
 	});
 
 	it("falls back to the tree's own message for an unreachable repository", async () => {

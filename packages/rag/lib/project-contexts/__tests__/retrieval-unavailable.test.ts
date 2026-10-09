@@ -32,7 +32,7 @@ const {
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: getProviderConfigMock,
+	getEmbeddingRAGProviderConfig: getProviderConfigMock,
 }));
 
 vi.mock("@repo/database", () => ({

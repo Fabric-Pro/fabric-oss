@@ -303,14 +303,9 @@ describe.skipIf(SKIP_BROWSER_E2E)(
 				launchedBrowser(),
 			);
 			try {
-				await page.goto(`${originA}/go-internal`);
-				// The refresh to the internal host is its own navigation,
-				// which the route refuses; give it time to have happened.
-				await page
-					.waitForURL(`${originInternal}/metadata`, {
-						timeout: 2_000,
-					})
-					.catch(() => undefined);
+				await expect(
+					page.goto(`${originA}/go-internal`),
+				).rejects.toThrow("ERR_BLOCKED_BY_CLIENT");
 				expect(seenInternal).toHaveLength(0);
 				expect(relayed).toEqual([`${originA}/go-internal`]);
 			} finally {

@@ -16,7 +16,11 @@
  * 4. **Grant lifecycle**: Create, approve, consume, expire authority grants
  */
 
-import type { GatewaySession } from "./types";
+import {
+	type GatewayCredential,
+	type GatewaySession,
+	isDelegatedCredential,
+} from "./types";
 
 // ─── Provider Normalization ─────────────────────────────────────────────────
 // This map MUST stay in sync with CANONICAL_PROVIDER_KEYS in
@@ -246,6 +250,30 @@ export function classifyAccessLevel(
 	return "WRITE";
 }
 
+/**
+ * Classify a connected server's tool for the credential making the call.
+ *
+ * A person's own session or personal key keeps the layered guess above: it is
+ * the person at the keyboard, and the guess only decides whether a runtime
+ * grant is asked for. A delegated credential (an OAuth sign-in, an `org_` key)
+ * gets READ only from the server's own `readOnlyHint: true`. A tool whose name
+ * merely looks harmless (`get_`, `list_`) is still a write to it, so it needs
+ * the `mcp:write` scope and a runtime grant, and an OAuth agent, which cannot
+ * hold that scope, can never call it.
+ */
+export function classifyConnectedToolAccess(
+	toolName: string,
+	annotations:
+		| { readOnlyHint?: boolean; destructiveHint?: boolean }
+		| undefined,
+	credential: GatewayCredential,
+): "READ" | "WRITE" {
+	if (isDelegatedCredential(credential)) {
+		return annotations?.readOnlyHint === true ? "READ" : "WRITE";
+	}
+	return classifyAccessLevel(toolName, annotations);
+}
+
 // ─── Authority Enforcement ──────────────────────────────────────────────────
 
 export interface AuthorityEnforcementResult {
@@ -307,7 +335,11 @@ export async function enforceAuthority(params: {
 		return { authorized: true };
 	}
 
-	const accessLevel = classifyAccessLevel(toolName, annotations);
+	const accessLevel = classifyConnectedToolAccess(
+		toolName,
+		annotations,
+		session.credential,
+	);
 	if (accessLevel === "READ") {
 		return { authorized: true };
 	}

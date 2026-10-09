@@ -1,4 +1,5 @@
 export * from "./client";
+export * from "./hidden-mcp-server-keys";
 export * from "./queries";
 // Export OpenAPI types from Zod schemas
 export type {

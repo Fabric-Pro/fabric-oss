@@ -107,7 +107,12 @@ export interface AiUsageActivityRow {
 }
 
 export interface AiUsageActivityTotals {
+	/** Successful requests: a failed attempt retried elsewhere counts once. */
 	requests: number;
+	/** Failed attempts in the same filter, never in the totals here. */
+	failedAttempts: number;
+	/** Every logged row in the filter, failures included: the activity log's size. */
+	rowCount: number;
 	inputTokens: number;
 	outputTokens: number;
 	totalTokens: number;
@@ -251,71 +256,100 @@ export async function listAiUsageActivity(
 		{ id: sortOrder },
 	];
 
-	const [rawRows, totalsAggregate, sourceGroups, planModelGroups] =
-		await Promise.all([
-			db.aiUsageLog.findMany({
-				where,
-				orderBy,
-				take: limit + 1,
-				...(params.cursor
-					? { cursor: { id: params.cursor }, skip: 1 }
-					: {}),
-				select: {
-					id: true,
-					createdAt: true,
-					userId: true,
-					provider: true,
-					modelCanonicalName: true,
-					providerModelId: true,
-					taskType: true,
-					agentId: true,
-					conversationId: true,
-					jobType: true,
-					projectId: true,
-					inputTokens: true,
-					outputTokens: true,
-					totalTokens: true,
-					costMicroUsd: true,
-					latencyMs: true,
-					success: true,
-					errorMessage: true,
-					project: {
-						select: { name: true },
-					},
+	// Totals count successful calls only (Fizzy #2972 AC3): a request a plan
+	// failed and another subscription served is one request, not two. The
+	// log itself lists every row.
+	// Filtered to errors, the failed attempts are what the person asked to
+	// see, so their own counts make the totals.
+	const succeeded: Prisma.AiUsageLogWhereInput =
+		params.status === "error" ? where : { AND: [where, { success: true }] };
+	const [
+		rawRows,
+		totalsAggregate,
+		sourceGroups,
+		planModelGroups,
+		rowCount,
+		failedAttempts,
+		costGroups,
+	] = await Promise.all([
+		db.aiUsageLog.findMany({
+			where,
+			orderBy,
+			take: limit + 1,
+			...(params.cursor
+				? { cursor: { id: params.cursor }, skip: 1 }
+				: {}),
+			select: {
+				id: true,
+				createdAt: true,
+				userId: true,
+				provider: true,
+				modelCanonicalName: true,
+				providerModelId: true,
+				taskType: true,
+				agentId: true,
+				conversationId: true,
+				jobType: true,
+				projectId: true,
+				inputTokens: true,
+				outputTokens: true,
+				totalTokens: true,
+				costMicroUsd: true,
+				latencyMs: true,
+				success: true,
+				errorMessage: true,
+				project: {
+					select: { name: true },
 				},
-			}),
-			db.aiUsageLog.aggregate({
-				where,
-				_sum: {
-					inputTokens: true,
-					outputTokens: true,
-					totalTokens: true,
-					costMicroUsd: true,
-				},
-				_count: { id: true },
-				_avg: { latencyMs: true },
-			}),
-			db.aiUsageLog.groupBy({
-				by: ["provider"],
-				where,
-				_count: { id: true },
-				_sum: {
-					inputTokens: true,
-					outputTokens: true,
-					totalTokens: true,
-					costMicroUsd: true,
-				},
-			}),
-			db.aiUsageLog.groupBy({
-				by: ["providerModelId"],
-				where: { AND: [where, { provider: CHATGPT_PLAN_PROVIDER }] },
-				_sum: {
-					inputTokens: true,
-					outputTokens: true,
-					cachedInputTokens: true,
-				},
-			}),
-		]);
+			},
+		}),
+		db.aiUsageLog.aggregate({
+			where: succeeded,
+			_sum: {
+				inputTokens: true,
+				outputTokens: true,
+				totalTokens: true,
+				costMicroUsd: true,
+			},
+			_count: { id: true },
+			_avg: { latencyMs: true },
+		}),
+		db.aiUsageLog.groupBy({
+			by: ["provider"],
+			where: succeeded,
+			_count: { id: true },
+			_sum: {
+				inputTokens: true,
+				outputTokens: true,
+				totalTokens: true,
+				costMicroUsd: true,
+			},
+		}),
+		db.aiUsageLog.groupBy({
+			by: ["providerModelId"],
+			where: {
+				AND: [
+					where,
+					{ success: true },
+					{ provider: CHATGPT_PLAN_PROVIDER },
+				],
+			},
+			_sum: {
+				inputTokens: true,
+				outputTokens: true,
+				cachedInputTokens: true,
+			},
+		}),
+		db.aiUsageLog.count({ where }),
+		db.aiUsageLog.count({ where: { AND: [where, { success: false }] } }),
+		// Cost is real spend: a failed API attempt that was billed stays in
+		// it, though it is not a request (Fizzy #2972 AC3).
+		db.aiUsageLog.groupBy({
+			by: ["provider"],
+			where,
+			_sum: { costMicroUsd: true },
+		}),
+	]);
 
 	const bySource: Record<AiUsageBillingSource, AiUsageBillingSourceTotals> = {
 		chatgpt_plan: {
@@ -339,7 +373,12 @@ export async function listAiUsageActivity(
 		bucket.inputTokens += group._sum.inputTokens ?? 0;
 		bucket.outputTokens += group._sum.outputTokens ?? 0;
 		bucket.totalTokens += group._sum.totalTokens ?? 0;
-		bucket.costMicroUsd += group._sum.costMicroUsd ?? 0;
+	}
+	let costMicroUsd = 0;
+	for (const group of costGroups) {
+		const cost = group._sum.costMicroUsd ?? 0;
+		bySource[billingSourceOf(group.provider)].costMicroUsd += cost;
+		costMicroUsd += cost;
 	}
 
 	const hasMore = rawRows.length > limit;
@@ -404,10 +443,12 @@ export async function listAiUsageActivity(
 		periodDays: effectivePeriodDays,
 		totals: {
 			requests: totalsAggregate._count.id,
+			failedAttempts,
+			rowCount,
 			inputTokens: totalsAggregate._sum.inputTokens ?? 0,
 			outputTokens: totalsAggregate._sum.outputTokens ?? 0,
 			totalTokens: totalsAggregate._sum.totalTokens ?? 0,
-			costMicroUsd: totalsAggregate._sum.costMicroUsd ?? 0,
+			costMicroUsd,
 			avgLatencyMs: Math.round(totalsAggregate._avg.latencyMs ?? 0),
 			bySource,
 		},
@@ -701,6 +742,7 @@ export async function getAiUsageActivityTimeSeries(
 			totalTokens: true,
 			costMicroUsd: true,
 			latencyMs: true,
+			success: true,
 		},
 		orderBy: { createdAt: "asc" },
 		take: 50_000,
@@ -774,10 +816,16 @@ export async function getAiUsageActivityTimeSeries(
 		if (!bucket) {
 			continue;
 		}
-		bucket.requests += 1;
-		bucket.totalTokens += row.totalTokens;
+		// Cost is real spend, so every row counts, a billed failure included;
+		// requests, tokens and latency are successful calls only, like the
+		// totals — or the failed attempts when filtered to errors
+		// (Fizzy #2972 AC3).
 		bucket.costMicroUsd += row.costMicroUsd;
-		bucket.latencySum += row.latencyMs;
+		if (row.success || params.status === "error") {
+			bucket.requests += 1;
+			bucket.totalTokens += row.totalTokens;
+			bucket.latencySum += row.latencyMs;
+		}
 	}
 
 	return Array.from(buckets.values())
@@ -857,4 +905,53 @@ export async function getMedianAiUsageByTaskType(
 		medianCostMicroUsd: median(samples.map((s) => s.costMicroUsd)),
 		sampleCount: samples.length,
 	};
+}
+
+/** One plan source's successful calls of one plan model in a range. */
+export interface ChatGptPlanUsageGroup {
+	/** The shared account's id; null for a member's own plan. */
+	accountId: string | null;
+	userId: string | null;
+	providerModelId: string;
+	requests: number;
+	/** Every input token, cached included, as logged. */
+	inputTokens: number;
+	cachedInputTokens: number;
+	outputTokens: number;
+}
+
+/**
+ * An organization's ChatGPT plan usage in `[from, to]`, grouped by plan
+ * source (a shared account by id, a member's own plan by member) and plan
+ * model (Fizzy #2972 FR4). Successful calls only, as every usage total.
+ */
+export async function getChatGptPlanUsageBySource(params: {
+	organizationId: string;
+	from: Date;
+	to: Date;
+}): Promise<ChatGptPlanUsageGroup[]> {
+	const groups = await db.aiUsageLog.groupBy({
+		by: ["providerConfigId", "userId", "providerModelId"],
+		where: {
+			organizationId: params.organizationId,
+			provider: CHATGPT_PLAN_PROVIDER,
+			success: true,
+			createdAt: { gte: params.from, lte: params.to },
+		},
+		_count: { id: true },
+		_sum: {
+			inputTokens: true,
+			cachedInputTokens: true,
+			outputTokens: true,
+		},
+	});
+	return groups.map((group) => ({
+		accountId: group.providerConfigId,
+		userId: group.userId,
+		providerModelId: group.providerModelId,
+		requests: group._count.id,
+		inputTokens: group._sum.inputTokens ?? 0,
+		cachedInputTokens: group._sum.cachedInputTokens ?? 0,
+		outputTokens: group._sum.outputTokens ?? 0,
+	}));
 }

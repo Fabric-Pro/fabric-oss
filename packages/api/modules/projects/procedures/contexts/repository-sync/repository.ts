@@ -150,7 +150,7 @@ export function repositoryReadError(
 	if (outcome === "not-found") {
 		return new ORPCError("BAD_REQUEST", {
 			message: `Branch "${options.ref}" wasn't found on the remote.`,
-			data: { code: "BRANCH_NOT_FOUND" },
+			data: { code: "BRANCH_NOT_FOUND", ref: options.ref },
 		});
 	}
 	if (outcome === "unauthorized") {

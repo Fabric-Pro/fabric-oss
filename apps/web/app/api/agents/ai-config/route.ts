@@ -19,6 +19,7 @@ import {
 	chatGptPlanReconnectRefusal,
 	getChatGptPlanAgentConfig,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -32,14 +33,24 @@ export async function GET(req: NextRequest) {
 	}
 
 	try {
-		const { userId, organizationId } = auth;
+		const { userId, organizationId, impersonated } = auth;
 
 		let modelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
 		try {
-			modelResult = await getAIModelWithMetadata(
-				{ taskType: "TOOL_CALLING" },
-				{ userId, organizationId },
-			);
+			const resolve = () =>
+				getAIModelWithMetadata(
+					{ taskType: "TOOL_CALLING" },
+					{ userId, organizationId },
+				);
+			// Signed while an admin acted as the member (Fizzy #2770 D7):
+			// resolved as that impersonated request, which the plan gate
+			// refuses outright, exactly as for an AI token's `imp` claim.
+			modelResult = impersonated
+				? await runWithAiInteractiveContext(
+						{ userId, impersonated: true },
+						resolve,
+					)
+				: await resolve();
 		} catch (error) {
 			const reconnect = chatGptPlanReconnectRefusal(error);
 			if (reconnect) {

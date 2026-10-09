@@ -9,6 +9,7 @@ import {
 	useCapabilityGate,
 	useCapabilityGates,
 } from "@saas/projects/components/capability-gates/useCapabilityGates";
+import { useProjectContextCountSync } from "@saas/projects/hooks/use-project-context-count-sync";
 import { ConfluenceIcon } from "@saas/workflows/lib/plugins/confluence/icon";
 import { MicrosoftTeamsIcon } from "@saas/workflows/lib/plugins/microsoft-teams/icon";
 import { TruncatedText } from "@shared/components/TruncatedText";
@@ -90,9 +91,11 @@ import {
 import { toast } from "sonner";
 import {
 	type ContextDeleteOutcome,
+	type ContextSyncIndexingClock,
 	type ContextSyncState,
 	contextSyncLatestRunChanged,
 	contextSyncLatestRunFingerprint,
+	contextSyncIndexingClock,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
 	showsLivingMemorySection,
@@ -1253,6 +1256,12 @@ export function ProjectContextsList({ projectId }: Props) {
 	);
 
 	const queryClient = useQueryClient();
+	useProjectContextCountSync(
+		projectId,
+		data?.contexts
+			.map((ctx) => `${ctx.id}:${ctx.extractionStatus}`)
+			.join(","),
+	);
 
 	const deleteMutation = useMutation({
 		mutationFn: (params: {
@@ -1662,20 +1671,21 @@ export function ProjectContextsList({ projectId }: Props) {
 		orpc.projects.contexts.repositorySync.get.queryOptions({
 			input: { projectId, organizationId },
 		});
-	const indexingSinceRef = useRef<number | null>(null);
+	const indexingClockRef = useRef<ContextSyncIndexingClock>(null);
 	const wasSyncRunningRef = useRef(false);
 	const repositorySyncQuery = useQuery({
 		...repositorySyncQueryOptions,
 		refetchInterval: (query) => {
 			const syncState = query.state.data as ContextSyncState | undefined;
 			const awaitingIndexCount = syncState?.awaitingIndexCount ?? 0;
-			if (awaitingIndexCount > 0 && indexingSinceRef.current === null) {
-				indexingSinceRef.current = Date.now();
-			} else if (awaitingIndexCount === 0) {
-				indexingSinceRef.current = null;
-			}
-			const elapsed = indexingSinceRef.current
-				? Date.now() - indexingSinceRef.current
+			const now = Date.now();
+			indexingClockRef.current = contextSyncIndexingClock(
+				indexingClockRef.current,
+				awaitingIndexCount,
+				now,
+			);
+			const elapsed = indexingClockRef.current
+				? now - indexingClockRef.current.since
 				: 0;
 			return contextSyncPollInterval(syncState, elapsed);
 		},
@@ -2018,7 +2028,11 @@ export function ProjectContextsList({ projectId }: Props) {
 				? metadata.provider || "Integration"
 				: baseConfig.label);
 
+		// A pushed file keeps the title its author gave it (the server stores
+		// the file name when none was given); a repository-synced file is
+		// always labelled by its name. The full path stays under either.
 		const title =
+			(!context.repositorySyncId && synced ? metadata.title : "") ||
 			synced?.name ||
 			metadata.chatTopic ||
 			metadata.title ||

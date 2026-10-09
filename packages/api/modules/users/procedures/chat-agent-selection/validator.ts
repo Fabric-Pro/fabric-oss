@@ -37,6 +37,7 @@
 import {
 	type AIProvider,
 	db,
+	LLM_PROVIDER_PURPOSE_FILTER,
 	type PersistedSelectedAgent,
 	PersistedSelectedAgentSchema,
 } from "@repo/database";
@@ -141,13 +142,17 @@ async function getEnabledProviders(
 ): Promise<Set<AIProvider>> {
 	if (organizationId) {
 		const rows = await db.cloudProviderConfig.findMany({
-			where: { organizationId, enabled: true },
+			where: {
+				organizationId,
+				enabled: true,
+				...LLM_PROVIDER_PURPOSE_FILTER,
+			},
 			select: { provider: true },
 		});
 		return new Set(rows.map((r) => r.provider));
 	}
 	const rows = await db.userCloudProviderConfig.findMany({
-		where: { userId, enabled: true },
+		where: { userId, enabled: true, ...LLM_PROVIDER_PURPOSE_FILTER },
 		select: { provider: true },
 	});
 	return new Set(rows.map((r) => r.provider));

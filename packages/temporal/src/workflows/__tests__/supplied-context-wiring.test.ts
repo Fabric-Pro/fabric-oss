@@ -251,6 +251,24 @@ describe("parent workflow forwards supplied context to the child", () => {
 		expect(childArgs().excludeContextId).toBe("ctx_just_created");
 	});
 
+	it("passes the attempt's identity through to the child workflow", async () => {
+		// The coordinated Proposal plan scopes its takeover to it (Fizzy
+		// #2801); forgotten here, it would never arrive and the plan would
+		// take the document over unconditionally.
+		activityMocks.startGenerationRun.mockResolvedValue({
+			outcome: "started",
+		});
+
+		await projectDocumentGenerationWorkflow({
+			...PARENT_INPUT,
+			generationStartedAt: "2026-10-07T09:00:00.123Z",
+		});
+
+		expect(childArgs().generationStartedAt).toBe(
+			"2026-10-07T09:00:00.123Z",
+		);
+	});
+
 	it("produces the child call it produced before the change when the fields are absent", async () => {
 		await projectDocumentGenerationWorkflow(PARENT_INPUT);
 
@@ -437,6 +455,26 @@ describe("supplied-context wiring (source assertions)", () => {
 		expect(destructureBlock).toContain("excludeContextId,");
 	});
 
+	it("enumerates the attempt's identity in the child args, and the child takes it on its input", () => {
+		// Sliced to the `executeChild` call alone: the completion
+		// notification right after it names `generationStartedAt` too.
+		const executeChildStart = parent.indexOf("executeChild(");
+		const executeChildEnd = parent.indexOf(
+			"// The run's own closing writes",
+		);
+		expect(executeChildStart).toBeGreaterThan(-1);
+		expect(executeChildEnd).toBeGreaterThan(executeChildStart);
+		expect(parent.slice(executeChildStart, executeChildEnd)).toMatch(
+			/^\s*generationStartedAt,/m,
+		);
+
+		const childInput = child.slice(
+			child.indexOf("export interface DocumentGenerationChildInput {"),
+			child.indexOf("export interface DocumentGenerationChildOutput {"),
+		);
+		expect(childInput).toContain("generationStartedAt?: string;");
+	});
+
 	it("joins supplied context into the array instead of assigning over it", () => {
 		// The precise shape matters: `contexts = [suppliedContext]` would be
 		// the fan-in bug, and it reads almost identically at review.
@@ -496,12 +534,16 @@ describe("supplied-context wiring (source assertions)", () => {
 		// carried on without RAG and must keep replaying that way. Neither is
 		// supplied-context's, and a marker appearing here for a change that
 		// adds no command is still the regression this test is looking for.
+		// `proposal-artifact-v1` gates the coordinated Proposal branch (Fizzy
+		// #2801), which adds a plan activity, visuals, the analysis run record
+		// and a child workflow start.
 		const markers = [
 			...new Set(child.match(/patched\("([^"]+)"\)/g) ?? []),
 		].sort();
 		expect(markers).toEqual([
 			'patched("document-decision-precheck-v1")',
 			'patched("document-provider-refusal-fatal-v1")',
+			'patched("proposal-artifact-v1")',
 		]);
 
 		// The parent's one gate is the dependency queue (Fizzy #2199), which

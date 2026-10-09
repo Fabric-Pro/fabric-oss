@@ -65,6 +65,7 @@ export * from "./presence";
 export * from "./priority-history";
 export * from "./project-shortcuts";
 export * from "./projects";
+export * from "./proposal-artifact";
 export * from "./publishing-analysis-revision";
 export * from "./publishing-analysis-timeline";
 export * from "./publishing-chat-delivery";

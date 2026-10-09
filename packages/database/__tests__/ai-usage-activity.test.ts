@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const findManyMock = vi.fn();
 const aggregateMock = vi.fn();
 const groupByMock = vi.fn();
+const countMock = vi.fn(async (_args: unknown) => 0);
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -23,6 +24,7 @@ vi.mock("../prisma/client", () => ({
 			findMany: (args: unknown) => findManyMock(args),
 			aggregate: (args: unknown) => aggregateMock(args),
 			groupBy: (args: unknown) => groupByMock(args),
+			count: (args: unknown) => countMock(args),
 		},
 	},
 	Prisma: {},
@@ -31,6 +33,7 @@ vi.mock("../prisma/client", () => ({
 import {
 	getAiUsageActivityFacets,
 	getAiUsageActivityTimeSeries,
+	getChatGptPlanUsageBySource,
 	getMedianAiUsageByTaskType,
 	listAiUsageActivity,
 } from "../prisma/queries/ai-usage-activity";
@@ -72,9 +75,9 @@ describe("listAiUsageActivity", () => {
 			userId: "user-1",
 			organizationId: null,
 		});
-		expect(aggregateArgs.where).toMatchObject({
-			userId: "user-1",
-			organizationId: null,
+		// Totals count successful calls only (Fizzy #2972 AC3).
+		expect(aggregateArgs.where).toEqual({
+			AND: [findArgs.where, { success: true }],
 		});
 	});
 
@@ -186,10 +189,13 @@ describe("listAiUsageActivity", () => {
 
 		expect(result.totals).toEqual({
 			requests: 5,
+			failedAttempts: 0,
+			rowCount: 0,
 			inputTokens: 1234,
 			outputTokens: 0,
 			totalTokens: 2000,
-			costMicroUsd: 9999,
+			// Cost comes from every billed row, not the success aggregate.
+			costMicroUsd: 0,
 			avgLatencyMs: 424,
 			bySource: {
 				chatgpt_plan: {
@@ -340,6 +346,129 @@ describe("listAiUsageActivity", () => {
 	});
 });
 
+// Fizzy #2972 AC3: a request a plan failed and another subscription then
+// served is counted once, for the success; the log still lists both rows.
+describe("failed attempts", () => {
+	beforeEach(() => {
+		findManyMock.mockReset();
+		aggregateMock.mockReset();
+		groupByMock.mockReset();
+		countMock.mockReset();
+		findManyMock.mockResolvedValue([]);
+		aggregateMock.mockResolvedValue({
+			...EMPTY_AGGREGATE,
+			_count: { id: 1 },
+		});
+		groupByMock.mockResolvedValue([]);
+		countMock.mockImplementation(async (args: unknown) =>
+			JSON.stringify(args).includes('"success":false') ? 1 : 2,
+		);
+	});
+
+	it("counts the success only, and reports the failed attempt apart", async () => {
+		const result = await listAiUsageActivity({ organizationId: "org-1" });
+		expect(result.totals).toMatchObject({
+			requests: 1,
+			failedAttempts: 1,
+			rowCount: 2,
+		});
+		const planGroupArgs = groupByMock.mock.calls[1]?.[0] as {
+			where: { AND: unknown[] };
+		};
+		expect(planGroupArgs.where.AND).toContainEqual({ success: true });
+	});
+
+	it("keeps a billed failed attempt's cost: cost is real spend", async () => {
+		const isCostGroup = (args: { by: string[]; _sum: object }) =>
+			args.by.length === 1 &&
+			args.by[0] === "provider" &&
+			Object.keys(args._sum).join() === "costMicroUsd";
+		groupByMock.mockImplementation(
+			async (args: { by: string[]; _sum: object }) =>
+				isCostGroup(args)
+					? [
+							{
+								provider: "OPENAI_DIRECT",
+								_sum: { costMicroUsd: 700 },
+							},
+						]
+					: [],
+		);
+		const result = await listAiUsageActivity({ organizationId: "org-1" });
+		expect(result.totals.costMicroUsd).toBe(700);
+		expect(result.totals.bySource.api.costMicroUsd).toBe(700);
+		const costArgs = groupByMock.mock.calls.find((call) =>
+			isCostGroup(call[0] as { by: string[]; _sum: object }),
+		)?.[0] as { where: unknown };
+		expect(JSON.stringify(costArgs.where)).not.toContain('"success"');
+	});
+
+	it("totals the failed attempts themselves when filtered to errors", async () => {
+		await listAiUsageActivity({ organizationId: "org-1", status: "error" });
+		const aggregateArgs = aggregateMock.mock.calls.at(-1)?.[0] as {
+			where: Record<string, unknown>;
+		};
+		expect(aggregateArgs.where).toMatchObject({ success: false });
+		expect(JSON.stringify(aggregateArgs.where)).not.toContain(
+			'"success":true',
+		);
+	});
+
+	it("charts successful calls, the billed cost of every row, or the failures when filtered to errors", async () => {
+		const at = new Date();
+		at.setHours(12, 0, 0, 0);
+		findManyMock.mockResolvedValue([
+			{
+				createdAt: at,
+				totalTokens: 100,
+				costMicroUsd: 50,
+				latencyMs: 10,
+				success: true,
+			},
+			{
+				createdAt: at,
+				totalTokens: 40,
+				costMicroUsd: 20,
+				latencyMs: 30,
+				success: false,
+			},
+		]);
+		const series = await getAiUsageActivityTimeSeries({
+			organizationId: "org-1",
+			periodDays: 1,
+		});
+		const totals = series.reduce(
+			(sum, point) => ({
+				requests: sum.requests + point.requests,
+				totalTokens: sum.totalTokens + point.totalTokens,
+				costMicroUsd: sum.costMicroUsd + point.costMicroUsd,
+			}),
+			{ requests: 0, totalTokens: 0, costMicroUsd: 0 },
+		);
+		// The tile and the chart agree: cost includes the billed failure.
+		expect(totals).toEqual({
+			requests: 1,
+			totalTokens: 100,
+			costMicroUsd: 70,
+		});
+		expect(
+			(findManyMock.mock.calls.at(-1)?.[0] as { where: object }).where,
+		).not.toHaveProperty("success");
+
+		await getAiUsageActivityTimeSeries({
+			organizationId: "org-1",
+			status: "error",
+		});
+		expect(
+			(
+				findManyMock.mock.calls.at(-1)?.[0] as {
+					where: { success: boolean };
+				}
+			).where.success,
+		).toBe(false);
+	});
+});
+
 describe("billing source (ChatGPT plan vs API)", () => {
 	beforeEach(() => {
 		findManyMock.mockReset();
@@ -455,8 +584,11 @@ describe("billing source (ChatGPT plan vs API)", () => {
 			where: Record<string, unknown>;
 		};
 		expect(groupArgs.by).toEqual(["provider"]);
-		// Same where as the rows, so the split honours every other filter.
-		expect(groupArgs.where).toEqual(whereOfFirstFindMany());
+		// Same where as the rows, so the split honours every other filter —
+		// successful calls only.
+		expect(groupArgs.where).toEqual({
+			AND: [whereOfFirstFindMany(), { success: true }],
+		});
 	});
 
 	it("reports zeroed sources when nothing matched", async () => {
@@ -624,5 +756,50 @@ describe("getMedianAiUsageByTaskType", () => {
 		expect(findWhere.taskType).toBe("CHAT");
 		expect(findWhere.userId).toBe("user-1");
 		expect(findWhere.organizationId).toBe(null);
+	});
+});
+
+// Fizzy #2972 FR4: per-subscription plan usage — one organization, the
+// range, successful plan calls only, grouped by source and model.
+describe("getChatGptPlanUsageBySource", () => {
+	it("groups one organization's successful plan calls in the range by source and model", async () => {
+		groupByMock.mockReset();
+		groupByMock.mockResolvedValue([
+			{
+				providerConfigId: "acc-1",
+				userId: "user-1",
+				providerModelId: "gpt-6.1-sol",
+				_count: { id: 3 },
+				_sum: {
+					inputTokens: 900,
+					cachedInputTokens: 300,
+					outputTokens: 50,
+				},
+			},
+		]);
+		const from = new Date("2026-10-01T00:00:00Z");
+		const to = new Date("2026-10-08T00:00:00Z");
+		await expect(
+			getChatGptPlanUsageBySource({ organizationId: "org-1", from, to }),
+		).resolves.toEqual([
+			{
+				accountId: "acc-1",
+				userId: "user-1",
+				providerModelId: "gpt-6.1-sol",
+				requests: 3,
+				inputTokens: 900,
+				cachedInputTokens: 300,
+				outputTokens: 50,
+			},
+		]);
+		expect(groupByMock.mock.calls[0]?.[0]).toMatchObject({
+			by: ["providerConfigId", "userId", "providerModelId"],
+			where: {
+				organizationId: "org-1",
+				provider: "OPENAI_CHATGPT_PLAN",
+				success: true,
+				createdAt: { gte: from, lte: to },
+			},
+		});
 	});
 });

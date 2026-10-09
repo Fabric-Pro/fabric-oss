@@ -49,6 +49,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	isOrganizationMember: mocks.isOrganizationMember,
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,

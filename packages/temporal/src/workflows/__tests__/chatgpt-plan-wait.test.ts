@@ -272,7 +272,7 @@ describe("withChatGptPlanWait", () => {
 describe("which workflows may wait for a plan", () => {
 	// Default-deny, like PLAN_POOL_BACKGROUND_JOB_TYPES: a workflow waits for
 	// a ChatGPT plan only when its steps may run on a shared one.
-	it("is exactly the daily brief and workflow-builder executions", () => {
+	it("is exactly the daily brief, workflow-builder executions and meeting auto-analysis", () => {
 		const importers = readdirSync(WORKFLOWS_PATH, { recursive: true })
 			.map(String)
 			.filter(
@@ -285,6 +285,7 @@ describe("which workflows may wait for a plan", () => {
 			)
 			.sort();
 		expect(importers).toEqual([
+			"auto-analyze-meeting-transcript.ts",
 			"daily-brief-generation-workflow.ts",
 			"workflow-builder-execution.ts",
 		]);

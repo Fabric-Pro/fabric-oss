@@ -39,6 +39,8 @@ describe("OpenAI catalog retirement", () => {
 				providerModelId: "openai/gpt-6.1-sol",
 			},
 			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-sol" },
+			// ChatGPT plans serve it too, and it is their default (Fizzy #2770).
+			{ provider: "OPENAI_CHATGPT_PLAN", providerModelId: "gpt-6.1-sol" },
 		]);
 		for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol"]) {
 			expect(getModelCapabilitiesFromCatalog(id)).toMatchObject({

@@ -95,9 +95,14 @@ export const AUDIT_ACTIONS = [
 	"org.chatgpt_plan.account_connected",
 	"org.chatgpt_plan.account_updated",
 	"org.chatgpt_plan.account_disconnected",
+	// One ChatGPT account moved between a member's own plan and the shared
+	// accounts without a new sign-in (Fizzy #2770 I1).
+	"org.chatgpt_plan.account_shared_from_personal",
+	"org.chatgpt_plan.account_returned_to_personal",
 	"org.chatgpt_plan.policy_changed",
 	"org.chatgpt_plan.terms_acknowledged",
 	"org.chatgpt_plan.api_fallback_used",
+	"org.chatgpt_plan.fallback_model_changed",
 	// The non-member contact register (#2340): people with no Fabric account
 	// whom the organization tracks deliverables against. Security-relevant
 	// because the register holds names and contact details of client staff
@@ -802,7 +807,10 @@ export function redactSensitiveKeys(input: unknown): unknown {
  *     time and pass them in — see D11).
  */
 function buildAuditRow(input: RecordAuditInput): Prisma.AuditLogCreateInput {
-	if (!AUDIT_ACTION_SET.has(input.action)) {
+	if (
+		!AUDIT_ACTION_SET.has(input.action) &&
+		!isActivityAction(input.action)
+	) {
 		logger.warn(
 			{
 				event: "audit.unknown_action",
@@ -969,6 +977,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 			return "DATA_DELETE";
 		case "org.chatgpt_plan.account_updated":
 		case "org.chatgpt_plan.policy_changed":
+		case "org.chatgpt_plan.fallback_model_changed":
 		case "org.ai_provider.updated":
 		case "org.ai_provider.default_changed":
 		case "org.ai_provider.embedding_changed":

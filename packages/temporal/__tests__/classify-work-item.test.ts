@@ -14,6 +14,11 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	capturedDecisionOutcomes,
+	decideWithFallbackRefusal,
+	resetCapturedDecisionOutcomes,
+} from "./test-helpers/decision-outcomes";
 
 const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 	vi.hoisted(() => {
@@ -33,7 +38,7 @@ const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 			AIProviderNotConfiguredError,
 			AiUsageLimitExceededError,
 			mocks: {
-				experimental_evaluate: vi.fn(),
+				experimental_decide: vi.fn(),
 				getBoundPromptForAgent: vi.fn(),
 				getAIDecisionModelWithMetadata: vi.fn(),
 				generateObject: vi.fn(),
@@ -44,14 +49,26 @@ const { mocks, AIProviderNotConfiguredError, AiUsageLimitExceededError } =
 		};
 	});
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	AIProviderNotConfiguredError,
-	experimental_evaluate: mocks.experimental_evaluate,
+	experimental_decide: mocks.experimental_decide,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 	generateObject: mocks.generateObject,
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	logModelUsageAsync: mocks.logModelUsageAsync,
+	recordDecisionOutcome: await (
+		await import("./test-helpers/decision-outcomes")
+	).realRecordDecisionOutcome(),
+	createDecisionCapture: await (
+		await import("./test-helpers/decision-outcomes")
+	).realCreateDecisionCapture(),
 }));
+
+// The real telemetry helper runs against this stand-in, so tests assert the
+// outcome, model and confidence samples that would reach the metrics.
+vi.mock("@repo/observability/llm", async () =>
+	(await import("./test-helpers/decision-outcomes")).observabilityLlmMock(),
+);
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -76,6 +93,10 @@ vi.mock("@repo/utils", () => ({
 }));
 
 import { classifyWorkItem } from "../src/lib/classify-work-item";
+import {
+	decideWithRefusal,
+	rejectedWithRefusal,
+} from "./test-helpers/refusing-decision-model";
 
 const STANDARD_INPUT = {
 	reporterText: "Login button stops working after 2 clicks, returns 500",
@@ -121,7 +142,7 @@ describe("classifyWorkItem", () => {
 			format: "HANDLEBARS",
 			version: { content: "custom organization classifier policy" },
 		});
-		mocks.experimental_evaluate.mockResolvedValue({
+		mocks.experimental_decide.mockResolvedValue({
 			answers: {
 				workItemKind: {
 					type: "choice",
@@ -162,7 +183,7 @@ describe("classifyWorkItem", () => {
 				"policy: existing behavior is a BUG; requests are FEATURE",
 			error: null,
 		});
-		mocks.experimental_evaluate.mockResolvedValue({
+		mocks.experimental_decide.mockResolvedValue({
 			answers: {
 				workItemKind: {
 					type: "choice",
@@ -178,7 +199,7 @@ describe("classifyWorkItem", () => {
 		});
 
 		expect(result.kind).toBe("FEATURE");
-		expect(mocks.experimental_evaluate).toHaveBeenCalledWith(
+		expect(mocks.experimental_decide).toHaveBeenCalledWith(
 			expect.objectContaining({
 				state: expect.objectContaining({
 					classifierPolicy:
@@ -252,7 +273,7 @@ describe("classifyWorkItem", () => {
 				format: "MARKDOWN",
 				version: { content: "classifier prompt body" },
 			});
-			mocks.experimental_evaluate.mockResolvedValue({
+			mocks.experimental_decide.mockResolvedValue({
 				answers: { workItemKind: answer },
 			});
 			mocks.generateObject.mockResolvedValue({
@@ -275,13 +296,47 @@ describe("classifyWorkItem", () => {
 		},
 	);
 
+	it("treats a decision refusal as no decision and uses the language classifier", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			key: "bug_classifier",
+			format: "MARKDOWN",
+			version: { content: "classifier prompt body" },
+		});
+		mocks.experimental_decide.mockImplementation(decideWithRefusal);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				kind: "BUG",
+				confidence: "High",
+				fallback_used: false,
+				primary_signals: ["returns 500"],
+				rationale: "existing classifier result",
+			},
+			usage: { totalTokens: 42 },
+		});
+
+		const result = await classifyWorkItem(STANDARD_INPUT);
+
+		expect(
+			await rejectedWithRefusal(
+				mocks.experimental_decide.mock.results[0]?.value,
+			),
+		).toBe(true);
+		// The language classifier's answer, not a refusal read as FEATURE or
+		// as the safe fallback.
+		expect(result).toMatchObject({
+			kind: "BUG",
+			rationale: "existing classifier result",
+		});
+		expect(mocks.generateObject).toHaveBeenCalledOnce();
+	});
+
 	it("uses the existing language classifier when decision evaluation throws", async () => {
 		mocks.getBoundPromptForAgent.mockResolvedValue({
 			key: "bug_classifier",
 			format: "MARKDOWN",
 			version: { content: "classifier prompt body" },
 		});
-		mocks.experimental_evaluate.mockRejectedValue(
+		mocks.experimental_decide.mockRejectedValue(
 			new Error("gateway timeout"),
 		);
 		mocks.generateObject.mockResolvedValue({
@@ -535,5 +590,169 @@ describe("classifyWorkItem", () => {
 				}),
 			}),
 		);
+	});
+});
+
+describe("classifyWorkItem decision telemetry", () => {
+	const BOUND_PROMPT = {
+		key: "bug_classifier",
+		format: "MARKDOWN",
+		version: { content: "classifier prompt body" },
+	};
+	const LANGUAGE_RESULT = {
+		object: {
+			kind: "FEATURE",
+			confidence: "Medium",
+			fallback_used: false,
+			primary_signals: [],
+			rationale: "language classifier",
+		},
+		usage: { totalTokens: 10 },
+	};
+
+	beforeEach(() => {
+		resetCapturedDecisionOutcomes();
+		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_PROMPT);
+		mocks.generateObject.mockResolvedValue(LANGUAGE_RESULT);
+		mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
+			model: { modelId: "openai/example-decider" },
+			metadata: {
+				provider: "VERCEL_GATEWAY",
+				modelString: "openai/example-decider",
+				canonicalName: "example-decider",
+			},
+			trackUsage: decisionTrackUsage,
+		});
+	});
+
+	it("records an accepted decision with the answering model and its confidence", async () => {
+		mocks.experimental_decide.mockResolvedValue({
+			answers: {
+				workItemKind: {
+					type: "choice",
+					choice: "BUG",
+					probabilities: { BUG: 0.96, FEATURE: 0.04 },
+				},
+			},
+			response: { modelId: "typesafe-ai/jev" },
+		});
+
+		await classifyWorkItem(STANDARD_INPUT);
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: "classify-work-item",
+				outcome: "accepted",
+				model: "typesafe-ai-jev",
+				confidences: [0.96],
+			},
+		]);
+	});
+
+	it.each([
+		[
+			"below_threshold",
+			{
+				type: "choice",
+				choice: "BUG",
+				probabilities: { BUG: 0.7, FEATURE: 0.3 },
+			},
+			[0.7],
+		],
+		["malformed", { type: "choice", choice: "BUG" }, []],
+	])(
+		"records %s when the language classifier takes over",
+		async (outcome, answer, confidences) => {
+			mocks.experimental_decide.mockResolvedValue({
+				answers: { workItemKind: answer },
+			});
+
+			await classifyWorkItem(STANDARD_INPUT);
+
+			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(capturedDecisionOutcomes).toEqual([
+				{
+					site: "classify-work-item",
+					outcome,
+					model: "example-decider",
+					confidences,
+				},
+			]);
+		},
+	);
+
+	it("records a refusal as refused and a thrown error as failed", async () => {
+		mocks.experimental_decide.mockImplementationOnce(decideWithRefusal);
+		await classifyWorkItem(STANDARD_INPUT);
+		mocks.experimental_decide.mockRejectedValueOnce(
+			new Error("gateway timeout"),
+		);
+		await classifyWorkItem(STANDARD_INPUT);
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model }) => [
+				outcome,
+				model,
+			]),
+		).toEqual([
+			["refused", "example-decider"],
+			["failed", "example-decider"],
+		]);
+	});
+
+	it("records unavailable when no decision model resolves", async () => {
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+			new AIProviderNotConfiguredError(),
+		);
+
+		await classifyWorkItem(STANDARD_INPUT);
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: "classify-work-item",
+				outcome: "unavailable",
+				model: "none",
+				confidences: [],
+			},
+		]);
+	});
+
+	it("records limit_exceeded, and still rethrows, for a usage limit at decision or at resolution", async () => {
+		mocks.experimental_decide.mockRejectedValueOnce(
+			new AiUsageLimitExceededError(),
+		);
+		await expect(classifyWorkItem(STANDARD_INPUT)).rejects.toBeInstanceOf(
+			AiUsageLimitExceededError,
+		);
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValueOnce(
+			new AiUsageLimitExceededError(),
+		);
+		await expect(classifyWorkItem(STANDARD_INPUT)).rejects.toBeInstanceOf(
+			AiUsageLimitExceededError,
+		);
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model }) => [
+				outcome,
+				model,
+			]),
+		).toEqual([
+			["limit_exceeded", "example-decider"],
+			["limit_exceeded", "none"],
+		]);
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+
+	it("labels a refusal by the gateway fallback model with that model, although the SDK threw", async () => {
+		mocks.experimental_decide.mockImplementation(decideWithFallbackRefusal);
+
+		await classifyWorkItem(STANDARD_INPUT);
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model }) => [
+				outcome,
+				model,
+			]),
+		).toEqual([["refused", "typesafe-ai-jev"]]);
 	});
 });

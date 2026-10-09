@@ -232,6 +232,44 @@ describe("Company context tables are registered on the tenant path", () => {
 });
 
 /**
+ * Proposal artifact (Fizzy #2801). Analysis runs, findings and the document
+ * style carry organizationId and no userId, so they are organization-only —
+ * a USER_OWNED_TABLES entry would inject a userId filter Prisma rejects — and
+ * never project-scoped, so an invited guest's projects cannot reach internal
+ * review material. RLS is plain org_only: no guest-read branch.
+ */
+describe("Proposal artifact tables are registered on the tenant path", () => {
+	const orgOnly = setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set([");
+	const userOwned = setMembers(
+		tenantDb,
+		"const USER_OWNED_TABLES = new Set([",
+	);
+	const perUserOrg = setMembers(
+		tenantDb,
+		"const PER_USER_ORG_TABLES = new Set([",
+	);
+
+	it.each([
+		["ProjectDocumentAnalysis", "project_document_analysis"],
+		["ProjectDocumentFinding", "project_document_finding"],
+		["ProjectDocumentStyle", "project_document_style"],
+	])(
+		"%s is organization-only and never project-scoped, under org_only RLS",
+		(model, table) => {
+			expect(orgOnly).toContain(model);
+			expect(userOwned).not.toContain(model);
+			expect(perUserOrg).not.toContain(model);
+			expect(tenantDb).not.toMatch(new RegExp(`\\b${model}: "`));
+			expect(rls).toMatch(
+				new RegExp(
+					`\\{\\s*name: "${table}",\\s*policy: "org_only",?\\s*\\}`,
+				),
+			);
+		},
+	);
+});
+
+/**
  * Agent sign-in's OAuth tables belong to Better Auth, like `session` and
  * `account`: its adapter writes them on the base client, outside any tenant
  * context, so they are classified the same way — off the tenant path and off

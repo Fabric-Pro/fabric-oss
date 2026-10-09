@@ -177,13 +177,23 @@ export function GetStartedController() {
 	// from the flag provider too. It gates one Documents page-tour component
 	// and one guided-tour step.
 	const glossyEditionEnabled = useFeatureFlag("GLOSSY_EDITION");
+	// The Proposal artifact rollout (#2801) gates nothing in the tours; it
+	// changes what the Glossy component and step say, since a Proposal under
+	// it needs no Glossy edition.
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
 			todoList: todoListEnabled,
 			glossyEdition: glossyEditionEnabled,
+			proposalArtifact: proposalArtifactEnabled,
 		}),
-		[tabGates, todoListEnabled, glossyEditionEnabled],
+		[
+			tabGates,
+			todoListEnabled,
+			glossyEditionEnabled,
+			proposalArtifactEnabled,
+		],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't
 	// see would navigate nowhere or spotlight a missing anchor — drop it.
@@ -347,6 +357,7 @@ export function GetStartedController() {
 				gates: {
 					todoList: todoListEnabled,
 					glossyEdition: glossyEditionEnabled,
+					proposalArtifact: proposalArtifactEnabled,
 				} satisfies TourStepGates,
 			}),
 		[
@@ -356,6 +367,7 @@ export function GetStartedController() {
 			isTabVisible,
 			todoListEnabled,
 			glossyEditionEnabled,
+			proposalArtifactEnabled,
 		],
 	);
 	const [adHocStep, setAdHocStep] = useState<OnboardingStep | null>(null);

@@ -5,12 +5,12 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
 	loadRecipientBrandProject,
 	presentRecipientBrand,
 	recipientBrandOutputSchema,
 } from "../../lib/recipient-brand";
-import { requireGlossyEnabled } from "../../lib/glossy-feature";
 
 /**
  * The project's recipient brand (Fizzy #2589, R32): the party a Glossy
@@ -20,12 +20,13 @@ import { requireGlossyEnabled } from "../../lib/glossy-feature";
  * project has none yet — so a confirmation made against a stale read comes
  * back as `conflict` instead of overwriting someone else's (KTD23).
  *
- * AUTHORIZATION: `requireGlossyEnabled` first (gate off → NOT_FOUND for every
- * caller), then `requireProjectPermission(DOCUMENT_READ)`, then the shared
+ * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
+ * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
+ * `requireProjectPermission(DOCUMENT_READ)`, then the shared
  * recipient brand gate (rollout flag, trashed project, project access).
  */
 export const getRecipientBrandProcedure = tenantProtectedProcedure
-	.use(requireGlossyEnabled())
+	.use(requireGlossyOrProposalArtifactEnabled())
 	.use(requireProjectPermission(Permissions.DOCUMENT_READ))
 	.route({
 		method: "GET",

@@ -1,4 +1,4 @@
-import { getAiProviderApiKey, getOrgModelPreferences } from "@repo/database";
+import { getOrgModelPreferences } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -6,6 +6,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { hasAnyAiProvider } from "../../lib/has-ai-provider";
 
 export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.ORG_AI_CONFIG_READ))
@@ -58,13 +59,12 @@ export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 			return [];
 		}
 
-		// Get org's default provider
-		const providerConfig = await getAiProviderApiKey({
-			userId: context.user.id,
-			organizationId,
-		});
-
-		if (!providerConfig.provider) {
+		if (
+			!(await hasAnyAiProvider({
+				userId: context.user.id,
+				organizationId,
+			}))
+		) {
 			return [];
 		}
 

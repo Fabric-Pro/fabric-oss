@@ -10,10 +10,14 @@ import { Skeleton } from "@ui/components/skeleton";
 import { cn } from "@ui/lib";
 import { ExternalLinkIcon, RefreshCwIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useRef } from "react";
 import { toast } from "sonner";
+import { isBranchChangedRefusal } from "../../lib/instructions-action-error";
+import { instructionsFreshness } from "../../lib/instructions-query-freshness";
 import {
 	branchCardLine,
 	branchPanelPollInterval,
+	nextTransitionSince,
 	offersBranchRefresh,
 	offersClose,
 	offersRetryOpening,
@@ -22,8 +26,9 @@ import {
 	type ProposalBranchLite,
 } from "./lib/instructions-proposal-branch";
 import {
+	branchesSignature,
 	invalidateProposalViews,
-	invalidateProposalViewsAfterRefresh,
+	useRefreshSettleWindow,
 } from "./lib/instructions-proposal-views";
 
 const TONE_CLASS = {
@@ -98,6 +103,7 @@ export type MyProposalBranch = {
 export function InstructionProposalBranchPanel({
 	projectId,
 	onChanged,
+	onRefreshRequested,
 	userId,
 	ownerName,
 	data: dataProp,
@@ -106,6 +112,8 @@ export function InstructionProposalBranchPanel({
 }: {
 	projectId: string;
 	onChanged?: () => void;
+	/** Called when a provider Refresh was asked for; a read-only panel's caller owns the poll that follows. */
+	onRefreshRequested?: () => void;
 	/** Another member's id, for a reviewer only; omitted reads the caller's own. */
 	userId?: string;
 	/** That member's display name, shown above their read-only branches. */
@@ -133,20 +141,37 @@ export function InstructionProposalBranchPanel({
 	// Disabled in read-only mode: the caller already fetched this exact view
 	// through the reviewer aggregate read, so this query would never be more
 	// than a discarded duplicate of it.
+	const settle = useRefreshSettleWindow();
+	const transitionSince = useRef<number | null>(null);
+	const closeRetried = useRef(false);
 	const query = useQuery({
 		...orpc.projects.instructions.proposals.myBranch.queryOptions({
 			input: { projectId },
 		}),
+		...instructionsFreshness.proposalView,
 		enabled: !readOnly,
-		staleTime: 0,
-		refetchOnMount: "always",
-		refetchInterval: (q) =>
-			branchPanelPollInterval(
-				(q.state.data as MyProposalBranch | undefined)?.branches.map(
-					(entry) => entry.branch,
-				),
-			),
+		refetchInterval: (q) => {
+			const shown = (
+				q.state.data as MyProposalBranch | undefined
+			)?.branches.map((entry) => entry.branch);
+			const now = Date.now();
+			transitionSince.current = nextTransitionSince(
+				transitionSince.current,
+				shown,
+				now,
+			);
+			return settle.pollInterval(
+				branchPanelPollInterval(shown, transitionSince.current, now),
+			);
+		},
 	});
+	settle.observe(
+		branchesSignature(
+			(query.data as MyProposalBranch | undefined)?.branches.map(
+				(entry) => entry.branch,
+			) ?? [],
+		),
+	);
 
 	const isLoading = readOnly ? Boolean(isLoadingProp) : query.isLoading;
 	const isError = readOnly ? Boolean(isErrorProp) : query.isError;
@@ -154,16 +179,14 @@ export function InstructionProposalBranchPanel({
 		? dataProp
 		: (query.data as MyProposalBranch | undefined);
 
-	const refresh = async (options?: { settling?: boolean }) => {
+	const refresh = async () => {
 		onChanged?.();
 		if (readOnly) {
 			// No query of our own: the caller's `onChanged` is what refetches
 			// the reviewer aggregate this view came from.
 			return;
 		}
-		await (options?.settling
-			? invalidateProposalViewsAfterRefresh(queryClient)
-			: invalidateProposalViews(queryClient));
+		await invalidateProposalViews(queryClient);
 	};
 
 	// The branch's own fencing attempt, as the last read showed it: a command
@@ -172,6 +195,19 @@ export function InstructionProposalBranchPanel({
 	function attemptFor(branchId: string): number {
 		const entry = data?.branches.find((e) => e.branch.id === branchId);
 		return entry?.branch.attempt ?? 0;
+	}
+
+	// Close is the one command confirmed against a card that may be seconds
+	// old: the pull request opening moves OPENING -> OPEN and bumps the
+	// attempt between the 10 s polls, so a fence taken from the cached view
+	// is refused as BRANCH_CHANGED. The confirmation reads the branch again
+	// and fences on that.
+	async function freshAttemptFor(branchId: string): Promise<number> {
+		const fresh = await query.refetch();
+		const entry = (
+			fresh.data as MyProposalBranch | undefined
+		)?.branches.find((e) => e.branch.id === branchId);
+		return entry?.branch.attempt ?? attemptFor(branchId);
 	}
 
 	function onCommandSuccess(
@@ -186,12 +222,39 @@ export function InstructionProposalBranchPanel({
 
 	const close = useMutation(
 		orpc.projects.instructions.proposals.closeBranch.mutationOptions({
-			onSuccess: (result) =>
+			onSuccess: (result, variables) => {
+				closeRetried.current = false;
+				const closed = (
+					query.data as MyProposalBranch | undefined
+				)?.branches.find((e) => e.branch.id === variables.branchId);
 				onCommandSuccess(
 					result as { changed: boolean },
-					t("closeSuccess"),
-				),
-			onError: (error: Error) => {
+					t(
+						closed?.branch.pullRequest
+							? "closeSuccess"
+							: "closeSuccessNoPr",
+					),
+				);
+			},
+			onError: async (error: Error, variables) => {
+				// The branch moved between the confirmation and the command
+				// (the pull request opened). The intent is unchanged, so resend
+				// once against the branch as it now is, if it still takes Close.
+				if (!closeRetried.current && isBranchChangedRefusal(error)) {
+					closeRetried.current = true;
+					const fresh = await query.refetch();
+					const entry = (
+						fresh.data as MyProposalBranch | undefined
+					)?.branches.find((e) => e.branch.id === variables.branchId);
+					if (entry && offersClose(entry.branch)) {
+						close.mutate({
+							...variables,
+							expectedAttempt: entry.branch.attempt,
+						});
+						return;
+					}
+				}
+				closeRetried.current = false;
 				toast.error(actionError(error));
 				refresh();
 			},
@@ -241,7 +304,9 @@ export function InstructionProposalBranchPanel({
 	const refreshBranch = useMutation(
 		orpc.projects.instructions.proposals.refreshBranch.mutationOptions({
 			onSuccess: async (result) => {
-				await refresh({ settling: true });
+				settle.startSettling();
+				onRefreshRequested?.();
+				await refresh();
 				if (!isRefreshAnswer(result)) {
 					toast.error(t("loadError"));
 					return;
@@ -256,7 +321,9 @@ export function InstructionProposalBranchPanel({
 				}
 			},
 			onError: async (error: Error) => {
-				await refresh({ settling: true });
+				settle.startSettling();
+				onRefreshRequested?.();
+				await refresh();
 				toast.error(actionError(error));
 			},
 		}),
@@ -395,13 +462,14 @@ export function InstructionProposalBranchPanel({
 											}),
 											confirmLabel: t("close"),
 											destructive: true,
-											onConfirm: () =>
+											onConfirm: async () =>
 												close.mutate({
 													projectId,
 													branchId: branch.id,
-													expectedAttempt: attemptFor(
-														branch.id,
-													),
+													expectedAttempt:
+														await freshAttemptFor(
+															branch.id,
+														),
 												}),
 										})
 									}

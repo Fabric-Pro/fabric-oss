@@ -4,6 +4,7 @@ import {
 	parseFrontmatter,
 } from "@repo/instructions";
 import type { NativeInstructionBase } from "@saas/projects/lib/instruction-change-source";
+import { instructionsFreshness } from "@saas/projects/lib/instructions-query-freshness";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -57,8 +58,7 @@ export function useInstructionFileContent(input: {
 							},
 						},
 					),
-					staleTime: Number.POSITIVE_INFINITY,
-					refetchOnWindowFocus: false,
+					...instructionsFreshness.pinnedRead,
 				}))
 			: [],
 	});

@@ -397,6 +397,37 @@ describe("ContextRepositorySyncStatus — configured status line", () => {
 		);
 	});
 
+	it("states the skipped files on a PARTIAL run that kept no older version, never '0 files kept an older version'", () => {
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				lastAppliedRun: {
+					...emptyRun(),
+					status: "PARTIAL",
+					commitSha: "abc1234def5678",
+					counts: { ...emptyRun().counts, created: 3 },
+					plan: {
+						keptCount: 3,
+						excludedCount: 0,
+						attentionCount: 2,
+						attention: [
+							{ key: "a.bin", reason: "binary" },
+							{ key: "b.md", reason: "too-large" },
+						],
+						missingPaths: [],
+						protectedPrefixes: [],
+					},
+				},
+			}),
+		});
+
+		expect(
+			screen.getByTestId("context-sync-status-line"),
+		).toHaveTextContent(
+			`${NS}.status.partialSkipped${JSON.stringify({ sha: "abc1234", count: 2 })}`,
+		);
+	});
+
 	it("says Sync failed part-way on FAILED", () => {
 		renderStatus({
 			state: baseState({

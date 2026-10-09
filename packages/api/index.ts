@@ -1,5 +1,3 @@
-import { OpenAPIGenerator } from "@orpc/openapi";
-import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { auth } from "@repo/auth";
 import {
 	clearLockout,
@@ -8,14 +6,11 @@ import {
 } from "@repo/auth/lib/brute-force";
 import { getTrustedClientIp } from "@repo/auth/lib/client-ip";
 import { config } from "@repo/config";
-import { db, syncIntegrationProviderRegistry } from "@repo/database";
+import { db } from "@repo/database";
 import { initAuditLogging, logger } from "@repo/logs";
-import { getRegisteredProviders, initAppInsights } from "@repo/observability";
 import { webhookHandler as paymentsWebhookHandler } from "@repo/payments";
 import { getBaseUrl } from "@repo/utils";
-import { Scalar } from "@scalar/hono-api-reference";
-import { Hono } from "hono";
-import { cors } from "hono/cors";
+import { type ErrorHandler, Hono } from "hono";
 import { logger as honoLogger } from "hono/logger";
 import { wireAuditObservability } from "./lib/audit";
 import { authRateLimitMiddleware } from "./lib/auth-rate-limit";
@@ -23,19 +18,18 @@ import {
 	asyncCorrelationMiddleware,
 	correlationIdMiddleware,
 } from "./lib/correlation-id";
+import { applicationCorsMiddleware } from "./lib/cors-policy";
 import { internalErrorBody } from "./lib/error-response";
+import { lazyRoutes } from "./lib/lazy-routes";
+import { generateRouterOpenApiSchema } from "./lib/openapi-generator";
 import { mergeOpenApiSchemas } from "./lib/openapi-schema";
+import { syncProviderRegistryOnce } from "./lib/provider-registry-sync";
 import {
 	getAuditLogOpenApiSpec,
 	publicApiDocsEnabled,
 } from "./modules/audit/rest/openapi-spec";
-import { createAuditLogRestRoutes } from "./modules/audit/rest/routes";
-import { createExternalApiRoutes } from "./modules/external-api/routes";
-import { createSystemHealthRestRoutes } from "./modules/system-health/rest/routes";
-import { createPublicV1Routes } from "./modules/v1/routes";
 import { createVscodeAuthRoutes } from "./modules/vscode-auth/routes";
 import { openApiHandler, rpcHandler } from "./orpc/handler";
-import { router } from "./orpc/router";
 
 // Initialize audit logging with external transport if configured
 initAuditLogging();
@@ -43,104 +37,34 @@ initAuditLogging();
 // Must run before any procedure can fire a recordAudit/recordAuditTx call.
 wireAuditObservability();
 
-// Azure Application Insights — metrics, custom events, and alerting
-// backend. Idempotent + safe to call from every entry point; no-ops when
-// APPLICATIONINSIGHTS_CONNECTION_STRING is unset (local dev).
-initAppInsights();
+// Azure Application Insights (`initAppInsights()`) is initialised by the host
+// (apps/web API route), after it has set the cloud role: initialising it here,
+// at import, would build the client under the wrong role.
 
-// Provider registry boot sync: mirror the in-memory
-// integration-provider registry into the DB on every boot. Fire-and-
-// forget — the sync function swallows errors internally and logs so a
-// transient DB blip at startup never blocks the API from accepting
-// traffic. Skipped during unit tests (no DATABASE_URL or explicit opt-
-// out) so that test runs do not require Postgres to be reachable.
-//
-// The registry data lives in `@repo/observability`; the DB sync helper
-// lives in `@repo/database`. We bridge them here at the boot site so
-// neither package has to depend on the other (avoids the cycle
-// `observability → database → storage → observability`).
-if (
-	process.env.NODE_ENV !== "test" &&
-	process.env.SKIP_PROVIDER_REGISTRY_SYNC !== "1"
-) {
-	void syncIntegrationProviderRegistry(getRegisteredProviders()).catch(
-		(err) => {
-			logger.error(
-				"[API] Failed to sync integration provider registry:",
-				err,
-			);
-		},
-	);
-}
+// Global error handler: always return JSON so oRPC client can parse errors
+// (avoids "Cannot parse response body" when HTML error pages are returned)
+const handleApiError: ErrorHandler = (err, c) => {
+	logger.error("[API] Unhandled error:", err);
+	return c.json(internalErrorBody(err), 500, {
+		"Content-Type": "application/json",
+	});
+};
 
 export const app = new Hono()
-	// Global error handler: always return JSON so oRPC client can parse errors
-	// (avoids "Cannot parse response body" when HTML error pages are returned)
-	.onError((err, c) => {
-		logger.error("[API] Unhandled error:", err);
-		return c.json(internalErrorBody(err), 500, {
-			"Content-Type": "application/json",
-		});
-	})
+	.onError(handleApiError)
 	.basePath("/api")
 	// Correlation ID middleware - must be first for tracing
 	.use(correlationIdMiddleware)
 	.use(asyncCorrelationMiddleware)
 	// Logger middleware
 	.use(honoLogger((message, ...rest) => logger.log(message, ...rest)))
-	// Cors middleware - allow both base URL and configured origins
-	.use(
-		cors({
-			origin: (origin) => {
-				const baseUrl = getBaseUrl();
-
-				// Build allowed origins from environment.
-				// Additional public origins must be supplied via
-				// CORS_ALLOWED_ORIGINS (comma-separated).
-				const allowedOrigins = [
-					baseUrl,
-					"http://localhost:3484", // Allow fabric-kanban CLI
-					"http://localhost:3001", // Allow local dev
-				];
-
-				// Add additional origins from environment variable (comma-separated)
-				const additionalOrigins = process.env.CORS_ALLOWED_ORIGINS;
-				if (additionalOrigins) {
-					allowedOrigins.push(
-						...additionalOrigins
-							.split(",")
-							.map((o) => o.trim())
-							.filter(Boolean),
-					);
-				}
-
-				// Allow if origin matches any allowed origin
-				if (allowedOrigins.includes(origin)) {
-					return origin;
-				}
-
-				// Default to base URL
-				return baseUrl;
-			},
-			allowHeaders: [
-				"Content-Type",
-				"Authorization",
-				"X-Correlation-ID",
-				"X-Request-ID",
-			],
-			allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE"],
-			exposeHeaders: [
-				"Content-Length",
-				"X-Correlation-ID",
-				"X-RateLimit-Limit",
-				"X-RateLimit-Remaining",
-				"X-RateLimit-Reset",
-				"Retry-After",
-			],
-			maxAge: 600,
-			credentials: true,
-		}),
-	)
+	// Boot-time provider registry sync, once the first request is handled
+	.use(async (_c, next) => {
+		await next();
+		syncProviderRegistryOnce();
+	})
+	// Credentialed CORS for the app's own API; /api/v1 carries its own policies
+	.use(applicationCorsMiddleware)
 	// Auth rate limiting - runs before Better Auth to throttle brute force attempts
 	.use("/auth/*", authRateLimitMiddleware())
 	// Auth handler
@@ -281,9 +205,7 @@ export const app = new Hono()
 	.get("/openapi", async (c) => {
 		const authSchema = await auth.api.generateOpenAPISchema({});
 
-		const appSchema = await new OpenAPIGenerator({
-			schemaConverters: [new ZodToJsonSchemaConverter()],
-		}).generate(router, {
+		const appSchema = await generateRouterOpenApiSchema({
 			info: {
 				title: `${config.appName} API`,
 				version: "1.0.0",
@@ -304,9 +226,7 @@ export const app = new Hono()
 		return c.json(mergedSchema);
 	})
 	.get("/orpc-openapi", async (c) => {
-		const appSchema = await new OpenAPIGenerator({
-			schemaConverters: [new ZodToJsonSchemaConverter()],
-		}).generate(router, {
+		const appSchema = await generateRouterOpenApiSchema({
 			info: {
 				title: `${config.appName} API`,
 				version: "1.0.0",
@@ -316,13 +236,13 @@ export const app = new Hono()
 		return c.json(appSchema);
 	})
 	// Scalar API reference based on OpenAPI schema
-	.get(
-		"/docs",
-		Scalar({
+	.get("/docs", async (c, next) => {
+		const { Scalar } = await import("@scalar/hono-api-reference");
+		return Scalar({
 			theme: "saturn",
 			url: "/api/openapi",
-		}),
-	)
+		})(c, next);
+	})
 	// Payments webhook handler
 	.post("/webhooks/payments", (c) => paymentsWebhookHandler(c.req.raw))
 	// Health check
@@ -353,8 +273,6 @@ export const app = new Hono()
 	})
 	// VS Code extension integration (device auth, profile, openrouter proxy)
 	.route("/", createVscodeAuthRoutes())
-	// External API gateway (API key auth, agent execution)
-	.route("/v1/external", createExternalApiRoutes())
 	// Public docs (Swagger UI + raw OpenAPI spec) for the audit-log REST API,
 	// reachable without a key. The key middleware of the audit-log and
 	// system-health sub-apps below is scoped to their own paths
@@ -408,6 +326,7 @@ code { background: #f4f4f5; padding: 0.15rem 0.4rem; border-radius: 4px; font-si
 				404,
 			);
 		}
+		const { Scalar } = await import("@scalar/hono-api-reference");
 		const handler = Scalar({
 			theme: "saturn",
 			pageTitle: "Fabric Audit Log API",
@@ -415,16 +334,43 @@ code { background: #f4f4f5; padding: 0.15rem 0.4rem; border-radius: 4px; font-si
 		});
 		return handler(c, next);
 	})
-	// Public audit-log REST API. Its key middleware covers `/v1/audit-log` and
-	// `/v1/audit-log/*` only — never every `/v1` request, which once refused
-	// the v1 API's own credentials (see the sub-app).
-	.route("/v1", createAuditLogRestRoutes())
-	// Public system-health REST API. The same key middleware, scoped to
-	// `/v1/system-health*` and `/v1/status-updates*`; each route enforces its
-	// own scope, so an audit-log-only key is refused here.
-	.route("/v1", createSystemHealthRestRoutes())
-	// Public v1 API — stable surface for @fabricorg/sdk and @fabricorg/cli
-	.route("/v1", createPublicV1Routes())
+	// The REST surfaces below import most of the monorepo, so they are built on
+	// the first `/v1/*` request rather than on every cold start.
+	.use(
+		"/v1/*",
+		lazyRoutes(async () => {
+			const [
+				{ createExternalApiRoutes },
+				{ createAuditLogRestRoutes },
+				{ createSystemHealthRestRoutes },
+				{ createPublicV1Routes },
+			] = await Promise.all([
+				import("./modules/external-api/routes"),
+				import("./modules/audit/rest/routes"),
+				import("./modules/system-health/rest/routes"),
+				import("./modules/v1/routes"),
+			]);
+			return (
+				new Hono()
+					.basePath("/api")
+					// External API gateway (API key auth, agent execution)
+					.route("/v1/external", createExternalApiRoutes())
+					// Public audit-log REST API. Its key middleware covers
+					// `/v1/audit-log` and `/v1/audit-log/*` only — never every `/v1`
+					// request, which once refused the v1 API's own credentials (see
+					// the sub-app).
+					.route("/v1", createAuditLogRestRoutes())
+					// Public system-health REST API. The same key middleware, scoped
+					// to `/v1/system-health*` and `/v1/status-updates*`; each route
+					// enforces its own scope, so an audit-log-only key is refused
+					// here.
+					.route("/v1", createSystemHealthRestRoutes())
+					// Public v1 API — stable surface for @fabricorg/sdk and
+					// @fabricorg/cli
+					.route("/v1", createPublicV1Routes())
+			);
+		}, handleApiError),
+	)
 	// oRPC handlers (for RPC and OpenAPI)
 	.use("*", async (c, next) => {
 		const context = {

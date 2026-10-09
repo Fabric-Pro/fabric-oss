@@ -24,7 +24,9 @@
  * (a version counter, and CONFLICT on a stale `expectedVersion`), `useEditor`
  * records its options so a test can fire the editor's `onUpdate`, the
  * context-update hook records its options, and the editor renders its Save
- * button into a slot.
+ * button into a slot. For the attached-run tests the sidebar can render its
+ * children (with stand-ins for those not under test), and collaboration can
+ * be switched on over a fake room.
  */
 
 import { serializeVisualSlot } from "@repo/utils/glossy/visual-slots";
@@ -33,6 +35,7 @@ import {
 	act,
 	fireEvent,
 	render,
+	screen,
 	waitFor,
 	within,
 } from "@testing-library/react";
@@ -195,6 +198,37 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 	useSession: () => ({ user: { id: "user-1" }, session: {} }),
 }));
 
+// ---- Collaboration: off unless a test sets NEXT_PUBLIC_ENABLE_COLLABORATION.
+// Then the editor runs on a connected, synced room whose awareness a test
+// supplies; the shared fragment already holds the body, so the editor's
+// first-sync seeding stays out of the way.
+type FakeAwareness = {
+	clientID: number;
+	getStates: () => Map<number, Record<string, unknown>>;
+	getLocalState: () => Record<string, unknown> | null;
+	setLocalStateField: ReturnType<typeof vi.fn>;
+};
+const collab = vi.hoisted(() => ({
+	ydoc: { getXmlFragment: () => ({ length: 1 }) },
+	provider: { awareness: null as unknown },
+}));
+vi.mock("@saas/projects/hooks/useCollaborativeEditor", () => ({
+	useCollaborativeEditor: () => ({
+		ydoc: collab.ydoc,
+		provider: collab.provider,
+		isConnected: true,
+		isSynced: true,
+		collaborators: [],
+		userColor: "#4ECDC4",
+	}),
+}));
+vi.mock("@saas/projects/lib/tiptap-extensions", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@saas/projects/lib/tiptap-extensions")
+	>()),
+	createCollaborativeExtensions: () => [],
+}));
+
 // ---- CopilotKit: agent state, node name, and loading flag are mutable so a
 // test can walk a run; every action config is recorded.
 let mockIsLoading = false;
@@ -214,8 +248,69 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotReadable: vi.fn(),
 	useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
 }));
+// The sidebar renders nothing, except for the tests that look at what the
+// editor shows inside it: the progress overlay and the regeneration review.
+// Its other children are stand-ins.
+const sidebar = vi.hoisted(() => ({ rendersChildren: false }));
 vi.mock("@copilotkit/react-ui", () => ({
-	CopilotSidebar: () => null,
+	CopilotSidebar: ({ children }: { children?: import("react").ReactNode }) =>
+		sidebar.rendersChildren ? children : null,
+}));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+vi.mock("@saas/projects/components/DocumentGenerationProgress", () => ({
+	DocumentGenerationProgress: () => (
+		<div data-testid="generation-progress-overlay" />
+	),
+}));
+vi.mock("@saas/projects/components/EditorToolbar", () => ({
+	EditorToolbar: () => null,
+}));
+vi.mock("@saas/projects/components/DocumentTocRail", () => ({
+	DocumentTocRail: () => null,
+}));
+vi.mock("@saas/projects/components/DocumentVersionHistory", () => ({
+	DocumentVersionHistory: () => null,
+}));
+vi.mock("@saas/projects/components/DiffReviewBar", () => ({
+	DiffReviewBar: () => null,
+}));
+vi.mock("@saas/projects/components/DiffViewModeToggle", () => ({
+	DiffViewModeToggle: () => null,
+}));
+vi.mock("@saas/projects/components/DiffPreviewPanes", () => ({
+	DiffPreviewPanes: () => null,
+}));
+vi.mock("@saas/projects/components/DocumentAssetFrame", () => ({
+	DocumentAssetsPanel: () => null,
+}));
+vi.mock("@saas/projects/components/DocumentDecisionPrecheckBanner", () => ({
+	DocumentDecisionPrecheckBanner: () => null,
+}));
+vi.mock("@saas/projects/components/DocumentGenerationFailedNotice", () => ({
+	DocumentGenerationFailedNotice: () => null,
+}));
+vi.mock("@saas/projects/components/ImageSelectionToolbar", () => ({
+	ImageSelectionToolbar: () => null,
+}));
+vi.mock("@saas/projects/components/ImageLightbox", () => ({
+	ImageLightbox: () => null,
+}));
+vi.mock("@saas/projects/components/CollaborationStatus", () => ({
+	CollaborationStatus: () => null,
+}));
+vi.mock("@saas/projects/components/copilot/CopilotHistoryDrawer", () => ({
+	CopilotHistoryDrawer: () => null,
+}));
+vi.mock("@saas/projects/components/copilot/CopilotPersistenceHook", () => ({
+	CopilotPersistenceHook: () => null,
+}));
+vi.mock("@saas/projects/components/stories/MeetingSelector", () => ({
+	MeetingSelector: () => null,
+}));
+vi.mock("@saas/prompts/components/PromptSelector", () => ({
+	PromptSelector: () => null,
 }));
 
 let mockEditor: Editor | null = null;
@@ -350,6 +445,7 @@ vi.mock(
 );
 
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
+import { GENERATION_RUN_AWARENESS_FIELD } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
 import { fromMarkdown } from "@saas/projects/lib/diff-utils";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
 import { createAdvancedExtensions } from "@saas/projects/lib/tiptap-extensions-advanced";
@@ -384,13 +480,14 @@ function makeEditor(markdown: string): Editor {
 let queryClient: QueryClient;
 let saveSlot: HTMLElement;
 
-function tree() {
+function tree(extraProps: { attachToServerRun?: boolean } = {}) {
 	return (
 		<QueryClientProvider client={queryClient}>
 			<DocumentEditor
 				projectId="proj-1"
 				documentId="doc-1"
 				saveSlot={saveSlot}
+				{...extraProps}
 			/>
 		</QueryClientProvider>
 	);
@@ -409,6 +506,13 @@ async function mount(stored: string) {
 async function flush() {
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+}
+
+/** Lets the editor's animation-frame writes land before a test looks. */
+async function nextFrames() {
+	await act(async () => {
+		await new Promise((resolve) => setTimeout(resolve, 50));
 	});
 }
 
@@ -496,6 +600,8 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		mockEditor?.destroy();
 		mockEditor = null;
 		saveSlot.remove();
+		vi.unstubAllEnvs();
+		collab.provider.awareness = null;
 	});
 
 	it("a slotted accept sends expectedVersion equal to the version its slots came from", async () => {
@@ -675,6 +781,424 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		expect(cachedDocument()).toMatchObject({
 			content: elsewhere,
 			version: 8,
+		});
+	});
+
+	/**
+	 * A run the editor did not start — from the documents list, the chat, or
+	 * before a reload — is adopted, not reviewed: its body replaces the one the
+	 * editor loaded with no Accept/Reject, since Reject would rewind someone
+	 * else's run. Only the run's final save counts as its result, and a run
+	 * that ends without a new body lets the editor go. Under collaboration one
+	 * editor writes the body into the shared document; the others get it
+	 * through the room.
+	 *
+	 * The sidebar renders its children here, so the progress overlay (shown
+	 * while the editor regenerates) and the regeneration review are visible.
+	 */
+	describe("attaching to a run it did not start (Fizzy #2801)", () => {
+		beforeEach(() => {
+			sidebar.rendersChildren = true;
+		});
+		afterEach(() => {
+			sidebar.rendersChildren = false;
+		});
+
+		const REGENERATED = STORED.replace("then two", "then two, regenerated");
+		const WRITTEN_DURING_RUN = STORED.replace(
+			"then two",
+			"then two, typed by a colleague",
+		);
+
+		/** The server reports a run in progress, rendered with `attach`. */
+		async function serverStartsRun(
+			rerender: (ui: ReactElement) => void,
+			attach: boolean,
+		) {
+			serverStatus = "GENERATING";
+			await act(async () => {
+				await queryClient.refetchQueries();
+			});
+			rerender(tree({ attachToServerRun: attach }));
+			await flush();
+		}
+
+		/** A later server snapshot; the page attaches only while it runs. */
+		async function serverReports(
+			rerender: (ui: ReactElement) => void,
+			snapshot: { content?: string; version?: number; status: string },
+		) {
+			// A later snapshot than the one that showed the run in progress.
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			if (snapshot.content !== undefined) {
+				server.content = snapshot.content;
+			}
+			if (snapshot.version !== undefined) {
+				server.version = snapshot.version;
+			}
+			serverStatus = snapshot.status;
+			await act(async () => {
+				await queryClient.refetchQueries();
+			});
+			const running =
+				snapshot.status === "QUEUED" ||
+				snapshot.status === "GENERATING";
+			rerender(tree({ attachToServerRun: running }));
+			await flush();
+		}
+
+		/** The run's final save lands: its body and COMPLETE together. */
+		async function serverSavesRegeneratedBody(
+			rerender: (ui: ReactElement) => void,
+		) {
+			await serverReports(rerender, {
+				content: REGENERATED,
+				version: 8,
+				status: "COMPLETE",
+			});
+		}
+
+		function progressOverlay() {
+			return screen.queryByTestId("generation-progress-overlay");
+		}
+
+		it("without attaching, keeps the body it loaded when another run regenerates the document", async () => {
+			const { rerender, editor } = await mount(STORED);
+
+			await serverStartsRun(rerender, false);
+			await serverSavesRegeneratedBody(rerender);
+
+			expect(getEditorMarkdownForSave(editor)).not.toContain(
+				"regenerated",
+			);
+		});
+
+		it("takes the regenerated body of a run it did not start", async () => {
+			const { rerender, editor } = await mount(STORED);
+
+			await serverStartsRun(rerender, true);
+			await serverSavesRegeneratedBody(rerender);
+
+			await waitFor(() => {
+				expect(getEditorMarkdownForSave(editor)).toContain(
+					"regenerated",
+				);
+			});
+		});
+
+		it("adopts that body with no review, and stops regenerating", async () => {
+			const view = await mount(STORED);
+
+			await serverStartsRun(view.rerender, true);
+			expect(progressOverlay()).toBeInTheDocument();
+			await serverSavesRegeneratedBody(view.rerender);
+
+			await waitFor(() => {
+				expect(getEditorMarkdownForSave(view.editor)).toContain(
+					"regenerated",
+				);
+			});
+			expect(
+				view.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeInTheDocument();
+			expect(progressOverlay()).not.toBeInTheDocument();
+			expect(toast.error).not.toHaveBeenCalled();
+		});
+
+		it("takes on the adopted body's version: a later slotted accept is guarded with it", async () => {
+			const view = await mount(STORED);
+
+			await serverStartsRun(view.rerender, true);
+			await serverSavesRegeneratedBody(view.rerender);
+			await waitFor(() => {
+				expect(getEditorMarkdownForSave(view.editor)).toContain(
+					"regenerated",
+				);
+			});
+
+			await acceptProposal(view.rerender, PROPOSED);
+
+			expect(saveCalls.at(-1)?.expectedVersion).toBe(8);
+			expect(server.version).toBe(9);
+		});
+
+		it("does not take a write made while the run is still generating for its result", async () => {
+			const view = await mount(STORED);
+
+			await serverStartsRun(view.rerender, true);
+			// A colleague's save lands mid-run; the server is still writing.
+			await serverReports(view.rerender, {
+				content: WRITTEN_DURING_RUN,
+				version: 8,
+				status: "GENERATING",
+			});
+			await nextFrames();
+
+			expect(getEditorMarkdownForSave(view.editor)).not.toContain(
+				"typed by a colleague",
+			);
+			expect(
+				view.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeInTheDocument();
+			expect(progressOverlay()).toBeInTheDocument();
+
+			// The run's own final save is what the editor takes.
+			await serverReports(view.rerender, {
+				content: REGENERATED,
+				version: 9,
+				status: "COMPLETE",
+			});
+			await waitFor(() => {
+				expect(getEditorMarkdownForSave(view.editor)).toContain(
+					"regenerated",
+				);
+			});
+			expect(progressOverlay()).not.toBeInTheDocument();
+		});
+
+		it("lets go of a run that completes with the body it started from", async () => {
+			const view = await mount(STORED);
+
+			await serverStartsRun(view.rerender, true);
+			await serverReports(view.rerender, { status: "COMPLETE" });
+
+			await waitFor(() => {
+				expect(progressOverlay()).not.toBeInTheDocument();
+			});
+			expect(
+				view.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeInTheDocument();
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(getEditorMarkdownForSave(view.editor)).toContain(SLOT_A);
+		});
+
+		it("lets go of a run that leaves the running states for any status but FAILED", async () => {
+			const view = await mount(STORED);
+
+			await serverStartsRun(view.rerender, true);
+			await serverReports(view.rerender, { status: "DRAFT" });
+
+			await waitFor(() => {
+				expect(progressOverlay()).not.toBeInTheDocument();
+			});
+			expect(toast.error).not.toHaveBeenCalled();
+		});
+
+		it("keeps the review for a run it started, attached or not", async () => {
+			const view = await mount(STORED);
+
+			// Start a regeneration the way the assistant's tool call does.
+			await act(async () => {
+				actionConfigs
+					.get("regenerate_document")
+					?.renderAndWaitForResponse({
+						args: { prompt: "Rewrite it" },
+						respond: vi.fn(),
+						status: "executing",
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			});
+			await serverStartsRun(view.rerender, true);
+			await serverSavesRegeneratedBody(view.rerender);
+
+			expect(
+				await view.findByTestId("regeneration-confirm-modal"),
+			).toBeInTheDocument();
+			// The body under review is in the editor, as it always was.
+			await waitFor(() => {
+				expect(getEditorMarkdownForSave(view.editor)).toContain(
+					"regenerated",
+				);
+			});
+		});
+
+		it("stops regenerating with the failure toast when the attached run fails", async () => {
+			const { rerender, editor } = await mount(STORED);
+
+			await serverStartsRun(rerender, true);
+			// A later snapshot than the one that showed the run in progress.
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			serverStatus = "FAILED";
+			await act(async () => {
+				await queryClient.refetchQueries();
+			});
+			rerender(tree());
+			await flush();
+
+			await waitFor(() => {
+				expect(toast.error).toHaveBeenCalledWith(
+					"Document generation failed. Please try again.",
+				);
+			});
+			expect(getEditorMarkdownForSave(editor)).not.toContain(
+				"regenerated",
+			);
+		});
+
+		it("leaves an empty document to the first-load path", async () => {
+			const { rerender } = await mount("");
+
+			await serverStartsRun(rerender, true);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			serverStatus = "FAILED";
+			await act(async () => {
+				await queryClient.refetchQueries();
+			});
+			rerender(tree());
+			await flush();
+
+			// Not attached, so the FAILED watcher has no run to stop.
+			expect(toast.error).not.toHaveBeenCalledWith(
+				"Document generation failed. Please try again.",
+			);
+		});
+
+		describe("under collaboration", () => {
+			/**
+			 * The room's awareness as this editor sees it: its own client id,
+			 * and the run role each other open editor has published.
+			 */
+			function joinRoom(
+				clientID: number,
+				others: Record<number, "started" | "attached" | null>,
+			): FakeAwareness {
+				const states = new Map<number, Record<string, unknown>>();
+				for (const [id, role] of Object.entries(others)) {
+					states.set(Number(id), {
+						user: { name: `Colleague ${id}` },
+						[GENERATION_RUN_AWARENESS_FIELD]: role,
+					});
+				}
+				states.set(clientID, { user: { name: "Me" } });
+				const awareness: FakeAwareness = {
+					clientID,
+					getStates: () => states,
+					getLocalState: () => states.get(clientID) ?? null,
+					setLocalStateField: vi.fn(
+						(field: string, value: unknown) => {
+							states.set(clientID, {
+								...(states.get(clientID) ?? {}),
+								[field]: value,
+							});
+						},
+					),
+				};
+				collab.provider.awareness = awareness;
+				vi.stubEnv("NEXT_PUBLIC_ENABLE_COLLABORATION", "true");
+				return awareness;
+			}
+
+			function publishedRoles(awareness: FakeAwareness) {
+				return awareness.setLocalStateField.mock.calls
+					.filter(
+						([field]) => field === GENERATION_RUN_AWARENESS_FIELD,
+					)
+					.map(([, role]) => role);
+			}
+
+			it("says it is attached while the run is in progress, and stops saying so after", async () => {
+				const awareness = joinRoom(3, {});
+				const view = await mount(STORED);
+
+				await serverStartsRun(view.rerender, true);
+				expect(publishedRoles(awareness)).toEqual(["attached"]);
+
+				await serverSavesRegeneratedBody(view.rerender);
+				await waitFor(() => {
+					expect(publishedRoles(awareness)).toEqual([
+						"attached",
+						null,
+					]);
+				});
+			});
+
+			it("writes the body when it is the attached editor with the smallest client id", async () => {
+				joinRoom(3, { 7: "attached", 11: null });
+				const view = await mount(STORED);
+
+				await serverStartsRun(view.rerender, true);
+				await serverSavesRegeneratedBody(view.rerender);
+
+				await waitFor(() => {
+					expect(getEditorMarkdownForSave(view.editor)).toContain(
+						"regenerated",
+					);
+				});
+				expect(progressOverlay()).not.toBeInTheDocument();
+			});
+
+			it("leaves the body to an attached editor with a smaller client id, and stops regenerating", async () => {
+				joinRoom(7, { 3: "attached" });
+				const view = await mount(STORED);
+
+				await serverStartsRun(view.rerender, true);
+				await serverSavesRegeneratedBody(view.rerender);
+
+				await waitFor(() => {
+					expect(progressOverlay()).not.toBeInTheDocument();
+				});
+				await nextFrames();
+				// The elected editor writes it; this one receives it through
+				// the room rather than writing it a second time.
+				expect(getEditorMarkdownForSave(view.editor)).not.toContain(
+					"regenerated",
+				);
+				expect(
+					view.queryByTestId("regeneration-confirm-modal"),
+				).not.toBeInTheDocument();
+			});
+
+			it("leaves the body to the editor that started the run, which reviews it", async () => {
+				joinRoom(3, { 7: "started" });
+				const view = await mount(STORED);
+
+				await serverStartsRun(view.rerender, true);
+				await serverSavesRegeneratedBody(view.rerender);
+
+				await waitFor(() => {
+					expect(progressOverlay()).not.toBeInTheDocument();
+				});
+				await nextFrames();
+				expect(getEditorMarkdownForSave(view.editor)).not.toContain(
+					"regenerated",
+				);
+				expect(
+					view.queryByTestId("regeneration-confirm-modal"),
+				).not.toBeInTheDocument();
+			});
+
+			it("says it started the run it started, until its review is done", async () => {
+				const awareness = joinRoom(3, { 7: "attached" });
+				const view = await mount(STORED);
+
+				await act(async () => {
+					actionConfigs
+						.get("regenerate_document")
+						?.renderAndWaitForResponse({
+							args: { prompt: "Rewrite it" },
+							respond: vi.fn(),
+							status: "executing",
+						});
+					await new Promise((resolve) => setTimeout(resolve, 0));
+				});
+				view.rerender(tree());
+				await flush();
+				expect(publishedRoles(awareness)).toEqual(["started"]);
+
+				await serverStartsRun(view.rerender, true);
+				await serverSavesRegeneratedBody(view.rerender);
+				// The review is open: still the editor that started the run,
+				// and the one that wrote the body.
+				expect(
+					await view.findByTestId("regeneration-confirm-modal"),
+				).toBeInTheDocument();
+				await waitFor(() => {
+					expect(getEditorMarkdownForSave(view.editor)).toContain(
+						"regenerated",
+					);
+				});
+				expect(publishedRoles(awareness)).toEqual(["started"]);
+			});
 		});
 	});
 

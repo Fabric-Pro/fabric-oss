@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import type { McpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { db, Prisma } from "../client";
 import { CURATED_SYSTEM_MCP_SERVER_KEY_SET } from "../curated-mcp-server-keys";
 import {
@@ -7,6 +8,7 @@ import {
 	DEFAULT_PROJECT_MANAGEMENT_KEYS,
 	PM_SERVER_ID_KEY_SENTINEL_PREFIX,
 } from "../default-pm-tool-keys";
+import { HIDDEN_SYSTEM_MCP_SERVER_KEYS } from "../hidden-mcp-server-keys";
 import {
 	GITLAB_PERSONAL_MCP_SERVER_KEYS,
 	isGitLabPersonalMcpServerKey,
@@ -33,6 +35,10 @@ import type {
 
 // Maximum consecutive refresh failures before marking as needs re-auth
 const MAX_REFRESH_FAILURES = 3;
+
+const NOT_HIDDEN_SYSTEM_MCP_SERVER_FILTER = {
+	key: { notIn: [...HIDDEN_SYSTEM_MCP_SERVER_KEYS] },
+};
 
 /**
  * OAuth error codes that prove the stored grant itself is dead.
@@ -222,6 +228,7 @@ export async function listSystemMcpServers() {
 		where: {
 			isSystemProvided: true,
 			isImplemented: true,
+			...NOT_HIDDEN_SYSTEM_MCP_SERVER_FILTER,
 		},
 		orderBy: { name: "asc" },
 	});
@@ -472,8 +479,12 @@ export async function listMcpServersAccessibleToTenant({
 }) {
 	// XOR PATTERN: Strict context isolation
 	const systemCondition = includeNonImplemented
-		? { isSystemProvided: true }
-		: { isSystemProvided: true, isImplemented: true };
+		? { isSystemProvided: true, ...NOT_HIDDEN_SYSTEM_MCP_SERVER_FILTER }
+		: {
+				isSystemProvided: true,
+				isImplemented: true,
+				...NOT_HIDDEN_SYSTEM_MCP_SERVER_FILTER,
+			};
 
 	const conditions: Array<Record<string, unknown>> = [systemCondition];
 
@@ -2009,6 +2020,8 @@ export interface CachedTool {
 	name: string;
 	description: string | null;
 	inputSchema: Record<string, unknown> | null;
+	/** The server's own MCP tool annotations (boolean hints), when it declared any. */
+	annotations?: McpToolAnnotations | null;
 }
 
 /**

@@ -335,6 +335,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"org",
 	),
+	"org.chatgpt_plan.account_shared_from_personal": D(
+		"org.chatgpt_plan.account_shared_from_personal",
+		"Own ChatGPT plan shared with the organization",
+		Key,
+		"info",
+		"org",
+	),
+	"org.chatgpt_plan.account_returned_to_personal": D(
+		"org.chatgpt_plan.account_returned_to_personal",
+		"Shared ChatGPT plan taken back as own plan",
+		Key,
+		"info",
+		"org",
+	),
 	"org.chatgpt_plan.account_updated": D(
 		"org.chatgpt_plan.account_updated",
 		"Shared ChatGPT plan account updated",
@@ -352,6 +366,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 	"org.chatgpt_plan.policy_changed": D(
 		"org.chatgpt_plan.policy_changed",
 		"ChatGPT plan pooling policy changed",
+		Key,
+		"warning",
+		"org",
+	),
+	"org.chatgpt_plan.fallback_model_changed": D(
+		"org.chatgpt_plan.fallback_model_changed",
+		"ChatGPT plan fallback model changed",
 		Key,
 		"warning",
 		"org",

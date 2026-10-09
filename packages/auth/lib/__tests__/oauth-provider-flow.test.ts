@@ -12,7 +12,10 @@
  * configured plugin rather than restated from its documentation.
  */
 
-import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import {
+	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
+} from "@repo/utils/oauth-project-resource";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -67,6 +70,7 @@ async function signIn(ctx: Harness, tokenHeaders: Record<string, string> = {}) {
 			accept: true,
 			oauth_query: consentLocation.split("?")[1],
 			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 		}),
 	});
 	const { url } = (await consent.json()) as { url: string };
@@ -374,6 +378,7 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 					"?",
 				)[1],
 				[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 			}),
 		});
 		const code = new URL(
@@ -474,6 +479,7 @@ describe("the OAuth authorization server as configured for Fabric", () => {
 					accept: true,
 					oauth_query: consentQuery,
 					[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+					[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 				}),
 			});
 

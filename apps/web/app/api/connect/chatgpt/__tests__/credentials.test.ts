@@ -50,7 +50,7 @@ vi.mock("@repo/database", async () => ({
 	setChatGptPlanOrgUse: state.setOrgUse,
 	recordAudit: state.audit,
 	// Fizzy #2770: no subject in these cases is an organization's shared account.
-	isChatGptPlanOrgAccountSubject: async () => false,
+	findChatGptPlanSharedAccountConnector: async () => null,
 }));
 
 vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({

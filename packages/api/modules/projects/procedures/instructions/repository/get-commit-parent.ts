@@ -8,13 +8,8 @@ import {
 } from "../../../../../orpc/procedures";
 import { commitShaSchema } from "./commit-sha";
 import { directParentCache } from "./direct-cache";
-import {
-	assertDirectRepositoryPin,
-	assertDirectRepositorySourceCurrent,
-	directRepositoryReadError,
-	loadDirectRepositorySource,
-} from "./direct-source";
-import { settle, unsettle } from "./settle";
+import { withDirectRead } from "./direct-query";
+import { directRepositoryReadError } from "./direct-source";
 
 /**
  * The first parent of the one commit a person selected in native history.
@@ -40,44 +35,29 @@ export const getDirectInstructionRepositoryCommitParentProcedure =
 			}),
 		)
 		.handler(async ({ input, context, signal }) => {
-			const caller = {
-				projectId: input.projectId,
-				userId: context.user.id,
-				signal,
-			};
-			const source = await loadDirectRepositorySource(caller);
-			try {
-				const checking = settle(
-					assertDirectRepositoryPin(source, {
-						generation: input.generation,
-						commitSha: input.sha,
-					}),
-				);
-				const cached = directParentCache.get(source, input.sha);
-				if (cached !== undefined) {
-					unsettle(await checking);
-					return { sha: input.sha, parent: cached };
-				}
-				const [checked, read] = await Promise.all([
-					checking,
-					settle(
-						readRepositoryCommitParent({
-							...source.repository,
-							sha: input.sha,
-						}),
-					),
-				]);
-				unsettle(checked);
-				const result = unsettle(read);
-				if (!result.ok) {
-					throw directRepositoryReadError(source, result.outcome);
-				}
-				directParentCache.set(source, input.sha, result.parent);
-				return { sha: input.sha, parent: result.parent };
-			} finally {
-				await assertDirectRepositorySourceCurrent({
-					...caller,
-					source,
-				});
-			}
+			const { value: parent } = await withDirectRead(
+				{
+					projectId: input.projectId,
+					userId: context.user.id,
+					signal,
+					generation: input.generation,
+					commitSha: input.sha,
+				},
+				async ({ source }) => {
+					const cached = directParentCache.get(source, [input.sha]);
+					if (cached !== undefined) {
+						return cached;
+					}
+					const result = await readRepositoryCommitParent({
+						...source.repository,
+						sha: input.sha,
+					});
+					if (!result.ok) {
+						throw directRepositoryReadError(source, result.outcome);
+					}
+					directParentCache.set(source, [input.sha], result.parent);
+					return result.parent;
+				},
+			);
+			return { sha: input.sha, parent };
 		});

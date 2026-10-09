@@ -320,6 +320,7 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 				"AiUsageLimitExceededError",
 				"SubscriptionPlanExhaustedError",
 				"ChatGptPlanAuthError",
+				"ChatGptPlanModelNotServedError",
 			],
 		});
 

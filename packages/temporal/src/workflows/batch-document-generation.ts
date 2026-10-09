@@ -30,6 +30,10 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import {
+	isSupersededGenerationFailure,
+	liveRunIdOfGenerationFailure,
+} from "../lib/proposal-artifact/failures";
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
@@ -209,8 +213,13 @@ export async function batchDocumentGenerationWorkflow(
 		const childWorkflowId = `${workflowId}-child-${doc.id}`;
 
 		try {
-			// Update status to GENERATING
-			await updateProjectDocumentStatus({
+			// Update status to GENERATING. This starts the document's attempt
+			// and returns its identity, which scopes a coordinated Proposal
+			// child's takeover (Fizzy #2801): a plan that runs or retries after
+			// a newer generation claimed the document is then superseded
+			// instead of taking it back. A result recorded before the activity
+			// returned one gives the child today's input.
+			const attempt = await updateProjectDocumentStatus({
 				documentId: doc.id,
 				status: "GENERATING",
 				progress: 0,
@@ -237,6 +246,10 @@ export async function batchDocumentGenerationWorkflow(
 							aiToken: input.aiToken,
 							prompt: doc.prompt,
 							promptId: doc.promptId,
+							...(attempt?.generationStartedAt && {
+								generationStartedAt:
+									attempt.generationStartedAt,
+							}),
 						},
 					],
 				},
@@ -303,11 +316,21 @@ export async function batchDocumentGenerationWorkflow(
 				}
 			}
 
-			// Update status to COMPLETE
+			// Update status to COMPLETE. A coordinated Proposal child (Fizzy
+			// #2801) hands back its run token, and the write lands only while
+			// that run still owns the document: a newer generation started
+			// since keeps its status and live preview. A newer request whose
+			// plan has not claimed the document yet can still see this write,
+			// until its next progress report puts GENERATING back. Replay-safe
+			// without `patched()`: the same activity at the same point, and a
+			// result recorded without the token gives today's input.
 			await updateProjectDocumentStatus({
 				documentId: doc.id,
 				status: "COMPLETE",
 				progress: 100,
+				...(childResult.liveRunId !== undefined && {
+					liveRunId: childResult.liveRunId,
+				}),
 			});
 
 			log.info("Document generated successfully", {
@@ -333,12 +356,34 @@ export async function batchDocumentGenerationWorkflow(
 				error: errorMessage,
 			});
 
-			await updateProjectDocumentStatus({
-				documentId: doc.id,
-				status: "FAILED",
-				progress: 0,
-				error: errorMessage,
-			});
+			// A coordinated Proposal run that a newer generation superseded
+			// (Fizzy #2801): the newer run owns the document now, and this
+			// write has no guard, so it would stamp FAILED onto that run's
+			// document. The child's own writes were guarded and made none.
+			// Replay-safe without `patched()`: only a child of this release
+			// ends with that type, so every recorded history takes the write.
+			if (isSupersededGenerationFailure(error)) {
+				log.info(
+					"Document superseded by a newer generation; left to it",
+					{
+						documentId: doc.id,
+						documentType: doc.type,
+					},
+				);
+			} else {
+				// Any other failure of a coordinated Proposal child carries
+				// its run token, and the write lands only while that run still
+				// owns the document. Same replay argument as the COMPLETE
+				// write: a failure recorded without it gives today's input.
+				const liveRunId = liveRunIdOfGenerationFailure(error);
+				await updateProjectDocumentStatus({
+					documentId: doc.id,
+					status: "FAILED",
+					progress: 0,
+					error: errorMessage,
+					...(liveRunId !== undefined && { liveRunId }),
+				});
+			}
 
 			results.push({
 				documentId: doc.id,

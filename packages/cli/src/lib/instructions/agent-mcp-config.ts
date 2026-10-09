@@ -10,8 +10,8 @@
  * Claude Code's `.claude.json` (the checkout's local scope and the user scope)
  * and the checkout's `.mcp.json` as data, and Codex's `config.toml`.
  *
- * Only the servers of the one name are taken from them; nothing else in either
- * file is kept or shown. A file that cannot be read, or that is written in a form
+ * Every server's name and, when it has one, its address are taken from them;
+ * nothing else in either file is kept or shown. A file that cannot be read, or that is written in a form
  * this reader does not understand, is an answer of its own and never an error:
  * the caller that is about to write refuses to, and the one that reports says so.
  */
@@ -19,9 +19,19 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { InstructionsHookTool } from "./hook.js";
 
+/**
+ * The name Claude Code's server was given before every tool's server carried
+ * the project's own name. One at this project's gateway under it still counts
+ * as registered, and one at another Fabric gateway is this deployment's own to
+ * replace.
+ */
+export const LEGACY_SERVER_NAME = "fabric";
+
 export type RegistrationState =
 	/** A server at the project's gateway URL is registered. */
 	| "registered"
+	/** Registered only under the older name `fabric`, which still works. */
+	| "legacy"
 	/** A server of that name is registered, at another URL. */
 	| "elsewhere"
 	| "missing"
@@ -36,12 +46,22 @@ export interface AgentMcpFact {
 	state: RegistrationState;
 	/** The line that registers it by hand, or `null` when the address cannot be written into one. */
 	registerLine: string | null;
+	/**
+	 * The names, as they may be shown, of the servers the tool will use that
+	 * point at this project's gateway: one is normal, several are duplicates.
+	 */
+	projectServers: string[];
+	/** The names of the servers the tool will use that are the organization-wide gateway's. */
+	orgWide: string[];
+	/** A server of the name `init` uses is there, is not Fabric's, and is left alone. */
+	foreignSameName: boolean;
 }
 
-type ClaudeScope = "local" | "user" | "project";
+export type ClaudeScope = "local" | "user" | "project";
 
-/** A Claude Code server of the name asked for, in one scope. */
+/** A Claude Code server, in one scope. */
 export interface ClaudeServer {
+	name: string;
 	scope: ClaudeScope;
 	/** `null` for a server that has no URL, such as one that runs a command. */
 	url: string | null;
@@ -97,22 +117,23 @@ function projectKey(folder: string, platform: NodeJS.Platform): string {
 	return platform === "win32" ? slashed.toLowerCase() : slashed;
 }
 
-/** The named server in an `mcpServers` object: whether it is there, and its URL if it has one. */
-function serverIn(
+/** Every server in an `mcpServers` object: its name and its URL if it has one. */
+function serversIn(
 	servers: unknown,
-	name: string,
-): { url: string | null } | undefined {
-	const server = field(servers, name);
-	if (typeof server !== "object" || server === null) {
-		return undefined;
+): Array<{ name: string; url: string | null }> {
+	if (typeof servers !== "object" || servers === null) {
+		return [];
 	}
-	const url = field(server, "url");
-	return { url: typeof url === "string" ? url : null };
+	return Object.entries(servers).flatMap(([name, server]) => {
+		if (typeof server !== "object" || server === null) {
+			return [];
+		}
+		const url = field(server, "url");
+		return [{ name, url: typeof url === "string" ? url : null }];
+	});
 }
 
 export interface ReadClaudeInput {
-	/** The name `init` registers the server under. */
-	name: string;
 	/** The checkout's top folder, where Claude Code's local scope is the project. */
 	cwd: string;
 	home: string | null;
@@ -121,8 +142,8 @@ export interface ReadClaudeInput {
 }
 
 /**
- * Every server of the name in Claude Code's local scope for the checkout, in its
- * user scope, and in the checkout's `.mcp.json` (project scope).
+ * Every server in Claude Code's local scope for the checkout, in its user
+ * scope, and in the checkout's `.mcp.json` (project scope).
  */
 export async function readClaudeServers(
 	input: ReadClaudeInput,
@@ -149,18 +170,15 @@ export async function readClaudeServers(
 		if (typeof projects === "object" && projects !== null) {
 			for (const [key, project] of Object.entries(projects)) {
 				if (projectKey(key, input.platform) === wanted) {
-					const found = serverIn(
+					for (const found of serversIn(
 						field(project, "mcpServers"),
-						input.name,
-					);
-					if (found !== undefined) {
+					)) {
 						servers.push({ scope: "local", ...found });
 					}
 				}
 			}
 		}
-		const found = serverIn(field(parsed, "mcpServers"), input.name);
-		if (found !== undefined) {
+		for (const found of serversIn(field(parsed, "mcpServers"))) {
 			servers.push({ scope: "user", ...found });
 		}
 	}
@@ -168,11 +186,9 @@ export async function readClaudeServers(
 	const shared = await readText(path.join(input.cwd, ".mcp.json"));
 	if (shared.kind === "text") {
 		try {
-			const found = serverIn(
+			for (const found of serversIn(
 				field(JSON.parse(shared.text), "mcpServers"),
-				input.name,
-			);
-			if (found !== undefined) {
+			)) {
 				servers.push({ scope: "project", ...found });
 			}
 		} catch {
@@ -252,37 +268,4 @@ export async function readCodexServers(
 		state: "read",
 		servers: [...servers].map(([name, url]) => ({ name, url })),
 	};
-}
-
-export interface ReadInput extends ReadClaudeInput {
-	tool: InstructionsHookTool;
-	/** The project's gateway URL. */
-	url: string;
-}
-
-/** What the tool's configuration says about the project's server. */
-export async function readRegistration(
-	input: ReadInput,
-): Promise<RegistrationState> {
-	if (input.tool === "codex") {
-		const read = await readCodexServers(input);
-		if (read.state !== "read") {
-			return read.state === "unlocated" ? "missing" : "unreadable";
-		}
-		// Any server at the project's gateway counts, whatever the person named it.
-		if (read.servers.some((server) => server.url === input.url)) {
-			return "registered";
-		}
-		return read.servers.some((server) => server.name === input.name)
-			? "elsewhere"
-			: "missing";
-	}
-	const read = await readClaudeServers(input);
-	if (read.state !== "read") {
-		return read.state === "unlocated" ? "missing" : "unreadable";
-	}
-	if (read.servers.some((server) => server.url === input.url)) {
-		return "registered";
-	}
-	return read.servers.length > 0 ? "elsewhere" : "missing";
 }

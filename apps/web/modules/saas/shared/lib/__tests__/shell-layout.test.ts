@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
 	isFullBleedRoute,
 	SHELL_DOCK_LAYER_CLASS,
+	SHELL_LAUNCHER_CLEARANCE_CLASS,
 	SIDEBAR_WIDTHS_PX,
 	shellContentOffsetClass,
 	shellDockOffsetClass,
@@ -153,5 +154,42 @@ describe("isFullBleedRoute", () => {
 	it("treats a missing pathname as not full bleed", () => {
 		expect(isFullBleedRoute(null)).toBe(false);
 		expect(isFullBleedRoute(undefined)).toBe(false);
+	});
+});
+
+describe("shell-layout launcher clearance", () => {
+	const launcherSource = readFileSync(
+		path.resolve(
+			repoRoot,
+			"apps/web/modules/saas/agents/components/FabricAgentLauncher.tsx",
+		),
+		"utf8",
+	);
+	const appWrapperSource = readFileSync(
+		path.resolve(
+			repoRoot,
+			"apps/web/modules/saas/shared/components/AppWrapper.tsx",
+		),
+		"utf8",
+	);
+
+	it("clears the launcher button by at least its own footprint", () => {
+		const button = launcherSource.match(
+			/fixed bottom-(\d+) [^"]*size-(\d+)[^"]*sm:bottom-(\d+)/,
+		);
+		expect(button).not.toBeNull();
+		const [, bottom, size, smBottom] = button ?? [];
+		const footprintPx =
+			Math.max(Number(bottom), Number(smBottom)) * 4 + Number(size) * 4;
+		const clearancePx =
+			Number(SHELL_LAUNCHER_CLEARANCE_CLASS.replace("pb-", "")) * 4;
+
+		expect(clearancePx).toBeGreaterThanOrEqual(footprintPx);
+	});
+
+	it("is applied to the page column of every scrolling route", () => {
+		expect(appWrapperSource).toMatch(
+			/mainPaddingClasses = isFullHeightRoute\s*\? "p-0"\s*: SHELL_LAUNCHER_CLEARANCE_CLASS/,
+		);
 	});
 });

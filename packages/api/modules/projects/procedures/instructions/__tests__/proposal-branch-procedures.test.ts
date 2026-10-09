@@ -370,6 +370,24 @@ describe("member proposal branch procedures", () => {
 			expect(m.requestProposalBranchRefresh).not.toHaveBeenCalled();
 		});
 
+		it.each(["CLOSE_REQUESTED", "CLOSED", "MERGED"])(
+			"settles quietly, not as BRANCH_CHANGED, for a %s branch whose attempt moved on",
+			async (state) => {
+				m.getMemberProposalBranch.mockResolvedValue(
+					branchRow({ state, attempt: 6 }),
+				);
+
+				await expect(
+					run(REFRESH, OWNER, {
+						branchId: "branch_1",
+						expectedAttempt: 4,
+					}),
+				).resolves.toEqual({ refreshed: false, pending: false });
+				expect(m.requestProposalBranchRefresh).not.toHaveBeenCalled();
+				expect(m.workflowStart).not.toHaveBeenCalled();
+			},
+		);
+
 		it("does not start provider work when the atomic admission refuses cooldown", async () => {
 			m.requestProposalBranchRefresh.mockResolvedValue({
 				admitted: false,

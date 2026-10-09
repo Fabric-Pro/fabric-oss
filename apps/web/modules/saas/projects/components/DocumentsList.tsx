@@ -52,6 +52,10 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
+	needsLegacyGlossyEdition,
+	useLegacyGlossyEditions,
+} from "../hooks/use-legacy-glossy-edition";
+import {
 	getDocumentsPollInterval,
 	isDocumentGenerationRunning,
 } from "../lib/document-pipeline";
@@ -470,6 +474,11 @@ export function DocumentsList({
 	// menu only renders the href it is handed.
 	const glossyEnabled =
 		useFeatureFlag("GLOSSY_EDITION") && !!organizationSlug;
+	// A Proposal under the Proposal artifact gate needs no Glossy edition
+	// (Fizzy #2801): its entry points stay only where a legacy edition was
+	// published. Decided here, so the menu item and the tour anchor below
+	// agree; the menu asks the same cached question again before showing it.
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const queryClient = useQueryClient();
 	const [createDialogOpen, setCreateDialogOpen] = useState(false);
 	const [regeneratingDocId, setRegeneratingDocId] = useState<string | null>(
@@ -502,6 +511,20 @@ export function DocumentsList({
 				? "always"
 				: true,
 	});
+
+	const legacyGlossyEditions = useLegacyGlossyEditions(
+		projectId,
+		glossyEnabled
+			? (data?.documents ?? [])
+					.filter((doc) =>
+						needsLegacyGlossyEdition(
+							doc.type,
+							proposalArtifactEnabled,
+						),
+					)
+					.map((doc) => doc.id)
+			: [],
+	);
 
 	const deleteMutation = useMutation(
 		orpc.projects.documents.delete.mutationOptions({
@@ -886,7 +909,13 @@ export function DocumentsList({
 						const isClickable = hasContent;
 						const isActive = (doc as any).isActive !== false;
 						const glossyHref =
-							glossyEnabled && isGlossyEligible(doc.type)
+							glossyEnabled &&
+							isGlossyEligible(doc.type) &&
+							(!needsLegacyGlossyEdition(
+								doc.type,
+								proposalArtifactEnabled,
+							) ||
+								legacyGlossyEditions.has(doc.id))
 								? buildGlossyEditionRoute(
 										orgBasePath,
 										projectId,
@@ -926,11 +955,13 @@ export function DocumentsList({
 								 * offers the Glossy item, so with the rollout gate
 								 * off, or no Proposal or Business Case with content,
 								 * the tour finds no anchor and degrades as it does
-								 * for any conditional one. A marker covering the
-								 * card rather than a conditional attribute on it,
-								 * so the anchor stays a literal the Get Started
-								 * drift test can find; inert to pointer and
-								 * assistive technology.
+								 * for any conditional one. Under the Proposal
+								 * artifact gate a Proposal carries it only with a
+								 * published legacy edition (Fizzy #2801). A marker
+								 * covering the card rather than a conditional
+								 * attribute on it, so the anchor stays a literal
+								 * the Get Started drift test can find; inert to
+								 * pointer and assistive technology.
 								 */}
 								{isClickable && glossyHref && (
 									<span

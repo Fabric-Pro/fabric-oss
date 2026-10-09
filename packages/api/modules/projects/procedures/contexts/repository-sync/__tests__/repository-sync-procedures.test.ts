@@ -967,6 +967,9 @@ describe("repositorySync.listTree", () => {
 
 			expect(caught).not.toHaveProperty("resolvedWith");
 			expect(caught).toMatchObject({ code, data: { code: dataCode } });
+			if (dataCode === "BRANCH_NOT_FOUND") {
+				expect(caught.data).toMatchObject({ ref: "develop" });
+			}
 			expect(caught.message).not.toContain(SECRET_TOKEN);
 			expect(JSON.stringify(caught.data)).not.toContain(SECRET_TOKEN);
 			NO_WRITES();
@@ -1628,6 +1631,13 @@ describe("repositorySync.configure", () => {
 			await expect(
 				call("configure", configureInput),
 			).rejects.toMatchObject({ code, data: { code: dataCode } });
+			if (dataCode === "BRANCH_NOT_FOUND") {
+				await expect(
+					call("configure", configureInput),
+				).rejects.toMatchObject({
+					data: { code: "BRANCH_NOT_FOUND", ref: configureInput.ref },
+				});
+			}
 			NO_WRITES();
 		},
 	);

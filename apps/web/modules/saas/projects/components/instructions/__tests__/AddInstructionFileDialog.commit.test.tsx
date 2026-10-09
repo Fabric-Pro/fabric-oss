@@ -335,6 +335,28 @@ describe("AddInstructionFileDialog — commit to the branch", () => {
 		expect(m.commitChange).not.toHaveBeenCalled();
 	});
 
+	it("sends the commit message the person typed with the suggestion", async () => {
+		const user = userEvent.setup();
+		renderDialog();
+		await pickFile(user, new File(["# rule"], "naming.md"));
+		const message = screen.getByLabelText("Commit message");
+		await user.clear(message);
+		await user.type(message, "Document naming");
+
+		await user.click(
+			screen.getByRole("button", { name: "Suggest as a pull request" }),
+		);
+
+		await waitFor(() =>
+			expect(m.editInstructionSnapshot).toHaveBeenCalledWith(
+				expect.objectContaining({
+					proposal: true,
+					message: "Document naming",
+				}),
+			),
+		);
+	});
+
 	it("shows a refused commit message under its field", async () => {
 		m.commitChange.mockRejectedValue({
 			code: "UNPROCESSABLE_CONTENT",
@@ -370,5 +392,62 @@ describe("AddInstructionFileDialog — commit to the branch", () => {
 		expect(
 			screen.getByRole("button", { name: "Suggest as a pull request" }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("AddInstructionFileDialog — a long branch name", () => {
+	const LONG = {
+		repository: "example-org/instructions",
+		ref: "acceptance-restoration-20261006-66d59af",
+	};
+
+	it("cannot push the dialog's edge out: one shrinkable column, a wrapping footer, wrapping buttons", () => {
+		renderDialog({ repositoryTarget: LONG });
+
+		const dialog = screen.getByRole("dialog");
+		const commit = screen.getByRole("button", { name: /^Commit to/ });
+		const suggest = screen.getByRole("button", {
+			name: "Suggest as a pull request",
+		});
+		expect(dialog.className).toContain("grid-cols-[minmax(0,1fr)]");
+		expect(commit.parentElement?.className).toContain("sm:flex-wrap");
+		expect(commit.className).toContain("whitespace-normal");
+		expect(suggest.className).toContain("whitespace-normal");
+		expect(
+			screen.getByRole("heading", { name: /acceptance-restoration/ })
+				.className,
+		).toContain("[overflow-wrap:anywhere]");
+	});
+});
+
+describe("instruction dialogs — one shrinkable column", () => {
+	it("the rename dialog cannot be pushed wider than its box by a long branch name", async () => {
+		const { RenameInstructionFileDialog } = await import(
+			"../RenameInstructionFileDialog"
+		);
+		render(
+			<RenameInstructionFileDialog
+				open
+				onOpenChange={() => undefined}
+				projectId="p"
+				baseSnapshotId="s7"
+				path="docs/a.md"
+				content="x"
+				repositoryTarget={{
+					repository: "example-org/instructions",
+					ref: "acceptance-restoration-20261006-66d59af",
+				}}
+				canCommit
+				canPropose
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: TestQueryProvider },
+		);
+
+		const dialog = screen.getByRole("dialog");
+		const commit = screen.getByRole("button", { name: /^Commit to/ });
+		expect(dialog.className).toContain("grid-cols-[minmax(0,1fr)]");
+		expect(commit.parentElement?.className).toContain("sm:flex-wrap");
+		expect(commit.className).toContain("whitespace-normal");
 	});
 });

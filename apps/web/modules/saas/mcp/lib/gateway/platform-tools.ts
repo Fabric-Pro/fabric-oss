@@ -104,6 +104,7 @@ import {
 	boundProjectId,
 	sessionMayReachProject,
 } from "./project-binding";
+import { scopeSatisfied, type ToolScope } from "./tool-scope";
 import {
 	type GatewaySession,
 	type GatewayToolDefinition,
@@ -1136,6 +1137,25 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					description:
 						"Case-insensitive match on path, name or description",
 				},
+				prefix: {
+					type: "string",
+					description:
+						'Direct repositories only: list only files at or under this folder path, e.g. ".claude/skills" (matches whole path segments).',
+					maxLength: 512,
+				},
+				limit: {
+					type: "integer",
+					description:
+						"Direct repositories only: files per page (default 200, max 500). Large repositories are paged so one call stays small.",
+					minimum: 1,
+					maximum: 500,
+				},
+				cursor: {
+					type: "string",
+					description:
+						"Direct repositories only: the page.nextCursor from the previous response, to fetch the next page. Send it together with that response's generation and commitSha so every page comes from the same commit; a cursor used against a different commit is refused.",
+					maxLength: 2048,
+				},
 				sinceDigest: {
 					type: "string",
 					description:
@@ -1989,7 +2009,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
  * describes `mcp:read` / `mcp:write` as granting. Reads accept either coarse
  * scope, because a key permitted to write is not meaningfully denied a read.
  */
-type ToolScope = { scope: string; kind: "read" | "write" };
 
 export const TOOL_SCOPES: Record<string, ToolScope> = {
 	// Identity and organizations
@@ -2103,16 +2122,6 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
  */
 const UNMAPPED_TOOL_SCOPE: ToolScope = { scope: "mcp:write", kind: "write" };
 
-function scopeSatisfied(granted: string[], required: ToolScope): boolean {
-	if (granted.includes("*") || granted.includes(required.scope)) {
-		return true;
-	}
-	if (granted.includes("mcp:write")) {
-		return true;
-	}
-	return required.kind === "read" && granted.includes("mcp:read");
-}
-
 /**
  * Execute a platform tool by name.
  * All DB imports are dynamic to avoid pulling Prisma into the module scope.
@@ -2131,7 +2140,7 @@ export async function executePlatformTool(
 	const args = bound.args;
 
 	const required = TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
-	if (!scopeSatisfied(session.scopes, required)) {
+	if (!scopeSatisfied(session.scopes, required, session.credential)) {
 		return errorResult(
 			`This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${required.scope}" scope required by ${toolName}.`,
 		);
@@ -2249,10 +2258,15 @@ export async function executePlatformTool(
 				return errorResult(`Unknown platform tool: ${toolName}`);
 		}
 	} catch (error) {
-		const message =
-			error instanceof Error ? error.message : "Internal error";
 		console.error("[MCP Gateway] Platform tool %s error:", toolName, error);
-		return errorResult(message);
+		// Deliberate refusals carry a message written for a person; anything
+		// else (a database, storage or network failure) names internals that
+		// are not the caller's to see, so it gets one generic sentence and the
+		// detail stays in the server log above.
+		return errorResult(
+			instructionRefusalMessage(error) ??
+				`${toolName} failed because of an internal error. Nothing was confirmed; try again.`,
+		);
 	}
 }
 
@@ -2305,24 +2319,39 @@ function tenantFilter(session: GatewaySession) {
 
 // ─── Identity Handlers ──────────────────────────────────────────────────────
 
-async function handleGetIdentity(
-	session: GatewaySession,
-): Promise<ToolCallResult> {
+/**
+ * The organizations this session may be told about. A credential whose tenant
+ * is fixed (an organization key, an OAuth sign-in) sees only that tenant: it
+ * was issued for one organization, and its person's other memberships are not
+ * part of what it was given.
+ */
+async function listVisibleOrganizations(session: GatewaySession) {
 	const { db } = await import("@repo/database");
 
 	const memberships = await db.member.findMany({
-		where: { userId: session.userId },
+		where: {
+			userId: session.userId,
+			...(isOrganizationBoundCredential(session.credential)
+				? { organizationId: session.organizationId ?? "" }
+				: {}),
+		},
 		include: {
 			organization: { select: { id: true, name: true, slug: true } },
 		},
 	});
 
-	const organizations = memberships.map((m) => ({
+	return memberships.map((m) => ({
 		id: m.organization.id,
 		name: m.organization.name,
 		slug: m.organization.slug,
 		role: m.role,
 	}));
+}
+
+async function handleGetIdentity(
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const organizations = await listVisibleOrganizations(session);
 
 	return jsonResult({
 		userId: session.userId,
@@ -2350,21 +2379,7 @@ async function handleGetIdentity(
 async function handleListOrganizations(
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { db } = await import("@repo/database");
-
-	const memberships = await db.member.findMany({
-		where: { userId: session.userId },
-		include: {
-			organization: { select: { id: true, name: true, slug: true } },
-		},
-	});
-
-	const organizations = memberships.map((m) => ({
-		id: m.organization.id,
-		name: m.organization.name,
-		slug: m.organization.slug,
-		role: m.role,
-	}));
+	const organizations = await listVisibleOrganizations(session);
 
 	return jsonResult({
 		organizations,
@@ -2504,7 +2519,10 @@ async function attachCodingInstructions<T extends { id: string }>(
 	const required =
 		TOOL_SCOPES.fabric_get_project_instruction_bundle ??
 		UNMAPPED_TOOL_SCOPE;
-	if (projects.length === 0 || !scopeSatisfied(session.scopes, required)) {
+	if (
+		projects.length === 0 ||
+		!scopeSatisfied(session.scopes, required, session.credential)
+	) {
 		return projects;
 	}
 	const { getInstructionSummariesForProjects } = await import(
@@ -2878,9 +2896,17 @@ async function resolveGatewayProjectReadAccess(
 	if (!sessionMayReachProject(session, projectId)) {
 		return null;
 	}
-	const { getProjectAccessContext } = await import("@repo/database");
+	const { getProjectAccessContext, isProjectSoftDeleted } = await import(
+		"@repo/database"
+	);
 	const access = await getProjectAccessContext(projectId, session.userId);
 	if (!access || !credentialMayReachHost(session, access.organizationId)) {
+		return null;
+	}
+	// A project in the trash is gone as far as an agent is concerned: the web
+	// app keeps resolving it for restore, but nothing here should read or
+	// change it, and the refusal is the same one a missing project gets.
+	if (await isProjectSoftDeleted(projectId)) {
 		return null;
 	}
 	return access;
@@ -2989,14 +3015,20 @@ async function resolveGatewayProjectWriteAccessWithHost(
 	if (!sessionMayReachProject(session, projectId)) {
 		return { status: "not-found" };
 	}
-	const { hasPermission, Permissions, resolveProjectAccess } = await import(
-		"@repo/database"
-	);
+	const {
+		hasPermission,
+		isProjectSoftDeleted,
+		Permissions,
+		resolveProjectAccess,
+	} = await import("@repo/database");
 	const access = await resolveProjectAccess(projectId, session.userId);
 	if (!access || !access.isVisible) {
 		return { status: "not-found" };
 	}
 	if (!credentialMayReachHost(session, access.organizationId)) {
+		return { status: "not-found" };
+	}
+	if (await isProjectSoftDeleted(projectId)) {
 		return { status: "not-found" };
 	}
 	if (
@@ -3297,7 +3329,9 @@ async function handleUpdateFeatureStatus(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	const { moveStory } = await import("@repo/database");
+	const { moveStory, StoryMoveTargetNotFoundError } = await import(
+		"@repo/database"
+	);
 
 	const featureId = args.featureId as string;
 	const projectId = args.projectId as string;
@@ -3324,10 +3358,18 @@ async function handleUpdateFeatureStatus(
 		return errorResult("No edit permission for this project");
 	}
 
-	const updated = await moveStory(featureId, projectId, statusId, undefined, {
-		lastEditedByName: session.userName,
-		lastEditedSource: "MANUAL",
-	});
+	let updated: Awaited<ReturnType<typeof moveStory>>;
+	try {
+		updated = await moveStory(featureId, projectId, statusId, undefined, {
+			lastEditedByName: session.userName,
+			lastEditedSource: "MANUAL",
+		});
+	} catch (error) {
+		if (error instanceof StoryMoveTargetNotFoundError) {
+			return errorResult(error.message);
+		}
+		throw error;
+	}
 	return jsonResult({
 		success: true,
 		featureId: updated.id,
@@ -4331,10 +4373,14 @@ async function handleSearchProjectKnowledge(
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
 	if (
-		!scopeSatisfied(session.scopes, {
-			scope: "features:read",
-			kind: "read",
-		})
+		!scopeSatisfied(
+			session.scopes,
+			{
+				scope: "features:read",
+				kind: "read",
+			},
+			session.credential,
+		)
 	) {
 		return errorResult(
 			'This credential does not have the "features:read" scope required by fabric_search_project_knowledge.',
@@ -6396,7 +6442,7 @@ async function handleGetInstructionChecks(
 			projectId,
 			session,
 			authCheck,
-			...(checkout === undefined ? {} : { checkout }),
+			checkout,
 			access: {
 				ensureInstructionRead: () =>
 					callerCanReadInstructions(projectId, session),

@@ -15,10 +15,14 @@ const state = vi.hoisted(() => ({
 	rows: [] as Row[],
 	findAdminOrganization: vi.fn(),
 	personalSubjects: new Set<string>(),
+	personalEmails: new Set<string>(),
+	sharedEmails: new Set<string>(),
 	listAccounts: vi.fn(),
 	upsertAccount: vi.fn(),
 	upsertOwn: vi.fn(),
 	sharedSubjects: new Set<string>(),
+	personalOwner: "user-other" as string,
+	sharedConnector: "user-other" as string,
 	setOrgUse: vi.fn(),
 	verifyIdToken: vi.fn(),
 	audit: vi.fn(),
@@ -58,8 +62,14 @@ vi.mock("@repo/database", async () => {
 		>("@repo/database/prisma/queries/chatgpt-plan-upload-ticket")),
 		ChatGptPlanSubjectBoundElsewhereError,
 		findChatGptPlanPoolAdminOrganization: state.findAdminOrganization,
-		isChatGptPlanPersonalSubject: async (subject: string) =>
-			state.personalSubjects.has(subject),
+		findChatGptPlanPersonalAccountOwner: async (identity: {
+			subject: string;
+			email: string | null;
+		}) =>
+			state.personalSubjects.has(identity.subject) ||
+			state.personalEmails.has(identity.email?.toLowerCase() ?? "")
+				? state.personalOwner
+				: null,
 		listChatGptPlanOrgAccounts: state.listAccounts,
 		upsertChatGptPlanOrgAccount: state.upsertAccount,
 		upsertChatGptPlanCredential: state.upsertOwn,
@@ -74,8 +84,14 @@ vi.mock("@repo/database", async () => {
 				includeBackgroundJobs: false,
 			},
 		]),
-		isChatGptPlanOrgAccountSubject: async (subject: string) =>
-			state.sharedSubjects.has(subject),
+		findChatGptPlanSharedAccountConnector: async (identity: {
+			subject: string;
+			email: string | null;
+		}) =>
+			state.sharedSubjects.has(identity.subject) ||
+			state.sharedEmails.has(identity.email?.toLowerCase() ?? "")
+				? state.sharedConnector
+				: null,
 		recordAudit: state.audit,
 	};
 });
@@ -150,6 +166,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	state.rows = [];
 	state.sharedSubjects = new Set();
+	state.personalEmails = new Set();
+	state.sharedEmails = new Set();
 	state.findAdminOrganization.mockResolvedValue({
 		id: "org-a",
 		slug: "example-org",
@@ -157,6 +175,8 @@ beforeEach(() => {
 		role: "admin",
 	});
 	state.personalSubjects = new Set(["admins-own-subject"]);
+	state.personalOwner = "user-other";
+	state.sharedConnector = "user-other";
 	state.listAccounts.mockResolvedValue([]);
 	state.upsertAccount.mockResolvedValue({ id: "acc-1", created: true });
 	state.verifyIdToken.mockResolvedValue({
@@ -230,10 +250,15 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		expect(state.audit).not.toHaveBeenCalled();
 	});
 
-	it("refuses the connector's own plan as a shared account", async () => {
+	// Fizzy #2770 I1: their own plan moves without a new sign-in.
+	it("refuses the connector's own plan as a shared account, pointing to Share", async () => {
 		state.personalSubjects.add("shared-subject");
+		state.personalOwner = "user-admin";
 		const response = await post(await orgTicket());
 		expect(response.status).toBe(409);
+		expect((await response.json()).error).toMatch(
+			/already your own plan.*Share with this organization/,
+		);
 		expect(state.upsertAccount).not.toHaveBeenCalled();
 	});
 
@@ -265,6 +290,45 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		});
 		const response = await post(ticket);
 		expect(response.status).toBe(409);
+		const body = await response.json();
+		expect(body.error).toMatch(/already shared by an organization/);
+		expect(body.error).not.toMatch(/Take back/);
+		expect(state.upsertOwn).not.toHaveBeenCalled();
+	});
+
+	it("points the member who shared the account to Take back instead", async () => {
+		state.sharedSubjects.add("shared-subject");
+		state.sharedConnector = "user-member";
+		const { ticket } = await createChatGptPlanUploadTicket({
+			userId: "user-member",
+			organizationIds: ["org-a"],
+		});
+		const response = await post(ticket);
+		expect(response.status).toBe(409);
+		expect((await response.json()).error).toMatch(
+			/You already share this ChatGPT account.*Take back/,
+		);
+		expect(state.upsertOwn).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #2770: OpenAI's `sub` differs per client registration, so the same
+	// ChatGPT account arrives with a new one; its email gives it away.
+	it("refuses a shared account whose email someone holds as their own plan, under another sub", async () => {
+		state.personalEmails.add("shared-plan@example.com");
+		const response = await post(await orgTicket());
+		expect(response.status).toBe(409);
+		expect(state.upsertAccount).not.toHaveBeenCalled();
+	});
+
+	it("refuses a personal connect whose email an organization already shares, under another sub", async () => {
+		state.sharedEmails.add("shared-plan@example.com");
+		const { ticket } = await createChatGptPlanUploadTicket({
+			userId: "user-member",
+			organizationIds: ["org-a"],
+		});
+		const response = await post(ticket);
+		expect(response.status).toBe(409);
+		expect(JSON.stringify(await response.json())).not.toContain("org-a");
 		expect(state.upsertOwn).not.toHaveBeenCalled();
 	});
 });

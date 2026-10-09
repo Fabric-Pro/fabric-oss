@@ -38,23 +38,25 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			await client.query("BEGIN");
 			await client.query("SET LOCAL statement_timeout = '5s'");
 			await client.query(`
-   CREATE TEMP TABLE user_story (id text, "projectId" text, "organizationId" text, title text, description text, identifier text, kind text);
+   CREATE TEMP TABLE project (id text, "organizationId" text);
+   CREATE TEMP TABLE user_story (id text, "projectId" text, title text, description text, identifier text, kind text);
    CREATE TEMP TABLE project_document (id text, "projectId" text, "organizationId" text, title text, content text, type text);
    CREATE TEMP TABLE project_context (id text, "projectId" text, "organizationId" text, type text, content text, "sourceTitle" text, "originalFilename" text, "sourceUrl" text, "urlScope" text, metadata jsonb);
    CREATE TEMP TABLE project_context_url_page (id text, "parentContextId" text, "projectId" text, "organizationId" text, "pageTitle" text, "pageUrl" text, content text);
    CREATE TEMP TABLE project_context_conversation_bundle (id text, "parentContextId" text, "projectId" text, "organizationId" text, content text);
-   INSERT INTO user_story SELECT 'feature-' || lpad(i::text,4,'0'),'example-project','example-org','Feature','body needle','F-' || i,'FEATURE' FROM generate_series(1,1100) i;
+   INSERT INTO project VALUES ('example-project','example-org'), ('other-project','example-org');
+   INSERT INTO user_story SELECT 'feature-' || lpad(i::text,4,'0'),'example-project','Feature','body needle','F-' || i,'FEATURE' FROM generate_series(1,1100) i;
+   INSERT INTO user_story VALUES ('foreign-project-feature','other-project','needle','needle','F-0','FEATURE');
    INSERT INTO project_document VALUES ('doc-exact','example-project','example-org','needle','text needle','PRD'), ('doc-body','example-project','example-org','Document','needle inside body','GENERAL'), ('doc-title','example-project','example-org','needle overview','unrelated prose','GENERAL'), ('foreign-project','other-project','example-org','needle','needle','PRD'), ('foreign-tenant','example-project','other-org','needle','needle','PRD');
    INSERT INTO project_context VALUES ('ctx-direct','example-project','example-org','TEXT','direct needle','Notes',NULL,NULL,NULL,NULL), ('ctx-link','example-project','example-org','LINK','','Site',NULL,'https://example.com','PATH_PREFIX',NULL), ('ctx-chat','example-project','example-org','INTEGRATION','','Channel',NULL,NULL,NULL,NULL), ('ctx-code','example-project','example-org','CODE_FILE','needle','Code',NULL,NULL,NULL,NULL), ('ctx-empty','example-project','example-org','FILE','   ','needle unavailable',NULL,NULL,NULL,NULL), ('ctx-metadata','example-project','example-org','TEXT','unrelated',NULL,NULL,NULL,NULL,'{"title":{"needle":true},"filename":"Notes"}');
    INSERT INTO project_context_url_page VALUES ('page','ctx-link','example-project','example-org','Page','https://example.com/page','page needle'), ('foreign-page','ctx-link','example-project','other-org','needle','https://example.com/foreign','needle');
    INSERT INTO project_context_conversation_bundle VALUES ('bundle','ctx-chat','example-project','example-org','captured needle'), ('foreign-bundle','ctx-chat','other-project','example-org','needle');
   `);
 			await client.query(
-				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6,$7)",
+				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6)",
 				[
 					"tiptap",
 					base.projectId,
-					base.organizationId,
 					"Formatted",
 					JSON.stringify({
 						type: "doc",
@@ -84,11 +86,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				],
 			);
 			await client.query(
-				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6,$7)",
+				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6)",
 				[
 					"malformed",
 					base.projectId,
-					base.organizationId,
 					"Malformed",
 					'{"type":"doc","content":[{"type":"text","text":"bad\\uD800"}]}',
 					"F-9998",
@@ -191,11 +192,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 		});
 		it("preserves visible phrases and words across inline marks while separating paragraphs", async () => {
 			await client.query(
-				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6,$7)",
+				"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6)",
 				[
 					"inline-marks",
 					base.projectId,
-					base.organizationId,
 					"Formatted phrases",
 					JSON.stringify({
 						type: "doc",
@@ -269,11 +269,10 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			await client.query("SAVEPOINT volume_fixture");
 			try {
 				await client.query(
-					"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6,$7)",
+					"INSERT INTO user_story VALUES ($1,$2,$3,$4,$5,$6)",
 					[
 						"volume",
 						base.projectId,
-						base.organizationId,
 						"Volume",
 						description,
 						"F-9970",

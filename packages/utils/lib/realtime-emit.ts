@@ -1,7 +1,7 @@
 /**
  * Realtime emit helpers for the events a Temporal activity publishes: the
  * conversation channel's `message_appended`, and the project channel's
- * `context_change` and `activity`.
+ * `context_change`, `activity` and `document_change`.
  *
  * Lives in `@repo/utils` (and NOT in `@repo/api`) so that
  * `@repo/temporal` can static-import it without inverting the workspace
@@ -34,16 +34,17 @@
  *
  * # Schema scope
  *
- * Only the events a Temporal activity emits live here: `message_appended`,
- * and `context_change` and `activity`, which the synced-file deletion
- * workflow publishes after it deleted a row (Fizzy #2636) — moved here from
- * `packages/api/lib/realtime.ts`, which re-exports the emitters and builds
- * its SSE schema from the same zod objects, so the two sides cannot drift.
- * The rest of `projectRealtimeSchema` (presence, document_change,
- * lock_update, etc.) stays in `packages/api/lib/realtime.ts`, whose
- * `emitContextChange`/`emitActivity` wrappers call the emitters here with the
- * API's own client, so an API caller publishes everything through one
- * instance. The two `Realtime` instances (API and Temporal worker) co-exist; they share the same underlying Redis
+ * Only the events a Temporal activity emits live here: `message_appended`;
+ * `context_change` and `activity`, which the synced-file deletion workflow
+ * publishes after it deleted a row (Fizzy #2636); and `document_change`,
+ * which Proposal generation publishes as its sections land (Fizzy #2801).
+ * The project-channel three moved here from `packages/api/lib/realtime.ts`,
+ * which re-exports the emitters and builds its SSE schema from the same zod
+ * objects, so the two sides cannot drift. The rest of
+ * `projectRealtimeSchema` (presence_update, lock_update) stays in
+ * `packages/api/lib/realtime.ts`, whose `emitContextChange`, `emitActivity`
+ * and `emitDocumentChange` wrappers call the emitters here with the API's
+ * own client, so an API caller publishes everything through one instance. The two `Realtime` instances (API and Temporal worker) co-exist; they share the same underlying Redis
  * backend so events written by one and read by another (e.g. SSE route
  * subscribes via the api-side instance, emits come from the utils-side
  * instance) work fine — Redis is a shared message bus, the Realtime
@@ -118,6 +119,24 @@ export const activitySchema = z.object({
 
 export type ActivityPayload = z.infer<typeof activitySchema>;
 
+/**
+ * A project document was created, updated or deleted. The SSE-side schema in
+ * `packages/api/lib/realtime.ts` uses this same object. The web client only
+ * refetches on it, so a worker's nudge while a document generates looks
+ * like any other document update.
+ */
+export const documentChangeSchema = z.object({
+	projectId: z.string(),
+	documentId: z.string(),
+	action: z.enum(["created", "updated", "deleted"]),
+	userId: z.string(),
+	userName: z.string(),
+	documentType: z.string().optional(),
+	documentTitle: z.string().optional(),
+});
+
+export type DocumentChangePayload = z.infer<typeof documentChangeSchema>;
+
 /** Channel name for a project's realtime stream. */
 export function getProjectChannelName(projectId: string): string {
 	return `project:${projectId}`;
@@ -127,6 +146,7 @@ const realtimeEmitSchema = {
 	message_appended: conversationMessageAppendedSchema,
 	context_change: contextChangeSchema,
 	activity: activitySchema,
+	document_change: documentChangeSchema,
 };
 
 type RealtimeEmitOptions = {
@@ -237,6 +257,10 @@ export interface ProjectEventRealtime {
 			data: ContextChangePayload,
 		): Promise<void>;
 		emit(event: "activity", data: ActivityPayload): Promise<void>;
+		emit(
+			event: "document_change",
+			data: DocumentChangePayload,
+		): Promise<void>;
 	};
 }
 
@@ -281,6 +305,28 @@ export async function emitActivity(
 		await channel.emit("activity", payload);
 	} catch (error) {
 		console.error("[realtime-emit] Failed to emit activity:", error);
+	}
+}
+
+/**
+ * Emit a `document_change` event onto the project's channel. Never throws.
+ * `realtime` defaults to this module's client; `null` emits nothing.
+ */
+export async function emitDocumentChange(
+	payload: DocumentChangePayload,
+	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+): Promise<void> {
+	if (!realtime) {
+		return;
+	}
+
+	try {
+		const channel = realtime.channel(
+			getProjectChannelName(payload.projectId),
+		);
+		await channel.emit("document_change", payload);
+	} catch (error) {
+		console.error("[realtime-emit] Failed to emit document_change:", error);
 	}
 }
 

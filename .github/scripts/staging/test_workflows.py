@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -410,6 +411,67 @@ def gha_eval(expression, github, needs=None, variables=None):
         'true': True, 'false': False, 'null': NULL,
     }
     return eval(e, {'__builtins__': {}}, context)
+
+
+class RelayNotifierContracts(unittest.TestCase):
+    def test_live_promotion_and_invalid_branches_never_dispatch(self):
+        job = workflow('oss-relay-notify.yml')['jobs']['notify']
+        dispatch = next(step for step in job['steps'] if step.get('name') == 'Dispatch identifiers-only wake-up')
+        sha = 'a' * 40
+        for event in ['pull_request_target', 'issue_comment', 'workflow_run']:
+            for branch in ['promotion/example-cycle', None, '', 42, {}, 'feature/example']:
+                with self.subTest(event=event, branch=branch), tempfile.TemporaryDirectory() as directory:
+                    temp = pathlib.Path(directory)
+                    trace = temp / 'posted.json'
+                    gh = temp / 'gh'
+                    gh.write_text('#!/bin/sh\nif [ "$2" = "--method" ]; then\n'
+                                  '  cp "$6" "$DISPATCH_TRACE"\n'
+                                  'else\n  printf "%s\\n" "$LIVE_PR"\nfi\n')
+                    gh.chmod(0o755)
+                    pr = {'state': 'open', 'draft': False, 'base': {'ref': 'master'},
+                          'head': {'sha': sha, 'repo': {'full_name': 'example-org/source'}},
+                          'labels': [{'name': 'ready-for-relay'}]}
+                    if branch is not None:
+                        pr['head']['ref'] = branch
+                    # The payload may still name an ordinary branch. Every event
+                    # must use the current PR branch before dispatching.
+                    env = {**os.environ, 'PATH': directory + os.pathsep + os.environ['PATH'],
+                           'LIVE_PR': json.dumps(pr), 'DISPATCH_TRACE': trace.as_posix(),
+                           'GITHUB_REPOSITORY': 'example-org/source', 'RUNNER_TEMP': temp.as_posix(),
+                           'EVENT_NAME': event, 'STAGING_PR': '11', 'EVENT_HEAD_SHA': sha,
+                           'COMMENT_BODY': '/relay ' + sha, 'STAGING_TOKEN': 'synthetic-read-token',
+                           'DISPATCH_TOKEN': 'synthetic-dispatch-token'}
+                    result = subprocess.run([shutil.which('bash'), '-c', dispatch['run']], env=env,
+                                            capture_output=True, text=True, timeout=10)
+                    if branch == 'feature/example':
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertEqual(json.loads(trace.read_text()), {
+                            'ref': 'ops', 'inputs': {'mode': 'relay', 'staging_pr': '11', 'expected_head_sha': sha}})
+                    else:
+                        self.assertFalse(trace.exists(), result.stdout + result.stderr)
+                        if branch == 'promotion/example-cycle':
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        else:
+                            self.assertNotEqual(result.returncode, 0)
+
+    def test_payload_promotion_filters_preserve_ordinary_wakeups(self):
+        job = workflow('oss-relay-notify.yml')['jobs']['notify']
+        for branch, expected in [('promotion/example-cycle', False), ('feature/example', True)]:
+            for event in ['pull_request_target', 'workflow_run']:
+                with self.subTest(event=event, branch=branch):
+                    github = {'repository': 'Fabric-Pro/fabric-dev', 'event_name': event, 'event': {
+                        'action': 'labeled', 'label': {'name': 'ready-for-relay'},
+                        'pull_request': {'head': {'ref': branch, 'repo': {'full_name': 'Fabric-Pro/fabric-dev'}},
+                                         'labels_star_name': ['ready-for-relay']},
+                        'workflow_run': {'event': 'pull_request', 'head_branch': branch}}}
+                    self.assertEqual(bool(gha_eval(job['if'], github)), expected)
+        github = {'repository': 'Fabric-Pro/fabric-dev', 'event_name': 'issue_comment', 'event': {
+            'issue': {'pull_request': {}}, 'comment': {'body': '/relay ' + 'a' * 40}}}
+        self.assertTrue(gha_eval(job['if'], github))
+        for step in job['steps']:
+            self.assertNotIn('actions/checkout', step.get('uses', ''))
+            self.assertNotIn('download-artifact', step.get('uses', ''))
+            self.assertNotIn('${{', step.get('run', ''))
 
 
 class PullRequestContracts(unittest.TestCase):

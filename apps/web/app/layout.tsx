@@ -6,6 +6,7 @@ import { getLocale } from "next-intl/server";
 import type { PropsWithChildren } from "react";
 import "./globals.css";
 import "./register-ai-usage-threshold-notifier";
+import "./start-web-app-insights";
 
 export const metadata: Metadata = {
 	title: {

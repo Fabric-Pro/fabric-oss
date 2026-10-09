@@ -31,6 +31,7 @@ export const OWN_PLAN_BACKGROUND_DENYLIST: readonly AiJobKey[] = [
 	"newsletter-curation",
 	"security-scan",
 	"slack-channel-monitor",
+	"teams-channel-monitor",
 	"image-generation",
 	"transcription",
 ];

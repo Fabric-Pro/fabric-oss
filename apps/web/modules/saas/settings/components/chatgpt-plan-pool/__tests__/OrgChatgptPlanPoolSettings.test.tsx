@@ -11,8 +11,12 @@ const pool = vi.hoisted(() => ({
 	updatePolicy: vi.fn(),
 	acknowledgeTerms: vi.fn(),
 }));
+const takeBack = vi.hoisted(() => vi.fn());
 vi.mock("@shared/lib/orpc-client", () => ({
-	orpcClient: { organizations: { chatgptPlanPool: pool } },
+	orpcClient: {
+		organizations: { chatgptPlanPool: pool },
+		users: { chatgptPlan: { takeBack } },
+	},
 }));
 
 const flags = vi.hoisted(() => ({
@@ -45,16 +49,21 @@ vi.mock("next-intl", () => {
 		return typeof node === "string" ? node : path;
 	};
 	return {
-		useTranslations:
-			(namespace: string) =>
-			(key: string, values?: Record<string, string | number>) =>
-				lookup(`${namespace}.${key}`).replace(
-					/\{(\w+)\}/g,
-					(_match, name: string) =>
-						values?.[name] === undefined
-							? `{${name}}`
-							: String(values[name]),
-				),
+		useTranslations: (namespace: string) =>
+			Object.assign(
+				(key: string, values?: Record<string, string | number>) =>
+					lookup(`${namespace}.${key}`).replace(
+						/\{(\w+)\}/g,
+						(_match, name: string) =>
+							values?.[name] === undefined
+								? `{${name}}`
+								: String(values[name]),
+					),
+				{
+					has: (key: string) =>
+						lookup(`${namespace}.${key}`) !== `${namespace}.${key}`,
+				},
+			),
 	};
 });
 
@@ -80,15 +89,40 @@ const ACCOUNT = {
 	enabled: true,
 	serveInteractive: false,
 	serveBackground: true,
+	maxMemberSharePct: null as number | null,
+	subscriptionActiveUntil: null as Date | null,
 	lastUsedAt: null,
 	createdAt: new Date("2026-10-01T00:00:00Z"),
 	coolingUntil: null,
+	connectedByName: "Example Admin" as string | null,
+	viewerIsConnector: false,
 	usageEstimate: {
 		windowHours: 5,
+		windowStart: new Date("2026-10-08T01:37:00Z"),
+		resetsAt: new Date("2026-10-08T06:37:00Z"),
+		lastRequestAt: new Date("2026-10-08T03:33:00Z"),
 		requests: 3,
-		inputTokens: 375_000,
+		inputTokens: 1_000_000,
+		cachedInputTokens: 250_000,
 		outputTokens: 10,
 		estimatedPercent: 50,
+		weeklyLimitOnly: false,
+		topConsumers: [
+			{
+				kind: "job" as const,
+				key: "teams-channel-monitor",
+				requests: 2,
+				inputTokens: 920_000,
+				percent: 92,
+			},
+			{
+				kind: "feature" as const,
+				key: "advisor",
+				requests: 1,
+				inputTokens: 80_000,
+				percent: 8,
+			},
+		],
 	},
 };
 
@@ -114,6 +148,7 @@ function poolWith(
 		policy?: Partial<typeof POLICY>;
 		accounts?: Array<Partial<typeof ACCOUNT>>;
 		isOwner?: boolean;
+		hasOwnPlan?: boolean;
 	} = {},
 ) {
 	pool.get.mockResolvedValue({
@@ -122,7 +157,10 @@ function poolWith(
 			...ACCOUNT,
 			...account,
 		})),
-		viewer: { isOwner: overrides.isOwner ?? false },
+		viewer: {
+			isOwner: overrides.isOwner ?? false,
+			hasOwnPlan: overrides.hasOwnPlan ?? false,
+		},
 	});
 }
 
@@ -169,63 +207,20 @@ describe("Shared ChatGPT plans settings", () => {
 		},
 	);
 
-	it("lets an owner accept the terms, and keeps pooling off until then", async () => {
-		poolWith({ isOwner: true });
+	// Fizzy #2770 F6: one home for the policy — AI Models, with the routing.
+	it("links to the policy on AI Models and keeps no policy controls here", async () => {
 		renderSettings();
-		const accept = await screen.findByRole("button", {
-			name: copy.acceptTerms,
-		});
-		expect(
-			screen.getByRole("switch", { name: copy.poolingEnabled }),
-		).toBeDisabled();
-		await userEvent.click(accept);
-		await waitFor(() => expect(pool.acknowledgeTerms).toHaveBeenCalled());
-	});
-
-	it("tells an admin that only an owner can accept the terms", async () => {
-		renderSettings();
-		expect(await screen.findByText(copy.ownerOnly)).toBeInTheDocument();
+		const link = await screen.findByTestId("chatgpt-plan-pool-policy-link");
+		expect(link).toHaveTextContent(copy.policyLink);
+		expect(link).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-models",
+		);
+		await screen.findAllByTestId("chatgpt-plan-pool-account");
+		expect(screen.queryByTestId("chatgpt-plan-pool-policy")).toBeNull();
 		expect(
 			screen.queryByRole("button", { name: copy.acceptTerms }),
 		).toBeNull();
-	});
-
-	it("turns pooling on once the terms are accepted", async () => {
-		poolWith({
-			policy: {
-				termsAcknowledged: true,
-				termsAcknowledgedAt: new Date("2026-10-02T00:00:00Z") as never,
-			},
-		});
-		renderSettings();
-		const pooling = await screen.findByRole("switch", {
-			name: copy.poolingEnabled,
-		});
-		expect(pooling).toBeEnabled();
-		await userEvent.click(pooling);
-		await waitFor(() =>
-			expect(pool.updatePolicy).toHaveBeenCalledWith({
-				poolingEnabled: true,
-			}),
-		);
-	});
-
-	it("offers no interactive fallback choice: a spent plan's refusal already asks the member", async () => {
-		renderSettings();
-		await screen.findByTestId("chatgpt-plan-pool-policy");
-		expect(
-			document.getElementById("chatgpt-plan-pool-interactive"),
-		).toBeNull();
-		// Background fallback and headroom are the only choices.
-		expect(screen.getAllByRole("combobox")).toHaveLength(2);
-	});
-
-	it("warns that background jobs are billed to the organization under AUTO", async () => {
-		poolWith({ policy: { apiFallbackBackground: "AUTO" } });
-		renderSettings();
-		expect(
-			await screen.findByTestId("chatgpt-plan-pool-auto-warning"),
-		).toHaveTextContent(copy.backgroundAutoWarningTitle);
 	});
 
 	it("shows each account's status, masked address and estimated window", async () => {
@@ -257,6 +252,19 @@ describe("Shared ChatGPT plans settings", () => {
 			/About 50% of a 5-hour window .*\(estimate\)/,
 		);
 		expect(
+			within(rows[0] as HTMLElement).getByTestId(
+				"chatgpt-plan-window-timing",
+			),
+		).toHaveTextContent(
+			/^Last request \d\d:\d\d( [AP]M)? · resets at \d\d:\d\d( [AP]M)?$/,
+		);
+		// A job with a label reads as words; one without, as its raw key.
+		expect(
+			within(rows[0] as HTMLElement).getByTestId(
+				"chatgpt-plan-window-consumers",
+			),
+		).toHaveTextContent("Used by: Teams channel monitor 92% · advisor 8%");
+		expect(
 			within(rows[1] as HTMLElement).getByText(copy.statusNeedsReconnect),
 		).toBeInTheDocument();
 		expect(rows[2]).toHaveTextContent(/Cooling until/);
@@ -265,13 +273,208 @@ describe("Shared ChatGPT plans settings", () => {
 	it("changes which work an account serves", async () => {
 		renderSettings();
 		await userEvent.click(
-			await screen.findByRole("switch", { name: copy.serveInteractive }),
+			await screen.findByRole("switch", {
+				name: `${copy.serveInteractive} — Shared plan 1`,
+			}),
 		);
 		await waitFor(() =>
 			expect(pool.updateAccount).toHaveBeenCalledWith({
 				accountId: "acc-1",
 				serveInteractive: true,
 			}),
+		);
+	});
+
+	// Fizzy #2770 D6: fair share, offered where the account serves members.
+	it("sets a member's fair share on an account that serves members", async () => {
+		poolWith({
+			accounts: [
+				{ ...ACCOUNT, serveInteractive: true, maxMemberSharePct: 25 },
+				{ id: "acc-2", label: "Shared plan 2" },
+			],
+		});
+		renderSettings();
+		const share = await screen.findByRole("combobox", {
+			name: `${copy.memberShare} — Shared plan 1`,
+		});
+		expect(share).toHaveTextContent("25%");
+		expect(
+			screen.queryByRole("combobox", {
+				name: `${copy.memberShare} — Shared plan 2`,
+			}),
+		).toBeNull();
+
+		await userEvent.click(share);
+		await userEvent.click(
+			await screen.findByRole("option", { name: copy.memberShareNone }),
+		);
+		await waitFor(() =>
+			expect(pool.updateAccount).toHaveBeenCalledWith({
+				accountId: "acc-1",
+				maxMemberSharePct: null,
+			}),
+		);
+	});
+
+	// Fizzy #2770 G7: what the account's sign-in says about its subscription.
+	it("shows each account's tier, a Free warning and a Pro plan's weekly-only limit", async () => {
+		poolWith({
+			accounts: [
+				{ ...ACCOUNT, tier: "FREE" },
+				{
+					id: "acc-2",
+					label: "Shared plan 2",
+					tier: "PRO",
+					usageEstimate: {
+						...ACCOUNT.usageEstimate,
+						weeklyLimitOnly: true,
+					},
+				},
+			],
+		});
+		renderSettings();
+		const rows = await screen.findAllByTestId("chatgpt-plan-pool-account");
+		expect(rows[0]).toHaveTextContent(
+			en.settings.chatgptPlan.subscription.freeWarning,
+		);
+		expect(
+			within(rows[1] as HTMLElement).getByTestId(
+				"chatgpt-plan-subscription",
+			),
+		).toHaveTextContent(en.settings.chatgptPlan.subscription.tier.PRO);
+		expect(rows[1]).toHaveTextContent(
+			en.settings.chatgptPlan.weeklyLimitOnly,
+		);
+		expect(rows[1]).not.toHaveTextContent(/of a 5-hour window/);
+	});
+
+	// OpenAI's sign-in does not report the plan, so an admin may set it; until
+	// then it reads "Not set" and no tier badge is shown.
+	it("shows an unset plan type as Not set, with no tier badge", async () => {
+		poolWith({ accounts: [{ ...ACCOUNT, tier: "UNKNOWN" }] });
+		renderSettings();
+		const planType = await screen.findByRole("combobox", {
+			name: `${copy.planType} — Shared plan 1`,
+		});
+		expect(planType).toHaveTextContent(copy.planTypeNotSet);
+		expect(
+			screen.getByTestId("chatgpt-plan-subscription"),
+		).toHaveTextContent(/^$/);
+	});
+
+	it("shows a set plan type in the select and as a badge", async () => {
+		poolWith({ accounts: [{ ...ACCOUNT, tier: "TEAM" }] });
+		renderSettings();
+		expect(
+			await screen.findByRole("combobox", {
+				name: `${copy.planType} — Shared plan 1`,
+			}),
+		).toHaveTextContent(en.settings.chatgptPlan.subscription.tier.TEAM);
+		expect(
+			screen.getByTestId("chatgpt-plan-subscription"),
+		).toHaveTextContent(en.settings.chatgptPlan.subscription.tier.TEAM);
+	});
+
+	it("saves the chosen plan type", async () => {
+		poolWith({ accounts: [{ ...ACCOUNT, tier: "UNKNOWN" }] });
+		renderSettings();
+		await userEvent.click(
+			await screen.findByRole("combobox", {
+				name: `${copy.planType} — Shared plan 1`,
+			}),
+		);
+		const options = await screen.findAllByRole("option");
+		expect(options.map((option) => option.textContent)).toEqual([
+			copy.planTypeNotSet,
+			"Plus",
+			"Pro",
+			"Team",
+			"Free",
+		]);
+		await userEvent.click(screen.getByRole("option", { name: "Pro" }));
+		await waitFor(() =>
+			expect(pool.updateAccount).toHaveBeenCalledWith({
+				accountId: "acc-1",
+				tier: "PRO",
+			}),
+		);
+		await waitFor(() => expect(pool.get).toHaveBeenCalledTimes(2));
+	});
+
+	it("clears a set plan type back to Not set", async () => {
+		poolWith({ accounts: [{ ...ACCOUNT, tier: "PRO" }] });
+		renderSettings();
+		await userEvent.click(
+			await screen.findByRole("combobox", {
+				name: `${copy.planType} — Shared plan 1`,
+			}),
+		);
+		await userEvent.click(
+			await screen.findByRole("option", { name: copy.planTypeNotSet }),
+		);
+		await waitFor(() =>
+			expect(pool.updateAccount).toHaveBeenCalledWith({
+				accountId: "acc-1",
+				tier: "UNKNOWN",
+			}),
+		);
+	});
+
+	// Fizzy #2770 I1: only the member who connected it may take it back.
+	it("names who connected each account and offers Take back to them alone", async () => {
+		poolWith({
+			accounts: [
+				{ id: "acc-1", label: "Shared plan 1" },
+				{
+					id: "acc-2",
+					label: "Shared plan 2",
+					connectedByName: null,
+					viewerIsConnector: true,
+				},
+			],
+		});
+		takeBack.mockResolvedValue({ ok: true });
+		renderSettings();
+
+		const [first, second] = await screen.findAllByTestId(
+			"chatgpt-plan-pool-account",
+		);
+		expect(first).toHaveTextContent("Connected by Example Admin");
+		expect(
+			within(first as HTMLElement).queryByRole("button", {
+				name: copy.takeBack,
+			}),
+		).toBeNull();
+		expect(second).toHaveTextContent(copy.connectedByYou);
+
+		await userEvent.click(
+			within(second as HTMLElement).getByRole("button", {
+				name: copy.takeBack,
+			}),
+		);
+		expect(takeBack).not.toHaveBeenCalled();
+		const dialog = await screen.findByRole("alertdialog");
+		expect(dialog).toHaveTextContent(copy.takeBackConfirmBody);
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: copy.takeBack }),
+		);
+		await waitFor(() =>
+			expect(takeBack).toHaveBeenCalledWith({ accountId: "acc-2" }),
+		);
+	});
+
+	it("blocks Take back while the connector has an own plan, saying why", async () => {
+		poolWith({
+			accounts: [{ viewerIsConnector: true }],
+			hasOwnPlan: true,
+		});
+		renderSettings();
+		const row = await screen.findByTestId("chatgpt-plan-pool-account");
+		expect(
+			within(row).getByRole("button", { name: copy.takeBack }),
+		).toBeDisabled();
+		expect(row).toHaveTextContent(
+			en.settings.chatgptPlan.share.takeBackBlocked,
 		);
 	});
 
@@ -300,6 +503,25 @@ describe("Shared ChatGPT plans settings", () => {
 			screen.getByText(
 				"fabric connect chatgpt --org example-org --shared",
 			),
+		).toBeInTheDocument();
+	});
+
+	// Each account row repeats the same three settings: the accessible name
+	// says which account a switch belongs to.
+	it("names each switch with its account", async () => {
+		poolWith({
+			accounts: [ACCOUNT, { id: "acc-2", label: "Shared plan 2" }],
+		});
+		renderSettings();
+		expect(
+			await screen.findByRole("switch", {
+				name: `${copy.enabled} — Shared plan 2`,
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("switch", {
+				name: `${copy.serveBackground} — Shared plan 1`,
+			}),
 		).toBeInTheDocument();
 	});
 });

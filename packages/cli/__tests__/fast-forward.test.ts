@@ -373,12 +373,7 @@ describe("fastForwardLines", () => {
 	});
 
 	describe("a checkout it left alone", () => {
-		it.each<NotSafeReason>([
-			"dirty",
-			"wrong-branch",
-			"detached",
-			"operation",
-		])(
+		it.each<NotSafeReason>(["wrong-branch", "detached", "operation"])(
 			"says %s with the behind line the report already has, once",
 			(reason) => {
 				expect(lines({ kind: "not-safe", reason })).toEqual({
@@ -388,12 +383,7 @@ describe("fastForwardLines", () => {
 			},
 		);
 
-		it.each<NotSafeReason>([
-			"dirty",
-			"wrong-branch",
-			"detached",
-			"operation",
-		])(
+		it.each<NotSafeReason>(["wrong-branch", "detached", "operation"])(
 			"says nothing about %s when the checkout is not behind anything",
 			(reason) => {
 				expect(
@@ -572,7 +562,6 @@ describe("fastForwardLines", () => {
 			{ kind: "deadline", stage: "fetch" },
 			...(
 				[
-					"dirty",
 					"wrong-branch",
 					"detached",
 					"operation",

@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
@@ -8,6 +14,15 @@ const state = vi.hoisted(() => ({
 	historyProps: [] as Array<Record<string, unknown>>,
 	calls: [] as string[],
 	filesGate: null as Promise<void> | null,
+	filesFailures: 0,
+	sectionProps: null as null | {
+		onChange: () => void;
+		onChanged: () => Promise<void>;
+	},
+	settingsProps: null as null | {
+		onOpenChange: (o: boolean) => void;
+		onSaved?: () => void;
+	},
 }));
 
 function queryOptions(
@@ -63,6 +78,10 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 						queryOptions: queryOptions("list-files", async () => {
 							state.calls.push("listFiles");
 							await state.filesGate;
+							if (state.filesFailures > 0) {
+								state.filesFailures--;
+								throw new Error("transient");
+							}
 							return {
 								files: [
 									{ path: "AGENTS.md", kind: "INSTRUCTIONS" },
@@ -136,10 +155,23 @@ vi.mock("@saas/get-started/components/PageTourButton", () => ({
 	PageTourButton: () => null,
 }));
 vi.mock("../InstructionsSettingsDialog", () => ({
-	InstructionsSettingsDialog: () => null,
+	InstructionsSettingsDialog: (props: {
+		onOpenChange: (o: boolean) => void;
+		onSaved?: () => void;
+		repositorySection?: React.ReactNode;
+	}) => {
+		state.settingsProps = props;
+		return props.repositorySection ?? null;
+	},
 }));
 vi.mock("../RepositorySyncSettingsSection", () => ({
-	RepositorySyncSettingsSection: () => null,
+	RepositorySyncSettingsSection: (props: {
+		onChange: () => void;
+		onChanged: () => Promise<void>;
+	}) => {
+		state.sectionProps = props;
+		return null;
+	},
 }));
 
 vi.mock("../InstructionsTree", () => ({
@@ -170,6 +202,8 @@ function renderDirectInstructions(
 				canConfigure
 				refreshing={false}
 				onRefresh={async () => undefined}
+				onReread={async () => undefined}
+				onUserRefresh={async () => undefined}
 				state={{
 					availability: "READY",
 					provider: "GITHUB",
@@ -195,7 +229,7 @@ describe("DirectRepositoryInstructions — load order", () => {
 		});
 		renderDirectInstructions();
 		await waitFor(() => expect(state.calls).toContain("getFile:CLAUDE.md"));
-		expect(state.calls).toContain("getFile:AGENTS.md");
+		expect(state.calls).not.toContain("getFile:AGENTS.md");
 		expect(state.calls).not.toContain("listCommits");
 		release();
 		state.filesGate = null;
@@ -205,6 +239,47 @@ describe("DirectRepositoryInstructions — load order", () => {
 		expect(state.calls.indexOf("listCommits")).toBeGreaterThan(
 			state.calls.indexOf("listFiles"),
 		);
+	});
+
+	it("offers a retry when the file list fails to load, and shows the tree after it", async () => {
+		state.filesGate = null;
+		state.filesFailures = 1;
+		renderDirectInstructions();
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("loadError");
+		fireEvent.click(screen.getByRole("button", { name: "retryLoad" }));
+		await waitFor(() =>
+			expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
+		);
+	});
+
+	it("re-reads the current commit when the settings dialog closes only if a setting was saved", async () => {
+		const onReread = vi.fn(async () => undefined);
+		renderDirectInstructions({ onReread });
+		await waitFor(() => expect(state.settingsProps).not.toBeNull());
+		act(() => state.settingsProps?.onOpenChange(false));
+		expect(onReread).not.toHaveBeenCalled();
+		act(() => {
+			state.settingsProps?.onSaved?.();
+			state.settingsProps?.onOpenChange(false);
+		});
+		expect(onReread).toHaveBeenCalledTimes(1);
+		act(() => state.settingsProps?.onOpenChange(false));
+		expect(onReread).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not carry a saved-settings flag past a close through the section's own change flow", async () => {
+		const onReread = vi.fn(async () => undefined);
+		state.sectionProps = null;
+		renderDirectInstructions({ onReread });
+		await waitFor(() => expect(state.sectionProps).not.toBeNull());
+		await act(async () => {
+			await state.sectionProps?.onChanged();
+		});
+		act(() => state.sectionProps?.onChange());
+		expect(onReread).toHaveBeenCalledTimes(1);
+		act(() => state.settingsProps?.onOpenChange(false));
+		expect(onReread).toHaveBeenCalledTimes(1);
 	});
 
 	it("truncates a long branch pill instead of clipping it", async () => {
@@ -224,6 +299,30 @@ describe("DirectRepositoryInstructions — load order", () => {
 		expect(pill).toHaveAttribute("title", pill.textContent ?? "");
 		expect(pill).toHaveClass("max-w-full", "min-w-0");
 		expect(pill.querySelector(".truncate")).not.toBeNull();
+	});
+
+	it("links the Source to the ref on screen, not the repository's default branch", async () => {
+		state.filesGate = null;
+		renderDirectInstructions({
+			state: {
+				availability: "READY",
+				provider: "GITHUB",
+				repositoryUrl: "https://github.com/example-org/instructions",
+				ref: "feature/proposal-1",
+				rootPath: "",
+				generation: 1,
+				currentCommitSha: "a".repeat(40),
+			},
+		});
+
+		const source = await screen.findByRole("link", {
+			name: /statusSourceRepository/,
+		});
+
+		expect(source).toHaveAttribute(
+			"href",
+			"https://github.com/example-org/instructions/tree/feature/proposal-1",
+		);
 	});
 });
 
@@ -393,7 +492,7 @@ describe("DirectRepositoryInstructions — connect checkout setup", () => {
 		});
 	});
 
-	it("opens the root CLAUDE.md by default, reading only the default candidates and not every listed file", async () => {
+	it("opens the root CLAUDE.md by default, reading only that file and not AGENTS.md or every listed file", async () => {
 		state.connectDialogProps.length = 0;
 		state.fileInputs.length = 0;
 		renderDirectInstructions();
@@ -401,7 +500,6 @@ describe("DirectRepositoryInstructions — connect checkout setup", () => {
 		await waitFor(() => {
 			expect(state.fileInputs).toEqual([
 				expect.objectContaining({ path: "CLAUDE.md", offset: 0 }),
-				expect.objectContaining({ path: "AGENTS.md", offset: 0 }),
 			]);
 		});
 	});

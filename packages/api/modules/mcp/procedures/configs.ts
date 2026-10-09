@@ -14,6 +14,7 @@ import {
 	getOrganizationById,
 	importMcpOAuthTokens,
 	isGitLabPersonalMcpServerKey,
+	isHiddenSystemMcpServerKey,
 	isStoredMcpOAuthClientTrusted,
 	listMcpConfigsForTenant,
 	type McpOAuthImportedTokens,
@@ -427,6 +428,16 @@ export const configProcedures = {
 			// Validate that non-STDIO servers have a URL configured
 			const mcpServerForValidation = await getMcpServerById(mcpServerId);
 			if (mcpServerForValidation) {
+				if (
+					!existingConfig &&
+					isHiddenSystemMcpServerKey(mcpServerForValidation.key)
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"This MCP server is not available to configure.",
+					});
+				}
+
 				const serverTransport = mcpServerForValidation.transport;
 				const hasCommand = !!mcpServerForValidation.command;
 

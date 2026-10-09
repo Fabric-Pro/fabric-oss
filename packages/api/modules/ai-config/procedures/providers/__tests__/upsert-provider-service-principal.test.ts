@@ -49,6 +49,7 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: mockDb,
+	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getProviderMetadata: (...args: unknown[]) =>
 		mockGetProviderMetadata(...args),
 	getProviderDisplayName: vi.fn((p: string) => p),

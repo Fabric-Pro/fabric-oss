@@ -233,10 +233,7 @@ describe("deleteProjectFromQdrantActivity — absent vs failed", () => {
 });
 
 describe("no hardcoded collection name at either site", () => {
-	it.each([
-		["project-deletion.ts", "../project-deletion.ts"],
-		["project-contexts-reprocess.ts", "../project-contexts-reprocess.ts"],
-	])(
+	it.each([["project-deletion.ts", "../project-deletion.ts"]])(
 		"%s resolves the collection instead of naming it",
 		(_label, relativePath) => {
 			const source = readFileSync(
@@ -252,4 +249,18 @@ describe("no hardcoded collection name at either site", () => {
 			expect(source).not.toContain("ensureCollection(");
 		},
 	);
+
+	// The reprocess no longer deletes through a client of its own (Fizzy
+	// #2770): it removes deleted contexts' points through `@repo/rag`, whose
+	// helper resolves the collection and never creates it.
+	it("project-contexts-reprocess.ts reaches Qdrant only through @repo/rag", () => {
+		const source = readFileSync(
+			new URL("../project-contexts-reprocess.ts", import.meta.url),
+			"utf8",
+		);
+		expect(source).not.toContain(`"${LEGACY_UNDERSCORE_COLLECTION}"`);
+		expect(source).not.toContain("QdrantClient");
+		expect(source).not.toContain("ensureCollection(");
+		expect(source).toContain("deleteOrphanProjectContextPoints(");
+	});
 });

@@ -153,7 +153,7 @@ describe("listProjectContextSummaries", () => {
 
 	// The chat's source listing filters by text (Fizzy #2578). The code-index
 	// count still reports what the default hides, not what matched.
-	it("matches search text in the title, file name or URL, project-scoped", async () => {
+	it("matches search text in the title, file name, URL or synced path, project-scoped", async () => {
 		stubFindMany([], []);
 		stubCounts(0, 12);
 
@@ -174,6 +174,7 @@ describe("listProjectContextSummaries", () => {
 					},
 				},
 				{ sourceUrl: { contains: "roadmap", mode: "insensitive" } },
+				{ sourcePath: { contains: "roadmap", mode: "insensitive" } },
 			],
 		});
 		expect(result.excludedCodeContexts).toBe(12);

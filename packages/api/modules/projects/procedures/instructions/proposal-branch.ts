@@ -320,6 +320,13 @@ export async function refreshProposalBranch(
 	},
 ): Promise<{ refreshed: boolean; pending: boolean }> {
 	const branch = await readableBranch(caller);
+	// Closing or settling a branch moves its attempt on, so a Refresh sent from
+	// a view that predates it names an old attempt. Only an OPEN branch can be
+	// observed, and for any other there is nothing to refresh, whatever attempt
+	// the caller holds.
+	if (branch.state !== "OPEN") {
+		return { refreshed: false, pending: false };
+	}
 	if (branch.attempt !== caller.expectedAttempt) {
 		return branchChanged();
 	}

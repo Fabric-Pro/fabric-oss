@@ -662,7 +662,7 @@ jobs:
         run: pnpm --filter @repo/temporal exec playwright install-deps chromium
 
       - name: Run browser relay security suite
-        run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts
+        run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts __tests__/qa-agentic-browser-security.e2e.test.ts
 
   # The migration chain, replayed into an empty database, must match
   # schema.prisma exactly (Fizzy #2268). `prisma migrate dev` diffs that

@@ -24,16 +24,14 @@ const { mockDb, mockRecordAudit, tx, mockRequireOrgMembership } = vi.hoisted(
 		const tx = {
 			cloudProviderConfig: model(),
 			userCloudProviderConfig: model(),
+			organizationModelPreference: model(),
+			userModelPreference: model(),
 		};
 		const mockDb = {
 			cloudProviderConfig: tx.cloudProviderConfig,
 			userCloudProviderConfig: tx.userCloudProviderConfig,
-			organizationModelPreference: {
-				deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-			},
-			userModelPreference: {
-				deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-			},
+			organizationModelPreference: tx.organizationModelPreference,
+			userModelPreference: tx.userModelPreference,
 			$transaction: vi.fn(async (cb: (t: unknown) => unknown) => cb(tx)),
 		};
 		return {
@@ -47,6 +45,7 @@ const { mockDb, mockRecordAudit, tx, mockRequireOrgMembership } = vi.hoisted(
 
 vi.mock("@repo/database", () => ({
 	db: mockDb,
+	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getProviderMetadata: vi.fn(() => ({
 		requiresBaseUrl: false,
 		displayName: "Test provider",

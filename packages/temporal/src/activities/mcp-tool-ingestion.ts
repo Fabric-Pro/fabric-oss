@@ -10,7 +10,7 @@
  * - Automatic cleanup when MCP configs are removed
  *
  * IMPORTANT: This activity follows the established pattern for AI provider configuration:
- * - Fetches provider config with getSystemRAGProviderConfig() — the SYSTEM half
+ * - Fetches provider config with getSystemEmbeddingRAGProviderConfig() — the SYSTEM half
  *   of the resolver pair. Tool ingestion is indexing work, which R13 leaves on
  *   the deployment's own gateway key when a tenant has none of its own; the
  *   tenant-facing half would refuse and leave the tenant's tools unsearchable.
@@ -20,7 +20,7 @@
 
 import {
 	AIProviderNotConfiguredError,
-	getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
 import {
 	type CachedTool,
@@ -40,8 +40,40 @@ import {
 	deleteCapabilitiesByServer,
 	upsertCapabilities,
 } from "@repo/rag/lib/vector-store/capability-store";
+import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { Context } from "@temporalio/activity";
 // Note: decryptApiKey removed - authentication is now handled by createMcpClientForConfig
+
+/**
+ * The cache rows for a server's tools, as the gateway lists them without
+ * connecting. The server's own annotations are kept: the gateway's authority
+ * gate grants READ to delegated credentials only on its `readOnlyHint`.
+ */
+export function cachedToolsFromServer(
+	toolEntries: ReadonlyArray<readonly [string, unknown]>,
+): CachedTool[] {
+	return toolEntries.map(([name, def]) => {
+		const toolDef = def as {
+			description?: string;
+			inputSchema?: Record<string, unknown>;
+			metadata?: { annotations?: unknown };
+		};
+		// Unwrap AI SDK jsonSchema wrapper if present
+		// dynamicTool() wraps schemas as { jsonSchema: { type, properties, ... } }
+		let schema = toolDef.inputSchema || null;
+		if (schema && typeof schema === "object" && "jsonSchema" in schema) {
+			schema = (schema as { jsonSchema: Record<string, unknown> })
+				.jsonSchema;
+		}
+		return {
+			name,
+			description: toolDef.description || null,
+			inputSchema: schema,
+			annotations:
+				readMcpToolAnnotations(toolDef.metadata?.annotations) ?? null,
+		};
+	});
+}
 
 // =============================================================================
 // Types
@@ -405,28 +437,7 @@ export async function ingestMcpToolsActivity(
 		});
 
 		// Cache tools in database for fast listing (avoid live MCP connections)
-		const cachedTools: CachedTool[] = toolEntries.map(([name, def]) => {
-			const toolDef = def as {
-				description?: string;
-				inputSchema?: Record<string, unknown>;
-			};
-			// Unwrap AI SDK jsonSchema wrapper if present
-			// dynamicTool() wraps schemas as { jsonSchema: { type, properties, ... } }
-			let schema = toolDef.inputSchema || null;
-			if (
-				schema &&
-				typeof schema === "object" &&
-				"jsonSchema" in schema
-			) {
-				schema = (schema as { jsonSchema: Record<string, unknown> })
-					.jsonSchema;
-			}
-			return {
-				name,
-				description: toolDef.description || null,
-				inputSchema: schema,
-			};
-		});
+		const cachedTools = cachedToolsFromServer(toolEntries);
 
 		try {
 			await updateMcpConfigToolCache({
@@ -463,10 +474,10 @@ export async function ingestMcpToolsActivity(
 			organizationId || config.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemEmbeddingRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getSystemRAGProviderConfig({
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});
@@ -882,10 +893,10 @@ export async function ingestMcpServerActivity(
 			organizationId || config.organizationId || undefined;
 
 		let providerConfig:
-			| Awaited<ReturnType<typeof getSystemRAGProviderConfig>>
+			| Awaited<ReturnType<typeof getSystemEmbeddingRAGProviderConfig>>
 			| undefined;
 		try {
-			providerConfig = await getSystemRAGProviderConfig({
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
 				userId: effectiveUserId,
 				organizationId: effectiveOrgId,
 			});

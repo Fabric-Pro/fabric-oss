@@ -581,13 +581,68 @@ describe("readRepositoryCommitParent", () => {
 		).toEqual({ ok: false, outcome: "unauthorized" });
 	});
 
-	it("refuses a provider that lists parents itself, and a malformed sha, without a request", async () => {
+	it("reads one GitHub commit and returns its first parent", async () => {
+		mockFetch.mockResolvedValue(
+			json(200, {
+				sha: SHA,
+				parents: [{ sha: PARENT }, { sha: "c".repeat(40) }],
+			}),
+		);
+
+		const result = await readRepositoryCommitParent({
+			...githubInput,
+			sha: SHA,
+		});
+
+		expect(result).toEqual({ ok: true, parent: PARENT });
+		expect(mockFetch).toHaveBeenCalledOnce();
+		expect(requested().url.pathname).toBe(
+			`/repos/example-org/memory/commits/${SHA}`,
+		);
+	});
+
+	it("answers a GitHub root commit with a null parent", async () => {
+		mockFetch.mockResolvedValue(json(200, { sha: SHA, parents: [] }));
+
 		expect(
 			await readRepositoryCommitParent({ ...githubInput, sha: SHA }),
-		).toEqual({ ok: false, outcome: "unreachable" });
+		).toEqual({ ok: true, parent: null });
+	});
+
+	it("reports a GitHub failure instead of a missing parent", async () => {
+		mockFetch.mockResolvedValue(json(404));
+
+		expect(
+			await readRepositoryCommitParent({ ...githubInput, sha: SHA }),
+		).toEqual({ ok: false, outcome: "not-found" });
+	});
+
+	it("reads one GitLab commit and returns its first parent", async () => {
+		mockFetch.mockResolvedValue(
+			json(200, { id: SHA, parent_ids: [PARENT] }),
+		);
+
+		const result = await readRepositoryCommitParent({
+			...gitlabInput,
+			sha: SHA,
+		});
+
+		expect(result).toEqual({ ok: true, parent: PARENT });
+		expect(requested().url.pathname).toContain(
+			`/repository/commits/${SHA}`,
+		);
+	});
+
+	it("refuses a malformed sha without a request", async () => {
 		expect(
 			await readRepositoryCommitParent({
 				...adoRepository,
+				sha: "../etc",
+			}),
+		).toEqual({ ok: false, outcome: "unreachable" });
+		expect(
+			await readRepositoryCommitParent({
+				...githubInput,
 				sha: "../etc",
 			}),
 		).toEqual({ ok: false, outcome: "unreachable" });

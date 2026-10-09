@@ -9,6 +9,11 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { join, relative, resolve } from "node:path";
+import {
+	BaseResolutionError,
+	extractBaseArg,
+	resolveAndAnnounce,
+} from "./lib/resolve-base.mjs";
 
 const root = process.cwd();
 const installCommand = "pnpm install --frozen-lockfile";
@@ -299,9 +304,11 @@ function nodeOptions() {
 }
 
 function main() {
-	const [mode, ...forwardedArgs] = process.argv.slice(2);
+	// --base is ours, never turbo's.
+	const { base: explicitBase, rest } = extractBaseArg(process.argv.slice(2));
+	const [mode, ...forwardedArgs] = rest;
 	const changed = mode === "--changed";
-	const extraArgs = changed ? forwardedArgs : process.argv.slice(2);
+	const extraArgs = changed ? forwardedArgs : rest;
 
 	validatePnpmInstall();
 
@@ -309,7 +316,8 @@ function main() {
 	const turboBin = createRequire(import.meta.url).resolve("turbo/bin/turbo");
 	const turboArgs = ["type-check", `--concurrency=${concurrency}`];
 	if (changed) {
-		turboArgs.push("--filter=...[origin/master]");
+		const { base } = resolveAndAnnounce({ explicit: explicitBase });
+		turboArgs.push(`--filter=...[${base}]`);
 	}
 	turboArgs.push(...extraArgs);
 
@@ -334,6 +342,9 @@ try {
 	if (error instanceof SetupError) {
 		writeSync(process.stderr.fd, `${error.message}\n`);
 		process.exitCode = 1;
+	} else if (error instanceof BaseResolutionError) {
+		writeSync(process.stderr.fd, `${error.message}\n`);
+		process.exitCode = 2;
 	} else {
 		throw error;
 	}

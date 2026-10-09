@@ -40,6 +40,16 @@ export const SHELL_DOCK_GUTTER_CLASS = "px-4";
 export const SHELL_DOCK_LAYER_CLASS = "z-40";
 
 /**
+ * Bottom padding that keeps the last of a scrolling page's content above the
+ * Fabric Agent launcher: a 44px button 16px (20px from `sm`) off the bottom
+ * edge, so it covers the lowest 64px of the viewport. 80px clears it with a
+ * margin. A full-height route scrolls inside itself and takes none, and the
+ * launcher's source is pinned in `__tests__/shell-layout.test.ts` so the two
+ * cannot drift apart.
+ */
+export const SHELL_LAUNCHER_CLEARANCE_CLASS = "pb-20";
+
+/**
  * Left margin that keeps the shell's content column clear of the sidebar.
  *
  * The width is a literal here rather than built from `SIDEBAR_WIDTHS_PX`, which

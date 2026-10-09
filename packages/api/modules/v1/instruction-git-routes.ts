@@ -1,4 +1,5 @@
 import { parseAdoRepositoryUrl } from "@repo/connectors";
+import { logger } from "@repo/logs";
 import { Permissions } from "@repo/permissions";
 import type { Context, Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
@@ -19,6 +20,22 @@ let activeTransfers = 0;
 
 type V1Context = Context<{ Variables: ExternalApiVariables }>;
 
+type TransportFailureReason =
+	| "busy"
+	| "upstream_fetch_failed"
+	| "upstream_status"
+	| "upstream_empty_body"
+	| "upstream_content_type"
+	| "aborted"
+	| "authority_check_failed";
+
+interface TransportFailureContext {
+	provider: DirectRepositorySource["repository"]["provider"];
+	method: "GET" | "POST";
+	upstreamStatus?: number;
+	upstreamContentType?: string | null;
+}
+
 function parseGeneration(raw: string): number | null {
 	return /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw))
 		? Number(raw)
@@ -27,6 +44,22 @@ function parseGeneration(raw: string): number | null {
 
 function gatewayFailure(message: string, status = 403): Response {
 	return Response.json({ error: { message } }, { status });
+}
+
+function transportUnavailable(
+	reason: TransportFailureReason,
+	context: TransportFailureContext,
+): Response {
+	logger.warn("[instruction-git] transport unavailable", {
+		reason,
+		...context,
+	});
+	return gatewayFailure(
+		reason === "busy"
+			? "Repository Git transport is busy. Try again."
+			: "Repository Git transport is unavailable.",
+		503,
+	);
 }
 
 function encodedPath(value: string): string {
@@ -196,13 +229,15 @@ async function proxyUploadPack(
 	}
 	const query = new URL(c.req.url).searchParams;
 	const gitProtocol = c.req.header("git-protocol");
+	const contentEncoding = c.req.header("content-encoding")?.toLowerCase();
 	if (
 		(method === "GET" &&
 			(query.size !== 1 || query.get("service") !== GIT_SERVICE)) ||
 		(method === "POST" &&
 			(query.size !== 0 ||
 				c.req.header("content-type") !==
-					"application/x-git-upload-pack-request"))
+					"application/x-git-upload-pack-request" ||
+				(contentEncoding !== undefined && contentEncoding !== "gzip")))
 	) {
 		return gatewayFailure("Only git-upload-pack is available.", 400);
 	}
@@ -217,11 +252,12 @@ async function proxyUploadPack(
 	const path =
 		method === "GET" ? `info/refs?service=${GIT_SERVICE}` : GIT_SERVICE;
 	const target = new URL(path, `${upstream.toString().replace(/\/$/, "")}/`);
+	const failureContext: TransportFailureContext = {
+		provider: resolved.source.repository.provider,
+		method,
+	};
 	if (activeTransfers >= MAX_CONCURRENT_TRANSFERS) {
-		return gatewayFailure(
-			"Repository Git transport is busy. Try again.",
-			503,
-		);
+		return transportUnavailable("busy", failureContext);
 	}
 	activeTransfers += 1;
 	let released = false;
@@ -243,6 +279,8 @@ async function proxyUploadPack(
 				"Content-Type",
 				"application/x-git-upload-pack-request",
 			);
+		if (method === "POST" && contentEncoding === "gzip")
+			headers.set("Content-Encoding", contentEncoding);
 		if (gitProtocol === "version=2")
 			headers.set("Git-Protocol", gitProtocol);
 		upstreamResponse = await fetch(target, {
@@ -259,12 +297,18 @@ async function proxyUploadPack(
 		});
 	} catch {
 		release();
-		return gatewayFailure("Repository Git transport is unavailable.", 503);
+		return transportUnavailable(
+			abort.aborted ? "aborted" : "upstream_fetch_failed",
+			failureContext,
+		);
 	}
 	if (!upstreamResponse.ok || upstreamResponse.body === null) {
 		await upstreamResponse.body?.cancel().catch(() => undefined);
 		release();
-		return gatewayFailure("Repository Git transport is unavailable.", 503);
+		return transportUnavailable(
+			upstreamResponse.ok ? "upstream_empty_body" : "upstream_status",
+			{ ...failureContext, upstreamStatus: upstreamResponse.status },
+		);
 	}
 	const expectedContentType =
 		method === "GET"
@@ -278,7 +322,11 @@ async function proxyUploadPack(
 	) {
 		await upstreamResponse.body.cancel().catch(() => undefined);
 		release();
-		return gatewayFailure("Repository Git transport is unavailable.", 503);
+		return transportUnavailable("upstream_content_type", {
+			...failureContext,
+			upstreamStatus: upstreamResponse.status,
+			upstreamContentType: upstreamResponse.headers.get("content-type"),
+		});
 	}
 	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 	const cancelTransfer = (): void => {
@@ -293,7 +341,7 @@ async function proxyUploadPack(
 	if (abort.aborted) {
 		cancelTransfer();
 		abort.removeEventListener("abort", cancelTransfer);
-		return gatewayFailure("Repository Git transport is unavailable.", 503);
+		return transportUnavailable("aborted", failureContext);
 	}
 	try {
 		const current = await sourceStillCurrent(
@@ -312,7 +360,7 @@ async function proxyUploadPack(
 		await upstreamResponse.body.cancel().catch(() => undefined);
 		abort.removeEventListener("abort", cancelTransfer);
 		release();
-		return gatewayFailure("Repository Git transport is unavailable.", 503);
+		return transportUnavailable("authority_check_failed", failureContext);
 	}
 	const streamReader = upstreamResponse.body.getReader();
 	reader = streamReader;

@@ -706,26 +706,32 @@ export function createFakeDatabase(real: Real) {
 				};
 			},
 
-			setOperationMembership: async (i: {
-				operationId: string;
+			setOperationMembershipMany: async (i: {
 				organizationId: string;
-				membership: "included" | "unverified";
+				entries: readonly {
+					operationId: string;
+					membership: "included" | "unverified";
+				}[];
 			}) => {
-				const op = state.ops.find(
-					(o) =>
-						o.id === i.operationId &&
-						o.organizationId === i.organizationId,
-				);
-				if (
-					!op ||
-					(op.membership === "included" &&
-						i.membership !== "included")
-				) {
-					return false;
+				let written = 0;
+				for (const entry of i.entries) {
+					const op = state.ops.find(
+						(o) =>
+							o.id === entry.operationId &&
+							o.organizationId === i.organizationId,
+					);
+					if (
+						!op ||
+						(op.membership === "included" &&
+							entry.membership !== "included")
+					) {
+						continue;
+					}
+					op.membership = entry.membership;
+					state.trace.push(`membership:${op.id}:${entry.membership}`);
+					written += 1;
 				}
-				op.membership = i.membership;
-				state.trace.push(`membership:${op.id}:${i.membership}`);
-				return true;
+				return written;
 			},
 
 			commitBranchClassification: async (i: {

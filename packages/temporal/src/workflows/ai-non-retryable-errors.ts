@@ -28,6 +28,9 @@
  *  - `ChatGptPlanAuthError` — the member's plan is on but its sign-in must be
  *    renewed (or is gone). Only the member can fix it, and Fabric never falls
  *    back to the organization's API billing on its own.
+ *  - `ChatGptPlanModelNotServedError` — the plan does not serve the model the
+ *    work asked for and no fallback model stood in (Fizzy #2770). Only an
+ *    admin choosing another model fixes it.
  *
  * Spread this into `retry.nonRetryableErrorTypes` on every proxy whose
  * activities reach a model, alongside whatever workflow-specific types that
@@ -48,6 +51,7 @@ export const AI_NON_RETRYABLE_ERROR_TYPES = [
 	"AiUsageLimitExceededError",
 	"SubscriptionPlanExhaustedError",
 	"ChatGptPlanAuthError",
+	"ChatGptPlanModelNotServedError",
 ] as const;
 
 /**

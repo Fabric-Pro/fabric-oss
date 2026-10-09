@@ -13,6 +13,10 @@
 			"types": "./src/chatgpt-plan-fetch.ts",
 			"default": "./src/chatgpt-plan-fetch.ts"
 		},
+		"./ai-interactive-context": {
+			"types": "./src/ai-interactive-context.ts",
+			"default": "./src/ai-interactive-context.ts"
+		},
 		"./databricks-compat": {
 			"types": "./src/databricks-compat.ts",
 			"default": "./src/databricks-compat.ts"

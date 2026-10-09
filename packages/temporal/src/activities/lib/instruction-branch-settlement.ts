@@ -14,98 +14,72 @@
  * Not re-exported from the activities barrel: every export of a module the
  * barrel re-exports becomes a schedulable Temporal activity.
  */
-import path from "node:path";
 import {
 	type BranchOperationRow,
 	type BranchWithClock,
 	blockUnrehomableProposal,
-	clearBranchMergeSyncRequest,
-	commitBranchClassification,
-	deferBranchClassification,
 	deferBranchConfirmation,
-	findMergeTriggeredRun,
-	getInstructionRepositorySyncForProposal,
-	getProjectInstructionSettings,
 	getProposalBranch,
-	getSyncRunReceiptByRunId,
-	instructionRepositoryImportAllowed,
 	listBranchOperations,
-	type MergeSyncTuple,
-	markBranchMergeSyncDispatched,
-	membershipStatusOf,
 	type ProposalBranchNaming,
-	parseBranchDestination,
 	readBranchWork,
 	recordBranchConfirmation,
 	recordBranchDeleted,
 	recordBranchFailure,
-	recordBranchMergeSyncRun,
 	recordBranchObservation,
 	recordBranchReceipt,
 	recordBranchSettlement,
 	refuseBranchStartOver,
-	setOperationMembership,
 	transferProposal,
 	transitionBranch,
 } from "@repo/database";
 import { memberBranchRef } from "@repo/instructions/proposal-branch-ref";
-import { instructionRepositorySyncWorkflowId } from "@repo/instructions/workflow-ids";
 import {
 	type PullRequestObservation,
 	repositoryIdentity,
 	repositoryKey,
-	sourceHeadEvidence,
 } from "@repo/integrations/instruction-pull-requests";
-import { getTemporalClient } from "../../client";
+import { logger } from "@repo/logs";
 import { safeHeartbeat } from "./activity-liveness";
-import { deleteIfFabricOwned } from "./instruction-branch-create";
+import { recordClassificationEvidence } from "./instruction-branch-classify";
+import {
+	deleteIfFabricOwned,
+	mayDeleteBranch,
+} from "./instruction-branch-create";
 import {
 	type BranchCredential,
 	withBranchRepoCredential,
 } from "./instruction-branch-credential";
-import {
-	fetchBranchHead,
-	fetchPullRequestHead,
-	initBranchWorkspace,
-	isAncestor,
-} from "./instruction-branch-git";
+import { isAncestor } from "./instruction-branch-git";
 import {
 	establishedShas,
+	fetchTip,
 	lookupBranchRef,
 	observationOf,
 	provenanceOf,
+	stepCredential,
+	stepFailureOf,
 } from "./instruction-branch-support";
 import type {
-	ClassifyBranchResult,
 	ReconcileBranchResult,
 	RehomeBranchProposalsResult,
 	SettleBranchResult,
 } from "./instruction-branch-types";
 import { wakeBranchWorkflow } from "./instruction-branch-wake";
-import {
-	abandonMigrationOfBranch,
-	settleMigrationForObservedBranch,
-} from "./instruction-migration-settlement";
+import { abandonMigrationOfBranch } from "./instruction-migration-settlement";
 import {
 	asJson,
 	assertMayContinue,
 	cancellationOf,
+	errorClassName,
 	failureJson,
 	nextAttemptAt,
 	ProposalStepFailure,
 } from "./instruction-proposal-boundary";
-import {
-	branchMergeSyncTarget,
-	classifyMergeSyncReceipt,
-	mergeSyncBackoffMs,
-	mergeSyncDispatchesBefore,
-} from "./instruction-proposal-merge-sync";
 import { gitCall, providerCall } from "./instruction-proposal-operation";
-import { startAutomaticInstructionSync } from "./instruction-sync-start";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
 
 /**
  * A non-retryable settlement or confirmation failure is looked at again
@@ -138,35 +112,6 @@ function failureOf(value: unknown): Failure {
 		code: typeof f.code === "string" ? f.code : null,
 		phase: typeof f.phase === "string" ? f.phase : null,
 	};
-}
-
-/** The workspace a step clones into: one directory per step, never reused. */
-function stepCredential(
-	credential: BranchCredential,
-	step: string,
-): BranchCredential {
-	return { ...credential, workDir: path.join(credential.runDir, step) };
-}
-
-/** A blobless clone of the target, then the branch's tip, in `credential.workDir`. */
-async function fetchTip(
-	credential: BranchCredential,
-	ref: string,
-	phase: "close" | "reconcile",
-): Promise<{ kind: "present"; sha: string } | { kind: "absent" }> {
-	const { env, signal } = credential;
-	const dir = credential.workDir;
-	return gitCall(phase, credential, async () => {
-		await initBranchWorkspace({
-			url: credential.url,
-			targetRef: credential.destination.targetRef,
-			dir,
-			env,
-			signal,
-		});
-		safeHeartbeat();
-		return fetchBranchHead({ dir, branch: ref, env, signal });
-	});
 }
 
 /**
@@ -208,18 +153,6 @@ async function recordStepFailure(
 		},
 	});
 	return moved.ok;
-}
-
-/** Rethrows a stop; answers the step failure; rethrows anything else. */
-function stepFailureOf(error: unknown): ProposalStepFailure {
-	const stopped = cancellationOf(error);
-	if (stopped) {
-		throw stopped;
-	}
-	if (!(error instanceof ProposalStepFailure)) {
-		throw error;
-	}
-	return error;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,237 +244,6 @@ export async function runReconcile(
 		return observation.state;
 	}
 	return (await getProposalBranch(i))?.state ?? null;
-}
-
-// ---------------------------------------------------------------------------
-// Classification (spec §6.6, Decision 14)
-// ---------------------------------------------------------------------------
-
-/** Classification's backoff while the history cannot be fetched: 1, 5, 15, 60 min, then hourly. */
-export function classificationBackoffMs(attempts: number): number {
-	return [1, 5, 15, 60][Math.min(Math.max(attempts, 0), 3)] * MINUTE_MS;
-}
-
-type MembershipJson = { at?: unknown; attempts?: unknown };
-
-/**
- * The final source history (spec §6.6 step 1, §7): the provider's head ref
- * at the observed `headSha`, or else the branch ref when its tip is exactly
- * that SHA. Complete and blobless, never shallow. False when neither is
- * available.
- */
-async function fetchFinalHistory(
-	credential: BranchCredential,
-	branch: BranchWithClock,
-	headSha: string,
-): Promise<boolean> {
-	const { env, signal } = credential;
-	const dir = credential.workDir;
-	await gitCall("reconcile", credential, () =>
-		initBranchWorkspace({
-			url: credential.url,
-			targetRef: credential.destination.targetRef,
-			dir,
-			env,
-			signal,
-		}),
-	);
-	safeHeartbeat();
-	const externalId = branch.pullRequestExternalId;
-	if (externalId !== null) {
-		const evidence = sourceHeadEvidence(
-			credential.adapter,
-			externalId,
-			headSha,
-		);
-		if (!("kind" in evidence)) {
-			const fetched = await gitCall("reconcile", credential, () =>
-				fetchPullRequestHead({
-					dir,
-					ref: evidence.ref,
-					sha: evidence.expectSha,
-					env,
-					signal,
-				}),
-			);
-			if (fetched.kind === "ok") {
-				return true;
-			}
-		}
-	}
-	safeHeartbeat();
-	const tip = await gitCall("reconcile", credential, () =>
-		fetchBranchHead({ dir, branch: branch.ref, env, signal }),
-	);
-	return tip.kind === "present" && tip.sha === headSha;
-}
-
-/**
- * `classifyBranch` (spec §6.6, Decision 14), only when no journal operation
- * lacks an outcome, at the `factsRevision` the loop read:
- *
- * 0. an established operation whose commit is the pull request's head takes
- *    `included` without a fetch;
- * 1. the final history (`fetchFinalHistory`), when any other remains;
- * 2. each established operation not already `included` takes `included`
- *    when `isAncestor(sha, headSha)` holds, `unverified` otherwise (a
- *    false or an error alike);
- * 3. `commitBranchClassification` applies Decision 14 to the proposals,
- *    conditional on `factsRevision`.
- *
- * History that cannot be fetched is retried with backoff
- * (`deferBranchClassification`, `retry_later`); 24 h after the membership
- * became pending, every established operation not already included is
- * marked unverified and the branch's membership becomes `unverified`.
- */
-export async function runClassify(
-	i: BranchIds & { factsRevision: number; signal: AbortSignal },
-): Promise<ClassifyBranchResult["outcome"]> {
-	const branch = await getProposalBranch(i);
-	if (
-		!branch ||
-		branch.untracked ||
-		membershipStatusOf(branch.membership) !== "pending" ||
-		(branch.state !== "MERGED" && branch.state !== "CLOSED")
-	) {
-		return "stale_revision";
-	}
-	if (branch.factsRevision !== i.factsRevision) {
-		return "stale_revision";
-	}
-	const ops = await listBranchOperations(i);
-	if (ops.some((op) => op.outcome === null)) {
-		return "stale_revision";
-	}
-	// Before the classification can ask for the merge-triggered sync: a pull
-	// request that moved a project's uploads into the repository switches the
-	// project over first, so that sync finds a repository-backed project; one
-	// that ended without its files landing ends the move (Fizzy #2878 §9).
-	await settleMigrationForObservedBranch(branch);
-	const commit = async (
-		status: "done" | "unverified",
-	): Promise<ClassifyBranchResult["outcome"]> => {
-		const committed = await commitBranchClassification({
-			branchId: branch.id,
-			organizationId: branch.organizationId,
-			factsRevision: i.factsRevision,
-			status,
-		});
-		return committed.kind === "done" ? status : "stale_revision";
-	};
-	const headSha = headShaOf(branch.pullRequestObservation);
-	const undecided: BranchOperationRow[] = [];
-	for (const op of ops) {
-		if (
-			(op.outcome !== "acked" && op.outcome !== "observed") ||
-			op.membership === "included"
-		) {
-			continue;
-		}
-		if (op.sha === headSha) {
-			// The pull request's head commit is in its own history: no fetch,
-			// which a branch deleted without a provider head ref (Azure
-			// DevOps) could not answer.
-			await setOperationMembership({
-				operationId: op.id,
-				organizationId: branch.organizationId,
-				membership: "included",
-			});
-			continue;
-		}
-		undecided.push(op);
-	}
-	if (undecided.length === 0) {
-		return commit("done");
-	}
-	const membership = (branch.membership ?? {}) as MembershipJson;
-	const pendingSince =
-		typeof membership.at === "string"
-			? Date.parse(membership.at)
-			: Number.NaN;
-	const expired =
-		Number.isFinite(pendingSince) &&
-		branch.databaseNow.getTime() - pendingSince >= DAY_MS;
-	const unverifiedAll = async () => {
-		for (const op of undecided) {
-			await setOperationMembership({
-				operationId: op.id,
-				organizationId: branch.organizationId,
-				membership: "unverified",
-			});
-		}
-		return commit("unverified");
-	};
-	const defer = async (): Promise<ClassifyBranchResult["outcome"]> => {
-		if (expired) {
-			return unverifiedAll();
-		}
-		await deferBranchClassification({
-			branchId: branch.id,
-			organizationId: branch.organizationId,
-			factsRevision: i.factsRevision,
-			delayMs: classificationBackoffMs(
-				typeof membership.attempts === "number"
-					? membership.attempts
-					: 0,
-			),
-		});
-		return "retry_later";
-	};
-	if (headSha === null) {
-		return defer();
-	}
-	try {
-		return await withBranchRepoCredential(
-			{ branch, phase: "reconcile", signal: i.signal },
-			async (base) => {
-				const credential = stepCredential(base, "classify");
-				if (!(await fetchFinalHistory(credential, branch, headSha))) {
-					return defer();
-				}
-				for (const op of undecided) {
-					safeHeartbeat();
-					const ancestry = await gitCall(
-						"reconcile",
-						credential,
-						() =>
-							isAncestor({
-								dir: credential.workDir,
-								ancestor: op.sha,
-								descendant: headSha,
-								env: credential.env,
-								signal: credential.signal,
-							}),
-					);
-					await setOperationMembership({
-						operationId: op.id,
-						organizationId: branch.organizationId,
-						membership:
-							ancestry === "true" ? "included" : "unverified",
-					});
-				}
-				return commit("done");
-			},
-		);
-	} catch (error) {
-		const failure = stepFailureOf(error);
-		if (failure.code === "REPOSITORY_CHANGED") {
-			await recordBranchFailure({
-				branchId: branch.id,
-				organizationId: branch.organizationId,
-				failure: failureJson(failure),
-			});
-		}
-		return defer();
-	}
-}
-
-function headShaOf(observation: unknown): string | null {
-	if (observation === null || typeof observation !== "object") {
-		return null;
-	}
-	const sha = (observation as { headSha?: unknown }).headSha;
-	return typeof sha === "string" && sha.length > 0 ? sha : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +403,6 @@ async function settleUnder(
 	const resumed =
 		branch.settlementPhase === "deleted" && branch.deletedAt !== null;
 	let closed: PullRequestObservation | null = null;
-	const closedHeadSha = (): string | null => closed?.headSha ?? null;
 
 	const refuse = async (foreign: boolean): Promise<SettleOutcome> => {
 		const refused = await refuseBranchStartOver({
@@ -730,6 +431,46 @@ async function settleUnder(
 			: to === "CLOSED"
 				? "closed"
 				: "canceled";
+	};
+
+	/**
+	 * The classification evidence of the pull request just closed, recorded
+	 * once per closed head, while the branch still holds the history it
+	 * reads and before the delete that would destroy it.
+	 */
+	let evidenceFor: string | null = null;
+	const recordEvidence = async (step: string): Promise<void> => {
+		const head = closed?.headSha ?? null;
+		if (
+			head === null ||
+			head === evidenceFor ||
+			!mayDeleteBranch(branch, ops)
+		) {
+			return;
+		}
+		evidenceFor = head;
+		try {
+			await recordClassificationEvidence(
+				stepCredential(credential, step),
+				branch,
+				ops,
+				head,
+			);
+		} catch (error) {
+			// Evidence only spares the classification a fetch: a failure here
+			// must not hold the settlement, which the classification outlasts.
+			const stopped = cancellationOf(error);
+			if (stopped) {
+				throw stopped;
+			}
+			logger.warn(
+				{
+					event: "instruction_proposal_branch.evidence_failed",
+					errorClass: errorClassName(error),
+				},
+				"Classification evidence could not be recorded; the classification will fetch the history",
+			);
+		}
 	};
 
 	/** Steps 1 and 3: by receipt, then on the ref; adopt (START_OVER), or close, MERGED winning. */
@@ -825,11 +566,11 @@ async function settleUnder(
 		}
 		// Step 2: delete only what Fabric alone made, leased at the tip.
 		safeHeartbeat();
+		await recordEvidence("evidence-1");
 		let deleted = await deleteIfFabricOwned(
 			stepCredential(credential, "delete-1"),
 			branch,
 			ops,
-			closedHeadSha(),
 		);
 		if (deleted === "refused") {
 			// Azure DevOps refuses to delete a branch an active pull request
@@ -838,11 +579,11 @@ async function settleUnder(
 			if (again) {
 				return again;
 			}
+			await recordEvidence("evidence-2");
 			deleted = await deleteIfFabricOwned(
 				stepCredential(credential, "delete-2"),
 				branch,
 				ops,
-				closedHeadSha(),
 			);
 			if (deleted === "refused") {
 				throw new ProposalStepFailure({
@@ -990,266 +731,4 @@ export async function runConfirmations(
 		});
 		return "deferred";
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Merge sync (spec §6.6 "Merge sync", #2563 §9.1)
-// ---------------------------------------------------------------------------
-
-function mergeSyncTupleOf(value: unknown): MergeSyncTuple | null {
-	const v = value as { syncId?: unknown; generation?: unknown } | null;
-	return typeof v?.syncId === "string" && typeof v.generation === "number"
-		? { syncId: v.syncId, generation: v.generation }
-		: null;
-}
-
-/** Temporal client calls under the attempt's signal (as #2563's dispatcher). */
-async function withClientSignal<T>(
-	signal: AbortSignal,
-	fn: (client: Awaited<ReturnType<typeof getTemporalClient>>) => Promise<T>,
-): Promise<T> {
-	assertMayContinue(signal);
-	const client = await getTemporalClient();
-	return client.withAbortSignal(signal, () => fn(client));
-}
-
-/** Whether the sync workflow's run `runId` is still running; unknown counts as running. */
-async function syncRunRunning(
-	projectId: string,
-	runId: string,
-	signal: AbortSignal,
-): Promise<boolean> {
-	try {
-		const description = await withClientSignal(signal, (client) =>
-			client.workflow
-				.getHandle(
-					instructionRepositorySyncWorkflowId(projectId),
-					runId,
-				)
-				.describe(),
-		);
-		return description.status.name === "RUNNING";
-	} catch (error) {
-		const stopped = cancellationOf(error);
-		if (stopped) {
-			throw stopped;
-		}
-		return !(
-			error instanceof Error && error.name === "WorkflowNotFoundError"
-		);
-	}
-}
-
-export type BranchMergeSyncResult =
-	| "idle"
-	| "waiting"
-	| "acknowledged"
-	| "dispatched"
-	| "failed"
-	| "gave_up"
-	| "moved";
-
-/**
- * `dispatchBranchMergeSync`: #2563 §9.1 steps 1-5 once per MERGED branch
- * with a merge-sync request (set by classification unless `targetMismatch`):
- * give up after 24 h or when the destination changed; adopt the run it
- * dispatched (by run id, else the newest merge-triggered run for the tuple);
- * acknowledge a consuming receipt, wait on one in flight, and re-dispatch
- * on a retaining receipt or none with the 5, 15, then 60 minute backoff.
- */
-export async function runBranchMergeSync(
-	i: BranchIds & { signal: AbortSignal },
-): Promise<BranchMergeSyncResult> {
-	const branch = await getProposalBranch(i);
-	const requestedAt = branch?.mergeSyncRequestedAt ?? null;
-	if (
-		!branch ||
-		branch.untracked ||
-		requestedAt === null ||
-		branch.state !== "MERGED"
-	) {
-		return "idle";
-	}
-	const ids = { branchId: branch.id, organizationId: branch.organizationId };
-	const expected = mergeSyncTupleOf(branch.mergeSyncExpected);
-	const giveUp = async (
-		code: "CONFIGURATION_CHANGED" | "MERGE_SYNC_FAILED",
-	): Promise<BranchMergeSyncResult> => {
-		const cleared = await clearBranchMergeSyncRequest({
-			kind: "gave_up",
-			...ids,
-			expected,
-			failure: {
-				phase: "merge_sync",
-				code,
-				retryable: false,
-				at: branch.databaseNow.toISOString(),
-				params: {},
-			},
-		});
-		return cleared ? "gave_up" : "moved";
-	};
-	const elapsed = branch.databaseNow.getTime() - requestedAt.getTime();
-	const [sync, settings] = await Promise.all([
-		getInstructionRepositorySyncForProposal(
-			branch.projectId,
-			branch.organizationId,
-		),
-		getProjectInstructionSettings(branch.projectId, branch.organizationId),
-	]);
-	const target = branchMergeSyncTarget({
-		elapsedMs: elapsed,
-		destination: parseBranchDestination(branch.destination),
-		sync: sync
-			? {
-					id: sync.id,
-					generation: sync.generation,
-					repositoryIntegrationId: sync.repositoryIntegrationId,
-					ref: sync.ref,
-					rootPath: sync.rootPath,
-				}
-			: null,
-		sourceOfTruth: settings.sourceOfTruth,
-	});
-	if (target.kind === "give_up") {
-		return giveUp(target.code);
-	}
-	const current = target.tuple;
-
-	// Step 2: adopt what was dispatched.
-	if (branch.mergeSyncDispatchedAt && expected) {
-		const receipt = branch.mergeSyncRunId
-			? await getSyncRunReceiptByRunId({
-					projectId: branch.projectId,
-					organizationId: branch.organizationId,
-					runId: branch.mergeSyncRunId,
-				})
-			: await findMergeTriggeredRun({
-					projectId: branch.projectId,
-					organizationId: branch.organizationId,
-					syncId: expected.syncId,
-					generation: expected.generation,
-					startedAtOrAfter: requestedAt,
-				});
-		if (receipt) {
-			const verdict = classifyMergeSyncReceipt(receipt, {
-				projectId: branch.projectId,
-				syncId: expected.syncId,
-				generation: expected.generation,
-				requestedAt,
-			});
-			if (verdict === "wait") {
-				return "waiting";
-			}
-			if (verdict === "consuming") {
-				const acknowledged = await clearBranchMergeSyncRequest({
-					kind: "acknowledged",
-					...ids,
-					expected: {
-						syncId: receipt.syncId,
-						generation: receipt.generation,
-					},
-					audit: {
-						action: "project.instructions.pull_request_merge_sync_requested",
-						category: "project",
-						actor: { type: "system" },
-						organizationId: branch.organizationId,
-						projectId: branch.projectId,
-						resource: {
-							type: "project_instruction_proposal_branch",
-							id: branch.id,
-							name: `#${branch.number}`,
-						},
-						metadata: {
-							branchId: branch.id,
-							syncRunKey: receipt.id,
-						},
-					},
-				});
-				return acknowledged ? "acknowledged" : "moved";
-			}
-		} else if (
-			branch.mergeSyncRunId &&
-			(await syncRunRunning(
-				branch.projectId,
-				branch.mergeSyncRunId,
-				i.signal,
-			))
-		) {
-			return "waiting"; // started, no receipt yet
-		}
-	}
-
-	// Step 3: dispatch, after one conditional write.
-	if (!instructionRepositoryImportAllowed(settings, current.syncId)) {
-		const acknowledged = await clearBranchMergeSyncRequest({
-			kind: "direct_read",
-			...ids,
-			expected,
-			audit: {
-				action: "project.instructions.pull_request_merge_observed",
-				category: "project",
-				actor: { type: "system" },
-				organizationId: branch.organizationId,
-				projectId: branch.projectId,
-				resource: {
-					type: "project_instruction_proposal_branch",
-					id: branch.id,
-					name: `#${branch.number}`,
-				},
-				metadata: { branchId: branch.id, readState: "DIRECT" },
-			},
-		});
-		return acknowledged ? "acknowledged" : "moved";
-	}
-	const backoff = mergeSyncBackoffMs(mergeSyncDispatchesBefore(elapsed));
-	const nextAttempt = new Date(branch.databaseNow.getTime() + backoff);
-	assertMayContinue(i.signal);
-	const marked = await markBranchMergeSyncDispatched({
-		...ids,
-		lastExpected: expected,
-		next: current,
-		dispatchedAt: branch.databaseNow,
-		nextAttemptAt: nextAttempt,
-	});
-	if (!marked) {
-		return "moved";
-	}
-	let runId: string;
-	try {
-		({ runId } = await withClientSignal(i.signal, () =>
-			startAutomaticInstructionSync({
-				projectId: branch.projectId,
-				organizationId: branch.organizationId,
-				trigger: "PULL_REQUEST_MERGED",
-				expected: current,
-			}),
-		));
-	} catch (error) {
-		const cancelled = cancellationOf(error);
-		if (cancelled) {
-			throw cancelled;
-		}
-		// The outcome is unknown: the dispatch mark stays, so the next tick
-		// adopts a run the server did start before starting another.
-		const failed = new ProposalStepFailure({
-			code: "SYNC_START_FAILED",
-			phase: "merge_sync",
-			retryable: true,
-		});
-		await transitionBranch({
-			...ids,
-			from: ["MERGED"],
-			expectedAttempt: branch.attempt,
-			to: "unchanged",
-			bumpAttempt: false,
-			data: {
-				failure: asJson(failureJson(failed)),
-				nextAttemptAt: nextAttempt,
-			},
-		});
-		return "failed";
-	}
-	await recordBranchMergeSyncRun({ ...ids, expected: current, runId });
-	return "dispatched";
 }

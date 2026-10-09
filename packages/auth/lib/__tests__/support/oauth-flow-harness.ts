@@ -14,6 +14,7 @@ import {
 	createOAuthProviderPlugin,
 	enforceOAuthDpopPolicy,
 	OAUTH_DISABLED_PATHS,
+	resolveConsentOrganizationId,
 } from "../../oauth-provider";
 import { enforceRegistrationPolicy } from "../../oauth-registration-policy";
 import { OAUTH_SCOPES } from "../../oauth-scopes";
@@ -69,6 +70,16 @@ export async function boot() {
 						appUrl: APP_URL,
 						getSessionUserId: async () =>
 							(await getSessionFromCtx(ctx))?.user.id ?? null,
+						getConsentOrganizationId: async () => {
+							const current = await getSessionFromCtx(ctx);
+							if (!current) {
+								throw new Error("no session");
+							}
+							return resolveConsentOrganizationId(
+								current.user.id,
+								current.session.activeOrganizationId,
+							);
+						},
 					});
 				}
 			}),

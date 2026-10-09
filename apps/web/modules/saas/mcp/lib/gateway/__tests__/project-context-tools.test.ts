@@ -62,6 +62,7 @@ vi.mock("@repo/database/prisma/queries/projects/conversation-bundles", () => ({
 }));
 
 vi.mock("@repo/database", async () => ({
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	listProjectContextSummaries: mocks.listProjectContextSummaries,
 	getContextById: mocks.getContextById,

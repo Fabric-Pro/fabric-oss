@@ -59,6 +59,17 @@ export const AI_FEATURE_KEYS = [
 	 */
 	"glossy-edition",
 	/**
+	 * Proposal artifact visuals: detection and spec extraction for the
+	 * visuals the coordinated Proposal job writes into the Main document
+	 * (Fizzy #2801).
+	 */
+	"proposal-visuals",
+	/**
+	 * Proposal artifact Internal Analysis: the review of a saved Main
+	 * document that only the owning organization's members read (Fizzy #2801).
+	 */
+	"proposal-analysis",
+	/**
 	 * Parlume meeting agent: every spoken turn (built-in or custom agent),
 	 * speech synthesis, post-meeting notes, and the meeting-provider bot time
 	 * recorded as an invocation-marker row at finalization. `conversationId`

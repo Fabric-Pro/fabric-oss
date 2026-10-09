@@ -97,6 +97,8 @@ export interface RetrievedContext {
 	filename?: string;
 	sourceUrl?: string;
 	sourceTitle?: string;
+	/** A synced file's repository path, e.g. `docs/architecture.md`. */
+	sourcePath?: string;
 	/**
 	 * User-declared type label + AI guidance (Fizzy #1888). Present only
 	 * when the source carries them, so every downstream formatter renders
@@ -315,6 +317,7 @@ export async function retrieveProjectContexts(
 				filename: context.originalFilename || undefined,
 				sourceUrl: context.sourceUrl || undefined,
 				sourceTitle: context.sourceTitle || undefined,
+				sourcePath: context.sourcePath || undefined,
 				sourceType: context.sourceType ?? undefined,
 				aiInstructions: context.aiInstructions ?? undefined,
 			});
@@ -421,6 +424,7 @@ export function formatContextsForPrompt(contexts: RetrievedContext[]): string {
 	}
 	const formattedContexts = contexts.map((ctx, index) => {
 		const source =
+			ctx.sourcePath ||
 			ctx.filename ||
 			ctx.sourceTitle ||
 			ctx.sourceUrl ||

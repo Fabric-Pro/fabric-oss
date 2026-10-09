@@ -23,11 +23,21 @@ function resolve(path: string): unknown {
 	}, en);
 }
 
+const { createTranslator } =
+	await vi.importActual<typeof import("next-intl")>("next-intl");
+
 function makeT(namespace: string) {
 	return (key: string, values?: Record<string, unknown>) => {
 		const raw = resolve(`${namespace}.${key}`);
 		if (typeof raw !== "string") {
 			throw new Error(`missing translation: ${namespace}.${key}`);
+		}
+		if (raw.includes(", plural,")) {
+			return createTranslator({
+				locale: "en",
+				messages: en,
+				namespace,
+			})(key as never, values as never);
 		}
 		return Object.entries(values ?? {}).reduce(
 			(out, [name, value]) => out.replaceAll(`{${name}}`, String(value)),
@@ -51,6 +61,8 @@ const state = vi.hoisted(() => ({
 	 */
 	myBranchQueryFn: vi.fn(),
 	close: vi.fn(),
+	closeErrors: [] as Error[],
+	afterRefusal: [] as Array<Record<string, unknown>>,
 	closeResult: { changed: true, attempt: 1 } as Record<string, unknown>,
 	retry: vi.fn(),
 	startOver: vi.fn(),
@@ -113,6 +125,11 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					closeBranch: {
 						mutationOptions: mutationOptions(async (input) => {
 							state.close(input);
+							const queued = state.closeErrors.shift();
+							if (queued) {
+								state.branches = state.afterRefusal;
+								throw queued;
+							}
 							if (state.commandError) {
 								throw state.commandError;
 							}
@@ -266,6 +283,7 @@ beforeEach(() => {
 	state.commandError = null;
 	state.myBranchQueryFn.mockReset();
 	state.close.mockReset();
+	state.closeErrors = [];
 	state.retry.mockReset();
 	state.startOver.mockReset();
 	state.stopTracking.mockReset();
@@ -381,6 +399,174 @@ describe("InstructionProposalBranchPanel", () => {
 			}),
 		);
 		await waitFor(() => expect(onChanged).toHaveBeenCalled());
+	});
+
+	it("fences Close with the branch's attempt as of the confirmation, not the last poll", async () => {
+		state.branches = [
+			{
+				branch: branch({ state: "OPENING", attempt: 2 }),
+				liveChanges: 3,
+			},
+		];
+		const user = userEvent.setup();
+		renderPanel();
+		const closeButton = await screen.findByRole("button", {
+			name: branchCopy.close,
+		});
+		// The pull request opened after the last poll: OPENING -> OPEN
+		// bumps the attempt, which the 10 s poll has not shown yet.
+		state.branches = [
+			{ branch: branch({ state: "OPEN", attempt: 3 }), liveChanges: 3 },
+		];
+		await user.click(closeButton);
+		await waitFor(() =>
+			expect(state.close).toHaveBeenCalledWith({
+				projectId: "p",
+				branchId: "branch_1",
+				expectedAttempt: 3,
+			}),
+		);
+	});
+
+	it("says it is withdrawing changes, not closing a pull request, when none exists yet", async () => {
+		state.branches = [
+			{
+				branch: branch({ state: "CLOSE_REQUESTED", pullRequest: null }),
+				liveChanges: 3,
+			},
+		];
+		renderPanel();
+		expect(
+			await screen.findByText(branchCopy.states.CLOSE_REQUESTED_NO_PR),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(branchCopy.states.CLOSE_REQUESTED),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the closing-pull-request copy once the pull request exists", async () => {
+		state.branches = [
+			{
+				branch: branch({
+					state: "CLOSE_REQUESTED",
+					pullRequest: {
+						url: "https://github.com/example-org/example-repo/pull/9",
+						externalId: "9",
+						state: "OPEN",
+						lastCheckedAt: null,
+					},
+				}),
+				liveChanges: 3,
+			},
+		];
+		renderPanel();
+		expect(
+			await screen.findByText(branchCopy.states.CLOSE_REQUESTED),
+		).toBeInTheDocument();
+	});
+
+	describe("a Close refused because the branch moved under it", () => {
+		function stale(): Error {
+			return Object.assign(new Error("stale"), {
+				code: "CONFLICT",
+				data: { reason: "BRANCH_CHANGED" },
+			});
+		}
+
+		it("resends once with the fresh attempt when the branch is still closable", async () => {
+			state.branches = [
+				{
+					branch: branch({ state: "OPENING", attempt: 2 }),
+					liveChanges: 3,
+				},
+			];
+			state.closeErrors = [stale()];
+			state.afterRefusal = [
+				{
+					branch: branch({ state: "OPEN", attempt: 3 }),
+					liveChanges: 3,
+				},
+			];
+			const user = userEvent.setup();
+			renderPanel();
+			await user.click(
+				await screen.findByRole("button", { name: branchCopy.close }),
+			);
+			await waitFor(() => expect(state.close).toHaveBeenCalledTimes(2));
+			expect(state.close).toHaveBeenLastCalledWith({
+				projectId: "p",
+				branchId: "branch_1",
+				expectedAttempt: 3,
+			});
+			expect(state.toastError).not.toHaveBeenCalled();
+		});
+
+		it("does not resend, and tells the member, when the branch left the closable set", async () => {
+			state.branches = [
+				{
+					branch: branch({ state: "OPENING", attempt: 2 }),
+					liveChanges: 3,
+				},
+			];
+			state.closeErrors = [stale()];
+			state.afterRefusal = [
+				{
+					branch: branch({ state: "MERGED", attempt: 4 }),
+					liveChanges: 0,
+				},
+			];
+			const user = userEvent.setup();
+			renderPanel();
+			await user.click(
+				await screen.findByRole("button", { name: branchCopy.close }),
+			);
+			await waitFor(() => expect(state.toastError).toHaveBeenCalled());
+			expect(state.close).toHaveBeenCalledTimes(1);
+		});
+
+		it("resends only once when the retry is refused as well", async () => {
+			state.branches = [
+				{
+					branch: branch({ state: "OPENING", attempt: 2 }),
+					liveChanges: 3,
+				},
+			];
+			state.closeErrors = [stale(), stale()];
+			state.afterRefusal = [
+				{
+					branch: branch({ state: "OPEN", attempt: 3 }),
+					liveChanges: 3,
+				},
+			];
+			const user = userEvent.setup();
+			renderPanel();
+			await user.click(
+				await screen.findByRole("button", { name: branchCopy.close }),
+			);
+			await waitFor(() => expect(state.toastError).toHaveBeenCalled());
+			expect(state.close).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	it.each([
+		[
+			"no pull request yet",
+			{ state: "OPENING", pullRequest: null },
+			"closeSuccessNoPr",
+		],
+		["a pull request", { state: "OPEN" }, "closeSuccess"],
+	])("words the Close toast for %s", async (_label, overrides, key) => {
+		state.branches = [{ branch: branch(overrides), liveChanges: 3 }];
+		const user = userEvent.setup();
+		renderPanel();
+		await user.click(
+			await screen.findByRole("button", { name: branchCopy.close }),
+		);
+		await waitFor(() =>
+			expect(state.toastSuccess).toHaveBeenCalledWith(
+				(branchCopy as Record<string, string>)[key],
+			),
+		);
 	});
 
 	it("does nothing when the confirmation is dismissed", async () => {
@@ -609,7 +795,7 @@ describe("InstructionProposalBranchPanel", () => {
 		).toBeInTheDocument();
 	});
 
-	it("Refresh re-reads every proposals view now and again once the backend settles", async () => {
+	it("Refresh re-reads every proposals view right away", async () => {
 		const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
 		try {
 			const user = userEvent.setup();
@@ -636,18 +822,10 @@ describe("InstructionProposalBranchPanel", () => {
 			]) {
 				expect(invalidatedKeys()).toContain(key);
 			}
-			const afterAnswer = invalidate.mock.calls.length;
-			await waitFor(
-				() =>
-					expect(invalidate.mock.calls.length).toBeGreaterThan(
-						afterAnswer,
-					),
-				{ timeout: 5_000 },
-			);
 		} finally {
 			invalidate.mockRestore();
 		}
-	}, 10_000);
+	});
 
 	it("does not claim a refresh succeeded when admission is refused", async () => {
 		state.commandError = new Error("cooldown");

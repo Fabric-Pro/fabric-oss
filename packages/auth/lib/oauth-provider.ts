@@ -246,7 +246,7 @@ async function resolveConsentReferenceId(
  * hook that resumes an authorization — always before the code is issued, so
  * no route around the consent pages skips it.
  */
-async function resolveConsentOrganizationId(
+export async function resolveConsentOrganizationId(
 	userId: string,
 	activeOrganizationId: unknown,
 ): Promise<string> {

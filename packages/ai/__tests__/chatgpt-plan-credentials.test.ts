@@ -87,11 +87,13 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
+import { upsertChatGptPlanCredential } from "@repo/database";
 import {
 	chatGptPlanNeedsRefresh,
 	disconnectChatGptPlan,
 	getChatGptPlanAccessToken,
 	refreshChatGptPlanAfterUnauthorized,
+	storeChatGptPlanCredential,
 } from "../lib/chatgpt-plan/plan-credentials";
 
 const NOW = Date.parse("2026-10-06T12:00:00Z");
@@ -283,5 +285,88 @@ describe("disconnectChatGptPlan", () => {
 		);
 		await disconnectChatGptPlan("user_1", { fetchImpl });
 		expect(store.row).toBeNull();
+	});
+});
+
+// Fizzy #2770 G7: the sign-in's subscription claims are stored at connect.
+describe("storeChatGptPlanCredential", () => {
+	it("stores the tier and paid-until date the ID token reports", async () => {
+		const part = (value: unknown) =>
+			Buffer.from(JSON.stringify(value)).toString("base64url");
+		await storeChatGptPlanCredential({
+			userId: "user_1",
+			email: "member@example.com",
+			subject: "sub-1",
+			clientId: "client-1",
+			hostId: "host-1",
+			scopes: ["openid"],
+			tokens: {
+				access_token: "access",
+				refresh_token: "refresh",
+				id_token: `${part({ alg: "RS256" })}.${part({
+					"https://api.openai.com/auth": {
+						chatgpt_plan_type: "free",
+						chatgpt_subscription_active_until: null,
+					},
+				})}.sig`,
+				expires_in: 3600,
+				token_type: "Bearer",
+			},
+		});
+		const written = vi.mocked(upsertChatGptPlanCredential).mock
+			.calls[0]?.[0] as Record<string, unknown>;
+		expect(written.tier).toBe("FREE");
+		// The token did not say: nothing written, nothing overwritten.
+		expect(written).not.toHaveProperty("subscriptionActiveUntil");
+	});
+
+	it("logs what the ID token held, never a token, the subject or an address", async () => {
+		const { logger } = await import("@repo/logs");
+		vi.mocked(logger.info).mockClear();
+		const part = (value: unknown) =>
+			Buffer.from(JSON.stringify(value)).toString("base64url");
+		const payload = part({
+			email: "member@example.com",
+			"https://api.openai.com/auth": { chatgpt_plan_type: "plus" },
+		});
+		await storeChatGptPlanCredential({
+			userId: "user_1",
+			email: "member@example.com",
+			subject: "sub-secret-1",
+			clientId: "client-1",
+			hostId: "host-1",
+			scopes: ["openid"],
+			tokens: {
+				access_token: "access-secret-1",
+				refresh_token: "refresh-secret-1",
+				id_token: `${part({ alg: "RS256" })}.${payload}.sig`,
+				expires_in: 3600,
+				token_type: "Bearer",
+			},
+		});
+		expect(logger.info).toHaveBeenCalledWith(
+			"[chatgpt-plan] ID token subscription claims",
+			{
+				event: "connect",
+				sourceKind: "user",
+				userId: "user_1",
+				idTokenPresent: true,
+				emailPresent: true,
+				authClaimPresent: true,
+				authClaimKeys: ["chatgpt_plan_type"],
+				planTypeValue: "plus",
+				untilPresent: false,
+			},
+		);
+		const logged = JSON.stringify(vi.mocked(logger.info).mock.calls);
+		for (const secret of [
+			payload,
+			"access-secret-1",
+			"refresh-secret-1",
+			"sub-secret-1",
+			"member@example.com",
+		]) {
+			expect(logged).not.toContain(secret);
+		}
 	});
 });

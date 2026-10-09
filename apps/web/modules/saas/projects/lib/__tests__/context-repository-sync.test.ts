@@ -14,6 +14,7 @@ import {
 	contextSyncAutomaticInput,
 	contextSyncConfigureErrorMessage,
 	contextSyncFailureMessage,
+	contextSyncIndexingClock,
 	contextSyncLastAppliedMessage,
 	contextSyncLastAppliedSummary,
 	contextSyncLatestRunChanged,
@@ -199,7 +200,12 @@ describe("the last-applied summary (§7.1)", () => {
 					pruneConflicts: 0,
 				},
 			}),
-			{ kind: "partial", shortSha: "abc1234", keptOlderCount: 2 },
+			{
+				kind: "partial",
+				shortSha: "abc1234",
+				keptOlderCount: 2,
+				skippedCount: 0,
+			},
 		],
 		[run({ status: "FAILED" }), { kind: "failed", shortSha: "abc1234" }],
 	] as const)("%#", (input, expected) => {
@@ -223,6 +229,7 @@ describe("the last-applied summary (§7.1)", () => {
 				kind: "partial",
 				shortSha: "abc1234",
 				keptOlderCount: 2,
+				skippedCount: 0,
 			}).key,
 		).toBe("status.partial");
 		expect(
@@ -244,7 +251,7 @@ describe("polling (§7.1)", () => {
 		).toBe(CONTEXT_SYNC_RUNNING_POLL_MS);
 	});
 
-	it("polls every 15s while files await indexing, within the 10-minute budget", () => {
+	it("polls every 3s while files await indexing, within the 10-minute budget", () => {
 		expect(
 			contextSyncPollInterval(
 				{ running: false, awaitingIndexCount: 3 },
@@ -1276,5 +1283,147 @@ describe("contextSyncProgress", () => {
 			),
 		).toBeNull();
 		expect(contextSyncProgress(state({ latestRun: null }))).toBeNull();
+	});
+});
+
+describe("the headline of a PARTIAL run", () => {
+	const partial = (
+		attention: Array<{ key: string; reason: string }>,
+		counts: Partial<ContextSyncRunView["counts"]> = {},
+	) =>
+		run({
+			status: "PARTIAL",
+			counts: {
+				created: 3,
+				updated: 0,
+				adopted: 0,
+				unchanged: 0,
+				conflict: 0,
+				pathInUse: 0,
+				removed: 0,
+				pruneConflicts: 0,
+				...counts,
+			},
+			plan: {
+				keptCount: 3,
+				excludedCount: 0,
+				attentionCount: attention.length,
+				attention,
+				missingPaths: [],
+				protectedPrefixes: [],
+			},
+		});
+
+	it("counts files skipped as too large, binary or empty, not only files kept at an older version", () => {
+		const summary = contextSyncLastAppliedSummary(
+			partial([
+				{ key: "a.bin", reason: "binary" },
+				{ key: "b.md", reason: "empty" },
+				{ key: "c.md", reason: "too-large" },
+			]),
+		);
+
+		expect(summary).toMatchObject({
+			kind: "partial",
+			keptOlderCount: 0,
+			skippedCount: 3,
+		});
+		expect(contextSyncLastAppliedMessage(summary)).toEqual({
+			key: "status.partialSkipped",
+			values: { sha: "abc1234", count: 3 },
+		});
+	});
+
+	it("never pairs Partially with a zero: no kept and no skipped files has its own line", () => {
+		const message = contextSyncLastAppliedMessage(
+			contextSyncLastAppliedSummary(partial([])),
+		);
+
+		expect(message.key).toBe("status.partialNoDetail");
+	});
+
+	it("states both counts when files were kept at an older version and others skipped", () => {
+		const message = contextSyncLastAppliedMessage(
+			contextSyncLastAppliedSummary(
+				partial([{ key: "a.md", reason: "empty" }], { conflict: 2 }),
+			),
+		);
+
+		expect(message).toEqual({
+			key: "status.partialBoth",
+			values: { sha: "abc1234", kept: 2, skipped: 1 },
+		});
+	});
+});
+
+describe("configure's branch-not-found message", () => {
+	const missing = (data: Record<string, unknown>) => ({
+		message: "server message",
+		data: { code: "BRANCH_NOT_FOUND", ...data },
+	});
+
+	it("names the branch the server reports", () => {
+		expect(
+			contextSyncConfigureErrorMessage(missing({ ref: "gone" })).values
+				.path,
+		).toBe("gone");
+	});
+
+	it("falls back to the branch that was being saved", () => {
+		expect(
+			contextSyncConfigureErrorMessage(missing({}), "typed").values.path,
+		).toBe("typed");
+	});
+});
+
+describe("the indexing poll's clock", () => {
+	it("is off when nothing awaits indexing", () => {
+		expect(
+			contextSyncIndexingClock({ since: 1, awaiting: 3 }, 0, 99),
+		).toBeNull();
+	});
+
+	it("keeps counting while the number awaiting is unchanged", () => {
+		const clock = { since: 1, awaiting: 4 };
+		expect(contextSyncIndexingClock(clock, 4, 99)).toBe(clock);
+	});
+
+	it("starts again when the number awaiting changes, so a spent budget does not carry into the next sync", () => {
+		expect(
+			contextSyncIndexingClock({ since: 1, awaiting: 4 }, 8, 700_000),
+		).toEqual({
+			since: 700_000,
+			awaiting: 8,
+		});
+	});
+});
+
+describe("the indexing status line follows the index promptly", () => {
+	it("polls at most every 3 s while files await indexing, so the count advances and settles within one short poll", () => {
+		const awaiting = (n: number) => ({
+			running: false,
+			awaitingIndexCount: n,
+			configured: null,
+		});
+
+		expect(contextSyncPollInterval(awaiting(5), 0)).toBeLessThanOrEqual(
+			3_000,
+		);
+		expect(
+			contextSyncProgress({
+				running: false,
+				latestRun: null,
+				managedCount: 8,
+				awaitingIndexCount: 5,
+			}),
+		).toEqual({ kind: "indexing", indexed: 3, managed: 8 });
+		expect(
+			contextSyncProgress({
+				running: false,
+				latestRun: null,
+				managedCount: 8,
+				awaitingIndexCount: 0,
+			}),
+		).toBeNull();
 	});
 });

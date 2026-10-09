@@ -32,6 +32,7 @@ const { mocks } = vi.hoisted(() => ({
 vi.mock("../src/lib/config.js", () => ({
 	getApiKey: mocks.getApiKey,
 	getOAuth: () => undefined,
+	listProjectSignIns: () => [],
 	hasStoredApiKey: () => mocks.getApiKey() !== undefined,
 	getConfigPath: mocks.getConfigPath,
 	getBaseUrl: () => undefined,
@@ -104,10 +105,10 @@ async function hookCommands(dest: string): Promise<string[]> {
 	);
 }
 
-function serveFromBundle(): void {
+function serveFromBundle(packedFor?: string): void {
 	vi.stubGlobal("__FABRIC_BUNDLE__", true);
 	vi.stubGlobal("__FABRIC_BUNDLE_TARBALL__", TARBALL);
-	vi.stubGlobal("__FABRIC_BAKED_ORIGIN__", undefined);
+	vi.stubGlobal("__FABRIC_BAKED_ORIGIN__", packedFor);
 }
 
 describe("init from the build a deployment serves", () => {
@@ -212,7 +213,7 @@ describe("init from the build a deployment serves", () => {
 
 describe("what the served build tells someone to run", () => {
 	it("is the npx line, so a person with no fabric can run it", async () => {
-		serveFromBundle();
+		serveFromBundle("https://fabric.pro");
 		vi.stubEnv("CI", "true");
 		mocks.getApiKey.mockReturnValue(undefined);
 		const dest = await makeTree();
@@ -225,8 +226,8 @@ describe("what the served build tells someone to run", () => {
 		);
 	});
 
-	it("names the deployment --base-url chose, in the tarball's host and in the flag", async () => {
-		serveFromBundle();
+	it("names the deployment --base-url chose in the flag, and fetches the tarball from the deployment the build was packed for", async () => {
+		serveFromBundle("https://fabric.pro");
 		vi.stubEnv("CI", "true");
 		mocks.getApiKey.mockReturnValue(undefined);
 		const dest = await makeTree();
@@ -238,12 +239,12 @@ describe("what the served build tells someone to run", () => {
 		);
 
 		expect(result.stderr).toBe(
-			`✗ Not signed in to https://staging.example.com. Run: npx -y https://staging.example.com${TARBALL} auth login --base-url https://staging.example.com --project cm0example0project\n`,
+			`✗ Not signed in to https://staging.example.com. Run: npx -y https://fabric.pro${TARBALL} auth login --base-url https://staging.example.com --project cm0example0project\n`,
 		);
 	});
 
 	it("names it too when a run has no project to work on", async () => {
-		serveFromBundle();
+		serveFromBundle("https://fabric.pro");
 		const dest = await makeTree();
 
 		const result = await runCli(["check", "--dest", dest]);

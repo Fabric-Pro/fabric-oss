@@ -654,6 +654,7 @@ export async function projectDocumentGenerationWorkflow(
 						suppliedContext, // joined into the child's context array, never over it
 						excludeContextId, // filtered out of this run's retrieval
 						planEligible, // the clicking member's own plan may serve it
+						generationStartedAt, // scopes a Proposal plan's takeover to this attempt
 					},
 				],
 			},

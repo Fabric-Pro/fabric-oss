@@ -319,7 +319,11 @@ function contextToUnifiedResult(ctx: RetrievedContext): UnifiedSearchResult {
 		content: `${contextMetaHeader(ctx)}${ctx.content}`,
 		source: {
 			type: "project-context",
-			name: ctx.filename || ctx.sourceTitle || "Project Document",
+			name:
+				ctx.sourcePath ||
+				ctx.filename ||
+				ctx.sourceTitle ||
+				"Project Document",
 			badge: "Project",
 			url: ctx.sourceUrl,
 			filename: ctx.filename,

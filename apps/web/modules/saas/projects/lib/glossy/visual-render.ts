@@ -16,10 +16,14 @@
  */
 
 import type { EditionVisual } from "@repo/utils/glossy/edition-content";
+import {
+	fillVisualColors,
+	type GlossyPalette,
+	glossyMermaidThemeVariables,
+} from "@repo/utils/glossy/visual-colors";
 import type { VisualSpec } from "@repo/utils/glossy/visual-spec";
 import {
 	SVG_CARD_FONT_STACK,
-	VISUAL_COLOR_PLACEHOLDERS,
 	visualSpecToMermaid,
 	visualSpecToSvgCard,
 } from "@repo/utils/glossy/visual-templates";
@@ -28,11 +32,11 @@ import {
 	type MermaidExportTheme,
 	renderMermaidToPng,
 } from "../markdown-to-document";
-import {
-	type GlossyPalette,
-	glossyMermaidThemeVariables,
-	strictHexColor,
-} from "./palette";
+
+// The placeholder fill lives in `@repo/utils/glossy/visual-colors`, so the
+// worker filling a Proposal's visuals resolves colors exactly as this
+// renderer does (Fizzy #2801).
+export { fillVisualColors };
 
 export interface RenderedGlossyVisual {
 	/** PNG data URL. */
@@ -52,36 +56,6 @@ export interface GlossyVisualFailure {
 export interface GlossyVisualRenderResult {
 	images: Map<string, RenderedGlossyVisual>;
 	failures: GlossyVisualFailure[];
-}
-
-const PLACEHOLDER_ROLES: ReadonlyArray<
-	readonly [string, (palette: GlossyPalette) => string]
-> = [
-	[VISUAL_COLOR_PLACEHOLDERS.surface, (palette) => palette.surface],
-	[VISUAL_COLOR_PLACEHOLDERS.border, (palette) => palette.border],
-	// Stat values are text on the card fill, so they take the text-safe brand color.
-	[VISUAL_COLOR_PLACEHOLDERS.primary, (palette) => palette.heading],
-	[VISUAL_COLOR_PLACEHOLDERS.ink, (palette) => palette.ink],
-	[VISUAL_COLOR_PLACEHOLDERS.muted, (palette) => palette.muted],
-];
-
-/**
- * Replace U5's color placeholders with palette values. A value that is not
- * `#rrggbb` is refused outright rather than interpolated.
- */
-export function fillVisualColors(
-	source: string,
-	palette: GlossyPalette,
-): string {
-	let filled = source;
-	for (const [placeholder, role] of PLACEHOLDER_ROLES) {
-		const color = strictHexColor(role(palette));
-		if (!color) {
-			throw new Error(`Palette color for ${placeholder} is not #rrggbb.`);
-		}
-		filled = filled.split(placeholder).join(color);
-	}
-	return filled;
 }
 
 export function glossyMermaidTheme(palette: GlossyPalette): MermaidExportTheme {

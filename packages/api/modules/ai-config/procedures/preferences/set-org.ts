@@ -16,6 +16,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
+import { assertEmbeddingModelFitsVectorStore } from "../../lib/embedding-model-guard";
 
 const AiTaskTypeEnum = z.enum([
 	"SIMPLE",
@@ -197,6 +198,8 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 					"Evaluation models can only be configured for DECISION tasks.",
 			});
 		}
+
+		assertEmbeddingModelFitsVectorStore(taskType, model);
 
 		// Verify the model has a mapping for this provider
 		// Gateway providers can route to any model, so skip mapping check for them

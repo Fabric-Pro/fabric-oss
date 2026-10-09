@@ -244,6 +244,11 @@
 			"import": "./lib/oauth-project-resource.ts",
 			"default": "./lib/oauth-project-resource.ts"
 		},
+		"./mcp-tool-annotations": {
+			"types": "./lib/mcp-tool-annotations.ts",
+			"import": "./lib/mcp-tool-annotations.ts",
+			"default": "./lib/mcp-tool-annotations.ts"
+		},
 		"./oauth-refresh": {
 			"types": "./lib/oauth-refresh.ts",
 			"import": "./lib/oauth-refresh.ts",
@@ -389,6 +394,21 @@
 			"import": "./lib/glossy/edition-content.ts",
 			"default": "./lib/glossy/edition-content.ts"
 		},
+		"./glossy/visual-colors": {
+			"types": "./lib/glossy/visual-colors.ts",
+			"import": "./lib/glossy/visual-colors.ts",
+			"default": "./lib/glossy/visual-colors.ts"
+		},
+		"./proposal-artifact/live-sections": {
+			"types": "./lib/proposal-artifact/live-sections.ts",
+			"import": "./lib/proposal-artifact/live-sections.ts",
+			"default": "./lib/proposal-artifact/live-sections.ts"
+		},
+		"./proposal-artifact/visual-insert": {
+			"types": "./lib/proposal-artifact/visual-insert.ts",
+			"import": "./lib/proposal-artifact/visual-insert.ts",
+			"default": "./lib/proposal-artifact/visual-insert.ts"
+		},
 		"./brand-colors": {
 			"types": "./lib/brand-colors.ts",
 			"import": "./lib/brand-colors.ts",
@@ -408,7 +428,7 @@
 	"dependencies": {
 		"@upstash/realtime": "^1.0.0",
 		"@upstash/redis": "^1.34.3",
-		"handlebars": "^4.7.8",
+		"handlebars": "^4.7.10",
 		"liquidjs": "^10.27.1",
 		"mustache": "^4.2.0",
 		"nunjucks": "^3.2.4",

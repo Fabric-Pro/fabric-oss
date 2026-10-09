@@ -398,6 +398,9 @@ model User {
   // so a departing admin never takes the organization's sources with them.
   companyContextSourcesCreated CompanyContextSource[] @relation("CompanyContextSourceCreatedBy")
 
+  // Proposal artifact (Fizzy #2801). Actor column only; SetNull on delete.
+  proposalStylesUpdated ProjectDocumentStyle[] @relation("ProjectDocumentStyleUpdatedBy")
+
   // Brute force protection
   failedLoginAttempts Int       @default(0)
   lockedUntil         DateTime?
@@ -1101,6 +1104,11 @@ model Organization {
   // Company context (Fizzy #2719); cascade on org delete (tenant erasure).
   companyContextSources  CompanyContextSource[]
   companyContextUrlPages CompanyContextUrlPage[]
+
+  // Proposal artifact (Fizzy #2801); cascade on org delete (tenant erasure).
+  projectDocumentAnalyses ProjectDocumentAnalysis[]
+  projectDocumentFindings ProjectDocumentFinding[]
+  projectDocumentStyles   ProjectDocumentStyle[]
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
@@ -2452,6 +2460,10 @@ model Project {
   glossySegmentCache    GlossySegmentCache[]
   recipientBrand        ProjectRecipientBrand?
 
+  // Proposal artifact (Fizzy #2801)
+  documentAnalyses ProjectDocumentAnalysis[]
+  documentStyles   ProjectDocumentStyle[]
+
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
 
@@ -2550,6 +2562,19 @@ model ProjectDocument {
   // or a second terminal path cannot notify the requester twice.
   generationNotificationEmittedAt DateTime?
 
+  // Proposal artifact live sections (Fizzy #2801). The completed sections of
+  // an in-flight coordinated Proposal run, shown while the agent streams.
+  // `content` stays untouched until the run's final save, which clears
+  // `liveContent` and keeps `liveRunId` so a retried save recognizes its own
+  // commit. `liveRunId` is the run token minted when the run is planned;
+  // `liveAttempt` is the activity attempt that claimed the run, so a
+  // superseded attempt's late write cannot land. All three are null on every
+  // row that never ran in artifact mode. Writers live in
+  // prisma/queries/projects/proposal-artifact.ts.
+  liveContent String? @db.Text
+  liveRunId   String?
+  liveAttempt Int?
+
   // Document source tracking
   source          DocumentSource @default(GENERATED)
   sourceContextId String? // Links to original ProjectContext if imported
@@ -2578,6 +2603,8 @@ model ProjectDocument {
   glossyEdition GlossyEdition?
   glossyBuilds  GlossyBuild[]
   glossyCache   GlossySegmentCache[]
+  analyses      ProjectDocumentAnalysis[] // Proposal artifact internal analysis runs (Fizzy #2801)
+  style         ProjectDocumentStyle? // Proposal artifact style settings (Fizzy #2801)
   user          User?                        @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization  Organization?                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -2621,6 +2648,151 @@ model ProjectDocumentAsset {
   @@index([userId])
   @@index([organizationId])
   @@map("project_document_asset")
+}
+
+// ============================================================================
+// Proposal artifact (Fizzy #2801): the Internal Analysis of a coordinated
+// Proposal run, its findings, and the document's style settings.
+//
+// Organization-owned. `organizationId` is the only tenant column and these
+// tables are `org_only` under RLS and in ORG_ONLY_TABLES, never project-scoped:
+// a project guest must not read internal review material, and the
+// project-scoped guest carve-out would hand it to them. No userId: the
+// organization is the only tenant (ADR-018), so an author column would only be
+// something to forge. Tenant columns are copied from the document's project by
+// the writers in prisma/queries/projects/proposal-artifact.ts, never taken from
+// the caller.
+//
+// Analysis stays out of retrieval: nothing here is embedded, versioned or
+// copied into `ProjectDocument.content`.
+// ============================================================================
+
+/// One Internal Analysis run over a saved Proposal Main document. A new run
+/// is a new row, so COMPLETE and FAILED are terminal for the row.
+model ProjectDocumentAnalysis {
+  id             String @id @default(cuid())
+  organizationId String
+  projectId      String
+  documentId     String
+  /// The analysis workflow id; unique, so a retried run creation finds the
+  /// row it already wrote.
+  runKey         String @unique
+
+  status ProjectDocumentAnalysisStatus @default(PENDING)
+
+  /// The saved Main body the run analyzes, read back from the document row.
+  analyzedContent String  @db.Text
+  /// `computeDocumentContentHash(analyzedContent)`; staleness compares it
+  /// with the hash of the document's current content at read time.
+  contentHash     String
+  /// A character-bounded copy of the generation's source context; the bound
+  /// is `PROPOSAL_ANALYSIS_SOURCE_CONTEXT_MAX_LENGTH` in the query module.
+  sourceContext   String  @db.Text
+  /// The document version the analyzed content was saved as.
+  documentVersion Int?
+  contextCount    Int     @default(0)
+  /// The pinned analysis prompt version and the model that ran it.
+  promptVersionId String?
+  model           String?
+
+  /// A fixed failure code and a fixed, length-capped message mapped from it;
+  /// never model output or context text.
+  errorCode    String?
+  errorMessage String?
+
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  document     ProjectDocument          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  findings     ProjectDocumentFinding[]
+
+  @@index([documentId, createdAt])
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("project_document_analysis")
+}
+
+/// One finding of an analysis run, in the order the run produced them.
+model ProjectDocumentFinding {
+  id             String @id @default(cuid())
+  organizationId String
+  analysisId     String
+
+  severity       ProjectDocumentFindingSeverity
+  type           ProjectDocumentFindingType
+  title          String
+  detail         String                         @db.Text
+  recommendation String?                        @db.Text
+  /// The heading of the Main section the finding refers to, when it has one.
+  sectionHeading String?
+  position       Int
+
+  createdAt DateTime @default(now())
+
+  analysis     ProjectDocumentAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId, position])
+  @@index([organizationId])
+  @@map("project_document_finding")
+}
+
+/// Style settings of one Proposal document, applied to its next generation's
+/// visuals. The recipient brand stays project-level in ProjectRecipientBrand.
+model ProjectDocumentStyle {
+  id             String   @id @default(cuid())
+  organizationId String
+  projectId      String
+  documentId     String   @unique
+  /// Free-text style direction, up to 500 characters.
+  styleDirection String?
+  /// A `#rrggbb` value.
+  primaryColor   String?
+  /// Up to three `#rrggbb` values.
+  accentColors   String[] @default([])
+  updatedById    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy    User?           @relation("ProjectDocumentStyleUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([updatedById])
+  @@map("project_document_style")
+}
+
+enum ProjectDocumentAnalysisStatus {
+  PENDING
+  RUNNING
+  COMPLETE
+  FAILED
+}
+
+enum ProjectDocumentFindingSeverity {
+  BLOCKING
+  IMPORTANT
+  INFORMATIONAL
+}
+
+enum ProjectDocumentFindingType {
+  SCOPE
+  COMMERCIAL
+  ASSUMPTION
+  RISK
+  GAP
+  SOURCE_VALIDATION
+  ARCHITECTURE
+  BRANDING
+  OPPORTUNITY
 }
 
 model ProjectContext {
@@ -12625,6 +12797,7 @@ model CloudProviderConfig {
   enabled             Boolean      @default(true)
   isDefault           Boolean      @default(false)
   isEmbeddingProvider Boolean      @default(false) // Dedicated provider for embeddings (independent of default)
+  purpose             AiProviderPurpose @default(ALL)
   priority            Int          @default(0)
   config              Json
   encryptedApiKey     String?      @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
@@ -12673,6 +12846,7 @@ model UserCloudProviderConfig {
   enabled             Boolean      @default(true)
   isDefault           Boolean      @default(false)
   isEmbeddingProvider Boolean      @default(false) // Dedicated provider for embeddings (independent of default)
+  purpose             AiProviderPurpose @default(ALL)
   priority            Int          @default(0)
   config              Json
   encryptedApiKey     String?      @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
@@ -12697,6 +12871,13 @@ model UserCloudProviderConfig {
   @@index([userId, isDefault])
   @@index([userId, isEmbeddingProvider])
   @@map("user_cloud_provider_config")
+}
+
+/// What a provider key may serve. EMBEDDINGS_ONLY keys are never resolved for
+/// LLM work — only the embeddings lookups can reach them.
+enum AiProviderPurpose {
+  ALL
+  EMBEDDINGS_ONLY
 }
 
 enum ChatGptPlanCredentialStatus {
@@ -12734,6 +12915,11 @@ model ChatGptPlanCredential {
   earliestRefreshAt     DateTime?
   scopes                String[]
   status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  /// Read from the ID token's subscription claims at sign-in and on every
+  /// refresh (Fizzy #2770 G7).
+  tier                  ChatGptPlanTier             @default(UNKNOWN)
+  /// When the paid subscription runs out, per the ID token; null if unknown.
+  subscriptionActiveUntil DateTime?
   lastUsedAt            DateTime?
   createdAt             DateTime                    @default(now())
   updatedAt             DateTime                    @updatedAt
@@ -12779,6 +12965,10 @@ enum ChatGptPlanTier {
   UNKNOWN
   PLUS
   PRO
+  /// Free ChatGPT: very small limits (Fizzy #2770 G7).
+  FREE
+  /// Team, Business, Enterprise or Edu workspaces.
+  TEAM
 }
 
 /// What a member's interactive call does when every plan it may use is spent.
@@ -12830,13 +13020,21 @@ model ChatGptPlanOrgAccount {
   earliestRefreshAt     DateTime?
   scopes                String[]
   status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  /// Read from the ID token's subscription claims at sign-in and on every
+  /// refresh (Fizzy #2770 G7); an admin may still set it.
   tier                  ChatGptPlanTier             @default(UNKNOWN)
+  /// When the paid subscription runs out, per the ID token; null if unknown.
+  subscriptionActiveUntil DateTime?
   enabled               Boolean                     @default(true)
   /// Also serve the interactive work of members with no usable plan of
   /// their own. Off until an admin turns it on.
   serveInteractive      Boolean                     @default(false)
   /// Serve allowlisted background jobs.
   serveBackground       Boolean                     @default(true)
+  /// Fair share: the most of this account's window one member's interactive
+  /// work may use, as a percent of its budget. Past it the member's work goes
+  /// to the organization's other accounts. Null = no cap (Fizzy #2770 D6).
+  maxMemberSharePct     Int?
   lastUsedAt            DateTime?
   createdAt             DateTime                    @default(now())
   updatedAt             DateTime                    @updatedAt
@@ -12860,6 +13058,9 @@ model ChatGptPlanOrgPolicy {
   /// `100 - headroomPct` percent, leaving the rest for people; it uses an
   /// account past that only when every account serving it is.
   headroomPct            Int                               @default(40)
+  /// The plan model a call retries on, once, when the plan does not serve the
+  /// chosen one; null means no fallback, and the call fails naming the model.
+  fallbackModel          String?                           @default("gpt-6-astra")
   termsAcknowledgedById  String?
   termsAcknowledgedAt    DateTime?
   createdAt              DateTime                          @default(now())
@@ -12868,6 +13069,28 @@ model ChatGptPlanOrgPolicy {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@map("chat_gpt_plan_org_policy")
+}
+
+/// What a shared organization account had used of its window when OpenAI
+/// refused it — one row per account and window (Fizzy #2770 D6). The median
+/// of the latest few is that account's calibrated window budget, in place of
+/// the default. Members' own plans are not observed: they are also used
+/// outside Fabric, so Fabric's share of their window says little.
+///
+/// Keyed by source like `ChatGptPlanSourceState`, and so no `organizationId`,
+/// no RLS policy and no foreign key: whoever deletes a source deletes its
+/// rows. Unlike that row, these are never cleared when the source answers.
+model ChatGptPlanBudgetObservation {
+  sourceKind  ChatGptPlanSourceKind
+  sourceId    String
+  /// The anchored window the refusal fell in; one observation per window.
+  windowStart DateTime
+  /// Uncached input tokens Fabric's calls had used in it.
+  inputTokens Int
+  observedAt  DateTime
+
+  @@id([sourceKind, sourceId, windowStart])
+  @@map("chat_gpt_plan_budget_observation")
 }
 
 /// The shared memory of a spent plan window, one row per plan source, so
@@ -12893,6 +13116,30 @@ model ChatGptPlanSourceState {
 
   @@id([sourceKind, sourceId])
   @@map("chat_gpt_plan_source_state")
+}
+
+/// The models one plan source serves, as its `GET /v1/models` last listed
+/// them (Fizzy #2770): the plan-model pickers offer only these, and a call
+/// whose model is no longer listed goes to the organization's fallback.
+///
+/// Keyed by source with no `organizationId`, like `ChatGptPlanSourceState`:
+/// a member's own plan belongs to no tenant, and an organization account's
+/// rows are reached only through the account, whose readers filter by
+/// organization. So the RLS coverage guard does not apply, and whoever
+/// deletes a source deletes its rows.
+model ChatGptPlanServedModel {
+  sourceKind  ChatGptPlanSourceKind
+  sourceId    String
+  /// The model id a call names (`model` in a Responses request).
+  slug        String
+  displayName String
+  description String?
+  /// OpenAI's ordering; lower is listed first.
+  priority    Int?
+  checkedAt   DateTime
+
+  @@id([sourceKind, sourceId, slug])
+  @@map("chat_gpt_plan_served_model")
 }
 
 enum PurchaseType {
@@ -19674,6 +19921,17 @@ enum NotificationType {
   /// to-do. Category ASSIGNMENT, so the recipient's `assignments` toggle
   /// silences both kinds together.
   TODO_MEETING_ITEMS_ASSIGNED
+
+  /// A ChatGPT plan account the organization shares with its members lost its
+  /// sign-in (refresh token revoked or expired) and must be reconnected before
+  /// it serves anyone again (Fizzy #2770). Written to the organization's
+  /// owners and admins, plus whoever connected the account, once per flip
+  /// from ACTIVE: no repeat until a new sign-in makes it ACTIVE again.
+  ///
+  /// Category SYSTEM, always on: until someone reconnects it, work the
+  /// organization routed to that account falls to its other accounts or its
+  /// API provider, or stops.
+  CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT
 }
 
 model Notification {

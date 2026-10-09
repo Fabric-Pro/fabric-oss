@@ -1015,10 +1015,13 @@ export function getModel(
 }
 
 /**
- * Create a typed evaluation model for the AI SDK evaluation API.
+ * Create a typed decision model for the AI SDK decision API
+ * (`experimental_decide`).
  *
- * Evaluation models are a separate SDK surface from language models. They must
- * stay on Vercel AI Gateway and use `gateway.evaluationModel` directly.
+ * Decision models are a separate SDK surface from language models. They must
+ * stay on Vercel AI Gateway and use `gateway.decisionModel` directly. The
+ * Fabric name keeps "evaluation" because the catalog capability is still
+ * `EVALUATION`.
  */
 export function getEvaluationModel(
 	modelName: string,
@@ -1040,7 +1043,7 @@ export function getEvaluationModel(
 		);
 	}
 
-	return getGatewayProvider(context.apiKey, context.headers).evaluationModel(
+	return getGatewayProvider(context.apiKey, context.headers).decisionModel(
 		modelName,
 	);
 }

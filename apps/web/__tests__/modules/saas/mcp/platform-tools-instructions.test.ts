@@ -42,6 +42,7 @@ vi.mock("@repo/database", () => ({
 	hasPermission: (permissions: readonly string[], permission: string) =>
 		permissions.includes(permission),
 	Permissions: { INSTRUCTION_READ: "instruction:read" },
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: m.getProjectAccessContext,
 	getPublishedInstructionSnapshot: m.getPublishedInstructionSnapshot,
 	getInstructionSummariesForProjects: m.getInstructionSummariesForProjects,

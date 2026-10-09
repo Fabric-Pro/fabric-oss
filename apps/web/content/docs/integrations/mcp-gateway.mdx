@@ -34,10 +34,10 @@ deployment's URL and the project filled in.
     Run it in the project's folder:
 
     ```bash
-    claude mcp add --transport http fabric https://your-fabric.com/api/mcp-gateway/projects/<project-id>
+    claude mcp add --scope local --transport http fabric-<end-of-project-id> https://your-fabric.com/api/mcp-gateway/projects/<project-id>
     ```
 
-    Then run `/mcp` in Claude Code and choose **Authenticate**.
+    The server is named `fabric-` and the last six letters and digits of the project's id, the same name Codex and `fabric instructions init` use, so a server added from the dialog is the one `init` finds. A server you already named `fabric` that points at this project keeps working and is not duplicated. Then run `/mcp` in Claude Code and choose **Authenticate**.
   </Tab>
   <Tab value="VS Code">
     Use **Add to VS Code** in the Connect dialog, or add the server to your MCP
@@ -98,8 +98,10 @@ deployment's URL and the project filled in.
 </Tabs>
 
 What you approve is the same for every tool, and it is for that project alone:
-read the project and its context, read its coding instructions, and suggest
-changes to them, held for review and never published by the agent. The consent
+read the project, its features and bugs and their decisions and revisions, its
+documents, its context, and search its knowledge; read its coding instructions;
+and suggest changes to them, held for review and never published by the agent.
+The consent
 page names the project and its organization, and what you approve is exactly
 what the page showed: if the connection changes while the page is open, nothing
 is approved and the tool has to start the sign-in again. The agent works on that
@@ -130,6 +132,17 @@ signed in for one organization, which is chosen on the sign-in page when you
 belong to several, and reach all of its projects. The Connect dialog no longer
 offers it. A token issued for one project is refused there, and the refusal
 names the project's URL to use instead.
+
+The sign-in page shows the organization it will use, and what you approve is
+exactly what the page showed: if the organization the server would use differs,
+nothing is approved and the tool has to start the sign-in again. `mcp:read`,
+the scope behind "Read this organization's projects and context", covers that
+organization's projects, features and bugs with their decisions and revisions,
+documents, project context, coding instructions, workspaces, workflows and
+frames, plus the list of connected servers. It does not cover your personal AI
+chats, and the identity tools list only the organization you signed in for.
+An OAuth sign-in never holds `mcp:write`, so it cannot call a connected server's
+tools unless that server declares them read-only.
 
 ### Or use an API key (CI and headless)
 
@@ -200,7 +213,9 @@ For organization context, create the key from your organization settings page.
 
 #### 3. Organization Context (Optional)
 
-To scope all tools to a specific organization, add the `X-Organization-Id` header:
+A personal API key (`fab_`) belongs to you, not to an organization. If you belong to
+more than one, name the organization the connection should start in with the
+`X-Organization-Id` header:
 
 ```json
 {
@@ -211,7 +226,13 @@ To scope all tools to a specific organization, add the `X-Organization-Id` heade
 }
 ```
 
-Or use `fabric_switch_organization` after connecting to switch context dynamically.
+Fabric checks that you are a member of that organization and refuses the request
+otherwise. The header chooses where the connection starts. It does not confine the
+key: a personal key can still move between your organizations with
+`fabric_switch_organization`, and a browser session follows the organization you are
+working in. A connection that must stay in one organization uses an organization API
+key (`org_`) or an OAuth sign-in. Both are fixed to one organization when they are
+issued, ignore this header, and cannot switch.
 
 ### Coding Instructions
 
@@ -635,7 +656,14 @@ fizzy__get_cards          → Get cards from Fizzy boards
 ```
 
 <Callout type="warn">
-Connected server tools require **runtime authority** before use. See [Runtime Authority](/docs/core-concepts/runtime-authority) for details.
+A connected server's tools are held to the credential's scopes and, for any tool that
+may change something, to **runtime authority**. A tool counts as a read only when its
+server declares `readOnlyHint: true`; for an OAuth sign-in or an organization API key
+nothing else makes it a read, whatever its name. Everything else needs the `mcp:write`
+scope (an OAuth sign-in can never hold it, so it cannot call those tools) and a
+runtime grant. Your own session and your personal API key keep the name-based
+guess (`get_`, `list_` and the like) for deciding whether a grant is asked for,
+and still need `mcp:read` or `mcp:write`. See [Runtime Authority](/docs/core-concepts/runtime-authority) for details.
 </Callout>
 
 ### Per-User Tool Visibility

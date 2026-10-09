@@ -16,7 +16,7 @@ vi.mock("@repo/database/prisma/client", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
+	getSystemEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-api-key",
 		provider: "OPENAI_DIRECT",
 	}),

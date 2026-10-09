@@ -24,7 +24,10 @@ import {
 	isClientRenderableAiChatImage,
 } from "@repo/utils/ai-chat-attachment";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
-import { getSelectedAgentInstanceId } from "@saas/agents/components/FabricChat/shared/agent-selection";
+import {
+	getSelectedAgentInstanceId,
+	shouldPersistAgentSelection,
+} from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
@@ -668,7 +671,9 @@ export function FabricTemporalOrchestratorChat({
 		(agent: SelectedAgent) => {
 			setSelectedAgent((current) => {
 				const next = current?.agentId === agent.agentId ? null : agent;
-				persistAgentSelection.mutate(next ? [next] : []);
+				if (shouldPersistAgentSelection(current, next)) {
+					persistAgentSelection.mutate(next ? [next] : []);
+				}
 				return next;
 			});
 		},

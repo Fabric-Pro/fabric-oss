@@ -17,6 +17,7 @@ import {
 	readdir,
 	readFile,
 	realpath,
+	rm,
 	stat,
 	utimes,
 	writeFile,
@@ -193,6 +194,8 @@ interface RunOptions {
 	traceFile?: string;
 	/** Milliseconds of git budget left; the merge reserve comes out of it. */
 	budgetMs?: number;
+	/** A direct-repository project: no snapshot, the server's read commit instead. */
+	direct?: boolean;
 }
 
 async function run(
@@ -200,7 +203,9 @@ async function run(
 	options: RunOptions,
 ): Promise<FastForwardResult> {
 	const classification = await classificationOf(fx.checkout);
-	const snapshot = snapshotAt(options.published, options.version);
+	const snapshot = options.direct
+		? undefined
+		: snapshotAt(options.published, options.version);
 	const repository = options.repository ?? REPOSITORY;
 	const deadline = Date.now() + (options.budgetMs ?? 60_000);
 	const report = await reportForClassification({
@@ -213,7 +218,10 @@ async function run(
 		classification,
 		repository,
 		snapshot,
-		report,
+		...(options.direct ? { directCommitSha: options.published } : {}),
+		report: options.direct
+			? { ...report, reportKind: "current", line: null }
+			: report,
 		projectId: "project-1",
 		deadline,
 		optedOut: options.optedOut ?? false,
@@ -455,7 +463,10 @@ describe("a checkout it must leave alone", () => {
 				"one" + "\r\n",
 			);
 
-			const clean = await git.isClean(fx.checkout, Date.now() + 60_000);
+			const clean = await git.hasNoTrackedContentChanges(
+				fx.checkout,
+				Date.now() + 60_000,
+			);
 
 			expect(clean).toEqual({ kind: "ok", value: true });
 		},
@@ -465,7 +476,12 @@ describe("a checkout it must leave alone", () => {
 		const fx = await fixture();
 		await writeFile(path.join(fx.checkout, "AGENTS.md"), "changed" + "\n");
 
-		expect(await git.isClean(fx.checkout, Date.now() + 60_000)).toEqual({
+		expect(
+			await git.hasNoTrackedContentChanges(
+				fx.checkout,
+				Date.now() + 60_000,
+			),
+		).toEqual({
 			kind: "ok",
 			value: false,
 		});
@@ -667,7 +683,7 @@ describe("the clock", () => {
 				gitIn(fx.checkout, "rev-parse", "refs/remotes/origin/main"),
 			).toBe(fx.first);
 			expect(result.stderr).toEqual([
-				"fabric: coding instructions sync skipped: gave up after 10 s",
+				"fabric: coding instructions sync skipped: gave up after 9.5 s",
 			]);
 			await nothingLeftBehind(fx);
 		},
@@ -877,17 +893,186 @@ describe("the trace", () => {
 					"at",
 					"ms",
 					"outcome",
+					"phases",
 					"projectId",
 					"reason",
+					"totalMs",
 				]);
 				expect(entry.projectId).toBe("project-1");
 				expect(typeof entry.ms).toBe("number");
+				for (const [phase, spent] of Object.entries(entry.phases)) {
+					expect([
+						"facts",
+						"contains",
+						"fetch",
+						"relate",
+						"merge",
+					]).toContain(phase);
+					expect(typeof spent).toBe("number");
+				}
 				expect(JSON.stringify(entry)).not.toContain(fx.base);
 				expect(JSON.stringify(entry)).not.toContain(tip);
 			}
 			expect((await readdir(path.dirname(traceFile))).sort()).toEqual([
 				"instructions-hook.jsonl",
 			]);
+		},
+	);
+});
+
+describe("a checkout whose line endings were rewritten (core.autocrlf)", () => {
+	async function autocrlfFixture(): Promise<Fixture & { start: string }> {
+		const fx = await fixture();
+		await commit(fx.seed, "tools/a.md", "a" + "\n");
+		await commit(fx.seed, "tools/b.md", "b" + "\n");
+		gitIn(fx.seed, "push", "-q", "origin", "main");
+		gitIn(fx.checkout, "pull", "-q", "--ff-only");
+		gitIn(fx.checkout, "config", "core.autocrlf", "true");
+		for (const file of ["tools/a.md", "tools/b.md"]) {
+			await rm(path.join(fx.checkout, file));
+			gitIn(fx.checkout, "checkout", "-q", "--", file);
+		}
+		return { ...fx, start: head(fx) };
+	}
+
+	async function rewriteWithLf(fx: Fixture, file: string, text: string) {
+		await writeFile(path.join(fx.checkout, file), text);
+	}
+
+	itWithGit(
+		"fast-forwards when the incoming commit touches files that differ only in line endings",
+		async () => {
+			const fx = await autocrlfFixture();
+			await rewriteWithLf(fx, "tools/a.md", "a" + "\n");
+			await rewriteWithLf(fx, "tools/b.md", "b" + "\n");
+			await commit(fx.seed, "tools/a.md", "a2" + "\n");
+			const tip = await commit(fx.seed, "tools/b.md", "b2" + "\n");
+			gitIn(fx.seed, "push", "-q", "origin", "main");
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "fast-forwarded",
+				from: fx.start,
+				to: tip,
+			});
+			expect(head(fx)).toBe(tip);
+			expect(
+				(
+					await readFile(path.join(fx.checkout, "tools/a.md"), "utf8")
+				).replaceAll("\r", ""),
+			).toBe("a2" + "\n");
+			await nothingLeftBehind(fx);
+		},
+	);
+
+	itWithGit(
+		"names only the real change, and restores nothing, when one blocker is an edit",
+		async () => {
+			const fx = await autocrlfFixture();
+			await rewriteWithLf(fx, "tools/a.md", "a" + "\n");
+			await rewriteWithLf(fx, "tools/b.md", "my edit" + "\n");
+			await commit(fx.seed, "tools/a.md", "a2" + "\n");
+			const tip = await commit(fx.seed, "tools/b.md", "b2" + "\n");
+			gitIn(fx.seed, "push", "-q", "origin", "main");
+			const before = await readFile(path.join(fx.checkout, "tools/a.md"));
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "merge-failed",
+				reason: "local-changes",
+				files: ["tools/b.md"],
+			});
+			expect(head(fx)).toBe(fx.start);
+			expect(
+				await readFile(path.join(fx.checkout, "tools/a.md")),
+			).toEqual(before);
+			expect(
+				await readFile(path.join(fx.checkout, "tools/b.md"), "utf8"),
+			).toBe("my edit" + "\n");
+			await nothingLeftBehind(fx);
+		},
+	);
+
+	itWithGit(
+		"still refuses an untracked file the incoming commit adds, restoring nothing",
+		async () => {
+			const fx = await autocrlfFixture();
+			await rewriteWithLf(fx, "tools/a.md", "a" + "\n");
+			await writeFile(path.join(fx.checkout, "NOTES.md"), "mine" + "\n");
+			await commit(fx.seed, "tools/a.md", "a2" + "\n");
+			const tip = await commit(fx.seed, "NOTES.md", "theirs" + "\n");
+			gitIn(fx.seed, "push", "-q", "origin", "main");
+
+			const result = await run(fx, { published: tip });
+
+			expect(result.outcome).toEqual({
+				kind: "merge-failed",
+				reason: "local-changes",
+				files: ["NOTES.md"],
+			});
+			expect(head(fx)).toBe(fx.start);
+		},
+	);
+});
+
+describe("a direct-repository project's hook", () => {
+	itWithGit(
+		"makes no fetch when HEAD already holds the commit the server read",
+		async () => {
+			const fx = await fixture();
+			gitIn(
+				fx.checkout,
+				"remote",
+				"set-url",
+				"origin",
+				"/nowhere/gone.git",
+			);
+			const traceFile = path.join(fx.base, "trace.jsonl");
+
+			const result = await run(fx, {
+				published: fx.first,
+				direct: true,
+				traceFile,
+			});
+
+			expect(result.outcome).toEqual({ kind: "already-current" });
+			expect(result.stdout).toEqual([]);
+			const [entry] = (await readFile(traceFile, "utf8"))
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(entry.phases).toHaveProperty("contains");
+			expect(entry.phases).not.toHaveProperty("fetch");
+		},
+	);
+
+	itWithGit(
+		"fetches only when the commit the server read is not in HEAD",
+		async () => {
+			const fx = await fixture();
+			const tip = await advance(fx);
+			const traceFile = path.join(fx.base, "trace.jsonl");
+
+			const result = await run(fx, {
+				published: tip,
+				direct: true,
+				traceFile,
+			});
+
+			expect(result.outcome).toEqual({
+				kind: "fast-forwarded",
+				from: fx.first,
+				to: tip,
+			});
+			const [entry] = (await readFile(traceFile, "utf8"))
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(Object.keys(entry.phases)).toEqual(
+				expect.arrayContaining(["facts", "fetch", "merge"]),
+			);
 		},
 	);
 });

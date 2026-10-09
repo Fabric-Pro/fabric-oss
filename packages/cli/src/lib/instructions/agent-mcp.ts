@@ -6,18 +6,28 @@
  * <id>`, so the tool reaches that project and nothing else. Each tool is written
  * through its own command line (`claude mcp add ...`, `codex mcp add ...`), never
  * by editing its configuration files. What is registered already is read from
- * those files, as data (`agent-mcp-config.ts`), and never by asking the tool:
- * Claude Code's `mcp get` and `mcp list` health-check the servers they name, and
- * in a checkout one of them can be the repository's own project-scope `fabric`.
- * Nothing here prints what a tool says, and a name read from a file is shown only
- * if it is plain.
+ * those files, as data, every server of every name (`agent-mcp-config.ts`), and
+ * classified by its address alone (`agent-mcp-servers.ts`): this project's
+ * gateway, another project's, the organization-wide one, someone else's, or a
+ * command. Nothing here prints what a tool says, and a name read from a file is
+ * shown only if it is plain.
  *
- * What a run does for a tool that already has a server of that name:
+ * What a run does for each tool:
  *
- *   - the same URL: nothing, it is already done;
- *   - another URL that is a Fabric gateway of this deployment, in the scope this
- *     run writes to: replaced, it is Fabric's to replace;
- *   - anything else: left alone, and said so with the line to do it by hand.
+ *   - a server the tool will use already points at this project, under any
+ *     name: nothing, it is already done;
+ *   - a server of one of the names Fabric registers under (`fabric-<id>`, or the
+ *     older `fabric`, which earlier versions wrote to the checkout's local scope)
+ *     points at another project of this deployment, in the one scope this run
+ *     writes to: replaced, it is Fabric's to replace;
+ *   - the organization-wide server, and any server that is someone else's or
+ *     that could not be told: never touched, and the project's server is added
+ *     beside it. Only an entry holding the very name the project's server needs
+ *     can get in the way, and then it is said so with the line to do it by hand.
+ *
+ * Once the project's server is there, Claude Code is asked about that one
+ * server (`claude mcp get <name>`) whether it is connected, and Codex, which has
+ * no such question, is not.
  *
  * A line to do something by hand is printed only when every word of it is plain
  * (`shell-words.ts`); a deployment address that is not is never written into one
@@ -27,24 +37,33 @@
  * `mcp login` is run with the terminal handed to it; otherwise its line is
  * printed. A login that does not finish never fails `init`.
  */
-import { isGatewayUrlOf, projectResource } from "../oauth/project-resource.js";
+import {
+	normalizeServerUrl,
+	projectResource,
+} from "../oauth/project-resource.js";
 import { NO_LINE_FOR_ADDRESS, pasteableLine } from "../shell-words.js";
 import {
 	type AgentMcpFact,
-	type ClaudeServer,
-	readClaudeServers,
+	LEGACY_SERVER_NAME,
 	readCodexServers,
-	readRegistration,
 } from "./agent-mcp-config.js";
+import {
+	type ClassifiedServer,
+	describeTarget,
+	inspectServers,
+	orgWideServersOf,
+	projectServersOf,
+	registrationOf,
+	shownName,
+} from "./agent-mcp-servers.js";
 import type { AgentCommand, AgentRun, AgentRunner } from "./agent-run.js";
+import type { GatewayProbe } from "./gateway-probe.js";
 import { findSessionStartHooks, type InstructionsHookTool } from "./hook.js";
-
-/** Claude Code's server for a project, kept in the checkout's own (local) scope. */
-const CLAUDE_SERVER_NAME = "fabric";
 
 /** How long each step may take. */
 const WRITE_TIMEOUT_MS = 20_000;
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
+const STATUS_TIMEOUT_MS = 5_000;
 
 const TOOL_LABEL: Record<InstructionsHookTool, string> = {
 	"claude-code": "Claude Code",
@@ -60,7 +79,12 @@ type AgentMcpOutcome =
 	| { kind: "registered" }
 	| { kind: "replaced" }
 	| { kind: "already" }
-	| { kind: "left"; reason: "foreign" | "other-scope" }
+	/**
+	 * A server of the same name that is not this project's gateway, in the one
+	 * place that is the person's own explicit choice for this checkout. `scope`
+	 * is Claude Code's local scope, or `null` for a tool with no scopes.
+	 */
+	| { kind: "left"; scope: "local" | null; points: string }
 	/** The tool's command is not on PATH. */
 	| { kind: "skipped" }
 	/**
@@ -79,7 +103,22 @@ type AgentMcpLogin =
 	| "printed"
 	/** Printed for a server that was registered before, which may not be signed in. */
 	| "hint"
+	/** The tool itself reported the server connected, so it is signed in. */
+	| "signed-in"
 	| "unneeded";
+
+/**
+ * What the tool says of the project's server when asked about that one server:
+ * only Claude Code can be, so Codex's is `unavailable`, and so is a tool that
+ * could not be asked or answered in a way that says nothing.
+ */
+type AgentMcpStatus =
+	| "connected"
+	| "needs-sign-in"
+	| "unreachable"
+	| "unavailable"
+	/** Not asked: machine-readable output walks nothing through and starts nothing. */
+	| "unchecked";
 
 export interface AgentMcpResult {
 	tool: InstructionsHookTool;
@@ -89,6 +128,15 @@ export interface AgentMcpResult {
 	expectedName: string;
 	url: string;
 	outcome: AgentMcpOutcome;
+	/** Same-name servers in wider scopes that this project's local entry takes precedence over. */
+	shadowed: readonly ShadowedServer[];
+	/** The name of the person's organization-wide Fabric server, which is left as it is. */
+	orgWide: string | null;
+	/** Servers whose address is on this deployment but that could not be told apart from Fabric's, and were left as they are. */
+	unverified: readonly UnverifiedServer[];
+	status: AgentMcpStatus;
+	/** The host the project's server is at, as it may be shown, for a status that names it. */
+	host: string;
 	login: AgentMcpLogin;
 	/** The line that registers the server by hand, or `null` when it cannot be written as one. */
 	registerLine: string | null;
@@ -96,16 +144,43 @@ export interface AgentMcpResult {
 	loginLine: string | null;
 }
 
-/** Whether every selected tool has this project's server registered. */
+function isRegistered(result: AgentMcpResult): boolean {
+	return (
+		result.outcome.kind === "registered" ||
+		result.outcome.kind === "replaced" ||
+		result.outcome.kind === "already"
+	);
+}
+
+/** Whether every selected tool actually has this project's server registered. */
 export function mcpRegistrationComplete(
 	results: readonly AgentMcpResult[],
 ): boolean {
-	return results.every(
-		(result) =>
-			result.outcome.kind === "registered" ||
-			result.outcome.kind === "replaced" ||
-			result.outcome.kind === "already",
+	return results.every(isRegistered);
+}
+
+/**
+ * Whether a tool could not be set up, as opposed to being left for the person
+ * on purpose: Codex signs in as part of adding the server and waits for a
+ * browser, so where nobody is at the terminal `init` does not run it, prints
+ * the line and goes on (`manual`). That is a note, not a failure.
+ */
+export function mcpSetupFailed(results: readonly AgentMcpResult[]): boolean {
+	return results.some(
+		(result) => !isRegistered(result) && result.outcome.kind !== "manual",
 	);
+}
+
+/** The tools left for the person to finish, each with the line to run. */
+export function mcpManualSteps(
+	results: readonly AgentMcpResult[],
+): Array<{ tool: InstructionsHookTool; registerLine: string | null }> {
+	return results
+		.filter((result) => result.outcome.kind === "manual")
+		.map((result) => ({
+			tool: result.tool,
+			registerLine: result.registerLine,
+		}));
 }
 
 /** Whether registration completed but the coding tool still needs its own OAuth sign-in. */
@@ -138,23 +213,9 @@ export function codexServerName(projectId: string): string {
 	return `fabric-${suffix === "" ? projectId : suffix}`;
 }
 
-export function serverNameFor(
-	tool: InstructionsHookTool,
-	projectId: string,
-): string {
-	return tool === "codex" ? codexServerName(projectId) : CLAUDE_SERVER_NAME;
-}
-
-/** What a server may be called for its name to be shown, which is what Codex accepts. */
-const PLAIN_NAME = /^[A-Za-z0-9_-]{1,64}$/;
-
-/**
- * A name read out of a file somebody else may have written, as it may be shown.
- * One with a character a terminal reads, or one that is not plain, is said to be
- * unusual and not repeated.
- */
-function shownName(name: string): string {
-	return PLAIN_NAME.test(name) ? name : "(a name with unusual characters)";
+/** Every tool's server for a project has the one name, so a project's server is the same wherever it is read. */
+export function serverNameFor(projectId: string): string {
+	return codexServerName(projectId);
 }
 
 function registerArguments(
@@ -196,6 +257,8 @@ export async function agentRegistrationFacts(input: {
 	home: string | null;
 	env: Readonly<Record<string, string | undefined>>;
 	platform: NodeJS.Platform;
+	/** Asks where an address on the deployment's origin points, when it is spelled unlike any gateway. */
+	probe?: GatewayProbe | undefined;
 }): Promise<AgentMcpFact[]> {
 	const url = projectResource(input.origin, "mcp", input.projectId);
 	const facts: AgentMcpFact[] = [];
@@ -208,19 +271,31 @@ export async function agentRegistrationFacts(input: {
 		if (hooks.state !== "ok" || hooks.commands.length === 0) {
 			continue;
 		}
-		const name = serverNameFor(tool, input.projectId);
+		const name = serverNameFor(input.projectId);
+		const inspected = await inspectServers({
+			tool,
+			origin: input.origin,
+			projectId: input.projectId,
+			probe: input.probe,
+			cwd: input.cwd,
+			home: input.home,
+			env: input.env,
+			platform: input.platform,
+		});
 		facts.push({
 			tool,
 			name,
-			state: await readRegistration({
-				tool,
-				name,
-				url,
-				cwd: input.cwd,
-				home: input.home,
-				env: input.env,
-				platform: input.platform,
-			}),
+			...(inspected.state === "read"
+				? registrationOf(inspected.servers, name)
+				: {
+						state:
+							inspected.state === "unlocated"
+								? "missing"
+								: "unreadable",
+						projectServers: [],
+						orgWide: [],
+						foreignSameName: false,
+					}),
 			registerLine: lineOf(
 				TOOL_COMMAND[tool],
 				registerArguments(tool, name, url),
@@ -234,7 +309,28 @@ function succeeded(run: AgentRun): boolean {
 	return run.kind === "exited" && run.code === 0;
 }
 
-interface Registration {
+/** A same-name server in a wider scope that the project's own entry takes precedence over. */
+interface ShadowedServer {
+	scope: "user" | "project";
+	/** Where it points, as it may be shown: a plain host, `a local command`, or `another address`. */
+	points: string;
+}
+
+/** A server in this tool that could not be told apart from Fabric's, and was left as it is. */
+interface UnverifiedServer {
+	name: string;
+	points: string;
+}
+
+/** What a run found around the project's server, to be said and not acted on. */
+interface Surroundings {
+	shadowed?: ShadowedServer[];
+	/** The name of the person's organization-wide Fabric server, which is left as it is. */
+	orgWide?: string;
+	unverified?: UnverifiedServer[];
+}
+
+interface Registration extends Surroundings {
 	outcome: AgentMcpOutcome;
 	/** The name the server ended up under, which may be one the person chose. */
 	name: string;
@@ -243,50 +339,117 @@ interface Registration {
 }
 
 interface Where {
+	projectId: string;
 	cwd: string;
 	origin: string;
 	url: string;
 	home: string | null;
 	env: Readonly<Record<string, string | undefined>>;
 	platform: NodeJS.Platform;
+	probe?: GatewayProbe | undefined;
 }
 
-/** Whether a server of this deployment's own gateway, whichever project it is for. */
-function isOurs(origin: string, url: string | null): boolean {
-	return url !== null && isGatewayUrlOf(origin, url);
+/**
+ * Whether two server URLs are the same address however they are spelled (a
+ * trailing slash, a host in capitals). Claude Code keeps its OAuth sign-in
+ * under the server's name and URL, shared by every checkout that registers
+ * the same one, so an entry that already points here must never be removed
+ * and added again: `claude mcp remove` signs out every other checkout that
+ * holds the same server. Only an entry that points somewhere else is removed.
+ */
+function sameServerUrl(left: string | null, right: string): boolean {
+	if (left === null) {
+		return false;
+	}
+	const normal = normalizeServerUrl(left);
+	return normal === null
+		? left === right
+		: normal === normalizeServerUrl(right);
+}
+
+/** What a run says about the servers beside the project's, which it never touches. */
+function surroundingsOf(servers: readonly ClassifiedServer[]): Surroundings {
+	const orgWide = orgWideServersOf(servers)[0];
+	const unverified = servers
+		.filter((server) => server.effective && server.kind === "unknown")
+		.map((server) => ({
+			name: shownName(server.name),
+			points: server.points,
+		}));
+	return {
+		...(orgWide === undefined ? {} : { orgWide: shownName(orgWide.name) }),
+		unverified,
+	};
+}
+
+/** The name the project's server is found under: the one Fabric registers, else the older one, else whatever the person chose. */
+function foundUnder(
+	here: readonly ClassifiedServer[],
+	name: string,
+): string | undefined {
+	return (
+		here.find((server) => server.name === name) ??
+		here.find((server) => server.name === LEGACY_SERVER_NAME) ??
+		here[0]
+	)?.name;
 }
 
 async function registerWithClaude(
 	run: AgentRunner,
 	context: Where,
 ): Promise<Registration> {
-	const name = CLAUDE_SERVER_NAME;
-	const read = await readClaudeServers({
-		name,
+	const name = serverNameFor(context.projectId);
+	const inspected = await inspectServers({
+		tool: "claude-code",
+		origin: context.origin,
+		projectId: context.projectId,
+		probe: context.probe,
 		cwd: context.cwd,
 		home: context.home,
 		env: context.env,
 		platform: context.platform,
 	});
-	if (read.state !== "read") {
+	if (inspected.state !== "read") {
 		return { outcome: { kind: "failed" }, name };
 	}
-	const existing: readonly ClaudeServer[] = read.servers;
+	const servers = inspected.servers;
+	const around = surroundingsOf(servers);
 
-	if (existing.some((server) => server.url === context.url)) {
-		return { outcome: { kind: "already" }, name };
+	// Whatever name the person gave it, a server Claude Code will use that
+	// points at this project is the project's server.
+	const alreadyAs = foundUnder(projectServersOf(servers), name);
+	if (alreadyAs !== undefined) {
+		return { outcome: { kind: "already" }, name: alreadyAs, ...around };
 	}
-	if (existing.some((server) => !isOurs(context.origin, server.url))) {
-		return { outcome: { kind: "left", reason: "foreign" }, name };
+
+	// Only this checkout's local scope is written to, so only an entry there can
+	// be in the way of the name, and only one of Fabric's own names at another of
+	// this deployment's projects is stale: the person's other servers, the
+	// organization-wide one and a `fabric` of another make are never touched.
+	const local = servers.find(
+		(server) => server.scope === "local" && server.name === name,
+	);
+	if (local !== undefined && local.kind !== "other-project") {
+		return {
+			outcome: { kind: "left", scope: "local", points: local.points },
+			name,
+			...around,
+		};
 	}
-	const replacing = existing.length > 0;
-	if (replacing) {
-		if (!existing.some((server) => server.scope === "local")) {
-			return { outcome: { kind: "left", reason: "other-scope" }, name };
-		}
+	const stale = servers
+		.filter(
+			(server) =>
+				server.scope === "local" &&
+				server.kind === "other-project" &&
+				(server.name === name || server.name === LEGACY_SERVER_NAME),
+		)
+		.map((server) => server.name);
+	// Reached only when no server in use points at this URL, so none removed
+	// here is one other checkouts rely on for it.
+	for (const staleName of stale) {
 		const removed = await run(
 			"claude",
-			["mcp", "remove", name, "--scope", "local"],
+			["mcp", "remove", staleName, "--scope", "local"],
 			{ cwd: context.cwd, timeoutMs: WRITE_TIMEOUT_MS },
 		);
 		if (removed.kind === "missing") {
@@ -305,12 +468,19 @@ async function registerWithClaude(
 	if (added.kind === "missing") {
 		return { outcome: { kind: "skipped" }, name };
 	}
-	return {
-		outcome: succeeded(added)
-			? { kind: replacing ? "replaced" : "registered" }
-			: { kind: "failed" },
-		name,
-	};
+	return succeeded(added)
+		? {
+				outcome: { kind: stale.length > 0 ? "replaced" : "registered" },
+				name,
+				...around,
+				shadowed: servers.flatMap((server) =>
+					server.name === name &&
+					(server.scope === "user" || server.scope === "project")
+						? [{ scope: server.scope, points: server.points }]
+						: [],
+				),
+			}
+		: { outcome: { kind: "failed" }, name };
 }
 
 /**
@@ -327,29 +497,37 @@ async function registerWithCodex(
 	context: Where & { name: string },
 	interactive: boolean,
 ): Promise<Registration> {
-	const read = await readCodexServers({
+	const inspected = await inspectServers({
+		tool: "codex",
+		origin: context.origin,
+		projectId: context.projectId,
+		probe: context.probe,
+		cwd: context.cwd,
 		home: context.home,
 		env: context.env,
+		platform: context.platform,
 	});
-	if (read.state !== "read") {
+	if (inspected.state !== "read") {
 		return { outcome: { kind: "failed" }, name: context.name };
 	}
-	const servers = read.servers;
+	const servers = inspected.servers;
+	const around = surroundingsOf(servers);
 
-	const sameUrl = servers.find((server) => server.url === context.url);
-	if (sameUrl !== undefined) {
-		return { outcome: { kind: "already" }, name: sameUrl.name };
+	const alreadyAs = foundUnder(projectServersOf(servers), context.name);
+	if (alreadyAs !== undefined) {
+		return { outcome: { kind: "already" }, name: alreadyAs, ...around };
 	}
 	const sameName = servers.find((server) => server.name === context.name);
-	if (sameName !== undefined && !isOurs(context.origin, sameName.url)) {
+	if (sameName !== undefined && sameName.kind !== "other-project") {
 		return {
-			outcome: { kind: "left", reason: "foreign" },
+			outcome: { kind: "left", scope: null, points: sameName.points },
 			name: context.name,
+			...around,
 		};
 	}
 
 	if (!interactive) {
-		return { outcome: { kind: "manual" }, name: context.name };
+		return { outcome: { kind: "manual" }, name: context.name, ...around };
 	}
 	// `codex mcp add` of an existing name replaces it, so a gateway that is
 	// this deployment's own, on another project, is replaced by the same call.
@@ -367,6 +545,7 @@ async function registerWithCodex(
 			outcome: { kind: written },
 			name: context.name,
 			login: "completed",
+			...around,
 		};
 	}
 	// The add writes the server before it waits for the sign-in, so a command
@@ -381,13 +560,15 @@ async function registerWithCodex(
 		after.state === "read" &&
 		after.servers.some(
 			(server) =>
-				server.name === context.name && server.url === context.url,
+				server.name === context.name &&
+				sameServerUrl(server.url, context.url),
 		);
 	return registered
 		? {
 				outcome: { kind: written },
 				name: context.name,
 				login: "not-finished",
+				...around,
 			}
 		: { outcome: { kind: "failed" }, name: context.name };
 }
@@ -406,6 +587,14 @@ export interface RegisterAgentMcpInput {
 	run: AgentRunner;
 	/** A person is at the terminal, so each tool's sign-in may be walked through now. */
 	interactive: boolean;
+	/**
+	 * Ask Claude Code whether it is already signed in (`claude mcp get`). Off
+	 * for machine-readable output, where nothing is walked through and the
+	 * extra process only costs time.
+	 */
+	checkSignIn?: boolean;
+	/** Asks where an address on the deployment's origin points, when it is spelled unlike any gateway. */
+	probe?: GatewayProbe;
 }
 
 /**
@@ -418,17 +607,19 @@ export async function registerAgentMcp(
 ): Promise<AgentMcpResult[]> {
 	const url = projectResource(input.origin, "mcp", input.projectId);
 	const where: Where = {
+		projectId: input.projectId,
 		cwd: input.cwd,
 		origin: input.origin,
 		url,
 		home: input.home,
 		env: input.env,
 		platform: input.platform,
+		probe: input.probe,
 	};
 	const results: AgentMcpResult[] = [];
 
 	for (const tool of input.tools) {
-		const intendedName = serverNameFor(tool, input.projectId);
+		const intendedName = serverNameFor(input.projectId);
 		const command = TOOL_COMMAND[tool];
 		const registration =
 			tool === "codex"
@@ -445,6 +636,11 @@ export async function registerAgentMcp(
 			expectedName: intendedName,
 			url,
 			outcome: registration.outcome,
+			shadowed: registration.shadowed ?? [],
+			orgWide: registration.orgWide ?? null,
+			unverified: registration.unverified ?? [],
+			status: "unchecked",
+			host: describeTarget(url),
 			login:
 				registration.login ??
 				(registration.outcome.kind === "already" && loginLine !== null
@@ -456,6 +652,35 @@ export async function registerAgentMcp(
 			),
 			loginLine,
 		});
+	}
+
+	// Ask Claude Code about the project's server, and only that one, before
+	// saying a sign-in is pending: another checkout's sign-in covers this one,
+	// and a person who signed in earlier is not asked again. It points at this
+	// project's gateway, so what `mcp get` starts is a request to Fabric and
+	// nothing else. Codex has no question for one server, so it is not asked.
+	for (const result of results) {
+		if (!isRegistered(result)) {
+			continue;
+		}
+		if (result.tool === "codex") {
+			result.status = "unavailable";
+		} else if (input.checkSignIn !== false) {
+			result.status = await claudeStatus(
+				input.run,
+				result.name,
+				input.cwd,
+			);
+		}
+		if (result.status === "connected") {
+			result.login = "signed-in";
+		} else if (
+			result.status === "needs-sign-in" &&
+			result.outcome.kind === "already" &&
+			result.loginLine !== null
+		) {
+			result.login = "printed";
+		}
 	}
 
 	// A server a command registered without signing in, and that was new, is
@@ -489,6 +714,33 @@ export async function registerAgentMcp(
 	return results;
 }
 
+const STATUS_LINE = /^\s*Status:\s*(?:[^\sA-Za-z0-9]+\s+)?(.+?)\s*$/m;
+
+/** What `claude mcp get` says of one server it was asked about, by its `Status:` line. */
+async function claudeStatus(
+	run: AgentRunner,
+	name: string,
+	cwd: string,
+): Promise<AgentMcpStatus> {
+	const answer = await run("claude", ["mcp", "get", name], {
+		cwd,
+		timeoutMs: STATUS_TIMEOUT_MS,
+	});
+	if (answer.kind !== "exited" || answer.code !== 0) {
+		return "unavailable";
+	}
+	const status = STATUS_LINE.exec(answer.stdout)?.[1]?.toLowerCase() ?? "";
+	if (status === "connected") {
+		return "connected";
+	}
+	if (status === "needs authentication") {
+		return "needs-sign-in";
+	}
+	return /^(?:failed|disconnected|not connected|error)\b/.test(status)
+		? "unreachable"
+		: "unavailable";
+}
+
 /** What a run says about each tool, one line each, and the line to finish a sign-in. */
 export function agentMcpLines(results: readonly AgentMcpResult[]): string[] {
 	const lines: string[] = [];
@@ -513,9 +765,7 @@ export function agentMcpLines(results: readonly AgentMcpResult[]): string[] {
 				break;
 			case "left":
 				lines.push(
-					outcome.reason === "foreign"
-						? `${label} already has a server named "${result.name}" that is not a Fabric gateway, so it was left alone. Remove it, then ${byHand(result.registerLine)}`
-						: `${label} has a "${result.name}" server in another scope that points at a different Fabric gateway, so it was left alone. Remove it with: ${TOOL_COMMAND[result.tool]} mcp remove ${result.name}, then ${byHand(result.registerLine)}`,
+					`${label} already has a server named "${result.name}" ${outcome.scope === "local" ? "in this checkout's local settings" : "in its settings"} that points at ${outcome.points}, not at this project's gateway, so it was left alone. Remove it, then ${byHand(result.registerLine)}`,
 				);
 				break;
 			case "skipped":
@@ -538,6 +788,21 @@ export function agentMcpLines(results: readonly AgentMcpResult[]): string[] {
 				return unreachable;
 			}
 		}
+		if (result.orgWide !== null && isRegistered(result)) {
+			lines.push(
+				`Your organization-wide Fabric server "${result.orgWide}" stays as it is; coding instructions use the project server "${result.name}".`,
+			);
+		}
+		for (const server of result.unverified) {
+			lines.push(
+				`${label} has a server "${server.name}" at ${server.points} that could not be told apart from Fabric's, so it was left as it is.`,
+			);
+		}
+		for (const server of result.shadowed) {
+			lines.push(
+				`${label} also has a "${result.name}" server in your ${server.scope} settings (${server.points}); in this checkout the project's gateway takes precedence.`,
+			);
+		}
 		if (result.login === "printed") {
 			lines.push(
 				result.loginLine === null
@@ -559,4 +824,44 @@ export function agentMcpLines(results: readonly AgentMcpResult[]): string[] {
 		}
 	}
 	return lines;
+}
+
+/**
+ * One line per tool for the end of a run: what the project's server is in it,
+ * and how far the sign-in has got where the tool can say.
+ */
+export function agentMcpSummaryLines(
+	results: readonly AgentMcpResult[],
+): string[] {
+	return results.map((result) => {
+		const label = TOOL_LABEL[result.tool];
+		const outcome = result.outcome;
+		if (!isRegistered(result)) {
+			return outcome.kind === "manual"
+				? `${label}: not registered yet, see above.`
+				: `${label}: nothing usable for this project, see above.`;
+		}
+		const server = `"${result.name}"`;
+		if (result.login === "completed" || result.login === "signed-in") {
+			return `${label}: ${server} connected.`;
+		}
+		switch (result.status) {
+			case "connected":
+				return `${label}: ${server} connected.`;
+			case "needs-sign-in":
+				return `${label}: ${server} registered, needs sign-in.`;
+			case "unreachable":
+				return `${label}: ${server} registered, unreachable (${result.host}).`;
+			case "unavailable":
+				return result.tool === "codex"
+					? `${label}: ${server} registered; sign-in status not available for Codex.`
+					: `${label}: ${server} registered; its status could not be read.`;
+			case "unchecked":
+				return `${label}: ${server} registered.`;
+			default: {
+				const unreachable: never = result.status;
+				return unreachable;
+			}
+		}
+	});
 }

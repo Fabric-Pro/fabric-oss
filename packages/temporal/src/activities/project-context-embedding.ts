@@ -1,4 +1,4 @@
-import { getSystemRAGProviderConfig } from "@repo/ai";
+import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import { stampContextsEmbedded } from "@repo/database";
 import {
 	ensureCollection,
@@ -42,7 +42,7 @@ export async function generateContextEmbeddings(params: {
 	}
 
 	// Get AI provider configuration using centralized function
-	const providerConfig = await getSystemRAGProviderConfig({
+	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 		userId,
 		organizationId,
 	});

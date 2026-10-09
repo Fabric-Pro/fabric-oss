@@ -1090,3 +1090,47 @@
   text-decoration-thickness: 1px;
   text-decoration-color: hsl(var(--muted-foreground) / 0.4);
 }
+
+/* Proposal artifact typography (Fizzy #2801). Scoped to the wrapper the
+   document page puts around a Proposal's live sections and its editor, so the
+   global `.tiptap` rules above, shared with the diff viewer and the other
+   editors, stay as they are. Heading sizes are Tailwind's text-3xl, text-2xl
+   and text-xl steps. The column stops at a readable line length: content-box
+   so the 72ch is the text itself, not the text plus the editor's padding. */
+.proposal-artifact .tiptap {
+  box-sizing: content-box;
+  max-width: 72ch;
+  margin-inline: auto;
+  font-size: 1.0625rem;
+  line-height: 1.75;
+}
+
+.proposal-artifact .tiptap h1,
+.proposal-artifact .tiptap h2,
+.proposal-artifact .tiptap h3,
+.proposal-artifact .tiptap h4,
+.proposal-artifact .tiptap h5,
+.proposal-artifact .tiptap h6 {
+  line-height: 1.3;
+}
+
+.proposal-artifact .tiptap h1 {
+  font-size: 1.875rem;
+}
+
+.proposal-artifact .tiptap h2 {
+  font-size: 1.5rem;
+}
+
+.proposal-artifact .tiptap h3 {
+  font-size: 1.25rem;
+}
+
+/* Below Tailwind's `md` breakpoint the body returns to the editor's size and
+   the column takes the full width. */
+@media (width < 48rem) {
+  .proposal-artifact .tiptap {
+    max-width: none;
+    font-size: 1rem;
+  }
+}

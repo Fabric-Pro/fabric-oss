@@ -13,21 +13,28 @@ import {
 	fetchRef,
 	fetchRefFromUrl,
 } from "../src/lib/instructions/git.js";
+import { resetFetchHeadFlagForTests } from "../src/lib/instructions/git-write.js";
 
-const { spawnMock } = vi.hoisted(() => ({ spawnMock: vi.fn() }));
+const { spawnMock, spawnSyncMock } = vi.hoisted(() => ({
+	spawnMock: vi.fn(),
+	spawnSyncMock: vi.fn(),
+}));
 
 vi.mock("node:child_process", async (importOriginal) => ({
 	...(await importOriginal<typeof import("node:child_process")>()),
 	spawn: spawnMock,
+	spawnSync: spawnSyncMock,
 }));
 
 const TIP = "a".repeat(40);
 
 class FakeChild extends EventEmitter {
-	stdout = new EventEmitter();
-	stderr = new EventEmitter();
+	stdout: EventEmitter & { destroy?: () => void } = new EventEmitter();
+	stderr: EventEmitter & { destroy?: () => void } = new EventEmitter();
 	kill = vi.fn();
 }
+
+let spawnOptions: object | undefined;
 
 interface Call {
 	command: string;
@@ -86,6 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	resetFetchHeadFlagForTests();
 	for (const [name, value] of Object.entries(saved)) {
 		if (value === undefined) {
 			delete process.env[name];
@@ -96,6 +104,131 @@ afterEach(() => {
 });
 
 const soon = (): number => Date.now() + 60_000;
+
+describe("a fetch that hangs past its deadline", () => {
+	it("kills what git started, lets go of its pipes and answers that it timed out", async () => {
+		const hung = new FakeChild();
+		const destroyed = { stdout: vi.fn(), stderr: vi.fn() };
+		hung.stdout.destroy = destroyed.stdout;
+		hung.stderr.destroy = destroyed.stderr;
+		const unref = vi.fn();
+		Object.assign(hung, { unref });
+		spawnMock.mockReset();
+		spawnMock.mockImplementation(
+			(_command: string, _args: string[], options: object) => {
+				spawnOptions = options;
+				return hung;
+			},
+		);
+
+		const result = await fetchRef(
+			"/work/rules",
+			"origin",
+			"main",
+			Date.now() + 40,
+		);
+
+		expect(result).toEqual({ kind: "timed-out" });
+		expect(hung.kill).toHaveBeenCalledWith("SIGTERM");
+		expect(destroyed.stdout).toHaveBeenCalled();
+		expect(destroyed.stderr).toHaveBeenCalled();
+		expect(unref).toHaveBeenCalled();
+		expect(spawnOptions).toMatchObject({
+			stdio: ["ignore", "pipe", "pipe"],
+			detached: process.platform !== "win32",
+		});
+	});
+});
+
+describe("on Windows, the deadline's taskkill", () => {
+	async function hangOn(exitCode: number | null) {
+		const hung = Object.assign(new FakeChild(), {
+			pid: 4242,
+			exitCode,
+			signalCode: null,
+			unref: vi.fn(),
+		});
+		hung.stdout.destroy = vi.fn();
+		hung.stderr.destroy = vi.fn();
+		spawnMock.mockReset();
+		spawnMock.mockImplementation(() => hung);
+		spawnSyncMock.mockReset();
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+		Object.defineProperty(process, "platform", { value: "win32" });
+		try {
+			await fetchRef("/work/rules", "origin", "main", Date.now() + 40);
+		} finally {
+			if (platform) {
+				Object.defineProperty(process, "platform", platform);
+			}
+		}
+	}
+
+	it("ends the tree by the absolute taskkill path while git is still ours", async () => {
+		await hangOn(null);
+
+		expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+		const [command, args] = spawnSyncMock.mock.calls[0] as [
+			string,
+			string[],
+		];
+		expect(command).toMatch(/System32[\\/]taskkill\.exe$/i);
+		expect(args).toEqual(["/PID", "4242", "/T", "/F"]);
+	});
+
+	it("does not aim taskkill at a PID after git has exited", async () => {
+		await hangOn(0);
+
+		expect(spawnSyncMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("on POSIX, the deadline's process group", () => {
+	it("gets SIGTERM, then SIGKILL after the grace even though the leader already exited", async () => {
+		const hung = Object.assign(new FakeChild(), {
+			pid: 4242,
+			exitCode: null,
+			signalCode: null,
+			unref: vi.fn(),
+		});
+		hung.stdout.destroy = vi.fn();
+		hung.stderr.destroy = vi.fn();
+		spawnMock.mockReset();
+		spawnMock.mockImplementation(() => hung);
+		const killed: Array<[number, string]> = [];
+		const kill = vi.spyOn(process, "kill").mockImplementation(((
+			pid: number,
+			signal: string,
+		) => {
+			killed.push([pid, signal]);
+			if (signal === "SIGTERM") {
+				setTimeout(() => hung.emit("close", null), 10);
+			}
+			return true;
+		}) as typeof process.kill);
+		const platform = Object.getOwnPropertyDescriptor(process, "platform");
+		Object.defineProperty(process, "platform", { value: "linux" });
+		try {
+			const result = await fetchRef(
+				"/work/rules",
+				"origin",
+				"main",
+				Date.now() + 30,
+			);
+
+			expect(result).toEqual({ kind: "timed-out" });
+			expect(killed).toEqual([
+				[-4242, "SIGTERM"],
+				[-4242, "SIGKILL"],
+			]);
+		} finally {
+			kill.mockRestore();
+			if (platform) {
+				Object.defineProperty(process, "platform", platform);
+			}
+		}
+	});
+});
 
 describe("Fabric gateway clone", () => {
 	const url =
@@ -170,11 +303,14 @@ describe("fetchRef", () => {
 			"maintenance.auto=false",
 			"fetch",
 			"--no-recurse-submodules",
+			"--no-tags",
+			"--no-write-fetch-head",
 			"--",
 			"origin",
 			"refs/heads/main:refs/remotes/origin/main",
 		]);
 		expect(calls[0]?.args.some((arg) => arg.startsWith("+"))).toBe(false);
+		expect(calls[0]?.args).not.toContain("--no-show-forced-updates");
 		expect(calls[1]?.args.slice(-4)).toEqual([
 			"rev-parse",
 			"--verify",
@@ -314,6 +450,8 @@ describe("fastForwardTo", () => {
 			"core.fsmonitor=false",
 			"-c",
 			"credential.interactive=never",
+			"-c",
+			"core.quotepath=false",
 			"merge",
 			"--ff-only",
 			"--no-edit",
@@ -342,5 +480,50 @@ describe("fastForwardTo", () => {
 		const result = await fastForwardTo("/work/rules", TIP, soon());
 
 		expect(result).toEqual({ kind: "failed", reason: "other" });
+	});
+});
+
+describe("a git that does not know a fetch flag, or the gateway's option", () => {
+	it("says a git without --config-env needs updating, as its own reason", async () => {
+		answers.push({
+			code: 129,
+			stderr: "unknown option: --config-env=http.x.extraHeader=FABRIC\nusage: git [-v | --version]",
+		});
+
+		const result = await fetchRefFromUrl(
+			"/work/rules",
+			"https://example.com/api/v1/git/1",
+			"origin",
+			"main",
+			soon(),
+			{
+				url: "https://example.com/api/v1/git/1",
+				authorization: "Bearer synthetic-fixture",
+			},
+		);
+
+		expect(result).toEqual({ kind: "failed", reason: "old-git" });
+	});
+
+	it("asks again without --no-write-fetch-head when git 2.28 does not know it, and remembers", async () => {
+		answers.push(
+			{
+				code: 129,
+				stderr: "error: unknown option `no-write-fetch-head'\nusage: git fetch",
+			},
+			{ code: 0 },
+			{ code: 0, stdout: `${TIP}\n` },
+			{ code: 0 },
+			{ code: 0, stdout: `${TIP}\n` },
+		);
+
+		const first = await fetchRef("/work/rules", "origin", "main", soon());
+		const second = await fetchRef("/work/rules", "origin", "main", soon());
+
+		expect(first).toEqual({ kind: "fetched", tip: TIP });
+		expect(second).toEqual({ kind: "fetched", tip: TIP });
+		expect(calls[0]?.args).toContain("--no-write-fetch-head");
+		expect(calls[1]?.args).not.toContain("--no-write-fetch-head");
+		expect(calls[3]?.args).not.toContain("--no-write-fetch-head");
 	});
 });

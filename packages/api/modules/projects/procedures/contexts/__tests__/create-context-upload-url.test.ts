@@ -122,6 +122,24 @@ describe("createContextUploadUrl", () => {
 		);
 	});
 
+	it("lists the source under the title the person typed, else the file name", async () => {
+		await handler({
+			input: { ...baseInput, title: "  Design notes " },
+			context: ctx,
+		});
+		await handler({
+			input: { ...baseInput, title: "   " },
+			context: ctx,
+		});
+
+		expect(mockCreateFileContext.mock.calls[0][0].metadata.title).toBe(
+			"Design notes",
+		);
+		expect(mockCreateFileContext.mock.calls[1][0].metadata.title).toBe(
+			"design.md",
+		);
+	});
+
 	it("accepts a .md sent as application/octet-stream and persists text/markdown", async () => {
 		const res = await handler({
 			input: { ...baseInput, mimeType: "application/octet-stream" },

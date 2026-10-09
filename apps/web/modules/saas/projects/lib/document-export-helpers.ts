@@ -9,6 +9,9 @@
  * - `normalizeOrderedMarkerEscape` — drop a serializer-escaped ordered marker
  *   (re-exported from `@repo/utils`, which the Glossy cache keys share)
  * - `stripInlineMarkdown`          — inline Markdown → plain text for jsPDF
+ * - `TABLE_ROW`, `TABLE_SEPARATOR`, `splitTableRow`, `readMarkdownTable`
+ *                                  — read a GFM table out of Markdown lines
+ * - `toWinAnsiText`                — text jsPDF's built-in fonts can draw
  * - `getImageDimensions`           — natural size of an image data URL
  * - `tryAddPdfImage`               — place an image on a jsPDF page
  * - `tryLoadImageBytes`            — image → bytes and size for a DOCX `ImageRun`
@@ -38,6 +41,58 @@ export function stripInlineMarkdown(text: string): string {
 			.replace(/_(.+?)_/g, "$1")
 			.replace(/`([^`]+)`/g, "$1")
 	);
+}
+
+/**
+ * A horizontal rule in any CommonMark spelling: three or more of one of
+ * `-`, `*` or `_`, spaces allowed between. The editor saves its rule as
+ * `* * *`, which would otherwise read as a list item.
+ */
+const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
+
+export function isThematicBreak(line: string): boolean {
+	return THEMATIC_BREAK.test(line);
+}
+
+/** A GFM table row: a line wrapped in pipes. */
+export const TABLE_ROW = /^\s*\|.*\|\s*$/;
+
+/** The delimiter row under a GFM table's header (`| --- | :---: |`). */
+export const TABLE_SEPARATOR =
+	/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*(?::?-+:?\s*)?\|?\s*$/;
+
+/** The cells of a table row, split on unescaped pipes and trimmed. */
+export function splitTableRow(line: string): string[] {
+	const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+	return cells.split(/(?<!\\)\|/).map((cell) => cell.trim());
+}
+
+/**
+ * The GFM table starting at `lines[start]`, if one does: a header row, the
+ * delimiter row, then every row up to the first line that is not one. Rows
+ * keep their cells' inline Markdown; `next` is the index after the table.
+ * Null when `start` is not a header row followed by a delimiter row.
+ */
+export function readMarkdownTable(
+	lines: readonly string[],
+	start: number,
+): { rows: string[][]; columns: number; next: number } | null {
+	const header = lines[start];
+	if (
+		header === undefined ||
+		!TABLE_ROW.test(header) ||
+		!TABLE_SEPARATOR.test(lines[start + 1] ?? "")
+	) {
+		return null;
+	}
+	const rows = [splitTableRow(header)];
+	let next = start + 2;
+	while (next < lines.length && TABLE_ROW.test(lines[next])) {
+		rows.push(splitTableRow(lines[next]));
+		next++;
+	}
+	const columns = Math.max(...rows.map((row) => row.length));
+	return { rows, columns, next };
 }
 
 /**
@@ -417,4 +472,218 @@ export async function svgToPng(
 		width: svgW,
 		height: svgH,
 	};
+}
+
+/**
+ * The characters of Windows-1252 at 0x80–0x9F: with Latin-1, all that the
+ * PDF's built-in Helvetica and Courier can draw.
+ */
+const WIN_ANSI_EXTRAS = new Set("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ");
+
+/** Readable stand-ins for common characters outside Windows-1252. */
+const WIN_ANSI_FALLBACKS: Readonly<Record<string, string>> = {
+	"≥": ">=",
+	"≤": "<=",
+	"→": "->",
+	"←": "<-",
+	"↔": "<->",
+	"⇒": "=>",
+	"⇐": "<=",
+	"⇔": "<=>",
+	"≠": "!=",
+	"≈": "~",
+	// Bullet variants: Windows-1252 has the bullet itself.
+	"●": "•",
+	"▪": "•",
+	"◦": "•",
+	"▸": "•",
+	"►": "•",
+	"‣": "•",
+	"′": "'",
+	"″": '"',
+	// Latin letters that do not decompose into a base letter and a mark.
+	ł: "l",
+	Ł: "L",
+	đ: "d",
+	Đ: "D",
+	ı: "i",
+};
+
+/**
+ * Words that stand in for a symbol. Each is set off by a space from a
+ * letter or digit beside it: `₹500` is `INR 500`, `↑20%` is `up 20%`.
+ */
+const WIN_ANSI_WORDS: Readonly<Record<string, string>> = {
+	"✓": "Yes",
+	"✔": "Yes",
+	"✅": "Yes",
+	"✗": "No",
+	"✘": "No",
+	"❌": "No",
+	"↑": "up",
+	"↓": "down",
+	// Currencies outside Windows-1252, as their ISO 4217 codes.
+	"₹": "INR",
+	"₽": "RUB",
+	"₴": "UAH",
+	"₩": "KRW",
+	"₪": "ILS",
+	"₺": "TRY",
+	"₦": "NGN",
+	"₫": "VND",
+};
+
+/**
+ * A run of superscript digits and signs: Windows-1252's ¹ ² ³, and ⁰ ⁴–⁹
+ * ⁺ ⁻, which it lacks.
+ */
+const SUPERSCRIPT_RUN = /[\u00b9\u00b2\u00b3\u2070\u2074-\u207b]+/g;
+const OUTSIDE_WIN_ANSI_SUPERSCRIPT = /[\u2070\u2074-\u207b]/;
+
+/**
+ * A superscript run holding a character Windows-1252 lacks, after a caret
+ * (Fizzy #2589 follow-up): flattened, `10⁶` would read `106`, a different
+ * figure. `10⁶` → `10^6`, `10⁻³` → `10^-3`, and `10¹⁵` → `10^15`, since
+ * ¹ belongs to the run. A run of ¹ ² ³ alone is drawn as it is. The
+ * compatibility form of `⁻` is the minus sign, which `toWinAnsiChar`
+ * writes as `-`.
+ */
+function caretSuperscripts(text: string): string {
+	return text.replace(SUPERSCRIPT_RUN, (run) =>
+		OUTSIDE_WIN_ANSI_SUPERSCRIPT.test(run)
+			? `^${run.normalize("NFKC")}`
+			: run,
+	);
+}
+
+const COMBINING_MARK = /\p{M}/gu;
+const LONE_MARK = /^\p{M}$/u;
+const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u;
+
+/** The soft hyphen: Latin-1, but invisible in text, and jsPDF draws it. */
+const SOFT_HYPHEN = 0xad;
+
+function isWinAnsi(char: string): boolean {
+	const code = char.codePointAt(0) ?? 0;
+	return (
+		code === 0x09 ||
+		code === 0x0a ||
+		code === 0x0d ||
+		(code >= 0x20 && code <= 0x7e) ||
+		(code >= 0xa0 && code <= 0xff && code !== SOFT_HYPHEN) ||
+		WIN_ANSI_EXTRAS.has(char)
+	);
+}
+
+/**
+ * The character's compatibility form, with any letter outside
+ * Windows-1252 reduced to its base letter: `ﬁ` → `fi`, `Ａ` → `A`,
+ * `₂` → `2`, `ř` → `r`, while `ǅ` keeps the `ž` Windows-1252 has. Null
+ * when that form still holds a character Windows-1252 lacks, or is only
+ * blank, as a spacing accent's space-and-mark is.
+ */
+function plainForm(char: string): string | null {
+	// Most characters with no form of their own (CJK, emoji) stop here.
+	if (char.normalize("NFKD") === char) {
+		return null;
+	}
+	let out = "";
+	for (const part of char.normalize("NFKC")) {
+		if (isWinAnsi(part)) {
+			out += part;
+			continue;
+		}
+		const fallback = WIN_ANSI_FALLBACKS[part];
+		if (fallback !== undefined) {
+			out += fallback;
+			continue;
+		}
+		const base = part.normalize("NFD").replace(COMBINING_MARK, "");
+		for (const piece of base) {
+			if (!isWinAnsi(piece)) {
+				return null;
+			}
+		}
+		out += base;
+	}
+	return out !== "" && out.trim() === "" ? null : out;
+}
+
+function toWinAnsiChar(char: string): string {
+	if (isWinAnsi(char)) {
+		return char;
+	}
+	const fallback = WIN_ANSI_FALLBACKS[char];
+	if (fallback !== undefined) {
+		return fallback;
+	}
+	const code = char.codePointAt(0) ?? 0;
+	// Hyphen and minus variants.
+	if ((code >= 0x2010 && code <= 0x2012) || code === 0x2212) {
+		return "-";
+	}
+	// Space variants, from the en quad to the ideographic space.
+	if (
+		(code >= 0x2000 && code <= 0x200a) ||
+		code === 0x202f ||
+		code === 0x205f ||
+		code === 0x3000
+	) {
+		return " ";
+	}
+	// Zero-width characters, variation selectors, and the soft hyphen.
+	if (
+		(code >= 0x200b && code <= 0x200d) ||
+		code === 0x2060 ||
+		code === 0xfeff ||
+		(code >= 0xfe00 && code <= 0xfe0f) ||
+		code === SOFT_HYPHEN
+	) {
+		return "";
+	}
+	// A mark that composition left without a letter to join is dropped,
+	// as a letter's own diacritic is.
+	if (LONE_MARK.test(char)) {
+		return "";
+	}
+	return plainForm(char) ?? "?";
+}
+
+/**
+ * Text a PDF can draw: the Glossy edition's and the regular download's
+ * (Fizzy #2589 follow-up, shared since #2801). jsPDF's built-in
+ * fonts draw only Windows-1252: any other character came out as two wrong
+ * glyphs (`≥` as `"e`), letter-spaced the whole string, and threw off
+ * `splitTextToSize`, so the line ran past the margin. Common symbols become
+ * their ASCII forms or a word (`↑` → `up`, `₹` → `INR`), superscript
+ * runs Windows-1252 cannot draw a caret form (`10⁶` → `10^6`), hyphen and
+ * space variants plain ones, invisible characters are dropped, ligatures,
+ * full-width and other compatibility forms take their plain form, other
+ * Latin letters lose their diacritic, and anything else, one code point at
+ * a time, becomes `?`. Its output maps to itself. The DOCX keeps the
+ * original text.
+ */
+export function toWinAnsiText(text: string): string {
+	let out = "";
+	// The last character written, and whether it ended a word stand-in.
+	let last = "";
+	let afterWord = false;
+	for (const char of caretSuperscripts(text.normalize("NFC"))) {
+		const word = WIN_ANSI_WORDS[char];
+		const mapped = word ?? toWinAnsiChar(char);
+		if (mapped === "") {
+			continue;
+		}
+		if (
+			(word !== undefined || afterWord) &&
+			LETTER_OR_DIGIT.test(last) &&
+			LETTER_OR_DIGIT.test(mapped[0])
+		) {
+			out += " ";
+		}
+		out += mapped;
+		last = mapped[mapped.length - 1];
+		afterWord = word !== undefined;
+	}
+	return out;
 }

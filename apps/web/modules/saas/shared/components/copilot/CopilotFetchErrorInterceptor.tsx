@@ -5,15 +5,21 @@ import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
+import { chatgptPlanStatusQueryKey } from "@saas/settings/components/chatgpt-plan/chatgpt-plan-status";
 import {
 	AI_NETWORK_FAILURE,
 	AI_STREAM_RESUMED,
 	AI_STREAM_SILENT,
 	describeAiError,
 	describeAiStreamError,
+	isChatGptPlanSpentCode,
 } from "@saas/shared/lib/ai-error-message";
+import { orpcClient } from "@shared/lib/orpc-client";
+import { QueryClientContext } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useTranslations } from "next-intl";
+import { useContext, useEffect, useRef } from "react";
+import { toast } from "sonner";
 import { findAgUiRunError } from "./ag-ui-run-error";
 import {
 	type AiErrorToastAction,
@@ -179,6 +185,17 @@ function watchStreamForSilentFailure(
 		});
 }
 
+/** The organization a CopilotKit request names (`?organizationId=`), if any. */
+function requestOrganizationId(url: string): string | null {
+	try {
+		return new URL(url, "http://localhost").searchParams.get(
+			"organizationId",
+		);
+	} catch {
+		return null;
+	}
+}
+
 export function CopilotFetchErrorInterceptor() {
 	const patchedRef = useRef(false);
 	const showAiUsageLimitToast = useShowAiUsageLimitToast();
@@ -212,6 +229,45 @@ export function CopilotFetchErrorInterceptor() {
 	// call inside the wrapper would forever invoke the original
 	// (potentially stale) translator. The ref keeps the callback
 	// fresh even after re-renders.
+	// Turning the member's own plan off here is what moves their work onto
+	// the organization's API billing; the server says when that would help.
+	// The switch acts on the session's organization, so it is offered only
+	// for a refusal in the organization on screen, and the plan status every
+	// notice reads is refreshed after it.
+	const tChatgptPlan = useTranslations("settings.chatgptPlan");
+	const queryClient = useContext(QueryClientContext);
+	const planBillingActionRef = useRef<
+		(requestOrganizationId: string | null) => AiErrorToastAction | undefined
+	>(() => undefined);
+	useEffect(() => {
+		planBillingActionRef.current = (requestOrganizationId) => {
+			if (
+				!activeOrganization?.id ||
+				(requestOrganizationId !== null &&
+					requestOrganizationId !== activeOrganization.id)
+			) {
+				return undefined;
+			}
+			return {
+				label: tChatgptPlan("useOrganizationBilling"),
+				onClick: () => {
+					orpcClient.users.chatgptPlan
+						.setOrganizationUse({ enabled: false })
+						.then(
+							() => {
+								toast.success(
+									tChatgptPlan("usingOrganizationBilling"),
+								);
+								return queryClient?.invalidateQueries({
+									queryKey: chatgptPlanStatusQueryKey,
+								});
+							},
+							() => toast.error(tChatgptPlan("updateFailed")),
+						);
+				},
+			};
+		};
+	}, [activeOrganization?.id, queryClient, tChatgptPlan]);
 	const showAiUsageLimitToastRef = useRef(showAiUsageLimitToast);
 	useEffect(() => {
 		showAiUsageLimitToastRef.current = showAiUsageLimitToast;
@@ -370,6 +426,23 @@ export function CopilotFetchErrorInterceptor() {
 						  }
 						| undefined;
 					if (isCallerHandledTurnRefusal(url, body?.code)) {
+						return response;
+					}
+					// A spent plan is not rate limiting: retrying sooner
+					// cannot help, so it never arms the backoff below.
+					if (isChatGptPlanSpentCode(body?.code)) {
+						consecutive429Count = 0;
+						const copy = describeAiError(response.status, body);
+						showPersistentAiErrorToast(
+							copy.title,
+							copy.description,
+							Date.now(),
+							copy.planApiBillingActionable
+								? planBillingActionRef.current(
+										requestOrganizationId(url),
+									)
+								: undefined,
+						);
 						return response;
 					}
 					if (body?.code === "AI_USAGE_LIMIT_EXCEEDED") {

@@ -113,14 +113,17 @@ describe("InstructionsSettingsDialog", () => {
 		settingsGate.release = null;
 	});
 
-	it("shows the defaults as placeholder text and saves no override when untouched", async () => {
+	it("lists the defaults in effect as text, not placeholder, and saves no override when untouched", async () => {
 		renderDialog();
 		const textarea = (await screen.findByLabelText(
 			"textareaLabel",
 		)) as HTMLTextAreaElement;
-		await waitFor(() =>
-			expect(textarea.placeholder).toBe("**/node_modules/**\nretro.md"),
+		const defaults = await screen.findByTestId(
+			"instructions-settings-defaults",
 		);
+		expect(defaults).toHaveTextContent("**/node_modules/**");
+		expect(defaults).toHaveTextContent("retro.md");
+		expect(textarea.placeholder).not.toContain("node_modules");
 		// The project has no override, so nothing is seeded — the defaults
 		// are readable but not editable content.
 		expect(textarea.value).toBe("");
@@ -371,5 +374,26 @@ describe("InstructionsSettingsDialog — a reader", () => {
 		expect(en.projects.codingInstructions.settingsDialog.title).toBe(
 			"Coding instructions settings",
 		);
+	});
+
+	it("keeps the glob help out of the dialog's subtitle and lists no defaults once the project has its own rules", async () => {
+		const copy = en.projects.codingInstructions.settingsDialog;
+		expect(copy.description).not.toMatch(/glob/i);
+		expect(copy.descriptionRepository).not.toMatch(/glob/i);
+		expect(copy.textareaHint).toMatch(/one glob per line/i);
+
+		settingsResponse.current = {
+			ignoreGlobs: ["dist/**"],
+			defaultIgnoreGlobs: ["**/node_modules/**", "retro.md"],
+			sourceOfTruth: null,
+		};
+		renderDialog();
+		const textarea = (await screen.findByLabelText(
+			"textareaLabel",
+		)) as HTMLTextAreaElement;
+		await waitFor(() => expect(textarea.value).toBe("dist/**"));
+		expect(
+			screen.queryByTestId("instructions-settings-defaults"),
+		).toBeNull();
 	});
 });

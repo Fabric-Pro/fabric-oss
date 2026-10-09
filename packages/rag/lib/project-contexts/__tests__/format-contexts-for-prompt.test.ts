@@ -136,3 +136,20 @@ describe("formatContextsForPrompt", () => {
 		);
 	});
 });
+
+describe("formatContextsForPrompt synced files", () => {
+	it("labels a synced file by its full repository path, not its base name", () => {
+		const out = formatContextsForPrompt([
+			{
+				id: "c-1",
+				type: "TEXT",
+				content: "The QA marker for this file is KESTREL-5530.",
+				score: 0.9,
+				sourceTitle: "architecture.md",
+				sourcePath: "docs/architecture.md",
+			},
+		]);
+
+		expect(out).toContain("--- docs/architecture.md (TEXT");
+	});
+});

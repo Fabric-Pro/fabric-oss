@@ -44,14 +44,22 @@ import { toast } from "sonner";
 import {
 	type AuthMode,
 	canProviderSupportEmbeddings,
+	embeddingsOnlyTakenBy,
 	GATEWAY_SUB_PROVIDERS,
 	getCloudProviders,
 	getDirectProviders,
 	getGatewayProviders,
 	hasCompleteCredentials,
+	isEmbeddingCapableProvider,
+	isProviderEmbeddingsOnly,
 	isServicePrincipalMode,
 	type ProviderWithIcon,
 } from "../lib/ai-providers";
+import {
+	EmbeddingsBadge,
+	EmbeddingsOnlyOption,
+	EmbeddingsOnlyToggle,
+} from "./EmbeddingsOnlyControls";
 
 interface OrgAiProvidersSettingsFormProps {
 	readOnly?: boolean;
@@ -75,6 +83,9 @@ export function OrgAiProvidersSettingsForm({
 	const [showClientSecret, setShowClientSecret] = useState(false);
 	const [customBaseUrl, setCustomBaseUrl] = useState("");
 	const [deploymentName, setDeploymentName] = useState("");
+	// Saved with the key (Fizzy #2770): an embeddings-only key is never the
+	// default, not even before the card's toggle could be reached.
+	const [embeddingsOnly, setEmbeddingsOnly] = useState(false);
 	const [isTesting, setIsTesting] = useState(false);
 	const [testResult, setTestResult] = useState<{
 		success: boolean;
@@ -176,6 +187,7 @@ export function OrgAiProvidersSettingsForm({
 			baseUrl?: string;
 			deploymentName?: string;
 			isDefault?: boolean;
+			purpose?: "ALL" | "EMBEDDINGS_ONLY";
 			displayName?: string;
 		}) => {
 			// Cast to never to satisfy API type (API validates on server)
@@ -187,6 +199,7 @@ export function OrgAiProvidersSettingsForm({
 				baseUrl: data.baseUrl,
 				deploymentName: data.deploymentName,
 				isDefault: data.isDefault ?? true,
+				...(data.purpose && { purpose: data.purpose }),
 				displayName: data.displayName,
 				organizationId: organizationId ?? undefined, // Save to organization-level config
 			});
@@ -511,6 +524,16 @@ export function OrgAiProvidersSettingsForm({
 		}
 	};
 
+	const embeddingsOnlyPayload =
+		selectedProvider && isEmbeddingCapableProvider(selectedProvider.id)
+			? embeddingsOnly
+				? { purpose: "EMBEDDINGS_ONLY" as const, isDefault: false }
+				: {
+						purpose: "ALL" as const,
+						isDefault: !configStatus?.isConfigured,
+					}
+			: { isDefault: !configStatus?.isConfigured };
+
 	const handleSaveProvider = async () => {
 		// Belt-and-braces alongside the disabled Save button: never persist a
 		// credential that the passing test did not actually exercise.
@@ -530,7 +553,7 @@ export function OrgAiProvidersSettingsForm({
 				? customBaseUrl
 				: undefined,
 			deploymentName: deploymentNamePayload,
-			isDefault: !configStatus?.isConfigured,
+			...embeddingsOnlyPayload,
 		});
 	};
 
@@ -540,6 +563,7 @@ export function OrgAiProvidersSettingsForm({
 		}
 		setSelectedProvider(provider);
 		resetCredentialFields();
+		setEmbeddingsOnly(isProviderEmbeddingsOnly(provider.id, configStatus));
 
 		// Reconfiguring an existing provider: restore the saved auth mode and
 		// prefill the non-secret fields, so a service-principal config doesn't
@@ -742,6 +766,8 @@ export function OrgAiProvidersSettingsForm({
 															</Badge>
 															{!readOnly &&
 																!p.isDefault &&
+																p.purpose !==
+																	"EMBEDDINGS_ONLY" &&
 																configStatus
 																	.configuredProviders
 																	.length >
@@ -892,6 +918,11 @@ export function OrgAiProvidersSettingsForm({
 								const isEmbedding = isProviderEmbedding(
 									provider.id,
 								);
+								const isEmbeddingsOnly =
+									isProviderEmbeddingsOnly(
+										provider.id,
+										configStatus,
+									);
 								const Icon = provider.icon;
 
 								return (
@@ -936,13 +967,14 @@ export function OrgAiProvidersSettingsForm({
 															</Badge>
 														)}
 														{isEmbedding && (
-															<Badge
-																variant="outline"
-																className="shrink-0 text-xs"
-															>
-																<DatabaseIcon className="mr-1 size-3" />
-																Embeddings
-															</Badge>
+															<EmbeddingsBadge
+																onlyForDocuments={
+																	!isDefault
+																}
+																embeddingsOnly={
+																	isEmbeddingsOnly
+																}
+															/>
 														)}
 													</div>
 													<p className="mt-1 text-muted-foreground text-xs">
@@ -1025,6 +1057,7 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
 															variant="outline"
@@ -1090,6 +1123,22 @@ export function OrgAiProvidersSettingsForm({
 															</TooltipContent>
 														</Tooltip>
 													)}
+												{isConfigured &&
+													isEmbedding &&
+													!readOnly && (
+														<EmbeddingsOnlyToggle
+															provider={
+																provider.id
+															}
+															organizationId={
+																organizationId ??
+																undefined
+															}
+															checked={
+																isEmbeddingsOnly
+															}
+														/>
+													)}
 											</div>
 										</div>
 									</Card>
@@ -1114,6 +1163,11 @@ export function OrgAiProvidersSettingsForm({
 								const isEmbedding = isProviderEmbedding(
 									provider.id,
 								);
+								const isEmbeddingsOnly =
+									isProviderEmbeddingsOnly(
+										provider.id,
+										configStatus,
+									);
 								const Icon = provider.icon;
 
 								return (
@@ -1157,13 +1211,14 @@ export function OrgAiProvidersSettingsForm({
 															</Badge>
 														)}
 														{isEmbedding && (
-															<Badge
-																variant="outline"
-																className="shrink-0 text-xs"
-															>
-																<DatabaseIcon className="mr-1 size-3" />
-																Embeddings
-															</Badge>
+															<EmbeddingsBadge
+																onlyForDocuments={
+																	!isDefault
+																}
+																embeddingsOnly={
+																	isEmbeddingsOnly
+																}
+															/>
 														)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
@@ -1231,6 +1286,7 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
 															variant="outline"
@@ -1296,6 +1352,22 @@ export function OrgAiProvidersSettingsForm({
 															</TooltipContent>
 														</Tooltip>
 													)}
+												{isConfigured &&
+													isEmbedding &&
+													!readOnly && (
+														<EmbeddingsOnlyToggle
+															provider={
+																provider.id
+															}
+															organizationId={
+																organizationId ??
+																undefined
+															}
+															checked={
+																isEmbeddingsOnly
+															}
+														/>
+													)}
 											</div>
 										</div>
 									</Card>
@@ -1324,6 +1396,11 @@ export function OrgAiProvidersSettingsForm({
 								const isEmbedding = isProviderEmbedding(
 									provider.id,
 								);
+								const isEmbeddingsOnly =
+									isProviderEmbeddingsOnly(
+										provider.id,
+										configStatus,
+									);
 								const Icon = provider.icon;
 
 								return (
@@ -1367,13 +1444,14 @@ export function OrgAiProvidersSettingsForm({
 															</Badge>
 														)}
 														{isEmbedding && (
-															<Badge
-																variant="outline"
-																className="shrink-0 text-xs"
-															>
-																<DatabaseIcon className="mr-1 size-3" />
-																Embeddings
-															</Badge>
+															<EmbeddingsBadge
+																onlyForDocuments={
+																	!isDefault
+																}
+																embeddingsOnly={
+																	isEmbeddingsOnly
+																}
+															/>
 														)}
 													</div>
 													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
@@ -1437,6 +1515,7 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
 															variant="outline"
@@ -1501,6 +1580,22 @@ export function OrgAiProvidersSettingsForm({
 																</p>
 															</TooltipContent>
 														</Tooltip>
+													)}
+												{isConfigured &&
+													isEmbedding &&
+													!readOnly && (
+														<EmbeddingsOnlyToggle
+															provider={
+																provider.id
+															}
+															organizationId={
+																organizationId ??
+																undefined
+															}
+															checked={
+																isEmbeddingsOnly
+															}
+														/>
 													)}
 											</div>
 										</div>
@@ -1826,6 +1921,18 @@ export function OrgAiProvidersSettingsForm({
 								)}
 							</div>
 						)}
+
+						{selectedProvider &&
+							isEmbeddingCapableProvider(selectedProvider.id) && (
+								<EmbeddingsOnlyOption
+									checked={embeddingsOnly}
+									onCheckedChange={setEmbeddingsOnly}
+									takenBy={embeddingsOnlyTakenBy(
+										configStatus,
+										selectedProvider.id,
+									)}
+								/>
+							)}
 
 						{/* Test Connection Button */}
 						<Button

@@ -5,6 +5,8 @@ import {
 	db,
 	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
+	getEmbeddingProviderConfig,
+	LLM_PROVIDER_PURPOSE_FILTER,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -62,6 +64,63 @@ const TASK_CAPABILITY_MAP: Record<
 		preferQualityTier: "STANDARD",
 	},
 };
+
+interface TaskDefaultRow {
+	taskType: string;
+	complexity: string;
+	priority: number;
+	provider: string | null;
+	model: {
+		id: string;
+		canonicalName: string;
+		displayName: string;
+		family: string;
+		vendor: string;
+		speedTier: string;
+		qualityTier: string;
+	};
+}
+
+function toTaskDefaultOutput(d: TaskDefaultRow) {
+	return {
+		taskType: d.taskType,
+		complexity: d.complexity,
+		priority: d.priority,
+		provider: d.provider,
+		model: {
+			id: d.model.id,
+			canonicalName: d.model.canonicalName,
+			displayName: d.model.displayName,
+			family: d.model.family,
+			vendor: d.model.vendor,
+			speedTier: d.model.speedTier,
+			qualityTier: d.model.qualityTier,
+		},
+	};
+}
+
+/**
+ * The tenant's enabled API providers that may serve LLM work. A ChatGPT plan
+ * is never a provider row, and an embeddings-only key is excluded.
+ */
+async function getConfiguredLlmProviders(
+	userId: string,
+	organizationId: string | null | undefined,
+): Promise<AIProvider[]> {
+	const where = { enabled: true, ...LLM_PROVIDER_PURPOSE_FILTER };
+	const rows = organizationId
+		? await db.cloudProviderConfig.findMany({
+				where: { organizationId, ...where },
+				select: { provider: true },
+			})
+		: await db.userCloudProviderConfig.findMany({
+				where: { userId, ...where },
+				select: { provider: true },
+			});
+	return rows
+		.map((row) => row.provider)
+		.filter((provider) => provider !== "OPENAI_CHATGPT_PLAN");
+}
 
 /**
  * Get system default models for each task type, filtered by the user's default provider.
@@ -143,10 +202,39 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				"AUDIO",
 			];
 
-			// Query defaults filtered by the default provider
-			// If no default provider, return all defaults (fallback)
+			// Query defaults filtered by the default provider. Without one, only
+			// the tenant's configured LLM providers: never the whole catalog,
+			// which would offer a ChatGPT plan's defaults as API choices.
+			const configuredProviders = defaultProvider
+				? null
+				: await getConfiguredLlmProviders(
+						context.user.id,
+						organizationId,
+					);
+			if (configuredProviders?.length === 0) {
+				// An embeddings-only key is never an LLM provider, but its
+				// documents default still applies.
+				const embedding = await getEmbeddingProviderConfig({
+					userId: context.user.id,
+					organizationId,
+				});
+				if (!embedding.provider) {
+					return [];
+				}
+				const embeddingDefaults = await db.aiTaskModelDefault.findMany({
+					where: {
+						provider: embedding.provider as AIProvider,
+						taskType: "EMBEDDING" as AiTaskType,
+					},
+					include: { model: true },
+					orderBy: [{ complexity: "asc" }, { priority: "desc" }],
+				});
+				return embeddingDefaults.map(toTaskDefaultOutput);
+			}
 			const defaults = await db.aiTaskModelDefault.findMany({
-				where: defaultProvider ? { provider: defaultProvider } : {},
+				where: defaultProvider
+					? { provider: defaultProvider }
+					: { provider: { in: configuredProviders ?? [] } },
 				include: {
 					model: true,
 				},
@@ -421,21 +509,7 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				}
 			}
 
-			return allDefaults.map((d) => ({
-				taskType: d.taskType,
-				complexity: d.complexity,
-				priority: d.priority,
-				provider: d.provider,
-				model: {
-					id: d.model.id,
-					canonicalName: d.model.canonicalName,
-					displayName: d.model.displayName,
-					family: d.model.family,
-					vendor: d.model.vendor,
-					speedTier: d.model.speedTier,
-					qualityTier: d.model.qualityTier,
-				},
-			}));
+			return allDefaults.map(toTaskDefaultOutput);
 		} catch (error) {
 			console.error("[AI Config] getTaskDefaults error:", error);
 			throw error;

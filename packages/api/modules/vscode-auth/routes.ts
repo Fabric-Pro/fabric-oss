@@ -12,9 +12,9 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { getAIModelWithMetadata } from "@repo/ai/model-selector";
 import { createUserApiKey, db, hasOrganizationTie } from "@repo/database";
-import { streamText } from "ai";
+import { logger } from "@repo/logs";
+import type { streamText } from "ai";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { verifyUserApiKey } from "../users/procedures/api-keys/verify";
@@ -79,16 +79,24 @@ async function authFromBearer(
 export function createVscodeAuthRoutes() {
 	const app = new Hono();
 
-	app.use(
-		"*",
-		cors({
-			origin: "*",
-			allowHeaders: ["Content-Type", "Authorization"],
-			allowMethods: ["POST", "GET", "OPTIONS"],
-			maxAge: 3600,
-			credentials: false,
-		}),
-	);
+	// Mounted at the API root, so a catch-all pattern here would apply to every
+	// route of the API; the policy is scoped to this app's own paths.
+	const extensionCors = cors({
+		origin: "*",
+		allowHeaders: ["Content-Type", "Authorization"],
+		allowMethods: ["POST", "GET", "OPTIONS"],
+		maxAge: 3600,
+		credentials: false,
+	});
+	for (const path of [
+		"/device-auth/*",
+		"/profile/*",
+		"/defaults",
+		"/organizations/:orgId/defaults",
+		"/openrouter/*",
+	]) {
+		app.use(path, extensionCors);
+	}
 
 	// =========================================================================
 	// Device Auth (no API key required — code is the shared secret)
@@ -449,6 +457,18 @@ export function createVscodeAuthRoutes() {
 		// Resolve AI model from user's configured provider
 		const { taskType, complexity } = modelToComplexity(modelId);
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
+		let getAIModelWithMetadata: typeof import("@repo/ai/model-selector").getAIModelWithMetadata;
+		try {
+			({ getAIModelWithMetadata } = await import(
+				"@repo/ai/model-selector"
+			));
+		} catch (error) {
+			logger.error(
+				"[vscode-auth] Failed to load the AI model selector:",
+				error,
+			);
+			return c.json({ error: "Internal Server Error" }, 500);
+		}
 		try {
 			aiModelResult = await getAIModelWithMetadata(
 				{ taskType, complexity },
@@ -516,6 +536,7 @@ export function createVscodeAuthRoutes() {
 
 		let textStream: ReturnType<typeof streamText>;
 		try {
+			const { streamText } = await import("ai");
 			textStream = streamText({
 				model: aiModel,
 				messages: modelMessages,

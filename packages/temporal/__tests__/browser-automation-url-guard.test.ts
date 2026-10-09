@@ -269,7 +269,7 @@ describe("route handler", () => {
 		expect(route.fulfill).not.toHaveBeenCalled();
 		expect(console.warn).toHaveBeenCalledWith(
 			expect.stringMatching(
-				/non-public address.*BROWSER_AUTOMATION_ALLOWED_HOSTS/s,
+				/UNSAFE_OUTBOUND_URL.*BROWSER_AUTOMATION_ALLOWED_HOSTS/s,
 			),
 		);
 	});
@@ -282,7 +282,7 @@ describe("route handler", () => {
 		await handleGuardedRoute(route, fetchPinned);
 		expect(route.abort).toHaveBeenCalledWith("blockedbyclient");
 		expect(console.warn).toHaveBeenCalledWith(
-			expect.stringMatching(/non-public address/),
+			expect.stringMatching(/UNSAFE_OUTBOUND_URL/),
 		);
 	});
 
@@ -372,7 +372,7 @@ describe("route handler", () => {
 		expect(fulfilled.body.toString()).toBe("<html>hello</html>");
 	});
 
-	it("never fulfills a navigation redirect as a 3xx, which Chromium would follow without the route; it answers a refresh page instead", async () => {
+	it("refuses an unsafe navigation redirect before fulfilling a refresh page", async () => {
 		const fetchPinned = vi.fn(async () =>
 			redirectTo('http://169.254.169.254/latest/?a=1&b="x"', 302, [
 				"hop=1; Path=/",
@@ -384,22 +384,8 @@ describe("route handler", () => {
 		});
 		await handleGuardedRoute(route, fetchPinned);
 		expect(fetchPinned).toHaveBeenCalledTimes(1);
-		const [fulfilled] = route.fulfill.mock.calls[0] as unknown as [
-			{ status: number; headers: Record<string, string>; body: Buffer },
-		];
-		expect(fulfilled.status).toBe(200);
-		expect(fulfilled.headers.location).toBeUndefined();
-		expect(fulfilled.headers["set-cookie"]).toBe("hop=1; Path=/");
-		expect(fulfilled.body.toString()).toContain(
-			'http-equiv="refresh" content="0;url=http://169.254.169.254/latest/?a=1&amp;b=%22x%22"',
-		);
-
-		// The refresh is a new navigation; the route refuses it there.
-		const next = fakeRoute("http://169.254.169.254/latest/", {
-			navigation: true,
-		});
-		await handleGuardedRoute(next, neverFetch());
-		expect(next.abort).toHaveBeenCalledWith("blockedbyclient");
+		expect(route.fulfill).not.toHaveBeenCalled();
+		expect(route.abort).toHaveBeenCalledWith("blockedbyclient");
 	});
 
 	it.each([

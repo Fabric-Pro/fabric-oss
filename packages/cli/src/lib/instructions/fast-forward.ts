@@ -7,7 +7,7 @@
  * safe, to the tip of the branch the project follows: git is the authority on
  * where that is, Fabric's published copy only mirrors it. "Safe" is a gate over
  * facts the checkout already reports plus a few the write itself needs: the
- * right branch, tracking the right upstream, a clean tree, no operation in
+ * right branch, tracking the right upstream, no operation in
  * progress, nothing else writing, nobody else holding the branch. Anything
  * else leaves the checkout exactly as it was and says so once.
  *
@@ -25,10 +25,14 @@ import type {
 	FastForwardMergeFailure,
 	FastForwardNotSafe,
 } from "./outcome.js";
-import { HOOK_PREFIX, outcomeLine } from "./outcome.js";
+import {
+	HOOK_PREFIX,
+	isUserActionableMergeFailure,
+	outcomeLine,
+} from "./outcome.js";
 
 /** The reasons `behind` already has words for: the report line is the line. */
-type BehindReason = "dirty" | "wrong-branch" | "detached" | "operation";
+type BehindReason = "wrong-branch" | "detached" | "operation";
 
 export type NotSafeReason = BehindReason | FastForwardNotSafe;
 
@@ -44,11 +48,7 @@ export type FfOutcome =
 	| { kind: "already-current" }
 	| { kind: "not-safe"; reason: NotSafeReason }
 	| { kind: "fetch-failed"; reason: FastForwardFetchFailure }
-	| {
-			kind: "merge-failed";
-			reason: FastForwardMergeFailure;
-			files?: string[];
-	  }
+	| ({ kind: "merge-failed" } & FastForwardMergeFailure)
 	| { kind: "locked" }
 	| { kind: "abandoned-lock"; lockPath: string }
 	| { kind: "opted-out" }
@@ -60,7 +60,7 @@ export interface FastForwardFacts {
 	ref: string;
 	/** The remote the checkout fetches the repository from. */
 	remote: string;
-	state: CheckoutState;
+	state: Omit<CheckoutState, "clean">;
 	/** The branch's upstream as `<remote>/<branch>`, or `null`. */
 	upstream: string | null;
 	/** An `index.lock` or `HEAD.lock` exists. */
@@ -77,8 +77,9 @@ export type Eligibility =
  * The gate. The order is the order a person would explain it in: an operation
  * first (a rebase detaches HEAD, and "check out the branch" would be the wrong
  * advice in the middle of one), then where HEAD is, what it tracks, what kind
- * of checkout it is, whether the tree is clean, and last whether something
- * else is touching it. A sparse checkout passes.
+ * of checkout it is, and last whether something else is touching it. A sparse
+ * checkout passes. The tree is not asked about: git's own refusal, naming the
+ * files, is the check for local changes.
  */
 export function fastForwardEligibility(facts: FastForwardFacts): Eligibility {
 	const { state, ref, remote } = facts;
@@ -162,7 +163,6 @@ export function fabricCopyLag(input: {
 
 function isBehindReason(reason: NotSafeReason): reason is BehindReason {
 	return (
-		reason === "dirty" ||
 		reason === "wrong-branch" ||
 		reason === "detached" ||
 		reason === "operation"
@@ -283,7 +283,7 @@ export function fastForwardLines(
 				login: context.login,
 				commands: context.commands,
 			});
-			if (outcome.reason === "auth") {
+			if (outcome.reason === "auth" || outcome.reason === "old-git") {
 				stdout.push(text);
 			} else {
 				stderr.push(skipped(text));
@@ -293,16 +293,12 @@ export function fastForwardLines(
 		}
 		case "merge-failed": {
 			const text = outcomeLine("ff-merge-failed", {
-				reason: outcome.reason,
-				files: outcome.files,
+				failure: outcome,
 				ref: context.ref,
 				remote: context.remote,
 				commands: context.commands,
 			});
-			if (
-				outcome.reason === "diverged" ||
-				outcome.reason === "local-changes"
-			) {
+			if (isUserActionableMergeFailure(outcome.reason)) {
 				stdout.push(text);
 				otherLine();
 			} else {

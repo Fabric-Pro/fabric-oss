@@ -8,7 +8,7 @@
  * right `@repo/rag` retrieval function based on scope.
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import { db } from "@repo/database";
 import { retrieveContext, retrieveRelevantContextsForSpec } from "@repo/rag";
 import type { Hono } from "hono";
@@ -126,7 +126,7 @@ export function registerKnowledgeRoutes(
 		if (!chat) {
 			return c.json(notFound("Chat"), 404);
 		}
-		const ragConfig = await getRAGProviderConfig({
+		const ragConfig = await getEmbeddingRAGProviderConfig({
 			userId: ctx.userId,
 			organizationId: ctx.organizationId ?? undefined,
 		});

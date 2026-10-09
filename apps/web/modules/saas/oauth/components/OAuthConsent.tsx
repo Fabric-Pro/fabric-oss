@@ -1,7 +1,10 @@
 "use client";
 
 import { authClient } from "@repo/auth/client";
-import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import {
+	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
+} from "@repo/utils/oauth-project-resource";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationListQuery } from "@saas/organizations/lib/api";
 import { useQuery } from "@tanstack/react-query";
@@ -93,6 +96,9 @@ export function OAuthConsent() {
 										audience: project.audience,
 									}
 								: null,
+							[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: project
+								? null
+								: (organization?.id ?? null),
 						},
 					},
 				);

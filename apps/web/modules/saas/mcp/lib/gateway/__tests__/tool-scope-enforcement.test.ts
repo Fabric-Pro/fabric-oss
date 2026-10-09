@@ -29,6 +29,7 @@ vi.mock("@repo/database", () => ({
 	db: {},
 	// The project read gate, behind every project-scoped read and the
 	// work-item create preamble.
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: vi
 		.fn()
 		.mockResolvedValue({ organizationId: "org-1" }),

@@ -21,6 +21,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
 	deleteRecipientBrandObjects,
 	listRecipientLogoPendingKeys,
@@ -29,7 +30,6 @@ import {
 	recipientBrandBucket,
 	recipientLogoPendingKey,
 } from "../../lib/recipient-brand";
-import { requireGlossyEnabled } from "../../lib/glossy-feature";
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
@@ -126,13 +126,14 @@ async function promotePendingLogo(
  * Step 3 is best-effort: a leftover object is unreferenced, stays under the
  * project prefix, and goes when the project does.
  *
- * AUTHORIZATION: `requireGlossyEnabled` first (gate off → NOT_FOUND for every
- * caller), then `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
+ * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
+ * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
  * recipient brand gate including `canEditProject` (an invited guest editor
  * passes it).
  */
 export const updateRecipientBrandProcedure = tenantProtectedProcedure
-	.use(requireGlossyEnabled())
+	.use(requireGlossyOrProposalArtifactEnabled())
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
 	.route({
 		method: "PUT",

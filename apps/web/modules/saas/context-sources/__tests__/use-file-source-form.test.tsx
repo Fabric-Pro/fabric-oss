@@ -209,3 +209,74 @@ describe("useFileSourceForm — auto-close after a batch settles clean", () => {
 		).toBe("queued");
 	});
 });
+
+describe("useFileSourceForm — the title the person typed", () => {
+	function makeAdapter() {
+		return {
+			createUploadUrl: vi.fn(async () => ({
+				signedUploadUrl: "https://storage.example.com/put/a.pdf",
+				contextId: "ctx-a",
+			})),
+			processFile: vi.fn(async () => undefined),
+			processLink: vi.fn(async () => undefined),
+			createText: vi.fn(async () => undefined),
+			listQueryKey: LIST_KEY,
+		} satisfies ContextSourceSubmitAdapter;
+	}
+
+	function HookHarness({
+		adapter,
+		formRef,
+	}: {
+		adapter: ContextSourceSubmitAdapter;
+		formRef: { current: FileSourceForm | null };
+	}) {
+		formRef.current = useFileSourceForm({
+			adapter,
+			onComplete: vi.fn(),
+		});
+		return null;
+	}
+
+	async function submit(title: string) {
+		const adapter = makeAdapter();
+		const formRef: { current: FileSourceForm | null } = { current: null };
+		render(
+			<QueryClientProvider client={newQueryClient()}>
+				<HookHarness adapter={adapter} formRef={formRef} />
+			</QueryClientProvider>,
+		);
+		await act(async () => {
+			formRef.current?.setFiles([
+				makeRow("a.pdf", "queued"),
+				makeRow("b.pdf", "queued"),
+			]);
+			formRef.current?.setFileTitle(title);
+		});
+		await act(async () => {
+			await formRef.current?.upload();
+		});
+		return adapter;
+	}
+
+	it("sends it with every queued file", async () => {
+		const adapter = await submit("  Quarterly notes ");
+
+		expect(adapter.createUploadUrl).toHaveBeenCalledTimes(2);
+		for (const [file] of adapter.createUploadUrl.mock.calls as unknown as [
+			{ title?: string },
+		][]) {
+			expect(file.title).toBe("Quarterly notes");
+		}
+	});
+
+	it("sends none when the title was left blank", async () => {
+		const adapter = await submit("   ");
+
+		for (const [file] of adapter.createUploadUrl.mock.calls as unknown as [
+			{ title?: string },
+		][]) {
+			expect(file).not.toHaveProperty("title");
+		}
+	});
+});

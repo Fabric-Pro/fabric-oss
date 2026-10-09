@@ -61,11 +61,22 @@ export type CheckoutClassification =
 			traits: CheckoutTraits;
 	  };
 
+/**
+ * When the tree's content is compared with the index: `always` (`check`'s
+ * JSON reports it), or only `when-behind`, where a line needs it (the hook).
+ */
+export type ContentChanges = "always" | "when-behind";
+
 /** Everything the matching report reads from the checkout. */
 export interface CheckoutState {
 	/** The checked-out branch, or `null` for a detached HEAD. */
 	branch: string | null;
 	head: string | null;
+	/**
+	 * No tracked file's CONTENT differs from the index or HEAD (a file that
+	 * differs only in how its line endings are stored does not count).
+	 * Untracked files are not changes. Read only where a line needs it.
+	 */
 	clean: boolean;
 	operation: GitOperation | null;
 	traits: CheckoutTraits;
@@ -88,6 +99,8 @@ export interface CheckoutJson {
 	traits: Array<keyof CheckoutTraits>;
 	/** The line printed for this checkout, or `null` when it is current. */
 	line: string | null;
+	/** A direct-repository project's verdict on this checkout, as a word. */
+	verdict?: string;
 }
 
 export interface CheckoutReport {
@@ -297,42 +310,41 @@ async function inspectMatchingCheckout(input: {
 	repository: PublishedInstructionRepository;
 	snapshot: PublishedInstructionSnapshot | undefined;
 	deadline: GitDeadline;
+	contentChanges: ContentChanges;
 }): Promise<CheckoutReport> {
 	const { classification, repository, snapshot, deadline } = input;
 	const root = classification.toplevel;
 	const unknown = (reason: string): CheckoutReport =>
 		reportFor(repository, { class: "unknown", reason });
 
-	const branch = await git.currentBranch(root, deadline);
-	if (branch.kind !== "ok") {
-		return unknown(
-			branch.kind === "absent" ? "not a git checkout" : branch.reason,
-		);
+	const [branch, head, operation, readClean] = await Promise.all([
+		git.currentBranch(root, deadline),
+		git.headSha(root, deadline),
+		git.operationInProgress(root, deadline),
+		input.contentChanges === "always"
+			? git.hasNoTrackedContentChanges(root, deadline)
+			: Promise.resolve(null),
+	]);
+	for (const answer of [branch, head, operation, readClean]) {
+		if (answer === null) {
+			continue;
+		}
+		if (answer.kind !== "ok") {
+			return unknown(
+				answer.kind === "absent" ? "not a git checkout" : answer.reason,
+			);
+		}
 	}
-	const head = await git.headSha(root, deadline);
-	if (head.kind !== "ok") {
-		return unknown(
-			head.kind === "absent" ? "not a git checkout" : head.reason,
-		);
+	if (branch.kind !== "ok" || head.kind !== "ok" || operation.kind !== "ok") {
+		return unknown("the checkout could not be read");
 	}
-	const clean = await git.isClean(root, deadline);
-	if (clean.kind !== "ok") {
-		return unknown(
-			clean.kind === "absent" ? "not a git checkout" : clean.reason,
-		);
-	}
-	const operation = await git.operationInProgress(root, deadline);
-	if (operation.kind !== "ok") {
-		return unknown(
-			operation.kind === "absent"
-				? "not a git checkout"
-				: operation.reason,
-		);
-	}
-	const state: CheckoutState = {
+	let state: CheckoutState = {
 		branch: branch.value,
 		head: head.value,
-		clean: clean.value,
+		clean:
+			readClean === null
+				? true
+				: readClean.kind === "ok" && readClean.value,
 		operation: operation.value,
 		traits: classification.traits,
 	};
@@ -358,15 +370,27 @@ async function inspectMatchingCheckout(input: {
 		}
 	}
 
-	const { kind: reportKind, line } = matchingReport({
-		repository,
-		remote: classification.remote,
-		snapshot: snapshot
-			? { version: snapshot.version, source: snapshot.source }
-			: null,
-		state,
-		contains,
-	});
+	const report = (): MatchingReport =>
+		matchingReport({
+			repository,
+			remote: classification.remote,
+			snapshot: snapshot
+				? { version: snapshot.version, source: snapshot.source }
+				: null,
+			state,
+			contains,
+		});
+	let { kind: reportKind, line } = report();
+	if (readClean === null && reportKind === "behind") {
+		// Compared only where a line is about to say `behind`: it is two
+		// `git diff` runs over every tracked file, and the current checkout,
+		// the common case, needs neither.
+		const content = await git.hasNoTrackedContentChanges(root, deadline);
+		if (content.kind === "ok") {
+			state = { ...state, clean: content.value };
+			({ kind: reportKind, line } = report());
+		}
+	}
 	return {
 		classification,
 		state,
@@ -481,32 +505,6 @@ export function matchingReport(input: {
 		return { kind: "current", line: null };
 	}
 
-	// An operation first: a rebase detaches HEAD, and "check out the branch"
-	// is the wrong advice in the middle of one.
-	let condition: BehindCondition;
-	if (state.operation !== null) {
-		condition = { kind: "operation", operation: state.operation };
-	} else if (state.branch === null) {
-		condition = { kind: "detached" };
-	} else if (state.branch !== repository.ref) {
-		condition = {
-			kind: "other-branch",
-			branch: show(state.branch, MAX.ref),
-		};
-	} else if (!state.clean) {
-		condition = { kind: "dirty" };
-	} else {
-		condition = {
-			kind: "clean",
-			pull: [
-				"git",
-				"pull",
-				"--ff-only",
-				shellQuote(show(remote, MAX.remote)),
-				shellQuote(ref),
-			].join(" "),
-		};
-	}
 	return {
 		kind: "behind",
 		line: outcomeLine("behind", {
@@ -515,9 +513,61 @@ export function matchingReport(input: {
 			ref,
 			notFetched: contains !== false,
 			traits: traitNames(state.traits),
-			condition,
+			condition: behindCondition(state, repository.ref, remote),
 		}),
 	};
+}
+
+/**
+ * Why a checkout that lacks the commit cannot simply pull, and the one thing
+ * to do for the state it is in.
+ */
+function behindCondition(
+	state: CheckoutState,
+	branchRef: string,
+	remote: string,
+): BehindCondition {
+	// An operation first: a rebase detaches HEAD, and "check out the branch"
+	// is the wrong advice in the middle of one.
+	if (state.operation !== null) {
+		return { kind: "operation", operation: state.operation };
+	}
+	if (state.branch === null) {
+		return { kind: "detached" };
+	}
+	if (state.branch !== branchRef) {
+		return { kind: "other-branch", branch: show(state.branch, MAX.ref) };
+	}
+	if (!state.clean) {
+		return { kind: "dirty" };
+	}
+	return {
+		kind: "clean",
+		pull: [
+			"git",
+			"pull",
+			"--ff-only",
+			shellQuote(show(remote, MAX.remote)),
+			shellQuote(show(branchRef, MAX.ref)),
+		].join(" "),
+	};
+}
+
+/** The line for a checkout that lacks the commit a direct repository read named. */
+export function directBehindLine(input: {
+	repository: Pick<PublishedInstructionRepository, "host" | "path">;
+	commitSha: string;
+	ref: string;
+	remote: string;
+	state: CheckoutState;
+}): string {
+	return outcomeLine("behind-direct", {
+		repo: repositoryName(input.repository),
+		sha7: show(input.commitSha.slice(0, 7), 7),
+		ref: show(input.ref, MAX.ref),
+		traits: traitNames(input.state.traits),
+		condition: behindCondition(input.state, input.ref, input.remote),
+	});
 }
 
 /** The one line for the matching class, or `null` when the checkout already holds the published commit. */
@@ -579,9 +629,14 @@ export async function inspectCheckout(input: {
 	snapshot: PublishedInstructionSnapshot | undefined;
 	deadline: GitDeadline;
 	remote?: string;
+	contentChanges?: ContentChanges;
 }): Promise<CheckoutReport> {
 	const classification = await classifyCheckout(input);
-	return reportForClassification({ ...input, classification });
+	return reportForClassification({
+		contentChanges: "always",
+		...input,
+		classification,
+	});
 }
 
 /** The report for a classification already made. */
@@ -590,6 +645,7 @@ export async function reportForClassification(input: {
 	repository: PublishedInstructionRepository | null | undefined;
 	snapshot: PublishedInstructionSnapshot | undefined;
 	deadline: GitDeadline;
+	contentChanges?: ContentChanges;
 }): Promise<CheckoutReport> {
 	const { classification, repository } = input;
 	if (classification.class !== "matching") {
@@ -601,6 +657,7 @@ export async function reportForClassification(input: {
 	try {
 		return await inspectMatchingCheckout({
 			...input,
+			contentChanges: input.contentChanges ?? "always",
 			classification,
 			repository,
 		});

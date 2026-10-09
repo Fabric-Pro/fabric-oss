@@ -250,6 +250,19 @@ export async function claimSlackMessageForAnalysis(
 }
 
 /**
+ * Give back a claim whose analysis never ran, so the thread is analyzed the
+ * next time it is picked up. Only a claim with no proposal is released.
+ */
+export async function releaseSlackMessageClaim(
+	linkedChannelId: string,
+	messageTs: string,
+) {
+	return await db.projectLinkedSlackChannelSeenMessage.deleteMany({
+		where: { linkedChannelId, messageTs, pendingProposalId: null },
+	});
+}
+
+/**
  * Attach a `pendingProposalId` to a previously-claimed seen-message row. Used
  * after a successful LLM extraction so the inbox UI can deep-link back to the
  * source thread.

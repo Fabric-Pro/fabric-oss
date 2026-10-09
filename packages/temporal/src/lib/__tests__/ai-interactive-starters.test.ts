@@ -20,6 +20,8 @@ const REPO_ROOT = resolve(__dirname, "../../../../..");
 
 const REVIEWED: Record<string, string> = {
 	// Chat routes a person types into.
+	"apps/web/app/api/agents/a2a/send/route.ts":
+		"A2A message a person sends to an agent",
 	"apps/web/app/api/agents/fabric-ai/stream/route.ts": "Direct chat turn",
 	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/route.ts":
 		"Orchestrator chat turn",
@@ -39,6 +41,8 @@ const REVIEWED: Record<string, string> = {
 		"Document a person creates",
 	"packages/api/modules/projects/procedures/documents/generate-document.ts":
 		"Document a person regenerates",
+	"packages/api/modules/projects/procedures/meeting-digest/generate-proposals.ts":
+		"Feature proposals a person asks for from one meeting (Fizzy #2770); the automatic scan sets none",
 	"packages/api/modules/projects/lib/dispatch-document-generation.ts":
 		"Passes the caller's flag through; unset for every other starter",
 	// Plumbing that carries or reads the flag; sets it for no one.
@@ -47,11 +51,15 @@ const REVIEWED: Record<string, string> = {
 	"packages/ai-token/lib/types.ts": "Claim type",
 	"packages/ai/lib/dynamic-model-selector.ts": "Routing gate",
 	"packages/ai/lib/chatgpt-plan/routing.ts": "Routing gate",
+	"packages/ai/lib/chatgpt-plan/plan-spent-response.ts":
+		"Asks whether the member's interactive work has a plan left before a chat turn (Fizzy #2770); marks none",
 	"packages/ai/lib/chatgpt-plan/pool.ts":
 		"Routing gate for shared plans (Fizzy #2770); asks for the member's own work, marks none",
 	"packages/temporal/src/lib/ai-interactive-interceptor.ts":
 		"Stamps the header for a start whose input sets the flag",
 	"packages/temporal/src/types.ts": "Workflow input types",
+	"packages/temporal/src/workflows/auto-analyze-meeting-transcript.ts":
+		"Workflow input type; the run itself sets nothing",
 	"packages/temporal/src/workflows/orchestrator/types/workflow-io.types.ts":
 		"Workflow input type",
 	"packages/temporal/src/workflows/project-document-generation.ts":
@@ -65,6 +73,14 @@ const REVIEWED: Record<string, string> = {
 		"Passes its input's flag",
 	"packages/temporal/src/activities/project-document-generation.ts":
 		"Passes its input's flag",
+	"packages/temporal/src/activities/proposal-artifact/analysis.ts":
+		"Passes its input's flag (Fizzy #2801)",
+	"packages/temporal/src/activities/proposal-artifact/visuals.ts":
+		"Passes its input's flag (Fizzy #2801)",
+	"packages/temporal/src/lib/glossy/model.ts":
+		"Passes its caller's flag; Glossy's own callers set none",
+	"packages/temporal/src/lib/proposal-artifact/types.ts":
+		"Workflow and activity input types (Fizzy #2801)",
 	"packages/temporal/src/activities/orchestrator/delegation/delegate-to-agent.ts":
 		"Claim follows the run's marker",
 	"packages/temporal/src/activities/weave/delegate-to-weave-agent.ts":

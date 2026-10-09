@@ -74,6 +74,9 @@ vi.mock("@repo/database", async () => ({
 	...(await vi.importActual<Record<string, unknown>>(
 		"@repo/database/prisma/queries/lib/mcp-oauth-binding",
 	)),
+	...(await vi.importActual<Record<string, unknown>>(
+		"@repo/database/prisma/hidden-mcp-server-keys",
+	)),
 	// Mirrors the real predicate (prisma/queries/lib/gitlab-personal-keys.ts).
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",
@@ -836,6 +839,130 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 		});
 
 		expect(triggerMcpToolIngestionMock).not.toHaveBeenCalled();
+	});
+
+	describe("hidden server config creation guard", () => {
+		it("refuses new config creation when the target MCP server is hidden", async () => {
+			getMcpServerByIdMock.mockResolvedValue({
+				id: "srv_hidden",
+				key: "sequential-thinking",
+				transport: "STDIO",
+				command:
+					"npx -y @modelcontextprotocol/server-sequential-thinking",
+				authMethods: ["NONE"],
+			});
+			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
+
+			await expect(
+				handler({
+					input: {
+						mcpServerId: "srv_hidden",
+						authType: "NONE",
+					},
+					context: { user: { id: "user_1" } },
+				}),
+			).rejects.toThrow("This MCP server is not available to configure.");
+		});
+
+		it("allows updating an existing config even when the target MCP server is hidden", async () => {
+			getMcpServerByIdMock.mockResolvedValue({
+				id: "srv_hidden",
+				key: "memory",
+				transport: "STDIO",
+				command: "npx -y @modelcontextprotocol/server-memory",
+				authMethods: ["NONE"],
+			});
+			const existing = {
+				id: "cfg_existing_1",
+				mcpServerId: "srv_hidden",
+				userId: "user_1",
+				authType: "NONE",
+				enabled: true,
+			};
+			getMcpConfigByIdMock.mockResolvedValue(existing);
+			findUniqueOrThrowMock.mockResolvedValue({
+				...existing,
+				displayName: "Updated Memory",
+			});
+			updateManyMock.mockResolvedValue({ count: 1 });
+
+			const result = await handler({
+				input: {
+					configId: "cfg_existing_1",
+					mcpServerId: "srv_hidden",
+					displayName: "Updated Memory",
+					authType: "NONE",
+				},
+				context: { user: { id: "user_1" } },
+			});
+
+			expect(result).toBeDefined();
+			expect(updateManyMock).toHaveBeenCalledOnce();
+		});
+
+		it("allows updating an existing config found by server lookup when configId is omitted (OAuth/re-save path)", async () => {
+			getMcpServerByIdMock.mockResolvedValue({
+				id: "srv_hidden",
+				key: "memory",
+				transport: "STDIO",
+				command: "npx -y @modelcontextprotocol/server-memory",
+				authMethods: ["NONE"],
+			});
+			const existing = {
+				id: "cfg_existing_1",
+				mcpServerId: "srv_hidden",
+				userId: "user_1",
+				authType: "NONE",
+				enabled: true,
+			};
+			getMcpConfigForTenantAndServerMock.mockResolvedValue(existing);
+			upsertMcpConfigMock.mockResolvedValue({
+				...existing,
+				displayName: "Re-saved Memory",
+			});
+
+			const result = await handler({
+				input: {
+					mcpServerId: "srv_hidden",
+					displayName: "Re-saved Memory",
+					authType: "NONE",
+				},
+				context: { user: { id: "user_1" } },
+			});
+
+			expect(result).toBeDefined();
+			expect(upsertMcpConfigMock).toHaveBeenCalledOnce();
+		});
+
+		it("allows new config creation for a non-hidden key (e.g. github)", async () => {
+			getMcpServerByIdMock.mockResolvedValue({
+				id: "srv_github",
+				key: "github",
+				transport: "STDIO",
+				command: "npx -y @modelcontextprotocol/server-github",
+				authMethods: ["API_KEY"],
+			});
+			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
+			upsertMcpConfigMock.mockResolvedValue({
+				id: "cfg_github_1",
+				mcpServerId: "srv_github",
+				userId: "user_1",
+				authType: "API_KEY",
+				enabled: true,
+			});
+
+			const result = await handler({
+				input: {
+					mcpServerId: "srv_github",
+					authType: "API_KEY",
+					apiKey: "example-api-key",
+				},
+				context: { user: { id: "user_1" } },
+			});
+
+			expect(result).toBeDefined();
+			expect(upsertMcpConfigMock).toHaveBeenCalledOnce();
+		});
 	});
 });
 

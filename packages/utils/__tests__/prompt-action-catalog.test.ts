@@ -15,6 +15,8 @@ import {
 	listPromptActions,
 	PROMPT_AGENT_TARGETS,
 	PROMPT_FEATURE_TYPES,
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
 	promptActionFeatureType,
 	promptActionId,
 } from "../lib/prompt-action-catalog";
@@ -383,5 +385,41 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 		// Project Documents would be the invention the catalog's own rule warns
 		// against: tier 1 follows the areas the app already has.
 		expect(PROMPT_FEATURE_TYPES.PUBLISHING).toBeDefined();
+	});
+});
+
+describe("coordinated Proposal prompt actions (Fizzy #2801)", () => {
+	it.each([
+		[PROPOSAL_CLIENT_MAIN_AGENT_KEY, "Client proposal (Main)"],
+		[PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY, "Proposal internal analysis"],
+	])(
+		"lists %s under Project Documents, bindable for PROPOSAL only",
+		(key, label) => {
+			const target = findPromptAgentTarget(key);
+			expect(target?.label).toBe(label);
+			expect(target?.featureType).toBe("PROJECT_DOCUMENTS");
+			expect(target?.actions).toEqual([
+				{ documentType: "PROPOSAL", storyKind: null },
+			]);
+			expect(byId(promptActionId(key, "PROPOSAL", null))).toMatchObject({
+				targetKey: key,
+				featureType: "PROJECT_DOCUMENTS",
+			});
+		},
+	);
+
+	it("keeps the two actions apart from each other and from the Draft flow's PROPOSAL action", () => {
+		// All three resolve at (PROPOSAL, null); only the agent key tells the
+		// client document, its analysis and the Draft prompt apart.
+		const keys = [
+			PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+			PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
+			"project_document_generator",
+		];
+		expect(new Set(keys).size).toBe(keys.length);
+		const draftAgent = findPromptAgentTarget("project_document_generator");
+		expect(
+			draftAgent ? bindableDocumentTypes(draftAgent, null) : [],
+		).toContain("PROPOSAL");
 	});
 });

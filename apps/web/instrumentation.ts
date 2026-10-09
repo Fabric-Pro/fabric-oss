@@ -61,8 +61,9 @@ export async function register() {
 			process.env.APPLICATION_INSIGHTS_NO_STATSBEAT ||= "true";
 		}
 
-		const { initAppInsightsLogs, trackLog, trackLogException } =
-			await import("@repo/observability/web-startup");
+		const { trackLog, trackLogException } = await import(
+			"@repo/observability/web-startup"
+		);
 		const otelSetting = process.env.OTEL_ENABLED;
 		if (
 			otelSetting === "true" ||
@@ -81,10 +82,12 @@ export async function register() {
 
 		// Forward warn/error/fatal logs to App Insights independently of OTel.
 		// Vercel runtime logs are otherwise the web app's only backend log sink.
-		const appInsightsInitStartedAt = performance.now();
-		initAppInsightsLogs({ cloudRoleName: "fabric.web" });
-		const appInsightsInitMs = Math.round(
-			performance.now() - appInsightsInitStartedAt,
+		// The client is not built here: this also runs in the proxy function,
+		// which never logs and would pay the init on every new instance. Page
+		// and API functions start it eagerly (see `startWebAppInsights`); any
+		// other function starts it with its first warn/error record.
+		const { startWebAppInsights } = await import(
+			"@shared/lib/web-app-insights"
 		);
 		const { addLogSink } = await import("@repo/logs");
 		// The "app-insights" id makes this idempotent across register()
@@ -93,6 +96,7 @@ export async function register() {
 		// one global registry keyed by this id, so re-registration replaces
 		// rather than piling up duplicate forwarders.
 		addLogSink((record) => {
+			startWebAppInsights();
 			if (record.error) {
 				// `trackException` carries no message field of its own (only
 				// the Error's) — fold the log call's own text and level into
@@ -153,7 +157,6 @@ export async function register() {
 		}
 
 		console.info("Web instrumentation timing", {
-			appInsightsInitMs,
 			event: "web.instrumentation_timing",
 			processUptimeMs: Math.round(process.uptime() * 1000),
 			registerMs: Math.round(performance.now() - registerStartedAt),

@@ -702,6 +702,52 @@ describe("InstructionProposals", () => {
 		expect(await screen.findByText("paged body")).toBeInTheDocument();
 	});
 
+	it("says why the original side is missing once the repository settings changed, with nothing to page in", async () => {
+		const user = userEvent.setup();
+		state.detail = {
+			...row(),
+			changes: [
+				{
+					path: "AGENTS.md",
+					op: "edit",
+					before: null,
+					after: "new text",
+					binary: false,
+					beforeOmitted: "SOURCE_CHANGED",
+					afterOmitted: null,
+					beforeSize: null,
+					afterSize: 8,
+				},
+			],
+		};
+		render(
+			<InstructionProposals
+				projectId="p"
+				open
+				onOpenChange={() => undefined}
+				onChanged={() => undefined}
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await user.click(
+			await screen.findByRole("button", { name: "Proposal version 8" }),
+		);
+		expect(
+			screen.getByText(
+				"This side is not shown because the repository settings changed after this suggestion was made, so its original version can no longer be read.",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				"This side is not shown because the inline diff reached its size limit.",
+			),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "View full text" }),
+		).toBeNull();
+	});
+
 	it("clears the selected detail when moving to another proposal page", async () => {
 		const user = userEvent.setup();
 		state.nextCursor = "page-2";
@@ -1436,7 +1482,7 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 		}
 	});
 
-	it("re-reads the suggestions, the branch view and the reviewer branches after a suggestion Refresh, and again once the backend settles", async () => {
+	it("re-reads the suggestions, the branch view and the reviewer branches after a suggestion Refresh, and keeps polling until the backend settles", async () => {
 		vi.useFakeTimers();
 		const invalidate = vi.spyOn(QueryClient.prototype, "invalidateQueries");
 		try {
@@ -1459,9 +1505,9 @@ describe("InstructionProposals — pull-request suggestions (Fizzy #2563 spec §
 			]) {
 				expect(invalidatedKeys()).toContain(key);
 			}
-			const afterAnswer = invalidate.mock.calls.length;
+			const readsAfterAnswer = state.listCalls;
 			await tick(3_000);
-			expect(invalidate.mock.calls.length).toBeGreaterThan(afterAnswer);
+			expect(state.listCalls).toBeGreaterThan(readsAfterAnswer);
 		} finally {
 			invalidate.mockRestore();
 			vi.useRealTimers();

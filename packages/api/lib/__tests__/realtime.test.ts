@@ -82,6 +82,40 @@ describe("getProjectRealtime", () => {
 	});
 });
 
+describe("document_change schema", () => {
+	it("subscribes with the same zod object the worker's emitter uses, so the SSE side accepts the lifted event", async () => {
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Realtime()`
+		const RealtimeMock = vi.fn(function () {
+			return { channel: vi.fn() };
+		});
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Redis()`
+		vi.doMock("@upstash/redis", () => ({ Redis: vi.fn(function () {}) }));
+		process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+		process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+
+		const mod = await import("../realtime");
+		const shared = await import("@repo/utils/realtime-emit");
+		mod.getProjectRealtime();
+
+		const schema = (
+			RealtimeMock.mock.calls[0] as unknown as [
+				{ schema: Record<string, unknown> },
+			]
+		)[0].schema;
+		expect(schema.document_change).toBe(shared.documentChangeSchema);
+		expect(
+			shared.documentChangeSchema.safeParse({
+				projectId: "project-1",
+				documentId: "doc-1",
+				action: "updated",
+				userId: "user-1",
+				userName: "Fabric",
+			}).success,
+		).toBe(true);
+	});
+});
+
 describe("one Realtime client for every API emit", () => {
 	it("sends an API caller's document_change, activity and context_change through the same Realtime instance", async () => {
 		const emits: Array<{ client: number; channel: string; event: string }> =

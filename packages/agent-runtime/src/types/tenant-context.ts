@@ -21,6 +21,15 @@ export interface TenantContext {
 
 	/** Scopes granted to the API key */
 	scopes?: string[];
+
+	/**
+	 * An admin is acting as `userId` (Fizzy #2770 D7): the work is not the
+	 * member's own, so it may never run on their ChatGPT plan. Part of the
+	 * signed payload, so it cannot be stripped or forged in transit. Absent —
+	 * every signer before this field existed — means not impersonated, and a
+	 * verifier that predates it still accepts the signature and ignores it.
+	 */
+	impersonated?: boolean;
 }
 
 /**

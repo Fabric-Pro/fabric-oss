@@ -485,6 +485,18 @@ The organization's own branding as a preparer of documents — logo, brand color
 ### Recipient brand
 The branding of the party a project's documents are prepared for, held on the project because a project is normally one engagement with one recipient. Distinct from the Brand kit: the Brand kit says who wrote the edition, the recipient brand says who it is for, and an edition can carry both.
 
+## Proposal artifact
+
+### Proposal artifact
+A Proposal produced by one coordinated generation: a client-only Main Document whose sections appear as they are written, visuals added in the same run, and an Internal Analysis kept apart from it. It replaces the Draft followed by a Glossy edition for organizations that have it switched on, and only for Proposals.
+
+The Main Document is the client artifact itself, not a draft to be cleaned later, so nothing that would have to be removed before a client sees it may enter it: the prompt that writes it is pinned to the client-only action and never falls back to another. Its live sections are previews owned by one run; the document's content changes only when that run's final save succeeds.
+
+### Internal Analysis
+A review of a saved Main Document against the same source context that produced it, recorded as findings with a severity and a type. It is supplementary: it runs after the Main Document is saved, it can fail without affecting it, and nothing waits on it.
+
+It is internal to the organization that owns the project. A Project guest neither reads nor retrieves it, it is never part of the document's content, versions, exports or retrieval, and a generation a guest started does not produce one. A run analyses one version of the Main Document; once the document changes, the run describes an earlier version rather than the current one.
+
 ## Flagged ambiguities
 
 - "Queued" had been used for both a generation deliberately holding until the project's context work completes, and a job step that simply has not been reached yet — these are distinct. The first advances on its own and offers nothing to retry; the second is only a step's position in a list. Copy that blurs them invites a retry that supersedes a healthy attempt.

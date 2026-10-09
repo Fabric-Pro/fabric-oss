@@ -415,6 +415,8 @@ export interface RetrievableContext {
 	originalFilename: string | null;
 	sourceUrl: string | null;
 	sourceTitle: string | null;
+	/** A synced file's repository path; its title is only the base name. */
+	sourcePath?: string | null;
 	/** User-declared type label + AI guidance (Fizzy #1888); null when unset. */
 	sourceType: string | null;
 	aiInstructions: string | null;
@@ -434,6 +436,7 @@ export async function getRetrievableContextById(
 			originalFilename: true,
 			sourceUrl: true,
 			sourceTitle: true,
+			sourcePath: true,
 			sourceType: true,
 			aiInstructions: true,
 		},
@@ -449,6 +452,7 @@ export async function getRetrievableContextById(
 			originalFilename: projectContext.originalFilename,
 			sourceUrl: projectContext.sourceUrl,
 			sourceTitle: projectContext.sourceTitle,
+			sourcePath: projectContext.sourcePath,
 			sourceType: projectContext.sourceType,
 			aiInstructions: projectContext.aiInstructions,
 		};
@@ -870,7 +874,8 @@ export async function listProjectContextSummaries(options: {
 	type?: ProjectContextType;
 	includeCodeContexts?: boolean;
 	/**
-	 * Case-insensitive substring of the title, original filename or URL. The
+	 * Case-insensitive substring of the title, original filename, URL or a
+	 * synced file's repository path. The
 	 * code-index count (`excludedCodeContexts`) ignores it: it reports what the
 	 * default hides, not what matched.
 	 */
@@ -920,6 +925,12 @@ export async function listProjectContextSummaries(options: {
 						},
 						{
 							sourceUrl: {
+								contains: search,
+								mode: "insensitive",
+							},
+						},
+						{
+							sourcePath: {
 								contains: search,
 								mode: "insensitive",
 							},

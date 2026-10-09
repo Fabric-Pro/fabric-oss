@@ -19,14 +19,17 @@ const {
 	validatePartykitConfigMock,
 	initObservabilityMock,
 	initAppInsightsLogsMock,
+	addLogSinkMock,
 	ensureBucketsMock,
 } = vi.hoisted(() => ({
 	validatePartykitConfigMock: vi.fn(),
 	initObservabilityMock: vi.fn(),
 	initAppInsightsLogsMock: vi.fn(),
+	addLogSinkMock: vi.fn(),
 	ensureBucketsMock: vi.fn(),
 }));
 
+vi.mock("@repo/logs", () => ({ addLogSink: addLogSinkMock }));
 vi.mock("@shared/lib/partykit-config", () => ({
 	validatePartykitConfig: validatePartykitConfigMock,
 }));
@@ -115,11 +118,22 @@ describe("register — CRON_SECRET startup diagnostic", () => {
 });
 
 describe("register — Application Insights log forwarding", () => {
-	it("starts forwarding the web app's logs under its own cloud role", async () => {
+	it("does not build the App Insights client at registration, so the proxy function skips it", async () => {
 		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
 		initAppInsightsLogsMock.mockClear();
 
 		await register();
+
+		expect(initAppInsightsLogsMock).not.toHaveBeenCalled();
+	});
+
+	it("starts forwarding under the web app's own cloud role with the first warning", async () => {
+		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
+		initAppInsightsLogsMock.mockClear();
+		await register();
+		const [sink] = addLogSinkMock.mock.calls.at(-1) ?? [];
+
+		sink({ level: "warn", message: "first warning" });
 
 		expect(initAppInsightsLogsMock).toHaveBeenCalledWith({
 			cloudRoleName: "fabric.web",
@@ -128,12 +142,10 @@ describe("register — Application Insights log forwarding", () => {
 
 	it("skips Azure VM usage probes on Vercel while forwarding logs", async () => {
 		vi.stubEnv("APPLICATION_INSIGHTS_NO_STATSBEAT", "");
-		initAppInsightsLogsMock.mockClear();
 
 		await register();
 
 		expect(process.env.APPLICATION_INSIGHTS_NO_STATSBEAT).toBe("true");
-		expect(initAppInsightsLogsMock).toHaveBeenCalledOnce();
 	});
 });
 
@@ -190,8 +202,6 @@ describe("register — startup timing", () => {
 		vi.spyOn(process, "uptime").mockReturnValue(12.345);
 		vi.spyOn(performance, "now")
 			.mockReturnValueOnce(100)
-			.mockReturnValueOnce(110)
-			.mockReturnValueOnce(125)
 			.mockReturnValueOnce(145);
 
 		// Act
@@ -199,7 +209,6 @@ describe("register — startup timing", () => {
 
 		// Assert
 		expect(infoSpy).toHaveBeenCalledWith("Web instrumentation timing", {
-			appInsightsInitMs: 15,
 			event: "web.instrumentation_timing",
 			processUptimeMs: 12345,
 			registerMs: 45,

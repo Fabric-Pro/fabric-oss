@@ -41,6 +41,8 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+	// The page invalidates on document nudges in a Proposal's artifact mode.
+	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 	useQuery: ({ queryKey }: { queryKey: [string, unknown] }) => {
 		if (queryKey[0] === "documents.get") {
 			return {
@@ -68,6 +70,9 @@ vi.mock("@tanstack/react-query", () => ({
 	},
 }));
 
+vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
+	useIsGuestInOrg: () => false,
+}));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: "org-acme",

@@ -251,6 +251,11 @@ export async function adoptDocumentIntoProjectTenant(document: {
 export async function getDocumentById(documentId: string) {
 	const document = await db.projectDocument.findUnique({
 		where: { id: documentId },
+		// The Proposal artifact's run token and attempt (Fizzy #2801) guard
+		// the worker's writes and mean nothing to a reader; every caller of
+		// this read hands the row out. `liveContent` stays: the document page
+		// renders it while a run streams.
+		omit: { liveRunId: true, liveAttempt: true },
 		include: {
 			project: {
 				select: {
@@ -319,6 +324,9 @@ export async function listDocuments(options: {
 	const [documents, total] = await Promise.all([
 		db.projectDocument.findMany({
 			where,
+			// A run's live preview is for the document page alone; a list has no
+			// use for a second copy of a body that is still being written.
+			omit: { liveContent: true },
 			include: {
 				_count: {
 					select: {
@@ -994,6 +1002,16 @@ export async function markDocumentGenerationQueued(
 			// one run, so a late terminal write from the previous one still
 			// finds its own claim taken.
 			generationNotificationEmittedAt: null,
+			// The previous coordinated Proposal run's ownership ends here
+			// (Fizzy #2801). Its writes are guarded by its run token, and this
+			// attempt's own run claims the document only later, at its plan;
+			// keeping the token until then would let a late progress or
+			// terminal write of the previous run move this attempt off QUEUED,
+			// and its start, which requires QUEUED, would give the generation
+			// up. A null token matches none of them. Its preview goes too.
+			liveRunId: null,
+			liveAttempt: null,
+			liveContent: null,
 			// Only when supplied: a caller with no workflow to point at must
 			// not blank out the id an earlier attempt left behind.
 			...(options.workflowId ? { workflowId: options.workflowId } : {}),

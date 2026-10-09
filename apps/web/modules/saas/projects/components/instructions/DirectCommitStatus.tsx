@@ -275,7 +275,7 @@ export function DirectCommitBranchMovedDialog({
 				}
 			}}
 		>
-			<DialogContent>
+			<DialogContent className="grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>
 						{t("branchMovedTitle", { ref: branch })}
@@ -284,7 +284,7 @@ export function DirectCommitBranchMovedDialog({
 						{t("branchMovedBody", { ref: branch })}
 					</DialogDescription>
 				</DialogHeader>
-				<DialogFooter>
+				<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 					<Button variant="ghost" onClick={onCancel}>
 						{t("cancel")}
 					</Button>

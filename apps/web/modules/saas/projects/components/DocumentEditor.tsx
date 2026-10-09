@@ -81,6 +81,7 @@ import {
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
+	type ReactNode,
 	startTransition,
 	useCallback,
 	useEffect,
@@ -157,6 +158,10 @@ import { EditorToolbar } from "./EditorToolbar";
 import { getOrpcCode } from "./field-mapping/orpc-error";
 import { ImageLightbox } from "./ImageLightbox";
 import { ImageSelectionToolbar } from "./ImageSelectionToolbar";
+import {
+	appliesAttachedRunBody,
+	publishGenerationRunRole,
+} from "./proposal-artifact/generation-run-awareness";
 import {
 	SlashCommandsExtension,
 	setSlashCommandImageUploadHandler,
@@ -346,6 +351,27 @@ type Props = {
 	 * docblock for the full Part-2 rationale.
 	 */
 	initialAssistantMessages?: ReadonlyArray<Record<string, unknown>>;
+	/**
+	 * The page shows generation progress itself (a Proposal in artifact mode,
+	 * Fizzy #2801), so the full-screen progress overlay stays off. The failed
+	 * notice and the regeneration review are unaffected.
+	 */
+	suppressGenerationOverlay?: boolean;
+	/**
+	 * Attach the editor to a generation the server reports as queued or running
+	 * that the editor did not start (Fizzy #2801): a Proposal in artifact mode
+	 * regenerated from the documents list, the chat, or before a reload. The
+	 * editor then takes the regenerated body through its own regeneration
+	 * review, exactly as if it had started the run, instead of keeping the body
+	 * it loaded.
+	 */
+	attachToServerRun?: boolean;
+	/**
+	 * Shown in place of the prompt selector when the run ignores the prompt
+	 * chosen here: a Proposal under the `PROPOSAL_ARTIFACT` gate is always
+	 * written from the library's client proposal prompt (Fizzy #2801).
+	 */
+	promptSelectorReplacement?: ReactNode;
 };
 
 interface AgentState {
@@ -406,6 +432,9 @@ export function DocumentEditor({
 	initialPersistedMessageIds,
 	initialAttachmentsByMessageId,
 	initialAssistantMessages,
+	suppressGenerationOverlay = false,
+	attachToServerRun = false,
+	promptSelectorReplacement,
 }: Props) {
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	const { organizationId } = useOrganizationContext();
@@ -617,6 +646,9 @@ export function DocumentEditor({
 				initialAttachmentsByMessageId={initialAttachmentsByMessageId}
 				initialAssistantMessages={initialAssistantMessages}
 				documentDataUpdatedAt={documentDataUpdatedAt}
+				suppressGenerationOverlay={suppressGenerationOverlay}
+				attachToServerRun={attachToServerRun}
+				promptSelectorReplacement={promptSelectorReplacement}
 			/>
 		);
 	}
@@ -659,6 +691,9 @@ export function DocumentEditor({
 			initialAssistantMessages={initialAssistantMessages}
 			ssrConversationId={initialAssistantConversationId}
 			documentDataUpdatedAt={documentDataUpdatedAt}
+			suppressGenerationOverlay={suppressGenerationOverlay}
+			attachToServerRun={attachToServerRun}
+			promptSelectorReplacement={promptSelectorReplacement}
 		/>
 	);
 }
@@ -691,6 +726,9 @@ function CollaborativeDocumentEditor({
 	initialAssistantMessages,
 	ssrConversationId,
 	documentDataUpdatedAt,
+	suppressGenerationOverlay,
+	attachToServerRun,
+	promptSelectorReplacement,
 }: {
 	projectId: string;
 	documentId: string;
@@ -746,6 +784,9 @@ function CollaborativeDocumentEditor({
 	initialAssistantMessages?: ReadonlyArray<Record<string, unknown>>;
 	ssrConversationId: string | null;
 	documentDataUpdatedAt: number;
+	suppressGenerationOverlay: boolean;
+	attachToServerRun: boolean;
+	promptSelectorReplacement?: ReactNode;
 }) {
 	const [isClient, setIsClient] = useState(false);
 	const [connectionTimedOut, setConnectionTimedOut] = useState(false);
@@ -842,6 +883,9 @@ function CollaborativeDocumentEditor({
 				initialAttachmentsByMessageId={initialAttachmentsByMessageId}
 				initialAssistantMessages={initialAssistantMessages}
 				documentDataUpdatedAt={documentDataUpdatedAt}
+				suppressGenerationOverlay={suppressGenerationOverlay}
+				attachToServerRun={attachToServerRun}
+				promptSelectorReplacement={promptSelectorReplacement}
 			/>
 		);
 	}
@@ -930,6 +974,9 @@ function CollaborativeDocumentEditor({
 			initialAssistantMessages={initialAssistantMessages}
 			ssrConversationId={ssrConversationId}
 			documentDataUpdatedAt={documentDataUpdatedAt}
+			suppressGenerationOverlay={suppressGenerationOverlay}
+			attachToServerRun={attachToServerRun}
+			promptSelectorReplacement={promptSelectorReplacement}
 		/>
 	);
 }
@@ -1040,6 +1087,12 @@ interface DocumentEditorInnerProps {
 	 * resolved.
 	 */
 	documentDataUpdatedAt: number;
+	/** See the public DocumentEditor `suppressGenerationOverlay` prop. */
+	suppressGenerationOverlay: boolean;
+	/** See the public DocumentEditor `attachToServerRun` prop. */
+	attachToServerRun: boolean;
+	/** See the public DocumentEditor `promptSelectorReplacement` prop. */
+	promptSelectorReplacement?: ReactNode;
 }
 
 function formatTranscriptContexts(
@@ -1100,6 +1153,9 @@ function DocumentEditorInner({
 	initialAssistantMessages,
 	ssrConversationId,
 	documentDataUpdatedAt,
+	suppressGenerationOverlay,
+	attachToServerRun,
+	promptSelectorReplacement,
 }: DocumentEditorInnerProps) {
 	const tTooltips = useTranslations("tooltips.documentEditor");
 
@@ -1881,6 +1937,11 @@ function DocumentEditorInner({
 	// Track if this is a direct regeneration (button click) vs agent-based regeneration
 	// Direct regeneration should NOT sync agent state back to editor (prevents AI response overwriting)
 	const isDirectRegenerationRef = useRef(false);
+
+	// True while the regeneration in flight is a run this editor did not
+	// start and only follows (see the attach effect below). Such a run is
+	// adopted when it ends, never reviewed.
+	const attachedRunRef = useRef(false);
 
 	// LOCAL STATE for RAG contexts and project context
 	// These are stored locally and sent via useCopilotReadable (one-way to agent)
@@ -2809,6 +2870,11 @@ function DocumentEditorInner({
 		if (!isRegenerating || isConfirming) {
 			return;
 		}
+		// A run this editor only follows is adopted by the effect after the
+		// attach effect below, without this review.
+		if (attachedRunRef.current) {
+			return;
+		}
 
 		const baseline = regenerationBaselineRef.current;
 		const polledContent = document?.content;
@@ -2924,6 +2990,7 @@ function DocumentEditorInner({
 		regenerationTriggeredRef.current = false;
 		regenerationBaselineRef.current = null;
 		regenerationAckAtRef.current = null;
+		attachedRunRef.current = false;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [
 		document?.status,
@@ -2931,6 +2998,138 @@ function DocumentEditorInner({
 		documentDataUpdatedAt,
 		isRegenerating,
 	]);
+
+	// Attach to a run the editor did not start (Fizzy #2801). Without this,
+	// a Proposal regenerated from the documents list, the chat or before a
+	// reload ends with the editor still holding the body it loaded: the
+	// regeneration effect above only listens while this editor is
+	// regenerating. Attaching marks the editor regenerating for that run,
+	// and the effect below adopts the run's body when it ends. There is no
+	// Accept/Reject: the run belongs to whoever started it, and a Reject
+	// here would rewind it for everyone.
+	//
+	// - A run this editor started is already regenerating, so attaching is a
+	//   no-op and the run keeps its review.
+	// - An empty document is left to the first-load path, which takes the
+	//   first body without a review.
+	// - The baseline is the saved body: the server writes the regenerated
+	//   body only at the run's final save.
+	// - The ack is the time of the snapshot that showed the run in
+	//   progress, so the FAILED watcher treats a later FAILED as this run's
+	//   own rather than ignoring it for want of a mutation to date it by.
+	useEffect(() => {
+		if (!attachToServerRun || isRegenerating || isConfirming) {
+			return;
+		}
+		if (
+			document?.status !== "QUEUED" &&
+			document?.status !== "GENERATING"
+		) {
+			return;
+		}
+		const savedBody = document?.content;
+		if (!savedBody) {
+			return;
+		}
+		attachedRunRef.current = true;
+		regenerationBaselineRef.current = savedBody;
+		isDirectRegenerationRef.current = true;
+		regenerationTriggeredRef.current = true;
+		regenerationAckAtRef.current = documentDataUpdatedAt;
+		setIsRegenerating(true);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [
+		attachToServerRun,
+		document?.status,
+		document?.content,
+		documentDataUpdatedAt,
+		isRegenerating,
+		isConfirming,
+	]);
+
+	// The end of an attached run (Fizzy #2801).
+	//
+	// - While the server still reports the run queued or generating, nothing
+	//   is taken: the final save writes the body and COMPLETE together, so a
+	//   body that changes before then is a colleague's save, not the result.
+	// - FAILED belongs to the FAILED watcher above, which needs the ack this
+	//   effect would otherwise clear.
+	// - Any other status with a new body: the editor adopts it as it adopts
+	//   a restored version — its content, its version for the slot guard,
+	//   and its saved baseline. Under collaboration one open editor writes
+	//   it into the shared document (see `appliesAttachedRunBody`) and the
+	//   others receive it through the room; two writing at once would leave
+	//   the body in it twice.
+	// - Without a new body the run is over all the same, and the editor
+	//   stops regenerating.
+	//
+	// The body is applied synchronously, so its room update leaves before
+	// the cleared awareness role that lets another editor take over.
+	useEffect(() => {
+		if (!isRegenerating || !attachedRunRef.current) {
+			return;
+		}
+		const status = document?.status;
+		if (
+			status === "QUEUED" ||
+			status === "GENERATING" ||
+			status === "FAILED"
+		) {
+			return;
+		}
+		const baseline = regenerationBaselineRef.current;
+		const polledContent = document?.content;
+		const hasNewContent =
+			polledContent != null &&
+			polledContent.length > 0 &&
+			polledContent !== (baseline || "");
+		if (hasNewContent) {
+			const awareness = enableCollaboration ? provider?.awareness : null;
+			if (appliesAttachedRunBody(awareness)) {
+				applyProgrammaticContent(
+					editor,
+					fromMarkdown(polledContent),
+					"server",
+				);
+				baselineRef.current = polledContent;
+				updateSavedBaseline(polledContent);
+				setHasUnsavedChanges(false);
+			}
+			editorBodyVersionRef.current =
+				document?.version ?? editorBodyVersionRef.current;
+			setCurrentDocument(polledContent);
+		}
+		attachedRunRef.current = false;
+		isDirectRegenerationRef.current = false;
+		regenerationTriggeredRef.current = false;
+		regenerationBaselineRef.current = null;
+		regenerationAckAtRef.current = null;
+		setIsRegenerating(false);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [document?.status, document?.content, isRegenerating]);
+
+	// Tell the other editors in a collaborative room whether this one
+	// started the run in flight or follows it, so only one of them writes
+	// its body (see `appliesAttachedRunBody`). The role stays published
+	// through the review of a run this editor started.
+	useEffect(() => {
+		const awareness = enableCollaboration ? provider?.awareness : null;
+		publishGenerationRunRole(
+			awareness,
+			isRegenerating || isConfirming
+				? attachedRunRef.current
+					? "attached"
+					: "started"
+				: null,
+		);
+	}, [enableCollaboration, provider, isRegenerating, isConfirming]);
+	const providerRef = useRef(provider);
+	providerRef.current = provider;
+	useEffect(() => {
+		return () => {
+			publishGenerationRunRole(providerRef.current?.awareness, null);
+		};
+	}, []);
 
 	// === STREAMING PATTERN - REF-BASED TO FIX RACE CONDITIONS ===
 	// The key insight: React state updates are async, but we need the baseline
@@ -5334,43 +5533,49 @@ function DocumentEditorInner({
 								  underneath the document type on Line 3. */}
 											<div className="flex items-center gap-2 min-w-0 flex-1 justify-start">
 												<div className="flex min-w-0 lg:flex-initial">
-													<PromptSelector
-														agentName="project_document_generator"
-														documentType={
-															document.type
-														}
-														value={selectedPromptId}
-														onValueChange={
-															setSelectedPromptId
-														}
-														onPromptVersionChange={
-															setSelectedPromptVersionId
-														}
-														disabled={
-															isSaving ||
-															isRegenerating
-														}
-														placeholder="Use default prompt"
-														// Always show the "Update Binding" action so
-														// users can re-bind their prompt selection as
-														// the default for this document type. The
-														// action bar is lean enough now that there's
-														// always room for it.
-														showBindAction={true}
-														// PromptSelector renders its own Manage
-														// Prompts gear inline. Action slot on Line 3
-														// no longer mirrors this control — it lives
-														// here next to the selector where prompt-
-														// management actions belong.
-														hideManagePromptsAction={
-															false
-														}
-														// Compact sizing matches the 32-px buttons in
-														// the prompt row (Line 4) — non-doc-editor
-														// usages (form contexts in ExistingProjectFlow
-														// etc.) keep the default Radix h-9/text-base.
-														compact={true}
-													/>
+													{promptSelectorReplacement ?? (
+														<PromptSelector
+															agentName="project_document_generator"
+															documentType={
+																document.type
+															}
+															value={
+																selectedPromptId
+															}
+															onValueChange={
+																setSelectedPromptId
+															}
+															onPromptVersionChange={
+																setSelectedPromptVersionId
+															}
+															disabled={
+																isSaving ||
+																isRegenerating
+															}
+															placeholder="Use default prompt"
+															// Always show the "Update Binding" action so
+															// users can re-bind their prompt selection as
+															// the default for this document type. The
+															// action bar is lean enough now that there's
+															// always room for it.
+															showBindAction={
+																true
+															}
+															// PromptSelector renders its own Manage
+															// Prompts gear inline. Action slot on Line 3
+															// no longer mirrors this control — it lives
+															// here next to the selector where prompt-
+															// management actions belong.
+															hideManagePromptsAction={
+																false
+															}
+															// Compact sizing matches the 32-px buttons in
+															// the prompt row (Line 4) — non-doc-editor
+															// usages (form contexts in ExistingProjectFlow
+															// etc.) keep the default Radix h-9/text-base.
+															compact={true}
+														/>
+													)}
 												</div>
 
 												{/* Spacer pushes Regenerate + Update using
@@ -5729,7 +5934,8 @@ function DocumentEditorInner({
 									context work has no content yet either, and gating
 									on GENERATING alone left it staring at an empty
 									editor with nothing saying why. */}
-								{!isProgressDismissed &&
+								{!suppressGenerationOverlay &&
+									!isProgressDismissed &&
 									!showImportedRegenWarning &&
 									((isRegenerating && !showConfirmDialog) ||
 										(isGenerationRunning &&

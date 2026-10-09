@@ -19,9 +19,8 @@ import {
 	recordChatGptPlanSourceExhausted,
 } from "./exhaustion-breaker";
 import {
-	CHATGPT_PLAN_HEAVY_MODEL,
+	ChatGptPlanModelNotServedError,
 	type ChatGptPlanReasoningEffort,
-	recordChatGptPlanModelUnsupported,
 } from "./models";
 import {
 	getChatGptPlanAccessToken,
@@ -29,6 +28,7 @@ import {
 	refreshChatGptPlanAfterUnauthorized,
 	refreshChatGptPlanSourceAfterUnauthorized,
 } from "./plan-credentials";
+import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
 import { type PlanSourceRef, planSourceLogFields } from "./sources";
 
 /**
@@ -113,53 +113,69 @@ export type PlanResponsesModel = ReturnType<
 export type PlanCallOptions = Parameters<PlanResponsesModel["doGenerate"]>[0];
 
 /**
- * Retries once on the heavy default when the plan refuses the chosen model,
- * and remembers the refusal so the next call goes straight to it. Never loops:
- * the heavy model's own failure is final.
+ * When the plan refuses the chosen model as unsupported, retries once on the
+ * organization's fallback model (Fizzy #2770 F10). No fallback, the same
+ * model, or a refusal of the fallback too ends in
+ * {@link ChatGptPlanModelNotServedError}, naming the chosen model. Never loops.
  */
 function createChatGptPlanModelFallbackMiddleware(params: {
 	source: PlanSourceRef;
 	modelId: string;
-	fallbackModel: () => PlanResponsesModel;
+	fallbackModelId: string | null;
+	buildModel: (modelId: string) => PlanResponsesModel;
 	onModelFallback?: (modelId: string) => void;
 }): LanguageModelMiddleware {
-	const fallBack = (error: unknown) => {
-		if (
-			params.modelId === CHATGPT_PLAN_HEAVY_MODEL ||
-			!isUnsupportedModelError(error)
-		) {
+	const { fallbackModelId } = params;
+	const fallBack = (error: unknown): PlanResponsesModel => {
+		if (!isUnsupportedModelError(error)) {
 			throw error;
 		}
+		// OpenAI just refused a model the stored list may still name; re-read
+		// the list so pickers and resolution catch up on their own.
+		refreshChatGptPlanServedModelsInBackground(params.source);
+		if (!fallbackModelId || fallbackModelId === params.modelId) {
+			throw new ChatGptPlanModelNotServedError(params.modelId);
+		}
 		logger.warn(
-			"[chatgpt-plan] Model not available on this plan; retrying on the default",
+			"[chatgpt-plan] Model not available on this plan; retrying on the fallback",
 			{
 				...planSourceLogFields(params.source),
 				model: params.modelId,
-				fallback: CHATGPT_PLAN_HEAVY_MODEL,
+				fallback: fallbackModelId,
 			},
 		);
-		recordChatGptPlanModelUnsupported(params.source, params.modelId);
-		params.onModelFallback?.(CHATGPT_PLAN_HEAVY_MODEL);
-		return params.fallbackModel();
+		params.onModelFallback?.(fallbackModelId);
+		return params.buildModel(fallbackModelId);
+	};
+	const finalOnFallback = (error: unknown): never => {
+		throw isUnsupportedModelError(error)
+			? new ChatGptPlanModelNotServedError(params.modelId)
+			: error;
 	};
 	return {
 		specificationVersion: "v4",
 		wrapGenerate: async ({ doGenerate, params: callParams }) => {
+			let retry: PlanResponsesModel;
 			try {
 				return await doGenerate();
 			} catch (error) {
-				// `ai` and `@ai-sdk/openai` resolve separate provider-type versions.
-				return fallBack(error).doGenerate(
-					callParams as PlanCallOptions,
-				);
+				retry = fallBack(error);
 			}
+			// `ai` and `@ai-sdk/openai` resolve separate provider-type versions.
+			return Promise.resolve(
+				retry.doGenerate(callParams as PlanCallOptions),
+			).catch(finalOnFallback);
 		},
 		wrapStream: async ({ doStream, params: callParams }) => {
+			let retry: PlanResponsesModel;
 			try {
 				return await doStream();
 			} catch (error) {
-				return fallBack(error).doStream(callParams as PlanCallOptions);
+				retry = fallBack(error);
 			}
+			return Promise.resolve(
+				retry.doStream(callParams as PlanCallOptions),
+			).catch(finalOnFallback);
 		},
 	};
 }
@@ -224,6 +240,8 @@ export interface ChatGptPlanModelOptions {
 	/** The plan that serves the call; the member's own plan when omitted. */
 	source?: PlanSourceRef;
 	modelId: string;
+	/** The organization's fallback for a model the plan refuses; null for none. */
+	fallbackModelId?: string | null;
 	reasoningEffort?: ChatGptPlanReasoningEffort;
 	/** Told the model that actually served the call after a fallback. */
 	onModelFallback?: (modelId: string) => void;
@@ -241,6 +259,7 @@ export function createChatGptPlanModel({
 	userId,
 	source = { kind: "user", userId },
 	modelId,
+	fallbackModelId = null,
 	reasoningEffort,
 	onModelFallback,
 	fetchImpl,
@@ -284,8 +303,8 @@ export function createChatGptPlanModel({
 			createChatGptPlanModelFallbackMiddleware({
 				source,
 				modelId,
-				fallbackModel: () =>
-					provider.responses(CHATGPT_PLAN_HEAVY_MODEL),
+				fallbackModelId,
+				buildModel: (id) => provider.responses(id),
 				onModelFallback,
 			}),
 		],

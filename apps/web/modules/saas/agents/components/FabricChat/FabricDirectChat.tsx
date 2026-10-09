@@ -175,7 +175,10 @@ import {
 	ToolCallList,
 	useTypewriterPlaceholder,
 } from "./shared";
-import { getSelectedAgentInstanceId } from "./shared/agent-selection";
+import {
+	getSelectedAgentInstanceId,
+	shouldPersistAgentSelection,
+} from "./shared/agent-selection";
 import { shouldShowAssistantActionCards } from "./shared/assistant-action-cards";
 import { MemoizedRow } from "./shared/MemoizedRow";
 import { SkillAutocomplete } from "./shared/SkillAutocomplete";
@@ -1080,7 +1083,9 @@ export const FabricDirectChat = forwardRef<
 			setRemovedAgentProjectId(null);
 			setSelectedAgent((current) => {
 				const next = current?.agentId === agent.agentId ? null : agent;
-				persistAgentSelection.mutate(next ? [next] : []);
+				if (shouldPersistAgentSelection(current, next)) {
+					persistAgentSelection.mutate(next ? [next] : []);
+				}
 				return next;
 			});
 		},

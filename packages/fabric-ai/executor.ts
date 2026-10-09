@@ -16,6 +16,7 @@
  * - FABRIC_AI_TIMEOUT: Request timeout in milliseconds
  */
 
+import { chatGptPlanServesCall } from "@repo/ai";
 import { logger } from "@repo/logs";
 import { createFabricClient } from "./client";
 import {
@@ -48,6 +49,30 @@ export function getFabricAIMode(): FabricAIMode {
 		return mode;
 	}
 	return "hybrid"; // Default to most secure mode
+}
+
+/**
+ * Whether this pattern may run in delegated mode: the Fabric AI server must
+ * support it, and the work must not be the tenant's ChatGPT plan's — delegated
+ * mode hands the server the organization's raw API key, which a plan does not
+ * have. Plan-served work runs in hybrid mode instead, through the plan-aware
+ * model resolution (Fizzy #2770 D9).
+ */
+async function delegationApplies(
+	userContext: UserContext,
+	fabricConfig?: Partial<FabricConfig>,
+): Promise<boolean> {
+	if (
+		await chatGptPlanServesCall({
+			userId: userContext.userId,
+			organizationId: userContext.organizationId,
+			projectId: userContext.projectId,
+		})
+	) {
+		logger.info("ChatGPT plan serves this work; running in hybrid mode");
+		return false;
+	}
+	return isDelegatedModeSupported(fabricConfig);
 }
 
 /**
@@ -160,14 +185,13 @@ export async function executeFabricPattern(
 				};
 			}
 
-			// Check if delegated mode is supported
-			const supported = await isDelegatedModeSupported(
-				options.fabricConfig,
-			);
-			if (!supported) {
-				logger.warn(
-					"Delegated mode not supported, falling back to hybrid mode",
-				);
+			if (
+				!(await delegationApplies(
+					options.userContext,
+					options.fabricConfig,
+				))
+			) {
+				logger.warn("Delegated mode does not apply; using hybrid mode");
 				const result = await executePatternHybrid({
 					input: options.input,
 					pattern: options.pattern,
@@ -267,14 +291,13 @@ export async function* executeFabricPatternStream(
 				return;
 			}
 
-			// Check if delegated mode is supported
-			const supported = await isDelegatedModeSupported(
-				options.fabricConfig,
-			);
-			if (!supported) {
-				logger.warn(
-					"Delegated mode not supported, falling back to hybrid mode",
-				);
+			if (
+				!(await delegationApplies(
+					options.userContext,
+					options.fabricConfig,
+				))
+			) {
+				logger.warn("Delegated mode does not apply; using hybrid mode");
 				for await (const event of executePatternHybridStream({
 					input: options.input,
 					pattern: options.pattern,
@@ -407,6 +430,23 @@ export async function analyzeYouTube(
 					},
 					mode: "delegated",
 				};
+			}
+
+			if (
+				!(await delegationApplies(
+					options.userContext,
+					options.fabricConfig,
+				))
+			) {
+				const result = await analyzeYouTubeHybrid({
+					url: options.url,
+					pattern: options.pattern,
+					variables: options.variables,
+					userContext: options.userContext,
+					temperature: options.temperature,
+					fabricConfig: options.fabricConfig,
+				});
+				return { ...result, mode: "hybrid" };
 			}
 
 			const fabricClient = createFabricClient(options.fabricConfig);

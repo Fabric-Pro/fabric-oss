@@ -15,6 +15,7 @@ vi.mock("@repo/database", async () => {
 	return {
 		db: { cloudProviderConfig: { findFirst: mocks.findFirst } },
 		readProviderRowCredentials: credentials.readProviderRowCredentials,
+		LLM_PROVIDER_PURPOSE_FILTER: credentials.LLM_PROVIDER_PURPOSE_FILTER,
 	};
 });
 vi.mock("@repo/logs", () => ({
@@ -51,6 +52,7 @@ describe("isRoadmapRecommendationProviderAvailable", () => {
 					organizationId: "org-1",
 					isDefault: true,
 					enabled: true,
+					purpose: { not: "EMBEDDINGS_ONLY" },
 				},
 			}),
 		);

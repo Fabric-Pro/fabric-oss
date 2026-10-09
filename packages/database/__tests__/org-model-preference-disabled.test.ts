@@ -11,7 +11,7 @@
  * The regression worth guarding is the middle of `getModelForTask`: the branch
  * that falls through to `getTaskDefaultModel` when an organization override
  * cannot be honored. Falling through for a NULL row would silently re-enable
- * the seeded default (Jev) for an organization that had just switched it off,
+ * the seeded default for an organization that had just switched it off,
  * and the off switch would look like it did nothing.
  *
  * Mocks stand in for the prisma client and the task-default cache so the real
@@ -91,7 +91,7 @@ describe("getModelForTask — an organization that switched the task off", () =>
 		);
 
 		expect(resolved).toBeNull();
-		// The load-bearing half: a fall-through would have re-enabled Jev.
+		// The load-bearing half: a fall-through would have re-enabled the default.
 		expect(taskDefaultFindMany).not.toHaveBeenCalled();
 	});
 

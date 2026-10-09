@@ -1,3 +1,4 @@
+import "../../../start-web-telemetry";
 import { denyDeviceCode } from "@repo/api";
 import { NextResponse } from "next/server";
 

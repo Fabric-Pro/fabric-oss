@@ -555,6 +555,7 @@ function labelForContextType(type: string): string {
 function sourceLabelForContext(ctx: {
 	type: string;
 	sourceTitle?: string;
+	sourcePath?: string;
 	filename?: string;
 	metadata?: Record<string, unknown>;
 }): string {
@@ -573,7 +574,9 @@ function sourceLabelForContext(ctx: {
 	if (ctx.type === EXTERNAL_INDEX_CONTEXT_TYPE) {
 		return ctx.sourceTitle || "External knowledge index";
 	}
-	return ctx.sourceTitle || ctx.filename || "Project Document";
+	return (
+		ctx.sourcePath || ctx.sourceTitle || ctx.filename || "Project Document"
+	);
 }
 
 /**
@@ -729,6 +732,7 @@ export async function fetchProjectContextSources({
 			sourceLabel: sourceLabelForContext({
 				type: ctx.type,
 				sourceTitle: ctx.sourceTitle,
+				sourcePath: ctx.sourcePath,
 				filename: ctx.filename,
 				metadata: meta,
 			}),

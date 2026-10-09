@@ -5,7 +5,11 @@
  * This is the server-side implementation that agents call via HTTP.
  */
 
-import { getAIModelWithMetadata, getRAGProviderConfig } from "@repo/ai";
+import {
+	chatGptPlanServesCall,
+	getAIModelWithMetadata,
+	getRAGProviderConfig,
+} from "@repo/ai";
 import type { AiTaskType } from "@repo/database";
 import type { ResolvedModelConfig, TaskType, TenantContext } from "../types";
 
@@ -60,4 +64,23 @@ export async function resolveModelForTenant(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Why no model resolved, for the caller's refusal. An external runtime needs
+ * the raw provider key, which a ChatGPT plan does not have (Fizzy #2770 D9):
+ * a tenant whose work runs on a plan, with no API provider for LLM work (an
+ * embeddings-only key never counts), is told so rather than told nothing is
+ * configured.
+ */
+export async function modelUnavailableMessage(
+	tenant: TenantContext,
+): Promise<string> {
+	const planServed = await chatGptPlanServesCall({
+		userId: tenant.userId,
+		organizationId: tenant.organizationId ?? undefined,
+	}).catch(() => false);
+	return planServed
+		? "This organization's AI work runs on ChatGPT plans, which an agent runtime cannot use. Add an API provider in Settings → AI Providers."
+		: "No AI provider configured. Please configure at least one provider in settings.";
 }

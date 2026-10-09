@@ -10,6 +10,7 @@ import {
 	ActivityIcon,
 	BotMessageSquareIcon,
 	Building2Icon,
+	GaugeIcon,
 	ScrollTextIcon,
 	ToggleLeftIcon,
 	TrendingUpIcon,
@@ -121,6 +122,13 @@ export default async function OrganizationAdminLayout({
 										href: `/app/${organizationSlug}/admin/ai-adoption`,
 										icon: (
 											<TrendingUpIcon className="size-4 opacity-50" />
+										),
+									},
+									{
+										title: "Plan Health",
+										href: `/app/${organizationSlug}/admin/chatgpt-plan-health`,
+										icon: (
+											<GaugeIcon className="size-4 opacity-50" />
 										),
 									},
 									...(monitoringEnabled

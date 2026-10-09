@@ -11,7 +11,7 @@
  * the prompt and took ~2 minutes per call.
  */
 
-import { getRAGProviderConfig } from "@repo/ai";
+import { getEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	fetchCredentialsByIdInTenant,
 	getRetrievableContextById,
@@ -557,9 +557,14 @@ export async function retrieveRelevantContextsForSpec(
 	// human/unattended split is already carried by `throwOnRetrievalError`
 	// below rather than by which key is resolved, and a keyless tenant should
 	// see "no context found" here, not context retrieved on the platform's key.
-	let providerConfig: Awaited<ReturnType<typeof getRAGProviderConfig>>;
+	let providerConfig: Awaited<
+		ReturnType<typeof getEmbeddingRAGProviderConfig>
+	>;
 	try {
-		providerConfig = await getRAGProviderConfig({ userId, organizationId });
+		providerConfig = await getEmbeddingRAGProviderConfig({
+			userId,
+			organizationId,
+		});
 	} catch (error) {
 		logger.warn(
 			`[SpecRetrieval] No embedding provider for project ${projectId}: ${error instanceof Error ? error.message : error}`,
@@ -799,6 +804,7 @@ export async function retrieveRelevantContextsForSpec(
 						filename: ctx.originalFilename || undefined,
 						sourceUrl: ctx.sourceUrl || undefined,
 						sourceTitle: ctx.sourceTitle || undefined,
+						sourcePath: ctx.sourcePath || undefined,
 						sourceType: ctx.sourceType ?? undefined,
 						aiInstructions: ctx.aiInstructions ?? undefined,
 					},

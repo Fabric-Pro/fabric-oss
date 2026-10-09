@@ -314,24 +314,61 @@ async function readAzureDevOpsParent(
 		: { ok: false, outcome: "unreachable" };
 }
 
+async function readGitHubParent(
+	target: RepositoryApiTarget,
+	sha: string,
+): Promise<ReadRepositoryCommitParentResult> {
+	const answer = await getRepositoryJson(target, `/commits/${sha}`);
+	if (!answer.ok) {
+		return answer;
+	}
+	return isRecord(answer.data)
+		? { ok: true, parent: firstParent(answer.data.parents) }
+		: { ok: false, outcome: "unreachable" };
+}
+
+async function readGitLabParent(
+	target: RepositoryApiTarget,
+	sha: string,
+): Promise<ReadRepositoryCommitParentResult> {
+	const answer = await getRepositoryJson(
+		target,
+		`/repository/commits/${sha}`,
+	);
+	if (!answer.ok) {
+		return answer;
+	}
+	return isRecord(answer.data)
+		? { ok: true, parent: firstParent(answer.data.parent_ids) }
+		: { ok: false, outcome: "unreachable" };
+}
+
 /**
- * The first parent of one Azure DevOps commit, for the commit a person
- * selected: the list endpoints leave parents out, and reading one per listed
- * commit costs a request each. Other providers list their parents with the
- * commit, so asking for one is `unreachable`. Never throws.
+ * The first parent of one commit, for the commit a person selected. Azure
+ * DevOps leaves parents out of its list endpoints, so reading one per listed
+ * commit costs a request each; GitHub and GitLab list them with the commit but
+ * answer the same question for a commit that is not on a listed page. Never
+ * throws.
  */
 export async function readRepositoryCommitParent(
 	input: ReadRepositoryCommitParentInput,
 ): Promise<ReadRepositoryCommitParentResult> {
 	const target = repositoryApiTarget(input);
-	if (
-		target === null ||
-		input.provider !== "AZURE_DEVOPS" ||
-		!OBJECT_ID.test(input.sha)
-	) {
+	if (target === null || !OBJECT_ID.test(input.sha)) {
 		return { ok: false, outcome: "unreachable" };
 	}
-	return readAzureDevOpsParent(target, input.sha);
+	switch (input.provider) {
+		case "GITHUB":
+			return readGitHubParent(target, input.sha);
+		case "GITLAB":
+			return readGitLabParent(target, input.sha);
+		case "AZURE_DEVOPS":
+			return readAzureDevOpsParent(target, input.sha);
+		default: {
+			const unreachable: never = input.provider;
+			return unreachable;
+		}
+	}
 }
 
 /**

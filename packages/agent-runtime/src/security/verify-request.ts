@@ -6,7 +6,13 @@ import {
 import { SignatureVerificationError, verifyTenantContext } from "./signing";
 
 export type VerifySignedTenantRequestResult =
-	| { ok: true; userId: string; organizationId?: string }
+	| {
+			ok: true;
+			userId: string;
+			organizationId?: string;
+			/** The signer marked the work as done while an admin acted as the user. */
+			impersonated: boolean;
+	  }
 	| { ok: false; status: number; error: string };
 
 /**
@@ -58,6 +64,7 @@ export function verifySignedTenantRequest(
 			ok: true,
 			userId: tenant.userId,
 			organizationId: tenant.organizationId ?? undefined,
+			impersonated: tenant.impersonated === true,
 		};
 	} catch (error) {
 		if (error instanceof SignatureVerificationError) {

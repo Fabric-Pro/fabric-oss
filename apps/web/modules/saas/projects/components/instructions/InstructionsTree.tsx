@@ -13,7 +13,13 @@ import {
 	SearchIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useState } from "react";
+import {
+	type KeyboardEvent,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import type { ChangeMark } from "../../lib/instructions-base-changes";
 
 export type TreeFile = {
@@ -35,6 +41,20 @@ type Node = {
 	/** A file beneath this folder differs from the base version. */
 	changed: boolean;
 };
+
+/**
+ * Rows are a fixed height so a long tree can be windowed: above
+ * `VIRTUALIZE_ABOVE_ROWS` visible rows only the rows in (and just around) the
+ * scroll viewport are mounted, so a search that opens every folder of a
+ * five-thousand-file repository costs a screenful of DOM, not five thousand
+ * buttons.
+ */
+const ROW_HEIGHT_PX = 24;
+const VIRTUALIZE_ABOVE_ROWS = 200;
+const OVERSCAN_ROWS = 12;
+const FALLBACK_VIEWPORT_PX = 600;
+
+type TreeRow = { node: Node; depth: number };
 
 function emptyNode(name: string, path: string): Node {
 	return { name, path, children: new Map(), count: 0, changed: false };
@@ -140,7 +160,6 @@ export function InstructionsTree({
 	onSelect,
 	changes,
 	leftOut,
-	onNoMatchesChange,
 }: {
 	files: TreeFile[];
 	selectedPath: string | null;
@@ -154,8 +173,6 @@ export function InstructionsTree({
 		shown: boolean;
 		onToggle: () => void;
 	};
-	/** Tells the page when the search or kind filter leaves nothing to show. */
-	onNoMatchesChange?: (noMatches: boolean) => void;
 }) {
 	const t = useTranslations("projects.codingInstructions.tree");
 	// Reuses `fileView.kindLabels` rather than a second copy of the same
@@ -240,10 +257,6 @@ export function InstructionsTree({
 	const noMatches =
 		searching && visible.length === 0 && visibleLeftOut.length === 0;
 
-	useEffect(() => {
-		onNoMatchesChange?.(noMatches);
-	}, [noMatches, onNoMatchesChange]);
-
 	const toggle = (path: string) => {
 		if (searching) {
 			setSearchCollapsed((prev) => {
@@ -268,7 +281,207 @@ export function InstructionsTree({
 		});
 	};
 
-	const renderNode = (node: Node, depth: number): React.ReactNode => {
+	const isOpen = (node: Node): boolean =>
+		searching
+			? !(
+					searchCollapsed.key === searchKey &&
+					searchCollapsed.paths.has(node.path)
+				)
+			: open.has(node.path);
+
+	const rows = useMemo(() => {
+		const out: TreeRow[] = [];
+		const walk = (node: Node, depth: number) => {
+			out.push({ node, depth });
+			if (!node.file && !node.leftOut && isOpen(node)) {
+				for (const child of sortedChildren(node)) {
+					walk(child, depth + 1);
+				}
+			}
+		};
+		for (const child of sortedChildren(tree)) {
+			walk(child, 0);
+		}
+		return out;
+	}, [tree, searching, searchKey, searchCollapsed, open]);
+
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const [viewport, setViewport] = useState({
+		top: 0,
+		height: FALLBACK_VIEWPORT_PX,
+	});
+	useEffect(() => {
+		const element = scrollRef.current;
+		if (!element || typeof ResizeObserver === "undefined") {
+			return;
+		}
+		const observer = new ResizeObserver(() =>
+			setViewport((previous) => ({
+				...previous,
+				height: element.clientHeight || FALLBACK_VIEWPORT_PX,
+			})),
+		);
+		observer.observe(element);
+		return () => observer.disconnect();
+	}, []);
+	const windowed = rows.length > VIRTUALIZE_ABOVE_ROWS;
+	const first = windowed
+		? Math.max(0, Math.floor(viewport.top / ROW_HEIGHT_PX) - OVERSCAN_ROWS)
+		: 0;
+	const last = windowed
+		? Math.min(
+				rows.length,
+				Math.ceil((viewport.top + viewport.height) / ROW_HEIGHT_PX) +
+					OVERSCAN_ROWS,
+			)
+		: rows.length;
+
+	// The rows that stay mounted wherever the window is: the selected row and
+	// the one holding keyboard focus, so neither is lost to a scroll.
+	const [focusedPath, setFocusedPath] = useState<string | null>(null);
+	// Arrow keys move focus from row to row, and only one row is a tab stop
+	// (the one last focused, else the selected one, else the first), so Tab
+	// crosses the tree in one step instead of once per file. A row outside the
+	// window is scrolled to and mounted first; the focus lands once it is there.
+	const [pendingFocus, setPendingFocus] = useState<string | null>(null);
+	const focusableRows = useMemo(
+		() => rows.filter((row) => !row.node.leftOut),
+		[rows],
+	);
+	const tabStopPath =
+		[focusedPath, selectedPath].find((path) =>
+			focusableRows.some((row) => row.node.path === path),
+		) ??
+		focusableRows[0]?.node.path ??
+		null;
+	const rowElement = (path: string): HTMLElement | null =>
+		[
+			...(scrollRef.current?.querySelectorAll<HTMLElement>(
+				"[data-tree-path]",
+			) ?? []),
+		].find((element) => element.dataset.treePath === path) ?? null;
+	// Re-runs when the window moves, so a row the scroll has just mounted gets
+	// its focus.
+	useEffect(() => {
+		if (pendingFocus === null) {
+			return;
+		}
+		const element = rowElement(pendingFocus);
+		if (element) {
+			element.focus();
+			setPendingFocus(null);
+		}
+	}, [pendingFocus, viewport.top, rows]);
+	const focusRow = (path: string) => {
+		setFocusedPath(path);
+		setPendingFocus(path);
+		if (windowed && !rowElement(path)) {
+			const top =
+				rows.findIndex((row) => row.node.path === path) * ROW_HEIGHT_PX;
+			if (scrollRef.current) {
+				scrollRef.current.scrollTop = top;
+			}
+			setViewport((previous) => ({ ...previous, top }));
+		}
+	};
+	const onTreeKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		const path =
+			event.target instanceof HTMLElement
+				? event.target.dataset.treePath
+				: undefined;
+		if (
+			path === undefined ||
+			event.altKey ||
+			event.ctrlKey ||
+			event.metaKey
+		) {
+			return;
+		}
+		const index = focusableRows.findIndex((row) => row.node.path === path);
+		const row = focusableRows[index];
+		if (!row) {
+			return;
+		}
+		const isFolder = !row.node.file;
+		let next: TreeRow | undefined;
+		switch (event.key) {
+			case "ArrowDown":
+				next = focusableRows[index + 1];
+				break;
+			case "ArrowUp":
+				next = focusableRows[index - 1];
+				break;
+			case "Home":
+				next = focusableRows[0];
+				break;
+			case "End":
+				next = focusableRows.at(-1);
+				break;
+			case "ArrowRight":
+				if (!isFolder) {
+					return;
+				}
+				if (!isOpen(row.node)) {
+					event.preventDefault();
+					toggle(row.node.path);
+					return;
+				}
+				next = focusableRows[index + 1];
+				if (next && next.depth <= row.depth) {
+					next = undefined;
+				}
+				break;
+			case "ArrowLeft":
+				if (isFolder && isOpen(row.node)) {
+					event.preventDefault();
+					toggle(row.node.path);
+					return;
+				}
+				next = focusableRows
+					.slice(0, index)
+					.findLast((candidate) => candidate.depth < row.depth);
+				break;
+			default:
+				return;
+		}
+		event.preventDefault();
+		if (next) {
+			focusRow(next.node.path);
+		}
+	};
+	const pinned = windowed
+		? rows.flatMap((row, index) =>
+				(row.node.path === selectedPath ||
+					row.node.path === focusedPath) &&
+				(index < first || index >= last)
+					? [index]
+					: [],
+			)
+		: [];
+	const visibleIndexes = windowed
+		? [
+				...new Set([
+					...pinned,
+					...Array.from(
+						{ length: last - first },
+						(_, i) => first + i,
+					),
+				]),
+			].sort((a, b) => a - b)
+		: [];
+
+	const renderRow = (
+		{ node, depth }: TreeRow,
+		index: number,
+	): React.ReactNode => {
+		const position: React.CSSProperties = windowed
+			? {
+					position: "absolute",
+					top: index * ROW_HEIGHT_PX,
+					left: 0,
+					right: 0,
+				}
+			: {};
 		// Depth is unbounded (a tree can nest arbitrarily deep), so no fixed
 		// Tailwind spacing scale can cover every level — the indent has to be
 		// computed, not a class.
@@ -277,8 +490,12 @@ export function InstructionsTree({
 				<div
 					key={node.path}
 					title={t("leftOutTitle", { rule: node.leftOut.rule })}
-					className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 font-mono text-foreground/40 text-xs"
-					style={{ paddingLeft: `${10 + depth * 16 + 17}px` }}
+					className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 font-mono text-foreground/40 text-xs"
+					style={{
+						...position,
+						height: ROW_HEIGHT_PX,
+						paddingLeft: `${10 + depth * 16 + 17}px`,
+					}}
 				>
 					<FileIcon
 						className="size-3.5 shrink-0"
@@ -304,10 +521,21 @@ export function InstructionsTree({
 				<button
 					key={node.path}
 					type="button"
+					data-tree-path={node.path}
 					onClick={() => onSelect(node.path)}
 					aria-current={active ? "true" : undefined}
-					className={`flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left font-mono text-xs hover:bg-accent ${active ? "bg-accent font-medium" : ""}`}
-					style={{ paddingLeft: `${10 + depth * 16 + 17}px` }}
+					tabIndex={node.path === tabStopPath ? 0 : -1}
+					className={cn(
+						"flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 text-left font-mono text-xs",
+						active
+							? "bg-primary/10 font-medium text-primary shadow-[inset_2px_0_0_var(--primary)]"
+							: "hover:bg-accent",
+					)}
+					style={{
+						...position,
+						height: ROW_HEIGHT_PX,
+						paddingLeft: `${10 + depth * 16 + 17}px`,
+					}}
 				>
 					<FileIcon
 						className="size-3.5 shrink-0 text-muted-foreground"
@@ -332,67 +560,64 @@ export function InstructionsTree({
 				</button>
 			);
 		}
-		const isOpen = searching
-			? !(
-					searchCollapsed.key === searchKey &&
-					searchCollapsed.paths.has(node.path)
-				)
-			: open.has(node.path);
+		const folderOpen = isOpen(node);
 		const changesTitle =
-			changes && node.changed && !isOpen
+			changes && node.changed && !folderOpen
 				? t("folderChangesTitle", { version: changes.baseVersion })
 				: null;
 		return (
-			<div key={node.path}>
-				<button
-					type="button"
-					onClick={() => toggle(node.path)}
-					aria-expanded={isOpen}
-					className="flex w-full items-center gap-1.5 rounded-md px-2.5 py-1 text-left font-mono text-xs hover:bg-accent"
-					style={{ paddingLeft: `${10 + depth * 16}px` }}
-				>
-					{isOpen ? (
-						<ChevronDownIcon
-							className="size-3.5 shrink-0 text-muted-foreground"
-							aria-hidden="true"
-						/>
-					) : (
-						<ChevronRightIcon
-							className="size-3.5 shrink-0 text-muted-foreground"
-							aria-hidden="true"
-						/>
-					)}
-					<FolderIcon
+			<button
+				key={node.path}
+				type="button"
+				data-tree-path={node.path}
+				onClick={() => toggle(node.path)}
+				aria-expanded={folderOpen}
+				tabIndex={node.path === tabStopPath ? 0 : -1}
+				className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2.5 text-left font-mono text-xs hover:bg-accent"
+				style={{
+					...position,
+					height: ROW_HEIGHT_PX,
+					paddingLeft: `${10 + depth * 16}px`,
+				}}
+			>
+				{folderOpen ? (
+					<ChevronDownIcon
 						className="size-3.5 shrink-0 text-muted-foreground"
 						aria-hidden="true"
 					/>
-					{/* A folder that holds only left-out files reads like them. */}
-					<span
-						className={cn(
-							"truncate",
-							node.count === 0 && "text-muted-foreground",
-						)}
-					>
-						{node.name}
+				) : (
+					<ChevronRightIcon
+						className="size-3.5 shrink-0 text-muted-foreground"
+						aria-hidden="true"
+					/>
+				)}
+				<FolderIcon
+					className="size-3.5 shrink-0 text-muted-foreground"
+					aria-hidden="true"
+				/>
+				{/* A folder that holds only left-out files reads like them. */}
+				<span
+					className={cn(
+						"truncate",
+						node.count === 0 && "text-muted-foreground",
+					)}
+				>
+					{node.name}
+				</span>
+				{node.count > 0 ? (
+					<span className="ml-auto text-muted-foreground">
+						{node.count}
 					</span>
-					{node.count > 0 ? (
-						<span className="ml-auto text-muted-foreground">
-							{node.count}
-						</span>
-					) : null}
-					{changesTitle ? (
-						<span
-							role="img"
-							aria-label={changesTitle}
-							title={changesTitle}
-							className="size-1.5 shrink-0 rounded-full bg-highlight"
-						/>
-					) : null}
-				</button>
-				{isOpen
-					? sortedChildren(node).map((c) => renderNode(c, depth + 1))
-					: null}
-			</div>
+				) : null}
+				{changesTitle ? (
+					<span
+						role="img"
+						aria-label={changesTitle}
+						title={changesTitle}
+						className="size-1.5 shrink-0 rounded-full bg-highlight"
+					/>
+				) : null}
+			</button>
 		);
 	};
 
@@ -400,7 +625,16 @@ export function InstructionsTree({
 		leftOut && leftOut.files.length > 0 ? leftOut : undefined;
 
 	return (
-		<div className="flex h-full flex-col rounded-lg border border-border">
+		<div
+			data-testid="instructions-tree-panel"
+			// The tour anchor sits on the panel, not its column: the column
+			// stretches to the file view's height (the room the panel sticks
+			// in), so a spotlight on it framed empty space below the tree.
+			data-onboarding-target="coding-instructions-tree"
+			// svh, not dvh: a dvh cap follows the mobile address bar and would
+			// push the file view below up and down as the bar collapses.
+			className="flex max-h-[60svh] min-h-0 flex-col rounded-lg border border-border lg:sticky lg:top-4 lg:max-h-[calc(100svh-8rem)]"
+		>
 			<div className="flex flex-col gap-2 border-border border-b p-2.5">
 				{/* Visual grouping only — the input below carries its own
 				`aria-label`, so a `<label>` wrapper here would just be a
@@ -454,8 +688,36 @@ export function InstructionsTree({
 					</fieldset>
 				) : null}
 			</div>
-			<div className="flex min-h-0 flex-1 flex-col gap-px overflow-auto p-2">
-				{sortedChildren(tree).map((c) => renderNode(c, 0))}
+			{/* biome-ignore lint/a11y/noStaticElementInteractions: focus bubbles up from the row buttons */}
+			<div
+				ref={scrollRef}
+				onScroll={(event) => {
+					const top = event.currentTarget.scrollTop;
+					setViewport((previous) => ({ ...previous, top }));
+				}}
+				onKeyDown={onTreeKeyDown}
+				onFocus={(event) =>
+					setFocusedPath(
+						event.target instanceof HTMLElement
+							? (event.target.dataset.treePath ?? null)
+							: null,
+					)
+				}
+				className="flex min-h-0 flex-1 flex-col overflow-auto p-2"
+			>
+				{windowed ? (
+					<div
+						className="relative shrink-0"
+						style={{ height: rows.length * ROW_HEIGHT_PX }}
+					>
+						{visibleIndexes.map((index) => {
+							const row = rows[index];
+							return row ? renderRow(row, index) : null;
+						})}
+					</div>
+				) : (
+					rows.map(renderRow)
+				)}
 				{/* Always mounted, so the change from results to none is
 				    announced: a live region inserted already holding its text
 				    is often missed. */}

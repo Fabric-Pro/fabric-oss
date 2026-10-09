@@ -21,11 +21,16 @@
 import { logger } from "@repo/logs";
 import {
 	getBlockedOutboundReason,
-	safeFetchOutbound,
+	getUnsafeUrlReason,
 } from "@repo/utils/url-security";
 import type { Browser, BrowserContext, Page } from "playwright";
+import { settleNavigation } from "../browser-automation/relay-response";
+import {
+	installOutboundRequestGuard,
+	type OutboundRefusalCode,
+} from "../browser-automation/url-guard";
 
-type BrowserCookie = Parameters<BrowserContext["addCookies"]>[0][number];
+export { settleNavigation } from "../browser-automation/relay-response";
 
 /** The closed set of things a step is allowed to do. */
 export type BrowserOperation =
@@ -33,9 +38,7 @@ export type BrowserOperation =
 	| { kind: "fill"; role: string; name: string; text: string }
 	| { kind: "press"; key: string }
 	| { kind: "goto"; path: string }
-	| { kind: "wait"; ms: number }
-	/** The page already satisfies the step — assess without touching anything. */
-	| { kind: "none" };
+	| { kind: "wait"; ms: number };
 
 export interface OpenBrowserOptions {
 	browser: string;
@@ -44,6 +47,7 @@ export interface OpenBrowserOptions {
 	timeoutMs: number;
 	/** The only HTTP(S) origin this credentialed browser may reach. */
 	targetOrigin: string;
+	signal?: AbortSignal;
 	scopedHTTPHeaders?: {
 		origin: string;
 		headers: Record<string, string>;
@@ -78,7 +82,31 @@ export type BrowserRefusalKind =
 	| "connection-refused"
 	| "host-not-found"
 	| "certificate-invalid"
+	| "tls-failed"
 	| "fetch-failed";
+
+export function refusalKindForGuardCode(
+	code: OutboundRefusalCode,
+): BrowserRefusalKind {
+	switch (code) {
+		case "off-origin":
+			return "off-origin";
+		case "destination-refused":
+			return "unsafe-address";
+		case "invalid-url":
+		case "unsupported-scheme":
+		case "unsupported-response":
+		case "missing-location":
+		case "redirect-replay":
+		case "redirect-limit":
+		case "direct-connection":
+			return "fetch-failed";
+		default: {
+			const exhaustive: never = code;
+			return exhaustive;
+		}
+	}
+}
 
 /** Node/undici codes for a TLS certificate the environment presented and the
  * runner could not verify. */
@@ -96,15 +124,32 @@ const CERTIFICATE_ERROR_CODES = new Set([
 /** The system error code behind a failed fetch: undici wraps the socket or
  * DNS error as `cause` of a generic `TypeError("fetch failed")`. */
 function fetchFailureCode(err: unknown): string | null {
-	const cause = err instanceof Error ? err.cause : undefined;
-	for (const candidate of [cause, err]) {
+	const pending = [err];
+	const seen = new Set<unknown>();
+	while (pending.length > 0) {
+		const candidate = pending.shift();
+		if (candidate === undefined || seen.has(candidate)) {
+			continue;
+		}
+		seen.add(candidate);
 		if (
 			typeof candidate === "object" &&
 			candidate !== null &&
 			"code" in candidate &&
-			typeof candidate.code === "string"
+			typeof candidate.code === "string" &&
+			!(
+				candidate instanceof Error &&
+				candidate.cause &&
+				candidate.code === "UNSAFE_OUTBOUND_URL"
+			)
 		) {
 			return candidate.code;
+		}
+		if (candidate instanceof Error) {
+			pending.push(candidate.cause);
+			if (candidate instanceof AggregateError) {
+				pending.push(...candidate.errors);
+			}
 		}
 	}
 	return null;
@@ -128,13 +173,48 @@ export function classifyFetchFailure(
 	if (code !== null && CERTIFICATE_ERROR_CODES.has(code)) {
 		return "certificate-invalid";
 	}
+	if (
+		code !== null &&
+		(code === "EPROTO" ||
+			code.startsWith("ERR_SSL_") ||
+			code.startsWith("ERR_TLS_"))
+	) {
+		return "tls-failed";
+	}
 	return "fetch-failed";
+}
+
+export function refusalForFetchError(
+	url: string,
+	error: unknown,
+	isNavigation = true,
+): BrowserRefusal {
+	const code = fetchFailureCode(error);
+	const kind =
+		code === "UNSAFE_OUTBOUND_URL" ||
+		getBlockedOutboundReason(error) ||
+		getUnsafeUrlReason(url)
+			? "unsafe-address"
+			: classifyFetchFailure(error);
+	const detail =
+		code && /^[A-Z][A-Z0-9_]{0,79}$/.test(code)
+			? code
+			: error instanceof Error && error.name === "TimeoutError"
+				? "TIMEOUT: the request timed out"
+				: "the request failed before a response was received";
+	return { url: urlForDisplay(url), kind, detail, isNavigation };
+}
+
+/** A safe, neutral message when Playwright failed before the guard recorded one. */
+export function describeNavigationFailure(url: string, error: unknown): string {
+	return describeBrowserRefusal(refusalForFetchError(url, error));
 }
 
 export interface BrowserRefusal {
 	url: string;
 	kind: BrowserRefusalKind;
 	detail: string;
+	isNavigation?: boolean;
 }
 
 /** Last N refusals kept per run — enough to explain the failure that follows
@@ -169,10 +249,14 @@ function recordRefusal(
 	kind: BrowserRefusalKind,
 	url: string,
 	detail: string,
+	isNavigation = false,
 ): void {
-	refusals.push({ url: urlForDisplay(url), kind, detail });
+	refusals.push({ url: urlForDisplay(url), kind, detail, isNavigation });
 	if (refusals.length > MAX_TRACKED_REFUSALS) {
-		refusals.shift();
+		const resourceIndex = refusals.findIndex(
+			(refusal) => refusal.isNavigation === false,
+		);
+		refusals.splice(resourceIndex < 0 ? 0 : resourceIndex, 1);
 	}
 	// Origin and kind only — never headers, cookies, or query strings, which
 	// can carry a session token or another credential the log must not hold.
@@ -193,7 +277,7 @@ function recordRefusal(
 export function describeBrowserRefusal(refusal: BrowserRefusal): string {
 	switch (refusal.kind) {
 		case "off-origin":
-			return `The page redirected to ${refusal.url}, outside this environment's origin — check the environment's base URL.`;
+			return `${refusal.isNavigation === false ? "A subresource requested" : "The page redirected to"} ${refusal.url}, outside this environment's origin — check the environment's base URL.`;
 		case "unsafe-address":
 			return `${refusal.url} resolved to a non-public address (${refusal.detail}) — this is an environment configuration problem, not a Fabric outage.`;
 		case "connection-refused":
@@ -202,6 +286,8 @@ export function describeBrowserRefusal(refusal: BrowserRefusal): string {
 			return `${refusal.url} does not resolve (${refusal.detail}) — check the environment's base URL.`;
 		case "certificate-invalid":
 			return `${refusal.url} presented a certificate the runner could not verify (${refusal.detail}) — check the environment's TLS certificate.`;
+		case "tls-failed":
+			return `${refusal.url} could not complete a TLS handshake (${refusal.detail}) — check the environment's TLS configuration.`;
 		case "fetch-failed":
 			return `The runner's request to ${refusal.url} failed before any response (${refusal.detail}). Either the environment is down or not reachable from the public internet, or the runner's own network failed — if the URL opens from outside your network, report it to Fabric support.`;
 		default: {
@@ -219,8 +305,19 @@ export function describeBrowserRefusal(refusal: BrowserRefusal): string {
 export function explainBlockedNavigation(
 	refusals: readonly BrowserRefusal[],
 ): string | null {
-	const last = refusals.at(-1);
-	return last ? describeBrowserRefusal(last) : null;
+	for (let index = refusals.length - 1; index >= 0; index -= 1) {
+		const refusal = refusals[index];
+		if (refusal?.isNavigation) {
+			return describeBrowserRefusal(refusal);
+		}
+	}
+	for (let index = refusals.length - 1; index >= 0; index -= 1) {
+		const refusal = refusals[index];
+		if (refusal?.isNavigation === undefined) {
+			return describeBrowserRefusal(refusal);
+		}
+	}
+	return null;
 }
 
 export interface RunnerBrowser {
@@ -229,6 +326,7 @@ export interface RunnerBrowser {
 	page: Page;
 	/** Bounded log of requests the route handler refused, most recent last. */
 	refusals: BrowserRefusal[];
+	abortController?: AbortController;
 }
 
 /**
@@ -246,143 +344,6 @@ export function parseResolution(resolution: string): {
 		return { width: 1920, height: 1080 };
 	}
 	return { width: Number(match[1]), height: Number(match[2]) };
-}
-
-export function headersForRequest(
-	requestUrl: string,
-	requestHeaders: Record<string, string>,
-	scopedHeaders: OpenBrowserOptions["scopedHTTPHeaders"],
-): Record<string, string> {
-	if (!scopedHeaders) {
-		return requestHeaders;
-	}
-
-	let requestOrigin: string;
-	try {
-		requestOrigin = new URL(requestUrl).origin;
-	} catch {
-		return requestHeaders;
-	}
-	if (requestOrigin !== scopedHeaders.origin) {
-		return requestHeaders;
-	}
-
-	const overriddenNames = new Set(
-		Object.keys(scopedHeaders.headers).map((name) => name.toLowerCase()),
-	);
-	return {
-		...Object.fromEntries(
-			Object.entries(requestHeaders).filter(
-				([name]) => !overriddenNames.has(name.toLowerCase()),
-			),
-		),
-		...scopedHeaders.headers,
-	};
-}
-
-function parseResponseCookie(
-	responseUrl: string,
-	rawCookie: string,
-): BrowserCookie | null {
-	const parsedResponseUrl = new URL(responseUrl);
-	const [nameValue, ...rawAttributes] = rawCookie.split(";");
-	if (!nameValue) {
-		return null;
-	}
-
-	const separator = nameValue.indexOf("=");
-	if (separator <= 0) {
-		return null;
-	}
-
-	const name = nameValue.slice(0, separator).trim();
-	const value = nameValue.slice(separator + 1).trim();
-	const attributes = new Map<string, string>();
-	for (const rawAttribute of rawAttributes) {
-		const attribute = rawAttribute.trim();
-		if (!attribute) {
-			continue;
-		}
-		const attributeSeparator = attribute.indexOf("=");
-		const key = (
-			attributeSeparator === -1
-				? attribute
-				: attribute.slice(0, attributeSeparator)
-		)
-			.trim()
-			.toLowerCase();
-		const attributeValue =
-			attributeSeparator === -1
-				? ""
-				: attribute.slice(attributeSeparator + 1).trim();
-		attributes.set(key, attributeValue);
-	}
-
-	const configuredPath = attributes.get("path");
-	const lastSlash = parsedResponseUrl.pathname.lastIndexOf("/");
-	const defaultPath =
-		lastSlash <= 0 ? "/" : parsedResponseUrl.pathname.slice(0, lastSlash);
-	const path = configuredPath?.startsWith("/") ? configuredPath : defaultPath;
-	const cookie: BrowserCookie = {
-		name,
-		value,
-		domain: parsedResponseUrl.hostname,
-		path,
-		httpOnly: attributes.has("httponly"),
-		secure: attributes.has("secure"),
-	};
-	const domain = attributes.get("domain");
-	if (domain) {
-		const responseHost = parsedResponseUrl.hostname.toLowerCase();
-		const cookieDomain = domain.replace(/^\./, "").toLowerCase();
-		if (
-			responseHost !== cookieDomain &&
-			!responseHost.endsWith(`.${cookieDomain}`)
-		) {
-			return null;
-		}
-		cookie.domain = domain;
-	}
-
-	const sameSite = attributes.get("samesite")?.toLowerCase();
-	if (sameSite === "strict") {
-		cookie.sameSite = "Strict";
-	} else if (sameSite === "lax") {
-		cookie.sameSite = "Lax";
-	} else if (sameSite === "none") {
-		cookie.sameSite = "None";
-	}
-
-	const maxAge = attributes.get("max-age");
-	if (maxAge !== undefined) {
-		const seconds = Number.parseInt(maxAge, 10);
-		if (Number.isFinite(seconds)) {
-			cookie.expires = Math.max(
-				1,
-				Math.floor(Date.now() / 1000) + seconds,
-			);
-		}
-	} else {
-		const expires = attributes.get("expires");
-		if (expires) {
-			const timestamp = Date.parse(expires);
-			if (Number.isFinite(timestamp)) {
-				cookie.expires = Math.max(1, Math.floor(timestamp / 1000));
-			}
-		}
-	}
-
-	return cookie;
-}
-
-function responseCookiesForBrowser(
-	responseUrl: string,
-	headers: Headers,
-): BrowserCookie[] {
-	return headers
-		.getSetCookie()
-		.map((rawCookie) => parseResponseCookie(responseUrl, rawCookie))
-		.filter((cookie): cookie is BrowserCookie => cookie !== null);
 }
 
 /**
@@ -418,95 +379,50 @@ export async function openBrowser(
 	// exits, the worker loses resources, or Playwright rejects an option. Temporal
 	// retries the activity, so an unclosed process would repeat per attempt.
 	const refusals: BrowserRefusal[] = [];
+	const abortController = new AbortController();
 	try {
 		const context = await browser.newContext({
 			viewport: parseResolution(options.resolution),
+			serviceWorkers: "block",
 		});
-		await context.route("**/*", async (route) => {
-			const request = route.request();
-			const requestUrl = request.url();
-			let parsedUrl: URL;
-			try {
-				parsedUrl = new URL(requestUrl);
-			} catch {
-				await route.abort("blockedbyclient");
-				return;
-			}
-			if (
-				parsedUrl.protocol !== "http:" &&
-				parsedUrl.protocol !== "https:"
-			) {
-				await route.continue();
-				return;
-			}
-			if (parsedUrl.origin !== options.targetOrigin) {
+		await installOutboundRequestGuard(context, undefined, {
+			allowedOrigin: options.targetOrigin,
+			relayHeaders:
+				options.scopedHTTPHeaders?.origin === options.targetOrigin
+					? options.scopedHTTPHeaders.headers
+					: undefined,
+			relayTimeoutMs: Math.max(
+				1,
+				Math.min(options.timeoutMs - 1_000, 25_000),
+			),
+			signal: options.signal
+				? AbortSignal.any([options.signal, abortController.signal])
+				: abortController.signal,
+			onRequestFailed: ({ url, error, isNavigation }) => {
+				const refusal = refusalForFetchError(url, error, isNavigation);
 				recordRefusal(
 					refusals,
-					"off-origin",
-					requestUrl,
-					`Request to ${parsedUrl.origin} is outside the environment origin ${options.targetOrigin}.`,
+					refusal.kind,
+					url,
+					refusal.detail,
+					isNavigation,
 				);
-				await route.abort("blockedbyclient");
-				return;
-			}
-			try {
-				const method = request.method();
-				const response = await safeFetchOutbound(requestUrl, {
-					method,
-					// Fulfil redirects back to Playwright instead of following them in
-					// the server-side fetch. The browser then issues the next request,
-					// which passes through this same origin guard before any network
-					// access. This preserves browser navigation semantics (including
-					// POST redirect handling) without widening the credential boundary.
-					redirect: "manual",
-					headers: headersForRequest(
-						requestUrl,
-						request.headers(),
-						options.scopedHTTPHeaders,
-					),
-					body:
-						method === "GET" || method === "HEAD"
-							? undefined
-							: (request.postData() ?? undefined),
-				});
-				const responseHeaders: Record<string, string> = {};
-				response.headers.forEach((value, key) => {
-					if (key.toLowerCase() !== "set-cookie") {
-						responseHeaders[key] = value;
-					}
-				});
-				const responseCookies = responseCookiesForBrowser(
-					requestUrl,
-					response.headers,
+			},
+			onBlocked: ({ url, code, reason, isNavigation }) => {
+				recordRefusal(
+					refusals,
+					refusalKindForGuardCode(code),
+					url,
+					reason,
+					isNavigation,
 				);
-				if (responseCookies.length > 0) {
-					await context.addCookies(responseCookies);
-				}
-				await route.fulfill({
-					status: response.status,
-					headers: responseHeaders,
-					body: Buffer.from(await response.arrayBuffer()),
-				});
-			} catch (err) {
-				const blockedReason = getBlockedOutboundReason(err);
-				const kind: BrowserRefusalKind = blockedReason
-					? "unsafe-address"
-					: classifyFetchFailure(err);
-				const detail =
-					blockedReason ??
-					(err instanceof Error
-						? err.cause instanceof Error
-							? `${err.message}: ${err.cause.message}`
-							: err.message
-						: String(err));
-				recordRefusal(refusals, kind, requestUrl, detail);
-				await route.abort("blockedbyclient");
-			}
+			},
 		});
 		const page = await context.newPage();
 		page.setDefaultTimeout(options.timeoutMs);
-		return { browser, context, page, refusals };
+		return { browser, context, page, refusals, abortController };
 	} catch (err) {
+		abortController.abort();
 		// Closing the browser closes any context it already owns, so this one call
 		// covers both the `newContext` and the `newPage` failure. Best-effort: the
 		// original error is what the caller needs, and a close failure here must
@@ -517,6 +433,7 @@ export async function openBrowser(
 }
 
 export async function closeBrowser(runner: RunnerBrowser): Promise<void> {
+	runner.abortController?.abort();
 	// Best-effort and in order. A browser left running outlives the activity and
 	// leaks a process on the worker, so a failure to close one layer must not
 	// stop the next from being tried.
@@ -590,28 +507,28 @@ export async function performOperation(
 	page: Page,
 	operation: BrowserOperation,
 	baseUrl: string,
+	refusals: readonly BrowserRefusal[] = [],
 ): Promise<OperationOutcome> {
+	const previousRefusals = new Set(refusals);
 	try {
+		let detail: string;
 		switch (operation.kind) {
 			case "click":
 				await locate(page, operation.role, operation.name)
 					.first()
 					.click();
-				return {
-					ok: true,
-					detail: `Clicked ${operation.role} “${operation.name}”.`,
-				};
+				detail = `Clicked ${operation.role} “${operation.name}”.`;
+				break;
 			case "fill":
 				await locate(page, operation.role, operation.name)
 					.first()
 					.fill(operation.text);
-				return {
-					ok: true,
-					detail: `Typed into ${operation.role} “${operation.name}”.`,
-				};
+				detail = `Typed into ${operation.role} “${operation.name}”.`;
+				break;
 			case "press":
 				await page.keyboard.press(operation.key);
-				return { ok: true, detail: `Pressed ${operation.key}.` };
+				detail = `Pressed ${operation.key}.`;
+				break;
 			case "goto": {
 				const target = resolveSameOriginUrl(baseUrl, operation.path);
 				if (!target) {
@@ -620,22 +537,19 @@ export async function performOperation(
 					// tried it.
 					return {
 						ok: false,
-						detail: `Refused to navigate outside ${baseUrl}.`,
+						detail: `The requested navigation was outside this environment's origin — check the environment's base URL.`,
 					};
 				}
 				await page.goto(target, { waitUntil: "domcontentloaded" });
-				return { ok: true, detail: `Navigated to ${target}.` };
+				detail = `Navigated to ${urlForDisplay(target)}.`;
+				break;
 			}
-			case "wait":
-				await page.waitForTimeout(
-					Math.min(Math.max(operation.ms, 0), 10_000),
-				);
-				return { ok: true, detail: `Waited ${operation.ms}ms.` };
-			case "none":
-				return {
-					ok: true,
-					detail: "No interaction needed — checked the page as it stood.",
-				};
+			case "wait": {
+				const ms = Math.min(Math.max(operation.ms, 0), 10_000);
+				await page.waitForTimeout(ms);
+				detail = `Waited ${ms}ms.`;
+				break;
+			}
 			default: {
 				// Exhaustiveness: a new operation added to the union without a
 				// branch here fails the build rather than silently no-opping.
@@ -646,7 +560,18 @@ export async function performOperation(
 				};
 			}
 		}
+		await settleNavigation(page);
+		const refusal = explainBlockedNavigation(
+			refusals.filter((entry) => !previousRefusals.has(entry)),
+		);
+		return refusal ? { ok: false, detail: refusal } : { ok: true, detail };
 	} catch (err) {
+		const explanation = explainBlockedNavigation(
+			refusals.filter((refusal) => !previousRefusals.has(refusal)),
+		);
+		if (explanation) {
+			return { ok: false, detail: explanation };
+		}
 		return {
 			ok: false,
 			detail:
@@ -743,9 +668,7 @@ async function openAppAfterFormSignIn(
 
 	return {
 		ok: false,
-		detail: `Signed in, but could not then open ${baseUrl}: ${
-			lastError instanceof Error ? lastError.message : String(lastError)
-		}`,
+		detail: `Signed in, but could not then open ${urlForDisplay(baseUrl)}. ${describeNavigationFailure(baseUrl, lastError)}`,
 	};
 }
 
@@ -781,10 +704,11 @@ export async function signInWithForm(
 	const formUrl = signInUrl?.trim() || baseUrl;
 	try {
 		await page.goto(formUrl, { waitUntil: "domcontentloaded" });
+		await settleNavigation(page);
 	} catch (err) {
 		return {
 			ok: false,
-			detail: `Could not open ${formUrl}: ${err instanceof Error ? err.message : String(err)}`,
+			detail: describeNavigationFailure(formUrl, err),
 		};
 	}
 
@@ -854,7 +778,18 @@ export async function signInWithForm(
 		}
 	}
 
-	return { ok: true, detail: "Submitted the sign-in form." };
+	try {
+		await settleNavigation(page);
+		return { ok: true, detail: "Submitted the sign-in form." };
+	} catch (error) {
+		return {
+			ok: false,
+			detail:
+				error instanceof Error
+					? (error.message.split("\n")[0] ?? error.message)
+					: String(error),
+		};
+	}
 }
 
 /** A PNG of the current viewport, for evidence. */

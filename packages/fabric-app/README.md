@@ -56,12 +56,14 @@ identifiers. Put any safe engineering rationale after a blank line.
 Before the first push and after every later revision, run:
 
 ```bash
-pnpm exec changeset status --since=origin/master --output=/tmp/changeset-status.json
-jq '.releases | length' /tmp/changeset-status.json
+pnpm changeset:gate
 ```
 
-An exit code of zero is insufficient: Changesets also exits zero when the JSON
-contains `"releases": []`. An impacting PR must have at least one release.
+The gate compares against the closer of `origin/staging` and `origin/master`
+(`--base=<ref>` overrides), counts untracked changesets, and exits non-zero
+when the release list is empty. A plain `changeset status` exits zero even when
+the JSON contains `"releases": []`; an impacting PR must have at least one
+release.
 
 Docs-only, CI-only, Markdown-only, and pure changeset edits are normally
 non-impacting. Do not create meaningless release notes for them; apply the

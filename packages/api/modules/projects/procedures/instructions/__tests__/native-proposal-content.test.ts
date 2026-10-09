@@ -8,6 +8,7 @@ const m = vi.hoisted(() => ({
 	source: vi.fn(),
 	current: vi.fn(),
 	files: vi.fn(),
+	assertPin: vi.fn(),
 }));
 vi.mock("@repo/database", async (original) => ({
 	...(await original<typeof import("@repo/database")>()),
@@ -20,7 +21,7 @@ vi.mock("@repo/storage", () => ({
 }));
 vi.mock("../repository/direct-source", () => ({
 	loadDirectRepositorySource: m.source,
-	assertDirectRepositoryPin: vi.fn(),
+	assertDirectRepositoryPin: m.assertPin,
 	assertDirectRepositorySourceCurrent: m.current,
 	directRepositoryPath: (_source: object, path: string) => path,
 }));
@@ -42,6 +43,7 @@ beforeEach(() => {
 	m.source.mockResolvedValue({
 		integrationId: "integration_example",
 		ref: "main",
+		generation: 1,
 		repository: {},
 	});
 	m.current.mockResolvedValue(undefined);
@@ -144,4 +146,76 @@ it("rechecks source access before returning native content", async () => {
 	await expect(buildNativeProposalChanges(scope)).rejects.toThrow(
 		"access revoked",
 	);
+});
+
+it("keeps a proposal viewable after the repository configuration changed, without reading its base", async () => {
+	m.source.mockResolvedValue({
+		integrationId: "integration_example",
+		ref: "main",
+		generation: 2,
+		repository: {},
+	});
+
+	const changes = await buildNativeProposalChanges(scope);
+
+	expect(changes).toMatchObject([
+		{
+			path: "CLAUDE.md",
+			op: "edit",
+			before: null,
+			beforeOmitted: "SOURCE_CHANGED",
+			after: "changed\r\n",
+			afterOmitted: null,
+		},
+		{ path: "old.md", op: "delete", before: null, after: null },
+	]);
+	expect(m.read).not.toHaveBeenCalled();
+	expect(m.assertPin).not.toHaveBeenCalled();
+	expect(m.current).not.toHaveBeenCalled();
+});
+
+it("keeps a proposal viewable after the project moved to another branch or integration", async () => {
+	for (const moved of [{ ref: "release" }, { integrationId: "other" }]) {
+		m.source.mockResolvedValue({
+			integrationId: "integration_example",
+			ref: "main",
+			generation: 1,
+			repository: {},
+			...moved,
+		});
+
+		await expect(buildNativeProposalChanges(scope)).resolves.toHaveLength(
+			2,
+		);
+	}
+	expect(m.read).not.toHaveBeenCalled();
+});
+
+it("pages the changed side of a proposal whose configuration changed, and refuses its base", async () => {
+	m.source.mockResolvedValue({
+		integrationId: "integration_example",
+		ref: "main",
+		generation: 2,
+		repository: {},
+	});
+
+	await expect(
+		readNativeProposalFile({
+			...scope,
+			path: "CLAUDE.md",
+			side: "after",
+			offset: 0,
+			maxLength: 3,
+		}),
+	).resolves.toMatchObject({ body: "cha" });
+	await expect(
+		readNativeProposalFile({
+			...scope,
+			path: "CLAUDE.md",
+			side: "before",
+			offset: 0,
+			maxLength: 3,
+		}),
+	).rejects.toMatchObject({ code: "NOT_FOUND" });
+	expect(m.read).not.toHaveBeenCalled();
 });

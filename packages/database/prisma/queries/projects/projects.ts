@@ -1201,6 +1201,25 @@ export async function hasProjectAccess(
 }
 
 /**
+ * Whether the project is in the trash (soft-deleted, awaiting purge or
+ * restore).
+ *
+ * Deliberately not part of `getProjectAccessContext`: the web app's trash and
+ * restore flows resolve access to a deleted project on purpose. A surface that
+ * should treat a trashed project as gone, such as the MCP gateway, asks this
+ * separately.
+ */
+export async function isProjectSoftDeleted(
+	projectId: string,
+): Promise<boolean> {
+	const project = await db.project.findFirst({
+		where: { id: projectId, deletedAt: { not: null } },
+		select: { id: true },
+	});
+	return project !== null;
+}
+
+/**
  * Legacy lowercase project role string. Retained for backward compatibility
  * with call sites written before `PROJECT_ADMIN` and `COMMENTER` were added
  * in migration `project_member_roles`. New call sites should use the typed

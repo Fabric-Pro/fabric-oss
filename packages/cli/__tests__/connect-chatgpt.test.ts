@@ -4,6 +4,9 @@
  * sign-in's nonce, the upload carries exactly what Fabric stores, and the
  * organization choice never picks one for a person with several.
  */
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	buildConnectCommand,
@@ -15,9 +18,14 @@ import {
 	buildApprovalUrl,
 	buildAuthorizeUrl,
 	buildUploadPayload,
+	type ChatGptRegistration,
 	checkIdToken,
 	DYNAMIC_CLIENT_ID,
 	issuedClientId,
+	loadRegistrationStore,
+	saveAccountRegistration,
+	selectRegistration,
+	signInWithChatGpt,
 	uploadChatGptPlan,
 } from "../src/lib/chatgpt-plan/flow.js";
 import { startLoopbackListener } from "../src/lib/oauth/loopback.js";
@@ -350,5 +358,340 @@ describe("shared account", () => {
 		).toMatch(
 			/^Connected the ChatGPT account \(shared@example.com\) as a shared account of Example Org/,
 		);
+	});
+});
+
+// A registration made in one ChatGPT workspace is refused in another, so a
+// saved one is kept per account, only once OpenAI confirmed it, and reused
+// only when the person names that account.
+describe("registration per ChatGPT account", () => {
+	type Reply = Record<string, string>;
+
+	/** Plays ChatGPT in the browser: each sign-in gets the next reply. */
+	function browser(...replies: Reply[]) {
+		const opened: URL[] = [];
+		const open = (url: string) => {
+			const authorize = new URL(url);
+			opened.push(authorize);
+			const reply = replies[opened.length - 1] ?? replies.at(-1) ?? {};
+			const query = new URLSearchParams({
+				state: authorize.searchParams.get("state") ?? "",
+				...reply,
+			});
+			void fetch(
+				`${authorize.searchParams.get("redirect_uri")}?${query}`,
+			).catch(() => {});
+		};
+		return { open, opened };
+	}
+
+	function tokenEndpoint(
+		opened: URL[],
+		claims: { sub: string; email?: string; nonce?: string } = {
+			sub: "subject-1",
+			email: "person@example.com",
+		},
+	) {
+		return vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						...TOKENS,
+						id_token: idToken({
+							nonce: opened.at(-1)?.searchParams.get("nonce"),
+							...claims,
+						}),
+					}),
+					{ status: 200 },
+				),
+		);
+	}
+
+	const SIGNED_IN = { code: "code-1", client_id: "oaiapp_new" };
+	const WORKSPACE_DENIED = {
+		error: "3p_login_workspace_scope_denied",
+		error_description:
+			"This app is only available to members of its workspace",
+	};
+	const FRESH: ChatGptRegistration = { hostId: "urn:uuid:host" };
+	const SAVED: ChatGptRegistration = {
+		hostId: "urn:uuid:host",
+		clientId: "oaiapp_saved",
+		subject: "subject-1",
+	};
+
+	it("starts a first sign-in with a new registration and keeps it per subject once confirmed", async () => {
+		const { open, opened } = browser(SIGNED_IN);
+		const save = vi.fn(async () => {});
+		const signIn = await signInWithChatGpt({
+			registration: FRESH,
+			open,
+			fetchImpl: tokenEndpoint(opened),
+			preferredPort: 0,
+			save,
+		});
+		expect(opened[0]?.searchParams.get("client_id")).toBe(
+			DYNAMIC_CLIENT_ID,
+		);
+		expect(signIn.subject).toBe("subject-1");
+		expect(save).toHaveBeenCalledWith({
+			hostId: "urn:uuid:host",
+			subject: "subject-1",
+			clientId: "oaiapp_new",
+			email: "person@example.com",
+		});
+	});
+
+	it("keeps nothing when OpenAI refuses the code", async () => {
+		const { open } = browser(SIGNED_IN);
+		const save = vi.fn(async () => {});
+		await expect(
+			signInWithChatGpt({
+				registration: FRESH,
+				open,
+				fetchImpl: vi.fn(
+					async () =>
+						new Response(
+							JSON.stringify({ error: "invalid_grant" }),
+							{
+								status: 400,
+							},
+						),
+				),
+				preferredPort: 0,
+				save,
+			}),
+		).rejects.toThrow(/invalid_grant/);
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("keeps nothing when the ID token was not minted for this sign-in", async () => {
+		const { open, opened } = browser(SIGNED_IN);
+		const save = vi.fn(async () => {});
+		await expect(
+			signInWithChatGpt({
+				registration: FRESH,
+				open,
+				fetchImpl: tokenEndpoint(opened, {
+					sub: "subject-1",
+					nonce: "other",
+				}),
+				preferredPort: 0,
+				save,
+			}),
+		).rejects.toThrow(/does not belong/);
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("reuses the saved registration of the account named with --account", async () => {
+		const { open, opened } = browser({ code: "code-1" });
+		const save = vi.fn(async () => {});
+		const signIn = await signInWithChatGpt({
+			registration: SAVED,
+			open,
+			fetchImpl: tokenEndpoint(opened),
+			preferredPort: 0,
+			save,
+		});
+		expect(opened).toHaveLength(1);
+		expect(opened[0]?.searchParams.get("client_id")).toBe("oaiapp_saved");
+		expect(signIn.clientId).toBe("oaiapp_saved");
+	});
+
+	it("signs in once more with a new registration when the saved one is refused for the workspace", async () => {
+		const { open, opened } = browser(WORKSPACE_DENIED, SIGNED_IN);
+		const save = vi.fn(async () => {});
+		const onRetry = vi.fn();
+		const signIn = await signInWithChatGpt({
+			registration: SAVED,
+			open,
+			fetchImpl: tokenEndpoint(opened),
+			preferredPort: 0,
+			save,
+			onRetry,
+		});
+		expect(opened.map((url) => url.searchParams.get("client_id"))).toEqual([
+			"oaiapp_saved",
+			DYNAMIC_CLIENT_ID,
+		]);
+		expect(onRetry).toHaveBeenCalledTimes(1);
+		expect(signIn.clientId).toBe("oaiapp_new");
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(save).toHaveBeenCalledWith(
+			expect.objectContaining({ clientId: "oaiapp_new" }),
+		);
+	});
+
+	it("retries only once, then says to run without --account and choose the personal workspace", async () => {
+		const { open, opened } = browser(WORKSPACE_DENIED);
+		const save = vi.fn(async () => {});
+		const failure = signInWithChatGpt({
+			registration: SAVED,
+			open,
+			fetchImpl: tokenEndpoint(opened),
+			preferredPort: 0,
+			save,
+		});
+		await expect(failure).rejects.toThrow(/without --account/);
+		await expect(failure).rejects.toThrow(/personal Plus or Pro workspace/);
+		expect(opened).toHaveLength(2);
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("does not retry a new registration that is refused", async () => {
+		const { open, opened } = browser(WORKSPACE_DENIED);
+		await expect(
+			signInWithChatGpt({
+				registration: FRESH,
+				open,
+				fetchImpl: tokenEndpoint(opened),
+				preferredPort: 0,
+			}),
+		).rejects.toThrow(/members of its workspace.*without --account/);
+		expect(opened).toHaveLength(1);
+	});
+
+	it("does not retry when the person cancels the sign-in", async () => {
+		const { open, opened } = browser({ error: "access_denied" });
+		const save = vi.fn(async () => {});
+		await expect(
+			signInWithChatGpt({
+				registration: SAVED,
+				open,
+				fetchImpl: tokenEndpoint(opened),
+				preferredPort: 0,
+				save,
+			}),
+		).rejects.toThrow(/denied in the browser/);
+		expect(opened).toHaveLength(1);
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("does not retry a saved registration for an unrelated failure", async () => {
+		const { open, opened } = browser({ error: "server_error" });
+		await expect(
+			signInWithChatGpt({
+				registration: SAVED,
+				open,
+				fetchImpl: tokenEndpoint(opened),
+				preferredPort: 0,
+			}),
+		).rejects.toThrow(/server_error/);
+		expect(opened).toHaveLength(1);
+	});
+
+	it("keeps every account's registration in the store", async () => {
+		const path = join(
+			await mkdtemp(join(tmpdir(), "fabric-chatgpt-")),
+			"host.json",
+		);
+		await saveAccountRegistration(
+			{
+				hostId: "urn:uuid:host",
+				subject: "subject-1",
+				clientId: "oaiapp_1",
+			},
+			path,
+		);
+		await saveAccountRegistration(
+			{
+				hostId: "urn:uuid:host",
+				subject: "subject-2",
+				clientId: "oaiapp_2",
+				email: "second@example.com",
+			},
+			path,
+		);
+		expect(await loadRegistrationStore(path)).toEqual({
+			hostId: "urn:uuid:host",
+			accounts: {
+				"subject-1": { clientId: "oaiapp_1" },
+				"subject-2": {
+					clientId: "oaiapp_2",
+					email: "second@example.com",
+				},
+			},
+		});
+	});
+
+	it("starts an unnamed account with a new registration, and finds a named one by subject or email", async () => {
+		const store = {
+			hostId: "urn:uuid:host",
+			accounts: {
+				"subject-2": {
+					clientId: "oaiapp_2",
+					email: "second@example.com",
+				},
+			},
+		};
+		expect(selectRegistration(store)).toEqual({ hostId: "urn:uuid:host" });
+		const named = {
+			hostId: "urn:uuid:host",
+			clientId: "oaiapp_2",
+			subject: "subject-2",
+		};
+		expect(selectRegistration(store, "subject-2")).toEqual(named);
+		expect(selectRegistration(store, "Second@Example.com")).toEqual(named);
+		expect(() => selectRegistration(store, "other@example.com")).toThrow(
+			/No ChatGPT account/,
+		);
+	});
+
+	it("reads the earlier single registration without reusing an unconfirmed client id", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "fabric-chatgpt-"));
+		const unconfirmed = join(dir, "unconfirmed.json");
+		await writeFile(
+			unconfirmed,
+			JSON.stringify({ hostId: "urn:uuid:host", clientId: "oaiapp_old" }),
+		);
+		const store = await loadRegistrationStore(unconfirmed);
+		expect(store).toEqual({ hostId: "urn:uuid:host", accounts: {} });
+		expect(selectRegistration(store)).toEqual({ hostId: "urn:uuid:host" });
+
+		const confirmed = join(dir, "confirmed.json");
+		await writeFile(
+			confirmed,
+			JSON.stringify({
+				hostId: "urn:uuid:host",
+				clientId: "oaiapp_old",
+				subject: "subject-1",
+			}),
+		);
+		expect(await loadRegistrationStore(confirmed)).toEqual({
+			hostId: "urn:uuid:host",
+			accounts: { "subject-1": { clientId: "oaiapp_old" } },
+		});
+		await saveAccountRegistration(
+			{
+				hostId: "urn:uuid:host",
+				subject: "subject-2",
+				clientId: "oaiapp_2",
+			},
+			confirmed,
+		);
+		expect(JSON.parse(await readFile(confirmed, "utf8"))).toEqual({
+			hostId: "urn:uuid:host",
+			accounts: {
+				"subject-1": { clientId: "oaiapp_old" },
+				"subject-2": { clientId: "oaiapp_2" },
+			},
+		});
+	});
+
+	it("refuses --account with --new-registration or --shared", () => {
+		expect(
+			connectOptionsError({
+				account: "subject-1",
+				newRegistration: true,
+			}),
+		).toMatch(/--new-registration/);
+		expect(
+			connectOptionsError({
+				account: "subject-1",
+				org: "example-org",
+				shared: true,
+			}),
+		).toMatch(/shared account/);
+		expect(connectOptionsError({ account: "subject-1" })).toBeNull();
 	});
 });

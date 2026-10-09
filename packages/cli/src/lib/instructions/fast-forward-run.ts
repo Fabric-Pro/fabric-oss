@@ -34,7 +34,6 @@ import { providerLoginCommand } from "./adoption.js";
 import {
 	type CheckoutClassification,
 	type CheckoutReport,
-	type CheckoutState,
 	repositoryName,
 	shellQuote,
 } from "./checkout.js";
@@ -55,8 +54,9 @@ import {
 	rememberNotice,
 } from "./fast-forward-memory.js";
 import * as git from "./git.js";
-import { hookTiming } from "./hook-timing.js";
+import { hookTiming, sinceProcessStart } from "./hook-timing.js";
 import { appendTrace } from "./hook-trace.js";
+import { isUserActionableMergeFailure } from "./outcome.js";
 
 /**
  * What the fetch leaves for the local steps after it (re-reading the checkout,
@@ -87,8 +87,8 @@ export interface FastForwardRun {
 	snapshot: PublishedInstructionSnapshot | undefined;
 	/** The immutable direct-read commit, when this project has no snapshot. */
 	directCommitSha?: string;
-	/** Fabric's one-shot Git transport for a direct repository hook. */
-	gitTransport?: git.GitHttpAuthorization;
+	/** Fabric's one-shot Git transport for a direct repository hook, asked for when a fetch needs it. */
+	gitTransport?: () => Promise<git.GitHttpAuthorization>;
 	/** The checkout as `check` found it: its state and the line it would print. */
 	report: CheckoutReport;
 	projectId: string;
@@ -98,12 +98,36 @@ export interface FastForwardRun {
 	optedOut: boolean;
 	/** Where the trace goes, or `undefined` for none. */
 	traceFile?: string;
+	/** Milliseconds the caller already spent, by phase, for the trace. */
+	timings?: Record<string, number>;
 }
 
 export interface FastForwardResult {
 	outcome: FfOutcome;
 	stdout: string[];
 	stderr: string[];
+}
+
+/** Milliseconds spent in each named phase of the run, for the trace. */
+class Phases {
+	readonly totals: Record<string, number> = {};
+
+	async time<T>(name: string, work: () => Promise<T>): Promise<T> {
+		const started = Date.now();
+		try {
+			return await work();
+		} finally {
+			this.totals[name] =
+				(this.totals[name] ?? 0) + (Date.now() - started);
+		}
+	}
+}
+
+/** The run plus what its steps share. */
+interface Session extends FastForwardRun {
+	phases: Phases;
+	/** Asked for once, at the start, while the first facts are read. */
+	commonDir: Promise<Awaited<ReturnType<typeof git.commonDir>>>;
 }
 
 interface Decision {
@@ -124,70 +148,57 @@ async function samePath(a: string, b: string): Promise<boolean> {
 		: left === right;
 }
 
-/** The checkout's state, read again; `null` when git could not answer. */
-async function readState(
-	root: string,
-	traits: CheckoutState["traits"],
-	deadline: number,
-): Promise<CheckoutState | null> {
-	const branch = await git.currentBranch(root, deadline);
-	const head = await git.headSha(root, deadline);
-	const clean = await git.isClean(root, deadline);
-	const operation = await git.operationInProgress(root, deadline);
-	if (
-		branch.kind !== "ok" ||
-		head.kind !== "ok" ||
-		clean.kind !== "ok" ||
-		operation.kind !== "ok"
-	) {
-		return null;
-	}
-	return {
-		branch: branch.value,
-		head: head.value,
-		clean: clean.value,
-		operation: operation.value,
-		traits,
-	};
-}
-
-/** Everything the gate reads, fresh; `null` when git could not answer. */
+/**
+ * Everything the gate reads, fresh; `null` when git could not answer. The
+ * independent reads run together (each is a process spawn, and on Windows a
+ * spawn is the cost); the upstream waits only for the branch name. Whether the
+ * tree has content changes is not read: eligibility does not use it, and git
+ * itself says so, naming the files, if a change is in the merge's way.
+ */
 async function readFacts(
-	run: FastForwardRun,
+	run: Session,
 	deadline: number,
 ): Promise<FastForwardFacts | null> {
 	const { classification, repository } = run;
 	const root = classification.toplevel;
-	const state = await readState(root, classification.traits, deadline);
-	if (state === null) {
-		return null;
-	}
-	const upstream =
-		state.branch === null
-			? { kind: "ok" as const, value: null }
-			: await git.upstreamOf(root, state.branch, deadline);
-	const locks = await git.lockFilesPresent(root, deadline);
-	const holders = await git.worktreesOnBranch(root, repository.ref, deadline);
+	const [branch, head, operation, locks, holders] = await Promise.all([
+		git.currentBranch(root, deadline),
+		git.headSha(root, deadline),
+		git.operationInProgress(root, deadline),
+		git.lockFilesPresent(root, deadline),
+		git.worktreesOnBranch(root, repository.ref, deadline),
+	]);
 	if (
-		upstream.kind !== "ok" ||
+		branch.kind !== "ok" ||
+		head.kind !== "ok" ||
+		operation.kind !== "ok" ||
 		locks.kind !== "ok" ||
 		holders.kind !== "ok"
 	) {
 		return null;
 	}
-	let heldElsewhere = false;
-	for (const holder of holders.value) {
-		if (!(await samePath(holder, root))) {
-			heldElsewhere = true;
-		}
+	const upstream =
+		branch.value === null
+			? { kind: "ok" as const, value: null }
+			: await git.upstreamOf(root, branch.value, deadline);
+	if (upstream.kind !== "ok") {
+		return null;
 	}
+	const elsewhere = await Promise.all(
+		holders.value.map(async (holder) => !(await samePath(holder, root))),
+	);
 	return {
 		ref: repository.ref,
 		remote: classification.remote,
-		state,
+		state: {
+			branch: branch.value,
+			head: head.value,
+			operation: operation.value,
+			traits: classification.traits,
+		},
 		upstream: upstream.value,
 		lockFiles: locks.value,
-		heldElsewhere,
+		heldElsewhere: elsewhere.some(Boolean),
 	};
 }
 
@@ -226,7 +237,7 @@ async function tipRelation(
 }
 
 async function underLock(
-	run: FastForwardRun,
+	run: Session,
 	first: FastForwardFacts,
 ): Promise<Decision> {
 	const { classification, repository, deadline } = run;
@@ -235,7 +246,9 @@ async function underLock(
 	const ref = repository.ref;
 
 	// The checkout may have changed since the gate first looked.
-	const facts = await readFacts(run, deadline);
+	const facts = await run.phases.time("facts", () =>
+		readFacts(run, deadline),
+	);
 	if (facts === null) {
 		return unanswered(deadline, first.state.head, "read");
 	}
@@ -258,16 +271,26 @@ async function underLock(
 	if (Date.now() >= fetchDeadline) {
 		return { outcome: { kind: "deadline", stage: "fetch" }, head };
 	}
-	const fetched = run.gitTransport
-		? await git.fetchRefFromUrl(
-				root,
-				run.gitTransport.url,
-				remote,
-				ref,
-				fetchDeadline,
-				run.gitTransport,
-			)
-		: await git.fetchRef(root, remote, ref, fetchDeadline);
+	let transport: git.GitHttpAuthorization | undefined;
+	if (run.gitTransport) {
+		try {
+			transport = await run.gitTransport();
+		} catch {
+			return { outcome: { kind: "fetch-failed", reason: "auth" }, head };
+		}
+	}
+	const fetched = await run.phases.time("fetch", () =>
+		transport
+			? git.fetchRefFromUrl(
+					root,
+					transport.url,
+					remote,
+					ref,
+					fetchDeadline,
+					transport,
+				)
+			: git.fetchRef(root, remote, ref, fetchDeadline),
+	);
 	switch (fetched.kind) {
 		case "timed-out":
 			return { outcome: { kind: "deadline", stage: "fetch" }, head };
@@ -300,11 +323,9 @@ async function underLock(
 	// not held to the network's budget. It may start whenever `MERGE_FLOOR_MS`
 	// is left, however much of the reserve the checks below spent. The
 	// checkout is re-read once, right before the merge.
-	const relation = await tipRelation(root, head, tip, deadline);
-	const changed = await factsStillMatch(run, facts, deadline);
-	if (changed !== null) {
-		return changed;
-	}
+	const relation = await run.phases.time("relate", () =>
+		tipRelation(root, head, tip, deadline),
+	);
 	switch (relation) {
 		case "current":
 			return { outcome: { kind: "already-current" }, head };
@@ -318,10 +339,18 @@ async function underLock(
 		default:
 			return relation satisfies never;
 	}
+	const changed = await run.phases.time("facts", () =>
+		factsStillMatch(run, facts, deadline),
+	);
+	if (changed !== null) {
+		return changed;
+	}
 	if (deadline - Date.now() < MERGE_FLOOR_MS) {
 		return { outcome: { kind: "deadline", stage: "merge" }, head };
 	}
-	const merged = await git.fastForwardTo(root, tip, deadline);
+	const merged = await run.phases.time("merge", () =>
+		git.fastForwardTo(root, tip, deadline),
+	);
 	switch (merged.kind) {
 		case "merged":
 			return {
@@ -347,13 +376,14 @@ async function underLock(
 				};
 			}
 			return {
-				outcome: {
-					kind: "merge-failed",
-					reason: merged.reason,
-					...(merged.files === undefined
-						? {}
-						: { files: merged.files }),
-				},
+				outcome:
+					merged.reason === "local-changes"
+						? {
+								kind: "merge-failed",
+								reason: merged.reason,
+								files: merged.files,
+							}
+						: { kind: "merge-failed", reason: merged.reason },
 				head,
 			};
 		default:
@@ -367,7 +397,7 @@ async function underLock(
  * lock: a person using Git outside Fabric does not hold that lock.
  */
 async function factsStillMatch(
-	run: FastForwardRun,
+	run: Session,
 	expected: FastForwardFacts,
 	deadline: number,
 ): Promise<Decision | null> {
@@ -394,14 +424,14 @@ async function factsStillMatch(
 	return null;
 }
 
-async function decide(run: FastForwardRun): Promise<Decision> {
-	const { classification, deadline, report } = run;
+async function decide(run: Session): Promise<Decision> {
+	const { classification, deadline, report, phases } = run;
 	const root = classification.toplevel;
 	const head = report.state?.head ?? null;
 	if (run.optedOut) {
 		return { outcome: { kind: "opted-out" }, head };
 	}
-	const facts = await readFacts(run, deadline);
+	const facts = await phases.time("facts", () => readFacts(run, deadline));
 	if (facts === null) {
 		return unanswered(deadline, head, "read");
 	}
@@ -413,7 +443,28 @@ async function decide(run: FastForwardRun): Promise<Decision> {
 		};
 	}
 
-	const common = await git.commonDir(root, deadline);
+	// A direct-repository project's server read the branch tip itself, so a
+	// HEAD that already holds that commit is current with no network at all.
+	// (A project with a snapshot does not skip: its commit is the last
+	// one Fabric copied, and git, not that copy, is the authority on the tip.)
+	if (run.directCommitSha !== undefined && facts.state.head !== null) {
+		const holds = await phases.time("contains", () =>
+			git.isAncestor(
+				root,
+				run.directCommitSha as string,
+				facts.state.head as string,
+				deadline,
+			),
+		);
+		if (holds.kind === "ok" && holds.value) {
+			return {
+				outcome: { kind: "already-current" },
+				head: facts.state.head,
+			};
+		}
+	}
+
+	const common = await run.commonDir;
 	if (common.kind !== "ok") {
 		return unanswered(deadline, head, "read");
 	}
@@ -464,9 +515,12 @@ function noticeReason(outcome: FfOutcome, lag: string | null): string | null {
 	}
 	if (
 		outcome.kind === "merge-failed" &&
-		(outcome.reason === "diverged" || outcome.reason === "local-changes")
+		isUserActionableMergeFailure(outcome.reason)
 	) {
 		return `merge-failed:${outcome.reason}`;
+	}
+	if (outcome.kind === "fetch-failed" && outcome.reason === "old-git") {
+		return "fetch-failed:old-git";
 	}
 	if (
 		(outcome.kind === "fast-forwarded" ||
@@ -501,7 +555,9 @@ export async function runFastForward(
 	const started = Date.now();
 	const { repository, snapshot, classification } = run;
 	const root = classification.toplevel;
-	const decision = await decide(run);
+	const phases = new Phases();
+	const commonDir = git.commonDir(root, run.deadline);
+	const decision = await decide({ ...run, phases, commonDir });
 	const { outcome } = decision;
 
 	const source = snapshot?.source;
@@ -519,6 +575,7 @@ export async function runFastForward(
 	let publishedInHistory: boolean | null = null;
 	if (
 		moved &&
+		snapshot !== undefined &&
 		publishedSha !== null &&
 		head !== null &&
 		publishedSha !== head
@@ -560,16 +617,24 @@ export async function runFastForward(
 				: null,
 		lag,
 		head,
-		gaveUpAfter: describeDuration(hookTiming.deadlineMs),
+		gaveUpAfter: describeDuration(
+			hookTiming.processStartedAt === undefined
+				? hookTiming.deadlineMs
+				: Math.round(sinceProcessStart() / 100) * 100,
+		),
 	};
 	let { stdout, stderr } = fastForwardLines(outcome, context);
 
 	// Said once per published version and reason; a fast-forward ends whatever
 	// was said before it.
-	const common = await git.commonDir(
-		root,
-		Math.max(run.deadline, Date.now() + 500),
-	);
+	const early = await commonDir;
+	const common =
+		early.kind === "ok"
+			? early
+			: await git.commonDir(
+					root,
+					Math.max(run.deadline, Date.now() + 500),
+				);
 	const notices = common.kind === "ok" ? noticeFile(common.value) : null;
 	if (notices !== null) {
 		if (outcome.kind === "fast-forwarded") {
@@ -600,6 +665,8 @@ export async function runFastForward(
 			outcome: outcome.kind,
 			reason: reasonOf(outcome),
 			ms: Date.now() - started,
+			totalMs: sinceProcessStart(),
+			phases: { ...run.timings, ...phases.totals },
 		});
 	}
 	return { outcome, stdout, stderr };

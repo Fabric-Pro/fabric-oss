@@ -1,4 +1,4 @@
-import { getAiProviderApiKey, getUserModelPreferences } from "@repo/database";
+import { getUserModelPreferences } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -6,6 +6,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { hasAnyAiProvider } from "../../lib/has-ai-provider";
 
 export const getUserModelPreferencesProcedure = tenantProtectedProcedure
 	// Against the organization the handler resolves: otherwise this answered,
@@ -56,13 +57,7 @@ export const getUserModelPreferencesProcedure = tenantProtectedProcedure
 			session,
 		);
 
-		// Get user's default provider
-		const providerConfig = await getAiProviderApiKey({
-			userId: user.id,
-			organizationId,
-		});
-
-		if (!providerConfig.provider) {
+		if (!(await hasAnyAiProvider({ userId: user.id, organizationId }))) {
 			return [];
 		}
 

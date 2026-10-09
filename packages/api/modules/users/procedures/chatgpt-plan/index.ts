@@ -10,28 +10,31 @@
 import { ORPCError } from "@orpc/server";
 import { chatGptPlanSourceExhaustedError } from "@repo/ai/lib/chatgpt-plan/exhaustion-breaker";
 import { disconnectChatGptPlan } from "@repo/ai/lib/chatgpt-plan/plan-credentials";
-import { sharedPlanServesMember } from "@repo/ai/lib/chatgpt-plan/pool";
+import {
+	sharedPlanServesMember,
+	sharedPlansServeBackgroundWork,
+} from "@repo/ai/lib/chatgpt-plan/pool";
+import { backfillChatGptPlanSubscription } from "@repo/ai/lib/chatgpt-plan/subscription-backfill";
 import {
 	getChatGptPlanCredentialStatus,
-	getChatGptPlanUsageSince,
+	getChatGptPlanUserWindow,
+	getChatGptPlanWindowBudget,
 	listChatGptPlanOrganizations,
 	setChatGptPlanOrgUse,
 } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
+	chatGptPlanUsageEstimateSchema,
+	toChatGptPlanUsageEstimate,
+} from "../../../../lib/chatgpt-plan-usage";
+import {
 	Permissions,
 	requirePermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-
-// ChatGPT plans meter usage in rolling five-hour windows that OpenAI does not
-// expose. The share below is an advisory estimate of how much of such a window
-// Fabric alone used, against a rough allowance for a Plus plan; ChatGPT
-// Settings → Usage is the real figure.
-const PLAN_WINDOW_MS = 5 * 60 * 60_000;
-const ESTIMATED_WINDOW_INPUT_TOKENS = 750_000;
+import { chatGptPlanSharedHereSchema, chatGptPlanShareState } from "./share";
 
 /**
  * When the member's own plan window is spent in this organization: when it
@@ -81,6 +84,9 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 			connected: z.boolean(),
 			email: z.string().nullable(),
 			status: z.enum(["ACTIVE", "NEEDS_RECONNECT"]).nullable(),
+			// From the sign-in's subscription claims (Fizzy #2770 G7).
+			tier: z.enum(["UNKNOWN", "PLUS", "PRO", "FREE", "TEAM"]).nullable(),
+			subscriptionActiveUntil: z.date().nullable(),
 			/** The session's organization, when it allows plan use. */
 			currentOrganization: organizationSchema
 				.extend({
@@ -89,15 +95,23 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 				})
 				.nullable(),
 			organizations: z.array(organizationSchema),
-			usageEstimate: z
-				.object({
-					windowHours: z.number(),
-					requests: z.number(),
-					inputTokens: z.number(),
-					outputTokens: z.number(),
-					estimatedPercent: z.number(),
-				})
-				.nullable(),
+			/**
+			 * An advisory estimate of the plan's current window from Fabric's
+			 * own calls; ChatGPT Settings → Usage is the real figure.
+			 */
+			usageEstimate: chatGptPlanUsageEstimateSchema.nullable(),
+			/**
+			 * One of the organization's shared accounts serves this member's
+			 * own work here right now — they have no plan of their own here, or
+			 * theirs is spent (Fizzy #2770).
+			 */
+			sharedPlanServesOwnWork: z.boolean(),
+			/**
+			 * The organization's shared accounts serve its background jobs here,
+			 * so a channel or meeting series linked now has its first history
+			 * import run on them (Fizzy #2770 F3).
+			 */
+			sharedPlansServeBackground: z.boolean(),
 			/** The own plan's window is spent here; see `ownPlanSpentHere`. */
 			ownPlanSpent: z
 				.object({
@@ -105,21 +119,34 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 					servedBySharedPlan: z.boolean(),
 				})
 				.nullable(),
+			/** The own plan may become one of this organization's shared accounts (Fizzy #2770 I1). */
+			canShare: z.boolean(),
+			/** Shared accounts here this member connected; only they may take one back. */
+			sharedHere: z.array(chatGptPlanSharedHereSchema),
 		}),
 	)
 	.handler(async ({ context: { user, session } }) => {
 		const organizationId = resolveOrganizationId(undefined, session);
-		const [credential, organizations] = await Promise.all([
+		const [stored, organizations] = await Promise.all([
 			getChatGptPlanCredentialStatus(user.id),
 			listChatGptPlanOrganizations({ userId: user.id }),
 		]);
+		const credential =
+			stored &&
+			(await backfillChatGptPlanSubscription(
+				{ kind: "user", userId: user.id },
+				stored,
+			));
 		const current =
 			organizations.find((org) => org.id === organizationId) ?? null;
-		const usage = credential
-			? await getChatGptPlanUsageSince({
-					userId: user.id,
-					since: new Date(Date.now() - PLAN_WINDOW_MS),
-				})
+		const usageEstimate = credential
+			? toChatGptPlanUsageEstimate(
+					await getChatGptPlanUserWindow({ userId: user.id }),
+					await getChatGptPlanWindowBudget({
+						kind: "user",
+						userId: user.id,
+					}),
+				)
 			: null;
 		const ownPlanSpent =
 			credential?.status === "ACTIVE" &&
@@ -127,9 +154,28 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 			organizationId
 				? await ownPlanSpentHere({ userId: user.id, organizationId })
 				: null;
+		const sharedPlanServesOwnWork =
+			current && organizationId
+				? await sharedPlanServesMember({
+						userId: user.id,
+						organizationId,
+					}).catch(() => false)
+				: false;
+		const sharedPlansServeBackground = organizationId
+			? await sharedPlansServeBackgroundWork(organizationId)
+			: false;
+		const shareState = await chatGptPlanShareState({
+			userId: user.id,
+			organizationId,
+			hasOwnPlan: credential !== null,
+			impersonated: Boolean(session.impersonatedBy),
+		});
 		return {
 			connected: credential !== null,
 			email: credential?.email ?? null,
+			tier: credential?.tier ?? null,
+			subscriptionActiveUntil:
+				credential?.subscriptionActiveUntil ?? null,
 			status: credential?.status ?? null,
 			currentOrganization: current
 				? {
@@ -145,21 +191,11 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 				name,
 				enabled,
 			})),
-			usageEstimate: usage
-				? {
-						windowHours: PLAN_WINDOW_MS / 3_600_000,
-						...usage,
-						estimatedPercent: Math.min(
-							100,
-							Math.round(
-								(usage.inputTokens /
-									ESTIMATED_WINDOW_INPUT_TOKENS) *
-									100,
-							),
-						),
-					}
-				: null,
+			usageEstimate,
+			sharedPlanServesOwnWork,
+			sharedPlansServeBackground,
 			ownPlanSpent,
+			...shareState,
 		};
 	});
 

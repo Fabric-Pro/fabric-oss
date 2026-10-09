@@ -6,6 +6,10 @@ import { Checkbox } from "@ui/components/checkbox";
 import { Label } from "@ui/components/label";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
+import {
+	ChatgptPlanModelList,
+	type ChatgptPlanModelListTask,
+} from "../chatgpt-plan-models/ChatgptPlanModelList";
 
 const CLI_CALLBACK_PATH = "/fabric/callback";
 
@@ -13,6 +17,8 @@ interface ConnectOrganization {
 	id: string;
 	name: string;
 	enabled: boolean;
+	/** The plan model per kind of work the organization chose (Fizzy #2770). */
+	models?: ChatgptPlanModelListTask[];
 }
 
 /** The CLI's own listener; only the port comes from the link. */
@@ -32,6 +38,7 @@ export function ConnectChatgptPlanForm({
 	state: string | null;
 }) {
 	const t = useTranslations("settings.chatgptPlan.connect");
+	const tModels = useTranslations("settings.chatgptPlanModels");
 	const [chosen, setChosen] = useState<Set<string>>(
 		() =>
 			new Set(
@@ -141,17 +148,29 @@ export function ConnectChatgptPlanForm({
 					{t("chooseOrganizations")}
 				</legend>
 				{organizations.map((org) => (
-					<div className="flex items-center gap-2" key={org.id}>
-						<Checkbox
-							checked={chosen.has(org.id)}
-							id={`chatgpt-plan-org-${org.id}`}
-							onCheckedChange={(value) =>
-								toggle(org.id, value === true)
-							}
-						/>
-						<Label htmlFor={`chatgpt-plan-org-${org.id}`}>
-							{org.name}
-						</Label>
+					<div className="space-y-2" key={org.id}>
+						<div className="flex items-center gap-2">
+							<Checkbox
+								checked={chosen.has(org.id)}
+								id={`chatgpt-plan-org-${org.id}`}
+								onCheckedChange={(value) =>
+									toggle(org.id, value === true)
+								}
+							/>
+							<Label htmlFor={`chatgpt-plan-org-${org.id}`}>
+								{org.name}
+							</Label>
+						</div>
+						{org.models && org.models.length > 0 ? (
+							<div className="space-y-1 pl-6">
+								<p className="text-muted-foreground text-xs">
+									{tModels("connectNote", {
+										organization: org.name,
+									})}
+								</p>
+								<ChatgptPlanModelList tasks={org.models} />
+							</div>
+						) : null}
 					</div>
 				))}
 			</fieldset>
@@ -195,12 +214,17 @@ export function ConnectSharedChatgptPlanForm({
 	port,
 	state,
 }: {
-	organization: { slug: string; name: string } | null;
+	organization: {
+		slug: string;
+		name: string;
+		models?: ChatgptPlanModelListTask[];
+	} | null;
 	port: number | null;
 	state: string | null;
 }) {
 	const t = useTranslations("settings.chatgptPlan.connectShared");
 	const tConnect = useTranslations("settings.chatgptPlan.connect");
+	const tModels = useTranslations("settings.chatgptPlanModels");
 	const [status, setStatus] = useState<
 		"idle" | "approving" | "done" | "cancelled" | "error"
 	>("idle");
@@ -276,6 +300,17 @@ export function ConnectSharedChatgptPlanForm({
 					{t("description", { organization: organization.name })}
 				</p>
 			</div>
+
+			{organization.models && organization.models.length > 0 ? (
+				<div className="space-y-1">
+					<p className="text-muted-foreground text-sm">
+						{tModels("connectNote", {
+							organization: organization.name,
+						})}
+					</p>
+					<ChatgptPlanModelList tasks={organization.models} />
+				</div>
+			) : null}
 
 			{status === "error" ? (
 				<Alert variant="error">

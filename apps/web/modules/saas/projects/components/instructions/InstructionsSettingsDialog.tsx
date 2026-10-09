@@ -35,6 +35,7 @@ export function InstructionsSettingsDialog({
 	projectId,
 	open,
 	onOpenChange,
+	onSaved,
 	canEdit: mayEdit,
 	pausedReason = null,
 	repositorySection,
@@ -43,6 +44,8 @@ export function InstructionsSettingsDialog({
 	projectId: string;
 	open: boolean;
 	onOpenChange: (o: boolean) => void;
+	/** The ignore globs were saved: what the tree shows may have changed. */
+	onSaved?: () => void;
 	/**
 	 * Whether this viewer may change the settings. A UI gate only:
 	 * `updateSettings` re-checks the permission on every save.
@@ -60,6 +63,7 @@ export function InstructionsSettingsDialog({
 	repositoryMode?: boolean;
 }) {
 	const globsId = useId();
+	const hintId = useId();
 	const actionError = useInstructionActionError();
 	const canEdit = mayEdit && pausedReason === null;
 	const t = useTranslations("projects.codingInstructions.settingsDialog");
@@ -85,8 +89,8 @@ export function InstructionsSettingsDialog({
 			// read the rules and pressing Save silently pinned a copy of
 			// today's defaults onto the project (layer `default` -> `project`),
 			// after which changes to `DEFAULT_IGNORE_GLOBS` no longer reached
-			// it. The defaults are shown as placeholder text instead: visible
-			// to read, never submitted.
+			// it. The defaults are listed as read-only text under the field
+			// instead: visible to read, never submitted.
 			setText((settings.data.ignoreGlobs ?? []).join("\n"));
 			setSeededFor(seedKey);
 		}
@@ -103,6 +107,7 @@ export function InstructionsSettingsDialog({
 						}).queryKey,
 				});
 				toast.success(t("saved"));
+				onSaved?.();
 				onOpenChange(false);
 			},
 			onError: (error) => toast.error(actionError(error)),
@@ -130,7 +135,7 @@ export function InstructionsSettingsDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="max-w-xl">
+			<DialogContent className="max-w-xl grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>{t("title")}</DialogTitle>
 					<DialogDescription>
@@ -153,16 +158,37 @@ export function InstructionsSettingsDialog({
 				<Label htmlFor={globsId}>{t("textareaLabel")}</Label>
 				<Textarea
 					id={globsId}
-					placeholder={(settings.data?.defaultIgnoreGlobs ?? []).join(
-						"\n",
-					)}
+					aria-describedby={hintId}
+					placeholder={t("textareaPlaceholder")}
 					value={text}
 					readOnly={!canEdit || !settingsReady}
 					onChange={(e) => setText(e.target.value)}
 					className="min-h-[200px] font-mono text-xs"
 				/>
+				<p id={hintId} className="text-muted-foreground text-xs">
+					{t(
+						repositoryMode
+							? "textareaHintRepository"
+							: "textareaHint",
+					)}
+				</p>
+				{settings.data && settings.data.ignoreGlobs === null ? (
+					<div
+						className="rounded-md border bg-muted/40 p-3"
+						data-testid="instructions-settings-defaults"
+					>
+						<p className="text-muted-foreground text-xs">
+							{t("defaultsInEffect")}
+						</p>
+						<ul className="mt-2 flex flex-col gap-0.5 font-mono text-xs">
+							{settings.data.defaultIgnoreGlobs.map((glob) => (
+								<li key={glob}>{glob}</li>
+							))}
+						</ul>
+					</div>
+				) : null}
 				{canEdit ? (
-					<DialogFooter className="sm:justify-between">
+					<DialogFooter className="sm:justify-between sm:flex-wrap sm:gap-y-2">
 						<Button
 							variant="outline"
 							onClick={resetToDefaults}
@@ -187,7 +213,7 @@ export function InstructionsSettingsDialog({
 						</div>
 					</DialogFooter>
 				) : (
-					<DialogFooter>
+					<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 						<Button
 							variant="outline"
 							onClick={() => onOpenChange(false)}

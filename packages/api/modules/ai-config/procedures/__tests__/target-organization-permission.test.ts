@@ -49,6 +49,7 @@ vi.mock("@repo/database", () => ({
 	grantProjectAccess: vi.fn(),
 	StoryVersionConflictError: class extends Error {},
 	getAiProviderApiKey: (...a: unknown[]) => mocks.getAiProviderApiKey(...a),
+	getEmbeddingProviderConfig: vi.fn(async () => ({ provider: null })),
 	getUserModelPreferences: vi.fn(async () => []),
 	getModelByCanonicalName: vi.fn(async () => null),
 	isGatewayProvider: () => true,

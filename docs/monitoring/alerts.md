@@ -115,6 +115,13 @@ on `name startswith "llm."` (the span name pattern emitted by the
 OpenTelemetry instrumentation). All require `appInsightsId` to be set
 to deploy.
 
+The `llm.*` span pattern includes `llm.decide`, the span for AI decision
+calls (`experimental_decide`), so decision-model failures count toward the
+error-rate and latency rules below. Their per-site outcomes and confidence are
+metrics (`llm.decision.outcomes`, `llm.decision.confidence`) and are not part
+of these rules; see the LLM instrumentation section of
+`packages/observability/README.md`.
+
 | Alert name | Severity | Eval freq | Window | Trigger |
 |---|---|---|---|---|
 | `${prefix}-llm-high-error-rate` | SEV-1 | 5 min | 5 min | LLM error rate > 10 % over the last 5 min. |

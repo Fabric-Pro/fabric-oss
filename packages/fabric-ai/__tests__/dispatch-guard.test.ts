@@ -37,6 +37,8 @@ const hoisted = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({ logAiUsageAsync: vi.fn() }));
 vi.mock("@repo/ai", () => ({
+	// No plan serves this tenant: delegated mode applies as before.
+	chatGptPlanServesCall: vi.fn().mockResolvedValue(false),
 	getAIModelWithMetadata: hoisted.getAIModelWithMetadata,
 	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "example-provider-key",

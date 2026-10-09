@@ -5,7 +5,10 @@ import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
-import { useChatgptPlanServesOwnWork } from "@saas/settings/components/chatgpt-plan/chatgpt-plan-status";
+import {
+	useChatgptPlanServesOwnWork,
+	useSharedChatgptPlanServesOwnWork,
+} from "@saas/settings/components/chatgpt-plan/chatgpt-plan-status";
 import { useTenantScopeResolved } from "@saas/shared/lib/use-tenant-scope-resolved";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -81,7 +84,11 @@ export function AiGatewayWarningBanner() {
 	// the reader can still reach the explanation and the fix from anywhere.
 	// The member's own chat, agents and generation run on their ChatGPT plan
 	// here (Fizzy #2939); only what needs embeddings still lacks a provider.
-	const ownWorkOnPlan = useChatgptPlanServesOwnWork();
+	const ownWorkOnOwnPlan = useChatgptPlanServesOwnWork();
+	// Or on a ChatGPT account the organization shares with members who have
+	// no plan of their own (Fizzy #2770).
+	const ownWorkOnSharedPlan = useSharedChatgptPlanServesOwnWork();
+	const ownWorkOnPlan = ownWorkOnOwnPlan || ownWorkOnSharedPlan;
 	const { dismissed, dismiss, restore } = useNoticeDismissal(
 		`provider-required:${organizationId ?? "personal"}`,
 	);
@@ -148,10 +155,13 @@ export function AiGatewayWarningBanner() {
 	const title = ownWorkOnPlan
 		? "Document search needs an AI provider"
 		: "AI provider required";
+	const planLine = ownWorkOnOwnPlan
+		? "Your chat, agents, and document generation run on your ChatGPT plan here."
+		: "Your chat, agents, and document generation run on your organization's shared ChatGPT plan here.";
 	const description = ownWorkOnPlan
 		? canConfigure
-			? "Your chat, agents, and document generation run on your ChatGPT plan here. Document search needs embeddings, which only a provider key gives: add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible key to use it."
-			: "Your chat, agents, and document generation run on your ChatGPT plan here. Document search needs embeddings, which only a provider key gives: an organization admin can add one, or you can add a personal key."
+			? `${planLine} Document search needs embeddings, which only a provider key gives: add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible key to use it.`
+			: `${planLine} Document search needs embeddings, which only a provider key gives: an organization admin can add one, or you can add a personal key.`
 		: canConfigure
 			? "Add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible provider key to use chat, agents, and document generation. Anthropic covers chat and agents, but not the embeddings document search needs."
 			: "This organization has no AI provider configured, so chat, agents, and document generation are unavailable here. An organization admin can add one — or add a personal key to use these features yourself.";

@@ -198,9 +198,8 @@ function wrap(ui: React.ReactElement) {
 }
 
 /**
- * What `upsertContextBySourcePath` stores: a TEXT row keyed by its path. The
- * title deliberately differs from the file name, so a test can tell which
- * one the card shows.
+ * What `upsertContextBySourcePath` stores: a TEXT row keyed by its path, titled
+ * by its file name unless the pusher gave a title.
  */
 function syncedContext(
 	id: string,
@@ -221,7 +220,7 @@ function syncedContext(
 		extractionError: null,
 		embeddedAt: null,
 		createdAt: new Date("2026-06-01T10:00:00Z"),
-		metadata: { title: `Title of ${id}`, sourcePath },
+		metadata: { title: sourcePath.split("/").pop(), sourcePath },
 		duplicateOfContextId: null,
 		...overrides,
 	};
@@ -358,10 +357,28 @@ describe("ProjectContextsList — Living Memory folders (Fizzy #2620)", () => {
 		const path = screen.getByTestId("context-source-path-ctx_setup");
 		expect(path).toHaveTextContent("docs/guides/setup.md");
 		expect(path).toHaveAttribute("title", "docs/guides/setup.md");
-		// The stored title is not the label of a synced file.
+	});
+
+	it("labels a pushed file by the title its author gave it, with the full path underneath", async () => {
+		contextsListMock.mockResolvedValue({
+			contexts: [
+				syncedContext("ctx_probe", "docs/probe.md", {
+					metadata: {
+						title: "Probe notes (delete me)",
+						sourcePath: "docs/probe.md",
+					},
+				}),
+			],
+			total: 1,
+		});
+
+		wrap(<ProjectContextsList projectId="proj_1" />);
+
+		await findLivingMemory();
+		expect(screen.getByText("Probe notes (delete me)")).toBeInTheDocument();
 		expect(
-			screen.queryByText("Title of ctx_setup"),
-		).not.toBeInTheDocument();
+			screen.getByTestId("context-source-path-ctx_probe"),
+		).toHaveTextContent("docs/probe.md");
 	});
 
 	it("keeps rows without a sourcePath in the flat list", async () => {

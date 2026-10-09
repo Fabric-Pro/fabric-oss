@@ -30,7 +30,7 @@ const { mocks } = vi.hoisted(() => ({
 		routeActionItems: vi.fn(),
 		reanalyzeBodyByKind: vi.fn(),
 		findManyUserStory: vi.fn(),
-		evaluate: vi.fn(),
+		decide: vi.fn(),
 		getAIDecisionModelWithMetadata: vi.fn(),
 	},
 }));
@@ -43,7 +43,7 @@ vi.mock("@repo/ai", () => ({
 	// with NO organization decision model configured, so the analyzer's
 	// behaviour here is the unchanged, language-model one — asserted rather
 	// than left to the routing module being mocked out below.
-	experimental_evaluate: mocks.evaluate,
+	experimental_decide: mocks.decide,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 }));
 

@@ -256,6 +256,23 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		storyKind: "BUG",
 		targetKey: "bug_reanalyzer",
 	},
+	// proposal_client_main / proposal_internal_analysis (Fizzy #2801): the two
+	// prompts of the coordinated Proposal job. Each lives under its own agent
+	// key at documentType PROPOSAL, the shape bug_reanalysis uses, so the job
+	// resolves them apart from `proposal_template`, which the Draft flow keeps
+	// resolving through `project_document_generator`. The job fails closed when
+	// nothing is bound to the Main action, so these SYSTEM bindings are what a
+	// freshly seeded environment generates with.
+	proposal_client_main: {
+		documentTypes: ["PROPOSAL"],
+		storyKind: null as null,
+		targetKey: "proposal_client_main",
+	},
+	proposal_internal_analysis: {
+		documentTypes: ["PROPOSAL"],
+		storyKind: null as null,
+		targetKey: "proposal_internal_analysis",
+	},
 	// {feature,bug}_context_update_instructions (Fizzy #2048): the kind-scoped
 	// instructions appended to the shared "Update using context" engine's system
 	// prompt when it runs against a WORK ITEM. Both sit under one agent key —
@@ -2940,6 +2957,90 @@ Include only if helpful:
 		bindingTargetKey: null,
 	},
 	{
+		// Fizzy #2801. Resolved through the `proposal_client_main` binding by the
+		// coordinated Proposal job, which renders exactly the bound version. The
+		// sections are H2 on purpose: the job saves a section as finished when
+		// the next H2 or H3 heading starts. Nothing here may ask for material
+		// meant for the delivery team; that belongs to the Internal Analysis.
+		key: "proposal_client_main",
+		name: "Client Proposal (Main)",
+		description:
+			"The client-only Main document of a coordinated Proposal: what the client reads, with no internal review, citations, source list, readiness status or internal commercial commentary.",
+		category: "document-generation",
+		tags: ["proposal", "client-only", "proposal-artifact"],
+		format: "MARKDOWN" as const,
+		isPublic: true,
+		content: `# ROLE
+You are a senior delivery lead at a software delivery firm, writing a project proposal for a client. The reader is the client's decision maker, and everything you write is sent to them as it stands.
+
+# OBJECTIVE
+Using the project context and source material provided, write a client-ready proposal a decision maker can approve without a meeting: a clear account of their need, a credible solution and plan, firm scope boundaries and unambiguous commercial terms.
+
+# CLIENT-ONLY RULES
+The document goes to the client and contains nothing written for the delivery team.
+- No internal review material: no reviewer notes, readiness or approval status, confidence ratings, to-do lists for the team, or instructions to whoever edits the document next.
+- No citations: do not cite sources inline, and do not use bracketed source markers, footnotes, reference numbers, or a list or index of sources.
+- No internal commercial commentary: no margins, internal rates, cost build-ups, negotiation positions, discount strategy or remarks about the client's budget. State commercial terms only as the client should read them.
+- Do not mention these rules, the source material, or how the document was produced.
+
+# CONTENT RULES
+- Do not invent facts such as dates, prices, headcount, service levels or compliance obligations. Where the proposal needs something the inputs do not give, write "To be confirmed" in its place and list the decision under Next Steps.
+- Use the client's terminology, and keep the names of products, teams and systems consistent.
+- Prefer short paragraphs and bullet lists; use a table where it makes a comparison or a schedule easier to read.
+- Write prose, lists and tables only. Diagrams are added to the document separately.
+
+# STRUCTURE
+Output Markdown only. Start with one H1 title naming the project, then write these H2 sections in this order. Use H3 only for subsections inside a section. Finish each section before starting the next, and never return to an earlier one.
+1. Executive Summary: the need, the proposed outcome and why this approach, in a few short paragraphs.
+2. Your Goals: the problem, the drivers behind it and how success will be measured.
+3. Proposed Solution: what will be built or delivered, and how it meets the goals.
+4. Scope: In Scope and Out of Scope as H3 subsections, each a concrete list.
+5. Delivery Approach: the phases, the ways of working and how the client takes part.
+6. Timeline and Milestones: the phases and milestones as a table.
+7. Team and Governance: the roles, the decision makers and how progress is reported.
+8. Assumptions and Dependencies: what the plan relies on from the client and from third parties.
+9. Investment: the price, the payment schedule and change control, as the client should read them.
+10. Next Steps: the decisions and actions needed from the client to start.`,
+	},
+	{
+		// Fizzy #2801. Resolved through the `proposal_internal_analysis` binding
+		// and run over the saved Main document. This body holds the review
+		// instructions and the finding taxonomy only: the code that calls the
+		// model supplies the output contract, so an edit here cannot change the
+		// shape of a finding.
+		key: "proposal_internal_analysis",
+		name: "Proposal Internal Analysis",
+		description:
+			"Reviews a coordinated Proposal's Main document against its source material and reports findings by severity and type for the organization's own team.",
+		category: "document-generation",
+		tags: ["proposal", "internal-analysis", "proposal-artifact"],
+		format: "MARKDOWN" as const,
+		isPublic: true,
+		content: `You are reviewing a client proposal before it is sent. You are given the proposal exactly as the client will read it and the source material it was written from. Report what the delivery team needs to know or fix before sending it.
+
+Each finding is one specific issue, grounded in the proposal or the source material. Do not summarise, praise or rewrite the proposal, and do not repeat a finding under a second type.
+
+Give every finding one severity:
+- Blocking: the proposal must not be sent until this is resolved.
+- Important: should be resolved before sending, but does not on its own stop the proposal.
+- Informational: worth knowing; no change is required.
+
+Give every finding one type:
+- Scope: an unclear, missing or contradictory scope boundary.
+- Commercial: price, payment or contract terms that are missing, inconsistent or risky.
+- Assumption: something the proposal relies on that is unstated or unconfirmed.
+- Risk: a delivery, technical or business risk the proposal does not address.
+- Gap: something the client asked for, or the source material requires, that the proposal leaves out.
+- Source Validation: a statement in the proposal that the source material does not support, or contradicts.
+- Architecture: a weakness or inconsistency in the proposed solution design.
+- Branding: tone, naming or presentation that does not suit the client.
+- Opportunity: additional value the team could offer the client.
+
+Name the proposal section a finding concerns when there is one. When the proposal has nothing worth reporting, return no findings rather than inventing one.
+
+The output format is supplied separately by the caller. Follow it exactly and add nothing outside it.`,
+	},
+	{
 		key: "architecture_template",
 		name: "Technical Architecture Document",
 		description:
@@ -5284,13 +5385,13 @@ Given the step's action, the expected outcome, and an ARIA snapshot of the curre
 - press — needs "key" (e.g. "Enter")
 - goto — needs "path", relative to the site being tested (e.g. "/settings"). Never a full URL to another site.
 - wait — needs "ms", at most 10000
-- none — the page already satisfies the step, or nothing can usefully be done
+- none — inspect the page without interaction; requires "reasoning" explaining why
 
 Rules for question 1:
 - Use ONLY role/name pairs that appear in the snapshot. Never invent an element, and never guess a CSS selector.
 - Prefer the smallest action that advances the step. Do not batch several interactions into one.
-- If the step describes something already true of the page, answer "none" rather than acting again.
-- If nothing in the snapshot could accomplish the step, answer "none". The next question will record that the expectation did not hold, which is the correct outcome — do not click something unrelated in the hope it helps.
+- Use "none" only when no safe interaction can be selected. Explain the reason in "reasoning".
+- Any "none" result goes to human review. The runner cannot prove a free-text step was observation-only, even when its expected outcome is already visible.
 
 QUESTION 2 — "did it work?"
 Given what the runner did and an ARIA snapshot of the page AFTERWARDS, decide whether the step's expected outcome is TRUE of that page.

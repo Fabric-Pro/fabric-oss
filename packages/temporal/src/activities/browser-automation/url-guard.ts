@@ -63,12 +63,18 @@ import {
 	PINNED_FETCH_ANY_CONTENT_TYPE,
 	type PinnedFetchOptions,
 	safeFetchOutboundPinned,
+	settleBefore,
 } from "@repo/utils/url-security";
 import type { BrowserContext } from "playwright";
+import { withHopDefaultPath } from "./redirect-chain-cookies";
+import { createRelayDeadline } from "./relay-deadline";
 import {
-	fulfillableSetCookies,
-	withHopDefaultPath,
-} from "./redirect-chain-cookies";
+	toFulfillment,
+	toRefreshFulfillment,
+	urlForLog,
+} from "./relay-response";
+
+export { urlForLog } from "./relay-response";
 
 export const BROWSER_AUTOMATION_ALLOWED_HOSTS_ENV =
 	"BROWSER_AUTOMATION_ALLOWED_HOSTS";
@@ -211,19 +217,6 @@ const REQUEST_HEADERS_NOT_RELAYED = new Set([
 ]);
 
 /**
- * Response headers that described the relay's connection, not the body the
- * browser receives: the body is already decoded and its length is set by
- * `route.fulfill`.
- */
-const RESPONSE_HEADERS_NOT_RELAYED = new Set([
-	"connection",
-	"content-encoding",
-	"content-length",
-	"keep-alive",
-	"transfer-encoding",
-]);
-
-/**
  * The slice of a Playwright `Route` the guard touches. Structural so unit
  * tests can hand in a plain object; a real `Route` satisfies it.
  */
@@ -246,8 +239,90 @@ type GuardableRequest = {
  * them before deciding on a destination, so a blocked type is never relayed
  * or connected to, on declared and undeclared hosts alike.
  */
+export type OutboundRefusalCode =
+	| "off-origin"
+	| "invalid-url"
+	| "destination-refused"
+	| "unsupported-scheme"
+	| "unsupported-response"
+	| "missing-location"
+	| "redirect-replay"
+	| "redirect-limit"
+	| "direct-connection";
+
 export interface OutboundRequestGuardOptions {
 	blockResourceTypes?: readonly string[];
+	/** Restrict a context to one environment origin; unlike the operator
+	 * allowlist, this never permits a direct browser connection. */
+	allowedOrigin?: string;
+	/** Headers injected only into the pinned relay after origin validation. */
+	relayHeaders?: Record<string, string>;
+	/** Called only for a refusal, with safe origin/path URL text. */
+	onBlocked?: (input: {
+		url: string;
+		code: OutboundRefusalCode;
+		reason: string;
+		isNavigation: boolean;
+	}) => void;
+	relayTimeoutMs?: number;
+	signal?: AbortSignal;
+	onRequestFailed?: (input: {
+		url: string;
+		error: unknown;
+		isNavigation: boolean;
+	}) => void;
+}
+
+type GuardedRequestDecision =
+	| { action: "abort"; code: OutboundRefusalCode; reason: string }
+	| { action: "direct" }
+	| { action: "pinned" };
+
+function decideGuardedRequest(
+	url: string,
+	options: OutboundRequestGuardOptions,
+): GuardedRequestDecision {
+	if (options.allowedOrigin) {
+		try {
+			const parsed = new URL(url);
+			if (
+				(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+				parsed.origin !== options.allowedOrigin
+			) {
+				return {
+					action: "abort",
+					code: "off-origin",
+					reason: `Request is outside the configured environment origin ${options.allowedOrigin}`,
+				};
+			}
+		} catch {
+			return {
+				action: "abort",
+				code: "invalid-url",
+				reason: "Invalid URL format",
+			};
+		}
+		return { action: "pinned" };
+	}
+	const decision = decideBrowserRequest(url);
+	return decision.action === "abort"
+		? { ...decision, code: "destination-refused" }
+		: decision;
+}
+
+function reportBlocked(
+	options: OutboundRequestGuardOptions,
+	url: string,
+	code: OutboundRefusalCode,
+	reason: string,
+	isNavigation: boolean,
+): void {
+	options.onBlocked?.({
+		url: urlForLog(url),
+		code,
+		reason,
+		isNavigation,
+	});
 }
 
 type GuardableRoute = {
@@ -263,6 +338,7 @@ type GuardableRoute = {
 
 async function toRelayedRequestInit(
 	request: GuardableRequest,
+	options: OutboundRequestGuardOptions,
 ): Promise<RequestInit> {
 	const headers: Record<string, string> = {};
 	for (const [name, value] of Object.entries(await request.allHeaders())) {
@@ -276,67 +352,22 @@ async function toRelayedRequestInit(
 	// A fresh Uint8Array over its own ArrayBuffer: what `fetch` accepts as a
 	// body, without aliasing Playwright's buffer.
 	const body = posted ? new Uint8Array(posted) : undefined;
-	return { method, headers, body };
-}
-
-/**
- * A URL safe to log: origin and path only. Query strings and fragments can
- * carry tokens (signed URLs, OAuth codes), and userinfo carries credentials.
- */
-export function urlForLog(url: string): string {
-	try {
-		const parsed = new URL(url);
-		return `${parsed.origin}${parsed.pathname}`;
-	} catch {
-		return "a relayed response";
-	}
-}
-
-/**
- * The `Set-Cookie` headers to hand Chromium on a fulfilled response, in
- * wire order. Partitioned cookies are dropped: Chromium stores a cookie
- * set through `route.fulfill` without its partition key, which would turn
- * it into an ordinary cookie (see `isPartitionedSetCookie`).
- */
-function passableSetCookies(
-	setCookies: readonly string[],
-	from: string,
-): string[] {
-	const { kept, droppedPartitioned } = fulfillableSetCookies(setCookies);
-	if (droppedPartitioned > 0) {
-		console.warn(
-			`[Browser] Dropped ${droppedPartitioned} Partitioned cookie(s) from ${urlForLog(from)}: Chromium cannot store them partitioned through the relay`,
-		);
-	}
-	return kept;
-}
-
-async function toFulfillment(
-	response: Response,
-	setCookies: readonly string[],
-): Promise<{
-	status: number;
-	headers: Record<string, string>;
-	body: Buffer;
-}> {
-	const headers: Record<string, string> = {};
-	response.headers.forEach((value, name) => {
-		const key = name.toLowerCase();
-		if (key !== "set-cookie" && !RESPONSE_HEADERS_NOT_RELAYED.has(key)) {
-			headers[key] = value;
-		}
-	});
-	// Playwright's fulfill takes one value per header name; Chromium's
-	// interception splits `set-cookie` on newlines and applies each cookie
-	// in order, under the request's own credentials mode.
-	const cookies = passableSetCookies(setCookies, response.url);
-	if (cookies.length > 0) {
-		headers["set-cookie"] = cookies.join("\n");
-	}
+	const overridden = new Set(
+		Object.keys(options.relayHeaders ?? {}).map((name) =>
+			name.toLowerCase(),
+		),
+	);
 	return {
-		status: response.status,
-		headers,
-		body: Buffer.from(await response.arrayBuffer()),
+		method,
+		headers: {
+			...Object.fromEntries(
+				Object.entries(headers).filter(
+					([name]) => !overridden.has(name.toLowerCase()),
+				),
+			),
+			...options.relayHeaders,
+		},
+		body,
 	};
 }
 
@@ -358,14 +389,6 @@ function isRedirectStatus(status: number): boolean {
 	);
 }
 
-function escapeHtmlAttribute(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/"/g, "&quot;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;");
-}
-
 function isHttpUrl(url: URL): boolean {
 	return url.protocol === "http:" || url.protocol === "https:";
 }
@@ -374,37 +397,6 @@ function withoutFragment(url: string): string {
 	const parsed = new URL(url);
 	parsed.hash = "";
 	return parsed.toString();
-}
-
-/**
- * A navigation redirect, rewritten as a page that refreshes to the target.
- * The refresh is a new navigation, which reaches `context.route` as its own
- * request and is judged there. The redirect's cookies are kept: this
- * response is fulfilled for the URL that set them.
- */
-function toRefreshFulfillment(
-	redirect: Response,
-	target: string,
-): { status: number; headers: Record<string, string>; body: Buffer } {
-	const headers: Record<string, string> = {
-		"content-type": "text/html; charset=utf-8",
-		"cache-control": "no-store",
-	};
-	const cookies = passableSetCookies(
-		redirect.headers.getSetCookie(),
-		redirect.url,
-	);
-	if (cookies.length > 0) {
-		headers["set-cookie"] = cookies.join("\n");
-	}
-	const attribute = escapeHtmlAttribute(target);
-	return {
-		status: 200,
-		headers,
-		body: Buffer.from(
-			`<!doctype html><meta http-equiv="refresh" content="0;url=${attribute}"><title>Redirecting</title><a href="${attribute}">Redirecting</a>`,
-		),
-	};
 }
 
 /**
@@ -429,6 +421,18 @@ function frameOf(request: GuardableRequest): object | null {
 	}
 }
 
+function isPageNavigation(request: GuardableRequest): boolean {
+	if (!request.isNavigationRequest()) {
+		return false;
+	}
+	const frame = frameOf(request);
+	return (
+		!frame ||
+		!("parentFrame" in frame) ||
+		typeof frame.parentFrame !== "function" ||
+		frame.parentFrame() === null
+	);
+}
 /** Redirects already taken in the chain this navigation continues, or 0. */
 function takeNavigationChain(frame: object | null, url: string): number {
 	if (!frame) {
@@ -446,30 +450,6 @@ function takeNavigationChain(frame: object | null, url: string): number {
 	return 0;
 }
 
-/**
- * One deadline for everything a single intercepted request makes the relay
- * do. Each pinned fetch also has its own per-call deadline; this bounds the
- * chain as a whole, so a subresource's redirects cannot each take a fresh
- * budget. A timer rather than `AbortSignal.timeout` so it can be disposed.
- */
-function createRelayDeadline(timeoutMs: number): {
-	signal: AbortSignal;
-	dispose: () => void;
-} {
-	const controller = new AbortController();
-	const timer = setTimeout(
-		() =>
-			controller.abort(
-				new DOMException(
-					`Relayed request exceeded ${timeoutMs} ms`,
-					"TimeoutError",
-				),
-			),
-		timeoutMs,
-	);
-	return { signal: controller.signal, dispose: () => clearTimeout(timer) };
-}
-
 type RelayOutcome =
 	| {
 			kind: "response";
@@ -480,13 +460,53 @@ type RelayOutcome =
 	  }
 	| { kind: "abort"; errorCode: "blockedbyclient" | "failed" };
 
+function safeFailureCode(error: unknown): string {
+	if (
+		typeof error === "object" &&
+		error !== null &&
+		"code" in error &&
+		typeof error.code === "string"
+	) {
+		if (/^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)) {
+			return error.code;
+		}
+	}
+	if (error instanceof DOMException) {
+		return error.name === "TimeoutError" ? "TIMEOUT" : "REQUEST_ABORTED";
+	}
+	if (error instanceof TypeError) {
+		return "TYPE_ERROR";
+	}
+	if (error instanceof AggregateError) {
+		return "AGGREGATE_ERROR";
+	}
+	return "unknown";
+}
+
 async function relayOnce(
 	url: string,
 	init: RequestInit,
+	signal: AbortSignal,
 	fetchPinned: PinnedBrowserFetch,
+	options: OutboundRequestGuardOptions,
+	isNavigation: boolean,
 ): Promise<RelayOutcome> {
 	try {
-		const response = await fetchPinned(url, init);
+		const response = await settleBefore(fetchPinned(url, init), signal);
+		if (
+			response.status >= 300 &&
+			response.status < 400 &&
+			!isRedirectStatus(response.status)
+		) {
+			reportBlocked(
+				options,
+				url,
+				"unsupported-response",
+				`HTTP ${response.status} has no supported relay semantics`,
+				isNavigation,
+			);
+			return failed;
+		}
 		return {
 			kind: "response",
 			response,
@@ -494,15 +514,16 @@ async function relayOnce(
 			setCookies: response.headers.getSetCookie(),
 		};
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
+		options.onRequestFailed?.({ url: urlForLog(url), error, isNavigation });
+		const failureCode = safeFailureCode(error);
 		if (isDestinationRefusal(error)) {
 			console.warn(
-				`[Browser] Blocked request to ${urlForLog(String(url))}: ${message}. If this address is intended, add its host to ${BROWSER_AUTOMATION_ALLOWED_HOSTS_ENV}.`,
+				`[Browser] Blocked request to ${urlForLog(String(url))}: ${failureCode}. If this address is intended, add its host to ${BROWSER_AUTOMATION_ALLOWED_HOSTS_ENV}.`,
 			);
 			return { kind: "abort", errorCode: "blockedbyclient" };
 		}
 		console.warn(
-			`[Browser] Request to ${urlForLog(String(url))} failed: ${message}`,
+			`[Browser] Request to ${urlForLog(String(url))} failed: ${failureCode}`,
 		);
 		return { kind: "abort", errorCode: "failed" };
 	}
@@ -537,6 +558,7 @@ async function followSubresourceRedirects(
 	firstInit: RequestInit,
 	fetchPinned: PinnedBrowserFetch,
 	signal: AbortSignal,
+	options: OutboundRequestGuardOptions,
 ): Promise<RelayOutcome> {
 	const requestedUrl = new URL(first.url);
 	let { url, response } = first;
@@ -549,21 +571,42 @@ async function followSubresourceRedirects(
 		}
 		const next = new URL(location, url);
 		if (!isHttpUrl(next)) {
+			reportBlocked(
+				options,
+				url,
+				"unsupported-scheme",
+				"Redirect to a non-http(s) URL was refused",
+				false,
+			);
 			console.warn(
 				`[Browser] Blocked redirect from ${urlForLog(String(url))} to a non-http(s) URL`,
 			);
 			return blocked;
 		}
 		if (next.origin !== requestedUrl.origin) {
+			reportBlocked(
+				options,
+				next.toString(),
+				"off-origin",
+				"Cross-origin subresource redirect was refused",
+				false,
+			);
 			console.warn(
 				`[Browser] Blocked cross-origin redirect of a subresource from ${urlForLog(String(url))} to ${next.origin}: the relay cannot preserve the browser's cross-origin checks`,
 			);
 			return blocked;
 		}
-		const decision = decideBrowserRequest(next.toString());
+		const decision = decideGuardedRequest(next.toString(), options);
 		if (decision.action === "abort") {
 			console.warn(
 				`[Browser] Blocked redirect from ${urlForLog(String(url))} to ${urlForLog(next.toString())}: ${decision.reason}`,
+			);
+			reportBlocked(
+				options,
+				next.toString(),
+				decision.code,
+				decision.reason,
+				false,
 			);
 			return blocked;
 		}
@@ -590,7 +633,14 @@ async function followSubresourceRedirects(
 			signal,
 		};
 		url = next.toString();
-		const outcome = await relayOnce(url, init, fetchPinned);
+		const outcome = await relayOnce(
+			url,
+			init,
+			signal,
+			fetchPinned,
+			options,
+			false,
+		);
 		if (outcome.kind === "abort") {
 			return outcome;
 		}
@@ -607,6 +657,13 @@ async function followSubresourceRedirects(
 	console.warn(
 		`[Browser] More than ${BROWSER_RELAY_MAX_REDIRECTS} redirects from ${urlForLog(first.url)}`,
 	);
+	reportBlocked(
+		options,
+		url,
+		"redirect-limit",
+		"The redirect limit was exceeded",
+		false,
+	);
 	return failed;
 }
 
@@ -620,16 +677,50 @@ async function refreshNavigationRedirect(
 	outcome: Extract<RelayOutcome, { kind: "response" }>,
 	frame: object | null,
 	hopsSoFar: number,
+	options: OutboundRequestGuardOptions,
 ): Promise<"blockedbyclient" | "failed" | null> {
 	const { response, url } = outcome;
+	const pageNavigation = isPageNavigation(request);
 	const location = response.headers.get("location");
 	if (!location) {
+		reportBlocked(
+			options,
+			url,
+			"missing-location",
+			"Redirect response had no Location header",
+			pageNavigation,
+		);
 		return "failed";
 	}
 	const next = new URL(location, url);
 	if (!isHttpUrl(next)) {
+		reportBlocked(
+			options,
+			url,
+			"unsupported-scheme",
+			"Redirect to a non-http(s) URL was refused",
+			pageNavigation,
+		);
 		console.warn(
 			`[Browser] Blocked navigation redirect from ${urlForLog(String(url))} to a non-http(s) URL`,
+		);
+		return "blockedbyclient";
+	}
+	const decision = decideGuardedRequest(next.toString(), options);
+	if (
+		decision.action === "abort" ||
+		(options.allowedOrigin !== undefined && decision.action === "direct")
+	) {
+		const reason =
+			decision.action === "abort"
+				? decision.reason
+				: "Direct browser connections are not allowed for this context";
+		reportBlocked(
+			options,
+			next.toString(),
+			decision.action === "abort" ? decision.code : "direct-connection",
+			reason,
+			pageNavigation,
 		);
 		return "blockedbyclient";
 	}
@@ -645,10 +736,24 @@ async function refreshNavigationRedirect(
 		console.warn(
 			`[Browser] Navigation redirect ${response.status} from ${urlForLog(String(url))} would replay a ${method}; refused`,
 		);
+		reportBlocked(
+			options,
+			url,
+			"redirect-replay",
+			`Redirect ${response.status} would replay a ${method}; refused`,
+			pageNavigation,
+		);
 		return "failed";
 	}
 	const hops = hopsSoFar + 1;
 	if (hops > BROWSER_RELAY_MAX_REDIRECTS) {
+		reportBlocked(
+			options,
+			url,
+			"redirect-limit",
+			"The redirect limit was exceeded",
+			pageNavigation,
+		);
 		console.warn(
 			`[Browser] More than ${BROWSER_RELAY_MAX_REDIRECTS} redirects navigating to ${urlForLog(String(url))}`,
 		);
@@ -697,15 +802,23 @@ export async function handleGuardedRoute(
 		return;
 	}
 	const navigation = request.isNavigationRequest();
+	const pageNavigation = isPageNavigation(request);
 	const frame = navigation ? frameOf(request) : null;
 	// Read (and clear) the frame's pending chain for every navigation, even
 	// one refused below, so a stale entry cannot be continued later.
 	const hopsSoFar = navigation ? takeNavigationChain(frame, url) : 0;
 
-	const decision = decideBrowserRequest(url);
+	const decision = decideGuardedRequest(url, options);
 	if (decision.action === "abort") {
 		console.warn(
 			`[Browser] Blocked request to ${urlForLog(String(url))}: ${decision.reason}`,
+		);
+		reportBlocked(
+			options,
+			url,
+			decision.code,
+			decision.reason,
+			pageNavigation,
 		);
 		await route.abort("blockedbyclient");
 		return;
@@ -715,13 +828,25 @@ export async function handleGuardedRoute(
 		return;
 	}
 
-	const deadline = createRelayDeadline(BROWSER_PINNED_FETCH_TIMEOUT_MS);
+	const deadline = createRelayDeadline(
+		options.relayTimeoutMs ?? BROWSER_PINNED_FETCH_TIMEOUT_MS,
+	);
 	try {
+		const signal = options.signal
+			? AbortSignal.any([deadline.signal, options.signal])
+			: deadline.signal;
 		const init = {
-			...(await toRelayedRequestInit(request)),
-			signal: deadline.signal,
+			...(await toRelayedRequestInit(request, options)),
+			signal,
 		};
-		let outcome = await relayOnce(url, init, fetchPinned);
+		let outcome = await relayOnce(
+			url,
+			init,
+			signal,
+			fetchPinned,
+			options,
+			pageNavigation,
+		);
 		if (
 			outcome.kind === "response" &&
 			isRedirectStatus(outcome.response.status)
@@ -733,6 +858,7 @@ export async function handleGuardedRoute(
 					outcome,
 					frame,
 					hopsSoFar,
+					options,
 				);
 				if (refused) {
 					await route.abort(refused);
@@ -743,7 +869,8 @@ export async function handleGuardedRoute(
 				outcome,
 				init,
 				fetchPinned,
-				deadline.signal,
+				init.signal,
+				options,
 			);
 		}
 		if (outcome.kind === "abort") {
@@ -753,12 +880,28 @@ export async function handleGuardedRoute(
 		if (isRedirectStatus(outcome.response.status)) {
 			// A redirect without a Location: nothing to follow, and not safe
 			// to hand to Chromium as a 3xx.
+			reportBlocked(
+				options,
+				url,
+				"missing-location",
+				"Redirect response had no Location header",
+				pageNavigation,
+			);
 			await route.abort("failed");
 			return;
 		}
 		await route.fulfill(
 			await toFulfillment(outcome.response, outcome.setCookies),
 		);
+	} catch (error) {
+		if (!options.signal?.aborted) {
+			options.onRequestFailed?.({
+				url: urlForLog(url),
+				error,
+				isNavigation: pageNavigation,
+			});
+			await route.abort("failed");
+		}
 	} finally {
 		deadline.dispose();
 	}
@@ -781,7 +924,12 @@ type GuardableWebSocketRoute = {
  */
 export async function handleGuardedWebSocket(
 	socket: GuardableWebSocketRoute,
+	options: OutboundRequestGuardOptions = {},
 ): Promise<void> {
+	if (options.allowedOrigin) {
+		await socket.close({ code: 1008, reason: "Blocked by outbound guard" });
+		return;
+	}
 	const url = socket.url();
 	const decision = decideBrowserRequest(url);
 	if (decision.action === "direct") {
@@ -816,6 +964,6 @@ export async function installOutboundRequestGuard(
 	);
 	await context.routeWebSocket(
 		() => true,
-		(socket) => handleGuardedWebSocket(socket),
+		(socket) => handleGuardedWebSocket(socket, options),
 	);
 }

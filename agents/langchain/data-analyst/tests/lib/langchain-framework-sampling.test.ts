@@ -67,6 +67,7 @@ describe("data-analyst LangChain framework — Anthropic sampling params", () =>
 		"anthropic/claude-sonnet-5",
 		"anthropic/claude-opus-4-8",
 		"anthropic/claude-opus-5-5",
+		"anthropic/claude-haiku-5.5",
 		// Unknown provider prefix falls back to the default Anthropic model
 		// (claude-sonnet-5).
 		"other/whatever",

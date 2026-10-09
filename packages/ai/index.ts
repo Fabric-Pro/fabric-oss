@@ -60,7 +60,7 @@ export {
 	createUIMessageStreamResponse,
 	embed,
 	embedMany,
-	experimental_evaluate,
+	experimental_decide,
 	// Image generation
 	generateImage,
 	generateObject,
@@ -120,6 +120,18 @@ export {
 	toDatabricksWorkspaceHost,
 } from "./lib/databricks-url";
 export type {
+	DecisionCapture,
+	DecisionOutcome,
+	DecisionSite,
+	DecisionTelemetryContext,
+	RecordDecisionOutcomeInput,
+} from "./lib/decision-telemetry";
+export {
+	createDecisionCapture,
+	recordDecisionOutcome,
+	wrapDecisionModelWithTelemetry,
+} from "./lib/decision-telemetry";
+export type {
 	AggregateAIModelOptions,
 	AggregateAIModelResult,
 	AIDecisionModelResult,
@@ -139,6 +151,7 @@ export type {
 export {
 	AIProviderNotConfiguredError,
 	buildProviderModelString,
+	chatGptPlanServesCall,
 	getAIDecisionModel,
 	getAIDecisionModelWithMetadata,
 	getAIEmbeddingModel,
@@ -147,9 +160,11 @@ export {
 	getAIModelWithMetadata,
 	getAvailableModels,
 	getConfiguredModelString,
+	getEmbeddingRAGProviderConfig,
 	getModelForTaskDynamic,
 	getProvidersForModel,
 	getRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 	getSystemRAGProviderConfig,
 	isModelAvailableForProvider,
 	resolveModelConfiguration,

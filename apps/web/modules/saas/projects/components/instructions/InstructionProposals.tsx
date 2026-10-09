@@ -29,7 +29,7 @@ import {
 	RefreshCwIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	canProposeAgain,
@@ -48,6 +48,7 @@ import {
 	awaitsDecision,
 	PROPOSALS_PAGE_SIZE,
 } from "../../lib/instructions-proposal-review";
+import { instructionsFreshness } from "../../lib/instructions-query-freshness";
 import { repositoryProviderSupportsReconnect } from "../../lib/repo-reconnect-capability";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import {
@@ -55,10 +56,18 @@ import {
 	type MyProposalBranch,
 } from "./InstructionProposalBranchPanel";
 import { countDiffLines, toDiffRows } from "./lib/instruction-diff";
-import { branchPanelPollInterval } from "./lib/instructions-proposal-branch";
 import {
+	branchPanelPollInterval,
+	listInFlightStates,
+	nextTransitionSince,
+	TRANSITION_POLL_MS,
+} from "./lib/instructions-proposal-branch";
+import {
+	branchesSignature,
 	invalidateProposalViews,
-	invalidateProposalViewsAfterRefresh,
+	liveChangesOnMyBranch,
+	useInvalidateListOnBranchStateChange,
+	useRefreshSettleWindow,
 } from "./lib/instructions-proposal-views";
 
 /**
@@ -113,7 +122,29 @@ type ProposalChange = {
 	afterSize: number | null;
 };
 
-type OmissionReason = "BINARY" | "FILE_TOO_LARGE" | "RESPONSE_LIMIT" | null;
+type OmissionReason =
+	| "BINARY"
+	| "FILE_TOO_LARGE"
+	| "RESPONSE_LIMIT"
+	| "SOURCE_CHANGED"
+	| null;
+
+function omissionCopyKey(
+	reason: Exclude<OmissionReason, "BINARY" | null>,
+): "fileTooLarge" | "responseLimit" | "sourceChanged" {
+	switch (reason) {
+		case "FILE_TOO_LARGE":
+			return "fileTooLarge";
+		case "RESPONSE_LIMIT":
+			return "responseLimit";
+		case "SOURCE_CHANGED":
+			return "sourceChanged";
+		default: {
+			const unreachable: never = reason;
+			return unreachable;
+		}
+	}
+}
 
 type ProposalDetail = ProposalRow & { changes: ProposalChange[] | null };
 type ProposalFilePage = {
@@ -536,25 +567,59 @@ export function InstructionProposals({
 	const [changeToggles, setChangeToggles] = useState<Record<string, boolean>>(
 		{},
 	);
+	const settle = useRefreshSettleWindow();
+	const transitionSince = useRef<number | null>(null);
+	const listTransitionSince = useRef<number | null>(null);
+	// The same query the member's own branch panel runs, so one cache entry:
+	// the list reads the branch's state to know a branch-level open or close
+	// is moving even while every row still reads "On your branch".
+	const myBranch = useQuery({
+		...orpc.projects.instructions.proposals.myBranch.queryOptions({
+			input: { projectId },
+		}),
+		...instructionsFreshness.proposalView,
+		enabled: open && repositoryBacked,
+	});
+	const myBranches = (
+		myBranch.data as MyProposalBranch | undefined
+	)?.branches.map((entry) => entry.branch);
+	useInvalidateListOnBranchStateChange(queryClient, myBranches);
 	const proposals = useQuery({
 		...orpc.projects.instructions.proposals.list.queryOptions({
 			input: { projectId, limit: PAGE_SIZE, cursor },
 		}),
+		...instructionsFreshness.proposalView,
 		enabled: open,
-		// Opening the dialog always shows the current state, never a read
-		// from earlier in the session.
-		staleTime: 0,
-		refetchOnMount: "always",
 		// Every 3 s while a proposal is being validated; every 10 s while a
 		// pull-request suggestion is pending or its merge sync is requested
-		// (spec §12); off once everything shown is settled. The list carries
-		// each row's full `pullRequest` block, so one read refreshes every
-		// card at once.
-		refetchInterval: (query) =>
-			proposalListPollInterval(
-				(query.state.data as { items?: ProposalRow[] } | undefined)
-					?.items,
-			),
+		// (spec §12); after a Refresh, every 3 s until the rows change or the
+		// settle window ends; off once everything shown is settled. The list
+		// carries each row's full `pullRequest` block, so one read refreshes
+		// every card at once.
+		refetchInterval: (query) => {
+			const items = (
+				query.state.data as { items?: ProposalRow[] } | undefined
+			)?.items;
+			const inFlight = listInFlightStates(items, myBranches);
+			const now = Date.now();
+			listTransitionSince.current = nextTransitionSince(
+				listTransitionSince.current,
+				inFlight,
+				now,
+			);
+			const fast = branchPanelPollInterval(
+				inFlight,
+				listTransitionSince.current,
+				now,
+			);
+			const steady = proposalListPollInterval(items);
+			return settle.pollInterval(
+				fast === TRANSITION_POLL_MS &&
+					(steady === false || steady > fast)
+					? fast
+					: steady,
+			);
+		},
 	});
 	const detail = useQuery({
 		...orpc.projects.instructions.proposals.get.queryOptions({
@@ -613,37 +678,59 @@ export function InstructionProposals({
 		});
 	const branchOwners = useInfiniteQuery({
 		...branchOwnersOptions,
+		...instructionsFreshness.proposalView,
 		enabled: open && repositoryBacked && canReview,
-		staleTime: 0,
-		refetchOnMount: "always",
 		// Reviewer panels render from this read and never poll on their own,
-		// so it polls for them while any loaded branch is still in flight.
-		refetchInterval: (query) =>
-			branchPanelPollInterval(
-				(
-					(query.state.data?.pages ?? []) as Array<{
-						owners: ProposalBranchOwner[];
-					}>
-				).flatMap((page) =>
-					page.owners.flatMap((owner) =>
-						owner.branches.map((entry) => entry.branch),
-					),
+		// so it polls for them while any loaded branch is still in flight,
+		// and through the settle window that follows a Refresh.
+		refetchInterval: (query) => {
+			const shown = (
+				(query.state.data?.pages ?? []) as Array<{
+					owners: ProposalBranchOwner[];
+				}>
+			).flatMap((page) =>
+				page.owners.flatMap((owner) =>
+					owner.branches.map((entry) => entry.branch),
 				),
-			),
+			);
+			const now = Date.now();
+			transitionSince.current = nextTransitionSince(
+				transitionSince.current,
+				shown,
+				now,
+			);
+			return settle.pollInterval(
+				branchPanelPollInterval(shown, transitionSince.current, now),
+			);
+		},
 	});
 	const branchOwnerRows: ProposalBranchOwner[] = (
 		branchOwners.data?.pages ?? []
 	).flatMap((page) => (page as { owners: ProposalBranchOwner[] }).owners);
+	settle.observe(
+		[
+			...(
+				(proposals.data as { items?: ProposalRow[] } | undefined)
+					?.items ?? []
+			).map(
+				(row) =>
+					`${row.id}:${row.status}:${row.proposalStatus}:${row.pullRequest?.state ?? ""}`,
+			),
+			branchesSignature(
+				branchOwnerRows.flatMap((owner) =>
+					owner.branches.map((entry) => entry.branch),
+				),
+			),
+		].join("#"),
+	);
 	const clearSelection = () => {
 		setSelectedId(null);
 		setFilePageInput(null);
 		setChangeToggles({});
 	};
-	const refreshState = (options?: { settling?: boolean }) => {
+	const refreshState = () => {
 		onChanged();
-		void (options?.settling
-			? invalidateProposalViewsAfterRefresh(queryClient)
-			: invalidateProposalViews(queryClient));
+		void invalidateProposalViews(queryClient);
 		void queryClient.invalidateQueries({
 			queryKey: orpc.projects.instructions.getPublished.queryOptions({
 				input: { projectId },
@@ -680,13 +767,17 @@ export function InstructionProposals({
 				const pullRequest = (
 					result as { pullRequest?: string | null } | undefined
 				)?.pullRequest;
+				const otherLiveChanges =
+					liveChangesOnMyBranch(queryClient, projectId) > 1;
 				toast.success(
 					t(
-						pullRequest === "close_requested"
-							? "withdrawClosing"
-							: pullRequest === "canceled"
-								? "withdrawSuccess"
-								: "cancelSuccess",
+						pullRequest === "close_requested" && otherLiveChanges
+							? "withdrawStillOpen"
+							: pullRequest === "close_requested"
+								? "withdrawClosing"
+								: pullRequest === "canceled"
+									? "withdrawSuccess"
+									: "cancelSuccess",
 					),
 				);
 				refreshState();
@@ -733,7 +824,8 @@ export function InstructionProposals({
 								: "refreshSuccess",
 						),
 					);
-					refreshState({ settling: true });
+					settle.startSettling();
+					refreshState();
 				},
 				onError: (error, variables) => {
 					const seconds = refreshRetryAfterSeconds(error);
@@ -842,6 +934,7 @@ export function InstructionProposals({
 								key={owner.userId}
 								projectId={projectId}
 								onChanged={refreshState}
+								onRefreshRequested={settle.startSettling}
 								userId={owner.userId}
 								ownerName={owner.userName}
 								data={owner}
@@ -1325,29 +1418,31 @@ export function InstructionProposals({
 															</p>
 															<p className="text-muted-foreground text-sm">
 																{t(
-																	change.beforeOmitted ===
-																		"FILE_TOO_LARGE"
-																		? "fileTooLarge"
-																		: "responseLimit",
+																	omissionCopyKey(
+																		change.beforeOmitted,
+																	),
 																)}
 															</p>
-															<Button
-																variant="link"
-																className="h-auto justify-start px-0"
-																onClick={() =>
-																	setFilePageInput(
-																		{
-																			path: change.path,
-																			side: "before",
-																			offset: 0,
-																		},
-																	)
-																}
-															>
-																{t(
-																	"viewFullSide",
-																)}
-															</Button>
+															{change.beforeOmitted !==
+															"SOURCE_CHANGED" ? (
+																<Button
+																	variant="link"
+																	className="h-auto justify-start px-0"
+																	onClick={() =>
+																		setFilePageInput(
+																			{
+																				path: change.path,
+																				side: "before",
+																				offset: 0,
+																			},
+																		)
+																	}
+																>
+																	{t(
+																		"viewFullSide",
+																	)}
+																</Button>
+															) : null}
 														</div>
 													) : null}
 													{change.afterOmitted &&
@@ -1359,10 +1454,9 @@ export function InstructionProposals({
 															</p>
 															<p className="text-muted-foreground text-sm">
 																{t(
-																	change.afterOmitted ===
-																		"FILE_TOO_LARGE"
-																		? "fileTooLarge"
-																		: "responseLimit",
+																	omissionCopyKey(
+																		change.afterOmitted,
+																	),
 																)}
 															</p>
 															<Button

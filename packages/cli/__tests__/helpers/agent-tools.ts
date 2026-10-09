@@ -7,8 +7,9 @@
  * home folder and a checkout of its own (`toolFiles`, `writeClaudeFiles`,
  * `writeCodexConfig`). What is written goes through the tools' command lines,
  * so a test gets a runner (`simulateAgentTools`) that answers the way each does
- * and writes down every call. It answers nothing else: a call to `mcp get` or
- * `mcp list` throws, since `init` must never ask a tool what it already holds.
+ * and writes down every call. It answers `claude mcp get` (the one question
+ * `init` asks a tool, about a server of ours, to know whether it is signed in)
+ * and nothing else: a call to `mcp list` throws.
  *
  * The runner refuses an argument that is not plain, as the real one does, and
  * reports a tool that is not installed before it looks at the arguments.
@@ -51,6 +52,13 @@ export interface Tools {
 	codexAdd?: "ok" | "fails" | "blocks" | "signin-fails";
 	/** How a sign-in ends. */
 	login?: "ok" | "fails" | "timed-out";
+	/** What `claude mcp get` reports for a server of ours; `needs-auth` when unset. */
+	claudeStatus?:
+		| "connected"
+		| "needs-auth"
+		| "disconnected"
+		| "reconnected"
+		| "not-connected";
 }
 
 function exited(code: number, stdout = "", stderr = ""): AgentRun {
@@ -80,11 +88,15 @@ export function simulateAgentTools(
 	files?: ToolFiles,
 ): {
 	run: AgentRunner;
+	/** Every write and sign-in the runner was asked for. */
 	calls: Call[];
+	/** The `mcp get` status questions, kept apart from the writes in `calls`. */
+	statusCalls: Call[];
 } {
 	const calls: Call[] = [];
+	const statusCalls: Call[] = [];
 	const run: AgentRunner = async (command, args, options) => {
-		calls.push({
+		(args[1] === "get" ? statusCalls : calls).push({
 			command,
 			args: [...args],
 			cwd: options.cwd,
@@ -105,6 +117,29 @@ export function simulateAgentTools(
 			return tools.login === "fails" ? exited(1) : exited(0);
 		}
 		if (command === "claude") {
+			if (verb === "mcp get") {
+				switch (tools.claudeStatus) {
+					case "connected":
+						return exited(
+							0,
+							"fabric:\n  Status: \u2713 Connected\n",
+						);
+					case "disconnected":
+						return exited(
+							0,
+							"fabric:\n  Status: \u2717 Disconnected\n",
+						);
+					case "not-connected":
+						return exited(0, "fabric:\n  Status: Not Connected\n");
+					case "reconnected":
+						return exited(0, "fabric:\n  Status: Reconnected\n");
+					default:
+						return exited(
+							0,
+							"fabric:\n  Status: ! Needs authentication\n",
+						);
+				}
+			}
 			if (verb === "mcp remove") {
 				return tools.claudeRemove === "fails" ? exited(1) : exited(0);
 			}
@@ -125,7 +160,7 @@ export function simulateAgentTools(
 		}
 		throw new Error(`unexpected call: ${command} ${args.join(" ")}`);
 	};
-	return { run, calls };
+	return { run, calls, statusCalls };
 }
 
 /** `claude mcp add` and `codex mcp login`, as two short words each, per call. */
@@ -171,6 +206,8 @@ export interface ClaudeEntry {
 	scope: "local" | "user" | "project";
 	/** `null` for a server that runs a command and has no URL. */
 	url: string | null;
+	/** What it is named; `fabric` unless said. */
+	name?: string;
 }
 
 function claudeServer(url: string | null): object {
@@ -187,13 +224,15 @@ function claudeServer(url: string | null): object {
 export async function writeClaudeFiles(
 	files: ToolFiles,
 	entries: readonly ClaudeEntry[],
-	name = "fabric",
 ): Promise<void> {
 	const pick = (scope: ClaudeEntry["scope"]) =>
 		Object.fromEntries(
 			entries
 				.filter((entry) => entry.scope === scope)
-				.map((entry) => [name, claudeServer(entry.url)]),
+				.map((entry) => [
+					entry.name ?? "fabric",
+					claudeServer(entry.url),
+				]),
 		);
 	await writeFile(
 		path.join(files.home, ".claude.json"),

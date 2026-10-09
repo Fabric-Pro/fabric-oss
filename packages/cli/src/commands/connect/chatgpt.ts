@@ -10,10 +10,13 @@
  *   2. You sign in to ChatGPT on this machine.
  *   3. The sign-in goes to Fabric with the one-time ticket from step 1. Fabric
  *      stores it encrypted and refreshes it itself; nothing but this machine's
- *      registration is kept here.
+ *      registration with OpenAI, per ChatGPT account, is kept here.
  *
  *   fabric connect chatgpt                      connect to the deployment you use
  *   fabric connect chatgpt --base-url <url>     connect to another deployment
+ *   fabric connect chatgpt --account <subject-or-email>
+ *                                               reuse the registration saved for
+ *                                               that ChatGPT account
  *   fabric connect chatgpt --new-registration   register this machine with OpenAI again
  *   fabric connect chatgpt --org <slug> --shared
  *                                               connect a ChatGPT account the
@@ -23,6 +26,10 @@
  * this machine's saved one: that belongs to your own plan, and the shared
  * account is a different ChatGPT account.
  *
+ * Without --account every sign-in starts with a new registration: one made
+ * in another ChatGPT workspace is refused. A saved registration OpenAI refuses
+ * is replaced by a new one automatically, once.
+ *
  * Disconnecting, and the per-organization choices, live in Fabric settings.
  */
 
@@ -30,31 +37,21 @@ import { randomUUID } from "node:crypto";
 import { Command } from "commander";
 import {
 	buildApprovalUrl,
-	buildAuthorizeUrl,
 	buildUploadPayload,
-	CHATGPT_CALLBACK_PATH,
-	CHATGPT_CALLBACK_PORT,
 	type ChatGptPlanSharedUploadResult,
 	type ChatGptPlanUploadResult,
 	type ChatGptRegistration,
-	checkIdToken,
-	DYNAMIC_CLIENT_ID,
-	exchangeCode,
 	FABRIC_APPROVAL_CALLBACK_PATH,
-	issuedClientId,
-	loadRegistration,
-	randomToken,
-	saveRegistration,
+	loadRegistrationStore,
+	saveAccountRegistration,
+	selectRegistration,
+	signInWithChatGpt,
 	uploadChatGptPlan,
 } from "../../lib/chatgpt-plan/flow.js";
 import { getBaseUrl } from "../../lib/config.js";
 import { openBrowser } from "../../lib/oauth/browser.js";
 import { startLoopbackListener } from "../../lib/oauth/loopback.js";
-import {
-	codeChallengeS256,
-	createCodeVerifier,
-	createState,
-} from "../../lib/oauth/pkce.js";
+import { createState } from "../../lib/oauth/pkce.js";
 import {
 	BAD_BASE_URL_LINE,
 	DEFAULT_ORIGIN,
@@ -68,6 +65,7 @@ const CHATGPT_PLAN_SHARED_NOT_ALLOWED =
 	"You can connect a shared ChatGPT plan account only to an organization you administer, with ChatGPT plan pooling enabled.";
 
 export interface ConnectOptions {
+	account?: string;
 	baseUrl?: string;
 	newRegistration?: boolean;
 	org?: string;
@@ -81,6 +79,12 @@ export function connectOptionsError(opts: ConnectOptions): string | null {
 	}
 	if (opts.org && !opts.shared) {
 		return "--org is used only with --shared, to connect an account the organization shares.";
+	}
+	if (opts.account !== undefined && opts.newRegistration) {
+		return "--account reuses a saved registration; --new-registration makes a new one. Use one of them.";
+	}
+	if (opts.account !== undefined && opts.shared) {
+		return "--account is for your own plan; a shared account always signs in with a new registration.";
 	}
 	return null;
 }
@@ -161,6 +165,20 @@ async function connect(opts: ConnectOptions): Promise<void> {
 	}
 	const sharedOrganizationSlug = opts.shared ? opts.org : undefined;
 
+	let registration: ChatGptRegistration;
+	if (sharedOrganizationSlug) {
+		registration = { hostId: `urn:uuid:${randomUUID()}` };
+	} else {
+		try {
+			registration = selectRegistration(
+				await loadRegistrationStore(),
+				opts.account,
+			);
+		} catch (err: unknown) {
+			printError((err as Error).message, 2);
+		}
+	}
+
 	let ticket: string;
 	try {
 		ticket = await approveInFabric(origin, sharedOrganizationSlug);
@@ -168,73 +186,33 @@ async function connect(opts: ConnectOptions): Promise<void> {
 		printError((err as Error).message, 1);
 	}
 
-	const stored = await loadRegistration();
-	let registration: ChatGptRegistration = stored;
-	if (sharedOrganizationSlug) {
-		registration = { hostId: `urn:uuid:${randomUUID()}` };
-	} else if (opts.newRegistration) {
-		registration = { hostId: stored.hostId };
-	}
-	const verifier = createCodeVerifier();
-	const state = createState();
-	const nonce = randomToken();
-	const listener = await startLoopbackListener({
-		state,
-		callbackPath: CHATGPT_CALLBACK_PATH,
-		preferredPort: CHATGPT_CALLBACK_PORT,
-	});
-	open(
-		buildAuthorizeUrl({
-			clientId: registration.clientId ?? DYNAMIC_CLIENT_ID,
-			hostId: registration.hostId,
-			redirectUri: listener.redirectUri,
-			state,
-			nonce,
-			codeChallenge: codeChallengeS256(verifier),
-		}),
-		"sign in with ChatGPT",
-	);
-
 	let result: ChatGptPlanUploadResult | ChatGptPlanSharedUploadResult;
-	let clientId: string;
-	let subject: string;
 	try {
-		const { code, params } = await listener.result;
-		clientId = issuedClientId(params, registration);
-		// Saved before the exchange, so a failed exchange does not register
-		// this machine a second time next run.
-		if (!sharedOrganizationSlug) {
-			await saveRegistration({ ...registration, clientId });
-		}
-		const tokens = await exchangeCode({
-			clientId,
-			code,
-			codeVerifier: verifier,
-			redirectUri: listener.redirectUri,
+		const signIn = await signInWithChatGpt({
+			registration,
+			open: (url) => open(url, "sign in with ChatGPT"),
+			...(!sharedOrganizationSlug && { save: saveAccountRegistration }),
+			onRetry: () =>
+				process.stdout.write(
+					"ChatGPT refused this machine's saved registration; signing in again with a new one.\n",
+				),
 		});
-		subject = checkIdToken(tokens.id_token ?? "", {
-			nonce,
-			subject: registration.subject,
-		}).sub;
 		result = await uploadChatGptPlan({
 			origin,
 			ticket,
-			payload: buildUploadPayload(tokens, {
-				clientId,
+			payload: buildUploadPayload(signIn.tokens, {
+				clientId: signIn.clientId,
 				hostId: registration.hostId,
 			}),
 		});
 	} catch (err: unknown) {
 		printError((err as Error).message, 1);
-	} finally {
-		listener.close();
 	}
 
 	if ("shared" in result) {
 		printSuccess(describeSharedAccount(result));
 		return;
 	}
-	await saveRegistration({ hostId: registration.hostId, clientId, subject });
 	printSuccess(
 		`Connected your ChatGPT plan${result.email ? ` (${result.email})` : ""} to Fabric.`,
 	);
@@ -251,8 +229,12 @@ export function buildConnectCommand(): Command {
 				"Approve in Fabric, sign in with ChatGPT and run your own Fabric AI work on your plan",
 			)
 			.option(
+				"--account <subject-or-email>",
+				"Reuse the registration saved for this ChatGPT account instead of making a new one",
+			)
+			.option(
 				"--new-registration",
-				"Register this machine with OpenAI again, for example to switch accounts",
+				"Register this machine with OpenAI again (the default without --account)",
 			)
 			.option(
 				"--base-url <url>",

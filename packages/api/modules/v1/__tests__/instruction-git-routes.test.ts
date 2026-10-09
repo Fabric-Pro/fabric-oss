@@ -7,7 +7,12 @@ const { mocks } = vi.hoisted(() => ({
 		assertDirectRepositorySourceCurrent: vi.fn(),
 		resolveInstructionProject: vi.fn(),
 		scopes: ["repositories:read"] as string[],
+		warn: vi.fn(),
 	},
+}));
+
+vi.mock("@repo/logs", () => ({
+	logger: { warn: mocks.warn },
 }));
 
 vi.mock("@repo/connectors", () => ({
@@ -212,5 +217,138 @@ describe("repository Git transport", () => {
 		expect(response.status).toBe(200);
 		expect(await response.text()).toContain("git-upload-pack");
 		expect(upstream).toHaveBeenCalledTimes(5);
+	});
+
+	it("forwards the gzip content encoding of a protocol v2 fetch request body unchanged", async () => {
+		const requestBody = new Uint8Array([
+			0x1f, 0x8b, 0x08, 0x00, 0x01, 0x02,
+		]);
+		let forwardedEncoding: string | null = null;
+		let forwardedBody: Uint8Array | null = null;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+				forwardedEncoding = new Headers(init?.headers).get(
+					"content-encoding",
+				);
+				forwardedBody = new Uint8Array(
+					await new Response(
+						init?.body as ReadableStream,
+					).arrayBuffer(),
+				);
+				return new Response("0008NAK\n", {
+					headers: {
+						"content-type": "application/x-git-upload-pack-result",
+					},
+				});
+			}),
+		);
+
+		const response = await app().request(
+			new Request(`http://localhost${BASE}/git-upload-pack`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-git-upload-pack-request",
+					"content-encoding": "gzip",
+					"git-protocol": "version=2",
+				},
+				body: requestBody,
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		expect(forwardedEncoding).toBe("gzip");
+		expect(forwardedBody).toEqual(requestBody);
+	});
+
+	it("refuses a request body encoding other than gzip before contacting a provider", async () => {
+		const upstream = vi.fn();
+		vi.stubGlobal("fetch", upstream);
+
+		const response = await app().request(
+			new Request(`http://localhost${BASE}/git-upload-pack`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-git-upload-pack-request",
+					"content-encoding": "br",
+				},
+				body: "0000",
+			}),
+		);
+
+		expect(response.status).toBe(400);
+		expect(upstream).not.toHaveBeenCalled();
+	});
+
+	it("logs the reason and upstream status when the provider rejects the request", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("bad request", { status: 400 })),
+		);
+
+		const response = await app().request(
+			new Request(`http://localhost${BASE}/git-upload-pack`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/x-git-upload-pack-request",
+				},
+				body: "0000",
+			}),
+		);
+
+		expect(response.status).toBe(503);
+		expect(mocks.warn).toHaveBeenCalledWith(
+			"[instruction-git] transport unavailable",
+			{
+				reason: "upstream_status",
+				provider: "GITHUB",
+				method: "POST",
+				upstreamStatus: 400,
+			},
+		);
+	});
+
+	it("reports a saturated gateway as busy, distinct from an upstream failure", async () => {
+		let release: () => void = () => undefined;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const stream = () =>
+			new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					await gate;
+					controller.close();
+				},
+			});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(stream(), {
+						headers: {
+							"content-type":
+								"application/x-git-upload-pack-advertisement",
+						},
+					}),
+			),
+		);
+		const held = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				app().request(`${BASE}/info/refs?service=git-upload-pack`),
+			),
+		);
+
+		const response = await app().request(
+			`${BASE}/info/refs?service=git-upload-pack`,
+		);
+
+		expect(response.status).toBe(503);
+		expect((await response.json()).error.message).toContain("busy");
+		expect(mocks.warn).toHaveBeenCalledWith(
+			"[instruction-git] transport unavailable",
+			expect.objectContaining({ reason: "busy" }),
+		);
+		release();
+		await Promise.all(held.map((r) => r.text()));
 	});
 });

@@ -8,6 +8,7 @@ import {
 	isNonStageAgent,
 	listPromptActions,
 	PROMPT_AGENT_TARGETS,
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 	promptActionId,
 	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
@@ -43,6 +44,16 @@ const ALL_ACTIONS = listPromptActions();
 
 /** Mirrors `PromptScope` — the tier a binding is written at. */
 type BindingScope = "SYSTEM" | "ORG" | "USER";
+
+/**
+ * Agents the bind procedure refuses a personal default for (Fizzy #2801). The
+ * client proposal prompt is the whole of what the client reads, so it is
+ * chosen for the organization or not at all; offering "just for me" would
+ * offer a write the server refuses.
+ */
+const PERSONAL_DEFAULT_REFUSED_AGENTS: ReadonlySet<string> = new Set([
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+]);
 
 /** One row of `bind.listForPrompt` — an action this prompt already serves. */
 type BoundAction = {
@@ -215,12 +226,33 @@ export function SetAsDefaultDialog({
 		}
 	};
 
+	// Fizzy #2801: no personal default for the client proposal prompt, whether
+	// it is the action chosen above or one ticked under "Also apply to" — the
+	// batch binds every action at one tier, so one refused action refuses the
+	// write. Derived rather than written into the scope state: a fast submit
+	// cannot race it, and leaving that action gives the user back the tier
+	// they chose.
+	const personalScopeRefused =
+		PERSONAL_DEFAULT_REFUSED_AGENTS.has(selectedAgent) ||
+		alsoApplyTo.some((id) => {
+			const action = ALL_ACTIONS.find((a) => a.id === id);
+			return action
+				? PERSONAL_DEFAULT_REFUSED_AGENTS.has(action.targetKey)
+				: false;
+		});
+	const scope: BindingScope =
+		personalScopeRefused && selectedScope === "USER"
+			? isOrgContext
+				? "ORG"
+				: "SYSTEM"
+			: selectedScope;
+
 	// A shared tier you may not write yourself is one you may PROPOSE (FR15).
 	// Rather than hide the option — which leaves a member no route at all and
 	// no hint that one exists — the same dialog changes its verb.
 	const mustPropose =
-		(selectedScope === "ORG" && !isOrganizationAdmin) ||
-		(selectedScope === "SYSTEM" && !canSetSystemDefault);
+		(scope === "ORG" && !isOrganizationAdmin) ||
+		(scope === "SYSTEM" && !canSetSystemDefault);
 
 	const bindMutation = useMutation({
 		mutationFn: async () => {
@@ -253,17 +285,15 @@ export function SetAsDefaultDialog({
 				// which is nobody else's to approve.
 				return await orpcClient.prompts.nominations.create({
 					promptVersionId,
-					targetScope: selectedScope === "ORG" ? "ORG" : "SYSTEM",
+					targetScope: scope === "ORG" ? "ORG" : "SYSTEM",
 					organizationId:
-						selectedScope === "ORG"
-							? (organizationId ?? null)
-							: null,
+						scope === "ORG" ? (organizationId ?? null) : null,
 					targets: [primary, ...extras],
 				});
 			}
 
 			const organizationIdForScope =
-				selectedScope === "ORG" ? (organizationId ?? null) : null;
+				scope === "ORG" ? (organizationId ?? null) : null;
 
 			// One call for one action so the common case keeps the simpler
 			// endpoint; the batch is a transaction, so several actions either
@@ -273,7 +303,7 @@ export function SetAsDefaultDialog({
 					targetType: "AGENT",
 					...primary,
 					storyKind: nonStageAgent ? undefined : storyKind,
-					scope: selectedScope,
+					scope,
 					organizationId: organizationIdForScope,
 					promptVersionId,
 					isDefault: true,
@@ -285,7 +315,7 @@ export function SetAsDefaultDialog({
 					targetType: "AGENT" as const,
 					...t,
 				})),
-				scope: selectedScope,
+				scope,
 				organizationId: organizationIdForScope,
 				promptVersionId,
 				isDefault: true,
@@ -377,7 +407,7 @@ export function SetAsDefaultDialog({
 					<div className="space-y-2">
 						<Label htmlFor="set-default-scope">Scope</Label>
 						<Select
-							value={selectedScope}
+							value={scope}
 							onValueChange={(val) =>
 								setSelectedScope(val as BindingScope)
 							}
@@ -386,9 +416,11 @@ export function SetAsDefaultDialog({
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
-								<SelectItem value="USER">
-									My prompts (just for me)
-								</SelectItem>
+								{!personalScopeRefused && (
+									<SelectItem value="USER">
+										My prompts (just for me)
+									</SelectItem>
+								)}
 								{isOrgContext && (
 									<SelectItem value="ORG">
 										Organization (for all members)
@@ -403,16 +435,26 @@ export function SetAsDefaultDialog({
 							</SelectContent>
 						</Select>
 						<p className="text-xs text-muted-foreground">
-							{selectedScope === "USER"
+							{scope === "USER"
 								? "This will only affect your documents"
 								: mustPropose
-									? selectedScope === "ORG"
+									? scope === "ORG"
 										? "An organization admin reviews this before it applies to anyone else."
 										: "A platform admin reviews this before it applies to any organization."
-									: selectedScope === "ORG"
+									: scope === "ORG"
 										? "This will affect all organization members"
 										: "This becomes the default for every organization that has not set its own"}
 						</p>
+						{personalScopeRefused && (
+							<p
+								data-testid="set-default-personal-refused"
+								className="text-xs text-muted-foreground"
+							>
+								The client proposal prompt is chosen for the
+								whole organization, so it cannot be a personal
+								default.
+							</p>
+						)}
 					</div>
 
 					{/* FR22 / FR19: the other actions this applies to. */}

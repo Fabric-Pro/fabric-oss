@@ -46,7 +46,7 @@ const handler = (
 )["~orpc"].handler;
 
 describe("audit.taxonomy handler", () => {
-	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge + chatgpt-plan connect/disconnect/organization-use + chatgpt-plan pooling account/policy/terms/api-fallback)", async () => {
+	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge + chatgpt-plan connect/disconnect/organization-use + chatgpt-plan pooling account/policy/terms/api-fallback + chatgpt-plan fallback model + chatgpt-plan share/take-back)", async () => {
 		const result = await handler({
 			context: { user: { id: "user-1", email: "alice@example.com" } },
 			input: {},
@@ -264,7 +264,10 @@ describe("audit.taxonomy handler", () => {
 		// api_fallback_used} (an organization's shared ChatGPT plan accounts,
 		// its pooling policy and the background calls that fell back to its
 		// provider; no token in the metadata, Fizzy #2770) = 198.
-		expect(result.actions).toHaveLength(198);
+		// + 2 org.chatgpt_plan.{account_shared_from_personal,
+		// account_returned_to_personal} (one ChatGPT account moving between a
+		// member's own plan and the shared accounts, Fizzy #2770 I1) = 201.
+		expect(result.actions).toHaveLength(201);
 		expect(result.actions).toContain(
 			"account.chatgpt_plan.organization_use_changed",
 		);

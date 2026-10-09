@@ -2,6 +2,7 @@
 
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -22,6 +23,10 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../shared/lib/orpc-client";
+import {
+	needsLegacyGlossyEdition,
+	useLegacyGlossyEdition,
+} from "../hooks/use-legacy-glossy-edition";
 import {
 	parseImgTag,
 	renderMarkdownToDocx,
@@ -45,11 +50,48 @@ interface Props {
 	/**
 	 * Where the document's Glossy page lives (Fizzy #2589, R1). The parent
 	 * passes it only when the `GLOSSY_EDITION` rollout gate is on for the
-	 * organization; this menu reads no flag itself. Absent, no Glossy item
-	 * renders.
+	 * organization. Absent, no Glossy item renders. Handed one for a Proposal
+	 * under the `PROPOSAL_ARTIFACT` gate, the menu still offers the item only
+	 * once a published legacy edition is confirmed (Fizzy #2801).
 	 */
 	glossyHref?: string;
 	className?: string;
+}
+
+/** The Glossy item, below a separator from the downloads. */
+function GlossyMenuItem({ href }: { href: string }) {
+	const t = useTranslations("projects.glossyEntry");
+	return (
+		<>
+			<DropdownMenuSeparator />
+			<DropdownMenuItem asChild>
+				<Link href={href} onClick={(e) => e.stopPropagation()}>
+					<SparklesIcon className="mr-2 size-4" aria-hidden="true" />
+					{t("menuItem")}
+				</Link>
+			</DropdownMenuItem>
+		</>
+	);
+}
+
+/**
+ * The Glossy item of a Proposal under the Proposal artifact gate
+ * (Fizzy #2801): such a Proposal needs no Glossy edition, so the item stays
+ * only to reach one already published. Its own component so the edition read
+ * happens only here, and only while the menu is open; the list asks the same
+ * question through the same cache.
+ */
+function LegacyGlossyMenuItem({
+	projectId,
+	documentId,
+	href,
+}: {
+	projectId: string;
+	documentId: string;
+	href: string;
+}) {
+	const published = useLegacyGlossyEdition(projectId, documentId, true);
+	return published ? <GlossyMenuItem href={href} /> : null;
 }
 
 /**
@@ -114,13 +156,17 @@ export function DocumentDownloadDropdown({
 	glossyHref,
 	className,
 }: Props) {
-	const t = useTranslations("projects.glossyEntry");
 	const [isLoading, setIsLoading] = useState(false);
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	// The href carries the gate; the type check keeps an ineligible
 	// document from offering the item whatever the parent passes (R2).
 	const glossyItemHref =
 		glossyHref && isGlossyEligible(documentType) ? glossyHref : null;
 
+	// Every download reads the document's own content and nothing else: under
+	// the Proposal artifact gate (Fizzy #2801) that is the client-ready Main
+	// document, and the Internal Analysis lives apart from it, so no export
+	// can carry it.
 	const fetchContent = async (): Promise<string> => {
 		const res = await orpcClient.projects.documents.get({
 			projectId,
@@ -282,23 +328,19 @@ export function DocumentDownloadDropdown({
 					<FileTextIcon className="mr-2 size-4" />
 					Word (.docx)
 				</DropdownMenuItem>
-				{glossyItemHref && (
-					<>
-						<DropdownMenuSeparator />
-						<DropdownMenuItem asChild>
-							<Link
-								href={glossyItemHref}
-								onClick={(e) => e.stopPropagation()}
-							>
-								<SparklesIcon
-									className="mr-2 size-4"
-									aria-hidden="true"
-								/>
-								{t("menuItem")}
-							</Link>
-						</DropdownMenuItem>
-					</>
-				)}
+				{glossyItemHref &&
+					(needsLegacyGlossyEdition(
+						documentType,
+						proposalArtifactEnabled,
+					) ? (
+						<LegacyGlossyMenuItem
+							projectId={projectId}
+							documentId={documentId}
+							href={glossyItemHref}
+						/>
+					) : (
+						<GlossyMenuItem href={glossyItemHref} />
+					))}
 			</DropdownMenuContent>
 		</DropdownMenu>
 	);

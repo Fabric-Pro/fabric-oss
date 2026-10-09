@@ -101,6 +101,13 @@ vi.mock("@saas/projects/lib/edit-snapshot", () => ({
 // absent here. `confirmMock` records what each destructive action asked and,
 // unless a test says otherwise, confirms, as pressing the dialog's button would.
 const confirmMock = vi.hoisted(() => vi.fn());
+const viewMocks = vi.hoisted(() => ({ invalidate: vi.fn() }));
+vi.mock("../lib/instructions-proposal-views", async (importActual) => ({
+	...(await importActual<
+		typeof import("../lib/instructions-proposal-views")
+	>()),
+	invalidateProposalViews: (...a: unknown[]) => viewMocks.invalidate(...a),
+}));
 vi.mock("@saas/shared/components/ConfirmationAlertProvider", () => ({
 	useConfirmationAlert: () => ({ confirm: confirmMock }),
 }));
@@ -203,6 +210,7 @@ function TestQueryProvider({ children }: { children: ReactNode }) {
 
 describe("InstructionFileView", () => {
 	beforeEach(() => {
+		viewMocks.invalidate.mockReset();
 		confirmMock.mockReset();
 		confirmMock.mockImplementation((options: { onConfirm: () => void }) =>
 			options.onConfirm(),
@@ -645,6 +653,7 @@ describe("InstructionFileView", () => {
 			expect(editMocks.toastSuccess).toHaveBeenCalledWith(
 				"Suggestion submitted. Fabric opens the pull request once the files pass their checks.",
 			);
+			expect(viewMocks.invalidate).toHaveBeenCalledTimes(1);
 		});
 
 		it("names the repository and branch when confirming a suggested deletion", async () => {

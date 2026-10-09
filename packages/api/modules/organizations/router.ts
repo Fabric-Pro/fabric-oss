@@ -16,6 +16,11 @@ import {
 	updateBrandKitProcedure,
 } from "./procedures/brand-kit";
 import {
+	getChatGptPlanModelsProcedure,
+	setChatGptPlanFallbackModelProcedure,
+	setChatGptPlanModelProcedure,
+} from "./procedures/chatgpt-plan-models";
+import {
 	acknowledgeChatGptPlanPoolTermsProcedure,
 	disconnectChatGptPlanPoolAccountProcedure,
 	getChatGptPlanPoolProcedure,
@@ -96,6 +101,11 @@ export const organizationsRouter = {
 	// once about itself for Proposals and Business Cases. Brand kit
 	// permissions: members read, admins and owners write, behind the
 	// COMPANY_CONTEXT gate.
+	chatgptPlanModels: {
+		get: getChatGptPlanModelsProcedure,
+		set: setChatGptPlanModelProcedure,
+		setFallback: setChatGptPlanFallbackModelProcedure,
+	},
 	chatgptPlanPool: {
 		get: getChatGptPlanPoolProcedure,
 		updateAccount: updateChatGptPlanPoolAccountProcedure,

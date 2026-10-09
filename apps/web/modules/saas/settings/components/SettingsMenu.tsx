@@ -7,10 +7,20 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
+import {
+	ChevronDownIcon,
+	PanelLeftCloseIcon,
+	PanelLeftOpenIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import {
+	type ReactNode,
+	type RefObject,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 
 export type SettingsMenuSection = {
 	/** Omitted or empty: the menu draws a hairline instead of a label. */
@@ -35,6 +45,8 @@ export function SettingsMenu({
 	showBottomToggle?: boolean;
 }) {
 	const pathname = usePathname();
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const hasMoreBelow = useHasMoreBelow(scrollRef, menuItems, collapsed);
 
 	const isActiveMenuItem = (href: string) =>
 		pathname === href || pathname.startsWith(`${href}/`);
@@ -154,90 +166,117 @@ export function SettingsMenu({
 					</div>
 
 					<div className="hidden lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
-						<div className="no-scrollbar flex max-h-[calc(100vh-10rem)] flex-col gap-4 overflow-y-auto px-1 py-4 lg:flex-1">
-							{menuItems.map((item, index) => (
-								<div key={item.title || `group-${index}`}>
-									{collapsed || !item.title ? (
-										// A hairline separates an untitled group from the one
-										// above it; the first group has nothing to separate from.
-										index > 0 ? (
-											<div className="mx-1 mb-2 h-px bg-border/40" />
-										) : null
-									) : (
-										<p className="fab-label mb-1.5 px-2 text-muted-foreground/60 select-none">
-											{item.title}
-										</p>
-									)}
-									<ul className="flex list-none flex-col gap-0.5">
-										{item.items.map((subitem) => (
-											<li key={subitem.href}>
-												<SidebarTooltip
-													disabled={!collapsed}
-													label={subitem.title}
-												>
-													<Link
-														href={subitem.href}
-														className={cn(
-															"flex min-h-[44px] items-center rounded-md px-2 py-1.5 text-sm transition-colors",
-															collapsed
-																? "justify-center"
-																: "gap-2",
-															isActiveMenuItem(
-																subitem.href,
-															)
-																? "bg-primary/8 font-semibold text-foreground"
-																: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-														)}
-														style={
-															isActiveMenuItem(
-																subitem.href,
-															)
-																? {
-																		backgroundColor:
-																			"color-mix(in srgb, var(--org-accent, hsl(var(--primary))) 10%, transparent)",
-																		color: "var(--org-accent, hsl(var(--primary)))",
-																	}
-																: undefined
-														}
-														aria-current={
-															isActiveMenuItem(
-																subitem.href,
-															)
-																? "page"
-																: undefined
-														}
-														aria-label={
-															collapsed
-																? subitem.title
-																: undefined
-														}
+						<div className="relative flex min-h-0 flex-1 flex-col">
+							<div
+								ref={scrollRef}
+								data-testid="settings-nav-scroll"
+								className="no-scrollbar flex max-h-[calc(100vh-10rem)] scroll-pb-14 flex-col gap-4 overflow-y-auto px-1 py-4 lg:flex-1"
+							>
+								{menuItems.map((item, index) => (
+									<div key={item.title || `group-${index}`}>
+										{collapsed || !item.title ? (
+											// A hairline separates an untitled group from the one
+											// above it; the first group has nothing to separate from.
+											index > 0 ? (
+												<div className="mx-1 mb-2 h-px bg-border/40" />
+											) : null
+										) : (
+											<p className="fab-label mb-1.5 px-2 text-muted-foreground/60 select-none">
+												{item.title}
+											</p>
+										)}
+										<ul className="flex list-none flex-col gap-0.5">
+											{item.items.map((subitem) => (
+												<li key={subitem.href}>
+													<SidebarTooltip
+														disabled={!collapsed}
+														label={subitem.title}
 													>
-														{subitem.icon ? (
-															<span
-																className={cn(
-																	"shrink-0 transition-colors [&_svg]:size-[21px]",
-																	isActiveMenuItem(
-																		subitem.href,
-																	)
-																		? ""
-																		: "opacity-50",
-																)}
-															>
-																{subitem.icon}
-															</span>
-														) : null}
-														{!collapsed ? (
-															<span className="truncate">
-																{subitem.title}
-															</span>
-														) : null}
-													</Link>
-												</SidebarTooltip>
-											</li>
-										))}
-									</ul>
+														<Link
+															href={subitem.href}
+															className={cn(
+																"flex min-h-[44px] items-center rounded-md px-2 py-1.5 text-sm transition-colors",
+																collapsed
+																	? "justify-center"
+																	: "gap-2",
+																isActiveMenuItem(
+																	subitem.href,
+																)
+																	? "bg-primary/8 font-semibold text-foreground"
+																	: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+															)}
+															style={
+																isActiveMenuItem(
+																	subitem.href,
+																)
+																	? {
+																			backgroundColor:
+																				"color-mix(in srgb, var(--org-accent, hsl(var(--primary))) 10%, transparent)",
+																			color: "var(--org-accent, hsl(var(--primary)))",
+																		}
+																	: undefined
+															}
+															aria-current={
+																isActiveMenuItem(
+																	subitem.href,
+																)
+																	? "page"
+																	: undefined
+															}
+															aria-label={
+																collapsed
+																	? subitem.title
+																	: undefined
+															}
+														>
+															{subitem.icon ? (
+																<span
+																	className={cn(
+																		"shrink-0 transition-colors [&_svg]:size-[21px]",
+																		isActiveMenuItem(
+																			subitem.href,
+																		)
+																			? ""
+																			: "opacity-50",
+																	)}
+																>
+																	{
+																		subitem.icon
+																	}
+																</span>
+															) : null}
+															{!collapsed ? (
+																<span className="truncate">
+																	{
+																		subitem.title
+																	}
+																</span>
+															) : null}
+														</Link>
+													</SidebarTooltip>
+												</li>
+											))}
+										</ul>
+									</div>
+								))}
+							</div>
+							{hasMoreBelow ? (
+								<div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-14 items-end justify-center bg-gradient-to-t from-background via-background/80 to-transparent pb-1.5 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+									<button
+										type="button"
+										onClick={() =>
+											scrollDownBy(scrollRef.current)
+										}
+										aria-label="Scroll to more settings"
+										className="pointer-events-auto flex size-7 items-center justify-center rounded-full border border-border/60 bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+									>
+										<ChevronDownIcon
+											className="size-4"
+											aria-hidden="true"
+										/>
+									</button>
 								</div>
-							))}
+							) : null}
 						</div>
 
 						{onToggleCollapsed && showBottomToggle ? (
@@ -296,4 +335,61 @@ function SidebarTooltip({
 	}
 
 	return children;
+}
+
+function useHasMoreBelow(
+	ref: RefObject<HTMLElement | null>,
+	menuItems: SettingsMenuSection[],
+	collapsed: boolean,
+): boolean {
+	const [hasMoreBelow, setHasMoreBelow] = useState(false);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) {
+			return;
+		}
+
+		const update = () => {
+			setHasMoreBelow(
+				el.scrollHeight - el.scrollTop - el.clientHeight > 1,
+			);
+		};
+		update();
+
+		el.addEventListener("scroll", update, { passive: true });
+
+		if (typeof ResizeObserver === "undefined") {
+			window.addEventListener("resize", update);
+			return () => {
+				el.removeEventListener("scroll", update);
+				window.removeEventListener("resize", update);
+			};
+		}
+
+		const observer = new ResizeObserver(update);
+		observer.observe(el);
+		for (const child of Array.from(el.children)) {
+			observer.observe(child);
+		}
+		return () => {
+			el.removeEventListener("scroll", update);
+			observer.disconnect();
+		};
+	}, [ref, menuItems, collapsed]);
+
+	return hasMoreBelow;
+}
+
+function scrollDownBy(el: HTMLElement | null) {
+	if (!el) {
+		return;
+	}
+	const prefersReducedMotion =
+		typeof window.matchMedia === "function" &&
+		window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+	el.scrollBy({
+		top: Math.max(el.clientHeight * 0.75, 120),
+		behavior: prefersReducedMotion ? "auto" : "smooth",
+	});
 }

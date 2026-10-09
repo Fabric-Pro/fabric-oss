@@ -4,9 +4,10 @@
  *
  * The browser sign-in, the PKCE exchange and the nonce check all happen here;
  * the tokens then go to Fabric with the one-time ticket the person approved
- * in the browser, and are never written to this machine. What is kept on disk is the registration — the
- * host id and the client id OpenAI issued to it — because OpenAI asks for it
- * to be reused on every later sign-in.
+ * in the browser, and are never written to this machine. What is kept on disk
+ * is the host id and, per ChatGPT account, the client id OpenAI issued to it.
+ * A registration is made inside one ChatGPT workspace and refused in another,
+ * so a saved one is reused only for the account it was made for, when asked.
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
@@ -14,6 +15,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getConfigPath } from "../config.js";
 import type { FetchLike } from "../oauth/flow.js";
+import { CallbackError, startLoopbackListener } from "../oauth/loopback.js";
+import {
+	codeChallengeS256,
+	createCodeVerifier,
+	createState,
+} from "../oauth/pkce.js";
 
 const CHATGPT_ISSUER = "https://auth.openai.com";
 const AUTHORIZE_URL = `${CHATGPT_ISSUER}/api/accounts/authorize`;
@@ -23,9 +30,9 @@ const CHATGPT_PLAN_SCOPE = "chatgpt.tokens.use.direct";
 const SCOPES = `openid profile email offline_access resource.invoke ${CHATGPT_PLAN_SCOPE}`;
 /** The client id a first sign-in starts with; OpenAI issues the real one. */
 export const DYNAMIC_CLIENT_ID = "dynamic_agent_client";
-export const CHATGPT_CALLBACK_PATH = "/auth/callback";
+const CHATGPT_CALLBACK_PATH = "/auth/callback";
 /** The port OpenAI documents for local apps; another is used when taken. */
-export const CHATGPT_CALLBACK_PORT = 1455;
+const CHATGPT_CALLBACK_PORT = 1455;
 const AGENT_NAME = "Fabric";
 
 export interface ChatGptRegistration {
@@ -38,25 +45,92 @@ function registrationPath(): string {
 	return join(dirname(getConfigPath()), "chatgpt-plan-host.json");
 }
 
-export async function loadRegistration(
-	path = registrationPath(),
-): Promise<ChatGptRegistration> {
-	try {
-		return JSON.parse(await readFile(path, "utf8")) as ChatGptRegistration;
-	} catch {
-		return { hostId: `urn:uuid:${randomUUID()}` };
-	}
+/** One ChatGPT account's registration with OpenAI on this machine. */
+export interface ChatGptAccountRegistration {
+	clientId: string;
+	email?: string;
 }
 
-export async function saveRegistration(
-	registration: ChatGptRegistration,
+export interface ChatGptRegistrationStore {
+	hostId: string;
+	/** Keyed by the account's ID token subject. */
+	accounts: Record<string, ChatGptAccountRegistration>;
+}
+
+/**
+ * The single registration earlier versions kept. Its client id is carried
+ * over only with the subject it was confirmed for; without one it may have
+ * been saved before a sign-in that never completed.
+ */
+interface LegacyRegistration {
+	hostId?: string;
+	clientId?: string;
+	subject?: string;
+}
+
+export async function loadRegistrationStore(
+	path = registrationPath(),
+): Promise<ChatGptRegistrationStore> {
+	let stored: Partial<ChatGptRegistrationStore> & LegacyRegistration;
+	try {
+		stored = JSON.parse(await readFile(path, "utf8"));
+	} catch {
+		stored = {};
+	}
+	const hostId = stored.hostId ?? `urn:uuid:${randomUUID()}`;
+	if (stored.accounts && typeof stored.accounts === "object") {
+		return { hostId, accounts: stored.accounts };
+	}
+	return {
+		hostId,
+		accounts:
+			stored.subject && stored.clientId
+				? { [stored.subject]: { clientId: stored.clientId } }
+				: {},
+	};
+}
+
+/** Records one account's registration, keeping every other account's. */
+export async function saveAccountRegistration(
+	account: { hostId: string; subject: string } & ChatGptAccountRegistration,
 	path = registrationPath(),
 ): Promise<void> {
+	const store = await loadRegistrationStore(path);
+	const { hostId, subject, ...registration } = account;
+	const next: ChatGptRegistrationStore = {
+		hostId,
+		accounts: { ...store.accounts, [subject]: registration },
+	};
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	await writeFile(path, JSON.stringify(registration), { mode: 0o600 });
+	await writeFile(path, JSON.stringify(next), { mode: 0o600 });
 }
 
-export function randomToken(): string {
+/**
+ * The registration a sign-in starts with: the saved one of the account named
+ * with `--account` (its subject, or its email), otherwise a fresh one.
+ */
+export function selectRegistration(
+	store: ChatGptRegistrationStore,
+	account?: string,
+): ChatGptRegistration {
+	if (account === undefined) {
+		return { hostId: store.hostId };
+	}
+	const email = account.toLowerCase();
+	const match = Object.entries(store.accounts).find(
+		([subject, saved]) =>
+			subject === account || saved.email?.toLowerCase() === email,
+	);
+	if (!match) {
+		throw new Error(
+			`No ChatGPT account ${account} is saved on this machine; run without --account to sign in with a new registration`,
+		);
+	}
+	const [subject, saved] = match;
+	return { hostId: store.hostId, clientId: saved.clientId, subject };
+}
+
+function randomToken(): string {
 	return randomBytes(24).toString("base64url");
 }
 
@@ -119,7 +193,7 @@ export interface ChatGptTokens {
 	earliest_refresh_at?: number | string;
 }
 
-export async function exchangeCode(
+async function exchangeCode(
 	params: {
 		clientId: string;
 		code: string;
@@ -186,6 +260,132 @@ export function checkIdToken(
 		);
 	}
 	return { sub: claims.sub, email: claims.email };
+}
+
+const WORKSPACE_DENIED_ERROR = "3p_login_workspace_scope_denied";
+
+/**
+ * OpenAI refused the sign-in for its workspace, as it does a registration
+ * made in another one. A plain `access_denied` is the person cancelling, and
+ * is never retried.
+ */
+function isWorkspaceDenied(err: unknown): boolean {
+	if (err instanceof CallbackError) {
+		return (
+			err.error === WORKSPACE_DENIED_ERROR ||
+			/workspace/i.test(err.description ?? "")
+		);
+	}
+	return err instanceof Error && err.message.includes(WORKSPACE_DENIED_ERROR);
+}
+
+function explainDenial(err: unknown): unknown {
+	if (!isWorkspaceDenied(err)) {
+		return err;
+	}
+	const description =
+		err instanceof CallbackError && err.description
+			? ` ${err.description}`
+			: "";
+	return new Error(
+		`${(err as Error).message}${description} ChatGPT refused it for that workspace: run \`fabric connect chatgpt\` again without --account (the same as --new-registration) and choose your personal Plus or Pro workspace when ChatGPT asks which one to sign in to.`,
+	);
+}
+
+export interface ChatGptSignInOptions {
+	registration: ChatGptRegistration;
+	open: (url: string) => void;
+	fetchImpl?: FetchLike;
+	preferredPort?: number;
+	/** Keeps the registration once OpenAI confirmed it; omitted for a shared account. */
+	save?: (
+		account: {
+			hostId: string;
+			subject: string;
+		} & ChatGptAccountRegistration,
+	) => Promise<void>;
+	/** Told when the saved registration was refused and a fresh one is tried. */
+	onRetry?: () => void;
+}
+
+export interface ChatGptSignIn {
+	tokens: ChatGptTokens;
+	clientId: string;
+	subject: string;
+	email?: string;
+}
+
+async function attemptSignIn(
+	registration: ChatGptRegistration,
+	options: ChatGptSignInOptions,
+): Promise<ChatGptSignIn> {
+	const verifier = createCodeVerifier();
+	const state = createState();
+	const nonce = randomToken();
+	const listener = await startLoopbackListener({
+		state,
+		callbackPath: CHATGPT_CALLBACK_PATH,
+		preferredPort: options.preferredPort ?? CHATGPT_CALLBACK_PORT,
+	});
+	try {
+		options.open(
+			buildAuthorizeUrl({
+				clientId: registration.clientId ?? DYNAMIC_CLIENT_ID,
+				hostId: registration.hostId,
+				redirectUri: listener.redirectUri,
+				state,
+				nonce,
+				codeChallenge: codeChallengeS256(verifier),
+			}),
+		);
+		const { code, params } = await listener.result;
+		const clientId = issuedClientId(params, registration);
+		const tokens = await exchangeCode(
+			{
+				clientId,
+				code,
+				codeVerifier: verifier,
+				redirectUri: listener.redirectUri,
+			},
+			options.fetchImpl,
+		);
+		const { sub, email } = checkIdToken(tokens.id_token ?? "", {
+			nonce,
+			subject: registration.subject,
+		});
+		await options.save?.({
+			hostId: registration.hostId,
+			subject: sub,
+			clientId,
+			...(email !== undefined && { email }),
+		});
+		return { tokens, clientId, subject: sub, email };
+	} finally {
+		listener.close();
+	}
+}
+
+/**
+ * Signs in with ChatGPT. A saved registration OpenAI refuses is replaced by a
+ * fresh one, once.
+ */
+export async function signInWithChatGpt(
+	options: ChatGptSignInOptions,
+): Promise<ChatGptSignIn> {
+	const { registration } = options;
+	try {
+		return await attemptSignIn(registration, options);
+	} catch (err: unknown) {
+		if (!registration.clientId || !isWorkspaceDenied(err)) {
+			throw explainDenial(err);
+		}
+	}
+	options.onRetry?.();
+	try {
+		return await attemptSignIn({ hostId: registration.hostId }, options);
+	} catch (err: unknown) {
+		throw explainDenial(err);
+	}
 }
 
 /** What Fabric's upload route stores; field names are its contract. */

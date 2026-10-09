@@ -238,6 +238,7 @@ export async function analyzeChatThreadActivity(
 			// Enrichment is decided afterwards by the semantic routing pass, which
 			// applies the project's own opt-in.
 			allowRouting: true,
+			jobType: "teams-channel-monitor",
 		});
 
 		// Zero-change bundle → seen markers only

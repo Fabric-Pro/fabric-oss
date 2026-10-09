@@ -300,7 +300,7 @@ export type ProjectScalarFieldEnum = z.infer<typeof ProjectScalarFieldEnumSchema
 
 // File: ProjectDocumentScalarFieldEnum.schema.ts
 
-export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'generationQueueReason', 'generationNotificationEmittedAt', 'source', 'sourceContextId', 'isActive', 'storyId', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+export const ProjectDocumentScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'title', 'content', 'status', 'version', 'generationPrompt', 'generationError', 'generationProgress', 'generationStartedAt', 'generationCompletedAt', 'workflowId', 'runId', 'wordCount', 'lastEditedBy', 'decisionPrecheck', 'generationQueueReason', 'generationNotificationEmittedAt', 'liveContent', 'liveRunId', 'liveAttempt', 'source', 'sourceContextId', 'isActive', 'storyId', 'qdrantId', 'embeddedAt', 'contentHash', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
 
 export type ProjectDocumentScalarFieldEnum = z.infer<typeof ProjectDocumentScalarFieldEnumSchema>;
 
@@ -309,6 +309,24 @@ export type ProjectDocumentScalarFieldEnum = z.infer<typeof ProjectDocumentScala
 export const ProjectDocumentAssetScalarFieldEnumSchema = z.enum(['id', 'projectDocumentId', 'filename', 'contentType', 'storageKey', 'sizeBytes', 'sha256', 'sortOrder', 'userId', 'organizationId', 'createdAt'])
 
 export type ProjectDocumentAssetScalarFieldEnum = z.infer<typeof ProjectDocumentAssetScalarFieldEnumSchema>;
+
+// File: ProjectDocumentAnalysisScalarFieldEnum.schema.ts
+
+export const ProjectDocumentAnalysisScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'documentId', 'runKey', 'status', 'analyzedContent', 'contentHash', 'sourceContext', 'documentVersion', 'contextCount', 'promptVersionId', 'model', 'errorCode', 'errorMessage', 'startedAt', 'completedAt', 'createdAt', 'updatedAt'])
+
+export type ProjectDocumentAnalysisScalarFieldEnum = z.infer<typeof ProjectDocumentAnalysisScalarFieldEnumSchema>;
+
+// File: ProjectDocumentFindingScalarFieldEnum.schema.ts
+
+export const ProjectDocumentFindingScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'analysisId', 'severity', 'type', 'title', 'detail', 'recommendation', 'sectionHeading', 'position', 'createdAt'])
+
+export type ProjectDocumentFindingScalarFieldEnum = z.infer<typeof ProjectDocumentFindingScalarFieldEnumSchema>;
+
+// File: ProjectDocumentStyleScalarFieldEnum.schema.ts
+
+export const ProjectDocumentStyleScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'projectId', 'documentId', 'styleDirection', 'primaryColor', 'accentColors', 'updatedById', 'createdAt', 'updatedAt'])
+
+export type ProjectDocumentStyleScalarFieldEnum = z.infer<typeof ProjectDocumentStyleScalarFieldEnumSchema>;
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
@@ -1398,7 +1416,7 @@ export type AzureAiModelDeploymentScalarFieldEnum = z.infer<typeof AzureAiModelD
 
 // File: CloudProviderConfigScalarFieldEnum.schema.ts
 
-export const CloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const CloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type CloudProviderConfigScalarFieldEnum = z.infer<typeof CloudProviderConfigScalarFieldEnumSchema>;
 
@@ -1410,13 +1428,13 @@ export type ModelRouterConfigScalarFieldEnum = z.infer<typeof ModelRouterConfigS
 
 // File: UserCloudProviderConfigScalarFieldEnum.schema.ts
 
-export const UserCloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'userId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const UserCloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'userId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type UserCloudProviderConfigScalarFieldEnum = z.infer<typeof UserCloudProviderConfigScalarFieldEnumSchema>;
 
 // File: ChatGptPlanCredentialScalarFieldEnum.schema.ts
 
-export const ChatGptPlanCredentialScalarFieldEnumSchema = z.enum(['id', 'userId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const ChatGptPlanCredentialScalarFieldEnumSchema = z.enum(['id', 'userId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'tier', 'subscriptionActiveUntil', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type ChatGptPlanCredentialScalarFieldEnum = z.infer<typeof ChatGptPlanCredentialScalarFieldEnumSchema>;
 
@@ -1428,21 +1446,33 @@ export type ChatGptPlanOrgUseScalarFieldEnum = z.infer<typeof ChatGptPlanOrgUseS
 
 // File: ChatGptPlanOrgAccountScalarFieldEnum.schema.ts
 
-export const ChatGptPlanOrgAccountScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'label', 'connectedByUserId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'tier', 'enabled', 'serveInteractive', 'serveBackground', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const ChatGptPlanOrgAccountScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'label', 'connectedByUserId', 'email', 'subject', 'clientId', 'hostId', 'encryptedAccessToken', 'encryptedRefreshToken', 'encryptedIdToken', 'accessTokenExpiresAt', 'earliestRefreshAt', 'scopes', 'status', 'tier', 'subscriptionActiveUntil', 'enabled', 'serveInteractive', 'serveBackground', 'maxMemberSharePct', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type ChatGptPlanOrgAccountScalarFieldEnum = z.infer<typeof ChatGptPlanOrgAccountScalarFieldEnumSchema>;
 
 // File: ChatGptPlanOrgPolicyScalarFieldEnum.schema.ts
 
-export const ChatGptPlanOrgPolicyScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'poolingEnabled', 'apiFallbackInteractive', 'apiFallbackBackground', 'headroomPct', 'termsAcknowledgedById', 'termsAcknowledgedAt', 'createdAt', 'updatedAt'])
+export const ChatGptPlanOrgPolicyScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'poolingEnabled', 'apiFallbackInteractive', 'apiFallbackBackground', 'headroomPct', 'fallbackModel', 'termsAcknowledgedById', 'termsAcknowledgedAt', 'createdAt', 'updatedAt'])
 
 export type ChatGptPlanOrgPolicyScalarFieldEnum = z.infer<typeof ChatGptPlanOrgPolicyScalarFieldEnumSchema>;
+
+// File: ChatGptPlanBudgetObservationScalarFieldEnum.schema.ts
+
+export const ChatGptPlanBudgetObservationScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'windowStart', 'inputTokens', 'observedAt'])
+
+export type ChatGptPlanBudgetObservationScalarFieldEnum = z.infer<typeof ChatGptPlanBudgetObservationScalarFieldEnumSchema>;
 
 // File: ChatGptPlanSourceStateScalarFieldEnum.schema.ts
 
 export const ChatGptPlanSourceStateScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'openUntil', 'resetAt', 'consecutiveUnknownResets', 'lastExhaustedAt', 'updatedAt'])
 
 export type ChatGptPlanSourceStateScalarFieldEnum = z.infer<typeof ChatGptPlanSourceStateScalarFieldEnumSchema>;
+
+// File: ChatGptPlanServedModelScalarFieldEnum.schema.ts
+
+export const ChatGptPlanServedModelScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'slug', 'displayName', 'description', 'priority', 'checkedAt'])
+
+export type ChatGptPlanServedModelScalarFieldEnum = z.infer<typeof ChatGptPlanServedModelScalarFieldEnumSchema>;
 
 // File: WorkflowScalarFieldEnum.schema.ts
 
@@ -2398,6 +2428,24 @@ export const DocumentSourceSchema = z.enum(['GENERATED', 'IMPORTED', 'EXTERNAL']
 
 export type DocumentSource = z.infer<typeof DocumentSourceSchema>;
 
+// File: ProjectDocumentAnalysisStatus.schema.ts
+
+export const ProjectDocumentAnalysisStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETE', 'FAILED'])
+
+export type ProjectDocumentAnalysisStatus = z.infer<typeof ProjectDocumentAnalysisStatusSchema>;
+
+// File: ProjectDocumentFindingSeverity.schema.ts
+
+export const ProjectDocumentFindingSeveritySchema = z.enum(['BLOCKING', 'IMPORTANT', 'INFORMATIONAL'])
+
+export type ProjectDocumentFindingSeverity = z.infer<typeof ProjectDocumentFindingSeveritySchema>;
+
+// File: ProjectDocumentFindingType.schema.ts
+
+export const ProjectDocumentFindingTypeSchema = z.enum(['SCOPE', 'COMMERCIAL', 'ASSUMPTION', 'RISK', 'GAP', 'SOURCE_VALIDATION', 'ARCHITECTURE', 'BRANDING', 'OPPORTUNITY'])
+
+export type ProjectDocumentFindingType = z.infer<typeof ProjectDocumentFindingTypeSchema>;
+
 // File: ProjectContextType.schema.ts
 
 export const ProjectContextTypeSchema = z.enum(['FILE', 'LINK', 'TEXT', 'DOCUMENT', 'TECH_STACK', 'FEATURES', 'GOALS', 'DESCRIPTION', 'IMAGE', 'SPREADSHEET', 'INTEGRATION', 'MEETING_TRANSCRIPT', 'SLACK_HUDDLE_NOTES', 'CODE_FILE', 'CODE_FILE_SUMMARY', 'ARCHITECTURE_DECISION', 'TEST_CASE', 'API_SPEC'])
@@ -3190,6 +3238,12 @@ export const HealthStatusSchema = z.enum(['HEALTHY', 'DEGRADED', 'UNHEALTHY', 'U
 
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
 
+// File: AiProviderPurpose.schema.ts
+
+export const AiProviderPurposeSchema = z.enum(['ALL', 'EMBEDDINGS_ONLY'])
+
+export type AiProviderPurpose = z.infer<typeof AiProviderPurposeSchema>;
+
 // File: ChatGptPlanCredentialStatus.schema.ts
 
 export const ChatGptPlanCredentialStatusSchema = z.enum(['ACTIVE', 'NEEDS_RECONNECT'])
@@ -3198,7 +3252,7 @@ export type ChatGptPlanCredentialStatus = z.infer<typeof ChatGptPlanCredentialSt
 
 // File: ChatGptPlanTier.schema.ts
 
-export const ChatGptPlanTierSchema = z.enum(['UNKNOWN', 'PLUS', 'PRO'])
+export const ChatGptPlanTierSchema = z.enum(['UNKNOWN', 'PLUS', 'PRO', 'FREE', 'TEAM'])
 
 export type ChatGptPlanTier = z.infer<typeof ChatGptPlanTierSchema>;
 
@@ -3780,7 +3834,7 @@ export type ChatArtifactType = z.infer<typeof ChatArtifactTypeSchema>;
 
 // File: NotificationType.schema.ts
 
-export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED'])
+export const NotificationTypeSchema = z.enum(['STORY_MENTION', 'STORY_COMMENT_REPLY', 'STORY_ASSIGNED', 'TASK_MENTION', 'TASK_COMMENT_REPLY', 'COMMENT_MENTION', 'DOCUMENT_MENTION', 'AGENT_REPLY_READY', 'STORY_STATUS_CHANGED', 'PM_SYNC_CONFLICT', 'AI_USAGE_LIMIT_WARNING', 'AI_USAGE_LIMIT_REACHED', 'INTEGRATION_INCIDENT', 'SYSTEM_INCIDENT', 'CONTEXT_INDEXING_STARTED', 'CONTEXT_INDEXING_COMPLETED', 'REPO_INTEGRATION_TOKEN_EXPIRED', 'SECURITY_SCAN_COMPLETED', 'PROJECT_SERVICE_ALERT_DIGEST', 'REPORT_COMPLETED', 'REPORT_FAILED', 'SECURITY_TICKETS_GENERATED', 'DOCUMENT_UPDATED', 'FEATURE_UPDATED', 'STORY_SHARED', 'NEWSLETTER_APPROVAL_PENDING', 'TEST_CASES_DRAFTED', 'STATUS_ANNOUNCEMENT', 'PUBLISHING_TOPICS_READY', 'PROMPT_DEFAULT_UPDATED', 'PROMPT_NOMINATION_PENDING', 'PM_ATTACHMENT_SYNC_FAILED', 'DECISION_OWNER_ASSIGNED', 'DECISION_OWNER_UPDATED', 'QUESTION_ASSIGNED', 'QUESTION_MENTIONED', 'QUESTION_ANSWERED', 'PUBLISHING_TOPIC_ASSIGNED', 'PUBLISHING_QUESTION_ASSIGNED', 'DOCUMENT_GENERATION_COMPLETED', 'DOCUMENT_GENERATION_FAILED', 'CLI_CONNECTION_REQUESTED', 'TODO_ASSIGNED', 'TODO_MEETING_ITEMS_ASSIGNED', 'CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT'])
 
 export type NotificationType = z.infer<typeof NotificationTypeSchema>;
 
@@ -4967,6 +5021,9 @@ export const ProjectDocumentSchema = z.object({
   decisionPrecheck: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   generationQueueReason: z.string().nullish(),
   generationNotificationEmittedAt: z.date().nullish(),
+  liveContent: z.string().nullish(),
+  liveRunId: z.string().nullish(),
+  liveAttempt: z.number().int().nullish(),
   source: DocumentSourceSchema.default("GENERATED"),
   sourceContextId: z.string().nullish(),
   isActive: z.boolean().default(true),
@@ -4999,6 +5056,69 @@ export const ProjectDocumentAssetSchema = z.object({
 });
 
 export type ProjectDocumentAssetType = z.infer<typeof ProjectDocumentAssetSchema>;
+
+
+// File: ProjectDocumentAnalysis.schema.ts
+
+export const ProjectDocumentAnalysisSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  documentId: z.string(),
+  runKey: z.string(),
+  status: ProjectDocumentAnalysisStatusSchema.default("PENDING"),
+  analyzedContent: z.string(),
+  contentHash: z.string(),
+  sourceContext: z.string(),
+  documentVersion: z.number().int().nullish(),
+  contextCount: z.number().int(),
+  promptVersionId: z.string().nullish(),
+  model: z.string().nullish(),
+  errorCode: z.string().nullish(),
+  errorMessage: z.string().nullish(),
+  startedAt: z.date().nullish(),
+  completedAt: z.date().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectDocumentAnalysisType = z.infer<typeof ProjectDocumentAnalysisSchema>;
+
+
+// File: ProjectDocumentFinding.schema.ts
+
+export const ProjectDocumentFindingSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  analysisId: z.string(),
+  severity: ProjectDocumentFindingSeveritySchema,
+  type: ProjectDocumentFindingTypeSchema,
+  title: z.string(),
+  detail: z.string(),
+  recommendation: z.string().nullish(),
+  sectionHeading: z.string().nullish(),
+  position: z.number().int(),
+  createdAt: z.date(),
+});
+
+export type ProjectDocumentFindingModel = z.infer<typeof ProjectDocumentFindingSchema>;
+
+// File: ProjectDocumentStyle.schema.ts
+
+export const ProjectDocumentStyleSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  projectId: z.string(),
+  documentId: z.string(),
+  styleDirection: z.string().nullish(),
+  primaryColor: z.string().nullish(),
+  accentColors: z.array(z.string()),
+  updatedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectDocumentStyleType = z.infer<typeof ProjectDocumentStyleSchema>;
 
 
 // File: ProjectContext.schema.ts
@@ -9306,6 +9426,7 @@ export const CloudProviderConfigSchema = z.object({
   enabled: z.boolean().default(true),
   isDefault: z.boolean(),
   isEmbeddingProvider: z.boolean(),
+  purpose: AiProviderPurposeSchema.default("ALL"),
   priority: z.number().int(),
   config: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
   encryptedApiKey: z.string().nullish(),
@@ -9351,6 +9472,7 @@ export const UserCloudProviderConfigSchema = z.object({
   enabled: z.boolean().default(true),
   isDefault: z.boolean(),
   isEmbeddingProvider: z.boolean(),
+  purpose: AiProviderPurposeSchema.default("ALL"),
   priority: z.number().int(),
   config: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
   encryptedApiKey: z.string().nullish(),
@@ -9385,6 +9507,8 @@ export const ChatGptPlanCredentialSchema = z.object({
   earliestRefreshAt: z.date().nullish(),
   scopes: z.array(z.string()),
   status: ChatGptPlanCredentialStatusSchema.default("ACTIVE"),
+  tier: ChatGptPlanTierSchema.default("UNKNOWN"),
+  subscriptionActiveUntil: z.date().nullish(),
   lastUsedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -9427,9 +9551,11 @@ export const ChatGptPlanOrgAccountSchema = z.object({
   scopes: z.array(z.string()),
   status: ChatGptPlanCredentialStatusSchema.default("ACTIVE"),
   tier: ChatGptPlanTierSchema.default("UNKNOWN"),
+  subscriptionActiveUntil: z.date().nullish(),
   enabled: z.boolean().default(true),
   serveInteractive: z.boolean(),
   serveBackground: z.boolean().default(true),
+  maxMemberSharePct: z.number().int().nullish(),
   lastUsedAt: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -9447,6 +9573,7 @@ export const ChatGptPlanOrgPolicySchema = z.object({
   apiFallbackInteractive: ChatGptPlanApiFallbackInteractiveSchema.default("ASK"),
   apiFallbackBackground: ChatGptPlanApiFallbackBackgroundSchema.default("NEVER"),
   headroomPct: z.number().int().default(40),
+  fallbackModel: z.string().default("gpt-6-astra").nullish(),
   termsAcknowledgedById: z.string().nullish(),
   termsAcknowledgedAt: z.date().nullish(),
   createdAt: z.date(),
@@ -9454,6 +9581,19 @@ export const ChatGptPlanOrgPolicySchema = z.object({
 });
 
 export type ChatGptPlanOrgPolicyType = z.infer<typeof ChatGptPlanOrgPolicySchema>;
+
+
+// File: ChatGptPlanBudgetObservation.schema.ts
+
+export const ChatGptPlanBudgetObservationSchema = z.object({
+  sourceKind: ChatGptPlanSourceKindSchema,
+  sourceId: z.string(),
+  windowStart: z.date(),
+  inputTokens: z.number().int(),
+  observedAt: z.date(),
+});
+
+export type ChatGptPlanBudgetObservationType = z.infer<typeof ChatGptPlanBudgetObservationSchema>;
 
 
 // File: ChatGptPlanSourceState.schema.ts
@@ -9469,6 +9609,21 @@ export const ChatGptPlanSourceStateSchema = z.object({
 });
 
 export type ChatGptPlanSourceStateType = z.infer<typeof ChatGptPlanSourceStateSchema>;
+
+
+// File: ChatGptPlanServedModel.schema.ts
+
+export const ChatGptPlanServedModelSchema = z.object({
+  sourceKind: ChatGptPlanSourceKindSchema,
+  sourceId: z.string(),
+  slug: z.string(),
+  displayName: z.string(),
+  description: z.string().nullish(),
+  priority: z.number().int().nullish(),
+  checkedAt: z.date(),
+});
+
+export type ChatGptPlanServedModelType = z.infer<typeof ChatGptPlanServedModelSchema>;
 
 
 // File: Workflow.schema.ts

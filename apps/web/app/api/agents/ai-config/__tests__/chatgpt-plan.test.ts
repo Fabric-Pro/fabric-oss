@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	activeUse: vi.fn(),
 	getPlanToken: vi.fn(),
+	impersonated: false,
 }));
 
 const ORG_KEY = "sk-org-key-example";
@@ -22,6 +23,7 @@ vi.mock("@repo/agent-runtime", () => ({
 		ok: true,
 		userId: "user-1",
 		organizationId: "org-1",
+		impersonated: mocks.impersonated,
 	}),
 }));
 
@@ -106,6 +108,7 @@ const ROUTES = [
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.impersonated = false;
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.getPlanToken.mockResolvedValue({
 		accessToken: "plan-access-token",
@@ -154,6 +157,20 @@ describe.each(ROUTES)("GET /api/agents/%s — ChatGPT plan", (_name, call) => {
 			code: "CHATGPT_PLAN_UNAVAILABLE",
 		});
 		expect(text).not.toContain(ORG_KEY);
+	});
+
+	// Fizzy #2770 D7: the signed headers say an admin was acting as the
+	// member, exactly as an AI token's `imp` claim would.
+	it("never hands over the plan for work signed as impersonated", async () => {
+		mocks.impersonated = true;
+		mocks.activeUse.mockResolvedValue({
+			includeBackgroundJobs: true,
+			credentialStatus: "ACTIVE",
+		});
+		const body = await (await call()).json();
+		expect(body.provider).toBe("OPENROUTER");
+		expect(JSON.stringify(body)).not.toContain("plan-access-token");
+		expect(mocks.getPlanToken).not.toHaveBeenCalled();
 	});
 
 	it("stays on the organization provider when the flag is off, even with background jobs on", async () => {

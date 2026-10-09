@@ -1,9 +1,9 @@
 import {
 	type ChatGptPlanOrganization,
 	ChatGptPlanSubjectBoundElsewhereError,
+	findChatGptPlanPersonalAccountOwner,
 	findChatGptPlanPoolAdminOrganization,
-	isChatGptPlanOrgAccountSubject,
-	isChatGptPlanPersonalSubject,
+	findChatGptPlanSharedAccountConnector,
 	listChatGptPlanOrgAccounts,
 	listChatGptPlanOrganizations,
 	recordAudit,
@@ -15,6 +15,15 @@ import {
 	storeChatGptPlanCredential,
 	storeChatGptPlanOrgAccount,
 } from "./plan-credentials";
+import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
+
+/** The uploader already shares this account; moving it back needs no sign-in (Fizzy #2770 I1). */
+const CHATGPT_PLAN_ALREADY_SHARED_BY_YOU =
+	"You already share this ChatGPT account with an organization. To use it as your own plan, open that organization and choose Take back on your ChatGPT plan in Account settings → AI Providers.";
+
+/** The uploader's own plan; sharing it needs no new sign-in (Fizzy #2770 I1). */
+const CHATGPT_PLAN_ALREADY_YOUR_OWN =
+	"This ChatGPT account is already your own plan. To share it, choose Share with this organization on your ChatGPT plan in Account settings → AI Providers — no new sign-in needed.";
 
 export const CHATGPT_PLAN_NOT_ENABLED =
 	"ChatGPT plan isn't enabled for any of your organizations. Ask your Fabric admin to enable it.";
@@ -98,12 +107,20 @@ export async function connectChatGptPlan(params: {
 	}
 	const { claims } = verified;
 	// One ChatGPT account, one usage window: as an organization's shared
-	// account and someone's own plan at once it would be counted twice.
-	if (await isChatGptPlanOrgAccountSubject(claims.sub)) {
+	// account and someone's own plan at once it would be counted twice. Matched
+	// by email too, since each client registration gets its own `sub`.
+	const connector = await findChatGptPlanSharedAccountConnector({
+		subject: claims.sub,
+		email: claims.email ?? null,
+	});
+	if (connector) {
 		return {
 			ok: false,
 			status: 409,
-			error: "This ChatGPT account is already shared by an organization. Sign in with your own ChatGPT account.",
+			error:
+				connector === userId
+					? CHATGPT_PLAN_ALREADY_SHARED_BY_YOU
+					: "This ChatGPT account is already shared by an organization. Sign in with your own ChatGPT account.",
 		};
 	}
 
@@ -132,6 +149,11 @@ export async function connectChatGptPlan(params: {
 		},
 		scopes: upload.scopes,
 	});
+	// Which models this plan serves, for the pickers; never holds up the connect.
+	refreshChatGptPlanServedModelsInBackground(
+		{ kind: "user", userId },
+		{ accessToken: upload.accessToken },
+	);
 
 	await Promise.all(
 		enabledHere.map((org) =>
@@ -229,11 +251,18 @@ export async function connectChatGptPlanOrgAccount(params: {
 	}
 	// Anyone's own plan, the connector's included: one ChatGPT account, one
 	// usage window, never counted as a person's plan and a shared one at once.
-	if (await isChatGptPlanPersonalSubject(claims.sub)) {
+	const owner = await findChatGptPlanPersonalAccountOwner({
+		subject: claims.sub,
+		email: claims.email ?? null,
+	});
+	if (owner) {
 		return {
 			ok: false,
 			status: 409,
-			error: "This ChatGPT account is already connected as someone's own plan. Sign in with the account the organization should share.",
+			error:
+				owner === userId
+					? CHATGPT_PLAN_ALREADY_YOUR_OWN
+					: "This ChatGPT account is already connected as someone's own plan. Sign in with the account the organization should share.",
 		};
 	}
 
@@ -264,6 +293,11 @@ export async function connectChatGptPlanOrgAccount(params: {
 		}
 		throw error;
 	}
+
+	refreshChatGptPlanServedModelsInBackground(
+		{ kind: "org", organizationId, accountId: stored.id },
+		{ accessToken: upload.accessToken },
+	);
 
 	const label =
 		existing.find((account) => account.id === stored.id)?.label ??

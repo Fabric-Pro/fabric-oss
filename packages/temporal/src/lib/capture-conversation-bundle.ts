@@ -44,7 +44,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { getSystemRAGProviderConfig } from "@repo/ai";
+import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
 import {
 	type ClaimedConversationMessage,
 	claimConversationBundleForEmbedding,
@@ -441,7 +441,7 @@ export async function embedConversationBundle(
 			return "abandoned";
 		}
 
-		const providerConfig = await getSystemRAGProviderConfig({
+		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 			userId: params.userId,
 			organizationId: params.organizationId,
 		});

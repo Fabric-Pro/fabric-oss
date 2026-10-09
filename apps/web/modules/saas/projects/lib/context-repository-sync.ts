@@ -371,8 +371,21 @@ export type ContextSyncLastAppliedSummary =
 			startedAt: string | Date;
 			fileCount: number;
 	  }
-	| { kind: "partial"; shortSha: string; keptOlderCount: number }
+	| {
+			kind: "partial";
+			shortSha: string;
+			keptOlderCount: number;
+			skippedCount: number;
+	  }
 	| { kind: "failed"; shortSha: string };
+
+/** Attention reasons for a file the sync left out of the run rather than kept at an older version. */
+const SKIPPED_FILE_REASONS = new Set([
+	"too-large",
+	"binary",
+	"empty",
+	"invalid-path",
+]);
 
 /**
  * The status line's headline (§7.1): "Applied commit … · N files" /
@@ -395,6 +408,10 @@ export function contextSyncLastAppliedSummary(
 			kind: "partial",
 			shortSha,
 			keptOlderCount: run.counts.conflict + run.counts.pathInUse,
+			skippedCount:
+				run.plan?.attention.filter((item) =>
+					SKIPPED_FILE_REASONS.has(item.reason),
+				).length ?? 0,
 		};
 	}
 	if (run.status === "FAILED") {
@@ -431,14 +448,31 @@ export function contextSyncLastAppliedMessage(
 				key: "status.applied",
 				values: { sha: summary.shortSha, count: summary.fileCount },
 			};
-		case "partial":
+		case "partial": {
+			const { keptOlderCount: kept, skippedCount: skipped } = summary;
+			if (kept > 0 && skipped > 0) {
+				return {
+					key: "status.partialBoth",
+					values: { sha: summary.shortSha, kept, skipped },
+				};
+			}
+			if (kept > 0) {
+				return {
+					key: "status.partial",
+					values: { sha: summary.shortSha, count: kept },
+				};
+			}
+			if (skipped > 0) {
+				return {
+					key: "status.partialSkipped",
+					values: { sha: summary.shortSha, count: skipped },
+				};
+			}
 			return {
-				key: "status.partial",
-				values: {
-					sha: summary.shortSha,
-					count: summary.keptOlderCount,
-				},
+				key: "status.partialNoDetail",
+				values: { sha: summary.shortSha },
 			};
+		}
 		case "failed":
 			return { key: "status.failed", values: { sha: summary.shortSha } };
 	}
@@ -557,7 +591,7 @@ function unknownFailure(_error: never): ContextSyncMessage {
 // ── Polling (§7.1) ──────────────────────────────────────────────────────────
 
 export const CONTEXT_SYNC_RUNNING_POLL_MS = 3_000;
-export const CONTEXT_SYNC_INDEXING_POLL_MS = 15_000;
+export const CONTEXT_SYNC_INDEXING_POLL_MS = 3_000;
 export const CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS = 10 * 60 * 1000;
 /**
  * While automatic sync is on and not paused, the tab reads the sync state
@@ -568,8 +602,34 @@ export const CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS = 10 * 60 * 1000;
 export const CONTEXT_SYNC_IDLE_POLL_MS = 60_000;
 
 /**
+ * Where the indexing poll's budget (`CONTEXT_SYNC_INDEXING_POLL_BUDGET_MS`)
+ * is counted from: the last moment the number of files awaiting indexing
+ * changed. Counted from the first moment any file awaited, a page that had
+ * once waited on files that never indexed carried an already-spent budget into
+ * the next sync, so that sync's indexing was never polled and its status line
+ * stayed on "4 of 8 files indexed" until a reload. Null when nothing awaits.
+ */
+export type ContextSyncIndexingClock = {
+	since: number;
+	awaiting: number;
+} | null;
+
+export function contextSyncIndexingClock(
+	previous: ContextSyncIndexingClock,
+	awaitingIndexCount: number,
+	now: number,
+): ContextSyncIndexingClock {
+	if (awaitingIndexCount <= 0) {
+		return null;
+	}
+	return previous && previous.awaiting === awaitingIndexCount
+		? previous
+		: { since: now, awaiting: awaitingIndexCount };
+}
+
+/**
  * `refetchInterval` for `repositorySync.get`: every 3 s while a run is open;
- * otherwise every 15 s while files still await indexing, for up to 10
+ * otherwise every 3 s while files still await indexing, for up to 10
  * minutes of that state (`indexingElapsedMs`, tracked by the caller from the
  * moment `awaitingIndexCount` first became positive); otherwise every 60 s
  * while automatic sync is on and not paused; otherwise no poll.
@@ -683,7 +743,10 @@ export type ContextSyncConfigureErrorField = "branch" | "paths" | null;
  * repository-level refusal) and a toast otherwise (`REPOSITORY_UNREACHABLE`,
  * a transient platform fault, and anything unrecognized).
  */
-export function contextSyncConfigureErrorMessage(error: unknown): {
+export function contextSyncConfigureErrorMessage(
+	error: unknown,
+	ref?: string,
+): {
 	key: string;
 	inline: boolean;
 	field: ContextSyncConfigureErrorField;
@@ -692,7 +755,14 @@ export function contextSyncConfigureErrorMessage(error: unknown): {
 	const data = orpcErrorData(error);
 	const code = typeof data?.code === "string" ? data.code : undefined;
 	const values: Record<string, string | number> = {
-		path: typeof data?.path === "string" ? data.path : "",
+		path:
+			typeof data?.path === "string"
+				? data.path
+				: code === "BRANCH_NOT_FOUND"
+					? typeof data?.ref === "string"
+						? data.ref
+						: (ref ?? "")
+					: "",
 		withPath: typeof data?.withPath === "string" ? data.withPath : "",
 		managedCount:
 			typeof data?.managedCount === "number" ? data.managedCount : 0,
@@ -783,6 +853,11 @@ export function contextSyncTreeErrorMessage(
 		};
 	}
 	return { key: "tree.error" };
+}
+
+/** Whether a `listTree` or `configure` failure says the branch is not on the remote. */
+export function contextSyncBranchNotFound(error: unknown): boolean {
+	return orpcErrorData(error)?.code === "BRANCH_NOT_FOUND";
 }
 
 export type ContextSyncNowResult =

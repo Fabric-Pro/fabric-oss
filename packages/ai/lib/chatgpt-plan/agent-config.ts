@@ -3,6 +3,7 @@ import {
 	SubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
 import { chatGptPlanSourceExhaustedError } from "./exhaustion-breaker";
+import { ChatGptPlanModelNotServedError } from "./models";
 import {
 	CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE,
 	ChatGptPlanAuthError,
@@ -95,12 +96,26 @@ export async function getChatGptPlanAgentConfig(params: {
 
 /**
  * The 409 an agent route answers when resolving the model refused because
- * the member's plan needs reconnecting; never the organization's key.
+ * the plan cannot serve the call as configured — the member's plan needs
+ * reconnecting, or the plan does not serve the chosen model and no fallback
+ * stood in (Fizzy #2770 F10); never the organization's key.
  */
 export function chatGptPlanReconnectRefusal(error: unknown): {
 	status: 409;
-	body: { error: string; code: "CHATGPT_PLAN_UNAVAILABLE" };
+	body: {
+		error: string;
+		code: "CHATGPT_PLAN_UNAVAILABLE" | "CHATGPT_PLAN_MODEL_NOT_SERVED";
+	};
 } | null {
+	if (error instanceof ChatGptPlanModelNotServedError) {
+		return {
+			status: 409,
+			body: {
+				error: error.message,
+				code: "CHATGPT_PLAN_MODEL_NOT_SERVED",
+			},
+		};
+	}
 	return error instanceof ChatGptPlanAuthError
 		? {
 				status: 409,

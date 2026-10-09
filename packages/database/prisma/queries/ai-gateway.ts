@@ -103,6 +103,14 @@ export interface AiProviderConfig {
 	encryptedClientSecret: string | null;
 }
 
+/**
+ * Excludes "embeddings only" keys. Every lookup that can feed LLM work carries
+ * this; only {@link getEmbeddingProviderConfig} may resolve such a key.
+ */
+export const LLM_PROVIDER_PURPOSE_FILTER = {
+	purpose: { not: "EMBEDDINGS_ONLY" },
+} as const;
+
 /** The "nothing configured" shape, shared by every early return below. */
 const EMPTY_PROVIDER_CONFIG: AiProviderConfig = {
 	apiKey: null,
@@ -185,6 +193,7 @@ async function resolveOrganizationProviderConfig(
 			organizationId,
 			isDefault: true,
 			enabled: true,
+			...LLM_PROVIDER_PURPOSE_FILTER,
 		},
 		select: {
 			id: true,
@@ -255,6 +264,7 @@ async function resolveTenantProviderConfig({
 			userId,
 			isDefault: true,
 			enabled: true,
+			...LLM_PROVIDER_PURPOSE_FILTER,
 		},
 		select: {
 			id: true,
@@ -449,6 +459,9 @@ export async function updateProviderLastUsed({
  * This ensures embeddings always use the same model, preventing vector incompatibility
  * when users change their default provider.
  *
+ * The only lookup that resolves an "embeddings only" key (purpose
+ * EMBEDDINGS_ONLY); every LLM lookup excludes it.
+ *
  * @param userId - User ID
  * @param organizationId - Organization ID (if in org context)
  */
@@ -594,6 +607,7 @@ export async function getAiProviderApiKeyByProvider({
 				organizationId,
 				provider: providerEnum,
 				enabled: true,
+				...LLM_PROVIDER_PURPOSE_FILTER,
 			},
 			select: {
 				id: true,
@@ -619,6 +633,7 @@ export async function getAiProviderApiKeyByProvider({
 			userId,
 			provider: providerEnum,
 			enabled: true,
+			...LLM_PROVIDER_PURPOSE_FILTER,
 		},
 		select: {
 			id: true,

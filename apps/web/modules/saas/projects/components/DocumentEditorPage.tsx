@@ -4,6 +4,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
+import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
@@ -17,8 +18,9 @@ import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
+import { Badge } from "@ui/components/badge";
 import {
 	Breadcrumb,
 	BreadcrumbItem,
@@ -28,19 +30,42 @@ import {
 } from "@ui/components/breadcrumb";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@ui/components/tabs";
 import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { ArrowLeftIcon, HomeIcon, SparklesIcon } from "lucide-react";
+import { cn } from "@ui/lib";
+import {
+	AlertCircleIcon,
+	ArrowLeftIcon,
+	HomeIcon,
+	Loader2Icon,
+	SparklesIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { ErrorInfo, ReactNode } from "react";
-import { Component, useCallback, useEffect, useMemo, useState } from "react";
-import { useProjectPresence } from "../hooks";
+import {
+	Component,
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { toast } from "sonner";
+import { type DocumentChangeEvent, useProjectPresence } from "../hooks";
+import {
+	needsLegacyGlossyEdition,
+	useLegacyGlossyEdition,
+} from "../hooks/use-legacy-glossy-edition";
+import { isDocumentGenerationRunning } from "../lib/document-pipeline";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
 import { DocumentEditor, getDocumentTypeLabel } from "./DocumentEditor";
@@ -50,6 +75,18 @@ import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
+import { ProposalAnalysisPanel } from "./proposal-artifact/ProposalAnalysisPanel";
+import {
+	PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
+	ProposalLiveSections,
+} from "./proposal-artifact/ProposalLiveSections";
+import { ProposalStylePanel } from "./proposal-artifact/ProposalStylePanel";
+import {
+	analysisTabIndicator,
+	awaitingAnalysisOfLatestGeneration,
+	proposalAnalysisQueryKey,
+	useProposalAnalysis,
+} from "./proposal-artifact/use-proposal-analysis";
 
 // Error boundary to catch CopilotKit initialization failures. The fallback
 // must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
@@ -94,17 +131,40 @@ class CopilotErrorBoundary extends Component<
  * the organization has the `GLOSSY_EDITION` rollout gate on (R40) and the
  * document type is Glossy-eligible (R2). Viewers get it too — the page shows
  * them the preview and downloads.
+ *
+ * A Proposal under the `PROPOSAL_ARTIFACT` gate is written client-ready and
+ * needs no Glossy edition, so it keeps the link only while a published legacy
+ * edition exists to open (Fizzy #2801).
  */
 function GlossyVersionLink({
 	href,
+	projectId,
+	documentId,
 	documentType,
 }: {
 	/** Absent outside an organization route: the Glossy page has no other. */
 	href: string | null;
+	projectId: string;
+	documentId: string;
 	documentType: string | null | undefined;
 }) {
 	const enabled = useFeatureFlag("GLOSSY_EDITION");
-	if (!enabled || !href || !isGlossyEligible(documentType ?? "")) {
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	const eligible = enabled && !!href && isGlossyEligible(documentType ?? "");
+	const needsLegacyEdition = needsLegacyGlossyEdition(
+		documentType,
+		proposalArtifactEnabled,
+	);
+	const hasLegacyEdition = useLegacyGlossyEdition(
+		projectId,
+		documentId,
+		eligible && needsLegacyEdition,
+	);
+	if (
+		!eligible ||
+		!href ||
+		(needsLegacyEdition && hasLegacyEdition !== true)
+	) {
 		return null;
 	}
 	return <GlossyVersionLinkButton href={href} />;
@@ -120,6 +180,174 @@ function GlossyVersionLinkButton({ href }: { href: string }) {
 			</Link>
 		</Button>
 	);
+}
+
+/** The tabs of a Proposal's page in artifact mode (Fizzy #2801). */
+type ProposalArtifactTab = "main" | "analysis" | "style";
+
+/**
+ * What the Internal Analysis tab shows beside its label. Each state carries
+ * words, not only an icon or a colour: a spinner says it is waiting or
+ * running, a finished run says how many findings are Blocking, and a failed
+ * one says so.
+ */
+function AnalysisTabIndicator({
+	indicator,
+}: {
+	indicator: ReturnType<typeof analysisTabIndicator>;
+}) {
+	const t = useTranslations(
+		"projects.proposalArtifactPage.analysisIndicator",
+	);
+	switch (indicator.kind) {
+		case "pending":
+		case "running":
+			return (
+				<Badge variant="info">
+					<Loader2Icon
+						className="motion-safe:animate-spin"
+						aria-hidden="true"
+					/>
+					{t(indicator.kind)}
+				</Badge>
+			);
+		case "complete":
+			return indicator.blockingCount > 0 ? (
+				<Badge variant="error">
+					{t("blocking", { count: indicator.blockingCount })}
+				</Badge>
+			) : null;
+		case "failed":
+			return (
+				<Badge variant="error">
+					<AlertCircleIcon aria-hidden="true" />
+					{t("failed")}
+				</Badge>
+			);
+		default:
+			return null;
+	}
+}
+
+/**
+ * Stands where the editor's prompt selector would: the run writes an
+ * artifact Proposal from the library's client proposal prompt and ignores a
+ * prompt chosen here (Fizzy #2801).
+ */
+function LibraryPromptLabel() {
+	const t = useTranslations("projects.proposalArtifactEntry");
+	return (
+		<span
+			className="inline-flex h-8 min-w-0 items-center rounded-md border border-border bg-muted/40 px-3 text-xs"
+			title={t("libraryPromptHint")}
+		>
+			<span className="truncate">{t("libraryPrompt")}</span>
+		</span>
+	);
+}
+
+/**
+ * The live Main of a generating Proposal, with the Retry a stalled run
+ * offers. The editor that would otherwise offer it is hidden while the run
+ * is under way, so the retry starts the run from here, as the documents
+ * list's Regenerate does.
+ */
+function ProposalLiveMain({
+	projectId,
+	documentId,
+	organizationId,
+	document,
+	canRetry,
+}: {
+	projectId: string;
+	documentId: string;
+	organizationId: string | null | undefined;
+	document: {
+		title: string;
+		content: string | null;
+		liveContent?: string | null;
+		status?: string | null;
+		generationProgress?: number | null;
+		generationError?: string | null;
+		generationStartedAt?: Date | string | null;
+		updatedAt?: Date | string | null;
+	};
+	canRetry: boolean;
+}) {
+	const t = useTranslations("projects.proposalArtifactPage.live");
+	const queryClient = useQueryClient();
+	const retry = useMutation(
+		orpc.projects.documents.generate.mutationOptions({
+			onSuccess: () => {
+				void queryClient.invalidateQueries({
+					queryKey: orpc.projects.documents.get.queryKey({
+						input: { id: documentId, projectId, organizationId },
+					}),
+				});
+			},
+			onError: (error) => {
+				toast.error(t("retryFailed", { message: error.message }));
+			},
+		}),
+	);
+
+	return (
+		<ProposalLiveSections
+			liveContent={document.liveContent}
+			savedContent={document.content}
+			status={document.status ?? "GENERATING"}
+			progress={document.generationProgress ?? 0}
+			title={document.title}
+			generationError={document.generationError}
+			generationStartedAt={document.generationStartedAt}
+			updatedAt={document.updatedAt}
+			onRetry={
+				canRetry ? () => retry.mutate({ id: documentId }) : undefined
+			}
+			isRetrying={retry.isPending}
+		/>
+	);
+}
+
+/**
+ * Keeps the scroll offsets inside `root` across it being hidden. A box with
+ * `display: none` loses its offset, so every scroll inside is recorded and
+ * written back when the subtree is shown again: switching tabs, or a
+ * generation finishing, returns the editor where the reader left it.
+ */
+function useKeptScrollPositions(root: HTMLElement | null, shown: boolean) {
+	const positionsRef = useRef(new Map<Element, number>());
+
+	useEffect(() => {
+		if (!root) {
+			return;
+		}
+		const record = (event: Event) => {
+			if (event.target instanceof Element) {
+				positionsRef.current.set(event.target, event.target.scrollTop);
+			}
+		};
+		root.addEventListener("scroll", record, {
+			capture: true,
+			passive: true,
+		});
+		return () => {
+			root.removeEventListener("scroll", record, { capture: true });
+		};
+	}, [root]);
+
+	useLayoutEffect(() => {
+		if (!shown) {
+			return;
+		}
+		for (const [element, top] of positionsRef.current) {
+			if (element.isConnected) {
+				element.scrollTop = top;
+			} else {
+				positionsRef.current.delete(element);
+			}
+		}
+	}, [shown]);
 }
 
 type Props = {
@@ -304,6 +532,122 @@ export function DocumentEditorPage({
 		enabled: orgContextReady,
 	});
 
+	// A Proposal under the `PROPOSAL_ARTIFACT` gate is written in one run from
+	// the library's client proposal prompt, whoever starts it. Its page — a
+	// live Main tab, Internal Analysis and Style — is for members of the
+	// owning organization; a project guest keeps today's page (Fizzy #2801).
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	const isGuestInOrg = useIsGuestInOrg();
+	const isArtifactProposal =
+		proposalArtifactEnabled &&
+		documentRefKind === "PROJECT_DOCUMENT" &&
+		documentData?.document?.type === "PROPOSAL";
+	const artifactMode = isArtifactProposal && !isGuestInOrg;
+	const tTabs = useTranslations("projects.proposalArtifactPage.tabs");
+	const [activeTab, setActiveTab] = useState<ProposalArtifactTab>("main");
+	const tabIdBase = useId();
+	const isGenerationRunning = isDocumentGenerationRunning(
+		documentData?.document?.status ?? "",
+	);
+	// The latest generation's start lets the analysis keep looking for that
+	// generation's run after it ends, without depending on a nudge.
+	const analysisQuery = useProposalAnalysis({
+		projectId,
+		documentId,
+		enabled: artifactMode,
+		generationStartedAt: documentData?.document?.generationStartedAt,
+		generationRunning: isGenerationRunning,
+	});
+	// Between a generation's end and its run being recorded, what the tab
+	// holds is the previous Main's run; a failed generation records none.
+	const awaitingNewAnalysis =
+		artifactMode &&
+		documentData?.document?.status !== "FAILED" &&
+		awaitingAnalysisOfLatestGeneration(analysisQuery.data, {
+			generationStartedAt: documentData?.document?.generationStartedAt,
+			generationRunning: isGenerationRunning,
+		});
+	// A guest gets neither the label, which names an internal library prompt,
+	// nor the selector, whose choice the run would ignore for them as well:
+	// `false`, not `undefined`, since the editor falls back to the selector
+	// on a nullish value.
+	const promptSelectorReplacement = useMemo(
+		() =>
+			isArtifactProposal ? (
+				isGuestInOrg ? (
+					false
+				) : (
+					<LibraryPromptLabel />
+				)
+			) : undefined,
+		[isArtifactProposal, isGuestInOrg],
+	);
+
+	// The page switches on the server's status, never on the editor's: while
+	// a run is queued or writing, the Main tab shows the live sections and the
+	// editor stays mounted but hidden, so the regeneration it started can
+	// still be reviewed — and rejected — once the run completes.
+	const showLiveMain = artifactMode && isGenerationRunning;
+	const isEditorShown =
+		!artifactMode || (activeTab === "main" && !showLiveMain);
+	const [editorRegionEl, setEditorRegionEl] = useState<HTMLDivElement | null>(
+		null,
+	);
+	useKeptScrollPositions(editorRegionEl, isEditorShown);
+
+	// Each section a run saves, and each step of its Internal Analysis, comes
+	// with a `document_change` nudge for this document. In artifact mode the
+	// page refetches the document on one instead of waiting for the next
+	// poll, and the analysis too once no run is writing: the analysis cannot
+	// change before the run's final save, and a run nudges every section. The
+	// handler reads the mode, the run state and the tenant through refs so
+	// its identity — which the realtime connection depends on — never
+	// changes.
+	const queryClient = useQueryClient();
+	const artifactModeRef = useRef(artifactMode);
+	artifactModeRef.current = artifactMode;
+	const isGenerationRunningRef = useRef(isGenerationRunning);
+	isGenerationRunningRef.current = isGenerationRunning;
+	const organizationIdRef = useRef(organizationId);
+	organizationIdRef.current = organizationId;
+	const handleDocumentChange = useCallback(
+		(event: DocumentChangeEvent) => {
+			if (event.documentId !== documentId || !artifactModeRef.current) {
+				return;
+			}
+			void queryClient.invalidateQueries({
+				queryKey: orpc.projects.documents.get.queryKey({
+					input: {
+						id: documentId,
+						projectId,
+						organizationId: organizationIdRef.current,
+					},
+				}),
+			});
+			if (isGenerationRunningRef.current) {
+				return;
+			}
+			void queryClient.invalidateQueries({
+				queryKey: proposalAnalysisQueryKey(projectId, documentId),
+			});
+		},
+		[queryClient, projectId, documentId],
+	);
+
+	// The end of a run starts its analysis, so the analysis is asked for
+	// again when the page sees the run end — whether or not a nudge arrives.
+	const wasGenerationRunningRef = useRef(isGenerationRunning);
+	useEffect(() => {
+		const runEnded =
+			wasGenerationRunningRef.current && !isGenerationRunning;
+		wasGenerationRunningRef.current = isGenerationRunning;
+		if (runEnded && artifactMode) {
+			void queryClient.invalidateQueries({
+				queryKey: proposalAnalysisQueryKey(projectId, documentId),
+			});
+		}
+	}, [isGenerationRunning, artifactMode, queryClient, projectId, documentId]);
+
 	// Real-time presence for this project (tracking that we're editing this document)
 	// Note: True collaborative editing is now handled by PartyKit + Yjs in the DocumentEditor
 	const { activeUsers, isConnected } = useProjectPresence({
@@ -311,6 +655,7 @@ export function DocumentEditorPage({
 		activeTab: "documents",
 		editingDocId: documentId,
 		enabled: true,
+		onDocumentChange: handleDocumentChange,
 	});
 
 	// Include org context loading in overall loading state
@@ -374,6 +719,21 @@ export function DocumentEditorPage({
 					documentId,
 				)
 			: null;
+	// Who may edit the document: the title, the Style tab and the Retry of a
+	// stalled run all follow it.
+	const canEdit =
+		project.userRole === "owner" || project.userRole === "editor";
+	const tabId = (tab: ProposalArtifactTab) => `${tabIdBase}-tab-${tab}`;
+	const panelId = (tab: ProposalArtifactTab) => `${tabIdBase}-panel-${tab}`;
+	// The Main panel's wrapper renders on every page; only in artifact mode is
+	// it a tab panel.
+	const mainPanelProps = artifactMode
+		? {
+				id: panelId("main"),
+				role: "tabpanel",
+				"aria-labelledby": tabId("main"),
+			}
+		: {};
 
 	return (
 		// Page chrome shifts its right edge when the CopilotKit chat
@@ -381,10 +741,14 @@ export function DocumentEditorPage({
 		// editor body) slides as one piece — otherwise the breadcrumb +
 		// action bar would stay full-width and get covered by the chat
 		// panel. The CopilotKit wrapper's own margin-right is neutralised
-		// in globals.css so the shift doesn't double-apply.
+		// in globals.css so the shift doesn't double-apply. The chat lives
+		// inside the editor, so while the editor is hidden (another tab, or
+		// a Proposal's live Main) the page takes its full width back.
 		<div
 			className={`fixed inset-y-0 left-0 right-0 md:left-[72px] bg-background flex flex-col transition-[right] duration-300 ${
-				isAiSidebarExpanded ? AI_SIDEBAR_CONTENT_SHIFT_CLASS : ""
+				isAiSidebarExpanded && isEditorShown
+					? AI_SIDEBAR_CONTENT_SHIFT_CLASS
+					: ""
 			}`}
 		>
 			{/* Three-line header (title → breadcrumb → action bar) consistent
@@ -402,10 +766,7 @@ export function DocumentEditorPage({
 						documentId={documentId}
 						organizationId={organizationId}
 						title={document.title}
-						canEdit={
-							project.userRole === "owner" ||
-							project.userRole === "editor"
-						}
+						canEdit={canEdit}
 						alwaysEditable
 						inputClassName="h-auto py-1.5 px-3 text-xl md:text-2xl font-semibold tracking-tight border border-transparent shadow-none w-full transition-colors hover:bg-muted/40 hover:border-border focus-visible:bg-background focus-visible:border-input focus-visible:ring-1 focus-visible:ring-ring cursor-text truncate"
 					/>
@@ -628,14 +989,24 @@ export function DocumentEditorPage({
 				/>
 				<GlossyVersionLink
 					href={glossyHref}
+					projectId={projectId}
+					documentId={documentId}
 					documentType={document.type}
 				/>
 				<div className="flex-1" />
+				{/* The editor's own controls (Raw, Version history, Save) go
+				  with it when it is hidden: on another tab they would act on
+				  a document nobody is looking at. */}
 				<div
 					ref={setActionSlotEl}
+					hidden={!isEditorShown}
 					className="flex items-center gap-2"
 				/>
-				<div ref={setSaveSlotEl} className="flex items-center" />
+				<div
+					ref={setSaveSlotEl}
+					hidden={!isEditorShown}
+					className="flex items-center"
+				/>
 			</div>
 
 			{/* A Features document is a snapshot now, not a Roadmap source. */}
@@ -643,6 +1014,51 @@ export function DocumentEditorPage({
 				<div className="border-b bg-background px-6 py-2">
 					<FeaturesDeprecationNotice roadmapHref={roadmapUrl} />
 				</div>
+			)}
+
+			{/* A Proposal in artifact mode (Fizzy #2801): Main Document,
+			  Internal Analysis and Style. Only the tab list renders here; the
+			  panels below are force-mounted and the inactive ones carry
+			  `hidden`, which takes them out of the tab order and the
+			  accessibility tree without unmounting the editor. */}
+			{artifactMode && (
+				<Tabs
+					value={activeTab}
+					onValueChange={(value) =>
+						setActiveTab(value as ProposalArtifactTab)
+					}
+					className="shrink-0 border-b bg-background px-6 pt-2 overflow-x-auto"
+				>
+					<TabsList aria-label={tTabs("label")}>
+						<TabsTrigger
+							value="main"
+							id={tabId("main")}
+							aria-controls={panelId("main")}
+						>
+							{tTabs("main")}
+						</TabsTrigger>
+						<TabsTrigger
+							value="analysis"
+							id={tabId("analysis")}
+							aria-controls={panelId("analysis")}
+							className="gap-2"
+						>
+							{tTabs("analysis")}
+							<AnalysisTabIndicator
+								indicator={analysisTabIndicator(
+									analysisQuery.data,
+								)}
+							/>
+						</TabsTrigger>
+						<TabsTrigger
+							value="style"
+							id={tabId("style")}
+							aria-controls={panelId("style")}
+						>
+							{tTabs("style")}
+						</TabsTrigger>
+					</TabsList>
+				</Tabs>
 			)}
 
 			{/* Editor body — DocumentEditor renders its inline AI/prompt row
@@ -660,61 +1076,136 @@ export function DocumentEditorPage({
 			  leaves its inner `overflow-y-auto` scroll container unbounded:
 			  wheel scrolling dies and the scrollbar disappears while keyboard
 			  scrolling still works. Every wrapper between this element and the
-			  workspace root must carry a definite height. */}
-			<div className="flex-1 min-h-0 overflow-hidden [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full">
-				<CopilotErrorBoundary
-					fallback={(error) => (
-						<DocumentEditorAiUnavailable
-							content={document.content}
-							error={error}
+			  workspace root must carry a definite height, which is why the
+			  selectors sit on the innermost wrapper, the editor region.
+
+			  The two wrappers render on every page, so the editor never moves
+			  in the tree when a Proposal's artifact mode settles: the outer one
+			  is the Main tab panel in artifact mode, the inner one the region
+			  hidden while a run writes the live sections. */}
+			<div className="flex-1 min-h-0 overflow-hidden">
+				<div
+					{...mainPanelProps}
+					hidden={artifactMode && activeTab !== "main"}
+					className="h-full"
+				>
+					{showLiveMain && (
+						<ProposalLiveMain
+							projectId={projectId}
+							documentId={documentId}
+							organizationId={organizationId}
+							document={document}
+							canRetry={canEdit}
 						/>
 					)}
-				>
-					<CopilotKit
-						runtimeUrl={copilotRuntimeUrl}
-						useSingleEndpoint
-						agent="project_document_generator"
-						showDevConsole={false}
-						onError={onCopilotError}
+					<div
+						ref={setEditorRegionEl}
+						hidden={showLiveMain}
+						className={cn(
+							"h-full [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full",
+							artifactMode && PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
+						)}
 					>
-						{/* One `useCopilotChatInternal()` for the whole
+						<CopilotErrorBoundary
+							fallback={(error) => (
+								<DocumentEditorAiUnavailable
+									content={document.content}
+									error={error}
+								/>
+							)}
+						>
+							<CopilotKit
+								runtimeUrl={copilotRuntimeUrl}
+								useSingleEndpoint
+								agent="project_document_generator"
+								showDevConsole={false}
+								onError={onCopilotError}
+							>
+								{/* One `useCopilotChatInternal()` for the whole
 						  surface — every call site of that hook (and of
 						  `useCopilotChat`) opens its own agent/connect on
 						  1.70, so the consumers inside share this one
 						  instead of each connecting (Fizzy #2389). */}
-						<CopilotChatSessionProvider>
-							<DocumentEditor
-								projectId={projectId}
-								documentId={documentId}
-								isAiSidebarExpanded={isAiSidebarExpanded}
-								actionSlot={actionSlotEl}
-								saveSlot={saveSlotEl}
-								syncSlot={syncSlotEl}
-								documentRefKind={documentRefKind}
-								initialAssistantConversationId={
-									initialAssistantConversationId
-								}
-								initialAssistantVisibility={
-									initialAssistantVisibility
-								}
-								initialAssistantVisibilityLockedAt={
-									initialAssistantVisibilityLockedAt
-								}
-								initialAssistantMessages={
-									initialAssistantMessages as ReadonlyArray<
-										Record<string, unknown>
-									>
-								}
-								initialPersistedMessageIds={
-									initialPersistedMessageIds
-								}
-								initialAttachmentsByMessageId={
-									initialAttachmentsByMessageId
-								}
-							/>
-						</CopilotChatSessionProvider>
-					</CopilotKit>
-				</CopilotErrorBoundary>
+								<CopilotChatSessionProvider>
+									<DocumentEditor
+										projectId={projectId}
+										documentId={documentId}
+										isAiSidebarExpanded={
+											isAiSidebarExpanded
+										}
+										actionSlot={actionSlotEl}
+										saveSlot={saveSlotEl}
+										syncSlot={syncSlotEl}
+										documentRefKind={documentRefKind}
+										initialAssistantConversationId={
+											initialAssistantConversationId
+										}
+										initialAssistantVisibility={
+											initialAssistantVisibility
+										}
+										initialAssistantVisibilityLockedAt={
+											initialAssistantVisibilityLockedAt
+										}
+										initialAssistantMessages={
+											initialAssistantMessages as ReadonlyArray<
+												Record<string, unknown>
+											>
+										}
+										initialPersistedMessageIds={
+											initialPersistedMessageIds
+										}
+										initialAttachmentsByMessageId={
+											initialAttachmentsByMessageId
+										}
+										suppressGenerationOverlay={artifactMode}
+										attachToServerRun={
+											showLiveMain && canEdit
+										}
+										promptSelectorReplacement={
+											promptSelectorReplacement
+										}
+									/>
+								</CopilotChatSessionProvider>
+							</CopilotKit>
+						</CopilotErrorBoundary>
+					</div>
+				</div>
+				{artifactMode && (
+					<>
+						<div
+							id={panelId("analysis")}
+							role="tabpanel"
+							aria-labelledby={tabId("analysis")}
+							hidden={activeTab !== "analysis"}
+							className="h-full overflow-y-auto"
+						>
+							<div className="mx-auto w-full max-w-4xl p-6">
+								<ProposalAnalysisPanel
+									projectId={projectId}
+									documentId={documentId}
+									isGenerating={isGenerationRunning}
+									awaitingNewRun={awaitingNewAnalysis}
+								/>
+							</div>
+						</div>
+						<div
+							id={panelId("style")}
+							role="tabpanel"
+							aria-labelledby={tabId("style")}
+							hidden={activeTab !== "style"}
+							className="h-full overflow-y-auto"
+						>
+							<div className="mx-auto w-full max-w-4xl p-6">
+								<ProposalStylePanel
+									projectId={projectId}
+									documentId={documentId}
+									canEdit={canEdit}
+									isGenerating={isGenerationRunning}
+								/>
+							</div>
+						</div>
+					</>
+				)}
 			</div>
 		</div>
 	);

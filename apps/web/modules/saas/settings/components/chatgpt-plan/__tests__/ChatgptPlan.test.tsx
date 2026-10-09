@@ -51,16 +51,21 @@ vi.mock("next-intl", () => {
 		return typeof node === "string" ? node : path;
 	};
 	return {
-		useTranslations:
-			(namespace: string) =>
-			(key: string, values?: Record<string, string | number>) =>
-				lookup(`${namespace}.${key}`).replace(
-					/\{(\w+)\}/g,
-					(_match, name: string) =>
-						values?.[name] === undefined
-							? `{${name}}`
-							: String(values[name]),
-				),
+		useTranslations: (namespace: string) =>
+			Object.assign(
+				(key: string, values?: Record<string, string | number>) =>
+					lookup(`${namespace}.${key}`).replace(
+						/\{(\w+)\}/g,
+						(_match, name: string) =>
+							values?.[name] === undefined
+								? `{${name}}`
+								: String(values[name]),
+					),
+				{
+					has: (key: string) =>
+						lookup(`${namespace}.${key}`) !== `${namespace}.${key}`,
+				},
+			),
 	};
 });
 
@@ -91,10 +96,21 @@ type Status = {
 	}>;
 	usageEstimate: {
 		windowHours: number;
+		windowStart: Date | null;
+		resetsAt: Date | null;
+		lastRequestAt: Date | null;
 		requests: number;
 		inputTokens: number;
+		cachedInputTokens: number;
 		outputTokens: number;
 		estimatedPercent: number;
+		topConsumers: Array<{
+			kind: "job" | "feature" | "other";
+			key: string | null;
+			requests: number;
+			inputTokens: number;
+			percent: number;
+		}>;
 	} | null;
 };
 
@@ -131,10 +147,15 @@ const CONNECTED: Status = {
 	],
 	usageEstimate: {
 		windowHours: 5,
+		windowStart: null,
+		resetsAt: null,
+		lastRequestAt: new Date("2026-10-08T03:33:00Z"),
 		requests: 12,
 		inputTokens: 4000,
+		cachedInputTokens: 0,
 		outputTokens: 1200,
 		estimatedPercent: 23.6,
+		topConsumers: [],
 	},
 };
 
@@ -208,6 +229,15 @@ describe("ChatGPT plan settings section", () => {
 		expect(screen.getByTestId("chatgpt-plan-usage")).toHaveTextContent(
 			"Fabric used about 24% of your 5-hour window (estimate)",
 		);
+		// The last window has reset: no reset time, and nobody "using" it.
+		expect(
+			screen.getByTestId("chatgpt-plan-window-timing"),
+		).toHaveTextContent(
+			/^Last request \d\d:\d\d( [AP]M)? · no open window$/,
+		);
+		expect(
+			screen.queryByTestId("chatgpt-plan-window-consumers"),
+		).not.toBeInTheDocument();
 		expect(
 			screen.getByRole("link", { name: /ChatGPT Settings → Usage/ }),
 		).toHaveAttribute("href", "https://chatgpt.com/settings/usage");

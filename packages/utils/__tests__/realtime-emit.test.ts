@@ -307,3 +307,117 @@ describe("emitContextChange / emitActivity", () => {
 		expect(ownEmit).not.toHaveBeenCalled();
 	});
 });
+
+/**
+ * `document_change`, which Proposal generation publishes from the worker as
+ * its sections land (Fizzy #2801): moved here from
+ * `packages/api/lib/realtime.ts` like `context_change`, so the worker and the
+ * API publish the same payload on the same channel.
+ */
+describe("emitDocumentChange", () => {
+	function realtimeWith(emitMock: ReturnType<typeof vi.fn>) {
+		const channelMock = vi.fn(() => ({ emit: emitMock }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Realtime()`
+		const RealtimeMock = vi.fn(function () {
+			return { channel: channelMock };
+		});
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		vi.doMock("@upstash/redis", () => ({ Redis: vi.fn() }));
+		process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+		process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+		return { channelMock, RealtimeMock };
+	}
+
+	const documentChange = {
+		projectId: "proj-1",
+		documentId: "doc-1",
+		action: "updated" as const,
+		userId: "user-1",
+		userName: "Fabric",
+	};
+
+	it("emits document_change on the project's channel", async () => {
+		const emitMock = vi.fn().mockResolvedValue(undefined);
+		const { channelMock } = realtimeWith(emitMock);
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitDocumentChange(documentChange);
+
+		expect(channelMock).toHaveBeenCalledWith("project:proj-1");
+		expect(emitMock).toHaveBeenCalledTimes(1);
+		expect(emitMock).toHaveBeenCalledWith(
+			"document_change",
+			documentChange,
+		);
+	});
+
+	it("is a no-op that never throws when the Upstash env is absent", async () => {
+		const emitMock = vi.fn();
+		const { RealtimeMock } = realtimeWith(emitMock);
+		process.env.UPSTASH_REDIS_REST_URL = undefined;
+		process.env.UPSTASH_REDIS_REST_TOKEN = undefined;
+
+		const mod = await import("../lib/realtime-emit");
+
+		await expect(
+			mod.emitDocumentChange(documentChange),
+		).resolves.toBeUndefined();
+		expect(RealtimeMock).not.toHaveBeenCalled();
+		expect(emitMock).not.toHaveBeenCalled();
+	});
+
+	it("never throws: a Redis outage degrades to the next refresh", async () => {
+		const emitMock = vi.fn().mockRejectedValue(new Error("Redis down"));
+		realtimeWith(emitMock);
+
+		const mod = await import("../lib/realtime-emit");
+
+		await expect(
+			mod.emitDocumentChange(documentChange),
+		).resolves.toBeUndefined();
+		expect(emitMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("emits through a client the caller passes, and nothing for null", async () => {
+		const ownEmit = vi.fn();
+		const { RealtimeMock } = realtimeWith(ownEmit);
+		const callerEmit = vi.fn().mockResolvedValue(undefined);
+		const channel = vi.fn(() => ({ emit: callerEmit }));
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitDocumentChange(documentChange, { channel });
+		await mod.emitDocumentChange(documentChange, null);
+
+		expect(RealtimeMock).not.toHaveBeenCalled();
+		expect(ownEmit).not.toHaveBeenCalled();
+		expect(channel).toHaveBeenCalledTimes(1);
+		expect(callerEmit).toHaveBeenCalledWith(
+			"document_change",
+			documentChange,
+		);
+	});
+
+	it("registers its schema on its own client, and the schema accepts what the web client reads", async () => {
+		const { RealtimeMock } = realtimeWith(vi.fn());
+
+		const mod = await import("../lib/realtime-emit");
+		await mod.emitDocumentChange(documentChange);
+
+		expect(RealtimeMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				schema: expect.objectContaining({
+					document_change: mod.documentChangeSchema,
+				}),
+			}),
+		);
+		expect(mod.documentChangeSchema.parse(documentChange)).toEqual(
+			documentChange,
+		);
+		expect(
+			mod.documentChangeSchema.safeParse({
+				...documentChange,
+				action: "generating",
+			}).success,
+		).toBe(false);
+	});
+});

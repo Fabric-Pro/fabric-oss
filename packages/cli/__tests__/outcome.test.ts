@@ -101,6 +101,13 @@ const SAMPLES: { [K in OutcomeId]: OutcomeParams[K] } = {
 		traits: [],
 		condition: { kind: "clean", pull: "git pull --ff-only origin main" },
 	},
+	"behind-direct": {
+		repo: "github.com/example-org/rules",
+		sha7: "a1b2c3d",
+		ref: "main",
+		traits: [],
+		condition: { kind: "clean", pull: "git pull --ff-only origin main" },
+	},
 	"earlier-source": {
 		version: 12,
 		sourceRef: "release",
@@ -135,7 +142,7 @@ const SAMPLES: { [K in OutcomeId]: OutcomeParams[K] } = {
 		commands: COMMANDS,
 	},
 	"ff-merge-failed": {
-		reason: "diverged",
+		failure: { reason: "diverged" },
 		ref: "main",
 		remote: "origin",
 		commands: COMMANDS,
@@ -194,6 +201,7 @@ describe("the outcome lines", () => {
 			  "bad-project-id": "--project must be a project id: letters, digits, '.', '_' or '-', starting with a letter or digit, at most 64 characters.",
 			  "bad-remote-name": "--remote must be the name of a git remote: letters, digits, '.', '_', '-' and '/', starting with a letter, digit, '.' or '_'.",
 			  "behind": "fabric: coding instructions v12 (a1b2c3d) is on main; this checkout is behind — run: git pull --ff-only origin main",
+			  "behind-direct": "fabric: coding instructions: read directly from github.com/example-org/rules at a1b2c3d; this checkout is behind — run: git pull --ff-only origin main",
 			  "class-ambiguous": "fabric: coding instructions: remotes origin, upstream all fetch from github.com/example-org/rules; nothing was checked. Run: fabric instructions init --remote origin",
 			  "class-foreign": "fabric: coding instructions: no remote of this checkout fetches from github.com/example-org/rules; nothing was checked.",
 			  "class-unknown": "fabric: coding instructions: this git checkout could not be read (git timed out); nothing was checked.",
@@ -500,6 +508,47 @@ describe("the checkout report lines", () => {
 		],
 	] as const)("%s", (_label, condition, expected) => {
 		expect(outcomeLine("behind", { ...base, condition })).toBe(expected);
+	});
+
+	it.each([
+		[
+			{ kind: "clean", pull: "git pull --ff-only origin main" },
+			"fabric: coding instructions: read directly from github.com/example-org/rules at a1b2c3d; this checkout is behind — run: git pull --ff-only origin main",
+		],
+		[
+			{ kind: "other-branch", branch: "feature/x" },
+			"fabric: coding instructions: read directly from github.com/example-org/rules at a1b2c3d; this checkout is behind; you are on feature/x — pull main when you switch to it.",
+		],
+		[
+			{ kind: "detached" },
+			"fabric: coding instructions: read directly from github.com/example-org/rules at a1b2c3d; this checkout is behind; HEAD is detached — check out main and pull.",
+		],
+		[
+			{ kind: "dirty" },
+			"fabric: coding instructions: read directly from github.com/example-org/rules at a1b2c3d; this checkout is behind and has uncommitted changes — commit or stash, then pull.",
+		],
+	] as const)("a direct read behind: %j", (condition, expected) => {
+		expect(
+			outcomeLine("behind-direct", {
+				repo: "github.com/example-org/rules",
+				sha7: "a1b2c3d",
+				ref: "main",
+				traits: [],
+				condition,
+			}),
+		).toBe(expected);
+	});
+
+	it("says which project is missing a sign-in when the machine is signed in for others", () => {
+		expect(
+			outcomeLine("hook-signed-out", {
+				origin: "https://fabric.pro",
+				project: "project-2",
+				otherProjects: true,
+			}),
+		).toBe(
+			"not signed in to https://fabric.pro for project project-2 (it is signed in for other projects) — run: fabric auth login --base-url https://fabric.pro --project project-2",
+		);
 	});
 
 	it("says the commit has not been fetched when it is not in the clone at all", () => {

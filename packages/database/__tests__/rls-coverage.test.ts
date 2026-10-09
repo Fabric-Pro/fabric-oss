@@ -547,6 +547,58 @@ describe("Company context registration (Fizzy #2719)", () => {
 	);
 });
 
+/**
+ * Proposal artifact registration (Fizzy #2801).
+ *
+ * Internal analysis runs, their findings and the document style. A project
+ * guest must never read internal review material, so the policy is plain
+ * `org_only` and none of the three is project-scoped in tenant-db.ts — the
+ * Glossy project tables' carve-out would OR a guest's invited projects into
+ * the filter. Analysis and Style carry a projectId for cascade and lookup;
+ * that column must not become a guest route.
+ */
+describe("Proposal artifact registration (Fizzy #2801)", () => {
+	const orgOnlyBlock =
+		tenantDbSrc.match(
+			/const ORG_ONLY_TABLES = new Set\(\[([\s\S]*?)\]\);/,
+		)?.[1] ?? "";
+	const projectScopedBlock =
+		tenantDbSrc.match(
+			/const PROJECT_SCOPED_TABLES:[^{]+\{([\s\S]*?)\n\};/,
+		)?.[1] ?? "";
+
+	const tables = [
+		["ProjectDocumentAnalysis", "project_document_analysis"],
+		["ProjectDocumentFinding", "project_document_finding"],
+		["ProjectDocumentStyle", "project_document_style"],
+	] as const;
+
+	it("sanity: the tenant-db table sets parsed", () => {
+		expect(orgOnlyBlock).not.toBe("");
+		expect(projectScopedBlock).not.toBe("");
+	});
+
+	it.each(tables)(
+		"%s (%s) is a real table under org_only RLS, not exempted or project-scoped",
+		(model, physical) => {
+			expect(physicals.has(physical)).toBe(true);
+			expect(allowlist.has(physical)).toBe(true);
+			expect(EXEMPT.has(physical)).toBe(false);
+			expect(applySrc).toMatch(
+				new RegExp(
+					`name:\\s*"${physical}"\\s*,\\s*policy:\\s*"org_only"\\s*}`,
+				),
+			);
+			expect(orgOnlyBlock).toMatch(new RegExp(`"${model}",`));
+			expect(projectScopedBlock).not.toMatch(new RegExp(`\\b${model}:`));
+			const parsed = models.find((m) => m.name === model);
+			expect(parsed?.hasOrg).toBe(true);
+			// Organization is the only tenant: no author column to forge.
+			expect(parsed?.hasUser).toBe(false);
+		},
+	);
+});
+
 describe("tenant-db allowlist parity with the RLS registration", () => {
 	const userOwnedBlock =
 		tenantDbSrc.match(

@@ -25,10 +25,12 @@
 
 import {
 	AIProviderNotConfiguredError,
-	experimental_evaluate,
+	createDecisionCapture,
+	experimental_decide,
 	generateObject,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	recordDecisionOutcome,
 } from "@repo/ai";
 import {
 	getBoundPromptForAgent,
@@ -79,9 +81,11 @@ const DECISION_MAX_RETRIES = 1;
 // calibrated. Until labeled Fabric work-item data calibrates it, only a very
 // confident typed choice can skip the existing language classifier.
 const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+// Fixed call-site name for decision telemetry (llm.decision.outcomes).
+const DECISION_SITE = "classify-work-item";
 
 function isConfidentDecision(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 ): ClassifierOutput | null {
 	const answer = (result as { answers?: Record<string, unknown> }).answers
 		?.workItemKind;
@@ -207,40 +211,58 @@ export async function classifyWorkItem(
 
 	// Decision evaluation is optional. Organizations without an organization-owned
 	// Vercel Gateway decision model continue through the language classifier.
+	let resolvedDecisionModel:
+		| Awaited<ReturnType<typeof getAIDecisionModelWithMetadata>>
+		| undefined;
+	const capture = createDecisionCapture();
 	try {
 		const decisionModel = await getAIDecisionModelWithMetadata({
 			userId: input.userId,
 			organizationId: orgId,
 			projectId: input.projectId,
 		});
-		const decision = await experimental_evaluate({
-			model: decisionModel.model,
-			state: {
-				classifierPolicy: rendered.rendered,
-				reporterText: input.reporterText,
-				creationSource: input.creationSource ?? "Manual",
-				additionalContext: input.additionalContext ?? "",
-			},
-			questions: {
-				workItemKind: {
-					type: "choice",
-					instructions:
-						"Apply classifierPolicy to the supplied work item. Choose BUG only for an existing behavior that is incorrect; choose FEATURE for a requested or new capability.",
-					criteria: {
-						BUG: "An existing behavior is broken, regressed, or produces an incorrect result.",
-						FEATURE:
-							"A requested capability, enhancement, or ambiguous work item.",
+		resolvedDecisionModel = decisionModel;
+		const decision = await capture.run(() =>
+			experimental_decide({
+				model: decisionModel.model,
+				state: {
+					classifierPolicy: rendered.rendered,
+					reporterText: input.reporterText,
+					creationSource: input.creationSource ?? "Manual",
+					additionalContext: input.additionalContext ?? "",
+				},
+				questions: {
+					workItemKind: {
+						type: "choice",
+						instructions:
+							"Apply classifierPolicy to the supplied work item. Choose BUG only for an existing behavior that is incorrect; choose FEATURE for a requested or new capability.",
+						criteria: {
+							BUG: "An existing behavior is broken, regressed, or produces an incorrect result.",
+							FEATURE:
+								"A requested capability, enhancement, or ambiguous work item.",
+						},
 					},
 				},
-			},
-			maxRetries: DECISION_MAX_RETRIES,
-			abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-		});
+				maxRetries: DECISION_MAX_RETRIES,
+				abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+			}),
+		);
 		// A completed evaluation used the organization provider even if the
 		// answer is too uncertain for the fast path, so update last-used before
 		// inspecting the result.
 		decisionModel.trackUsage();
 		const confidentDecision = isConfidentDecision(decision);
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			outcome: confidentDecision ? "accepted" : "below_threshold",
+			decisionModel,
+			result: decision,
+			capture,
+			answers: [
+				(decision as { answers?: Record<string, unknown> }).answers
+					?.workItemKind,
+			],
+		});
 		if (confidentDecision) {
 			logger.info("[classify-work-item] decision evaluation returned", {
 				promptKey: "bug_classifier",
@@ -255,6 +277,12 @@ export async function classifyWorkItem(
 			{ projectId: input.projectId },
 		);
 	} catch (error) {
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			error,
+			decisionModel: resolvedDecisionModel,
+			capture,
+		});
 		rethrowUsageLimit(error);
 		logger.warn(
 			"[classify-work-item] decision evaluation unavailable; using language classifier",

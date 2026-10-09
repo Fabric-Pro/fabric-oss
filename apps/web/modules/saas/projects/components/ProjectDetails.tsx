@@ -72,12 +72,11 @@ import {
 	type DocumentChangeEvent,
 	useProjectPresence,
 } from "../hooks";
+import { useProjectTabWarmup } from "../hooks/use-project-tab-warmup";
 import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
-import {
-	loadCodingInstructionsTab,
-	warmCodingInstructions,
-} from "./instructions/lib/coding-instructions-warmup";
+import { InstructionDraftsProvider } from "./instructions/InstructionDrafts";
+import { loadCodingInstructionsTab } from "./instructions/lib/coding-instructions-warmup";
 // ProjectHeader is always visible, keep static import
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
@@ -425,7 +424,20 @@ function CodeAnalysisBanner({
 	);
 }
 
-export function ProjectDetails({ projectId, organizationSlug }: Props) {
+/**
+ * The tab bodies are unmounted when another tab is picked, so what someone is
+ * typing in one lives above them: an unsaved instruction edit is still there
+ * when the Coding Instructions tab is opened again.
+ */
+export function ProjectDetails(props: Props) {
+	return (
+		<InstructionDraftsProvider>
+			<ProjectDetailsTabs {...props} />
+		</InstructionDraftsProvider>
+	);
+}
+
+function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	const _t = useTranslations();
 	const router = useRouter();
 	const { user } = useSession();
@@ -575,17 +587,10 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 	// the hook's doc comment. The sessionStorage persistence effect below then
 	// records the resolved tab as usual.
 	const tabDeepLink = useProjectTabDeepLink(isTabId);
-	// The tab's first reads need nothing from `projects.get`, so they start
-	// as soon as the page knows the tab is wanted instead of after the project
-	// and the tab's code have loaded in turn.
-	const wantsCodingInstructions =
-		rawActiveTab === "coding-instructions" ||
-		tabDeepLink?.tab === "coding-instructions";
-	useEffect(() => {
-		if (wantsCodingInstructions) {
-			warmCodingInstructions(queryClient, projectId);
-		}
-	}, [wantsCodingInstructions, queryClient, projectId]);
+	const warmupFor = useProjectTabWarmup(projectId, [
+		rawActiveTab,
+		tabDeepLink?.tab,
+	]);
 	useEffect(() => {
 		if (tabDeepLink) {
 			initialTabSourceRef.current = "stored";
@@ -1192,15 +1197,7 @@ export function ProjectDetails({ projectId, organizationSlug }: Props) {
 									anchor={`project-tab-${tab.id}`}
 									beta={showBetaLabel && isBetaTab(tab.id)}
 									overflowed={index >= inlineCount}
-									onIntent={
-										tab.id === "coding-instructions"
-											? () =>
-													warmCodingInstructions(
-														queryClient,
-														projectId,
-													)
-											: undefined
-									}
+									onIntent={warmupFor(tab.id)}
 									onSelect={() => {
 										startTransition(() =>
 											setActiveTab(tab.id),

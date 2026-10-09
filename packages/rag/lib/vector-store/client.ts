@@ -5,6 +5,7 @@
 
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { logger } from "@repo/logs";
+import { VECTOR_STORE_DIMENSIONS } from "../embedding/dimensions";
 
 // Qdrant configuration from environment variables
 const QDRANT_URL = process.env.QDRANT_URL || "http://localhost:6333";
@@ -13,7 +14,7 @@ const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
 // Collection configuration
 export const COLLECTION_NAME =
 	process.env.QDRANT_COLLECTION_NAME || "chat-documents";
-export const VECTOR_SIZE = 1536; // OpenAI text-embedding-3-small dimensions
+export const VECTOR_SIZE = VECTOR_STORE_DIMENSIONS;
 export const DISTANCE_METRIC = "Cosine"; // Cosine similarity for embeddings
 
 /**

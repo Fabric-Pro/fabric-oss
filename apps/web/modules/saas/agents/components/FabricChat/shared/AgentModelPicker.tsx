@@ -17,7 +17,9 @@
  * nothing is fetched until the user actually opens the picker.
  */
 
+import { CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX } from "@repo/agent-types/chatgpt-plan-fetch";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
+import { formatPlanResetTime } from "@saas/shared/lib/ai-error-message";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -27,10 +29,11 @@ import {
 } from "@ui/components/popover";
 import { cn } from "@ui/lib";
 import { CheckCircle2Icon, ChevronDownIcon, SearchIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AgentAvatar, VendorLogo } from "./AgentIdentity";
 import {
 	buildInstanceAgentConfig,
+	PLAN_MODEL_AGENT_PREFIX,
 	type SelectedAgent,
 } from "./agent-selection";
 
@@ -115,6 +118,9 @@ export function AgentModelPicker({
 			orpcClient.aiConfig.models.listAvailable({
 				organizationId: organizationId ?? null,
 				taskType: "CHAT",
+				// Advisor and ⌘J run tool calling: the plan's "Default" is that
+				// task's model, the one that actually runs.
+				planTaskType: "TOOL_CALLING",
 			}),
 		enabled: agentPickerOpen,
 		refetchOnWindowFocus: false,
@@ -153,8 +159,60 @@ export function AgentModelPicker({
 				),
 			];
 	const availableModels = modelsData?.models ?? [];
+	// The ChatGPT plan that runs the member's own work here instead of any
+	// provider model (Fizzy #2770). Its models replace the provider list: a
+	// provider model never runs while a plan serves the chat (F13).
+	const chatgptPlan = modelsData?.chatgptPlan ?? null;
+	const planModels = (chatgptPlan?.models ?? []).filter(
+		(model) =>
+			!agentSearch ||
+			model.displayName.toLowerCase().includes(agentSearch.toLowerCase()),
+	);
+	// A chat's plan pick is its own kind of selection (Fizzy #2770 F13): its
+	// id never equals a saved provider model's, and its override carries the
+	// plan marker, so it runs only on the plan and is never saved.
+	const pickedPlanModel = selectedAgents.find(
+		(agent) =>
+			agent.chatOnly && agent.agentId.startsWith(PLAN_MODEL_AGENT_PREFIX),
+	);
+	const servedPick =
+		pickedPlanModel &&
+		chatgptPlan?.models.some(
+			(model) =>
+				pickedPlanModel.agentId ===
+				`${PLAN_MODEL_AGENT_PREFIX}${model.canonicalName}`,
+		)
+			? pickedPlanModel
+			: undefined;
+	// A pick the serving plan no longer lists would be ignored by the
+	// server; drop it, unsaved, so the chip and the menu agree. A spent plan
+	// lists nothing until it resets, and the pick still applies then.
+	useEffect(() => {
+		if (
+			chatgptPlan &&
+			!chatgptPlan.spent &&
+			pickedPlanModel &&
+			!servedPick
+		) {
+			onToggleAgent?.(pickedPlanModel);
+		}
+	}, [chatgptPlan, pickedPlanModel, servedPick, onToggleAgent]);
+	const handleTogglePlanModel = (
+		model: NonNullable<typeof chatgptPlan>["models"][number],
+	) => {
+		onToggleAgent?.({
+			agentId: `${PLAN_MODEL_AGENT_PREFIX}${model.canonicalName}`,
+			name: model.displayName,
+			modelOverride: `${CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX}${model.canonicalName}`,
+			vendor: "OpenAI",
+			chatOnly: true,
+		});
+	};
 
 	const filteredModels = availableModels.filter((m) => {
+		if (chatgptPlan) {
+			return false;
+		}
 		if (!agentSearch) {
 			return true;
 		}
@@ -252,6 +310,72 @@ export function AgentModelPicker({
 
 				{/* Scrollable list */}
 				<div className="max-h-72 overflow-y-auto py-1">
+					{chatgptPlan && (
+						<div data-testid="agent-picker-chatgpt-plan">
+							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
+								Runs on your{" "}
+								{chatgptPlan.source === "shared"
+									? "organization's shared ChatGPT plan"
+									: "ChatGPT plan"}
+							</p>
+							{chatgptPlan.spent && (
+								<p
+									className="px-3 py-1.5 text-xs text-muted-foreground"
+									data-testid="agent-picker-chatgpt-plan-spent"
+								>
+									{chatgptPlan.spent.until
+										? `Spent until ${formatPlanResetTime(new Date(chatgptPlan.spent.until))}`
+										: "Spent until its usage resets"}
+								</p>
+							)}
+							{planModels.map((model) => {
+								const isSelected = servedPick
+									? servedPick.agentId ===
+										`${PLAN_MODEL_AGENT_PREFIX}${model.canonicalName}`
+									: model.isDefault;
+								return (
+									<button
+										aria-pressed={isSelected}
+										className={cn(
+											"w-full flex items-center gap-2.5 px-3 py-1.5 text-left hover:bg-muted/50 transition-colors",
+											isSelected && "bg-primary/5",
+										)}
+										key={model.canonicalName}
+										onClick={() => {
+											// The default needs no override: picking it
+											// clears this chat's choice.
+											if (model.isDefault) {
+												if (servedPick) {
+													onToggleAgent?.(servedPick);
+												}
+												return;
+											}
+											handleTogglePlanModel(model);
+										}}
+										type="button"
+									>
+										<VendorLogo size={18} vendor="OpenAI" />
+										<span className="flex-1 min-w-0 truncate text-foreground text-xs">
+											{model.displayName}
+										</span>
+										{model.isDefault && (
+											<span className="shrink-0 text-[10px] text-muted-foreground">
+												Default
+											</span>
+										)}
+										{model.newest && (
+											<span className="shrink-0 font-mono text-[10px] text-success">
+												Newest
+											</span>
+										)}
+										{isSelected && (
+											<CheckCircle2Icon className="size-3.5 shrink-0 text-primary" />
+										)}
+									</button>
+								);
+							})}
+						</div>
+					)}
 					{/* Models section */}
 					{filteredModels.length > 0 && (
 						<div>
@@ -336,7 +460,8 @@ export function AgentModelPicker({
 
 					{/* Empty state */}
 					{filteredModels.length === 0 &&
-						filteredAgents.length === 0 && (
+						filteredAgents.length === 0 &&
+						!chatgptPlan && (
 							<p className="px-3 py-4 text-xs text-muted-foreground text-center">
 								{agentSearch
 									? "No matches found"
@@ -361,8 +486,9 @@ export function AgentModelPicker({
 				 */}
 				<div className="border-t border-border/60 px-3 py-2">
 					<p className="text-[11px] leading-relaxed text-muted-foreground">
-						Applies to this chat only. Everywhere else uses your
-						configured defaults in{" "}
+						{chatgptPlan
+							? "A model picked here applies to this chat only. The organization's default comes from "
+							: "Applies to this chat only. Everywhere else uses your configured defaults in "}
 						<span className="text-foreground">
 							Settings → AI Models
 						</span>

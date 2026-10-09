@@ -6,7 +6,11 @@
  * is not signed in yet.
  */
 
-import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import {
+	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
+} from "@repo/utils/oauth-project-resource";
+import { APIError } from "better-auth/api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	enforceOAuthResourceBinding,
@@ -67,7 +71,7 @@ function context(
 	stored: {
 		verification?: string | null;
 		refresh?: { referenceId: string };
-		client?: { disabled?: boolean } | null;
+		client?: { disabled?: boolean; redirectUris?: string[] } | null;
 	} = {},
 ) {
 	const findVerificationValue = vi.fn(async (_identifier: string) =>
@@ -90,7 +94,11 @@ function context(
 	return {
 		ctx: {
 			...request,
+			headers: new Headers(),
+			redirect: (url: string) =>
+				new APIError("FOUND", undefined, { Location: url }),
 			context: {
+				baseURL: `${APP_URL}/api/auth`,
 				internalAdapter: { findVerificationValue },
 				adapter: { findOne },
 				returned,
@@ -101,8 +109,18 @@ function context(
 	};
 }
 
-const signedOut = { appUrl: APP_URL, getSessionUserId: async () => null };
-const signedIn = { appUrl: APP_URL, getSessionUserId: async () => "user-1" };
+const CONSENT_ORGANIZATION = "org-example-alpha";
+const consentOrganization = async () => CONSENT_ORGANIZATION;
+const signedOut = {
+	appUrl: APP_URL,
+	getSessionUserId: async () => null,
+	getConsentOrganizationId: consentOrganization,
+};
+const signedIn = {
+	appUrl: APP_URL,
+	getSessionUserId: async () => "user-1",
+	getConsentOrganizationId: consentOrganization,
+};
 
 const PROJECT_QUERY = {
 	client_id: "client-1",
@@ -330,6 +348,109 @@ describe("authorizing", () => {
 		expect(database.saveOAuthAuthorizationResource).not.toHaveBeenCalled();
 	});
 
+	describe("delivers a refusal to the client", () => {
+		const REDIRECT = "http://127.0.0.1:41235/callback";
+		const withRedirect = (redirectUri: string, extra = {}) => ({
+			path: "/oauth2/authorize",
+			query: {
+				...PROJECT_QUERY,
+				redirect_uri: redirectUri,
+				state: "state-example",
+				...extra,
+			},
+		});
+		const locationOf = async (attempt: Promise<unknown>): Promise<URL> => {
+			const error = await attempt.then(
+				() => null,
+				(thrown: unknown) => thrown,
+			);
+			expect(error).toMatchObject({ status: "FOUND" });
+			const headers = new Headers(
+				(error as { headers: HeadersInit }).headers,
+			);
+			return new URL(headers.get("location") ?? "");
+		};
+
+		it("to the registered redirect URI when the caller cannot read the project", async () => {
+			const { ctx } = context(withRedirect(REDIRECT), {
+				client: { redirectUris: [REDIRECT] },
+			});
+
+			const location = await locationOf(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			);
+
+			expect(`${location.origin}${location.pathname}`).toBe(REDIRECT);
+			expect(Object.fromEntries(location.searchParams)).toEqual({
+				error: "access_denied",
+				error_description: "You don't have access to this project.",
+				state: "state-example",
+				iss: `${APP_URL}/api/auth`,
+			});
+			expect(
+				database.saveOAuthAuthorizationResource,
+			).not.toHaveBeenCalled();
+		});
+
+		it("to a loopback redirect URI on another port than the registered one", async () => {
+			const { ctx } = context(
+				withRedirect("http://127.0.0.1:53172/callback"),
+				{ client: { redirectUris: [REDIRECT] } },
+			);
+
+			const location = await locationOf(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			);
+
+			expect(location.origin).toBe("http://127.0.0.1:53172");
+		});
+
+		it("to the registered redirect URI when the binding that stands is another project's", async () => {
+			database.saveOAuthAuthorizationResource.mockResolvedValue({
+				resource: `${APP_URL}/api/mcp-gateway/projects/project-example-two`,
+				projectId: "project-example-two",
+				audience: "mcp",
+			});
+			database.resolveOAuthProjectGrantTarget.mockResolvedValue({
+				projectId: "project-example-one",
+				organizationId: "org-example",
+			});
+			const { ctx } = context(withRedirect(REDIRECT), {
+				client: { redirectUris: [REDIRECT] },
+			});
+
+			const location = await locationOf(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			);
+
+			expect(location.searchParams.get("error")).toBe("invalid_request");
+		});
+
+		it.each([
+			["an unregistered redirect URI", "https://evil.example/callback"],
+			["a redirect URI with a fragment", `${REDIRECT}#fragment`],
+		])("not to %s", async (_label, redirectUri) => {
+			const { ctx } = context(withRedirect(redirectUri), {
+				client: { redirectUris: [REDIRECT] },
+			});
+
+			await expect(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			).rejects.toMatchObject({ body: { error: "access_denied" } });
+		});
+
+		it("not to a caller that asked for JSON", async () => {
+			const { ctx } = context(withRedirect(REDIRECT), {
+				client: { redirectUris: [REDIRECT] },
+			});
+			ctx.headers.set("accept", "application/json");
+
+			await expect(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			).rejects.toMatchObject({ body: { error: "access_denied" } });
+		});
+	});
+
 	it("records the binding of a signed-in caller who can read the project", async () => {
 		database.resolveOAuthProjectGrantTarget.mockResolvedValue({
 			projectId: "project-example-one",
@@ -490,6 +611,7 @@ describe("consenting", () => {
 			accept: true,
 			oauth_query: SIGNED_QUERY,
 			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: CONSENT_ORGANIZATION,
 		});
 
 		await expect(
@@ -503,6 +625,7 @@ describe("consenting", () => {
 			accept: true,
 			oauth_query: SIGNED_QUERY,
 			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: CONSENT_ORGANIZATION,
 		});
 
 		await enforceOAuthResourceBinding(ctx, signedIn);
@@ -514,12 +637,67 @@ describe("consenting", () => {
 		expect(asOf?.getTime()).toBeLessThanOrEqual(Date.now() + 60 * 1000);
 	});
 
+	it("refuses an organization-wide approval that does not say which organization it showed", async () => {
+		const { ctx } = consent({
+			accept: true,
+			oauth_query: SIGNED_QUERY,
+			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+		});
+
+		await expect(
+			enforceOAuthResourceBinding(ctx, signedIn),
+		).rejects.toMatchObject({ body: { error: "invalid_request" } });
+	});
+
+	it.each([
+		["another organization", "org-example-beta"],
+		["an empty string", ""],
+		["a number", 7],
+		["null", null],
+	])(
+		"refuses an organization-wide approval that showed %s instead of the one it would grant",
+		async (_label, shown) => {
+			const { ctx } = consent({
+				accept: true,
+				oauth_query: SIGNED_QUERY,
+				[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: shown,
+			});
+
+			await expect(
+				enforceOAuthResourceBinding(ctx, signedIn),
+			).rejects.toMatchObject({ body: { error: "invalid_request" } });
+		},
+	);
+
+	it("does not ask which organization a project approval showed", async () => {
+		database.findLiveOAuthAuthorizationResource.mockResolvedValue(LIVE);
+		const getConsentOrganizationId = vi.fn(async () => "org-example-beta");
+		const { ctx } = consent({
+			accept: true,
+			oauth_query: SIGNED_QUERY,
+			[OAUTH_DISPLAYED_BINDING_FIELD]: {
+				projectId: "project-example-one",
+				audience: "mcp",
+			},
+		});
+
+		await expect(
+			enforceOAuthResourceBinding(ctx, {
+				...signedIn,
+				getConsentOrganizationId,
+			}),
+		).resolves.toBeUndefined();
+		expect(getConsentOrganizationId).not.toHaveBeenCalled();
+	});
+
 	it("refuses an approval that says none was shown when a binding is live", async () => {
 		database.findLiveOAuthAuthorizationResource.mockResolvedValue(LIVE);
 		const { ctx } = consent({
 			accept: true,
 			oauth_query: SIGNED_QUERY,
 			[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: CONSENT_ORGANIZATION,
 		});
 
 		await expect(
@@ -596,6 +774,7 @@ describe("consenting", () => {
 				accept: true,
 				oauth_query: oauthQuery,
 				[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: CONSENT_ORGANIZATION,
 			});
 
 			await expect(

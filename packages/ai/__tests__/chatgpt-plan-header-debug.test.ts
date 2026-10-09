@@ -19,7 +19,7 @@ vi.mock("@repo/database", () => ({
 	getChatGptPlanSourceStates: async () => [],
 	recordChatGptPlanSourceExhausted: async () => {},
 	clearChatGptPlanSourceState: async () => {},
-	getChatGptPlanOrgAccountFirstUseSince: async () => null,
+	getChatGptPlanOrgAccountWindows: async () => new Map(),
 	getUserModelPreference: vi.fn(),
 	getModelForTask: vi.fn(),
 }));

@@ -42,6 +42,8 @@ export interface ContextSourceSubmitAdapter {
 		filename: string;
 		mimeType: string;
 		size: number;
+		/** The title the person typed for the batch; absent when left blank. */
+		title?: string;
 	}) => Promise<{
 		signedUploadUrl: string;
 		contextId: string;

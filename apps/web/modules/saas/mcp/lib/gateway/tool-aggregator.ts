@@ -12,11 +12,13 @@
  * every upstream server. Falls back to live tool discovery if cache is stale.
  */
 
+import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { boundProjectId, projectBoundTools } from "./project-binding";
 import type {
 	ConnectedServerInfo,
 	GatewaySession,
 	GatewayToolDefinition,
+	ToolAnnotations,
 	ToolCallResult,
 } from "./types";
 
@@ -84,6 +86,7 @@ export async function getAggregatedTools(
 	const connectedTools: GatewayToolDefinition[] = [];
 	for (const server of connectedServers) {
 		for (const tool of server.tools) {
+			const annotations = readMcpToolAnnotations(tool.annotations);
 			connectedTools.push({
 				name: `${server.toolPrefix}__${tool.name}`,
 				description: `[${server.displayName}] ${tool.description || tool.name}`,
@@ -93,6 +96,7 @@ export async function getAggregatedTools(
 				},
 				_gateway_source: server.displayName,
 				_gateway_config_id: server.configId,
+				...(annotations ? { annotations } : {}),
 			});
 		}
 	}
@@ -151,6 +155,7 @@ async function discoverConnectedServerTools(
 			name: string;
 			description?: string;
 			inputSchema?: Record<string, unknown>;
+			annotations?: ToolAnnotations;
 		}> | null;
 
 		const cacheAge = config.toolsCachedAt
@@ -221,6 +226,7 @@ async function discoverToolsLive(
 		name: string;
 		description?: string;
 		inputSchema?: Record<string, unknown>;
+		annotations?: ToolAnnotations;
 	}>
 > {
 	const { getCachedMcpClientForConfig } = await import("@repo/mcp");
@@ -245,17 +251,20 @@ async function discoverToolsLive(
 			name: string;
 			description?: string;
 			inputSchema?: Record<string, unknown>;
+			annotations?: ToolAnnotations;
 		}> = [];
 
 		for (const [name, tool] of Object.entries(toolsMap)) {
 			const t = tool as {
 				description?: string;
 				inputSchema?: unknown;
+				metadata?: { annotations?: unknown };
 			};
 			tools.push({
 				name,
 				description: t.description,
 				inputSchema: normalizeInputSchema(t.inputSchema),
+				annotations: readMcpToolAnnotations(t.metadata?.annotations),
 			});
 		}
 
@@ -266,6 +275,7 @@ async function discoverToolsLive(
 				name: t.name,
 				description: t.description ?? null,
 				inputSchema: t.inputSchema ?? null,
+				annotations: t.annotations ?? null,
 			})),
 		}).catch(() => {});
 

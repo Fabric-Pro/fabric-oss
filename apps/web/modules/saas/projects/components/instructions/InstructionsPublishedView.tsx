@@ -740,7 +740,7 @@ export function InstructionsPublishedView({
 					{/* Side by side only where the file keeps a reading width:
 					    at md the app's sidebar leaves it ~110px beside a 340px
 					    tree. */}
-					<div data-onboarding-target="coding-instructions-tree">
+					<div>
 						<InstructionsTree
 							files={treeFiles}
 							selectedPath={selectedFile}
@@ -794,6 +794,8 @@ export function InstructionsPublishedView({
 								onChanged={onChanged}
 								onCommitted={onCommitted}
 								onDraftStateChange={onDraftStateChange}
+								onOpenPath={setSelected}
+								onRenamed={setSelected}
 							/>
 						) : fileListLoaded ? (
 							<div className="flex h-full items-center justify-center rounded-lg border border-border text-muted-foreground">

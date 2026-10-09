@@ -66,3 +66,28 @@ describe("Markdown", () => {
 		expect(container.querySelector("script")).toBeNull();
 	});
 });
+
+describe("Markdown — fenced code", () => {
+	it("resets the inline-code chip inside a fenced block and boxes the block itself", () => {
+		const { container } = render(
+			<Markdown>{"```sh\nexport A=1\nrun --now\n```"}</Markdown>,
+		);
+
+		const className = container.firstElementChild?.className ?? "";
+		expect(container.querySelector("pre code")).not.toBeNull();
+		expect(className).toContain("[&_pre_code]:border-0");
+		expect(className).toContain("[&_pre_code]:bg-transparent");
+		expect(className).toContain("[&_pre_code]:p-0");
+		expect(className).toContain("prose-pre:bg-muted");
+	});
+});
+
+describe("Markdown — fenced code padding", () => {
+	it("pads the pre box, since the code inside is reset to no padding", () => {
+		const { container } = render(<Markdown>{"```\nx\n```"}</Markdown>);
+
+		const className = container.firstElementChild?.className ?? "";
+		expect(className).toContain("prose-pre:px-4");
+		expect(className).toContain("prose-pre:py-3");
+	});
+});

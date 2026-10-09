@@ -7,6 +7,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
 	loadRecipientBrandProject,
 	newRecipientLogoToken,
@@ -15,7 +16,6 @@ import {
 	recipientBrandBucket,
 	recipientLogoPendingKey,
 } from "../../lib/recipient-brand";
-import { requireGlossyEnabled } from "../../lib/glossy-feature";
 
 /**
  * Issue a signed PUT for a manually uploaded recipient logo (Fizzy #2589,
@@ -31,12 +31,13 @@ import { requireGlossyEnabled } from "../../lib/glossy-feature";
  * Recorded by the activity-capture middleware (the name is not a read), so
  * issuance needs no curated audit action of its own.
  *
- * AUTHORIZATION: `requireGlossyEnabled` first (gate off → NOT_FOUND for every
- * caller), then `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
+ * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
+ * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
  * recipient brand gate including `canEditProject`.
  */
 export const createRecipientLogoUploadUrlProcedure = tenantProtectedProcedure
-	.use(requireGlossyEnabled())
+	.use(requireGlossyOrProposalArtifactEnabled())
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
 	.route({
 		method: "POST",

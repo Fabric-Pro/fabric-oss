@@ -45,6 +45,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	isOrganizationMember: mocks.isOrganizationMember,
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	findOpenBacklogTitleCollision: mocks.findOpenBacklogTitleCollision,
@@ -660,7 +661,9 @@ describe("fabric_create_bug — dedup", () => {
 		);
 
 		expect(result.isError).toBe(true);
-		expect(payload(result).error).toBe("Unique constraint failed");
+		expect(payload(result).error).toBe(
+			"fabric_create_bug failed because of an internal error. Nothing was confirmed; try again.",
+		);
 		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
 	});
 
@@ -676,7 +679,10 @@ describe("fabric_create_bug — dedup", () => {
 		);
 
 		expect(result.isError).toBe(true);
-		expect(payload(result).error).toBe("drafting model unavailable");
+		expect(payload(result).error).toBe(
+			"fabric_create_bug failed because of an internal error. Nothing was confirmed; try again.",
+		);
+		expect(JSON.stringify(result)).not.toContain("drafting model");
 	});
 });
 

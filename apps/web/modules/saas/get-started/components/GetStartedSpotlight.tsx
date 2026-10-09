@@ -548,12 +548,15 @@ export function GetStartedSpotlight({
 	}
 
 	const StepIcon = step.icon;
+	// A step can carry its copy under another key while a rollout flag
+	// changes what it should say (`OnboardingStep.copyId`).
+	const copyKey = step.copyId ?? step.id;
 	const title = noProject
 		? t("onboarding.tour.noProject.title")
-		: (step.title ?? t(`onboarding.tour.steps.${step.id}.title` as string));
+		: (step.title ?? t(`onboarding.tour.steps.${copyKey}.title` as string));
 	const body = noProject
 		? t("onboarding.tour.noProject.body")
-		: (step.body ?? t(`onboarding.tour.steps.${step.id}.body` as string));
+		: (step.body ?? t(`onboarding.tour.steps.${copyKey}.body` as string));
 
 	const scrimColor =
 		"color-mix(in oklch, var(--color-background) 86%, transparent)";

@@ -13,6 +13,10 @@ import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
 } from "@saas/payments/lib/ai-usage-limit-toast";
+import {
+	describeAiError,
+	isChatGptPlanSpentCode,
+} from "@saas/shared/lib/ai-error-message";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
 import {
@@ -711,6 +715,14 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						setIsLoading(false);
 						setState({ status: "idle" });
 						return;
+					}
+					// Every ChatGPT plan serving the member is spent (Fizzy
+					// #2770): the turn says until when; the app's fetch
+					// interceptor raises the toast and any billing switch.
+					if (isChatGptPlanSpentCode(error?.code)) {
+						throw new Error(
+							describeAiError(response.status, error).description,
+						);
 					}
 					// `message` carries the specifics (the rate limiter's
 					// "try again in N seconds"); `error` is only the category.

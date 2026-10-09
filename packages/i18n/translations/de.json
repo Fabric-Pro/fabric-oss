@@ -1295,11 +1295,14 @@
 					},
 					"chatgpt_plan": {
 						"account_connected": "Gemeinsames ChatGPT-Plan-Konto verbunden",
+						"account_shared_from_personal": "Eigener ChatGPT-Plan mit der Organisation geteilt",
+						"account_returned_to_personal": "Geteilter ChatGPT-Plan als eigener Plan zurückgenommen",
 						"account_updated": "Gemeinsames ChatGPT-Plan-Konto aktualisiert",
 						"account_disconnected": "Gemeinsames ChatGPT-Plan-Konto getrennt",
 						"policy_changed": "Richtlinie für ChatGPT-Plan-Pooling geändert",
 						"terms_acknowledged": "Bedingungen für ChatGPT-Plan-Pooling akzeptiert",
-						"api_fallback_used": "Hintergrund-KI-Arbeit auf den Anbieter der Organisation ausgewichen"
+						"api_fallback_used": "Hintergrund-KI-Arbeit auf den Anbieter der Organisation ausgewichen",
+						"fallback_model_changed": "Ersatzmodell des ChatGPT-Plans geändert"
 					},
 					"restored": "Organisation wiederhergestellt",
 					"purged": "Organisation endgültig gelöscht",
@@ -2280,32 +2283,49 @@
 				"everythingElse": "Der KI-Anbieter unten übernimmt alles andere, etwa Hintergrundaufgaben und die Dokumentsuche.",
 				"onlyTitle": "Nur dein ChatGPT-Plan ist eingerichtet",
 				"onlyDescription": "Deine eigene KI-Arbeit in {organization} läuft über deinen ChatGPT-Plan. Hintergrundaufgaben und die Dokumentsuche brauchen einen KI-Anbieter: Füge unten einen hinzu."
+			},
+			"subscription": {
+				"tier": {
+					"FREE": "Free",
+					"PLUS": "Plus",
+					"PRO": "Pro",
+					"TEAM": "Team",
+					"UNKNOWN": "Unbekannt"
+				},
+				"freeWarning": "Free-Pläne haben sehr kleine Limits",
+				"paidUntil": "Bezahlt bis {date}",
+				"expiring": "Bezahlt bis {date}: läuft in weniger als 3 Tagen ab",
+				"expired": "Abo beendet am {date}: in ChatGPT verlängern"
+			},
+			"weeklyLimitOnly": "Kein Fünf-Stunden-Fenster bei diesem Plan: nur Wochenlimit",
+			"share": {
+				"action": "Mit {organization} teilen",
+				"description": "Dieses ChatGPT-Konto wird eines der geteilten Konten von {organization}. Eine neue Anmeldung ist nicht nötig.",
+				"confirmTitle": "Deinen ChatGPT-Plan mit {organization} teilen?",
+				"confirmBody": "Er ist dann in keiner Organisation mehr dein eigener Plan, sondern ein geteiltes Konto von {organization}. Dessen Admins verwalten die Nutzung; nur du kannst ihn zurücknehmen.",
+				"confirm": "Teilen",
+				"shared": "Dein ChatGPT-Plan wird jetzt mit {organization} geteilt",
+				"failed": "Der ChatGPT-Plan konnte nicht geteilt werden",
+				"sharedWithTitle": "Geteilt mit {organization}",
+				"sharedWithNote": "Admins von {organization} verwalten dieses Konto. Nur du kannst es als eigenen Plan zurücknehmen.",
+				"takeBack": "Zurücknehmen",
+				"takeBackBlocked": "Trenne zuerst deinen eigenen ChatGPT-Plan, um dieses Konto zurückzunehmen.",
+				"takeBackConfirmTitle": "{account} zurücknehmen?",
+				"takeBackConfirmBody": "Es wird wieder dein eigener Plan und dient nicht mehr der geteilten Arbeit von {organization}. Du kannst es später erneut teilen.",
+				"takenBack": "Das Konto ist wieder dein eigener Plan",
+				"takeBackFailed": "Das Konto konnte nicht zurückgenommen werden"
 			}
 		},
 		"chatgptPlanPool": {
 			"title": "Gemeinsame ChatGPT-Pläne",
 			"description": "ChatGPT-Konten, die die Organisation gemeinsam nutzt. Freigegebene Hintergrundaufgaben – und, wo du es erlaubst, die eigene Arbeit von Mitgliedern ohne eigenen Plan – laufen darauf statt über den KI-Anbieter der Organisation.",
 			"loadFailed": "Die gemeinsamen ChatGPT-Pläne konnten nicht geladen werden. Lade die Seite neu, um es erneut zu versuchen.",
-			"policyTitle": "Pooling-Richtlinie",
-			"policyDescription": "Ob überhaupt Arbeit auf den gemeinsamen Konten laufen darf und was passiert, wenn kein Plan mehr Nutzung übrig hat.",
 			"termsTitle": "Bedingungen für gemeinsame ChatGPT-Pläne",
 			"termsBody": "Für das Teilen eines ChatGPT-Plans in einer Organisation gelten die Bedingungen von OpenAI für diesen Plan. Mit der Zustimmung bestätigst du, dass die Organisation die hier verbundenen Konten besitzt und sie für die Arbeit ihrer Mitglieder und ihre Hintergrundaufgaben nutzen darf.",
-			"termsAcceptedOn": "Akzeptiert am {date}.",
 			"acceptTerms": "Bedingungen akzeptieren",
-			"termsAccepted": "Bedingungen akzeptiert",
 			"ownerOnly": "Nur ein Eigentümer der Organisation kann diese Bedingungen akzeptieren.",
-			"poolingEnabled": "Arbeit auf gemeinsamen Plänen ausführen",
-			"poolingEnabledHelp": "Aus läuft nichts auf den gemeinsamen Konten; sie bleiben verbunden.",
-			"poolingNeedsTerms": "Ein Eigentümer der Organisation muss zuerst die Bedingungen akzeptieren.",
-			"backgroundFallback": "Hintergrundaufgaben, wenn alle Pläne aufgebraucht sind",
-			"backgroundNever": "Auf das Zurücksetzen eines Plans warten, dann fehlschlagen",
-			"backgroundAuto": "Über den KI-Anbieter der Organisation laufen",
 			"backgroundAutoWarningTitle": "Hintergrundaufgaben werden der Organisation berechnet",
 			"backgroundAutoWarning": "Sobald alle gemeinsamen Pläne aufgebraucht sind, laufen freigegebene Hintergrundaufgaben ohne Rückfrage über den eigenen KI-Anbieter der Organisation. Jeder Wechsel dorthin wird im Audit-Log festgehalten.",
-			"headroom": "Reserve für Menschen",
-			"headroomChoice": "{percent} % jedes Fensters",
-			"headroomHelp": "Hintergrundaufgaben bevorzugen Konten, die noch so viel ihres geschätzten Fünf-Stunden-Fensters übrig haben.",
-			"policyUpdated": "Pooling-Richtlinie aktualisiert",
 			"accountsTitle": "Gemeinsame Konten",
 			"accountsDescription": "Status jedes Kontos, eine Schätzung seines aktuellen Fünf-Stunden-Fensters und die Arbeit, die es übernimmt.",
 			"emptyAccounts": "Noch ist kein gemeinsames Konto verbunden. Ein Admin der Organisation verbindet eines im Terminal:",
@@ -2318,6 +2338,14 @@
 			"enabled": "Aktiviert",
 			"serveInteractive": "Übernimmt die eigene Arbeit von Mitgliedern ohne Plan",
 			"serveBackground": "Übernimmt freigegebene Hintergrundaufgaben",
+			"planType": "Plantyp",
+			"planTypeDescription": "Der ChatGPT-Plan des Kontos. OpenAI meldet ihn nicht; er bestimmt die Nutzungsschätzung.",
+			"planTypeNotSet": "Nicht festgelegt",
+			"memberShare": "Fairer Anteil pro Mitglied",
+			"memberShareDescription": "Wie viel vom Fenster dieses Kontos die eigene Arbeit eines Mitglieds höchstens nutzen darf; danach übernehmen die anderen Konten der Organisation.",
+			"memberShareNone": "Keine Grenze",
+			"memberSharePercent": "{percent} %",
+			"importHeadsUp": "Der erste Import dieses Verlaufs läuft über die gemeinsamen ChatGPT-Pläne deiner Organisation und kann einen großen Teil des Fünf-Stunden-Fensters eines Plans verbrauchen.",
 			"accountUpdated": "Konto aktualisiert",
 			"updateFailed": "Die Änderung konnte nicht gespeichert werden. Versuche es erneut.",
 			"disconnect": "Trennen",
@@ -2326,7 +2354,187 @@
 			"disconnectFailed": "Das Konto konnte nicht getrennt werden. Versuche es erneut.",
 			"disconnectConfirmTitle": "Dieses gemeinsame Konto trennen?",
 			"disconnectConfirmDescription": "{label} wird bei OpenAI abgemeldet und aus Fabric entfernt. Danach läuft nichts mehr darauf; verbinde es mit der Fabric CLI erneut, um es zurückzuholen.",
-			"cancel": "Abbrechen"
+			"cancel": "Abbrechen",
+			"switchLabel": "{setting} – {account}",
+			"policyLink": "Routing- und Verbrauchsregeln → AI Models",
+			"connectedBy": "Verbunden von {name}",
+			"connectedByYou": "Von dir verbunden",
+			"connectedByUnknown": "Von einem ehemaligen Mitglied verbunden",
+			"takeBack": "Als meinen Plan zurücknehmen",
+			"takeBackConfirmBody": "Es wird wieder dein eigener Plan und dient nicht mehr der geteilten Arbeit dieser Organisation. Du kannst es später erneut teilen."
+		},
+		"aiProviders": {
+			"embeddingsOnly": {
+				"badge": "Nur Embeddings",
+				"badgeTooltip": "Dieser Schlüssel dient nur der Dokumentensuche (Embeddings). Fabric nutzt ihn nie für Chat, Agenten oder Generierung.",
+				"toggleLabel": "Nur Embeddings",
+				"toggleHint": "Diesen Schlüssel nie für Chat, Agenten oder Generierung verwenden. Er kann nicht der Standardanbieter sein.",
+				"enabledToast": "Schlüssel auf Embeddings beschränkt",
+				"disabledToast": "Schlüssel darf nun alle KI-Aufgaben übernehmen",
+				"failedToast": "Zweck des Schlüssels konnte nicht geändert werden",
+				"takenHint": "{provider} ist bereits der Schlüssel nur für Embeddings. Ändere zuerst seinen Zweck oder entferne ihn."
+			}
+		},
+		"chatgptPlanWindow": {
+			"lastRequestResets": "Letzte Anfrage {last} · wird um {reset} zurückgesetzt",
+			"lastRequestNoWindow": "Letzte Anfrage {last} · kein offenes Fenster",
+			"noOpenWindow": "Kein offenes Fenster",
+			"usedBy": "Genutzt von: {consumers}",
+			"otherConsumer": "Sonstiges",
+			"consumers": {
+				"teams-channel-monitor": "Teams-Kanalüberwachung",
+				"slack-channel-monitor": "Slack-Kanalüberwachung",
+				"daily-brief": "Tagesbriefing",
+				"workflow-builder": "Workflow-Builder",
+				"meeting-transcript-sync": "Meeting-Transkript-Sync",
+				"chat-agent": "Chat",
+				"maturation": "Feature-Reifung",
+				"answer-recommendation": "Antwortvorschläge",
+				"clean-spec": "Clean Spec",
+				"backlog-update": "Backlog-Aktualisierung",
+				"document-generation": "Dokumentgenerierung",
+				"generate-tasks": "Aufgabengenerierung",
+				"enhance-feature": "Feature verbessern",
+				"publishing-suite": "Publishing"
+			}
+		},
+		"aiModelsRouting": {
+			"routing": {
+				"label": "Routing",
+				"title": "So läuft KI-Arbeit in dieser Organisation",
+				"description": "Fabric versucht diese Quellen für jede Anfrage der Reihe nach. Embeddings und Dokumentensuche laufen immer über API-Abrechnung.",
+				"ownPlansTitle": "Eigener ChatGPT-Plan des Mitglieds",
+				"ownPlansBody": "Für die eigene Arbeit eines Mitglieds, wenn es einen Plan verbunden hat.",
+				"ownPlansCount": "{count, plural, one {# Mitglied verbunden} other {# Mitglieder verbunden}}",
+				"sharedTitle": "Geteilte Organisationskonten",
+				"sharedBody": "Bedienen Mitglieder ohne Plan und freigegebene Hintergrundjobs.",
+				"sharedActive": "{count} aktiv · {percent}% des Fensters genutzt",
+				"sharedNone": "Keine Konten verbunden",
+				"sharedOff": "Teilen ist aus",
+				"sharedNotEnabled": "Für diese Organisation nicht aktiviert",
+				"manageShared": "Geteilte Konten verwalten",
+				"apiTitle": "API-Abrechnung",
+				"apiBody": "Wird genutzt, wenn kein Plan die Anfrage bedienen kann.",
+				"apiBodyNone": "Nicht verfügbar. Anfragen, die kein Plan bedienen kann, schlagen fehl.",
+				"apiNone": "Kein API-Anbieter für LLM-Aufgaben",
+				"manageProviders": "Anbieter verwalten",
+				"addProvider": "API-Anbieter hinzufügen",
+				"stepNumber": "Schritt {number}",
+				"sharingQuestion": "Konten mit Mitgliedern und Hintergrundjobs teilen",
+				"sharingHelp": "Geteilte Konten bedienen Mitglieder ohne eigenen Plan und die freigegebenen Hintergrundjobs.",
+				"sharingNeedsTerms": "Ein Organisationsinhaber muss die Bedingungen akzeptieren, bevor Teilen aktiviert werden kann.",
+				"spentQuestion": "Wenn jeder Plan aufgebraucht ist",
+				"spentHelpWait": "Hintergrundjobs warten, bis das Fenster zurückgesetzt wird. Interaktive Arbeit fragt das Mitglied.",
+				"spentHelpAuto": "Hintergrundjobs wechseln zur API-Abrechnung. Interaktive Arbeit fragt das Mitglied.",
+				"spentHelpNoApi": "Ohne API-Anbieter wartet alles, bis das Fenster zurückgesetzt wird.",
+				"spentHelpNoSharing": "Gilt für die geteilten Konten. Aktiviere das Teilen, um zu wählen.",
+				"interactiveLabel": "Interaktive Arbeit",
+				"interactiveAsk": "Mitglied fragen",
+				"interactiveFixed": "Fest: Die Ablehnung eines aufgebrauchten Plans fragt das Mitglied bereits; seine Arbeit wechselt nie von selbst zur API-Abrechnung.",
+				"backgroundLabel": "Hintergrundjobs",
+				"backgroundWait": "Auf Zurücksetzen warten",
+				"backgroundApi": "API-Abrechnung nutzen",
+				"headroomLabel": "Für Menschen freihalten",
+				"fallbackQuestion": "Wenn der Plan ein gewähltes Modell nicht mehr anbietet",
+				"fallbackHelpRecommended": "Fabric versucht es einmal mit diesem Modell. GPT-6 Astra ist das stärkste und verbraucht am meisten vom Planfenster.",
+				"fallbackHelpOther": "Fabric versucht es einmal mit diesem Modell. Wird auch es nicht angeboten, stoppt die Arbeit mit einem Fehler.",
+				"fallbackHelpNone": "Arbeit, die ein nicht angebotenes Modell braucht, stoppt mit einem Fehler, der einen Admin bittet, hier ein anderes Modell zu wählen.",
+				"fallbackLabel": "Ersatzmodell",
+				"recommended": "Empfohlen",
+				"noFallback": "Kein Ersatzmodell",
+				"noFallbackDescription": "Einen Fehler zeigen und einen Admin bitten, ein anderes Modell zu wählen.",
+				"saved": "Gespeichert",
+				"saveFailed": "Die Änderung konnte nicht gespeichert werden",
+				"loadFailed": "Wie KI-Arbeit hier läuft, konnte nicht geladen werden"
+			},
+			"models": {
+				"label": "Modelle",
+				"title": "Modell für jede Art von Arbeit",
+				"description": "Die linke Spalte läuft, wann immer ein ChatGPT-Plan die Anfrage bedient. Die rechte Spalte läuft über API-Abrechnung.",
+				"kindColumn": "Art der Arbeit",
+				"planColumn": "Auf einem ChatGPT-Plan",
+				"planColumnHint": "Eigene Pläne und geteilte Konten",
+				"apiColumn": "Über API-Abrechnung",
+				"apiColumnHint": "Kein Plan oder Pläne aufgebraucht",
+				"apiColumnHintNone": "Füge einen Anbieter hinzu, um zu wählen",
+				"defaultModel": "Standard · {model}",
+				"defaultPlain": "Standard",
+				"newest": "Neuestes",
+				"servedGroup": "Heute von euren Plänen angeboten",
+				"servedFooter": "Geprüft {time} · {count, plural, one {# Modell} other {# Modelle}}. Wird ein Modell nicht mehr angeboten, nutzt Fabric das unter Routing gewählte Ersatzmodell.",
+				"servedFooterUnchecked": "Noch nicht mit euren Plänen abgeglichen. Wird ein Modell nicht mehr angeboten, nutzt Fabric das unter Routing gewählte Ersatzmodell.",
+				"noLongerServed": "Nicht mehr angeboten; Aufrufe nutzen das Ersatzmodell.",
+				"notOnPlan": "Läuft nicht auf einem Plan",
+				"noApiProvider": "Kein API-Anbieter für LLM-Aufgaben",
+				"needsApiProvider": "Benötigt einen API-Anbieter · läuft nicht über einen Plan",
+				"noModelsAvailable": "Keine Modelle verfügbar",
+				"enforced": "Mitglieder können das nicht ändern",
+				"planSelectLabel": "{task} auf einem ChatGPT-Plan",
+				"apiSelectLabel": "{task} über API-Abrechnung",
+				"embeddingsTitle": "Embeddings",
+				"embeddingsHint": "Dokumentensuche, Codebase-Indexierung, Wissensabruf",
+				"embeddingsWhy": "Immer API-Abrechnung. Pläne führen keine Embeddings aus.",
+				"embeddingsVia": "über {provider}",
+				"embeddingsOffTitle": "Dokumentensuche ist aus",
+				"embeddingsOffBody": "Pläne können keine Embeddings ausführen. Füge einen API-Schlüssel nur für Embeddings hinzu, zum Beispiel OpenAI mit „Für Dokumente nutzen“.",
+				"addEmbeddingsKey": "Embeddings-Schlüssel hinzufügen",
+				"embeddingsNeedsVectorSize": "benötigt Vektoren mit 1536 Dimensionen",
+				"embeddingsChangeTitle": "Embeddings-Modell ändern?",
+				"embeddingsChangeBody": "Mit dem aktuellen Modell indexierte Dokumente müssen neu indexiert werden, bevor die Suche sie findet.",
+				"embeddingsChangeCancel": "Abbrechen",
+				"embeddingsChangeConfirm": "Ändern",
+				"tasks": {
+					"COMPLEX": {
+						"name": "Komplexe Arbeit",
+						"hint": "Dokumente, Specs, Analysen"
+					},
+					"REASONING": {
+						"name": "Reasoning",
+						"hint": "Mehrstufige Problemlösung"
+					},
+					"TOOL_CALLING": {
+						"name": "Tool-Aufrufe",
+						"hint": "Advisor, ⌘J-Chat, Agenten, MCP-Tools"
+					},
+					"CHAT": {
+						"name": "Chat",
+						"hint": "Workspace-Dokumentchat, Atlas-Assistent, Agent-Builder-Sidekick"
+					},
+					"EVAL": {
+						"name": "Bewertung",
+						"hint": "Bewertungs- und Review-Durchläufe"
+					},
+					"SIMPLE": {
+						"name": "Einfache Aufgaben",
+						"hint": "Titel, kurze Zusammenfassungen"
+					},
+					"IMAGE": {
+						"name": "Bildgenerierung",
+						"hint": "Bilder aus Text-Prompts"
+					},
+					"AUDIO": {
+						"name": "Audio",
+						"hint": "Sprache-zu-Text-Transkription"
+					},
+					"DECISION": {
+						"name": "Entscheidungen",
+						"hint": "Bug- oder Feature-Klassifizierung"
+					}
+				}
+			}
+		},
+		"chatgptPlanModels": {
+			"noModel": "Kein Modell verfügbar",
+			"memberNote": "Ihre Organisation hat diese Modelle ausgewählt; sie laufen über Ihren Plan.",
+			"connectNote": "{organization} hat diese Modelle ausgewählt; wenn Sie Ihren Plan dort verbinden, laufen sie darüber.",
+			"tasks": {
+				"COMPLEX": "Komplexe Aufgaben",
+				"REASONING": "Schlussfolgern",
+				"TOOL_CALLING": "Tool-Aufrufe",
+				"CHAT": "Chat",
+				"EVAL": "Bewertung",
+				"SIMPLE": "Einfache Aufgaben"
+			}
 		}
 	},
 	"start": {
@@ -2687,6 +2895,9 @@
 						"notSynced": "Noch nicht synchronisiert",
 						"applied": "Commit {sha} angewendet · vor {time} · {count, plural, one {# Datei} other {# Dateien}}",
 						"partial": "Commit {sha} teilweise angewendet · {count, plural, one {# Datei behielt eine ältere Version} other {# Dateien behielten eine ältere Version}}",
+						"partialBoth": "Commit {sha} teilweise angewendet · {kept, plural, one {# Datei behielt eine ältere Version} other {# Dateien behielten eine ältere Version}} · {skipped, plural, one {# Datei übersprungen} other {# Dateien übersprungen}}",
+						"partialSkipped": "Commit {sha} angewendet · {count, plural, one {# Datei übersprungen} other {# Dateien übersprungen}}",
+						"partialNoDetail": "Commit {sha} teilweise angewendet",
 						"failed": "Synchronisierung bei Commit {sha} teilweise fehlgeschlagen · vorheriger Inhalt bleibt erhalten"
 					},
 					"awaitingIndex": "{count, plural, one {# Datei wartet auf Indizierung} other {# Dateien warten auf Indizierung}}",
@@ -2762,7 +2973,8 @@
 						},
 						"saveBlocked": {
 							"noRepository": "Wählen Sie ein Repository, aus dem synchronisiert wird.",
-							"noBranch": "Geben Sie den Branch ein, aus dem synchronisiert wird."
+							"noBranch": "Geben Sie den Branch ein, aus dem synchronisiert wird.",
+							"branchMissing": "Der Branch {ref} wurde im Repository nicht gefunden. Wählen Sie zum Speichern einen anderen Branch."
 						},
 						"contextignoreNotice": "Die eigene .contextignore jedes ausgewählten Ordners wird berücksichtigt, genau wie `fabric context push` sie anwendet.",
 						"pruneNotice": "Eine nicht mehr ausgewählte, ausgelassene oder aus dem Repository entfernte Datei wird bei der nächsten Synchronisierung aus Living Memory entfernt.",
@@ -4893,6 +5105,11 @@
 			"editorLink": "Glossy-Version",
 			"menuItem": "Glossy-Version"
 		},
+		"proposalArtifactEntry": {
+			"libraryPrompt": "Kundenangebots-Prompt aus der Bibliothek",
+			"libraryPromptHint": "Angebote werden mit dem Kundenangebots-Prompt erstellt, den Ihre Organisation in der Prompt-Bibliothek pflegt. Hier ist daher kein Prompt auszuwählen.",
+			"recipientBrandDescription": "Für wen die Angebote dieses Projekts erstellt werden. Ihre Farben prägen die Visualisierungen des nächsten Angebots, das in diesem Projekt generiert wird."
+		},
 		"proposals": {
 			"source": {
 				"TEAMS_CHANNEL": "Teams-Kanal",
@@ -4919,6 +5136,131 @@
 				"body": "Die Unternehmensquellen Ihrer Organisation sind noch nicht bereit, daher nutzt dieser Entwurf nur den Kontext des Projekts. Entwürfe, die nach Abschluss der Verarbeitung begonnen werden, können darauf zurückgreifen."
 			},
 			"openSettings": "Unternehmenskontext öffnen"
+		},
+		"proposalArtifact": {
+			"analysis": {
+				"title": "Interne Analyse",
+				"description": "Prüfhinweise zu diesem Angebot für Ihr Team. Projektgäste sehen sie nie, und sie sind nie Teil des Hauptdokuments oder seiner Downloads.",
+				"loading": "Die interne Analyse wird geladen…",
+				"loadFailed": "Die interne Analyse konnte nicht geladen werden.",
+				"retry": "Erneut versuchen",
+				"unavailable": "Die interne Analyse ist nicht verfügbar.",
+				"notRun": "Noch keine interne Analyse. Sie läuft automatisch nach der nächsten Generierung dieses Angebots.",
+				"afterGeneration": "Nach dieser Generierung läuft eine interne Analyse.",
+				"newRunAfterGeneration": "Nach dieser Generierung läuft eine neue interne Analyse. Die Analyse unten bezieht sich auf die vorherige Fassung.",
+				"awaiting": "Die interne Analyse dieser Fassung wird erstellt.",
+				"awaitingNewRun": "Die interne Analyse dieser Fassung wird erstellt. Die Analyse unten bezieht sich auf die vorherige Fassung.",
+				"pending": "Wartet auf den Start. Die interne Analyse läuft, sobald das Hauptdokument fertig ist.",
+				"running": "Das Angebot wird analysiert…",
+				"timedOut": "Die interne Analyse reagiert nicht mehr.",
+				"failedTitle": "Die interne Analyse wurde nicht ausgeführt.",
+				"failed": {
+					"AI_PROVIDER_NOT_CONFIGURED": "Für diese Organisation ist kein KI-Anbieter konfiguriert. Ein Administrator der Organisation kann einen in den KI-Einstellungen der Organisation hinzufügen.",
+					"PROMPT_NOT_BOUND": "Der Aktion für die interne Analyse von Angeboten ist kein Prompt zugeordnet. Ein Administrator der Organisation kann einen in der Prompt-Bibliothek zuordnen.",
+					"GUEST_TRIGGERED": "Für Generierungen, die von Projektgästen gestartet wurden, läuft keine interne Analyse.",
+					"PROMPT_RENDER_FAILED": "Der Prompt für die interne Analyse konnte nicht vorbereitet werden.",
+					"MODEL_ERROR": "Das KI-Modell konnte die interne Analyse nicht abschließen.",
+					"START_FAILED": "Die interne Analyse konnte nicht gestartet werden.",
+					"TIMED_OUT": "Die interne Analyse hat zu lange gedauert und wurde abgebrochen.",
+					"unknown": "Bei der internen Analyse ist ein Fehler aufgetreten."
+				},
+				"failedHint": "Das Hauptdokument ist nicht betroffen. Die Analyse läuft mit der nächsten Generierung erneut.",
+				"stale": "Diese Analyse bezieht sich auf eine frühere Fassung des Dokuments. Die nächste Generierung erstellt eine neue.",
+				"noContext": "Diese Analyse lief ohne Quellkontext und hat daher nur das Dokument selbst geprüft.",
+				"empty": "Keine Befunde. Die Analyse hat in dieser Fassung nichts gefunden, das hervorzuheben wäre.",
+				"summary": "{count, plural, one {# Befund} other {# Befunde}}",
+				"severity": {
+					"BLOCKING": "Blockierend",
+					"IMPORTANT": "Wichtig",
+					"INFORMATIONAL": "Informativ"
+				},
+				"groupCount": "{count}",
+				"groupEmpty": "Keine.",
+				"type": {
+					"SCOPE": "Umfang",
+					"COMMERCIAL": "Kommerziell",
+					"ASSUMPTION": "Annahme",
+					"RISK": "Risiko",
+					"GAP": "Lücke",
+					"SOURCE_VALIDATION": "Quellenprüfung",
+					"ARCHITECTURE": "Architektur",
+					"BRANDING": "Branding",
+					"OPPORTUNITY": "Chance",
+					"unknown": "Sonstiges"
+				},
+				"recommendation": "Empfehlung:",
+				"section": "Abschnitt: {heading}"
+			},
+			"style": {
+				"title": "Stil",
+				"description": "Wie die Visuals der nächsten Generierung dieses Angebots aussehen. Gespeicherte Änderungen verändern nichts bereits Generiertes.",
+				"loading": "Der Stil wird geladen…",
+				"loadFailed": "Der Stil konnte nicht geladen werden.",
+				"retry": "Erneut versuchen",
+				"unavailable": "Der Stil ist nicht verfügbar.",
+				"readOnly": "Nur Projektbearbeiter können den Stil ändern.",
+				"generating": "Eine Generierung läuft. Änderungen, die Sie jetzt speichern, sind für die nächste Generierung gedacht; die laufende verwendet sie möglicherweise nicht.",
+				"styleDirection": "Stilvorgabe",
+				"styleDirectionPlaceholder": "Zum Beispiel: ruhig und sachlich, mit dem Zeitplan beginnen",
+				"styleDirectionHelp": "Optionale Vorgabe für die Visuals.",
+				"characterCount": "{count} / {max} Zeichen",
+				"directionTooLong": "Die Stilvorgabe darf höchstens {max} Zeichen lang sein.",
+				"colors": "Farben",
+				"colorsHelp": "Ihre Farben für die Diagramme der nächsten Generierung.",
+				"primaryColor": "Hauptfarbe",
+				"primaryHex": "Hauptfarbe (Hex)",
+				"primaryPicker": "Hauptfarbe auswählen",
+				"primaryRemove": "Hauptfarbe entfernen",
+				"accentColors": "Akzentfarben",
+				"accentColorsHelp": "Bis zu {max}.",
+				"accentHex": "Akzentfarbe {position} (Hex)",
+				"accentPicker": "Akzentfarbe {position} auswählen",
+				"accentRemove": "Akzentfarbe {position} entfernen",
+				"addColor": "Farbe hinzufügen",
+				"invalidColor": "Geben Sie eine Farbe als #rrggbb ein, zum Beispiel #1a73e8.",
+				"noColors": "Keine Farben.",
+				"recipient": "Empfängermarke",
+				"recipientHelp": "Gilt für alle Angebote in diesem Projekt: Eine Änderung hier betrifft jedes davon.",
+				"recipientLoadFailed": "Die Empfängermarke konnte nicht geladen werden.",
+				"recipientConflict": "Jemand anderes hat die Empfängermarke geändert, während Sie sie bearbeitet haben. Unten sehen Sie die neue Fassung — prüfen Sie sie und speichern Sie erneut.",
+				"save": "Stil speichern",
+				"discard": "Änderungen verwerfen",
+				"saving": "Wird gespeichert…",
+				"unsaved": "Nicht gespeicherte Änderungen",
+				"saved": "Gespeichert. Die Änderungen gelten ab der nächsten Generierung dieses Angebots.",
+				"regenerate": "Jetzt neu generieren",
+				"invalid": {
+					"directionTooLong": "Kürzen Sie die Stilvorgabe vor dem Speichern.",
+					"invalidColor": "Korrigieren Sie die markierten Farben vor dem Speichern.",
+					"tooManyAccentColors": "Verwenden Sie höchstens {max} Akzentfarben."
+				},
+				"styleFailed": "Der Stil konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+				"recipientFailed": "Die Empfängermarke konnte nicht gespeichert werden. Versuchen Sie es erneut."
+			}
+		},
+		"proposalArtifactPage": {
+			"tabs": {
+				"label": "Angebot",
+				"main": "Hauptdokument",
+				"analysis": "Interne Analyse",
+				"style": "Stil"
+			},
+			"analysisIndicator": {
+				"pending": "Wartet",
+				"running": "Läuft",
+				"blocking": "{count} blockierend",
+				"failed": "Fehlgeschlagen"
+			},
+			"live": {
+				"sectionsReady": "{count, plural, one {# Abschnitt fertig} other {# Abschnitte fertig}}",
+				"writingNext": "Der nächste Abschnitt wird geschrieben…",
+				"finishing": "Visualisierungen werden ergänzt und das Angebot wird fertiggestellt…",
+				"previousVersion": "Vorherige Version, angezeigt bis der erste neue Abschnitt fertig ist",
+				"newDocument": "Der erste Abschnitt erscheint hier, sobald er geschrieben ist.",
+				"stalled": "Die Generierung dauert länger als erwartet.",
+				"retry": "Generierung wiederholen",
+				"retryFailed": "Die Generierung konnte nicht neu gestartet werden: {message}"
+			}
 		},
 		"glossy": {
 			"recipientBrand": {

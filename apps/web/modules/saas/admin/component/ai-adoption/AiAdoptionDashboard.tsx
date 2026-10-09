@@ -483,8 +483,12 @@ function UsageSection({ usage }: { usage: AiAdoptionMetrics["usage"] }) {
 				/>
 				<StatTile
 					label="Error rate"
-					value={formatPercent(usage.failedRequests, usage.requests)}
-					detail={`${numberFormat.format(usage.failedRequests)} failed`}
+					// Requests are successful calls only; the rate is of attempts.
+					value={formatPercent(
+						usage.failedRequests,
+						usage.requests + usage.failedRequests,
+					)}
+					detail={`${numberFormat.format(usage.failedRequests)} failed attempts, not in the counts above`}
 				/>
 			</div>
 			<p className="text-muted-foreground text-xs">

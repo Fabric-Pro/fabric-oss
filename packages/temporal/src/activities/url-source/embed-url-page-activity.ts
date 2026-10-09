@@ -25,7 +25,7 @@
  */
 import {
 	AIProviderNotConfiguredError,
-	getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
 import { db } from "@repo/database/prisma/client";
 import {
@@ -100,7 +100,7 @@ export async function embedUrlPageActivity(
 		return { success: true, chunkCount: 0 };
 	}
 
-	const providerConfig = await getSystemRAGProviderConfig({
+	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
 		userId,
 		organizationId,
 	});

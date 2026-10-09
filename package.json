@@ -22,6 +22,7 @@
 		"validate:agents": "tsx scripts/validate-agents.ts",
 		"postinstall": "node -e \"const s='scripts/postinstall-dev-build.mjs';require('fs').existsSync(s)&&require('child_process').execFileSync(process.execPath,[s],{stdio:'inherit'})\"",
 		"changeset": "changeset",
+		"changeset:gate": "node scripts/changeset-gate.mjs",
 		"version-packages": "changeset version",
 		"release": "turbo build --filter=\"@fabricorg/*\" && changeset publish",
 		"prepare": "git config core.hooksPath .githooks || true; node tooling/identifier-guard/terms-sync.mjs --bootstrap || true",

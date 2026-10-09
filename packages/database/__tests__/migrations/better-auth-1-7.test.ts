@@ -720,6 +720,31 @@ describe.skipIf(!databaseUrl)("Better Auth 1.7 database compatibility", () => {
 		}
 	});
 
+	it("points the installer's trigger at the migration's function when it exists, in either order", async () => {
+		await client.query(readFileSync(cursorMigrationPath, "utf8"));
+		await backfill();
+		const triggerFunction = async () =>
+			(
+				await client.query(
+					"SELECT tgfoid::regprocedure::text AS fn FROM pg_trigger WHERE tgname = 'fabric_oauth_client_compatibility' AND tgrelid = 'oauth_client'::regclass",
+				)
+			).rows;
+		expect(await triggerFunction()).toEqual([
+			{ fn: "fabric_oauth_client_compatibility_v2()" },
+		]);
+		await register("example-cursor", {
+			public: null,
+			type: null,
+			applicationType: "native",
+			redirectUris: ["cursor://anysphere.cursor-mcp/oauth/callback"],
+		});
+		await client.query(readFileSync(cursorMigrationPath, "utf8"));
+		expect(await triggerFunction()).toEqual([
+			{ fn: "fabric_oauth_client_compatibility_v2()" },
+		]);
+		expect(await isBetterAuth17Ready(client)).toBe(true);
+	});
+
 	it("installs no trigger where the installer never ran", async () => {
 		await client.query(readFileSync(cursorMigrationPath, "utf8"));
 		expect(

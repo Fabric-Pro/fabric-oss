@@ -4,8 +4,14 @@ import { useActiveOrganization } from "@saas/organizations/hooks/use-active-orga
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { chatgptPlanModelsQueryKey } from "../chatgpt-plan-models/chatgpt-plan-models-queries";
+import { chatgptPlanPoolQueryKey } from "../chatgpt-plan-pool/chatgpt-plan-pool-queries";
 
-const chatgptPlanStatusQueryKey = ["users", "chatgpt-plan", "status"] as const;
+export const chatgptPlanStatusQueryKey = [
+	"users",
+	"chatgpt-plan",
+	"status",
+] as const;
 
 /**
  * The member's ChatGPT plan connection, shared by the settings section and the
@@ -57,6 +63,19 @@ export function useChatgptPlanServesOwnWork(): boolean {
 		query.data?.connected === true &&
 		query.data.status === "ACTIVE" &&
 		currentOrganization?.enabled === true
+	);
+}
+
+/**
+ * Whether one of the organization's shared ChatGPT accounts serves the
+ * member's own interactive work in the organization on screen (Fizzy #2770):
+ * they have no plan of their own here, or theirs is spent.
+ */
+export function useSharedChatgptPlanServesOwnWork(): boolean {
+	const { query, currentOrganization } = useChatgptPlanStatus();
+	return (
+		currentOrganization !== null &&
+		query.data?.sharedPlanServesOwnWork === true
 	);
 }
 
@@ -130,4 +149,54 @@ export function useDisconnectChatgptPlan({
 		},
 		onError,
 	});
+}
+
+/** Both moves change the member's own plan and the organization's shared accounts. */
+function useChatgptPlanMove<TInput>(
+	mutationFn: (input: TInput) => Promise<unknown>,
+	callbacks: { onSuccess?: () => void; onError?: (error: unknown) => void },
+) {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn,
+		onSuccess: () => {
+			callbacks.onSuccess?.();
+			return Promise.all([
+				queryClient.invalidateQueries({
+					queryKey: chatgptPlanStatusQueryKey,
+				}),
+				queryClient.invalidateQueries({
+					queryKey: chatgptPlanPoolQueryKey,
+				}),
+				// The plan models page counts the members on their own plan.
+				queryClient.invalidateQueries({
+					queryKey: chatgptPlanModelsQueryKey,
+				}),
+			]);
+		},
+		onError: callbacks.onError,
+	});
+}
+
+/** Shares the member's own plan with the organization on screen (Fizzy #2770 I1). */
+export function useShareChatgptPlan(callbacks: {
+	onSuccess?: () => void;
+	onError?: (error: unknown) => void;
+}) {
+	return useChatgptPlanMove<undefined>(
+		() => orpcClient.users.chatgptPlan.share({}),
+		callbacks,
+	);
+}
+
+/** Takes a shared account the member connected back as their own plan. */
+export function useTakeBackChatgptPlan(callbacks: {
+	onSuccess?: () => void;
+	onError?: (error: unknown) => void;
+}) {
+	return useChatgptPlanMove(
+		(accountId: string) =>
+			orpcClient.users.chatgptPlan.takeBack({ accountId }),
+		callbacks,
+	);
 }

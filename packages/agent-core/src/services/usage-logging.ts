@@ -1,3 +1,4 @@
+import { servingChatGptPlanSource } from "./chatgpt-plan-reexchange";
 import { AI_TOKEN_HEADER } from "./token-exchange";
 
 function getDefaultFabricBaseUrl(): string {
@@ -184,7 +185,14 @@ async function sendAgentUsageEvent(
 	const model = configurable?.ai_model;
 	const billingMode = configurable?.ai_billing_mode;
 	const billingCustomerId = configurable?.ai_billing_customer_id;
-	const planSource = configurable?.ai_plan_source;
+	// After a re-exchange the run's model answered on another plan; the row
+	// names the plan that served it (Fizzy #2770 D2).
+	const planAccessToken = configurable?.ai_api_key;
+	const planSource =
+		(provider === "OPENAI_CHATGPT_PLAN" &&
+		typeof planAccessToken === "string"
+			? servingChatGptPlanSource(planAccessToken)
+			: null) ?? configurable?.ai_plan_source;
 	const configProjectId = configurable?.project_id;
 
 	if (

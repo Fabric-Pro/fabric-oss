@@ -161,6 +161,8 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
 				taskType: { notIn: ["DECISION", "EMBEDDING"] },
+				// The ChatGPT plan's model choices are not tied to the default.
+				provider: { not: "OPENAI_CHATGPT_PLAN" },
 			});
 			expect(res.preferencesCleared).toBe(4);
 		});
@@ -184,6 +186,8 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
 				taskType: { notIn: ["DECISION"] },
+				// The ChatGPT plan's model choices are not tied to the default.
+				provider: { not: "OPENAI_CHATGPT_PLAN" },
 			});
 		});
 
@@ -206,6 +210,8 @@ describe("setDefaultProviderProcedure — embeddings preservation", () => {
 			expect(mockOrgDeleteMany.mock.calls[0][0].where).toEqual({
 				organizationId: "org-1",
 				taskType: { notIn: ["DECISION"] },
+				// The ChatGPT plan's model choices are not tied to the default.
+				provider: { not: "OPENAI_CHATGPT_PLAN" },
 			});
 		});
 

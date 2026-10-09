@@ -67,6 +67,12 @@ export async function editInstructionSnapshot(
 		 * Sent only with a proposal: a direct version stores no note.
 		 */
 		note?: { title?: string; body?: string };
+		/**
+		 * The commit message the person typed for a repository suggestion;
+		 * the server makes it the pull request's title unless a note title is
+		 * given. Native repository changes only.
+		 */
+		message?: string;
 		edits: InstructionEdit[];
 	} & InstructionChangeBase,
 ): Promise<EditInstructionSnapshotResult> {
@@ -93,6 +99,7 @@ export async function editInstructionSnapshot(
 			mode: "proposal",
 			changes,
 			note: input.note,
+			...(input.message ? { message: input.message } : {}),
 		});
 	}
 	const puts = new Map<string, Blob>();

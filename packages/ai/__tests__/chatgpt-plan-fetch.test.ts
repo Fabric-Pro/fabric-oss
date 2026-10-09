@@ -40,7 +40,7 @@ vi.mock("@repo/database", () => ({
 	getChatGptPlanSourceStates: async () => [],
 	recordChatGptPlanSourceExhausted: async () => {},
 	clearChatGptPlanSourceState: async () => {},
-	getChatGptPlanOrgAccountFirstUseSince: async () => null,
+	getChatGptPlanOrgAccountWindows: async () => new Map(),
 }));
 
 vi.mock("../lib/chatgpt-plan/plan-credentials", () => ({

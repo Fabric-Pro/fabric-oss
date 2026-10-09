@@ -38,6 +38,12 @@ import { buildSkillsCommand } from "../commands/skills/index.js";
 import { buildWorkflowsCommand } from "../commands/workflows/index.js";
 import { buildWorkspacesCommand } from "../commands/workspaces/index.js";
 import { getConfigPath } from "../lib/config.js";
+import { hookTiming } from "../lib/instructions/hook-timing.js";
+
+// The session hook's deadline counts from when this process began, and the
+// hook ends the process itself once its output is written (hook-timing.ts).
+hookTiming.processStartedAt = Math.round(Date.now() - process.uptime() * 1000);
+hookTiming.exitWhenDone = true;
 
 const program = new Command();
 

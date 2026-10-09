@@ -20,8 +20,16 @@
  * inside what is left of the hook's deadline (`hook-timing.ts`), runs at most
  * once a day per copy, and is off under `CI` and `FABRIC_CLI_NO_SELF_UPDATE`.
  */
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	readFile,
+	realpath,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { withDeadline } from "../command-boundary.js";
 import { isFlagSet, runningInCi } from "../environment.js";
@@ -134,10 +142,7 @@ function transportIsSafe(origin: string): boolean {
 }
 
 /** Why no request should be made at all, or `null` when one may be. */
-function reasonToStayQuiet(
-	input: SelfUpdateInput,
-	now: number,
-): SelfUpdateSkip | null {
+function reasonToStayQuiet(input: SelfUpdateInput): SelfUpdateSkip | null {
 	if (isFlagSet(input.env[SELF_UPDATE_OPT_OUT])) {
 		return "opted-out";
 	}
@@ -147,13 +152,14 @@ function reasonToStayQuiet(
 	if (!transportIsSafe(input.origin)) {
 		return "insecure-origin";
 	}
-	if (
-		input.deadlineAt - now <
-		input.timing.budgetMs + input.timing.marginMs
-	) {
-		return "no-time";
-	}
 	return null;
+}
+
+/** Whether too little of the deadline is left for the budget and its margin. */
+function outOfTime(input: SelfUpdateInput, now: number): boolean {
+	return (
+		input.deadlineAt - now < input.timing.budgetMs + input.timing.marginMs
+	);
 }
 
 /** Is `script` the very file `init` keeps for this deployment? */
@@ -189,6 +195,42 @@ async function writeState(file: string, state: UpdateState): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Take the right to ask: create the claim file, which fails for every caller
+ * but one (`wx`). A claim older than the update's whole budget belongs to a
+ * process that died, and is taken over.
+ */
+async function claimSlot(
+	file: string,
+	now: number,
+	timing: SelfUpdateTiming,
+): Promise<boolean> {
+	try {
+		await mkdir(path.dirname(file), { recursive: true });
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			try {
+				await writeFile(file, `${now}\n`, { flag: "wx" });
+				return true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+					return false;
+				}
+				const held = await stat(file).catch(() => null);
+				if (
+					held !== null &&
+					now - held.mtimeMs < timing.budgetMs + timing.marginMs
+				) {
+					return false;
+				}
+				await rm(file, { force: true });
+			}
+		}
+	} catch {
+		return false;
+	}
+	return false;
 }
 
 /** A clock set backwards must not hold the check off for ever. */
@@ -374,7 +416,7 @@ export async function refreshKeptCopy(
 	deps: SelfUpdateDeps = {},
 ): Promise<SelfUpdateOutcome> {
 	const now = deps.now ?? Date.now;
-	const quiet = reasonToStayQuiet(input, now());
+	const quiet = reasonToStayQuiet(input);
 	if (quiet !== null) {
 		return skipped(quiet);
 	}
@@ -387,53 +429,118 @@ export async function refreshKeptCopy(
 		return skipped("not-a-kept-copy");
 	}
 
-	// The slot is claimed before anything is asked, so two sessions that start
-	// together do not both download, and a deployment that is slow or down is
-	// asked once a day rather than at every session start.
+	// The slot is claimed before anything is asked, by creating a claim file
+	// that only one of two sessions starting together can create (below), so
+	// they do not both download; the day's answer is then recorded, so a
+	// deployment that is slow or down is asked once a day rather than at every
+	// session start.
 	const stateFile = path.join(path.dirname(copy), STATE_FILE);
 	const previous = await readState(stateFile);
 	if (previous !== null && askedRecently(previous, now())) {
 		return skipped("checked-recently");
 	}
-	if (
-		!(await writeState(stateFile, { checkedAt: now(), tarball: running }))
-	) {
-		return skipped("state-unwritable");
+	// After every other reason to stay quiet, so that `no-time` (which starts
+	// a background update) is only answered when an update is really due.
+	if (outOfTime(input, now())) {
+		return skipped("no-time");
+	}
+	const claimFile = `${stateFile}.claim`;
+	if (!(await claimSlot(claimFile, now(), input.timing))) {
+		return skipped("checked-recently");
+	}
+	try {
+		// Read again now that the slot is ours: a process that held it a moment
+		// ago has written its answer.
+		const latest = await readState(stateFile);
+		if (latest !== null && askedRecently(latest, now())) {
+			return skipped("checked-recently");
+		}
+		if (
+			!(await writeState(stateFile, {
+				checkedAt: now(),
+				tarball: running,
+			}))
+		) {
+			return skipped("state-unwritable");
+		}
+		return await runAttempt(running);
+	} finally {
+		await rm(claimFile, { force: true }).catch(() => undefined);
 	}
 
-	let signal: AbortSignal | undefined;
-	let outcome: SelfUpdateOutcome = { kind: "current" };
-	try {
-		await withDeadline(input.timing.budgetMs, async (deadline) => {
-			signal = deadline;
-			outcome = await attempt({
-				input,
-				copy,
-				stateFile,
-				now,
-				fetchImpl: deps.fetchImpl ?? fetch,
-				replace: deps.replace ?? writeCopy,
-				signal: deadline,
-				running,
+	async function runAttempt(running: string): Promise<SelfUpdateOutcome> {
+		let signal: AbortSignal | undefined;
+		let outcome: SelfUpdateOutcome = { kind: "current" };
+		try {
+			await withDeadline(input.timing.budgetMs, async (deadline) => {
+				signal = deadline;
+				outcome = await attempt({
+					input,
+					copy,
+					stateFile,
+					now,
+					fetchImpl: deps.fetchImpl ?? fetch,
+					replace: deps.replace ?? writeCopy,
+					signal: deadline,
+					running,
+				});
 			});
-		});
-	} catch (error) {
-		if (signal?.aborted) {
-			return {
-				kind: "failed",
-				reason: "it ran out of time",
-				cause: error,
-			};
-		}
-		return error instanceof SelfUpdateFailure
-			? { kind: "failed", reason: error.message, cause: error.cause }
-			: {
+		} catch (error) {
+			if (signal?.aborted) {
+				return {
 					kind: "failed",
-					reason: "it failed unexpectedly",
+					reason: "it ran out of time",
 					cause: error,
 				};
+			}
+			return error instanceof SelfUpdateFailure
+				? { kind: "failed", reason: error.message, cause: error.cause }
+				: {
+						kind: "failed",
+						reason: "it failed unexpectedly",
+						cause: error,
+					};
+		}
+		return outcome;
 	}
-	return outcome;
+}
+
+/**
+ * Start the update in a child of its own when the hook had no time left for
+ * it, so a slow session start does not mean the kept copy is never refreshed.
+ * The child is detached with every stream ignored: it holds none of the
+ * hook's pipes (a session waits for those to close), and the hook does not
+ * wait for it. It asks the same question with a fresh budget
+ * (`instructions self-update`), and says nothing. `false` when it could not
+ * be started.
+ */
+export function startBackgroundSelfUpdate(
+	input: { script: string; origin: string; env: NodeJS.ProcessEnv },
+	spawnImpl: typeof spawn = spawn,
+): boolean {
+	try {
+		const child = spawnImpl(
+			process.execPath,
+			[
+				input.script,
+				"instructions",
+				"self-update",
+				"--base-url",
+				input.origin,
+			],
+			{
+				detached: true,
+				stdio: "ignore",
+				windowsHide: true,
+				env: input.env,
+			},
+		);
+		child.on("error", () => undefined);
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** The one line on stderr that says what happened, or `null` when nothing is worth saying. */

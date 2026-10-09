@@ -56,6 +56,14 @@ export interface GatewaySession {
 	expiresAt: Date;
 }
 
+/** The MCP tool annotations the gateway reads. A server's own claims, not Fabric's. */
+export interface ToolAnnotations {
+	readOnlyHint?: boolean;
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+}
+
 export interface GatewayToolDefinition {
 	name: string;
 	description: string;
@@ -65,12 +73,7 @@ export interface GatewayToolDefinition {
 	/** MCPConfig ID if this tool comes from a connected server */
 	_gateway_config_id?: string;
 	/** MCP tool annotations */
-	annotations?: {
-		readOnlyHint?: boolean;
-		destructiveHint?: boolean;
-		idempotentHint?: boolean;
-		openWorldHint?: boolean;
-	};
+	annotations?: ToolAnnotations;
 }
 
 export interface ToolCallResult {
@@ -97,6 +100,7 @@ export interface ConnectedServerInfo {
 		name: string;
 		description?: string;
 		inputSchema?: Record<string, unknown>;
+		annotations?: ToolAnnotations;
 	}>;
 }
 
@@ -109,5 +113,16 @@ export interface ConnectedServerInfo {
 export function isOrganizationBoundCredential(
 	credential: GatewayCredential,
 ): boolean {
+	return credential === "organization-key" || credential === "oauth";
+}
+
+/**
+ * Credentials that act for a person without being that person at a keyboard —
+ * a coding agent signed in over OAuth, or an organization key. What they may do
+ * is whatever the person consented to or the key's creator chose, so they are
+ * held to declared facts (a server's own `readOnlyHint`, the granted scopes)
+ * and never to a guess made from a tool's name.
+ */
+export function isDelegatedCredential(credential: GatewayCredential): boolean {
 	return credential === "organization-key" || credential === "oauth";
 }

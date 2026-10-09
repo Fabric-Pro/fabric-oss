@@ -90,6 +90,38 @@ describe("direct repository reads", () => {
 		});
 	});
 
+	it("lists a 5,253-file tree completely", async () => {
+		m.listRepositoryTreeAtCommit.mockResolvedValueOnce({
+			ok: true,
+			entries: Array.from({ length: 5_253 }, (_, i) => ({
+				path: `docs/file-${i}.md`,
+				type: "file",
+			})),
+			truncated: false,
+		});
+
+		const listed = await listDirectRepositoryFiles({ source, pin });
+
+		expect(listed.incomplete).toBe(false);
+		expect(listed.files).toHaveLength(5_253);
+	});
+
+	it("still flags a tree beyond the connector's own entry cap as incomplete", async () => {
+		m.listRepositoryTreeAtCommit.mockResolvedValueOnce({
+			ok: true,
+			entries: Array.from({ length: 20_001 }, (_, i) => ({
+				path: `docs/file-${i}.md`,
+				type: "file",
+			})),
+			truncated: false,
+		});
+
+		const listed = await listDirectRepositoryFiles({ source, pin });
+
+		expect(listed.incomplete).toBe(true);
+		expect(listed.files).toHaveLength(20_000);
+	});
+
 	it("keeps a provider-truncated tree explicit after filtering", async () => {
 		m.listRepositoryTreeAtCommit.mockResolvedValueOnce({
 			ok: true,

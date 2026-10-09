@@ -71,9 +71,12 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		// Generation and the Proposal visuals (Fizzy #2801). The visuals proxy
+		// makes one attempt anyway; it declares the policy like any proxy
+		// that reaches a model.
 		name: "document-generation-child",
 		load: () => import("../document-generation-child"),
-		aiProxies: 1,
+		aiProxies: 2,
 	},
 	{
 		name: "extract-meeting-insights-on-demand",
@@ -143,6 +146,12 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 1,
 	},
 	{
+		// The review reaches a model; the FAILED write's proxy does not.
+		name: "proposal-analysis",
+		load: () => import("../proposal-analysis"),
+		aiProxies: 1,
+	},
+	{
 		name: "publishing-suggestion-generation-workflow",
 		load: () => import("../publishing-suggestion-generation-workflow"),
 		aiProxies: 1,
@@ -150,6 +159,16 @@ const AI_WORKFLOWS: Array<{
 	{
 		name: "slack-channel-monitor",
 		load: () => import("../slack-channel-monitor"),
+		aiProxies: 1,
+	},
+	{
+		name: "teams-channel-monitor",
+		load: () => import("../teams-channel-monitor"),
+		aiProxies: 1,
+	},
+	{
+		name: "teams-chat-monitor",
+		load: () => import("../teams-chat-monitor"),
 		aiProxies: 1,
 	},
 ];
@@ -222,6 +241,15 @@ describe("a spent ChatGPT plan window is non-retryable (Fizzy #2939)", () => {
 		);
 
 		expect(AI_NON_RETRYABLE_ERROR_TYPES).toContain(failure.type);
+	});
+
+	// Fizzy #2770 F10: the plan does not serve the chosen model and no fallback
+	// stood in. A literal for the reason above; `chatgpt-plan-provider.test.ts`
+	// in @repo/ai pins the class's constructor name to it.
+	it("names the not-served model refusal", () => {
+		expect(AI_NON_RETRYABLE_ERROR_TYPES).toContain(
+			"ChatGptPlanModelNotServedError",
+		);
 	});
 
 	// Fizzy #2770: a plan that ran out after output started, with another plan

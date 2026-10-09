@@ -13,7 +13,7 @@
  * falls back to "Other", and the questions still surface ungrouped.
  *
  * When the organization has a typed decision model configured, a single
- * `experimental_evaluate` call asks it for every question up front — one
+ * `experimental_decide` call asks it for every question up front — one
  * `choice` question per question, over the same fixed taxonomy the language
  * classifier uses. A question whose answer clears the confidence floor is
  * labelled from that answer alone; everything else (no decision model, an
@@ -25,10 +25,12 @@
  */
 
 import {
-	experimental_evaluate,
+	createDecisionCapture,
+	experimental_decide,
 	generateObject,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	recordDecisionOutcome,
 } from "@repo/ai";
 import type { MaturationTenantFilter } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -109,6 +111,9 @@ ${numbered}`;
 const DECISION_TIMEOUT_MS = 30_000;
 const DECISION_MAX_RETRIES = 1;
 const DECISION_CONFIDENCE_THRESHOLD = 0.9;
+// Fixed call-site name for decision telemetry (llm.decision.outcomes). Outcomes
+// are recorded per question, matching the per-question language fallback.
+const DECISION_SITE = "question-topics";
 
 /**
  * One short criterion per topic, offered to the decision model as its choice
@@ -135,7 +140,7 @@ const TOPIC_CRITERIA: Record<QuestionTopic, string> = {
  * above the floor (and no greater than 1) is uncertain — never a verdict.
  */
 function readTopicChoice(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 	questionKey: string,
 ): QuestionTopic | null {
 	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
@@ -212,6 +217,11 @@ export async function classifyQuestionTopics({
 		});
 	} catch (error) {
 		if (error instanceof AiUsageLimitExceededError) {
+			recordDecisionOutcome({
+				site: DECISION_SITE,
+				error,
+				count: questions.length,
+			});
 			// The language model would hit the same limit, so there is
 			// nothing to gain from trying it — that is exactly what happens
 			// today (the language path's catch swallows it into all-Other).
@@ -251,24 +261,33 @@ export async function classifyQuestionTopics({
 			};
 		}
 
-		let evalResult: Awaited<
-			ReturnType<typeof experimental_evaluate>
-		> | null = null;
+		let evalResult: Awaited<ReturnType<typeof experimental_decide>> | null =
+			null;
+		const capture = createDecisionCapture();
 		try {
-			evalResult = await experimental_evaluate({
-				model: decisionModel.model,
-				state: {
-					topics: TOPIC_CRITERIA,
-					questions: questions.map((text, index) => ({
-						key: keyByIndex[index],
-						text,
-					})),
-				},
-				questions: evalQuestions,
-				maxRetries: DECISION_MAX_RETRIES,
-				abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-			});
+			evalResult = await capture.run(() =>
+				experimental_decide({
+					model: decisionModel.model,
+					state: {
+						topics: TOPIC_CRITERIA,
+						questions: questions.map((text, index) => ({
+							key: keyByIndex[index],
+							text,
+						})),
+					},
+					questions: evalQuestions,
+					maxRetries: DECISION_MAX_RETRIES,
+					abortSignal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+				}),
+			);
 		} catch (error) {
+			recordDecisionOutcome({
+				site: DECISION_SITE,
+				error,
+				decisionModel,
+				capture,
+				count: questions.length,
+			});
 			if (error instanceof AiUsageLimitExceededError) {
 				// Nothing has been decided yet, so there is nothing to keep;
 				// retrying through the language model would bill the very
@@ -301,8 +320,19 @@ export async function classifyQuestionTopics({
 			decisionModel.trackUsage();
 
 			const stillLeftover: number[] = [];
+			const evalAnswers = (
+				evalResult as { answers?: Record<string, unknown> }
+			).answers;
 			for (const index of leftover) {
 				const topic = readTopicChoice(evalResult, keyByIndex[index]);
+				recordDecisionOutcome({
+					site: DECISION_SITE,
+					outcome: topic ? "accepted" : "below_threshold",
+					decisionModel,
+					result: evalResult,
+					capture,
+					answers: [evalAnswers?.[keyByIndex[index]]],
+				});
 				if (topic) {
 					result[index] = topic;
 				} else {
@@ -320,6 +350,13 @@ export async function classifyQuestionTopics({
 				},
 			);
 		}
+	} else {
+		// No decision model: every question goes to the language classifier.
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			outcome: "unavailable",
+			count: questions.length,
+		});
 	}
 
 	if (leftover.length === 0) {

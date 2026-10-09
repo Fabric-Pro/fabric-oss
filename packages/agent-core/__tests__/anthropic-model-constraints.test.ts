@@ -39,6 +39,7 @@ describe("isAnthropicAdaptiveOnlyModel", () => {
 		"claude-opus-5-5",
 		"claude-sonnet-5",
 		"claude-sonnet-5-5",
+		"claude-haiku-5-5",
 		"claude-fable-5",
 		"claude-fable-5-1",
 		"claude-mythos-5",
@@ -64,6 +65,9 @@ describe("isAnthropicAdaptiveOnlyModel", () => {
 		"system.ai.claude-sonnet-4-5",
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
+		// There is no Haiku 5.0; only the 5.5 point release is matched.
+		"claude-haiku-5",
+		"claude-haiku-5-50",
 		"claude-opus-4-1",
 		"claude-opus-4",
 		"claude-3-7-sonnet",
@@ -103,6 +107,9 @@ describe("anthropicModelRejectsForcedToolChoice", () => {
 		"databricks-claude-opus-5",
 		"claude-opus-5-20260901",
 		"claude-sonnet-5",
+		// claude-haiku-5-5 accepts forced tool_choice (it skips thinking).
+		"claude-haiku-5-5",
+		"anthropic/claude-haiku-5.5",
 		"claude-opus-4-8",
 		"anthropic/claude-opus-4.8",
 		"claude-fable-5",

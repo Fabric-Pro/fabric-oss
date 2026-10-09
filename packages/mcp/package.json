@@ -15,13 +15,13 @@
 		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
-		"@ai-sdk/mcp": "^2.0.49",
+		"@ai-sdk/mcp": "^2.0.69",
 		"@modelcontextprotocol/sdk": "^1.32.1",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/integrations": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^7.0.105",
+		"ai": "^7.0.131",
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {

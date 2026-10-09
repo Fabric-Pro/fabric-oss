@@ -366,7 +366,7 @@ export async function isAncestor(
  * them either, and when an incoming commit does want one of those paths git
  * itself refuses, naming it.
  */
-export async function isClean(
+export async function hasNoTrackedContentChanges(
 	root: string,
 	deadline: GitDeadline,
 ): Promise<GitResult<boolean>> {
@@ -786,6 +786,8 @@ export type CloneFailure =
 	| "not-empty"
 	/** Git downloaded the repository but could not populate the working tree. */
 	| "checkout"
+	/** Fabric's gateway transport needs git 2.31 (`--config-env`). */
+	| "old-git"
 	| "other";
 
 export type CloneResult =
@@ -795,6 +797,9 @@ export type CloneResult =
 
 /** git's refusal to clone as a class. Only the SHAPE of stderr is read. */
 export function cloneFailureOf(stderr: string): CloneFailure {
+	if (/config-env/i.test(stderr) && /unknown option|usage:/i.test(stderr)) {
+		return "old-git";
+	}
 	if (/already exists and is not an empty directory/i.test(stderr)) {
 		return "not-empty";
 	}

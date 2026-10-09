@@ -15,6 +15,7 @@ import {
 	chatGptPlanReconnectRefusal,
 	getChatGptPlanAgentConfig,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import type { AiTaskType } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { type NextRequest, NextResponse } from "next/server";
@@ -29,7 +30,7 @@ export async function GET(req: NextRequest) {
 	}
 
 	try {
-		const { userId, organizationId } = auth;
+		const { userId, organizationId, impersonated } = auth;
 
 		const { searchParams } = new URL(req.url);
 		const taskType = searchParams.get("taskType");
@@ -43,10 +44,19 @@ export async function GET(req: NextRequest) {
 
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
 		try {
-			aiModelResult = await getAIModelWithMetadata(
-				{ taskType: taskType as AiTaskType },
-				{ userId, organizationId },
-			);
+			const resolve = () =>
+				getAIModelWithMetadata(
+					{ taskType: taskType as AiTaskType },
+					{ userId, organizationId },
+				);
+			// Signed while an admin acted as the member: never their plan
+			// (see `../route.ts`).
+			aiModelResult = impersonated
+				? await runWithAiInteractiveContext(
+						{ userId, impersonated: true },
+						resolve,
+					)
+				: await resolve();
 		} catch (error) {
 			const reconnect = chatGptPlanReconnectRefusal(error);
 			if (reconnect) {

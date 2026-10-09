@@ -56,6 +56,7 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	isOrganizationMember: mocks.isOrganizationMember,
+	isProjectSoftDeleted: vi.fn().mockResolvedValue(false),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	canCreateProjectStory: mocks.canCreateProjectStory,
 	findOpenBacklogTitleCollision: vi.fn().mockResolvedValue(null),
@@ -501,5 +502,77 @@ describe("an organization key is pinned to the organization it was issued for", 
 
 		expect(result.isError).toBeFalsy();
 		expect(session.organizationId).toBe("org-2");
+	});
+});
+
+describe("an organization-bound credential sees only its own organization", () => {
+	// An `org_` key and an OAuth sign-in are issued for one organization. The
+	// person's other memberships are not part of what they were given, so
+	// neither identity tool lists them.
+	beforeEach(() => {
+		const memberships = [
+			{
+				role: "member",
+				organization: {
+					id: "org-1",
+					name: "Example Org",
+					slug: "example-org",
+				},
+			},
+			{
+				role: "owner",
+				organization: {
+					id: "org-2",
+					name: "Example Org Two",
+					slug: "example-org-two",
+				},
+			},
+		];
+		mocks.memberFindMany.mockImplementation(
+			async ({ where }: { where: { organizationId?: string } }) =>
+				memberships.filter(
+					(m) =>
+						where.organizationId === undefined ||
+						m.organization.id === where.organizationId,
+				),
+		);
+	});
+
+	it.each(["organization-key", "oauth"] as const)(
+		"lists only the session's organization to %s",
+		async (credential) => {
+			const session = freshSession({ credential });
+
+			const identity = payload(
+				await executePlatformTool("fabric_get_identity", {}, session),
+			);
+			const listed = payload(
+				await executePlatformTool(
+					"fabric_list_organizations",
+					{},
+					session,
+				),
+			);
+
+			expect(
+				identity.organizations.map((o: { id: string }) => o.id),
+			).toEqual(["org-1"]);
+			expect(
+				listed.organizations.map((o: { id: string }) => o.id),
+			).toEqual(["org-1"]);
+			expect(listed.count).toBe(1);
+		},
+	);
+
+	it("still lists every membership to a personal key", async () => {
+		const listed = payload(
+			await executePlatformTool(
+				"fabric_list_organizations",
+				{},
+				freshSession({ credential: "personal-key" }),
+			),
+		);
+
+		expect(listed.organizations).toHaveLength(2);
 	});
 });

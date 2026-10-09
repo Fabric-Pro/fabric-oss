@@ -12,7 +12,13 @@ import { shortCommit } from "@saas/projects/lib/instructions-repository-sync";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { type ReactNode, useCallback, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { toast } from "sonner";
 import {
 	DirectCommitBranchMovedDialog,
@@ -31,6 +37,22 @@ export type DirectCommitRequest = {
 	 */
 	suggest?: () => void;
 } & InstructionChangeBase;
+
+/**
+ * How long a committed change waits for the page to re-read before it is
+ * announced anyway. A re-read that hangs must not leave the flow stuck.
+ */
+export const COMMIT_REREAD_TIMEOUT_MS = 10_000;
+
+/** A touched file longer than this many 200,000-character pages is not compared. */
+const MAX_IDENTITY_PAGES = 25;
+const ABSENT = Symbol("absent");
+
+export type RereadCallback = () => Promise<void> | void;
+export type CommittedCallback = (commit: {
+	sha: string;
+	ref: string;
+}) => Promise<void> | void;
 
 type Flow =
 	| { phase: "idle" }
@@ -79,13 +101,13 @@ export function useDirectCommit({
 	/** The synced branch, for the words. */
 	branch: string;
 	/** The tab's lists and published pointer should be re-read. */
-	onChanged: () => unknown;
+	onChanged: RereadCallback;
 	/**
 	 * A commit landed on the branch. Fabric's copy follows from a sync of the
 	 * real tree a few seconds later, so the tab keeps reading until it has.
 	 * A returned promise is awaited before the commit is announced.
 	 */
-	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+	onCommitted?: CommittedCallback;
 	onFinished?: (result: SettledCommit) => void;
 }): {
 	start: (request: DirectCommitRequest) => void;
@@ -97,6 +119,13 @@ export function useDirectCommit({
 	const t = useTranslations("projects.codingInstructions.commit");
 	const actionError = useInstructionActionError();
 	const [flow, setFlow] = useState<Flow>({ phase: "idle" });
+	const mounted = useRef(true);
+	useEffect(() => {
+		mounted.current = true;
+		return () => {
+			mounted.current = false;
+		};
+	}, []);
 	const [messageRefusal, setMessageRefusal] = useState<CommitRefusal | null>(
 		null,
 	);
@@ -146,27 +175,187 @@ export function useDirectCommit({
 		[submit],
 	);
 
+	/**
+	 * The request, moved onto the branch's current head, when that is safe:
+	 * every file it touches is the same blob there as at the version it was
+	 * written against, by blob id from the listings or, for a path a capped
+	 * listing does not decide, by its content (a file whose identity cannot
+	 * be proven counts as changed). Retrying the unchanged request would meet the same
+	 * conflict forever. `null` means a touched file changed on the branch, so
+	 * the draft needs a person, not another attempt.
+	 */
+	const rebaseOntoHead = useCallback(
+		async (request: DirectCommitRequest) => {
+			const base = request.nativeBase;
+			if (!base) {
+				return request;
+			}
+			const state =
+				await orpcClient.projects.instructions.repository.getState({
+					projectId,
+				});
+			if (state.availability !== "READY") {
+				return null;
+			}
+			const head = {
+				generation: state.generation,
+				commitSha: state.currentCommitSha,
+			};
+			if (head.commitSha === base.commitSha) {
+				return request;
+			}
+			const list = (pin: typeof head) =>
+				orpcClient.projects.instructions.repository.listFiles({
+					projectId,
+					...pin,
+				});
+			const [atBase, atHead] = await Promise.all([
+				list(base),
+				list(head),
+			]);
+			const entryAt = (listing: typeof atBase, path: string) =>
+				listing.files.find((file) => file.path === path);
+			// Whether a path is the same at both commits, from the listings
+			// when they decide it, else from the content itself. `null` is
+			// "cannot be proven".
+			const sameAtBoth = async (path: string) => {
+				const before = entryAt(atBase, path);
+				const after = entryAt(atHead, path);
+				if (before && after && before.blobId !== undefined) {
+					if (before.blobId === after.blobId) {
+						return true;
+					}
+					if (after.blobId !== undefined) {
+						return false;
+					}
+				}
+				if (before === undefined && after === undefined) {
+					if (!atBase.incomplete && !atHead.incomplete) {
+						return true;
+					}
+				} else if (before === undefined && !atBase.incomplete) {
+					return false;
+				} else if (after === undefined && !atHead.incomplete) {
+					return false;
+				}
+				const [oldContent, newContent] = await Promise.all([
+					readWhole(base, path),
+					readWhole(head, path),
+				]);
+				return oldContent === null || newContent === null
+					? null
+					: oldContent === newContent;
+			};
+			const readWhole = async (pin: typeof head, path: string) => {
+				let text = "";
+				let offset = 0;
+				for (let page = 0; page < MAX_IDENTITY_PAGES; page++) {
+					const read =
+						await orpcClient.projects.instructions.repository.getFile(
+							{
+								projectId,
+								...pin,
+								path,
+								offset,
+								maxLength: 200_000,
+							},
+						);
+					if (read.state === "absent") {
+						return page === 0 ? ABSENT : null;
+					}
+					if (read.state !== "found") {
+						return null;
+					}
+					text += read.body;
+					if (read.nextOffset === null) {
+						return text;
+					}
+					offset = read.nextOffset;
+				}
+				return null;
+			};
+			for (const change of request.changes) {
+				if ((await sameAtBoth(change.path)) !== true) {
+					return null;
+				}
+			}
+			return { ...request, nativeBase: head };
+		},
+		[projectId],
+	);
+
+	const retryOnHead = useCallback(
+		async (request: DirectCommitRequest) => {
+			setFlow({ phase: "submitting", request });
+			let rebased: DirectCommitRequest | null = null;
+			try {
+				rebased = await rebaseOntoHead(request);
+			} catch (error) {
+				setFlow({ phase: "idle" });
+				toast.error(actionError(error as Error));
+				return;
+			}
+			if (rebased === null) {
+				setFlow({ phase: "idle" });
+				toast.error(t("retryNeedsMerge", { ref: branch }));
+				return;
+			}
+			start(rebased);
+		},
+		[actionError, branch, rebaseOntoHead, start, t],
+	);
+
+	const announceCommitted = useCallback(
+		async (result: Extract<SettledCommit, { kind: "committed" }>) => {
+			// The commit is announced once the page shows it, not before: the
+			// old file would otherwise sit under the toast until the re-read
+			// finishes. The wait is bounded and every outcome of it ends the
+			// flow.
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let rereadFailed = false;
+			try {
+				const rereads = Promise.allSettled([
+					Promise.resolve().then(onChanged),
+					Promise.resolve().then(() =>
+						onCommitted?.({ sha: result.sha, ref: result.ref }),
+					),
+				]).then((outcomes) => {
+					rereadFailed = outcomes.some(
+						(outcome) => outcome.status === "rejected",
+					);
+				});
+				const timeout = new Promise<void>((resolve) => {
+					timer = setTimeout(() => {
+						rereadFailed = true;
+						resolve();
+					}, COMMIT_REREAD_TIMEOUT_MS);
+				});
+				await Promise.race([rereads, timeout]);
+			} finally {
+				clearTimeout(timer);
+				toast.success(
+					t("committed", {
+						sha7: shortCommit(result.sha) ?? "",
+						ref: result.ref,
+					}),
+				);
+				if (rereadFailed) {
+					toast.error(t("rereadFailed"));
+				}
+				if (mounted.current) {
+					setFlow({ phase: "idle" });
+					onFinished?.(result);
+				}
+			}
+		},
+		[onChanged, onCommitted, onFinished, t],
+	);
+
 	const settled = useCallback(
 		(result: SettledCommit) => {
 			switch (result.kind) {
 				case "committed":
-					void (async () => {
-						// The commit is announced once the page shows it, not
-						// before: the old file would otherwise sit under the
-						// toast until the re-read finishes.
-						await Promise.allSettled([
-							onChanged(),
-							onCommitted?.({ sha: result.sha, ref: result.ref }),
-						]);
-						toast.success(
-							t("committed", {
-								sha7: shortCommit(result.sha) ?? "",
-								ref: result.ref,
-							}),
-						);
-						setFlow({ phase: "idle" });
-						onFinished?.(result);
-					})();
+					void announceCommitted(result);
 					return;
 				case "unchanged":
 					toast.info(t("unchanged"));
@@ -218,7 +407,7 @@ export function useDirectCommit({
 				}
 			}
 		},
-		[branch, onChanged, onCommitted, onFinished, t],
+		[announceCommitted, branch, onChanged, onFinished, t],
 	);
 
 	const busy = flow.phase === "submitting" || flow.phase === "watching";
@@ -249,7 +438,7 @@ export function useDirectCommit({
 				onCancel={() => setFlow({ phase: "idle" })}
 				onRetry={() => {
 					if (flow.phase === "branch-moved") {
-						start(flow.request);
+						void retryOnHead(flow.request);
 					}
 				}}
 				onSuggest={

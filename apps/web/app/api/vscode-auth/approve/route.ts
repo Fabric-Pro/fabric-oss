@@ -1,3 +1,4 @@
+import "../../../start-web-telemetry";
 import { approveDeviceCode } from "@repo/api";
 import { getSession } from "@saas/auth/lib/server";
 import { NextResponse } from "next/server";

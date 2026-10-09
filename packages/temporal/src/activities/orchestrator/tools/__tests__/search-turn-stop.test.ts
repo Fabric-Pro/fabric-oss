@@ -57,7 +57,7 @@ vi.mock("@repo/rag/lib/vector-store/capability-store", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({}),
+	getSystemEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("@repo/agent-core/backend", () => ({

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 	setUse: vi.fn(),
 	usage: vi.fn(),
 	disconnect: vi.fn(),
+	backfill: vi.fn(),
 	audit: vi.fn(),
 }));
 
@@ -19,12 +20,31 @@ vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: mocks.audit,
 }));
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await vi.importActual<Record<string, unknown>>(
+		"../../../../../../database/prisma/queries/chatgpt-plan-window",
+	)),
 	getChatGptPlanCredentialStatus: mocks.status,
 	listChatGptPlanOrganizations: mocks.organizations,
 	setChatGptPlanOrgUse: mocks.setUse,
-	getChatGptPlanUsageSince: mocks.usage,
+	getChatGptPlanUserWindow: mocks.usage,
+	getChatGptPlanWindowBudget: async () => 2_000_000,
 }));
+
+vi.mock("@repo/ai/lib/chatgpt-plan/subscription-backfill", () => ({
+	backfillChatGptPlanSubscription: mocks.backfill,
+}));
+
+vi.mock("../share", async () => {
+	const { z } = await import("zod");
+	return {
+		chatGptPlanSharedHereSchema: z.object({}).passthrough(),
+		chatGptPlanShareState: async () => ({
+			canShare: false,
+			sharedHere: [],
+		}),
+	};
+});
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
 	disconnectChatGptPlan: mocks.disconnect,
@@ -87,6 +107,9 @@ const ORG = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.backfill.mockImplementation(
+		async (_ref: unknown, row: unknown) => row,
+	);
 });
 
 describe("users.chatgptPlan.setOrganizationUse", () => {
@@ -178,15 +201,22 @@ describe("users.chatgptPlan.status", () => {
 		mocks.status.mockResolvedValue({
 			email: "dev@example.com",
 			status: "ACTIVE",
+			tier: "PLUS",
+			subscriptionActiveUntil: new Date("2026-11-08T00:00:00Z"),
 		});
 		mocks.organizations.mockResolvedValue([
 			ORG,
 			{ ...ORG, id: "org-2", slug: "example-two", enabled: true },
 		]);
 		mocks.usage.mockResolvedValue({
+			windowStart: new Date("2026-10-08T06:10:00Z"),
+			resetsAt: new Date("2026-10-08T11:10:00Z"),
+			lastRequestAt: new Date("2026-10-08T07:00:00Z"),
 			requests: 4,
-			inputTokens: 75_000,
+			inputTokens: 200_000,
+			cachedInputTokens: 0,
 			outputTokens: 2_000,
+			topConsumers: [],
 		});
 		const result = (await handler(getChatGptPlanStatusProcedure)({
 			context: context(),
@@ -195,10 +225,52 @@ describe("users.chatgptPlan.status", () => {
 			connected: true,
 			email: "dev@example.com",
 			status: "ACTIVE",
+			// Fizzy #2770 G7: from the sign-in's subscription claims.
+			tier: "PLUS",
+			subscriptionActiveUntil: new Date("2026-11-08T00:00:00Z"),
 			currentOrganization: { slug: "example-org", answered: false },
-			usageEstimate: { requests: 4, estimatedPercent: 10 },
+			usageEstimate: {
+				requests: 4,
+				estimatedPercent: 10,
+				resetsAt: new Date("2026-10-08T11:10:00Z"),
+				lastRequestAt: new Date("2026-10-08T07:00:00Z"),
+			},
 		});
 		expect(result.organizations).toHaveLength(2);
+	});
+
+	it("reports a tier filled from the stored ID token of the person's own credential", async () => {
+		mocks.status.mockResolvedValue({
+			email: "dev@example.com",
+			status: "ACTIVE",
+			tier: "UNKNOWN",
+			subscriptionActiveUntil: null,
+		});
+		mocks.organizations.mockResolvedValue([ORG]);
+		mocks.usage.mockResolvedValue({
+			windowStart: null,
+			resetsAt: null,
+			lastRequestAt: null,
+			requests: 0,
+			inputTokens: 0,
+			cachedInputTokens: 0,
+			outputTokens: 0,
+			topConsumers: [],
+		});
+		mocks.backfill.mockImplementation(
+			async (_ref: unknown, row: Record<string, unknown>) => ({
+				...row,
+				tier: "FREE",
+			}),
+		);
+		const result = (await handler(getChatGptPlanStatusProcedure)({
+			context: context(),
+		})) as Record<string, unknown>;
+		expect(mocks.backfill).toHaveBeenCalledWith(
+			{ kind: "user", userId: "user-1" },
+			expect.objectContaining({ tier: "UNKNOWN" }),
+		);
+		expect(result.tier).toBe("FREE");
 	});
 
 	it("reports no connection and no estimate for a person who never connected", async () => {
@@ -213,6 +285,7 @@ describe("users.chatgptPlan.status", () => {
 			usageEstimate: null,
 		});
 		expect(mocks.usage).not.toHaveBeenCalled();
+		expect(mocks.backfill).not.toHaveBeenCalled();
 	});
 });
 

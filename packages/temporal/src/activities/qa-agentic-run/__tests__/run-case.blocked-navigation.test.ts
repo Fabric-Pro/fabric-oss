@@ -1,115 +1,81 @@
-/**
- * `net::ERR_BLOCKED_BY_CLIENT` on its own tells a person nothing about which
- * side needs fixing — Fizzy #2232. `blockedNavigationSuffix` is the piece
- * both "Could not open …" sites in `runAgenticCase` share to turn that bare
- * Playwright error into a sentence naming the environment or the runner.
- */
-
 import { describe, expect, it } from "vitest";
-import { blockedNavigationSuffix } from "../run-case";
+import {
+	type BrowserRefusal,
+	explainBlockedNavigation,
+} from "../browser-driver";
 
-describe("blockedNavigationSuffix", () => {
-	it("adds nothing when the failure is not a blocked-by-client one", () => {
+describe("navigation refusal explanations", () => {
+	it("has no explanation when no navigation was refused", () => {
+		expect(explainBlockedNavigation([])).toBeNull();
 		expect(
-			blockedNavigationSuffix("net::ERR_CONNECTION_REFUSED", {
-				refusals: [
-					{
-						kind: "off-origin",
-						url: "https://other.example.com/",
-						detail: "unused",
-					},
-				],
-			}),
-		).toBe("");
+			explainBlockedNavigation([
+				{
+					kind: "off-origin",
+					url: "https://font.example.com/font.woff2",
+					detail: "font",
+					isNavigation: false,
+				},
+			]),
+		).toBeNull();
 	});
-
-	it("adds nothing when no refusal was recorded to explain it", () => {
-		expect(
-			blockedNavigationSuffix(
-				"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
-				{ refusals: [] },
-			),
-		).toBe("");
-	});
-
-	it("names the environment when the most recent refusal is off-origin", () => {
-		const suffix = blockedNavigationSuffix(
-			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
+	it.each([
+		[
+			"off-origin",
+			"outside this environment's origin",
+			"check the environment's base URL",
+		],
+		[
+			"connection-refused",
+			"refused the connection",
+			"environment is running",
+		],
+		["host-not-found", "does not resolve", "environment's base URL"],
+		["unsafe-address", "non-public address", "environment configuration"],
+		["certificate-invalid", "certificate", "TLS certificate"],
+		["tls-failed", "TLS handshake", "TLS configuration"],
+		[
+			"fetch-failed",
+			"environment is down or not reachable",
+			"runner's own network",
+		],
+	] satisfies [BrowserRefusal["kind"], string, string][])(
+		"explains %s and names the responsible checks",
+		(kind, failure, nextStep) => {
+			const explanation = explainBlockedNavigation([
+				{
+					kind,
+					url: "https://app.example.com/",
+					detail: "TEST_FAILURE",
+					isNavigation: true,
+				},
+			]);
+			expect(explanation).toContain(failure);
+			expect(explanation).toContain(nextStep);
+		},
+	);
+	it("uses the latest page navigation rather than a newer resource refusal", () => {
+		const explanation = explainBlockedNavigation([
 			{
-				refusals: [
-					{
-						kind: "off-origin",
-						url: "https://other.example.com/redirected",
-						detail: "unused",
-					},
-				],
+				kind: "connection-refused",
+				url: "https://first.example.com/",
+				detail: "ECONNREFUSED",
+				isNavigation: true,
 			},
-		);
-		expect(suffix).toContain("https://other.example.com/redirected");
-		expect(suffix).toContain("environment's base URL");
-		// On its own line, not a leading space: the failure message this is
-		// appended to is often Playwright's own multi-line call log, and a
-		// single space glued the explanation onto the end of its last line.
-		expect(suffix.startsWith("\n")).toBe(true);
-	});
-
-	it("names both possible sides, and blames neither, for an ambiguous fetch failure", () => {
-		const suffix = blockedNavigationSuffix(
-			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
 			{
-				refusals: [
-					{
-						kind: "fetch-failed",
-						url: "https://app.example.com/",
-						detail: "ECONNRESET",
-					},
-				],
+				kind: "off-origin",
+				url: "https://redirect.example.com/next",
+				detail: "redirect",
+				isNavigation: true,
 			},
-		);
-		// A reset or timeout on one request cannot say whose network failed
-		// (Fizzy #2232): telling the customer "not your environment" when their
-		// host is down or firewalled sends them to debug the wrong side.
-		expect(suffix).toContain("environment is down or not reachable");
-		expect(suffix).toContain("runner's own network");
-		expect(suffix).not.toContain("not your environment");
-	});
-
-	it("points at the environment when its own host refused the connection", () => {
-		const suffix = blockedNavigationSuffix(
-			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
 			{
-				refusals: [
-					{
-						kind: "connection-refused",
-						url: "https://app.example.com/",
-						detail: "fetch failed: connect ECONNREFUSED 203.0.113.10:443",
-					},
-				],
+				kind: "unsafe-address",
+				url: "https://font.example.com/font.woff2",
+				detail: "font",
+				isNavigation: false,
 			},
-		);
-		expect(suffix).toContain("refused the connection");
-		expect(suffix).toContain("check that the environment is running");
-	});
-
-	it("uses the LAST refusal when several were recorded", () => {
-		const suffix = blockedNavigationSuffix(
-			"page.goto: net::ERR_BLOCKED_BY_CLIENT at https://app.example.com/",
-			{
-				refusals: [
-					{
-						kind: "off-origin",
-						url: "https://first.example.com/",
-						detail: "unused",
-					},
-					{
-						kind: "unsafe-address",
-						url: "https://app.example.com/",
-						detail: "Private network access (10.x.x.x) is not allowed",
-					},
-				],
-			},
-		);
-		expect(suffix).toContain("non-public address");
-		expect(suffix).not.toContain("first.example.com");
+		]);
+		expect(explanation).toContain("redirect.example.com");
+		expect(explanation).not.toContain("first.example.com");
+		expect(explanation).not.toContain("font.example.com");
 	});
 });

@@ -43,9 +43,11 @@ const LOOPBACK_HOSTNAMES: readonly string[] = [
  * exactly: these are public PKCE clients, open registration already permits
  * arbitrary https redirects, so an exact match adds no new capability. The
  * same list is patched into `@better-auth/oauth-provider` (patches/), whose
- * own registration check would otherwise refuse them.
+ * own registration check would otherwise refuse them, and is written into the
+ * database's client trigger; `oauth-redirect-allowlist-parity.test.ts` fails
+ * when any copy differs.
  */
-const PRE_RFC8252_NATIVE_REDIRECT_URIS: readonly string[] = [
+export const PRE_RFC8252_NATIVE_REDIRECT_URIS: readonly string[] = [
 	"cursor://anysphere.cursor-mcp/oauth/callback",
 ];
 

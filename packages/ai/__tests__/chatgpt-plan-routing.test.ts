@@ -24,6 +24,10 @@ const mocks = vi.hoisted(() => ({
 	isFeatureEnabled: vi.fn(),
 	activeUse: vi.fn(),
 	createPlanModel: vi.fn(),
+	providerModelIdFor: vi.fn(
+		async (_canonical: string, _provider: string) => null as string | null,
+	),
+	resolvePlanModel: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -33,7 +37,7 @@ vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: vi.fn(),
 	getEmbeddingProviderConfig: vi.fn(),
 	getModelForTask: mocks.getModelForTask,
-	getProviderModelIdForCanonical: vi.fn(),
+	getProviderModelIdForCanonical: mocks.providerModelIdFor,
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: vi.fn(),
 	updateProviderLastUsed: vi.fn(() => Promise.resolve()),
@@ -74,14 +78,17 @@ vi.mock("../lib/chatgpt-plan/provider", () => ({
 
 // The per-task choice itself is tested in chatgpt-plan-models.test.ts.
 vi.mock("../lib/chatgpt-plan/models", () => ({
-	resolveChatGptPlanModel: async ({ taskType }: { taskType: string }) =>
-		taskType === "SIMPLE"
-			? { model: "gpt-5.6-luna", reasoningEffort: "low" }
-			: { model: "gpt-6-astra", reasoningEffort: "medium" },
+	resolveChatGptPlanModel: (params: {
+		taskType: string;
+		override?: string;
+	}) => mocks.resolvePlanModel(params),
 }));
 
 import { runWithAiInteractiveContext } from "../lib/chatgpt-plan/interactive-context";
-import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
+import {
+	chatGptPlanServesCall,
+	getAIModelWithMetadata,
+} from "../lib/dynamic-model-selector";
 
 const USAGE = {
 	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -142,6 +149,21 @@ beforeEach(() => {
 	mocks.createPlanModel.mockImplementation(() => mockModel());
 	mocks.getAiProviderApiKey.mockResolvedValue(ORG_GATEWAY);
 	mocks.getModelForTask.mockResolvedValue(SELECTION);
+	mocks.providerModelIdFor.mockResolvedValue(null);
+	mocks.resolvePlanModel.mockImplementation(
+		async ({
+			taskType,
+			override,
+		}: {
+			taskType: string;
+			override?: string;
+		}) =>
+			override === "gpt-6.1-sol"
+				? { model: "gpt-6.1-sol" }
+				: taskType === "SIMPLE"
+					? { model: "gpt-5.6-luna", reasoningEffort: "low" }
+					: { model: "gpt-6-astra", reasoningEffort: "medium" },
+	);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.activeUse.mockResolvedValue({
 		includeBackgroundJobs: false,
@@ -170,6 +192,31 @@ describe("getAIModelWithMetadata — ChatGPT plan routing", () => {
 		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
 			"CHATGPT_PLAN",
 			"org-1",
+		);
+	});
+
+	// Fizzy #2770 F13: a chat's plan pick reaches the plan resolver; a saved
+	// provider model from before the plan does not.
+	it("hands only a chat's plan pick to the plan's resolution", async () => {
+		const resolved = await getAIModelWithMetadata(
+			{
+				taskType: "TOOL_CALLING",
+				modelOverride: "chatgpt-plan:gpt-6.1-sol",
+			},
+			ELIGIBLE,
+		);
+		expect(resolved.metadata.provider).toBe("OPENAI_CHATGPT_PLAN");
+		expect(resolved.metadata.modelString).toBe("gpt-6.1-sol");
+		expect(mocks.resolvePlanModel).toHaveBeenLastCalledWith(
+			expect.objectContaining({ override: "gpt-6.1-sol" }),
+		);
+
+		await getAIModelWithMetadata(
+			{ taskType: "TOOL_CALLING", modelOverride: "gpt-6-astra" },
+			ELIGIBLE,
+		);
+		expect(mocks.resolvePlanModel).toHaveBeenLastCalledWith(
+			expect.objectContaining({ override: undefined }),
 		);
 	});
 
@@ -448,5 +495,84 @@ describe("getAIModelWithMetadata — an admin acting as the member", () => {
 			getAIModelWithMetadata({ taskType: "COMPLEX" }, ELIGIBLE),
 		);
 		expect(resolved.metadata.provider).toBe("VERCEL_GATEWAY");
+	});
+});
+
+// Fizzy #2770 D9: callers that would hand a raw key to a client of their own
+// ask first whether the plan serves the call, by the very same rules.
+describe("chatGptPlanServesCall", () => {
+	it("agrees with getAIModelWithMetadata for an eligible member's call", async () => {
+		await expect(chatGptPlanServesCall(ELIGIBLE)).resolves.toBe(true);
+	});
+
+	it("follows the member's own interactive request when eligibility is unset", async () => {
+		const context = { userId: "user-1", organizationId: "org-1" };
+		await expect(chatGptPlanServesCall(context)).resolves.toBe(false);
+		await expect(
+			runWithAiInteractiveContext({ userId: "user-1" }, () =>
+				chatGptPlanServesCall(context),
+			),
+		).resolves.toBe(true);
+	});
+
+	it("is false while an admin acts as the member, with the flag off, or when excluded", async () => {
+		await expect(
+			runWithAiInteractiveContext(
+				{ userId: "user-1", impersonated: true },
+				() => chatGptPlanServesCall(ELIGIBLE),
+			),
+		).resolves.toBe(false);
+		await expect(
+			chatGptPlanServesCall({ ...ELIGIBLE, excludeChatGptPlan: true }),
+		).resolves.toBe(false);
+		mocks.isFeatureEnabled.mockResolvedValue(false);
+		await expect(chatGptPlanServesCall(ELIGIBLE)).resolves.toBe(false);
+	});
+
+	it("counts a plan that needs reconnecting, so the caller surfaces that refusal", async () => {
+		mocks.activeUse.mockResolvedValue({
+			includeBackgroundJobs: false,
+			credentialStatus: "NEEDS_RECONNECT",
+		});
+		await expect(chatGptPlanServesCall(ELIGIBLE)).resolves.toBe(true);
+	});
+});
+
+// Fizzy #2770 F13: when a call does not run on a plan (none serves it, plans
+// are off, it is excluded), a chat's plan pick never reaches the provider.
+describe("getAIModelWithMetadata — a plan pick on the API path", () => {
+	const API_ONLY = { userId: "user-1", organizationId: "org-1" };
+
+	it("runs the task's own model instead of a chat's plan pick", async () => {
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", modelOverride: "chatgpt-plan:gpt-6.1-sol" },
+			API_ONLY,
+		);
+		expect(resolved.metadata.provider).not.toBe("OPENAI_CHATGPT_PLAN");
+		expect(resolved.metadata.modelString).toBe("openai/gpt-4o-mini");
+		expect(resolved.metadata.selectionSource).not.toBe("override");
+	});
+
+	it("runs the task's own model instead of a model only a plan serves", async () => {
+		mocks.providerModelIdFor.mockImplementation(async (_name, provider) =>
+			provider === "OPENAI_CHATGPT_PLAN" ? "gpt-7-nova" : null,
+		);
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", modelOverride: "gpt-7-nova-chatgpt-plan" },
+			API_ONLY,
+		);
+		expect(resolved.metadata.modelString).toBe("openai/gpt-4o-mini");
+	});
+
+	it("still honours a provider model the member picked", async () => {
+		mocks.providerModelIdFor.mockImplementation(async (_name, provider) =>
+			provider === "VERCEL_GATEWAY" ? "anthropic/claude-sonnet-5" : null,
+		);
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", modelOverride: "claude-sonnet-5" },
+			API_ONLY,
+		);
+		expect(resolved.metadata.selectionSource).toBe("override");
+		expect(resolved.metadata.modelString).toContain("claude-sonnet-5");
 	});
 });

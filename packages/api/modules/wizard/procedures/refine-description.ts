@@ -108,7 +108,7 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 		// Import AI utilities
 		const {
 			getAIModelWithMetadata,
-			getRAGProviderConfig,
+			getEmbeddingRAGProviderConfig,
 			logModelUsageAsync,
 		} = await import("@repo/ai");
 
@@ -119,7 +119,7 @@ export const refineDescriptionProcedure = tenantProtectedProcedure
 		);
 
 		// Get RAG provider config for embedding operations
-		const ragConfig = await getRAGProviderConfig({
+		const ragConfig = await getEmbeddingRAGProviderConfig({
 			userId: user.id,
 			organizationId,
 		});

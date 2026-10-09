@@ -29,7 +29,7 @@ import {
 export const CHECKOUT_INPUT_SCHEMA = {
 	type: "object",
 	description:
-		"Facts about the git checkout you are running in, to compare with the commit the project published. Read them with read-only git commands: remoteUrl from `git remote get-url` for the remote the checkout fetches from, headSha from `git rev-parse HEAD`, branch from `git branch --show-current` (omit it when HEAD is detached), and clean as whether `git status --porcelain` printed nothing. When you already know the published commit (the `published` check's source.commitSha from an earlier call), add containsPublished as whether `git merge-base --is-ancestor <published commit> HEAD` succeeds: it tells a checkout that is ahead from one that is behind. Only meaningful on a repository-sourced project.",
+		"Facts about the git checkout you are running in, to compare with the commit the project published. Read them with read-only git commands: remoteUrl from `git remote get-url` for the remote the checkout fetches from, headSha from `git rev-parse HEAD`, branch from `git branch --show-current` (omit it when HEAD is detached), and clean as true only when BOTH `git diff --quiet` and `git diff --cached --quiet` exit 0 (no tracked file's content differs from the index or HEAD). Do NOT derive clean from `git status --porcelain`: untracked files and line-ending-only differences are listed by status but are not changes, and reporting them as dirty raises a false uncommitted-changes warning. When you already know the published commit (the `published` check's source.commitSha from an earlier call), add containsPublished as whether `git merge-base --is-ancestor <published commit> HEAD` succeeds: it tells a checkout that is ahead from one that is behind. Only meaningful on a repository-sourced project.",
 	properties: {
 		remoteUrl: {
 			type: "string",
@@ -46,7 +46,11 @@ export const CHECKOUT_INPUT_SCHEMA = {
 			maxLength: CHECKOUT_BRANCH_MAX_CHARS,
 			pattern: CHECKOUT_BRANCH_LITERAL.source,
 		},
-		clean: { type: "boolean" },
+		clean: {
+			type: "boolean",
+			description:
+				"true when `git diff --quiet && git diff --cached --quiet` succeeds; untracked files and line-ending-only differences do not make a checkout dirty.",
+		},
 		containsPublished: { type: "boolean" },
 	},
 	required: ["remoteUrl", "headSha", "clean"],

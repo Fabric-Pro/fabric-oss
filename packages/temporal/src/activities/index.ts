@@ -1164,6 +1164,17 @@ export {
 	retrieveProjectContextsActivity,
 } from "./project-metadata";
 export * from "./prompt-activities";
+// Coordinated Proposal job (Fizzy #2801): plan, visuals and Internal Analysis.
+// Named, not `export *`: the prompt resolver in lib/proposal-artifact is a
+// helper, not an activity.
+export {
+	clearProposalLiveContent,
+	createProposalAnalysisRun,
+	failProposalAnalysisRun,
+	generateProposalVisuals,
+	planProposalArtifact,
+	runProposalAnalysis,
+} from "./proposal-artifact";
 export * from "./rag-activities";
 // Repository Integration Health Check activities (token validation, refresh, PAT check)
 export {

@@ -600,7 +600,7 @@ describe("ConnectCliDialog — what the deployment serves", () => {
 		expect(
 			screen.getByTestId("agent-sign-in-claude-code"),
 		).toHaveTextContent(
-			`claude mcp add --transport http fabric ${PROJECT_GATEWAY}`,
+			`claude mcp add --scope local --transport http fabric-ewrite ${PROJECT_GATEWAY}`,
 		);
 		expect(screen.getAllByRole("listitem")).toHaveLength(2);
 	});
@@ -691,7 +691,7 @@ describe("ConnectCliDialog — the project purpose", () => {
 		expect(
 			screen.getByTestId("agent-sign-in-claude-code"),
 		).toHaveTextContent(
-			`claude mcp add --transport http fabric ${PROJECT_GATEWAY}`,
+			`claude mcp add --scope local --transport http fabric-ewrite ${PROJECT_GATEWAY}`,
 		);
 		expect(
 			screen.queryByTestId("agent-sign-in-setup-line"),
@@ -741,7 +741,7 @@ describe("ConnectCliDialog — the project purpose", () => {
 		);
 
 		expect(clipboardWrite).toHaveBeenCalledWith(
-			`claude mcp add --transport http fabric ${PROJECT_GATEWAY}`,
+			`claude mcp add --scope local --transport http fabric-ewrite ${PROJECT_GATEWAY}`,
 		);
 		expect(document.querySelectorAll('[aria-live="polite"]')).toHaveLength(
 			1,

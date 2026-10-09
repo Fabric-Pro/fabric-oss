@@ -104,6 +104,27 @@ describe("describeAiError — an oversized request body (Fizzy #2167)", () => {
 	});
 });
 
+describe("describeAiError — a model the ChatGPT plan does not serve (Fizzy #2770)", () => {
+	it("names the model in Fabric's own words and points at AI Models", () => {
+		const message =
+			"The ChatGPT plan does not serve gpt-5.6-luna. Choose another model in Organization settings → AI Models.";
+		const copy = describeAiError(409, {
+			error: message,
+			code: "CHATGPT_PLAN_MODEL_NOT_SERVED",
+		});
+		expect(copy.title).toBe("Model not available on the ChatGPT plan");
+		expect(copy.description).toBe(message);
+	});
+
+	it("reads the code from an oRPC error's data too", () => {
+		const copy = describeAiError(412, {
+			data: { code: "CHATGPT_PLAN_MODEL_NOT_SERVED" },
+		});
+		expect(copy.title).toBe("Model not available on the ChatGPT plan");
+		expect(copy.description).toMatch(/AI Models/);
+	});
+});
+
 describe("extractProviderMessage", () => {
 	it.each([
 		["plain string", "boom", "boom"],
@@ -194,5 +215,80 @@ describe("describeAiError — spent ChatGPT plan", () => {
 		expect(`${copy.title} ${copy.description}`).not.toMatch(
 			/your own ChatGPT plan reached/i,
 		);
+	});
+
+	const RESET_AT = new Date(Date.now() + 60 * 60_000).toISOString();
+	const localUntil = new Intl.DateTimeFormat(undefined, {
+		...(new Date(RESET_AT).toDateString() !== new Date().toDateString() && {
+			weekday: "short",
+		}),
+		hour: "2-digit",
+		minute: "2-digit",
+	}).format(new Date(RESET_AT));
+
+	it.each([
+		"subscription_sharing_usage_limit_exceeded",
+		"CHATGPT_PLAN_EXHAUSTED",
+	])(
+		"%s with a reset says the plans are spent until the local time",
+		(code) => {
+			const copy = describeAiError(429, {
+				error: "Every ChatGPT plan this work may use has no usage left in this window. The first resets at 2026-10-08 16:37 UTC.",
+				code,
+				resetAt: RESET_AT,
+			});
+			expect(copy.title).toBe("The ChatGPT plan has no usage left");
+			expect(copy.description).toContain(
+				`All ChatGPT plans for your work are spent until ${localUntil}.`,
+			);
+			expect(copy.description).not.toMatch(/UTC/);
+			expect(copy.planApiBillingActionable).toBeUndefined();
+			expect(copy.billingActionable).toBeUndefined();
+		},
+	);
+
+	it("offers the organization's API billing only when the server says it helps", () => {
+		const copy = describeAiError(429, {
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: RESET_AT,
+			apiBillingOption: true,
+		});
+		expect(copy.planApiBillingActionable).toBe(true);
+		expect(copy.description).toMatch(/organization's API billing/);
+
+		const without = describeAiError(429, {
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: RESET_AT,
+			apiBillingOption: false,
+		});
+		expect(without.planApiBillingActionable).toBeUndefined();
+		expect(without.description).not.toMatch(/API billing/);
+	});
+
+	it("names the weekday when the reset is not today", () => {
+		const reset = new Date(Date.now() + 3 * 24 * 60 * 60_000);
+		const expected = new Intl.DateTimeFormat(undefined, {
+			weekday: "short",
+			hour: "2-digit",
+			minute: "2-digit",
+		}).format(reset);
+		const copy = describeAiError(429, {
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: reset.toISOString(),
+		});
+		expect(copy.description).toContain(
+			`All ChatGPT plans for your work are spent until ${expected}.`,
+		);
+	});
+
+	it("keeps the server's sentence when the reset is unknown", () => {
+		const message =
+			"Every ChatGPT plan this work may use has no usage left in this window. Wait for one to reset, then try again.";
+		const copy = describeAiError(429, {
+			error: message,
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: null,
+		});
+		expect(copy.description).toBe(message);
 	});
 });

@@ -344,6 +344,7 @@ describe("generatePublishingNewsletterBlurbWorkflow", () => {
 				"AiUsageLimitExceededError",
 				"SubscriptionPlanExhaustedError",
 				"ChatGptPlanAuthError",
+				"ChatGptPlanModelNotServedError",
 			],
 		});
 

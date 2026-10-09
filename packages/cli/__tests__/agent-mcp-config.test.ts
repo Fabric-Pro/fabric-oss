@@ -12,8 +12,11 @@ import { agentRegistrationFacts } from "../src/lib/instructions/agent-mcp.js";
 import {
 	readClaudeServers,
 	readCodexServers,
-	readRegistration,
 } from "../src/lib/instructions/agent-mcp-config.js";
+import {
+	inspectServers,
+	registrationOf,
+} from "../src/lib/instructions/agent-mcp-servers.js";
 import {
 	buildHookCommand,
 	mergeSessionStartHook,
@@ -26,6 +29,31 @@ const URL = `${ORIGIN}/api/mcp-gateway/projects/${PROJECT}`;
 const OTHER_URL = `${ORIGIN}/api/mcp-gateway/projects/project-example-two`;
 
 const folders: string[] = [];
+
+/** What the tool's files say about the project's server, as `doctor` reads them. */
+async function readRegistration(input: {
+	tool: "claude-code" | "codex";
+	name: string;
+	url: string;
+	cwd: string;
+	home: string | null;
+	env: Record<string, string | undefined>;
+	platform: NodeJS.Platform;
+}) {
+	const inspected = await inspectServers({
+		tool: input.tool,
+		origin: ORIGIN,
+		projectId: PROJECT,
+		cwd: input.cwd,
+		home: input.home,
+		env: input.env,
+		platform: input.platform,
+	});
+	if (inspected.state !== "read") {
+		return inspected.state === "unlocated" ? "missing" : "unreadable";
+	}
+	return registrationOf(inspected.servers, input.name).state;
+}
 
 async function folder(label: string): Promise<string> {
 	const made = await mkdtemp(
@@ -201,9 +229,19 @@ describe("readRegistration for Claude Code", () => {
 		expect(await readClaude({ home, cwd })).toBe("registered");
 	});
 
-	it("ignores a server of another name", async () => {
+	it("counts a server of another name at the project's gateway as registered", async () => {
 		const { home, cwd } = await claudeFiles({
 			claudeJson: { mcpServers: { docs: { type: "http", url: URL } } },
+		});
+
+		expect(await readClaude({ home, cwd })).toBe("registered");
+	});
+
+	it("ignores a server of another name that points elsewhere", async () => {
+		const { home, cwd } = await claudeFiles({
+			claudeJson: {
+				mcpServers: { docs: { type: "http", url: OTHER_URL } },
+			},
 		});
 
 		expect(await readClaude({ home, cwd })).toBe("missing");
@@ -435,6 +473,9 @@ describe("agentRegistrationFacts", () => {
 				name: "fabric-pleone",
 				state: "registered",
 				registerLine: `codex mcp add fabric-pleone --url ${URL}`,
+				projectServers: ["fabric-pleone"],
+				orgWide: [],
+				foreignSameName: false,
 			},
 		]);
 	});
@@ -449,15 +490,21 @@ describe("agentRegistrationFacts", () => {
 		expect(found).toEqual([
 			{
 				tool: "claude-code",
-				name: "fabric",
+				name: "fabric-pleone",
 				state: "missing",
-				registerLine: `claude mcp add --scope local --transport http fabric ${URL}`,
+				registerLine: `claude mcp add --scope local --transport http fabric-pleone ${URL}`,
+				projectServers: [],
+				orgWide: [],
+				foreignSameName: false,
 			},
 			{
 				tool: "codex",
 				name: "fabric-pleone",
 				state: "missing",
 				registerLine: `codex mcp add fabric-pleone --url ${URL}`,
+				projectServers: [],
+				orgWide: [],
+				foreignSameName: false,
 			},
 		]);
 	});
@@ -493,7 +540,7 @@ describe("agentRegistrationFacts", () => {
 });
 
 describe("readClaudeServers", () => {
-	it("lists the server of the name in each scope, with its URL when it has one", async () => {
+	it("lists every server in each scope, whatever it is named, with its URL when it has one", async () => {
 		const { home, cwd } = await claudeFiles({
 			mcpJson: {
 				mcpServers: { fabric: { type: "http", url: OTHER_URL } },
@@ -521,7 +568,6 @@ describe("readClaudeServers", () => {
 		);
 
 		const read = await readClaudeServers({
-			name: "fabric",
 			cwd,
 			home,
 			env: {},
@@ -531,9 +577,10 @@ describe("readClaudeServers", () => {
 		expect(read).toEqual({
 			state: "read",
 			servers: [
-				{ scope: "local", url: URL },
-				{ scope: "user", url: null },
-				{ scope: "project", url: OTHER_URL },
+				{ name: "fabric", scope: "local", url: URL },
+				{ name: "docs", scope: "local", url: OTHER_URL },
+				{ name: "fabric", scope: "user", url: null },
+				{ name: "fabric", scope: "project", url: OTHER_URL },
 			],
 		});
 	});
@@ -552,7 +599,6 @@ describe("readClaudeServers", () => {
 		});
 
 		const read = await readClaudeServers({
-			name: "fabric",
 			cwd,
 			home,
 			env: {},
@@ -561,7 +607,7 @@ describe("readClaudeServers", () => {
 
 		expect(read).toEqual({
 			state: "read",
-			servers: [{ scope: "project", url: null }],
+			servers: [{ name: "fabric", scope: "project", url: null }],
 		});
 	});
 
@@ -570,7 +616,6 @@ describe("readClaudeServers", () => {
 
 		expect(
 			await readClaudeServers({
-				name: "fabric",
 				cwd,
 				home,
 				env: {},
@@ -585,7 +630,6 @@ describe("readClaudeServers", () => {
 
 		expect(
 			await readClaudeServers({
-				name: "fabric",
 				cwd: unreadable.cwd,
 				home: unreadable.home,
 				env: {},
@@ -594,7 +638,6 @@ describe("readClaudeServers", () => {
 		).toEqual({ state: "unreadable" });
 		expect(
 			await readClaudeServers({
-				name: "fabric",
 				cwd,
 				home: null,
 				env: {},

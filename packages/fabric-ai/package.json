@@ -12,14 +12,14 @@
 		"type-check": "tsgo --noEmit"
 	},
 	"dependencies": {
-		"@ai-sdk/groq": "^4.0.41",
-		"@ai-sdk/openai": "^4.0.66",
+		"@ai-sdk/groq": "^4.0.57",
+		"@ai-sdk/openai": "^4.0.87",
 		"@repo/ai": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/logs": "workspace:*",
 		"@repo/observability": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^7.0.105",
+		"ai": "^7.0.131",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {

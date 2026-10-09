@@ -42,9 +42,11 @@
  * Names only: no email address leaves this procedure. Not audited: it returns
  * metadata the repository already shows its readers, and writes nothing.
  */
+
 import { listRepositoryCommits, type RepositoryCommit } from "@repo/connectors";
 import { getInstructionCommitOverlay } from "@repo/database";
 import { z } from "zod";
+import { TtlCache } from "../../../../../lib/ttl-cache";
 import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
 	Permissions,
@@ -53,7 +55,6 @@ import {
 } from "../../../../../orpc/procedures";
 import { presentRepositoryCommit } from "../repository/commit-presentation";
 import { loadCommitSource, readError } from "./commit-source";
-import { TtlCache } from "./ttl-cache";
 
 const historyCache = new TtlCache<{
 	commits: RepositoryCommit[];

@@ -13,7 +13,10 @@ import {
 	findLiveOAuthAuthorizationResource,
 	recordAudit,
 } from "@repo/database";
-import { OAUTH_DISPLAYED_BINDING_FIELD } from "@repo/utils/oauth-project-resource";
+import {
+	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
+} from "@repo/utils/oauth-project-resource";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	hashOAuthToken,
@@ -109,6 +112,7 @@ function postConsent(
 	authorizeResponse: Response,
 	extra: Record<string, unknown> = {
 		[OAUTH_DISPLAYED_BINDING_FIELD]: pageShows(authorizeResponse),
+		[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 	},
 ) {
 	return ctx.call("/oauth2/consent", {
@@ -378,8 +382,10 @@ describe("authorizing an agent for one project", () => {
 				await authorizeUrl(client.client_id, { resource: PROJECT_ONE })
 			).split("?")[1],
 		});
-		expect(response.status).toBe(403);
-		expect(await response.json()).toMatchObject({ error: "access_denied" });
+		expect(refusalDeliveredToClient(response)).toMatchObject({
+			error: "access_denied",
+			state: "state-example",
+		});
 		expect(fixtures.bindings.size).toBe(0);
 	});
 	it("refuses repeated authorization identity fields in a project POST before the form parser discards them", async () => {
@@ -545,10 +551,10 @@ describe("authorizing an agent for one project", () => {
 			});
 
 			for (const response of [unreadable, missing]) {
-				expect(response.status).toBe(403);
-				expect(await response.json()).toMatchObject({
+				expect(refusalDeliveredToClient(response)).toMatchObject({
 					error: "access_denied",
 					error_description: "You don't have access to this project.",
+					state: "state-example",
 				});
 			}
 			expect(fixtures.bindings.size).toBe(0);
@@ -987,6 +993,14 @@ describe("an authorization that names no project", () => {
 
 const START_AGAIN = { error: "invalid_request" };
 
+/** A refusal delivered to the client's registered redirect URI, as its query. */
+function refusalDeliveredToClient(response: Response) {
+	expect(response.status).toBe(302);
+	const location = new URL(response.headers.get("location") ?? "");
+	expect(`${location.origin}${location.pathname}`).toBe(REDIRECT_URI);
+	return Object.fromEntries(location.searchParams);
+}
+
 async function issuedCodes(ctx: Harness) {
 	return (await rowsOf(ctx, "verification")).filter((row) =>
 		String(row.value).includes('"type":"authorization_code"'),
@@ -1054,6 +1068,7 @@ describe("consenting to what the page showed", () => {
 
 			const consent = await postConsent(ctx, response, {
 				[OAUTH_DISPLAYED_BINDING_FIELD]: shown,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 			});
 
 			await expectRefused(ctx, consent);
@@ -1072,6 +1087,7 @@ describe("consenting to what the page showed", () => {
 
 			const consent = await postConsent(ctx, response, {
 				[OAUTH_DISPLAYED_BINDING_FIELD]: shown,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 			});
 
 			await expectRefused(ctx, consent);
@@ -1086,6 +1102,7 @@ describe("consenting to what the page showed", () => {
 
 			const consent = await postConsent(ctx, response, {
 				[OAUTH_DISPLAYED_BINDING_FIELD]: null,
+				[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 			});
 
 			await expectRefused(ctx, consent);
@@ -1154,6 +1171,7 @@ describe("consenting to what the page showed", () => {
 			]) {
 				const consent = await postConsent(ctx, response, {
 					[OAUTH_DISPLAYED_BINDING_FIELD]: shown,
+					[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 				});
 
 				expect(consent.status, JSON.stringify(shown)).toBe(400);
@@ -1215,8 +1233,7 @@ describe("a live binding is write-once", () => {
 			resource: PROJECT_TWO,
 		});
 
-		expect(second.status).toBe(400);
-		expect(await second.json()).toMatchObject(START_AGAIN);
+		expect(refusalDeliveredToClient(second)).toMatchObject(START_AGAIN);
 		expect(pageShows(first)).toEqual({
 			projectId: "project-example-one",
 			audience: "mcp",
@@ -1237,7 +1254,7 @@ describe("a live binding is write-once", () => {
 			resource: API_PROJECT_ONE,
 		});
 
-		expect(second.status).toBe(400);
+		expect(refusalDeliveredToClient(second)).toMatchObject(START_AGAIN);
 		expect([...fixtures.bindings.values()]).toMatchObject([
 			{ audience: "mcp" },
 		]);
@@ -1313,8 +1330,7 @@ describe("spending a code leaves the binding where it is", () => {
 			resource: ORGANIZATION_WIDE,
 		});
 
-		expect(other.status).toBe(400);
-		expect(await other.json()).toMatchObject(START_AGAIN);
+		expect(refusalDeliveredToClient(other)).toMatchObject(START_AGAIN);
 		const location = unbound.headers.get("location") ?? "";
 		expect(location).toContain(REDIRECT_URI);
 		const nextCode = new URL(location).searchParams.get("code") as string;
@@ -1357,6 +1373,7 @@ describe("spending a code leaves the binding where it is", () => {
 
 		const consent = await postConsent(ctx, victim, {
 			[OAUTH_DISPLAYED_BINDING_FIELD]: shown,
+			[OAUTH_DISPLAYED_ORGANIZATION_FIELD]: ORGANIZATION_ID,
 		});
 		const { url } = (await consent.json()) as { url: string };
 		const code = new URL(url).searchParams.get("code") as string;

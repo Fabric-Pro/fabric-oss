@@ -5,6 +5,7 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { chatGptPlanSpentChatResponse } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -756,6 +757,17 @@ export async function POST(request: NextRequest) {
 						systemPrompt: systemPrompt ?? undefined,
 						projectContext: undefined,
 					};
+
+		// Every ChatGPT plan serving the member's work is spent: refuse with
+		// when it resets instead of falling through to the organization's
+		// provider, which a plan-only organization does not have (Fizzy #2770).
+		const planSpent = await chatGptPlanSpentChatResponse({
+			userId,
+			organizationId,
+		});
+		if (planSpent) {
+			return planSpent;
+		}
 
 		// Get AI model and provider config using centralized entry point
 		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;

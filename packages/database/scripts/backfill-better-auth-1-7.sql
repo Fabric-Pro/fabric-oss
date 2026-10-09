@@ -74,9 +74,19 @@ BEGIN
 END;
 $function$ LANGUAGE plpgsql;
 
+-- Migration 20261007120000 creates a v2 copy of this function, owned by the
+-- migration role. Where it exists the trigger runs it, so neither role needs to
+-- replace a function the other owns; elsewhere the trigger runs this one.
 DROP TRIGGER IF EXISTS fabric_oauth_client_compatibility ON oauth_client;
-CREATE TRIGGER fabric_oauth_client_compatibility BEFORE INSERT OR UPDATE ON oauth_client
-FOR EACH ROW EXECUTE FUNCTION fabric_oauth_client_compatibility();
+DO $install_trigger$
+BEGIN
+  EXECUTE format(
+    'CREATE TRIGGER fabric_oauth_client_compatibility BEFORE INSERT OR UPDATE ON oauth_client FOR EACH ROW EXECUTE FUNCTION %s()',
+    CASE WHEN to_regprocedure('fabric_oauth_client_compatibility_v2()') IS NOT NULL
+      THEN 'fabric_oauth_client_compatibility_v2'
+      ELSE 'fabric_oauth_client_compatibility' END);
+END;
+$install_trigger$;
 UPDATE oauth_client SET "applicationType" = "applicationType";
 
 DO $install$

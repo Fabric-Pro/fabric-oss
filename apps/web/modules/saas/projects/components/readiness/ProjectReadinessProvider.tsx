@@ -5,6 +5,7 @@ import {
 	type ProjectTabEventDetail,
 } from "@saas/get-started/lib/tour-steps";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useTenantScopeResolved } from "@saas/shared/lib/use-tenant-scope-resolved";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -121,6 +122,7 @@ export function ProjectReadinessProvider({
 	children: ReactNode;
 }) {
 	const { organizationId } = useOrganizationContext();
+	const tenantResolved = useTenantScopeResolved();
 	const queryClient = useQueryClient();
 	const [isExpanded, setExpanded] = useState(false);
 	const [autoExpandedFor, setAutoExpandedFor] = useState<string | null>(null);
@@ -132,6 +134,10 @@ export function ProjectReadinessProvider({
 				projectId,
 				organizationId: organizationId ?? null,
 			}),
+		// Until the URL's organization has resolved, organizationId is null
+		// without meaning "personal": reading then would ask for the personal
+		// context (and again a moment later for the organization).
+		enabled: tenantResolved,
 		staleTime: 30_000,
 		/**
 		 * Poll only while something is actually running.
@@ -151,6 +157,13 @@ export function ProjectReadinessProvider({
 		// backgrounded tab) is explicit rather than incidental.
 		refetchIntervalInBackground: false,
 	});
+
+	// `refetch()` ignores `enabled`, so every re-read goes through this gate.
+	const reread = useCallback(() => {
+		if (tenantResolved) {
+			void refetch();
+		}
+	}, [tenantResolved, refetch]);
 
 	/**
 	 * Re-read readiness after ANY successful mutation on this page.
@@ -198,7 +211,7 @@ export function ProjectReadinessProvider({
 					schedule();
 					return;
 				}
-				void refetch();
+				reread();
 			}, 400);
 		};
 		const unsubscribe = cache.subscribe((event) => {
@@ -215,7 +228,7 @@ export function ProjectReadinessProvider({
 			}
 			unsubscribe();
 		};
-	}, [queryClient, refetch, projectId, organizationId]);
+	}, [queryClient, reread, projectId, organizationId]);
 
 	/**
 	 * Re-read readiness when the user moves between project tabs.
@@ -234,7 +247,7 @@ export function ProjectReadinessProvider({
 		const onTabChange = (event: Event) => {
 			const detail = (event as CustomEvent<ProjectTabEventDetail>).detail;
 			if (detail?.projectId === projectId) {
-				void refetch();
+				reread();
 			}
 		};
 		window.addEventListener(GET_STARTED_PROJECT_TAB_EVENT, onTabChange);
@@ -243,7 +256,7 @@ export function ProjectReadinessProvider({
 				GET_STARTED_PROJECT_TAB_EVENT,
 				onTabChange,
 			);
-	}, [projectId, refetch]);
+	}, [projectId, reread]);
 
 	/**
 	 * When the panel is allowed to open itself.
@@ -354,9 +367,7 @@ export function ProjectReadinessProvider({
 				isLoading,
 				isExpanded,
 				setExpanded: handleSetExpanded,
-				refetch: () => {
-					void refetch();
-				},
+				refetch: reread,
 				hasInlineSlot: inlineSlotCount > 0,
 				claimInlineSlot,
 				cliKeyIssued,

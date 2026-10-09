@@ -4,7 +4,10 @@ import { useActiveOrganization } from "@saas/organizations/hooks/use-active-orga
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-const poolQueryKey = ["organizations", "chatgpt-plan-pool"] as const;
+export const chatgptPlanPoolQueryKey = [
+	"organizations",
+	"chatgpt-plan-pool",
+] as const;
 
 type UpdateAccountInput = Parameters<
 	typeof orpcClient.organizations.chatgptPlanPool.updateAccount
@@ -13,7 +16,7 @@ type UpdatePolicyInput = Parameters<
 	typeof orpcClient.organizations.chatgptPlanPool.updatePolicy
 >[0];
 
-export type ChatgptPlanPool = Awaited<
+type ChatgptPlanPool = Awaited<
 	ReturnType<typeof orpcClient.organizations.chatgptPlanPool.get>
 >;
 export type ChatgptPlanPoolAccount = ChatgptPlanPool["accounts"][number];
@@ -23,13 +26,17 @@ export type ChatgptPlanPoolAccount = ChatgptPlanPool["accounts"][number];
  * (Fizzy #2770). The server acts on the SESSION's organization, so the key
  * carries the slug on screen and nothing is fetched mid-switch.
  */
-export function useChatgptPlanPool() {
+export function useChatgptPlanPool(enabled = true) {
 	const { activeOrganization, isSwitching, isResolvingOrganization } =
 		useActiveOrganization();
 	return useQuery({
-		queryKey: [...poolQueryKey, activeOrganization?.slug ?? null],
+		queryKey: [
+			...chatgptPlanPoolQueryKey,
+			activeOrganization?.slug ?? null,
+		],
 		queryFn: () => orpcClient.organizations.chatgptPlanPool.get({}),
 		enabled:
+			enabled &&
 			Boolean(activeOrganization) &&
 			!isSwitching &&
 			!isResolvingOrganization,
@@ -45,7 +52,9 @@ function usePoolMutation<TInput, TResult>(
 		mutationFn,
 		onSuccess: () => {
 			callbacks.onSuccess?.();
-			return queryClient.invalidateQueries({ queryKey: poolQueryKey });
+			return queryClient.invalidateQueries({
+				queryKey: chatgptPlanPoolQueryKey,
+			});
 		},
 		onError: callbacks.onError,
 	});

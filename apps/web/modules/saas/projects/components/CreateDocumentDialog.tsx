@@ -16,6 +16,7 @@ import { CapabilityGateBanner } from "@saas/projects/components/capability-gates
 import { CapabilityRestoreControl } from "@saas/projects/components/capability-gates/CapabilityRestoreControl";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,17 +44,48 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CompanyContextNotice } from "./CompanyContextNotice";
 import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
+import { getOrpcCode } from "./field-mapping/orpc-error";
 
 type DocumentType = (typeof DOCUMENT_TYPE_OPTIONS)[number]["value"];
 
 const DEFAULT_DOCUMENT_TYPE: DocumentType = "GENERAL";
+
+/**
+ * The `data.code` of the create call's refusal when nothing is bound to the
+ * client proposal (Main) prompt while the Proposal artifact is on (Fizzy
+ * #2801) — `PROPOSAL_PROMPT_NOT_BOUND` in
+ * `@repo/temporal/proposal-artifact-types`, spelled out because this bundle
+ * takes no runtime values from `@repo/temporal`.
+ */
+const PROPOSAL_PROMPT_NOT_BOUND = "PROPOSAL_PROMPT_NOT_BOUND";
+
+/**
+ * The server's own message when it refused the create because the Proposal's
+ * client prompt is not bound: fixed text that tells the person an
+ * organization admin has to bind it. Null for every other failure.
+ */
+function proposalPromptRefusalMessage(error: unknown): string | null {
+	if (getOrpcCode(error) !== "PRECONDITION_FAILED") {
+		return null;
+	}
+	const { data, message } = error as { data?: unknown; message?: unknown };
+	const code =
+		typeof data === "object" && data !== null
+			? (data as { code?: unknown }).code
+			: undefined;
+	return code === PROPOSAL_PROMPT_NOT_BOUND &&
+		typeof message === "string" &&
+		message.trim() !== ""
+		? message
+		: null;
+}
 
 /**
  * The document types whose generation has a capability gate (Fizzy #1930).
@@ -335,6 +367,44 @@ async function uploadSourceFile({
 }
 
 const PROMPT_TRIGGER_ID = "create-document-prompt";
+
+/**
+ * The prompt field of a Proposal (Fizzy #2801). With the `PROPOSAL_ARTIFACT`
+ * rollout gate on, a Proposal's Main document is always written from the
+ * client proposal prompt bound in the library, and the run ignores any prompt
+ * a request names — so a selector would offer a choice the run never honours.
+ * The field says where the prompt comes from instead. With the gate off it is
+ * the ordinary selector, handed in as `selector`.
+ *
+ * Its own component, mounted only while the chosen type is a Proposal, so the
+ * flag is read only where it decides something.
+ */
+function ProposalPromptField({
+	promptLabel,
+	selector,
+}: {
+	promptLabel: string;
+	selector: ReactNode;
+}) {
+	const t = useTranslations("projects.proposalArtifactEntry");
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	if (!proposalArtifactEnabled) {
+		return selector;
+	}
+	return (
+		<div data-testid="proposal-library-prompt">
+			<p className="mb-2 font-medium text-sm leading-none">
+				{promptLabel}
+			</p>
+			<p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
+				{t("libraryPrompt")}
+			</p>
+			<p className="mt-1 text-muted-foreground text-xs">
+				{t("libraryPromptHint")}
+			</p>
+		</div>
+	);
+}
 
 export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const t = useTranslations("projects.documents.create");
@@ -781,15 +851,49 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 			router.push(
 				`${basePath}/projects/${projectId}/documents/${data.document.id}`,
 			);
-		} catch (_error) {
+		} catch (error) {
 			// Deliberately generic. The server already replaces internal
 			// failures with a fixed message, and anything that reaches here
-			// from the transport has no business being read by a user.
-			toast.error(t("createFailed"), { id: toastId });
+			// from the transport has no business being read by a user. The
+			// one exception is the unbound Proposal prompt refusal: its text
+			// is the server's own and says who can fix it.
+			toast.error(
+				proposalPromptRefusalMessage(error) ?? t("createFailed"),
+				{ id: toastId },
+			);
 		} finally {
 			setIsOrchestrating(false);
 		}
 	};
+
+	/*
+	 * The same selector the onboarding generation step uses, under the same
+	 * agent name, so both surfaces resolve prompts through one binding model
+	 * rather than two.
+	 */
+	const promptSelectorField = (
+		<div>
+			<Label className="mb-2 block" htmlFor={PROMPT_TRIGGER_ID}>
+				{t("promptLabel")}
+			</Label>
+			<PromptSelector
+				triggerId={PROMPT_TRIGGER_ID}
+				// Remount per type: the selector notifies its default once
+				// per mount, so without this a second type's default never
+				// reaches the payload — the dropdown shows it, the submitted
+				// attribution does not.
+				key={type}
+				agentName="project_document_generator"
+				documentType={type}
+				value={promptId}
+				onValueChange={setPromptId}
+				onPromptVersionChange={setPromptVersionId}
+				disabled={isSubmitting}
+				placeholder={t("promptPlaceholder")}
+				tooltipCollisionBoundaryRef={dialogContentRef}
+			/>
+		</div>
+	);
 
 	return (
 		<Dialog
@@ -973,38 +1077,15 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 						</p>
 					)}
 
-					{/*
-					 * The same selector the onboarding generation step uses,
-					 * under the same agent name, so both surfaces resolve
-					 * prompts through one binding model rather than two.
-					 */}
-					{generateWithAI && (
-						<div>
-							<Label
-								className="mb-2 block"
-								htmlFor={PROMPT_TRIGGER_ID}
-							>
-								{t("promptLabel")}
-							</Label>
-							<PromptSelector
-								triggerId={PROMPT_TRIGGER_ID}
-								// Remount per type: the selector notifies its
-								// default once per mount, so without this a
-								// second type's default never reaches the
-								// payload — the dropdown shows it, the
-								// submitted attribution does not.
-								key={type}
-								agentName="project_document_generator"
-								documentType={type}
-								value={promptId}
-								onValueChange={setPromptId}
-								onPromptVersionChange={setPromptVersionId}
-								disabled={isSubmitting}
-								placeholder={t("promptPlaceholder")}
-								tooltipCollisionBoundaryRef={dialogContentRef}
+					{generateWithAI &&
+						(type === "PROPOSAL" ? (
+							<ProposalPromptField
+								promptLabel={t("promptLabel")}
+								selector={promptSelectorField}
 							/>
-						</div>
-					)}
+						) : (
+							promptSelectorField
+						))}
 
 					{generateWithAI && (
 						<div>

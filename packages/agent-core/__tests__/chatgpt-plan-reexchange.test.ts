@@ -2,16 +2,21 @@
  * An agent whose ChatGPT plan refuses a call as spent (Fizzy #2770): before
  * any output, the plan model asks the exchange once for another plan's token,
  * skipping the spent one, and sends the call again; a second refusal is
- * final. Only OpenAI and the exchange are simulated.
+ * final. The spent plan is reported to Fabric's shared breaker (D1), and the
+ * run's usage rows name the plan that actually served it (D2). Only OpenAI and
+ * Fabric are simulated.
  */
 
 import { HumanMessage } from "@langchain/core/messages";
+import { getCachedKey, setCachedKey } from "@repo/ai-token";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetChatGptPlanExchanges,
 	rememberChatGptPlanExchange,
+	servingChatGptPlanSource,
 } from "../src/services/chatgpt-plan-reexchange";
 import { createProviderModel } from "../src/services/langchain-models";
+import { logAgentUsageFromRunnableConfig } from "../src/services/usage-logging";
 
 const FABRIC = "http://fabric.example.com";
 
@@ -85,10 +90,20 @@ function simulate(
 ) {
 	const openaiCalls: string[] = [];
 	const exchangeBodies: unknown[] = [];
+	const reports: unknown[] = [];
+	const usageBodies: Record<string, unknown>[] = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: unknown, init?: RequestInit) => {
 			const url = String(input instanceof Request ? input.url : input);
+			if (url.endsWith("/api/internal/chatgpt-plan/exhausted")) {
+				reports.push(JSON.parse(String(init?.body)));
+				return new Response(null, { status: 202 });
+			}
+			if (url.endsWith("/api/internal/ai-usage")) {
+				usageBodies.push(JSON.parse(String(init?.body)));
+				return new Response(null, { status: 200 });
+			}
 			if (url.startsWith(FABRIC)) {
 				exchangeBodies.push(JSON.parse(String(init?.body)));
 				return nextPlan();
@@ -99,7 +114,7 @@ function simulate(
 			return (plans[token] ?? spent)();
 		}),
 	);
-	return { openaiCalls, exchangeBodies };
+	return { openaiCalls, exchangeBodies, reports, usageBodies };
 }
 
 const planModel = () =>
@@ -135,6 +150,96 @@ describe("plan model — a spent plan", () => {
 		expect(reply.text).toBe("From B");
 		expect(openaiCalls).toEqual(["token-A", "token-B"]);
 		expect(exchangeBodies).toEqual([{ excludeSources: ["org:acc-A"] }]);
+	});
+
+	it("reports the spent plan to Fabric before asking for another (D1)", async () => {
+		const { reports } = simulate(
+			{ "token-A": spent, "token-B": () => answered("From B") },
+			() => exchanged("token-B", "org:acc-B"),
+		);
+		await planModel().invoke([new HumanMessage("Hello")]);
+		await vi.waitFor(() =>
+			expect(reports).toEqual([{ planSource: "org:acc-A" }]),
+		);
+	});
+
+	it("passes OpenAI's reset time along with the report", async () => {
+		const spentUntil = () =>
+			new Response(
+				JSON.stringify({
+					error: {
+						code: "subscription_sharing_usage_limit_exceeded",
+						message: "Usage limit reached",
+						resets_at: "2026-10-08T16:37:00Z",
+					},
+				}),
+				{
+					status: 429,
+					headers: { "content-type": "application/json" },
+				},
+			);
+		const { reports } = simulate(
+			{ "token-A": spentUntil, "token-B": () => answered("From B") },
+			() => exchanged("token-B", "org:acc-B"),
+		);
+		await planModel().invoke([new HumanMessage("Hello")]);
+		await vi.waitFor(() =>
+			expect(reports).toEqual([
+				{
+					planSource: "org:acc-A",
+					resetAt: "2026-10-08T16:37:00.000Z",
+				},
+			]),
+		);
+	});
+
+	it("drops this process's cached exchange, which would hand the spent plan out again", async () => {
+		await setCachedKey("jwt-example", {
+			apiKey: "token-A",
+			provider: "OPENAI_CHATGPT_PLAN",
+			model: "gpt-6-astra",
+			expiresIn: 300,
+			planSource: "org:acc-A",
+		} as Parameters<typeof setCachedKey>[1]);
+		simulate(
+			{ "token-A": spent, "token-B": () => answered("From B") },
+			() => exchanged("token-B", "org:acc-B"),
+		);
+		await planModel().invoke([new HumanMessage("Hello")]);
+		await vi.waitFor(async () =>
+			expect(await getCachedKey("jwt-example")).toBeNull(),
+		);
+	});
+
+	it("names the plan that served the run on its usage rows after a rotation (D2)", async () => {
+		const { usageBodies } = simulate(
+			{ "token-A": spent, "token-B": () => answered("From B") },
+			() => exchanged("token-B", "org:acc-B"),
+		);
+		const reply = await planModel().invoke([new HumanMessage("Hello")]);
+		expect(servingChatGptPlanSource("token-A")).toBe("org:acc-B");
+
+		vi.stubEnv("FABRIC_API_URL", FABRIC);
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					ai_token: "jwt-example",
+					ai_provider: "OPENAI_CHATGPT_PLAN",
+					ai_model: "gpt-6-astra",
+					ai_api_key: "token-A",
+					ai_plan_source: "org:acc-A",
+				},
+			},
+			reply,
+			{ taskType: "COMPLEX" },
+		);
+		vi.unstubAllEnvs();
+		expect(usageBodies[0]?.planSource).toBe("org:acc-B");
+	});
+
+	it("keeps the plan handed out on usage rows when nothing rotated", () => {
+		expect(servingChatGptPlanSource("token-A")).toBe("org:acc-A");
+		expect(servingChatGptPlanSource("token-never-handed-out")).toBeNull();
 	});
 
 	it("gives up after the second refusal", async () => {

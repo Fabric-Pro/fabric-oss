@@ -35,6 +35,17 @@ export interface GlossyModelContext {
 	projectId: string;
 	/** Cancels the in-flight model call, e.g. when an activity is cancelled. */
 	abortSignal?: AbortSignal;
+	/**
+	 * The feature the call's usage is attributed to. Glossy builds leave it
+	 * unset (`glossy-edition`); the Proposal artifact's visuals reuse these
+	 * calls under their own key (Fizzy #2801).
+	 */
+	featureKey?: AiFeatureKey;
+	/**
+	 * The member's own ChatGPT plan may serve the call (Fizzy #2939). Unset
+	 * leaves the decision to the resolver, as every Glossy caller does.
+	 */
+	planEligible?: boolean;
 }
 
 /** KTD21's typed outcome; the message is fixed and safe to show or persist. */
@@ -67,7 +78,10 @@ export async function resolveGlossyModel(
 				userId: context.userId,
 				organizationId: context.organizationId,
 				projectId: context.projectId,
-				featureKey: GLOSSY_FEATURE_KEY,
+				featureKey: context.featureKey ?? GLOSSY_FEATURE_KEY,
+				// Unset, not false, unless the caller says so: the same rule
+				// document generation follows.
+				...(context.planEligible && { planEligible: true }),
 			},
 		);
 		return { status: "resolved", ...resolved };

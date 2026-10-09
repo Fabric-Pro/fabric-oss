@@ -1,10 +1,16 @@
+import { Experimental_DecisionRefusalError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	capturedDecisionOutcomes,
+	decideWithFallbackRefusal,
+	resetCapturedDecisionOutcomes,
+} from "./support/decision-outcomes";
 
 const mocks = vi.hoisted(() => ({
 	getAIModelWithMetadata: vi.fn(),
 	generateObject: vi.fn(),
 	getAIDecisionModelWithMetadata: vi.fn(),
-	experimental_evaluate: vi.fn(),
+	experimental_decide: vi.fn(),
 	trackUsage: vi.fn(),
 }));
 
@@ -13,12 +19,24 @@ const { AiUsageLimitExceededError } = vi.hoisted(() => {
 	return { AiUsageLimitExceededError };
 });
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
 	generateObject: mocks.generateObject,
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
-	experimental_evaluate: mocks.experimental_evaluate,
+	experimental_decide: mocks.experimental_decide,
+	recordDecisionOutcome: await (
+		await import("./support/decision-outcomes")
+	).realRecordDecisionOutcome(),
+	createDecisionCapture: await (
+		await import("./support/decision-outcomes")
+	).realCreateDecisionCapture(),
 }));
+
+// The real telemetry helper runs against this stand-in, so tests assert the
+// outcome, model and confidence samples that would reach the metrics.
+vi.mock("@repo/observability/llm", async () =>
+	(await import("./support/decision-outcomes")).observabilityLlmMock(),
+);
 
 vi.mock("@repo/logs", () => ({ logger: { info: vi.fn(), warn: vi.fn() } }));
 
@@ -49,7 +67,7 @@ function enableDecisionModel() {
 const MISSING = Symbol("missing");
 
 /**
- * Builds an `experimental_evaluate` result. `entries` maps a question index to
+ * Builds an `experimental_decide` result. `entries` maps a question index to
  * the answer body merged onto `{ type: "choice" }` (or to {@link MISSING} to
  * omit that key entirely, simulating a missing answer).
  */
@@ -75,7 +93,7 @@ beforeEach(() => {
 	mocks.getAIModelWithMetadata.mockReset();
 	mocks.generateObject.mockReset();
 	mocks.getAIDecisionModelWithMetadata.mockReset();
-	mocks.experimental_evaluate.mockReset();
+	mocks.experimental_decide.mockReset();
 	mocks.trackUsage.mockReset();
 	mocks.getAIModelWithMetadata.mockResolvedValue({ model: {} });
 	// Default: no decision model configured, so existing tests exercise only
@@ -194,7 +212,7 @@ describe("typed decision fast path", () => {
 
 	it("all questions confident: topics come from the decision answers, no generateObject, trackUsage once, no getAIModelWithMetadata", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({
 				0: choice("Tooling & Tech", 0.95),
 				1: choice("Other", 0.9),
@@ -212,7 +230,7 @@ describe("typed decision fast path", () => {
 
 	it("partial: index 1 uncertain sends only that question (numbered 1.) to the language model, and its assignment lands back at index 1", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({
 				0: choice("Tooling & Tech", 0.95),
 				// index 1 left uncertain (missing answer)
@@ -238,7 +256,7 @@ describe("typed decision fast path", () => {
 
 	it("language path throws after a partial decision: decided labels are kept, the leftover stays 'Other'", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({ 0: choice("Tooling & Tech", 0.95) }),
 		);
 		mocks.generateObject.mockRejectedValue(new Error("model down"));
@@ -251,7 +269,7 @@ describe("typed decision fast path", () => {
 
 	it("probability exactly 0.9 is accepted; 0.8999 is leftover", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({
 				0: choice("Tooling & Tech", 0.9),
 				1: choice("Testing & QA", 0.8999),
@@ -270,7 +288,7 @@ describe("typed decision fast path", () => {
 
 	it("'Other' at 0.95 from the decision model is accepted without a language call", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({ 0: choice("Other", 0.95) }),
 		);
 		const out = await classifyQuestionTopics({
@@ -305,7 +323,7 @@ describe("typed decision fast path", () => {
 		"malformed decision answer (%s) is treated as leftover",
 		async (_label, malformed) => {
 			enableDecisionModel();
-			mocks.experimental_evaluate.mockResolvedValue(
+			mocks.experimental_decide.mockResolvedValue(
 				answers({
 					0: malformed as Record<string, unknown> | typeof MISSING,
 				}),
@@ -324,7 +342,7 @@ describe("typed decision fast path", () => {
 
 	it("all uncertain: trackUsage is still called once, then the language call runs over all questions with the master prompt", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({
 				0: choice("Tooling & Tech", 0.5),
 				1: choice("Other", 0.4),
@@ -351,9 +369,7 @@ describe("typed decision fast path", () => {
 
 	it("evaluate rejects with a generic error: trackUsage is not called, and the language path runs over all questions", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockRejectedValue(
-			new Error("evaluate down"),
-		);
+		mocks.experimental_decide.mockRejectedValue(new Error("evaluate down"));
 		mocks.generateObject.mockResolvedValue({
 			object: {
 				assignments: [
@@ -373,7 +389,69 @@ describe("typed decision fast path", () => {
 		expect(out).toEqual(["Tooling & Tech", "Rollout & Migration"]);
 	});
 
-	it("usage limit at resolution: all 'Other', experimental_evaluate and getAIModelWithMetadata are both not called", async () => {
+	it("a decision refusal is no decision: no topic is taken from it, and the language path labels every question", async () => {
+		// Drive the REAL SDK `experimental_decide` against a model that refuses
+		// every question, so the site sees exactly what the SDK produces for a
+		// refusal (a thrown Experimental_DecisionRefusalError).
+		const ai = await vi.importActual<typeof import("ai")>("ai");
+		const refusingModel = {
+			specificationVersion: "v4" as const,
+			provider: "example-decider",
+			modelId: "example/refusing-decider",
+			supportedQuestionTypes: ["choice" as const],
+			doDecide: async ({
+				questions,
+			}: {
+				questions: Record<string, unknown>;
+			}) => ({
+				answers: Object.fromEntries(
+					Object.keys(questions).map((id) => [
+						id,
+						{ type: "refusal" as const },
+					]),
+				),
+				warnings: [],
+			}),
+		};
+		enableDecisionModel();
+		mocks.experimental_decide.mockImplementation(
+			(args: Parameters<typeof ai.experimental_decide>[0]) =>
+				ai.experimental_decide({
+					...args,
+					model: refusingModel as unknown as Parameters<
+						typeof ai.experimental_decide
+					>[0]["model"],
+				}),
+		);
+		mocks.generateObject.mockResolvedValue({
+			object: {
+				assignments: [
+					{ id: 1, topic: "Tooling & Tech" },
+					{ id: 2, topic: "Rollout & Migration" },
+				],
+			},
+		});
+
+		const out = await classifyQuestionTopics({
+			questions: ["Which toolkit?", "Feature flag or big bang?"],
+			tenantFilter,
+		});
+
+		await expect(
+			mocks.experimental_decide.mock.results[0]?.value,
+		).rejects.toSatisfy((error: unknown) =>
+			ai.Experimental_DecisionRefusalError.isInstance(error),
+		);
+		expect(mocks.trackUsage).not.toHaveBeenCalled();
+		// Both questions went to the language model: nothing was settled from
+		// the refusal, not even as "Other".
+		expect(mocks.generateObject).toHaveBeenCalledWith(
+			expect.objectContaining({ prompt: MASTER_PROMPT_TWO }),
+		);
+		expect(out).toEqual(["Tooling & Tech", "Rollout & Migration"]);
+	});
+
+	it("usage limit at resolution: all 'Other', experimental_decide and getAIModelWithMetadata are both not called", async () => {
 		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
 			new AiUsageLimitExceededError("limit"),
 		);
@@ -382,14 +460,14 @@ describe("typed decision fast path", () => {
 			tenantFilter,
 		});
 		expect(out).toEqual(["Other", "Other"]);
-		expect(mocks.experimental_evaluate).not.toHaveBeenCalled();
+		expect(mocks.experimental_decide).not.toHaveBeenCalled();
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(mocks.generateObject).not.toHaveBeenCalled();
 	});
 
 	it("usage limit at evaluate: all 'Other', trackUsage is not called, getAIModelWithMetadata is not called", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockRejectedValue(
+		mocks.experimental_decide.mockRejectedValue(
 			new AiUsageLimitExceededError("limit"),
 		);
 		const out = await classifyQuestionTopics({
@@ -411,9 +489,9 @@ describe("typed decision fast path", () => {
 		expect(mocks.getAIDecisionModelWithMetadata).not.toHaveBeenCalled();
 	});
 
-	it("experimental_evaluate request: questions/criteria/state/maxRetries/abortSignal are exact", async () => {
+	it("experimental_decide request: questions/criteria/state/maxRetries/abortSignal are exact", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(answers({}));
+		mocks.experimental_decide.mockResolvedValue(answers({}));
 		mocks.generateObject.mockResolvedValue({
 			object: { assignments: [] },
 		});
@@ -424,8 +502,8 @@ describe("typed decision fast path", () => {
 		];
 		await classifyQuestionTopics({ questions, tenantFilter });
 
-		expect(mocks.experimental_evaluate).toHaveBeenCalledTimes(1);
-		const call = mocks.experimental_evaluate.mock.calls[0][0];
+		expect(mocks.experimental_decide).toHaveBeenCalledTimes(1);
+		const call = mocks.experimental_decide.mock.calls[0][0];
 
 		expect(Object.keys(call.questions)).toEqual([
 			"question_0",
@@ -470,7 +548,7 @@ describe("typed decision fast path", () => {
 				return {};
 			},
 		};
-		mocks.experimental_evaluate.mockResolvedValue(evalResult);
+		mocks.experimental_decide.mockResolvedValue(evalResult);
 		mocks.generateObject.mockResolvedValue({
 			object: { assignments: [{ id: 1, topic: "Other" }] },
 		});
@@ -486,7 +564,7 @@ describe("typed decision fast path", () => {
 
 	it("partial with non-contiguous leftovers: uncertain indices 0 and 2 go to the language model, renumbered 1. and 2., while decided indices 1 and 3 keep their decision labels", async () => {
 		enableDecisionModel();
-		mocks.experimental_evaluate.mockResolvedValue(
+		mocks.experimental_decide.mockResolvedValue(
 			answers({
 				1: choice("Rollout & Migration", 0.95),
 				3: choice("UX & Design", 0.93),
@@ -526,5 +604,162 @@ describe("typed decision fast path", () => {
 		expect(mocks.generateObject).toHaveBeenCalledWith(
 			expect.objectContaining({ prompt: expectedPrompt }),
 		);
+	});
+});
+
+describe("decision telemetry", () => {
+	const SITE = "question-topics";
+
+	beforeEach(() => {
+		resetCapturedDecisionOutcomes();
+		mocks.getAIDecisionModelWithMetadata.mockResolvedValue({
+			model: {},
+			metadata: {
+				provider: "VERCEL_GATEWAY",
+				modelString: "openai/example-decider",
+				canonicalName: "example-decider",
+			},
+			trackUsage: mocks.trackUsage,
+		});
+		mocks.generateObject.mockResolvedValue({
+			object: { assignments: [{ id: 1, topic: "UX & Design" }] },
+		});
+	});
+
+	it("records one outcome and confidence sample per question", async () => {
+		mocks.experimental_decide.mockResolvedValue({
+			...answers({
+				0: choice("Tooling & Tech", 0.97),
+				1: choice("UX & Design", 0.55),
+				2: { choice: "Data & Storage" },
+			}),
+			response: { modelId: "typesafe-ai/jev" },
+		});
+
+		await classifyQuestionTopics({
+			questions: ["a?", "b?", "c?"],
+			tenantFilter,
+		});
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: SITE,
+				outcome: "accepted",
+				model: "typesafe-ai-jev",
+				confidences: [0.97],
+			},
+			{
+				site: SITE,
+				outcome: "below_threshold",
+				model: "typesafe-ai-jev",
+				confidences: [0.55],
+			},
+			{
+				site: SITE,
+				outcome: "malformed",
+				model: "typesafe-ai-jev",
+				confidences: [],
+			},
+		]);
+		// Only the two unsettled questions reach the language classifier.
+		expect(mocks.generateObject).toHaveBeenCalledOnce();
+	});
+
+	it("records a failed or refused call once per question, and the language classifier still runs", async () => {
+		mocks.experimental_decide.mockRejectedValueOnce(
+			new Error("gateway timeout"),
+		);
+		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+		mocks.experimental_decide.mockRejectedValueOnce(
+			new Experimental_DecisionRefusalError({
+				questionIds: ["question_0"],
+				provider: "example-provider",
+				modelId: "example/decider",
+			}),
+		);
+		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+
+		expect(mocks.generateObject).toHaveBeenCalledTimes(2);
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([
+			["failed", "example-decider", 2],
+			["refused", "example-decider", 2],
+		]);
+	});
+
+	it("records limit_exceeded, with no language fallback, at the decision call and at resolution", async () => {
+		mocks.experimental_decide.mockRejectedValueOnce(
+			new AiUsageLimitExceededError(),
+		);
+		const decisionLimited = await classifyQuestionTopics({
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValueOnce(
+			new AiUsageLimitExceededError(),
+		);
+		const resolutionLimited = await classifyQuestionTopics({
+			questions: ["a?", "b?", "c?"],
+			tenantFilter,
+		});
+
+		expect(decisionLimited).toEqual(["Other", "Other"]);
+		expect(resolutionLimited).toEqual(["Other", "Other", "Other"]);
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([
+			["limit_exceeded", "example-decider", 2],
+			["limit_exceeded", "none", 3],
+		]);
+	});
+
+	it("records unavailable per question when no decision model resolves", async () => {
+		mocks.getAIDecisionModelWithMetadata.mockRejectedValue(
+			new Error("not configured"),
+		);
+
+		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+
+		expect(capturedDecisionOutcomes).toEqual([
+			{
+				site: SITE,
+				outcome: "unavailable",
+				model: "none",
+				confidences: [],
+				count: 2,
+			},
+		]);
+	});
+
+	it("records nothing for empty input, which makes no decision call", async () => {
+		await classifyQuestionTopics({ questions: [], tenantFilter });
+
+		expect(capturedDecisionOutcomes).toEqual([]);
+	});
+
+	it("labels a refusal by the gateway fallback model with that model, once per question", async () => {
+		mocks.experimental_decide.mockImplementationOnce(
+			decideWithFallbackRefusal,
+		);
+
+		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([["refused", "typesafe-ai-jev", 2]]);
 	});
 });

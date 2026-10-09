@@ -604,6 +604,14 @@ async function applyRLS() {
 			// userId; organizationId is NOT NULL on both.
 			{ name: "company_context_source", policy: "org_only" },
 			{ name: "company_context_url_page", policy: "org_only" },
+			// Proposal artifact (Fizzy #2801). Internal analysis runs, their
+			// findings and the document style: organization-owned, and a project
+			// guest must never read them, so plain `org_only` with no guest-read
+			// branch — unlike the Glossy project tables above. None has a userId;
+			// organizationId is NOT NULL on all three.
+			{ name: "project_document_analysis", policy: "org_only" },
+			{ name: "project_document_finding", policy: "org_only" },
+			{ name: "project_document_style", policy: "org_only" },
 			{ name: "discovery_run", policy: "user_owned" }, // Discovery runs (integration contracts)
 			{ name: "project_success_metric", policy: "user_owned" }, // Customer success metrics
 			// Parent-scoped: no tenant columns of their own, tenancy is

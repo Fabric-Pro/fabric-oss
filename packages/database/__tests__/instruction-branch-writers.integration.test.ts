@@ -32,7 +32,7 @@ import {
 	releaseBlockedBranch,
 	releaseBranchClaim,
 	selectDueBranches,
-	setOperationMembership,
+	setOperationMembershipMany,
 	transitionPullRequest,
 } from "../index";
 import { hasReachableDatabaseUrl } from "./_helpers/db-availability";
@@ -753,29 +753,43 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 		// Classification (spec §6.6, Decision 14)
 		// ---------------------------------------------------------------
 
-		describe("setOperationMembership", () => {
-			it("writes a fact on the operation's identity; included is never downgraded", async () => {
+		describe("setOperationMembershipMany", () => {
+			it("writes facts on each operation's identity in one statement; included is never downgraded", async () => {
 				const branchId = await seedBranch({ state: "MERGED" });
 				const id = await seedProposal("OPEN", branchId);
 				const op = await seedOp(branchId, id, "APPEND", "acked");
-				const set = (membership: "included" | "unverified") =>
-					setOperationMembership({
-						operationId: op,
-						organizationId: ORG,
-						membership,
+				const other = await seedOp(branchId, id, "APPEND", "acked");
+				const set = (
+					membership: "included" | "unverified",
+					organizationId = ORG,
+				) =>
+					setOperationMembershipMany({
+						organizationId,
+						entries: [{ operationId: op, membership }],
 					});
-				expect(await set("unverified")).toBe(true);
-				expect(await set("included")).toBe(true);
-				expect(await set("unverified")).toBe(false);
+				expect(await set("unverified")).toBe(1);
+				expect(await set("included")).toBe(1);
+				expect(await set("unverified")).toBe(0);
 				expect((await opOf(op)).membership).toBe("included");
-				expect(await set("included")).toBe(true);
+				expect(await set("included")).toBe(1);
+				expect(await set("included", "org_other_example")).toBe(0);
 				expect(
-					await setOperationMembership({
-						operationId: op,
-						organizationId: "org_other_example",
-						membership: "included",
+					await setOperationMembershipMany({
+						organizationId: ORG,
+						entries: [
+							{ operationId: op, membership: "unverified" },
+							{ operationId: other, membership: "unverified" },
+						],
 					}),
-				).toBe(false);
+				).toBe(1);
+				expect((await opOf(op)).membership).toBe("included");
+				expect((await opOf(other)).membership).toBe("unverified");
+				expect(
+					await setOperationMembershipMany({
+						organizationId: ORG,
+						entries: [],
+					}),
+				).toBe(0);
 			});
 		});
 
@@ -980,10 +994,14 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					// A late fact re-pends the branch, and the revert is now
 					// counted included: the proposal already took the outcome and
 					// is never classified again.
-					await setOperationMembership({
-						operationId: racedRevert,
+					await setOperationMembershipMany({
 						organizationId: ORG,
-						membership: "included",
+						entries: [
+							{
+								operationId: racedRevert,
+								membership: "included",
+							},
+						],
 					});
 					await db.projectInstructionProposalBranch.update({
 						where: { id: branchId },

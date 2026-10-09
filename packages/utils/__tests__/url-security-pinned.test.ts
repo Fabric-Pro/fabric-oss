@@ -28,6 +28,7 @@ import {
 	pinnedConnectLookup,
 	resolvePinnedAddress,
 	safeFetchOutboundPinned,
+	settleBefore,
 	UnsafeOutboundUrlError,
 	withoutCrossOriginCredentials,
 } from "../lib/url-security";
@@ -148,6 +149,17 @@ describe("resolvePinnedAddress", () => {
 		expect(result.address).toEqual({ address: PUBLIC_V4, family: 4 });
 		expect(result.url.hostname).toBe("api.example.com");
 	});
+
+	it.each(["ENOTFOUND", "EAI_AGAIN"])(
+		"preserves the %s DNS cause for callers explaining a refusal",
+		async (code) => {
+			const cause = Object.assign(new Error("lookup failed"), { code });
+			mockLookup.mockRejectedValueOnce(cause);
+			await expect(
+				resolvePinnedAddress("https://api.example.com/spec"),
+			).rejects.toMatchObject({ code: "UNSAFE_OUTBOUND_URL", cause });
+		},
+	);
 });
 
 describe("safeFetchOutboundPinned", () => {
@@ -413,6 +425,27 @@ describe("safeFetchOutboundPinned redirect credentials", () => {
 });
 
 describe("safeFetchOutboundPinned deadline", () => {
+	it("consumes a late transport rejection when the caller signal is already aborted", async () => {
+		const controller = new AbortController();
+		const reason = new Error("relay deadline elapsed");
+		controller.abort(reason);
+		let rejectTransport: (error: Error) => void = () => {};
+		const transport = new Promise<Response>((_resolve, reject) => {
+			rejectTransport = reject;
+		});
+		const unhandled = vi.fn();
+		process.once("unhandledRejection", unhandled);
+
+		await expect(settleBefore(transport, controller.signal)).rejects.toBe(
+			reason,
+		);
+		rejectTransport(new Error("transport stopped after the deadline"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		process.off("unhandledRejection", unhandled);
+
+		expect(unhandled).not.toHaveBeenCalled();
+	});
+
 	it("times out a lookup that never answers, without attempting a fetch", async () => {
 		// `AbortSignal.timeout` schedules on Node's internal timer, which fake
 		// timers do not reach, so the deadline here is short and real.

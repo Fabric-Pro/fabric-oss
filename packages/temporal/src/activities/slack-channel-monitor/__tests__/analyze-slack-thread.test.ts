@@ -8,6 +8,7 @@ const getLinkedSlackChannelsForMonitor = vi.fn();
 const getCachedProjectBacklog = vi.fn();
 const createPendingBacklogProposal = vi.fn();
 const attachProposalToSeenSlackMessage = vi.fn();
+const releaseSlackMessageClaim = vi.fn();
 
 // Partial mock: keep every real export (constants, side-effect registrations,
 // etc.) but override the specific functions this test cares about. Required
@@ -25,6 +26,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			createPendingBacklogProposal(...a),
 		attachProposalToSeenSlackMessage: (...a: unknown[]) =>
 			attachProposalToSeenSlackMessage(...a),
+		releaseSlackMessageClaim: (...a: unknown[]) =>
+			releaseSlackMessageClaim(...a),
 		// Conversation capture (Fizzy #2228) runs between the fetch and the
 		// claim and looks the channel's ProjectContext row up through this.
 		// These fixtures register no such row, so capture correctly finds no
@@ -65,6 +68,10 @@ vi.mock("@temporalio/activity", () => ({
 	heartbeat: () => {},
 }));
 
+import {
+	PlanSourceRotatedError,
+	SubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
 import { analyzeSlackThreadActivity } from "../analyze-slack-thread";
 
 const BASE_INPUT = {
@@ -351,5 +358,71 @@ describe("analyzeSlackThreadActivity — attachment sidecar", () => {
 		expect(createPendingBacklogProposal.mock.calls[1][0]).toEqual(
 			expect.objectContaining({ decisionPrecheck: undefined }),
 		);
+	});
+});
+
+describe("analyzeSlackThreadActivity — a ChatGPT plan refusal (Fizzy #2770 A4)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getLinkedSlackChannelsForMonitor.mockResolvedValue([LINKED_CHANNEL]);
+		claimSlackMessageForAnalysis.mockResolvedValue(true);
+		getCachedProjectBacklog.mockResolvedValue(EMPTY_BACKLOG);
+		releaseSlackMessageClaim.mockResolvedValue({ count: 1 });
+		fetchSlackThreadContextActivity.mockResolvedValue({
+			messages: [
+				{
+					ts: BASE_INPUT.threadRootTs,
+					sender: "U1",
+					content: "the export button does nothing",
+					createdAt: "2026-05-23T10:00:00.000Z",
+					threadTs: BASE_INPUT.threadRootTs,
+				},
+			],
+			truncated: false,
+			pendingAttachments: [],
+			attachmentWarnings: [],
+		});
+	});
+
+	it.each([
+		[
+			"spent",
+			() => new SubscriptionPlanExhaustedError("No usage left", null),
+		],
+		["ran out mid-reply", () => new PlanSourceRotatedError()],
+	])(
+		"gives the claim back when the plan %s, so the thread is analyzed next time",
+		async (_label, refusal) => {
+			const error = refusal();
+			analyzeContextAndPropose.mockRejectedValue(error);
+			await expect(analyzeSlackThreadActivity(BASE_INPUT)).rejects.toBe(
+				error,
+			);
+			expect(releaseSlackMessageClaim).toHaveBeenCalledWith(
+				"lcs1",
+				BASE_INPUT.threadRootTs,
+			);
+			expect(createPendingBacklogProposal).not.toHaveBeenCalled();
+		},
+	);
+
+	it("tags the analysis as slack-channel-monitor background work", async () => {
+		analyzeContextAndPropose.mockResolvedValue({
+			summary: "",
+			changes: [],
+		});
+		await analyzeSlackThreadActivity(BASE_INPUT);
+		const arg = analyzeContextAndPropose.mock.calls[0][0] as {
+			jobType?: string;
+		};
+		expect(arg.jobType).toBe("slack-channel-monitor");
+	});
+
+	it("keeps the claim on any other failure, so a failing thread does not loop", async () => {
+		analyzeContextAndPropose.mockRejectedValue(new Error("boom"));
+		await expect(analyzeSlackThreadActivity(BASE_INPUT)).rejects.toThrow(
+			"boom",
+		);
+		expect(releaseSlackMessageClaim).not.toHaveBeenCalled();
 	});
 });

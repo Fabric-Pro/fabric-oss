@@ -9,6 +9,7 @@ import {
 } from "@repo/database";
 import {
 	findPromptAgentTarget,
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { z } from "zod";
@@ -90,6 +91,34 @@ async function assertMayBindAtScope({
 }
 
 /**
+ * Agents no personal (USER) binding may target.
+ *
+ * The client-only Main prompt of a coordinated Proposal is everything the
+ * client reads, and a personal default outranks the organization's, so one
+ * person's preference could otherwise put internal notes in front of a client
+ * (Fizzy #2801). Only the write is refused: precedence and the readers are
+ * unchanged, and clearing stays open so nothing can be stranded.
+ */
+const PERSONAL_BINDING_REFUSED_TARGETS: ReadonlySet<string> = new Set([
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+]);
+
+function assertPersonalBindingAllowed(
+	scope: "SYSTEM" | "ORG" | "USER",
+	targetKeys: readonly string[],
+) {
+	if (
+		scope === "USER" &&
+		targetKeys.some((key) => PERSONAL_BINDING_REFUSED_TARGETS.has(key))
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"The client proposal prompt applies to the whole organization and cannot be set as a personal default. Ask an organization admin to change the organization's prompt instead.",
+		});
+	}
+}
+
+/**
  * A tier's default must be backed by content of at least that tier.
  *
  * Otherwise the default rests on a prompt one person can edit or delete, and
@@ -152,6 +181,8 @@ export const bindProcedures = {
 				input.organizationId,
 				context.session,
 			);
+
+			assertPersonalBindingAllowed(input.scope, [input.targetKey]);
 
 			// Tier compatibility FIRST, so a projectId on SYSTEM/USER fails with
 			// the scope message rather than a membership lookup's refusal.
@@ -381,6 +412,13 @@ export const bindProcedures = {
 				input.organizationId,
 				context.session,
 			);
+			// All or nothing, like the write itself: one refused target refuses
+			// the request.
+			assertPersonalBindingAllowed(
+				input.scope,
+				input.targets.map((t) => t.targetKey),
+			);
+
 			// Tier compatibility FIRST — see the single-action handler above.
 			await assertMayBindAtScope({
 				scope: input.scope,

@@ -21,6 +21,7 @@ import {
 	normalizeAzureEndpoint,
 	resolveAzureDeploymentTarget,
 } from "@repo/agent-types";
+import { aiImpersonatedUserId } from "@repo/agent-types/ai-interactive-context";
 import {
 	CHATGPT_PLAN_ORIGIN,
 	createChatGptPlanFetch,
@@ -31,7 +32,10 @@ import {
 } from "@repo/agent-types/databricks-compat";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
 import { isRetryableError } from "../retry";
-import { reexchangeChatGptPlan } from "./chatgpt-plan-reexchange";
+import {
+	reexchangeChatGptPlan,
+	reportChatGptPlanExhausted,
+} from "./chatgpt-plan-reexchange";
 import { createLangChainTelemetryCallback } from "./langchain-telemetry";
 
 /**
@@ -185,6 +189,21 @@ interface UserPreferenceResponse {
 }
 
 /**
+ * The tenant the ai-config routes are asked about, marked impersonated when
+ * this run is one an admin started while acting as the member (Fizzy #2770
+ * D7): inside a Temporal activity the interceptor records that, and the route
+ * then never resolves the member's ChatGPT plan. Unmarked everywhere else,
+ * as before.
+ */
+function signedTenant(userId: string, organizationId?: string) {
+	return {
+		userId,
+		organizationId: organizationId ?? null,
+		...(aiImpersonatedUserId() === userId && { impersonated: true }),
+	};
+}
+
+/**
  * Fetch AI configuration from the API using tenant context.
  * This is used when AI config is not passed directly through CopilotKit.
  *
@@ -224,10 +243,7 @@ async function fetchAiConfigFromApi(
 			method: "GET",
 			headers: {
 				"Content-Type": "application/json",
-				...createSecurityHeaders({
-					userId,
-					organizationId: organizationId ?? null,
-				}),
+				...createSecurityHeaders(signedTenant(userId, organizationId)),
 			},
 		});
 	} catch (error) {
@@ -331,10 +347,9 @@ async function fetchTaskSpecificConfig(
 				method: "GET",
 				headers: {
 					"Content-Type": "application/json",
-					...createSecurityHeaders({
-						userId,
-						organizationId: organizationId ?? null,
-					}),
+					...createSecurityHeaders(
+						signedTenant(userId, organizationId),
+					),
 				},
 			},
 		);
@@ -1921,7 +1936,10 @@ function createChatGptPlanChatModel(
 			baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
 			fetch: createChatGptPlanFetch({
 				getAccessToken: async () => accessToken,
-				onExhausted: async () => {
+				onExhausted: async ({ resetAt }) => {
+					// Every process stops sending this plan work until it
+					// resets (Fizzy #2770 D1); fire-and-forget.
+					reportChatGptPlanExhausted(accessToken, resetAt);
 					if (reexchanged) {
 						return null;
 					}

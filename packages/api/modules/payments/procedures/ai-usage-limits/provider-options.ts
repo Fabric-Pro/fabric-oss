@@ -25,6 +25,7 @@ import {
 	getOrganizationMembership,
 	getProviderDisplayName,
 } from "@repo/database";
+import type { AiProviderPurpose } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
 	resolveOrganizationId,
@@ -57,6 +58,13 @@ interface ProviderOptionsResult {
 	providers: ProviderOption[];
 }
 
+const PROVIDER_ROW_SELECT = {
+	id: true,
+	provider: true,
+	displayName: true,
+	purpose: true,
+} as const;
+
 function canManageLimits(role: string | undefined): boolean {
 	return role === "owner" || role === "admin";
 }
@@ -85,6 +93,7 @@ export const providerOptions = tenantProtectedProcedure
 				id: string;
 				provider: AIProvider;
 				displayName: string | null;
+				purpose: AiProviderPurpose;
 			}>;
 
 			if (organizationId) {
@@ -103,13 +112,13 @@ export const providerOptions = tenantProtectedProcedure
 
 				providerRows = await db.cloudProviderConfig.findMany({
 					where: { organizationId, enabled: true },
-					select: { id: true, provider: true, displayName: true },
+					select: PROVIDER_ROW_SELECT,
 					orderBy: { priority: "asc" },
 				});
 			} else {
 				providerRows = await db.userCloudProviderConfig.findMany({
 					where: { userId: user.id, enabled: true },
-					select: { id: true, provider: true, displayName: true },
+					select: PROVIDER_ROW_SELECT,
 					orderBy: { priority: "asc" },
 				});
 			}
@@ -131,7 +140,11 @@ export const providerOptions = tenantProtectedProcedure
 				select: {
 					provider: true,
 					model: {
-						select: { canonicalName: true, displayName: true },
+						select: {
+							canonicalName: true,
+							displayName: true,
+							capabilities: true,
+						},
 					},
 				},
 				// Stable order so the same model appears at the top of every
@@ -141,7 +154,7 @@ export const providerOptions = tenantProtectedProcedure
 
 			const modelsByProvider = new Map<
 				AIProvider,
-				ProviderModelOption[]
+				Array<ProviderModelOption & { embedding: boolean }>
 			>();
 			for (const m of mappings) {
 				if (!m.model) {
@@ -151,16 +164,28 @@ export const providerOptions = tenantProtectedProcedure
 				list.push({
 					canonicalName: m.model.canonicalName,
 					displayName: m.model.displayName ?? m.model.canonicalName,
+					embedding: m.model.capabilities.includes("EMBEDDING"),
 				});
 				modelsByProvider.set(m.provider, list);
 			}
 
+			// An embeddings-only key can only ever spend on embedding models,
+			// so those are the only ones worth capping on it.
 			const providers: ProviderOption[] = providerRows.map((row) => ({
 				id: row.id,
 				provider: row.provider,
 				displayName:
 					row.displayName ?? getProviderDisplayName(row.provider),
-				models: modelsByProvider.get(row.provider) ?? [],
+				models: (modelsByProvider.get(row.provider) ?? [])
+					.filter(
+						(model) =>
+							row.purpose !== "EMBEDDINGS_ONLY" ||
+							model.embedding,
+					)
+					.map(({ canonicalName, displayName }) => ({
+						canonicalName,
+						displayName,
+					})),
 			}));
 
 			return { providers };

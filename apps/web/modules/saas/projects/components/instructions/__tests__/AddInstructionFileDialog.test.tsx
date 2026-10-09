@@ -55,6 +55,7 @@ vi.mock("next-intl", () => ({
 	NextIntlClientProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
+const viewMocks = vi.hoisted(() => ({ invalidate: vi.fn() }));
 const m = vi.hoisted(() => ({
 	editInstructionSnapshot: vi.fn(),
 	toastSuccess: vi.fn(),
@@ -64,6 +65,12 @@ const m = vi.hoisted(() => ({
 vi.mock("@saas/projects/lib/edit-snapshot", () => ({
 	editInstructionSnapshot: (...a: unknown[]) =>
 		m.editInstructionSnapshot(...a),
+}));
+vi.mock("../lib/instructions-proposal-views", async (importActual) => ({
+	...(await importActual<
+		typeof import("../lib/instructions-proposal-views")
+	>()),
+	invalidateProposalViews: (...a: unknown[]) => viewMocks.invalidate(...a),
 }));
 vi.mock("sonner", () => ({
 	toast: {
@@ -112,6 +119,7 @@ function pick(name: string, contents = "# hello") {
 }
 
 beforeEach(() => {
+	viewMocks.invalidate.mockReset();
 	for (const fn of Object.values(m)) {
 		fn.mockReset();
 	}
@@ -400,6 +408,7 @@ describe("AddInstructionFileDialog — suggesting a change as a pull request", (
 		expect(m.toastSuccess).toHaveBeenCalledWith(
 			addCopy.pullRequestSubmitted,
 		);
+		expect(viewMocks.invalidate).toHaveBeenCalledTimes(1);
 	});
 
 	it("sends no note when both fields are left empty", async () => {

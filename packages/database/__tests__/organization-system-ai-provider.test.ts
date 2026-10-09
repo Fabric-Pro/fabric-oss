@@ -81,7 +81,12 @@ describe("getOrganizationSystemAiProviderApiKey", () => {
 		expect(result.source).toBe("organization");
 		expect(orgFindFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { organizationId: ORG, isDefault: true, enabled: true },
+				where: {
+					organizationId: ORG,
+					isDefault: true,
+					enabled: true,
+					purpose: { not: "EMBEDDINGS_ONLY" },
+				},
 			}),
 		);
 		expect(userFindFirst).not.toHaveBeenCalled();

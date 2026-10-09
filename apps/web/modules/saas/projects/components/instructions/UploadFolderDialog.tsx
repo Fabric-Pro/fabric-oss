@@ -537,7 +537,7 @@ export function UploadFolderDialog({
 			open={open}
 			onOpenChange={(next) => (next ? onOpenChange(next) : close())}
 		>
-			<DialogContent className="max-w-3xl">
+			<DialogContent className="max-w-3xl grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
 					<DialogTitle>
 						{entries ? t("reviewTitle") : t("pickTitle")}
@@ -923,7 +923,7 @@ export function UploadFolderDialog({
 						) : null}
 					</div>
 				) : null}
-				<DialogFooter>
+				<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 					{serverExcludedNotice ? (
 						<Button onClick={close}>{t("done")}</Button>
 					) : (

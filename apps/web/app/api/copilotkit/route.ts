@@ -40,6 +40,10 @@ import {
 } from "@repo/agent-tools";
 import type { BaseAgentState } from "@repo/agent-types";
 import {
+	CHATGPT_PLAN_EXHAUSTED_CODE,
+	SubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import {
 	buildEffectiveBaseUrl,
 	createDatabricksFetch,
 	type getAIModelWithMetadata,
@@ -54,7 +58,11 @@ import {
 	isAiImpersonatedRequest,
 } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { resolveChatGptPlanModel } from "@repo/ai/lib/chatgpt-plan/models";
-import { planServesInteractiveWork } from "@repo/ai/lib/chatgpt-plan/pool";
+import {
+	chatGptPlanApiBillingOption,
+	chatGptPlanSpentError,
+} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import { pickChatGptPlanSource } from "@repo/ai/lib/chatgpt-plan/pool";
 import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
@@ -672,6 +680,37 @@ async function getTenantConfig(
 }
 
 /**
+ * Whether this call starts a turn. Only a turn is refused for a spent ChatGPT
+ * plan: the mount-time `info` / `agent/connect` calls must still succeed.
+ */
+async function isAgentRunRequest(req: NextRequest): Promise<boolean> {
+	try {
+		const body = JSON.parse(await req.clone().text()) as {
+			method?: unknown;
+		};
+		return body?.method === "agent/run";
+	} catch {
+		return false;
+	}
+}
+
+/** A 429 the fetch interceptor shows as "every plan is spent until …" (Fizzy #2770). */
+function planExhaustedResponse(
+	error: SubscriptionPlanExhaustedError,
+	apiBillingOption: boolean,
+): Response {
+	return new Response(
+		JSON.stringify({
+			error: error.message,
+			code: CHATGPT_PLAN_EXHAUSTED_CODE,
+			resetAt: error.resetAt?.toISOString() ?? null,
+			apiBillingOption,
+		}),
+		{ status: 429, headers: { "Content-Type": "application/json" } },
+	);
+}
+
+/**
  * POST is the ONLY method this route exports — do not add a `GET`.
  *
  * `copilotRuntimeNextJSAppRouterEndpoint` builds a *single-route* endpoint:
@@ -777,6 +816,7 @@ export async function POST(req: NextRequest) {
 
 		let tenantConfig: TenantConfig;
 		let agentOnPlan: boolean;
+		let planModelHint: string | null = null;
 		try {
 			tenantConfig = await getTenantConfig(
 				session.user.id,
@@ -787,11 +827,39 @@ export async function POST(req: NextRequest) {
 			// the organization shares with members who have none (Fizzy #2770).
 			// The exchange makes the same decision from the token's claim; the
 			// hints below only have to agree with it.
-			agentOnPlan = await planServesInteractiveWork({
+			const plan = await pickChatGptPlanSource({
 				userId: session.user.id,
 				organizationId,
+				planEligible: true,
 			});
+			agentOnPlan = plan !== null;
+			if (plan && "exhausted" in plan && (await isAgentRunRequest(req))) {
+				return planExhaustedResponse(
+					chatGptPlanSpentError(plan),
+					chatGptPlanApiBillingOption(
+						plan,
+						tenantConfig.providerConfig !== null,
+					),
+				);
+			}
+			if (plan) {
+				// The task the key exchange resolves for agents, on the plan the
+				// pick chose, so the hint and the model the agent finally uses
+				// agree. Inside this try: a plan that serves no usable model is
+				// the 409 below, not a 500.
+				planModelHint = (
+					await resolveChatGptPlanModel({
+						userId: session.user.id,
+						organizationId,
+						taskType: "COMPLEX",
+						...("source" in plan && { source: plan.source }),
+					})
+				).model;
+			}
 		} catch (error) {
+			if (error instanceof SubscriptionPlanExhaustedError) {
+				return planExhaustedResponse(error, false);
+			}
 			// The member's plan is on here but needs reconnecting: refuse rather
 			// than run the agents on the organization's API billing.
 			const reconnect = chatGptPlanReconnectRefusal(error);
@@ -871,17 +939,8 @@ export async function POST(req: NextRequest) {
 		const agentProvider = agentOnPlan
 			? "OPENAI_CHATGPT_PLAN"
 			: metadata.provider;
-		const agentModel = agentOnPlan
-			? // The task the key exchange resolves for agents, so the hint and
-				// the model the agent finally uses agree.
-				(
-					await resolveChatGptPlanModel({
-						userId: session.user.id,
-						organizationId,
-						taskType: "COMPLEX",
-					})
-				).model
-			: metadata.modelString;
+		const agentModel =
+			agentOnPlan && planModelHint ? planModelHint : metadata.modelString;
 		const agentGatewayUrl = agentOnPlan ? null : aiGatewayUrl;
 		const agentDeploymentName = agentOnPlan
 			? undefined

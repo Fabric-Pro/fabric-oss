@@ -66,7 +66,7 @@ const mocks = vi.hoisted(() => {
 		clearCompanyContextSourceEmbedding: vi.fn(),
 		deleteCompanyContextSource: vi.fn(),
 		// AI and storage.
-		getSystemRAGProviderConfig: vi.fn(),
+		getSystemEmbeddingRAGProviderConfig: vi.fn(),
 		downloadFile: vi.fn(),
 		deleteFile: vi.fn(),
 		// RAG.
@@ -128,7 +128,8 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/ai", () => ({
 	AIProviderNotConfiguredError: mocks.AIProviderNotConfiguredError,
-	getSystemRAGProviderConfig: mocks.getSystemRAGProviderConfig,
+	getSystemEmbeddingRAGProviderConfig:
+		mocks.getSystemEmbeddingRAGProviderConfig,
 }));
 
 vi.mock("@repo/rag", () => ({
@@ -287,7 +288,7 @@ beforeEach(() => {
 		id: SOURCE,
 		urlPageIds: [],
 	});
-	mocks.getSystemRAGProviderConfig.mockResolvedValue({
+	mocks.getSystemEmbeddingRAGProviderConfig.mockResolvedValue({
 		apiKey: "test-key",
 		provider: "OPENAI_DIRECT",
 		baseUrl: null,
@@ -439,13 +440,15 @@ describe("processProjectContext with a company owner", () => {
 		});
 		// The provider is the organization's embedding one, never the
 		// default-provider key a member's personal provider can answer.
-		expect(mocks.getSystemRAGProviderConfig).not.toHaveBeenCalled();
+		expect(
+			mocks.getSystemEmbeddingRAGProviderConfig,
+		).not.toHaveBeenCalled();
 		expectNoProjectCalls();
 	});
 
 	it("indexes for an organization whose only provider is a dedicated embedding one", async () => {
 		// No default provider to answer the project path's key lookup.
-		mocks.getSystemRAGProviderConfig.mockRejectedValue(
+		mocks.getSystemEmbeddingRAGProviderConfig.mockRejectedValue(
 			new Error("No AI provider configured"),
 		);
 
@@ -952,7 +955,9 @@ describe("embedSingleContextActivity with a company owner", () => {
 		expect(options).not.toHaveProperty("projectId");
 		// No key: the embed resolves the organization's own provider.
 		expect(options).not.toHaveProperty("apiKey");
-		expect(mocks.getSystemRAGProviderConfig).not.toHaveBeenCalled();
+		expect(
+			mocks.getSystemEmbeddingRAGProviderConfig,
+		).not.toHaveBeenCalled();
 
 		expect(mocks.markCompanyContextSourceEmbedded).toHaveBeenCalledWith(
 			SOURCE,
@@ -1023,7 +1028,7 @@ describe("embedSingleContextActivity with a company owner", () => {
 	});
 
 	it("embeds for an organization whose only provider is a dedicated embedding one", async () => {
-		mocks.getSystemRAGProviderConfig.mockRejectedValue(
+		mocks.getSystemEmbeddingRAGProviderConfig.mockRejectedValue(
 			new mocks.AIProviderNotConfiguredError("No AI provider configured"),
 		);
 

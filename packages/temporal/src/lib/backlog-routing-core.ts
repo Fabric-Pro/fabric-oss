@@ -35,10 +35,12 @@
  */
 
 import {
-	experimental_evaluate,
+	createDecisionCapture,
+	experimental_decide,
 	generateObject,
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
+	recordDecisionOutcome,
 	resolveModelWithProvider,
 } from "@repo/ai";
 // Subpath import (not the @repo/ai root) so it stays UNMOCKED in tests that
@@ -104,13 +106,16 @@ const DECISION_CONFIDENCE_THRESHOLD = 0.9;
  */
 const DECISION_CRITERION_CHARS = 500;
 
+// Fixed call-site name for decision telemetry (llm.decision.outcomes).
+const DECISION_SITE = "backlog-routing";
+
 /**
  * Read one `choice` answer defensively. An answer that is missing, not a
  * choice, carries no distribution, or whose winning probability is not a finite
  * number in [0,1] is uncertain — never a verdict.
  */
 function readChoiceAnswer(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 	questionKey: string,
 ): { choice: string; probability: number } | null {
 	const answer = (result as { answers?: Record<string, unknown> }).answers?.[
@@ -164,7 +169,7 @@ type DecisionFastPath =
  * anyway.
  */
 function acceptDecisionEvaluation(
-	result: Awaited<ReturnType<typeof experimental_evaluate>>,
+	result: Awaited<ReturnType<typeof experimental_decide>>,
 	shortlistIdentifiers: ReadonlySet<string>,
 	enrichThreshold: number,
 ): DecisionFastPath | null {
@@ -239,41 +244,50 @@ async function evaluateRouting(params: {
 			);
 	}
 
-	let result: Awaited<ReturnType<typeof experimental_evaluate>>;
+	let result: Awaited<ReturnType<typeof experimental_decide>>;
+	const capture = createDecisionCapture();
 	try {
-		result = await experimental_evaluate({
-			model: decisionModel.model,
-			state: {
-				judgePolicy: params.prompt,
-				actionItem: params.actionItem,
-				analyzerReasoning: params.analyzerReasoning ?? "",
-			},
-			questions: {
-				routing: {
-					type: "choice",
-					instructions:
-						"Apply judgePolicy to actionItem. Choose enrich only when the action item is additional detail on one of the candidate tickets; choose create when it is work none of them already covers.",
-					criteria: {
-						create: "The action item is new work that none of the candidate tickets already tracks.",
-						enrich: "The action item is additional detail on one of the candidate tickets, which should absorb it rather than a new ticket being opened.",
+		result = await capture.run(() =>
+			experimental_decide({
+				model: decisionModel.model,
+				state: {
+					judgePolicy: params.prompt,
+					actionItem: params.actionItem,
+					analyzerReasoning: params.analyzerReasoning ?? "",
+				},
+				questions: {
+					routing: {
+						type: "choice",
+						instructions:
+							"Apply judgePolicy to actionItem. Choose enrich only when the action item is additional detail on one of the candidate tickets; choose create when it is work none of them already covers.",
+						criteria: {
+							create: "The action item is new work that none of the candidate tickets already tracks.",
+							enrich: "The action item is additional detail on one of the candidate tickets, which should absorb it rather than a new ticket being opened.",
+						},
+					},
+					target: {
+						type: "choice",
+						instructions:
+							"Choose the candidate ticket the action item belongs to, by its identifier. Answer as if enrich were the correct routing, even when create is the better one.",
+						criteria: targetCriteria,
 					},
 				},
-				target: {
-					type: "choice",
-					instructions:
-						"Choose the candidate ticket the action item belongs to, by its identifier. Answer as if enrich were the correct routing, even when create is the better one.",
-					criteria: targetCriteria,
-				},
-			},
-			maxRetries: DECISION_MAX_RETRIES,
-			abortSignal: params.abortSignal
-				? AbortSignal.any([
-						AbortSignal.timeout(DECISION_TIMEOUT_MS),
-						params.abortSignal,
-					])
-				: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-		});
+				maxRetries: DECISION_MAX_RETRIES,
+				abortSignal: params.abortSignal
+					? AbortSignal.any([
+							AbortSignal.timeout(DECISION_TIMEOUT_MS),
+							params.abortSignal,
+						])
+					: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+			}),
+		);
 	} catch (error) {
+		recordDecisionOutcome({
+			site: DECISION_SITE,
+			error,
+			decisionModel,
+			capture,
+		});
 		if (error instanceof AiUsageLimitExceededError) {
 			throw error;
 		}
@@ -298,6 +312,22 @@ async function evaluateRouting(params: {
 		new Set(candidates.map((candidate) => candidate.identifier)),
 		params.threshold,
 	);
+	// One outcome per item. Confidence is sampled for the routing answer and,
+	// when the routing answer chose enrich, the target answer too: those are the
+	// answers the acceptance rule above consults.
+	const answers = (result as { answers?: Record<string, unknown> }).answers;
+	recordDecisionOutcome({
+		site: DECISION_SITE,
+		outcome: verdict ? "accepted" : "below_threshold",
+		decisionModel,
+		result,
+		capture,
+		answers:
+			(answers?.routing as { choice?: unknown } | undefined)?.choice ===
+			"enrich"
+				? [answers?.routing, answers?.target]
+				: [answers?.routing],
+	});
 	if (!verdict) {
 		logger.warn(
 			`${logPrefix} decision evaluation was uncertain or malformed; using language judge`,
@@ -868,6 +898,12 @@ export async function judgeRoutingItem(
 					};
 				}
 			}
+		} else {
+			// No decision model: this item goes straight to the language judge.
+			recordDecisionOutcome({
+				site: DECISION_SITE,
+				outcome: "unavailable",
+			});
 		}
 
 		// A ceiling, not a target: the verdict is a handful of fields and a

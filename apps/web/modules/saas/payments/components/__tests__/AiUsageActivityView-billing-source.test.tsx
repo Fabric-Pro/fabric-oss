@@ -18,6 +18,12 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The plan breakdown reads the feature flags and its own query; covered in
+// ChatgptPlanUsageBreakdown.test.tsx.
+vi.mock("../ChatgptPlanUsageBreakdown", () => ({
+	ChatgptPlanUsageBreakdown: () => null,
+}));
+
 vi.mock("../AiUsageLimitsCard", () => ({
 	AiUsageLimitsCard: () => <div data-testid="ai-usage-limits-card" />,
 }));
@@ -199,12 +205,25 @@ function facetsData(planRequests: number) {
 	};
 }
 
-function mockQueries({ planRequests = 9 }: { planRequests?: number } = {}) {
+function mockQueries({
+	planRequests = 9,
+	failedAttempts = 0,
+}: {
+	planRequests?: number;
+	failedAttempts?: number;
+} = {}) {
 	useQueryMock.mockImplementation((options: QueryOptions) => {
 		const [path] = options.queryKey;
 		const data =
 			path === "payments.listAiActivity"
-				? LIST_DATA
+				? {
+						...LIST_DATA,
+						totals: {
+							...LIST_DATA.totals,
+							failedAttempts,
+							rowCount: 2,
+						},
+					}
 				: path === "payments.getAiActivityFacets"
 					? facetsData(planRequests)
 					: path === "payments.getAiActivityTimeSeries"
@@ -384,5 +403,32 @@ describe("AiUsageActivityView — cost covered by ChatGPT plans (Fizzy #2939)", 
 		render(<AiUsageActivityView organizationId="org-1" />);
 
 		expect(screen.queryByTestId("total-cost-plan-covered")).toBeNull();
+	});
+});
+
+// Fizzy #2972 AC3: failed attempts are not requests — said beside the count,
+// except when the person filtered to the errors themselves.
+describe("AiUsageActivityView — failed attempts", () => {
+	it("says how many failed attempts the request count leaves out", () => {
+		mockQueries({ failedAttempts: 2 });
+		render(<AiUsageActivityView organizationId="org-1" />);
+		expect(
+			screen.getByText(/2 failed attempts not counted/),
+		).toBeInTheDocument();
+	});
+
+	it("drops that note when filtered to errors", async () => {
+		mockQueries({ failedAttempts: 2 });
+		render(<AiUsageActivityView organizationId="org-1" />);
+		const user = userEvent.setup();
+		await user.click(
+			screen.getByRole("combobox", { name: "Filter by status" }),
+		);
+		await user.click(await screen.findByRole("option", { name: "Errors" }));
+		await waitFor(() =>
+			expect(
+				screen.queryByText(/failed attempts? not counted/),
+			).toBeNull(),
+		);
 	});
 });

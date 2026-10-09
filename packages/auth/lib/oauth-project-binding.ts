@@ -39,15 +39,20 @@ import {
 	isProjectId,
 	looksLikeProjectResource,
 	OAUTH_DISPLAYED_BINDING_FIELD,
+	OAUTH_DISPLAYED_ORGANIZATION_FIELD,
 	type OAuthProjectAudience,
 	parseOAuthReference,
 	parseProjectResource,
 	staticResourceFor,
 } from "@repo/utils/oauth-project-resource";
 import { APIError } from "better-auth/api";
+import {
+	type AuthorizeRefusalContext,
+	refusalForClient,
+} from "./oauth-client-redirect";
 import { oauthValidAudiences } from "./oauth-scopes";
 
-export interface OAuthResourceHookContext {
+interface OAuthResourceHookContext {
 	path?: string;
 	method?: string;
 	/** Set by the provider when it resumes authorize through its dispatcher. */
@@ -67,6 +72,7 @@ export interface OAuthResourceHookContext {
 			}): Promise<{
 				referenceId?: string | null;
 				disabled?: boolean | null;
+				redirectUris?: string[] | null;
 			} | null>;
 		};
 	};
@@ -80,10 +86,24 @@ export type OAuthIssuedGrantContext = Pick<
 	context: { returned?: unknown };
 };
 
+/** What the authorize hook needs beyond the others: to answer a refusal to the client. */
+export interface OAuthAuthorizeHookContext
+	extends OAuthResourceHookContext,
+		AuthorizeRefusalContext {
+	context: OAuthResourceHookContext["context"] &
+		AuthorizeRefusalContext["context"];
+}
+
 export interface OAuthResourceHookDeps {
 	appUrl: string;
 	/** The signed-in person, when there is one. Read lazily: most requests need none. */
 	getSessionUserId: () => Promise<string | null>;
+	/**
+	 * The organization an organization-wide authorization would be granted for
+	 * if the person allowed it now. Read lazily, and throws as the grant itself
+	 * would when there is none.
+	 */
+	getConsentOrganizationId: () => Promise<string>;
 }
 
 export const PROJECT_ACCESS_DENIED_DESCRIPTION =
@@ -114,6 +134,29 @@ function invalidRequest(description: string): APIError {
 		error: "invalid_request",
 		error_description: description,
 	});
+}
+
+/**
+ * A refusal of an authorization whose client is known, delivered to the
+ * client's registered `redirect_uri` where there is one (RFC 6749 §4.1.2.1).
+ */
+function refuseToClient(
+	ctx: AuthorizeRefusalContext,
+	client: { redirectUris?: string[] | null },
+	query: Record<string, unknown>,
+	status: "BAD_REQUEST" | "FORBIDDEN",
+	details: { error: string; error_description: string },
+): Error {
+	return refusalForClient(
+		ctx,
+		{
+			redirectUri: singleValueOf(query.redirect_uri),
+			state: singleValueOf(query.state),
+		},
+		client.redirectUris ?? [],
+		status,
+		details,
+	);
 }
 
 function valuesOf(value: unknown): string[] {
@@ -178,7 +221,7 @@ function sameProject(
  * Those passes keep the matching live binding alive, for a while.
  */
 async function bindResourceOnAuthorize(
-	ctx: OAuthResourceHookContext,
+	ctx: OAuthAuthorizeHookContext,
 	deps: OAuthResourceHookDeps,
 ): Promise<
 	| { context: { query: Record<string, unknown> } }
@@ -280,7 +323,7 @@ async function bindResourceOnAuthorize(
 		userId &&
 		!(await resolveOAuthProjectGrantTarget(userId, requested.projectId))
 	) {
-		throw new APIError("FORBIDDEN", {
+		throw refuseToClient(ctx, client, query, "FORBIDDEN", {
 			error: "access_denied",
 			error_description: PROJECT_ACCESS_DENIED_DESCRIPTION,
 		});
@@ -293,9 +336,11 @@ async function bindResourceOnAuthorize(
 		audience: requested.audience,
 	});
 	if (!standing || !sameProject(standing, requested)) {
-		throw invalidRequest(
-			"This authorization was already started for something else. Start it again from your agent.",
-		);
+		throw refuseToClient(ctx, client, query, "BAD_REQUEST", {
+			error: "invalid_request",
+			error_description:
+				"This authorization was already started for something else. Start it again from your agent.",
+		});
 	}
 	// The provider now validates resources at authorize and carries them into
 	// the code. Keep the canonical project in Fabric's binding while using the
@@ -357,7 +402,10 @@ function shownMatches(
  * Reads the key from the same `oauth_query` the plugin does, so the binding
  * compared with is the one the grant is decided from.
  */
-async function requireGrantShown(ctx: OAuthResourceHookContext): Promise<void> {
+async function requireGrantShown(
+	ctx: OAuthResourceHookContext,
+	deps: OAuthResourceHookDeps,
+): Promise<void> {
 	const body = (ctx.body ?? {}) as Record<string, unknown>;
 	if (body.accept !== true) {
 		return;
@@ -384,6 +432,18 @@ async function requireGrantShown(ctx: OAuthResourceHookContext): Promise<void> {
 		throw invalidRequest(
 			"What this page showed is not what the connection is for any more. Start it again from your agent.",
 		);
+	}
+
+	if (live === null) {
+		const shownOrganization = body[OAUTH_DISPLAYED_ORGANIZATION_FIELD];
+		if (
+			typeof shownOrganization !== "string" ||
+			shownOrganization !== (await deps.getConsentOrganizationId())
+		) {
+			throw invalidRequest(
+				"The organization this page showed is not the one the connection is for. Start it again from your agent.",
+			);
+		}
 	}
 }
 
@@ -559,7 +619,7 @@ export async function issuedGrantOfConsent(
  * the test harness that stands in for it.
  */
 export async function enforceOAuthResourceBinding(
-	ctx: OAuthResourceHookContext,
+	ctx: OAuthAuthorizeHookContext,
 	deps: OAuthResourceHookDeps,
 ): Promise<
 	| { context: { body: Record<string, unknown> } }
@@ -570,7 +630,7 @@ export async function enforceOAuthResourceBinding(
 		case "/oauth2/authorize":
 			return bindResourceOnAuthorize(ctx, deps);
 		case "/oauth2/consent":
-			await requireGrantShown(ctx);
+			await requireGrantShown(ctx, deps);
 			return undefined;
 		case "/oauth2/token":
 			return matchResourceOnToken(ctx, deps);

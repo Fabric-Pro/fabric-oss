@@ -42,6 +42,24 @@ import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
 /**
+ * The client-only Main document of a coordinated Proposal (Fizzy #2801).
+ *
+ * Its own agent key at documentType PROPOSAL, so the coordinated job resolves
+ * a prompt apart from `project_document_generator`'s PROPOSAL binding, which
+ * keeps serving the Draft flow. The prompt bound here is the whole of what the
+ * client reads, so the bind procedure refuses a personal (USER) binding on it.
+ */
+export const PROPOSAL_CLIENT_MAIN_AGENT_KEY = "proposal_client_main";
+
+/**
+ * The Internal Analysis a coordinated Proposal runs over its saved Main
+ * document (Fizzy #2801). Only the instructions live in the prompt; the output
+ * contract is supplied by the code that calls the model.
+ */
+export const PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY =
+	"proposal_internal_analysis";
+
+/**
  * Document types that exist only in the prompt layer.
  *
  * These share the `documentType` column with project document types but are not
@@ -218,6 +236,25 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		label: "Document Generator",
 		featureType: "PROJECT_DOCUMENTS",
 		actions: nonStage("GENERAL", "PRD", "PROPOSAL", "ARCHITECTURE"),
+	},
+	{
+		// The client-only Main document of a coordinated Proposal. Editing it
+		// changes everything the client reads; it cannot be overridden with a
+		// personal default, and a coordinated Proposal will not generate while
+		// nothing is bound here.
+		key: PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+		label: "Client proposal (Main)",
+		featureType: "PROJECT_DOCUMENTS",
+		actions: nonStage("PROPOSAL"),
+	},
+	{
+		// The Internal Analysis of a coordinated Proposal, read only by members
+		// of the owning organization. Editing it changes what the review looks
+		// for; it cannot change the shape of a finding, which the code supplies.
+		key: PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
+		label: "Proposal internal analysis",
+		featureType: "PROJECT_DOCUMENTS",
+		actions: nonStage("PROPOSAL"),
 	},
 	{
 		// Runs once per new story to decide BUG vs FEATURE.

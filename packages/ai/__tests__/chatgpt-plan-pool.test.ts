@@ -17,6 +17,7 @@ type Account = {
 	status: "ACTIVE" | "NEEDS_RECONNECT";
 	serveInteractive: boolean;
 	serveBackground: boolean;
+	maxMemberSharePct?: number | null;
 };
 
 const db = vi.hoisted(() => ({
@@ -37,7 +38,18 @@ const db = vi.hoisted(() => ({
 	accounts: [] as Account[],
 	accountsCalls: [] as string[],
 	usage: new Map<string, number>(),
+	/** Per account, each member's uncached input in its window. */
+	byUser: new Map<string, Record<string, number>>(),
+	resetsAt: new Map<string, Date>(),
+	budgets: new Map<string, number>(),
 	open: new Map<string, Date>(),
+	/** The serving source's model list, as last read. */
+	served: [] as Array<{ slug: string; priority: number | null }>,
+	catalog: [] as Array<{
+		canonicalName: string;
+		slug: string;
+		displayName: string;
+	}>,
 	failPool: false,
 	audit: vi.fn(),
 }));
@@ -46,7 +58,19 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
+// The model list's background re-read is observed, never run.
+const refreshStale = vi.hoisted(() => vi.fn());
+vi.mock("../lib/chatgpt-plan/served-models", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../lib/chatgpt-plan/served-models")
+	>()),
+	refreshStaleChatGptPlanServedModels: refreshStale,
+	refreshChatGptPlanServedModelsInBackground: vi.fn(),
+}));
+
 vi.mock("@repo/database", () => ({
+	getChatGptPlanServedModels: async () => db.served,
+	listChatGptPlanModels: async () => db.catalog,
 	isFeatureEnabled: async (key: string) => db.flags[key] === true,
 	getActiveChatGptPlanOrgUse: async () => db.ownUse,
 	hasDeclinedChatGptPlanInOrganization: async () => db.declined,
@@ -56,11 +80,17 @@ vi.mock("@repo/database", () => ({
 		}
 		return db.policy;
 	},
+	getCachedChatGptPlanOrgPolicy: async () => {
+		if (db.failPool) {
+			throw new Error("database down");
+		}
+		return db.policy;
+	},
 	listChatGptPlanOrgAccounts: async (organizationId: string) => {
 		db.accountsCalls.push(organizationId);
 		return db.accounts;
 	},
-	getChatGptPlanPoolUsageSince: async (params: { accountIds: string[] }) =>
+	getChatGptPlanOrgAccountWindows: async (params: { accountIds: string[] }) =>
 		new Map(
 			params.accountIds
 				.filter((id) => db.usage.has(id))
@@ -70,9 +100,15 @@ vi.mock("@repo/database", () => ({
 						requests: 1,
 						inputTokens: db.usage.get(id),
 						outputTokens: 0,
+						resetsAt: db.resetsAt.get(id) ?? null,
+						inputTokensByUser: db.byUser.get(id) ?? {},
 					},
 				]),
 		),
+	getChatGptPlanWindowBudget: async (ref: { accountId: string }) =>
+		db.budgets.get(ref.accountId) ?? 750_000,
+	getChatGptPlanWindowBudgets: async (_kind: string, ids: string[]) =>
+		new Map(ids.map((id) => [id, db.budgets.get(id) ?? 750_000])),
 	getChatGptPlanSourceStates: async (kind: string, ids: string[]) =>
 		ids
 			.filter((id) => db.open.has(`${kind}:${id}`))
@@ -85,7 +121,6 @@ vi.mock("@repo/database", () => ({
 			})),
 	recordChatGptPlanSourceExhausted: async () => {},
 	clearChatGptPlanSourceState: async () => {},
-	getChatGptPlanOrgAccountFirstUseSince: async () => null,
 	recordAudit: db.audit,
 }));
 
@@ -94,10 +129,13 @@ import { runWithAiInteractiveContext } from "../lib/chatgpt-plan/interactive-con
 import {
 	__resetChatGptPlanApiFallbackAudit,
 	chatGptPlanSourceForCall,
+	interactivePlanModel,
 	PLAN_POOL_BACKGROUND_JOB_TYPES,
 	pickChatGptPlanSource,
 	planServesInteractiveWork,
+	sharedPlansServeBackgroundWork,
 } from "../lib/chatgpt-plan/pool";
+import { __resetChatGptPlanWindowCache } from "../lib/chatgpt-plan/window-cache";
 
 const IN_AN_HOUR = new Date(Date.now() + 60 * 60_000);
 
@@ -126,6 +164,7 @@ const orgSource = (accountId: string) => ({
 });
 
 beforeEach(() => {
+	__resetChatGptPlanWindowCache();
 	__resetChatGptPlanBreaker();
 	__resetChatGptPlanApiFallbackAudit();
 	vi.clearAllMocks();
@@ -142,6 +181,11 @@ beforeEach(() => {
 	db.accounts = [account("acc_1")];
 	db.accountsCalls = [];
 	db.usage = new Map();
+	db.served = [];
+	db.catalog = [];
+	db.byUser = new Map();
+	db.resetsAt = new Map();
+	db.budgets = new Map();
 	db.open = new Map();
 	db.failPool = false;
 });
@@ -271,9 +315,17 @@ describe("shared accounts", () => {
 		await expect(
 			pickChatGptPlanSource({
 				...background,
-				jobType: "meeting-transcript-sync",
+				jobType: "newsletter-curation",
 			}),
 		).resolves.toBeNull();
+		// Meeting sync and channel monitoring are the organization's own capture
+		// work, so shared accounts may run them (DSU 10/7).
+		await expect(
+			pickChatGptPlanSource({
+				...background,
+				jobType: "meeting-transcript-sync",
+			}),
+		).resolves.toEqual(orgSource("acc_1"));
 		await expect(
 			pickChatGptPlanSource({ ...background, jobType: undefined }),
 		).resolves.toBeNull();
@@ -316,6 +368,80 @@ describe("shared accounts", () => {
 		);
 	});
 
+	// Fizzy #2770 D6: fair share.
+	it("skip an account whose fair share this member has used, for their interactive work only", async () => {
+		db.accounts = [
+			account("acc_quiet", { maxMemberSharePct: 25 }),
+			account("acc_busy"),
+		];
+		db.usage = new Map([
+			["acc_quiet", 200_000],
+			["acc_busy", 400_000],
+		]);
+		db.budgets = new Map([
+			["acc_quiet", 800_000],
+			["acc_busy", 800_000],
+		]);
+		db.byUser = new Map([["acc_quiet", { user_1: 200_000 }]]);
+		await expect(pickChatGptPlanSource(interactive)).resolves.toEqual(
+			orgSource("acc_busy"),
+		);
+		// Another member still gets the quieter account.
+		await expect(
+			pickChatGptPlanSource({ ...interactive, userId: "user_2" }),
+		).resolves.toEqual(orgSource("acc_quiet"));
+		// Background work is not a member's share.
+		await expect(pickChatGptPlanSource(background)).resolves.toEqual(
+			orgSource("acc_quiet"),
+		);
+	});
+
+	it("is spent for a member over their share on every account, until the earliest of those windows resets", async () => {
+		const soon = new Date(Date.now() + 30 * 60_000);
+		db.accounts = [
+			account("acc_1", { maxMemberSharePct: 50 }),
+			account("acc_2", { maxMemberSharePct: 50 }),
+		];
+		db.usage = new Map([
+			["acc_1", 500_000],
+			["acc_2", 500_000],
+		]);
+		db.budgets = new Map([
+			["acc_1", 1_000_000],
+			["acc_2", 1_000_000],
+		]);
+		db.byUser = new Map([
+			["acc_1", { user_1: 500_000 }],
+			["acc_2", { user_1: 500_000 }],
+		]);
+		db.resetsAt = new Map([
+			["acc_1", IN_AN_HOUR],
+			["acc_2", soon],
+		]);
+		await expect(pickChatGptPlanSource(interactive)).resolves.toMatchObject(
+			{
+				exhausted: true,
+				audience: "interactive",
+				resetAt: soon,
+			},
+		);
+	});
+
+	it("compare accounts by the share of their own window budget used", async () => {
+		db.accounts = [account("acc_small"), account("acc_large")];
+		db.usage = new Map([
+			["acc_small", 300_000],
+			["acc_large", 500_000],
+		]);
+		db.budgets = new Map([
+			["acc_small", 500_000],
+			["acc_large", 2_000_000],
+		]);
+		await expect(pickChatGptPlanSource(interactive)).resolves.toEqual(
+			orgSource("acc_large"),
+		);
+	});
+
 	it("skip an excluded or cooling account", async () => {
 		db.accounts = [account("acc_1"), account("acc_2"), account("acc_3")];
 		db.open.set("ORG:acc_2", IN_AN_HOUR);
@@ -335,10 +461,12 @@ describe("shared accounts", () => {
 			orgSource("acc_full"),
 		);
 		db.usage.set("acc_room", 100_000);
+		__resetChatGptPlanWindowCache();
 		await expect(pickChatGptPlanSource(background)).resolves.toEqual(
 			orgSource("acc_room"),
 		);
 		// People are not held to the headroom.
+		__resetChatGptPlanWindowCache();
 		db.usage = new Map([
 			["acc_full", 440_000],
 			["acc_room", 460_000],
@@ -401,10 +529,13 @@ describe("every plan spent", () => {
 describe("PLAN_POOL_BACKGROUND_JOB_TYPES", () => {
 	// The review point for what may spend a shared plan unattended: changing
 	// this list must be a deliberate, reviewed edit.
-	it("is exactly the daily brief and workflow-builder runs", () => {
+	it("is exactly the daily brief, workflow-builder, meeting sync and channel monitor runs", () => {
 		expect(PLAN_POOL_BACKGROUND_JOB_TYPES).toEqual([
 			"daily-brief",
 			"workflow-builder",
+			"meeting-transcript-sync",
+			"slack-channel-monitor",
+			"teams-channel-monitor",
 		]);
 	});
 });
@@ -439,5 +570,129 @@ describe("planServesInteractiveWork", () => {
 				organizationId: "org_a",
 			}),
 		).resolves.toBe(true);
+	});
+});
+
+// The model picker's read-only "ChatGPT plan · <model>" row.
+describe("interactivePlanModel", () => {
+	it("names the shared plan and its model for a member with no plan", async () => {
+		await expect(
+			interactivePlanModel({
+				userId: "user_1",
+				organizationId: "org_a",
+				taskType: "TOOL_CALLING",
+			}),
+		).resolves.toMatchObject({ model: "gpt-6.1-sol", source: "shared" });
+	});
+
+	// Fizzy #2770 F13: what a chat may pick instead.
+	it("offers the models the serving plan lists, marking the default and the newest", async () => {
+		db.catalog = [
+			{
+				canonicalName: "gpt-6-astra",
+				slug: "gpt-6-astra",
+				displayName: "GPT-6 Astra (ChatGPT plan)",
+			},
+			{
+				canonicalName: "gpt-6.1-sol",
+				slug: "gpt-6.1-sol",
+				displayName: "GPT-6.1 Sol (ChatGPT plan)",
+			},
+			{
+				canonicalName: "gpt-5.6-luna",
+				slug: "gpt-5.6-luna",
+				displayName: "GPT-5.6 Luna (ChatGPT plan)",
+			},
+		];
+		db.served = [
+			{ slug: "gpt-6-astra", priority: 1 },
+			{ slug: "gpt-6.1-sol", priority: 2 },
+		];
+		const choice = await interactivePlanModel({
+			userId: "user_1",
+			organizationId: "org_a",
+			taskType: "TOOL_CALLING",
+		});
+		expect(choice?.models).toEqual([
+			expect.objectContaining({
+				slug: "gpt-6-astra",
+				isDefault: false,
+				newest: true,
+			}),
+			expect.objectContaining({
+				slug: "gpt-6.1-sol",
+				isDefault: true,
+				newest: false,
+			}),
+		]);
+	});
+
+	it("offers only the organization's model before the plan's list was read, and asks for it", async () => {
+		db.catalog = [
+			{
+				canonicalName: "gpt-6.1-sol",
+				slug: "gpt-6.1-sol",
+				displayName: "GPT-6.1 Sol (ChatGPT plan)",
+			},
+			{
+				canonicalName: "gpt-6-astra",
+				slug: "gpt-6-astra",
+				displayName: "GPT-6 Astra (ChatGPT plan)",
+			},
+		];
+		db.served = [];
+		const choice = await interactivePlanModel({
+			userId: "user_1",
+			organizationId: "org_a",
+			taskType: "TOOL_CALLING",
+		});
+		expect(choice?.models.map((model) => model.slug)).toEqual([
+			"gpt-6.1-sol",
+		]);
+		expect(refreshStale).toHaveBeenCalled();
+	});
+
+	it("is null when no plan serves the member's work", async () => {
+		db.accounts = [account("acc_1", { serveInteractive: false })];
+		await expect(
+			interactivePlanModel({
+				userId: "user_1",
+				organizationId: "org_a",
+				taskType: "CHAT",
+			}),
+		).resolves.toBeNull();
+	});
+});
+
+// Fizzy #2770 F3: the link dialogs warn when shared plans run background jobs.
+describe("sharedPlansServeBackgroundWork", () => {
+	it("is true with pooling on, terms accepted and a signed-in account that serves background work", async () => {
+		db.accounts = [
+			account("acc_off", { enabled: false }),
+			account("acc_bg", { serveBackground: true }),
+		];
+		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
+			true,
+		);
+	});
+
+	it("is false without such an account, with pooling off, or with the flags off", async () => {
+		db.accounts = [
+			account("acc_people", { serveBackground: false }),
+			account("acc_reconnect", { status: "NEEDS_RECONNECT" }),
+		];
+		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
+			false,
+		);
+		db.accounts = [account("acc_bg")];
+		db.policy = { ...db.policy, poolingEnabled: false };
+		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
+			false,
+		);
+		db.policy = { ...db.policy, poolingEnabled: true };
+		db.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: false };
+		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
+			false,
+		);
 	});
 });

@@ -120,18 +120,22 @@ export function pathAsCommandWord(
  * line a person pastes is short, and it keeps working after the deployment
  * ships a newer build, because the old name redirects to the current one. A
  * build that never learned its name can only be started from the file it runs
- * from. `origin` is the deployment the tarball is served from.
+ * from.
+ *
+ * The tarball is fetched from the deployment this build was packed for, never
+ * from the deployment a run was pointed at: a typed `--base-url` is not a place
+ * the person has chosen to run code from, and its host has no such file of this
+ * name unless it is that deployment. A build that does not know where it was
+ * packed for is started from the file it runs from.
  */
-export function launcherWords(
-	origin: string = launcherOrigin ?? implicitOrigin(),
-	script?: string,
-): string[] {
+export function launcherWords(script?: string): string[] {
 	if (!isServedBundle()) {
 		return ["fabric"];
 	}
 	const tarball = bundleTarballPath();
-	if (tarball !== undefined) {
-		return ["npx", "-y", `${origin}${tarball}`];
+	const packedFor = bakedOrigin();
+	if (tarball !== undefined && packedFor !== undefined) {
+		return ["npx", "-y", `${packedFor}${tarball}`];
 	}
 	const word = pathAsCommandWord(script ?? bundleScriptPath());
 	return word === null ? ["fabric"] : ["node", word];
@@ -142,10 +146,15 @@ export function launcherWords(
  * deployment's address and it is not plain, since an address may hold `$ ( ) ;
  * & ` ' " ! ~ ,` and no command can carry those (see `shell-words.ts`).
  */
-export function printableLauncherWords(
-	origin: string = launcherOrigin ?? implicitOrigin(),
-): string[] | null {
-	const words = launcherWords(origin);
+export function printableLauncherWords(): string[] | null {
+	if (
+		launcherOrigin !== undefined &&
+		launcherOrigin !== implicitOrigin() &&
+		!isSafeArgument(launcherOrigin)
+	) {
+		return null;
+	}
+	const words = launcherWords();
 	return words[0] === "npx" && !isSafeArgument(words[2] ?? "") ? null : words;
 }
 
@@ -178,7 +187,7 @@ export function fabricCommand(
 	origin: string | undefined = launcherOrigin,
 ): string {
 	const deployment = origin ?? implicitOrigin();
-	const words = printableLauncherWords(deployment);
+	const words = printableLauncherWords();
 	const bound =
 		deployment !== implicitOrigin() && !args.includes("--base-url")
 			? ` --base-url ${deployment}`

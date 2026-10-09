@@ -31,7 +31,11 @@ vi.mock("../../../client", () => ({
 	Prisma: {},
 }));
 
-import { getProjectAccessContext, hasProjectAccess } from "../projects";
+import {
+	getProjectAccessContext,
+	hasProjectAccess,
+	isProjectSoftDeleted,
+} from "../projects";
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -210,5 +214,42 @@ describe("hasProjectAccess (thin wrapper)", () => {
 		mockProjectFindFirst.mockResolvedValue(null);
 
 		await expect(hasProjectAccess("p1", "owner1")).resolves.toBe(false);
+	});
+});
+
+describe("isProjectSoftDeleted", () => {
+	it("asks only for a trashed row of that project", async () => {
+		mockProjectFindFirst.mockResolvedValue({ id: "p1" });
+
+		const result = await isProjectSoftDeleted("p1");
+
+		expect(result).toBe(true);
+		expect(mockProjectFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "p1", deletedAt: { not: null } },
+			}),
+		);
+	});
+
+	it("is false for a live or missing project", async () => {
+		mockProjectFindFirst.mockResolvedValue(null);
+
+		expect(await isProjectSoftDeleted("p1")).toBe(false);
+	});
+
+	it("leaves the access context resolving a trashed project for restore", async () => {
+		mockProjectFindFirst.mockResolvedValue({
+			id: "p1",
+			userId: "owner1",
+			organizationId: null,
+			deletedAt: new Date("2026-08-01T00:00:00Z"),
+		});
+
+		const result = await getProjectAccessContext("p1", "owner1");
+
+		expect(result).toEqual({ organizationId: null });
+		expect(mockProjectFindFirst.mock.calls[0][0].where).toEqual({
+			id: "p1",
+		});
 	});
 });

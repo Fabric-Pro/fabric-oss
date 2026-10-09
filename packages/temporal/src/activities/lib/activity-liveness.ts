@@ -35,6 +35,15 @@ export function safeHeartbeat(details?: unknown): void {
 	}
 }
 
+/** The activity's cancellation signal, absent in direct local calls. */
+export function activityCancellationSignal(): AbortSignal | undefined {
+	try {
+		return Context.current().cancellationSignal;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * An `AbortSignal` that fires when the request outlives `timeoutMs` OR when the
  * activity is cancelled, so a cancelled workflow tears down in-flight HTTP

@@ -54,7 +54,7 @@ import {
 	SaveIcon,
 	XIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TurndownService from "turndown";
 // @ts-expect-error - turndown-plugin-gfm has no types
 import { gfm } from "turndown-plugin-gfm";
@@ -344,6 +344,10 @@ function PromptEditorAIInner({
 	const [isMetadataOpen, setIsMetadataOpen] = useState(true);
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("raw");
 	const [rawContent, setRawContent] = useState(initialData?.content ?? "");
+	// Read by the editor's update handler, which `useEditor` keeps from the
+	// first render.
+	const viewModeRef = useRef(viewMode);
+	viewModeRef.current = viewMode;
 
 	const { isLoading: isAILoading } = useCopilotChat();
 
@@ -356,6 +360,15 @@ function PromptEditorAIInner({
 		},
 		content: initialData?.content ? fromMarkdown(initialData.content) : "",
 		onUpdate: ({ editor }) => {
+			// In the raw view the textarea is the content. The rich editor is
+			// hidden and not kept in step, and its own setContent calls (when
+			// it starts, and on a format change) emit updates that would
+			// otherwise replace what the person typed with its empty body,
+			// so the prompt saved without content while the textarea still
+			// showed it.
+			if (viewModeRef.current !== "rich") {
+				return;
+			}
 			if (editor.isEditable && !isAILoading) {
 				const html = editor.getHTML();
 				const markdown = toMarkdown(html);
@@ -564,7 +577,9 @@ function PromptEditorAIInner({
 			category: category || undefined,
 			tags,
 			isPublic,
-			content: currentContent || undefined,
+			// What the person sees is what is saved.
+			content:
+				(viewMode === "raw" ? rawContent : currentContent) || undefined,
 		});
 	};
 

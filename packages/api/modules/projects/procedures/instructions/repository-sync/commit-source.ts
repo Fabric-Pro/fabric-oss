@@ -24,6 +24,7 @@
  * reads that return repository content (`compareCommits`, `readCommitFile`).
  * No error carries the token.
  */
+
 import { ORPCError } from "@orpc/client";
 import { isCommitOnBranch, type RepositoryApiInput } from "@repo/connectors";
 import {
@@ -31,13 +32,13 @@ import {
 	getProjectInstructionSettings,
 	getPublishedInstructionSnapshot,
 } from "@repo/database";
+import { TtlCache } from "../../../../../lib/ttl-cache";
 import { requireHostingOrganizationId } from "../hosting-organization";
 import {
 	loadInstructionSyncIntegration,
 	repositoryReadError,
 	resolveInstructionSyncCredential,
 } from "./repository";
-import { TtlCache } from "./ttl-cache";
 
 const NOT_REPOSITORY_SOURCED_ERROR = {
 	code: "PRECONDITION_FAILED",

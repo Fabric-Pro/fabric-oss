@@ -24,10 +24,25 @@ vi.mock("@temporalio/activity", () => ({
 }));
 
 import {
+	activityCancellationSignal,
 	currentActivityAttemptDeadline,
 	requestAbortSignal,
 	safeHeartbeat,
 } from "../activity-liveness";
+
+describe("activityCancellationSignal", () => {
+	it("returns the cancellation signal without adding a case timeout", () => {
+		const controller = new AbortController();
+		currentMock.mockReturnValue({ cancellationSignal: controller.signal });
+		expect(activityCancellationSignal()).toBe(controller.signal);
+	});
+	it("is absent outside an activity", () => {
+		currentMock.mockImplementation(() => {
+			throw new Error("not in activity context");
+		});
+		expect(activityCancellationSignal()).toBeUndefined();
+	});
+});
 
 describe("safeHeartbeat", () => {
 	it("passes details through when inside an activity", () => {

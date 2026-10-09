@@ -15,6 +15,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { assertEmbeddingModelFitsVectorStore } from "../../lib/embedding-model-guard";
 
 const AiTaskTypeEnum = z.enum([
 	"SIMPLE",
@@ -103,6 +104,8 @@ export const setUserModelPreferenceProcedure = tenantProtectedProcedure
 				message: `Model "${input.modelCanonicalName}" not found in catalog.`,
 			});
 		}
+
+		assertEmbeddingModelFitsVectorStore(input.taskType, model);
 
 		if (model.capabilities.includes("EVALUATION")) {
 			throw new ORPCError("BAD_REQUEST", {

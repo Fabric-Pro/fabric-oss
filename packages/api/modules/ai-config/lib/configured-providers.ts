@@ -17,6 +17,7 @@ import {
 	db,
 	GATEWAY_PROVIDERS,
 } from "@repo/database";
+import type { AiProviderPurpose } from "@repo/database/prisma/zod";
 
 const SPECIALIZED_TASK_TYPES = [
 	"IMAGE",
@@ -62,6 +63,8 @@ export interface ConfiguredGateway {
 	isDefault: boolean;
 	priority: number;
 	enabledProviders: AIProvider[];
+	/** EMBEDDINGS_ONLY: never the default, never an LLM provider. */
+	purpose: AiProviderPurpose;
 	source: "user_config" | "org_config";
 }
 
@@ -126,6 +129,7 @@ export async function getConfiguredProviders(
 				isDefault: config.isDefault,
 				priority: config.priority,
 				enabledProviders: providers,
+				purpose: config.purpose,
 				source: "org_config",
 			};
 
@@ -163,6 +167,7 @@ export async function getConfiguredProviders(
 				isDefault: config.isDefault,
 				priority: config.priority,
 				enabledProviders: providers,
+				purpose: config.purpose,
 				source: "user_config",
 			};
 
@@ -174,10 +179,13 @@ export async function getConfiguredProviders(
 		}
 	}
 
-	// If no default, use first configured
-	if (!defaultProvider && allProviders.length > 0) {
-		defaultProvider = allProviders[0];
-		allProviders[0].isDefault = true;
+	// If no default, use first configured that may serve LLM work
+	if (!defaultProvider) {
+		defaultProvider =
+			allProviders.find((p) => p.purpose !== "EMBEDDINGS_ONLY") ?? null;
+		if (defaultProvider) {
+			defaultProvider.isDefault = true;
+		}
 	}
 
 	// Build the list of providers to query models from

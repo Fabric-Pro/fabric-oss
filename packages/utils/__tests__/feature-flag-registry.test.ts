@@ -1104,3 +1104,75 @@ describe("CHATGPT_PLAN_POOLING (#2770)", () => {
 		expect(owners.map(([key]) => key)).toEqual(["CHATGPT_PLAN_POOLING"]);
 	});
 });
+
+describe("PROPOSAL_ARTIFACT (#2801)", () => {
+	// Default OFF and per organization: off, Proposals keep today's Draft and
+	// Glossy flow, so merging this entry must change nothing for anyone.
+	it("is registered off by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("PROPOSAL_ARTIFACT")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.PROPOSAL_ARTIFACT).toMatchObject({
+			envVar: "FABRIC_FEATURE_PROPOSAL_ARTIFACT",
+			default: false,
+			orgScopable: true,
+		});
+	});
+
+	// The per-organization admin panel renders exactly this list, so being in
+	// it is what makes the gate switchable for one organization.
+	it("is listed among the org-scopable flags, after every one that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("PROPOSAL_ARTIFACT");
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("PROPOSAL_ARTIFACT"),
+		).toBeGreaterThan(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN_POOLING"),
+		);
+	});
+
+	it("resolves off when neither an override nor the env var is set", () => {
+		expect(resolveFlag("PROPOSAL_ARTIFACT", {}, {})).toEqual({
+			enabled: false,
+			source: "default",
+		});
+	});
+
+	it("lets one organization be enabled while the deployment stays off", () => {
+		expect(
+			resolveFlag("PROPOSAL_ARTIFACT", { org: true, global: false }, {}),
+		).toEqual({ enabled: true, source: "org-override" });
+	});
+
+	it("lets an org override of false beat a global override of true", () => {
+		expect(
+			resolveFlag("PROPOSAL_ARTIFACT", { org: false, global: true }, {}),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+
+	it("lets a global override beat the env var", () => {
+		expect(
+			resolveFlag(
+				"PROPOSAL_ARTIFACT",
+				{ global: false },
+				{ FABRIC_FEATURE_PROPOSAL_ARTIFACT: "true" },
+			),
+		).toEqual({ enabled: false, source: "override" });
+	});
+
+	it("is seeded by its env var when no override row exists", () => {
+		expect(
+			resolveFlag(
+				"PROPOSAL_ARTIFACT",
+				{},
+				{ FABRIC_FEATURE_PROPOSAL_ARTIFACT: "true" },
+			),
+		).toEqual({ enabled: true, source: "env" });
+	});
+
+	it("does not share its env var with any other entry", () => {
+		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
+			([, definition]) =>
+				definition.envVar === "FABRIC_FEATURE_PROPOSAL_ARTIFACT",
+		);
+		expect(owners.map(([key]) => key)).toEqual(["PROPOSAL_ARTIFACT"]);
+	});
+});

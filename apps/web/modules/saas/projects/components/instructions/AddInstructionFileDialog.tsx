@@ -11,7 +11,11 @@ import {
 	validatePortableName,
 	validateRelativePath,
 } from "@repo/instructions";
-import { useDirectCommit } from "@saas/projects/hooks/use-direct-commit";
+import {
+	type CommittedCallback,
+	type RereadCallback,
+	useDirectCommit,
+} from "@saas/projects/hooks/use-direct-commit";
 import { useInstructionActionError } from "@saas/projects/hooks/use-instruction-action-error";
 import { editInstructionSnapshot } from "@saas/projects/lib/edit-snapshot";
 import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
@@ -20,7 +24,7 @@ import {
 	defaultCommitMessage,
 	fileToBase64,
 } from "@saas/projects/lib/instructions-direct-commit";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -38,9 +42,17 @@ import { useTranslations } from "next-intl";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { CommitMessageField } from "./CommitMessageField";
+import { invalidateProposalViews } from "./lib/instructions-proposal-views";
 import { PublishBeforeScanOption } from "./PublishBeforeScanOption";
 
 /** The admission refusals the dialog names with its own copy (spec §5.3). */
+/**
+ * A button named after a branch can be longer than the dialog is wide: it
+ * wraps its label instead of pushing the dialog's edge out.
+ */
+export const WRAPPING_BUTTON =
+	"h-auto min-h-9 whitespace-normal py-1.5 text-left";
+
 const ADMISSION_REFUSALS = new Set([
 	"REPOSITORY_UNAVAILABLE",
 	"REPOSITORY_BASE_UNAVAILABLE",
@@ -210,9 +222,9 @@ export function AddInstructionFileDialog({
 	 * re-checks.
 	 */
 	canCommit?: boolean;
-	onAdded: () => unknown;
+	onAdded: RereadCallback;
 	/** A commit landed on the branch: the tab waits for Fabric's copy to take it. */
-	onCommitted?: (commit: { sha: string; ref: string }) => unknown;
+	onCommitted?: CommittedCallback;
 } & InstructionChangeBase) {
 	const actionError = useInstructionActionError();
 	const t = useTranslations("projects.codingInstructions.addFileDialog");
@@ -263,6 +275,7 @@ export function AddInstructionFileDialog({
 	}
 
 	const note = noteFrom(noteTitle, noteBody);
+	const queryClient = useQueryClient();
 	const add = useMutation({
 		mutationFn: ({
 			picked,
@@ -278,6 +291,7 @@ export function AddInstructionFileDialog({
 				proposal,
 				// A direct version stores no note, so none is sent with one.
 				...(proposal && note ? { note } : {}),
+				...(proposal && commitMode && message ? { message } : {}),
 				...(!proposal && fastPath ? { publishBeforeScan: true } : {}),
 				edits: [{ op: "put", path: path.trim(), body: picked }],
 			}),
@@ -293,6 +307,9 @@ export function AddInstructionFileDialog({
 							)
 						: t("added"),
 			);
+			if (input.proposal) {
+				void invalidateProposalViews(queryClient);
+			}
 			reset();
 			onOpenChange(false);
 			onAdded();
@@ -376,9 +393,9 @@ export function AddInstructionFileDialog({
 				onOpenChange(next);
 			}}
 		>
-			<DialogContent>
+			<DialogContent className="grid-cols-[minmax(0,1fr)]">
 				<DialogHeader>
-					<DialogTitle>
+					<DialogTitle className="[overflow-wrap:anywhere]">
 						{commitMode
 							? t("repositoryCommitTitle", repositoryTarget)
 							: repositoryTarget
@@ -574,7 +591,7 @@ export function AddInstructionFileDialog({
 						/>
 					) : null}
 				</div>
-				<DialogFooter>
+				<DialogFooter className="sm:flex-wrap sm:gap-y-2">
 					{pullRequestOpened ? (
 						<Button
 							onClick={() => {
@@ -595,6 +612,7 @@ export function AddInstructionFileDialog({
 							</Button>
 							{commitMode ? (
 								<Button
+									className={WRAPPING_BUTTON}
 									disabled={
 										!canSubmit ||
 										tooLargeToCommit ||
@@ -657,6 +675,7 @@ export function AddInstructionFileDialog({
 							) : null}
 							{offersProposal ? (
 								<Button
+									className={WRAPPING_BUTTON}
 									variant={
 										proposalOnly ? "default" : "outline"
 									}

@@ -101,7 +101,7 @@ function mapTaskTypeToDb(taskType: string): DbAiTaskType {
 /**
  * DECISION is an evaluation-model modality, not a language-model task. Keep
  * this at every language-resolution entry point so a future caller cannot hand
- * Jev to `getModel()` and receive a malformed language model.
+ * a decision model to `getModel()` and receive a malformed language model.
  */
 function assertLanguageModelTask(taskType: string): void {
 	if (taskType.toUpperCase() === "DECISION") {
@@ -988,11 +988,16 @@ export async function getProvidersForModel(
 // ============================================================================
 
 import {
+	chatGptPlanModelOverride,
+	SubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import {
 	touchChatGptPlanCredential,
 	touchChatGptPlanOrgAccount,
 	updateProviderLastUsed,
 } from "@repo/database";
 import { getTenantAiGatewayBillingState } from "@repo/payments";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { type LanguageModel, wrapLanguageModel } from "ai";
 // Import from model-factory to avoid circular dependency with index.ts
 import {
@@ -1002,6 +1007,7 @@ import {
 } from "../model-factory";
 import { isAiInteractiveRequestFor } from "./chatgpt-plan/interactive-context";
 import { resolveChatGptPlanModel } from "./chatgpt-plan/models";
+import { ChatGptPlanAuthError } from "./chatgpt-plan/oauth";
 import { chatGptPlanSourceForCall } from "./chatgpt-plan/pool";
 import { createChatGptPlanModel } from "./chatgpt-plan/provider";
 import { createChatGptPlanRotationMiddleware } from "./chatgpt-plan/rotation";
@@ -1012,6 +1018,12 @@ import {
 	hasServicePrincipalCredentials,
 	resolveProviderApiKey,
 } from "./databricks-oauth";
+import {
+	type DecisionModelFallback,
+	getDecisionModelFallbacks,
+	withGatewayDecisionFallbacks,
+} from "./decision-model-fallback";
+import { wrapDecisionModelWithTelemetry } from "./decision-telemetry";
 import {
 	wrapEmbeddingModelWithDispatchGuard,
 	wrapModelWithDispatchGuard,
@@ -1217,7 +1229,7 @@ export interface AIEmbeddingModelResult {
 
 /** Result from resolving the typed decision-evaluation model. */
 export interface AIDecisionModelResult {
-	/** Ready-to-use AI SDK evaluation model, never a text LanguageModel. */
+	/** Ready-to-use AI SDK decision model, never a text LanguageModel. */
 	model: ReturnType<typeof getEvaluationModel>;
 	/** Metadata about the configured tenant provider and selected model. */
 	metadata: AIModelMetadata;
@@ -1228,9 +1240,10 @@ export interface AIDecisionModelResult {
 /**
  * Resolve the organization-configured typed decision model.
  *
- * Jev is an AI SDK evaluation model, rather than a language model, so this
- * cannot use `getAIModelWithMetadata`. It refuses every fallback source to
- * keep a missing organization gateway from using a personal or platform key.
+ * Decision models (Luna Decisions, Jev) are AI SDK decision models rather
+ * than language models, so this cannot use `getAIModelWithMetadata`. It
+ * refuses every credential fallback source, to keep a missing organization
+ * gateway from using a personal or platform key.
  */
 export async function getAIDecisionModelWithMetadata(
 	context: AIOperationContext,
@@ -1280,14 +1293,53 @@ export async function getAIDecisionModelWithMetadata(
 		);
 	}
 
-	await assertWithinAiUsageLimits({
+	const limitScope = {
 		userId: context.userId,
 		organizationId: context.organizationId,
 		projectId: context.projectId ?? null,
 		providerConfigId: providerConfig.configId,
-		modelCanonicalName: model.canonicalName,
 		taskType: "DECISION" as DbAiTaskType,
+	};
+	await assertWithinAiUsageLimits({
+		...limitScope,
+		modelCanonicalName: model.canonicalName,
 	});
+
+	// A system-default decision model may carry a gateway-level fallback
+	// (Luna -> Jev). An organization that chose its model explicitly gets no
+	// automatic cross-vendor decision-model fallback.
+	//
+	// The gateway can dispatch the request to any fallback, so each one's
+	// HARD limits are checked here, at the same point and with the same
+	// scope as the primary model's check above. A fallback whose limit is
+	// exhausted is left off the request rather than failing it: the primary
+	// model was allowed and still runs. Any other failure of the check
+	// propagates, exactly as it does for the primary.
+	const fallbacks: DecisionModelFallback[] = [];
+	for (const fallback of getDecisionModelFallbacks({
+		selectionSource: selection.source,
+		canonicalName: model.canonicalName,
+	})) {
+		try {
+			await assertWithinAiUsageLimits({
+				...limitScope,
+				modelCanonicalName: fallback.canonicalName,
+			});
+			fallbacks.push(fallback);
+		} catch (error) {
+			if (!(error instanceof AiUsageLimitExceededError)) {
+				throw error;
+			}
+			console.warn(
+				"[getAIDecisionModelWithMetadata] usage limit reached for a decision fallback model — omitting it from this request",
+				{
+					organizationId: context.organizationId,
+					fallbackCanonicalName: fallback.canonicalName,
+					limitId: error.limitId,
+				},
+			);
+		}
+	}
 
 	const apiKey = await resolveProviderApiKey(providerConfig);
 	const billingState = getTenantAiGatewayBillingState({
@@ -1315,7 +1367,21 @@ export async function getAIDecisionModelWithMetadata(
 		billingCustomerId: null,
 	};
 	const trackedEvaluationModel = wrapEvaluationModelWithUsageLogging(
-		evaluationModel,
+		// The span wraps the gateway model directly, inside the fallback
+		// wrapper, so it measures exactly one `doDecide` network round trip
+		// (and one span per SDK retry).
+		withGatewayDecisionFallbacks(
+			wrapDecisionModelWithTelemetry(evaluationModel, {
+				provider: metadata.provider,
+				requestModelId: metadata.modelString,
+				requestModelLabel: metadata.canonicalName ?? undefined,
+				organizationId: context.organizationId,
+				projectId: context.projectId,
+				featureKey: context.featureKey,
+				jobType: context.jobType,
+			}),
+			fallbacks,
+		),
 		{
 			userId: context.userId,
 			organizationId: context.organizationId,
@@ -1330,6 +1396,14 @@ export async function getAIDecisionModelWithMetadata(
 			featureKey: context.featureKey,
 			promptVersionId: context.promptVersionId,
 			jobType: context.jobType,
+		},
+		{
+			answeringModelCanonicalNames: Object.fromEntries(
+				fallbacks.map((fallback) => [
+					fallback.providerModelId,
+					fallback.canonicalName,
+				]),
+			),
 		},
 	);
 
@@ -1397,6 +1471,43 @@ export async function getAIModel(
 	return result.model;
 }
 
+/** The context plan routing reads: unset eligibility follows the member's own interactive request. */
+function planRoutingContext(context: AIOperationContext): AIOperationContext {
+	return context.planEligible === undefined &&
+		isAiInteractiveRequestFor(context.userId)
+		? { ...context, planEligible: true }
+		: context;
+}
+
+/**
+ * Whether {@link getAIModelWithMetadata} would run this text call on a
+ * ChatGPT plan, by the same rules (flag, plan source, interactive or
+ * allowlisted background, never impersonated) — for a caller that otherwise
+ * hands a raw provider key to a client of its own (Fizzy #2770 D9), so it can
+ * resolve through the plan instead. A plan that would serve but is spent or
+ * needs reconnecting still counts: resolving through it surfaces that refusal
+ * rather than quietly billing the organization's provider.
+ */
+export async function chatGptPlanServesCall(
+	context: AIOperationContext,
+): Promise<boolean> {
+	if (context.excludeChatGptPlan === true) {
+		return false;
+	}
+	try {
+		return (
+			(await chatGptPlanSourceForCall(planRoutingContext(context), {
+				exclude: context.excludePlanSources,
+			})) !== null
+		);
+	} catch (error) {
+		return (
+			error instanceof SubscriptionPlanExhaustedError ||
+			error instanceof ChatGptPlanAuthError
+		);
+	}
+}
+
 /**
  * GET AI MODEL WITH METADATA - For cases that need tracking or logging
  * Returns the model instance along with metadata about the configuration.
@@ -1433,19 +1544,20 @@ export async function getAIModelWithMetadata(
 		taskType,
 		complexity,
 		requiresToolCalling,
-		modelOverride,
 		usageLogging = "per-call",
 	} = options;
 	assertLanguageModelTask(taskType);
+	// A chat's ChatGPT plan pick (Fizzy #2770 F13) runs only on a plan; when
+	// this call does not, the task's own model runs instead.
+	const modelOverride =
+		chatGptPlanModelOverride(options.modelOverride) === null
+			? options.modelOverride
+			: undefined;
 
 	// Only text work can run on a plan — the member's own or one the
 	// organization shares. Embeddings also stay on the organization's provider
 	// because vectors from different models would not be comparable.
-	const routingContext =
-		context.planEligible === undefined &&
-		isAiInteractiveRequestFor(context.userId)
-			? { ...context, planEligible: true }
-			: context;
+	const routingContext = planRoutingContext(context);
 	if (
 		!NON_TEXT_TASK_TYPES.has(String(taskType).toUpperCase()) &&
 		context.excludeChatGptPlan !== true
@@ -1499,22 +1611,38 @@ export async function getAIModelWithMetadata(
 	// canonical and rejects it. Falls back to the override as-is when it isn't a
 	// catalog canonical for this provider (e.g. an already provider-specific id).
 	let finalModelString = config.modelString;
-	if (modelOverride) {
+	let apiModelOverride = modelOverride;
+	if (apiModelOverride) {
 		const overrideProviderModelId = config.provider
 			? await getProviderModelIdForCanonical(
-					modelOverride,
+					apiModelOverride,
 					config.provider,
 				)
 			: null;
-		finalModelString =
-			overrideProviderModelId && config.provider
-				? buildProviderModelString(
-						overrideProviderModelId,
-						config.provider as DbAIProvider,
-					)
-				: modelOverride;
+		// A model only a ChatGPT plan serves (a saved pick from before the
+		// plan, or one a plan's list added) is no model of this provider:
+		// the task's own model runs, rather than a call the provider rejects.
+		if (
+			!overrideProviderModelId &&
+			(await getProviderModelIdForCanonical(
+				apiModelOverride,
+				"OPENAI_CHATGPT_PLAN",
+			))
+		) {
+			apiModelOverride = undefined;
+		} else {
+			finalModelString =
+				overrideProviderModelId && config.provider
+					? buildProviderModelString(
+							overrideProviderModelId,
+							config.provider as DbAIProvider,
+						)
+					: apiModelOverride;
+		}
 	}
-	const selectionSource = modelOverride ? "override" : config.selectionSource;
+	const selectionSource = apiModelOverride
+		? "override"
+		: config.selectionSource;
 
 	// AI usage limits chokepoint (see [ai/llm-integration.md]).
 	// Throws AiUsageLimitExceededError on a HARD breach so the request fails
@@ -1526,7 +1654,7 @@ export async function getAIModelWithMetadata(
 		organizationId: context.organizationId ?? null,
 		projectId: context.projectId ?? null,
 		providerConfigId: config.configId,
-		modelCanonicalName: modelOverride || config.canonicalName,
+		modelCanonicalName: apiModelOverride || config.canonicalName,
 		taskType: mapTaskTypeToDb(taskType as string),
 	});
 
@@ -1544,9 +1672,9 @@ export async function getAIModelWithMetadata(
 		headers: billingState.headers ?? undefined,
 		deploymentName: config.deploymentName,
 		isReasoningModel: isReasoningModelName(
-			modelOverride || config.canonicalName,
+			apiModelOverride || config.canonicalName,
 		),
-		canonicalModelName: modelOverride || config.canonicalName,
+		canonicalModelName: apiModelOverride || config.canonicalName,
 	});
 
 	// Step 6: Build metadata
@@ -1556,9 +1684,9 @@ export async function getAIModelWithMetadata(
 		configId: config.configId,
 		configSource: config.configSource,
 		selectionSource,
-		canonicalName: modelOverride || config.canonicalName,
-		maxOutputTokens: modelOverride ? undefined : config.maxOutputTokens,
-		contextWindow: modelOverride ? undefined : config.contextWindow,
+		canonicalName: apiModelOverride || config.canonicalName,
+		maxOutputTokens: apiModelOverride ? undefined : config.maxOutputTokens,
+		contextWindow: apiModelOverride ? undefined : config.contextWindow,
 		billingMode: billingState.mode,
 		// Always null: the Stripe-metered mode is unreachable now that the
 		// allowance and the saved-card path are gone.
@@ -1629,8 +1757,8 @@ const NON_TEXT_TASK_TYPES = new Set(["EMBEDDING", "IMAGE", "AUDIO"]);
  * organization's shared account. Runs the same usage-limit gate, dispatch
  * guard and usage logging as every other resolution. The model is the plan
  * model chosen for the task (preferences, then defaults; see
- * `resolveChatGptPlanModel`) — a model override names an organization catalog
- * model and does not apply — and its usage rows are recorded at zero API
+ * `resolveChatGptPlanModel`), or the chat's model override when the serving
+ * plan serves it (Fizzy #2770 F13) — and its usage rows are recorded at zero API
  * cost. A shared account's id is the `providerConfigId` of its usage rows and
  * of the token limits that apply to it.
  */
@@ -1641,11 +1769,17 @@ async function getChatGptPlanModelWithMetadata(
 ): Promise<AIModelResult | AggregateAIModelResult> {
 	const taskType = mapTaskTypeToDb(options.taskType as string);
 	const providerConfigId = source.kind === "org" ? source.accountId : null;
-	const { model: modelId, reasoningEffort } = await resolveChatGptPlanModel({
+	const {
+		model: modelId,
+		reasoningEffort,
+		fallbackModel,
+	} = await resolveChatGptPlanModel({
 		userId: context.userId,
 		organizationId: context.organizationId,
 		taskType,
 		source,
+		// Only a chat's plan pick; a saved provider model is not the plan's.
+		override: chatGptPlanModelOverride(options.modelOverride) ?? undefined,
 	});
 	await assertWithinAiUsageLimits({
 		userId: context.userId,
@@ -1701,6 +1835,7 @@ async function getChatGptPlanModelWithMetadata(
 			userId: context.userId,
 			source: current,
 			modelId,
+			fallbackModelId: fallbackModel,
 			reasoningEffort,
 			// The usage row names the model that actually answered.
 			onModelFallback: (servedBy) => {
@@ -2052,4 +2187,48 @@ export async function getSystemRAGProviderConfig(
 			organizationId: context.organizationId || undefined,
 		}),
 	);
+}
+
+/**
+ * {@link getRAGProviderConfig} for a person's request that only EMBEDS — a
+ * retrieval query, an upload being indexed. The tenant-facing twin of
+ * {@link getSystemEmbeddingRAGProviderConfig}: the documents provider first, so
+ * an organization whose only key is "embeddings only" (served by ChatGPT plans
+ * for everything else) can still search and index; then the tenant's default,
+ * never the platform key. Anything that also generates keeps
+ * {@link getRAGProviderConfig}.
+ */
+export async function getEmbeddingRAGProviderConfig(
+	context: AIOperationContext,
+): Promise<RAGProviderConfig> {
+	const documentsProvider = await getEmbeddingProviderConfig({
+		userId: context.userId,
+		organizationId: context.organizationId || undefined,
+	});
+	if (hasProviderCredentials(documentsProvider)) {
+		return toRAGProviderConfig(documentsProvider);
+	}
+	return getRAGProviderConfig(context);
+}
+
+/**
+ * {@link getSystemRAGProviderConfig} for background work that only EMBEDS.
+ *
+ * Consults the tenant's documents provider first, exactly as the embedding
+ * model resolution does, so a tenant whose only key is "embeddings only" (never
+ * the default, so invisible to the default-provider rungs) still passes the
+ * gate. Anything that also generates must keep using
+ * {@link getSystemRAGProviderConfig}: an embeddings-only key must never fund it.
+ */
+export async function getSystemEmbeddingRAGProviderConfig(
+	context: AIOperationContext,
+): Promise<RAGProviderConfig> {
+	const documentsProvider = await getEmbeddingProviderConfig({
+		userId: context.userId,
+		organizationId: context.organizationId || undefined,
+	});
+	if (hasProviderCredentials(documentsProvider)) {
+		return toRAGProviderConfig(documentsProvider);
+	}
+	return getSystemRAGProviderConfig(context);
 }

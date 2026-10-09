@@ -11,6 +11,7 @@
  * the `channels` array. Channels already linked to the monitor are disabled.
  */
 
+import { ChatgptPlanImportNotice } from "@saas/settings/components/chatgpt-plan/ChatgptPlanImportNotice";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -262,6 +263,8 @@ export function TeamsChannelPickerDialog({
 						backlog proposals.
 					</DialogDescription>
 				</DialogHeader>
+
+				<ChatgptPlanImportNotice />
 
 				{isLoading && (
 					<div className="flex flex-col items-center gap-3 py-10 text-center">

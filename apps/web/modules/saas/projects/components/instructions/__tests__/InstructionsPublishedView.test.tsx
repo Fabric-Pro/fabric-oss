@@ -291,6 +291,7 @@ vi.mock("../InstructionFileView", () => ({
 				path: string;
 			} | null,
 		) => void;
+		onOpenPath?: (path: string) => void;
 		path: string;
 		projectId: string;
 		snapshotId: string;
@@ -318,6 +319,12 @@ vi.mock("../InstructionFileView", () => ({
 					type="button"
 				>
 					Keep draft
+				</button>
+				<button
+					onClick={() => props.onOpenPath?.("notes.md")}
+					type="button"
+				>
+					Follow link to notes.md
 				</button>
 			</>
 		);
@@ -462,6 +469,25 @@ describe("InstructionsPublishedView — selection across versions", () => {
 				en.projects.codingInstructions.publishedView.selectFilePrompt,
 			),
 		).toBeInTheDocument();
+	});
+
+	it("selects the instruction file a relative link in the open file points at", async () => {
+		filesBySnapshot.set("s8", [
+			treeFile("f1", "guide.md"),
+			treeFile("f2", "notes.md"),
+		]);
+		const user = userEvent.setup();
+		render(renderVersion("s8", 8), { wrapper: TestQueryProvider });
+		await user.click(
+			await screen.findByRole("button", { name: "guide.md" }),
+		);
+		expect(screen.getByTestId("file-view")).toHaveTextContent("guide.md");
+
+		await user.click(
+			screen.getByRole("button", { name: "Follow link to notes.md" }),
+		);
+
+		expect(screen.getByTestId("file-view")).toHaveTextContent("notes.md");
 	});
 
 	it("falls back to the entry file, not to the file that is gone, when the version has one", async () => {
@@ -1378,7 +1404,8 @@ describe("InstructionsPublishedView — editing entry points", () => {
 		const tree = document.querySelector(
 			'[data-onboarding-target="coding-instructions-tree"]',
 		);
-		const columns = tree?.parentElement?.className ?? "";
+		const columns =
+			tree?.closest('[class*="grid-cols-1"]')?.className ?? "";
 		expect(columns).toContain("grid-cols-1");
 		// Side by side only from lg: at md the app sidebar left the file pane
 		// about 110px wide beside a 340px tree.
@@ -3387,7 +3414,9 @@ describe("InstructionsPublishedView — the header", () => {
 
 			await user.click(screen.getByRole("button", { name: "Show" }));
 
-			expect(screen.getByText("Showing the first 3")).toBeInTheDocument();
+			expect(
+				screen.getByText(/^Showing the first 3 of 4,000 files\./),
+			).toBeInTheDocument();
 			expect(
 				screen.getByTestId("instructions-status-strip"),
 			).toHaveTextContent("4,000 files");

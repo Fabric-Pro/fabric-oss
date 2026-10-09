@@ -8,6 +8,7 @@
  * multi-select with a single confirm action.
  */
 
+import { ChatgptPlanImportNotice } from "@saas/settings/components/chatgpt-plan/ChatgptPlanImportNotice";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -280,6 +281,8 @@ export function LinkedMeetingSelector({
 						automatically.
 					</DialogDescription>
 				</DialogHeader>
+
+				<ChatgptPlanImportNotice />
 
 				{/* Date range selector */}
 				<div className="flex items-center justify-between gap-2">

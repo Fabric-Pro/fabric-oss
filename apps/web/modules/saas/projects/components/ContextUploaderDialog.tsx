@@ -240,13 +240,14 @@ export function ContextUploaderDialog({
 	// refresh is this project's contexts list.
 	const adapter = useMemo<ContextSourceSubmitAdapter>(
 		() => ({
-			createUploadUrl: async ({ filename, mimeType, size }) => {
+			createUploadUrl: async ({ filename, mimeType, size, title }) => {
 				const { signedUploadUrl, contextId, contentType } =
 					await orpcClient.projects.contexts.createUploadUrl({
 						projectId,
 						filename,
 						mimeType,
 						size,
+						...(title ? { title } : {}),
 						...(fileDocumentTag
 							? { documentTag: fileDocumentTag }
 							: {}),

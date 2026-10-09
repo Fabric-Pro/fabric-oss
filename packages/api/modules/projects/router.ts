@@ -394,6 +394,10 @@ import {
 	setProjectTabPreferencesProcedure,
 	setProjectTabVisibilityProcedure,
 } from "./procedures/project-tabs";
+// Proposal artifact: Internal Analysis and Style (Fizzy #2801)
+import { getProposalAnalysisProcedure } from "./procedures/proposal-artifact/get-analysis";
+import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
+import { updateProposalStyleProcedure } from "./procedures/proposal-artifact/update-style";
 import {
 	acceptRefinementProcedure,
 	adoptBlogPostDraftProcedure,
@@ -2182,6 +2186,16 @@ export const projectsRouter = {
 		update: updateRecipientBrandProcedure,
 		fetch: fetchRecipientBrandProcedure,
 		createLogoUploadUrl: createRecipientLogoUploadUrlProcedure,
+	},
+
+	// Proposal artifact (Fizzy #2801): a Proposal's Internal Analysis and
+	// its Style. Gated on the rollout flag for the project's owning
+	// organization (NOT_FOUND when off), and organization members only: a
+	// project guest is refused whatever their project role.
+	proposalArtifact: {
+		getAnalysis: getProposalAnalysisProcedure,
+		getStyle: getProposalStyleProcedure,
+		updateStyle: updateProposalStyleProcedure,
 	},
 
 	// @mentions autocomplete search

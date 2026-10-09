@@ -781,6 +781,9 @@ describe("a history recorded before the queue shipped", () => {
 			aiToken: "dispatch-token",
 			prompt: "",
 			excludeContextId: "ctx_1",
+			// Forwarded on every path (Fizzy #2801). A child input only: a
+			// replay matches the child start by type and id, never by args.
+			generationStartedAt: "2026-09-07T10:00:00.000Z",
 		});
 	});
 

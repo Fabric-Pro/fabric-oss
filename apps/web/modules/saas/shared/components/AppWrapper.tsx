@@ -19,6 +19,7 @@ import {
 } from "@saas/shared/contexts/SidebarCollapseContext";
 import {
 	SHELL_DOCK_GUTTER_CLASS,
+	SHELL_LAUNCHER_CLEARANCE_CLASS,
 	SHELL_DOCK_LAYER_CLASS,
 	shellContentOffsetClass,
 	shellDockOffsetClass,
@@ -52,7 +53,9 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 		isWorkflowCanvasRoute || isChatbotRoute || isKanbanRoute;
 
 	// All routes use full-width layout — no card wrapper or outer padding
-	const mainPaddingClasses = "p-0";
+	const mainPaddingClasses = isFullHeightRoute
+		? "p-0"
+		: SHELL_LAUNCHER_CLEARANCE_CLASS;
 	const mainSurfaceClasses = cn(
 		"flex flex-col w-full flex-1",
 		isFullHeightRoute ? "h-full overflow-hidden" : "",

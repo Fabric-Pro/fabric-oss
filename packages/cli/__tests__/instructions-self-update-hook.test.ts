@@ -35,6 +35,7 @@ vi.mock("../src/lib/config.js", () => ({
 	getBaseUrl: () => undefined,
 	getDefaultContext: mocks.getDefaultContext,
 	getOutputFormat: () => "table",
+	listProjectSignIns: () => [],
 }));
 
 vi.mock("../src/lib/client.js", () => {
