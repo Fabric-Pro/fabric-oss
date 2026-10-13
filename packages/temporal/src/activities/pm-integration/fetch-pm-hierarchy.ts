@@ -5,7 +5,11 @@
  * Used by the backlog updater to compare existing PM items against Fabric's backlog.
  */
 import { logger } from "@repo/logs";
-import { findBacklogsListTool } from "@repo/utils";
+import {
+	extractAtlassianSiteId,
+	findBacklogsListTool,
+	unwrapDataEnvelope,
+} from "@repo/utils";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { assertPmMcpTargetOrigin } from "../pm-source";
 import {
@@ -199,14 +203,10 @@ export async function resolveAtlassianCloudId(params: {
 		if (!result.success) {
 			return undefined;
 		}
-		const parsed = parseMcpJsonFromOutput(result.output);
-		const first = (Array.isArray(parsed) ? parsed[0] : undefined) as
-			| Record<string, unknown>
-			| undefined;
-		const cloudId = first?.id ?? first?.cloudId;
-		return typeof cloudId === "string" && cloudId.length > 0
-			? cloudId
-			: undefined;
+		const cloudId = extractAtlassianSiteId(
+			parseMcpJsonFromOutput(result.output),
+		);
+		return cloudId ?? undefined;
 	} catch (error) {
 		logger.warn("[Jira CloudId] Failed to resolve cloudId", {
 			error: error instanceof Error ? error.message : String(error),
@@ -260,7 +260,7 @@ export async function resolveJiraDefaultIssueType(params: {
 		return FALLBACK;
 	}
 	const toolName = params.availableTools.find((t) =>
-		/getJiraProjectIssueTypesMetadata$/i.test(t),
+		/(?:get|list)JiraProjectIssueTypesMetadata$/i.test(t),
 	);
 	if (!toolName) {
 		return FALLBACK;
@@ -279,9 +279,10 @@ export async function resolveJiraDefaultIssueType(params: {
 		if (!result.success) {
 			return FALLBACK;
 		}
-		const parsed = parseMcpJsonFromOutput(result.output) as
+		const output = parseMcpJsonFromOutput(result.output) as
 			| Record<string, unknown>
 			| undefined;
+		const parsed = output && unwrapDataEnvelope(output, ["issueTypes"]);
 		const types = Array.isArray(parsed?.issueTypes)
 			? (parsed.issueTypes as Array<Record<string, unknown>>)
 			: [];
@@ -294,6 +295,47 @@ export async function resolveJiraDefaultIssueType(params: {
 			},
 		);
 		return FALLBACK;
+	}
+}
+
+/**
+ * Fill the `cloudId` and issue type that Rovo's `createJiraIssue` requires.
+ * Rovo v1 names the issue-type param `issueTypeName`; v2 names it `issueType`.
+ */
+export async function fillJiraCreateArgs(params: {
+	createArgs: Record<string, unknown>;
+	createParams: Array<{ name: string }>;
+	projectKey: string;
+	savedCloudId?: string;
+	mcpConfigId: string;
+	userId: string;
+	organizationId?: string;
+	availableTools: string[];
+}): Promise<void> {
+	const { createArgs } = params;
+	const declares = (name: string) =>
+		params.createParams.some((p) => p.name === name);
+	const issueTypeParam = ["issueTypeName", "issueType"].find(declares);
+	const needsCloudId = !createArgs.cloudId && declares("cloudId");
+	const needsIssueType =
+		issueTypeParam !== undefined && !createArgs[issueTypeParam];
+	if (!needsCloudId && !needsIssueType) {
+		return;
+	}
+	const existing =
+		typeof createArgs.cloudId === "string" ? createArgs.cloudId : "";
+	const cloudId =
+		existing ||
+		params.savedCloudId ||
+		(await resolveAtlassianCloudId(params));
+	if (needsCloudId && cloudId) {
+		createArgs.cloudId = cloudId;
+	}
+	if (needsIssueType && issueTypeParam) {
+		createArgs[issueTypeParam] = await resolveJiraDefaultIssueType({
+			...params,
+			cloudId,
+		});
 	}
 }
 

@@ -14,26 +14,44 @@ export interface ChatGptPlanRoutingContext {
 	planEligible?: boolean;
 	/** The background pipeline making the call, when one is. */
 	jobType?: AiJobKey;
+	/**
+	 * A person let this one bulk run use the organization's provider once
+	 * every shared plan is spent ("Run now on API billing"), as an AUTO
+	 * policy does for every run.
+	 */
+	apiFallbackApproved?: boolean;
 }
 
 /**
  * Bulk background work that never runs on a member's own plan, even when
  * they included background jobs (Fizzy #2770): meeting sync, newsletters,
- * sweeps and scans, and the non-text jobs. Their volume would spend the
- * member's window on work nobody asked them for. A call with no `jobType`
- * keeps the phase-1 rule. Scheduled reports, daily briefs and publishing
- * suggestions stay allowed: the setting's own warning names them as what it
- * covers.
+ * sweeps and scans, work the member the call names never asked for (a
+ * channel's mentions, an API key's callers), and the non-text jobs. Their
+ * volume would spend the member's window on work nobody asked them for. A
+ * call with no `jobType` keeps the phase-1 rule. Scheduled reports, daily
+ * briefs, publishing suggestions, document updates and agents stay allowed:
+ * the setting's own warning names them as what it covers.
  */
 export const OWN_PLAN_BACKGROUND_DENYLIST: readonly AiJobKey[] = [
 	"meeting-transcript-sync",
 	"parlume-meeting-notes",
 	"newsletter-curation",
 	"security-scan",
+	// Bulk runs a person clicks: one run can spend a whole window
+	// (product decision, 2026-10-09).
+	"batch-document-generation",
+	"project-setup",
+	"atlas-analysis",
 	"slack-channel-monitor",
 	"teams-channel-monitor",
 	"image-generation",
 	"transcription",
+	// Driven by someone other than the member the call names: a channel's
+	// trigger or project owner, or the member who created an API key.
+	"fabric-mention",
+	"public-api",
+	// A topic scan someone clicks runs under the project owner's name.
+	"publishing-suggestion-manual",
 ];
 
 /**

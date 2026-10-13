@@ -28,6 +28,7 @@ import { logger } from "@repo/logs";
 import {
 	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { createFabricClient } from "./client";
 import type {
@@ -289,6 +290,9 @@ export async function executePatternDelegated(
 		// 8. Call Fabric AI's delegated endpoint
 		const delegatedStart = Date.now();
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "POST",
 			signal,
@@ -519,6 +523,9 @@ export async function* executePatternDelegatedStream(
 		// 6. Call delegated endpoint
 		const delegatedStart = Date.now();
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "POST",
 			signal,
@@ -643,6 +650,9 @@ export async function isDelegatedModeSupported(
 
 		// Try OPTIONS request to check if endpoint exists
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${baseUrl}/chat/delegated`, {
 			method: "OPTIONS",
 			signal,

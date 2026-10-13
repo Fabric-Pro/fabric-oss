@@ -41,12 +41,44 @@ describe("own-plan background denylist", () => {
 		"scheduled-report",
 		"daily-brief",
 		"publishing-suggestion",
+		"living-document-refresh",
+		"external-agent",
 	] as const)(
 		"still runs %s on the plan the member included",
 		async (jobType) => {
 			await expect(
 				resolveOwnChatGptPlan({ ...background, jobType }),
 			).resolves.toBe("own");
+		},
+	);
+
+	// Work the member a call names never asked for runs on a shared account,
+	// never on that member's window (2026-10-09). A topic scan someone clicks
+	// runs under the project owner's name (Fizzy #2770).
+	it.each([
+		"fabric-mention",
+		"public-api",
+		"publishing-suggestion-manual",
+	] as const)("keeps %s off the member's own plan", async (jobType) => {
+		expect(OWN_PLAN_BACKGROUND_DENYLIST).toContain(jobType);
+		await expect(
+			resolveOwnChatGptPlan({ ...background, jobType }),
+		).resolves.toBe("ownDisabled");
+	});
+
+	// Bulk runs a person clicks: one run can drain a personal window
+	// (product decision, 2026-10-09).
+	it.each([
+		"security-scan",
+		"batch-document-generation",
+		"project-setup",
+		"atlas-analysis",
+	] as const)(
+		"keeps the bulk run %s off the clicker's own plan",
+		async (jobType) => {
+			await expect(
+				resolveOwnChatGptPlan({ ...background, jobType }),
+			).resolves.toBe("ownDisabled");
 		},
 	);
 
@@ -72,10 +104,16 @@ describe("own-plan background denylist", () => {
 			"parlume-meeting-notes",
 			"newsletter-curation",
 			"security-scan",
+			"batch-document-generation",
+			"project-setup",
+			"atlas-analysis",
 			"slack-channel-monitor",
 			"teams-channel-monitor",
 			"image-generation",
 			"transcription",
+			"fabric-mention",
+			"public-api",
+			"publishing-suggestion-manual",
 		]);
 	});
 });

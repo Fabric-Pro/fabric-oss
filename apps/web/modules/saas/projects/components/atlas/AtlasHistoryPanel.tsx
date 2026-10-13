@@ -68,7 +68,11 @@ function modeLabelKey(mode: AnalysisRunSummary["mode"]): string {
 
 function HistoryRunRow({ run }: { run: AnalysisRunSummary }) {
 	const t = useTranslations("projects.atlas.history");
-	const isRunning = run.status === "RUNNING";
+	// A run paused for a ChatGPT plan reset is still in progress.
+	const isRunning =
+		run.status === "RUNNING" ||
+		run.status === "PENDING" ||
+		run.status === "WAITING_FOR_PLAN";
 	const isFailed = run.status === "FAILED";
 	// "Re-map fresh" is a destructive reset — flag it in the badge so it reads
 	// distinctly from the additive full/incremental/keep runs.

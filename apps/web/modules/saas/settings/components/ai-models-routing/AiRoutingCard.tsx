@@ -12,14 +12,13 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
-import { Switch } from "@ui/components/switch";
-import { cn } from "@ui/lib";
 import { ArrowDownIcon, ArrowRightIcon } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 import { toast } from "sonner";
 import { useSetChatgptPlanFallbackModel } from "../chatgpt-plan-models/chatgpt-plan-models-queries";
+import { AdvancedSettings } from "../chatgpt-plan-pool/AdvancedSettings";
 import {
 	useAcknowledgeChatgptPlanPoolTerms,
 	useUpdateChatgptPlanPoolPolicy,
@@ -37,7 +36,6 @@ function Step({
 	body,
 	status,
 	action,
-	muted = false,
 	testId,
 }: {
 	number: number;
@@ -45,15 +43,11 @@ function Step({
 	body: string;
 	status: ReactNode;
 	action?: ReactNode;
-	muted?: boolean;
 	testId: string;
 }) {
 	return (
 		<li
-			className={cn(
-				"grid min-w-0 content-start gap-1.5 rounded-lg border border-border bg-muted p-4",
-				muted && "text-muted-foreground",
-			)}
+			className="grid min-w-0 content-start gap-1.5 rounded-lg border border-border bg-muted p-4"
 			data-testid={testId}
 		>
 			<span className="font-mono text-muted-foreground text-xs">
@@ -97,7 +91,7 @@ function PolicyRow({
 /**
  * How AI work runs in the organization (Fizzy #2770 F6): the three sources a
  * request tries in order with their live status, then the organization's
- * policy — sharing, what happens when every plan is spent, and the fallback
+ * policy — what happens when every plan is spent, and the fallback
  * for a model a plan stops serving. The one home of that policy.
  */
 export function AiRoutingCard({ data }: { data: AiRoutingData }) {
@@ -113,10 +107,11 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 	const setFallback = useSetChatgptPlanFallbackModel(onSave);
 
 	const plan = data.planModels.data;
-	const pool = data.pooling ? data.pool.data : undefined;
+	const pool = data.pool.data;
 	const policy = pool?.policy;
 	const canEdit = plan?.canEdit ?? false;
-	const sharingOn = Boolean(policy?.poolingEnabled);
+	// Accounts serve as soon as an owner has accepted the sharing terms.
+	const sharingOn = Boolean(policy?.termsAcknowledged);
 
 	const activeAccounts =
 		pool?.accounts.filter(
@@ -127,16 +122,16 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 			? Math.round(
 					activeAccounts.reduce(
 						(sum, account) =>
-							sum + account.usageEstimate.estimatedPercent,
+							sum +
+							(account.usageEstimate.percent ??
+								account.usageEstimate.estimatedPercent),
 						0,
 					) / activeAccounts.length,
 				)
 			: 0;
 
-	const sharedStatus = !data.pooling ? (
-		<Badge status="info">{t("sharedNotEnabled")}</Badge>
-	) : !sharingOn ? (
-		<Badge status="info">{t("sharedOff")}</Badge>
+	const sharedStatus = !sharingOn ? (
+		<Badge status="info">{t("sharedNeedsTerms")}</Badge>
 	) : activeAccounts.length === 0 ? (
 		<Badge status="warning">{t("sharedNone")}</Badge>
 	) : (
@@ -155,16 +150,33 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 			provider.provider,
 	);
 
-	const background = policy?.apiFallbackBackground ?? "NEVER";
+	const background = data.hasApiProvider
+		? (policy?.apiFallbackBackground ?? "NEVER")
+		: "NEVER";
+	// A stored NEVER, no longer offered, reads as Stop.
+	const people =
+		data.hasApiProvider && policy?.apiFallbackInteractive === "AUTO"
+			? "AUTO"
+			: "ASK";
 	const spentHelp = !data.hasApiProvider
 		? t("spentHelpNoApi")
-		: !data.pooling || !sharingOn
-			? t("spentHelpNoSharing")
-			: background === "AUTO"
-				? t("spentHelpAuto")
-				: t("spentHelpWait");
-	const spentDisabled =
-		!canEdit || !data.pooling || !sharingOn || updatePolicy.isPending;
+		: [
+				background === "AUTO"
+					? t("spentHelpBackgroundApi")
+					: t("spentHelpBackgroundWait"),
+				people === "AUTO"
+					? t("spentHelpPeopleApi")
+					: background === "AUTO"
+						? t("spentHelpPeopleStopApi")
+						: t("spentHelpPeopleStopWait"),
+			].join(" ");
+	const spentDisabled = !canEdit || updatePolicy.isPending;
+	// Why "Use API billing" cannot be chosen, said next to it.
+	const apiDisabledReason = data.hasApiProvider
+		? null
+		: data.onlyEmbeddingsKeys
+			? t("apiNeedsLlmProvider")
+			: t("apiNeedsProvider");
 
 	const models = plan?.models ?? [];
 	const fallback = plan?.fallbackModel ?? null;
@@ -209,7 +221,7 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 				<StepArrow />
 				<Step
 					action={
-						data.pooling && data.providersHref ? (
+						data.providersHref ? (
 							<Link
 								className="w-fit text-primary text-sm underline underline-offset-4"
 								href={`${data.providersHref}#shared-chatgpt-plans`}
@@ -219,7 +231,6 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 						) : undefined
 					}
 					body={t("sharedBody")}
-					muted={!data.pooling}
 					number={2}
 					status={sharedStatus}
 					testId="ai-routing-step-shared"
@@ -255,31 +266,7 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 				/>
 			</ol>
 
-			{data.pooling && policy ? (
-				<PolicyRow
-					help={
-						policy.termsAcknowledged
-							? t("sharingHelp")
-							: t("sharingNeedsTerms")
-					}
-					question={t("sharingQuestion")}
-					testId="ai-routing-sharing"
-				>
-					<Switch
-						aria-label={t("sharingQuestion")}
-						checked={policy.poolingEnabled}
-						disabled={
-							!canEdit ||
-							!policy.termsAcknowledged ||
-							updatePolicy.isPending
-						}
-						onCheckedChange={(checked) =>
-							updatePolicy.mutate({ poolingEnabled: checked })
-						}
-					/>
-				</PolicyRow>
-			) : null}
-			{data.pooling && policy && !policy.termsAcknowledged ? (
+			{policy && !policy.termsAcknowledged ? (
 				<div
 					className="space-y-2 rounded-md border border-border p-3"
 					data-testid="ai-routing-terms"
@@ -311,14 +298,6 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 			>
 				<div className="flex flex-wrap items-center gap-2 sm:justify-end">
 					<span className="text-muted-foreground text-sm">
-						{t("interactiveLabel")}
-					</span>
-					<Badge status="outline" title={t("interactiveFixed")}>
-						{t("interactiveAsk")}
-					</Badge>
-				</div>
-				<div className="flex flex-wrap items-center gap-2 sm:justify-end">
-					<span className="text-muted-foreground text-sm">
 						{t("backgroundLabel")}
 					</span>
 					<SegmentedControl
@@ -337,49 +316,89 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 								disabled: !data.hasApiProvider,
 							},
 						]}
-						value={data.hasApiProvider ? background : "NEVER"}
+						value={background}
 					/>
 				</div>
 				<div className="flex flex-wrap items-center gap-2 sm:justify-end">
-					<Label
-						className="font-normal text-muted-foreground"
-						htmlFor="ai-routing-headroom"
-					>
-						{t("headroomLabel")}
-					</Label>
-					<Select
+					<span className="text-muted-foreground text-sm">
+						{t("peopleLabel")}
+					</span>
+					<SegmentedControl
+						ariaLabel={t("peopleLabel")}
 						disabled={spentDisabled}
 						onValueChange={(value) =>
-							updatePolicy.mutate({ headroomPct: Number(value) })
+							updatePolicy.mutate({
+								apiFallbackInteractive: value,
+							})
 						}
-						value={String(policy?.headroomPct ?? 40)}
-					>
-						<SelectTrigger
-							className="w-24"
-							id="ai-routing-headroom"
-						>
-							<SelectValue />
-						</SelectTrigger>
-						<SelectContent>
-							{[
-								...new Set<number>([
-									...HEADROOM_CHOICES,
-									policy?.headroomPct ?? 40,
-								]),
-							]
-								.sort((a, b) => a - b)
-								.map((percent) => (
-									<SelectItem
-										key={percent}
-										value={String(percent)}
-									>
-										{`${percent}%`}
-									</SelectItem>
-								))}
-						</SelectContent>
-					</Select>
+						options={[
+							{ value: "ASK", label: t("peopleStop") },
+							{
+								value: "AUTO",
+								label: t("peopleApi"),
+								disabled: !data.hasApiProvider,
+							},
+						]}
+						value={people}
+					/>
 				</div>
-				{data.hasApiProvider && sharingOn && background === "AUTO" ? (
+				{apiDisabledReason ? (
+					<p
+						className="max-w-sm text-muted-foreground text-xs sm:text-right"
+						data-testid="ai-routing-api-disabled-reason"
+					>
+						{apiDisabledReason}
+					</p>
+				) : null}
+				<AdvancedSettings testId="ai-routing-advanced">
+					<p className="max-w-sm text-muted-foreground text-xs sm:text-right">
+						{t("headroomHelp")}
+					</p>
+					<div className="flex flex-wrap items-center gap-2 sm:justify-end">
+						<Label
+							className="font-normal text-muted-foreground"
+							htmlFor="ai-routing-headroom"
+						>
+							{t("headroomLabel")}
+						</Label>
+						<Select
+							disabled={spentDisabled}
+							onValueChange={(value) =>
+								updatePolicy.mutate({
+									headroomPct: Number(value),
+								})
+							}
+							value={String(policy?.headroomPct ?? 40)}
+						>
+							<SelectTrigger
+								className="w-24"
+								id="ai-routing-headroom"
+							>
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent>
+								{[
+									...new Set<number>([
+										...HEADROOM_CHOICES,
+										policy?.headroomPct ?? 40,
+									]),
+								]
+									.sort((a, b) => a - b)
+									.map((percent) => (
+										<SelectItem
+											key={percent}
+											value={String(percent)}
+										>
+											{`${percent}%`}
+										</SelectItem>
+									))}
+							</SelectContent>
+						</Select>
+					</div>
+				</AdvancedSettings>
+				{data.hasApiProvider &&
+				sharingOn &&
+				(background === "AUTO" || people === "AUTO") ? (
 					<Alert
 						className="max-w-md"
 						data-testid="ai-routing-auto-warning"
@@ -389,7 +408,9 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 							{tPool("backgroundAutoWarningTitle")}
 						</AlertTitle>
 						<AlertDescription>
-							{tPool("backgroundAutoWarning")}
+							{people === "AUTO"
+								? `${tPool("backgroundAutoWarning")} ${tPool("peopleAutoWarning")}`
+								: tPool("backgroundAutoWarning")}
 						</AlertDescription>
 					</Alert>
 				) : null}

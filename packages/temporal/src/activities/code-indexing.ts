@@ -25,6 +25,7 @@ import {
 	resolveFreshRepoToken,
 } from "@repo/integrations/repo-auth";
 import { logger } from "@repo/logs";
+import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import type { SimpleGit } from "simple-git";
@@ -1535,6 +1536,25 @@ export async function runWithConcurrency<T>(
 }
 
 /**
+ * The embedding context for every code-index call: tagged with the project and
+ * the `code-index` feature/job keys so AI Usage attributes the spend rather
+ * than filing it under untagged embeddings.
+ */
+function codeIndexEmbeddingContext(params: {
+	userId: string;
+	organizationId?: string | null;
+	projectId: string;
+}): TenantContext {
+	return {
+		userId: params.userId,
+		organizationId: params.organizationId ?? undefined,
+		projectId: params.projectId,
+		featureKey: "code-index",
+		jobType: "code-index",
+	};
+}
+
+/**
  * Chunk a batch of files using AST-aware chunking and embed + upsert to Qdrant.
  */
 export async function chunkAndEmbedBatchActivity(
@@ -1604,10 +1624,11 @@ export async function chunkAndEmbedBatchActivity(
 		"project-contexts",
 		organizationId,
 	);
-	const tenantContext = {
+	const tenantContext = codeIndexEmbeddingContext({
 		userId,
-		organizationId: organizationId ?? undefined,
-	};
+		organizationId,
+		projectId,
+	});
 
 	let filesProcessedSoFar = 0;
 	// A config error (bad creds / missing embedding model) is deterministic —
@@ -1912,10 +1933,11 @@ export async function generateFileSummariesActivity(
 		"project-contexts",
 		organizationId,
 	);
-	const tenantContext = {
+	const tenantContext = codeIndexEmbeddingContext({
 		userId,
-		organizationId: organizationId ?? undefined,
-	};
+		organizationId,
+		projectId,
+	});
 
 	// Collect all summaries first, then batch embed + upsert
 	const summaryTexts: string[] = [];

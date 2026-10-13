@@ -77,6 +77,11 @@ export function chatGptPlanLockKey(userId: string): string {
 	return `chatgpt-plan:${userId}`;
 }
 
+/** Lock key for a shared ChatGPT plan account, including reconnect and disconnect. */
+export function chatGptPlanOrgAccountLockKey(accountId: string): string {
+	return `chatgpt-plan-org:${accountId}`;
+}
+
 /**
  * Lifecycle lock for one person's GitLab connection in one tenant context.
  *

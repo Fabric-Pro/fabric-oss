@@ -53,6 +53,8 @@ import {
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PlanPausedNotice } from "../PlanPausedNotice";
+import { PAUSED_RUN_POLL_MS } from "../security/use-paused-run";
 import { navigateToProjectSettingsTab } from "../settings-tab-navigation";
 import { AtlasAboutDialog } from "./AtlasAboutDialog";
 import { AtlasAnalyzingState } from "./AtlasAnalyzingState";
@@ -82,6 +84,7 @@ import {
 	downloadTextFile,
 } from "./atlas-export";
 import { isAnalysisInFlight } from "./atlas-utils";
+import { usePausedAtlasRun } from "./use-paused-atlas-run";
 import { useStagedGraphEdits } from "./use-staged-graph-edits";
 
 interface ProjectAtlasProps {
@@ -213,9 +216,11 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 			// Poll for a first-build run (status PENDING/ANALYZING) AND for a
 			// background re-run of an already-READY analysis (status stays READY
 			// while `activeRun` is set), so the bar can switch when it clears.
-			return isAnalysisInFlight(data?.status) || data?.activeRun != null
-				? 4000
-				: false;
+			if (isAnalysisInFlight(data?.status) || data?.activeRun != null) {
+				return 4000;
+			}
+			// A run paused for a ChatGPT plan reset: slower, to see it resume.
+			return data?.waitingForPlan ? PAUSED_RUN_POLL_MS : false;
 		},
 	});
 	const status = statusQuery.data;
@@ -790,6 +795,38 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 			organizationId: organizationId ?? null,
 		});
 	}, [cancelMutation, projectId, repositoryIntegrationId, organizationId]);
+
+	// --- A run paused for a ChatGPT plan reset (Fizzy #2770) ----------------
+	const waitingForPlan = status?.waitingForPlan === true;
+	const pausedRun = usePausedAtlasRun({
+		projectId,
+		organizationId,
+		analysisId,
+		paused: waitingForPlan,
+		onResumed: () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.atlas.status.queryKey({
+					input: {
+						projectId,
+						repositoryIntegrationId:
+							repositoryIntegrationId ?? undefined,
+						organizationId: organizationId ?? null,
+					},
+				}),
+			});
+		},
+	});
+	const planPausedNotice = waitingForPlan ? (
+		<PlanPausedNotice
+			resumesAt={pausedRun.run?.resumesAt}
+			canRunOnApi={pausedRun.canRunOnApi}
+			askAdminToRunOnApi={pausedRun.askAdminToRunOnApi}
+			onCancel={handleCancel}
+			onRunNow={pausedRun.runNow}
+			cancelling={cancelMutation.isPending}
+			runningNow={pausedRun.runningNow}
+		/>
+	) : null;
 
 	const handleSelectNode = useCallback((key: string) => {
 		setSelectedKey(key);
@@ -1416,6 +1453,16 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 		);
 	}
 
+	// --- First analysis paused for a ChatGPT plan reset ---------------------
+	if (status.status === "WAITING_FOR_PLAN") {
+		return (
+			<div className="space-y-4">
+				{controlsRow}
+				{planPausedNotice}
+			</div>
+		);
+	}
+
 	// --- Not analysed yet (has repo, never run) ----------------------------
 	if (status.status === "NOT_ANALYZED" || !isReady) {
 		return (
@@ -1461,6 +1508,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 	// --- Ready --------------------------------------------------------------
 	return (
 		<div className="space-y-4">
+			{planPausedNotice}
 			<AtlasStatusBar
 				projectId={projectId}
 				status={status}
@@ -1483,6 +1531,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 				repositoryIntegrationId={repositoryIntegrationId}
 				onRepoChange={handleRepoChange}
 				repoChangeDisabled={analyzeMutation.isPending}
+				planPausedResumesAt={pausedRun.run?.resumesAt}
 			/>
 			{controlsRow}
 

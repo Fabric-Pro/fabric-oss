@@ -107,3 +107,26 @@ export function sortJobsForPanel(
 export function isJobRunning(job: JobListItem): boolean {
 	return job.status === "RUNNING";
 }
+
+/**
+ * The class a job carries while it waits for a ChatGPT plan to reset
+ * (Fizzy #2770). Its status reads FAILED — the status has no waiting member —
+ * but nothing failed: the run resumes after the reset and reopens the row.
+ * Written by `backfill-slack-channel.ts` in `@repo/temporal`.
+ */
+const CHATGPT_PLAN_WAIT_ERROR_CLASS = "ChatGptPlanWait";
+
+/**
+ * When a job waiting for a plan reset resumes: undefined for any other job,
+ * null when the plan did not say. A waiting job's `error` holds the reset time.
+ */
+export function planWaitResumesAt(job: JobListItem): Date | null | undefined {
+	if (
+		job.status !== "FAILED" ||
+		job.errorClass !== CHATGPT_PLAN_WAIT_ERROR_CLASS
+	) {
+		return undefined;
+	}
+	const resumesAt = job.error ? new Date(job.error) : null;
+	return resumesAt && !Number.isNaN(resumesAt.getTime()) ? resumesAt : null;
+}

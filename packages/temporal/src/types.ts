@@ -24,6 +24,11 @@ export interface ChatTitleGenerationInput {
 	firstMessage: string;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * Set by the chat-title procedure a person's own chat triggers, so the
+	 * title may run on their ChatGPT plan (Fizzy #2770).
+	 */
+	planEligible?: boolean;
 }
 
 /**
@@ -96,6 +101,11 @@ export interface ChatMessageInput {
 		role: "user" | "assistant" | "system";
 		parts: Array<{ type: string; text: string }>;
 	}>;
+	/**
+	 * Set when a person retries their own failed message, so the turn may run
+	 * on their ChatGPT plan (Fizzy #2770).
+	 */
+	planEligible?: boolean;
 }
 
 /**
@@ -490,11 +500,35 @@ export interface DirectChatWorkflowOutput {
 	/** Provider limit behind `error` / `partialError`, when it was one. */
 	limitSignal?: LimitSignal;
 	/**
+	 * A HARD AI usage limit refused one of the turn's model requests once the
+	 * turn had started (the model checks the limits before each request). Set
+	 * with `partialError` when part of the answer had streamed (the answer
+	 * stays), or with `error` on a failed turn, which the workflow then does
+	 * not rerun without tools. The route sends it as the same
+	 * `AI_USAGE_LIMIT_EXCEEDED` event a refusal at model resolution gets.
+	 */
+	usageLimit?: DirectChatUsageLimitRefusal;
+	/**
 	 * The answer stopped on a limit, not because it was finished — the
 	 * output-token ceiling or the step cap. The client says so and offers
 	 * to continue (review F25, Fizzy #2166).
 	 */
 	truncated?: ChatTurnTruncation;
+}
+
+/**
+ * An `AiUsageLimitExceededError` as plain data that survives the workflow
+ * result's JSON round trip: the BigInt counters are decimal strings, the
+ * shape the client's limit toast reads.
+ */
+export interface DirectChatUsageLimitRefusal {
+	message: string;
+	limitId: string;
+	dimension: "TOKENS" | "SPEND_USD";
+	window: "HOURLY" | "DAILY" | "WEEKLY" | "MONTHLY";
+	used: string;
+	max: string;
+	manageLimitsUrl: string;
 }
 
 /**

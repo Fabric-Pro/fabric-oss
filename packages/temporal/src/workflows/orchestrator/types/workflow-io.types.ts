@@ -30,6 +30,64 @@ export interface OrchestratorTurnScope {
 	executionId: string;
 	userId: string;
 	organizationId: string;
+	/**
+	 * The turn's generation (its number in the conversation), or null for a
+	 * turn with no conversation. Sent only under the `orch-turn-budget-v1`
+	 * marker; absent on an older run and then not compared. When present the
+	 * dispatch check and every ledger reservation require it to match the
+	 * turn row.
+	 */
+	generation?: number | null;
+	/**
+	 * The budget contract this run's workflow speaks
+	 * (`ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION`), sent only under the
+	 * `orch-turn-budget-v1` marker. Requests reserve against the turn's token
+	 * ledger only when this AND the turn row's `budgetContractVersion` both
+	 * say 1; otherwise the turn runs unledgered (see turn-contract.ts).
+	 */
+	budgetContractVersion?: number;
+}
+
+/** The budget contract a workflow speaks; see `budgetContractVersion`. */
+export const ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION = 1;
+
+/**
+ * How a ledgered turn's request counts against its allowance. Set only by the
+ * workflow, on the activity input (`budgetAttemptKind`): FINALIZATION for the
+ * synthesis that writes the turn's answer after a stop, EXPLORATION for a
+ * main round. Everything else under the turn is AUXILIARY.
+ */
+export type OrchestratorBudgetAttemptKind = "EXPLORATION" | "FINALIZATION";
+
+/**
+ * The structured record of a turn that stopped on its token allowance. The
+ * live stream's `completed` event, the turn row (`budgetStop`) and a
+ * reconnect all carry this same payload. Counts are tokens; `outstanding` is
+ * reservations not yet settled plus attempts whose usage is unknown, kept as
+ * a conservative charge — never measured usage.
+ */
+export interface TurnBudgetStop {
+	kind: "token_allowance";
+	allowance: number;
+	measured: number;
+	outstanding: number;
+	enforcement: "ENFORCED" | "MEASURED_ONLY" | null;
+	/**
+	 * `allowance_exhausted`: a request did not fit and the reserved
+	 * finalization wrote the answer. `finalization_unavailable`: the
+	 * finalization request could not be made or failed too, so the answer is
+	 * the static summary of the work done.
+	 */
+	stopReason: "allowance_exhausted" | "finalization_unavailable";
+}
+
+/** A ledger reading an activity returns after its requests settled. */
+export interface TurnLedgerSnapshot {
+	allowance: number;
+	finalizationReserve: number;
+	measured: number;
+	outstanding: number;
+	enforcement: "ENFORCED" | "MEASURED_ONLY" | null;
 }
 
 /** The turn contract a chat starter speaks; see `turnContractVersion`. */
@@ -51,6 +109,12 @@ export interface OrchestratorWorkflowInput {
 	turnId?: string;
 	/** `ORCHESTRATOR_TURN_CONTRACT_VERSION` of the starter that set `turnId`. */
 	turnContractVersion?: number;
+	/**
+	 * The turn row's generation (null for a turn with no conversation), set
+	 * by the starter with `turnId`. The workflow carries it in its turn scope
+	 * under the `orch-turn-budget-v1` marker.
+	 */
+	turnGeneration?: number | null;
 	/** User's message/task */
 	message: string;
 	/** Conversation history */
@@ -58,11 +122,12 @@ export interface OrchestratorWorkflowInput {
 	/** User ID */
 	userId: string;
 	/**
-	 * Set only by the chat routes a person types into (the Advisor and the
-	 * Fabric Agent drawer, in orchestrator mode): every AI step of the run may
-	 * then run on that person's own ChatGPT plan (Fizzy #2939). Story
-	 * automations, Weave, project setup and delegations leave it unset and
-	 * stay on the organization's provider.
+	 * Set by starters a person drives — the chat routes they type into (the
+	 * Advisor and the Fabric Agent drawer, in orchestrator mode), a story
+	 * automation their move fired, a Weave execution they started (Fizzy
+	 * #2770): every AI step of the run may then run on that person's own
+	 * ChatGPT plan (Fizzy #2939). Delegations and system starts leave it unset
+	 * and stay on the organization's provider.
 	 */
 	planEligible?: boolean;
 	/** Organization ID */
@@ -410,6 +475,12 @@ export interface OrchestratorWorkflowOutput {
 		reason: string;
 		summary: string;
 	};
+	/**
+	 * Set when the turn stopped because it used its token allowance (a
+	 * ledgered turn only). The chat offers no new-chat workaround for it: the
+	 * user can ask to continue in the same chat.
+	 */
+	budgetStop?: TurnBudgetStop;
 	/**
 	 * The final answer stopped at the output-token ceiling, so it ends
 	 * mid-way. The chat says so and offers to continue (review F25).

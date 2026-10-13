@@ -185,6 +185,7 @@ const baseInput = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	dbMocks.userStoryUpdate.mockResolvedValue({});
+	dbMocks.userStoryUpdateMany.mockResolvedValue({ count: 1 });
 	dbMocks.recordPmSyncLog.mockResolvedValue(undefined);
 	vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
 		makeCapabilities() as never,

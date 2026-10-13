@@ -23,12 +23,20 @@ const {
 	getSearchProviderConfigMock,
 	decryptApiKeyMock,
 	scrapeUrlMock,
+	getRetrievableConversationBundleByIdMock,
+	searchSimilarProjectContextsMock,
+	embedMock,
+	getAIEmbeddingModelWithMetadataMock,
 } = vi.hoisted(() => ({
 	findManyMock: vi.fn(),
 	updateMock: vi.fn(),
 	getSearchProviderConfigMock: vi.fn(),
 	decryptApiKeyMock: vi.fn(),
 	scrapeUrlMock: vi.fn(),
+	getRetrievableConversationBundleByIdMock: vi.fn(),
+	searchSimilarProjectContextsMock: vi.fn(),
+	embedMock: vi.fn(),
+	getAIEmbeddingModelWithMetadataMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -39,6 +47,8 @@ vi.mock("@repo/database", () => ({
 			update: updateMock,
 		},
 	},
+	getRetrievableConversationBundleById:
+		getRetrievableConversationBundleByIdMock,
 	getSearchProviderConfig: getSearchProviderConfigMock,
 }));
 
@@ -50,21 +60,24 @@ vi.mock("../src/activities/lib/firecrawl-client", () => ({
 	scrapeUrl: scrapeUrlMock,
 }));
 
-// `gatherLiveUrlSources` lives next to `retrieveProjectContexts`, which pulls
-// in `@repo/ai` and `@repo/rag`. We don't exercise those code paths here, so
-// stubbing them avoids loading their full dependency graphs during the test.
+// Stubbed rather than loaded: their full dependency graphs are not needed to
+// drive `retrieveProjectContexts` and `gatherLiveUrlSources`.
 vi.mock("@repo/ai", () => ({
-	embed: vi.fn(),
-	getAIEmbeddingModelWithMetadata: vi.fn(),
+	embed: embedMock,
+	getAIEmbeddingModelWithMetadata: getAIEmbeddingModelWithMetadataMock,
 	logEmbeddingUsageAsync: vi.fn(),
 }));
 
 vi.mock("@repo/rag", () => ({
-	extractBaseContextId: (id: string) => id,
-	searchSimilarProjectContexts: vi.fn(),
+	contextMetaHeader: () => "",
+	extractBaseContextId: (id: string) => id.replace(/-chunk-\d+$/, ""),
+	searchSimilarProjectContexts: searchSimilarProjectContextsMock,
 }));
 
-import { gatherLiveUrlSources } from "../src/activities/task-agent/rag-context";
+import {
+	gatherLiveUrlSources,
+	retrieveProjectContexts,
+} from "../src/activities/task-agent/rag-context";
 
 // -----------------------------------------------------------------------------
 // Fixtures
@@ -331,5 +344,54 @@ describe("gatherLiveUrlSources", () => {
 		});
 
 		expect(result[0].sourceTitle).toBeNull();
+	});
+});
+
+describe("retrieveProjectContexts conversation bundles", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getAIEmbeddingModelWithMetadataMock.mockResolvedValue({
+			model: {},
+			metadata: {},
+			trackUsage: vi.fn(),
+		});
+		embedMock.mockResolvedValue({ embedding: [0.1], usage: { tokens: 1 } });
+	});
+
+	it("resolves a bundle hit through the bundle table, tenant-scoped", async () => {
+		searchSimilarProjectContextsMock.mockResolvedValue([
+			{ contextId: "ctx-1-chunk-0", score: 0.9 },
+			{
+				contextId: "bundle-1-chunk-0",
+				score: 0.8,
+				conversationBundleId: "bundle-1",
+			},
+		]);
+		findManyMock.mockResolvedValue([
+			{ content: "row text", sourceType: null, aiInstructions: null },
+		]);
+		getRetrievableConversationBundleByIdMock.mockResolvedValue({
+			content: "captured messages",
+			sourceType: null,
+			aiInstructions: null,
+		});
+
+		const result = await retrieveProjectContexts({
+			projectId: PROJECT_ID,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			taskTitle: "Task",
+			taskDescription: "Do it",
+		});
+
+		expect(result).toEqual(["row text", "captured messages"]);
+		expect(findManyMock.mock.calls[0][0].where.id).toEqual({
+			in: ["ctx-1"],
+		});
+		expect(getRetrievableConversationBundleByIdMock).toHaveBeenCalledWith({
+			bundleId: "bundle-1",
+			projectId: PROJECT_ID,
+			tenant: { userId: USER_ID, organizationId: ORG_ID },
+		});
 	});
 });

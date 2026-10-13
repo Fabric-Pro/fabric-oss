@@ -12,6 +12,14 @@
  *     when stopped (see orchestratorExecutionWorkflow), after writing the
  *     turn's terminal state from a non-cancellable scope.
  *
+ * Under the later `orch-turn-budget-v1` marker such a run also carries its
+ * token ledger contract (see TURN_BUDGET_PATCH): every model request
+ * reserves against the turn's durable allowance, and a request that does not
+ * fit fails with a non-retryable `TurnBudgetExhausted`, which every
+ * intermediate catch rethrows like a stop until it reaches the run's one
+ * budget exit. It is not a cancellation: the exit still makes the reserved
+ * finalization request.
+ *
  * Only the type of `ActivityFailure`/`CancelledFailure` is inspected here, so
  * this module never schedules anything and changes no command on replay.
  */
@@ -22,7 +30,10 @@ import {
 	CancelledFailure,
 	ChildWorkflowFailure,
 } from "@temporalio/common";
-import type { OrchestratorTurnScope } from "./types";
+import type {
+	OrchestratorBudgetAttemptKind,
+	OrchestratorTurnScope,
+} from "./types";
 
 /**
  * Gates every behaviour above. Called once at the start of the workflow, so a
@@ -44,8 +55,42 @@ export const TURN_CANCELLATION_PATCH = "orch-turn-cancellation-v1";
  */
 export const PLANNER_TURN_PATCH = "orch-planner-turn-v1";
 
+/**
+ * Gates the turn token ledger. Called once, right after
+ * `PLANNER_TURN_PATCH`. Under it a run with a turn scope adds to that scope
+ * the turn's `generation` (from the starter's `turnGeneration`) and
+ * `budgetContractVersion: 1`, tells its activities which requests are its
+ * main rounds (EXPLORATION) and its finalization (FINALIZATION), and routes
+ * a `TurnBudgetExhausted` refusal to the budget exit (an `internal_budget`
+ * signal, the finalization synthesis, else the static summary of the work
+ * done; the turn ends LIMITED with a structured `budgetStop`).
+ *
+ * Rollout. A request reserves only when BOTH the turn row's
+ * `budgetContractVersion` (written by the web app at admission) and the
+ * activity's scope say 1:
+ *   - a history recorded before this marker (an in-flight or legacy turn)
+ *     replays without it, carries no contract in its scope, and its turn
+ *     stays unledgered whatever its row says; nothing ever upgrades it;
+ *   - a new web app with a worker that predates this marker: the row says 1,
+ *     the scope says nothing, so the turn runs unledgered (as today), never
+ *     half-enforced;
+ *   - an old web app with a new worker: the scope says 1, the row has no
+ *     contract, so the ledger answers "unledgered" and nothing is reserved.
+ * Residual window: an activity task scheduled by a workflow under this
+ * marker but picked up by a worker still on the code before it ignores the
+ * scope's contract and sends its requests unreserved. Those requests are
+ * neither reserved nor settled, so the ledger under-counts the turn by their
+ * usage (it never over-counts because of them). The window closes when every
+ * worker on the queue runs this code.
+ * Never reuse or rename.
+ */
+export const TURN_BUDGET_PATCH = "orch-turn-budget-v1";
+
 /** Mirrors `TURN_NOT_DISPATCHABLE` in activities/orchestrator/turn-dispatch.ts. */
 export const TURN_NOT_DISPATCHABLE_TYPE = "TurnNotDispatchable";
+
+/** Mirrors `TURN_BUDGET_EXHAUSTED` in activities/orchestrator/turn-dispatch.ts. */
+export const TURN_BUDGET_EXHAUSTED_TYPE = "TurnBudgetExhausted";
 
 export type TurnStopReason = "cancelled" | "scope_mismatch" | "terminal";
 
@@ -101,6 +146,20 @@ export function turnNotDispatchableReason(
 }
 
 /**
+ * True when `error` is (or wraps, as the `ActivityFailure` the workflow
+ * sees) the ledger's refusal of a request that did not fit the turn's token
+ * allowance.
+ */
+export function isTurnBudgetExhausted(error: unknown): boolean {
+	const failure =
+		error instanceof ActivityFailure ? error.cause : (error as unknown);
+	return (
+		failure instanceof ApplicationFailure &&
+		failure.type === TURN_BUDGET_EXHAUSTED_TYPE
+	);
+}
+
+/**
  * True when `error` means the turn must stop: a cancellation, or any
  * dispatch refusal. Catches that would otherwise fall back rethrow these.
  */
@@ -111,12 +170,21 @@ export function isTurnStop(error: unknown): boolean {
 	);
 }
 
+/**
+ * What every intermediate catch must rethrow instead of falling back: a
+ * turn stop, or a budget refusal (which travels the same way to the budget
+ * exit, but is not a stop: the exit still writes an answer).
+ */
+function mustPropagate(error: unknown): boolean {
+	return isTurnStop(error) || isTurnBudgetExhausted(error);
+}
+
 /** Rethrow `error` when it is a turn stop and the run honours the contract. */
 export function rethrowTurnStop(
 	error: unknown,
 	turn: IterativeTurnOptions | undefined,
 ): void {
-	if (turn?.cancellationAware && isTurnStop(error)) {
+	if (turn?.cancellationAware && mustPropagate(error)) {
 		throw error;
 	}
 }
@@ -124,7 +192,9 @@ export function rethrowTurnStop(
 /**
  * After a fan-out settled: when the run honours the contract and any branch
  * failed with a turn stop, throw that stop, so the fan-out's own failure
- * handling (a fallback, a recovery loop) never sees it. A no-op otherwise.
+ * handling (a fallback, a recovery loop) never sees it. A stop wins over a
+ * budget refusal (cancellation precedes LIMITED); a budget refusal is thrown
+ * when no branch stopped. A no-op otherwise.
  */
 export function rethrowFirstTurnStop(
 	results: readonly PromiseSettledResult<unknown>[],
@@ -135,6 +205,14 @@ export function rethrowFirstTurnStop(
 	}
 	for (const result of results) {
 		if (result.status === "rejected" && isTurnStop(result.reason)) {
+			throw result.reason;
+		}
+	}
+	for (const result of results) {
+		if (
+			result.status === "rejected" &&
+			isTurnBudgetExhausted(result.reason)
+		) {
 			throw result.reason;
 		}
 	}
@@ -171,6 +249,46 @@ export function turnScopeField(
 	turn: IterativeTurnOptions | undefined,
 ): { turnScope: OrchestratorTurnScope } | Record<string, never> {
 	return turn?.turnScope ? { turnScope: turn.turnScope } : {};
+}
+
+/**
+ * `budgetAttemptKind` spread for a model-calling activity input: present only
+ * for a run whose scope carries the budget contract, so a run without it
+ * schedules the activity with exactly the input it always had.
+ */
+export function budgetAttemptKindField(
+	turn: IterativeTurnOptions | undefined,
+	kind: OrchestratorBudgetAttemptKind,
+):
+	| { budgetAttemptKind: OrchestratorBudgetAttemptKind }
+	| Record<string, never> {
+	return turn?.turnScope?.budgetContractVersion !== undefined
+		? { budgetAttemptKind: kind }
+		: {};
+}
+
+/**
+ * `finalizationQuestion` spread for the finalization synthesis's activity
+ * input: the user's request, which the activity keeps in the request it
+ * shrinks to fit the turn's remaining allowance. Present only beside
+ * `budgetAttemptKind` (a run whose scope carries the budget contract, under
+ * `orch-turn-budget-v1`), so a run without it schedules the activity with
+ * exactly the input it always had.
+ */
+export function finalizationQuestionField(
+	turn: IterativeTurnOptions | undefined,
+	question: string | undefined,
+): { finalizationQuestion: string } | Record<string, never> {
+	return turn?.turnScope?.budgetContractVersion !== undefined && question
+		? { finalizationQuestion: question }
+		: {};
+}
+
+/** True when the run's scope carries the budget contract. */
+export function speaksBudgetContract(
+	turn: IterativeTurnOptions | undefined,
+): boolean {
+	return turn?.turnScope?.budgetContractVersion !== undefined;
 }
 
 /**

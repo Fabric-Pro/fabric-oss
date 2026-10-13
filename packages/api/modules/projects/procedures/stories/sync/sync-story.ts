@@ -246,6 +246,9 @@ export const syncStoryProcedure = tenantProtectedProcedure
 		if (!result.success) {
 			if (
 				result.errorCode === "PM_TOOL_MISMATCH" ||
+				// A legacy link to another tool: the user's Unlink &
+				// re-create, not a migrate push, replaces it.
+				result.errorCode === "PM_TOOL_MISMATCH_LEGACY" ||
 				result.errorCode === "EXTERNAL_ID_NOT_FOUND"
 			) {
 				throw new ORPCError("BAD_REQUEST", {
@@ -311,8 +314,10 @@ export const syncStoryProcedure = tenantProtectedProcedure
 
 		// Audit-log emission. Only emit `story.pm_pushed` on a
 		// real outbound push; the "pull" direction is a remote read into our
-		// DB and is intentionally outside the v1 taxonomy.
-		if (input.direction === "push") {
+		// DB and is intentionally outside the v1 taxonomy. A push skipped
+		// because another run linked the story first sent nothing, and its
+		// link is that run's, so it is not this caller's push either.
+		if (input.direction === "push" && !result.pushSkipped) {
 			recordAuditFromRequest(context, {
 				action: "story.pm_pushed",
 				category: "story",

@@ -43,6 +43,11 @@ import { createStoryMediaPullStore } from "@repo/integrations/pm/pull-image-stor
 import { logger } from "@repo/logs";
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils";
 import { resolveAttachmentLimits } from "@repo/utils/attachment-limits";
+import {
+	dispatchDeadlinePassed,
+	dispatchDeadlineRemainingMs,
+	isDispatchDeadlinePassedError,
+} from "@repo/utils/dispatch-deadline";
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
 import { ApplicationFailure } from "@temporalio/activity";
 import { type PMSource, PMSourceNotFound, resolvePmSource } from "../pm-source";
@@ -58,7 +63,26 @@ import {
 	stampPmSyncConflict,
 	stampPmSyncSuccess,
 } from "./hierarchy-sync";
+import {
+	acquirePmCreateClaim,
+	claimHeldMessage,
+	createDeadlinePassedMessage,
+	createIndeterminateMessage,
+	isDefiniteGitLabCreateRejection,
+	releasePmCreateClaim,
+	startPmCreateSendDeadline,
+} from "./pm-create-claim";
+import {
+	describeOrphanCause,
+	recordCreateOrphan,
+	recordCreateUnconfirmed,
+} from "./pm-create-orphan";
 import { computePmHash } from "./pm-sync-hash";
+import {
+	detectExternalLinkMismatch,
+	legacyLinkOtherToolMessage,
+	safeOrigin,
+} from "./pm-tool-mismatch";
 import { updateStoryFromPm as updateStory } from "./pm-update-story";
 import {
 	type ReconcileResult,
@@ -77,6 +101,7 @@ import {
 	type RecordPmSyncLogInput,
 	recordPmSyncLog,
 } from "./record-pm-sync-log";
+import { recordPmSyncFailure } from "./record-pm-sync-state";
 import {
 	buildStoryDescription,
 	type PMWorkItemSummary,
@@ -470,6 +495,7 @@ export async function syncGitLabStoryViaRest(
 		organizationId,
 		overrideMismatch = false,
 		forceHashOverride = false,
+		pmSyncAttemptId,
 	} = input;
 
 	const startedAt = Date.now();
@@ -569,11 +595,49 @@ export async function syncGitLabStoryViaRest(
 				from: story.externalMcpServerId,
 				to: activeServerId,
 			});
-			await updateStory(storyId, projectId, {
-				externalId: null,
-				externalUrl: null,
-				externalMcpServerId: null,
-			});
+			// The user confirmed this migration ("Push & relink"). The link is
+			// dropped only while the row still carries the stamped link that
+			// was read: a link written since by a create on this server is
+			// stamped `activeServerId` (the create's link write below), so a
+			// second, stale migration cannot match it, erase it and create
+			// again. The create still has to take the create claim.
+			try {
+				await updateStory(
+					storyId,
+					projectId,
+					{
+						externalId: null,
+						externalUrl: null,
+						externalMcpServerId: null,
+					},
+					{
+						onlyIfPmLink: {
+							externalId: story.externalId,
+							externalMcpServerId: story.externalMcpServerId,
+						},
+					},
+				);
+			} catch (clearError) {
+				if (
+					clearError instanceof Error &&
+					clearError.name === "StoryLinkChangedError"
+				) {
+					logger.warn(
+						"[GitLab REST Sync] PM link changed before the migration; not creating",
+						{ storyId, from: story.externalMcpServerId },
+					);
+					await logOutcome("FAILURE", {
+						errorCode: "PM_LINK_CHANGED",
+					});
+					return {
+						success: false,
+						error: "This feature's PM link changed while it was syncing, so Fabric did not create a new issue. Sync again to use the current link.",
+						syncedAt: new Date(),
+						direction,
+					};
+				}
+				throw clearError;
+			}
 			externalId = undefined;
 			externalUrl = undefined;
 		} else {
@@ -586,6 +650,65 @@ export async function syncGitLabStoryViaRest(
 				success: false,
 				error: "This feature is linked to a different PM tool. Re-link it to push to GitLab.",
 				errorCode: "PM_TOOL_MISMATCH",
+				syncedAt: new Date(),
+				direction,
+			};
+		}
+	}
+
+	// 3b. A legacy link (no server stamp) that is not on this GitLab
+	//     instance: a link to another PM tool, to another GitLab instance
+	//     (gitlab.com vs self-hosted), or with no URL to place it. Its id
+	//     names an item elsewhere, so this instance's issue with the same
+	//     number is unrelated: the push neither updates it nor replaces the
+	//     link (the same rule as `syncStoryToPM`/`syncWorkItemToPM`, judged by
+	//     this instance's origin, `source.baseUrl`). Nothing is sent to
+	//     GitLab. The row is stamped FAILED with the message the sync failure
+	//     panel offers Unlink & re-create for, unless the caller records the
+	//     failure itself (`syncWorkItemToPM`'s workflows).
+	if (
+		!story.externalMcpServerId &&
+		(direction === "push" || direction === "bidirectional")
+	) {
+		const legacyMismatch = detectExternalLinkMismatch({
+			externalId,
+			externalUrl,
+			externalMcpServerId: story.externalMcpServerId,
+			activeServerId,
+			currentDetectedType: "gitlab",
+			currentBaseUrl: source.baseUrl,
+			currentInstanceOrigin: safeOrigin(source.baseUrl),
+		});
+		if (legacyMismatch.resolution === "legacy-other-tool") {
+			logger.warn(
+				"[GitLab REST Sync] Legacy external link is not on this GitLab instance; not syncing",
+				{ storyId, reason: legacyMismatch.reason },
+			);
+			const legacyMessage = legacyLinkOtherToolMessage("GitLab");
+			if (!input.failureRecordedByCaller) {
+				// Writes the FAILURE audit row too. Without an attempt id,
+				// only while the row still has the link and attempt read
+				// above: a relink or a newer run since keeps its state.
+				await recordPmSyncFailure({
+					itemId: storyId,
+					itemType: "story",
+					errorMessage: legacyMessage,
+					errorClass: "PM_TOOL_MISMATCH_LEGACY",
+					triggerSource: "manual-edit",
+					pmTool: "gitlab",
+					actorUserId: userId,
+					onlyIfAttempt: pmSyncAttemptId,
+					onlyIfRowUnchanged: {
+						externalId: story.externalId ?? null,
+						externalMcpServerId: null,
+						lastPmSyncAttemptId: story.lastPmSyncAttemptId ?? null,
+					},
+				});
+			}
+			return {
+				success: false,
+				error: legacyMessage,
+				errorCode: "PM_TOOL_MISMATCH_LEGACY",
 				syncedAt: new Date(),
 				direction,
 			};
@@ -843,7 +966,11 @@ export async function syncGitLabStoryViaRest(
 								: livePm.description,
 						);
 						if (currentHash !== baseline) {
-							await stampPmSyncConflict("story", storyId);
+							await stampPmSyncConflict(
+								"story",
+								storyId,
+								pmSyncAttemptId,
+							);
 							logger.info("pm.sync.conflict", {
 								itemType: "story",
 								itemId: storyId,
@@ -950,6 +1077,7 @@ export async function syncGitLabStoryViaRest(
 				itemId: storyId,
 				title: story.title,
 				description,
+				pmSyncAttemptId,
 			});
 			// §4.5 step 4 — only after the write landed, and only when the gate
 			// replaced the labels.
@@ -997,27 +1125,240 @@ export async function syncGitLabStoryViaRest(
 				...(story.labels ?? []),
 				...delta.addLabels,
 			];
-			const created = (await callPmToolWithFallback({
-				source,
-				userId,
-				organizationId: orgIdOrNull,
-				fabricProjectId: projectId,
-				call: {
-					tool: "createItem",
-					payload: {
-						title: story.title,
-						description: descriptionWithAttachments,
-						labels,
+			// Another run linked the story since this one read it: nothing to
+			// create, and no unconfirmed create to report. A success that
+			// writes nothing, so no state, audit row or PENDING is touched.
+			// `pushSkipped` tells the caller nothing was sent.
+			const alreadyLinked = (link: {
+				externalId: string;
+				externalUrl: string | null;
+			}): StorySyncResult => {
+				logger.info("pm.sync.create_skipped", {
+					storyId,
+					reason: "linked",
+				});
+				return {
+					success: true,
+					externalId: link.externalId,
+					externalUrl: link.externalUrl ?? undefined,
+					syncedAt: new Date(),
+					direction,
+					pushSkipped: "already-linked",
+				};
+			};
+			// FAILED (`create_unconfirmed`) by id, best effort, with its audit
+			// row, only while the story is unlinked and its claim is held;
+			// returned rather than thrown, so Temporal does not retry the
+			// create. The story keeps its create claim.
+			const createUnconfirmed = async (
+				errorMessage: string,
+				reason: string,
+			): Promise<StorySyncResult> => {
+				logger.warn("pm.sync.create_unconfirmed", {
+					storyId,
+					reason,
+				});
+				const recording = await recordCreateUnconfirmed({
+					itemId: storyId,
+					itemType: "story",
+					errorMessage,
+					triggerSource: "manual-edit",
+					pmTool: "gitlab",
+					actorUserId: userId,
+				});
+				if (recording.outcome === "linked") {
+					return alreadyLinked(recording);
+				}
+				return {
+					success: false,
+					error: errorMessage,
+					errorCode: "PM_CREATE_UNCONFIRMED",
+					syncedAt: new Date(),
+					direction,
+				};
+			};
+			// Started before the claim is asked for, so the claim's
+			// database-clock stamp is read after it: no create is sent past
+			// it (`PM_CREATE_SEND_TIMEOUT_MS`), however long taking the claim
+			// takes.
+			const sendDeadline = startPmCreateSendDeadline();
+			// Immediately before the create request: no issue is created
+			// unless this call took the story's create claim. Held by anyone
+			// (another run, or an earlier attempt of this one whose create may
+			// have landed), nothing is sent and `create_unconfirmed` is
+			// recorded. Linked since this run read the story, nothing is sent
+			// or recorded.
+			const claim = await acquirePmCreateClaim({ storyId });
+			if ("miss" in claim) {
+				if (claim.miss === "linked") {
+					return alreadyLinked(claim);
+				}
+				if (claim.miss === "missing") {
+					throw ApplicationFailure.nonRetryable(
+						`Story ${storyId} not found in project ${projectId}`,
+					);
+				}
+				return createUnconfirmed(
+					claimHeldMessage("GitLab"),
+					"claim-held",
+				);
+			}
+			const pmCreateClaimId = claim.claimId;
+			// The create was not sent: its send deadline passed first, so no
+			// issue exists. The claim is released so a later push can create,
+			// and the error (which offers a retry) is thrown as a rejection's
+			// is.
+			const notSent = async (): Promise<never> => {
+				logger.warn("pm.sync.create_not_sent", {
+					storyId,
+					reason: "send-deadline-passed",
+				});
+				await releasePmCreateClaim({
+					storyId,
+					claimId: pmCreateClaimId,
+				});
+				throw new Error(createDeadlinePassedMessage("GitLab"));
+			};
+			if (dispatchDeadlinePassed(sendDeadline)) {
+				// Taking the claim took the whole send ceiling.
+				await notSent();
+			}
+			let created: WriteResult;
+			try {
+				created = (await callPmToolWithFallback({
+					source,
+					userId,
+					organizationId: orgIdOrNull,
+					fabricProjectId: projectId,
+					call: {
+						tool: "createItem",
+						payload: {
+							title: story.title,
+							description: descriptionWithAttachments,
+							labels,
+						},
 					},
-				},
-			})) as WriteResult;
+					// Not sent past the claim's send deadline: the GitLab
+					// POST compares the clock with it right before `fetch`.
+					dispatchDeadline: sendDeadline,
+					// The signal reaches the GitLab REST request, which it
+					// aborts at the deadline: an unconfirmed create (the claim is kept), and a recovery
+					// may clear the claim only well after it.
+					signal: AbortSignal.timeout(
+						Math.max(
+							1,
+							Math.ceil(
+								dispatchDeadlineRemainingMs(sendDeadline),
+							),
+						),
+					),
+				})) as WriteResult;
+			} catch (createError) {
+				// Refused by the POST's send-deadline check, which runs before
+				// the request is handed to `fetch` (on the first send, and on
+				// the resend after a 401 that refused the first): not sent.
+				if (isDispatchDeadlinePassedError(createError)) {
+					await notSent();
+				}
+				if (
+					isDefiniteGitLabCreateRejection(
+						createError,
+						READ_ONLY_MODE_MESSAGE,
+					)
+				) {
+					// GitLab refused the create (a 4xx), or it was refused
+					// before sending: no issue exists, so a later push may
+					// create. The error is rethrown as before.
+					await releasePmCreateClaim({
+						storyId,
+						claimId: pmCreateClaimId,
+					});
+					throw createError;
+				}
+				// A 5xx, a timeout or a network error: the issue may exist.
+				return createUnconfirmed(
+					createIndeterminateMessage(
+						"GitLab",
+						describeOrphanCause(createError),
+					),
+					"create-indeterminate",
+				);
+			}
+			// GitLab answered success; `toWriteResult` stringifies `iid`, so
+			// an answer without one reads "undefined" here. The issue may
+			// exist but cannot be linked: an orphan, and the claim stays.
+			if (!/^[1-9]\d*$/.test(String(created.externalId ?? ""))) {
+				const errorMessage =
+					"GitLab reported the issue created, but Fabric could not read its number from the response, so this story is not linked to it. A GitLab issue may already exist for it. Check GitLab; if there is none, use Unlink & re-create.";
+				logger.warn(
+					"[GitLab REST Sync] created issue has no readable iid",
+					{
+						storyId,
+					},
+				);
+				await recordCreateOrphan({
+					itemId: storyId,
+					itemType: "story",
+					errorMessage,
+					triggerSource: "manual-edit",
+					pmTool: "gitlab",
+					actorUserId: userId,
+				});
+				return {
+					success: false,
+					error: errorMessage,
+					errorCode: "PM_CREATE_ORPHAN",
+					syncedAt: new Date(),
+					direction,
+				};
+			}
 			externalId = created.externalId;
 			externalUrl = created.externalUrl ?? undefined;
-			await updateStory(storyId, projectId, {
-				externalId: created.externalId,
-				externalUrl: created.externalUrl ?? null,
-				externalMcpServerId: activeServerId,
-			});
+			try {
+				// Clears the create claim in the same write, scoped to it.
+				await updateStory(
+					storyId,
+					projectId,
+					{
+						externalId: created.externalId,
+						externalUrl: created.externalUrl ?? null,
+						externalMcpServerId: activeServerId,
+					},
+					{ settlesPmCreateClaim: pmCreateClaimId },
+				);
+			} catch (linkError) {
+				// The issue exists but the story has no link. Thrown, this
+				// would be retried by Temporal. Stamp FAILED by id, not scoped
+				// to the run's attempt, and keep the create claim: together
+				// they record the orphan and stop any later push from
+				// creating a second issue. Best effort (`recordCreateOrphan`
+				// never throws), so this result is returned whatever the
+				// recording does.
+				const errorMessage = `Issue ${created.externalId} was created in GitLab but Fabric could not save its link (${describeOrphanCause(
+					linkError,
+				)}), so this story is not linked to it. Check GitLab: use Unlink & re-create only if issue ${created.externalId} was deleted or a second issue is wanted.`;
+				logger.warn("[GitLab REST Sync] created issue not linked", {
+					storyId,
+					externalId: created.externalId,
+				});
+				await recordCreateOrphan({
+					itemId: storyId,
+					itemType: "story",
+					errorMessage,
+					triggerSource: "manual-edit",
+					pmTool: "gitlab",
+					actorUserId: userId,
+				});
+				return {
+					success: false,
+					externalId: created.externalId,
+					externalUrl: created.externalUrl ?? undefined,
+					error: errorMessage,
+					errorCode: "PM_CREATE_ORPHAN",
+					syncedAt: new Date(),
+					direction,
+				};
+			}
 			// Stamp the baseline for the freshly-created issue so subsequent
 			// pushes engage the conflict guard. Block-free for the same
 			// reason as the update path's stamp above.
@@ -1026,6 +1367,7 @@ export async function syncGitLabStoryViaRest(
 				itemId: storyId,
 				title: story.title,
 				description,
+				pmSyncAttemptId,
 			});
 			// §4.5 step 5 — the new link's first observation is the ticket this
 			// push just created. Stamped against the snapshot's (normally null)
@@ -1342,6 +1684,7 @@ export async function syncGitLabStoryViaRest(
 			description: fetched.description
 				? stripAttachmentBlock(fetched.description)
 				: fetched.description,
+			pmSyncAttemptId,
 		});
 
 		// Attachment pull (Fizzy #1745, AC-5..AC-9). Runs AFTER the story and

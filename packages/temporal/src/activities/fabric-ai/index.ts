@@ -452,7 +452,7 @@ export interface TranscribeAndAnalyzeOutput {
  * Supports all three modes:
  * - hybrid: Uses user's OpenAI API key directly
  * - delegated: Uses Fabric AI with user's credentials
- * - full: Uses Fabric AI's own API keys
+ * - full: transcribes as hybrid; audio never runs on Fabric's own keys
  *
  * Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm
  * Max file size: 25MB

@@ -360,6 +360,7 @@ describe("generateLinkedInPostActivity — what it persists", () => {
 		});
 		expect(getAIModelWithMetadata.mock.calls[0]?.[1]).toMatchObject({
 			jobType: "publishing-linkedin-post",
+			projectId: "proj-1",
 		});
 	});
 

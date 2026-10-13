@@ -64,6 +64,7 @@ vi.mock("../../chunking", () => ({
 vi.mock("@repo/database", () => ({
 	getProjectRagSettings: getProjectRagSettingsMock,
 	markContextAsEmbedded: markContextAsEmbeddedMock,
+	setContextEnrichmentRetryAt: vi.fn(),
 }));
 
 vi.mock("@repo/logs", () => ({

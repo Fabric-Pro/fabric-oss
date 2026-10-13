@@ -45,11 +45,35 @@
  * without per-call-site work. `guardTurnModel` / `guardTurnImageModel` remain
  * for models built outside the factory (the image activity's gateway models)
  * and for code running outside the guard.
+ *
+ * Token ledger. When the scope carries the budget contract
+ * (`budgetContractVersion: 1`, sent under the `orch-turn-budget-v1` marker),
+ * the guard also carries the turn's ledger (`guard.budget`): every factory
+ * model reserves each physical request against the turn's durable allowance
+ * immediately before sending it and settles the reported usage after
+ * (`@repo/ai` turn-budget-middleware.ts; the ledger itself is
+ * `reserveConversationTurnAttempt` in @repo/database). A turn row admitted
+ * without the contract answers "unledgered" and nothing is reserved. A
+ * request that does not fit fails with a NON-RETRYABLE `TurnBudgetExhausted`
+ * failure. It travels like a stop — the guard aborts its sibling requests
+ * and every catch that consults `rethrowIfTurnStopped` (or the guard's
+ * `rethrowIfStopped`) rethrows it — but it is not a cancellation: the
+ * workflow answers it with its budget exit. Models built
+ * outside the factory (the image activity's gateway models, raw HTTP calls
+ * through `guardDispatch`) are checked but not reserved.
  */
 
-import { checkConversationTurnDispatchable } from "@repo/database";
+import {
+	type ConversationTurnLedgerSnapshot,
+	checkConversationTurnDispatchable,
+	conversationTurnRoom,
+	getConversationTurnLedgerSnapshot,
+	reserveConversationTurnAttempt,
+	settleConversationTurnAttempt,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import {
+	type DispatchBudget,
 	type DispatchGuard,
 	getDispatchGuard,
 	isDispatchGuardedModel,
@@ -63,13 +87,26 @@ import {
 	wrapImageModel,
 	wrapLanguageModel,
 } from "ai";
-import type { OrchestratorTurnScope } from "../../workflows/orchestrator/types";
+import {
+	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
+	type OrchestratorBudgetAttemptKind,
+	type OrchestratorTurnScope,
+	type TurnLedgerSnapshot,
+} from "../../workflows/orchestrator/types";
 
 /** The turn an activity is working for, as the workflow carries it. */
 export type TurnScope = OrchestratorTurnScope;
 
 /** `ApplicationFailure.type` of a refused dispatch. */
 export const TURN_NOT_DISPATCHABLE = "TurnNotDispatchable";
+
+/**
+ * `ApplicationFailure.type` of a request the turn's token ledger refused
+ * because it does not fit what is left of the allowance. Non-retryable, and
+ * distinct from `TurnNotDispatchable`: the turn is not stopped, it has used
+ * its allowance.
+ */
+export const TURN_BUDGET_EXHAUSTED = "TurnBudgetExhausted";
 
 export type TurnNotDispatchableReason =
 	| "cancelled"
@@ -92,6 +129,15 @@ export async function assertTurnDispatchable(
 	if (verdict.ok) {
 		return;
 	}
+	throw turnNotDispatchableFailure(turnScope, verdict.reason);
+}
+
+/** Logs a refused dispatch and builds its non-retryable failure. */
+function turnNotDispatchableFailure(
+	turnScope: TurnScope,
+	reason: TurnNotDispatchableReason,
+): ApplicationFailure {
+	const verdict = { reason };
 	const logDetails = {
 		reason: verdict.reason,
 		turnId: turnScope.turnId,
@@ -111,12 +157,27 @@ export async function assertTurnDispatchable(
 			logDetails,
 		);
 	}
-	throw ApplicationFailure.create({
+	return ApplicationFailure.create({
 		type: TURN_NOT_DISPATCHABLE,
 		message: `Turn ${turnScope.turnId} may not make another model request (${verdict.reason})`,
 		nonRetryable: true,
 		details: [{ reason: verdict.reason }],
 	});
+}
+
+/** True when `error` is (or wraps) the ledger's budget refusal. */
+export function isTurnBudgetExhausted(error: unknown): boolean {
+	return findTurnBudgetExhausted(error) !== null;
+}
+
+/**
+ * The budget refusal inside `error`, wherever the AI SDK put it (as is, a
+ * `cause`, or inside a `RetryError`). Null when there is none.
+ */
+export function findTurnBudgetExhausted(
+	error: unknown,
+): ApplicationFailure | null {
+	return findApplicationFailure(error, TURN_BUDGET_EXHAUSTED, 0);
 }
 
 /** True when `error` is the dispatch refusal above (unwrapped). */
@@ -133,13 +194,18 @@ export function findTurnNotDispatchable(
 	error: unknown,
 	depth = 0,
 ): ApplicationFailure | null {
+	return findApplicationFailure(error, TURN_NOT_DISPATCHABLE, depth);
+}
+
+function findApplicationFailure(
+	error: unknown,
+	type: string,
+	depth: number,
+): ApplicationFailure | null {
 	if (!error || typeof error !== "object" || depth > 5) {
 		return null;
 	}
-	if (
-		error instanceof ApplicationFailure &&
-		error.type === TURN_NOT_DISPATCHABLE
-	) {
+	if (error instanceof ApplicationFailure && error.type === type) {
 		return error;
 	}
 	const candidate = error as {
@@ -153,7 +219,7 @@ export function findTurnNotDispatchable(
 		...(Array.isArray(candidate.errors) ? candidate.errors : []),
 	];
 	for (const inner of nested) {
-		const found = findTurnNotDispatchable(inner, depth + 1);
+		const found = findApplicationFailure(inner, type, depth + 1);
 		if (found) {
 			return found;
 		}
@@ -259,8 +325,10 @@ async function checkTurnRequest<P extends { abortSignal?: AbortSignal }>(
 }
 
 /**
- * The identity of a turn scope, as the dispatch guard's `key`. All four
- * fields: the turn check compares every one of them with the record.
+ * The identity of a turn scope, as the dispatch guard's `key`. Every field
+ * the turn check and the ledger compare with the record, and the budget
+ * contract, so a guard for the same turn with a different contract is not
+ * mistaken for this one.
  */
 export function turnScopeKey(turnScope: TurnScope): string {
 	return JSON.stringify([
@@ -268,6 +336,8 @@ export function turnScopeKey(turnScope: TurnScope): string {
 		turnScope.executionId,
 		turnScope.userId,
 		turnScope.organizationId,
+		turnScope.generation,
+		turnScope.budgetContractVersion,
 	]);
 }
 
@@ -278,24 +348,331 @@ function activeTurnGuard(turnScope: TurnScope): DispatchGuard | undefined {
 }
 
 /**
- * Each turn guard's stop controller. Aborted, with the stop as its reason,
- * the first time anything under the guard sees the turn stop: a refused
- * dispatch, or a stop a catch hands to `rethrowIfTurnStopped`.
+ * What a turn guard has seen. `controller` is aborted, with the first stop
+ * as its reason, the moment anything under the guard sees one — a refused
+ * dispatch, a budget refusal, or a stop a catch hands to
+ * `rethrowIfTurnStopped` — so every request still in flight under the guard
+ * is aborted too. Each kind of stop is also kept in its own slot, so the
+ * outcome applies the precedence (`turnStopToThrow`) whatever order the
+ * stops arrived in.
  */
-const turnGuardStops = new WeakMap<DispatchGuard, AbortController>();
-
-/** The stop controller of the active turn guard, if any. */
-function activeTurnStopController(): AbortController | undefined {
-	const guard = getDispatchGuard();
-	return guard ? turnGuardStops.get(guard) : undefined;
+interface TurnGuardState {
+	controller: AbortController;
+	/** The activity's cancellation signal, as the guard was installed. */
+	activitySignal: AbortSignal | undefined;
+	cancellation?: CancelledFailure;
+	refusal?: ApplicationFailure;
+	budget?: ApplicationFailure;
 }
 
-/** The stop `error` carries: a dispatch refusal or a cancellation. */
+const turnGuardStates = new WeakMap<DispatchGuard, TurnGuardState>();
+
+/** The state of the active turn guard, if any. */
+function activeTurnGuardState(): TurnGuardState | undefined {
+	const guard = getDispatchGuard();
+	return guard ? turnGuardStates.get(guard) : undefined;
+}
+
+/**
+ * Latches the stop `error` carries, if any, on `state` (and aborts the
+ * guard's requests). An ordinary error latches nothing.
+ */
+function latchTurnStop(state: TurnGuardState, error: unknown): void {
+	const refusal = findTurnNotDispatchable(error);
+	const cancellation = error instanceof CancelledFailure ? error : null;
+	const budget =
+		refusal || cancellation ? null : findTurnBudgetExhausted(error);
+	const stop = refusal ?? cancellation ?? budget;
+	if (!stop) {
+		return;
+	}
+	if (refusal) {
+		state.refusal ??= refusal;
+	} else if (cancellation) {
+		state.cancellation ??= cancellation;
+	} else if (budget) {
+		state.budget ??= budget;
+	}
+	if (!state.controller.signal.aborted) {
+		state.controller.abort(stop);
+	}
+}
+
+/**
+ * THE outcome rule of a turn-scoped activity, used by every completion
+ * branch of `runWithTurnDispatch` (a normal return and a thrown error) and
+ * by every in-body stop check: the stop to throw, or null when the work's
+ * own completion stands. Precedence:
+ *
+ *   1. cancellation — the activity's cancellation signal fired, or a
+ *      cancellation was latched or thrown;
+ *   2. dispatch refusal — the turn record refused a request (the turn was
+ *      stopped, has ended, or the scope does not match), latched or thrown;
+ *   3. budget refusal — the ledger refused a request for the allowance,
+ *      latched or thrown.
+ *
+ * `thrown` is the error the work ended with, when it threw; a latched stop
+ * outranks it whichever order they came in, so a helper that turned a stop
+ * into a value or into an ordinary error still leaves as that stop.
+ */
+function turnStopToThrow(
+	state: TurnGuardState,
+	thrown?: unknown,
+): Error | null {
+	const activitySignal = state.activitySignal ?? activityCancellationSignal();
+	const cancellation = activitySignal?.aborted
+		? cancellationOf(activitySignal)
+		: (state.cancellation ??
+			(thrown instanceof CancelledFailure ? thrown : null));
+	if (cancellation) {
+		return cancellation;
+	}
+	const refusal = state.refusal ?? findTurnNotDispatchable(thrown);
+	if (refusal) {
+		return refusal;
+	}
+	return state.budget ?? findTurnBudgetExhausted(thrown);
+}
+
+/** The `CancelledFailure` an aborted activity signal stands for. */
+function cancellationOf(signal: AbortSignal): CancelledFailure {
+	return signal.reason instanceof CancelledFailure
+		? signal.reason
+		: new CancelledFailure("Activity cancelled");
+}
+
+/**
+ * The stop `error` carries: a dispatch refusal, a cancellation, or a budget
+ * refusal (which ends the activity's requests the same way, though the
+ * workflow does not treat it as a cancellation).
+ */
 function turnStopIn(error: unknown): Error | null {
 	return (
 		findTurnNotDispatchable(error) ??
-		(error instanceof CancelledFailure ? error : null)
+		(error instanceof CancelledFailure ? error : null) ??
+		findTurnBudgetExhausted(error)
 	);
+}
+
+/** Diagnostic attribution of the running activity, when there is one. */
+function activityAttribution(): {
+	workflowId?: string;
+	runId?: string;
+	activityId?: string;
+	activityAttempt?: number;
+} {
+	try {
+		const info = Context.current().info;
+		return {
+			workflowId: info.workflowExecution?.workflowId,
+			runId: info.workflowExecution?.runId,
+			activityId: info.activityId,
+			activityAttempt: info.attempt,
+		};
+	} catch {
+		return {};
+	}
+}
+
+/** True when the scope carries the budget contract this code speaks. */
+function speaksBudgetContract(turnScope: TurnScope): boolean {
+	return (
+		turnScope.budgetContractVersion ===
+		ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION
+	);
+}
+
+function snapshotForWorkflow(
+	snapshot: ConversationTurnLedgerSnapshot,
+): TurnLedgerSnapshot {
+	return {
+		allowance: snapshot.allowance,
+		finalizationReserve: snapshot.finalizationReserve,
+		measured: snapshot.measured,
+		outstanding: snapshot.outstanding,
+		enforcement: snapshot.enforcement,
+	};
+}
+
+/**
+ * The NON-RETRYABLE `TurnBudgetExhausted` failure for a request of `kind`
+ * that does not fit what is left of the turn's allowance. Its details carry
+ * the request kind, the room and what the request needed, and the ledger
+ * reading the workflow records the stop from (`ledgerSnapshotFromRefusal`,
+ * `refusedFinalization` in workflows/orchestrator/turn-budget.ts).
+ */
+export function turnBudgetExhaustedFailure(
+	turnScope: TurnScope,
+	refusal: {
+		kind: OrchestratorBudgetAttemptKind | "AUXILIARY";
+		room: number;
+		needed: number;
+		snapshot: ConversationTurnLedgerSnapshot;
+	},
+): ApplicationFailure {
+	return ApplicationFailure.create({
+		type: TURN_BUDGET_EXHAUSTED,
+		message: `Turn ${turnScope.turnId} has used its token allowance (${refusal.kind} request needs ${refusal.needed}, ${refusal.room} left)`,
+		nonRetryable: true,
+		details: [
+			{
+				kind: refusal.kind,
+				room: refusal.room,
+				needed: refusal.needed,
+				snapshot: snapshotForWorkflow(refusal.snapshot),
+			},
+		],
+	});
+}
+
+/**
+ * The turn's ledger as the guard's `budget`. A denial aborts the guard's
+ * other requests (through `stop`) and is thrown: a `TurnNotDispatchable`
+ * when the turn may not dispatch at all, a `TurnBudgetExhausted` when the
+ * request does not fit.
+ */
+function turnLedgerBudget(
+	turnScope: TurnScope,
+	attemptKind: OrchestratorBudgetAttemptKind | undefined,
+	stop: (error: Error) => never,
+): DispatchBudget {
+	const settle = async (
+		attemptId: string,
+		settlement: Parameters<
+			typeof settleConversationTurnAttempt
+		>[0]["settlement"],
+	) => {
+		const result = await settleConversationTurnAttempt({
+			scope: turnScope,
+			attemptId,
+			settlement,
+		});
+		if (result.outcome === "not_found") {
+			logger.error("[TurnDispatch] Ledger attempt not found to settle", {
+				turnId: turnScope.turnId,
+				attemptId,
+			});
+		}
+	};
+	return {
+		attemptKind: attemptKind ?? "AUXILIARY",
+		reserve: async (request) => {
+			// Only a language request takes the activity's kind: an embedding
+			// or a typed decision is always auxiliary work.
+			const kind =
+				request.modality === "language"
+					? (attemptKind ?? "AUXILIARY")
+					: "AUXILIARY";
+			const result = await reserveConversationTurnAttempt({
+				scope: turnScope,
+				kind,
+				inputEstimate: request.inputEstimate,
+				requestedOutputTokens: request.requestedOutputTokens,
+				minOutputTokens: request.minOutputTokens,
+				enforced: request.enforcesOutputCap,
+				attribution: {
+					...activityAttribution(),
+					modelId: request.modelId,
+				},
+			});
+			switch (result.outcome) {
+				case "unledgered":
+					return null;
+				case "reserved":
+					return {
+						attemptId: result.attemptId,
+						outputCap: result.outputCap,
+					};
+				case "denied":
+					return stop(
+						turnNotDispatchableFailure(turnScope, result.reason),
+					);
+				case "exhausted": {
+					logger.info("[TurnDispatch] Turn token allowance used", {
+						turnId: turnScope.turnId,
+						executionId: turnScope.executionId,
+						kind,
+						room: result.room,
+						needed: result.needed,
+					});
+					return stop(
+						turnBudgetExhaustedFailure(turnScope, {
+							kind,
+							room: result.room,
+							needed: result.needed,
+							snapshot: result.snapshot,
+						}),
+					);
+				}
+			}
+		},
+		settle: (attemptId, usage) =>
+			settle(attemptId, { status: "SETTLED", ...usage }),
+		markUnknown: (attemptId) => settle(attemptId, { status: "UNKNOWN" }),
+		release: (attemptId) => settle(attemptId, { status: "RELEASED" }),
+	};
+}
+
+/**
+ * The turn's ledger totals after this activity's requests settled, for the
+ * workflow (progress, warnings and its record of the stop). Undefined for a
+ * scope without the budget contract or a turn without a ledger, and when the
+ * read fails (the ledger, not this reading, admits requests).
+ */
+export async function readTurnLedgerSnapshot(
+	turnScope: TurnScope | undefined,
+): Promise<TurnLedgerSnapshot | undefined> {
+	if (!turnScope || !speaksBudgetContract(turnScope)) {
+		return undefined;
+	}
+	try {
+		const snapshot = await getConversationTurnLedgerSnapshot(turnScope);
+		return snapshot ? snapshotForWorkflow(snapshot) : undefined;
+	} catch (error) {
+		logger.warn("[TurnDispatch] Could not read the turn's ledger", {
+			turnId: turnScope.turnId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+}
+
+/**
+ * The room a FINALIZATION reservation would find right now
+ * (`allowance − measured − outstanding`, computed by the ledger's own
+ * `conversationTurnRoom`), with the reading it came from. Advisory: the
+ * finalization synthesis sizes its request to it, and the reservation made
+ * when the request is sent stays the authority, so a request that a
+ * concurrent charge squeezed out is refused there as any other. Undefined
+ * for a scope without the budget contract, a turn without a ledger, and
+ * when the read fails.
+ */
+export async function readTurnFinalizationRoom(
+	turnScope: TurnScope | undefined,
+): Promise<
+	{ room: number; snapshot: ConversationTurnLedgerSnapshot } | undefined
+> {
+	if (!turnScope || !speaksBudgetContract(turnScope)) {
+		return undefined;
+	}
+	try {
+		const snapshot = await getConversationTurnLedgerSnapshot(turnScope);
+		return snapshot
+			? {
+					room: Math.max(
+						conversationTurnRoom(snapshot, "FINALIZATION"),
+						0,
+					),
+					snapshot,
+				}
+			: undefined;
+	} catch (error) {
+		logger.warn("[TurnDispatch] Could not read the turn's ledger", {
+			turnId: turnScope.turnId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
 }
 
 /**
@@ -324,38 +701,107 @@ function turnStopIn(error: unknown): Error | null {
 export function runWithTurnDispatch<T>(
 	turnScope: TurnScope | undefined,
 	fn: () => T,
+	options: {
+		/**
+		 * How this activity's model requests count against a ledgered turn's
+		 * allowance, from the workflow-set activity input; AUXILIARY when
+		 * absent. Embeddings and typed decisions are always AUXILIARY.
+		 */
+		attemptKind?: OrchestratorBudgetAttemptKind;
+	} = {},
 ): T {
 	if (!turnScope) {
 		return fn();
 	}
-	const stopController = new AbortController();
+	const state: TurnGuardState = {
+		controller: new AbortController(),
+		activitySignal: activityCancellationSignal(),
+	};
 	let requestSignal: AbortSignal | undefined;
+	/** Latches `error` and throws the stop the precedence picks. */
+	const stop = (error: Error): never => {
+		latchTurnStop(state, error);
+		throw turnStopToThrow(state) ?? error;
+	};
+	const throwIfStopped = () => {
+		const latched = turnStopToThrow(state);
+		if (latched) {
+			throw latched;
+		}
+	};
 	const guard: DispatchGuard = {
 		key: turnScopeKey(turnScope),
 		assertDispatchable: async () => {
-			if (stopController.signal.aborted) {
-				throw stopController.signal.reason;
-			}
+			throwIfStopped();
 			try {
 				await assertTurnDispatchable(turnScope);
 			} catch (error) {
-				const stop = turnStopIn(error);
-				if (stop && !stopController.signal.aborted) {
-					stopController.abort(stop);
-				}
-				throw error;
+				latchTurnStop(state, error);
+				throw turnStopToThrow(state) ?? error;
 			}
 		},
 		abortSignal: () => {
 			// One combined signal per guard: the activity's cancellation and
 			// the guard's own stop.
-			requestSignal ??= activityAbortSignal(stopController.signal);
+			requestSignal ??= activityAbortSignal(state.controller.signal);
 			return requestSignal;
 		},
 		rethrowIfStopped: rethrowIfTurnStopped,
+		throwIfStopped,
+		...(speaksBudgetContract(turnScope)
+			? {
+					budget: turnLedgerBudget(
+						turnScope,
+						options.attemptKind,
+						stop,
+					),
+				}
+			: {}),
 	};
-	turnGuardStops.set(guard, stopController);
-	return runWithDispatchGuard(guard, fn);
+	turnGuardStates.set(guard, state);
+	return completeTurnDispatch(state, () => runWithDispatchGuard(guard, fn));
+}
+
+/**
+ * Ends the guarded work through `turnStopToThrow`, on both of its completion
+ * branches: a normal return (sync or resolved) and a thrown error (sync or
+ * rejected) each give way to a stop the precedence picks, else stand as
+ * they are. So a helper deep in the activity that turned a stop into a
+ * value or into an ordinary error — a catch that never consulted
+ * `rethrowIfTurnStopped` — still fails the activity with that stop (the
+ * budget exit for a budget refusal), and a delivered cancellation is
+ * reported as a cancellation whatever the work made of the stops before it.
+ * This is the last line, not the mechanism: work that mutates anything
+ * checks `throwIfTurnStopped()` immediately before each write. Applies to
+ * everything `runWithTurnDispatch` runs: every activity the interceptor
+ * wraps and every positional activity that calls it itself.
+ */
+function completeTurnDispatch<T>(state: TurnGuardState, run: () => T): T {
+	let result: T;
+	try {
+		result = run();
+	} catch (error) {
+		throw turnStopToThrow(state, error) ?? error;
+	}
+	if (!result || typeof (result as { then?: unknown }).then !== "function") {
+		const latched = turnStopToThrow(state);
+		if (latched) {
+			throw latched;
+		}
+		return result;
+	}
+	return (result as unknown as Promise<unknown>).then(
+		(value) => {
+			const latched = turnStopToThrow(state);
+			if (latched) {
+				throw latched;
+			}
+			return value;
+		},
+		(error: unknown) => {
+			throw turnStopToThrow(state, error) ?? error;
+		},
+	) as unknown as T;
 }
 
 /**
@@ -381,15 +827,24 @@ export function withTurnDispatchGuard<T>(
 
 /**
  * Throws when the work must stop: the activity was cancelled, or the active
- * turn guard has seen the stop. For code that got a result back after a
- * stop it did not see as an error (a partial result whose aborted parts were
- * recorded as failures), so the result is not used.
+ * turn guard has latched a stop (a dispatch refusal, a cancellation, or a
+ * budget refusal), picking among them by the same precedence as the
+ * activity's outcome (`turnStopToThrow`). For code that got a result back
+ * after a stop it did not see as an error (a partial result whose aborted
+ * parts were recorded as failures), so the result is not used — and,
+ * through `throwIfDispatchStopped` (`@repo/utils/dispatch-guard`), for code
+ * about to write anything, immediately before the write. Outside a turn
+ * guard it only checks the activity's cancellation.
  */
 export function throwIfTurnStopped(): void {
-	throwIfActivityCancelled();
-	const stopController = activeTurnStopController();
-	if (stopController?.signal.aborted) {
-		throw stopController.signal.reason;
+	const state = activeTurnGuardState();
+	if (!state) {
+		throwIfActivityCancelled();
+		return;
+	}
+	const latched = turnStopToThrow(state);
+	if (latched) {
+		throw latched;
 	}
 }
 
@@ -485,29 +940,33 @@ export function throwIfActivityCancelled(): void {
 
 /**
  * For a catch block that would otherwise turn an error into a fallback
- * result: rethrow when the error is a stop (the activity was cancelled, or
- * the turn refused dispatch), so neither is converted into an answer.
+ * result: rethrow when the error is a stop (a cancellation, a dispatch
+ * refusal or a budget refusal) or the active turn guard has latched one, so
+ * none is converted into an answer. The stop thrown is the one the
+ * precedence picks (`turnStopToThrow`).
  */
 export function rethrowIfTurnStopped(error: unknown): void {
-	throwIfActivityCancelled();
-	// Inside a turn guard that has already seen the stop, every failure is
-	// that stop: a sibling request aborted by the guard fails with whatever
-	// the provider or the SDK makes of the abort, which need not carry it.
-	const stopController = activeTurnStopController();
-	if (stopController?.signal.aborted) {
-		throw stopController.signal.reason;
+	const state = activeTurnGuardState();
+	if (!state) {
+		throwIfActivityCancelled();
+		const stop = turnStopIn(error);
+		if (stop) {
+			// Unwrapped from any SDK retry error, so Temporal records the
+			// non-retryable failure itself.
+			throw stop;
+		}
+		return;
 	}
-	const refusal = findTurnNotDispatchable(error);
-	if (refusal) {
-		// Abort the guard's other requests in flight: the turn is over.
-		stopController?.abort(refusal);
-		// The refusal itself, unwrapped from any SDK retry error, so
-		// Temporal records the non-retryable TurnNotDispatchable failure.
-		throw refusal;
-	}
-	if (error instanceof CancelledFailure) {
-		stopController?.abort(error);
-		throw error;
+	// Latch the stop this error carries (aborting the guard's other
+	// requests: the turn's work is over), then throw whichever latched stop
+	// the precedence picks. Inside a guard that has seen a stop, every
+	// failure is that stop: a sibling request aborted by the guard fails
+	// with whatever the provider or the SDK makes of the abort, which need
+	// not carry it.
+	latchTurnStop(state, error);
+	const latched = turnStopToThrow(state);
+	if (latched) {
+		throw latched;
 	}
 }
 

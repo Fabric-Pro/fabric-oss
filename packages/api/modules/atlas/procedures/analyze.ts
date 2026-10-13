@@ -66,7 +66,9 @@ export const analyzeProcedure = tenantProtectedProcedure
 					// safely above the worst-case healthy run so it never terminates
 					// one uncatchably mid-flight.
 					workflowExecutionTimeout: "5h",
-					args: [plan.workflowArgs],
+					// Bulk work: runs on the organization's shared ChatGPT plans,
+					// never the clicker's own (Fizzy #2770).
+					args: [{ ...plan.workflowArgs, jobType: "atlas-analysis" }],
 				}),
 			);
 		} catch (error) {

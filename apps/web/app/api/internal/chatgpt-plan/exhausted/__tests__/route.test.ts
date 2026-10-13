@@ -109,6 +109,49 @@ describe("POST /api/internal/chatgpt-plan/exhausted", () => {
 		expect(mocks.record).not.toHaveBeenCalled();
 	});
 
+	// Fizzy #3037: the key the exchange handed out names the sign-in whose
+	// token the agent used; the breaker records the refusal only while the
+	// plan still has it.
+	it.each([
+		["user:user-1", { kind: "user", userId: "user-1" }],
+		[
+			"org:acc-own",
+			{ kind: "org", organizationId: "org-1", accountId: "acc-own" },
+		],
+	])(
+		"binds a report for %s to the sign-in its key names",
+		async (key, source) => {
+			await report({ planSource: `${key}.0123456789abcdef` });
+			expect(mocks.record).toHaveBeenCalledWith(
+				source,
+				expect.objectContaining({
+					name: "SubscriptionPlanExhaustedError",
+				}),
+				"0123456789abcdef",
+			);
+		},
+	);
+
+	it("records an older agent's key that names no sign-in against the plan's current one", async () => {
+		await report({ planSource: "user:user-1" });
+		expect(mocks.record).toHaveBeenCalledWith(
+			{ kind: "user", userId: "user-1" },
+			expect.anything(),
+			null,
+		);
+	});
+
+	it("ignores a key whose sign-in part is malformed", async () => {
+		for (const planSource of [
+			"user:user-1.",
+			"user:user-1.NOTHEX0123456789",
+			"user:user-1.0123",
+		]) {
+			expect((await report({ planSource })).status).toBe(202);
+		}
+		expect(mocks.record).not.toHaveBeenCalled();
+	});
+
 	it("refuses a request with no valid AI token", async () => {
 		expect((await report({ planSource: "user:user-1" }, null)).status).toBe(
 			401,

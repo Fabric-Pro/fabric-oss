@@ -11,8 +11,9 @@
  * protected (no direct row-level security on story child-tables).
  */
 
+import { randomUUID } from "node:crypto";
 import { TERMINAL_DRAFTING_STAGES } from "../../../utils";
-import { db, type FeatureDraftingStage } from "../../client";
+import { db, type FeatureDraftingStage, PmSyncStatus } from "../../client";
 import { updateStoryDraftingStage } from "./stories";
 
 /**
@@ -429,9 +430,37 @@ const PM_LINK_CLUSTER_SELECT = {
 	lastPmSyncStatus: true,
 	lastSyncedPmHash: true,
 	lastPmSyncAttemptAt: true,
+	lastPmSyncAttemptId: true,
+	pmSyncPendingSince: true,
 	lastPmSyncError: true,
 	lastSyncedStatusId: true,
 } as const;
+
+/**
+ * The PM-sync attempt bookkeeping a transferred cluster gives the survivor.
+ *
+ * A transferred PENDING gets a fresh attempt id, so a late compensation from
+ * an attempt the survivor itself had in flight (scoped to that attempt's id)
+ * cannot overwrite it, and it keeps the duplicate's pending-since bound
+ * (falling back to its attempt time for a row stamped before that column
+ * existed), so the stuck-sync watchdog neither gives up early on the
+ * survivor's older bound nor restarts the clock. Any other transferred status
+ * is not PENDING, so the bookkeeping is cleared with the survivor's old state.
+ */
+function transferredPmSyncAttempt(duplicate: {
+	lastPmSyncStatus: PmSyncStatus | null;
+	lastPmSyncAttemptAt: Date | null;
+	pmSyncPendingSince: Date | null;
+}): { lastPmSyncAttemptId: string | null; pmSyncPendingSince: Date | null } {
+	if (duplicate.lastPmSyncStatus !== PmSyncStatus.PENDING) {
+		return { lastPmSyncAttemptId: null, pmSyncPendingSince: null };
+	}
+	return {
+		lastPmSyncAttemptId: randomUUID(),
+		pmSyncPendingSince:
+			duplicate.pmSyncPendingSince ?? duplicate.lastPmSyncAttemptAt,
+	};
+}
 
 /**
  * One duplicate attachment row's move onto the survivor.
@@ -616,6 +645,8 @@ export async function mergeDuplicateStories(params: {
 					lastPmSyncStatus: null,
 					lastSyncedPmHash: null,
 					lastPmSyncAttemptAt: null,
+					lastPmSyncAttemptId: null,
+					pmSyncPendingSince: null,
 					lastPmSyncError: null,
 					lastSyncedStatusId: null,
 				},
@@ -637,6 +668,7 @@ export async function mergeDuplicateStories(params: {
 						lastPmSyncStatus: duplicate.lastPmSyncStatus,
 						lastSyncedPmHash: duplicate.lastSyncedPmHash,
 						lastPmSyncAttemptAt: duplicate.lastPmSyncAttemptAt,
+						...transferredPmSyncAttempt(duplicate),
 						lastPmSyncError: duplicate.lastPmSyncError,
 						lastSyncedStatusId: duplicate.lastSyncedStatusId,
 					},

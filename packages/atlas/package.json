@@ -15,6 +15,7 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
+		"@repo/agent-types": "workspace:*",
 		"@repo/ai": "workspace:*",
 		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",

@@ -199,6 +199,27 @@ describe("generateBlogPost", () => {
 		);
 	});
 
+	it("lets the clicker's ChatGPT plan serve the draft, naming them for the plan header", async () => {
+		// The input has no `userId`, and the client interceptor stamps the plan
+		// header only from `userId` or `planUserId`. Without `planUserId` the
+		// flag would be a silent no-op; with any id other than the one the
+		// activity resolves models for (`actorUserId`), the header and the
+		// model calls would disagree (Fizzy #2770).
+		await generate.handler({ input: INPUT, context: CONTEXT });
+
+		const [, options] = temporalMocks.workflowStart.mock.calls[0] as [
+			string,
+			{ args: Array<Record<string, unknown>> },
+		];
+		const [args] = options.args;
+		expect(args).toMatchObject({
+			planEligible: true,
+			planUserId: CONTEXT.user.id,
+			actorUserId: CONTEXT.user.id,
+		});
+		expect(args).not.toHaveProperty("userId");
+	});
+
 	it("does not collide with the short post's workflow id", async () => {
 		// Both are keyed on a draft id, and draft ids are unique per attempt —
 		// but the prefixes differ too, so a reader grepping Temporal can tell

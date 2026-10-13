@@ -21,8 +21,13 @@ import {
 	isAiImpersonatedRequest,
 	isAiInteractiveRequestFor,
 } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { currentAiJobType } from "@repo/ai/lib/job-context";
 import { issueAIToken } from "@repo/ai-token";
 import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
+import {
+	getDispatchGuard,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
 import {
 	activityAbortSignal,
@@ -312,6 +317,9 @@ async function delegateViaA2A(
 				// exchange hand over the same plan, never the organization key
 				// beside a plan model (Fizzy #2939).
 				planEligible: isAiInteractiveRequestFor(input.userId),
+				// The job this run is, so the agent's exchange resolves as that
+				// job — on the shared plans when it may use them (Fizzy #2770).
+				jobType: currentAiJobType(),
 			});
 
 			// Determine the correct base URL for the provider
@@ -418,11 +426,12 @@ async function delegateViaA2A(
 		},
 		input.turnScope ? 5_000 : 15_000,
 	);
-	// In a chat turn: the turn record is checked immediately before the
-	// send (after every preflight await above — the endpoint lookup, the
-	// health check, model configuration, token issuance) and before each of
-	// the client's own retries of it; the activity's cancellation aborts the
-	// send and the polling.
+	// In a chat turn: before the send and before each of the client's own
+	// retries of it, after every preflight await above (the endpoint lookup,
+	// the health check, model configuration, token issuance), the turn
+	// record is checked and then, inside the client and with nothing awaited
+	// before its `fetch`, the guard's latched stops; the activity's
+	// cancellation and the guard's stop abort the send and the polling.
 	//
 	// Aborting stops OUR request only. The remote agent is not told to stop:
 	// a synchronous agent runs its work inside the send and returns no task id
@@ -430,8 +439,20 @@ async function delegateViaA2A(
 	// polled. Either may keep working (and spending) after the Stop.
 	const turnControl = input.turnScope
 		? {
-				signal: activityAbortSignal(),
+				// The activity's cancellation and the turn guard's own stop
+				// (a refusal or budget stop seen anywhere in this activity),
+				// so either aborts the send and the polling.
+				signal: activityAbortSignal(getDispatchGuard()?.abortSignal()),
+				// The turn record, awaited before each attempt (the client's
+				// network retries included).
 				beforeAttempt: () => assertTurnDispatchable(input.turnScope),
+				// The guard's latched stops (a budget refusal absorbed
+				// earlier in this activity included). The client runs this
+				// after awaiting `beforeAttempt`, in the same synchronous run
+				// as each attempt's `fetch` (agent-core a2a/client.ts), so a
+				// stop that lands while the record check resolves still
+				// keeps the request from being sent.
+				throwIfStopped: throwIfDispatchStopped,
 			}
 		: {};
 

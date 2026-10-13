@@ -25,6 +25,7 @@ import {
 	repoIntegrationLockKey,
 } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	refreshOAuthToken,
 	sanitizeCredential,
@@ -121,6 +122,11 @@ async function githubPost(
 	path: string,
 	body: Record<string, unknown>,
 ): Promise<unknown> {
+	// Every write the GitHub tools make is a POST through here, sent after the
+	// executor's own awaits (the integration lookup, a token refresh, a retry
+	// after a 401). Inside an Advisor chat turn that has stopped, nothing is
+	// sent; checked immediately before the request. A no-op outside a turn.
+	throwIfDispatchStopped();
 	const response = await fetch(`${GITHUB_API_URL}${path}`, {
 		method: "POST",
 		headers: {

@@ -102,6 +102,10 @@ export const AUDIT_ACTIONS = [
 	"org.chatgpt_plan.policy_changed",
 	"org.chatgpt_plan.terms_acknowledged",
 	"org.chatgpt_plan.api_fallback_used",
+	// A member's own work moved to the organization's provider under the
+	// interactive "Use API billing" policy (Fizzy #3048).
+	"org.chatgpt_plan.interactive_api_fallback_used",
+	"org.chatgpt_plan.api_override_approved",
 	"org.chatgpt_plan.fallback_model_changed",
 	// The non-member contact register (#2340): people with no Fabric account
 	// whom the organization tracks deliverables against. Security-relevant

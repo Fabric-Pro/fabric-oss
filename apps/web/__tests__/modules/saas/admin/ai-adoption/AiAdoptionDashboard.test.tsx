@@ -394,7 +394,7 @@ describe("AiAdoptionDashboard", () => {
 		expect(
 			(
 				await screen.findAllByText(
-					"Covered by members' ChatGPT plans, so nothing was billed. At the provider's API list prices these tokens would have cost about $1.25 (estimate, priced as gpt-6-astra).",
+					"Covered by ChatGPT plans — members' own or the organization's shared accounts — so nothing was billed. At the provider's API list prices these tokens would have cost about $1.25 (estimate, priced as gpt-6-astra).",
 				)
 			).length,
 		).toBeGreaterThan(0);

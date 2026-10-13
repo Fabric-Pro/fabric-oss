@@ -13,6 +13,11 @@ import {
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -55,15 +60,22 @@ export function ChatgptPlanShareAction({
 			<p className="text-muted-foreground text-sm">
 				{t("description", { organization: organizationName })}
 			</p>
-			<Button
-				autoLoading={false}
-				onClick={() => setOpen(true)}
-				size="sm"
-				type="button"
-				variant="outline"
-			>
-				{t("action", { organization: organizationName })}
-			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						autoLoading={false}
+						onClick={() => setOpen(true)}
+						size="sm"
+						type="button"
+						variant="outline"
+					>
+						{t("action")}
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent className="max-w-xs">
+					{t("actionTooltip", { organization: organizationName })}
+				</TooltipContent>
+			</Tooltip>
 			<AlertDialog onOpenChange={setOpen} open={open}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
@@ -110,7 +122,7 @@ export interface ChatgptPlanSharedAccount {
 
 /**
  * The shared accounts in this organization the member connected: read-only
- * here — its admins manage them — with the take-back only they may use.
+ * here — its admins manage them — with the stop-sharing only they may use.
  */
 export function ChatgptPlanSharedHere({
 	accounts,

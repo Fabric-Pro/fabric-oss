@@ -2,6 +2,7 @@ import type { ReporterSource } from "@repo/database";
 import { db, getBoundPromptForAgent } from "@repo/database";
 import { logger } from "@repo/logs";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import {
@@ -398,6 +399,9 @@ export async function generateStoryTitleFromDescription(
 			parsed = generated.object as TitleResponse;
 			usage = generated.usage as typeof usage;
 		} catch (generateObjectError) {
+			// A turn stop or a token-allowance refusal is not a malformed
+			// answer to retry another way.
+			rethrowIfDispatchStopped(generateObjectError);
 			logger.warn(
 				"[story-title-generator] generateObject failed; falling back to generateText + manual JSON parse",
 				generateObjectError,
@@ -499,6 +503,9 @@ export async function generateStoryTitleFromDescription(
 		});
 		return result;
 	} catch (error) {
+		// Inside a chat turn a stop or a token-allowance refusal must not
+		// become an untitled story the caller goes on to create.
+		rethrowIfDispatchStopped(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.info(
 				"[story-title-generator] no AI provider configured, using untitled fallback",

@@ -104,6 +104,10 @@ import {
 	boundProjectId,
 	sessionMayReachProject,
 } from "./project-binding";
+import {
+	selectionAllowsTool,
+	selectionRefusalMessage,
+} from "./server-selection";
 import { scopeSatisfied, type ToolScope } from "./tool-scope";
 import {
 	type GatewaySession,
@@ -119,10 +123,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_identity",
 		description:
-			"Returns the authenticated user's identity: userId, email, role, active organizationId, and the full list of organizations they belong to. " +
-			"CALL THIS FIRST in any session to understand your context. " +
-			"Returns 'mode': always 'organization' — every session runs inside exactly one organization; there is no personal mode. " +
-			"If you need to work in a specific org, use the organizationId from this response to call fabric_switch_organization.",
+			"Returns the caller's userId, email, role, active organizationId and the organizations they belong to. Call it first to learn the session's context. 'mode' is always 'organization': every session runs inside one organization.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -130,9 +131,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_organizations",
 		description:
-			"Lists all organizations the current user belongs to, with their role (owner, admin, member) in each. " +
-			"Returns organization IDs needed for fabric_switch_organization. " +
-			"Use this if fabric_get_identity doesn't list an org you expect.",
+			"Lists the organizations the user belongs to, with their role in each. Use an id with fabric_switch_organization.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -140,17 +139,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_switch_organization",
 		description:
-			"Switches the active organization context for this entire session. " +
-			"After switching, ALL subsequent calls (fabric_list_projects, fabric_list_features, etc.) are scoped to that organization. " +
-			"organizationId is REQUIRED and must name an organization you belong to. A session always runs inside one organization — there is no personal context to switch to, and a null or missing organizationId is refused. " +
-			"Get the organizationId from fabric_get_identity or fabric_list_organizations.",
+			"Switches the session's active organization; every later call is scoped to it. organizationId must name an organization you belong to.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				organizationId: {
 					type: "string",
-					description:
-						"Organization ID from fabric_list_organizations. Required — you must belong to it. There is no null/personal value.",
+					description: "From fabric_list_organizations.",
 				},
 			},
 			required: ["organizationId"],
@@ -162,31 +157,25 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_projects",
 		description:
-			"Lists all projects in the session's active organization. " +
-			"Returns project IDs, names, descriptions, and status. " +
-			"Use the returned 'id' field as 'projectId' in fabric_list_features, fabric_list_documents, fabric_get_project_statuses, and other project-scoped tools. " +
-			"Filter by status='ACTIVE' to find projects in progress.",
+			"Lists projects in the active organization with id, name, description and status. Use 'id' as projectId in the project tools.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				status: {
 					type: "string",
 					enum: ["ACTIVE", "ARCHIVED", "COMPLETED"],
-					description:
-						"Filter by project status. Omit to return all.",
 				},
 				search: {
 					type: "string",
-					description: "Search projects by name",
+					description: "Match on project name",
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 20, max 50)",
+					description: "Max 50",
 					default: 20,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -197,16 +186,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project",
 		description:
-			"Retrieves details for a single project: name, description, status, heroEmojis, and timestamps. " +
-			"Use the projectId from fabric_list_projects. " +
-			"After this, call fabric_list_features(projectId) to see features/stories, " +
-			"or fabric_list_documents(projectId) to see PRDs and specs.",
+			"Gets one project's name, description, status, heroEmojis and timestamps.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 			},
 			required: ["projectId"],
@@ -217,19 +202,15 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_project",
 		description:
-			"Creates a new project in the session's active organization. " +
-			"Returns the new project's id and name. " +
-			"After creating, call fabric_list_features(projectId) or fabric_list_documents(projectId) to add content.",
+			"Creates a project in the active organization and returns its id and name.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				name: {
 					type: "string",
-					description: "Project name",
 				},
 				description: {
 					type: "string",
-					description: "Optional project description",
 				},
 			},
 			required: ["name"],
@@ -240,24 +221,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_project",
 		description:
-			"Updates an existing project's name, description, or status (ACTIVE | ARCHIVED | COMPLETED). " +
-			"Provide only the fields you want to change alongside the required projectId.",
+			"Updates a project's name, description or status; omitted fields are unchanged.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
-				name: { type: "string", description: "New project name" },
+				name: { type: "string" },
 				description: {
 					type: "string",
-					description: "New project description",
 				},
 				status: {
 					type: "string",
 					enum: ["ACTIVE", "ARCHIVED", "COMPLETED"],
-					description: "New project status",
 				},
 			},
 			required: ["projectId"],
@@ -269,24 +246,19 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_features",
 		description:
-			"Lists work items for a project. Each has an identifier like 'F-001', a title, Kanban status, priority, size, and task counts. " +
-			"BUGS ARE INCLUDED: the project backlog holds both features and bugs, and this tool returns both by default. Every row carries a 'kind' field ('FEATURE' or 'BUG'); pass kind='BUG' to see only bugs (e.g. what an autonomous monitor has filed via fabric_create_bug) or kind='FEATURE' to exclude them. " +
-			"Use the returned 'id' field as 'featureId' in fabric_get_feature, fabric_update_feature_status, fabric_complete_task, and fabric_create_feature_task — those tools accept bugs too. " +
-			"IMPORTANT: Filter draftingStage='PUBLISHED' to only see features that are fully spec'd and ready to implement. " +
-			"PLACEHOLDER/DRAFT features are still being written and should not be implemented yet. " +
-			"To find features ready to start: combine draftingStage='PUBLISHED' with the 'Backlog' statusId from fabric_get_project_statuses. " +
-			"Response includes 'hasMore' to indicate additional pages.",
+			"Lists a project's backlog: features AND bugs (each row has 'kind'; filter with kind), with identifier, status, priority, size, draftingStage and task counts. " +
+			"Only draftingStage='PUBLISHED' items are fully specified and ready to implement; for ones ready to start, also filter by the Backlog statusId from fabric_get_project_statuses. " +
+			"A row's id is the featureId for the feature and task tools, bugs included.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 				statusId: {
 					type: "string",
 					description:
-						"Filter by Kanban status column ID. Get valid IDs from fabric_get_project_statuses(projectId). Omit to return features in all statuses.",
+						"Status column id from fabric_get_project_statuses",
 				},
 				// PASSIVE_ANALYSIS soft-deprecated per spec 2026-05-19-remove-passive-analysis;
 				// kept in this public-API enum for backward compatibility (OQ-3 recommended default).
@@ -302,33 +274,29 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"DECLINED",
 						"CLOSED",
 					],
-					description:
-						"Filter by spec readiness stage. Use 'PUBLISHED' for features ready to implement. PLACEHOLDER/DRAFT are incomplete specs.",
+					description: "'PUBLISHED' = ready to implement",
 				},
 				priority: {
 					type: "string",
 					enum: ["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"],
-					description: "Filter by priority (P0_CRITICAL is highest)",
 				},
 				kind: {
 					type: "string",
 					enum: ["FEATURE", "BUG"],
-					description:
-						"Filter by work-item type. Omit to return both features and bugs.",
+					description: "Omit for both",
 				},
 				search: {
 					type: "string",
 					description:
-						"Search features by title, description, or identifier (e.g. 'F-001')",
+						"Match on title, description or identifier (e.g. 'F-001')",
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 50, max 100)",
+					description: "Max 100",
 					default: 50,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -340,24 +308,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature",
 		description:
-			"Retrieves the complete context for a single feature: title, full description (markdown), acceptance criteria, priority, size, projectId, all tasks with completion status/subtasks/assigned repo+branch, latest PR/coding run URL, and external PM tool link. " +
-			"CALL THIS before implementing a feature — it contains everything you need to understand scope and success criteria. " +
-			"WARNING: Check the 'draftingStage' field in the response. If it is NOT 'PUBLISHED', the feature spec may be incomplete and should not be implemented yet — confirm with the user before proceeding. " +
-			"The returned 'projectId' can be used with fabric_list_documents(projectId) to also fetch the project's PRD, technical spec, or architecture docs for additional context. " +
-			"Task 'id' fields → fabric_complete_task. Task 'repositoryUrl'/'targetBranch' fields show where previous coding runs pushed code. " +
-			"After implementing, call fabric_update_task with your branch and PR URL to record the implementation. " +
-			"This returns the spec as it stands now, with no provenance: call fabric_get_feature_decisions for what was decided and by whom (and what is still an open question), and fabric_get_feature_versions for how the spec got here. " +
-			"The 'pmSync' block says whether the linked PM-tool card still reflects this spec — 'autoSyncEnabled' false means the card is a snapshot of the last manual push, not a live mirror, so Fabric is the source of truth.",
+			"Gets a feature or bug in full: description, acceptance criteria, draftingStage, tasks (ids, completion, repository and branch), latest PR and PM-tool link. Read it before implementing. " +
+			"If draftingStage is not 'PUBLISHED' the spec may be incomplete: confirm with the user before building on it. " +
+			"pmSync.autoSyncEnabled=false means the PM card is a snapshot, so Fabric is the source of truth. " +
+			"For why the spec says what it does use fabric_get_feature_decisions; for its history, fabric_get_feature_versions.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				featureId: {
 					type: "string",
-					description: "Feature ID from fabric_list_features",
 				},
 				projectId: {
 					type: "string",
-					description: "Project ID — required to verify access",
 				},
 			},
 			required: ["featureId", "projectId"],
@@ -368,23 +330,16 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature_decisions",
 		description:
-			"Returns the feature's Decision Log — the threaded record of what was decided about this spec and by whom. " +
-			"fabric_get_feature tells you WHAT the spec says; this tells you WHY it says it. " +
-			"Each thread is a question root plus its answers, with 'content' reproduced verbatim — quote it, never paraphrase it and call it a decision. " +
-			"PROVENANCE IS THE POINT: every entry carries 'source' (HUMAN = a person wrote it, AI_CONFIRMED = the AI proposed it and it was accepted unchallenged) and every answer carries 'answerSource' (MANUAL / AI_EDITED / AI_SUGGESTED). " +
-			"A spec whose decisions are all AI_CONFIRMED has not actually been decided by the product side — treat those as drafts and confirm before building on them. " +
-			"Threads with status 'OPEN' are unanswered questions and are the scope risk on this feature; check them before estimating. " +
-			"Returns an empty list when maturation has never run on the feature.",
+			"Returns a feature's Decision Log: question threads and their answers, verbatim, showing why the spec says what it does. Quote 'content'; never paraphrase it as a decision. " +
+			"Entries carry 'source' (HUMAN, or AI_CONFIRMED: AI-proposed and unchallenged) and answers carry 'answerSource'. Treat AI_CONFIRMED-only decisions as drafts to confirm, and OPEN threads as unanswered scope risk.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				featureId: {
 					type: "string",
-					description: "Feature ID from fabric_list_features",
 				},
 				projectId: {
 					type: "string",
-					description: "Project ID — required to verify access",
 				},
 				status: {
 					type: "string",
@@ -395,8 +350,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"FORMATTING_ONLY",
 						"POSSIBLY_RESOLVED",
 					],
-					description:
-						"Filter threads by root status. Omit for all. 'OPEN' = still unanswered by the product side.",
+					description: "Filter by thread status; 'OPEN' = unanswered",
 				},
 			},
 			required: ["featureId", "projectId"],
@@ -407,34 +361,28 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_feature_versions",
 		description:
-			"Returns the feature's revision history — one entry per saved version, newest first, each carrying the change-summary bullets the enhance run emitted describing what it rewrote. " +
-			"Use it to see how a spec reached its current state: what the last maturation run changed, when the acceptance criteria last moved, and who moved them. " +
-			"Version BODIES ARE OMITTED by default because a mature spec runs to tens of KB per version — pass 'version' to retrieve one revision in full (description, acceptance criteria, and the summary-digest / working-notes snapshots as they stood then). " +
-			"Pairs with fabric_get_feature_decisions: versions say what changed, decisions say why.",
+			"Returns a feature's revision history, newest first, with each revision's change summary and author; bodies are omitted. Pass 'version' to get one revision in full.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				featureId: {
 					type: "string",
-					description: "Feature ID from fabric_list_features",
 				},
 				projectId: {
 					type: "string",
-					description: "Project ID — required to verify access",
 				},
 				version: {
 					type: "number",
 					description:
-						"Retrieve this single version in full, including the spec body as it stood at that revision. Omit to list version metadata only.",
+						"Return this revision in full, with the spec as it stood then",
 				},
 				limit: {
 					type: "number",
-					description: "Max versions per page (default 20, max 50)",
+					description: "Max 50",
 					default: 20,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -446,15 +394,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_statuses",
 		description:
-			"Returns all Kanban status columns for a project. Each status has an 'id', 'name' (e.g. 'Backlog', 'In Progress', 'Review', 'Done'), 'color', 'isDefault' (starting column), and 'isFinal' (completion column). " +
-			"CALL THIS before fabric_update_feature_status to get the statusId for the column you want to move a feature to. " +
-			"Typical workflow progression: Backlog (isDefault=true) → In Progress → Review → Done (isFinal=true).",
+			"Lists a project's Kanban status columns: id, name, color, isDefault (the starting column) and isFinal (the done column). Get a statusId here for fabric_update_feature_status or a statusId filter.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 			},
 			required: ["projectId"],
@@ -465,28 +410,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_feature_status",
 		description:
-			"Moves a feature to a different Kanban status column to reflect implementation progress. " +
-			"WORKFLOW: (1) Call fabric_get_project_statuses(projectId) to get status IDs and names. " +
-			"(2) Move to 'In Progress' when starting implementation. " +
-			"(3) Move to 'Review' when implementation is complete and ready for code review. " +
-			"(4) Move to the isFinal=true column ('Done') when merged/shipped. " +
-			"The featureId comes from fabric_list_features; statusId comes from fabric_get_project_statuses.",
+			"Moves a feature or bug to another status column: typically In Progress when you start, Review when it is ready for review, and the isFinal column once shipped. Requires edit permission on the project.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				featureId: {
 					type: "string",
-					description: "Feature ID from fabric_list_features",
 				},
 				projectId: {
 					type: "string",
-					description:
-						"Project ID — required to verify edit permission",
 				},
 				statusId: {
 					type: "string",
 					description:
-						"Target status column ID from fabric_get_project_statuses. Do NOT pass the status name — pass the id.",
+						"Column id (not its name) from fabric_get_project_statuses",
 				},
 			},
 			required: ["featureId", "projectId", "statusId"],
@@ -496,25 +433,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_complete_task",
 		description:
-			"Marks a task within a feature as completed (or reopens it). " +
-			"Task IDs are returned by fabric_get_feature in the 'tasks[].id' field. " +
-			"Call this after finishing each piece of implementation to track progress. " +
-			"Set completed=false to reopen a task if further work is needed.",
+			"Marks a task (an id from fabric_get_feature tasks[].id) complete, or reopens it with completed=false.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				taskId: {
 					type: "string",
-					description: "Task ID from fabric_get_feature tasks[].id",
 				},
 				projectId: {
 					type: "string",
-					description: "Project ID — required to verify access",
 				},
 				completed: {
 					type: "boolean",
-					description:
-						"true to mark the task complete (default), false to reopen it",
 					default: true,
 				},
 			},
@@ -525,31 +455,22 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_feature_task",
 		description:
-			"Adds a new task to an existing feature. " +
-			"Use this to create sub-tasks when you discover implementation work not already captured, or to break down a vague feature into concrete steps before starting. " +
-			"The featureId comes from fabric_list_features; projectId is the same project. " +
-			"After creating, call fabric_get_feature again to see the updated task list.",
+			"Adds a task to a feature or bug, for implementation work it does not yet capture or to break vague work into concrete steps.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				featureId: {
 					type: "string",
-					description: "Feature ID from fabric_list_features",
 				},
 				projectId: {
 					type: "string",
-					description:
-						"Project ID — required to verify edit permission",
 				},
 				title: {
 					type: "string",
-					description:
-						"Short, actionable task title (e.g. 'Add input validation to login form')",
+					description: "Short, actionable task title",
 				},
 				description: {
 					type: "string",
-					description:
-						"Optional detailed description of what needs to be done",
 				},
 			},
 			required: ["featureId", "projectId", "title"],
@@ -559,43 +480,35 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_bug",
 		description:
-			"Files a BUG work item on a project's roadmap. Bugs live alongside features in the same backlog — they get a 'B'-style work-item identifier, appear in fabric_list_features (filter kind='BUG'), and are drafted through the project's bug template, so a short factual report is enough. " +
-			"BUILT FOR AUTONOMOUS MONITORING: this tool is safe to call every time you observe a failure. It will NOT pile up duplicates, because it runs two dedup layers before creating anything. " +
-			"A DEDUP HIT IS SUCCESS, NOT AN ERROR — the response is always success-shaped with a 'created' boolean. When created=false you still get the 'id' and 'identifier' of the bug that already covers this failure, plus 'dedupedBy' telling you which layer matched. Treat that as 'already filed', add your new evidence as a comment or an update if it matters, and do NOT retry with a tweaked title to force a second row. " +
-			"ALWAYS SEND A 'fingerprint'. It is the only reliable dedup key. Title matching is best-effort and WILL eventually miss, because the bug is drafted through the project's bug template, which may rewrite the stored title into something your next report no longer matches. If you cannot compute a fingerprint, expect occasional duplicates. " +
-			"LAYER 1 — fingerprint (exact, reliable). Pass 'fingerprint': a stable key you derive from the underlying error itself, e.g. a hash of the normalized stack top + exception type + failing route, with volatile parts (timestamps, request IDs, memory addresses, row counts) stripped. Send the SAME value on every sighting. If an OPEN bug in this project already carries that fingerprint, it is returned unchanged and dedupedBy='fingerprint'. This is exact and title-independent, so it survives both you and Fabric rewording the report. A bug that was CLOSED or DECLINED does not block a new filing: a regression after a fix is a new bug, and it will get a new row. " +
-			"LAYER 2 — title (best-effort). Even with no fingerprint, the title is matched (normalized, case- and punctuation-insensitive) against the project's open bugs. A match returns that bug with dedupedBy='title'. Bug titles are only ever matched against other bugs, never against features. When a title match happens AND you supplied a fingerprint that the matched bug does not yet have, your fingerprint is attached to it (the response sets fingerprintAttached=true) so every later sighting hits layer 1 instead. " +
-			"WRITING THE REPORT: put the failure in 'title' as a short specific symptom ('Checkout returns 500 when cart is empty'), not a category ('bug in checkout'). Put everything you observed in 'description' — error message, stack trace, the request or job that triggered it, environment, frequency, first-seen time. That text is fed to the project's bug-drafting prompt, so more detail produces a more actionable card. " +
-			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE organization — call fabric_switch_organization first if it lives in another organization you belong to. Requires permission to create work items in the project. " +
-			"Inputs are validated strictly: an unrecognised 'priority' is rejected rather than quietly downgraded, so read the error and resend with a valid value.",
+			"Files a BUG in a project's backlog, drafted through the project's bug template, so a short factual report is enough. Safe to call on every sighting of a failure: it first matches open bugs by 'fingerprint', then by normalized title. " +
+			"A match is a success with created=false and the existing bug's id and identifier: treat it as already filed and never resend with a reworded title. " +
+			"Always send a fingerprint: title matching is best-effort because drafting can rewrite the title. A closed or declined bug does not block a new filing. " +
+			"The project must be in the session's active organization, and you need permission to create work items in it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description:
-						"Project ID from fabric_list_projects. Must be in your session's active organization.",
 				},
 				title: {
 					type: "string",
 					description:
-						"Short, specific symptom line (e.g. 'Checkout returns 500 when cart is empty'). Avoid vague category titles — this is also the layer-2 dedup key. Max 500 characters.",
+						"One-line specific symptom, e.g. 'Checkout returns 500 when cart is empty'. Max 500 characters.",
 				},
 				description: {
 					type: "string",
 					description:
-						"Everything you observed: error message, stack trace, triggering request/job, environment, frequency, first-seen time. Fed to the project's bug-drafting prompt. Max 50000 characters — send the relevant frames, not a whole log file.",
+						"What you observed: error, relevant stack frames, trigger, environment, frequency, first seen. Max 50000 characters.",
 				},
 				fingerprint: {
 					type: "string",
 					description:
-						"STRONGLY RECOMMENDED — the only reliable dedup key. A stable key for the underlying error, e.g. a hash of the normalized error signature (exception type + stack top + failing route), with timestamps, IDs and other volatile parts stripped. Send the SAME value on every sighting of the same error. Max 200 characters.",
+						"Stable key for the underlying error, e.g. a hash of exception type, stack top and route with timestamps and IDs stripped. Send the same value on every sighting. Max 200 characters.",
 				},
 				priority: {
 					type: "string",
 					enum: ["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"],
-					description:
-						"Severity band (P0_CRITICAL is highest). Defaults to P2_MEDIUM when omitted. An unrecognised value is an error, NOT a silent downgrade — send one of the four exact strings.",
+					description: "Default P2_MEDIUM",
 				},
 			},
 			required: ["projectId", "title"],
@@ -605,42 +518,35 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_feature",
 		description:
-			"Files a FEATURE work item on a project's roadmap. Features are the default work-item type: they get an 'F'-style work-item identifier, appear in fabric_list_features (filter kind='FEATURE'), and land in the project's default backlog status. " +
-			"THE PROJECT WRITES THE DETAIL. The item is created as a placeholder and drafted through the project's feature-drafting prompt, so a one-line request plus whatever context you have is enough — you do NOT need to author a spec, a template, or acceptance criteria. " +
-			"FILE ONLY WHAT WAS ACTUALLY ASKED FOR. Create a feature when a person has requested the capability or agreed a follow-up is worth tracking. Do NOT create one speculatively, to record an idea you had, or to split work you are about to do anyway — an unwanted feature has to be triaged and closed by a human. " +
-			"A TITLE COLLISION IS SUCCESS, NOT AN ERROR. Before creating anything, your title is matched (normalized, case- and punctuation-insensitive) against the project's other open features. On a match nothing is created and the response is still success-shaped: 'created' is false, 'dedupedBy' is 'title', and 'id' / 'identifier' point at the item that already covers this request. Treat that as 'already tracked'. If you have information the existing item does not cover, attach it with fabric_create_feature_task or raise it with whoever asked — do NOT resend with a reworded title to force a second row. Feature titles are only ever matched against other features, never against bugs, and a CLOSED or DECLINED item does not block a new filing. " +
-			"WRITING THE REQUEST: put a short capability statement in 'title' ('Export the roadmap as CSV'), not a vague area ('reporting') — it is also the dedup key. Put the request and its context in 'description': who asked, the problem it solves, constraints, links to the conversation. That text is fed to the drafting prompt, so more context produces a more actionable card. " +
-			"Get 'projectId' from fabric_list_projects. The project must belong to your session's ACTIVE organization — call fabric_switch_organization first if it lives in another organization you belong to. Requires permission to create work items in the project. " +
-			"Inputs are validated strictly: an unrecognised 'priority' or 'size' is rejected rather than quietly defaulted, so read the error and resend with a valid value.",
+			"Files a FEATURE in a project's backlog as a placeholder the project's drafting prompt expands, so a one-line request plus context is enough; no spec needed. " +
+			"File only what a person asked for or agreed to track, never speculatively. " +
+			"An open feature with the same normalized title is a success with created=false and that item's id: treat it as already tracked and never resend with a reworded title. " +
+			"The project must be in the session's active organization, and you need permission to create work items in it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description:
-						"Project ID from fabric_list_projects. Must be in your session's active organization.",
 				},
 				title: {
 					type: "string",
 					description:
-						"Short capability statement (e.g. 'Export the roadmap as CSV'). Avoid vague area titles — this is also the dedup key. Max 500 characters.",
+						"Short capability statement, e.g. 'Export the roadmap as CSV'. Max 500 characters.",
 				},
 				description: {
 					type: "string",
 					description:
-						"The request and its context: who asked, the problem it solves, constraints, links. Fed to the project's feature-drafting prompt. Max 50000 characters — context, not a pasted design doc.",
+						"The request and its context: who asked, the problem, constraints, links. Max 50000 characters.",
 				},
 				priority: {
 					type: "string",
 					enum: ["P0_CRITICAL", "P1_HIGH", "P2_MEDIUM", "P3_LOW"],
-					description:
-						"Priority band (P0_CRITICAL is highest). Defaults to P2_MEDIUM when omitted. An unrecognised value is an error, NOT a silent default — send one of the four exact strings.",
+					description: "Default P2_MEDIUM",
 				},
 				size: {
 					type: "string",
 					enum: ["XS", "S", "M", "L", "XL"],
-					description:
-						"Optional t-shirt size estimate. Omit it unless you have a real basis for the estimate — a guess here is worse than no value.",
+					description: "Omit unless you have a real basis for it",
 				},
 			},
 			required: ["projectId", "title"],
@@ -651,43 +557,32 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_task",
 		description:
-			"Updates a task's details. Use this to record implementation metadata back onto the task after completing work: set the repositoryUrl, targetBranch, and a description with the PR link. " +
-			"This closes the feedback loop so teammates and future agents can see exactly where each task was implemented. " +
-			"Task IDs come from fabric_get_feature tasks[].id. " +
-			"You can also update the title or estimated hours, or mark isCompleted=true (same as fabric_complete_task).",
+			"Updates a task's title, description, completion, repositoryUrl or targetBranch. After implementing, record the repository, branch and PR link here so others can see where the work landed.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				taskId: {
 					type: "string",
-					description: "Task ID from fabric_get_feature tasks[].id",
 				},
 				projectId: {
 					type: "string",
-					description: "Project ID — required to verify access",
 				},
 				title: {
 					type: "string",
-					description: "Updated task title",
 				},
 				description: {
 					type: "string",
-					description:
-						"Implementation notes, e.g. 'Implemented in PR #42 — added input validation in auth/login.ts'",
+					description: "Implementation notes, e.g. the PR link",
 				},
 				isCompleted: {
 					type: "boolean",
-					description: "Mark task complete (true) or reopen (false)",
 				},
 				repositoryUrl: {
 					type: "string",
-					description:
-						"Full GitHub/GitLab repo URL where this task was implemented, e.g. 'https://github.com/org/repo'",
+					description: "Full repository URL",
 				},
 				targetBranch: {
 					type: "string",
-					description:
-						"Branch where implementation was pushed, e.g. 'feat/login-validation'",
 				},
 			},
 			required: ["taskId", "projectId"],
@@ -698,7 +593,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_search_project_knowledge",
 		description:
-			"Search one project's feature titles/descriptions, authored documents, and available context text by a literal case-insensitive keyword or phrase. Returns ranked bounded excerpts and IDs with follow-up read tools. Includes crawled pages and captured conversations; excludes code-index contexts and unavailable text. Requires projects:read and features:read (or an MCP read/write umbrella). Continue with nextCursor using the same project and query. Results use live keyset ordering: edits between calls may change matches; this is not a snapshot.",
+			"Literal, case-insensitive keyword search over one project's features, documents and readable context text (code-index contexts excluded). Returns ranked excerpts, ids and the tool to read each in full. Requires projects:read and features:read (or an MCP read/write scope). Page with nextCursor, keeping the same project and query; pages are live, not a snapshot.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -715,14 +610,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					minimum: 8192,
 					maximum: 50000,
 					default: 12000,
-					description:
-						"Maximum UTF-8 bytes of complete serialized JSON response text, including pagination metadata.",
+					description: "Max UTF-8 bytes of the whole JSON response",
 				},
 				cursor: {
 					type: "string",
 					maxLength: 1024,
-					description:
-						"Opaque nextCursor from the preceding page of this project/query.",
+					description: "nextCursor from the previous page",
 				},
 			},
 			required: ["projectId", "query"],
@@ -735,17 +628,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_documents",
 		description:
-			"Lists documents attached to a project (PRDs, Technical Specs, Architecture docs, API Specs, etc.). " +
-			"Returns document IDs, titles, types, and status. " +
-			"Use the returned 'id' as 'documentId' in fabric_get_document to read full content. " +
-			"CONTEXT FOR CODING AGENTS: After fabric_get_feature, call this with the same projectId to find PRD (type='PRD') and technical spec (type='TECHNICAL_SPEC') documents that describe the broader system context and design decisions. " +
-			"Filter by type to find only the relevant document category.",
+			"Lists a project's authored documents (PRDs, technical specs, architecture, API specs…) with id, title, type and status; read one with fabric_get_document. For implementation context filter type to PRD, TECHNICAL_SPEC or ARCHITECTURE.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 				type: {
 					type: "string",
@@ -761,17 +649,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"API_SPEC",
 						"QA_STRATEGY",
 					],
-					description:
-						"Filter by document type. Omit to list all. For implementation context, use 'PRD', 'TECHNICAL_SPEC', or 'ARCHITECTURE'.",
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 20)",
 					default: 20,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -783,17 +667,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_document",
 		description:
-			"Retrieves the full markdown content of a project document, including title, type, version number, and the complete body text. " +
-			"Get the documentId from fabric_list_documents(projectId). " +
-			"Use this to read a PRD (type='PRD') for product requirements, a technical spec (type='TECHNICAL_SPEC') for implementation details, or an architecture doc (type='ARCHITECTURE') for system design. " +
-			"These documents provide the broader context that informs how features should be implemented. " +
-			"A `<visual-slot …></visual-slot>` line is a placeholder marker where an editor asked for a visual, not prose: do not quote, summarize, or rewrite it (fabric_update_document keeps stored slots in place on its own).",
+			"Reads a project document's full markdown with its title, type and version. " +
+			"A `<visual-slot …></visual-slot>` line is a placeholder marker for a visual, not prose: do not quote, summarize or rewrite it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				documentId: {
 					type: "string",
-					description: "Document ID from fabric_list_documents",
 				},
 			},
 			required: ["documentId"],
@@ -804,17 +684,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_document",
 		description:
-			"Creates a new document in a project (PRD, Technical Spec, Architecture doc, API Spec, etc.). " +
-			"Use this to document implementation decisions, create a technical spec for a feature, or record API design. " +
-			"The projectId comes from fabric_list_projects. " +
-			"Content should be markdown. Status defaults to 'DRAFT' — set to 'ACTIVE' if immediately publishing. " +
-			"After creating, the returned documentId can be used with fabric_get_document or fabric_update_document.",
+			"Creates a markdown document in a project (PRD, technical spec, architecture, API spec…), e.g. to record a design or implementation notes. Status defaults to DRAFT.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 				type: {
 					type: "string",
@@ -830,22 +705,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"API_SPEC",
 						"QA_STRATEGY",
 					],
-					description:
-						"Document type. Use 'TECHNICAL_SPEC' for implementation notes, 'API_SPEC' for API design, 'ARCHITECTURE' for system diagrams/decisions.",
 				},
 				title: {
 					type: "string",
-					description: "Document title",
 				},
 				content: {
 					type: "string",
-					description: "Document body in markdown format",
+					description: "Markdown body",
 				},
 				status: {
 					type: "string",
 					enum: ["DRAFT", "IN_PROGRESS", "REVIEW", "COMPLETE"],
-					description:
-						"Initial status (default: 'DRAFT'). Use 'IN_PROGRESS' while writing, 'REVIEW' when ready for review, 'COMPLETE' when finalized.",
 				},
 			},
 			required: ["projectId", "type", "title", "content"],
@@ -856,37 +726,28 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_document",
 		description:
-			"Updates an existing project document's title, content, or status. Each content update creates a version snapshot for history. " +
-			"Get the documentId from fabric_list_documents(projectId). " +
-			"Provide only the fields you want to change — omitted fields are left unchanged. " +
-			"Use this to update implementation notes after a coding run, append PR links to a technical spec, or move a DRAFT document to COMPLETE.",
+			"Updates a document's title, content or status; omitted fields are unchanged. A content change replaces the whole body and saves a version.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				documentId: {
 					type: "string",
-					description: "Document ID from fabric_list_documents",
 				},
 				title: {
 					type: "string",
-					description: "New document title",
 				},
 				content: {
 					type: "string",
 					description:
-						"New document body in markdown. Replaces the entire content and bumps the version number. " +
-						"`<visual-slot …></visual-slot>` lines are managed by Fabric: the stored document's slots are kept in place and any slot tag sent here is ignored, so omit them rather than adding, moving, or deleting one.",
+						"The whole new markdown body. `<visual-slot …></visual-slot>` lines are managed by Fabric: stored slots are kept in place and any slot tag sent here is ignored, so omit them.",
 				},
 				status: {
 					type: "string",
 					enum: ["DRAFT", "IN_PROGRESS", "REVIEW", "COMPLETE"],
-					description:
-						"New document status. Progress: DRAFT → IN_PROGRESS → REVIEW → COMPLETE.",
 				},
 				changeDescription: {
 					type: "string",
-					description:
-						"Brief description of what changed, e.g. 'Added implementation notes for auth module'. Stored in version history.",
+					description: "Short note for the version history",
 				},
 			},
 			required: ["documentId"],
@@ -898,17 +759,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_project_contexts",
 		description:
-			"Lists the source material attached to a project's Context tab: uploaded files (PDF, DOCX, images, spreadsheets), meeting transcripts, crawled links, pasted notes, and connected-integration sources. " +
-			"This is the same inventory the Context tab's 'Download All' export covers — use it when you need the raw research material behind a project, not its authored documents (fabric_list_documents) or its backlog (fabric_list_features). " +
-			"Returns lightweight summaries only, never bodies: read one with fabric_get_project_context using the returned 'id'. " +
-			"'contentAvailable': false means there is no text to read — check 'unavailableReason' before assuming the source was empty. " +
-			"Repository code-index entries (CODE_FILE, CODE_FILE_SUMMARY) are excluded by default because an indexed repo produces thousands of them; 'excludedCodeContexts' reports how many were hidden.",
+			"Lists the source material on a project's Context tab (uploads, meeting transcripts, crawled links, notes, integration sources) as summaries without bodies; read one with fabric_get_project_context. Authored documents are in fabric_list_documents. " +
+			"contentAvailable=false comes with an unavailableReason. Code-index entries are hidden by default; excludedCodeContexts counts them.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 				type: {
 					type: "string",
@@ -932,22 +789,21 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"TEST_CASE",
 					],
 					description:
-						"Filter to one source type. Use 'MEETING_TRANSCRIPT' for synced meeting transcripts, 'FILE'/'DOCUMENT'/'SPREADSHEET'/'IMAGE' for uploads, 'LINK' for crawled URL sources. Passing 'CODE_FILE' or 'CODE_FILE_SUMMARY' explicitly overrides the code-index exclusion.",
+						"One source type. CODE_FILE or CODE_FILE_SUMMARY overrides the code-index exclusion.",
 				},
 				includeCodeContexts: {
 					type: "boolean",
 					description:
-						"Include repository code-index entries in an unfiltered listing (default false). There are usually thousands — prefer filtering by type instead.",
+						"Include code-index entries in an unfiltered list; there are usually thousands",
 					default: false,
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 50, max 200)",
+					description: "Max 200",
 					default: 50,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -959,30 +815,25 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_context",
 		description:
-			"Reads one project context source in full: the transcript text of a meeting, the extracted text of an uploaded PDF/DOCX/spreadsheet, the crawled markdown of a link, a pasted note, or the conversation captured from a monitored Teams/Slack channel. " +
-			"Get the contextId from fabric_list_project_contexts. " +
-			"Long bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset' to continue. " +
-			"For uploaded files the response also carries 'originalFile.url' — a short-lived link to the original binary, for cases where the extracted text is not enough (an image, a diagram-heavy PDF). " +
-			"If 'contentAvailable' is false, read 'unavailableReason': a monitored Teams or Slack conversation, for example, keeps its captured messages apart from the context row, so an empty body does not mean an empty conversation.",
+			"Reads one Context source in full: a transcript, an upload's extracted text, a crawled page, a note or a captured Teams/Slack conversation. " +
+			"Long bodies are paged: when 'truncated' is true, call again with offset=nextOffset. Uploads also return originalFile.url, a short-lived link to the original file. " +
+			"If contentAvailable is false, read unavailableReason: an empty body does not mean an empty source.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				contextId: {
 					type: "string",
-					description: "Context ID from fabric_list_project_contexts",
 				},
 				offset: {
 					type: "integer",
 					description:
-						"Unicode-character offset to start reading from (default 0). Use 'nextOffset' from a truncated response.",
+						"Character offset; nextOffset from a truncated response",
 					default: 0,
 					minimum: 0,
 					maximum: 2_147_483_646,
 				},
 				maxLength: {
 					type: "integer",
-					description:
-						"Max Unicode characters of body text to return in this call (default 50000, max 200000)",
 					default: 50000,
 					minimum: 1,
 					maximum: 200_000,
@@ -996,39 +847,34 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_project_context",
 		description:
-			"Edits a project context source's type label ('sourceType', e.g. 'Client Chat') and AI instructions ('aiInstructions', how the AI should use the source) — the same two fields, and the same edit, as the 'Source details' dialog on the project's Context tab. " +
-			"A context's title, type and body cannot be edited, here or in the app. " +
-			"Read the source first with fabric_get_project_context (find its id with fabric_list_project_contexts) and pass the two values you saw as 'expected'. If someone changed them since, nothing is written and the error returns the current values: re-read them and retry. " +
-			"Omit a field to leave it unchanged; pass null to clear it. Changes take effect on the next AI invocation that uses this source — nothing is re-embedded.",
+			"Edits a Context source's type label (sourceType) and AI instructions (aiInstructions), the Context tab's 'Source details' fields; title, type and body cannot be edited. " +
+			"Pass the two values you last read as 'expected': if they changed since, nothing is written and the error returns the current values. Omit a field to keep it; pass null to clear it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				contextId: {
 					type: "string",
-					description: "Context ID from fabric_list_project_contexts",
 				},
 				projectId: {
 					type: "string",
 					description:
-						"The project the context belongs to — the 'projectId' fabric_get_project_context returns",
+						"The context's projectId, as fabric_get_project_context returns it",
 				},
 				sourceType: {
 					type: ["string", "null"],
 					minLength: 1,
 					maxLength: 80,
-					description:
-						"New type label, 1-80 characters, e.g. 'Client Chat', 'Architect Chat', 'QA Thread', 'Knowledge Base', 'SDK Docs', 'Meeting Transcript', or your own. Pass null to clear it; omit to leave it unchanged.",
+					description: "e.g. 'Client Chat', 'QA Thread', 'SDK Docs'",
 				},
 				aiInstructions: {
 					type: ["string", "null"],
 					maxLength: 500,
-					description:
-						"New AI instructions, up to 500 characters, e.g. 'Use as the source of truth for client requirements.' Pass null to clear them; omit to leave them unchanged.",
+					description: "How the AI should use this source",
 				},
 				expected: {
 					type: "object",
 					description:
-						"The 'sourceType' and 'aiInstructions' values you last read for this context (null when a field was empty). The edit is refused, and nothing written, if the context no longer holds them.",
+						"The sourceType and aiInstructions you last read; null for an empty field",
 					properties: {
 						sourceType: {
 							type: ["string", "null"],
@@ -1053,50 +899,47 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_upsert_project_context",
 		description:
-			"Pushes a text file into a project's Context tab as a knowledge source, keyed by the file's path in your working tree ('sourcePath') inside that project, so pushing the same path again updates that one source instead of adding another. " +
-			"The result's 'status' says what happened: 'created' for a path the project has not seen; 'unchanged' when the same content is already stored under this path (nothing is written, so repeating a call is harmless); 'updated' when changed content replaced the previous version, which is then re-indexed for search; 'duplicate' when identical content is already in the project as another source (another pushed file, or one added in the Context tab), in which case nothing is created and 'duplicateOfContextId' is the existing source. " +
-			"To replace a file that already exists under this path, first read it with fabric_get_project_context (find it with fabric_list_project_contexts), or take the hash from a 'conflict' result, and pass its 'contentHash' as 'expectedContentHash'. Omitting expectedContentHash means: create the file if the path is new, otherwise only accept identical content — it never means overwrite. If the stored version is not the one you name (someone else changed it since), the tool returns 'conflict' with the current 'contentHash' and who changed it, and writes nothing: read it again, merge, and retry with that hash. A 'conflict' with 'current' null means the file you named was deleted on the server since you read it; nothing was written; call again without expectedContentHash to recreate it, which answers 'duplicate' instead if that content already exists elsewhere in the project. " +
-			"A path a Living Memory repository sync owns is refused with an error whose 'code' is 'REPOSITORY_MANAGED', naming the 'repository' and 'ref' (or 'the connected repository' in the message when the sync configuration was removed since); this is final, not a conflict to retry — the file changes in the repository, and a project member runs 'Sync now' to bring the change in. " +
-			"When you renamed a file, pass its old path as 'movedFromSourcePath' with that path's 'contentHash' as 'expectedContentHash': the source is renamed in place ('moved') when it still holds that version and the content is unchanged, otherwise the new path gets the ordinary answer and 'moveNotApplied' says why. " +
-			"Keep coding-instruction files out of this tool — CLAUDE.md, AGENTS.md, anything under .claude/, and skills, agents and hooks belong to fabric_propose_project_instruction_change.",
+			"Pushes a text file into a project's Context tab, keyed by the file's path ('sourcePath'), so pushing the same path again updates that one source. " +
+			"Answers 'created', 'updated' (re-indexed), 'unchanged', or 'duplicate' when the content is already another source. " +
+			"To replace an existing file, pass its 'contentHash' (from fabric_get_project_context, fabric_list_project_contexts or a 'conflict' result) as 'expectedContentHash'; omitting it never means overwrite. A 'conflict' writes nothing: re-read, merge and retry. " +
+			"For a rename pass the old path as 'movedFromSourcePath' with its hash as 'expectedContentHash': the source is 'moved' only when that version is current and the content is unchanged; otherwise the new path gets the ordinary answer and 'moveNotApplied' says why. A path a repository sync owns is refused with 'REPOSITORY_MANAGED'. " +
+			"Coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks) go to fabric_propose_project_instruction_change instead.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID from fabric_list_projects",
 				},
 				sourcePath: {
 					type: "string",
 					minLength: 1,
 					maxLength: 512,
 					description:
-						"The file's path relative to the root of your working tree, e.g. 'docs/architecture.md'. Backslashes, repeated separators and a leading './' are normalised; absolute paths and '.' or '..' segments are refused. With the project, this is the source's key.",
+						"Path relative to your working-tree root, e.g. 'docs/architecture.md'; absolute paths and '..' are refused",
 				},
 				content: {
 					type: "string",
-					description:
-						"The file's full text, at most 2 MiB of UTF-8. Must contain at least one non-whitespace character.",
+					description: "The file's full text, at most 2 MiB of UTF-8",
 				},
 				title: {
 					type: "string",
 					minLength: 1,
 					maxLength: 255,
 					description:
-						"How the source is named on the Context tab. Defaults to the file name.",
+						"Name on the Context tab; defaults to the file name",
 				},
 				expectedContentHash: {
 					type: "string",
 					pattern: "^[0-9a-fA-F]{64}$",
 					description:
-						"The 'contentHash' of the stored version you mean to replace, from fabric_get_project_context, fabric_list_project_contexts or a 'conflict' result. Required to replace a file that already exists under this path. Omit it to create the file if the path is new, or to confirm identical content; omitting it never overwrites.",
+						"contentHash of the stored version you replace; required to replace an existing file",
 				},
 				movedFromSourcePath: {
 					type: "string",
 					minLength: 1,
 					maxLength: 512,
 					description:
-						"The file's previous path when you renamed it, under the same rules as 'sourcePath'. Requires 'expectedContentHash', naming the version at that old path; a move never replaces content.",
+						"The previous path, when renamed. Requires that path's hash as expectedContentHash; a move never replaces content.",
 				},
 			},
 			required: ["projectId", "sourcePath", "content"],
@@ -1112,12 +955,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_project_instructions",
 		description:
-			"Lists a project's coding instructions: skills, agents, rules, entry files (CLAUDE.md, AGENTS.md), settings, scripts and knowledge docs a coding agent should follow. Repository-backed projects read the configured Git commit directly and return its immutable commitSha and generation instead of a published snapshot. " +
-			"Returns each file's path, kind, name, description and size. Call this to browse or search files before reading one with fabric_get_project_instruction. Uploaded projects support sinceDigest snapshot deltas; direct repositories return commitSha and generation instead.",
+			"Lists a project's coding-instruction files (skills, agents, rules, CLAUDE.md/AGENTS.md, settings, scripts, knowledge) with path, kind, name, description and size; read one with fabric_get_project_instruction. " +
+			"Repository-backed projects are read from the configured Git commit and return commitSha and generation; uploaded projects return the published snapshot.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "Project ID" },
+				projectId: { type: "string" },
 				kind: {
 					type: "string",
 					enum: [
@@ -1130,7 +973,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"KNOWLEDGE",
 						"OTHER",
 					],
-					description: "Only files of this kind",
 				},
 				query: {
 					type: "string",
@@ -1140,39 +982,39 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				prefix: {
 					type: "string",
 					description:
-						'Direct repositories only: list only files at or under this folder path, e.g. ".claude/skills" (matches whole path segments).',
+						"Repository projects: only files under this folder, e.g. '.claude/skills'",
 					maxLength: 512,
 				},
 				limit: {
 					type: "integer",
 					description:
-						"Direct repositories only: files per page (default 200, max 500). Large repositories are paged so one call stays small.",
+						"Repository projects: files per page (default 200)",
 					minimum: 1,
 					maximum: 500,
 				},
 				cursor: {
 					type: "string",
 					description:
-						"Direct repositories only: the page.nextCursor from the previous response, to fetch the next page. Send it together with that response's generation and commitSha so every page comes from the same commit; a cursor used against a different commit is refused.",
+						"Repository projects: page.nextCursor, sent with that response's generation and commitSha",
 					maxLength: 2048,
 				},
 				sinceDigest: {
 					type: "string",
 					description:
-						"The snapshot digest you last saw. An unchanged digest is answered without the file list; a changed one adds the changed paths to it.",
+						"Uploaded projects: the digest you last saw; unchanged answers without the file list",
 					minLength: 1,
 					maxLength: 128,
 				},
 				generation: {
 					type: "integer",
 					description:
-						"Repository generation returned by an earlier direct response. Provide it together with commitSha to keep a later list pinned.",
+						"From an earlier repository response; send with commitSha to pin the read",
 					minimum: 0,
 				},
 				commitSha: {
 					type: "string",
 					description:
-						"Full immutable commit SHA returned by an earlier direct response. Provide it together with generation.",
+						"From an earlier repository response; send with generation",
 					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
 				},
 			},
@@ -1184,30 +1026,26 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_instruction",
 		description:
-			"Reads one coding-instruction file by its path (from fabric_list_project_instructions). Repository-backed projects read the file directly from the returned Git commit. " +
-			"Use this to read a single skill, rule or agent; for the whole tree use fabric_get_project_instruction_bundle. " +
-			"Text bodies are paged, never silently cut: when 'truncated' is true, call again with 'offset' set to 'nextOffset' and, for a repository-backed project, the returned generation and commitSha. " +
-			"Uploaded binary files return a short-lived 'url' instead of a body. Direct repository binary files return a binary state; read them with native Git. Scripts and settings are returned as text for reading only; Fabric never runs them.",
+			"Reads one coding-instruction file by its listed path; for the whole tree use fabric_get_project_instruction_bundle. " +
+			"Text is paged: when 'truncated' is true, call again with offset=nextOffset, plus the returned generation and commitSha on a repository-backed project. " +
+			"Uploaded binaries return a short-lived 'url'; read repository binaries with Git. " +
+			"Scripts and settings are returned as text for reading only; Fabric never runs them.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "Project ID" },
+				projectId: { type: "string" },
 				path: {
 					type: "string",
-					description: "File path exactly as listed",
+					description: "Exactly as listed",
 				},
 				offset: {
 					type: "integer",
-					description:
-						"Unicode-character offset to start from (default 0)",
 					default: 0,
 					minimum: 0,
 					maximum: 2_147_483_646,
 				},
 				maxLength: {
 					type: "integer",
-					description:
-						"Max characters to return (default 50000, max 200000)",
 					default: 50000,
 					minimum: 1,
 					maximum: 200_000,
@@ -1215,13 +1053,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				generation: {
 					type: "integer",
 					description:
-						"Required with commitSha for a later page of a repository-backed file; use the pair returned by the first page.",
+						"Repository projects: from the first page; required for later pages",
 					minimum: 0,
 				},
 				commitSha: {
 					type: "string",
 					description:
-						"Required with generation for a later page of a repository-backed file; use the full SHA returned by the first page.",
+						"Repository projects: from the first page; required for later pages",
 					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
 				},
 			},
@@ -1233,16 +1071,16 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_project_instruction_bundle",
 		description:
-			"Returns the manifest of published coding instructions (snapshot id, version, digest, every file's path, sha256 and mode) and a short-lived URL to a zip of the approved tree. Repository-backed projects instead return the native repository, pinned commit and checkout guidance; Fabric does not create a snapshot zip for them. " +
-			"For uploaded projects, call this at the start of work and use sinceDigest to avoid an unchanged archive. For direct repositories, use the returned repository and pinned commit with native Git; read selected files with fabric_get_project_instruction.",
+			"Uploaded projects: returns the published instructions' manifest (snapshot id, version, digest, each file's path, sha256 and mode) and a short-lived zip URL; pass sinceDigest to skip an unchanged archive. " +
+			"Repository-backed projects: returns the repository and pinned commit to check out with Git, and no zip.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "Project ID" },
+				projectId: { type: "string" },
 				sinceDigest: {
 					type: "string",
 					description:
-						"The snapshot digest you last installed. An unchanged digest is answered without a zip URL; a changed one adds the changed paths to the usual response.",
+						"The digest you last installed; unchanged answers without a zip URL",
 					minLength: 1,
 					maxLength: 128,
 				},
@@ -1255,22 +1093,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_instruction_checks",
 		description:
-			"Reports current credential access and coding-instruction availability. Direct repository projects report their live Git commit and skip snapshot installation, lock and local environment checks; no historical snapshot is read. " +
-			"Uploaded projects can compare lockDigest from .fabric/instructions.lock and check declared environment using presentVariables containing names only, never values. Local files, hooks, tools and MCP configuration cannot be verified by this server. " +
+			"Read-only report on your credential's access and the project's coding instructions. Repository projects report the live commit; uploaded projects can compare lockDigest and check declared environment variables by name, never values. Local files, hooks and MCP configuration are not verified. " +
 			"Read-only reports grant no authority to install software, change credentials, pull, reset or overwrite files.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				projectId: {
 					type: "string",
-					description: "Project ID",
 					minLength: 1,
 					maxLength: 128,
 				},
 				lockDigest: {
 					type: "string",
 					description:
-						"The `digest` field from the project's .fabric/instructions.lock on the machine. Omit it when there is no lock.",
+						"'digest' from .fabric/instructions.lock; omit when there is no lock",
 					minLength: 1,
 					maxLength: 128,
 					pattern: "^[A-Fa-f0-9]+$",
@@ -1278,7 +1114,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				presentVariables: {
 					type: "array",
 					description:
-						"The NAMES of the declared environment variables that are set where you run. Send names only — never a value, never NAME=value.",
+						"Names of the declared environment variables set where you run. Names only, never values.",
 					maxItems: 500,
 					items: {
 						type: "string",
@@ -1295,16 +1131,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_propose_project_instruction_change",
 		description:
-			"Suggests an edit to a project's published coding instructions. Use this when working on a project turns up something its instructions get wrong, leave out, or no longer describe — a rule that has changed, a skill that needs a correction, a missing entry file. " +
-			"This does not apply the change to the target. For uploaded instructions, somebody with permission approves or rejects the proposal in Fabric's Coding Instructions tab. For a repository-backed project, Fabric opens a suggestion for review in a pull request in the configured provider. Say so when you report back, and do not describe the change as applied. " +
-			"Pass nativeBase with the generation and commitSha returned by the repository read. For uploaded instructions, pass baseSnapshotId. " +
-			"Pass note with a short title and a description of why the change is needed. " +
-			"Send the file's whole new content, not a patch: each change is 'put' (create or replace the file at that path) or 'delete'. Paths are the ones fabric_list_project_instructions reports. At most 50 changes in one call; for a wholesale replacement the folder is uploaded from the tab instead. " +
-			"The base is required: nativeBase for repository instructions, or baseSnapshotId for uploaded instructions. Pass the exact base returned by the read tools. If a touched file changed since that base, read it again and redo the edit.",
+			"Suggests an edit to a project's coding instructions when they are wrong, missing or out of date. Nothing is applied directly: for uploaded instructions a person approves the proposal in Fabric's Coding Instructions tab; for a repository-backed project it becomes a pull request in the configured provider. " +
+			"Send each file's whole new content ('put') or a 'delete', at most 50 changes. " +
+			"Pass the base you read: nativeBase (generation, commitSha) for repository instructions, or baseSnapshotId for uploaded instructions. If a touched file changed since, re-read it and redo the edit.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "Project ID" },
+				projectId: { type: "string" },
 				nativeBase: {
 					type: "object",
 					properties: {
@@ -1317,32 +1150,28 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					type: "array",
 					minItems: 1,
 					maxItems: 50,
-					description:
-						"The files to create, replace or remove in this project's coding instructions.",
 					items: {
 						type: "object",
 						properties: {
 							op: {
 								type: "string",
 								enum: ["put", "delete"],
-								description:
-									"'put' writes the file at this path; 'delete' removes it.",
 							},
 							path: {
 								type: "string",
 								description:
-									"Path exactly as fabric_list_project_instructions reports it, relative to the tree root.",
+									"As fabric_list_project_instructions reports it",
 							},
 							content: {
 								type: "string",
 								description:
-									"The file's whole new content. Required for 'put', ignored for 'delete'.",
+									"The whole new content; required for 'put'",
 							},
 							encoding: {
 								type: "string",
 								enum: ["utf8", "base64"],
 								description:
-									"How 'content' is encoded. Defaults to utf8; use base64 for a file that is not text.",
+									"Default utf8; base64 for a binary file",
 							},
 						},
 						required: ["op", "path"],
@@ -1351,24 +1180,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				baseSnapshotId: {
 					type: "string",
 					description:
-						"Required. The snapshot.id returned by fabric_list_project_instructions or fabric_get_project_instruction_bundle for the version you read. Not optional: without it a change cannot be told apart from one written against a version that has since been replaced.",
+						"Uploaded instructions: the snapshot.id of the version you read",
 					minLength: 1,
 					maxLength: 128,
 				},
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for an uploaded instruction proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either.",
+						"Optional proposal title (one line, max 120 characters) and markdown body (max 4096 bytes). Never put a credential in either.",
 					properties: {
 						title: {
 							type: "string",
-							description:
-								"One line, at most 120 characters: what the change does.",
 						},
 						body: {
 							type: "string",
-							description:
-								"Why the change is needed, as markdown. At most 4096 bytes.",
 						},
 					},
 				},
@@ -1393,27 +1218,22 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_add_instruction_lesson",
 		description:
-			"Records a lesson — a mistake the team should not repeat — as a new file under this project's coding instructions, so the next agent that reads them learns from it. " +
-			"Use it when the work just showed something went wrong: a check that was skipped, an assumption that turned out false, a fix for a bug that could recur. Write what happened, why it was a mistake, and what to do instead. " +
-			"For uploaded instructions, this opens a proposal that somebody with permission to edit the instructions approves or rejects in Fabric's Coding Instructions tab. Say so when you report back, and do not describe the lesson as recorded or applied — it is awaiting review. " +
-			"The file is created at Lessons/<today's date>-<a slug of the title>.md; a title that collides with an existing file on the same day is suffixed -2, -3, and so on. " +
-			"For repository-backed projects, Fabric submits the lesson as a pull-request suggestion for review in the configured provider. It is not applied to the target branch. " +
-			"note is the proposal's optional title and description for uploaded instructions.",
+			"Records a lesson, a mistake the next agent should not repeat (a skipped check, a false assumption, a recurring bug), as a new Lessons/<date>-<slug>.md file in the project's coding instructions. " +
+			"It awaits review: for uploaded instructions a person approves the proposal in Fabric's Coding Instructions tab; for a repository-backed project it is a pull-request suggestion in the configured provider.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "Project ID" },
+				projectId: { type: "string" },
 				title: {
 					type: "string",
-					description:
-						"A short, single-line summary of the lesson. Becomes the file's name and the slug of its path. 1-120 characters after trimming.",
+					description: "One line; becomes the file name",
 					minLength: 1,
 					maxLength: 120,
 				},
 				body: {
 					type: "string",
 					description:
-						"The lesson itself, as markdown: what happened, why it was a mistake, and what to do instead. 1-20000 characters after trimming.",
+						"Markdown: what happened, why it was a mistake, what to do instead",
 					minLength: 1,
 					maxLength: 20000,
 				},
@@ -1421,7 +1241,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 					type: "array",
 					maxItems: 20,
 					description:
-						"Optional paths, relative to the instruction tree root, of the rules, skills or files this lesson relates to — the ones an agent should read alongside it. Use the paths fabric_list_project_instructions reports.",
+						"Instruction paths, as listed, to read alongside the lesson",
 					items: {
 						type: "string",
 						minLength: 1,
@@ -1431,17 +1251,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				note: {
 					type: "object",
 					description:
-						"Optional title and description for an uploaded instruction proposal. The title is one line of at most 120 characters and the body at most 4096 bytes; never put a credential in either.",
+						"Optional proposal title (one line, max 120 characters) and markdown body (max 4096 bytes). Never put a credential in either.",
 					properties: {
 						title: {
 							type: "string",
-							description:
-								"One line, at most 120 characters: what the change does.",
 						},
 						body: {
 							type: "string",
-							description:
-								"Why the change is needed, as markdown. At most 4096 bytes.",
 						},
 					},
 				},
@@ -1458,24 +1274,20 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_workspaces",
 		description:
-			"Lists RAG knowledge bases the user has access to. Workspaces are separate from projects — they contain indexed documents for semantic search across large corpora. " +
-			"Use workspaces when you need to search across many documents rather than read a specific one. " +
-			"Returns workspace IDs needed for fabric_query_workspace and fabric_get_workspace.",
+			"Lists the RAG knowledge bases (workspaces) you can access. They are separate from projects and hold indexed documents for semantic search across large corpora.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				search: {
 					type: "string",
-					description: "Filter workspaces by name",
+					description: "Match on workspace name",
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 20)",
 					default: 20,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -1486,15 +1298,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_workspace",
 		description:
-			"Retrieves details of a workspace (knowledge base): name, description, and list of indexed documents. " +
-			"Use the workspaceId from fabric_list_workspaces. " +
-			"To search across workspace content, use fabric_query_workspace instead.",
+			"Gets a workspace's name, description and indexed documents. To search its content use fabric_query_workspace.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				workspaceId: {
 					type: "string",
-					description: "Workspace ID from fabric_list_workspaces",
 				},
 			},
 			required: ["workspaceId"],
@@ -1505,26 +1314,21 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_query_workspace",
 		description:
-			"Performs semantic (RAG) search across all documents in a workspace. Returns the most relevant chunks with similarity scores. " +
-			"Use this when you need to find specific information across a large knowledge base rather than reading entire documents. " +
-			"Get the workspaceId from fabric_list_workspaces. " +
-			"Example queries: 'authentication flow', 'database schema for users', 'API rate limiting policy'.",
+			"Semantic (RAG) search across a workspace's documents; returns the most relevant chunks with similarity scores.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				workspaceId: {
 					type: "string",
-					description: "Workspace ID from fabric_list_workspaces",
 				},
 				query: {
 					type: "string",
 					description:
-						"Natural language search query describing the information you need",
+						"Natural-language description of what you need",
 				},
 				limit: {
 					type: "number",
-					description:
-						"Max result chunks to return (default 10, max 50)",
+					description: "Max 50",
 					default: 10,
 				},
 			},
@@ -1538,29 +1342,24 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_workflows",
 		description:
-			"Lists automation workflows in the current context. Returns workflow IDs, names, status (DRAFT/ACTIVE/PAUSED/ARCHIVED), and trigger type. " +
-			"Use workflow IDs with fabric_get_workflow and fabric_execute_workflow.",
+			"Lists automation workflows with id, name, status and trigger type.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				status: {
 					type: "string",
 					enum: ["DRAFT", "ACTIVE", "PAUSED", "ARCHIVED"],
-					description:
-						"Filter by workflow status. Omit to return all.",
 				},
 				search: {
 					type: "string",
-					description: "Search workflows by name",
+					description: "Match on workflow name",
 				},
 				limit: {
 					type: "number",
-					description: "Max results per page (default 20)",
 					default: 20,
 				},
 				offset: {
 					type: "number",
-					description: "Offset for pagination (default 0)",
 					default: 0,
 				},
 			},
@@ -1571,15 +1370,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_workflow",
 		description:
-			"Retrieves a workflow's full definition: nodes, edges, trigger configuration, and recent execution history. " +
-			"Use the workflowId from fabric_list_workflows. " +
-			"Call fabric_execute_workflow to run it.",
+			"Gets a workflow's definition (nodes, edges, trigger configuration) and recent executions.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				workflowId: {
 					type: "string",
-					description: "Workflow ID from fabric_list_workflows",
 				},
 			},
 			required: ["workflowId"],
@@ -1590,21 +1386,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_execute_workflow",
 		description:
-			"Triggers a published (status='ACTIVE') workflow. Returns an executionId for tracking. " +
-			"Poll fabric_get_workflow_execution(executionId) to check completion status and results. " +
-			"The workflowId comes from fabric_list_workflows.",
+			"Runs an ACTIVE workflow and returns an executionId; poll fabric_get_workflow_execution for the result.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				workflowId: {
 					type: "string",
-					description:
-						"Workflow ID from fabric_list_workflows (must be ACTIVE)",
 				},
 				inputs: {
 					type: "object",
 					description:
-						"Key-value input parameters required by the workflow (check fabric_get_workflow for expected inputs)",
+						"Key-value inputs the workflow expects (see fabric_get_workflow)",
 				},
 			},
 			required: ["workflowId"],
@@ -1615,15 +1407,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_workflow_execution",
 		description:
-			"Checks the status and results of a workflow execution. " +
-			"Use the executionId returned by fabric_execute_workflow. " +
-			"Poll this until status is 'COMPLETED' or 'FAILED'.",
+			"Gets a workflow execution's status and results; poll until it is COMPLETED or FAILED.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				executionId: {
 					type: "string",
-					description: "Execution ID from fabric_execute_workflow",
 				},
 			},
 			required: ["executionId"],
@@ -1636,14 +1425,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_chats",
 		description:
-			"Lists recent AI chat conversations for the current user in the active context. " +
-			"Returns chat IDs, titles, and timestamps. Useful for reviewing past AI interactions related to a project.",
+			"Lists your recent AI chat conversations in the active context, with id, title and timestamps.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				limit: {
 					type: "number",
-					description: "Max results to return (default 20)",
 					default: 20,
 				},
 			},
@@ -1656,22 +1443,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_frame",
 		description:
-			"Creates a shareable visual artifact (Frame) in the current context. Frames are rich interactive cards that can contain HTML, Mermaid diagrams, markdown, or JSON data. " +
-			"Use this to create visualizations, diagrams, status boards, or rich-text reports that can be shared with teammates. " +
-			"Set shareOnCreate=true to immediately get a public share URL in the response. " +
-			"After creating, call fabric_share_frame(frameId) to get the share URL, or fabric_update_frame(frameId) to modify content. " +
-			"Use 'mermaid' format for flowcharts/sequence diagrams, 'html' for rich layouts, 'markdown' for formatted text. " +
-			"When the user only wants to see a diagram in a chat that renders Markdown, answer with a ```mermaid code block instead — create a frame only when they ask for a frame or a shareable artifact.",
+			"Creates a shareable Frame: a visual artifact built from html, mermaid, markdown or json blocks (diagrams, status boards, reports). shareOnCreate=true returns a public share URL. " +
+			"Create one only when the user asks for a frame or something shareable; to show a diagram in a chat that renders Markdown, answer with a ```mermaid block instead.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				title: {
 					type: "string",
-					description: "Frame title",
 				},
 				description: {
 					type: "string",
-					description: "Optional description shown below the title",
+					description: "Shown below the title",
 				},
 				components: {
 					type: "array",
@@ -1680,49 +1462,37 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						properties: {
 							id: {
 								type: "string",
-								description: "Unique block ID",
 							},
 							type: {
 								type: "string",
 								enum: ["html", "json", "mermaid", "markdown"],
-								description: "Content format of this block",
 							},
 							title: {
 								type: "string",
-								description: "Optional block title",
 							},
 							content: {
 								type: "string",
-								description: "Block content",
 							},
 							language: {
 								type: "string",
-								description: "Optional language hint",
 							},
 						},
 						required: ["id", "type", "content"],
 					},
-					description:
-						"Array of content blocks/components for the frame",
+					description: "Content blocks",
 				},
 				format: {
 					type: "string",
 					enum: ["html", "json", "mermaid", "markdown"],
 					default: "html",
-					description:
-						"Content format: 'html' for rich layouts, 'mermaid' for diagrams, 'markdown' for text, 'json' for structured data",
 				},
 				kind: {
 					type: "string",
 					enum: ["frame", "slideshow"],
 					default: "frame",
-					description:
-						"'frame' for a single-page artifact, 'slideshow' for a multi-slide presentation",
 				},
 				shareOnCreate: {
 					type: "boolean",
-					description:
-						"If true, immediately publish the frame and return a share URL in the response",
 				},
 			},
 			required: ["title"],
@@ -1732,24 +1502,18 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_frame",
 		description:
-			"Updates an existing Frame's title, description, or content blocks. " +
-			"Get the frameId from fabric_list_frames or from the response of fabric_create_frame. " +
-			"Provide only the fields you want to change — omitted fields are unchanged.",
+			"Updates a Frame's title, description or content blocks; omitted fields are unchanged.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: {
 					type: "string",
-					description:
-						"Frame ID from fabric_list_frames or fabric_create_frame",
 				},
 				title: {
 					type: "string",
-					description: "New frame title",
 				},
 				description: {
 					type: "string",
-					description: "New description",
 				},
 				blocks: {
 					type: "array",
@@ -1758,24 +1522,19 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						properties: {
 							id: {
 								type: "string",
-								description: "Unique block ID",
 							},
 							type: {
 								type: "string",
 								enum: ["html", "json", "mermaid", "markdown"],
-								description: "Content format of this block",
 							},
 							title: {
 								type: "string",
-								description: "Optional block title",
 							},
 							content: {
 								type: "string",
-								description: "Block content",
 							},
 							language: {
 								type: "string",
-								description: "Optional language hint",
 							},
 						},
 						required: ["id", "type", "content"],
@@ -1790,15 +1549,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_frame",
 		description:
-			"Retrieves a Frame by ID, including its full content blocks, format, and share URL (if published). " +
-			"Get the frameId from fabric_list_frames. " +
-			"Use fabric_share_frame(frameId) to publish and get a shareable URL if not already shared.",
+			"Gets a Frame's content blocks, format and share URL if it is published.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: {
 					type: "string",
-					description: "Frame ID from fabric_list_frames",
 				},
 			},
 			required: ["frameId"],
@@ -1809,8 +1565,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_frames",
 		description:
-			"Lists all Frames in the session's active organization. Returns frame IDs, titles, formats, and share status. " +
-			"Use the returned 'id' field as 'frameId' in fabric_get_frame, fabric_update_frame, or fabric_share_frame.",
+			"Lists the Frames in the active organization with id, title, format and share status.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -1818,16 +1573,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_share_frame",
 		description:
-			"Publishes a Frame and returns its public share URL. Once shared, anyone with the link can view the frame. " +
-			"Get the frameId from fabric_list_frames or fabric_create_frame. " +
-			"Returns the shareUrl to share with teammates or embed in external tools.",
+			"Publishes a Frame and returns its public share URL; anyone with the link can view it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: {
 					type: "string",
-					description:
-						"Frame ID from fabric_list_frames or fabric_create_frame",
 				},
 			},
 			required: ["frameId"],
@@ -1837,20 +1588,15 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_slideshow",
 		description:
-			"Creates a multi-slide presentation artifact (Slideshow) in the current context. Slideshows are ideal for structured presentations, feature demos, or step-by-step walkthroughs. " +
-			"Each component in the 'components' array becomes a separate slide. " +
-			"Set shareOnCreate=true to immediately get a public share URL. " +
-			"After creating, call fabric_share_frame(frameId) to get the share URL.",
+			"Creates a Slideshow, a multi-slide presentation in which each component becomes one slide. shareOnCreate=true returns a public share URL.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				title: {
 					type: "string",
-					description: "Slideshow title",
 				},
 				description: {
 					type: "string",
-					description: "Optional description",
 				},
 				components: {
 					type: "array",
@@ -1859,41 +1605,32 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						properties: {
 							id: {
 								type: "string",
-								description: "Unique slide ID",
 							},
 							type: {
 								type: "string",
 								enum: ["html", "json", "mermaid", "markdown"],
-								description: "Content format of this slide",
 							},
 							title: {
 								type: "string",
-								description: "Optional slide title",
 							},
 							content: {
 								type: "string",
-								description: "Slide content",
 							},
 							language: {
 								type: "string",
-								description: "Optional language hint",
 							},
 						},
 						required: ["id", "type", "content"],
 					},
-					description:
-						"Array of slide content objects — each entry becomes one slide",
+					description: "One entry per slide",
 				},
 				format: {
 					type: "string",
 					enum: ["html", "json", "mermaid", "markdown"],
 					default: "html",
-					description: "Content format for slides",
 				},
 				shareOnCreate: {
 					type: "boolean",
-					description:
-						"If true, immediately publish and return a share URL",
 				},
 			},
 			required: ["title"],
@@ -1905,9 +1642,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_list_connected_servers",
 		description:
-			"Lists all MCP servers the user has connected in the session's active organization. Returns server names, provider keys, status, and available tool count. " +
-			"Use the 'providerKey' values from this response as input to fabric_request_authority when you need runtime access to external tools on those servers. " +
-			"Example: if a server has providerKey='linear', pass providerKey='linear' to fabric_request_authority to request access.",
+			"Lists the MCP servers connected in the active organization with name, providerKey, status and tool count. Pass a providerKey to fabric_request_authority to use that server's tools.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -1917,27 +1652,23 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_request_authority",
 		description:
-			"Request runtime authority to use connected external systems. Authority is time-limited and must be approved before tools can be executed. " +
-			"Specify which providers you need access to and at what level (READ or WRITE). " +
-			"Returns a pending authority session that must be approved by a human in the Fabric UI or API.",
+			"Requests time-limited READ or WRITE authority to use connected servers' tools. Returns a pending session that a person must approve in Fabric; check it with fabric_check_authority.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				providers: {
 					type: "array",
-					description: "List of providers to request authority for",
 					items: {
 						type: "object",
 						properties: {
 							providerKey: {
 								type: "string",
 								description:
-									'Normalized provider key (e.g., "github", "linear", "slack") or "custom:<server-name>"',
+									'e.g. "github", "linear" or "custom:<server-name>"',
 							},
 							accessLevel: {
 								type: "string",
 								enum: ["READ", "WRITE"],
-								description: "Required access level",
 							},
 							reason: {
 								type: "string",
@@ -1949,8 +1680,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				},
 				ttlMinutes: {
 					type: "number",
-					description:
-						"How long authority should last (default: 30, max: 480)",
+					description: "Max 480",
 					default: 30,
 				},
 			},
@@ -1965,13 +1695,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_revoke_authority",
 		description:
-			"Revoke an active authority session, immediately ending all granted permissions.",
+			"Revokes an authority session, ending all of its grants immediately.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				sessionId: {
 					type: "string",
-					description: "Authority session ID to revoke",
 				},
 			},
 			required: ["sessionId"],
@@ -1981,7 +1710,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_check_authority",
 		description:
-			"Check current authority status. Returns active authority sessions and grants for the current context.",
+			"Shows the active authority sessions and grants for the current context.",
 		inputSchema: { type: "object", properties: {} },
 		annotations: { readOnlyHint: true },
 		_gateway_source: "platform",
@@ -2123,6 +1852,16 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 const UNMAPPED_TOOL_SCOPE: ToolScope = { scope: "mcp:write", kind: "write" };
 
 /**
+ * The scope a platform tool requires of the credential: its `TOOL_SCOPES`
+ * entry, or `UNMAPPED_TOOL_SCOPE` without one. `executePlatformTool` enforces
+ * it and `./tool-eligibility` reads it to decide what discovery mode offers, so
+ * the two answer from this one lookup.
+ */
+export function platformToolScope(toolName: string): ToolScope {
+	return TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
+}
+
+/**
  * Execute a platform tool by name.
  * All DB imports are dynamic to avoid pulling Prisma into the module scope.
  */
@@ -2139,7 +1878,13 @@ export async function executePlatformTool(
 	}
 	const args = bound.args;
 
-	const required = TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
+	// A platform tool the session's server selection leaves out is not run:
+	// see ./server-selection.
+	if (!selectionAllowsTool(session, toolName)) {
+		return errorResult(selectionRefusalMessage(toolName));
+	}
+
+	const required = platformToolScope(toolName);
 	if (!scopeSatisfied(session.scopes, required, session.credential)) {
 		return errorResult(
 			`This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${required.scope}" scope required by ${toolName}.`,
@@ -4022,7 +3767,7 @@ async function handleCreateBug(
 			identifier: matched.existingIdentifier,
 			title,
 			fingerprintAttached,
-			message: `A bug titled "${title}" already exists in this project as ${matched.existingIdentifier}. Returned it instead of filing a duplicate; update that item if you have new information.${
+			message: `A bug titled "${title}" already exists in this project as ${matched.existingIdentifier}. Returned it instead of filing a duplicate; update that item if you have new information, and do not resend with a reworded title.${
 				fingerprintAttached
 					? " Your fingerprint has been attached to that bug, so future reports of this error will match it exactly."
 					: ""
@@ -4172,7 +3917,9 @@ async function handleCreateBug(
 			priority: story.priority,
 			draftingStage: story.draftingStage,
 			fingerprint: fingerprint ?? null,
-			message: `Filed bug ${story.identifier}.`,
+			message: fingerprint
+				? `Filed bug ${story.identifier}.`
+				: `Filed bug ${story.identifier}. No fingerprint was sent, so a later report of this error can only be matched by title, which drafting may rewrite: send the same stable fingerprint on every sighting.`,
 		});
 
 	try {

@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const status = vi.fn();
 const setOrganizationUse = vi.fn();
 const disconnect = vi.fn();
+const testPlan = vi.fn();
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		users: {
@@ -16,6 +17,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 				setOrganizationUse: (input: unknown) =>
 					setOrganizationUse(input),
 				disconnect: (input: unknown) => disconnect(input),
+				test: (input: unknown) => testPlan(input),
 			},
 		},
 	},
@@ -31,6 +33,7 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
 		activeOrganization:
 			activeSlug.current === null ? null : { slug: activeSlug.current },
+		isSessionOnActiveOrganization: activeSlug.current !== null,
 	}),
 }));
 
@@ -201,7 +204,11 @@ describe("ChatGPT plan settings section", () => {
 		renderWithClient(<ChatgptPlanSettings />);
 
 		expect(await screen.findByText(copy.notConnected)).toBeInTheDocument();
-		expect(screen.getByText("fabric connect chatgpt")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				`fabric connect chatgpt --base-url ${window.location.origin}`,
+			),
+		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: copy.copyCommand }),
 		).toBeInTheDocument();
@@ -329,7 +336,9 @@ describe("ChatGPT plan settings section", () => {
 
 		const reconnect = await screen.findByTestId("chatgpt-plan-reconnect");
 		expect(reconnect).toHaveTextContent(copy.reconnectTitle);
-		expect(reconnect).toHaveTextContent("fabric connect chatgpt");
+		expect(reconnect).toHaveTextContent(
+			`fabric connect chatgpt --base-url ${window.location.origin}`,
+		);
 		expect(reconnect).toHaveTextContent(copy.reconnectDescription);
 		expect(screen.getByText(copy.statusNeedsReconnect)).toBeInTheDocument();
 
@@ -367,6 +376,80 @@ describe("ChatGPT plan settings section", () => {
 
 		await screen.findByTestId("chatgpt-plan-email");
 		expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+	});
+});
+
+describe("ChatGPT plan test", () => {
+	it("tests the member's own plan and shows that it works beside the button", async () => {
+		status.mockResolvedValue(CONNECTED);
+		testPlan.mockResolvedValue({
+			outcome: "ok",
+			model: "gpt-6-luna",
+			modelName: "GPT-6 Luna",
+			latencyMs: 2340,
+		});
+		renderWithClient(<ChatgptPlanSettings />);
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: copy.test.button }),
+		);
+
+		expect(testPlan).toHaveBeenCalledOnce();
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-plan-test-result"),
+			).toHaveTextContent("Works · GPT-6 Luna · 2.3 s"),
+		);
+		// The status is read again: a test can mark the plan for reconnecting.
+		await waitFor(() => expect(status).toHaveBeenCalledTimes(2));
+	});
+
+	it("says when the plan needs reconnecting", async () => {
+		status.mockResolvedValue(CONNECTED);
+		testPlan.mockResolvedValue({
+			outcome: "needs_reconnect",
+			message: "Your ChatGPT connection needs to be reconnected.",
+		});
+		renderWithClient(<ChatgptPlanSettings />);
+
+		await userEvent.click(
+			await screen.findByRole("button", { name: copy.test.button }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-plan-test-result"),
+			).toHaveTextContent(copy.test.needsReconnect),
+		);
+	});
+
+	it("shows why a test was refused, such as the rate limit", async () => {
+		status.mockResolvedValue(CONNECTED);
+		testPlan.mockRejectedValue(
+			new Error("Too many plan tests. Please try again in 42 seconds."),
+		);
+		renderWithClient(<ChatgptPlanSettings />);
+
+		const button = await screen.findByRole("button", {
+			name: copy.test.button,
+		});
+		await userEvent.click(button);
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-plan-test-result"),
+			).toHaveTextContent(
+				"Test failed: Too many plan tests. Please try again in 42 seconds.",
+			),
+		);
+		expect(button).toBeEnabled();
+	});
+
+	it("offers no test without a connected plan", async () => {
+		status.mockResolvedValue(NOT_CONNECTED);
+		renderWithClient(<ChatgptPlanSettings />);
+		expect(await screen.findByText(copy.notConnected)).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: copy.test.button }),
+		).not.toBeInTheDocument();
 	});
 });
 
@@ -446,7 +529,9 @@ describe("ChatGPT plan reconnect notice", () => {
 			"chatgpt-plan-reconnect-notice",
 		);
 		expect(notice).toHaveTextContent(copy.reconnectDescription);
-		expect(notice).toHaveTextContent("fabric connect chatgpt");
+		expect(notice).toHaveTextContent(
+			`fabric connect chatgpt --base-url ${window.location.origin}`,
+		);
 		expect(
 			screen.getByRole("link", { name: copy.openSettings }),
 		).toHaveAttribute(
@@ -513,7 +598,9 @@ describe("ChatGPT plan reconnect notice on a full-bleed page", () => {
 			"chatgpt-plan-reconnect-dock-notice",
 		);
 		expect(notice).toHaveTextContent(copy.reconnectDescription);
-		expect(notice).toHaveTextContent("fabric connect chatgpt");
+		expect(notice).toHaveTextContent(
+			`fabric connect chatgpt --base-url ${window.location.origin}`,
+		);
 		await userEvent.click(
 			screen.getByRole("button", { name: copy.useOrganizationBilling }),
 		);

@@ -107,7 +107,9 @@ describe("resolveOpenAiApiKey", () => {
 		expect(key).toBe("sk-legacy-plaintext-key");
 	});
 
-	it("falls back to the environment key when the tenant has no OpenAI config", async () => {
+	// Audio never runs on Fabric's own key: with the platform key set, a
+	// tenant without an OpenAI config still resolves to nothing.
+	it("never falls back to the platform key when the tenant has no OpenAI config", async () => {
 		getAiProviderApiKeyByProviderMock.mockResolvedValue({
 			...EMPTY_PROVIDER_CONFIG,
 		});
@@ -117,10 +119,10 @@ describe("resolveOpenAiApiKey", () => {
 			organizationId: "org-1",
 		});
 
-		expect(key).toBe("env-fallback-key");
+		expect(key).toBe("");
 	});
 
-	it("falls back to the environment key when the OpenAI config has no usable credentials", async () => {
+	it("never falls back to the platform key when the OpenAI config has no usable credentials", async () => {
 		getAiProviderApiKeyByProviderMock.mockResolvedValue({
 			...EMPTY_PROVIDER_CONFIG,
 			provider: "OPENAI_DIRECT",
@@ -134,7 +136,7 @@ describe("resolveOpenAiApiKey", () => {
 			organizationId: null,
 		});
 
-		expect(key).toBe("env-fallback-key");
+		expect(key).toBe("");
 	});
 
 	it("returns an empty string when neither a tenant key nor an environment key exists", async () => {

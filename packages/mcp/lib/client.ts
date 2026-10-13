@@ -18,16 +18,19 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import {
 	credentialFingerprintMatches,
 	getMcpConfigById,
+	getMcpConfigEncryptedApiKey,
 	getMcpOAuthGrantGeneration,
 	getValidAccessToken,
 	markMcpOAuthReconnectRequired,
 	parseMcpOAuthBinding,
-	sameAuthorizationServer,
+	refreshMcpOAuthAccessToken,
 } from "@repo/database";
 import {
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	parseGitLabOrigin,
 } from "@repo/integrations/gitlab";
+import { throwIfDispatchDeadlinePassed } from "@repo/utils/dispatch-deadline";
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { classifyOAuthErrorCode } from "@repo/utils/oauth-refresh";
 import {
 	GitLabMcpCredentialError,
@@ -38,6 +41,7 @@ import {
 } from "./gitlab-credential";
 import {
 	createOAuthClientProvider,
+	isFabricRefreshingProvider,
 	OAuthAuthorizationRequiredError,
 } from "./oauth-provider";
 import {
@@ -64,9 +68,10 @@ export interface CreateMcpClientOptions {
 	/** MCP Session ID for stateful connections */
 	sessionId?: string;
 	/**
-	 * OAuth client provider for automatic token management.
-	 * When provided, the transport will handle OAuth authentication automatically,
-	 * including token refresh and re-authorization when needed.
+	 * OAuth client provider: attaches the access token to each request. When
+	 * it is Fabric's own (`createOAuthClientProvider`), a 401 is refreshed and
+	 * resent once (`retryOnceAfterUnauthorized`); otherwise the transport's
+	 * `auth()` decides, which ends in OAuthAuthorizationRequiredError.
 	 */
 	authProvider?: OAuthClientProvider;
 	/**
@@ -83,8 +88,8 @@ export interface CreateMcpClientForConfigOptions {
 	userId: string;
 	organizationId?: string;
 	/**
-	 * Redirect URI for OAuth callbacks.
-	 * Used for OAuth2 configs to enable automatic token refresh.
+	 * Redirect URI for OAuth callbacks, which the SDK's provider interface
+	 * requires for OAuth2 configs (refresh does not use it).
 	 * If not provided, defaults to `${NEXT_PUBLIC_SITE_URL}/api/mcp/oauth/callback`.
 	 */
 	redirectUri?: string;
@@ -313,6 +318,145 @@ function isRedirectRefusal(error: unknown): boolean {
  * nowhere it points. The MCP server's own requests keep the SDK's
  * same-origin redirect handling.
  */
+/**
+ * The transport `fetch` refuses a request that can change something on the
+ * server — any method but GET or HEAD; every JSON-RPC message, a `tools/call`
+ * among them, is a POST, and so is an OAuth token exchange the SDK sends
+ * through it (Fabric's own refresh after a 401 is checked separately, in
+ * `retryOnceAfterUnauthorized`) — once the Advisor
+ * chat turn it runs in has stopped or used its token allowance (the ambient
+ * dispatch guard). The check is the last thing before the send: the MCP
+ * client and its transport await their own preparation (an OAuth token
+ * lookup or refresh, a retry's back-off) after the caller's last check, and
+ * only this `fetch` runs after all of it. GET (the server's event stream) is
+ * left alone. Outside a turn it is the given `fetch` unchanged.
+ *
+ * It also refuses a tool call (`tools/call`) sent after the send deadline of
+ * the code sending it (`runWithDispatchDeadline`, set by `executeMcpTool`
+ * for a PM create): the SDK transport sends with its own abort signal, not
+ * the call's, and awaits the OAuth token lookup before this `fetch`, so the
+ * caller's check before `tool.execute` does not bound when the request
+ * leaves. Only tool calls are refused: a response the client sends to the
+ * server, a notification or the initialize handshake carries no tool call,
+ * and may come from a cached client's background work that started inside
+ * a deadline scope. No-op outside a scope.
+ */
+export function refuseWritesAfterDispatchStop(
+	baseFetch: GitLabMcpFetch,
+): GitLabMcpFetch {
+	return async (input, init) => {
+		const method = (init?.method ?? "GET").toUpperCase();
+		if (method !== "GET" && method !== "HEAD") {
+			throwIfDispatchStopped();
+			if (mayCarryToolCall(init?.body)) {
+				throwIfDispatchDeadlinePassed();
+			}
+		}
+		return baseFetch(input, init);
+	};
+}
+
+/**
+ * Whether a transport request body may carry a tool call: a JSON-RPC message
+ * (or batch) naming `tools/call`, or a body this cannot read as JSON-RPC
+ * (anything but a string, or a string that is not JSON), which is treated as
+ * one so it is refused rather than let through. An OAuth token request (a
+ * `URLSearchParams` body) and an empty body carry none.
+ */
+function mayCarryToolCall(body: unknown): boolean {
+	if (body === undefined || body === null) {
+		return false;
+	}
+	if (body instanceof URLSearchParams) {
+		return false;
+	}
+	if (typeof body !== "string") {
+		return true;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(body);
+	} catch {
+		return true;
+	}
+	const messages = Array.isArray(parsed) ? parsed : [parsed];
+	return messages.some(
+		(message) =>
+			typeof message !== "object" ||
+			message === null ||
+			(message as { method?: unknown }).method === "tools/call",
+	);
+}
+
+/**
+ * Fabric's one refresh-and-resend after the MCP server answers 401, for an
+ * OAuth config whose provider Fabric refreshes (see
+ * `isFabricRefreshingProvider`). The SDK transports would otherwise call
+ * their own `auth()`, which no longer refreshes: the provider hands it no
+ * refresh token.
+ *
+ * A 401 to a request that carried a bearer token asks the provider for a
+ * fresh one (`refreshAfterUnauthorized`: at most one token-endpoint call,
+ * through Fabric's shared refresh service) and resends the request once with
+ * it, through `baseFetch` again — so the dispatch-stop check and the redirect
+ * refusal apply to the resend too. For a request that can change something
+ * (any method but GET or HEAD) the stop check also runs before the refresh,
+ * so a chat turn that stopped while the request was in flight spends no
+ * refresh token. Anything else returns the original 401
+ * untouched: the transport then calls `auth()`, which ends in
+ * `OAuthAuthorizationRequiredError`. That includes a second 401 (the resend's
+ * answer is returned as is, so a request is resent at most once), a request
+ * with no bearer token, a token request (a `URLSearchParams` body), and a
+ * body that cannot be sent twice (anything but a string; the SDK transports
+ * send JSON-RPC as a string and their GETs have no body).
+ */
+export function retryOnceAfterUnauthorized(
+	baseFetch: GitLabMcpFetch,
+	refreshAfterUnauthorized: (
+		sentAccessToken: string,
+	) => Promise<string | null>,
+): GitLabMcpFetch {
+	return async (input, init) => {
+		const response = await baseFetch(input, init);
+		if (response.status !== 401) {
+			return response;
+		}
+		const body = init?.body;
+		if (body !== undefined && body !== null && typeof body !== "string") {
+			return response;
+		}
+		const headers = new Headers(init?.headers);
+		const sent = /^Bearer\s+(\S+)\s*$/i.exec(
+			headers.get("authorization") ?? "",
+		)?.[1];
+		if (!sent) {
+			return response;
+		}
+		const method = (init?.method ?? "GET").toUpperCase();
+		if (method !== "GET" && method !== "HEAD") {
+			try {
+				throwIfDispatchStopped();
+			} catch (error) {
+				await response.body?.cancel().catch(() => {});
+				throw error;
+			}
+		}
+		let fresh: string | null;
+		try {
+			fresh = await refreshAfterUnauthorized(sent);
+		} catch (error) {
+			await response.body?.cancel().catch(() => {});
+			throw error;
+		}
+		if (!fresh) {
+			return response;
+		}
+		await response.body?.cancel().catch(() => {});
+		headers.set("authorization", `Bearer ${fresh}`);
+		return baseFetch(input, { ...init, headers });
+	};
+}
+
 export function oauthRequestsRefuseRedirects(
 	serverUrl: URL,
 	baseFetch: GitLabMcpFetch,
@@ -458,15 +602,29 @@ export async function createMcpClient(
 	// Helper to create a fresh transport (must be new for each connection
 	// attempt). Every request the transport makes — initialize, the SSE
 	// stream, each JSON-RPC POST, and on the OAuth path the metadata
-	// discovery, token refresh and token exchange the SDK's `auth()` performs
-	// — goes through the guarded fetch, which re-checks the destination at
+	// discovery and any token request the SDK's `auth()` makes (it no longer
+	// refreshes; see `./oauth-provider`) — goes through the guarded fetch, which re-checks the destination at
 	// DNS-lookup time and refuses redirects. The `@ai-sdk/mcp` transport
 	// config is not used for OAuth because it accepts no fetch implementation:
 	// the SDK would resolve and connect on its own, and a name that answered
 	// a public address to the check above could answer a private one to it.
-	const guardedFetch = authProvider
-		? oauthRequestsRefuseRedirects(url, transportFetch)
-		: transportFetch;
+	// The stop check wraps the redirect refusal, so it runs immediately
+	// before each request the transport sends, after every await of its own
+	// (see `refuseWritesAfterDispatchStop`).
+	const guardedFetch = refuseWritesAfterDispatchStop(
+		authProvider
+			? oauthRequestsRefuseRedirects(url, transportFetch)
+			: transportFetch,
+	);
+	// Fabric's 401 refresh-and-resend sits outside the stop check, so the
+	// resend goes back through `guardedFetch` and is checked like any other
+	// request (see `retryOnceAfterUnauthorized`).
+	const outerFetch =
+		authProvider && isFabricRefreshingProvider(authProvider)
+			? retryOnceAfterUnauthorized(guardedFetch, (sent) =>
+					authProvider.refreshAfterUnauthorized(sent),
+				)
+			: guardedFetch;
 	const createTransport = () => {
 		const requestInit =
 			Object.keys(finalHeaders).length > 0
@@ -474,20 +632,23 @@ export async function createMcpClient(
 				: undefined;
 		return transport === "SSE"
 			? new SSEClientTransport(url, {
-					fetch: guardedFetch,
+					fetch: outerFetch,
 					requestInit,
 					authProvider,
 				})
 			: new StreamableHTTPClientTransport(url, {
-					fetch: guardedFetch,
+					fetch: outerFetch,
 					requestInit,
 					authProvider,
 				});
 	};
 
-	// OAuth: the SDK transport carries the provider, so tokens are attached,
-	// refreshed on 401 and, when no valid token can be obtained,
-	// `redirectToAuthorization` raises OAuthAuthorizationRequiredError.
+	// OAuth: the SDK transport carries the provider, which attaches the
+	// access token to each request (refreshing an expired one through
+	// Fabric's refresh service first). A 401 is refreshed and resent once by
+	// `outerFetch` above; when that does not help, the transport's `auth()`
+	// reaches `redirectToAuthorization`, which raises
+	// OAuthAuthorizationRequiredError.
 	if (authProvider) {
 		try {
 			return await createMCPClient({
@@ -699,6 +860,12 @@ interface McpClientForConfig {
 	 * generation the client was built for. `undefined` otherwise.
 	 */
 	oauthGrantGeneration?: number;
+	/**
+	 * For a STDIO config that is not OAuth2: the stored API-key ciphertext
+	 * the client was built from (`null` when it held none). `undefined`
+	 * otherwise.
+	 */
+	apiKeyCiphertext?: string | null;
 }
 
 /**
@@ -827,7 +994,26 @@ async function buildMcpClientForConfig(
 			mcpConfig,
 			mcpServer,
 		});
-		return { ...stdio, gitlabOrigin };
+		// An OAuth2 STDIO client carries its grant generation too, so the
+		// client cache drops it once the config is reconnected, revoked or
+		// re-registered (`getCachedMcpClientForConfig`).
+		// Any other STDIO client carries the key ciphertext it was built
+		// from: it sends that key on every wrapper call, so once the key is
+		// changed the cache drops it. Otherwise callers still holding the old
+		// key and callers built with the new one would take turns making the
+		// wrapper restart the server, until the old clients expire.
+		return {
+			...stdio,
+			gitlabOrigin,
+			oauthGrantGeneration:
+				authType === "OAUTH2"
+					? mcpConfig.oauthGrantGeneration
+					: undefined,
+			apiKeyCiphertext:
+				authType === "OAUTH2"
+					? undefined
+					: (mcpConfig.encryptedApiKey ?? null),
+		};
 	}
 
 	const serverUrl = mcpConfig.baseUrl || mcpServer?.defaultUrl;
@@ -895,8 +1081,9 @@ async function buildMcpClientForConfig(
 		};
 	}
 
-	// Use AI SDK v7 authProvider for OAuth2 authentication
-	// This enables automatic token management and mid-session refresh
+	// OAuth2: Fabric's database-backed provider supplies the access token for
+	// each request, and Fabric's refresh service is the only refresher (see
+	// `./oauth-provider` and `retryOnceAfterUnauthorized`).
 	if (authType === "OAUTH2") {
 		// Build default redirectUri if not provided
 		// This allows OAuth2 configs to work for tool listing without explicit redirectUri
@@ -1061,6 +1248,12 @@ interface CachedMcpClient {
 	 * (its provider would refuse every call anyway).
 	 */
 	oauthGrantGeneration?: number;
+	/**
+	 * Set for a STDIO client that sends a stored API key: the key ciphertext
+	 * at build time (`null` for none). A client whose config's key has since
+	 * changed is dropped before use.
+	 */
+	apiKeyCiphertext?: string | null;
 	createdAt: number;
 	lastUsedAt: number;
 }
@@ -1217,6 +1410,33 @@ export async function getCachedMcpClientForConfig(
 				cached = undefined;
 			}
 		}
+		// A STDIO client sends the API key it was built with. Once the key is
+		// changed or removed, drop it so the next client carries the current
+		// one. A failed read drops it too.
+		if (cached && cached.apiKeyCiphertext !== undefined) {
+			let current: string | null | undefined;
+			let read = false;
+			try {
+				current = await getMcpConfigEncryptedApiKey(configId);
+				read = true;
+			} catch (error) {
+				console.warn(
+					`[MCP Client Cache] Could not re-check the cached API key client for ${cached.serverName}; dropping it`,
+					error instanceof Error ? error.message : error,
+				);
+			}
+			if (!read || current !== cached.apiKeyCiphertext) {
+				if (mcpClientCache.get(cacheKey) === cached) {
+					mcpClientCache.delete(cacheKey);
+				}
+				try {
+					await cached.client.close();
+				} catch {
+					// Ignore close errors
+				}
+				cached = undefined;
+			}
+		}
 		if (cached) {
 			// A cached client stays bound to the instance it was built for,
 			// even after the config or the connection moved. Refuse it for a
@@ -1344,6 +1564,7 @@ export async function getCachedMcpClientForConfig(
 			gitlabOrigin: result.gitlabOrigin,
 			gitlabConnectionGeneration: result.gitlabConnectionGeneration,
 			oauthGrantGeneration: result.oauthGrantGeneration,
+			apiKeyCiphertext: result.apiKeyCiphertext,
 			createdAt: Date.now(),
 			lastUsedAt: Date.now(),
 		});
@@ -1453,15 +1674,231 @@ interface StdioWrapperClient {
 }
 
 /**
- * Google's authorization server and token endpoint, as pinned for Google in
- * Fabric's provider table (`PINNED_OAUTH_PROVIDERS` in
- * packages/api/modules/mcp/lib/oauth-authorization-server.ts) and allowlisted
- * by the binding backfill: where the Google Drive STDIO server refreshes.
+ * How long before expiry Fabric refreshes a Google Drive STDIO access token.
+ * The Drive server (`@modelcontextprotocol/server-gdrive`) builds its Google
+ * client with no client id or secret and is handed no refresh token, so it
+ * cannot refresh. Its google-auth-library treats a token as expiring 5
+ * minutes early (`DEFAULT_EAGER_REFRESH_THRESHOLD_MILLIS`, checked in
+ * google-auth-library 9.15.1) and then fails the call with "No refresh token
+ * is set." Refreshing 10 minutes ahead hands it a token with margin past that.
  */
-const GOOGLE_PINNED_OAUTH = {
-	authorizationServerUrl: "https://accounts.google.com",
-	tokenEndpoint: "https://oauth2.googleapis.com/token",
-} as const;
+const GDRIVE_STDIO_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * Within this of its expiry a token counts as expired (clock skew), as in the
+ * HTTP OAuth provider: a failed refresh then counts a strike and the call is
+ * refused rather than sent with a dead token.
+ */
+const GDRIVE_STDIO_EXPIRED_SKEW_MS = 60 * 1000;
+
+/**
+ * Within this of its expiry the child refuses a token: its google-auth-library
+ * treats it as expiring (the 5-minute eager threshold described at
+ * GDRIVE_STDIO_REFRESH_WINDOW_MS) and fails the call trying to refresh with
+ * the empty refresh token. Such a token is never sent.
+ */
+const GDRIVE_STDIO_CHILD_REFUSES_MS = 5 * 60 * 1000;
+
+/**
+ * Lifetime of a Google access token (Google's token endpoint returns
+ * `expires_in: 3599`). Used only for a bound grant stored without an expiry,
+ * dated from the row's `updatedAt`, as the HTTP provider does for servers in
+ * `getMcpServerDefaultTokenExpiry`.
+ */
+const GOOGLE_ACCESS_TOKEN_LIFETIME_MS = 3600 * 1000;
+
+/**
+ * The credentials for one Google Drive STDIO wrapper call, and how fresh they
+ * are: `[grant generation, access-token expiry in ms]`, compared element by
+ * element by the wrapper, so a call that resolved its token just before
+ * another refreshed it does not displace the process started with the newer
+ * token.
+ */
+interface GoogleDriveStdioCredentials {
+	credentials: Record<string, string>;
+	version: number[];
+}
+
+/**
+ * The Google Drive STDIO server's credential files, for one wrapper call,
+ * from the config as stored now. Fabric is the only refresher of this grant:
+ * the child gets the access token alone, with an empty client secret and
+ * refresh token, and a token near expiry is refreshed here through the
+ * shared refresh service first.
+ *
+ * Refuses (`OAUTH_AUTH_REQUIRED`, nothing sent) when the config no longer
+ * holds the grant `generation` names, is flagged for reconnect, or carries a
+ * credential set its binding was not written with.
+ */
+async function resolveGoogleDriveStdioCredentials(
+	args: {
+		configId: string;
+		userId: string;
+		organizationId?: string;
+		serverName: string;
+		generation: number;
+	},
+	retryWhenSuperseded = true,
+): Promise<GoogleDriveStdioCredentials> {
+	const { configId, userId, organizationId, serverName, generation } = args;
+	const authRequired = (message: string) =>
+		new McpClientError({
+			message,
+			code: "OAUTH_AUTH_REQUIRED",
+			serverName,
+			isAuthError: true,
+		});
+	const reconnectMessage = `Authentication required for "${serverName}". Please reconnect it in MCP Settings.`;
+
+	// Read with the same tenant scope the client was built with.
+	const current = await getMcpConfigById(configId, {
+		userId,
+		organizationId,
+	});
+	if (!current) {
+		throw new McpClientError({
+			message:
+				"MCP configuration not found. Please configure your MCP server in Settings.",
+			code: "CONFIG_NOT_FOUND",
+			serverName,
+		});
+	}
+	if (
+		current.authType !== "OAUTH2" ||
+		current.oauthGrantGeneration !== generation ||
+		!current.encryptedAccessToken
+	) {
+		throw authRequired(
+			`The OAuth connection for "${serverName}" changed. Reconnect or retry.`,
+		);
+	}
+	if (current.needsReauth) {
+		throw authRequired(
+			`Authentication expired for "${serverName}". Please re-authenticate in MCP Settings.`,
+		);
+	}
+
+	// The refresh token and client secret never reach the child, but the
+	// access token does, and Fabric may refresh below. A credential set its
+	// binding was not written with (`credentialFingerprint`) means a writer
+	// outside the credential module replaced part of it (the previous app
+	// version during a rolling deploy); the access token written alongside
+	// may then belong to another authorization server. Send nothing and flag
+	// the config for reconnect, as the refresh service does on the same
+	// mismatch.
+	const binding = parseMcpOAuthBinding(current.oauthBinding);
+	if (
+		binding &&
+		!credentialFingerprintMatches(binding, {
+			oauthClientId: current.oauthClientId ?? null,
+			encryptedOauthClientSecret:
+				current.encryptedOauthClientSecret ?? null,
+			encryptedRefreshToken: current.encryptedRefreshToken ?? null,
+		})
+	) {
+		await markMcpOAuthReconnectRequired({
+			configId,
+			expectedGeneration: generation,
+			reason: "Reconnect required: the stored OAuth credentials do not match the connection they were bound with.",
+		});
+		throw authRequired(reconnectMessage);
+	}
+
+	const { decryptApiKey } = await import("@repo/utils");
+	const now = Date.now();
+	let expiresAt = current.tokenExpiresAt?.getTime() ?? null;
+	if (expiresAt === null && binding) {
+		// A bound grant stored without an expiry (a token import that left
+		// it out): date the token from the row's last write, so it is
+		// refreshed like any other rather than sent until Google rejects it
+		// inside the child. With no `updatedAt`, treat it as expired.
+		const updatedAt = current.updatedAt
+			? new Date(current.updatedAt).getTime()
+			: Number.NaN;
+		expiresAt = Number.isFinite(updatedAt)
+			? updatedAt + GOOGLE_ACCESS_TOKEN_LIFETIME_MS
+			: 0;
+	}
+	const isExpired =
+		expiresAt !== null && expiresAt < now + GDRIVE_STDIO_EXPIRED_SKEW_MS;
+	const childRefuses =
+		expiresAt !== null && expiresAt < now + GDRIVE_STDIO_CHILD_REFUSES_MS;
+	let accessToken = decryptApiKey(current.encryptedAccessToken);
+	let expiryDate = expiresAt;
+
+	if (!binding) {
+		// Unbound or a bearer-only import: no authorization server to refresh
+		// with. Served until the child would refuse it.
+		if (childRefuses) {
+			throw authRequired(reconnectMessage);
+		}
+	} else if (
+		expiresAt !== null &&
+		expiresAt < now + GDRIVE_STDIO_REFRESH_WINDOW_MS
+	) {
+		// Only a token that has expired counts a failed refresh against the
+		// three-strike limit; inside the early window the current token still
+		// works.
+		const outcome = await refreshMcpOAuthAccessToken(configId, {
+			recordFailures: isExpired,
+			expectedGeneration: generation,
+		});
+		if (outcome.status === "refreshed") {
+			accessToken = outcome.accessToken;
+			// The expiry the service wrote, not one computed here: the
+			// wrapper respawns the child whenever the credentials it is sent
+			// differ (`hashCredentials`), so this call, calls sharing this
+			// refresh and the next call reading the row must send the same
+			// value.
+			expiryDate = outcome.tokenExpiresAt?.getTime() ?? null;
+		} else if (outcome.status === "superseded") {
+			// Another refresh won, or the grant changed: read once more (that
+			// read refuses a changed grant).
+			if (retryWhenSuperseded) {
+				return resolveGoogleDriveStdioCredentials(args, false);
+			}
+			throw authRequired(
+				`The OAuth connection for "${serverName}" changed. Reconnect or retry.`,
+			);
+		} else if (outcome.status === "reconnect-required" || isExpired) {
+			throw authRequired(reconnectMessage);
+		} else if (childRefuses) {
+			// The refresh failed for now, and the stored token is too close
+			// to expiry for the child to use. Nothing is sent; a later call
+			// can retry the refresh.
+			throw new McpClientError({
+				message: `Could not renew the Google Drive access for "${serverName}" just now. Try again in a moment.`,
+				code: "OAUTH_REFRESH_FAILED",
+				serverName,
+			});
+		}
+	}
+
+	// The package expects file-based credentials, which the wrapper writes
+	// from these JSON strings: GDRIVE_OAUTH_PATH ({web: {client_id,
+	// client_secret, redirect_uris}}) and GDRIVE_CREDENTIALS_PATH
+	// ({access_token, refresh_token, token_type, expiry_date}). The secret
+	// and refresh token are always empty: the child cannot refresh with them
+	// (see GDRIVE_STDIO_REFRESH_WINDOW_MS) and must not hold them.
+	return {
+		credentials: {
+			__GDRIVE_OAUTH_KEYS_JSON: JSON.stringify({
+				web: {
+					client_id: current.oauthClientId ?? "",
+					client_secret: "",
+					redirect_uris: ["http://localhost"],
+				},
+			}),
+			__GDRIVE_CREDENTIALS_JSON: JSON.stringify({
+				access_token: accessToken,
+				refresh_token: "",
+				token_type: "Bearer",
+				expiry_date: expiryDate,
+			}),
+		},
+		version: [generation, expiryDate ?? 0],
+	};
+}
 
 /**
  * Configuration for STDIO MCP client creation
@@ -1476,12 +1913,7 @@ interface CreateStdioMcpClientOptions {
 		apiKeyMethod?: string | null;
 		commandArgs?: string[] | null;
 		authType?: string | null;
-		oauthClientId?: string | null;
-		encryptedOauthClientSecret?: string | null;
 		encryptedAccessToken?: string | null;
-		encryptedRefreshToken?: string | null;
-		tokenExpiresAt?: Date | null;
-		oauthBinding?: unknown;
 		oauthGrantGeneration?: number;
 	};
 	mcpServer: {
@@ -1489,6 +1921,19 @@ interface CreateStdioMcpClientOptions {
 		command?: string;
 	} | null;
 }
+
+/**
+ * Slack `auth.test` error codes that mean the bot token itself is unusable
+ * (https://api.slack.com/methods/auth.test), as opposed to a transient
+ * failure such as `ratelimited`.
+ */
+const SLACK_AUTH_ERRORS = new Set([
+	"invalid_auth",
+	"not_authed",
+	"account_inactive",
+	"token_revoked",
+	"token_expired",
+]);
 
 /**
  * Creates a client for STDIO-based MCP servers via the wrapper service.
@@ -1557,9 +2002,15 @@ async function createStdioMcpClientForConfig(
 			command.includes("server-slack") ||
 			command.includes("slack")
 		) {
-			credentials = { SLACK_BOT_TOKEN: decryptedKey };
-			// @modelcontextprotocol/server-slack also requires SLACK_TEAM_ID
-			// Fetch it from Slack's auth.test API using the bot token
+			// @modelcontextprotocol/server-slack exits at startup without
+			// SLACK_TEAM_ID, fetched here from Slack's auth.test API with the
+			// bot token. A client is not built without it: it would be cached
+			// for MCP_CLIENT_CACHE_TTL with credentials that differ from those
+			// of a working client, so the wrapper would start a new server for
+			// each of its calls, and each start would fail. Failing here keeps
+			// it out of the cache, so the next call looks the team id up again.
+			let teamId: string | undefined;
+			let slackError: string | undefined;
 			try {
 				const authResponse = await fetch(
 					"https://slack.com/api/auth.test",
@@ -1574,118 +2025,63 @@ async function createStdioMcpClientForConfig(
 				const authData = (await authResponse.json()) as {
 					ok: boolean;
 					team_id?: string;
+					error?: string;
 				};
 				if (authData.ok && authData.team_id) {
-					credentials.SLACK_TEAM_ID = authData.team_id;
+					teamId = authData.team_id;
+				} else {
+					slackError = authData.error;
 				}
 			} catch (e) {
 				console.warn("[MCP Client] Failed to fetch Slack team_id:", e);
 			}
+			if (!teamId) {
+				const isAuthError =
+					slackError !== undefined &&
+					SLACK_AUTH_ERRORS.has(slackError);
+				throw new McpClientError({
+					message: isAuthError
+						? `Slack rejected the bot token for "${serverName}". Please update it in MCP Settings.`
+						: `Could not look up the Slack workspace for "${serverName}". Please try again.`,
+					code: isAuthError
+						? "AUTH_FAILED"
+						: "SLACK_TEAM_ID_UNAVAILABLE",
+					serverName,
+					isAuthError,
+				});
+			}
+			credentials = {
+				SLACK_BOT_TOKEN: decryptedKey,
+				SLACK_TEAM_ID: teamId,
+			};
 		} else {
 			// Generic fallback - use API_KEY
 			credentials = { API_KEY: decryptedKey };
 		}
 	}
 
-	// Handle Google Drive OAuth2 credentials
-	// The @modelcontextprotocol/server-gdrive package expects file-based credentials:
-	// - GDRIVE_OAUTH_PATH: JSON with {installed: {client_id, client_secret, redirect_uris}}
-	// - GDRIVE_CREDENTIALS_PATH: JSON with {access_token, refresh_token, token_type, expiry_date}
+	// Google Drive OAuth2: the credential files are worked out again on every
+	// wrapper call (`resolveCredentials`), not frozen here, because a cached
+	// client outlives an access token, a revoke and a reconnect. Resolved once
+	// now as well, so an unusable grant is refused before a client exists.
+	let resolveCredentials:
+		| (() => Promise<GoogleDriveStdioCredentials>)
+		| undefined;
 	if (
 		mcpConfig.authType === "OAUTH2" &&
 		command.includes("server-gdrive") &&
 		mcpConfig.encryptedAccessToken
 	) {
-		const { decryptApiKey } = await import("@repo/utils");
-
-		// The wrapper's server refreshes with the client secret and refresh
-		// token on its own, so both are handed over only for a grant bound
-		// to its authorization server and still the credential set that
-		// binding was written with (`credentialFingerprint`). A mismatch —
-		// a writer outside the credential module replaced one of them —
-		// sends nothing and flags the config for reconnect. An unbound or
-		// bearer-only grant gets the access token alone, as the HTTP
-		// transports serve it.
-		const binding = parseMcpOAuthBinding(mcpConfig.oauthBinding);
-		const storedCredentials = {
-			oauthClientId: mcpConfig.oauthClientId ?? null,
-			encryptedOauthClientSecret:
-				mcpConfig.encryptedOauthClientSecret ?? null,
-			encryptedRefreshToken: mcpConfig.encryptedRefreshToken ?? null,
-		};
-		if (
-			binding &&
-			!credentialFingerprintMatches(binding, storedCredentials)
-		) {
-			await markMcpOAuthReconnectRequired({
+		const generation = mcpConfig.oauthGrantGeneration ?? 0;
+		resolveCredentials = () =>
+			resolveGoogleDriveStdioCredentials({
 				configId,
-				expectedGeneration: mcpConfig.oauthGrantGeneration ?? 0,
-				reason: "Reconnect required: the stored OAuth credentials do not match the connection they were bound with.",
-			});
-			throw new McpClientError({
-				message: `Authentication required for "${serverName}". Please reconnect it in MCP Settings.`,
-				code: "OAUTH_AUTH_REQUIRED",
+				userId,
+				organizationId,
 				serverName,
-				isAuthError: true,
+				generation,
 			});
-		}
-		// The child process refreshes at Google's token endpoint, which it
-		// chooses itself: hand it the secret and refresh token only for a
-		// binding that names exactly that AS and endpoint (Fabric's pinned
-		// Google entry). A grant bound anywhere else gets the access token
-		// alone.
-		const handOverRefreshCredentials =
-			!!binding &&
-			sameAuthorizationServer(
-				binding.authorizationServerUrl,
-				GOOGLE_PINNED_OAUTH.authorizationServerUrl,
-			) &&
-			binding.tokenEndpoint === GOOGLE_PINNED_OAUTH.tokenEndpoint;
-
-		// Build OAuth client keys JSON
-		const clientSecret =
-			handOverRefreshCredentials && mcpConfig.encryptedOauthClientSecret
-				? decryptApiKey(mcpConfig.encryptedOauthClientSecret)
-				: "";
-		const oauthKeys = {
-			web: {
-				client_id: mcpConfig.oauthClientId ?? "",
-				client_secret: clientSecret,
-				redirect_uris: ["http://localhost"],
-			},
-		};
-
-		// Build credentials (tokens) JSON
-		const accessToken = decryptApiKey(mcpConfig.encryptedAccessToken);
-		const refreshToken =
-			handOverRefreshCredentials && mcpConfig.encryptedRefreshToken
-				? decryptApiKey(mcpConfig.encryptedRefreshToken)
-				: "";
-		const creds = {
-			access_token: accessToken,
-			refresh_token: refreshToken,
-			token_type: "Bearer",
-			expiry_date: mcpConfig.tokenExpiresAt?.getTime() ?? null,
-		};
-
-		// Pass JSON content to the wrapper instead of file paths.
-		// The wrapper will materialize these into temp files on its own filesystem.
-		credentials = {
-			...credentials,
-			__GDRIVE_OAUTH_KEYS_JSON: JSON.stringify(oauthKeys),
-			__GDRIVE_CREDENTIALS_JSON: JSON.stringify(creds),
-		};
-
-		console.log(
-			"[MCP Client] Google Drive creds prepared (JSON content):",
-			{
-				hasAccessToken: !!accessToken,
-				hasRefreshToken: !!refreshToken,
-				tokenExpiry: mcpConfig.tokenExpiresAt?.toISOString(),
-				oauthClientId: mcpConfig.oauthClientId ? "present" : "missing",
-				clientSecret: clientSecret ? "present" : "missing",
-			},
-		);
+		await resolveCredentials();
 	}
 
 	if (process.env.NODE_ENV === "development") {
@@ -1720,6 +2116,7 @@ async function createStdioMcpClientForConfig(
 		organizationId,
 		configId,
 		credentials,
+		resolveCredentials,
 		serverName,
 	});
 
@@ -1843,6 +2240,12 @@ function createStdioWrapperClient(options: {
 	organizationId?: string;
 	configId: string;
 	credentials: Record<string, string>;
+	/**
+	 * Credentials worked out again for each call (Google Drive OAuth2), merged
+	 * over `credentials`, with how fresh they are (sent as
+	 * `credentialsVersion`). A throw refuses the call before anything is sent.
+	 */
+	resolveCredentials?: () => Promise<GoogleDriveStdioCredentials>;
 	serverName: string;
 }): StdioWrapperClient {
 	const {
@@ -1853,6 +2256,7 @@ function createStdioWrapperClient(options: {
 		organizationId,
 		configId,
 		credentials,
+		resolveCredentials,
 		serverName,
 	} = options;
 
@@ -1862,6 +2266,12 @@ function createStdioWrapperClient(options: {
 	async function callWrapper(
 		method: string,
 		params?: unknown,
+		/**
+		 * Aborts the request to the wrapper (a tool call's `abortSignal`,
+		 * set by `executeMcpTool` when a call has a time limit). An abort
+		 * before the request is sent means it is never sent.
+		 */
+		signal?: AbortSignal,
 	): Promise<unknown> {
 		// Build headers - include internal API key if configured
 		const headers: Record<string, string> = {
@@ -1872,9 +2282,35 @@ function createStdioWrapperClient(options: {
 			headers["x-internal-api-key"] = internalApiKey;
 		}
 
+		// A stopped chat turn makes no refresh either; checked again below,
+		// right before the send.
+		throwIfDispatchStopped();
+		const resolved = resolveCredentials
+			? await resolveCredentials()
+			: undefined;
+		const callCredentials = resolved
+			? { ...credentials, ...resolved.credentials }
+			: credentials;
+
+		// Every JSON-RPC call to a STDIO server (a `tools/call` among them) is
+		// this POST, which bypasses the transport fetch guarded above
+		// (`refuseWritesAfterDispatchStop`): inside an Advisor chat turn that
+		// has stopped or used its token allowance it is refused here, in the
+		// same synchronous run as the send, and outside the try so the stop
+		// is not reported as an unreachable wrapper. A no-op outside a turn.
+		throwIfDispatchStopped();
+		signal?.throwIfAborted();
+		// A tool call past the send deadline of the code sending it (a PM
+		// create's, set by `executeMcpTool`) is not sent: compared with the
+		// clock here, after `resolveCredentials`' await, in the same
+		// synchronous run as the send. No-op outside a deadline scope.
+		if (method === "tools/call") {
+			throwIfDispatchDeadlinePassed();
+		}
 		let response: Response;
 		try {
 			response = await fetch(`${wrapperUrl}/mcp/call`, {
+				...(signal ? { signal } : {}),
 				method: "POST",
 				headers,
 				body: JSON.stringify({
@@ -1885,10 +2321,17 @@ function createStdioWrapperClient(options: {
 					userId,
 					organizationId: organizationId ?? null,
 					configId,
-					credentials,
+					credentials: callCredentials,
+					...(resolved
+						? { credentialsVersion: resolved.version }
+						: {}),
 				}),
 			});
 		} catch (error) {
+			// Aborted by the caller's time limit: not an unreachable wrapper.
+			if (signal?.aborted) {
+				throw error;
+			}
 			throw new McpClientError({
 				message: `MCP STDIO wrapper service is not reachable at ${wrapperUrl}. Ensure the mcp-stdio-wrapper service is running. Original error: ${error instanceof Error ? error.message : String(error)}`,
 				code: "STDIO_WRAPPER_UNREACHABLE",
@@ -1997,7 +2440,10 @@ function createStdioWrapperClient(options: {
 							properties: (patchedSchema as any).properties ?? {},
 							additionalProperties: false,
 						}),
-						execute: async (toolArgs: unknown) => {
+						execute: async (
+							toolArgs: unknown,
+							options?: { abortSignal?: AbortSignal },
+						) => {
 							// Coerce arguments to match expected schema types
 							// LLMs often output strings for arrays/numbers/booleans
 							let coercedArgs = coerceToolArguments(
@@ -2016,10 +2462,14 @@ function createStdioWrapperClient(options: {
 								) as typeof coercedArgs;
 							}
 							// Call the tool via the wrapper service
-							const toolResult = await callWrapper("tools/call", {
-								name: toolName,
-								arguments: coercedArgs,
-							});
+							const toolResult = await callWrapper(
+								"tools/call",
+								{
+									name: toolName,
+									arguments: coercedArgs,
+								},
+								options?.abortSignal,
+							);
 							return toolResult;
 						},
 					});
@@ -2054,7 +2504,9 @@ function createStdioWrapperClient(options: {
 		},
 
 		async close(): Promise<void> {
-			// The wrapper handles process lifecycle and credential cleanup via TTL mechanism.
+			// The wrapper handles process lifecycle and credential cleanup: it
+			// recycles idle processes, and replaces a pooled process when a
+			// call brings different credentials.
 		},
 	};
 }

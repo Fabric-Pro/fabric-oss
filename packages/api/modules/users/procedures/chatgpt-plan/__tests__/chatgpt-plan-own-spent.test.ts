@@ -38,6 +38,7 @@ vi.mock("@repo/database", () => ({
 		lastRequestAt: null,
 		requests: 0,
 		inputTokens: 0,
+		weightedInputTokens: 0,
 		cachedInputTokens: 0,
 		outputTokens: 0,
 		topConsumers: [],
@@ -46,6 +47,8 @@ vi.mock("@repo/database", () => ({
 	CHATGPT_PLAN_WINDOW_MS: 5 * 60 * 60_000,
 	CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS: 1_000_000_000,
 	chatGptPlanWindowPercent: () => 0,
+	chatGptPlanReportedUsage: () => null,
+	getChatGptPlanSourceStates: async () => [],
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/subscription-backfill", () => ({

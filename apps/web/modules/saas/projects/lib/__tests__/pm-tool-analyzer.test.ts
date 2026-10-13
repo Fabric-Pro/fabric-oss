@@ -89,6 +89,45 @@ describe("analyzePMToolCapabilities — Atlassian Rovo", () => {
 	});
 });
 
+describe("analyzePMToolCapabilities — Atlassian Rovo v2", () => {
+	const ROVO_V2_TOOLS: McpTool[] = [
+		{ name: "getAccessibleAtlassianResources", inputSchema: obj({}) },
+		{
+			name: "getProject",
+			inputSchema: obj({ identifier: {} }, ["identifier"]),
+		},
+		{ name: "getTeam", inputSchema: obj({ teamId: {} }, ["teamId"]) },
+		{ name: "listJiraProjects", inputSchema: obj({ cloudId: {} }) },
+		{ name: "listJiraBoards", inputSchema: obj({ cloudId: {} }) },
+		{
+			name: "createJiraIssue",
+			inputSchema: obj(
+				{
+					cloudId: {},
+					projectKey: {},
+					issueTypeName: {},
+					summary: {},
+					description: {},
+				},
+				["cloudId", "projectKey", "issueTypeName", "summary"],
+			),
+		},
+	];
+
+	it("uses listJiraProjects and ignores single-item getters getProject and getTeam", () => {
+		const caps = analyzePMToolCapabilities(ROVO_V2_TOOLS);
+		expect(caps.hasPMCapabilities).toBe(true);
+		expect(caps.containerHierarchy).toHaveLength(1);
+		expect(caps.containerHierarchy[0].containerType).toBe("project");
+		expect(caps.containerHierarchy[0].listToolName).toBe(
+			"listJiraProjects",
+		);
+		expect(caps.cloudIdResolverTool).toBe(
+			"getAccessibleAtlassianResources",
+		);
+	});
+});
+
 describe("analyzePMToolCapabilities — Fizzy (multi-level chain preserved)", () => {
 	// Fizzy: get_accounts (root) → get_boards (needs account_slug). The prune
 	// must NOT drop the account level. account_slug is marked OPTIONAL here on
@@ -180,17 +219,18 @@ describe("fetchContainersWithHierarchy — Atlassian Rovo", () => {
 		);
 
 		const caps = analyzePMToolCapabilities(ROVO_TOOLS);
-		const { containers } = await fetchContainersWithHierarchy(
-			"cfg-1",
-			caps.containerHierarchy,
-			"org-1",
-			{
-				cloudIdResolverTool: caps.cloudIdResolverTool,
-				idFieldHint: containerIdFieldHint(
-					caps.taskCreation?.containerParam,
-				),
-			},
-		);
+		const { containers, additionalContext } =
+			await fetchContainersWithHierarchy(
+				"cfg-1",
+				caps.containerHierarchy,
+				"org-1",
+				{
+					cloudIdResolverTool: caps.cloudIdResolverTool,
+					idFieldHint: containerIdFieldHint(
+						caps.taskCreation?.containerParam,
+					),
+				},
+			);
 
 		// cloudId resolved before the project list, Confluence never touched.
 		expect(calls.map((c) => c.toolName)).toEqual([
@@ -199,5 +239,156 @@ describe("fetchContainersWithHierarchy — Atlassian Rovo", () => {
 		]);
 		// project identified by key ("SAN"), not numeric id ("10001").
 		expect(containers).toEqual([{ id: "SAN", name: "Sandbox" }]);
+		expect(additionalContext.cloudId).toBe("cloud-1");
+	});
+
+	it("throws missing cloudId when resolver returns an unreadable shape", async () => {
+		const calls: Array<{
+			toolName: string;
+			params: Record<string, string>;
+		}> = [];
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init: { body: string }) => {
+				const body = JSON.parse(init.body);
+				calls.push({ toolName: body.toolName, params: body.params });
+				if (body.toolName === "getAccessibleAtlassianResources") {
+					return {
+						ok: true,
+						json: async () => ({
+							result: { unexpected: "unreadable-shape" },
+						}),
+					};
+				}
+				if (body.toolName === "listJiraProjects") {
+					return {
+						ok: true,
+						json: async () => ({
+							result: [
+								{
+									id: "10002",
+									key: "PROJ",
+									name: "Project V2",
+								},
+							],
+						}),
+					};
+				}
+				throw new Error(`unexpected tool ${body.toolName}`);
+			}),
+		);
+
+		const v2Tools: McpTool[] = [
+			{ name: "getAccessibleAtlassianResources", inputSchema: obj({}) },
+			{
+				name: "listJiraProjects",
+				inputSchema: obj({ cloudId: {} }, ["cloudId"]),
+			},
+			{
+				name: "createJiraIssue",
+				inputSchema: obj({ cloudId: {}, projectKey: {}, summary: {} }, [
+					"cloudId",
+					"projectKey",
+					"summary",
+				]),
+			},
+		];
+
+		const caps = analyzePMToolCapabilities(v2Tools);
+		await expect(
+			fetchContainersWithHierarchy(
+				"cfg-2",
+				caps.containerHierarchy,
+				"org-1",
+				{
+					cloudIdResolverTool: caps.cloudIdResolverTool,
+					idFieldHint: containerIdFieldHint(
+						caps.taskCreation?.containerParam,
+					),
+				},
+			),
+		).rejects.toThrow("Missing required parameter: cloudId");
+
+		expect(calls.map((c) => c.toolName)).toEqual([
+			"getAccessibleAtlassianResources",
+		]);
+	});
+
+	it("unwraps Rovo v2 nested { data: { resources } } and { data: { values } }", async () => {
+		const calls: Array<{
+			toolName: string;
+			params: Record<string, unknown>;
+		}> = [];
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: string, init: { body: string }) => {
+				const body = JSON.parse(init.body);
+				calls.push({ toolName: body.toolName, params: body.params });
+				if (body.toolName === "getAccessibleAtlassianResources") {
+					return {
+						ok: true,
+						json: async () => ({
+							result: {
+								data: {
+									resources: [
+										{
+											cloudId:
+												"11111111-1111-4111-8111-111111111111",
+											url: "https://example.atlassian.net",
+										},
+									],
+								},
+							},
+						}),
+					};
+				}
+				if (body.toolName === "getVisibleJiraProjects") {
+					expect(body.params.cloudId).toBe(
+						"11111111-1111-4111-8111-111111111111",
+					);
+					return {
+						ok: true,
+						json: async () => ({
+							result: {
+								data: {
+									values: [
+										{
+											key: "EX",
+											name: "Example",
+										},
+									],
+								},
+							},
+						}),
+					};
+				}
+				throw new Error(`unexpected tool ${body.toolName}`);
+			}),
+		);
+
+		const caps = analyzePMToolCapabilities(ROVO_TOOLS);
+		const { containers, additionalContext } =
+			await fetchContainersWithHierarchy(
+				"cfg-1",
+				caps.containerHierarchy,
+				"org-1",
+				{
+					cloudIdResolverTool: caps.cloudIdResolverTool,
+					idFieldHint: containerIdFieldHint(
+						caps.taskCreation?.containerParam,
+					),
+				},
+			);
+
+		expect(calls.map((c) => c.toolName)).toEqual([
+			"getAccessibleAtlassianResources",
+			"getVisibleJiraProjects",
+		]);
+		expect(containers).toEqual([{ id: "EX", name: "Example" }]);
+		expect(additionalContext.cloudId).toBe(
+			"11111111-1111-4111-8111-111111111111",
+		);
 	});
 });

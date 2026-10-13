@@ -11,6 +11,7 @@
  */
 
 import type { DecisionPrecheckResult } from "@repo/agent-types";
+import type { AiJobKey } from "@repo/ai";
 import { logger } from "@repo/logs";
 import { judgeDecisionContradictions } from "./judge";
 import { selectCandidateDecisions } from "./select-candidates";
@@ -19,6 +20,8 @@ export interface RunDecisionPrecheckInput {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
+	/** The background job whose artifact this checks (Fizzy #2770). */
+	jobType?: AiJobKey;
 	artifact: {
 		surface: "backlog_proposal" | "document";
 		/**
@@ -36,7 +39,7 @@ function emptyResult(): DecisionPrecheckResult {
 export async function runDecisionPrecheck(
 	input: RunDecisionPrecheckInput,
 ): Promise<DecisionPrecheckResult> {
-	const { projectId, userId, organizationId, artifact } = input;
+	const { projectId, userId, organizationId, jobType, artifact } = input;
 	try {
 		const artifactText = artifact.items
 			.map((item) => item.text)
@@ -54,6 +57,7 @@ export async function runDecisionPrecheck(
 			projectId,
 			userId,
 			organizationId,
+			jobType,
 			candidates,
 			items: artifact.items,
 		});

@@ -254,6 +254,10 @@ export const startDiscoveryProcedure = tenantProtectedProcedure
 						projectId,
 						storyId,
 						userId: user.id,
+						// A person starts discovery on one feature and waits for
+						// the contract, so it may run on their ChatGPT plan
+						// (Fizzy #2770). Cleared on start while impersonating.
+						planEligible: true,
 						organizationId: workflowOrgId,
 						sources,
 						story: {

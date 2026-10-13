@@ -512,9 +512,15 @@ const FEATURE_LABELS: Record<string, string> = {
 	"duplicate-scan": "Duplicate scan",
 	"chat-agent": "Chat agents",
 	"glossy-edition": "Glossy Version Export",
-	// Embeddings resolve through a different path that cannot carry a feature
-	// key, and they are usually the bulk of the rows. Naming them keeps the
-	// genuine "not tagged yet" bucket meaningful.
+	"code-index": "Code index (embeddings)",
+	"text-to-speech": "Text to speech",
+	transcription: "Transcription",
+	"delivery-track": "Delivery track classification",
+	"document-quality": "Document quality scoring",
+	"story-classification": "Story kind classification",
+	// Most embeddings still carry no feature key, and they are usually the
+	// bulk of the rows. Naming them keeps the genuine "not tagged yet" bucket
+	// meaningful.
 	__embeddings__: "Embeddings (RAG indexing)",
 };
 

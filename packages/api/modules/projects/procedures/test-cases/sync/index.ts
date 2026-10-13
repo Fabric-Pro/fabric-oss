@@ -6,6 +6,7 @@ export { dismissTestCasePmSyncFailureProcedure } from "./dismiss-pm-sync-failure
 export { dismissTestCasePmSyncFailureBatchProcedure } from "./dismiss-pm-sync-failure-batch";
 export { getTestCasePmCapabilitiesProcedure } from "./get-test-case-pm-capabilities";
 export { importTestCaseFromPmProcedure } from "./import-test-case-from-pm";
+export { linkTestCasePmItemProcedure } from "./link-pm-item";
 export { listPmTestCasesProcedure } from "./list-pm-test-cases";
 export { retryTestCasePmSyncProcedure } from "./retry-pm-sync";
 export { retryTestCasePmSyncBatchProcedure } from "./retry-pm-sync-batch";

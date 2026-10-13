@@ -17,6 +17,7 @@ export {
 export {
 	executeConnectedServerTool,
 	getAggregatedTools,
+	validateServerSelection,
 } from "./tool-aggregator";
 export type {
 	GatewaySession,

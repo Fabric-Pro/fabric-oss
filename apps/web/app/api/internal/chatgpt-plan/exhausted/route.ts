@@ -9,6 +9,11 @@
  * may run on — the member's own, or one of the token's organization's shared
  * accounts; anything else is ignored. Answers 202 either way, so a caller
  * learns nothing about plans that are not its own.
+ *
+ * The key the exchange handed out also names the sign-in whose token the
+ * agent used (Fizzy #3037), and the refusal is recorded only while the plan
+ * still has that sign-in. A key without one, from an exchange before it named
+ * them, is recorded against whatever sign-in the plan has now.
  */
 
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
@@ -16,6 +21,10 @@ import {
 	chatGptPlanExhaustedMessage,
 	recordReportedChatGptPlanSourceExhausted,
 } from "@repo/ai/lib/chatgpt-plan/exhaustion-breaker";
+import {
+	type ExchangedPlanSource,
+	parseExchangedPlanSource,
+} from "@repo/ai/lib/chatgpt-plan/plan-source-key";
 import type { PlanSourceRef } from "@repo/ai/lib/chatgpt-plan/sources";
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import { getChatGptPlanOrgAccount } from "@repo/database";
@@ -29,8 +38,6 @@ const bodySchema = z.object({
 	planSource: z.string().min(1).max(160),
 	resetAt: z.iso.datetime().optional(),
 });
-
-const PLAN_SOURCE = /^(user|org):([\w-]{1,128})$/;
 
 // One five-hour window. A report is the agent's word, not OpenAI's to this
 // process: closing a plan longer than one window on it — a weekly reset, or a
@@ -50,18 +57,14 @@ function clampedResetAt(
 
 /** The plan `planSource` names, when the token's member may run on it. */
 async function ownedPlanSource(
-	planSource: string,
+	planSource: ExchangedPlanSource,
 	claims: { sub: string; org?: string | null },
 ): Promise<PlanSourceRef | null> {
-	const match = planSource.match(PLAN_SOURCE);
-	if (!match) {
-		return null;
-	}
-	const [, kind, id] = match;
+	const { kind, id } = planSource;
 	if (kind === "user") {
 		return id === claims.sub ? { kind: "user", userId: id } : null;
 	}
-	if (!claims.org || !id) {
+	if (!claims.org) {
 		return null;
 	}
 	const account = await getChatGptPlanOrgAccount({
@@ -93,11 +96,11 @@ export async function POST(request: Request) {
 		return NextResponse.json({ error: "Invalid body" }, { status: 400 });
 	}
 
-	const source = await ownedPlanSource(
-		parsed.data.planSource,
-		verified.claims,
-	);
-	if (source) {
+	const planSource = parseExchangedPlanSource(parsed.data.planSource);
+	const source = planSource
+		? await ownedPlanSource(planSource, verified.claims)
+		: null;
+	if (planSource && source) {
 		const resetAt = clampedResetAt(parsed.data.resetAt);
 		await recordReportedChatGptPlanSourceExhausted(
 			source,
@@ -105,6 +108,7 @@ export async function POST(request: Request) {
 				chatGptPlanExhaustedMessage(resetAt),
 				resetAt,
 			),
+			planSource.credentialFingerprint,
 		);
 	}
 	return NextResponse.json({ accepted: true }, { status: 202 });

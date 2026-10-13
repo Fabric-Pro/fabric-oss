@@ -29,7 +29,7 @@
 // @repo/database (pure leaf, deep-imported so no Prisma enters this module):
 // the MCP gateway and the chat engines read the same rows (Fizzy #2578).
 import { classifyConversationPointer } from "@repo/database/src/project-context-presentation";
-import type { ContextDownloadClass } from "./context-download-filename";
+import type { ContextDownloadClass } from "@repo/utils/context-download-class";
 
 /**
  * Every reason a context can be left out of the archive, in the order they

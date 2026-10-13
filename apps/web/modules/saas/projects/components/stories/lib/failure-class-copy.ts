@@ -27,7 +27,9 @@ const FAILURE_CLASS_COPY: Record<string, string> = {
 	DedupCollision:
 		"A story with this title already exists. Already on roadmap.",
 	create_orphan:
-		"Created in Fabric but the PM-tool link couldn't be saved. Retry to relink.",
+		"The PM tool may already have this item, but Fabric couldn't link to it. Check the PM tool; if it isn't there, use Unlink & re-create.",
+	create_unconfirmed:
+		"Fabric couldn't confirm whether the PM tool created this item, so it didn't create another. Check the PM tool; if it isn't there, use Unlink & re-create.",
 	default: "Couldn't sync this proposal. Show details.",
 };
 

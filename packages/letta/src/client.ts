@@ -4,6 +4,10 @@
  * @see https://docs.letta.com
  */
 
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type {
 	ArchivalMemoryEntry,
 	ArchivalSearchResult,
@@ -496,7 +500,10 @@ export class LettaClient {
 						return blockResponse.json() as Promise<MemoryBlock>;
 					}
 				}
-			} catch {
+			} catch (fallbackError) {
+				// A chat turn's stop (refused at `fetch` below) is handed
+				// back, not reported as a failed update.
+				rethrowIfDispatchStopped(fallbackError);
 				// Fall through to throw error
 			}
 		}
@@ -604,7 +611,8 @@ export class LettaClient {
 								await this.fetch(`/v1/blocks/${block.id}`, {
 									method: "DELETE",
 								});
-							} catch {
+							} catch (cleanupError) {
+								rethrowIfDispatchStopped(cleanupError);
 								// Ignore cleanup errors
 							}
 							return existingBlock;
@@ -618,7 +626,8 @@ export class LettaClient {
 							await this.fetch(`/v1/blocks/${block.id}`, {
 								method: "DELETE",
 							});
-						} catch {
+						} catch (cleanupError) {
+							rethrowIfDispatchStopped(cleanupError);
 							// Ignore cleanup errors
 						}
 						// Return a mock block marked as such
@@ -634,6 +643,7 @@ export class LettaClient {
 							_reason?: string;
 						};
 					} catch (fetchError) {
+						rethrowIfDispatchStopped(fetchError);
 						console.warn(
 							"[Letta] Failed to fetch blocks after race condition:",
 							fetchError,
@@ -699,6 +709,9 @@ export class LettaClient {
 						options,
 					);
 				} catch (createError) {
+					// A chat turn's stop is not a failed creation to replace
+					// with an in-memory block.
+					rethrowIfDispatchStopped(createError);
 					// Check if creation failed because block already exists (unique constraint)
 					const errorMessage =
 						createError instanceof Error
@@ -761,6 +774,7 @@ export class LettaClient {
 								}
 							}
 						} catch (searchError) {
+							rethrowIfDispatchStopped(searchError);
 							console.warn(
 								"[Letta] Failed to search global blocks:",
 								searchError,
@@ -905,7 +919,22 @@ export class LettaClient {
 	// Private Helpers
 	// =========================================================================
 
+	/**
+	 * Every request the client makes. A request that can change something
+	 * on the server (any method but GET or HEAD — a memory write, an agent
+	 * or block creation, a message, which Letta answers with its own model
+	 * call) first checks the ambient dispatch guard: inside an Advisor chat
+	 * turn that has stopped or used its token allowance it rejects with the
+	 * stop instead of sending. The check runs here, in the same synchronous
+	 * run as `fetch`, so it also covers the writes the client makes after
+	 * awaiting something of its own (`updateMemoryBlock`'s fallback PATCH
+	 * after a 404 and a block lookup). A no-op outside a turn.
+	 */
 	private async fetch(path: string, init?: RequestInit): Promise<Response> {
+		const method = (init?.method ?? "GET").toUpperCase();
+		if (method !== "GET" && method !== "HEAD") {
+			throwIfDispatchStopped();
+		}
 		const controller = new AbortController();
 		const timeoutId = setTimeout(
 			() => controller.abort(),

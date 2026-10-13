@@ -12,9 +12,8 @@ import { OrgChatgptPlanAccountsCard } from "./OrgChatgptPlanAccountsCard";
  * The organization's shared ChatGPT plan accounts, on its AI Providers page
  * (Fizzy #2770). Their policy — sharing, what happens when every plan is
  * spent — lives on AI Models with the rest of the routing; this links there.
- * Renders nothing, and mounts no query, unless both
- * `CHATGPT_PLAN` and `CHATGPT_PLAN_POOLING` are on and the viewer is one of
- * the organization's admins or owners.
+ * Renders nothing, and mounts no query, unless `CHATGPT_PLAN` is on and the
+ * viewer is one of the organization's admins or owners.
  */
 export function OrgChatgptPlanPoolSettings({
 	canManage,
@@ -24,8 +23,7 @@ export function OrgChatgptPlanPoolSettings({
 	organizationSlug: string;
 }) {
 	const plan = useFeatureFlag("CHATGPT_PLAN");
-	const pooling = useFeatureFlag("CHATGPT_PLAN_POOLING");
-	return plan && pooling && canManage ? (
+	return plan && canManage ? (
 		<OrgChatgptPlanPoolSection organizationSlug={organizationSlug} />
 	) : null;
 }

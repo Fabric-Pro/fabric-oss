@@ -9,6 +9,10 @@
  * replaced. The MCP server in these tests advertises a different AS ("B")
  * than the one the credentials are bound to ("A"); nothing may ever send B a
  * refresh token, client secret or authorization code.
+ *
+ * Fabric's refresh service is the only refresher: the SDK is never handed a
+ * refresh token, and a 401 from the MCP server is refreshed and resent once
+ * by the transport fetch in `../client` (`retryOnceAfterUnauthorized`).
  */
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -240,6 +244,7 @@ import {
 import { oauthRequestsRefuseRedirects } from "../client";
 import {
 	createOAuthClientProvider,
+	type FabricRefreshingOAuthClientProvider,
 	OAuthAuthorizationRequiredError,
 } from "../oauth-provider";
 
@@ -340,34 +345,27 @@ beforeEach(() => {
 });
 
 describe("the SDK's auth() with an MCP server that names another AS", () => {
-	it("refreshes at the bound AS's pinned token endpoint and sends B nothing", async () => {
+	it("never refreshes: it ends in a reconnect prompt without contacting a token endpoint", async () => {
 		const provider = await makeProvider();
 
-		const result = await auth(provider, {
-			serverUrl: "https://mcp.example.com/mcp",
-			fetchFn: sdkFetch,
-		});
+		await expect(
+			auth(provider, {
+				serverUrl: "https://mcp.example.com/mcp",
+				fetchFn: sdkFetch,
+			}),
+		).rejects.toBeInstanceOf(OAuthAuthorizationRequiredError);
 
-		expect(result).toBe("AUTHORIZED");
-		const refresh = requests.find((r) => r.url === `${AS_A}/oauth/token`);
-		expect(refresh?.body).toContain("refresh_token=a-refresh-1");
-		// The registered client authentication: HTTP Basic.
-		expect(refresh?.headers).toContain(
-			`Basic ${btoa("client_a:secret-a")}`,
-		);
-		// B is never asked anything, let alone sent a credential.
+		// No token endpoint, A's or B's, is asked anything (the SDK may still
+		// read the MCP server's own protected-resource metadata), and B is
+		// not contacted at all.
+		expect(requests.some((r) => r.url.includes("/token"))).toBe(false);
 		expect(requests.some((r) => r.url.startsWith(AS_B))).toBe(false);
 		expectNothingSentToB("a-refresh-1", "secret-a");
-		// The SDK's result is saved through the compare-and-set write.
 		expect(storedRow).toMatchObject({
-			encryptedAccessToken: "ENC:a-access-2",
-			encryptedRefreshToken: "ENC:a-refresh-2",
+			encryptedAccessToken: "ENC:a-access-1",
+			encryptedRefreshToken: "ENC:a-refresh-1",
 			oauthGrantGeneration: 7,
-			// Same binding, re-fingerprinted for the rotated refresh token.
-			oauthBinding: withCredentialFingerprint(BINDING_A, {
-				...STORED_CREDENTIALS,
-				encryptedRefreshToken: "ENC:a-refresh-2",
-			}),
+			needsReauth: false,
 		});
 	});
 
@@ -419,9 +417,11 @@ describe("the provider's own proactive refresh", () => {
 
 		expect(tokens).toMatchObject({
 			access_token: "a-access-2",
-			refresh_token: "a-refresh-2",
 			issuer: AS_A,
 		});
+		// The SDK never gets a refresh token to spend.
+		expect(tokens).not.toHaveProperty("refresh_token");
+		expect(storedRow?.encryptedRefreshToken).toBe("ENC:a-refresh-2");
 		expect(requests.map((r) => r.url)).toEqual([`${AS_A}/oauth/token`]);
 		expect(requests[0]?.headers).toContain(
 			`Basic ${btoa("client_a:secret-a")}`,
@@ -536,32 +536,44 @@ describe("generation fencing", () => {
 		});
 	});
 
-	it("the SDK's refresh result is dropped when the grant changed while it was in flight", async () => {
-		const provider = await makeProvider();
-		const fetchThatRevokes = vi.fn(
-			async (input: string | URL, init?: RequestInit) => {
+	it("a refresh after a 401 that races a revoke does not restore the old tokens", async () => {
+		const provider =
+			(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+		const { safeFetchOutbound } = await import("@repo/utils/url-security");
+		vi.mocked(safeFetchOutbound).mockImplementationOnce(
+			async (input, init) => {
 				record(input, init);
-				if (String(input) === `${AS_A}/oauth/token`) {
-					Object.assign(storedRow ?? {}, {
-						encryptedAccessToken: null,
-						encryptedRefreshToken: null,
-						oauthGrantGeneration: 8,
-					});
-				}
+				Object.assign(storedRow ?? {}, {
+					encryptedAccessToken: null,
+					encryptedRefreshToken: null,
+					oauthGrantGeneration: 8,
+				});
 				return respond(String(input));
 			},
-		) as unknown as typeof fetch;
+		);
 
 		await expect(
-			auth(provider, {
-				serverUrl: "https://mcp.example.com/mcp",
-				fetchFn: fetchThatRevokes,
-			}),
-		).rejects.toBeInstanceOf(OAuthAuthorizationRequiredError);
+			provider.refreshAfterUnauthorized("a-access-1"),
+		).resolves.toBeNull();
 		expect(storedRow).toMatchObject({
 			encryptedAccessToken: null,
 			encryptedRefreshToken: null,
+			oauthGrantGeneration: 8,
 		});
+	});
+
+	it("a refresh after a 401 from a provider whose grant was replaced sends nothing", async () => {
+		const provider =
+			(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+		Object.assign(storedRow ?? {}, {
+			encryptedAccessToken: "ENC:reconnected-access",
+			oauthGrantGeneration: 8,
+		});
+
+		await expect(
+			provider.refreshAfterUnauthorized("a-access-1"),
+		).resolves.toBeNull();
+		expect(requests).toHaveLength(0);
 	});
 });
 
@@ -731,19 +743,65 @@ describe("credentials the binding was not written with", () => {
 		},
 	);
 
-	it("tokens() never hands the SDK a replaced refresh token", async () => {
-		storedRow = baseRow({
-			encryptedRefreshToken: "ENC:refresh-from-another-as",
-			encryptedAccessToken: "ENC:access-from-another-as",
-		});
+	it.each(LEGACY_WRITES)(
+		"after a legacy write of %s, tokens() hands out not even the access token, and the config is flagged",
+		async (_label, legacyWrite) => {
+			// The access token written beside a replaced credential may belong
+			// to another authorization server.
+			storedRow = baseRow(legacyWrite);
+			const provider = await makeProvider();
+
+			await expect(provider.tokens()).rejects.toBeInstanceOf(
+				OAuthAuthorizationRequiredError,
+			);
+			expect(requests).toHaveLength(0);
+			expect(storedRow?.needsReauth).toBe(true);
+		},
+	);
+
+	it.each(LEGACY_WRITES)(
+		"after a legacy write of %s, a 401 is not resent with a token stored beside it",
+		async (_label, legacyWrite) => {
+			storedRow = baseRow({
+				...legacyWrite,
+				encryptedAccessToken: "ENC:a-access-other",
+			});
+			const provider =
+				(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+
+			await expect(
+				provider.refreshAfterUnauthorized("a-access-1"),
+			).resolves.toBeNull();
+			expect(requests).toHaveLength(0);
+			expect(storedRow?.needsReauth).toBe(true);
+		},
+	);
+
+	it("tokens() hands the SDK no refresh token", async () => {
 		const provider = await makeProvider();
 
-		await expect(provider.tokens()).rejects.toBeInstanceOf(
-			OAuthAuthorizationRequiredError,
-		);
-		expect(storedRow?.needsReauth).toBe(true);
+		const tokens = await provider.tokens();
+
+		expect(tokens?.access_token).toBe("a-access-1");
+		expect(tokens).not.toHaveProperty("refresh_token");
 		expect(requests).toHaveLength(0);
 	});
+
+	it.each(LEGACY_WRITES)(
+		"after a legacy write of %s, a refresh after a 401 sends nothing and the config is flagged",
+		async (_label, legacyWrite) => {
+			storedRow = baseRow(legacyWrite);
+			const provider =
+				(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+
+			await expect(
+				provider.refreshAfterUnauthorized("a-access-1"),
+			).resolves.toBeNull();
+			expect(requests).toHaveLength(0);
+			expectNoLegacyCredentialSent();
+			expect(storedRow?.needsReauth).toBe(true);
+		},
+	);
 
 	it.each(LEGACY_WRITES.slice(0, 2))(
 		"clientInformation() never hands the SDK a client after a legacy write of %s",
@@ -758,32 +816,28 @@ describe("credentials the binding was not written with", () => {
 		},
 	);
 
-	it("a legacy write landing after tokens() makes the SDK's refresh result unsavable", async () => {
+	it("saveTokens refuses even tokens stamped with the bound AS", async () => {
 		const provider = await makeProvider();
 		await provider.tokens();
-		// The previous app version replaces the client secret by id.
-		Object.assign(storedRow ?? {}, {
-			encryptedOauthClientSecret: "ENC:secret-from-another-as",
-		});
+		const before = structuredClone(storedRow);
 
-		await provider.saveTokens({
-			access_token: "a-access-2",
-			refresh_token: "a-refresh-2",
-			token_type: "Bearer",
-			issuer: AS_A,
-		} as never);
+		await expect(
+			provider.saveTokens({
+				access_token: "a-access-2",
+				refresh_token: "a-refresh-2",
+				token_type: "Bearer",
+				issuer: AS_A,
+			} as never),
+		).rejects.toBeInstanceOf(OAuthAuthorizationRequiredError);
 
-		// Fenced on the client handed out with the refresh token: nothing is
-		// written, and the binding is not re-fingerprinted over the new secret.
-		expect(storedRow).toMatchObject({
-			encryptedAccessToken: "ENC:a-access-1",
-			oauthBinding: BINDING_A,
-		});
+		expect(storedRow).toEqual(before);
 	});
 });
 
 describe("SDK token errors never carry what the token endpoint echoed", () => {
-	const SECRET = "a-refresh-1";
+	// The SDK no longer refreshes; the one token request it can still make is
+	// an authorization-code exchange, so the echoed secret is the code.
+	const SECRET = "code-secret-1";
 
 	function echoingFetch(body: string, status: number, contentType: string) {
 		return vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -846,6 +900,7 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 		"%s is reduced to its classified code before the SDK sees it",
 		async (_label, body, status, contentType) => {
 			const provider = await makeProvider(() => {});
+			await provider.saveCodeVerifier("verifier-1");
 			const errors: unknown[] = [];
 			const errorSpy = vi
 				.spyOn(console, "error")
@@ -855,6 +910,7 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 
 			const thrown = await auth(provider, {
 				serverUrl: "https://mcp.example.com/mcp",
+				authorizationCode: SECRET,
 				// The guarded fetch the transports are given in client.ts.
 				fetchFn: oauthRequestsRefuseRedirects(
 					new URL("https://mcp.example.com/mcp"),
@@ -865,7 +921,7 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 				(error: unknown) => error,
 			);
 
-			// The refresh was attempted with the secret...
+			// The exchange was attempted with the secret...
 			expect(
 				requests.some(
 					(r) =>
@@ -880,8 +936,25 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 		},
 	);
 
-	it("nor does the error createMcpClient throws, its cause, or its logs", async () => {
+	it("nor does the error createMcpClient throws, its cause, its logs, or the stored refresh error after Fabric's refresh on a 401", async () => {
+		const REFRESH_SECRET = "a-refresh-1";
 		const { createMcpClient } = await import("../client");
+		const { safeFetchOutbound } = await import("@repo/utils/url-security");
+		vi.mocked(safeFetchOutbound).mockImplementationOnce(
+			async (input, init) => {
+				record(input, init);
+				return new Response(
+					JSON.stringify({
+						error: "invalid_scope",
+						error_description: `refresh token ${REFRESH_SECRET} is not valid`,
+					}),
+					{
+						status: 400,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			},
+		);
 		const provider = await makeProvider(() => {});
 		const logged: unknown[] = [];
 		for (const level of ["error", "warn", "log"] as const) {
@@ -894,23 +967,11 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 				record(input, init);
 				const url = String(input);
 				if (url === "https://mcp.example.com/mcp") {
-					// The MCP server asks for authorization; the SDK refreshes.
+					// The MCP server asks for authorization; Fabric refreshes.
 					return new Response("{}", {
 						status: 401,
 						headers: { "content-type": "application/json" },
 					});
-				}
-				if (url === `${AS_A}/oauth/token`) {
-					return new Response(
-						JSON.stringify({
-							error: "invalid_scope",
-							error_description: `refresh token ${SECRET} is not valid`,
-						}),
-						{
-							status: 400,
-							headers: { "content-type": "application/json" },
-						},
-					);
 				}
 				return respond(url);
 			},
@@ -930,11 +991,15 @@ describe("SDK token errors never carry what the token endpoint echoed", () => {
 		expect(
 			requests.some(
 				(r) =>
-					r.url === `${AS_A}/oauth/token` && r.body.includes(SECRET),
+					r.url === `${AS_A}/oauth/token` &&
+					r.body.includes(REFRESH_SECRET),
 			),
 		).toBe(true);
-		expect(everythingSaidAbout(thrown)).not.toContain(SECRET);
-		expect(JSON.stringify(logged)).not.toContain(SECRET);
+		expect(everythingSaidAbout(thrown)).not.toContain(REFRESH_SECRET);
+		expect(JSON.stringify(logged)).not.toContain(REFRESH_SECRET);
+		expect(String(storedRow?.lastRefreshError ?? "")).not.toContain(
+			REFRESH_SECRET,
+		);
 	});
 });
 
@@ -1017,89 +1082,545 @@ describe("what the provider hands the SDK", () => {
 });
 
 describe("invalidateCredentials", () => {
-	it("tokens: wipes the tokens, moves the generation and flags reconnect, keeping client and binding", async () => {
-		const provider = await makeProvider();
-		await provider.tokens();
-
-		await provider.invalidateCredentials?.("tokens");
-
-		expect(storedRow).toMatchObject({
-			encryptedAccessToken: null,
-			encryptedRefreshToken: null,
-			oauthGrantGeneration: 8,
-			needsReauth: true,
-			oauthClientId: "client_a",
-			// Kept, re-fingerprinted for the credentials the wipe leaves.
-			oauthBinding: withCredentialFingerprint(BINDING_A, {
-				...STORED_CREDENTIALS,
-				encryptedRefreshToken: null,
-			}),
-		});
-	});
-
-	it("tokens: leaves a token another refresh rotated in place", async () => {
-		const provider = await makeProvider();
-		await provider.tokens();
-		Object.assign(storedRow ?? {}, {
-			encryptedRefreshToken: "ENC:rotated-by-another",
-		});
-
-		await provider.invalidateCredentials?.("tokens");
-
-		expect(storedRow).toMatchObject({
-			encryptedRefreshToken: "ENC:rotated-by-another",
-			oauthGrantGeneration: 7,
-		});
-	});
-
-	it.each(["client", "all"] as const)(
-		"%s: also clears the client, keeping the binding",
-		async (scope) => {
-			const provider = await makeProvider();
-
-			await provider.invalidateCredentials?.(scope);
-
-			expect(storedRow).toMatchObject({
-				encryptedAccessToken: null,
-				oauthClientId: null,
-				encryptedOauthClientSecret: null,
-				dcrClientMetadata: null,
-				oauthGrantGeneration: 8,
-				needsReauth: true,
-				oauthBinding: withCredentialFingerprint(BINDING_A, {
-					oauthClientId: null,
-					encryptedOauthClientSecret: null,
-					encryptedRefreshToken: null,
-				}),
-			});
-		},
-	);
-
-	it.each(["discovery", "verifier"] as const)(
+	// The SDK calls this after a token request of its own is rejected. It no
+	// longer makes one, and a wipe here would skip the refresh service's
+	// strike count, so no scope changes the row.
+	it.each(["tokens", "client", "all", "discovery", "verifier"] as const)(
 		"%s: makes no durable change",
 		async (scope) => {
 			const provider = await makeProvider();
+			await provider.tokens();
 			const before = structuredClone(storedRow);
 
 			await provider.invalidateCredentials?.(scope);
 
 			expect(storedRow).toEqual(before);
+			expect(storedRow).toMatchObject({
+				encryptedAccessToken: "ENC:a-access-1",
+				encryptedRefreshToken: "ENC:a-refresh-1",
+				oauthClientId: "client_a",
+				oauthGrantGeneration: 7,
+				needsReauth: false,
+			});
+		},
+	);
+});
+
+describe("a 401 from the MCP server, through the real SDK transports", () => {
+	const MCP_URL = "https://mcp.example.com/mcp";
+	const SSE_MESSAGES_URL = "https://mcp.example.com/messages";
+	const encoder = new TextEncoder();
+
+	type JsonRpc = {
+		id?: number;
+		method: string;
+		params?: { protocolVersion?: string };
+	};
+
+	function resultFor(message: JsonRpc) {
+		return {
+			jsonrpc: "2.0",
+			id: message.id,
+			result:
+				message.method === "initialize"
+					? {
+							protocolVersion: message.params?.protocolVersion,
+							capabilities: { tools: {} },
+							serverInfo: { name: "example", version: "1.0.0" },
+						}
+					: message.method === "tools/list"
+						? { tools: [] }
+						: {},
+		};
+	}
+
+	/** Bearer tokens the MCP server saw on each JSON-RPC POST, in order. */
+	let posts: Array<{ method: string; bearer: string | null }> = [];
+
+	function bearerOf(init?: RequestInit): string | null {
+		const header = new Headers(init?.headers).get("authorization");
+		return header?.replace(/^Bearer /, "") ?? null;
+	}
+
+	/**
+	 * A simulated MCP server, as the transport `fetch` `createMcpClient` is
+	 * given. `accepts` decides whether a POST's bearer token is accepted;
+	 * `onReject` runs before each 401. With `sse`, it speaks the legacy SSE
+	 * transport (GET event stream + POST endpoint), else Streamable HTTP.
+	 */
+	function mcpServer(options: {
+		accepts: (bearer: string | null) => boolean;
+		onReject?: () => void;
+		sse?: boolean;
+	}) {
+		let stream: ReadableStreamDefaultController<Uint8Array> | null = null;
+		return vi.fn(async (input: string | URL, init?: RequestInit) => {
+			record(input, init);
+			const url = String(input);
+			if (!url.startsWith("https://mcp.example.com/")) {
+				return respond(url);
+			}
+			const method = (init?.method ?? "GET").toUpperCase();
+			if (method === "GET") {
+				if (!options.sse) {
+					return new Response(null, { status: 405 });
+				}
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							stream = controller;
+							controller.enqueue(
+								encoder.encode(
+									`event: endpoint\ndata: ${SSE_MESSAGES_URL}\n\n`,
+								),
+							);
+						},
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					},
+				);
+			}
+			const message = JSON.parse(String(init?.body)) as JsonRpc;
+			const bearer = bearerOf(init);
+			posts.push({ method: message.method, bearer });
+			if (!options.accepts(bearer)) {
+				options.onReject?.();
+				return new Response("unauthorized", { status: 401 });
+			}
+			if (message.id === undefined) {
+				return new Response(null, { status: 202 });
+			}
+			if (options.sse) {
+				stream?.enqueue(
+					encoder.encode(
+						`event: message\ndata: ${JSON.stringify(resultFor(message))}\n\n`,
+					),
+				);
+				return new Response(null, { status: 202 });
+			}
+			return new Response(JSON.stringify(resultFor(message)), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+	}
+
+	const tokenRequests = () =>
+		requests.filter((r) => r.url === `${AS_A}/oauth/token`);
+
+	async function connect(
+		server: ReturnType<typeof mcpServer>,
+		transport: "HTTP" | "SSE" = "HTTP",
+	) {
+		const { createMcpClient } = await import("../client");
+		return createMcpClient({
+			serverUrl: MCP_URL,
+			transport,
+			authProvider: await makeProvider(),
+			fetch: server as never,
+		});
+	}
+
+	beforeEach(() => {
+		posts = [];
+	});
+
+	it.each(["HTTP", "SSE"] as const)(
+		"%s: refreshes once through Fabric's service and resends once with the new token",
+		async (transport) => {
+			const server = mcpServer({
+				accepts: (bearer) => bearer === "a-access-2",
+				sse: transport === "SSE",
+			});
+
+			const client = await connect(server, transport);
+			await client.close();
+
+			// Exactly one token-endpoint call, made by Fabric's refresh
+			// service (the transport fetch never carried one: the SDK did
+			// not refresh).
+			expect(tokenRequests()).toHaveLength(1);
+			expect(tokenRequests()[0]?.body).toContain(
+				"refresh_token=a-refresh-1",
+			);
+			expect(
+				server.mock.calls.some(([url]) =>
+					String(url).includes("/token"),
+				),
+			).toBe(false);
+			if (transport === "SSE") {
+				// The legacy transport: event stream opened, messages POSTed
+				// to the endpoint it named.
+				expect(
+					server.mock.calls.some(
+						([url]) => String(url) === SSE_MESSAGES_URL,
+					),
+				).toBe(true);
+			}
+			// initialize was sent twice: rejected, then resent once.
+			expect(posts.filter((p) => p.method === "initialize")).toEqual([
+				{ method: "initialize", bearer: "a-access-1" },
+				{ method: "initialize", bearer: "a-access-2" },
+			]);
+			expect(storedRow).toMatchObject({
+				encryptedAccessToken: "ENC:a-access-2",
+				encryptedRefreshToken: "ENC:a-refresh-2",
+				oauthGrantGeneration: 7,
+				needsReauth: false,
+			});
 		},
 	);
 
-	it("from a provider whose grant was replaced, changes nothing", async () => {
-		const provider = await makeProvider();
-		Object.assign(storedRow ?? {}, {
-			encryptedAccessToken: "ENC:new-grant",
-			oauthGrantGeneration: 8,
+	it("resends with the token another replica already stored, without a token-endpoint call", async () => {
+		const server = mcpServer({
+			accepts: (bearer) => bearer === "a-access-other",
+			// Another replica refreshes after this request read its token.
+			onReject: () => {
+				// As `saveMcpOAuthRefresh` writes it: re-fingerprinted for
+				// the rotated refresh token.
+				Object.assign(storedRow ?? {}, {
+					encryptedAccessToken: "ENC:a-access-other",
+					accessTokenHash: "HASH:a-access-other",
+					encryptedRefreshToken: "ENC:a-refresh-other",
+					oauthBinding: withCredentialFingerprint(
+						BINDING_A_UNFINGERPRINTED,
+						{
+							...STORED_CREDENTIALS,
+							encryptedRefreshToken: "ENC:a-refresh-other",
+						},
+					),
+				});
+			},
 		});
 
-		await provider.invalidateCredentials?.("all");
+		const client = await connect(server);
+		await client.close();
 
+		expect(tokenRequests()).toHaveLength(0);
+		expect(posts.filter((p) => p.method === "initialize")).toEqual([
+			{ method: "initialize", bearer: "a-access-1" },
+			{ method: "initialize", bearer: "a-access-other" },
+		]);
+		expect(storedRow?.encryptedRefreshToken).toBe("ENC:a-refresh-other");
+	});
+
+	it("a second 401 ends in OAuthAuthorizationRequiredError, after one refresh and one resend", async () => {
+		const server = mcpServer({ accepts: () => false });
+
+		const thrown = await connect(server).catch((error: unknown) => error);
+
+		expect(thrown).toBeInstanceOf(OAuthAuthorizationRequiredError);
+		expect(tokenRequests()).toHaveLength(1);
+		expect(posts.filter((p) => p.method === "initialize")).toEqual([
+			{ method: "initialize", bearer: "a-access-1" },
+			{ method: "initialize", bearer: "a-access-2" },
+		]);
+		// The grant is not condemned by a rejected access token.
 		expect(storedRow).toMatchObject({
-			encryptedAccessToken: "ENC:new-grant",
-			oauthClientId: "client_a",
-			oauthGrantGeneration: 8,
+			encryptedAccessToken: "ENC:a-access-2",
+			oauthGrantGeneration: 7,
+			needsReauth: false,
 		});
+	});
+
+	it("makes no refresh once the chat turn stopped while the rejected request was in flight", async () => {
+		const { runWithDispatchGuard } = await import(
+			"@repo/utils/dispatch-guard"
+		);
+		const STOP = new Error("the chat turn stopped");
+		let stopped = false;
+		const guard = {
+			key: "turn-example-2",
+			assertDispatchable: async () => undefined,
+			abortSignal: () => undefined,
+			rethrowIfStopped: () => {
+				if (stopped) {
+					throw STOP;
+				}
+			},
+			throwIfStopped: () => {
+				if (stopped) {
+					throw STOP;
+				}
+			},
+		};
+		const server = mcpServer({
+			accepts: (bearer) => bearer === "a-access-2",
+			// The turn stops after the send passed its check, before the 401.
+			onReject: () => {
+				stopped = true;
+			},
+		});
+
+		const thrown = await runWithDispatchGuard(guard, () =>
+			connect(server),
+		).catch((error: unknown) => error);
+
+		expect(thrown).toBeInstanceOf(Error);
+		// No refresh token was spent, and nothing was resent.
+		expect(tokenRequests()).toHaveLength(0);
+		expect(posts).toEqual([{ method: "initialize", bearer: "a-access-1" }]);
+		expect(storedRow?.encryptedRefreshToken).toBe("ENC:a-refresh-1");
+	});
+
+	it("refuses the resend once the chat turn stopped during the refresh", async () => {
+		const { runWithDispatchGuard } = await import(
+			"@repo/utils/dispatch-guard"
+		);
+		const STOP = new Error("the chat turn stopped");
+		let stopped = false;
+		const guard = {
+			key: "turn-example-1",
+			assertDispatchable: async () => undefined,
+			abortSignal: () => undefined,
+			rethrowIfStopped: () => {
+				if (stopped) {
+					throw STOP;
+				}
+			},
+			throwIfStopped: () => {
+				if (stopped) {
+					throw STOP;
+				}
+			},
+		};
+		const { safeFetchOutbound } = await import("@repo/utils/url-security");
+		vi.mocked(safeFetchOutbound).mockImplementationOnce(
+			async (input, init) => {
+				record(input, init);
+				// The turn stops while the refresh is in flight.
+				stopped = true;
+				return respond(String(input));
+			},
+		);
+		const server = mcpServer({
+			accepts: (bearer) => bearer === "a-access-2",
+		});
+
+		const thrown = await runWithDispatchGuard(guard, () =>
+			connect(server),
+		).catch((error: unknown) => error);
+
+		expect(thrown).toBeInstanceOf(Error);
+		expect(tokenRequests()).toHaveLength(1);
+		// Only the rejected first send reached the server.
+		expect(posts).toEqual([{ method: "initialize", bearer: "a-access-1" }]);
+	});
+
+	it("an invalid_grant counts one failure strike and wipes nothing", async () => {
+		const { safeFetchOutbound } = await import("@repo/utils/url-security");
+		vi.mocked(safeFetchOutbound).mockImplementationOnce(
+			async (input, init) => {
+				record(input, init);
+				return new Response(
+					JSON.stringify({ error: "invalid_grant" }),
+					{
+						status: 400,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			},
+		);
+		const server = mcpServer({ accepts: () => false });
+
+		const thrown = await connect(server).catch((error: unknown) => error);
+
+		expect(thrown).toBeInstanceOf(OAuthAuthorizationRequiredError);
+		expect(tokenRequests()).toHaveLength(1);
+		// No resend: there was no token to resend with.
+		expect(posts).toHaveLength(1);
+		expect(storedRow).toMatchObject({
+			encryptedAccessToken: "ENC:a-access-1",
+			encryptedRefreshToken: "ENC:a-refresh-1",
+			oauthClientId: "client_a",
+			oauthGrantGeneration: 7,
+			needsReauth: false,
+			refreshFailureCount: 1,
+		});
+	});
+
+	it("resends with another replica's token when its own refresh failed on the rotation race", async () => {
+		const { safeFetchOutbound } = await import("@repo/utils/url-security");
+		vi.mocked(safeFetchOutbound).mockImplementationOnce(
+			async (input, init) => {
+				record(input, init);
+				return new Response(
+					JSON.stringify({ error: "invalid_grant" }),
+					{
+						status: 400,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			},
+		);
+		// Another replica rotated the token first, and its write commits only
+		// after this replica's refresh service has reloaded the row and
+		// counted the failure: the service reports "failed", not "superseded".
+		const { db } = await import("@repo/database/prisma/client");
+		const otherReplicaCommits = () =>
+			Object.assign(storedRow ?? {}, {
+				encryptedAccessToken: "ENC:a-access-other",
+				accessTokenHash: "HASH:a-access-other",
+				encryptedRefreshToken: "ENC:a-refresh-other",
+				oauthBinding: withCredentialFingerprint(
+					BINDING_A_UNFINGERPRINTED,
+					{
+						...STORED_CREDENTIALS,
+						encryptedRefreshToken: "ENC:a-refresh-other",
+					},
+				),
+			});
+		type Impl = (...args: unknown[]) => unknown;
+		const restores: Array<() => void> = [];
+		for (const method of ["update", "updateMany"] as const) {
+			const mock = vi.mocked(db.mCPConfig[method]) as unknown as {
+				getMockImplementation(): Impl;
+				mockImplementation(fn: Impl): void;
+			};
+			const original = mock.getMockImplementation();
+			restores.push(() => mock.mockImplementation(original));
+			mock.mockImplementation(async (...args: unknown[]) => {
+				const result = await original(...args);
+				const data = (args[0] as { data?: Record<string, unknown> })
+					.data;
+				if (data && "refreshFailureCount" in data) {
+					otherReplicaCommits();
+				}
+				return result;
+			});
+		}
+		try {
+			const provider =
+				(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+
+			await expect(
+				provider.refreshAfterUnauthorized("a-access-1"),
+			).resolves.toBe("a-access-other");
+			expect(tokenRequests()).toHaveLength(1);
+			expect(storedRow).toMatchObject({
+				refreshFailureCount: 1,
+				needsReauth: false,
+			});
+		} finally {
+			for (const restore of restores) {
+				restore();
+			}
+		}
+	});
+
+	it("never refreshes or resends for a config already flagged for reconnect", async () => {
+		const provider =
+			(await makeProvider()) as FabricRefreshingOAuthClientProvider;
+		// Even a newer stored token is not handed out once reconnect is due.
+		Object.assign(storedRow ?? {}, {
+			needsReauth: true,
+			encryptedAccessToken: "ENC:a-access-other",
+		});
+
+		await expect(
+			provider.refreshAfterUnauthorized("a-access-1"),
+		).resolves.toBeNull();
+		expect(requests).toHaveLength(0);
+	});
+});
+
+describe("retryOnceAfterUnauthorized", () => {
+	const unauthorized = () => new Response("no", { status: 401 });
+
+	async function run(init: RequestInit) {
+		const { retryOnceAfterUnauthorized } = await import("../client");
+		const base = vi.fn(async () => unauthorized());
+		const refresh = vi.fn(async () => "fresh-token");
+		const response = await retryOnceAfterUnauthorized(base, refresh)(
+			"https://mcp.example.com/mcp",
+			init,
+		);
+		return { response, base, refresh };
+	}
+
+	it("resends a string body once with the fresh bearer token", async () => {
+		const { response, base, refresh } = await run({
+			method: "POST",
+			headers: { Authorization: "Bearer stale-token" },
+			body: "{}",
+		});
+
+		expect(response.status).toBe(401);
+		expect(refresh).toHaveBeenCalledWith("stale-token");
+		expect(base).toHaveBeenCalledTimes(2);
+		const resent = base.mock.calls[1] as unknown as [string, RequestInit];
+		expect(new Headers(resent[1].headers).get("authorization")).toBe(
+			"Bearer fresh-token",
+		);
+		expect(resent[1].body).toBe("{}");
+	});
+
+	it.each([
+		[
+			"a token request",
+			{
+				method: "POST",
+				headers: { Authorization: "Bearer stale-token" },
+				body: new URLSearchParams({ grant_type: "refresh_token" }),
+			},
+		],
+		[
+			"a stream body that cannot be sent twice",
+			{
+				method: "POST",
+				headers: { Authorization: "Bearer stale-token" },
+				body: new ReadableStream(),
+			},
+		],
+		["a request with no bearer token", { method: "POST", body: "{}" }],
+	])("leaves %s alone", async (_label, init) => {
+		const { response, base, refresh } = await run(init as RequestInit);
+
+		expect(response.status).toBe(401);
+		expect(refresh).not.toHaveBeenCalled();
+		expect(base).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns the original 401, unread, when no fresh token is available", async () => {
+		const { retryOnceAfterUnauthorized } = await import("../client");
+		const original = unauthorized();
+		const base = vi.fn(async () => original);
+		const response = await retryOnceAfterUnauthorized(
+			base,
+			async () => null,
+		)("https://mcp.example.com/mcp", {
+			method: "POST",
+			headers: { Authorization: "Bearer t" },
+			body: "{}",
+		});
+
+		expect(response).toBe(original);
+		expect(response.bodyUsed).toBe(false);
+		expect(base).toHaveBeenCalledTimes(1);
+	});
+	it("cancels the 401 body and rethrows when the refresh throws", async () => {
+		const { retryOnceAfterUnauthorized } = await import("../client");
+		const original = unauthorized();
+		const cancel = vi.spyOn(
+			original.body as ReadableStream<Uint8Array>,
+			"cancel",
+		);
+		const base = vi.fn(async () => original);
+		const failure = new Error("database unavailable");
+
+		await expect(
+			retryOnceAfterUnauthorized(base, async () => {
+				throw failure;
+			})("https://mcp.example.com/mcp", {
+				method: "POST",
+				headers: { Authorization: "Bearer t" },
+				body: "{}",
+			}),
+		).rejects.toBe(failure);
+
+		expect(cancel).toHaveBeenCalledTimes(1);
+		expect(base).toHaveBeenCalledTimes(1);
 	});
 });

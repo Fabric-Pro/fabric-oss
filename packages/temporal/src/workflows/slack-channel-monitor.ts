@@ -32,6 +32,7 @@ import {
 	sleep,
 	workflowInfo,
 } from "@temporalio/workflow";
+import type { estimatePlanPoolResetActivity as EstimatePlanPoolResetFn } from "../activities/chatgpt-plan-wait";
 import type * as slackChannelMonitorActivities from "../activities/slack-channel-monitor";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 
@@ -75,6 +76,14 @@ export interface SlackChannelMonitorInput {
 	 * survive. Empty on initial start.
 	 */
 	pendingQueue?: SlackMessageReceivedPayload[];
+	/**
+	 * Groups a spent ChatGPT plan refused, carried across `continueAsNew`
+	 * with the time they are retried at.
+	 */
+	planDeferred?: {
+		retryAtMs: number;
+		payloads: SlackMessageReceivedPayload[];
+	};
 }
 
 export interface SlackChannelMonitorProgress {
@@ -86,6 +95,9 @@ export interface SlackChannelMonitorProgress {
 	totalSkippedAlreadySeen: number;
 	totalFailures: number;
 	totalSignalsDropped: number;
+	/** Threads held for a ChatGPT plan reset, and when they are retried. */
+	planDeferredGroups: number;
+	planRetryAt: string | null;
 	isFlushing: boolean;
 	cancelled: boolean;
 }
@@ -99,6 +111,14 @@ export interface SlackChannelMonitorProgress {
  */
 const MAX_QUEUE_SIZE = 1000;
 
+/**
+ * Bounds on how long refused threads wait for a ChatGPT plan reset: the floor
+ * keeps a zero estimate from retrying in a loop while the plan stays spent.
+ */
+const MIN_PLAN_RETRY_MS = 5 * 60_000;
+const MAX_PLAN_RETRY_MS = 6 * 60 * 60_000;
+const FALLBACK_PLAN_RETRY_MS = 30 * 60_000;
+
 // =============================================================================
 // Signals & Queries
 // =============================================================================
@@ -111,6 +131,15 @@ export const cancelSlackChannelMonitorSignal = defineSignal(
 );
 export const slackChannelMonitorProgressQuery =
 	defineQuery<SlackChannelMonitorProgress>("slackChannelMonitorProgress");
+
+/**
+ * An activity failure because every ChatGPT plan is spent, read by the type
+ * Temporal sets on it (this file may not import helper packages).
+ */
+function isPlanSpent(error: unknown): boolean {
+	const failure = error as { cause?: { type?: unknown } } | null;
+	return failure?.cause?.type === "SubscriptionPlanExhaustedError";
+}
 
 // =============================================================================
 // Activity Proxies
@@ -130,6 +159,13 @@ const activities = proxyActivities<typeof slackChannelMonitorActivities>({
 			...AI_NON_RETRYABLE_ERROR_TYPES,
 		],
 	},
+});
+
+const { estimatePlanPoolResetActivity } = proxyActivities<{
+	estimatePlanPoolResetActivity: typeof EstimatePlanPoolResetFn;
+}>({
+	startToCloseTimeout: "1 minute",
+	retry: { maximumAttempts: 3, initialInterval: "2s" },
 });
 
 // =============================================================================
@@ -175,6 +211,7 @@ export async function slackChannelMonitorWorkflow(
 		debounceMs = 30_000,
 		maxHoldMs = 300_000,
 		pendingQueue = [],
+		planDeferred,
 	} = input;
 
 	// In-memory signal queue. Mutated only by the signal handler (deterministic
@@ -190,6 +227,19 @@ export async function slackChannelMonitorWorkflow(
 	let totalSignalsDropped = 0;
 	let lastFlushAt: string | null = null;
 	let isFlushing = false;
+
+	// Threads a spent ChatGPT plan refused (Fizzy #2770), keyed like a flush
+	// group, held until `planRetryAtMs` and then flushed again. Only ever
+	// filled behind `patched("slack-monitor-plan-spent-retry")`.
+	const deferred = new Map<string, SlackMessageReceivedPayload[]>();
+	let planRetryAtMs: number | null = null;
+	if (planDeferred && planDeferred.payloads.length > 0) {
+		for (const payload of planDeferred.payloads) {
+			const key = groupKeyOf(payload);
+			deferred.set(key, [...(deferred.get(key) ?? []), payload]);
+		}
+		planRetryAtMs = planDeferred.retryAtMs;
+	}
 
 	// Tracks the wall-clock time of the most recent signal arrival inside a
 	// debounce window. Used to "extend" the sleep when a new signal lands
@@ -229,13 +279,36 @@ export async function slackChannelMonitorWorkflow(
 		totalSkippedAlreadySeen,
 		totalFailures,
 		totalSignalsDropped,
+		planDeferredGroups: deferred.size,
+		planRetryAt:
+			planRetryAtMs === null
+				? null
+				: new Date(planRetryAtMs).toISOString(),
 		isFlushing,
 		cancelled,
 	}));
 
 	while (!cancelled) {
-		// Step 1: wait for the queue to become non-empty (or for cancel).
-		await condition(() => queue.length > 0 || cancelled);
+		// Step 1: wait for the queue to become non-empty (or for cancel), or
+		// for the plan reset that refused threads are held for.
+		if (planRetryAtMs !== null) {
+			const remainingMs = planRetryAtMs - Date.now();
+			const signalled =
+				remainingMs > 0 &&
+				(await condition(
+					() => queue.length > 0 || cancelled,
+					remainingMs,
+				));
+			if (!signalled && !cancelled) {
+				for (const payloads of deferred.values()) {
+					queue.push(...payloads);
+				}
+				deferred.clear();
+				planRetryAtMs = null;
+			}
+		} else {
+			await condition(() => queue.length > 0 || cancelled);
+		}
 
 		if (cancelled && queue.length === 0) {
 			break;
@@ -287,8 +360,7 @@ export async function slackChannelMonitorWorkflow(
 		// replies onto their root so we make a single analyze call per thread.
 		const groups = new Map<string, SlackMessageReceivedPayload[]>();
 		for (const payload of drained) {
-			const threadKey = payload.threadTs ?? payload.ts;
-			const key = `${payload.channelId}::${threadKey}`;
+			const key = groupKeyOf(payload);
 			const existing = groups.get(key);
 			if (existing) {
 				existing.push(payload);
@@ -305,7 +377,16 @@ export async function slackChannelMonitorWorkflow(
 		// the plan says "cancel drains the queue once, then exits". Letting
 		// the in-flight groups complete preserves analyses for messages that
 		// already passed the dedup boundary.
-		for (const [, payloads] of groups) {
+		// A thread held for the plan reset that is flushed now, on a new
+		// message, is covered by this flush and is not retried on its own.
+		for (const key of groups.keys()) {
+			deferred.delete(key);
+		}
+		if (deferred.size === 0) {
+			planRetryAtMs = null;
+		}
+
+		for (const [groupKey, payloads] of groups) {
 			totalGroupsFlushed++;
 
 			// Use the earliest-ts payload in the group as the root reference.
@@ -342,6 +423,33 @@ export async function slackChannelMonitorWorkflow(
 					totalSkippedAlreadySeen++;
 				}
 			} catch (err) {
+				// Every ChatGPT plan spent (Fizzy #2770) is a wait, not a broken
+				// channel: counted, it pins a false "needs relink" on a healthy
+				// channel, since nothing here ever resets the count. The
+				// activity can't tell — it is handed only "Activity task
+				// failed" — so the type is read here, and `patched()` keeps
+				// histories that recorded the failure replaying unchanged. Read
+				// only on that path, so no other flush records a marker.
+				if (
+					isPlanSpent(err) &&
+					patched("slack-monitor-plan-spent-not-failure")
+				) {
+					// Held and flushed again once the plan resets, rather than
+					// waiting for the next message in the thread. The activity
+					// gave the claim back, so the retry analyzes it once.
+					if (patched("slack-monitor-plan-spent-retry")) {
+						deferred.set(groupKey, payloads);
+						if (deferred.size > MAX_QUEUE_SIZE) {
+							const [oldest] = deferred.keys();
+							if (oldest !== undefined) {
+								deferred.delete(oldest);
+								totalSignalsDropped++;
+							}
+						}
+						planRetryAtMs ??= await planRetryAt(organizationId);
+					}
+					continue;
+				}
 				totalFailures++;
 				const errorMessage =
 					err instanceof Error ? err.message : String(err);
@@ -387,7 +495,42 @@ export async function slackChannelMonitorWorkflow(
 				debounceMs,
 				maxHoldMs,
 				pendingQueue: queue.slice(),
+				...(planRetryAtMs !== null && {
+					planDeferred: {
+						retryAtMs: planRetryAtMs,
+						payloads: [...deferred.values()].flat(),
+					},
+				}),
 			});
 		}
 	}
+}
+
+/** Thread replies collapse onto their root: one analysis per thread. */
+function groupKeyOf(payload: SlackMessageReceivedPayload): string {
+	return `${payload.channelId}::${payload.threadTs ?? payload.ts}`;
+}
+
+/**
+ * When threads a spent plan refused are retried: the earliest known reset of
+ * the organization's shared plans (channel monitoring never runs on a
+ * member's own plan), within bounds.
+ */
+async function planRetryAt(
+	organizationId: string | undefined,
+): Promise<number> {
+	let waitMs = FALLBACK_PLAN_RETRY_MS;
+	try {
+		const estimate = await estimatePlanPoolResetActivity({
+			organizationId: organizationId ?? null,
+			userId: null,
+		});
+		waitMs = estimate.waitMs + estimate.jitterMs;
+	} catch {
+		// The fallback wait: a failed estimate must not end the monitor.
+	}
+	return (
+		Date.now() +
+		Math.min(Math.max(waitMs, MIN_PLAN_RETRY_MS), MAX_PLAN_RETRY_MS)
+	);
 }

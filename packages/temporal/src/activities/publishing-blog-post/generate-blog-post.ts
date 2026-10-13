@@ -58,6 +58,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	type BlogPostDecision,
@@ -269,6 +270,7 @@ export async function generateBlogPostActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-blog-post",
 		},
 	);
@@ -308,7 +310,7 @@ export async function generateBlogPostActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`Blog post failed schema validation: ${error.message}`,
+				`Blog post failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_BLOG_POST_SCHEMA_VALIDATION_FAILED",
 			);
 		}

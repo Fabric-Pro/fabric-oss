@@ -22,6 +22,7 @@ import { z } from "zod";
 // constant. This import lives ONLY in this ACTIVITY (never in the workflow-side
 // helper) — collect-github-releases.ts pulls @repo/database at runtime.
 import { RELEASE_NOTES_OMITTED_NOTICE } from "../daily-brief/collect-github-releases";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { getDetailLevelClause } from "./detail-level";
 
 export interface CurateNewsletterFromReleasesInput {
@@ -204,7 +205,11 @@ export async function curateNewsletterFromReleasesActivity(
 
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "SIMPLE" },
-		{ userId, organizationId: organizationId ?? undefined },
+		{
+			userId,
+			organizationId: organizationId ?? undefined,
+			jobType: "newsletter-curation",
+		},
 	);
 	const prompt = buildReleaseNewsletterPrompt(
 		projectName,
@@ -246,6 +251,10 @@ export async function curateNewsletterFromReleasesActivity(
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
+	} catch (error) {
+		// However the AI SDK wrapped it, a spent ChatGPT plan leaves under its
+		// own type, which a scheduled send waits on (Fizzy #2770).
+		throw findWorkflowHandledPlanRefusal(error) ?? error;
 	} finally {
 		clearInterval(heartbeatInterval);
 	}

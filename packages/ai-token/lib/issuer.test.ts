@@ -53,6 +53,32 @@ describe("AI Token Issuer", () => {
 			expect(result.valid && result.claims.imp).toBe(true);
 			expect(result.valid && result.claims.pe).toBeUndefined();
 		});
+
+		// Fizzy #2770: a bulk run's agents resolve as its job, on the
+		// organization's shared plans, never the member's own.
+		it("carries the job a token was minted for, and no plan claim with it", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				source: "batch-document-generation",
+				jobType: "batch-document-generation",
+				impersonated: false,
+			});
+			const result = await verifyAIToken(token);
+			expect(result.valid && result.claims.jt).toBe(
+				"batch-document-generation",
+			);
+			expect(result.valid && result.claims.pe).toBeUndefined();
+		});
+
+		it("carries no job claim for a token minted without one", async () => {
+			const token = await issueAIToken({
+				userId: "user_123",
+				source: "test-service",
+				impersonated: false,
+			});
+			const result = await verifyAIToken(token);
+			expect(result.valid && "jt" in result.claims).toBe(false);
+		});
 	});
 
 	describe("issueAIToken", () => {

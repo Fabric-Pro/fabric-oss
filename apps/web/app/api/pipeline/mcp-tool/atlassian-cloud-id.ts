@@ -3,14 +3,16 @@
  *
  * Atlassian's Rovo MCP server requires a `cloudId` on nearly every tool call
  * (getConfluenceSpaces, getPagesInConfluenceSpace, getConfluencePage,
- * searchConfluenceUsingCql, the Jira tools…). The OAuth flow already resolves
- * and persists that cloudId on the MCP config (`atlassianCloudCloudId`), so the
- * generic tool-execution route can inject it transparently — callers don't need
- * to resolve it per request.
+ * searchConfluenceUsingCql, the Jira tools…). The OAuth flow resolves
+ * and persists that cloudId on the MCP config (`atlassianCloudCloudId`), or
+ * falls back to resolving it via Rovo on demand, so the generic tool-execution
+ * route can inject it transparently — callers don't need to resolve it per request.
  *
- * Kept as a pure, dependency-free module so the guard logic is unit-testable
+ * Kept lightweight so the guard and resolution logic is unit-testable
  * without standing up the route, the DB, or a live MCP connection.
  */
+
+import { extractAtlassianSiteId } from "@repo/utils";
 
 /**
  * Extract the declared input parameter names of an AI-SDK / MCP tool object.
@@ -87,4 +89,73 @@ export function injectAtlassianCloudId(
 		return params;
 	}
 	return { ...params, cloudId: storedCloudId };
+}
+
+// Rovo-resolved site ids, per config and grant generation: a new grant misses.
+const SITE_ID_TTL_MS = 10 * 60_000;
+const SITE_ID_CACHE_MAX = 500;
+const siteIdCache = new Map<string, { siteId: string; expiresAt: number }>();
+
+export function clearSiteIdCacheForTests(): void {
+	siteIdCache.clear();
+}
+
+/**
+ * Resolves the Atlassian site id when none is stored on the config yet.
+ * Asks Rovo via `getAccessibleAtlassianResources` if available,
+ * extracts the first site ID, and caches it in memory under `cacheKey`.
+ */
+export async function resolveAtlassianSiteId({
+	storedSiteId,
+	resolverTool,
+	cacheKey,
+	parseResult,
+}: {
+	storedSiteId?: string | null;
+	resolverTool?: {
+		execute: (
+			params: Record<string, unknown>,
+			context: { toolCallId: string; messages: unknown[] },
+		) => Promise<unknown>;
+	} | null;
+	cacheKey?: string;
+	parseResult?: (result: unknown) => unknown;
+}): Promise<string | null> {
+	if (storedSiteId) {
+		return storedSiteId;
+	}
+	if (!resolverTool || typeof resolverTool.execute !== "function") {
+		return null;
+	}
+	const hit = cacheKey ? siteIdCache.get(cacheKey) : undefined;
+	if (hit && hit.expiresAt > Date.now()) {
+		return hit.siteId;
+	}
+	let siteId: string | null = null;
+	try {
+		const raw = await resolverTool.execute(
+			{},
+			{ toolCallId: `site-${Date.now()}`, messages: [] },
+		);
+		siteId = extractAtlassianSiteId(parseResult ? parseResult(raw) : raw);
+	} catch (err) {
+		console.warn(
+			"[MCP Tool API] Atlassian site id lookup failed",
+			err instanceof Error ? err.message : String(err),
+		);
+		return null;
+	}
+	if (siteId && cacheKey) {
+		if (siteIdCache.size >= SITE_ID_CACHE_MAX) {
+			const firstKey = siteIdCache.keys().next().value;
+			if (firstKey !== undefined) {
+				siteIdCache.delete(firstKey);
+			}
+		}
+		siteIdCache.set(cacheKey, {
+			siteId,
+			expiresAt: Date.now() + SITE_ID_TTL_MS,
+		});
+	}
+	return siteId;
 }

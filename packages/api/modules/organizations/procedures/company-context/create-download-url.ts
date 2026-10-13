@@ -6,8 +6,10 @@ import {
 	companyContextStoragePrefix,
 	db,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import { getSignedUrl, uploadFile } from "@repo/storage";
 import { buildContentDisposition } from "@repo/utils/attachment";
+import { classifyContext } from "@repo/utils/context-download-class";
 import { z } from "zod";
 import {
 	Permissions,
@@ -15,10 +17,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { buildContextTextPayload } from "../../../projects/lib/build-context-text-payload";
-import { classifyContext } from "../../../projects/lib/context-classification";
 import { contextDownloadFilename } from "../../../projects/lib/context-download-filename";
 import { contextAuditResourceName } from "../../../projects/lib/context-metadata-audit";
 import { joinCrawledPagesMarkdown } from "../../../projects/lib/path-prefix-link-markdown";
+import { signOriginalContextFile } from "../../../projects/lib/sign-original-context-file";
 import { SINGLE_PRESIGN_EXPIRY_SECONDS } from "../../../projects/procedures/contexts/constants";
 import {
 	assertCompanyContextReader,
@@ -95,6 +97,9 @@ export const createCompanyContextDownloadUrlProcedure = tenantProtectedProcedure
 			// Defense in depth: only a key this organization's company context
 			// owns is ever signed.
 			if (!source.s3Path?.startsWith(storagePrefix)) {
+				logger.warn(
+					`[ContextDownload] Company context source ${source.id} in organization ${organizationId} has no stored original file under its organization's prefix`,
+				);
 				throw new ORPCError("BAD_REQUEST", {
 					message: "This source has no stored file to download",
 					data: { code: "CONTENT_UNAVAILABLE" },
@@ -108,23 +113,15 @@ export const createCompanyContextDownloadUrlProcedure = tenantProtectedProcedure
 					originalFilename: source.originalFilename,
 					mimeType: source.mimeType,
 				});
-			let url: string;
-			try {
-				url = await getSignedUrl(source.s3Path, {
-					bucket:
-						source.s3Bucket ??
-						config.storage.bucketNames.projectContexts,
-					expiresIn: SINGLE_PRESIGN_EXPIRY_SECONDS,
-					responseContentDisposition:
-						buildContentDisposition(filename),
-					responseContentType: source.mimeType ?? undefined,
-				});
-			} catch (err) {
-				throw new ORPCError("INTERNAL_SERVER_ERROR", {
-					message: "Failed to generate download URL",
-					cause: err,
-				});
-			}
+			const url = await signOriginalContextFile({
+				s3Path: source.s3Path,
+				bucket:
+					source.s3Bucket ??
+					config.storage.bucketNames.projectContexts,
+				filename,
+				mimeType: source.mimeType,
+				logLabel: `company context source ${source.id} in organization ${organizationId}`,
+			});
 			return { url, filename, expiresAt, contextClass: "A" as const };
 		}
 

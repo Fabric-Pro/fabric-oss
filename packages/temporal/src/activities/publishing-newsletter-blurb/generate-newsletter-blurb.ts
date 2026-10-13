@@ -98,6 +98,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	raiseAssetConfirmations,
@@ -406,6 +407,7 @@ export async function generateNewsletterBlurbActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-newsletter-blurb",
 		},
 	);
@@ -445,7 +447,7 @@ export async function generateNewsletterBlurbActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`Newsletter blurb failed schema validation: ${error.message}`,
+				`Newsletter blurb failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_NEWSLETTER_BLURB_SCHEMA_VALIDATION_FAILED",
 			);
 		}

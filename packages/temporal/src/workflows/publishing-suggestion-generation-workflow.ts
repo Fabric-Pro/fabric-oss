@@ -36,6 +36,10 @@ import {
 } from "@temporalio/workflow";
 import type * as acts from "../activities/publishing-suggestion";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import {
+	planSpentFailureAsError,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 // Runtime helper from a local, workflow-safe pure module (no imports at all →
 // sandbox-safe, deterministic), importable into the workflow exactly like
 // `./daily-brief-release-note-exclusions`.
@@ -92,6 +96,10 @@ const { collectReleases } = proxyActivities<typeof acts>({
 		nonRetryableErrorTypes: [...PROG],
 	},
 });
+
+// The run's whole execution is bounded at two hours (see the dispatcher), so
+// a wait for a ChatGPT plan reset must leave room for the rest of the run.
+const PUBLISHING_SUGGESTION_MAX_PLAN_WAIT_MS = 60 * 60_000;
 
 const { summarizeTopicSuggestions } = proxyActivities<typeof acts>({
 	...long,
@@ -231,6 +239,13 @@ export interface PublishingSuggestionWorkflowInput {
 	 * Absent on every pre-1C-1b history, and absent means "record nothing".
 	 */
 	preferences?: PublishingPreferencesSnapshot;
+	/**
+	 * Set only on a run a person started with "Scan for topics" (Fizzy #2770):
+	 * its AI steps run on the organization's shared ChatGPT plans, never the
+	 * project owner's own plan, whose name the run carries. Absent on the
+	 * scheduled sweep, which keeps `publishing-suggestion`.
+	 */
+	jobType?: "publishing-suggestion-manual";
 }
 
 // M6: SUPERSEDED is a workflow-level outcome (CAS lost to a reclaiming/superseding
@@ -425,28 +440,48 @@ export async function publishingSuggestionWorkflow(
 		const context = Object.fromEntries(
 			[...succeeded].map(([k, v]) => [k, v.items]),
 		);
-		const summary = await summarizeTopicSuggestions({
-			projectId,
-			organizationId,
-			actorUserId,
-			context,
-			// 1C-1b part 2 (§7.1(a)): the SAME snapshot the terminal writer
-			// fingerprints, so the prompt this cycle ran under and the hash
-			// recorded against it describe one configuration rather than two
-			// reads taken at different instants.
-			//
-			// Spread rather than sent unconditionally, unlike the dispatcher's
-			// own field: here an absent `preferences` is exactly what an OLD
-			// history looks like, and the activity's byte-identical-prompt
-			// guarantee is pinned against the field being MISSING, not against
-			// it being present-and-undefined.
-			//
-			// No `patched()`. Adding a field to an existing activity's input
-			// issues no new command, and the replay measurement for this exact
-			// boundary is recorded in preferences-replay.test.ts: real history
-			// CLEAN, negative control [TMPRL1100].
-			...(input.preferences && { preferences: input.preferences }),
-		});
+		// The summary may run on a shared ChatGPT plan (Fizzy #2770): when
+		// every plan is spent it waits for a reset and runs once more, but
+		// never past the run's own two-hour execution timeout, which bounds
+		// the notify retries too. Every run of this workflow is unattended,
+		// "Generate now" included. The helper's own `patched()` keeps older
+		// histories unchanged.
+		const summary = await withChatGptPlanWait(
+			() =>
+				summarizeTopicSuggestions({
+					projectId,
+					organizationId,
+					actorUserId,
+					context,
+					// 1C-1b part 2 (§7.1(a)): the SAME snapshot the terminal writer
+					// fingerprints, so the prompt this cycle ran under and the hash
+					// recorded against it describe one configuration rather than two
+					// reads taken at different instants.
+					//
+					// Spread rather than sent unconditionally, unlike the dispatcher's
+					// own field: here an absent `preferences` is exactly what an OLD
+					// history looks like, and the activity's byte-identical-prompt
+					// guarantee is pinned against the field being MISSING, not against
+					// it being present-and-undefined.
+					//
+					// No `patched()`. Adding a field to an existing activity's input
+					// issues no new command, and the replay measurement for this exact
+					// boundary is recorded in preferences-replay.test.ts: real history
+					// CLEAN, negative control [TMPRL1100].
+					...(input.preferences && {
+						preferences: input.preferences,
+					}),
+					// Same argument as `preferences`: an input field only.
+					...(input.jobType && { jobType: input.jobType }),
+				}),
+			{
+				organizationId,
+				// A clicked scan never runs on the owner's own plan, so its
+				// reset must not decide the wait.
+				userId: input.jobType ? null : actorUserId,
+				maxWaitMs: PUBLISHING_SUGGESTION_MAX_PLAN_WAIT_MS,
+			},
+		);
 		const mapped = await computeSuggestionTopics({
 			projectId,
 			topics: summary.topics,
@@ -639,7 +674,13 @@ export async function publishingSuggestionWorkflow(
 		}
 		return { status: persisted ? status : "SUPERSEDED" }; // M6 CAS-loss → SUPERSEDED
 	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
+		// A spent plan's activity failure reads only "Activity task failed";
+		// the cycle and its Job Hub row show the plan's own sentence instead
+		// (Fizzy #2770). A FAILED cycle never counts as a run, so the next
+		// tick retries it. Arguments only, so no `patched()`.
+		const failure = planSpentFailureAsError(error) ?? error;
+		const msg =
+			failure instanceof Error ? failure.message : String(failure);
 		// F5: projectId-scoped CAS — cannot fail another project's cycle, and a lost
 		// CAS above never reaches here (SUPERSEDED is returned, not thrown).
 		await markCycleFailed(cycleId, projectId, msg);

@@ -17,21 +17,30 @@ import {
 	createSkillTools,
 	listAvailableSkills,
 } from "@repo/ai/skills";
+import { runWithDispatchRequestSizer } from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
+import type { ModelMessage } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
-import type { IterativeMessage } from "../../../workflows/orchestrator/types";
+import type {
+	IterativeMessage,
+	OrchestratorBudgetAttemptKind,
+	TurnLedgerSnapshot,
+} from "../../../workflows/orchestrator/types";
 import { decideForcedToolChoice } from "../../direct-chat/decide-forced-tool-choice";
 import {
 	activityAbortSignal,
+	findTurnBudgetExhausted,
 	findTurnNotDispatchable,
 	guardTurnModel,
+	readTurnLedgerSnapshot,
 	rethrowIfTurnStopped,
 	type TurnScope,
 	throwIfActivityCancelled,
 } from "../turn-dispatch";
 import type { OrchestratorHeartbeatDetails } from "../types";
 import { getAiModelWithSelection } from "../utils";
+import { createFinalizationSizing } from "./finalization-fit";
 import {
 	budgetImageAttachments,
 	omittedImagesNote,
@@ -117,55 +126,77 @@ export interface AgentToolCall {
 }
 
 /**
+ * What every iteration result may also carry about its token accounting.
+ */
+interface IterationAccounting {
+	/**
+	 * Set when at least one attempt's usage could not be read (the provider
+	 * reported none, or the request failed after it was sent). `usage` then
+	 * counts only the attempts whose usage was reported: it is never a
+	 * guess, and for a ledgered turn the attempt stays charged at its
+	 * reservation in the ledger (see `ledger`).
+	 */
+	usageUnknown?: true;
+	/**
+	 * The turn's token ledger after this round's requests settled (a
+	 * ledgered turn only). The ledger, not `usage`, admits the turn's
+	 * tokens.
+	 */
+	ledger?: TurnLedgerSnapshot;
+}
+
+/**
  * Result of a single agent iteration
  */
-export type AgentIterationResult =
-	| {
-			type: "response";
-			content: string;
-			usage: {
-				inputTokens: number;
-				outputTokens: number;
-			};
-			/**
-			 * Populated when the LLM call aborted due to a provider-side limit
-			 * (rate limit, quota, context length, overloaded). The iteration
-			 * still returns a "response" so the workflow can soft-degrade, but
-			 * the UI uses this to show a banner / toast.
-			 */
-			limitSignal?: LimitSignal;
-			/**
-			 * The provider stopped this answer at the output-token ceiling
-			 * (`finishReason: "length"`), so the text ends mid-way. Before
-			 * this it was returned as a complete answer (review F25).
-			 */
-			truncated?: "output_limit";
-	  }
-	| {
-			type: "tool_calls";
-			toolCalls: AgentToolCall[];
-			usage: {
-				inputTokens: number;
-				outputTokens: number;
-			};
-	  }
-	/**
-	 * The provider/gateway emitted a transient stream error (e.g. malformed
-	 * tool_use, gateway 5xx) and the in-activity retry has already been spent.
-	 * Callers MUST NOT persist `message` as an assistant turn — doing so
-	 * poisons conversation history and re-feeds the error to the model on
-	 * every subsequent turn. Surface it out-of-band (failed workflow status,
-	 * SSE error event) and skip history mutation.
-	 */
-	| {
-			type: "stream_error";
-			message: string;
-			partialResponse: string;
-			usage: {
-				inputTokens: number;
-				outputTokens: number;
-			};
-	  };
+export type AgentIterationResult = IterationAccounting &
+	(
+		| {
+				type: "response";
+				content: string;
+				usage: {
+					inputTokens: number;
+					outputTokens: number;
+				};
+				/**
+				 * Populated when the LLM call aborted due to a provider-side limit
+				 * (rate limit, quota, context length, overloaded). The iteration
+				 * still returns a "response" so the workflow can soft-degrade, but
+				 * the UI uses this to show a banner / toast.
+				 */
+				limitSignal?: LimitSignal;
+				/**
+				 * The provider stopped this answer at the output-token ceiling
+				 * (`finishReason: "length"`), so the text ends mid-way. Before
+				 * this it was returned as a complete answer (review F25).
+				 */
+				truncated?: "output_limit";
+		  }
+		| {
+				type: "tool_calls";
+				toolCalls: AgentToolCall[];
+				usage: {
+					inputTokens: number;
+					outputTokens: number;
+				};
+		  }
+		/**
+		 * The provider/gateway emitted a transient stream error (e.g. malformed
+		 * tool_use, gateway 5xx) and the in-activity retry has already been spent.
+		 * Callers MUST NOT persist `message` as an assistant turn — doing so
+		 * poisons conversation history and re-feeds the error to the model on
+		 * every subsequent turn. Surface it out-of-band (failed workflow status,
+		 * SSE error event) and skip history mutation.
+		 */
+		| {
+				type: "stream_error";
+				message: string;
+				partialResponse: string;
+				usage: {
+					inputTokens: number;
+					outputTokens: number;
+				};
+		  }
+	);
 
 /**
  * Input for the agent iteration activity
@@ -239,7 +270,27 @@ export interface RunAgentIterationInput {
 	 * made. Absent for runs that have no turn (legacy, non-chat starters).
 	 */
 	turnScope?: TurnScope;
+	/**
+	 * How this round's requests count against a ledgered turn's token
+	 * allowance: EXPLORATION for a main round, FINALIZATION for the synthesis
+	 * that writes the answer after a stop (it may use the allowance's
+	 * reserve). Set by the workflow only, under the `orch-turn-budget-v1`
+	 * marker; the activity interceptor reads it from this input. Absent,
+	 * the round's requests are AUXILIARY.
+	 */
+	budgetAttemptKind?: OrchestratorBudgetAttemptKind;
+	/**
+	 * The user's request for this turn, for a FINALIZATION round that has
+	 * to shrink to fit what is left of the turn's allowance (see
+	 * `finalization-fit.ts`): the bounded request always carries it. Set by
+	 * the workflow beside `budgetAttemptKind`; absent, the turn's own user
+	 * message in `conversationHistory` is used.
+	 */
+	finalizationQuestion?: string;
 }
+
+/** The output the Advisor's rounds ask for (and the synthesis, when it fits). */
+const ROUND_MAX_OUTPUT_TOKENS = 16384;
 
 /**
  * Raw tool definition from preloaded resources
@@ -632,6 +683,31 @@ function convertToAiSdkMessages(messages: IterativeMessage[]): AiSdkMessage[] {
 export async function runAgentIteration(
 	input: RunAgentIterationInput,
 ): Promise<AgentIterationResult> {
+	const sizing =
+		input.budgetAttemptKind === "FINALIZATION" && input.turnScope
+			? createFinalizationSizing(
+					input.turnScope,
+					input.finalizationQuestion,
+				)
+			: undefined;
+	const result = sizing
+		? await runWithDispatchRequestSizer(sizing.sizer, () =>
+				runAgentIterationRound(input, sizing),
+			)
+		: await runAgentIterationRound(input);
+	// Read after the round: a stream's finish is held until its settlement
+	// is written, or for at most the settlement timeout
+	// (turn-budget-middleware.ts). A settlement still in flight then counts
+	// at its reservation, so this reading can be conservatively high (in
+	// `outstanding`) — never below what the round is known to have used.
+	const ledger = await readTurnLedgerSnapshot(input.turnScope);
+	return ledger ? { ...result, ledger } : result;
+}
+
+async function runAgentIterationRound(
+	input: RunAgentIterationInput,
+	finalizationSizing?: ReturnType<typeof createFinalizationSizing>,
+): Promise<AgentIterationResult> {
 	const {
 		conversationHistory,
 		availableTools,
@@ -677,6 +753,19 @@ export async function runAgentIteration(
 	// (e.g. model resolution failing) never leaks an interval into the worker.
 	const BACKGROUND_HEARTBEAT_INTERVAL_MS = 5_000;
 	let backgroundHeartbeatId: ReturnType<typeof setInterval> | undefined;
+
+	// Aggregates usage across ALL attempts, not just the last one. A
+	// defective attempt that gets retried still burned real provider
+	// tokens (staging: 13,210 input tokens on the failed attempt before
+	// the retry) — the per-attempt reset below discards `resolvedUsage`
+	// on retry, so this running total is the only place that cost isn't
+	// silently lost. Never reset per attempt, and declared outside the try
+	// so a failure after earlier attempts still reports their usage.
+	const aggregatedUsage = { inputTokens: 0, outputTokens: 0 };
+	// Set when any attempt's usage could not be read: `aggregatedUsage`
+	// then under-counts, and the result says so instead of passing a gap
+	// off as zero (see `IterationAccounting.usageUnknown`).
+	let usageUnknown = false;
 
 	// Convert raw tool definitions to AI SDK format up-front so the
 	// effective tool count (including any bound skill tools) can drive
@@ -966,6 +1055,31 @@ export async function runAgentIteration(
 			}
 		};
 
+		// A FINALIZATION round of a ledgered turn (the synthesis that writes
+		// the answer, sent with no tools) hands its request to the round's
+		// sizer (`runAgentIteration`, finalization-fit.ts). The turn-budget
+		// middleware then sizes every physical send of it — the first, an
+		// SDK retry, this loop's retry, a ChatGPT plan fallback or rotation —
+		// to the room a FINALIZATION reservation finds at that moment: sent
+		// as built when that fits, else shrunk to a bounded request, else
+		// refused before anything is reserved. Anything the round carries
+		// beyond the conversation (tools, a host note, image attachments) is
+		// not part of the plan, so such a round is not handed over and is
+		// sent as built.
+		if (
+			finalizationSizing &&
+			aiSdkToolCount === 0 &&
+			!input.turnNotice &&
+			attachedDocumentIds.length === 0
+		) {
+			finalizationSizing.prepare({
+				instructions: effectiveSystemPrompt,
+				fullMessages: messages as ModelMessage[],
+				fullMaxOutputTokens: ROUND_MAX_OUTPUT_TOKENS,
+				history: conversationHistory,
+			});
+		}
+
 		// One retry on transient stream errors. Provider/gateway glitches
 		// (malformed tool_use, intermittent 5xx, dropped connections) usually
 		// self-heal on a re-roll. Limit signals (rate/quota/context) are
@@ -973,13 +1087,7 @@ export async function runAgentIteration(
 		// `limitSignal` so the existing soft-degradation path handles them.
 		const MAX_STREAM_ATTEMPTS = 2;
 
-		// Aggregates usage across ALL attempts, not just the last one. A
-		// defective attempt that gets retried still burned real provider
-		// tokens (staging: 13,210 input tokens on the failed attempt before
-		// the retry) — the per-attempt reset below discards `resolvedUsage`
-		// on retry, so this running total is the only place that cost isn't
-		// silently lost. Declared outside the loop; never reset per attempt.
-		const aggregatedUsage = { inputTokens: 0, outputTokens: 0 };
+		// `aggregatedUsage` (declared before the try) is the running total.
 
 		for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
 			// Reset per-attempt state
@@ -1021,7 +1129,7 @@ export async function runAgentIteration(
 				tools: aiSdkToolCount > 0 ? (aiSdkTools as any) : undefined,
 				toolChoice,
 				stopWhen: isStepCount(maxStepsPerIteration),
-				maxOutputTokens: 16384,
+				maxOutputTokens: ROUND_MAX_OUTPUT_TOKENS,
 				// A cancelled activity aborts the request in flight.
 				abortSignal: activityAbortSignal(),
 			});
@@ -1091,8 +1199,12 @@ export async function runAgentIteration(
 				} else if (part.type === "error") {
 					// The turn record refused this request (possibly on an SDK
 					// retry, wrapped in its retry error): a stop, not a
-					// stream error to retry.
-					const refusal = findTurnNotDispatchable(part.error);
+					// stream error to retry. The same for the turn's token
+					// ledger refusing it: the allowance is used, and only the
+					// workflow's budget exit may answer that.
+					const refusal =
+						findTurnNotDispatchable(part.error) ??
+						findTurnBudgetExhausted(part.error);
 					if (refusal) {
 						// The result promises reject too; settle them so the
 						// rejection is handled.
@@ -1139,6 +1251,15 @@ export async function runAgentIteration(
 			const [usageSettled, finishReasonSettled] =
 				await Promise.allSettled([stream.usage, stream.finishReason]);
 
+			if (
+				usageSettled.status !== "fulfilled" ||
+				typeof usageSettled.value?.inputTokens !== "number" ||
+				typeof usageSettled.value?.outputTokens !== "number"
+			) {
+				// No usage, or only part of it: this attempt's tokens are
+				// not (all) in `aggregatedUsage`.
+				usageUnknown = true;
+			}
 			if (usageSettled.status === "fulfilled") {
 				resolvedUsage = usageSettled.value;
 				// Failed attempts still burn real provider tokens (staging:
@@ -1231,6 +1352,9 @@ export async function runAgentIteration(
 		// The aggregate across all attempts, not just the last one — see the
 		// `aggregatedUsage` declaration above the retry loop.
 		const usage = aggregatedUsage;
+		const accounting: IterationAccounting = usageUnknown
+			? { usageUnknown: true }
+			: {};
 
 		// Path A: usage/finishReason rejected — provider returned no usable output.
 		if (resolveError) {
@@ -1256,6 +1380,7 @@ export async function runAgentIteration(
 					content: `AI response was cut short (${limitSignal.kind.replace(/_/g, " ")}): ${limitSignal.message}`,
 					usage,
 					limitSignal,
+					...accounting,
 				};
 			}
 			return {
@@ -1263,6 +1388,7 @@ export async function runAgentIteration(
 				message: sanitizedError,
 				partialResponse: responseText,
 				usage,
+				...accounting,
 			};
 		}
 
@@ -1300,6 +1426,7 @@ export async function runAgentIteration(
 					content: `AI response was cut short (${limitSignal.kind.replace(/_/g, " ")}): ${limitSignal.message}${partialContext}`,
 					usage,
 					limitSignal,
+					...accounting,
 				};
 			}
 			return {
@@ -1307,6 +1434,7 @@ export async function runAgentIteration(
 				message: sanitizeProviderError(streamError),
 				partialResponse: responseText,
 				usage,
+				...accounting,
 			};
 		}
 
@@ -1320,6 +1448,7 @@ export async function runAgentIteration(
 				type: "tool_calls",
 				toolCalls: toolCallsToExecute,
 				usage,
+				...accounting,
 			};
 		}
 
@@ -1333,6 +1462,7 @@ export async function runAgentIteration(
 			type: "response",
 			content: finalText,
 			usage,
+			...accounting,
 			...(finishReason === "length"
 				? { truncated: "output_limit" as const }
 				: {}),
@@ -1363,11 +1493,18 @@ export async function runAgentIteration(
 		// as `stream_error` so the workflow does NOT persist the error text
 		// as an assistant turn — that would poison conversation history for
 		// every subsequent turn in the same chat thread.
+		//
+		// The usage of the attempt that threw is unknown (it may have been
+		// sent): report what the earlier attempts did report and say the rest
+		// is unknown, never a flat zero. A ledgered turn keeps the unknown
+		// attempt charged at its reservation.
+		const usage = { ...aggregatedUsage };
 		if (limitSignal) {
 			return {
 				type: "response",
 				content: `AI response was cut short (${limitSignal.kind.replace(/_/g, " ")}): ${limitSignal.message}`,
-				usage: { inputTokens: 0, outputTokens: 0 },
+				usage,
+				usageUnknown: true,
 				limitSignal,
 			};
 		}
@@ -1375,7 +1512,8 @@ export async function runAgentIteration(
 			type: "stream_error",
 			message: sanitizeProviderError(errorMessage),
 			partialResponse: "",
-			usage: { inputTokens: 0, outputTokens: 0 },
+			usage,
+			usageUnknown: true,
 		};
 	} finally {
 		if (backgroundHeartbeatId !== undefined) {

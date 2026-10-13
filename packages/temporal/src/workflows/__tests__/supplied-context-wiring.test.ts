@@ -489,7 +489,8 @@ describe("supplied-context wiring (source assertions)", () => {
 		const joinIdx = child.indexOf(
 			"contexts = [suppliedContext, ...contexts];",
 		);
-		const generateIdx = child.indexOf("await generateDocumentWithAgent(");
+		// The call sits in the step a ChatGPT plan wait can repeat (Fizzy #2770).
+		const generateIdx = child.indexOf("return generateDocumentWithAgent(");
 
 		expect(convergence).toBeGreaterThan(-1);
 		// After the convergence, so the direct-context path gets it too.

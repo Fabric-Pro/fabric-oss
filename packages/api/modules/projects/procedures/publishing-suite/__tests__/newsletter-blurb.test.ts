@@ -397,6 +397,11 @@ describe("generateNewsletterBlurb", () => {
 						projectId: "project-db-1",
 						organizationId: "org-db-1",
 						actorUserId: "user-1",
+						// The clicker's ChatGPT plan may serve the draft, and
+						// `planUserId` names them for the plan header, since
+						// this input has no `userId` (Fizzy #2770).
+						planEligible: true,
+						planUserId: "user-1",
 						guidance: "Keep it to one paragraph.",
 						currentDraft: null,
 					},

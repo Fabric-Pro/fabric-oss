@@ -1123,6 +1123,9 @@ export function DocumentsList({
 															organizationId
 														}
 														glossyHref={glossyHref}
+														sourceFile={
+															doc.sourceFile
+														}
 														className={
 															actionButtonClassName
 														}

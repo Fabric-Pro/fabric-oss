@@ -687,7 +687,11 @@ describe("update seam: verbatim PUT JSON → real updateGitLabIssueFromStory →
 			{ expectedOrigin: "https://gitlab.com" },
 		);
 		const stamp = fakeStore.calls.find(
-			(c) => c.table === "userStory" && c.method === "updateMany",
+			(c) =>
+				c.table === "userStory" &&
+				c.method === "updateMany" &&
+				"pmStatusSyncBaseId" in
+					((c.args as { data?: object }).data ?? {}),
 		);
 		expect(stamp?.args).toEqual({
 			where: {
@@ -735,9 +739,11 @@ describe("AC11 round trip: Fabric move → push → poll", () => {
 		expect(outcomeCounts().unchanged).toBe(1);
 		expect(storedStory("story-7").statusId).toBe("st-progress");
 		// Positive control for the write probe: it sees the push's own story
-		// writes (the content baseline, then the status-sync stamp).
+		// writes (the content baseline, the SUCCESS status, then the
+		// status-sync stamp).
 		expect(userStoryWritesSince(0).map((c) => c.method)).toEqual([
 			"update",
+			"updateMany",
 			"updateMany",
 		]);
 		expect(userStoryWritesSince(mark)).toEqual([]);
@@ -804,10 +810,12 @@ describe("AC12: ticket move → content-only push → poll", () => {
 			pmStatusSyncBaseLink: WEB_URL,
 			pmStatusSyncBaseFabricId: "st-todo",
 		});
-		// The push's story writes: the content baseline only. The same probe
-		// sees ["update", "updateMany"] on the stamping push in AC11.
+		// The push's story writes: the content baseline and the SUCCESS
+		// status only. The same probe sees a third write (the status-sync
+		// stamp) on the stamping push in AC11.
 		expect(userStoryWritesSince(0).map((c) => c.method)).toEqual([
 			"update",
+			"updateMany",
 		]);
 
 		await runPoll();

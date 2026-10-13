@@ -375,6 +375,7 @@ export async function foldContextBatch(
 		userId: input.tenancy.userId ?? "",
 		organizationId: input.tenancy.organizationId ?? undefined,
 		projectId: input.projectId,
+		jobType: "context-summarization" as const,
 	};
 
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(

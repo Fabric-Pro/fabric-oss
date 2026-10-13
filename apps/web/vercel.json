@@ -4,15 +4,5 @@
 	"installCommand": "cd ../.. && pnpm install --filter @repo/web... --filter .",
 	"ignoreCommand": "sh scripts/vercel-ignore.sh",
 	"framework": "nextjs",
-	"outputDirectory": ".next",
-	"crons": [
-		{
-			"path": "/api/cron/cleanup-oauth-states",
-			"schedule": "0 * * * *"
-		},
-		{
-			"path": "/api/cron/fail-stuck-pm-sync",
-			"schedule": "*/5 * * * *"
-		}
-	]
+	"outputDirectory": ".next"
 }

@@ -173,7 +173,7 @@ describe("budget-exhausted synthesis wiring", () => {
 	it("sends the (possibly compacted) history to both synthesis attempts", () => {
 		const block = source.slice(
 			source.indexOf("async function synthesizeFinalAnswer("),
-			source.indexOf("return { content: synthesisContent"),
+			source.indexOf("function getBudgetUsage("),
 		);
 		expect(block).toContain('patched("orch-synthesis-compacted-v1")');
 		expect(

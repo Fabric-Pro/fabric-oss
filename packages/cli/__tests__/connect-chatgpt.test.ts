@@ -9,8 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+	approvedPage,
 	buildConnectCommand,
 	connectOptionsError,
+	connectSteps,
 	describeOrganizations,
 	describeSharedAccount,
 } from "../src/commands/connect/chatgpt.js";
@@ -73,6 +75,57 @@ describe("loopback callback", () => {
 		const { code, params } = await listener.result;
 		expect(code).toBe("good");
 		expect(params.get("client_id")).toBe("oaiapp_1");
+	});
+});
+
+describe("connect steps (Fizzy #3052)", () => {
+	it("serves the approval page that says a ChatGPT sign-in follows", async () => {
+		const listener = await startLoopbackListener({
+			state: "expected-state",
+			callbackPath: "/fabric/callback",
+			codeParam: "ticket",
+			preferredPort: 0,
+			timeoutMs: 5_000,
+			successPage: approvedPage(false),
+		});
+		const page = await (
+			await fetch(`${listener.redirectUri}?state=expected-state&ticket=t`)
+		).text();
+		await listener.result;
+		expect(page).toContain("Approved in Fabric");
+		expect(page).toContain("opens ChatGPT");
+		expect(page).not.toContain("Signed in");
+	});
+
+	it("keeps the default page for every other sign-in", async () => {
+		const listener = await startLoopbackListener({
+			state: "expected-state",
+			preferredPort: 0,
+			timeoutMs: 5_000,
+		});
+		const page = await (
+			await fetch(`${listener.redirectUri}?state=expected-state&code=c`)
+		).text();
+		await listener.result;
+		expect(page).toContain("Signed in");
+	});
+
+	it("lists the Fabric approval before the ChatGPT sign-in", () => {
+		const steps = connectSteps(false);
+		expect(steps.indexOf("Approve the connection in Fabric")).toBeLessThan(
+			steps.indexOf("Sign in to ChatGPT"),
+		);
+		expect(steps).toContain("This terminal says when");
+	});
+
+	it("tells a shared connection to sign in with the organization's account", () => {
+		expect(connectSteps(true)).toContain(
+			"organization shares, not your own",
+		);
+		expect(approvedPage(true).body).toContain(
+			"organization shares, not your own",
+		);
+		expect(approvedPage(false).body).not.toContain("organization");
 	});
 });
 

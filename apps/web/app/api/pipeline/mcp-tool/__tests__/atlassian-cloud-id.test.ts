@@ -3,10 +3,12 @@
  * MCP tool-execution route.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+	clearSiteIdCacheForTests,
 	getToolParamNames,
 	injectAtlassianCloudId,
+	resolveAtlassianSiteId,
 	toolDeclaresCloudId,
 } from "../atlassian-cloud-id";
 
@@ -102,5 +104,103 @@ describe("injectAtlassianCloudId", () => {
 		expect(
 			injectAtlassianCloudId(params, jsonSchemaTool({}), "cloud-123"),
 		).toBe(params);
+	});
+});
+
+describe("resolveAtlassianSiteId", () => {
+	beforeEach(() => {
+		clearSiteIdCacheForTests();
+	});
+
+	it("caches the resolved site ID for the same cacheKey", async () => {
+		const executeMock = vi
+			.fn()
+			.mockResolvedValue([
+				{ id: "22222222-2222-4222-8222-222222222222", name: "Site" },
+			]);
+
+		const res1 = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:1",
+		});
+		const res2 = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:1",
+		});
+
+		expect(res1).toBe("22222222-2222-4222-8222-222222222222");
+		expect(res2).toBe("22222222-2222-4222-8222-222222222222");
+		expect(executeMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("re-resolves when cacheKey changes (different generation)", async () => {
+		const executeMock = vi
+			.fn()
+			.mockResolvedValueOnce([
+				{ id: "11111111-1111-4111-8111-111111111111", name: "Site A" },
+			])
+			.mockResolvedValueOnce([
+				{ id: "22222222-2222-4222-8222-222222222222", name: "Site B" },
+			]);
+
+		const res1 = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:1",
+		});
+		const res2 = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:2",
+		});
+
+		expect(res1).toBe("11111111-1111-4111-8111-111111111111");
+		expect(res2).toBe("22222222-2222-4222-8222-222222222222");
+		expect(executeMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("returns null without crashing when resolver throws", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const executeMock = vi
+			.fn()
+			.mockRejectedValue(new Error("network failure"));
+
+		const result = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:1",
+		});
+
+		expect(result).toBeNull();
+		warnSpy.mockRestore();
+	});
+
+	it("applies parseResult before extracting the site ID", async () => {
+		const executeMock = vi.fn().mockResolvedValue({
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify([
+						{ id: "11111111-1111-4111-8111-111111111111" },
+					]),
+				},
+			],
+		});
+		const parseResult = (raw: unknown) => {
+			const text = (raw as { content: Array<{ text: string }> })
+				.content[0]?.text;
+			return JSON.parse(text);
+		};
+
+		const result = await resolveAtlassianSiteId({
+			storedSiteId: null,
+			resolverTool: { execute: executeMock },
+			cacheKey: "cfg-1:1",
+			parseResult,
+		});
+
+		expect(result).toBe("11111111-1111-4111-8111-111111111111");
 	});
 });

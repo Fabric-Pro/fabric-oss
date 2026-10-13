@@ -28,6 +28,7 @@
  * to that item.
  */
 
+import type { AiJobKey } from "@repo/ai";
 import {
 	buildDetectionText,
 	db,
@@ -162,6 +163,8 @@ export type RouteActionItemsParams = {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
+	/** The background job whose proposal this routes (Fizzy #2770). */
+	jobType?: AiJobKey;
 };
 
 export type RouteActionItemsResult = {
@@ -182,7 +185,7 @@ export type RouteActionItemsResult = {
 export async function routeActionItemsToExistingTickets(
 	params: RouteActionItemsParams,
 ): Promise<RouteActionItemsResult> {
-	const { changes, projectId, userId, organizationId } = params;
+	const { changes, projectId, userId, organizationId, jobType } = params;
 
 	// Project opt-in. Checked before anything else so a project that has not
 	// enabled routing pays nothing beyond this one indexed lookup, and its
@@ -299,6 +302,7 @@ export async function routeActionItemsToExistingTickets(
 			organizationId,
 			projectId,
 			logPrefix: LOG_PREFIX,
+			jobType,
 		});
 	} catch (error) {
 		return allFailed(changes, routableIndexes, projectId, error);

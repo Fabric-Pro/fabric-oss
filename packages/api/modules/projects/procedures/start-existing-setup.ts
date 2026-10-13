@@ -45,6 +45,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import {
+	cancelPausedSetupsOfProject,
+	projectSetupIsPaused,
+} from "../lib/paused-setup";
 import { requireProjectOrganization } from "../lib/project-organization";
 
 function outboundRepositoryUrl(repositoryUrl: string): string {
@@ -190,8 +194,16 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 		// A project with no organization is refused before any of them.
 		const organizationId = requireProjectOrganization(project);
 
-		// Check if setup is already in progress
-		if (project.codeAnalysisStatus === "SCANNING") {
+		// Check if setup is already in progress. One paused for a ChatGPT
+		// plan reset runs nothing: this setup replaces it (Fizzy #2770).
+		if (
+			project.codeAnalysisStatus === "SCANNING" &&
+			!(await projectSetupIsPaused({
+				projectId,
+				organizationId,
+				userId: user.id,
+			}))
+		) {
 			throw new ORPCError("CONFLICT", {
 				message: "Project setup is already in progress",
 			});
@@ -240,6 +252,10 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 			impersonated: isAiImpersonatedRequest(),
 			source: "existing-project-setup",
 			expirySeconds: 7200, // 2 hours — sequential doc gen can take a while
+			// Bulk work: the agents it delegates to resolve on the
+			// organization's shared ChatGPT plans, never the clicker's own
+			// (Fizzy #2770).
+			jobType: "project-setup",
 		});
 
 		// Build PM config from project record
@@ -662,6 +678,15 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// A setup of this project paused for a ChatGPT plan reset is cancelled
+		// first: the newer setup wins, and the old resume never runs (Fizzy
+		// #2770).
+		await cancelPausedSetupsOfProject({
+			projectId,
+			organizationId,
+			userId: user.id,
+		});
+
 		// Start the Temporal workflow
 		const client = await getTemporalClient();
 		const workflowId = `existing-setup-${projectId}-${Date.now()}`;
@@ -675,6 +700,9 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 					{
 						projectId,
 						userId: user.id,
+						// Bulk work: its AI steps run on the organization's shared
+						// ChatGPT plans, never the clicker's own (Fizzy #2770).
+						jobType: "project-setup",
 						organizationId,
 						aiToken,
 						repoUrls: canonicalRepoUrls,

@@ -158,7 +158,6 @@
 	"packages/api/modules/projects/procedures/github/list-repos.ts",
 	"packages/api/modules/projects/procedures/github/setup-status.ts",
 	"packages/api/modules/projects/procedures/kanban-user-preference.ts",
-	"packages/api/modules/projects/procedures/list-documents.ts",
 	"packages/api/modules/projects/procedures/list-draft-projects.ts",
 	"packages/api/modules/projects/procedures/list-pending-state-changes.ts",
 	"packages/api/modules/projects/procedures/list-pm-sync-log.ts",

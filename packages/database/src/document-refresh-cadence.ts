@@ -67,6 +67,12 @@ export type DocumentRefreshCompletedStatus =
 export type DocumentRefreshFailureStatus =
 	| "SKIPPED_COLLISION"
 	| "SKIPPED_STALE_ACTOR"
+	/**
+	 * Every ChatGPT plan the refresh may use was spent past the run's wait
+	 * (Fizzy #2770). Nothing is wrong with the document, so the next sweep
+	 * retries it without the post-failure backoff.
+	 */
+	| "SKIPPED_PLAN_SPENT"
 	| "FAILED";
 
 export type DocumentRefreshStatus =
@@ -87,6 +93,8 @@ export interface DocumentRefreshCadenceSettings {
 	lastRefreshedAt: Date | null;
 	/** Advanced on every attempt, including failures. Drives the retry backoff. */
 	lastAttemptAt: Date | null;
+	/** What the last cycle did; a spent plan does not earn the backoff. */
+	lastRefreshStatus?: string | null;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -164,7 +172,10 @@ export function isRefreshDue(
 		return false;
 	}
 
-	if (s.lastAttemptAt) {
+	// The backoff is for a document that keeps failing. One skipped because
+	// every ChatGPT plan was spent comes back on the next hourly sweep, which
+	// is no more often than a plan window could have reset.
+	if (s.lastAttemptAt && s.lastRefreshStatus !== "SKIPPED_PLAN_SPENT") {
 		const elapsedSinceAttempt = now.getTime() - s.lastAttemptAt.getTime();
 		if (elapsedSinceAttempt < REFRESH_RETRY_BACKOFF_HOURS * HOUR_MS) {
 			return false;

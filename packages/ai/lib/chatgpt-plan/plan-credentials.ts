@@ -1,7 +1,7 @@
 import {
 	type ChatGptPlanCredential,
-	deleteChatGptPlanCredential,
-	deleteChatGptPlanOrgAccount,
+	deleteChatGptPlanCredentialUnderLock,
+	deleteChatGptPlanOrgAccountUnderLock,
 	getChatGptPlanCredential,
 	getChatGptPlanOrgAccount,
 	notifyChatGptPlanOrgAccountNeedsReconnect,
@@ -9,6 +9,7 @@ import {
 	upsertChatGptPlanOrgAccount,
 } from "@repo/database";
 import { db } from "@repo/database/prisma/client";
+import { chatGptPlanCredentialFingerprint } from "@repo/database/prisma/queries/lib/chatgpt-plan-credential-fence";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
 import { logger } from "@repo/logs";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
@@ -22,6 +23,7 @@ import {
 	refreshChatGptPlanTokens,
 	revokeChatGptPlanToken,
 } from "./oauth";
+import { invalidateChatGptPlanSourceCaches } from "./source-caches";
 import {
 	chatGptPlanSourceLockKey,
 	type PlanSourceRef,
@@ -69,6 +71,8 @@ export function chatGptPlanNeedsRefresh(
  */
 type PlanSignIn = Pick<
 	ChatGptPlanCredential,
+	| "id"
+	| "subject"
 	| "clientId"
 	| "encryptedAccessToken"
 	| "encryptedRefreshToken"
@@ -110,12 +114,19 @@ function assertUsable(
 export interface ChatGptPlanAccessToken {
 	accessToken: string;
 	expiresAt: Date;
+	/**
+	 * The sign-in this token belongs to, read from the same row (Fizzy
+	 * #3037). Whatever work done with the token writes about its source is
+	 * bound to it, and dropped once the source has another sign-in.
+	 */
+	credentialFingerprint: string;
 }
 
 function toAccessToken(credential: PlanSignIn): ChatGptPlanAccessToken {
 	return {
 		accessToken: decryptApiKey(credential.encryptedAccessToken),
 		expiresAt: credential.accessTokenExpiresAt,
+		credentialFingerprint: chatGptPlanCredentialFingerprint(credential),
 	};
 }
 
@@ -221,22 +232,33 @@ async function storeRotatedUnderLock(
  * Flips an ACTIVE source to NEEDS_RECONNECT. Only that flip tells a shared
  * account's owners and admins (Fizzy #2770 D4): an account already waiting
  * for a reconnect is not announced again, and only a new sign-in makes it
- * ACTIVE.
+ * ACTIVE. Match the sign-in read under the refresh lock so a delayed failure
+ * cannot mark credentials that a reconnect or another refresh has replaced.
  */
-async function markNeedsReconnect(ref: PlanSourceRef): Promise<void> {
+async function markNeedsReconnect(
+	ref: PlanSourceRef,
+	failedSignIn: PlanSignIn,
+): Promise<void> {
 	const data = { status: "NEEDS_RECONNECT" as const };
+	const failedCredential = {
+		id: failedSignIn.id,
+		clientId: failedSignIn.clientId,
+		encryptedAccessToken: failedSignIn.encryptedAccessToken,
+		encryptedRefreshToken: failedSignIn.encryptedRefreshToken,
+		status: "ACTIVE" as const,
+	};
 	if (ref.kind === "user") {
 		await db.chatGptPlanCredential.updateMany({
-			where: { userId: ref.userId },
+			where: { userId: ref.userId, ...failedCredential },
 			data,
 		});
 		return;
 	}
 	const flipped = await db.chatGptPlanOrgAccount.updateMany({
 		where: {
+			...failedCredential,
 			id: ref.accountId,
 			organizationId: ref.organizationId,
-			status: "ACTIVE",
 		},
 		data,
 	});
@@ -259,11 +281,13 @@ async function refreshUnderLock(
 	failedToken: string | undefined,
 	{ fetchImpl = fetch, now = Date.now }: ChatGptPlanCredentialDeps,
 ): Promise<ChatGptPlanAccessToken> {
+	let failedSignIn: PlanSignIn | null = null;
 	try {
 		return await withRefreshLock(
 			chatGptPlanSourceLockKey(ref),
 			async (tx, assertBudget) => {
 				const current = await readSignInUnderLock(tx, ref);
+				failedSignIn = current;
 				assertUsable(current);
 				const currentToken = toAccessToken(current);
 				const forced =
@@ -315,7 +339,9 @@ async function refreshUnderLock(
 			error.reauthRequired &&
 			error.code !== "not_connected"
 		) {
-			await markNeedsReconnect(ref).catch(() => {});
+			if (failedSignIn) {
+				await markNeedsReconnect(ref, failedSignIn).catch(() => {});
+			}
 			logger.warn("[chatgpt-plan] Sign-in needs to be repeated", {
 				...planSourceLogFields(ref),
 				code: error.code,
@@ -413,11 +439,12 @@ export interface StoreChatGptPlanCredentialInput {
 	now?: number;
 }
 
+/** Stores the sign-in; returns its fingerprint, for work done with its tokens. */
 export async function storeChatGptPlanCredential(
 	input: StoreChatGptPlanCredentialInput,
-): Promise<void> {
+): Promise<{ credentialFingerprint: string }> {
 	const now = input.now ?? Date.now();
-	await upsertChatGptPlanCredential({
+	const stored = await upsertChatGptPlanCredential({
 		userId: input.userId,
 		email: input.email,
 		subject: input.subject,
@@ -438,6 +465,12 @@ export async function storeChatGptPlanCredential(
 		{ kind: "user", userId: input.userId },
 		input.tokens.id_token,
 	);
+	return {
+		credentialFingerprint: chatGptPlanCredentialFingerprint({
+			id: stored.id,
+			subject: input.subject,
+		}),
+	};
 }
 
 /**
@@ -449,26 +482,49 @@ export async function disconnectChatGptPlan(
 	userId: string,
 	deps: ChatGptPlanCredentialDeps = {},
 ): Promise<boolean> {
-	const credential = await getChatGptPlanCredential(userId);
-	if (!credential) {
-		return false;
+	const disconnected = await withRefreshLock(
+		chatGptPlanSourceLockKey({ kind: "user", userId }),
+		async (tx, assertBudget) => {
+			const credential = await tx.chatGptPlanCredential.findUnique({
+				where: { userId },
+			});
+			if (!credential) {
+				return false;
+			}
+			// One bounded 10s revoke plus DB cleanup fits the 20s transaction;
+			// refuse provider work if waiting for the lock spent that budget.
+			assertBudget(CHATGPT_TOKEN_REQUEST_TIMEOUT_MS);
+			try {
+				await revokeChatGptPlanToken(
+					{
+						clientId: credential.clientId,
+						refreshToken: decryptApiKey(
+							credential.encryptedRefreshToken,
+						),
+					},
+					deps.fetchImpl,
+				);
+			} catch (error) {
+				logger.warn(
+					"[chatgpt-plan] Revoking the refresh token failed",
+					{
+						userId,
+						code:
+							error instanceof ChatGptPlanAuthError
+								? error.code
+								: undefined,
+					},
+				);
+			}
+			return deleteChatGptPlanCredentialUnderLock(tx, userId);
+		},
+	);
+	if (disconnected) {
+		// As a connect does: nothing this process cached about the plan
+		// outlives it.
+		invalidateChatGptPlanSourceCaches({ kind: "user", userId });
 	}
-	try {
-		await revokeChatGptPlanToken(
-			{
-				clientId: credential.clientId,
-				refreshToken: decryptApiKey(credential.encryptedRefreshToken),
-			},
-			deps.fetchImpl,
-		);
-	} catch (error) {
-		logger.warn("[chatgpt-plan] Revoking the refresh token failed", {
-			userId,
-			code:
-				error instanceof ChatGptPlanAuthError ? error.code : undefined,
-		});
-	}
-	return deleteChatGptPlanCredential(userId);
+	return disconnected;
 }
 
 export interface StoreChatGptPlanOrgAccountInput
@@ -486,7 +542,7 @@ export interface StoreChatGptPlanOrgAccountInput
  */
 export async function storeChatGptPlanOrgAccount(
 	input: StoreChatGptPlanOrgAccountInput,
-): Promise<{ id: string; created: boolean }> {
+): Promise<{ id: string; created: boolean; credentialFingerprint: string }> {
 	const now = input.now ?? Date.now();
 	const stored = await upsertChatGptPlanOrgAccount({
 		organizationId: input.organizationId,
@@ -515,7 +571,13 @@ export async function storeChatGptPlanOrgAccount(
 		},
 		input.tokens.id_token,
 	);
-	return stored;
+	return {
+		...stored,
+		credentialFingerprint: chatGptPlanCredentialFingerprint({
+			id: stored.id,
+			subject: input.subject,
+		}),
+	};
 }
 
 /**
@@ -527,25 +589,47 @@ export async function disconnectChatGptPlanOrgAccount(
 	params: { organizationId: string; accountId: string },
 	deps: ChatGptPlanCredentialDeps = {},
 ): Promise<boolean> {
-	const account = await getChatGptPlanOrgAccount(params);
-	if (!account) {
-		return false;
+	const disconnected = await withRefreshLock(
+		chatGptPlanSourceLockKey({ kind: "org", ...params }),
+		async (tx, assertBudget) => {
+			const account = await tx.chatGptPlanOrgAccount.findFirst({
+				where: {
+					id: params.accountId,
+					organizationId: params.organizationId,
+				},
+			});
+			if (!account) {
+				return false;
+			}
+			assertBudget(CHATGPT_TOKEN_REQUEST_TIMEOUT_MS);
+			try {
+				await revokeChatGptPlanToken(
+					{
+						clientId: account.clientId,
+						refreshToken: decryptApiKey(
+							account.encryptedRefreshToken,
+						),
+					},
+					deps.fetchImpl,
+				);
+			} catch (error) {
+				logger.warn(
+					"[chatgpt-plan] Revoking the refresh token failed",
+					{
+						organizationId: params.organizationId,
+						planAccountId: params.accountId,
+						code:
+							error instanceof ChatGptPlanAuthError
+								? error.code
+								: undefined,
+					},
+				);
+			}
+			return deleteChatGptPlanOrgAccountUnderLock(tx, params);
+		},
+	);
+	if (disconnected) {
+		invalidateChatGptPlanSourceCaches({ kind: "org", ...params });
 	}
-	try {
-		await revokeChatGptPlanToken(
-			{
-				clientId: account.clientId,
-				refreshToken: decryptApiKey(account.encryptedRefreshToken),
-			},
-			deps.fetchImpl,
-		);
-	} catch (error) {
-		logger.warn("[chatgpt-plan] Revoking the refresh token failed", {
-			organizationId: params.organizationId,
-			planAccountId: params.accountId,
-			code:
-				error instanceof ChatGptPlanAuthError ? error.code : undefined,
-		});
-	}
-	return deleteChatGptPlanOrgAccount(params);
+	return disconnected;
 }

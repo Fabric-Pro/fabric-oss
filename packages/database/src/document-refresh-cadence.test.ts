@@ -282,6 +282,21 @@ describe("isRefreshDue", () => {
 		).toBe(false);
 	});
 
+	it("does not hold a document skipped for a spent ChatGPT plan in the backoff", () => {
+		// Fizzy #2770: nothing failed, so the next hourly sweep retries it.
+		const justAttempted = new Date(NOW.getTime() - 1 * HOUR_MS);
+		expect(
+			isRefreshDue(
+				settings({
+					lastRefreshedAt: daysAgo(30),
+					lastAttemptAt: justAttempted,
+					lastRefreshStatus: "SKIPPED_PLAN_SPENT",
+				}),
+				NOW,
+			),
+		).toBe(true);
+	});
+
 	it("releases a due document once the backoff window has passed", () => {
 		const attemptedLongAgo = new Date(NOW.getTime() - 7 * HOUR_MS);
 		expect(

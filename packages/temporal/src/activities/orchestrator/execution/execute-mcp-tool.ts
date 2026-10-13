@@ -31,6 +31,17 @@ import {
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
 import { getBaseUrl } from "@repo/utils";
+import {
+	dispatchDeadlinePassed,
+	dispatchDeadlineRemainingMs,
+	isDispatchDeadlinePassedError,
+	runWithDispatchDeadline,
+	throwIfDeadlinePassed,
+} from "@repo/utils/dispatch-deadline";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { splitIntegrationToolRef } from "@repo/utils/integration-tool-ref";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -658,6 +669,13 @@ export async function executeMcpTool(
 	input: ExecuteMcpToolInput,
 ): Promise<ExecuteMcpToolOutput> {
 	const startTime = Date.now();
+	const deadline = input.dispatchDeadline;
+
+	// A send deadline that has already passed (a PM create whose claim took
+	// longer than its send ceiling to take): nothing is started or sent.
+	if (deadline !== undefined && dispatchDeadlinePassed(deadline)) {
+		return deadlinePassedResult(input, startTime);
+	}
 
 	const heartbeatInterval = setInterval(
 		() =>
@@ -673,14 +691,32 @@ export async function executeMcpTool(
 			: HEARTBEAT_INTERVALS.DEFAULT,
 	);
 
-	// When a timeout is set, also cancel the underlying MCP call on expiry so a
-	// never-settling tool.execute releases its request/socket instead of piling
-	// up across cycles (finding 8). One controller per call → siblings sharing
-	// the cached client are unaffected.
-	const timeoutMs = effectiveMcpToolTimeoutMs(
+	// When a timeout is set, the call's abort signal fires on expiry (finding
+	// 8). One controller per call → siblings sharing the cached client are
+	// unaffected. The signal reaches the STDIO wrapper request, which it
+	// cancels. On the HTTP and SSE transports it does not reach the
+	// underlying fetch (the SDK transport sends with its own controller), so
+	// a request already handed to fetch stays live on the wire: Fabric stops
+	// waiting for it and abandons it, it is not torn down.
+	const requestedTimeoutMs = effectiveMcpToolTimeoutMs(
 		input.timeoutMs,
 		isFirstPartyFabricTool(input.toolName),
 	);
+	// With a send deadline, the timer also ends at it, so Fabric stops waiting
+	// for a request still in flight there (abandoned on HTTP and SSE, not
+	// torn down; see above). The deadline itself is enforced by the explicit
+	// clock checks before each send, not by this timer, which can fire late
+	// when the event loop stalls.
+	const timeoutMs =
+		deadline === undefined
+			? requestedTimeoutMs
+			: Math.min(
+					requestedTimeoutMs ?? Number.POSITIVE_INFINITY,
+					Math.max(
+						1,
+						Math.ceil(dispatchDeadlineRemainingMs(deadline)),
+					),
+				);
 	const abortController = timeoutMs ? new AbortController() : undefined;
 
 	try {
@@ -695,14 +731,20 @@ export async function executeMcpTool(
 		if (input.turnScope) {
 			await assertTurnDispatchable(input.turnScope);
 		}
-		const work = executeMcpToolImpl(
-			input,
-			startTime,
-			abortController?.signal,
-		);
+		const runImpl = () =>
+			executeMcpToolImpl(input, startTime, abortController?.signal);
+		// The deadline is also read by the checks inside the clients that send
+		// (the MCP transport fetch, the STDIO wrapper call), which a cached
+		// client shares between calls: they read it from this scope.
+		const work =
+			deadline === undefined
+				? runImpl()
+				: runWithDispatchDeadline(deadline, runImpl);
 		// Opt-in per-call timeout. The race resolves on timeout, so this function
 		// returns and the `finally` below clears the heartbeat interval — the
-		// hung `tool.execute` inside `work` can no longer leak a live timer.
+		// hung `tool.execute` inside `work` can no longer leak a live timer. The
+		// abort below cancels a STDIO request; an HTTP or SSE request already
+		// handed to fetch is left running and its answer is ignored.
 		const result = await (timeoutMs
 			? runWithTimeout(work, timeoutMs, () => {
 					abortController?.abort();
@@ -713,6 +755,8 @@ export async function executeMcpTool(
 						durationMs: Date.now() - startTime,
 						success: false,
 						cached: false,
+						// The call may still land after the race gave up on it.
+						failureKind: "indeterminate" as const,
 					};
 				})
 			: work);
@@ -749,6 +793,25 @@ export async function executeMcpTool(
 	} finally {
 		clearInterval(heartbeatInterval);
 	}
+}
+
+/**
+ * A call not sent because its send deadline (`dispatchDeadline`) had passed
+ * before the request was handed to `fetch`: it did not run.
+ */
+function deadlinePassedResult(
+	input: ExecuteMcpToolInput,
+	startTime: number,
+): ExecuteMcpToolOutput {
+	return {
+		output: {
+			error: `MCP tool "${input.toolName}" was not sent: its send deadline had passed`,
+		},
+		durationMs: Date.now() - startTime,
+		success: false,
+		cached: false,
+		failureKind: "deadline_passed",
+	};
 }
 
 /** The non-retryable refusal for a PM call bound to another GitLab instance. */
@@ -1046,6 +1109,10 @@ async function executeIntegrationTool(
 	}
 
 	// ── 5. Execute ───────────────────────────────────────────────────────────
+	// Immediately before the external call, outside the catch below: no
+	// tool runs once the chat turn this activity serves has stopped or used
+	// its token allowance; a no-op outside a turn.
+	throwIfDispatchStopped();
 	try {
 		const result = await registry.executeRegisteredIntegrationOperation({
 			provider,
@@ -1212,6 +1279,9 @@ async function executeFabricCatalogTool(
 	}
 
 	safeHeartbeat({ phase: "fabric-catalog", toolName: input.toolName });
+	// The catalog tool's own writes check again immediately before each one
+	// (e.g. createStoryFromProposal); this refuses the whole call up front.
+	throwIfDispatchStopped();
 	const result = await runFabricCatalogTool({
 		toolName: input.toolName,
 		args: input.args || {},
@@ -1286,6 +1356,7 @@ async function executeMcpToolImpl(
 			output: readOnlyBlock,
 			durationMs: Date.now() - startTime,
 			success: false,
+			failureKind: "rejected",
 		};
 	}
 
@@ -1365,6 +1436,10 @@ async function executeMcpToolImpl(
 			return authorityBlock;
 		}
 
+		// Immediately before the external call, outside the catch below: no
+		// tool runs once the chat turn this activity serves has stopped or used
+		// its token allowance; a no-op outside a turn.
+		throwIfDispatchStopped();
 		try {
 			const output = await executeMicrosoftTeamsTool(
 				methodName,
@@ -1391,6 +1466,7 @@ async function executeMcpToolImpl(
 						`[Letta Cache] Stored Microsoft Teams result for ${input.toolName}`,
 					);
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache OAuth result",
 						cacheError,
@@ -1405,6 +1481,10 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
+			// A turn stop (a write the executor refused, or a stop latched
+			// while it ran) is not a tool failure for the model to see, and
+			// nothing is cached for it.
+			rethrowIfDispatchStopped(error);
 			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Microsoft Teams tool "${input.toolName}" execution failed:`,
@@ -1426,6 +1506,7 @@ async function executeMcpToolImpl(
 						success: false,
 					});
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache OAuth error result",
 						cacheError,
@@ -1472,6 +1553,10 @@ async function executeMcpToolImpl(
 			return authorityBlock;
 		}
 
+		// Immediately before the external call, outside the catch below: no
+		// tool runs once the chat turn this activity serves has stopped or used
+		// its token allowance; a no-op outside a turn.
+		throwIfDispatchStopped();
 		try {
 			const output = await executeGitHubTool(
 				methodName,
@@ -1497,6 +1582,7 @@ async function executeMcpToolImpl(
 						`[Letta Cache] Stored GitHub result for ${input.toolName}`,
 					);
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache GitHub OAuth result",
 						cacheError,
@@ -1511,6 +1597,10 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
+			// A turn stop (a write the executor refused, or a stop latched
+			// while it ran) is not a tool failure for the model to see, and
+			// nothing is cached for it.
+			rethrowIfDispatchStopped(error);
 			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] GitHub tool "${input.toolName}" execution failed:`,
@@ -1531,6 +1621,7 @@ async function executeMcpToolImpl(
 						success: false,
 					});
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache GitHub error result",
 						cacheError,
@@ -1574,6 +1665,10 @@ async function executeMcpToolImpl(
 			return authorityBlock;
 		}
 
+		// Immediately before the external call, outside the catch below: no
+		// tool runs once the chat turn this activity serves has stopped or used
+		// its token allowance; a no-op outside a turn.
+		throwIfDispatchStopped();
 		try {
 			const output = await executeSlackTool(
 				methodName,
@@ -1599,6 +1694,7 @@ async function executeMcpToolImpl(
 						`[Letta Cache] Stored Slack result for ${input.toolName}`,
 					);
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache Slack OAuth result",
 						cacheError,
@@ -1613,6 +1709,10 @@ async function executeMcpToolImpl(
 				cached: false,
 			};
 		} catch (error) {
+			// A turn stop (a write the executor refused, or a stop latched
+			// while it ran) is not a tool failure for the model to see, and
+			// nothing is cached for it.
+			rethrowIfDispatchStopped(error);
 			const errorMessage = describeError(error);
 			console.error(
 				`[Orchestrator] Slack tool "${input.toolName}" execution failed:`,
@@ -1633,6 +1733,7 @@ async function executeMcpToolImpl(
 						success: false,
 					});
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache Slack error result",
 						cacheError,
@@ -1897,6 +1998,7 @@ async function executeMcpToolImpl(
 							`[Letta Cache] Stored Fabric AI result for ${input.toolName}`,
 						);
 					} catch (cacheError) {
+						rethrowIfDispatchStopped(cacheError);
 						console.warn(
 							"[Letta Cache] Failed to cache Fabric AI result",
 							cacheError,
@@ -1953,6 +2055,9 @@ async function executeMcpToolImpl(
 		serverName?: string,
 		isRetry = false,
 	): Promise<ExecuteMcpToolOutput | null> => {
+		// Set immediately before `tool.execute`: a failure before it never
+		// reached the server, one after it may have.
+		let dispatched = false;
 		try {
 			safeHeartbeat({
 				phase: "mcp-connect",
@@ -2037,6 +2142,7 @@ async function executeMcpToolImpl(
 						durationMs: 0,
 						success: false,
 						cached: false,
+						failureKind: "rejected",
 					};
 				}
 				coercedArgs = normalizeExcalidrawCreateViewArgs(coercedArgs);
@@ -2050,7 +2156,7 @@ async function executeMcpToolImpl(
 					startTime,
 				);
 				if (authorityBlock) {
-					return authorityBlock;
+					return { ...authorityBlock, failureKind: "rejected" };
 				}
 			}
 
@@ -2074,6 +2180,20 @@ async function executeMcpToolImpl(
 				) => Promise<unknown>;
 			};
 
+			// Immediately before the external call: no tool runs once the
+			// chat turn this activity serves has stopped or used its token
+			// allowance (the catch below rethrows it); a no-op outside a turn.
+			throwIfDispatchStopped();
+			// A call whose time ran out (`timeoutMs`) while it was still being
+			// set up is never sent: the caller already reported it as
+			// timed out and acts on that, so a late send would be unseen.
+			signal?.throwIfAborted();
+			// Past the call's send deadline nothing is sent. Compared with
+			// the clock here, not left to the timer behind `signal`, which
+			// fires late when the event loop stalls. The transports check it
+			// again immediately before the request goes to `fetch`.
+			throwIfDeadlinePassed(input.dispatchDeadline);
+			dispatched = true;
 			const output = await tool.execute(coercedArgs, {
 				toolCallId: `${input.toolName}-${Date.now()}`,
 				messages: [],
@@ -2121,6 +2241,7 @@ async function executeMcpToolImpl(
 						`[Letta Cache] Stored successful result for ${input.toolName}`,
 					);
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache result",
 						cacheError,
@@ -2134,16 +2255,29 @@ async function executeMcpToolImpl(
 				durationMs,
 				success: !isMcpError,
 				cached: false,
+				// The server answered with an error result: it may still have
+				// acted (a wrapper can report an upstream timeout this way).
+				...(isMcpError ? { failureKind: "error_result" as const } : {}),
 				// MCP App support: pass through resource URI and config ID for iframe rendering
 				mcpAppResourceUri,
 				mcpAppConfigId: mcpAppResourceUri ? configId : undefined,
 			};
 		} catch (execError) {
+			// A turn stop or a token-allowance refusal is not a tool failure.
+			rethrowIfDispatchStopped(execError);
 			// The client is bound to another GitLab instance than the PM
 			// container: nothing was sent, and no retry or other config may
 			// run the tool instead.
 			if (execError instanceof McpGitLabOriginMismatchError) {
 				throw gitlabPmOriginMismatchFailure(execError.message);
+			}
+			// Refused by a send-deadline check: the one above, or the MCP
+			// transport's or the STDIO wrapper's, each of which runs before
+			// the tool-call request is handed to `fetch`, so it was not sent.
+			// (A transport's check also guards its one resend after a 401, an
+			// answer that refused the first request; `retryOnceAfterUnauthorized`.)
+			if (isDispatchDeadlinePassedError(execError)) {
+				return deadlinePassedResult(input, startTime);
 			}
 			// Handle OAuth authorization required errors specially
 			// Return authRequired result so workflow can pause and signal UI
@@ -2160,6 +2294,8 @@ async function executeMcpToolImpl(
 					authRequired: true,
 					authRequiredConfigId: execError.configId,
 					authRequiredServerName: execError.serverName,
+					// No authorized request reached the server.
+					failureKind: "rejected",
 				};
 			}
 
@@ -2174,6 +2310,20 @@ async function executeMcpToolImpl(
 				errorMessage.toLowerCase().includes("client is closed") ||
 				errorMessage.toLowerCase().includes("connection closed") ||
 				errorMessage.toLowerCase().includes("transport closed");
+			// A call that was sent and must not be sent twice is not resent
+			// on a fresh connection: the closed one may have delivered it.
+			if (isClosedClientError && dispatched && input.sendAtMostOnce) {
+				console.warn(
+					`[Orchestrator] Connection closed during "${input.toolName}" after it was sent; not resending a call that must run at most once`,
+				);
+				return {
+					output: { error: errorMessage },
+					durationMs: Date.now() - startTime,
+					success: false,
+					cached: false,
+					failureKind: "indeterminate",
+				};
+			}
 			if (isClosedClientError) {
 				console.warn(
 					`[Orchestrator] Detected stale MCP connection for "${input.toolName}", reconnecting...`,
@@ -2186,7 +2336,18 @@ async function executeMcpToolImpl(
 					);
 					// Retry the entire executeOnConfig with a fresh client
 					// Pass a flag so we don't recurse infinitely
-					return await executeOnConfig(configId, serverName, true);
+					const resent = await executeOnConfig(
+						configId,
+						serverName,
+						true,
+					);
+					// The first send may have landed, so a failed resend says
+					// nothing definite about the call. (A caller that must not
+					// repeat the call sets `sendAtMostOnce` and never gets here
+					// after a send.)
+					return dispatched && resent && !resent.success
+						? { ...resent, failureKind: "indeterminate" }
+						: resent;
 				} catch (retryError) {
 					const retryMsg = describeError(retryError);
 					console.error(
@@ -2198,6 +2359,7 @@ async function executeMcpToolImpl(
 						durationMs: Date.now() - startTime,
 						success: false,
 						cached: false,
+						failureKind: "indeterminate",
 					};
 				}
 			}
@@ -2230,6 +2392,7 @@ async function executeMcpToolImpl(
 						`[Letta Cache] Stored failed result for ${input.toolName}`,
 					);
 				} catch (cacheError) {
+					rethrowIfDispatchStopped(cacheError);
 					console.warn(
 						"[Letta Cache] Failed to cache error result",
 						cacheError,
@@ -2245,6 +2408,9 @@ async function executeMcpToolImpl(
 				durationMs: Date.now() - startTime,
 				success: false,
 				cached: false,
+				// Thrown before the call was sent: it never ran. Thrown during
+				// it (transport error, timeout): it may have.
+				failureKind: dispatched ? "indeterminate" : "rejected",
 			};
 		}
 	};
@@ -2275,6 +2441,7 @@ async function executeMcpToolImpl(
 			durationMs: Date.now() - startTime,
 			success: false,
 			cached: false,
+			failureKind: "rejected",
 		};
 	}
 
@@ -2318,5 +2485,6 @@ async function executeMcpToolImpl(
 		durationMs: Date.now() - startTime,
 		success: false,
 		cached: false,
+		failureKind: "rejected",
 	};
 }

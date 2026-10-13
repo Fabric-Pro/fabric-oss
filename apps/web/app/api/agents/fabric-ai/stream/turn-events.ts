@@ -13,6 +13,7 @@ type TurnResult = Pick<
 	| "error"
 	| "partialError"
 	| "limitSignal"
+	| "usageLimit"
 	| "toolsFailedThisTurn"
 	| "truncated"
 	| "durationMs"
@@ -25,6 +26,12 @@ interface TurnErrorEvent {
 	message: string;
 	/** Provider limit behind the failure — the client shows the limit banner. */
 	limit?: LimitSignal;
+	/**
+	 * A HARD AI usage limit refused the turn's request: the client shows the
+	 * shared limit toast, with `data`, as for a refusal at model resolution.
+	 */
+	code?: "AI_USAGE_LIMIT_EXCEEDED";
+	data?: Omit<NonNullable<TurnResult["usageLimit"]>, "message">;
 	/** The answer streamed partly before this error; keep it on screen. */
 	partial?: true;
 }
@@ -32,7 +39,13 @@ interface TurnErrorEvent {
 function limitFor(
 	result: TurnResult,
 	message: string,
-): { limit?: LimitSignal } {
+): Pick<TurnErrorEvent, "limit" | "code" | "data"> {
+	if (result.usageLimit) {
+		// The payload `buildWorkflowErrorEvent` sends for a refusal at model
+		// resolution, so the client handles both the same way.
+		const { message: _message, ...data } = result.usageLimit;
+		return { code: "AI_USAGE_LIMIT_EXCEEDED", data };
+	}
 	const limit = result.limitSignal ?? classifyLimitError(message);
 	return limit ? { limit } : {};
 }

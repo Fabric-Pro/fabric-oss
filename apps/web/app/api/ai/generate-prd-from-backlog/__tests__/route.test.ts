@@ -39,7 +39,8 @@ vi.mock("@repo/ai/lib/output-token-budget", () => ({
 }));
 
 const streamText = vi.fn();
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("ai")>()),
 	streamText: (...args: unknown[]) => streamText(...args),
 }));
 
@@ -162,5 +163,78 @@ describe("POST /api/ai/generate-prd-from-backlog — usage logging", () => {
 			expect.not.objectContaining({ usageLogging: "aggregate" }),
 			{ userId: USER_ID, organizationId: ACTIVE_ORG, planEligible: true },
 		);
+	});
+});
+
+describe("POST /api/ai/generate-prd-from-backlog — usage limit reached during the stream", () => {
+	it("answers 429 AI_USAGE_LIMIT_EXCEEDED when the model's request is refused on an SDK retry", async () => {
+		const actual = await vi.importActual<typeof import("ai")>("ai");
+		const { MockLanguageModelV4 } = await import("ai/test");
+		const { AiUsageLimitExceededError } = await import(
+			"@repo/payments/lib/ai-usage-limit-error"
+		);
+		const { wrapModelWithUsageLimits } = await import(
+			"@repo/ai/lib/usage-limit-middleware"
+		);
+		const limit = new AiUsageLimitExceededError({
+			message: "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
+			limitId: "limit-1",
+			dimension: "TOKENS" as never,
+			window: "MONTHLY" as never,
+			used: BigInt(100),
+			max: BigInt(100),
+			manageLimitsUrl: "https://example.com/limits",
+		});
+		// The provider fails retryably; the SDK's retry is then refused by the
+		// per-request limit check, so the stream's error is a RetryError.
+		const provider = new MockLanguageModelV4({
+			doStream: async () => {
+				throw new actual.APICallError({
+					message: "provider overloaded",
+					url: "https://provider.example.com/v1",
+					requestBodyValues: {},
+					statusCode: 503,
+					isRetryable: true,
+				});
+			},
+		});
+		let checks = 0;
+		const model = wrapModelWithUsageLimits(provider, async () => {
+			checks += 1;
+			if (checks > 1) {
+				throw limit;
+			}
+		});
+		getAIModelWithMetadata.mockResolvedValue({
+			model,
+			metadata: {
+				modelString: "stub-model",
+				provider: "OPENAI_DIRECT",
+				canonicalName: "stub",
+				billingMode: "external_provider",
+			},
+			trackUsage: () => {},
+		});
+		streamText.mockImplementation(
+			(options: Parameters<typeof actual.streamText>[0]) =>
+				actual.streamText(options),
+		);
+
+		const res = await generate();
+
+		expect(res.status).toBe(429);
+		await expect(res.json()).resolves.toEqual({
+			error: limit.message,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: {
+				limitId: "limit-1",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: "100",
+				max: "100",
+				manageLimitsUrl: "https://example.com/limits",
+			},
+		});
+		expect(provider.doStreamCalls).toHaveLength(1);
 	});
 });

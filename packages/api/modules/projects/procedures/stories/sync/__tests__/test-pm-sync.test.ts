@@ -12,12 +12,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	mockExecuteMcpTool,
 	mockDiscoverPMToolCapabilities,
+	mockFillJiraCreateArgs,
 	mockResolveGitLabPMSource,
 	mockCreateGitLabIssueFromStory,
 	mockRecordAuditFromRequest,
 } = vi.hoisted(() => ({
 	mockExecuteMcpTool: vi.fn(),
 	mockDiscoverPMToolCapabilities: vi.fn(),
+	mockFillJiraCreateArgs: vi.fn(),
 	mockResolveGitLabPMSource: vi.fn(),
 	mockCreateGitLabIssueFromStory: vi.fn(),
 	mockRecordAuditFromRequest: vi.fn(),
@@ -58,6 +60,7 @@ vi.mock("@repo/temporal", () => ({
 	discoverPMToolCapabilities: (...args: unknown[]) =>
 		mockDiscoverPMToolCapabilities(...args),
 	executeMcpTool: (...args: unknown[]) => mockExecuteMcpTool(...args),
+	fillJiraCreateArgs: (...args: unknown[]) => mockFillJiraCreateArgs(...args),
 }));
 
 vi.mock("@repo/integrations/gitlab/pm-adapter", async (importOriginal) => ({
@@ -112,10 +115,14 @@ function setupProject(overrides: ProjectFixtureOverrides = {}) {
 	} as never);
 }
 
-function setupCapabilities(taskCreation: Record<string, unknown>) {
+function setupCapabilities(
+	taskCreation: Record<string, unknown>,
+	extra: Record<string, unknown> = {},
+) {
 	mockDiscoverPMToolCapabilities.mockResolvedValue({
 		hasPMCapabilities: true,
 		taskCreation,
+		...extra,
 	});
 }
 
@@ -547,5 +554,87 @@ describe("testPMSyncProcedure — the GitLab container's instance on the MCP bra
 		expect(mockExecuteMcpTool.mock.calls[0][0].args).toMatchObject({
 			project_id: "container-1",
 		});
+	});
+});
+
+describe("testPMSyncProcedure — Atlassian Rovo v2 Jira support", () => {
+	const handler = (
+		testPMSyncProcedure as unknown as {
+			handler: (args: {
+				input: unknown;
+				context: unknown;
+			}) => Promise<{ success: boolean; externalId?: string }>;
+		}
+	).handler;
+
+	it("calls fillJiraCreateArgs for detectedType: 'jira' and unwraps externalId", async () => {
+		setupProject({ additionalContext: { cloudId: "saved-cloud-42" } });
+		setupCapabilities(
+			{
+				toolName: "createJiraIssue",
+				containerParam: "projectKey",
+				titleParam: "summary",
+				descriptionParam: "description",
+				allParams: [{ name: "cloudId" }, { name: "issueType" }],
+			},
+			{ detectedType: "jira", availableTools: ["createJiraIssue"] },
+		);
+		mockExecuteMcpTool.mockResolvedValue({
+			success: true,
+			output: {
+				content: [
+					{
+						type: "text",
+						text: JSON.stringify({ data: { id: "JIRA-100" } }),
+					},
+				],
+			},
+		});
+
+		const result = await handler({
+			input: { projectId: "proj-1" },
+			context: baseCtx,
+		});
+
+		expect(mockFillJiraCreateArgs).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectKey: "container-1",
+				savedCloudId: "saved-cloud-42",
+			}),
+		);
+		expect(result.externalId).toBe("JIRA-100");
+	});
+
+	it("does not call fillJiraCreateArgs for GitLab or Fizzy", async () => {
+		setupProject();
+		setupCapabilities(
+			{
+				toolName: "create_issue",
+				containerParam: "project_id",
+				titleParam: "title",
+			},
+			{ detectedType: "gitlab" },
+		);
+		defaultExecuteSuccess();
+
+		await handler({
+			input: { projectId: "proj-1" },
+			context: baseCtx,
+		});
+		expect(mockFillJiraCreateArgs).not.toHaveBeenCalled();
+
+		setupCapabilities(
+			{
+				toolName: "create_card",
+				containerParam: "board_id",
+				titleParam: "title",
+			},
+			{ detectedType: "fizzy" },
+		);
+		await handler({
+			input: { projectId: "proj-1" },
+			context: baseCtx,
+		});
+		expect(mockFillJiraCreateArgs).not.toHaveBeenCalled();
 	});
 });

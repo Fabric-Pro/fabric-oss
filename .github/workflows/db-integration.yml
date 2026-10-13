@@ -572,6 +572,101 @@ jobs:
           }
           EOF
 
+      - name: 'PM sync attempt fence writes (database package, real Postgres)'
+        # Fizzy #3044. The terminal writes that must leave another sync's
+        # PENDING alone (markPmSyncFailedUnlessPending names a NULL status
+        # explicitly, because SQL `<>` never matches NULL) and the duplicate
+        # merge's transfer of a PENDING link (a fresh attempt id and the
+        # duplicate's pending-since) are properties of what Postgres does with
+        # the conditions, which the mocked suites cannot see.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/pm-sync-terminal-writes.integration.test.ts \
+            prisma/queries/projects/__tests__/merge-duplicate-stories.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=pm-sync-attempt-fence-results.json
+
+      - name: 'Guard: assert the PM sync attempt fence suites executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 18: nine in pm-sync-terminal-writes.integration.test.ts and nine
+          // in merge-duplicate-stories.integration.test.ts.
+          const EXPECTED = 18;
+          const report = JSON.parse(fs.readFileSync("packages/database/pm-sync-attempt-fence-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`pm-sync-attempt-fence: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 2) { console.error("::error::Expected exactly 2 test files (pm-sync-terminal-writes.integration.test.ts + merge-duplicate-stories.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: 'PM Link to existing item and claim-age writes (database package, real Postgres)'
+        # Fizzy #3045. Link to existing item links an unlinked story or test
+        # case to a PM item the user named and clears the create claim it
+        # read, in one conditional UPDATE. It and Unlink & re-create's four
+        # claim clears clear a held claim only once it is older than
+        # PM_CREATE_CLAIM_RECOVERY_MIN_AGE_MS by the database clock (a claim
+        # with no timestamp never is), a condition only Postgres evaluates. Which rows that UPDATE matches (a
+        # NULL claim matched exactly, any PENDING row refused while a NULL
+        # status is not read as PENDING, a soft-deleted case refused) and the partial unique index on
+        # (projectId, externalId) refusing an item already linked elsewhere
+        # are properties of Postgres that the mocked suites cannot see.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/apply-pm-link.integration.test.ts \
+            __tests__/apply-pm-unlink-claim-age.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=apply-pm-link-results.json
+
+      - name: 'Guard: assert the PM link and claim-age suites executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 31. apply-pm-link: 18 — eleven story cases (a link under the
+          // claim read, a link with no claim read, linked since, claim
+          // changed, claim taken after none was read, PENDING for an attempt,
+          // PENDING with no attempt id, a claim younger than the recovery
+          // bound, a held claim with no timestamp, another project, an item
+          // linked to another story) and seven test-case cases (a link under
+          // the claim read, a NULL status with an attempt id, a claim younger
+          // than the bound, soft-deleted, PENDING for an attempt, claim
+          // changed, an item linked to a soft-deleted case).
+          // apply-pm-unlink-claim-age: 13 — for each of the four claim
+          // clears, a recent claim refused, a held claim with no timestamp
+          // refused and an old claim cleared; plus a linked story with no
+          // claim unlinked with no age to check.
+          const EXPECTED = 31;
+          const report = JSON.parse(fs.readFileSync("packages/database/apply-pm-link-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`apply-pm-link: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 2) { console.error("::error::Expected exactly 2 test files (apply-pm-link.integration.test.ts + apply-pm-unlink-claim-age.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION or a reachable DATABASE_URL missing — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
       - name: 'PM status sync session atomicity (api package, real Postgres)'
         # Fizzy #2304, spec D1.5. Turning the switch on saves it, enrols the
         # project, clears every story's sync base and the last-run summary, and
@@ -835,6 +930,42 @@ jobs:
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-admission.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
           if (passed !== 22) { console.error(`::error::expected exactly 22 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
+      - name: Run the conversation turn token ledger suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        # Advisor turn token ledger: concurrent reservations never exceed the
+        # allowance under the turn row lock, exploration cannot use the
+        # finalization reserve, a cancel committed first denies a reservation
+        # while one committed first stays charged, settlement is idempotent
+        # and accepted after a cancel or a newer turn, a settlement whose
+        # write fails leaves the attempt charged, the terminal write stores the
+        # budget stop with the ledger's totals and returns exactly what it
+        # stored (on a retry too), and another tenant or a stale generation
+        # can neither reserve nor settle. A mocked client cannot show the lock
+        # honoured.
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/conversation-turn-ledger.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=conversation-turn-ledger-results.json
+
+      - name: 'Guard: assert the conversation turn token ledger suite executed (exact count, zero skips)'
+        # Same anti-false-pass shape as the guards above.
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/conversation-turn-ledger-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`conversation-turn-ledger-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-ledger.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 17) { console.error(`::error::expected exactly 17 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the Advisor turn save suite against real Postgres
@@ -1709,6 +1840,140 @@ jobs:
           const todo = report.numTodoTests ?? 0;
           console.log(`reconcile-story-mapped-status-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
           if (files !== 1) { console.error("::error::Expected exactly 1 test file (reconcile-story-mapped-status.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the PM-sync unattempted status suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # Fizzy #3043. A sync run that carries no attempt id must not overwrite
+        # a row that is PENDING for an attempt, while its link and baseline
+        # writes still land. The predicate names NULL explicitly, which only
+        # real Postgres can prove. Without this step the file self-skips under
+        # unit-tests.yml (which never sets RUN_DB_INTEGRATION) and exits 0.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/pm-sync-unattempted-status.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=pm-sync-unattempted-status-integration-results.json
+
+      - name: 'Guard: assert the PM-sync unattempted status suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 18: nine cases each for user_story and test_case.
+          const EXPECTED = 18;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/pm-sync-unattempted-status-integration-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`pm-sync-unattempted-status-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (pm-sync-unattempted-status.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the bulk PM create link suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # The bulk story sync's create (createStoryInPmWithClaim). Its link
+        # and its SUCCESS commit in one transaction, whose status write keeps
+        # a row PENDING for an attempt and replaces every other status (NULL
+        # included, which only real Postgres can prove); a create orphan is
+        # stamped only while the row is unlinked and holds this create's
+        # claim. The claim's stamp is the database clock's, the one a
+        # recovery compares it with. Without this step the file self-skips under unit-tests.yml
+        # (which never sets RUN_DB_INTEGRATION) and exits 0.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/create-story-in-pm-with-claim.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=create-story-in-pm-with-claim-integration-results.json
+
+      - name: 'Guard: assert the bulk PM create link suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 12: a PENDING kept while the link lands, four statuses replaced by
+          // SUCCESS in the link's commit, three orphans after Unlink & re-create
+          // and another push's link (no id, a failed re-read, a link after the
+          // re-read), an orphan beside another create's claim, a same-id
+          // link on another URL, a claim stamped by the database clock while
+          // the worker's runs an hour behind (refused by a recovery as too
+          // recent), and a claim aged past the bound in SQL (cleared).
+          const EXPECTED = 12;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/create-story-in-pm-with-claim-integration-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`create-story-in-pm-with-claim-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (create-story-in-pm-with-claim.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the test-case PM create link suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        # The test-case push's create (createTestCaseInPmWithClaim) and the
+        # test-case Unlink & re-create writes. The link and its SUCCESS commit
+        # in one transaction whose status write keeps a case PENDING for
+        # another attempt and replaces every other status (NULL included,
+        # which only real Postgres can prove); a create orphan is stamped only
+        # while the case is unlinked and holds this create's claim; the
+        # unlink and claim clear match NULL URLs and claims exactly and skip a
+        # case PENDING for a retry attempt (a NULL status is not one). Without
+        # this step the file self-skips under unit-tests.yml (which never
+        # sets RUN_DB_INTEGRATION) and exits 0.
+        run: |
+          pnpm --filter @repo/temporal exec vitest run \
+            __tests__/create-test-case-in-pm-with-claim.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=create-test-case-in-pm-with-claim-integration-results.json
+
+      - name: 'Guard: assert the test-case PM create link suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 18: a PENDING kept while the link lands, three statuses replaced
+          // by SUCCESS in the link's commit, attempt-scoped SUCCESS, a no-id
+          // orphan stamped under this claim, a link refused after Unlink &
+          // re-create, an orphan beside another create's claim, the baseline
+          // fence, an item already linked to another case, an already-linked
+          // case settling only its own attempt, a late rejection and a late
+          // ambiguous failure kept off a newer create's case, a slipping
+          // claim that writes nothing, a soft-deleted case, and the
+          // test-case unlink and claim clear (exact read, and refused while
+          // a retry attempt is PENDING).
+          const EXPECTED = 18;
+          const report = JSON.parse(fs.readFileSync("packages/temporal/create-test-case-in-pm-with-claim-integration-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`create-test-case-in-pm-with-claim-integration: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (create-test-case-in-pm-with-claim.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error("::error::suite self-skipped — RUN_DB_INTEGRATION not honored — false pass"); process.exit(1); }
           if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
           if (total !== EXPECTED || passed !== EXPECTED) {

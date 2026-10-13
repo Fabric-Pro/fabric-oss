@@ -29,7 +29,10 @@ import {
 	searchCapabilities,
 	upsertCapabilities,
 } from "@repo/rag/lib/vector-store/capability-store";
-import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 
 // =============================================================================
 // Turned-off MCP configs
@@ -1846,12 +1849,19 @@ export class ToolIndex {
 			}),
 		);
 
+		// Refuses the whole write up front, outside the catch below: nothing is
+		// upserted once the chat turn this runs in has stopped or used its
+		// token allowance (an embedding batch refused and absorbed above); a
+		// no-op outside a turn. `upsertCapabilities` checks again immediately
+		// before each batch it writes, after its collection lookup.
+		throwIfDispatchStopped();
 		try {
 			const result = await upsertCapabilities(capabilityPoints);
 			console.log(
 				`[ToolIndex] Persisted ${result.success} capabilities to Qdrant (${result.failed} failed)`,
 			);
 		} catch (error) {
+			rethrowIfDispatchStopped(error);
 			console.error("[ToolIndex] Failed to persist to Qdrant:", error);
 			// Continue - in-memory index still works
 		}

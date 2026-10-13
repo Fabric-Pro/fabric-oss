@@ -29,6 +29,7 @@ import {
 import * as activities from "./activities";
 import { assertInsecureConnectionAllowed, getTemporalConfig } from "./client";
 import { AiInteractiveActivityInboundInterceptor } from "./lib/ai-interactive-interceptor";
+import { AiUsageLimitActivityInboundInterceptor } from "./lib/ai-usage-limit-interceptor";
 import { validateAuditRetentionDays } from "./lib/audit-log-env";
 import { CorrelationActivityInboundInterceptor } from "./lib/correlation-interceptor";
 import { validatePmSyncLogRetentionDays } from "./lib/pm-sync-log-env";
@@ -102,6 +103,12 @@ function getCombinedInterceptors(): Partial<
 				// header with their user id; its activities' AI calls for that
 				// user may then run on their own ChatGPT plan (Fizzy #2939).
 				() => new AiInteractiveActivityInboundInterceptor(),
+				// Innermost: an AI usage-limit refusal that the AI SDK wrapped
+				// in a RetryError leaves the activity unwrapped, so its failure
+				// type is AiUsageLimitExceededError, which proxies that list it
+				// as non-retryable do not retry. Every other error passes
+				// through unchanged.
+				() => new AiUsageLimitActivityInboundInterceptor(),
 			],
 		},
 	};

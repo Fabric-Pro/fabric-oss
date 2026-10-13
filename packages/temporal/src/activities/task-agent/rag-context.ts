@@ -17,7 +17,12 @@ import {
 	getAIEmbeddingModelWithMetadata,
 	logEmbeddingUsageAsync,
 } from "@repo/ai";
-import { db, getSearchProviderConfig, type Prisma } from "@repo/database";
+import {
+	db,
+	getRetrievableConversationBundleById,
+	getSearchProviderConfig,
+	type Prisma,
+} from "@repo/database";
 import {
 	contextMetaHeader,
 	extractBaseContextId,
@@ -81,33 +86,59 @@ export async function retrieveProjectContexts(
 		// Fetch actual content from database using contextIds
 		// Note: Qdrant stores chunk IDs like "contextId-chunk-0" but DB has original "contextId"
 		// Uses extractBaseContextId from @repo/rag to strip chunk suffix
-		const rawContextIds = results.map((r) => r.contextId);
+		// Captured conversation bundle hits live in their own table, not in
+		// `ProjectContext`; only the point payload says which hits they are.
+		const bundleIds = [
+			...new Set(
+				results.flatMap((r) =>
+					r.conversationBundleId ? [r.conversationBundleId] : [],
+				),
+			),
+		];
+		const rawContextIds = results
+			.filter((r) => !r.conversationBundleId)
+			.map((r) => r.contextId);
 		const contextIds = [
 			...new Set(rawContextIds.map(extractBaseContextId)),
 		];
-		if (contextIds.length === 0) {
+		if (contextIds.length === 0 && bundleIds.length === 0) {
 			return [];
 		}
 
 		// SECURITY: Validate project ownership when fetching contexts
 		// Defense-in-depth: Qdrant already filtered by projectId, but we validate at DB level too
-		const contexts = await db.projectContext.findMany({
-			where: {
-				id: { in: contextIds },
-				project: {
-					id: projectId,
-					// Enforce tenant isolation - project must belong to this user/org
-					...(organizationId
-						? { organizationId }
-						: { userId, organizationId: null }),
+		const [rows, bundles] = await Promise.all([
+			db.projectContext.findMany({
+				where: {
+					id: { in: contextIds },
+					project: {
+						id: projectId,
+						// Enforce tenant isolation - project must belong to this user/org
+						...(organizationId
+							? { organizationId }
+							: { userId, organizationId: null }),
+					},
 				},
-			},
-			select: {
-				content: true,
-				sourceType: true,
-				aiInstructions: true,
-			},
-		});
+				select: {
+					content: true,
+					sourceType: true,
+					aiInstructions: true,
+				},
+			}),
+			Promise.all(
+				bundleIds.map((bundleId) =>
+					getRetrievableConversationBundleById({
+						bundleId,
+						projectId,
+						tenant: { userId, organizationId },
+					}),
+				),
+			),
+		]);
+		const contexts = [
+			...rows,
+			...bundles.filter((bundle) => bundle !== null),
+		];
 
 		return contexts.map((c) => {
 			if (!c.sourceType && !c.aiInstructions) {

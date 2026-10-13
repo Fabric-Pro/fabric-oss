@@ -34,12 +34,14 @@ describe("seed-enterprise-mcp Atlassian entry", () => {
 
 	it("points OAuth discovery at the Atlassian MCP authorization server", () => {
 		expect(atlassian?.oauthDiscoveryUrl).toBe(
-			"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+			"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 		);
 	});
 
-	it("uses the current /v1/mcp HTTP endpoint (not deprecated /v1/sse)", () => {
-		expect(atlassian?.defaultUrl).toBe("https://mcp.atlassian.com/v1/mcp");
+	it("uses the current /v2/mcp HTTP endpoint (not deprecated /v1/mcp)", () => {
+		expect(atlassian?.defaultUrl).toBe(
+			"https://mcp.atlassian.com/v2/mcp?tools=all",
+		);
 		expect(atlassian?.transport).toBe("HTTP");
 	});
 

@@ -329,6 +329,12 @@ export function AiModelsTable({
 						{ROWS.map((taskType) => {
 							const taskName = t(`tasks.${taskType}.name`);
 							const planTask = planTasks.get(taskType);
+							// A decision a plan can serve is made by the
+							// language model of the work it belongs to, on
+							// the plan; the API decision model is the fallback.
+							const decidedOnPlan = Boolean(
+								plan && taskType === "DECISION",
+							);
 							return (
 								<tr
 									className="border-border border-b last:border-b-0"
@@ -344,7 +350,9 @@ export function AiModelsTable({
 											{t(`tasks.${taskType}.hint`)}
 										</span>
 									</th>
-									{!(planTask && plan) && noApi ? (
+									{!(planTask && plan) &&
+									!decidedOnPlan &&
+									noApi ? (
 										// Neither column could ever offer a choice.
 										<td
 											className="px-3 py-3 align-middle text-muted-foreground text-sm"
@@ -362,6 +370,22 @@ export function AiModelsTable({
 														task={planTask}
 														taskName={taskName}
 													/>
+												) : decidedOnPlan ? (
+													<div
+														className="space-y-1 text-sm"
+														data-testid={`ai-models-plan-decision-${taskType}`}
+													>
+														<p>
+															{t(
+																"decisionOnPlan",
+															)}
+														</p>
+														<p className="text-muted-foreground text-xs">
+															{t(
+																"decisionOnPlanHint",
+															)}
+														</p>
+													</div>
 												) : (
 													<span className="text-muted-foreground text-sm">
 														{t("notOnPlan")}

@@ -38,4 +38,8 @@ describe("testCaseSyncWorkflow determinism", () => {
 	it("gates the new command-producing logic behind patched('test-case-sync-v1')", () => {
 		expect(code).toContain('patched("test-case-sync-v1")');
 	});
+
+	it("gates the claimed create behind patched('test-case-sync-create-claim-v1')", () => {
+		expect(code).toContain('patched("test-case-sync-create-claim-v1")');
+	});
 });

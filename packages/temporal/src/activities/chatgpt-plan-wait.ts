@@ -5,12 +5,14 @@
  * lives here, never in workflow code.
  */
 
+import { aiApiFallbackApproved } from "@repo/ai/lib/job-context";
 import {
 	getChatGptPlanOrgPolicy,
 	getChatGptPlanSourceStates,
 	isFeatureEnabled,
 	listChatGptPlanOrgAccounts,
 } from "@repo/database";
+import { sharedPlansSpentError } from "./lib/chatgpt-plan-shared-spent";
 
 // With no reset time known for any plan, wait this long: a third of a Plus
 // window, so the retry has a fair chance without stalling the run for hours.
@@ -28,6 +30,12 @@ export interface EstimatePlanPoolResetInput {
 export interface EstimatePlanPoolResetResult {
 	waitMs: number;
 	jitterMs: number;
+	/**
+	 * False when no plan said when it resets and `waitMs` is a guess: a run
+	 * that pauses instead of waiting then sleeps longer, so its pause cap is
+	 * not spent on guesses shorter than a plan window.
+	 */
+	resetKnown?: boolean;
 }
 
 /**
@@ -39,23 +47,23 @@ export interface EstimatePlanPoolResetResult {
 export async function estimatePlanPoolResetActivity(
 	input: EstimatePlanPoolResetInput,
 ): Promise<EstimatePlanPoolResetResult> {
+	// A run a person let bill the organization's provider retries at once.
+	if (aiApiFallbackApproved()) {
+		return { waitMs: 0, jitterMs: 0, resetKnown: true };
+	}
 	const now = Date.now();
 	const jitterMs = Math.floor(Math.random() * MAX_JITTER_MS);
 	const resets: Date[] = [];
 
 	const { organizationId, userId } = input;
 	if (organizationId) {
-		const [plan, pooling] = await Promise.all([
-			isFeatureEnabled("CHATGPT_PLAN", organizationId),
-			isFeatureEnabled("CHATGPT_PLAN_POOLING", organizationId),
-		]);
-		if (plan && pooling) {
+		if (await isFeatureEnabled("CHATGPT_PLAN", organizationId)) {
 			const policy = await getChatGptPlanOrgPolicy(organizationId);
 			if (
-				policy.poolingEnabled &&
+				policy.termsAcknowledgedAt !== null &&
 				policy.apiFallbackBackground === "AUTO"
 			) {
-				return { waitMs: 0, jitterMs: 0 };
+				return { waitMs: 0, jitterMs: 0, resetKnown: true };
 			}
 			const accounts = (
 				await listChatGptPlanOrgAccounts(organizationId)
@@ -89,6 +97,23 @@ export async function estimatePlanPoolResetActivity(
 		.sort((a, b) => a - b)[0];
 	return {
 		waitMs: earliest === undefined ? UNKNOWN_RESET_WAIT_MS : earliest - now,
+		resetKnown: earliest !== undefined,
 		jitterMs,
 	};
+}
+
+/**
+ * Fails with the plan's own error when every shared ChatGPT plan the run's
+ * job may use is spent (Fizzy #2770). Asked by a workflow after a step that
+ * failed without saying why — an agent run on another queue — so its plan
+ * wait can fire; a plan left, or an AUTO policy, answers quietly.
+ */
+export async function assertSharedPlansNotSpentActivity(input: {
+	userId: string;
+	organizationId?: string | null;
+}): Promise<void> {
+	const spent = await sharedPlansSpentError(input);
+	if (spent) {
+		throw spent;
+	}
 }

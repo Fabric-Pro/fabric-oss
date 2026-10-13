@@ -23,14 +23,14 @@ const document = (origin: string | null) => ({
 });
 
 describe("chatgptConnectLines", () => {
-	it("runs the served CLI without --base-url where the tarball is baked for this address", () => {
+	it("pins the served CLI to the page even where the tarball is baked for this address", () => {
 		expect(
 			chatgptConnectLines({
 				document: document(STAGING),
 				origin: STAGING,
 			}),
 		).toEqual({
-			primary: `npx -y ${STAGING}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt`,
+			primary: `npx -y ${STAGING}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --base-url ${STAGING}`,
 			primaryKind: "served",
 			servedLine: null,
 		});
@@ -55,22 +55,22 @@ describe("chatgptConnectLines", () => {
 				sharedOrganizationSlug: "example-org",
 			}),
 		).toEqual({
-			primary: "fabric connect chatgpt --org example-org --shared",
+			primary: `fabric connect chatgpt --org example-org --shared --base-url ${STAGING}`,
 			primaryKind: "installed",
 			servedLine: null,
 		});
 	});
 
-	it("shows the plain line on the default address, offering the served CLI for someone without one", () => {
+	it("pins both installed and served commands on the default address", () => {
 		expect(
 			chatgptConnectLines({
 				document: document(CLI_DEFAULT_ORIGIN),
 				origin: CLI_DEFAULT_ORIGIN,
 			}),
 		).toEqual({
-			primary: "fabric connect chatgpt",
+			primary: `fabric connect chatgpt --base-url ${CLI_DEFAULT_ORIGIN}`,
 			primaryKind: "installed",
-			servedLine: `npx -y ${CLI_DEFAULT_ORIGIN}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt`,
+			servedLine: `npx -y ${CLI_DEFAULT_ORIGIN}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --base-url ${CLI_DEFAULT_ORIGIN}`,
 		});
 	});
 

@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const syncFn = vi.fn();
 const updateFn = vi.fn();
 const retryPmSyncFn = vi.fn();
+const linkPmItemFn = vi.fn();
 const checkPmSyncConflictsFn = vi.fn();
 const invalidatePmSyncState = vi.fn();
 const toastError = vi.fn();
@@ -27,6 +28,7 @@ vi.mock("../../../../../../shared/lib/orpc-client", () => ({
 				sync: (...a: unknown[]) => syncFn(...a),
 				update: (...a: unknown[]) => updateFn(...a),
 				retryPmSync: (...a: unknown[]) => retryPmSyncFn(...a),
+				linkPmItem: (...a: unknown[]) => linkPmItemFn(...a),
 				checkPmSyncConflicts: (...a: unknown[]) =>
 					checkPmSyncConflictsFn(...a),
 				resolveConflict: vi.fn().mockResolvedValue({ cleared: true }),
@@ -134,6 +136,7 @@ beforeEach(() => {
 		syncFn,
 		updateFn,
 		retryPmSyncFn,
+		linkPmItemFn,
 		checkPmSyncConflictsFn,
 	]) {
 		fn.mockReset();
@@ -355,6 +358,100 @@ describe("PmSyncChip — dropdown actions", () => {
 		);
 	});
 
+	const UNCONFIRMED =
+		"The create request to Jira got no definite answer (timed out), so a Jira item may already exist for this item. Check Jira; if there is none, use Unlink & re-create.";
+
+	it("failed with an unconfirmed create on an unlinked story: 'Link to existing item' links the named item", async () => {
+		linkPmItemFn.mockResolvedValue({
+			linked: true,
+			externalId: "PROJ-12",
+			externalUrl: null,
+		});
+		const user = userEvent.setup();
+		renderChip({
+			externalId: null,
+			externalUrl: null,
+			lastPmSyncStatus: "FAILED",
+			lastPmSyncError: UNCONFIRMED,
+		});
+		await user.click(screen.getByRole("button"));
+		await user.click(
+			await screen.findByRole("menuitem", { name: /review problem/i }),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: /link to existing item/i,
+			}),
+		);
+		await user.type(
+			await screen.findByLabelText("Jira item ID or key"),
+			"PROJ-12",
+		);
+		await user.click(screen.getByRole("button", { name: "Link item" }));
+
+		await waitFor(() =>
+			expect(linkPmItemFn).toHaveBeenCalledWith({
+				projectId: "proj-1",
+				storyId: "story-1",
+				externalId: "PROJ-12",
+				organizationId: null,
+			}),
+		);
+		await waitFor(() => expect(invalidatePmSyncState).toHaveBeenCalled());
+		expect(retryPmSyncFn).not.toHaveBeenCalled();
+		expect(syncFn).not.toHaveBeenCalled();
+	});
+
+	it("refreshes the PM-sync state when the link is refused", async () => {
+		linkPmItemFn.mockRejectedValue(new Error("This item was linked"));
+		const user = userEvent.setup();
+		renderChip({
+			externalId: null,
+			externalUrl: null,
+			lastPmSyncStatus: "FAILED",
+			lastPmSyncError: UNCONFIRMED,
+		});
+		await user.click(screen.getByRole("button"));
+		await user.click(
+			await screen.findByRole("menuitem", { name: /review problem/i }),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: /link to existing item/i,
+			}),
+		);
+		await user.type(
+			await screen.findByLabelText("Jira item ID or key"),
+			"PROJ-12",
+		);
+		await user.click(screen.getByRole("button", { name: "Link item" }));
+
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"This item was linked",
+		);
+		await waitFor(() => expect(invalidatePmSyncState).toHaveBeenCalled());
+	});
+
+	it("does not offer 'Link to existing item' on a linked story", async () => {
+		const user = userEvent.setup();
+		renderChip({
+			externalId: "EXT-1",
+			lastPmSyncStatus: "FAILED",
+			lastPmSyncError: UNCONFIRMED,
+		});
+		await user.click(screen.getByRole("button"));
+		await user.click(
+			await screen.findByRole("menuitem", { name: /review problem/i }),
+		);
+
+		expect(
+			await screen.findByRole("button", { name: /unlink & re-create/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /link to existing item/i }),
+		).not.toBeInTheDocument();
+	});
+
 	it("conflict: 'Review & resolve' opens the resolve dialog", async () => {
 		const user = userEvent.setup();
 		checkPmSyncConflictsFn.mockResolvedValue({
@@ -413,6 +510,32 @@ describe("PmSyncChip — shared PM-sync invalidation", () => {
 		await waitFor(() =>
 			expect(invalidatePmSyncState).toHaveBeenCalledTimes(1),
 		);
+	});
+
+	it("fires the shared invalidation after a push the server refused, so a stamped FAILED shows", async () => {
+		// A legacy link to another PM tool: Sync now answers BAD_REQUEST and
+		// has stamped the row FAILED. The chip must refetch, or the failure
+		// panel (and its Unlink & re-create) stays out of reach.
+		syncFn.mockRejectedValue(
+			Object.assign(
+				new Error(
+					"This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in Jira. To make a new ticket in Jira, use Unlink & re-create (the old ticket is not deleted).",
+				),
+				{ data: { errorCode: "PM_TOOL_MISMATCH_LEGACY" } },
+			),
+		);
+		const user = userEvent.setup();
+		renderChip({ externalId: "EXT-1" });
+		await user.click(screen.getByRole("button"));
+		await user.click(
+			await screen.findByRole("menuitem", { name: /push to jira/i }),
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /push & overwrite/i }),
+		);
+
+		await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
+		expect(invalidatePmSyncState).toHaveBeenCalledTimes(1);
 	});
 
 	it("fires the shared invalidation after a retry success", async () => {

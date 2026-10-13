@@ -3,6 +3,7 @@ import {
 	SubscriptionPlanExhaustedError,
 	toSubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
+import { ApplicationFailure } from "@temporalio/activity";
 
 /**
  * A ChatGPT plan refusal the workflow, not the step, must handle (Fizzy #2770):
@@ -60,4 +61,34 @@ export function findWorkflowHandledPlanRefusal(error: unknown): Error | null {
 			wrapper.cause;
 	}
 	return toSubscriptionPlanExhaustedError(error);
+}
+
+/**
+ * The spent-plan refusal inside an error, however wrapped; null for any other
+ * failure, a plan that ran out mid-reply with another left included (a retry
+ * resolves that one).
+ */
+export function findPlanExhausted(
+	error: unknown,
+): SubscriptionPlanExhaustedError | null {
+	const refusal = findWorkflowHandledPlanRefusal(error);
+	return refusal instanceof SubscriptionPlanExhaustedError ? refusal : null;
+}
+
+/**
+ * The failure a fan-out activity ends with when every plan ran out part-way
+ * (Fizzy #2770): the plan's own type, so the workflow waits for the reset,
+ * carrying what the activity finished, so the retry after the wait runs only
+ * the rest. `progress` must be JSON-safe.
+ */
+export function planSpentWithProgress(
+	spent: SubscriptionPlanExhaustedError,
+	progress: unknown,
+): ApplicationFailure {
+	return ApplicationFailure.create({
+		message: spent.message,
+		type: spent.name,
+		nonRetryable: true,
+		details: [progress],
+	});
 }

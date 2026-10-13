@@ -34,6 +34,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 
 /** Prompts-DB key for the admin-editable summarization system guidance. */
 const CONTEXT_SUMMARIZATION_PROMPT_KEY = "context_summarization";
@@ -545,6 +546,11 @@ export async function generateSummaryActivity(input: {
 			roadmapItems: roadmapForFold,
 			codeRepos: codeReposForFold,
 			includeProjectSources: foldEnrichmentNow,
+		}).catch((error: unknown) => {
+			// However the AI SDK wrapped it, a spent ChatGPT plan leaves under
+			// its own type, which an automatic run waits on (Fizzy #2770). The
+			// checkpoint above lets the retry resume from this batch.
+			throw findWorkflowHandledPlanRefusal(error) ?? error;
 		});
 		if (foldEnrichmentNow) {
 			enrichmentFolded = true;

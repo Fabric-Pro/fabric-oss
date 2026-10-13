@@ -3,10 +3,11 @@
 /**
  * ReadinessPanel
  *
- * Checklist of readiness gates for a feature (plan §1.1 / Slice 5). Always
- * visible: each gap is listed with whether it blocks (enforcement flag on) or
- * is advisory (flag off). Shows a "Review required" badge when the project
- * routes stage changes through an approver.
+ * Checklist of readiness gates for a feature (plan §1.1 / Slice 5). Rendered
+ * within the engagement profile metadata row (collapsible by default in normal
+ * mode; hidden in Focus Mode): each gap is listed with whether it blocks
+ * (enforcement flag on) or is advisory (flag off). Shows a "Review required" badge
+ * when the project routes stage changes through an approver.
  *
  * Editorial restraint: no ambient motion, tokens only, typography carries
  * the hierarchy.

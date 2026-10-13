@@ -155,10 +155,11 @@ const ATLASSIAN_STATE = {
 			encryptedOauthClientSecret: "secret",
 		}),
 		binding: {
-			authorizationServerUrl: "https://cf.mcp.atlassian.com",
-			tokenEndpoint: "https://cf.mcp.atlassian.com/v1/token",
+			authorizationServerUrl:
+				"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+			tokenEndpoint: "https://auth.atlassian.com/oauth/token",
 			authorizationServerMetadata: {
-				token_endpoint: "https://cf.mcp.atlassian.com/v1/token",
+				token_endpoint: "https://auth.atlassian.com/oauth/token",
 			},
 			source: "discovery",
 			boundAt: "2026-10-06T00:00:00.000Z",
@@ -175,7 +176,7 @@ function makeAtlassianConfig(
 		userId: "user_1",
 		organizationId: null,
 		mcpServerId: "srv-atlassian",
-		baseUrl: "https://mcp.atlassian.com/v1/mcp",
+		baseUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 		oauthClientId: "rovo-client",
 		encryptedOauthClientSecret: "secret",
 		encryptedAtlassianCloudAccessToken: null,
@@ -187,10 +188,10 @@ function makeAtlassianConfig(
 			key: "atlassian",
 			name: "Atlassian (Jira & Confluence)",
 			oauthDiscoveryUrl:
-				"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+				"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 			oauthAuthorizationEndpoint: null,
 			oauthTokenEndpoint: null,
-			defaultUrl: "https://mcp.atlassian.com/v1/mcp",
+			defaultUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 		},
 		...overrides,
 	};
@@ -223,7 +224,7 @@ beforeEach(() => {
 				ok: true,
 				status: 200,
 				json: async () => ({
-					token_endpoint: "https://cf.mcp.atlassian.com/v1/token",
+					token_endpoint: "https://auth.atlassian.com/oauth/token",
 				}),
 			};
 		}
@@ -256,7 +257,7 @@ describe("oauth.callback — Atlassian Cloud auto-chain", () => {
 		expect(result.chainTo?.authorizationUrl).toMatch(
 			/^https:\/\/auth\.atlassian\.com\/authorize\?/,
 		);
-		const url = new URL(result.chainTo!.authorizationUrl);
+		const url = new URL(result.chainTo?.authorizationUrl ?? "");
 		expect(url.searchParams.get("audience")).toBe("api.atlassian.com");
 		expect(url.searchParams.get("client_id")).toBe("cloud-client-id");
 		expect(url.searchParams.get("scope")).toContain(
@@ -389,7 +390,7 @@ describe("oauth.callback — Atlassian Cloud auto-chain", () => {
 			input: { code: "code", state: "state" },
 		});
 
-		const url = new URL(result.chainTo!.authorizationUrl);
+		const url = new URL(result.chainTo?.authorizationUrl ?? "");
 		const scope = url.searchParams.get("scope") ?? "";
 		expect(scope).toContain("read:attachment:jira");
 		expect(scope).toContain("write:attachment:jira");

@@ -155,6 +155,11 @@ describe("projects.glossy.build — who may build (R5, AE7)", () => {
 					organizationId: ORG_A,
 					startedById: USERS.editor,
 					options: ROLL_THE_DICE,
+					// The editor's ChatGPT plan may serve the build, and
+					// `planUserId` names them for the plan header, since this
+					// input has no `userId` (Fizzy #2770).
+					planEligible: true,
+					planUserId: USERS.editor,
 				},
 			],
 		});

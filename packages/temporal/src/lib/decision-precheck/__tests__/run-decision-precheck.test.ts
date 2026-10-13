@@ -93,6 +93,26 @@ afterEach(() => {
 });
 
 describe("runDecisionPrecheck", () => {
+	// Fizzy #2770: inside a pooled background job the judge is that job's
+	// work, so it runs where the job runs instead of half the job on the API.
+	it("runs the judge as the background job that asked for the check", async () => {
+		arrangeOneCandidate();
+		mockGenerateObject.mockResolvedValue({
+			object: { conflicts: [] },
+			usage: {},
+		});
+
+		await runDecisionPrecheck({
+			...input,
+			jobType: "slack-channel-monitor",
+		});
+
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({ jobType: "slack-channel-monitor" }),
+		);
+	});
+
 	it("returns conflicts when the judge flags a genuine contradiction", async () => {
 		arrangeOneCandidate();
 		mockGenerateObject.mockResolvedValue({

@@ -118,7 +118,8 @@ const PAGES_IN_SPACE_PATTERNS = [
 	"confluence_get_pages",
 	"list_pages",
 	"get_space_content",
-	"pagesin", // Rovo: getPagesInConfluenceSpace
+	"pagesin", // Rovo v1: getPagesInConfluenceSpace
+	"listconfluencecontent", // Rovo v2
 ];
 
 function detectTool(tools: string[], patterns: string[]): string | undefined {
@@ -133,15 +134,18 @@ function detectTool(tools: string[], patterns: string[]): string | undefined {
 
 /**
  * Build the query params for a search tool. Atlassian's `searchConfluenceUsingCql`
- * takes a CQL string, not a free-text `query` — so for cql-style tools we wrap
- * the user's text as `text ~ "…"` (quotes/backslashes escaped). Other servers
- * keep the plain `query` param.
+ * and v2 `searchConfluence` take a CQL string, not a free-text `query` — so for
+ * cql-style tools we wrap the user's text as `text ~ "…"` (quotes/backslashes escaped).
+ * Other servers keep the plain `query` param.
  */
 function buildSearchParams(
 	searchTool: string,
 	query: string,
 ): Record<string, string> {
-	if (/cql/i.test(searchTool)) {
+	if (
+		/cql/i.test(searchTool) ||
+		searchTool.toLowerCase() === "searchconfluence"
+	) {
 		const escaped = query.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 		return { cql: `text ~ "${escaped}"` };
 	}
@@ -159,6 +163,21 @@ function unwrapMcpResult(result: unknown): unknown {
 				typeof data[0].text === "string"
 					? JSON.parse(data[0].text)
 					: data[0].text;
+		}
+		// Rovo v2 wraps tool results as { data: { … } }.
+		const inner =
+			data && !Array.isArray(data)
+				? (data as Record<string, unknown>).data
+				: undefined;
+		if (
+			inner &&
+			typeof inner === "object" &&
+			!Array.isArray(inner) &&
+			!Array.isArray((data as Record<string, unknown>).results) &&
+			!Array.isArray((data as Record<string, unknown>).spaces) &&
+			!Array.isArray((data as Record<string, unknown>).pages)
+		) {
+			data = inner;
 		}
 		return data;
 	} catch {
@@ -595,12 +614,16 @@ export function ConfluencePageSelector({
 			setPagesLoading(true);
 			setPagesError(null);
 			try {
-				// Atlassian's getPagesInConfluenceSpace keys on the opaque
-				// `spaceId`; community servers key on `spaceKey`. Prefer the id
-				// when the spaces listing surfaced one, else fall back to the key.
+				// Atlassian Rovo v2 `listConfluenceContent` takes spaceId + type ("page").
+				// Atlassian Rovo v1 `getPagesInConfluenceSpace` keys on `spaceId`.
+				// Community servers key on `spaceKey`.
+				const isListContent =
+					pagesInSpaceTool?.toLowerCase() === "listconfluencecontent";
 				const params: Record<string, string> = pagesInSpaceTool
 					? currentSpaceId
-						? { spaceId: currentSpaceId }
+						? isListContent
+							? { spaceId: currentSpaceId, type: "page" }
+							: { spaceId: currentSpaceId }
 						: { spaceKey: currentSpaceKey as string }
 					: {
 							query: debouncedQuery.trim() || "*",

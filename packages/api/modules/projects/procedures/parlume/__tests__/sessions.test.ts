@@ -56,6 +56,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
+	AUDIO_PROVIDER_REQUIRED: { parlumeVoice: "parlume voice refused" },
 	getAISpeechModel: (...args: unknown[]) => mocks.speechModel(...args),
 	resolveOpenAiApiKey: (...args: unknown[]) => mocks.resolveVoiceKey(...args),
 }));
@@ -492,7 +493,9 @@ describe("Parlume session procedures", () => {
 	});
 
 	it("does not start a billable bot when voice is unconfigured", async () => {
-		mocks.resolveVoiceKey.mockResolvedValue(null);
+		// No gateway and no organization OpenAI key: the platform key is
+		// never a fallback, so the join is refused with the provider message.
+		mocks.resolveVoiceKey.mockResolvedValue("");
 		await expect(
 			handlers.start({
 				input: {
@@ -503,7 +506,10 @@ describe("Parlume session procedures", () => {
 				},
 				context,
 			}),
-		).rejects.toMatchObject({ code: "CONFLICT" });
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: "parlume voice refused",
+		});
 		expect(mocks.sessionCreate).not.toHaveBeenCalled();
 		expect(mocks.startBot).not.toHaveBeenCalled();
 	});

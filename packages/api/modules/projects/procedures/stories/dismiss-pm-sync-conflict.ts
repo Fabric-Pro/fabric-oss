@@ -47,8 +47,16 @@ export const dismissPmSyncConflictProcedure = tenantProtectedProcedure
 				message: "Item not found",
 			});
 		}
-		await db.userStory.update({
-			where: { id: input.storyId },
+		// Only while the row is still CONFLICT: a sync enqueued since the
+		// conflict was shown has stamped PENDING, and overwriting it with
+		// SUCCESS would hide that sync from the stuck-sync watchdog. A row no
+		// longer in CONFLICT has nothing to dismiss, so the result is the same.
+		await db.userStory.updateMany({
+			where: {
+				id: input.storyId,
+				projectId: input.projectId,
+				lastPmSyncStatus: "CONFLICT",
+			},
 			data: {
 				lastPmSyncStatus: "SUCCESS" as const,
 				lastPmSyncError: null,

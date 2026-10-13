@@ -142,6 +142,28 @@ describe("syncWorkItemToPM — GitLab REST delegation", () => {
 		});
 	});
 
+	it("forwards a push skipped because another run linked the story first", async () => {
+		const syncedAt = new Date("2026-05-28T12:00:00Z");
+		syncStoryToPMMock.mockResolvedValue({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://gitlab.com/group/project/-/issues/88",
+			syncedAt,
+			direction: "push",
+			pushSkipped: "already-linked",
+		});
+
+		const result = await syncWorkItemToPM(baseRestInput());
+
+		expect(result).toEqual({
+			status: "SUCCESS",
+			externalId: "88",
+			externalUrl: "https://gitlab.com/group/project/-/issues/88",
+			pushedAt: syncedAt.toISOString(),
+			pushSkipped: "already-linked",
+		});
+	});
+
 	it("maps PM_SYNC_CONFLICT to status: CONFLICT", async () => {
 		syncStoryToPMMock.mockResolvedValue({
 			success: false,
@@ -160,6 +182,44 @@ describe("syncWorkItemToPM — GitLab REST delegation", () => {
 		}
 	});
 
+	it("maps PM_CREATE_ORPHAN to a FAILED result, not a throw (the routine already stamped FAILED)", async () => {
+		syncStoryToPMMock.mockResolvedValue({
+			success: false,
+			error: "Issue created in GitLab but Fabric could not save its link.",
+			errorCode: "PM_CREATE_ORPHAN",
+			syncedAt: new Date("2026-05-28T12:00:00Z"),
+			direction: "push",
+		});
+
+		const result = await syncWorkItemToPM(baseRestInput());
+
+		expect(result).toMatchObject({
+			status: "FAILED",
+			errorClass: "create_orphan",
+			error: "Issue created in GitLab but Fabric could not save its link.",
+		});
+	});
+
+	it("maps PM_CREATE_UNCONFIRMED to a FAILED create_unconfirmed result, not a throw", async () => {
+		// Thrown, Temporal would retry the activity; the routine has already
+		// stamped FAILED and kept the story's create claim.
+		syncStoryToPMMock.mockResolvedValue({
+			success: false,
+			error: "a GitLab item may already exist for this item",
+			errorCode: "PM_CREATE_UNCONFIRMED",
+			syncedAt: new Date("2026-05-28T12:00:00Z"),
+			direction: "push",
+		});
+
+		const result = await syncWorkItemToPM(baseRestInput());
+
+		expect(result).toMatchObject({
+			status: "FAILED",
+			errorClass: "create_unconfirmed",
+			error: "a GitLab item may already exist for this item",
+		});
+	});
+
 	it("throws PmCapabilitiesError for PM_TOOL_MISMATCH (workflow stamps FAILED)", async () => {
 		syncStoryToPMMock.mockResolvedValue({
 			success: false,
@@ -172,6 +232,36 @@ describe("syncWorkItemToPM — GitLab REST delegation", () => {
 		await expect(syncWorkItemToPM(baseRestInput())).rejects.toMatchObject({
 			type: "PmCapabilitiesError",
 		});
+	});
+
+	it("throws PmToolMismatchError with the routine's message for PM_TOOL_MISMATCH_LEGACY (workflow stamps FAILED)", async () => {
+		const message =
+			"This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in GitLab. To make a new ticket in GitLab, use Unlink & re-create (the old ticket is not deleted).";
+		syncStoryToPMMock.mockResolvedValue({
+			success: false,
+			error: message,
+			errorCode: "PM_TOOL_MISMATCH_LEGACY",
+			syncedAt: new Date(),
+			direction: "push",
+		});
+
+		// Non-retryable, so the workflow's catch stamps FAILED with this
+		// message (`unwrapPmSyncError`), as for the MCP path's throw.
+		await expect(
+			syncWorkItemToPM(baseRestInput({ pmSyncAttemptId: "attempt-A" })),
+		).rejects.toMatchObject({
+			type: "PmToolMismatchError",
+			message,
+			nonRetryable: true,
+		});
+		// The workflow's catch is the one record of this failure (state and
+		// audit row): the REST routine is told not to record it too.
+		expect(syncStoryToPMMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				pmSyncAttemptId: "attempt-A",
+				failureRecordedByCaller: true,
+			}),
+		);
 	});
 
 	it("throws PmNotFoundError when the REST routine self-heals a missing remote", async () => {

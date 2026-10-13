@@ -18,7 +18,8 @@ import {
 	PlanSourceRotatedError,
 	SubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
-import { generateText, streamText } from "ai";
+import { generateText, streamText, wrapLanguageModel } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type Account = {
@@ -36,10 +37,18 @@ const state = vi.hoisted(() => ({
 	},
 	accounts: [] as Account[],
 	usage: new Map<string, number>(),
-	rows: new Map<string, { openUntil: Date | null; resetAt: Date | null }>(),
+	rows: new Map<
+		string,
+		{
+			openUntil: Date | null;
+			resetAt: Date | null;
+			credentialFingerprint?: string | null;
+		}
+	>(),
 	logUsage: vi.fn(),
 	limits: vi.fn(),
 	authFailure: null as Error | null,
+	fallbackModel: null as string | null,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -68,7 +77,6 @@ vi.mock("@repo/database", () => ({
 	getActiveChatGptPlanOrgUse: async () => state.ownUse,
 	hasDeclinedChatGptPlanInOrganization: async () => false,
 	getChatGptPlanOrgPolicy: async () => ({
-		poolingEnabled: true,
 		apiFallbackInteractive: "ASK",
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
@@ -76,12 +84,12 @@ vi.mock("@repo/database", () => ({
 		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
 	}),
 	getCachedChatGptPlanOrgPolicy: async () => ({
-		poolingEnabled: true,
 		apiFallbackInteractive: "ASK",
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
 		termsAcknowledgedById: "owner_1",
 		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+		fallbackModel: state.fallbackModel,
 	}),
 	listChatGptPlanOrgAccounts: async () => state.accounts,
 	getChatGptPlanOrgAccountWindows: async (params: { accountIds: string[] }) =>
@@ -93,6 +101,7 @@ vi.mock("@repo/database", () => ({
 					{
 						requests: 1,
 						inputTokens: state.usage.get(id),
+						weightedInputTokens: state.usage.get(id),
 						outputTokens: 0,
 						resetsAt: null,
 					},
@@ -101,6 +110,9 @@ vi.mock("@repo/database", () => ({
 	getChatGptPlanWindowBudget: async () => 750_000,
 	getChatGptPlanWindowBudgets: async (_kind: string, ids: string[]) =>
 		new Map(ids.map((id) => [id, 750_000])),
+	getChatGptPlanWindowCalibrations: async (_kind: string, ids: string[]) =>
+		new Map(ids.map((id) => [id, { budget: 750_000, calibrated: false }])),
+	chatGptPlanReportedUsage: () => null,
 	getChatGptPlanSourceStates: async (kind: string, ids: string[]) =>
 		ids
 			.filter((id) => state.rows.has(`${kind}:${id}`))
@@ -115,19 +127,31 @@ vi.mock("@repo/database", () => ({
 		sourceId: string;
 		openUntil: Date;
 		resetAt: Date | null;
+		credentialFingerprint: string | null;
 	}) => {
 		state.rows.set(`${input.sourceKind}:${input.sourceId}`, {
 			openUntil: input.openUntil,
 			resetAt: input.resetAt,
+			credentialFingerprint: input.credentialFingerprint,
 		});
+		return true;
 	},
-	clearChatGptPlanSourceState: async () => {},
+	markChatGptPlanSourceAnswered: async () => true,
 	getUserModelPreference: async () => null,
 	getModelForTask: async () => null,
 	touchChatGptPlanCredential: async () => {},
 	touchChatGptPlanOrgAccount: async () => {},
 	logAiUsageAsync: state.logUsage,
 	recordAudit: vi.fn(),
+}));
+
+// The re-read of a plan's model list after it refuses one never reaches
+// OpenAI here.
+vi.mock("../lib/chatgpt-plan/served-models", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../lib/chatgpt-plan/served-models")
+	>()),
+	refreshChatGptPlanServedModelsInBackground: vi.fn(),
 }));
 
 // Each source's access token names it, so the simulated OpenAI can tell
@@ -140,6 +164,7 @@ vi.mock("../lib/chatgpt-plan/plan-credentials", () => {
 		return {
 			accessToken: name,
 			expiresAt: new Date(Date.now() + 3_600_000),
+			credentialFingerprint: `sign-in-of-${name}`,
 		};
 	};
 	return {
@@ -157,6 +182,8 @@ vi.mock("../lib/chatgpt-plan/plan-credentials", () => {
 
 import { __resetChatGptPlanBreaker } from "../lib/chatgpt-plan/exhaustion-breaker";
 import { ChatGptPlanAuthError } from "../lib/chatgpt-plan/oauth";
+import { createChatGptPlanRotationMiddleware } from "../lib/chatgpt-plan/rotation";
+import { planSourceKey } from "../lib/chatgpt-plan/sources";
 import { __resetChatGptPlanWindowCache } from "../lib/chatgpt-plan/window-cache";
 import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
 
@@ -252,8 +279,23 @@ const spentMidReply = () =>
 		},
 	]);
 
-/** OpenAI, simulated per plan: `replies[token]` answers that plan's calls. */
-function openai(replies: Record<string, () => Response>) {
+const refusedModel = () =>
+	new Response(
+		JSON.stringify({
+			error: {
+				message:
+					"The model 'gpt-6.1-sol' is not supported on this plan.",
+				code: "model_not_found",
+			},
+		}),
+		{ status: 400, headers: { "content-type": "application/json" } },
+	);
+
+/**
+ * OpenAI, simulated per plan: `replies[token]` answers that plan's calls,
+ * given the model each one asks for.
+ */
+function openai(replies: Record<string, (model: string) => Response>) {
 	const calls: string[] = [];
 	vi.stubGlobal(
 		"fetch",
@@ -265,11 +307,26 @@ function openai(replies: Record<string, () => Response>) {
 			if (!reply) {
 				throw new Error(`unexpected plan ${token}`);
 			}
-			return reply();
+			const { model } = JSON.parse(String(init?.body ?? "{}")) as {
+				model: string;
+			};
+			return reply(model);
 		}),
 	);
 	return calls;
 }
+
+const servedRows = () =>
+	state.logUsage.mock.calls
+		.map(
+			(call: unknown[]) =>
+				call[0] as {
+					success?: boolean;
+					providerConfigId?: string;
+					modelCanonicalName?: string;
+				},
+		)
+		.filter((row) => row.success !== false);
 
 const account = (id: string): Account => ({
 	id,
@@ -297,6 +354,7 @@ beforeEach(() => {
 	]);
 	state.rows = new Map();
 	state.authFailure = null;
+	state.fallbackModel = null;
 	state.limits.mockReset();
 });
 
@@ -506,6 +564,10 @@ describe("a plan spent after output started", () => {
 			"The ChatGPT plan ran out mid-reply. Send your message again to continue on another plan.",
 		);
 		expect(state.rows.get("ORG:acc_A")?.openUntil).toBeInstanceOf(Date);
+		// Bound to the sign-in whose token the cut-off stream used (Fizzy #3037).
+		expect(state.rows.get("ORG:acc_A")).toMatchObject({
+			credentialFingerprint: "sign-in-of-org:acc_A",
+		});
 
 		// The retry lands on the next plan.
 		const calls = openai({ "org:acc_B": () => answered("From B") });
@@ -541,5 +603,315 @@ describe("a plan spent after output started", () => {
 				(error) => error instanceof SubscriptionPlanExhaustedError,
 			),
 		).toBe(true);
+	});
+});
+
+describe("per-request usage limits on a reused plan model", () => {
+	it("refuses a later request once its account's limit is reached, before anything is sent", async () => {
+		const calls = openai({ "org:acc_A": () => answered("From A") });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const limitReached = new Error("token limit reached for this account");
+		state.limits.mockImplementation(
+			async (input: { providerConfigId: string | null }) => {
+				if (input.providerConfigId === "acc_A") {
+					throw limitReached;
+				}
+			},
+		);
+
+		const error = await generateText({
+			model: resolved.model,
+			prompt: "Hi",
+		}).catch((caught: unknown) => caught);
+
+		expect(error).toBe(limitReached);
+		expect(calls).toEqual([]);
+		expect(state.logUsage).not.toHaveBeenCalled();
+	});
+
+	it("checks each request against the account it starts on, after an earlier request moved to another", async () => {
+		let accountASpent = true;
+		const calls = openai({
+			"org:acc_A": () =>
+				accountASpent ? refusedSpent() : answered("From A"),
+			"org:acc_B": () => answered("From B"),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({ model: resolved.model, prompt: "first" }),
+		).resolves.toMatchObject({ text: "From B" });
+		// Resolution and the request's own check on acc_A, then the
+		// rotation's check on acc_B.
+		expect(
+			state.limits.mock.calls.map(
+				(call: unknown[]) =>
+					(call[0] as { providerConfigId: string | null })
+						.providerConfigId,
+			),
+		).toEqual(["acc_A", "acc_A", "acc_B"]);
+
+		// acc_A has usage again. The same model's next request is sent to
+		// acc_A first, so that is the account its check covers.
+		accountASpent = false;
+		state.rows = new Map();
+		__resetChatGptPlanBreaker();
+		await expect(
+			generateText({ model: resolved.model, prompt: "second" }),
+		).resolves.toMatchObject({ text: "From A" });
+
+		expect(calls).toEqual(["org:acc_A", "org:acc_B", "org:acc_A"]);
+		expect(state.limits).toHaveBeenCalledTimes(4);
+		expect(state.limits).toHaveBeenLastCalledWith(
+			expect.objectContaining({ providerConfigId: "acc_A" }),
+		);
+		// Each request's row names the account that served it (Fizzy #3025).
+		expect(servedRows().map((row) => row.providerConfigId)).toEqual([
+			"acc_B",
+			"acc_A",
+		]);
+	});
+});
+
+describe("rotation state on a reused plan model (Fizzy #3025)", () => {
+	it("starts each request with nothing ruled out, so a later rotation can still reach an account an earlier one moved to", async () => {
+		let accountASpent = true;
+		const calls = openai({
+			"org:acc_A": () =>
+				accountASpent ? refusedSpent() : answered("From A"),
+			"org:acc_B": () => answered("From B"),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await generateText({ model: resolved.model, prompt: "first" });
+
+		// acc_A served a request in between, then ran out again.
+		accountASpent = false;
+		state.rows = new Map();
+		__resetChatGptPlanBreaker();
+		await generateText({ model: resolved.model, prompt: "second" });
+		accountASpent = true;
+
+		await expect(
+			generateText({ model: resolved.model, prompt: "third" }),
+		).resolves.toMatchObject({ text: "From B" });
+		expect(calls).toEqual([
+			"org:acc_A",
+			"org:acc_B",
+			"org:acc_A",
+			"org:acc_A",
+			"org:acc_B",
+		]);
+		expect(servedRows().map((row) => row.providerConfigId)).toEqual([
+			"acc_B",
+			"acc_A",
+			"acc_B",
+		]);
+	});
+
+	it("keeps overlapping requests apart: one moving to another account does not relabel the other", async () => {
+		let releaseFirst: () => void = () => {};
+		const firstHeld = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		let callsToA = 0;
+		openai({
+			"org:acc_A": () => {
+				callsToA++;
+				if (callsToA === 1) {
+					// The slow request, still on acc_A while the other moves.
+					return new Response(
+						new ReadableStream({
+							async start(controller) {
+								await firstHeld;
+								const body = await answered("Slow A").text();
+								controller.enqueue(
+									new TextEncoder().encode(body),
+								);
+								controller.close();
+							},
+						}),
+						{
+							status: 200,
+							headers: { "content-type": "text/event-stream" },
+						},
+					);
+				}
+				return refusedSpent();
+			},
+			"org:acc_B": () => answered("From B"),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+
+		const slow = generateText({ model: resolved.model, prompt: "slow" });
+		await vi.waitFor(() => expect(callsToA).toBe(1));
+		await expect(
+			generateText({ model: resolved.model, prompt: "fast" }),
+		).resolves.toMatchObject({ text: "From B" });
+		releaseFirst();
+		await expect(slow).resolves.toMatchObject({ text: "Slow A" });
+
+		expect(servedRows().map((row) => row.providerConfigId)).toEqual([
+			"acc_B",
+			"acc_A",
+		]);
+	});
+
+	it("gives each call through one rotation middleware its own rotation", async () => {
+		const spentModel = new MockLanguageModelV4({
+			doGenerate: async () => {
+				throw new SubscriptionPlanExhaustedError("spent", null);
+			},
+		});
+		const servingModel = new MockLanguageModelV4({
+			doGenerate: async () => ({
+				content: [{ type: "text" as const, text: "From B" }],
+				finishReason: { unified: "stop" as const, raw: undefined },
+				usage: {
+					inputTokens: {
+						total: 1,
+						noCache: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+					},
+					outputTokens: { total: 1, text: 1, reasoning: 0 },
+				},
+				warnings: [],
+			}),
+		});
+		const accountA = {
+			kind: "org" as const,
+			organizationId: "org_a",
+			accountId: "acc_A",
+		};
+		const accountB = { ...accountA, accountId: "acc_B" };
+		const ruledOut: string[][] = [];
+		const model = wrapLanguageModel({
+			model: spentModel,
+			middleware: createChatGptPlanRotationMiddleware({
+				source: accountA,
+				build: () => servingModel,
+				repick: async (exclude) => {
+					ruledOut.push([...exclude]);
+					return [accountA, accountB].find(
+						(source) => !exclude.has(planSourceKey(source)),
+					) as typeof accountA;
+				},
+			}),
+		});
+
+		for (const prompt of ["first", "second"]) {
+			await expect(
+				generateText({ model, prompt, maxRetries: 0 }),
+			).resolves.toMatchObject({ text: "From B" });
+		}
+		expect(ruledOut).toEqual([
+			[planSourceKey(accountA)],
+			[planSourceKey(accountA)],
+		]);
+	});
+
+	it("names the account of the turn's latest request on an aggregate usage row", async () => {
+		openai({
+			"org:acc_A": refusedSpent,
+			"org:acc_B": () => answered("From B"),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", usageLogging: "aggregate" },
+			ELIGIBLE,
+		);
+		await generateText({ model: resolved.model, prompt: "Hi" });
+		expect(state.logUsage).not.toHaveBeenCalled();
+
+		resolved.recordAggregateUsage({
+			usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+			latencyMs: 1,
+			success: true,
+		});
+		expect(state.logUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ providerConfigId: "acc_B" }),
+		);
+	});
+});
+
+describe("the plan's fallback model (Fizzy #3026)", () => {
+	it("checks the fallback model's usage limits before falling back, and stops there when one is reached", async () => {
+		state.fallbackModel = "gpt-6-astra";
+		const models: string[] = [];
+		const calls = openai({
+			"org:acc_A": (model) => {
+				models.push(model);
+				return model === "gpt-6-astra"
+					? answered("must not run")
+					: refusedModel();
+			},
+			"org:acc_B": () => answered("must not run"),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const limitReached = new Error("token limit reached for this model");
+		state.limits.mockImplementation(
+			async (input: { modelCanonicalName: string }) => {
+				if (input.modelCanonicalName === "gpt-6-astra") {
+					throw limitReached;
+				}
+			},
+		);
+
+		const error = await generateText({
+			model: resolved.model,
+			prompt: "Hi",
+			maxRetries: 0,
+		}).catch((caught: unknown) => caught);
+
+		expect(error).toBe(limitReached);
+		expect(models).toEqual(["gpt-6.1-sol"]);
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(state.limits).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				providerConfigId: "acc_A",
+				modelCanonicalName: "gpt-6-astra",
+			}),
+		);
+		expect(servedRows()).toEqual([]);
+	});
+
+	it("names the model that served each request, after an earlier one fell back", async () => {
+		state.fallbackModel = "gpt-6-astra";
+		let primaryRefused = true;
+		openai({
+			"org:acc_A": (model) =>
+				model === "gpt-6.1-sol" && primaryRefused
+					? refusedModel()
+					: answered(`From ${model}`),
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({ model: resolved.model, prompt: "first" }),
+		).resolves.toMatchObject({ text: "From gpt-6-astra" });
+		primaryRefused = false;
+		await expect(
+			generateText({ model: resolved.model, prompt: "second" }),
+		).resolves.toMatchObject({ text: "From gpt-6.1-sol" });
+
+		expect(servedRows().map((row) => row.modelCanonicalName)).toEqual([
+			"gpt-6-astra",
+			"gpt-6.1-sol",
+		]);
 	});
 });

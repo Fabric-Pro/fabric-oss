@@ -600,6 +600,11 @@ export interface UpdateProjectCodeAnalysisStatusInput {
 	projectId: string;
 	status: CodeAnalysisStatus;
 	workflowId?: string;
+	/**
+	 * Write only while the project's analysis is still this setup's (a
+	 * resumed setup, Fizzy #2770): a newer setup owns it otherwise.
+	 */
+	onlyIfWorkflowId?: string;
 }
 
 /**
@@ -608,8 +613,15 @@ export interface UpdateProjectCodeAnalysisStatusInput {
 export async function updateProjectCodeAnalysisStatus(
 	input: UpdateProjectCodeAnalysisStatusInput,
 ): Promise<void> {
-	const { projectId, status, workflowId } = input;
+	const { projectId, status, workflowId, onlyIfWorkflowId } = input;
 
+	if (onlyIfWorkflowId) {
+		await db.project.updateMany({
+			where: { id: projectId, codeAnalysisWorkflowId: onlyIfWorkflowId },
+			data: { codeAnalysisStatus: status },
+		});
+		return;
+	}
 	await db.project.update({
 		where: { id: projectId },
 		data: {

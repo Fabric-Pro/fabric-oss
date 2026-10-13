@@ -16,6 +16,7 @@
  * - cancelled: Workflow was cancelled
  */
 
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	filterWorkspaceIdsForTenant,
 	getInstanceWithTemplate,
@@ -53,6 +54,14 @@ export async function POST(request: NextRequest) {
 				headers: { "Content-Type": "application/json" },
 			});
 		}
+
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve: the workflow start below reads this to clear
+		// its plan flag (Fizzy #2770).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
 
 		const userId = session.user.id;
 		const body = await request.json();
@@ -276,7 +285,12 @@ export async function POST(request: NextRequest) {
 							{
 								taskQueue: workflowConfig.taskQueue,
 								workflowId: executionId,
-								args: [workflowInput],
+								// A person asked this research question and
+								// watches it stream, so every step may run on
+								// their ChatGPT plan (Fizzy #2770).
+								args: [
+									{ ...workflowInput, planEligible: true },
+								],
 							},
 						);
 

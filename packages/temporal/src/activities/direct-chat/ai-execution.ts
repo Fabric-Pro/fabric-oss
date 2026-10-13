@@ -29,6 +29,7 @@ import {
 	DEFAULT_MODEL_CAPABILITIES,
 	getModelCapabilities,
 } from "@repo/ai/capabilities";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { classifyLimitError } from "@repo/ai/limits";
 import { supportsAnthropicMidConversationSystem } from "@repo/ai/prompt-cache";
 import {
@@ -45,6 +46,7 @@ import {
 } from "@repo/database";
 import type { McpClientType } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
+import { NoOutputGeneratedError } from "ai";
 import { z } from "zod";
 import { resolveCompanyContextChatAccess } from "../../lib/company-context-chat-access";
 import { companyContextHintLine } from "../../lib/company-context-hint";
@@ -128,6 +130,7 @@ import {
 	validateMcpToolSet,
 } from "./tool-payload-safety";
 import { collectUntrustedContextSections } from "./untrusted-context";
+import { toUsageLimitRefusal } from "./usage-limit-refusal";
 
 const logger = {
 	info: (message: string, data?: Record<string, unknown>) =>
@@ -2118,6 +2121,12 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		lastHeartbeatTime = 0;
 		sendHeartbeat("completing", "Finalizing response...", 95);
 
+		// The model checks the HARD usage limits before each step's request,
+		// so a limit reached mid-turn ends the stream with an error part
+		// carrying the refusal (inside the SDK's RetryError when it refused a
+		// retry). Its own message replaces the wrapper's below.
+		const streamLimitError = findAiUsageLimitError(streamErrorRaw);
+
 		// Get token usage.
 		//
 		// AI SDK 7: `result.usage` is the TOTAL across every step of the turn
@@ -2129,7 +2138,24 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// v7 also removed the flat `cachedInputTokens`/`reasoningTokens` fields
 		// from LanguageModelUsage; they live under inputTokenDetails /
 		// outputTokenDetails now.
-		const usage = await result.usage;
+		const reportedUsage = await result.usage;
+		// After a stream error the SDK's turn total can lack the steps that
+		// completed before it: a step refused before its stream opened (a
+		// usage limit, or any failed request) leaves `result.usage` without
+		// token totals. The completed-step tracker holds those steps' actual
+		// provider counts, so use it for both the ledger row and the returned
+		// usage. That applies to every stream error, not only a limit: the
+		// tracker's numbers are the provider's own either way, while the
+		// alternatives are a zero failure row or an estimate.
+		const completedSteps =
+			(streamErrorRaw !== undefined ||
+				streamErrorMessage !== undefined) &&
+			!reportedUsage?.totalTokens
+				? aggregateUsage.partialAggregate()
+				: undefined;
+		const usage = completedSteps?.usage?.totalTokens
+			? completedSteps.usage
+			: reportedUsage;
 		if (usage?.totalTokens) {
 			tokenUsage = {
 				inputTokens: usage.inputTokens,
@@ -2178,7 +2204,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		const streamOutcome = resolveStreamOutcome({
 			responseText,
 			toolCalls,
-			streamErrorMessage,
+			streamErrorMessage: streamLimitError?.message ?? streamErrorMessage,
 			pendingConfirmation,
 			finishReason: streamFinishReason,
 			stepCount: steps.length,
@@ -2204,7 +2230,11 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			latencyMs: durationMs,
 			success: !streamOutcome.error && !streamOutcome.partialError,
 			errorMessage: streamOutcome.error ?? streamOutcome.partialError,
-			steps,
+			// With the tracker's usage, its steps too, so the row's steps
+			// match its usage. They include any step that started and did
+			// not finish; a request refused before its stream opened never
+			// started one.
+			steps: usage === reportedUsage ? steps : completedSteps?.steps,
 		});
 		aggregateUsageRecorded = true;
 
@@ -2222,10 +2252,22 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				reasoningText,
 				reasoningDurationMs,
 				toolCalls: streamOutcome.toolCalls,
-				error: streamOutcome.error,
 				durationMs,
 				usage: tokenUsage,
-				...limitSignalFor(streamErrorRaw ?? streamErrorMessage),
+				// A limit refusal before any answer fails the turn with the
+				// limit itself: the workflow does not rerun it without tools,
+				// and the route sends the structured limit event.
+				...(streamLimitError
+					? {
+							error: streamLimitError.message,
+							usageLimit: toUsageLimitRefusal(streamLimitError),
+						}
+					: {
+							error: streamOutcome.error,
+							...limitSignalFor(
+								streamErrorRaw ?? streamErrorMessage,
+							),
+						}),
 			};
 		}
 
@@ -2271,7 +2313,18 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			...(streamOutcome.partialError
 				? {
 						partialError: streamOutcome.partialError,
-						...limitSignalFor(streamErrorRaw ?? streamErrorMessage),
+						// A limit refusal after some text keeps the text (a
+						// success, so no tools-off rerun) and carries the
+						// limit, for the same event a refusal at resolution
+						// gets.
+						...(streamLimitError
+							? {
+									usageLimit:
+										toUsageLimitRefusal(streamLimitError),
+								}
+							: limitSignalFor(
+									streamErrorRaw ?? streamErrorMessage,
+								)),
 					}
 				: {}),
 			...(streamOutcome.truncated
@@ -2293,13 +2346,27 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		};
 	} catch (error) {
 		// Rethrow AI usage-limit errors immediately so the workflow does NOT
-		// fire the degraded retry and double-charge quota. @repo/payments is
-		// not a direct dep of @repo/temporal, so use the error name instead.
-		if (
-			error instanceof Error &&
-			error.name === "AiUsageLimitExceededError"
-		) {
-			throw error;
+		// fire the degraded retry and double-charge quota. Rethrow the
+		// unwrapped error: Temporal matches its class name against the
+		// activity's non-retryable error types.
+		const thrownLimitError = findAiUsageLimitError(error);
+		if (thrownLimitError) {
+			throw thrownLimitError;
+		}
+		// A refusal of the turn's first request ends the stream with an error
+		// part (inside the SDK's RetryError when it refused a retry), and the
+		// SDK then rejects with "No output generated". Fail the turn with the
+		// limit, as when a later step is refused before any answer.
+		const streamLimitError = NoOutputGeneratedError.isInstance(error)
+			? findAiUsageLimitError(streamErrorRaw)
+			: undefined;
+		if (streamLimitError) {
+			return {
+				success: false,
+				error: streamLimitError.message,
+				durationMs: Date.now() - startTime,
+				usageLimit: toUsageLimitRefusal(streamLimitError),
+			};
 		}
 		const rawMessage =
 			error instanceof Error ? error.message : "Unknown error";

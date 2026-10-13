@@ -173,4 +173,123 @@ describe("GitLab PM REST calls stay on the validated instance", () => {
 			"https://gitlab.com/api/v4/projects/42/issues",
 		);
 	});
+
+	it("a create carries the caller's abort signal to the GitLab request (the PM create's send ceiling)", async () => {
+		const source = await resolveGitLabPMSource({
+			userId: USER,
+			organizationId: ORG,
+			pmAdditionalContext: null,
+		});
+		fetchMock.mockResolvedValueOnce(
+			ok({ iid: 7, web_url: "https://gitlab.com/g/p/-/issues/7" }),
+		);
+		const controller = new AbortController();
+
+		await createGitLabIssueFromStory({
+			source: source as never,
+			gitlabProjectId: "42",
+			payload: { title: "Checkout flow", description: "Story body" },
+			userId: USER,
+			organizationId: ORG,
+			signal: controller.signal,
+		});
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(fetchMock.mock.calls[0][1]).toMatchObject({
+			method: "POST",
+			signal: controller.signal,
+		});
+	});
+
+	it("a create whose signal has already fired sends nothing", async () => {
+		const source = await resolveGitLabPMSource({
+			userId: USER,
+			organizationId: ORG,
+			pmAdditionalContext: null,
+		});
+		// The fetch an aborted signal reaches rejects without sending.
+		fetchMock.mockImplementation(
+			async (_url: unknown, init?: RequestInit) => {
+				init?.signal?.throwIfAborted();
+				return ok({ iid: 7 });
+			},
+		);
+
+		await expect(
+			createGitLabIssueFromStory({
+				source: source as never,
+				gitlabProjectId: "42",
+				payload: { title: "Checkout flow" },
+				userId: USER,
+				organizationId: ORG,
+				signal: AbortSignal.abort(
+					new DOMException("timed out", "TimeoutError"),
+				),
+			}),
+		).rejects.toMatchObject({ name: "TimeoutError" });
+	});
+
+	describe("past the send deadline of the code sending it (a PM create's)", () => {
+		const NOW = 1_000_000;
+		beforeEach(() => {
+			vi.spyOn(performance, "now").mockReturnValue(NOW);
+		});
+		afterEach(() => {
+			vi.mocked(performance.now).mockRestore();
+		});
+		const createIn = async (deadline: number) => {
+			const { runWithDispatchDeadline } = await import(
+				"@repo/utils/dispatch-deadline"
+			);
+			const source = await resolveGitLabPMSource({
+				userId: USER,
+				organizationId: ORG,
+				pmAdditionalContext: null,
+			});
+			return runWithDispatchDeadline(deadline, () =>
+				createGitLabIssueFromStory({
+					source: source as never,
+					gitlabProjectId: "42",
+					payload: { title: "Checkout flow" },
+					userId: USER,
+					organizationId: ORG,
+				}),
+			);
+		};
+
+		it("the create POST is not sent, and fails as not sent", async () => {
+			const { isDispatchDeadlinePassedError } = await import(
+				"@repo/utils/dispatch-deadline"
+			);
+			fetchMock.mockResolvedValue(ok({ iid: 7 }));
+
+			const outcome = await createIn(NOW).then(
+				() => null,
+				(error: unknown) => error,
+			);
+
+			expect(isDispatchDeadlinePassedError(outcome)).toBe(true);
+			expect(
+				fetchMock.mock.calls.filter(
+					([, init]) =>
+						(init as RequestInit | undefined)?.method === "POST",
+				),
+			).toHaveLength(0);
+		});
+
+		it("the create POST is sent while the deadline is ahead", async () => {
+			fetchMock.mockResolvedValue(
+				ok({ iid: 7, web_url: "https://gitlab.com/g/p/-/issues/7" }),
+			);
+
+			await createIn(NOW + 50_000);
+
+			expect(
+				fetchMock.mock.calls.filter(
+					([, init]) =>
+						(init as RequestInit | undefined)?.method === "POST",
+				),
+			).toHaveLength(1);
+		});
+	});
 });

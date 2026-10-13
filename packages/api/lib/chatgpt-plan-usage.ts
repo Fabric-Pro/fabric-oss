@@ -8,6 +8,7 @@
 import {
 	CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS,
 	CHATGPT_PLAN_WINDOW_MS,
+	type ChatGptPlanReportedUsage,
 	type ChatGptPlanWindow,
 	chatGptPlanWindowPercent,
 } from "@repo/database";
@@ -20,11 +21,28 @@ export const chatGptPlanUsageEstimateSchema = z.object({
 	resetsAt: z.date().nullable(),
 	lastRequestAt: z.date().nullable(),
 	requests: z.number(),
-	/** Uncached input tokens, the unit of the budget. */
+	/** Uncached input tokens; the budget weighs them by model. */
 	inputTokens: z.number(),
 	cachedInputTokens: z.number(),
 	outputTokens: z.number(),
 	estimatedPercent: z.number(),
+	/**
+	 * The percent to show: OpenAI's own report while it is fresh, else the
+	 * estimate. `percentSource` says which.
+	 */
+	percent: z.number(),
+	percentSource: z.enum(["reported", "estimated"]),
+	/** What OpenAI last reported for the plan, fresh or not; null with none. */
+	reported: z
+		.object({
+			windowUsedPercent: z.number().nullable(),
+			windowResetsAt: z.date().nullable(),
+			weeklyUsedPercent: z.number().nullable(),
+			weeklyResetsAt: z.date().nullable(),
+			observedAt: z.date(),
+			fresh: z.boolean(),
+		})
+		.nullable(),
 	/** Pro: no five-hour window, only a weekly limit (Fizzy #2770 G7). */
 	weeklyLimitOnly: z.boolean(),
 	topConsumers: z.array(
@@ -42,20 +60,45 @@ export type ChatGptPlanUsageEstimate = z.infer<
 	typeof chatGptPlanUsageEstimateSchema
 >;
 
+/** OpenAI's report, sorted for display; null with none. */
+function toChatGptPlanReportedSummary(
+	reported: ChatGptPlanReportedUsage | null,
+): ChatGptPlanUsageEstimate["reported"] {
+	return reported
+		? {
+				windowUsedPercent: reported.window?.usedPercent ?? null,
+				windowResetsAt: reported.window?.resetsAt ?? null,
+				weeklyUsedPercent: reported.weekly?.usedPercent ?? null,
+				weeklyResetsAt: reported.weekly?.resetsAt ?? null,
+				observedAt: reported.observedAt,
+				fresh: reported.windowFresh,
+			}
+		: null;
+}
+
 export function toChatGptPlanUsageEstimate(
 	window: ChatGptPlanWindow,
 	budget: number,
+	reported: ChatGptPlanReportedUsage | null = null,
 ): ChatGptPlanUsageEstimate {
+	const estimatedPercent = chatGptPlanWindowPercent(window, budget);
+	const fresh =
+		reported?.windowFresh && reported.window ? reported.window : null;
 	return {
 		windowHours: CHATGPT_PLAN_WINDOW_MS / 3_600_000,
 		windowStart: window.windowStart,
-		resetsAt: window.resetsAt,
+		resetsAt: fresh?.resetsAt ?? window.resetsAt,
 		lastRequestAt: window.lastRequestAt,
 		requests: window.requests,
 		inputTokens: window.inputTokens,
 		cachedInputTokens: window.cachedInputTokens,
 		outputTokens: window.outputTokens,
-		estimatedPercent: chatGptPlanWindowPercent(window, budget),
+		estimatedPercent,
+		percent: fresh
+			? Math.min(100, Math.max(0, Math.round(fresh.usedPercent)))
+			: estimatedPercent,
+		percentSource: fresh ? "reported" : "estimated",
+		reported: toChatGptPlanReportedSummary(reported),
 		weeklyLimitOnly: budget >= CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS,
 		topConsumers: window.topConsumers,
 	};

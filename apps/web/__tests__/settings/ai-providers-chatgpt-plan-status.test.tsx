@@ -129,7 +129,7 @@ describe("AI Providers status banner with a ChatGPT plan", () => {
 		const notice = await screen.findByTestId("chatgpt-plan-only-notice");
 		expect(notice).toHaveTextContent(copy.onlyTitle);
 		expect(notice).toHaveTextContent(
-			"Background jobs and document search need an AI provider",
+			"Background work and document search need an AI provider",
 		);
 		expect(screen.queryByText("No AI Provider Configured")).toBeNull();
 	});

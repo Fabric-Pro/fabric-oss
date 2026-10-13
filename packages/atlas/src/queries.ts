@@ -61,8 +61,14 @@ function tenantColumns(ctx: AtlasContext): {
  */
 const inFlightOr: Pick<Prisma.AtlasAnalysisWhereInput, "OR"> = {
 	OR: [
-		{ status: { in: ["PENDING", "ANALYZING"] } },
-		{ activeRunStatus: { in: ["PENDING", "ANALYZING"] } },
+		// A run paused for a ChatGPT plan reset still owns the row: it resumes
+		// on its own (Fizzy #2770).
+		{ status: { in: ["PENDING", "ANALYZING", "WAITING_FOR_PLAN"] } },
+		{
+			activeRunStatus: {
+				in: ["PENDING", "ANALYZING", "WAITING_FOR_PLAN"],
+			},
+		},
 	],
 };
 

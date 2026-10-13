@@ -3,6 +3,9 @@
 import { useAnalytics } from "@analytics";
 import { hasExtractionLifecycle } from "@repo/api/modules/projects/lib/extraction-lifecycle";
 import { pmDetectedTypeDisplayName } from "@repo/utils";
+// The classification the download procedure signs by, so the menu never offers
+// "extracted text" for a row the server returns as the original file.
+import { classifyContext } from "@repo/utils/context-download-class";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { CapabilityGateBanner } from "@saas/projects/components/capability-gates/CapabilityGateBanner";
 import {
@@ -93,9 +96,9 @@ import {
 	type ContextDeleteOutcome,
 	type ContextSyncIndexingClock,
 	type ContextSyncState,
+	contextSyncIndexingClock,
 	contextSyncLatestRunChanged,
 	contextSyncLatestRunFingerprint,
-	contextSyncIndexingClock,
 	contextSyncPollInterval,
 	contextSyncRunEnded,
 	showsLivingMemorySection,
@@ -105,6 +108,7 @@ import {
 	renderMarkdownToDocx,
 	renderMarkdownToPdf,
 	triggerBlobDownload,
+	triggerUrlDownload,
 } from "../lib/markdown-to-document";
 import {
 	ContextSourceDetailsDialog,
@@ -124,13 +128,8 @@ import { LivingMemorySection } from "./LivingMemorySection";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { getPmToolBrandIcon } from "./stories/pm-sync/pm-tool-brand-icon";
 
-// Context types that map to Class A (originals presigned directly) per
-// spec §8.4. Everything else is Class B (TEXT/NOTE → .md) or Class C
-// (LINK/INTEGRATION/MEETING_TRANSCRIPT → .txt).
-const CLASS_A_TYPES = new Set(["FILE", "IMAGE", "DOCUMENT", "SPREADSHEET"]);
 /** Context types that can be read as a customer scope document (plan §Slice 1). */
 const SCOPE_INTAKE_TYPES = new Set(["FILE", "DOCUMENT", "TEXT"]);
-const CLASS_C_TYPES = new Set(["CODE_FILE", "CODE_FILE_SUMMARY"]);
 
 /**
  * Maximum window during which we'll keep polling a still-in-flight context
@@ -186,18 +185,8 @@ type RowContext = {
 	metadataUpdatedByUserId?: string | null;
 };
 
-function getContextClass(ctx: RowContext): "A" | "B" | "C" {
-	if (CLASS_A_TYPES.has(ctx.type)) {
-		return "A";
-	}
-	if (CLASS_C_TYPES.has(ctx.type)) {
-		return "C";
-	}
-	return "B";
-}
-
 function isContextDownloadable(ctx: RowContext): boolean {
-	const cls = getContextClass(ctx);
+	const cls = classifyContext(ctx);
 	if (cls === "A") {
 		return Boolean(ctx.s3Path);
 	}
@@ -210,16 +199,6 @@ function isContextDownloadable(ctx: RowContext): boolean {
 		return true;
 	}
 	return ctx.extractionStatus === "COMPLETED";
-}
-
-function triggerBrowserDownload(url: string, filename: string): void {
-	const anchor = document.createElement("a");
-	anchor.href = url;
-	anchor.download = filename;
-	anchor.rel = "noopener";
-	document.body.appendChild(anchor);
-	anchor.click();
-	document.body.removeChild(anchor);
 }
 
 function getContextDisplayTitle(ctx: RowContext): string {
@@ -1057,8 +1036,8 @@ export function ProjectContextsList({ projectId }: Props) {
 				// Class A is always the original binary — `format` is ignored.
 				// Class B/C with `format === "md"` keeps the existing path
 				// (anchor-click the presigned URL — server already returns .md).
-				if (format === "md" || getContextClass(ctx) === "A") {
-					triggerBrowserDownload(res.url, res.filename);
+				if (format === "md" || classifyContext(ctx) === "A") {
+					triggerUrlDownload(res.url, res.filename);
 				} else {
 					// Fetch the synthesized markdown text from the presigned URL,
 					// then render to PDF / DOCX in the browser before saving.
@@ -1124,7 +1103,7 @@ export function ProjectContextsList({ projectId }: Props) {
 		if (!isContextDownloadable(ctx)) {
 			return editItem;
 		}
-		const cls = getContextClass(ctx);
+		const cls = classifyContext(ctx);
 		const title = getContextDisplayTitle(ctx);
 
 		// Class A: single Download item — the original binary is presigned
@@ -2408,7 +2387,7 @@ export function ProjectContextsList({ projectId }: Props) {
 
 	const totalBytesEstimate = contexts.reduce((sum, ctx) => {
 		const row = ctx as unknown as RowContext;
-		if (getContextClass(row) === "A") {
+		if (classifyContext(row) === "A") {
 			return sum + (row.fileSize ?? 0);
 		}
 		return sum + (row.contentLength ?? 0);

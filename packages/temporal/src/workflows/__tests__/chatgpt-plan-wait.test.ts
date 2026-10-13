@@ -34,9 +34,15 @@ const HOUR = 60 * 60_000;
 // The probe reports how long it waited, by its own (replay-safe) clock.
 const PROBE = `
 import { proxyActivities } from "@temporalio/workflow";
-import { withChatGptPlanWait } from "HELPER";
+import {
+	untilRunDeadline,
+	withChatGptPlanWait,
+	withChatGptPlanWaitResuming,
+} from "HELPER";
 
-const { probeStep } = proxyActivities<{ probeStep: () => Promise<string> }>({
+const { probeStep } = proxyActivities<{
+	probeStep: (resume?: unknown) => Promise<string>;
+}>({
 	startToCloseTimeout: "1 minute",
 	retry: {
 		maximumAttempts: 1,
@@ -49,6 +55,39 @@ export async function planWaitProbe(): Promise<{ result: string; waitedMs: numbe
 	const result = await withChatGptPlanWait(() => probeStep(), {
 		organizationId: "org-1",
 		userId: "user-1",
+	});
+	return { result, waitedMs: Date.now() - started };
+}
+
+// A run with an execution timeout waits only within it, leaving room for
+// the retry (Fizzy #2770).
+export async function planWaitProbeDeadline(): Promise<{ result: string; waitedMs: number }> {
+	const started = Date.now();
+	const result = await withChatGptPlanWait(() => probeStep(), {
+		organizationId: "org-1",
+		userId: null,
+		maxWaitMs: untilRunDeadline(30 * 60_000),
+	});
+	return { result, waitedMs: Date.now() - started };
+}
+
+// A fan-out step resumes from the progress its spent failure reported.
+export async function planWaitProbeResuming(): Promise<{ result: string; waitedMs: number }> {
+	const started = Date.now();
+	const result = await withChatGptPlanWaitResuming<unknown, string>(
+		(resume) => probeStep(resume),
+		{ organizationId: "org-1", userId: null },
+	);
+	return { result, waitedMs: Date.now() - started };
+}
+
+// A run with a deadline of its own never waits past it.
+export async function planWaitProbeCapped(): Promise<{ result: string; waitedMs: number }> {
+	const started = Date.now();
+	const result = await withChatGptPlanWait(() => probeStep(), {
+		organizationId: "org-1",
+		userId: "user-1",
+		maxWaitMs: 60 * 60_000,
 	});
 	return { result, waitedMs: Date.now() - started };
 }
@@ -114,18 +153,27 @@ interface Scenario {
 	steps: Array<() => string>;
 	waitMs: number;
 	workflowBundle?: WorkflowBundleWithSourceMap;
+	workflowType?:
+		| "planWaitProbe"
+		| "planWaitProbeCapped"
+		| "planWaitProbeDeadline"
+		| "planWaitProbeResuming";
+	/** The run's own execution timeout, when it has one. */
+	executionTimeoutMs?: number;
 }
 
 async function run(scenario: Scenario) {
 	const taskQueue = `chatgpt-plan-wait-${++taskQueueSeq}`;
 	let calls = 0;
 	const estimates: unknown[] = [];
+	const stepArgs: unknown[] = [];
 	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue,
 		workflowBundle: scenario.workflowBundle ?? bundle,
 		activities: {
-			probeStep: async () => {
+			probeStep: async (resume?: unknown) => {
+				stepArgs.push(resume ?? null);
 				const step = scenario.steps[calls++];
 				if (!step) {
 					throw new Error("called too often");
@@ -138,10 +186,16 @@ async function run(scenario: Scenario) {
 			},
 		},
 	});
-	const handle = await env.client.workflow.start("planWaitProbe", {
-		taskQueue,
-		workflowId: `${taskQueue}-wf`,
-	});
+	const handle = await env.client.workflow.start(
+		scenario.workflowType ?? "planWaitProbe",
+		{
+			taskQueue,
+			workflowId: `${taskQueue}-wf`,
+			...(scenario.executionTimeoutMs !== undefined && {
+				workflowExecutionTimeout: scenario.executionTimeoutMs,
+			}),
+		},
+	);
 	const outcome = await worker.runUntil(
 		handle.result().then(
 			(value) => ({ ok: true as const, value }),
@@ -149,7 +203,7 @@ async function run(scenario: Scenario) {
 		),
 	);
 	const history = await handle.fetchHistory();
-	return { outcome, calls: () => calls, estimates, history };
+	return { outcome, calls: () => calls, estimates, history, stepArgs };
 }
 
 const failureType = (error: unknown): string | undefined => {
@@ -196,6 +250,41 @@ describe("withChatGptPlanWait", () => {
 			expect(outcome.value.waitedMs).toBeGreaterThanOrEqual(6 * HOUR);
 			expect(outcome.value.waitedMs).toBeLessThan(7 * HOUR);
 		}
+	}, 60_000);
+
+	it("fails at once, without a timer, when the reset is past the run's own deadline", async () => {
+		const { outcome, calls } = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			waitMs: 2 * HOUR,
+			workflowType: "planWaitProbeCapped",
+		});
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(failureType(outcome.error)).toBe(
+				"SubscriptionPlanExhaustedError",
+			);
+		}
+		expect(calls()).toBe(1);
+	}, 60_000);
+
+	it("waits within the run's own deadline", async () => {
+		const { outcome, calls } = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			waitMs: HOUR / 2,
+			workflowType: "planWaitProbeCapped",
+		});
+		expect(outcome).toMatchObject({ ok: true, value: { result: "done" } });
+		expect(calls()).toBe(2);
 	}, 60_000);
 
 	it("fails for good when the retry finds every plan spent too", async () => {
@@ -252,6 +341,79 @@ describe("withChatGptPlanWait", () => {
 		).toBe(false);
 	}, 60_000);
 
+	it("waits within a run's execution timeout, leaving the reserve", async () => {
+		const { outcome, calls } = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			waitMs: HOUR,
+			workflowType: "planWaitProbeDeadline",
+			executionTimeoutMs: 2 * HOUR,
+		});
+		expect(outcome).toMatchObject({ ok: true, value: { result: "done" } });
+		expect(calls()).toBe(2);
+	}, 60_000);
+
+	it("fails at once when the reset would leave less than the reserve", async () => {
+		const { outcome, calls } = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			// 2h timeout - 30m reserve leaves 90 minutes; the reset is 100 away.
+			waitMs: 100 * 60_000,
+			workflowType: "planWaitProbeDeadline",
+			executionTimeoutMs: 2 * HOUR,
+		});
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(failureType(outcome.error)).toBe(
+				"SubscriptionPlanExhaustedError",
+			);
+		}
+		expect(calls()).toBe(1);
+	}, 60_000);
+
+	it("waits as long as the reset takes when the run has no execution timeout", async () => {
+		const { outcome, calls } = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			waitMs: 3 * HOUR,
+			workflowType: "planWaitProbeDeadline",
+		});
+		expect(outcome).toMatchObject({ ok: true, value: { result: "done" } });
+		expect(calls()).toBe(2);
+	}, 60_000);
+
+	it("hands the retry the progress the spent failure carried", async () => {
+		const { outcome, stepArgs } = await run({
+			steps: [
+				() => {
+					throw ApplicationFailure.create({
+						message: "Every ChatGPT plan is spent.",
+						type: "SubscriptionPlanExhaustedError",
+						nonRetryable: true,
+						details: [{ done: ["item-1", "item-2"] }],
+					});
+				},
+				() => "done",
+			],
+			waitMs: HOUR,
+			workflowType: "planWaitProbeResuming",
+		});
+		expect(outcome).toMatchObject({ ok: true, value: { result: "done" } });
+		expect(stepArgs).toEqual([null, { done: ["item-1", "item-2"] }]);
+	}, 60_000);
+
 	it("replays a history recorded before the helper existed", async () => {
 		const recorded = await run({
 			steps: [() => "done"],
@@ -272,7 +434,7 @@ describe("withChatGptPlanWait", () => {
 describe("which workflows may wait for a plan", () => {
 	// Default-deny, like PLAN_POOL_BACKGROUND_JOB_TYPES: a workflow waits for
 	// a ChatGPT plan only when its steps may run on a shared one.
-	it("is exactly the daily brief, workflow-builder executions and meeting auto-analysis", () => {
+	it("is exactly the workflows whose unattended steps may run on a shared plan", () => {
 		const importers = readdirSync(WORKFLOWS_PATH, { recursive: true })
 			.map(String)
 			.filter(
@@ -285,8 +447,29 @@ describe("which workflows may wait for a plan", () => {
 			)
 			.sort();
 		expect(importers).toEqual([
+			// Bulk runs a person starts, on the shared plans (Fizzy #2770):
+			// Atlas, the document children of batch generation and project
+			// setup (only when the parent asks), the setup's code analysis,
+			// and the scans with their grouping and review.
+			"atlas.ts",
 			"auto-analyze-meeting-transcript.ts",
+			// Reads a child's pause for a plan reset and pauses the batch.
+			"batch-document-generation.ts",
+			"context-summarization-workflow.ts",
 			"daily-brief-generation-workflow.ts",
+			"document-generation-child.ts",
+			"document-refresh.ts",
+			"existing-project-setup.ts",
+			"generate-and-send-newsletter.ts",
+			"parlume-notes.ts",
+			"publishing-suggestion-generation-workflow.ts",
+			"scan-finding-review.ts",
+			"security-accessibility-scan.ts",
+			"security-finding-grouping.ts",
+			// Channel monitoring is on the shared plans; its backfill waits
+			// rather than skip the threads a spent plan refused.
+			"slack-channel-backfill.ts",
+			"template-instance-execution.ts",
 			"workflow-builder-execution.ts",
 		]);
 	});

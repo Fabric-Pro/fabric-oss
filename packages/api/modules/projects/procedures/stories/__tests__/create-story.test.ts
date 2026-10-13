@@ -26,6 +26,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		userStoryUpdate: vi.fn(),
 		loggerWarn: vi.fn(),
 		maybeAutoDraftOnStageChange: vi.fn(),
+		workflowStart: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -69,6 +70,9 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/temporal", () => ({
 	createStoryFromProposal: mocks.createStoryFromProposal,
+	getTemporalClient: async () => ({
+		workflow: { start: mocks.workflowStart },
+	}),
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -134,6 +138,7 @@ beforeEach(() => {
 	// `runInBackground` hands this to `waitUntil`, which rejects anything that
 	// is not a Promise — a bare `vi.fn()` returning undefined throws there.
 	mocks.maybeAutoDraftOnStageChange.mockResolvedValue(undefined);
+	mocks.workflowStart.mockResolvedValue({});
 });
 
 describe("createStoryProcedure — title generation", () => {
@@ -368,5 +373,35 @@ describe("createStoryProcedure — auto-draft on creation", () => {
 		expect(mocks.maybeAutoDraftOnStageChange).toHaveBeenCalledWith(
 			expect.objectContaining({ targetStage: "DRAFT" }),
 		);
+	});
+});
+
+describe("createStoryProcedure — delivery-track classification", () => {
+	// The classification of a story a person just created may run on their own
+	// ChatGPT plan (Fizzy #2770): the interceptor needs both fields on the
+	// first argument, or a plan-only organization has no provider for it.
+	it("starts the classification plan-eligible for the creating person", async () => {
+		await handlers.create({
+			input: { ...baseInput, title: "Add SSO login" },
+			context: ctx,
+		});
+
+		await vi.waitFor(() => {
+			expect(mocks.workflowStart).toHaveBeenCalledWith(
+				"deliveryTrackClassificationWorkflow",
+				expect.objectContaining({
+					taskQueue: "ai-chat",
+					args: [
+						{
+							projectId: "project-1",
+							storyIds: ["story-1"],
+							userId: "user-1",
+							organizationId: undefined,
+							planEligible: true,
+						},
+					],
+				}),
+			);
+		});
 	});
 });

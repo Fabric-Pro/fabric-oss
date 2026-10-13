@@ -1,3 +1,7 @@
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { splitInternalStoryTags } from "../../../src/story-internal-tags";
 /**
  * Database queries for User Stories & Tasks
@@ -51,6 +55,38 @@ export class StoryVersionConflictError extends Error {
 			"Feature was updated by another request. Please refresh and try again.",
 		);
 		this.name = "StoryVersionConflictError";
+		this.storyId = storyId;
+	}
+}
+
+/**
+ * A write scoped to the story's current PM link (`onlyIfPmLink`) found the
+ * link changed since the caller read it (or the row gone), so nothing was
+ * written.
+ */
+export class StoryLinkChangedError extends Error {
+	readonly storyId: string;
+
+	constructor(storyId: string) {
+		super("The story's PM link changed since it was read.");
+		this.name = "StoryLinkChangedError";
+		this.storyId = storyId;
+	}
+}
+
+/**
+ * A PM link write scoped to a create claim (`settlesPmCreateClaim`) found the
+ * row no longer holding that claim (Unlink & re-create cleared it, or the row
+ * is gone), so nothing was written.
+ */
+export class PmCreateClaimNotHeldError extends Error {
+	readonly storyId: string;
+
+	constructor(storyId: string) {
+		super(
+			"The PM create claim this link write settles is no longer held on the story.",
+		);
+		this.name = "PmCreateClaimNotHeldError";
 		this.storyId = storyId;
 	}
 }
@@ -915,6 +951,13 @@ export async function createStory(data: {
 	dependsOnRefs?: string[];
 	dependsOnPhases?: string[];
 }) {
+	// Inside an Advisor chat turn (the ambient dispatch guard), every write
+	// below is preceded immediately by the turn's stop check, after every
+	// await before it, so nothing is created once the turn has stopped or
+	// used its token allowance; the call site's own check would leave this
+	// function's reads in between. A check inside the transaction makes it
+	// roll back whatever it already ran. Outside a turn each check is a
+	// no-op.
 	const markers = splitInternalStoryTags(data.labels);
 	// Get default status if not provided. Status resolution stays outside the
 	// allocator transaction so projects without seeded statuses don't deadlock
@@ -928,6 +971,7 @@ export async function createStory(data: {
 		});
 		if (!defaultStatus) {
 			// Create default statuses if none exist
+			throwIfDispatchStopped();
 			await createDefaultStoryStatuses(data.projectId);
 			const newDefault = await db.projectStoryStatus.findFirst({
 				where: { projectId: data.projectId, isDefault: true },
@@ -972,6 +1016,7 @@ export async function createStory(data: {
 	// "Transaction API error: Unable to start a transaction in the given time".
 	const created = await db.$transaction(
 		async (tx) => {
+			throwIfDispatchStopped();
 			const identifier = await allocateNextStoryNumber(
 				tx,
 				data.projectId,
@@ -989,7 +1034,8 @@ export async function createStory(data: {
 			});
 			const order = (lastStory?.order ?? 0) + 1;
 
-			return tx.userStory.create({
+			throwIfDispatchStopped();
+			const inserted = await tx.userStory.create({
 				data: {
 					projectId: data.projectId,
 					statusId: resolvedStatusId,
@@ -1078,6 +1124,10 @@ export async function createStory(data: {
 					tasks: true,
 				},
 			});
+			// The last point before the commit: a stop that landed while the
+			// row was inserted rolls the whole transaction back.
+			throwIfDispatchStopped();
+			return inserted;
 		},
 		{
 			maxWait: 15_000,
@@ -1110,6 +1160,7 @@ export async function createStory(data: {
 		const acceptanceCriteriaChanged =
 			placed.acceptanceCriteria !== (created.acceptanceCriteria ?? null);
 		if (descriptionChanged || acceptanceCriteriaChanged) {
+			throwIfDispatchStopped();
 			return await db.userStory.update({
 				where: { id: created.id },
 				data: {
@@ -1123,6 +1174,9 @@ export async function createStory(data: {
 			});
 		}
 	} catch (e) {
+		// A chat turn's stop is not a failed back-link: rethrown, so the
+		// caller stops too (a no-op outside a turn).
+		rethrowIfDispatchStopped(e);
 		// Soft-fail — story is already created; back-link append is opportunistic.
 		console.warn("[createStory] Failed to persist Fabric back-link", {
 			error: e,
@@ -1363,6 +1417,28 @@ export type UpdateStoryVersionContext = {
 	 * AI-recommended item as edited by a person (`firstHumanEditAt`).
 	 */
 	aiContextRefresh?: boolean;
+	/**
+	 * The PM create claim (`pmCreateClaimId`) this write settles: the link
+	 * write after a PM create. The write applies only while the row still
+	 * holds this claim, and clears the claim in the same UPDATE. When the row
+	 * no longer holds it, nothing is written and `PmCreateClaimNotHeldError`
+	 * is thrown.
+	 */
+	settlesPmCreateClaim?: string;
+	/**
+	 * The PM link the caller read, as stored: its `externalId` and the server
+	 * stamp `externalMcpServerId`. The write applies only while the row still
+	 * carries both. When it no longer does, nothing is written and
+	 * `StoryLinkChangedError` is thrown. Used by the user-confirmed migration
+	 * that drops a link stamped with another PM server: a link written since
+	 * by a create in the active tool carries the active server's stamp, so a
+	 * stale migration cannot match it and erase it.
+	 */
+	onlyIfPmLink?: {
+		externalId: string | null;
+		/** A stamp is required: an unstamped link gives no such guarantee. */
+		externalMcpServerId: string;
+	};
 };
 
 export async function updateStory(
@@ -1538,6 +1614,32 @@ export async function updateStory(
 			});
 		};
 
+		const settlesClaim = versionContext?.settlesPmCreateClaim;
+		const expectedLink = versionContext?.onlyIfPmLink;
+		const claimScope = {
+			...(settlesClaim !== undefined
+				? { pmCreateClaimId: settlesClaim }
+				: {}),
+			...(expectedLink !== undefined
+				? {
+						externalId: expectedLink.externalId,
+						externalMcpServerId: expectedLink.externalMcpServerId,
+					}
+				: {}),
+		};
+		// The error for a scoped write that matched no row: the scope it
+		// names, so a caller can tell a lost claim or a changed link from an
+		// edit conflict. Nothing was written either way. A scoped write
+		// normally carries only link fields and so takes the unversioned
+		// branch; if one also carries a versioned edit, a version conflict
+		// there is reported as its scope too.
+		const scopeLostError = () =>
+			settlesClaim !== undefined
+				? new PmCreateClaimNotHeldError(storyId)
+				: expectedLink !== undefined
+					? new StoryLinkChangedError(storyId)
+					: null;
+
 		// One timestamp for the band move, shared by the story's denormalised
 		// stamp and its history row so the two can never disagree.
 		const priorityChangedAt = lastEditedAt ?? new Date();
@@ -1601,6 +1703,9 @@ export async function updateStory(
 					}
 				: {}),
 			...(stampFirstHumanEdit ? { firstHumanEditAt: lastEditedAt } : {}),
+			...(settlesClaim !== undefined
+				? { pmCreateClaimId: null, pmCreateClaimedAt: null }
+				: {}),
 		};
 
 		if (!shouldCreateVersion) {
@@ -1625,11 +1730,14 @@ export async function updateStory(
 					...(stampLastEdited
 						? { lastEditedAt: currentStory.lastEditedAt }
 						: {}),
+					...claimScope,
 				},
 				data: writeData,
 			});
 			if (updatedCount.count === 0) {
-				throw new StoryVersionConflictError(storyId);
+				throw (
+					scopeLostError() ?? new StoryVersionConflictError(storyId)
+				);
 			}
 			if (linkIdentityChanged) {
 				await clearStaleMissingState();
@@ -1668,6 +1776,7 @@ export async function updateStory(
 				...(draftingStageChanged
 					? { draftingStage: currentStory.draftingStage }
 					: {}),
+				...claimScope,
 			},
 			data: {
 				...writeData,
@@ -1676,7 +1785,7 @@ export async function updateStory(
 		});
 
 		if (updatedCount.count === 0) {
-			throw new StoryVersionConflictError(storyId);
+			throw scopeLostError() ?? new StoryVersionConflictError(storyId);
 		}
 
 		if (linkIdentityChanged) {

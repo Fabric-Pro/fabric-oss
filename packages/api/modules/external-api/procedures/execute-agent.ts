@@ -282,6 +282,10 @@ export async function executeAgent(
 							userId: deployment.userId,
 							organizationId: deployment.organizationId,
 							input: body.input || {},
+							// An external caller, no member at a screen: the run is
+							// a background job, on the organization's shared
+							// ChatGPT plans when they serve it (Fizzy #2770).
+							jobType: "external-agent",
 							goal,
 							maxIterations,
 							triggerType: "API",
@@ -306,6 +310,10 @@ export async function executeAgent(
 							userId: deployment.userId,
 							organizationId: deployment.organizationId,
 							input: body.input || {},
+							// An external caller, no member at a screen: the run is
+							// a background job, on the organization's shared
+							// ChatGPT plans when they serve it (Fizzy #2770).
+							jobType: "external-agent",
 							triggerType: "API",
 							timeoutMs,
 							supervisorWorkflowId: undefined,

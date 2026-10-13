@@ -305,7 +305,7 @@ describe("ConnectionsTabs", () => {
 		);
 	});
 
-	it("renders guidance for connecting external tools via Fabric MCP with an API key link", () => {
+	it("renders guidance for connecting external tools via Fabric MCP with an API key link and endpoint", () => {
 		renderTabs();
 
 		expect(
@@ -317,5 +317,10 @@ describe("ConnectionsTabs", () => {
 			"href",
 			"/app/example-org/settings/api-keys",
 		);
+
+		const endpoint = screen.getByText("(https://fabric.pro/mcp)");
+		expect(endpoint).toBeInTheDocument();
+		expect(endpoint).toHaveClass("italic");
+		expect(endpoint.closest("a")).toBeNull();
 	});
 });

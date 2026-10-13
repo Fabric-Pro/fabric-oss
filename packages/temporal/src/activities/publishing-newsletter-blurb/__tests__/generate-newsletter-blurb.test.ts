@@ -477,7 +477,10 @@ describe("generateNewsletterBlurbActivity — prompt resolution", () => {
 
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			expect.objectContaining({ jobType: "publishing-newsletter-blurb" }),
+			expect.objectContaining({
+				jobType: "publishing-newsletter-blurb",
+				projectId: "proj-1",
+			}),
 		);
 	});
 

@@ -33,6 +33,10 @@ import {
 	mapAgenticGatheredData,
 } from "../activities/template-instance/report-data-gate";
 import type { McpServerDiagnostic } from "../activities/template-instance/types";
+import {
+	planSpentFailureAsError,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 
 // Activity proxies - core template instance activities
 const {
@@ -77,6 +81,10 @@ const { fetchDataSources, executeAiAnalysis, cleanupRagCollection } =
 			backoffCoefficient: 2,
 			maximumInterval: "60s",
 			maximumAttempts: 3,
+			// Retrying cannot refill a spent ChatGPT plan; a scheduled run
+			// waits for a reset instead (Fizzy #2770). Retry options are not
+			// part of the command sequence, so no `patched()` guard.
+			nonRetryableErrorTypes: ["SubscriptionPlanExhaustedError"],
 		},
 	});
 
@@ -90,6 +98,7 @@ const { executeAgentDataGatheringLoop, resolveReportConnections } =
 			backoffCoefficient: 2,
 			maximumInterval: "60s",
 			maximumAttempts: 2, // Fewer retries for agentic loop
+			nonRetryableErrorTypes: ["SubscriptionPlanExhaustedError"],
 		},
 	});
 
@@ -182,6 +191,19 @@ export async function templateInstanceExecutionWorkflow(
 	// runs (agentic loop or traditional fetch). Declared at function scope so
 	// both the success path and the catch block can persist them for the UI.
 	let mcpDiagnostics: McpServerDiagnostic[] = [];
+	// A scheduled run (`jobType` is set only by the report dispatcher) may run
+	// on a shared ChatGPT plan: when every plan is spent its AI steps wait for
+	// a reset and run once more (Fizzy #2770). "Execute now" is a person's
+	// click and is not held. `jobType` is workflow input, so the branch is
+	// replay-safe, and the helper's own `patched()` keeps older histories
+	// unchanged.
+	const withPlanWait = <T>(step: () => Promise<T>): Promise<T> =>
+		input.jobType
+			? withChatGptPlanWait(step, {
+					organizationId: input.organizationId,
+					userId: input.userId,
+				})
+			: step();
 
 	try {
 		// 1. Update status to RUNNING (also sets instance.lastRunAt to start time).
@@ -466,25 +488,28 @@ export async function templateInstanceExecutionWorkflow(
 				),
 			].filter((p) => p !== "unknown");
 
-			const agentLoopResult = await executeAgentDataGatheringLoop({
-				taskDescription,
-				promptOverride: effectiveConnections.promptOverride,
-				context: effectiveConnections.context || {},
-				mcpConfigIds: effectiveConnections.mcpConfigs,
-				providers,
-				maxIterations: effectiveConnections.maxIterations || 15,
-				enrichedSystemPrompt:
-					enrichmentResult.composedPrompt || undefined,
-				// Custom system prompt: instance override > template default
-				customSystemPrompt:
-					instanceFabricConfig?.customSystemPrompt ||
-					templateFabricConfig?.defaultSystemPrompt,
-				skillsContent: skillsContent || undefined,
-				userId: input.userId,
-				organizationId: input.organizationId,
-				jobType: input.jobType,
-				executionId: input.executionId,
-			});
+			const mcpConfigIds = effectiveConnections.mcpConfigs;
+			const agentLoopResult = await withPlanWait(() =>
+				executeAgentDataGatheringLoop({
+					taskDescription,
+					promptOverride: effectiveConnections.promptOverride,
+					context: effectiveConnections.context || {},
+					mcpConfigIds,
+					providers,
+					maxIterations: effectiveConnections.maxIterations || 15,
+					enrichedSystemPrompt:
+						enrichmentResult.composedPrompt || undefined,
+					// Custom system prompt: instance override > template default
+					customSystemPrompt:
+						instanceFabricConfig?.customSystemPrompt ||
+						templateFabricConfig?.defaultSystemPrompt,
+					skillsContent: skillsContent || undefined,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					jobType: input.jobType,
+					executionId: input.executionId,
+				}),
+			);
 
 			// Store metadata for reporting
 			agentLoopMetadata = {
@@ -675,19 +700,21 @@ export async function templateInstanceExecutionWorkflow(
 				templateFabricConfig?.defaultSystemPrompt ||
 				enrichmentResult.composedPrompt;
 
-			aiResults = await executeAiAnalysis({
-				aiAgents: effectiveAiAgents,
-				dataResults: dataFetchResult.results,
-				qdrantCollectionId: dataFetchResult.qdrantCollectionId,
-				enrichedSystemPrompt: systemPrompt,
-				skillsContent: skillsContent || undefined,
-				userId: input.userId,
-				organizationId: input.organizationId,
-				jobType: input.jobType,
-				parameters: mergedParameters,
-				sections: definition.sections,
-				outputFormat,
-			});
+			aiResults = await withPlanWait(() =>
+				executeAiAnalysis({
+					aiAgents: effectiveAiAgents,
+					dataResults: dataFetchResult.results,
+					qdrantCollectionId: dataFetchResult.qdrantCollectionId,
+					enrichedSystemPrompt: systemPrompt,
+					skillsContent: skillsContent || undefined,
+					userId: input.userId,
+					organizationId: input.organizationId,
+					jobType: input.jobType,
+					parameters: mergedParameters,
+					sections: definition.sections,
+					outputFormat,
+				}),
+			);
 		}
 
 		// 6. Render report content
@@ -948,8 +975,22 @@ export async function templateInstanceExecutionWorkflow(
 		};
 	} catch (error) {
 		const duration = Date.now() - startTime;
+		// A spent plan carries the plan's own sentence; its activity failure
+		// reads only "Activity task failed" (Fizzy #2770). Arguments only, no
+		// new command, so no `patched()`.
+		const planSpent = planSpentFailureAsError(error);
+		const failure = planSpent ?? error;
 		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+			failure instanceof Error ? failure.message : "Unknown error";
+		// A scheduled run every ChatGPT plan refused is tried again on its
+		// next tick, so telling its owner it failed is noise (Fizzy #2770);
+		// the run still reads FAILED with the plan's sentence. "Execute now"
+		// is not retried, so its owner still hears. Read only on that path,
+		// so no other failure records a marker.
+		const quietFailure =
+			planSpent !== null &&
+			input.jobType !== undefined &&
+			patched("report-plan-spent-no-failure-notice");
 
 		// Update DB status for UI — wrapped in try/catch to prevent
 		// a secondary failure from causing infinite workflow task retries
@@ -976,7 +1017,10 @@ export async function templateInstanceExecutionWorkflow(
 
 		// Notify the triggering user the run failed. Same patched()
 		// gate + wrapper; the original error below is still the one thrown.
-		if (patched("report-execution-notifications-2026-06-22")) {
+		if (
+			!quietFailure &&
+			patched("report-execution-notifications-2026-06-22")
+		) {
 			try {
 				await emitReportExecutionNotification({
 					executionId: input.executionId,
@@ -996,7 +1040,7 @@ export async function templateInstanceExecutionWorkflow(
 		// SEPARATE patched() gate placed AFTER the in-app block — reusing the
 		// 2026-06-22 id would break replay for in-flight executions. The
 		// try/catch keeps a send failure from masking the original error below.
-		if (patched("report-execution-emails-2026-06-23")) {
+		if (!quietFailure && patched("report-execution-emails-2026-06-23")) {
 			try {
 				await sendReportExecutionEmail({
 					executionId: input.executionId,

@@ -290,7 +290,10 @@ export async function getAgentCapabilities(
 		const result = buildCapabilitiesFromCard(agentId, agentCardRecord);
 
 		// Persist to L2 DB cache (fire-and-forget — don't let a DB failure
-		// block capability resolution)
+		// block capability resolution). Inside a chat turn that stopped while
+		// the card was fetched, the helper refuses the write itself, right
+		// before its UPDATE; that rejection is logged here and nothing more
+		// is written after it.
 		const now = new Date();
 		updateAgentCardCache(agentId, agentCardRecord, now).catch((err) => {
 			console.warn(

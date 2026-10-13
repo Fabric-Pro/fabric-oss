@@ -126,6 +126,49 @@ describe("callPmToolWithFallback — REST GitLab path", () => {
 		expect(result).toMatchObject({ externalId: "9", title: "New" });
 	});
 
+	it("passes a createItem's abort signal to the GitLab create", async () => {
+		createGitLabIssueFromStory.mockResolvedValue({
+			externalId: "9",
+			externalUrl: null,
+			title: "New",
+		});
+		const controller = new AbortController();
+
+		await callPmToolWithFallback({
+			source: REST_SOURCE,
+			call: { tool: "createItem", payload: { title: "New" } },
+			userId: "u",
+			organizationId: null,
+			signal: controller.signal,
+		});
+
+		expect(createGitLabIssueFromStory).toHaveBeenCalledWith(
+			expect.objectContaining({ signal: controller.signal }),
+		);
+	});
+
+	it("sends a createItem inside its send deadline's scope, which the GitLab POST checks right before fetch", async () => {
+		const { currentDispatchDeadline } = await import(
+			"@repo/utils/dispatch-deadline"
+		);
+		let seen: number | undefined;
+		createGitLabIssueFromStory.mockImplementation(async () => {
+			seen = currentDispatchDeadline();
+			return { externalId: "9", externalUrl: null, title: "New" };
+		});
+
+		await callPmToolWithFallback({
+			source: REST_SOURCE,
+			call: { tool: "createItem", payload: { title: "New" } },
+			userId: "u",
+			organizationId: null,
+			dispatchDeadline: 123_456,
+		});
+
+		expect(seen).toBe(123_456);
+		expect(currentDispatchDeadline()).toBeUndefined();
+	});
+
 	it("routes updateItem to updateGitLabIssueFromStory", async () => {
 		updateGitLabIssueFromStory.mockResolvedValue({
 			externalId: "9",

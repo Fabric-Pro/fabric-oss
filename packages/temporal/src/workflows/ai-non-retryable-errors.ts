@@ -20,7 +20,9 @@
  *    it had in the first millisecond.
  *  - `AiUsageLimitExceededError` — a HARD `AiUsageLimit` is exhausted. Limits
  *    are windowed in hours or days; a retry ladder measured in seconds cannot
- *    outlast one.
+ *    outlast one. A refusal the AI SDK wrapped in its `RetryError` leaves the
+ *    activity unwrapped (`lib/ai-usage-limit-interceptor.ts`, registered on
+ *    the worker), so it matches this name too.
  *  - `SubscriptionPlanExhaustedError` — the member's own ChatGPT plan has no
  *    usage left in its window (Fizzy #2939), thrown by the plan model wrapper
  *    in `@repo/ai`. The window resets in hours, and OpenAI asks apps not to

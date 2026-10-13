@@ -1,5 +1,67 @@
 # fabric-app
 
+## 1.16.21
+
+### Patch Changes
+
+- fd90a35: Each Advisor chat answer now keeps a durable record of its token allowance: every model request it makes is reserved against the allowance before it is sent and settled to its reported usage after, so failed, retried or reconnected requests stay counted, and an answer that uses its allowance still ends with a written reply, sized to the tokens set aside for it and drawn from its most recent findings, and an invitation to continue in the same chat instead of a suggestion to start a new one.
+- fd90a35: Atlassian connections now use Atlassian's Rovo MCP v2 server, adding Bitbucket support; existing Atlassian connections need to be reconnected.
+- fd90a35: Voice and transcription now run only on your organization's own AI provider key, with a clear message when none is set.
+- fd90a35: Scans and batch document generation pause when every shared ChatGPT plan is spent and resume after the reset, with Cancel and Run now on API billing.
+- fd90a35: ChatGPT connection commands now target the same Fabric address as the page that displays them.
+- fd90a35: Scheduled jobs, mentions, external agents, the public API and decision calls now run on your organization's shared ChatGPT plans.
+- fd90a35: Scans, project setup, Atlas analysis and batch document generation now run on your organization's shared ChatGPT plans, never your own.
+- fd90a35: AI actions you start yourself, like Update with context, roadmap recommendations and test-case drafts, now run on your ChatGPT plan.
+- fd90a35: Simplify shared ChatGPT plan settings: one Serves choice per account, Advanced for headroom and fair share, and Stop sharing in place of Take back.
+- fd90a35: Scan for topics runs on shared ChatGPT plans, and scans, setup, Atlas and batch generation wait for a plan reset instead of failing.
+- fd90a35: Publishing drafts, newsletter sends, Glossy builds, scans, setups and other person-started AI runs now use the starter's ChatGPT plan.
+- fd90a35: ChatGPT plan usage is now billed to the account that served each request, and a fallback model's usage limits are checked before it runs.
+- fd90a35: Admins can let people's own AI work continue on API billing when every ChatGPT plan is spent, with clearer plan settings and connect steps.
+- fd90a35: When no shared ChatGPT plan serves members, their AI requests now say so and point to Serves: Everything instead of "No AI provider configured".
+- fd90a35: Leftover ChatGPT plan usage and model records of deleted users and organizations are now cleaned up automatically.
+- fd90a35: Publishing drafts and other structured AI answers on a ChatGPT plan accept unused optional fields the model returns as empty (null).
+- fd90a35: Connected ChatGPT plans now have a Test button that checks whether the plan answers, needs a reconnect, or has reached its usage limit.
+- fd90a35: ChatGPT plan usage shows ChatGPT's own reported percent when available, and Fabric's estimate no longer blocks a member on its own.
+- fd90a35: ChatGPT plan usage reports are stored before the Test button answers, and every source logs which usage headers arrived.
+- fd90a35: ChatGPT plan usage estimates now weigh each model's share of the window and follow the reset time ChatGPT reports.
+- fd90a35: Reset exhaustion, served models, subscription metadata, and last use when a different ChatGPT account replaces a personal connection, while preserving the state of the same account on reconnect.
+- fd90a35: Hide integrations that have no working setup yet from the Connections page.
+- fd90a35: Decision-model usage limits are now checked before every decision call, not only when a batch starts, so once a batch's recorded usage reaches a hard limit its remaining decision calls are refused.
+- fd90a35: A new story's open questions or pending product decisions no longer put it on the Deferred delivery track.
+- fd90a35: A scope boundary inside a story's use cases or requirements no longer parks the story on the Defer track.
+- fd90a35: Uploaded files can now be downloaded exactly as they were uploaded: an OpenAPI or Swagger file on the Context tab downloads as its original file instead of a PDF of its text, and a document imported from a file offers that original file alongside its Markdown, PDF and Word exports.
+- fd90a35: A ChatGPT plan request that was already running when its account was replaced or disconnected no longer records its usage limit, model list or subscription details against the new account.
+- fd90a35: Hard AI usage limits are now checked before each request a chat, agent run or batch makes to its language model, not only when it starts, and when a limit is reached partway through a direct chat reply, the chat keeps the text already written and shows the usage-limit notice.
+- fd90a35: Atlassian connections now find your Atlassian site automatically, so choosing a Jira project and adding Confluence pages as context work reliably.
+- fd90a35: The MCP gateway's tool list now marks only tools that write as needing runtime authority, matching the check a call actually goes through, and reports approval as `providerAuthorityStatus` because it reflects any approved grant for the provider rather than a promise for that tool.
+- fd90a35: MCP gateway clients that cannot take the full tool list can connect with `?mode=discovery` to see three tools that search for, describe and call the gateway's tools instead.
+- fd90a35: MCP gateway tools from a connection whose name starts with "Fabric" can now be called, and a connection named "Fabric" gets its own prefix instead of sharing the name that selects the platform tools.
+- fd90a35: The organization-wide MCP gateway now accepts a `servers` URL parameter, such as `?servers=fabric,linear` or `?servers=fabric,fizzy:fizzy_get_cards`, so a client can choose which Fabric platform tools, connected servers and individual tools it sees, and a call to a tool outside that choice is refused.
+- fd90a35: The MCP gateway's Fabric tool definitions are now about 47% smaller, so MCP clients that resend them with every request spend fewer tokens per turn and stay within client tool-definition limits.
+- fd90a35: When an MCP connection is renamed, added, removed, enabled or disabled in a way that changes its gateway tool names, the MCP gateway now lists and routes tools by the new names on the next request, instead of keeping the old names for up to five minutes.
+- fd90a35: MCP servers connected with OAuth now stay connected more reliably: Fabric alone refreshes each connection's access token, so a server that rejects an expired token no longer triggers a second, competing refresh that could force a reconnect, and Google Drive's access token is now refreshed by Fabric before it expires.
+- fd90a35: Expired MCP OAuth sign-in states and expired MCP client sessions are now purged hourly by a Temporal schedule in every deployment, instead of only by a Vercel cron.
+- fd90a35: Remove the Fabric entry from the MCP registry in Connections and show its endpoint in the Connections guidance.
+- fd90a35: The "Document search needs an AI provider" notice no longer shows when an embeddings-only key already serves document search.
+- fd90a35: Atlas and project setup now pause for a ChatGPT plan reset and resume; scheduled jobs wait or skip cleanly instead of failing or losing work.
+- fd90a35: Work the ChatGPT plan refused is retried after the reset, without failure emails, and AI usage and agent labels read correctly.
+- fd90a35: A PM sync that finishes late no longer overwrites the status of a newer sync of the same item, and a ticket that was created in the PM tool but could not be linked is now reported as a failed sync instead of being retried into a duplicate.
+- fd90a35: A batch or automatic PM sync that finishes after you retried an item no longer overwrites that retry's pending status, so the item shows the retry's own outcome.
+- fd90a35: Syncing many stories to a PM tool no longer creates a second ticket for a story when an earlier create was not confirmed, and no longer replaces a story's link to another PM tool with a new ticket.
+- fd90a35: Syncing a single story or bug to a PM tool (Sync now, retry, auto-push or an applied backlog proposal) no longer creates a second ticket when an earlier create may already have reached the PM tool without being linked; the item is marked as a failed sync that asks you to check the PM tool, and Unlink & re-create makes a new ticket when none exists.
+- fd90a35: When Fabric could not confirm that a story, bug or test case was created in your PM tool, you can now link it to the item that was created with the new Link to existing item action, instead of making a second item with Unlink & re-create.
+- fd90a35: Syncing a test case to a PM tool no longer creates a second PM item when an earlier create was not confirmed, and a test case whose earlier create may already exist now offers Unlink & re-create.
+- fd90a35: A PM sync whose start timed out but actually went through no longer shows as failed while it runs, a late failure no longer overwrites a newer sync attempt, and syncs left pending now give up after about an hour in every deployment.
+- fd90a35: Deferred items explain why their type can't change, templated stories no longer auto-defer, and code-index embeddings show in AI Usage.
+- fd90a35: Document generation and the AI's project context use your connected sources again when the project's repository has been code-indexed.
+- fd90a35: Generated documents and task-agent runs now draw on the messages captured from your monitored Teams and Slack channels.
+- fd90a35: Keep ChatGPT plan credentials consistent when reconnecting, refreshing, disconnecting, or moving an account at the same time.
+- fd90a35: Atlassian project management and Confluence page selection work with Atlassian's Rovo MCP v2 tools.
+- fd90a35: Short posts no longer come back empty when the bound prompt asks for a Markdown document, and an all-empty answer now asks you to add context.
+- fd90a35: Pushing stories to Jira, pulling updates from Jira, and testing the Jira connection from project settings now work with Atlassian's current connection.
+- fd90a35: The engagement profile metadata row (Delivery Track, Estimate Confidence) can now be collapsed and expanded without entering Focus Mode. It starts collapsed by default, and Fabric remembers your choice in your browser.
+- fd90a35: Keep reconnected ChatGPT plans active when an earlier token refresh reports a delayed failure.
+
 ## 1.16.20
 
 ### Patch Changes

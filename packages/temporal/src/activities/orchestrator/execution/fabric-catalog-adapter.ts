@@ -11,6 +11,7 @@
  * one exists, else the plan-mode step handler for the tool.
  */
 
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../../workflows/orchestrator/company-context-tool-schemas";
 import {
 	FABRIC_CATALOG_DIRECT_BUILDER_ACCESS as DIRECT_BUILDER_TOOLS,
@@ -119,6 +120,9 @@ export async function runFabricCatalogTool(
 			? await runDirectBuilderTool(call)
 			: await runStepHandlerTool(call);
 	} catch (error) {
+		// A turn stop or a token-allowance refusal is not a tool failure for
+		// the model to work around: it leaves the activity as itself.
+		rethrowIfDispatchStopped(error);
 		return { success: false, error: describeError(error) };
 	}
 }

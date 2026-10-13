@@ -45,7 +45,29 @@ import {
 } from "../lib/proposal-artifact/types";
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import {
+	BULK_RUN_PAUSE_BEYOND_MS,
+	chatGptPlanPauseOf,
+	untilRunDeadline,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 import type { proposalAnalysisWorkflow } from "./proposal-analysis";
+
+/** One generation attempt's ceiling, its retries aside. */
+const GENERATION_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * Left after a ChatGPT plan wait (Fizzy #2770): a generation attempt and the
+ * save, version and embedding that follow it.
+ */
+const PLAN_WAIT_RESERVE_MS = GENERATION_TIMEOUT_MS + 5 * 60_000;
+
+/**
+ * The agent token a bulk run mints after a plan wait: the run's own token was
+ * minted for half an hour (batch) or an hour (setup), long gone after a wait
+ * for the reset. Batch generation's lifetime.
+ */
+const POST_WAIT_TOKEN_EXPIRY_SECONDS = 1800;
 
 // Generation awaits its own embedding before returning. Keep that activity
 // on the foreground queue too: the next setup document retrieves its vectors,
@@ -60,7 +82,7 @@ const {
 	embedProjectDocumentActivity,
 } = proxyActivities<typeof activities>({
 	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
-	startToCloseTimeout: "15m",
+	startToCloseTimeout: GENERATION_TIMEOUT_MS,
 	heartbeatTimeout: "2 minutes",
 	retry: {
 		initialInterval: "2s",
@@ -72,6 +94,22 @@ const {
 		// close to four minutes of backoff PER activity to reach the verdict
 		// the first millisecond already had.
 		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
+	},
+});
+
+// Re-authorizing the requester and minting a fresh agent token after a plan
+// wait (Fizzy #2770). Short indexed queries, retried a little longer than a
+// status write.
+const { assertRequesterMayGenerate, issueGenerationToken } = proxyActivities<
+	typeof activities
+>({
+	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
+	startToCloseTimeout: "1m",
+	retry: {
+		initialInterval: "1s",
+		maximumInterval: "30s",
+		backoffCoefficient: 2,
+		maximumAttempts: 4,
 	},
 });
 
@@ -208,6 +246,20 @@ export interface DocumentGenerationChildInput {
 	 * whose plan takes the document over unconditionally.
 	 */
 	generationStartedAt?: string;
+	/**
+	 * A bulk run (batch generation, project setup) whose AI steps run on the
+	 * organization's shared ChatGPT plans (Fizzy #2770): when every one is
+	 * spent, generation waits for the reset and runs once more, with a fresh
+	 * agent token. Unset for a person's own document, which keeps today's
+	 * refusal.
+	 */
+	waitForPlanReset?: boolean;
+	/**
+	 * With `waitForPlanReset`, a batch that pauses instead of waiting long
+	 * (Fizzy #2770): the child ends with the pause, writes nothing to the
+	 * document, and the batch queues it for its resume.
+	 */
+	pauseOnPlanSpent?: boolean;
 }
 
 /**
@@ -435,6 +487,7 @@ export async function documentGenerationChildWorkflow(
 		excludeContextId,
 		planEligible,
 		generationStartedAt,
+		waitForPlanReset,
 	} = input;
 
 	const startTime = Date.now();
@@ -848,40 +901,80 @@ export async function documentGenerationChildWorkflow(
 
 		await reportProgress(documentId, 35, proposal?.plan.liveRunId);
 
-		const generationResult = await generateDocumentWithAgent({
-			projectId,
-			documentId,
-			documentType,
-			prompt: prompt || "",
-			contexts,
-			userId,
-			organizationId,
-			aiToken,
-			promptId,
-			currentDocument,
-			// The project's own context only: company entries are marked as
-			// vendor material, and a project with nothing of its own keeps its
-			// wizard features in the prompt (Fizzy #2719). Histories recorded
-			// before company context hold no marked entries, so replay sees
-			// the value it always did.
-			hasRagContexts: hasProjectContextEntries(contexts),
-			hasTeamsIntegration,
-			hasSlackIntegration,
-			planEligible,
-			// A coordinated Proposal renders exactly the pinned client-only
-			// Main prompt and saves its sections live under the run token;
-			// the request's `promptId` is not used then. Only an argument
-			// changes, so no marker is needed beyond the plan's. Unset
-			// otherwise, which the payload drops: today's input, unchanged.
-			artifact: proposal
-				? {
-						liveRunId: proposal.plan.liveRunId,
-						promptId: proposal.plan.mainPrompt.promptId,
-						promptVersionNumber:
-							proposal.plan.mainPrompt.versionNumber,
-					}
-				: undefined,
-		});
+		// A bulk run waits for a shared ChatGPT plan's reset when every one is
+		// spent, and generates once more (Fizzy #2770). The retry re-checks the
+		// requester and mints a fresh agent token first: the run's own expired
+		// during the wait. Only a bulk parent sets `waitForPlanReset`, so every
+		// other run, and every history recorded before it, generates exactly
+		// as before; the helper's `patched()` covers the wait itself.
+		let generationAttempts = 0;
+		const generate = async () => {
+			let token = aiToken;
+			if (generationAttempts++ > 0) {
+				await assertRequesterMayGenerate({
+					documentId,
+					userId,
+					organizationId,
+				});
+				({ aiToken: token } = await issueGenerationToken({
+					userId,
+					organizationId,
+					expirySeconds: POST_WAIT_TOKEN_EXPIRY_SECONDS,
+					planEligible,
+				}));
+			}
+			return generateDocumentWithAgent({
+				projectId,
+				documentId,
+				documentType,
+				prompt: prompt || "",
+				contexts,
+				userId,
+				organizationId,
+				aiToken: token,
+				promptId,
+				currentDocument,
+				// The project's own context only: company entries are marked as
+				// vendor material, and a project with nothing of its own keeps its
+				// wizard features in the prompt (Fizzy #2719). Histories recorded
+				// before company context hold no marked entries, so replay sees
+				// the value it always did.
+				hasRagContexts: hasProjectContextEntries(contexts),
+				hasTeamsIntegration,
+				hasSlackIntegration,
+				planEligible,
+				// Tells the activity to surface a spent shared plan as the
+				// plan's own error, whatever shape the agent's failure took.
+				...(waitForPlanReset && { waitForPlanReset: true }),
+				// A coordinated Proposal renders exactly the pinned client-only
+				// Main prompt and saves its sections live under the run token;
+				// the request's `promptId` is not used then. Only an argument
+				// changes, so no marker is needed beyond the plan's. Unset
+				// otherwise, which the payload drops: today's input, unchanged.
+				artifact: proposal
+					? {
+							liveRunId: proposal.plan.liveRunId,
+							promptId: proposal.plan.mainPrompt.promptId,
+							promptVersionNumber:
+								proposal.plan.mainPrompt.versionNumber,
+						}
+					: undefined,
+			});
+		};
+		// `userId` is null: a bulk run never uses the clicker's own plan, so
+		// its reset cannot help.
+		const generationResult = waitForPlanReset
+			? await withChatGptPlanWait(generate, {
+					organizationId,
+					userId: null,
+					maxWaitMs: untilRunDeadline(PLAN_WAIT_RESERVE_MS),
+					// A batch that pauses (Fizzy #2770): a longer wait ends this
+					// child with the pause, and the batch saves its place.
+					...(input.pauseOnPlanSpent && {
+						pauseBeyondMs: BULK_RUN_PAUSE_BEYOND_MS,
+					}),
+				})
+			: await generate();
 		documentContent = generationResult.content;
 
 		// Attribute the run to the prompt version the activity actually rendered
@@ -1156,6 +1249,12 @@ export async function documentGenerationChildWorkflow(
 			},
 		};
 	} catch (error) {
+		// A batch pausing for a plan reset (Fizzy #2770): the document is not
+		// failed — the batch queues it for its resume.
+		const pause = input.pauseOnPlanSpent ? chatGptPlanPauseOf(error) : null;
+		if (pause) {
+			throw pause;
+		}
 		const totalDuration = Date.now() - startTime;
 		const errorMessage = extractActivityError(error);
 

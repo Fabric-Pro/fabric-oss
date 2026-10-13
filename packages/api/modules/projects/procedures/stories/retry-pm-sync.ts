@@ -6,7 +6,11 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { retryPmSyncItem } from "../../lib/retry-pm-sync-item";
+import { pmRecoveryTooRecentMessage } from "../../lib/pm-recovery-messages";
+import {
+	PM_RECOVERY_STALE_MESSAGE,
+	retryPmSyncItem,
+} from "../../lib/retry-pm-sync-item";
 
 const ItemTypeSchema = z.enum(["epic", "feature", "story", "bug"]);
 
@@ -16,7 +20,9 @@ const ItemTypeSchema = z.enum(["epic", "feature", "story", "bug"]);
  * current `externalId`/`externalMcpServerId` that the unlink path needs to sever
  * the link with the same atomic predicate the Review Center uses. Stories are
  * the only work-item rows — legacy `epic`/`feature` item types resolve to null
- * (the folder tables were dropped).
+ * (the folder tables were dropped). Also reads the story's PM create claim in
+ * the same row read, so Unlink & re-create clears only the claim seen here,
+ * and only once that claim is older than PM_CREATE_CLAIM_RECOVERY_MIN_AGE_MS.
  */
 async function resolveItemLink(
 	itemType: z.infer<typeof ItemTypeSchema>,
@@ -25,13 +31,18 @@ async function resolveItemLink(
 ): Promise<{
 	externalId: string | null;
 	externalMcpServerId: string | null;
+	pmCreateClaimId: string | null;
 } | null> {
 	if (itemType !== "story" && itemType !== "bug") {
 		return null;
 	}
 	return db.userStory.findFirst({
 		where: { id: itemId, projectId },
-		select: { externalId: true, externalMcpServerId: true },
+		select: {
+			externalId: true,
+			externalMcpServerId: true,
+			pmCreateClaimId: true,
+		},
 	});
 }
 
@@ -96,7 +107,29 @@ export const retryPmSyncProcedure = tenantProtectedProcedure
 			unlinkFirst: input.unlinkFirst,
 			externalId: item.externalId,
 			externalMcpServerId: item.externalMcpServerId,
+			pmCreateClaimId: item.pmCreateClaimId,
 		});
+
+		// Unlink & re-create found the create claim it read still held and
+		// too recent to clear: a push may still be sending its create.
+		if (result.reason === "pm-recovery-too-recent") {
+			throw new ORPCError("CONFLICT", {
+				message: pmRecoveryTooRecentMessage(result.recoverableAt),
+				data: {
+					errorCode: "PM_RECOVERY_TOO_RECENT",
+					recoverableAt: result.recoverableAt?.toISOString() ?? null,
+				},
+			});
+		}
+
+		// Unlink & re-create found the link or the create claim changed since
+		// the read above; nothing was cleared or enqueued.
+		if (result.reason === "pm-recovery-stale") {
+			throw new ORPCError("CONFLICT", {
+				message: PM_RECOVERY_STALE_MESSAGE,
+				data: { errorCode: "PM_RECOVERY_STALE" },
+			});
+		}
 
 		return {
 			enqueued: result.enqueued,

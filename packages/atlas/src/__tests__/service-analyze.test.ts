@@ -130,7 +130,7 @@ beforeEach(() => {
 	mockFindAnalysis.mockResolvedValue(makeAnalysis());
 	mockGetOrCreateAnalysis.mockResolvedValue(makeAnalysis());
 	mockBeginAnalysisRun.mockResolvedValue(undefined);
-	mockCreateAnalysisRun.mockResolvedValue(undefined);
+	mockCreateAnalysisRun.mockResolvedValue({ id: "run-1" });
 	mockResolveRepoCredentials.mockResolvedValue(null);
 	mockCountCommitsSince.mockResolvedValue({
 		headSha: null,
@@ -243,6 +243,8 @@ describe("requestAnalysis — per-branch analysis persistence", () => {
 		);
 		expect(plan.analysisId).toBe("an-develop");
 		expect(plan.workflowArgs.incremental).toBe(false);
+		// The run row is what pauses for a ChatGPT plan reset (Fizzy #2770).
+		expect(plan.workflowArgs.analysisRunId).toBe("run-1");
 		expect(mockCreateAnalysisRun).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({ mode: "full" }),

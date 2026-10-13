@@ -296,7 +296,13 @@ describe("AiUsageActivityView — billing source", () => {
 			plan.getByTestId("billing-source-chatgpt_plan-tokens"),
 		).toHaveTextContent("6.0k in · 1.5k out");
 		expect(plan.getByText("$0.00")).toBeInTheDocument();
-		expect(plan.getByText(/75% of requests/)).toBeInTheDocument();
+		// Plan usage may come from members' own plans or the organization's
+		// shared accounts, so the note names neither alone.
+		expect(
+			plan.getByText(
+				"75% of requests · covered by ChatGPT plans (own and shared)",
+			),
+		).toBeInTheDocument();
 		// The real cost stays $0.00; beside it, what the same tokens would
 		// have cost on API billing, struck through.
 		const estimate = plan.getByTestId("billing-source-plan-api-estimate");
@@ -340,7 +346,7 @@ describe("AiUsageActivityView — billing source", () => {
 
 describe("AiUsageActivityView — cost covered by ChatGPT plans (Fizzy #2939)", () => {
 	const TOOLTIP =
-		"Covered by members' ChatGPT plans, so nothing was billed. At the provider's API list prices these tokens would have cost about $15.00 (estimate, priced as gpt-6-astra).";
+		"Covered by ChatGPT plans — members' own or the organization's shared accounts — so nothing was billed. At the provider's API list prices these tokens would have cost about $15.00 (estimate, priced as gpt-6-astra).";
 
 	it("explains the struck-through estimate on focus", async () => {
 		mockQueries();

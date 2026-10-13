@@ -13,7 +13,7 @@ Use official vendor-hosted MCP servers. No custom integrations.
 
 | Vendor | MCP Server | Transport | Auth |
 |--------|------------|-----------|------|
-| Atlassian (Jira, Confluence) | `https://mcp.atlassian.com/v1/mcp` | HTTP | OAuth 2.1 + DCR |
+| Atlassian (Jira, Confluence & Bitbucket) | `https://mcp.atlassian.com/v2/mcp?tools=all` | HTTP | OAuth 2.1 + DCR |
 | Notion | `https://mcp.notion.com/mcp` | HTTP | OAuth 2.1 + DCR |
 | Linear | `https://mcp.linear.app/mcp` | SSE/HTTP | OAuth 2.1 + DCR |
 
@@ -51,10 +51,9 @@ All core MCP infrastructure is implemented:
 
 ### Atlassian
 
-- **OAuth Discovery**: `https://auth.atlassian.com/.well-known/openid-configuration`
-- **Auth**: OAuth 2.1 (standard, not DCR)
-- **Rate Limits**: Free 500/hr, Standard 1000/hr, Premium 1000+20/user (max 10000/hr)
-- **Tools**: `jira_search_issues`, `jira_get_issue`, `jira_create_issue`, `jira_update_issue`, `jira_add_comment`, `confluence_search`, `confluence_get_page`, `confluence_create_page`, `confluence_update_page`, `compass_get_components`
+- **OAuth Discovery**: `https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3`
+- **Auth**: OAuth 2.1 with Dynamic Client Registration (DCR)
+- **Tools**: `searchJiraIssuesUsingJql`, `getJiraIssue`, `createJiraIssue`, `editJiraIssue`, `listJiraProjects`, `searchConfluence`, `getConfluenceContent`, `listConfluenceSpaces`, `listConfluenceContent`, Bitbucket tools (`listBitbucketRepositories`, `listBitbucketRepoPullRequests`, `getBitbucketRepoFileContent`, …)
 
 ### Notion
 

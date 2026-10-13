@@ -226,7 +226,14 @@ export async function finalizeParlumeSession(
 			workflowIdConflictPolicy: "USE_EXISTING",
 			taskQueue: "project-documents",
 			workflowId: `parlume-notes-${session.id}`,
-			args: [{ sessionId: session.id }],
+			args: [
+				{
+					sessionId: session.id,
+					// For the shared-plan wait's reset estimate (Fizzy #2770).
+					organizationId: session.organizationId,
+					userId: session.userId,
+				},
+			],
 		});
 	}
 

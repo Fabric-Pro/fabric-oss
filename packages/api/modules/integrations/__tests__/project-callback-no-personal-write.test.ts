@@ -114,15 +114,17 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
-vi.mock("@repo/database/prisma/queries/lib/refresh-lock", async () => {
-	const { db } = await import("@repo/database");
-	return {
-		withRefreshLock: (
-			_keys: unknown,
-			fn: (tx: unknown, b: () => void) => unknown,
-		) => fn(db, () => {}),
-	};
-});
+vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
+	withRefreshLock: async (
+		_keys: unknown,
+		fn: (tx: unknown, b: () => void) => unknown,
+	) => {
+		// Database queries import this module while importOriginal is loading.
+		// Resolve the database only when the callback runs to avoid a mock cycle.
+		const { db } = await import("@repo/database");
+		return fn(db, () => {});
+	},
+}));
 
 vi.mock("@repo/permissions", () => ({
 	hasPermission: vi.fn().mockReturnValue(true),

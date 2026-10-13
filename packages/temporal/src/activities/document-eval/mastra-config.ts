@@ -21,7 +21,11 @@ export async function resolveEvalModel(params: {
 	try {
 		const result = await getAIModelWithMetadata(
 			{ taskType: "EVAL" },
-			{ userId: params.userId, organizationId: params.organizationId },
+			{
+				userId: params.userId,
+				organizationId: params.organizationId,
+				featureKey: "document-quality",
+			},
 		);
 		return result;
 	} catch (error) {

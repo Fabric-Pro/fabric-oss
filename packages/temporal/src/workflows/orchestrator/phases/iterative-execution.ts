@@ -93,8 +93,18 @@ import {
 	truncateWithinLimit,
 } from "../tool-result-progression";
 import {
+	ledgerSnapshotFromRefusal,
+	recordTurnBudgetStop,
+	refreshTurnBudgetStop,
+	refusedFinalization,
+} from "../turn-budget";
+import {
+	budgetAttemptKindField,
+	finalizationQuestionField,
 	type IterativeTurnOptions,
+	isTurnBudgetExhausted,
 	rethrowTurnStop,
+	speaksBudgetContract,
 	turnScopeField,
 	turnScopeOptionArgs,
 } from "../turn-contract";
@@ -756,6 +766,14 @@ function recordTruncation(
  * caller's deterministic fallback. The activity calls, their inputs and the
  * `orch-synthesis-compacted-v1` marker are taken in the order the
  * budget-exhaustion path has always taken them, so its histories replay.
+ *
+ * On a ledgered turn both calls are FINALIZATION rounds, and the activity
+ * sizes each one to the room the turn's ledger has left when it is sent
+ * (activities/orchestrator/execution/finalization-fit.ts): unchanged when it
+ * fits, else shrunk to a bounded request with the user's request and the
+ * most recent findings, else refused before anything is reserved or sent,
+ * which the budget exit answers with the static summary. The second call is
+ * sized after the first has settled, so it fits what the first left.
  */
 async function synthesizeFinalAnswer(params: {
 	state: WorkflowState;
@@ -767,7 +785,24 @@ async function synthesizeFinalAnswer(params: {
 	fallback: (includeFindings: boolean) => string;
 	/** The turn contract; a stop is rethrown, never replaced by the fallback. */
 	turn?: IterativeTurnOptions;
-}): Promise<{ content: string; truncated: "output_limit" | undefined }> {
+	/**
+	 * Set only by the token ledger's budget exit (`turnBudgetExit`): a
+	 * refusal of the synthesis request is answered here with the fallback.
+	 * Every other caller lets the refusal propagate to that exit, so a budget
+	 * stop always ends LIMITED with its structured `budgetStop`.
+	 */
+	handleBudgetRefusal?: boolean;
+}): Promise<{
+	content: string;
+	truncated: "output_limit" | undefined;
+	/**
+	 * The answer is the caller's deterministic fallback (no synthesis, or
+	 * only a degenerate one).
+	 */
+	usedFallback: boolean;
+	/** The turn's token ledger refused the synthesis request. */
+	finalizationDenied: boolean;
+}> {
 	const { state, input, conversationHistory, systemPrompt } = params;
 
 	// Synthesis over a compacted copy of the history, and a fallback
@@ -783,6 +818,7 @@ async function synthesizeFinalAnswer(params: {
 	let synthesisContent = "";
 	// Set when the synthesis itself hit the output ceiling.
 	let synthesisTruncated: "output_limit" | undefined;
+	let finalizationDenied = false;
 	try {
 		// Do NOT add an extra pruneConversationHistory pass here. The
 		// per-iteration prune already retains the last
@@ -804,7 +840,14 @@ async function synthesizeFinalAnswer(params: {
 			// tool_calls and break the type === "response" branch.
 			enableSkillTools: false,
 			...turnScopeField(params.turn),
+			// The turn's answer: may use the allowance's finalization reserve,
+			// and is sized to the room left (the activity's finalization-fit).
+			...budgetAttemptKindField(params.turn, "FINALIZATION"),
+			...finalizationQuestionField(params.turn, state.enrichedMessage),
 		});
+		if (synthesisResult.ledger) {
+			state.turnLedger = synthesisResult.ledger;
+		}
 
 		// Track synthesis cost
 		state.iterationCosts.push({
@@ -853,7 +896,15 @@ async function synthesizeFinalAnswer(params: {
 				modelOverride: input.modelOverride,
 				enableSkillTools: false,
 				...turnScopeField(params.turn),
+				...budgetAttemptKindField(params.turn, "FINALIZATION"),
+				...finalizationQuestionField(
+					params.turn,
+					state.enrichedMessage,
+				),
 			});
+			if (retryResult.ledger) {
+				state.turnLedger = retryResult.ledger;
+			}
 			state.iterationCosts.push({
 				iteration: state.currentIteration + 2,
 				inputTokens: retryResult.usage.inputTokens,
@@ -876,11 +927,28 @@ async function synthesizeFinalAnswer(params: {
 			});
 		}
 	} catch (synthesisError) {
-		// A stopped turn is not a failed synthesis: the fallback would
-		// hand a cancelled turn a "final answer".
-		rethrowTurnStop(synthesisError, params.turn);
+		if (
+			params.handleBudgetRefusal &&
+			speaksBudgetContract(params.turn) &&
+			isTurnBudgetExhausted(synthesisError)
+		) {
+			// Inside the budget exit, the ledger refused the finalization
+			// itself: nothing is left to write an answer with, so the
+			// deterministic fallback below is the answer.
+			finalizationDenied = true;
+			const refused = ledgerSnapshotFromRefusal(synthesisError);
+			if (refused) {
+				state.turnLedger = refused;
+			}
+		} else {
+			// A stopped turn is not a failed synthesis: the fallback would
+			// hand a cancelled turn a "final answer". A budget refusal outside
+			// the budget exit travels to it the same way.
+			rethrowTurnStop(synthesisError, params.turn);
+		}
 		log.warn("LLM synthesis failed, falling back to static summary", {
 			error: String(synthesisError),
+			finalizationDenied,
 		});
 	}
 
@@ -894,9 +962,20 @@ async function synthesizeFinalAnswer(params: {
 		);
 		synthesisContent = params.fallback(compactSynthesis);
 		synthesisTruncated = undefined;
+		return {
+			content: synthesisContent,
+			truncated: synthesisTruncated,
+			usedFallback: true,
+			finalizationDenied,
+		};
 	}
 
-	return { content: synthesisContent, truncated: synthesisTruncated };
+	return {
+		content: synthesisContent,
+		truncated: synthesisTruncated,
+		usedFallback: false,
+		finalizationDenied,
+	};
 }
 
 /**
@@ -951,6 +1030,13 @@ function getBudgetUsage(
 function checkIterationBudget(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
+	/**
+	 * True when the turn's token ledger admits its tokens (a ledgered turn
+	 * that has returned a ledger reading): the token check here is then
+	 * skipped, because the ledger refuses the request that does not fit and
+	 * the run answers that with its budget exit. The iteration limit stays.
+	 */
+	ledgerAdmitsTokens = false,
 ): {
 	withinBudget: boolean;
 	limit?: BudgetLimit;
@@ -958,7 +1044,7 @@ function checkIterationBudget(
 } {
 	const usage = getBudgetUsage(iterationCosts, modeConfig);
 
-	if (usage.totalTokens > usage.effectiveBudget) {
+	if (!ledgerAdmitsTokens && usage.totalTokens > usage.effectiveBudget) {
 		return {
 			withinBudget: false,
 			limit: "tokens",
@@ -1526,17 +1612,30 @@ export const FABRIC_DEFAULT_MCP_STATUS_CTA = {
 	},
 } as const;
 
+type IterativePhaseResult = PhaseResult<{
+	finalResponse: string;
+	authRequired?: { configId: string; serverName: string };
+}>;
+
 /**
  * Execute the iterative phase of the orchestrator workflow.
  *
  * This is the core of the iterative execution pattern - instead of planning
  * all steps upfront, the LLM sees the current state and decides what to do next.
+ *
+ * For a turn that speaks the token-ledger contract
+ * (`orch-turn-budget-v1`), every `TurnBudgetExhausted` refusal raised
+ * anywhere inside the loop — a main round, a tool's model call, compaction,
+ * a summary — travels out of it (each catch rethrows it; see
+ * `rethrowTurnStop`) to the one budget exit here: `turnBudgetExit`. Any
+ * other error, and every error of a run without the contract, leaves as
+ * before.
  */
 export async function executeIterativePhase(
 	state: WorkflowState,
 	input: OrchestratorWorkflowInput,
 	modeConfig: ExecutionModeConfig,
-	_altkConfig: ALTKConfig,
+	altkConfig: ALTKConfig,
 	updateProgress: (phase: string, message: string) => void,
 	waitForApproval: (
 		options?: WaitForApprovalOptions,
@@ -1548,12 +1647,144 @@ export async function executeIterativePhase(
 	 * then keeps its legacy fallback.
 	 */
 	turn?: IterativeTurnOptions,
-): Promise<
-	PhaseResult<{
-		finalResponse: string;
-		authRequired?: { configId: string; serverName: string };
-	}>
-> {
+): Promise<IterativePhaseResult> {
+	const loop: IterativeLoopContext = {};
+	try {
+		return await runIterativeLoop(
+			state,
+			input,
+			modeConfig,
+			altkConfig,
+			updateProgress,
+			waitForApproval,
+			isCancelled,
+			turn,
+			loop,
+		);
+	} catch (error) {
+		if (
+			!speaksBudgetContract(turn) ||
+			!isTurnBudgetExhausted(error) ||
+			!loop.conversationHistory
+		) {
+			throw error;
+		}
+		return turnBudgetExit({
+			state,
+			input,
+			conversationHistory: loop.conversationHistory,
+			refusal: error,
+			updateProgress,
+			isCancelled,
+			turn,
+		});
+	}
+}
+
+/** What the budget exit needs from the loop it replaces. */
+interface IterativeLoopContext {
+	/** Set as soon as the loop builds the turn's conversation. */
+	conversationHistory?: IterativeMessage[];
+}
+
+/**
+ * The one budget exit of a ledgered turn: the ledger refused a request
+ * because it did not fit what is left of the allowance. Records the stop
+ * (`internal_budget` signal and structured `budgetStop`), then writes the
+ * answer with the finalization synthesis — its requests may use the reserve
+ * the allowance held back — and, when that is refused or fails, with the
+ * static summary of the work done. Sibling exploration has already ended:
+ * the activity that met the refusal aborted its other requests in flight
+ * (a `settleAll` fan-out also waits for them), and the loop runs one
+ * activity at a time. A Stop still wins: a
+ * turn cancelled meanwhile reports cancelled, with the answer as its
+ * partial text. No new-chat handoff is offered.
+ */
+async function turnBudgetExit(params: {
+	state: WorkflowState;
+	input: OrchestratorWorkflowInput;
+	conversationHistory: IterativeMessage[];
+	refusal: unknown;
+	updateProgress: (phase: string, message: string) => void;
+	isCancelled: () => boolean;
+	turn: IterativeTurnOptions | undefined;
+}): Promise<IterativePhaseResult> {
+	const { state, input, turn } = params;
+	recordTurnBudgetStop(
+		state,
+		ledgerSnapshotFromRefusal(params.refusal),
+		"allowance_exhausted",
+	);
+	log.warn("Orchestrator turn used its token allowance", {
+		executionId: state.executionId,
+		iteration: state.currentIteration,
+		budgetStop: state.budgetStop,
+	});
+	params.updateProgress("synthesizing", "Summarizing findings...");
+
+	// A refused FINALIZATION (the iteration-limit or tool-failure synthesis
+	// was the request that did not fit) is not asked again: the answer is the
+	// static summary straight away.
+	const synthesis = refusedFinalization(params.refusal)
+		? {
+				content: summarizeAccomplishments(state, {
+					includeFindings: true,
+					tokenAllowance: true,
+				}),
+				truncated: undefined,
+				usedFallback: true,
+				finalizationDenied: true,
+			}
+		: await synthesizeFinalAnswer({
+				state,
+				input,
+				conversationHistory: params.conversationHistory,
+				systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+				retrySystemPrompt: SYNTHESIS_RETRY_SYSTEM_PROMPT,
+				fallback: (includeFindings) =>
+					summarizeAccomplishments(state, {
+						includeFindings,
+						tokenAllowance: true,
+					}),
+				turn,
+				handleBudgetRefusal: true,
+			});
+	if (synthesis.usedFallback) {
+		recordTurnBudgetStop(state, undefined, "finalization_unavailable");
+	}
+	// The stop as the ledger stands after the finalization: its totals and
+	// enforcement, not the reading taken when the refusal happened.
+	refreshTurnBudgetStop(state);
+
+	if (turn?.cancellationAware && params.isCancelled()) {
+		return {
+			success: false,
+			error: "Execution cancelled",
+			shouldContinue: false,
+			data: { finalResponse: synthesis.content },
+		};
+	}
+	recordTruncation(state, synthesis.truncated);
+	return {
+		success: true,
+		data: { finalResponse: synthesis.content },
+		shouldContinue: true,
+	};
+}
+
+async function runIterativeLoop(
+	state: WorkflowState,
+	input: OrchestratorWorkflowInput,
+	modeConfig: ExecutionModeConfig,
+	_altkConfig: ALTKConfig,
+	updateProgress: (phase: string, message: string) => void,
+	waitForApproval: (
+		options?: WaitForApprovalOptions,
+	) => Promise<ApprovalSignalData | null>,
+	isCancelled: () => boolean,
+	turn: IterativeTurnOptions | undefined,
+	loop: IterativeLoopContext,
+): Promise<IterativePhaseResult> {
 	log.info("Starting iterative execution phase", {
 		executionId: state.executionId,
 		maxIterations: modeConfig.maxIterations || BUDGET.defaultMaxIterations,
@@ -1593,6 +1824,8 @@ export async function executeIterativePhase(
 			timestamp: new Date().toISOString(),
 		},
 	];
+	// The budget exit synthesizes from this same conversation.
+	loop.conversationHistory = conversationHistory;
 
 	log.info("[IterativeExecution] Initialized conversation history", {
 		priorHistoryLength: priorHistory.length,
@@ -2210,6 +2443,7 @@ Never guess or use example values — always use real data from API responses.`;
 		const budgetCheck = checkIterationBudget(
 			state.iterationCosts,
 			modeConfig,
+			state.turnLedger !== undefined,
 		);
 		if (!budgetCheck.withinBudget) {
 			// Surface the exhaustion to the UI. Keep the soft-degrade
@@ -2389,7 +2623,14 @@ Never guess or use example values — always use real data from API responses.`;
 				? { suppressedToolNames: [...suppressedFrameTools] }
 				: {}),
 			...turnScopeField(turn),
+			// A main round, for the turn's token ledger.
+			...budgetAttemptKindField(turn, "EXPLORATION"),
 		});
+		// The ledger's reading after this round (a ledgered turn only): from
+		// here on the ledger, not `iterationCosts`, admits the turn's tokens.
+		if (iterationResult.ledger) {
+			state.turnLedger = iterationResult.ledger;
+		}
 
 		// If the iteration classifier tagged a provider limit/quota
 		// error, bubble it into state so it reaches the workflow output + SSE.
@@ -4261,6 +4502,12 @@ export function summarizeAccomplishments(
 		 * "`code_search` kept failing" (the per-round tool failure breaker).
 		 */
 		stoppedBecause?: string;
+		/**
+		 * The turn used its token allowance (a ledgered turn's budget stop):
+		 * the summary says so and suggests continuing in this chat, never a
+		 * new one.
+		 */
+		tokenAllowance?: boolean;
 	} = {},
 ): string {
 	const sections: string[] = [];
@@ -4277,16 +4524,20 @@ export function summarizeAccomplishments(
 	const iterations = state.currentIteration ?? 0;
 	// The patched wording matches the handoff card: it is this answer's step
 	// budget that ran out, not the conversation.
-	const stopped = options.stoppedBecause
-		? `Stopped after ${iterations} iteration(s) because ${options.stoppedBecause}`
-		: options.includeFindings
-			? `Ran out of this answer's step budget after ${iterations} iteration(s)`
-			: `Reached the conversation limit after ${iterations} iteration(s)`;
-	const toContinue = options.stoppedBecause
-		? "## To continue\n\nAsk again, or ask differently — for example with another path, branch, ID or query."
-		: options.includeFindings
-			? "## To continue\n\nAsk me to continue, narrow the question, or open a new chat with this summary carried over."
-			: "## To continue\n\nOpen a new chat. The summary above will be carried over as context.";
+	const stopped = options.tokenAllowance
+		? `Used this answer's token allowance after ${iterations} iteration(s)`
+		: options.stoppedBecause
+			? `Stopped after ${iterations} iteration(s) because ${options.stoppedBecause}`
+			: options.includeFindings
+				? `Ran out of this answer's step budget after ${iterations} iteration(s)`
+				: `Reached the conversation limit after ${iterations} iteration(s)`;
+	const toContinue = options.tokenAllowance
+		? "## To continue\n\nAsk me to continue in this chat, or narrow the question."
+		: options.stoppedBecause
+			? "## To continue\n\nAsk again, or ask differently — for example with another path, branch, ID or query."
+			: options.includeFindings
+				? "## To continue\n\nAsk me to continue, narrow the question, or open a new chat with this summary carried over."
+				: "## To continue\n\nOpen a new chat. The summary above will be carried over as context.";
 
 	if (state.toolCalls.length === 0) {
 		sections.push(

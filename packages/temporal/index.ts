@@ -26,22 +26,6 @@ export {
 	ScheduleAlreadyRunning,
 	ScheduleNotFoundError,
 } from "@temporalio/client";
-// Glossy edition build (Fizzy #2589): what the build procedure starts
-// `glossyEditionBuildWorkflow` with on GLOSSY_EDITION_TASK_QUEUE, and the
-// progress steps and report reason codes the Glossy page reads back. Types
-// only, so the API never loads activity code through them.
-export type {
-	GlossyBuildErrorCode,
-	GlossyBuildLengthMode,
-	GlossyBuildMode,
-	GlossyBuildOptions,
-	GlossyBuildStep,
-	GlossyEditionBuildWorkflowInput,
-	GlossyEditionBuildWorkflowOutput,
-	GlossyKeptOriginalReason,
-	GlossyOpportunityRef,
-	GlossyVisualDropReason,
-} from "./src/activities/glossy-edition/types";
 // The one key plan of a source body (cleanup, section keys, whole-document
 // detection key), shared by the build's activities and the in-request
 // Align-first detect and build procedures so their keys cannot drift; and
@@ -60,6 +44,22 @@ export {
 	planGlossyKeys,
 	planGlossyRegeneration,
 } from "./src/activities/glossy-edition/shared";
+// Glossy edition build (Fizzy #2589): what the build procedure starts
+// `glossyEditionBuildWorkflow` with on GLOSSY_EDITION_TASK_QUEUE, and the
+// progress steps and report reason codes the Glossy page reads back. Types
+// only, so the API never loads activity code through them.
+export type {
+	GlossyBuildErrorCode,
+	GlossyBuildLengthMode,
+	GlossyBuildMode,
+	GlossyBuildOptions,
+	GlossyBuildStep,
+	GlossyEditionBuildWorkflowInput,
+	GlossyEditionBuildWorkflowOutput,
+	GlossyKeptOriginalReason,
+	GlossyOpportunityRef,
+	GlossyVisualDropReason,
+} from "./src/activities/glossy-edition/types";
 export { executeMcpTool } from "./src/activities/orchestrator/execution/execute-mcp-tool";
 export type {
 	BulkStorySyncInput,
@@ -98,6 +98,7 @@ export {
 	enumeratePmFields,
 	fetchPMItemsByIds,
 	fetchPmComments,
+	fillJiraCreateArgs,
 	getContainerFetchWorkflow,
 	getPMToolCapabilities,
 	getPmToolTier,
@@ -129,6 +130,13 @@ export {
 	syncTaskToPM,
 	updateStoryExternalRefs,
 } from "./src/activities/pm-integration";
+// The ids a story (or epic/feature) and a test-case create store for a PM
+// item, read from the tool's response. Link to existing item reads a fetched
+// item through these, so a link carries the id a create would have stored.
+export {
+	extractCreatedWorkItemRefs,
+	readCreatedTestCaseRefs,
+} from "./src/activities/pm-integration/created-item-refs";
 // Client exports
 export {
 	closeTemporalConnection,
@@ -137,6 +145,14 @@ export {
 	getTemporalConfig,
 	isTemporalAvailable,
 } from "./src/client";
+// Company context (Fizzy #2719): the owner a context workflow input names,
+// and the queue a company owner's workflows start on.
+export {
+	type CompanyContextOwner,
+	type ContextOwner,
+	contextOwnerTaskQueue,
+	type ProjectContextOwner,
+} from "./src/lib/context-owner";
 // Story drafting helper (shared across api + temporal callers)
 export {
 	type CreateStoryFromProposalParams,
@@ -308,14 +324,6 @@ export {
 	upsertWorkflowSchedule,
 	WORKFLOW_BUILDER_SCHEDULE_PREFIX,
 } from "./src/schedules/workflow-builder-schedule";
-// Company context (Fizzy #2719): the owner a context workflow input names,
-// and the queue a company owner's workflows start on.
-export {
-	type CompanyContextOwner,
-	type ContextOwner,
-	contextOwnerTaskQueue,
-	type ProjectContextOwner,
-} from "./src/lib/context-owner";
 // Task queue names — shared by the worker and every starter so they cannot drift
 export {
 	COMPANY_CONTEXT_TASK_QUEUE,

@@ -25,7 +25,6 @@ export const chatgptPlanStatusQueryKey = [
  */
 export function useChatgptPlanStatus() {
 	const enabled = useFeatureFlag("CHATGPT_PLAN");
-	const pooling = useFeatureFlag("CHATGPT_PLAN_POOLING");
 	const { activeOrganization, isSwitching, isResolvingOrganization } =
 		useActiveOrganization();
 	const activeSlug = activeOrganization?.slug ?? null;
@@ -34,11 +33,10 @@ export function useChatgptPlanStatus() {
 		queryKey: [...chatgptPlanStatusQueryKey, activeSlug],
 		queryFn: () => orpcClient.users.chatgptPlan.status({}),
 		enabled: enabled && !isSwitching && !isResolvingOrganization,
-		// With shared plans here, the member's own window can run out at any
-		// call and the shell then says the shared plan took over (Fizzy
-		// #2770). Without them there is nothing to say, so nothing to poll.
+		// The member's own window can run out at any call and the shell then
+		// says a shared plan took over (Fizzy #2770).
 		refetchInterval: (current) =>
-			pooling && current.state.data?.currentOrganization?.enabled === true
+			current.state.data?.currentOrganization?.enabled === true
 				? 60_000
 				: false,
 	});
@@ -127,6 +125,21 @@ export function useSetChatgptPlanBackgroundJobs({
 			});
 		},
 		onError,
+	});
+}
+
+/**
+ * Tests the member's own plan with one tiny request (Fizzy #2770). A test can
+ * mark the plan for reconnecting or spent, so the status is read again.
+ */
+export function useTestChatgptPlan() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: () => orpcClient.users.chatgptPlan.test({}),
+		onSettled: () =>
+			queryClient.invalidateQueries({
+				queryKey: chatgptPlanStatusQueryKey,
+			}),
 	});
 }
 

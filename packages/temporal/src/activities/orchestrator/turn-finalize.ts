@@ -7,6 +7,12 @@
  * (`finalizeConversationTurn`): a cancel recorded before it ends the turn
  * CANCELLED, keeping the partial text; otherwise the first terminal write
  * wins. That makes the activity idempotent under retries.
+ *
+ * A token-allowance stop is persisted with the ledger's totals read under
+ * the turn row's lock inside that same write, and the activity returns the
+ * stop exactly as the row stores it — for the first write and for a retry
+ * whose first attempt committed but whose response was lost. Nothing built
+ * here from a separate ledger read reaches the workflow's output.
  */
 
 import {
@@ -14,6 +20,7 @@ import {
 	finalizeConversationTurn,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import type { TurnBudgetStop } from "../../workflows/orchestrator/types";
 import type { TurnScope } from "./turn-dispatch";
 
 export interface FinalizeConversationTurnActivityInput {
@@ -29,12 +36,24 @@ export interface FinalizeConversationTurnActivityInput {
 		provider?: string;
 		message: string;
 	}>;
+	/**
+	 * The structured token-allowance stop, when the run stopped on its
+	 * allowance. Its stop reason is persisted as is; its totals are replaced
+	 * by the ledger's at the moment of the write (see the header).
+	 */
+	budgetStop?: TurnBudgetStop;
 }
 
 export interface FinalizeConversationTurnActivityResult {
 	/** The turn's status after this write (or the one it already had). */
 	status: string | null;
 	wrote: boolean;
+	/**
+	 * The token-allowance stop exactly as the turn row stores it, absent when
+	 * the row stores none. The workflow returns this one, so the live
+	 * stream, the turn row and a reconnect carry the same payload.
+	 */
+	budgetStop?: TurnBudgetStop;
 }
 
 /** Longest response kept on the turn row; the conversation holds the rest. */
@@ -55,6 +74,17 @@ export async function finalizeConversationTurnActivity(
 		...(input.limitSignalSummary && input.limitSignalSummary.length > 0
 			? { limitSignalSummary: input.limitSignalSummary }
 			: {}),
+		...(input.budgetStop
+			? {
+					budgetStop: {
+						stopReason: input.budgetStop.stopReason,
+						allowance: input.budgetStop.allowance,
+						measured: input.budgetStop.measured,
+						outstanding: input.budgetStop.outstanding,
+						enforcement: input.budgetStop.enforcement,
+					},
+				}
+			: {}),
 	});
 	if (result.outcome === "not_found") {
 		// The scope the workflow carries matches no turn: never a normal
@@ -69,5 +99,10 @@ export async function finalizeConversationTurnActivity(
 	return {
 		status: result.status,
 		wrote: result.outcome === "finalized",
+		// The row's own value (a JSON column the terminal write fills only
+		// with a `TurnBudgetStop`), for both a fresh write and a retry.
+		...(result.budgetStop
+			? { budgetStop: result.budgetStop as unknown as TurnBudgetStop }
+			: {}),
 	};
 }

@@ -69,6 +69,7 @@ export async function issueAIToken(
 		expirySeconds,
 		planEligible,
 		impersonated,
+		jobType,
 	} = options;
 
 	if (!userId) {
@@ -88,6 +89,8 @@ export async function issueAIToken(
 		...(impersonated
 			? { imp: true }
 			: planEligible === true && { pe: true }),
+		...(jobType && { jt: jobType }),
+		...(options.apiFallbackApproved === true && { af: true }),
 	} as Partial<AITokenClaims>)
 		.setProtectedHeader({ alg: "HS256" })
 		.setIssuer("fabric-portal")

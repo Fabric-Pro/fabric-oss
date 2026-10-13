@@ -22,7 +22,10 @@ import {
 	invalidateMcpClientCache,
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
-import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
 import type { z } from "zod";
 import { makeInFlightToolCompactor } from "../../../agentic-loop/in-flight-tool-compaction";
@@ -247,6 +250,13 @@ function wrapToolsWithStartNotification(
 					return readOnlyBlock;
 				}
 
+				// Immediately before the external call: no tool runs (and
+				// so nothing is written) once the chat turn this step serves
+				// has stopped or used its token allowance — a refusal an
+				// earlier catch absorbed (an input repair, a sibling step)
+				// included. Outside the try, so the OAuth catch never sees
+				// it; a no-op outside a turn.
+				throwIfDispatchStopped();
 				// Execute the original tool with OAuth error handling
 				try {
 					return await originalExecute.call(toolObj, args, options);

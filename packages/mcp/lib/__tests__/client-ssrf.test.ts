@@ -55,7 +55,7 @@ import {
 	McpClientError,
 	oauthRequestsRefuseRedirects,
 } from "../client";
-import { fetchMcpServer, getMcpServerBlockedReason } from "../server-url-guard";
+import { getMcpServerBlockedReason } from "../server-url-guard";
 
 const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 const ORIGINAL_ALLOWED = process.env.MCP_SERVER_ALLOWED_HOSTS;
@@ -161,10 +161,9 @@ describe("createMcpClient outbound guard", () => {
 		expect(streamableCtor).toHaveBeenCalledTimes(1);
 		const [httpUrl, httpOptions] = streamableCtor.mock.calls[0] as [
 			URL,
-			{ fetch?: unknown; requestInit?: RequestInit },
+			{ fetch: typeof fetch; requestInit?: RequestInit },
 		];
 		expect(httpUrl.href).toBe("https://mcp.example.com/mcp");
-		expect(httpOptions.fetch).toBe(fetchMcpServer);
 		expect(httpOptions.requestInit?.headers).toEqual({
 			Authorization: "Bearer x",
 		});
@@ -174,9 +173,37 @@ describe("createMcpClient outbound guard", () => {
 			transport: "SSE",
 		});
 		expect(sseCtor).toHaveBeenCalledTimes(1);
-		expect(
-			(sseCtor.mock.calls[0] as [URL, { fetch?: unknown }])[1].fetch,
-		).toBe(fetchMcpServer);
+		const sseFetch = (
+			sseCtor.mock.calls[0] as [URL, { fetch: typeof fetch }]
+		)[1].fetch;
+
+		// Each transport's fetch is the guarded `fetchMcpServer` (wrapped only
+		// by the chat turn's stop check, a no-op outside a turn): a name that
+		// answers a private address by the time a request is sent is refused
+		// at lookup.
+		lookupMock.mockImplementation(
+			(
+				_hostname: string,
+				_options: unknown,
+				callback: (
+					error: Error | null,
+					addresses: { address: string; family: number }[],
+				) => void,
+			) => callback(null, [{ address: "169.254.169.254", family: 4 }]),
+		);
+		for (const transportFetch of [httpOptions.fetch, sseFetch]) {
+			let caught: unknown;
+			try {
+				await transportFetch("https://mcp.example.com/mcp", {
+					method: "POST",
+				});
+			} catch (error) {
+				caught = error;
+			}
+			expect(getMcpServerBlockedReason(caught)).toMatch(
+				/Blocked outbound connection.*MCP_SERVER_ALLOWED_HOSTS/s,
+			);
+		}
 	});
 
 	it("connects on the OAuth path through the SDK transport carrying the guarded fetch and the provider", async () => {

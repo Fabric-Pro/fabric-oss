@@ -25,7 +25,11 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { chatGptPlanSpentChatResponse } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import {
+	type ChatGptPlanChatPreflight,
+	chatGptPlanChatPreflight,
+	withChatGptPlanApiBilling,
+} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import {
 	abandonConversationTurnStart,
 	CARRIED_OVER_MARKER_PREFIX,
@@ -75,6 +79,7 @@ import {
 	startTurnWorkflow,
 	TurnStartAmbiguousError,
 	TurnStoppedBeforeStartError,
+	turnBudgetStopForStream,
 	turnPendingResponse,
 	turnStateUnavailableResponse,
 	waitForTurnWorkflow,
@@ -624,16 +629,18 @@ export async function POST(request: NextRequest) {
 		// pushed over — leaving a live Temporal workflow no client can
 		// attach to. The workflow resolves its own model on the Temporal
 		// worker regardless.
+		let planPreflight: ChatGptPlanChatPreflight = null;
 		if (newTurn || legacyExecutionId) {
 			// Every ChatGPT plan serving the member's work is spent: refuse
 			// with when it resets, rather than start a run that can only fail
-			// or quietly bill the organization (Fizzy #2770).
-			const planSpent = await chatGptPlanSpentChatResponse({
+			// or quietly bill the organization (Fizzy #2770). Under "Use API
+			// billing" the run goes there and says so (Fizzy #3048).
+			planPreflight = await chatGptPlanChatPreflight({
 				userId,
 				organizationId,
 			});
-			if (planSpent) {
-				return planSpent;
+			if (planPreflight && "refusal" in planPreflight) {
+				return planPreflight.refusal;
 			}
 			let aiModelResult: Awaited<
 				ReturnType<typeof getAIModelWithMetadata>
@@ -1054,6 +1061,11 @@ export async function POST(request: NextRequest) {
 							message:
 								turn.terminalReason ??
 								"Workflow execution failed",
+							// The row's stored stop, whatever the status,
+							// exactly as the live event carried it.
+							budgetStop: turnBudgetStopForStream(
+								turn.budgetStop,
+							),
 						}
 					: {
 							type: "completed",
@@ -1062,6 +1074,14 @@ export async function POST(request: NextRequest) {
 							toolCalls: [],
 							stepResults: [],
 							limitSignals: turn.limitSignalSummary ?? undefined,
+							// The same structured token-allowance stop the
+							// live event carried, from the row, whatever the
+							// status: a cancelled turn keeps the stop it
+							// stored, and the chat shows no budget card for
+							// it because of its status.
+							budgetStop: turnBudgetStopForStream(
+								turn.budgetStop,
+							),
 							fromTurnRecord: true,
 						},
 			];
@@ -1703,6 +1723,9 @@ export async function POST(request: NextRequest) {
 										message:
 											result.error ??
 											"Workflow execution failed",
+										// The turn row's stored stop, as the
+										// workflow returned it.
+										budgetStop: result.budgetStop,
 									});
 								} else {
 									// Send completed event with final response.
@@ -1730,6 +1753,13 @@ export async function POST(request: NextRequest) {
 											: result.handoffRecommended,
 										limitSignals: result.limitSignals,
 										tokenBudget: result.tokenBudget,
+										// A token-allowance stop exactly as the
+										// turn row stores it (the workflow
+										// returns the stored value), whatever
+										// the status. The chat decides from
+										// the status whether to show it: a
+										// stopped turn shows no budget card.
+										budgetStop: result.budgetStop,
 										// The answer stopped at the output
 										// ceiling (review F25).
 										truncated: result.truncated,
@@ -2141,13 +2171,16 @@ export async function POST(request: NextRequest) {
 		// The stream owns the turn from here: it starts the workflow (or
 		// marks the turn failed if the start definitely fails).
 		turnSettled = true;
-		return new Response(stream, {
-			headers: {
-				"Content-Type": "text/event-stream",
-				"Cache-Control": "no-cache",
-				Connection: "keep-alive",
-			},
-		});
+		return withChatGptPlanApiBilling(
+			new Response(stream, {
+				headers: {
+					"Content-Type": "text/event-stream",
+					"Cache-Control": "no-cache",
+					Connection: "keep-alive",
+				},
+			}),
+			planPreflight,
+		);
 	} catch (error) {
 		console.error("[Orchestrator Stream] Error:", error);
 		return new Response(

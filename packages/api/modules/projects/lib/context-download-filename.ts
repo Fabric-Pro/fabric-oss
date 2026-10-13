@@ -7,6 +7,8 @@
  * from both the single-file and batch download procedures.
  */
 
+import type { ContextDownloadClass } from "@repo/utils/context-download-class";
+
 /** Maximum slug stem length before the extension is appended. */
 const MAX_STEM_LENGTH = 80;
 
@@ -40,8 +42,6 @@ const MIME_TYPE_EXTENSIONS: Readonly<Record<string, string>> = {
 	"image/svg+xml": "svg",
 	"image/webp": "webp",
 };
-
-export type ContextDownloadClass = "A" | "B" | "C";
 
 export interface ContextDownloadFilenameArgs {
 	title: string | null;

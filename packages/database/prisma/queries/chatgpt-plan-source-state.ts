@@ -14,6 +14,7 @@ import type {
 	ChatGptPlanSourceKind,
 	ChatGptPlanSourceState,
 } from "../generated/client";
+import { withChatGptPlanCredentialFence } from "./lib/chatgpt-plan-credential-fence";
 
 export type { ChatGptPlanSourceKind, ChatGptPlanSourceState };
 
@@ -39,25 +40,68 @@ export interface ChatGptPlanSourceExhaustion extends ChatGptPlanSourceKey {
 	resetAt: Date | null;
 	consecutiveUnknownResets: number;
 	exhaustedAt: Date;
+	/**
+	 * The sign-in whose call was refused (Fizzy #3037); null accepts the
+	 * source's current one, for a report that does not say.
+	 */
+	credentialFingerprint: string | null;
 }
 
-export async function recordChatGptPlanSourceExhausted(
+/**
+ * Records the refusal, unless the source's sign-in changed since the refused
+ * call read its token. True when it was recorded.
+ */
+export function recordChatGptPlanSourceExhausted(
 	input: ChatGptPlanSourceExhaustion,
-): Promise<void> {
-	const { sourceKind, sourceId, exhaustedAt, ...fields } = input;
+): Promise<boolean> {
+	const {
+		sourceKind,
+		sourceId,
+		exhaustedAt,
+		credentialFingerprint,
+		...fields
+	} = input;
 	const data = { ...fields, lastExhaustedAt: exhaustedAt };
-	await db.chatGptPlanSourceState.upsert({
-		where: { sourceKind_sourceId: { sourceKind, sourceId } },
-		create: { sourceKind, sourceId, ...data },
-		update: data,
-	});
+	return withChatGptPlanCredentialFence(
+		{ sourceKind, sourceId },
+		credentialFingerprint,
+		(tx) =>
+			tx.chatGptPlanSourceState.upsert({
+				where: { sourceKind_sourceId: { sourceKind, sourceId } },
+				create: { sourceKind, sourceId, ...data },
+				update: data,
+			}),
+	);
 }
 
-/** Forgets a source's spent window: it answered again, or it is gone. */
-export async function clearChatGptPlanSourceState(
+/**
+ * The source answered again: it is no longer spent, and the refusal count
+ * starts over. A reset OpenAI reported stays, as the boundary the next
+ * window chains from (Fizzy #2770 G9); one Fabric only estimated goes.
+ * Skipped when the source's sign-in changed since the answering call read
+ * its token (Fizzy #3037).
+ */
+export function markChatGptPlanSourceAnswered(
 	key: ChatGptPlanSourceKey,
-): Promise<void> {
-	await db.chatGptPlanSourceState.deleteMany({
-		where: { sourceKind: key.sourceKind, sourceId: key.sourceId },
-	});
+	credentialFingerprint: string,
+): Promise<boolean> {
+	const where = { sourceKind: key.sourceKind, sourceId: key.sourceId };
+	return withChatGptPlanCredentialFence(
+		where,
+		credentialFingerprint,
+		async (tx) => {
+			await tx.chatGptPlanSourceState.updateMany({
+				where: { ...where, consecutiveUnknownResets: { gt: 0 } },
+				data: {
+					openUntil: null,
+					resetAt: null,
+					consecutiveUnknownResets: 0,
+				},
+			});
+			await tx.chatGptPlanSourceState.updateMany({
+				where,
+				data: { openUntil: null },
+			});
+		},
+	);
 }

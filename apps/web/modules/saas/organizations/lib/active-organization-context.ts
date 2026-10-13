@@ -27,6 +27,12 @@ export const ActiveOrganizationContext = React.createContext<
 			/** Target of the in-flight switch: an org slug, or `null` for the
 			 * personal workspace. Only meaningful when `isSwitching` is true. */
 			switchingToSlug: string | null;
+			/** True once the SESSION names the organization on screen. The URL
+			 * commits before `setActive` lands after a switch, so a call that
+			 * resolves its tenant from the session (no organization in its
+			 * input) answers for the previous organization until this is true.
+			 * Gate such queries on it. */
+			isSessionOnActiveOrganization: boolean;
 			setActiveOrganization: (
 				organizationId: string | null,
 			) => Promise<void>;

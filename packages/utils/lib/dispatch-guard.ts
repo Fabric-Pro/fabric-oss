@@ -3,9 +3,9 @@
  *
  * A caller that must be able to stop work in flight (an Advisor chat turn the
  * user pressed Stop on) installs a guard around the code doing that work.
- * Every model `getAIModelWithMetadata` / `getAIEmbeddingModelWithMetadata`
- * in `@repo/ai` returns reads the guard at REQUEST time, before each physical
- * provider request it makes, so a model or embedding call made with such a
+ * Every model `getAIModelWithMetadata` / `getAIEmbeddingModelWithMetadata` /
+ * `getAIDecisionModelWithMetadata` in `@repo/ai` returns reads the guard at
+ * REQUEST time, before each physical provider request it makes, so a model or embedding call made with such a
  * model inside the guarded code is checked and abortable by default,
  * including calls added later and calls made deep inside `@repo/rag`, with no
  * argument threaded to them. A model built outside that factory (a provider
@@ -39,7 +39,114 @@ export interface DispatchGuard {
 	 * it into a fallback result. Returns normally for any other error.
 	 */
 	rethrowIfStopped(error: unknown): void;
+	/**
+	 * Throws when the guarded work has already seen a stop (or its owner was
+	 * cancelled). For code about to make a write: called immediately before
+	 * it, so nothing is mutated after the work stopped. Optional: a guard
+	 * without it never stops writes.
+	 */
+	throwIfStopped?(): void;
+	/**
+	 * The guarded work's token ledger, when it has one: every factory model
+	 * reserves each physical request against it before sending and settles
+	 * the request's usage after (`@repo/ai`'s turn-budget middleware).
+	 * Absent for guarded work with no ledger.
+	 */
+	readonly budget?: DispatchBudget;
 }
+
+/** One physical request, as the turn-budget middleware describes it. */
+export interface DispatchBudgetRequest {
+	/**
+	 * What kind of model request it is. An embedding reserves its input only.
+	 * An embedding and a decision (a typed `doDecide`) always count as
+	 * auxiliary work for the ledger; a language request counts as whatever
+	 * its activity's work is.
+	 */
+	modality: "language" | "embedding" | "decision";
+	/** Estimated input tokens (an estimate, never a measured value). */
+	inputEstimate: number;
+	/** Output tokens the request asks for; 0 for an embedding. */
+	requestedOutputTokens: number;
+	/** Smallest output cap worth sending; 0 for an embedding. */
+	minOutputTokens: number;
+	/** False when the model cannot honour an output cap. */
+	enforcesOutputCap: boolean;
+	/** Diagnostic only. */
+	modelId?: string;
+}
+
+/** A reservation the ledger granted for one physical request. */
+export interface DispatchBudgetReservation {
+	attemptId: string;
+	/**
+	 * The output cap to send the request with, or null when the model cannot
+	 * be capped (the request is then sent as asked).
+	 */
+	outputCap: number | null;
+}
+
+/**
+ * Callbacks onto a ledger. `reserve` resolves null when the work turns out to
+ * have no ledger (the request is then sent unreserved) and throws the
+ * ledger's denial otherwise. The other three move one reservation to its
+ * final state: settled from complete usage, unknown (kept charged), or
+ * released (positively never sent). They resolve once the transition is
+ * durable and may reject when it is not; a reservation never transitioned
+ * stays charged. The caller makes at most one of these calls per
+ * reservation.
+ */
+export interface DispatchBudget {
+	/**
+	 * What the ledger counts this guard's language requests as (an
+	 * embedding or a decision is always auxiliary, whatever this says).
+	 * Read only to decide whether a request sizer applies: a sizer is
+	 * honoured for `"FINALIZATION"` and for nothing else, and a ledger that
+	 * leaves this out is never sized.
+	 */
+	readonly attemptKind?: string;
+	reserve(
+		request: DispatchBudgetRequest,
+	): Promise<DispatchBudgetReservation | null>;
+	settle(
+		attemptId: string,
+		usage: { inputTokens: number; outputTokens: number },
+	): Promise<void>;
+	markUnknown(attemptId: string): Promise<void>;
+	release(attemptId: string): Promise<void>;
+}
+
+/**
+ * How one physical language request is to be sent, as a request sizer
+ * decides it immediately before the request is reserved.
+ */
+export interface DispatchRequestSize {
+	/**
+	 * The prompt to send instead of the request's own (a LanguageModelV4
+	 * prompt), or undefined to keep the request's own.
+	 */
+	prompt?: unknown;
+	/**
+	 * The output allowance the sizer validated against the ledger's room:
+	 * the turn-budget middleware reserves it as the requested output, and
+	 * sends it as the cap to a model that honours one.
+	 */
+	maxOutputTokens: number;
+}
+
+/**
+ * Sizes the next physical language request. Called by the turn-budget
+ * middleware on every physical send made inside `runWithDispatchRequestSizer`
+ * under the guard that was active when the sizer was installed, when that
+ * guard's ledger counts its language requests as FINALIZATION
+ * (`DispatchBudget.attemptKind`) — the first send, an SDK retry, and every resend a provider adapter makes
+ * through another physical model (the ChatGPT plan's model fallback and
+ * account rotation) — just before that send reserves. Resolves null to send
+ * the request as built; throws to refuse it before anything is reserved.
+ */
+export type DispatchRequestSizer = () => Promise<DispatchRequestSize | null>;
+
+const SIZER_STORAGE_KEY = "__fabric_dispatch_request_sizer_storage__" as const;
 
 const STORAGE_KEY = "__fabric_dispatch_guard_storage__" as const;
 const GUARDED_MODELS_KEY = "__fabric_dispatch_guarded_models__" as const;
@@ -54,6 +161,57 @@ const dispatchGuardStorage: AsyncLocalStorage<DispatchGuard> =
 		return storage;
 	})();
 
+const dispatchRequestSizerStorage: AsyncLocalStorage<BoundDispatchRequestSizer> =
+	(globals[SIZER_STORAGE_KEY] as
+		| AsyncLocalStorage<BoundDispatchRequestSizer>
+		| undefined) ??
+	(() => {
+		const storage = new AsyncLocalStorage<BoundDispatchRequestSizer>();
+		globals[SIZER_STORAGE_KEY] = storage;
+		return storage;
+	})();
+
+/** A sizer with the guard that was active when it was installed. */
+interface BoundDispatchRequestSizer {
+	readonly owner: DispatchGuard;
+	readonly sizer: DispatchRequestSizer;
+}
+
+/**
+ * Runs `fn` with `sizer` sizing the physical language requests a ledgered
+ * factory model makes inside it (see {@link DispatchRequestSizer}). The sizer
+ * is bound to the guard active here: `getDispatchRequestSizer` returns it
+ * only while that same guard object is the active one, so a nested
+ * `runWithDispatchGuard` with another guard, or `runOutsideDispatchGuard`,
+ * does not see it, and leaving that scope sees it again. Only the
+ * turn-budget middleware reads it, and applies it only to a request whose
+ * guard's ledger counts it as FINALIZATION. Throws when no guard is active:
+ * a sizer without a guard is a programming error.
+ */
+export function runWithDispatchRequestSizer<T>(
+	sizer: DispatchRequestSizer,
+	fn: () => T,
+): T {
+	const owner = getDispatchGuard();
+	if (!owner) {
+		throw new Error(
+			"runWithDispatchRequestSizer needs an active dispatch guard to bind the sizer to",
+		);
+	}
+	return dispatchRequestSizerStorage.run({ owner, sizer }, fn);
+}
+
+/**
+ * The request sizer installed under the guard that is active now, or
+ * undefined (none installed, a different guard active, or no guard).
+ */
+export function getDispatchRequestSizer(): DispatchRequestSizer | undefined {
+	const bound = dispatchRequestSizerStorage.getStore();
+	return bound && bound.owner === getDispatchGuard()
+		? bound.sizer
+		: undefined;
+}
+
 /** The active guard, or undefined outside guarded code. */
 export function getDispatchGuard(): DispatchGuard | undefined {
 	return dispatchGuardStorage.getStore();
@@ -62,6 +220,19 @@ export function getDispatchGuard(): DispatchGuard | undefined {
 /** Runs `fn` with `guard` active for every request it makes. */
 export function runWithDispatchGuard<T>(guard: DispatchGuard, fn: () => T): T {
 	return dispatchGuardStorage.run(guard, fn);
+}
+
+/**
+ * Runs `fn` with no guard active. For work shared between callers that
+ * carries none of any one caller's content — provisioning a vector-store
+ * collection that several callers await through one in-flight promise — so
+ * one caller's stop neither refuses that work nor reaches the other callers
+ * through it. Nothing inside `fn` consults a guard: no stop check, no merged
+ * abort signal, no ledger. The caller's own guard is active again in the
+ * code that awaits `fn`'s result.
+ */
+export function runOutsideDispatchGuard<T>(fn: () => T): T {
+	return dispatchGuardStorage.exit(fn);
 }
 
 /**
@@ -74,10 +245,32 @@ export function rethrowIfDispatchStopped(error: unknown): void {
 }
 
 /**
+ * For code about to perform a write (a database row, a call to an external
+ * service, a workflow start, a lifecycle event): call it IMMEDIATELY before
+ * the write, after any catch that may have absorbed a model or embedding
+ * failure. For a client Fabric owns, "immediately before" means inside the
+ * client, in the same synchronous run as its transport call (the `fetch`,
+ * the Qdrant or Redis client method), on every path that sends — a retry,
+ * a resend after a token refresh, a fallback — because a check at the
+ * client's call site does not cover the awaits inside it.
+ *
+ * Inside guarded work that has already seen a stop (the turn was stopped or
+ * used its token allowance, or the activity was cancelled) it throws that
+ * stop, so the write never starts. A no-op outside guarded code,
+ * so callers with no guard keep their behaviour.
+ */
+export function throwIfDispatchStopped(): void {
+	getDispatchGuard()?.throwIfStopped?.();
+}
+
+/**
  * For code that sends a provider request itself (a raw `fetch`, a provider
  * SDK model built outside the `@repo/ai` factory): call it immediately before
  * EVERY physical request, each retry or poll attempt included, and send the
- * request with the signal it returns.
+ * request with the signal it returns. Awaiting it is itself an await, so
+ * the send still calls {@link throwIfDispatchStopped} (or
+ * {@link dispatchSendSignal}) in the same synchronous run as the request:
+ * a stop latched while this resolved is caught there.
  *
  * Inside guarded code it awaits `assertDispatchable()` (so a stopped guard
  * throws its stop and the request is never sent) and returns `signal` merged
@@ -99,6 +292,31 @@ export async function guardDispatch(
 		return signal;
 	}
 	await guard.assertDispatchable();
+	return dispatchSendSignal(signal);
+}
+
+/**
+ * The synchronous half of {@link guardDispatch}, for the transport call
+ * itself: the line that calls `fetch` (or a client method that sends).
+ * Call it in the same synchronous run as the send, with nothing awaited
+ * between the two — on a client's own resend or retry as much as on its
+ * first send.
+ *
+ * Inside guarded work it throws the stop the guard has already seen (as
+ * {@link throwIfDispatchStopped} does) and returns `signal` merged with the
+ * guard's abort signal. Outside guarded code it returns `signal` unchanged.
+ * It reads no durable record: that is `guardDispatch`, which awaits, so a
+ * send no earlier check covers awaits `guardDispatch` first and still calls
+ * this immediately before sending.
+ */
+export function dispatchSendSignal(
+	signal?: AbortSignal,
+): AbortSignal | undefined {
+	const guard = getDispatchGuard();
+	if (!guard) {
+		return signal;
+	}
+	guard.throwIfStopped?.();
 	const guardSignal = guard.abortSignal();
 	if (!guardSignal || guardSignal === signal) {
 		return signal;

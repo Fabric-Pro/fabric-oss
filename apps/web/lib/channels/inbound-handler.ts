@@ -302,6 +302,10 @@ export async function handleChannelInbound(
 					threadId: message.threadId,
 					userId: trigger.userId,
 					organizationId: trigger.organizationId ?? undefined,
+					// Every agent turn of the thread runs as a background job,
+					// on the organization's shared ChatGPT plans when they
+					// serve it (Fizzy #2770).
+					jobType: "fabric-mention",
 				},
 			],
 		});

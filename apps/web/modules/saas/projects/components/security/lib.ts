@@ -62,7 +62,12 @@ export type ScanSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 export type ScanCategory = "SECURITY" | "ACCESSIBILITY";
 export type FindingStatus = "OPEN" | "RESOLVED" | "DISMISSED";
 export type EnforcementMode = "WARN" | "BLOCK";
-export type ScanStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+export type ScanStatus =
+	| "PENDING"
+	| "RUNNING"
+	| "COMPLETED"
+	| "FAILED"
+	| "WAITING_FOR_PLAN";
 
 /**
  * History-feed entry types from `orpc.projects.scan.activity`. Drives the
@@ -226,6 +231,7 @@ export const SCAN_STATUS_LABEL: Record<ScanStatus, string> = {
 	RUNNING: "Running",
 	COMPLETED: "Completed",
 	FAILED: "Failed",
+	WAITING_FOR_PLAN: "Paused",
 };
 
 export const SCAN_STATUS_BADGE_VARIANT: Record<
@@ -236,6 +242,7 @@ export const SCAN_STATUS_BADGE_VARIANT: Record<
 	RUNNING: "info",
 	COMPLETED: "success",
 	FAILED: "destructive",
+	WAITING_FOR_PLAN: "warning",
 };
 
 /**

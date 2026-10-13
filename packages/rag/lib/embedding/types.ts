@@ -2,6 +2,8 @@
  * Types for embedding generation
  */
 
+import type { AiFeatureKey, AiJobKey } from "@repo/ai";
+
 /**
  * Embedding result
  */
@@ -59,6 +61,10 @@ export interface TenantContext {
 	organizationId?: string;
 	/** Project ID for per-project cost attribution in AiUsageLog */
 	projectId?: string;
+	/** Feature tag recorded on the AiUsageLog rows of this call */
+	featureKey?: AiFeatureKey;
+	/** Background-job tag recorded on the AiUsageLog rows of this call */
+	jobType?: AiJobKey;
 	/** Additional tags for categorization (e.g., 'rag-embedding', 'document-processing') */
 	tags?: string[];
 	/**

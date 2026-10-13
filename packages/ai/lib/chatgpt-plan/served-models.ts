@@ -3,14 +3,18 @@ import {
 	type ChatGptPlanListedModel,
 	type ChatGptPlanServedModel,
 	ensureChatGptPlanCatalogModels,
-	getChatGptPlanServedModels,
 	replaceChatGptPlanServedModels,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
+	type ChatGptPlanAccessToken,
 	getChatGptPlanAccessToken,
 	getChatGptPlanSourceAccessToken,
 } from "./plan-credentials";
+import {
+	__resetChatGptPlanServedSlugs,
+	invalidateChatGptPlanServedSlugs,
+} from "./served-slugs";
 import {
 	type PlanSourceRef,
 	planSourceKey,
@@ -90,60 +94,78 @@ export async function fetchChatGptPlanModelList(
 
 /**
  * Probes one source and stores what it serves, adding a catalog row for any
- * model the catalog does not know yet. `accessToken` saves a lookup right
- * after a connect; otherwise the source's own (refreshed) token is used.
+ * model the catalog does not know yet. `token` saves a lookup right after a
+ * connect; otherwise the source's own (refreshed) token is used. The list is
+ * stored only while the source still has the sign-in that token came from
+ * (Fizzy #3037): a probe that outlives a replacement or a disconnect stores
+ * nothing.
  */
 export async function refreshChatGptPlanServedModels(
 	source: PlanSourceRef,
 	options: {
-		accessToken?: string;
+		token?: PlanToken;
 		fetchImpl?: typeof fetch;
 		now?: Date;
 	} = {},
 ): Promise<ChatGptPlanListedModel[]> {
-	const accessToken =
-		options.accessToken ??
+	const token: PlanToken =
+		options.token ??
 		(source.kind === "user"
 			? await getChatGptPlanAccessToken(source.userId)
-			: await getChatGptPlanSourceAccessToken(source)
-		).accessToken;
+			: await getChatGptPlanSourceAccessToken(source));
 	const models = await fetchChatGptPlanModelList(
-		accessToken,
+		token.accessToken,
 		options.fetchImpl,
 	);
 	if (models.length === 0) {
 		// An empty list says nothing about what the plan serves; keep the last.
 		return models;
 	}
+	// Catalog rows are shared by every source, not this source's state.
 	await ensureChatGptPlanCatalogModels(models);
-	await replaceChatGptPlanServedModels({
-		...planSourceStateKey(source),
-		models,
-		checkedAt: options.now ?? new Date(),
-	});
-	slugCache.delete(planSourceKey(source));
+	let stored: boolean;
+	try {
+		stored = await replaceChatGptPlanServedModels({
+			...planSourceStateKey(source),
+			models,
+			checkedAt: options.now ?? new Date(),
+			credentialFingerprint: token.credentialFingerprint,
+		});
+	} catch (error) {
+		// It may still have landed; a list read before it must not be kept.
+		invalidateChatGptPlanServedSlugs(source);
+		throw error;
+	}
+	if (!stored) {
+		logger.info(
+			"[chatgpt-plan] Dropped a model list read with a replaced sign-in",
+			planSourceLogFields(source),
+		);
+		return models;
+	}
+	// A list read before the replace landed must not be kept.
+	invalidateChatGptPlanServedSlugs(source);
 	return models;
 }
 
-const inFlight = new Map<string, Promise<unknown>>();
+type PlanToken = Pick<
+	ChatGptPlanAccessToken,
+	"accessToken" | "credentialFingerprint"
+>;
 
-// Every plan-served call resolves its model against the stored list, so a
-// process reuses it briefly; a refresh in this process replaces it at once.
-const SERVED_SLUGS_CACHE_MS = 60_000;
-const slugCache = new Map<
-	string,
-	{ slugs: Set<string> | null; fetchedAt: number }
->();
+const inFlight = new Map<string, Promise<unknown>>();
 
 /**
  * {@link refreshChatGptPlanServedModels}, fire-and-forget: logged, never
- * thrown, and one probe per source at a time in this process.
+ * thrown, and one probe per source and sign-in at a time in this process. A
+ * probe that brings its own token is never held back by one that began
+ * before, which may have read a sign-in since replaced.
  */
 export function refreshChatGptPlanServedModelsInBackground(
 	source: PlanSourceRef,
-	options: { accessToken?: string } = {},
+	options: { token?: PlanToken } = {},
 ): void {
-	const key = planSourceKey(source);
+	const key = `${planSourceKey(source)}#${options.token?.credentialFingerprint ?? ""}`;
 	if (inFlight.has(key)) {
 		return;
 	}
@@ -186,33 +208,7 @@ export function refreshStaleChatGptPlanServedModels(
 	}
 }
 
-/**
- * The slugs this source served when last checked, or null when it was never
- * checked (or the lookup failed) — then nothing is known to be unserved.
- */
-export async function chatGptPlanServedSlugs(
-	source: PlanSourceRef,
-	now = Date.now(),
-): Promise<Set<string> | null> {
-	const key = planSourceKey(source);
-	const cached = slugCache.get(key);
-	if (cached && now - cached.fetchedAt < SERVED_SLUGS_CACHE_MS) {
-		return cached.slugs;
-	}
-	try {
-		const rows = await getChatGptPlanServedModels([
-			planSourceStateKey(source),
-		]);
-		const slugs =
-			rows.length > 0 ? new Set(rows.map((row) => row.slug)) : null;
-		slugCache.set(key, { slugs, fetchedAt: now });
-		return slugs;
-	} catch {
-		return null;
-	}
-}
-
 export function __resetChatGptPlanServedModelProbes(): void {
 	inFlight.clear();
-	slugCache.clear();
+	__resetChatGptPlanServedSlugs();
 }

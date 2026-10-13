@@ -208,3 +208,23 @@ describe("generateMaturationSummary — function-tag role clause (Fizzy #1767 St
 		expect(withClause).toBe(`${withoutClause}\n\n${ROLE_CLAUSE_SENTINEL}`);
 	});
 });
+
+describe("generateMaturationSummary — usage attribution", () => {
+	it("tags its model call as maturation so the AI Usage page can name it", async () => {
+		mocks.generateObject.mockResolvedValue({
+			object: { summary: "A concise summary." },
+		});
+		mocks.getProjectFunctionTagClause.mockResolvedValue("");
+
+		await generateMaturationSummary({
+			feature: feature(),
+			tenantFilter,
+			instructions: "INSTRUCTIONS",
+		});
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({ featureKey: "maturation" }),
+		);
+	});
+});

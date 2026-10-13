@@ -25,6 +25,10 @@ import {
 	workflowIntegrationAccessWhere,
 } from "@repo/database";
 import { decryptApiKey, encryptApiKey } from "@repo/utils";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import sharp from "sharp";
 import type { PendingAttachmentRef } from "../shared/attachment-types";
 import { TEAMS_TOOL_LIMITS } from "./config/limits";
@@ -766,8 +770,19 @@ export async function executeMicrosoftTeamsTool(
 		url: string,
 		options: RequestInit = {},
 	): Promise<Response> {
-		const makeRequest = (token: string) =>
-			fetch(url, {
+		// Every request this sends — the first, the resend after a token
+		// refresh, each transient-failure retry after its backoff — goes
+		// through here. One that can change something (any method but GET
+		// or HEAD; `send_message` posts a message) first checks the ambient
+		// dispatch guard, in the same synchronous run as `fetch`: inside an
+		// Advisor chat turn that has stopped or used its token allowance it
+		// is refused with the stop. A no-op outside a turn.
+		const makeRequest = (token: string) => {
+			const method = (options.method ?? "GET").toUpperCase();
+			if (method !== "GET" && method !== "HEAD") {
+				throwIfDispatchStopped();
+			}
+			return fetch(url, {
 				...options,
 				headers: {
 					Authorization: `Bearer ${token}`,
@@ -775,6 +790,7 @@ export async function executeMicrosoftTeamsTool(
 					...options.headers,
 				},
 			});
+		};
 
 		// First attempt with current token
 		let res = await makeRequest(accessToken);
@@ -846,6 +862,9 @@ export async function executeMicrosoftTeamsTool(
 				// Retry the request with new token
 				res = await makeRequest(accessToken);
 			} catch (refreshError) {
+				// The resend below refused by a chat turn's stop is not a
+				// failed refresh.
+				rethrowIfDispatchStopped(refreshError);
 				console.error(
 					"[MicrosoftTeams] Token refresh failed:",
 					refreshError,

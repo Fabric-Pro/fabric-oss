@@ -158,6 +158,11 @@ import { fetchMeetingNotesProcedure } from "./procedures/documents/fetch-meeting
 import { generateDocumentProcedure } from "./procedures/documents/generate-document";
 import { getDocumentAutoRefreshProcedure } from "./procedures/documents/get-auto-refresh";
 import { listDocumentAssetsProcedure } from "./procedures/documents/list-assets";
+import {
+	cancelPausedBatchProcedure,
+	getPausedBatchProcedure,
+	runPausedBatchOnApiProcedure,
+} from "./procedures/documents/paused-batch";
 import { rejectRegenerationProcedure } from "./procedures/documents/reject-regeneration";
 import { resolveMediaUrlsProcedure } from "./procedures/documents/resolve-media-urls";
 import { searchMentionablesProcedure } from "./procedures/documents/search-mentionables";
@@ -174,6 +179,11 @@ import { listEpicsProcedure } from "./procedures/epics/list-epics";
 import { listFeaturesProcedure } from "./procedures/epics/list-features";
 import { updateEpicProcedure } from "./procedures/epics/update-epic";
 import { updateFeatureProcedure } from "./procedures/epics/update-feature";
+import {
+	cancelPausedSetupProcedure,
+	getPausedSetupProcedure,
+	runPausedSetupOnApiProcedure,
+} from "./procedures/existing-setup-paused";
 import { getDocumentProcedure } from "./procedures/get-document";
 import { getDocumentContextProcedure } from "./procedures/get-document-context";
 import { getDocumentRecommendationsProcedure } from "./procedures/get-document-recommendations";
@@ -538,6 +548,10 @@ import {
 	getLatestScanProcedure,
 	listScansProcedure,
 } from "./procedures/scan/list-scans";
+import {
+	pausedRunOptionsProcedure,
+	runPausedOnApiProcedure,
+} from "./procedures/scan/paused-run";
 import { readdGroupingThemeProcedure } from "./procedures/scan/readd-grouping-theme";
 import { reattachGroupingProcedure } from "./procedures/scan/reattach-grouping";
 import { startGroupingProcedure } from "./procedures/scan/start-grouping";
@@ -600,6 +614,7 @@ import { exportScopeEstimateProcedure } from "./procedures/stories/export-scope-
 import { generateTasksProcedure } from "./procedures/stories/generate-tasks";
 import { getStoryRegenerationStatusProcedure } from "./procedures/stories/get-regeneration-status";
 import { getStoryProcedure } from "./procedures/stories/get-story";
+import { linkStoryPmItemProcedure } from "./procedures/stories/link-pm-item";
 import { listDuplicatesProcedure } from "./procedures/stories/list-duplicates";
 import { listMeetingReferencesProcedure } from "./procedures/stories/list-meeting-references";
 import { listStoriesProcedure } from "./procedures/stories/list-stories";
@@ -800,6 +815,7 @@ import {
 	dismissTestCasePmSyncFailureProcedure,
 	getTestCasePmCapabilitiesProcedure,
 	importTestCaseFromPmProcedure,
+	linkTestCasePmItemProcedure,
 	listPmTestCasesProcedure,
 	retryTestCasePmSyncBatchProcedure,
 	retryTestCasePmSyncProcedure,
@@ -913,6 +929,12 @@ export const projectsRouter = {
 		generate: generateDocumentProcedure,
 		rejectRegeneration: rejectRegenerationProcedure,
 		batchGenerate: batchGenerateDocumentsProcedure,
+		// A batch paused for a ChatGPT plan reset (Fizzy #2770).
+		pausedBatch: {
+			get: getPausedBatchProcedure,
+			cancel: cancelPausedBatchProcedure,
+			runOnApi: runPausedBatchOnApiProcedure,
+		},
 		setActive: setActiveDocumentProcedure,
 		fetchMeetingNotes: fetchMeetingNotesProcedure,
 		executeGitHubTool: executeGitHubToolProcedure,
@@ -1025,6 +1047,10 @@ export const projectsRouter = {
 		// Best-effort cancel of a running scan — terminates the workflow and
 		// flips the row terminal so the UI leaves "Scanning…" immediately.
 		cancel: cancelScanProcedure,
+		// A scan, review or grouping paused for a ChatGPT plan reset: what it
+		// may offer, and "Run now on API billing" (Fizzy #2770).
+		pausedRunOptions: pausedRunOptionsProcedure,
+		runPausedOnApi: runPausedOnApiProcedure,
 		latest: getLatestScanProcedure,
 		runs: listScansProcedure,
 		activity: listActivityProcedure,
@@ -1278,6 +1304,12 @@ export const projectsRouter = {
 	// Existing project setup (multi-repo + sequential doc gen)
 	existingSetup: {
 		start: startExistingSetupProcedure,
+		// Paused for a ChatGPT plan reset (Fizzy #2770).
+		pausedRun: {
+			get: getPausedSetupProcedure,
+			cancel: cancelPausedSetupProcedure,
+			runOnApi: runPausedSetupOnApiProcedure,
+		},
 	},
 
 	// GitHub code-based setup operations.
@@ -1505,6 +1537,7 @@ export const projectsRouter = {
 			listPmTestCases: listPmTestCasesProcedure,
 			pmCapabilities: getTestCasePmCapabilitiesProcedure,
 			retry: retryTestCasePmSyncProcedure,
+			linkPmItem: linkTestCasePmItemProcedure,
 			retryBatch: retryTestCasePmSyncBatchProcedure,
 			dismiss: dismissTestCasePmSyncFailureProcedure,
 			dismissBatch: dismissTestCasePmSyncFailureBatchProcedure,
@@ -1898,6 +1931,7 @@ export const projectsRouter = {
 		dismissPmSyncFailure: dismissPmSyncFailureProcedure,
 		dismissPmSyncFailureBatch: dismissPmSyncFailureBatchProcedure,
 		retryPmSync: retryPmSyncProcedure,
+		linkPmItem: linkStoryPmItemProcedure,
 		retryPmSyncBatch: retryPmSyncBatchProcedure,
 
 		// Delivery tracks (inverted-loop Slice 2)

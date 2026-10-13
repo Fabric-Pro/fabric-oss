@@ -453,7 +453,10 @@ describe("generateWebinarScriptActivity — tenancy and actor revalidation", () 
 
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			expect.objectContaining({ jobType: "publishing-webinar-script" }),
+			expect.objectContaining({
+				jobType: "publishing-webinar-script",
+				projectId: "proj-1",
+			}),
 		);
 	});
 });

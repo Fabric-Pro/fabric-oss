@@ -200,6 +200,127 @@ describe("useOrchestratorStream — server-owned turns", () => {
 		});
 	});
 
+	it.each(["completed", "cancelled"] as const)(
+		"keeps the structured token-allowance stop of a `completed` event with status '%s' exactly as sent (the card is decided by the status)",
+		async (status) => {
+			const budgetStop = {
+				kind: "token_allowance",
+				allowance: 500000,
+				measured: 470000,
+				outstanding: 25000,
+				enforcement: "ENFORCED",
+				stopReason: "allowance_exhausted",
+			};
+			const window = makeSseResponse();
+			installFetch([window.response]);
+			const { result } = renderHook(() =>
+				useOrchestratorStream(HOOK_OPTIONS),
+			);
+
+			let sending: Promise<string | null> | undefined;
+			act(() => {
+				sending = result.current.sendMessage("hello");
+			});
+			await act(async () => {
+				window.enqueueLine(
+					'data: {"type":"started","executionId":"orch-aaaaaaaa-0000-4000-8000-000000000001"}',
+				);
+				window.enqueueLine(
+					`data: ${JSON.stringify({ type: "completed", status, response: "what I found", budgetStop })}`,
+				);
+				window.enqueueDone();
+				await sending;
+			});
+
+			expect(result.current.state.status).toBe(status);
+			expect(result.current.state.budgetStop).toEqual(budgetStop);
+			expect(result.current.state.handoffRecommended).toBeUndefined();
+		},
+	);
+
+	describe("a failed turn's stored token-allowance stop (an `error` event)", () => {
+		const budgetStop = {
+			kind: "token_allowance",
+			allowance: 500000,
+			measured: 470000,
+			outstanding: 25000,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		};
+
+		it("keeps the stop a live `error` event carries; the turn shows as failed", async () => {
+			const window = makeSseResponse();
+			installFetch([window.response]);
+			const { result } = renderHook(() =>
+				useOrchestratorStream(HOOK_OPTIONS),
+			);
+
+			let sending: Promise<string | null> | undefined;
+			act(() => {
+				sending = result.current.sendMessage("hello");
+			});
+			await act(async () => {
+				window.enqueueLine(
+					'data: {"type":"started","executionId":"orch-aaaaaaaa-0000-4000-8000-000000000001"}',
+				);
+				window.enqueueLine(
+					`data: ${JSON.stringify({ type: "error", message: "Workflow execution failed", budgetStop })}`,
+				);
+				window.enqueueDone();
+				await sending;
+			});
+
+			expect(result.current.state.status).toBe("failed");
+			expect(result.current.state.budgetStop).toEqual(budgetStop);
+		});
+
+		it("keeps the stop the stored `error` event carries on a reconnect", async () => {
+			const first = makeSseResponse();
+			const reconnect = makeSseResponse();
+			const { calls } = installFetch([
+				first.response,
+				reconnect.response,
+			]);
+			const { result } = renderHook(() =>
+				useOrchestratorStream(HOOK_OPTIONS),
+			);
+
+			let sending: Promise<string | null> | undefined;
+			act(() => {
+				sending = result.current.sendMessage("hello");
+			});
+			await act(async () => {
+				first.enqueueLine(
+					'data: {"type":"started","executionId":"orch-aaaaaaaa-0000-4000-8000-000000000002"}',
+				);
+				first.enqueueLine(
+					'data: {"type":"stream_timeout","executionId":"orch-aaaaaaaa-0000-4000-8000-000000000002"}',
+				);
+				first.enqueueDone();
+			});
+			await waitFor(() => {
+				expect(
+					calls.filter((call) => call.url === STREAM_URL),
+				).toHaveLength(2);
+			});
+			// The reconnect replays the stored terminal turn: `started`
+			// (resumed) and its stored `error`, with the row's stop.
+			await act(async () => {
+				reconnect.enqueueLine(
+					'data: {"type":"started","executionId":"orch-aaaaaaaa-0000-4000-8000-000000000002","resumed":true}',
+				);
+				reconnect.enqueueLine(
+					`data: ${JSON.stringify({ type: "error", message: "Workflow execution failed", budgetStop })}`,
+				);
+				reconnect.enqueueDone();
+				await sending;
+			});
+
+			expect(result.current.state.status).toBe("failed");
+			expect(result.current.state.budgetStop).toEqual(budgetStop);
+		});
+	});
+
 	it("shows a `completed` event with status 'cancelled' as cancelled, with no handoff", async () => {
 		const window = makeSseResponse();
 		installFetch([window.response]);

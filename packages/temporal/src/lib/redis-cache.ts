@@ -6,7 +6,10 @@
  * (database reads, embedding API calls, HTTP fetches).
  *
  * Safety contract:
- * - All operations catch errors internally and NEVER throw to callers.
+ * - All operations catch errors internally and never throw to callers, with
+ *   one exception: inside an Advisor chat turn that has stopped (or used its
+ *   token allowance), a write (`set`, `del`) rejects with that stop instead
+ *   of writing, so the caller stops too (see `set`).
  * - If Redis is unavailable the helpers are silent no-ops.
  * - The underlying client connection is shared with RedisPublisher —
  *   no second TCP connection is opened.
@@ -14,6 +17,10 @@
 
 import { createHash } from "node:crypto";
 import { logger } from "@repo/logs";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { getRedisClient } from "./redis-publisher";
 
 // ---------------------------------------------------------------------------
@@ -100,7 +107,12 @@ export const CacheTTL = {
 export const RedisCache = {
 	/**
 	 * Store a JSON-serialisable value with a TTL.
-	 * Fire-and-forget safe — errors are logged, never thrown.
+	 * Fire-and-forget safe — errors are logged, never thrown, except a chat
+	 * turn's stop: inside a turn that has stopped (or used its token
+	 * allowance) nothing is written and the promise rejects with the stop,
+	 * so an awaiting caller stops too rather than carrying on as if it had
+	 * cached. (A fire-and-forget caller's `.catch` drops it; nothing was
+	 * written either way.)
 	 */
 	async set(key: string, value: unknown, ttlSeconds: number): Promise<void> {
 		try {
@@ -109,8 +121,12 @@ export const RedisCache = {
 				return;
 			}
 			const serialized = JSON.stringify(value);
+			// Immediately before the write, after the client lookup. A no-op
+			// outside a turn.
+			throwIfDispatchStopped();
 			await client.set(key, serialized, "EX", ttlSeconds);
 		} catch (err) {
+			rethrowIfDispatchStopped(err);
 			logger.warn("[RedisCache] set error", {
 				key,
 				error: err instanceof Error ? err.message : String(err),
@@ -144,7 +160,8 @@ export const RedisCache = {
 
 	/**
 	 * Delete a key.
-	 * Fire-and-forget safe — errors are logged, never thrown.
+	 * Fire-and-forget safe — errors are logged, never thrown, except a chat
+	 * turn's stop (as for `set`).
 	 */
 	async del(key: string): Promise<void> {
 		try {
@@ -152,8 +169,11 @@ export const RedisCache = {
 			if (!client) {
 				return;
 			}
+			// Immediately before the write, after the client lookup.
+			throwIfDispatchStopped();
 			await client.del(key);
 		} catch (err) {
+			rethrowIfDispatchStopped(err);
 			logger.warn("[RedisCache] del error", {
 				key,
 				error: err instanceof Error ? err.message : String(err),

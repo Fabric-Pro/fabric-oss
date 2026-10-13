@@ -10,6 +10,12 @@
  *             → finalize (READY, commit + manifest + counts)
  * On any failure the analysis row is finalized FAILED and the workflow returns
  * cleanly (the DB row is the source of truth for the UI).
+ *
+ * When every shared ChatGPT plan an AI step may use is spent for longer than
+ * a short in-run wait (Fizzy #2770), the run pauses instead: it saves the
+ * structure result (and the describe result, once done) on its
+ * `AtlasAnalysisRun` row and ends; a resume run of this workflow claims the
+ * row after the reset and continues from there, never cloning again.
  */
 
 import type { AtlasWorkflowInput } from "@repo/atlas";
@@ -18,8 +24,21 @@ import {
 	CancellationScope,
 	isCancellation,
 	proxyActivities,
+	workflowInfo,
 } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import {
+	type BulkRunInputExtras,
+	claimBulkRunResume,
+	pauseBulkRun,
+} from "./lib/bulk-run-pause";
+import {
+	BULK_RUN_PAUSE_BEYOND_MS,
+	chatGptPlanPauseOf,
+	untilRunDeadline,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 
 // Clone + walk + build + persist. Big monorepos take a while, so the window is
 // generous and the activity emits an interval heartbeat (see `withHeartbeat`) —
@@ -63,17 +82,27 @@ const { atlasRunStructureActivity } = proxyActivities<typeof activities>({
 // awaited provider calls, so a 2-minute heartbeat timeout detects a dead worker
 // fast without false-timing-out a slow provider batch. A few attempts so a
 // disruption mid-derivation retries rather than failing the analysis.
+const AI_STEP_TIMEOUT_MS = 30 * 60_000;
 const { atlasDescribeModulesActivity, atlasDeriveBusinessActivity } =
 	proxyActivities<typeof activities>({
-		startToCloseTimeout: "30 minutes",
+		startToCloseTimeout: AI_STEP_TIMEOUT_MS,
 		heartbeatTimeout: "2 minutes",
 		retry: {
 			initialInterval: "5s",
 			maximumInterval: "120s",
 			backoffCoefficient: 2,
 			maximumAttempts: 3,
+			// A spent ChatGPT plan is waited out below, never retried in seconds.
+			nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		},
 	});
+
+/**
+ * Left after a ChatGPT plan wait (Fizzy #2770): one AI step and the finalize
+ * write. The execution timeout cannot be caught, so a wait that overran it
+ * would end the run without finalizing it FAILED.
+ */
+const PLAN_WAIT_RESERVE_MS = AI_STEP_TIMEOUT_MS + 2 * 60_000;
 
 // Short DB updates.
 const { atlasMarkStatusActivity, atlasFinalizeActivity } = proxyActivities<
@@ -89,57 +118,127 @@ const { atlasMarkStatusActivity, atlasFinalizeActivity } = proxyActivities<
 });
 
 export interface AtlasWorkflowOutput {
-	status: "READY" | "FAILED";
+	status: "READY" | "FAILED" | "WAITING_FOR_PLAN";
 	nodeCount: number;
 	edgeCount: number;
 	error?: string;
+	/** Set when paused for a ChatGPT plan reset: when the resume starts. */
+	resumesAt?: string;
+}
+
+type AtlasStructure = Awaited<ReturnType<typeof atlasRunStructureActivity>>;
+type AtlasDescribe = Awaited<ReturnType<typeof atlasDescribeModulesActivity>>;
+
+/**
+ * What an analysis finished before it paused for a plan reset (Fizzy #2770).
+ * The technical graph and the module descriptions are already persisted;
+ * this carries the step results the rest of the run reads. No credential:
+ * a resume resolves the repository's own.
+ */
+export interface AtlasPauseProgress {
+	structure: AtlasStructure;
+	describe?: AtlasDescribe;
 }
 
 export async function atlasWorkflow(
-	input: AtlasWorkflowInput,
+	input: AtlasWorkflowInput & BulkRunInputExtras,
 ): Promise<AtlasWorkflowOutput> {
 	const tenant = {
 		userId: input.userId,
 		organizationId: input.organizationId,
 	};
 
+	// A resume after a ChatGPT plan pause takes its run row back first, and
+	// ends quietly when a Cancel or the other resume got there.
+	let resumed: AtlasPauseProgress | undefined;
+	if (input.resumeOf) {
+		const claim = await claimBulkRunResume<AtlasPauseProgress>(
+			"ATLAS_ANALYSIS",
+			{ ...input, resumeOf: input.resumeOf },
+		);
+		if (!claim.claimed) {
+			return {
+				status: "FAILED",
+				nodeCount: 0,
+				edgeCount: 0,
+				error: "The analysis was no longer waiting to resume.",
+			};
+		}
+		resumed = claim.progress;
+	}
+	// What a pause saves: grows as each step finishes.
+	let progress: AtlasPauseProgress | undefined = resumed;
+
 	try {
 		await atlasMarkStatusActivity({
 			...tenant,
 			analysisId: input.analysisId,
 			status: "ANALYZING",
+			// Only on a resume, so a first run's input is unchanged on replay.
+			...(input.resumeOf && {
+				resumedWorkflowId: workflowInfo().workflowId,
+			}),
 		});
 
-		const structure = await atlasRunStructureActivity({
-			...tenant,
-			analysisId: input.analysisId,
-			projectId: input.projectId,
-			repositoryIntegrationId: input.repositoryIntegrationId,
-		});
+		const structure =
+			resumed?.structure ??
+			(await atlasRunStructureActivity({
+				...tenant,
+				analysisId: input.analysisId,
+				projectId: input.projectId,
+				repositoryIntegrationId: input.repositoryIntegrationId,
+			}));
+		progress = { structure };
 
 		// `fresh` (B5) flows into the AI activities so they skip override-feeding,
 		// and into finalize so it persists `appliedUserOverrides = false`. Adding
 		// fields to an activity's INPUT is replay-safe (no command-sequence change).
-		const describe = await atlasDescribeModulesActivity({
-			...tenant,
-			analysisId: input.analysisId,
-			projectId: input.projectId,
-			changedModuleKeys: structure.changedModuleKeys,
-			fresh: input.fresh,
-		});
+		// The AI steps run on the organization's shared ChatGPT plans. When
+		// every one is spent the step waits for the reset and runs once more
+		// (Fizzy #2770); the describe retry skips the modules already
+		// persisted. `userId` is null: this bulk run never uses the
+		// clicker's own plan, so its reset cannot help.
+		// A run that knows its run row pauses instead of waiting long, or past
+		// its deadline (Fizzy #2770); one started before that waits in place.
+		const planWait = {
+			organizationId: input.organizationId,
+			userId: null,
+			maxWaitMs: untilRunDeadline(PLAN_WAIT_RESERVE_MS),
+			...(input.analysisRunId && {
+				pauseBeyondMs: BULK_RUN_PAUSE_BEYOND_MS,
+			}),
+		};
+		const describe =
+			resumed?.describe ??
+			(await withChatGptPlanWait(
+				() =>
+					atlasDescribeModulesActivity({
+						...tenant,
+						analysisId: input.analysisId,
+						projectId: input.projectId,
+						changedModuleKeys: structure.changedModuleKeys,
+						fresh: input.fresh,
+					}),
+				planWait,
+			));
+		progress = { structure, describe };
 
 		// Pass the change signal so the activity can skip the (expensive) AI
 		// re-derivation when nothing changed and a business graph already exists.
 		// The workflow command sequence is unchanged (the activity always runs),
 		// so this stays replay-safe.
-		const business = await atlasDeriveBusinessActivity({
-			...tenant,
-			analysisId: input.analysisId,
-			projectId: input.projectId,
-			incremental: input.incremental,
-			changedModuleKeys: structure.changedModuleKeys,
-			fresh: input.fresh,
-		});
+		const business = await withChatGptPlanWait(
+			() =>
+				atlasDeriveBusinessActivity({
+					...tenant,
+					analysisId: input.analysisId,
+					projectId: input.projectId,
+					incremental: input.incremental,
+					changedModuleKeys: structure.changedModuleKeys,
+					fresh: input.fresh,
+				}),
+			planWait,
+		);
 
 		// Sum telemetry across the two AI activities (T3); pick the first non-null
 		// model and concatenate any reasoning. Pure data folding — no new activity
@@ -180,7 +279,38 @@ export async function atlasWorkflow(
 			nodeCount: structure.nodeCount,
 			edgeCount: structure.edgeCount,
 		};
-	} catch (err) {
+	} catch (caught) {
+		let err = caught;
+		// Every shared plan is spent past a short wait: save what is done,
+		// schedule the resume and end without failing. A pause that cannot be
+		// taken (the cap, or a run cancelled meanwhile) fails the run below
+		// with its own message.
+		const pause = input.analysisRunId ? chatGptPlanPauseOf(caught) : null;
+		if (pause && input.analysisRunId && progress) {
+			try {
+				const paused = await pauseBulkRun({
+					kind: "ATLAS_ANALYSIS",
+					runId: input.analysisRunId,
+					input,
+					pause,
+					progress,
+				});
+				await atlasMarkStatusActivity({
+					...tenant,
+					analysisId: input.analysisId,
+					status: "WAITING_FOR_PLAN",
+				});
+				return {
+					status: "WAITING_FOR_PLAN",
+					nodeCount: progress.structure.nodeCount,
+					edgeCount: progress.structure.edgeCount,
+					resumesAt: paused.resumesAt,
+				};
+			} catch (pauseError) {
+				err = pauseError;
+			}
+		}
+
 		// Distinguish a user "Cancel analysis" (Temporal cancellation, surfaced
 		// as a CancelledFailure once the in-flight activity is cancelled) from a
 		// genuine pipeline failure, so the row reads "Cancelled by user" rather

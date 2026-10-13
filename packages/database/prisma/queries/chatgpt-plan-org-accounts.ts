@@ -23,6 +23,12 @@ import {
 	chatGptPlanAccountIdentityWhere,
 } from "./chatgpt-plan-credentials";
 import { isFeatureEnabled } from "./feature-flags";
+import {
+	chatGptPlanOrgAccountLockKey,
+	withRefreshLock,
+} from "./lib/refresh-lock";
+
+type AccountTx = Parameters<Parameters<typeof withRefreshLock>[1]>[0];
 
 export type {
 	ChatGptPlanApiFallbackBackground,
@@ -141,35 +147,63 @@ export async function upsertChatGptPlanOrgAccount(
 	// not change whose it is (Fizzy #2770 I1).
 	const { organizationId, label, subject, connectedByUserId, ...tokens } =
 		input;
-	// By email too: a reconnect through a fresh client registration brings a
-	// new `sub` for the same account.
-	const existing = await db.chatGptPlanOrgAccount.findFirst({
-		where: chatGptPlanAccountIdentityWhere({ subject, email: input.email }),
-		select: { id: true, organizationId: true },
+	const where = chatGptPlanAccountIdentityWhere({
+		subject,
+		email: input.email,
 	});
-	if (existing && existing.organizationId !== organizationId) {
-		throw new ChatGptPlanSubjectBoundElsewhereError();
-	}
 	try {
-		if (existing) {
-			await db.chatGptPlanOrgAccount.updateMany({
-				where: { id: existing.id, organizationId },
-				data: { ...tokens, subject, status: "ACTIVE" },
+		for (;;) {
+			// The id is only a lock candidate. Disconnect or take-back may
+			// remove it while we wait; select the current row again under lock.
+			const existing = await db.chatGptPlanOrgAccount.findFirst({
+				where,
+				select: { id: true, organizationId: true },
 			});
-			return { id: existing.id, created: false };
+			if (existing && existing.organizationId !== organizationId) {
+				throw new ChatGptPlanSubjectBoundElsewhereError();
+			}
+			if (existing) {
+				const stored = await withRefreshLock(
+					chatGptPlanOrgAccountLockKey(existing.id),
+					async (tx) => {
+						const current =
+							await tx.chatGptPlanOrgAccount.findFirst({
+								where,
+								select: { id: true, organizationId: true },
+							});
+						if (!current || current.id !== existing.id) {
+							return null;
+						}
+						if (current.organizationId !== organizationId) {
+							throw new ChatGptPlanSubjectBoundElsewhereError();
+						}
+						await tx.chatGptPlanOrgAccount.updateMany({
+							where: { id: current.id, organizationId },
+							data: { ...tokens, subject, status: "ACTIVE" },
+						});
+						return { id: current.id, created: false };
+					},
+				);
+				if (stored) {
+					return stored;
+				}
+				continue;
+			}
+			// A new id cannot be refreshed, revoked or moved before this
+			// atomic create commits; there is no existing source to lock.
+			const created = await db.chatGptPlanOrgAccount.create({
+				data: {
+					organizationId,
+					label,
+					subject,
+					connectedByUserId,
+					...tokens,
+					status: "ACTIVE",
+				},
+				select: { id: true },
+			});
+			return { id: created.id, created: true };
 		}
-		const created = await db.chatGptPlanOrgAccount.create({
-			data: {
-				organizationId,
-				label,
-				subject,
-				connectedByUserId,
-				...tokens,
-				status: "ACTIVE",
-			},
-			select: { id: true },
-		});
-		return { id: created.id, created: true };
 	} catch (error) {
 		if (
 			error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -233,26 +267,38 @@ export async function deleteChatGptPlanOrgAccount(params: {
 	organizationId: string;
 	accountId: string;
 }): Promise<boolean> {
-	return db.$transaction(async (tx) => {
-		const { count } = await tx.chatGptPlanOrgAccount.deleteMany({
-			where: {
-				id: params.accountId,
-				organizationId: params.organizationId,
-			},
-		});
-		if (count > 0) {
-			await tx.chatGptPlanSourceState.deleteMany({
-				where: { sourceKind: "ORG", sourceId: params.accountId },
-			});
-			await tx.chatGptPlanServedModel.deleteMany({
-				where: { sourceKind: "ORG", sourceId: params.accountId },
-			});
-			await tx.chatGptPlanBudgetObservation.deleteMany({
-				where: { sourceKind: "ORG", sourceId: params.accountId },
-			});
-		}
-		return count > 0;
+	return withRefreshLock(
+		chatGptPlanOrgAccountLockKey(params.accountId),
+		(tx) => deleteChatGptPlanOrgAccountUnderLock(tx, params),
+	);
+}
+
+/** The caller must hold this account's source lock for the whole operation. */
+export async function deleteChatGptPlanOrgAccountUnderLock(
+	tx: AccountTx,
+	params: { organizationId: string; accountId: string },
+): Promise<boolean> {
+	const { count } = await tx.chatGptPlanOrgAccount.deleteMany({
+		where: {
+			id: params.accountId,
+			organizationId: params.organizationId,
+		},
 	});
+	if (count > 0) {
+		await tx.chatGptPlanSourceState.deleteMany({
+			where: { sourceKind: "ORG", sourceId: params.accountId },
+		});
+		await tx.chatGptPlanServedModel.deleteMany({
+			where: { sourceKind: "ORG", sourceId: params.accountId },
+		});
+		await tx.chatGptPlanBudgetObservation.deleteMany({
+			where: { sourceKind: "ORG", sourceId: params.accountId },
+		});
+		await tx.chatGptPlanWindowAccuracy.deleteMany({
+			where: { sourceKind: "ORG", sourceId: params.accountId },
+		});
+	}
+	return count > 0;
 }
 
 export async function touchChatGptPlanOrgAccount(params: {
@@ -267,7 +313,6 @@ export async function touchChatGptPlanOrgAccount(params: {
 
 export type ChatGptPlanOrgPolicyValues = Pick<
 	ChatGptPlanOrgPolicy,
-	| "poolingEnabled"
 	| "apiFallbackInteractive"
 	| "apiFallbackBackground"
 	| "headroomPct"
@@ -279,9 +324,8 @@ export type ChatGptPlanOrgPolicyValues = Pick<
 /** The plan model a call retries on when the plan does not serve the chosen one. */
 export const DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL = "gpt-6-astra";
 
-/** What an organization with no policy row gets: pooling off, nothing acknowledged. */
+/** What an organization with no policy row gets: nothing acknowledged, so nothing pooled. */
 export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
-	poolingEnabled: false,
 	apiFallbackInteractive: "ASK",
 	apiFallbackBackground: "NEVER",
 	headroomPct: 40,
@@ -291,7 +335,6 @@ export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
 };
 
 const POLICY_SELECT = {
-	poolingEnabled: true,
 	apiFallbackInteractive: true,
 	apiFallbackBackground: true,
 	headroomPct: true,
@@ -349,7 +392,7 @@ export function __resetChatGptPlanOrgPolicyCache(): void {
 export type ChatGptPlanOrgPolicyPatch = Partial<
 	Pick<
 		ChatGptPlanOrgPolicyValues,
-		| "poolingEnabled"
+		| "apiFallbackInteractive"
 		| "apiFallbackBackground"
 		| "headroomPct"
 		| "fallbackModel"
@@ -360,9 +403,7 @@ export type ChatGptPlanOrgPolicyPatch = Partial<
  * Applies the change and returns the policy before and after. The
  * interactive fallback keeps its stored default (ASK) and is not changeable:
  * interactive work always fails with the plan's own refusal, which already
- * asks the member (Fizzy #2770). Whether the
- * change is allowed — pooling on only after the terms were acknowledged —
- * is the caller's rule, checked against `before`.
+ * asks the member (Fizzy #2770).
  */
 export async function updateChatGptPlanOrgPolicy(params: {
 	organizationId: string;
@@ -411,7 +452,7 @@ export interface ChatGptPlanPoolAdminOrganization {
 
 /**
  * The organization, when this person is one of its admins or owners and it
- * has both `CHATGPT_PLAN` and `CHATGPT_PLAN_POOLING` on; null otherwise. Looked
+ * has `CHATGPT_PLAN` on; null otherwise. Looked
  * up only among the person's own memberships, so an organization they do not
  * belong to reads exactly like one that does not exist. Name it by id or by
  * slug, not both.
@@ -439,11 +480,9 @@ export async function findChatGptPlanPoolAdminOrganization(
 		return null;
 	}
 	const { organization } = membership;
-	const [plan, pooling] = await Promise.all([
-		isFeatureEnabled("CHATGPT_PLAN", organization.id),
-		isFeatureEnabled("CHATGPT_PLAN_POOLING", organization.id),
-	]);
-	return plan && pooling ? { ...organization, role: membership.role } : null;
+	return (await isFeatureEnabled("CHATGPT_PLAN", organization.id))
+		? { ...organization, role: membership.role }
+		: null;
 }
 
 /**

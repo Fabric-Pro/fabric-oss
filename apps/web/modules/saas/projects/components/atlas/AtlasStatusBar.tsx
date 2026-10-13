@@ -66,6 +66,7 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
+import { format } from "date-fns";
 import {
 	AlertTriangleIcon,
 	CheckIcon,
@@ -132,6 +133,11 @@ interface AtlasStatusBarProps {
 	onRepoChange?: (repositoryIntegrationId: string | null) => void;
 	/** Disable the repo dropdown (e.g. while an analysis request is pending). */
 	repoChangeDisabled?: boolean;
+	/**
+	 * When a re-run paused for a ChatGPT plan reset resumes (Fizzy #2770):
+	 * Re-analyse is disabled meanwhile and says so.
+	 */
+	planPausedResumesAt?: Date | string | null;
 }
 
 /**
@@ -293,8 +299,10 @@ export function AtlasStatusBar({
 	repositoryIntegrationId = null,
 	onRepoChange,
 	repoChangeDisabled = false,
+	planPausedResumesAt = null,
 }: AtlasStatusBarProps) {
 	const t = useTranslations("projects.atlas.status");
+	const tPlanPause = useTranslations("projects.planPause");
 	const { organizationId } = useOrganizationContext();
 	const queryClient = useQueryClient();
 	const branchInputId = useId();
@@ -359,6 +367,22 @@ export function AtlasStatusBar({
 						credentialState === "disconnected"
 					? ("reanalyzeDisabledReconnect" as const)
 					: null;
+	// A re-run paused for a ChatGPT plan reset still holds the repository: a
+	// second run would be refused, so the button waits with it.
+	const reanalyzeDisabledReason = reanalyzeDisabledKey
+		? t(reanalyzeDisabledKey)
+		: status.waitingForPlan
+			? `${tPlanPause("title")} · ${
+					planPausedResumesAt
+						? tPlanPause("resumesAt", {
+								time: format(
+									new Date(planPausedResumesAt),
+									"HH:mm",
+								),
+							})
+						: tPlanPause("resumesSoon")
+				}`
+			: null;
 
 	const integrationId = status.repository?.repositoryIntegrationId ?? null;
 	const monitoredBranch = status.repository?.defaultBranch ?? "";
@@ -1234,7 +1258,7 @@ export function AtlasStatusBar({
 						</PopoverContent>
 					</Popover>
 				)}
-				{reanalyzeDisabledKey ? (
+				{reanalyzeDisabledReason ? (
 					<Tooltip>
 						<TooltipTrigger asChild>
 							{/* A disabled button doesn't emit pointer events, so
@@ -1257,7 +1281,7 @@ export function AtlasStatusBar({
 							</span>
 						</TooltipTrigger>
 						<TooltipContent className="max-w-xs">
-							{t(reanalyzeDisabledKey)}
+							{reanalyzeDisabledReason}
 						</TooltipContent>
 					</Tooltip>
 				) : isAnalyzed ? (

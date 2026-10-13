@@ -62,6 +62,11 @@ vi.mock("../../utils/partykit-publisher", () => ({
 }));
 
 import { executeAgentAsTool } from "../../execution/execute-agent-as-tool";
+import {
+	rethrowIfTurnStopped,
+	runWithTurnDispatch,
+	TURN_BUDGET_EXHAUSTED,
+} from "../../turn-dispatch";
 
 const TURN_SCOPE = {
 	turnId: "turn-example-1",
@@ -197,6 +202,52 @@ describe("delegation in a chat turn", () => {
 		expect(sendAborted).toBe(true);
 		expect(sends()).toHaveLength(1);
 		expect(outcome).toBeInstanceOf(CancelledFailure);
+	});
+
+	it("a stop latched under the activity's turn guard while the send's own turn check reads the record stops the send", async () => {
+		// The last turn check before the send is the client's per-attempt
+		// check; a sibling request's budget refusal latches on the guard
+		// while that check is reading the turn record. The guard's latched
+		// stops are checked after the read, immediately before the send.
+		let checks = 0;
+		h.checkDispatchable.mockImplementation(async () => {
+			checks += 1;
+			if (checks === 2) {
+				try {
+					rethrowIfTurnStopped(
+						ApplicationFailure.create({
+							type: TURN_BUDGET_EXHAUSTED,
+							message: "Turn has used its token allowance",
+							nonRetryable: true,
+						}),
+					);
+				} catch {
+					// Latched on the guard, as a sibling's catch would.
+				}
+			}
+			return { ok: true };
+		});
+		const outcome = await new MockActivityEnvironment()
+			.run(() =>
+				runWithTurnDispatch(TURN_SCOPE, () =>
+					executeAgentAsTool({
+						agentId: "agent-1",
+						input: { message: "research the launch" },
+						userId: TURN_SCOPE.userId,
+						organizationId: TURN_SCOPE.organizationId,
+						turnScope: TURN_SCOPE,
+					}),
+				),
+			)
+			.then(
+				(value) => ({ resolvedWith: value }),
+				(err: unknown) => err,
+			);
+		expect(checks).toBe(2);
+		expect(sends()).toEqual([]);
+		expect((outcome as ApplicationFailure).type).toBe(
+			TURN_BUDGET_EXHAUSTED,
+		);
 	});
 
 	it("a run without a turn delegates as before", async () => {

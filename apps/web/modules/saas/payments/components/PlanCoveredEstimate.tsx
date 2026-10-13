@@ -10,7 +10,7 @@ import { cn } from "@ui/lib";
 import type { ReactNode } from "react";
 
 /**
- * What a member's ChatGPT plan usage would have cost on API billing, shown
+ * What ChatGPT plan usage (own or shared) would have cost on API billing, shown
  * where the real cost reads $0 (Fizzy #2939). Only an estimate: the plan's
  * calls billed the organization nothing.
  */
@@ -21,7 +21,7 @@ function planCoveredEstimateTooltip({
 	formattedEstimate: string;
 	referenceModels: string[];
 }): string {
-	return `Covered by members' ChatGPT plans, so nothing was billed. At the provider's API list prices these tokens would have cost about ${formattedEstimate} (estimate, priced as ${referenceModels.join(", ")}).`;
+	return `Covered by ChatGPT plans — members' own or the organization's shared accounts — so nothing was billed. At the provider's API list prices these tokens would have cost about ${formattedEstimate} (estimate, priced as ${referenceModels.join(", ")}).`;
 }
 
 /**

@@ -32,6 +32,7 @@ import {
 	getAIModelWithMetadata,
 	recordDecisionOutcome,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	getBoundPromptForAgent,
 	type ReporterSource,
@@ -39,8 +40,8 @@ import {
 	type StorySource,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { z } from "zod";
 
 const ClassifierOutputSchema = z.object({
@@ -130,8 +131,11 @@ function isConfidentDecision(
 }
 
 function rethrowUsageLimit(error: unknown): void {
-	if (error instanceof AiUsageLimitExceededError) {
-		throw error;
+	// The SDK wraps a limit raised before a retry in a RetryError; what escapes
+	// is the unwrapped instance, so callers that test `instanceof` still match.
+	const limitError = findAiUsageLimitError(error);
+	if (limitError) {
+		throw limitError;
 	}
 }
 
@@ -220,6 +224,7 @@ export async function classifyWorkItem(
 			userId: input.userId,
 			organizationId: orgId,
 			projectId: input.projectId,
+			featureKey: "story-classification",
 		});
 		resolvedDecisionModel = decisionModel;
 		const decision = await capture.run(() =>
@@ -283,6 +288,10 @@ export async function classifyWorkItem(
 			decisionModel: resolvedDecisionModel,
 			capture,
 		});
+		// Inside a chat turn, a stop or a token-allowance refusal is not an
+		// unavailable decision model to fall back from: the caller must not
+		// go on to create the item (a no-op outside a turn).
+		rethrowIfDispatchStopped(error);
 		rethrowUsageLimit(error);
 		logger.warn(
 			"[classify-work-item] decision evaluation unavailable; using language classifier",
@@ -301,9 +310,11 @@ export async function classifyWorkItem(
 				userId: input.userId,
 				organizationId: orgId,
 				projectId: input.projectId,
+				featureKey: "story-classification",
 			},
 		);
 	} catch (error) {
+		rethrowIfDispatchStopped(error);
 		rethrowUsageLimit(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.warn(
@@ -372,6 +383,10 @@ export async function classifyWorkItem(
 
 		return object;
 	} catch (error) {
+		// A stop or a token-allowance refusal is not a classifier failure:
+		// SAFE_FALLBACK would let the caller create the item after the turn
+		// stopped.
+		rethrowIfDispatchStopped(error);
 		rethrowUsageLimit(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.warn(

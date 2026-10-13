@@ -32,6 +32,13 @@ export const AI_JOB_TYPES = [
 	/** Publishing-suggestion topic summarization (daily cron). */
 	"publishing-suggestion",
 	/**
+	 * The same topic summarization, started by a person's "Scan for topics"
+	 * click. Its own key because the click is not the project owner's, whose
+	 * name the run carries: it runs on the organization's shared ChatGPT
+	 * plans, never the owner's own (Fizzy #2770).
+	 */
+	"publishing-suggestion-manual",
+	/**
 	 * Publishing-suite topic Planning & Analysis (#1851).
 	 *
 	 * Separate from `publishing-suggestion` because the spend behaves nothing
@@ -151,6 +158,34 @@ export const AI_JOB_TYPES = [
 	"security-scan",
 	/** Weave reader agents (Thread, Spindle, Weft, Warp). */
 	"weave-reader",
+	/** Living Documents scheduled auto-refresh. */
+	"living-document-refresh",
+	/** Summaries of ingested project context. */
+	"context-summarization",
+	/** Vision extraction and contextual enrichment of ingested files. */
+	"context-enrichment",
+	/** Automatic pull-request review triggered by a repository webhook. */
+	"pr-review",
+	/** @Fabric mentions in Slack and Teams, and channel-triggered replies. */
+	"fabric-mention",
+	/** Parlume's live replies inside a meeting. */
+	"parlume-live-turn",
+	/** Deployed agents and agents run through the external agent API. */
+	"external-agent",
+	/** Public API v1 and MCP calls made with an API key, not a member session. */
+	"public-api",
+	/** Repository code indexing (chunk + embed), run in the background. */
+	"code-index",
+	/**
+	 * Documents a person generates in one batch, and the agents writing them.
+	 * Bulk work a person starts: it runs on the organization's shared ChatGPT
+	 * plans, never the person's own (Fizzy #2770).
+	 */
+	"batch-document-generation",
+	/** Existing-project and Azure DevOps code setup a person starts, and its agents. */
+	"project-setup",
+	/** Atlas repository analysis a person starts. */
+	"atlas-analysis",
 ] as const;
 
 export type AiJobKey = (typeof AI_JOB_TYPES)[number];

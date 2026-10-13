@@ -125,6 +125,8 @@ export const startAnalysisProcedure = tenantProtectedProcedure
 						{
 							projectId: input.projectId,
 							userId: user.id,
+							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+							planEligible: true,
 							organizationId,
 							contextSources: input.contextSources,
 							pmConfig: input.pmConfig,

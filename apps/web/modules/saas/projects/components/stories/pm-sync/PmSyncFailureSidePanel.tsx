@@ -10,11 +10,16 @@ import {
 } from "@ui/components/sheet";
 import {
 	ArrowUpFromLineIcon,
+	Link2Icon,
 	Loader2Icon,
 	RotateCcwIcon,
 	SettingsIcon,
 } from "lucide-react";
+import { useState } from "react";
+import { LinkPmItemDialog } from "./LinkPmItemDialog";
 import {
+	isPmCreateUnconfirmedError,
+	isPmLegacyOtherToolLinkError,
 	isPmTicketMissingError,
 	isPmToolMismatchError,
 } from "./PmSyncFailureBadge";
@@ -36,9 +41,24 @@ type Props = {
 	 * — a plain retry would just hit the same 404. There is no separate button
 	 * and no separate chip: every failure shows as "Sync failed"; the 404 detail
 	 * lives in the error block below and Retry just does the right thing.
+	 *
+	 * Also the primary action, labelled "Unlink & re-create", for a create that
+	 * may already have landed in the PM tool unlinked: there a plain retry is
+	 * refused, and re-creating is the user's call after checking the PM tool.
+	 * Likewise for a legacy link to a ticket in a different PM tool, which no
+	 * sync replaces on its own.
 	 */
 	onUnlinkRecreate?: () => void;
 	isUnlinking?: boolean;
+	/**
+	 * "Link to existing item" for a create that may already have landed in
+	 * the PM tool unlinked: links the item to the PM item the user names,
+	 * instead of creating another. Wired by a caller only while the item has
+	 * no PM link; offered beside Unlink & re-create for that failure only.
+	 * Resolves when linked (the panel then closes); rejects with the server's
+	 * reason, which the dialog shows.
+	 */
+	onLinkExisting?: (externalId: string) => Promise<unknown>;
 	/**
 	 * Relink handler for a "synced to a different PM tool" (PM_TOOL_MISMATCH)
 	 * failure. When wired and the error is a mismatch, the primary button becomes
@@ -66,6 +86,7 @@ export function PmSyncFailureSidePanel({
 	isRetrying,
 	onUnlinkRecreate,
 	isUnlinking,
+	onLinkExisting,
 	onRelink,
 	isRelinking,
 	settingsHref,
@@ -74,21 +95,44 @@ export function PmSyncFailureSidePanel({
 		? formatAttemptedAt(attemptedAt)
 		: null;
 	const truncatedError = truncateError(error);
+	const [linkDialogOpen, setLinkDialogOpen] = useState(false);
 
 	// Both stay "Sync failed" — no special title or chip. We classify the error
 	// only to pick the primary action: a deleted-card 404 re-creates under the
 	// hood (a plain retry would re-hit the 404); a tool mismatch relinks (a plain
 	// retry can never clear it). Everything else is a plain retry.
-	const missing = isPmTicketMissingError(error);
-	const mismatch = !missing && isPmToolMismatchError(error);
-	const recreating = missing && !!onUnlinkRecreate;
+	// A legacy link to another PM tool: checked first, because its message
+	// also names Unlink & re-create and a "different PM tool", and a "Push &
+	// relink" cannot migrate an unstamped link.
+	// A create that may already have landed unlinked: every push refuses to
+	// create again until the user re-creates on purpose, after checking the PM
+	// tool. Checked before a not-found: its message can quote a transport
+	// error that reads like one.
+	const legacyOtherTool = isPmLegacyOtherToolLinkError(error);
+	const unconfirmed = !legacyOtherTool && isPmCreateUnconfirmedError(error);
+	const missing =
+		!legacyOtherTool && !unconfirmed && isPmTicketMissingError(error);
+	const mismatch =
+		!legacyOtherTool &&
+		!unconfirmed &&
+		!missing &&
+		isPmToolMismatchError(error);
+	const explicitRecreate =
+		(unconfirmed || legacyOtherTool) && !!onUnlinkRecreate;
+	const offerLinkExisting = unconfirmed && !!onLinkExisting;
+	const recreating =
+		(missing || unconfirmed || legacyOtherTool) && !!onUnlinkRecreate;
 	const relinking = mismatch && !!onRelink;
 	const primaryBusy = recreating
 		? !!isUnlinking
 		: relinking
 			? !!isRelinking
 			: !!isRetrying;
-	const primaryLabel = relinking ? "Push & relink" : "Retry sync";
+	const primaryLabel = relinking
+		? "Push & relink"
+		: explicitRecreate
+			? "Unlink & re-create"
+			: "Retry sync";
 	const onPrimary = () =>
 		recreating
 			? onUnlinkRecreate?.()
@@ -111,11 +155,19 @@ export function PmSyncFailureSidePanel({
 						Sync failed
 					</SheetTitle>
 					<SheetDescription>
-						{missing
-							? `The last sync failed — the linked ${pmToolName} card no longer exists (it was deleted or can no longer be found). Retry to re-create it in ${pmToolName}.`
-							: mismatch
-								? `This item is linked to a different PM tool than ${pmToolName}. Push & relink creates a fresh ${pmToolName} item and drops the old link (the previous item isn't deleted) — a plain retry can't clear this.`
-								: `${pmToolName} rejected the latest update. Review the error and retry when ready.`}
+						{legacyOtherTool
+							? `This item is linked to a ticket in a different PM tool than ${pmToolName}, saved before Fabric recorded which tool a link belongs to, so Fabric won't replace it on its own. Unlink & re-create drops the old link and makes a new ${pmToolName} item (the old ticket isn't deleted).`
+							: unconfirmed
+								? `${pmToolName} may already have this item: Fabric sent a create it could not confirm or link, so it won't create another on its own. Check ${pmToolName} first — ${
+										offerLinkExisting
+											? "if the item is there, Link to existing item links this one to it; if it isn't"
+											: "if the item isn't there"
+									}, Unlink & re-create makes a new one.`
+								: missing
+									? `The last sync failed — the linked ${pmToolName} card no longer exists (it was deleted or can no longer be found). Retry to re-create it in ${pmToolName}.`
+									: mismatch
+										? `This item is linked to a different PM tool than ${pmToolName}. Push & relink creates a fresh ${pmToolName} item and drops the old link (the previous item isn't deleted) — a plain retry can't clear this.`
+										: `${pmToolName} rejected the latest update. Review the error and retry when ready.`}
 					</SheetDescription>
 				</SheetHeader>
 
@@ -162,17 +214,52 @@ export function PmSyncFailureSidePanel({
 							</a>
 						</Button>
 					)}
+					{offerLinkExisting && onLinkExisting && (
+						<LinkPmItemDialog
+							open={linkDialogOpen}
+							onOpenChange={setLinkDialogOpen}
+							onSubmit={async (externalId) => {
+								await onLinkExisting(externalId);
+								onOpenChange(false);
+							}}
+							copy={{
+								title: "Link to existing item",
+								description: `Enter the ID or key of the ${pmToolName} item Fabric's create made. Fabric checks it in ${pmToolName}, links this item to it and creates nothing; the next push updates it.`,
+								label: `${pmToolName} item ID or key`,
+								placeholder: "e.g. 1234 or PROJ-12",
+								submit: "Link item",
+								cancel: "Cancel",
+							}}
+							trigger={
+								<Button
+									type="button"
+									size="sm"
+									variant="outline"
+								>
+									<Link2Icon
+										className="size-3.5 mr-1.5"
+										aria-hidden="true"
+									/>
+									Link to existing item
+								</Button>
+							}
+						/>
+					)}
 					<Button
 						type="button"
 						size="sm"
 						onClick={onPrimary}
 						disabled={primaryBusy}
 						title={
-							recreating
-								? `Retry — unlinks the missing card and re-creates it in ${pmToolName}`
-								: relinking
-									? `Drops the old link and creates a fresh ${pmToolName} item`
-									: undefined
+							legacyOtherTool && explicitRecreate
+								? `Drops the old link and creates a new item in ${pmToolName}`
+								: explicitRecreate
+									? `Creates a new item in ${pmToolName} — check ${pmToolName} first for an existing one`
+									: recreating
+										? `Retry — unlinks the missing card and re-creates it in ${pmToolName}`
+										: relinking
+											? `Drops the old link and creates a fresh ${pmToolName} item`
+											: undefined
 						}
 					>
 						{primaryBusy ? (

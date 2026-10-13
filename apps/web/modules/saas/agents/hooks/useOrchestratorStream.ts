@@ -29,9 +29,17 @@ import {
 	type ChatTurnTruncation,
 	parseTurnTruncation,
 } from "../lib/chat-turn-truncation";
+import {
+	type ChatGptPlanApiBilling,
+	readChatGptPlanApiBilling,
+} from "../lib/chatgpt-plan-api-billing";
 import { formatClarificationTurn } from "../lib/clarification-turns";
 import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
 import { executionModeUsesTurns } from "../lib/orchestrator-turn-modes";
+import {
+	parseTurnBudgetStop,
+	type TurnBudgetStop,
+} from "../lib/turn-budget-stop";
 import type { StreamStatus } from "./useDirectStream";
 import { useOrchestratorPartyKit } from "./useOrchestratorPartyKit";
 
@@ -295,6 +303,19 @@ export interface OrchestratorStreamState {
 		reason: string;
 		summary: string;
 	};
+	/**
+	 * The turn's structured token-allowance stop, as its row stores it, when
+	 * it has one. A completed turn that stopped on its allowance shows it: the
+	 * chat says so and offers no new-chat workaround, the user can ask to
+	 * continue in this chat. A cancelled turn keeps the payload it stored but
+	 * shows no card for it (`budgetStopToShow`).
+	 */
+	budgetStop?: TurnBudgetStop;
+	/**
+	 * The turn runs on the organization's API billing because every ChatGPT
+	 * plan is spent (Fizzy #3048); the chat says so under the answer.
+	 */
+	apiBilling?: ChatGptPlanApiBilling;
 	/**
 	 * Mid-execution conversation compaction events. Each entry corresponds to
 	 * one `execution.context_compacted` SSE event — older history was folded
@@ -855,7 +876,9 @@ export function useOrchestratorStream(
 				limitSignals: [],
 				tokenBudget: undefined,
 				handoffRecommended: undefined,
+				budgetStop: undefined,
 				contextCompactions: [],
+				apiBilling: undefined,
 			}));
 
 			// Non-destructive failure for a stream we could not get back
@@ -1244,6 +1267,13 @@ export function useOrchestratorStream(
 							throw new Error(
 								error.error || "Failed to start orchestrator",
 							);
+						}
+
+						// A resume carries no marker; the turn's first
+						// response already said (Fizzy #3048).
+						const apiBilling = readChatGptPlanApiBilling(response);
+						if (apiBilling) {
+							setState((prev) => ({ ...prev, apiBilling }));
 						}
 
 						// Process SSE stream
@@ -2074,6 +2104,14 @@ export function useOrchestratorStream(
 							? undefined
 							: ((data.handoffRecommended as typeof prev.handoffRecommended) ??
 								prev.handoffRecommended),
+						// The structured token-allowance stop, live or restored
+						// from the turn record on a reconnect, kept whatever the
+						// status: it is the row's record of what the turn used.
+						// Whether a card shows it is decided by the status (a
+						// stopped turn shows none; see `budgetStopToShow`).
+						budgetStop:
+							parseTurnBudgetStop(data.budgetStop) ??
+							prev.budgetStop,
 					}));
 
 					// Mark assistant message as done streaming and set content
@@ -2233,6 +2271,14 @@ export function useOrchestratorStream(
 							...prev.result,
 							error: errorMessage,
 						},
+						// The turn row's stored token-allowance stop, which the
+						// route sends on a failed turn's `error` event, live and
+						// on a reconnect, exactly as on a `completed` one. Kept
+						// as the record of what the turn used; a failed turn
+						// shows no budget card (`budgetStopToShow`).
+						budgetStop:
+							parseTurnBudgetStop(data.budgetStop) ??
+							prev.budgetStop,
 					}));
 
 					setMessages((prev) =>

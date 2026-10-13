@@ -137,6 +137,7 @@ import { useStableHandlers } from "../../hooks/useStableHandlers";
 import { useToolSuggestions } from "../../hooks/useToolSuggestions";
 import { shapePastedImageForAi } from "../../lib/chat-image-upload";
 import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
+import { parseChatGptPlanApiBilling } from "../../lib/chatgpt-plan-api-billing";
 import {
 	buildComprehensiveFileContext,
 	type CodeReference,
@@ -175,6 +176,7 @@ import {
 	ToolCallList,
 	useTypewriterPlaceholder,
 } from "./shared";
+import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import {
 	getSelectedAgentInstanceId,
 	shouldPersistAgentSelection,
@@ -570,6 +572,7 @@ function readPersistedTurnOutcome(message: {
 	| "limit"
 	| "toolsFailed"
 	| "truncated"
+	| "apiBilling"
 > {
 	const metadata = persistedMetadata(message);
 	const toolsFailed =
@@ -577,11 +580,13 @@ function readPersistedTurnOutcome(message: {
 			? (metadata.toolsFailed as DirectStreamMessage["toolsFailed"])
 			: undefined;
 	const truncated = parseTurnTruncation(metadata?.truncated);
+	const apiBilling = parseChatGptPlanApiBilling(metadata?.apiBilling);
 	if (message.streamStatus !== "error") {
 		return {
 			content: message.content,
 			...(toolsFailed ? { toolsFailed } : {}),
 			...(truncated ? { truncated } : {}),
+			...(apiBilling ? { apiBilling } : {}),
 		};
 	}
 	const errorMessage =
@@ -1830,7 +1835,8 @@ export const FabricDirectChat = forwardRef<
 					assistantMsg.model ||
 					assistantMsg.errorMessage ||
 					assistantMsg.toolsFailed ||
-					assistantMsg.truncated
+					assistantMsg.truncated ||
+					assistantMsg.apiBilling
 						? {
 								metadata: {
 									...(assistantMsg.usage
@@ -1862,6 +1868,14 @@ export const FabricDirectChat = forwardRef<
 										? {
 												truncated:
 													assistantMsg.truncated,
+											}
+										: {}),
+									// So a reload still says it was billed
+									// to the organization (Fizzy #3048).
+									...(assistantMsg.apiBilling
+										? {
+												apiBilling:
+													assistantMsg.apiBilling,
 											}
 										: {}),
 								},
@@ -4248,6 +4262,16 @@ export const FabricDirectChat = forwardRef<
 																	</div>
 																</div>
 															))}
+
+														{message.role ===
+															"assistant" &&
+															message.apiBilling && (
+																<ApiBillingNotice
+																	apiBilling={
+																		message.apiBilling
+																	}
+																/>
+															)}
 
 														{message.role ===
 															"assistant" &&

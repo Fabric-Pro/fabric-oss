@@ -438,6 +438,7 @@ describe("generateStakeholderEmailActivity — tenancy and actor revalidation", 
 			{ taskType: "COMPLEX" },
 			expect.objectContaining({
 				jobType: "publishing-stakeholder-email",
+				projectId: "proj-1",
 			}),
 		);
 	});

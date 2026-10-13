@@ -163,6 +163,36 @@ describe("plan model — a spent plan", () => {
 		);
 	});
 
+	// Fizzy #3037: the exchange's key also names the sign-in behind the token.
+	// The agent passes it back exactly as handed out, in the report and in
+	// the plans to skip, so Fabric can tell a replaced sign-in's refusal apart.
+	it("echoes a key that names the token's sign-in untouched", async () => {
+		__resetChatGptPlanExchanges();
+		rememberChatGptPlanExchange({
+			accessToken: "token-A",
+			aiToken: "jwt-example",
+			fabricBaseUrl: FABRIC,
+			planSource: "org:acc-A.0123456789abcdef",
+			expiresInSeconds: 300,
+		});
+		const { reports, exchangeBodies } = simulate(
+			{ "token-A": spent, "token-B": () => answered("From B") },
+			() => exchanged("token-B", "org:acc-B.fedcba9876543210"),
+		);
+		await planModel().invoke([new HumanMessage("Hello")]);
+		await vi.waitFor(() =>
+			expect(reports).toEqual([
+				{ planSource: "org:acc-A.0123456789abcdef" },
+			]),
+		);
+		expect(exchangeBodies).toEqual([
+			{ excludeSources: ["org:acc-A.0123456789abcdef"] },
+		]);
+		expect(servingChatGptPlanSource("token-A")).toBe(
+			"org:acc-B.fedcba9876543210",
+		);
+	});
+
 	it("passes OpenAI's reset time along with the report", async () => {
 		const spentUntil = () =>
 			new Response(

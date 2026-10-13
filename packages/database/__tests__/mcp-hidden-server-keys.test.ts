@@ -137,6 +137,7 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 			const servers = [
 				{ key: "sqlite", isSystemProvided: true, name: "SQLite" },
 				{ key: "fetch", isSystemProvided: true, name: "Fetch" },
+				{ key: "fabric", isSystemProvided: true, name: "Fabric MCP" },
 			];
 			expect(withoutHiddenSystemMcpServers(servers)).toEqual([]);
 		});

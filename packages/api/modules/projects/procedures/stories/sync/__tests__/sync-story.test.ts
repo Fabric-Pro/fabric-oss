@@ -400,6 +400,139 @@ describe("syncStoryProcedure lifecycle passthrough (#1360)", () => {
 		expect(caught?.data?.errorCode).toBe("EXTERNAL_ID_NOT_FOUND");
 		expect(caught?.data?.linkPreserved).toBe(true);
 	});
+
+	it("reports a legacy link to another PM tool as BAD_REQUEST with its own code (not the migrate code)", async () => {
+		mockMcpProject();
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: "77",
+			tasks: [],
+		} as never);
+
+		mockSyncStoryToPM.mockResolvedValue({
+			success: false,
+			error: "This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in fizzy. To make a new ticket in fizzy, use Unlink & re-create (the old ticket is not deleted).",
+			errorCode: "PM_TOOL_MISMATCH_LEGACY",
+			direction: "push",
+			syncedAt: new Date(),
+		});
+
+		const handler = await loadProcedureHandler();
+		let caught:
+			| { code?: string; message?: string; data?: { errorCode?: string } }
+			| undefined;
+		try {
+			await handler({
+				input: {
+					projectId: "proj-1",
+					storyId: "story-1",
+					direction: "push",
+				},
+				context: baseCtx,
+			});
+		} catch (e) {
+			caught = e as typeof caught;
+		}
+
+		expect(caught?.code).toBe("BAD_REQUEST");
+		// Not "PM_TOOL_MISMATCH": that would offer a migrate push, which
+		// cannot replace an unstamped link.
+		expect(caught?.data?.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+		expect(caught?.message).toEqual(
+			expect.stringContaining("Unlink & re-create"),
+		);
+	});
+});
+
+describe("syncStoryProcedure story.pm_pushed audit", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		mockAssertCapabilityAvailable.mockResolvedValue(null);
+		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
+		vi.mocked(db.project.findUnique).mockResolvedValue({
+			id: "proj-1",
+			organizationId: "org-1",
+			readOnlyMode: false,
+			projectManagementMcpServerId: "mcp-server-1",
+			projectManagementMcpConfigId: "cfg-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: "example-org/widgets",
+			projectManagementAdditionalContext: null,
+		} as never);
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+			id: "cfg-1",
+			enabled: true,
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: null,
+			tasks: [],
+		} as never);
+	});
+
+	async function push() {
+		const handler = await loadProcedureHandler();
+		return handler({
+			input: {
+				projectId: "proj-1",
+				storyId: "story-1",
+				direction: "push",
+				organizationId: "org-1",
+			},
+			context: baseCtx,
+		});
+	}
+
+	async function pushedAudits() {
+		const { recordAuditFromRequest } = await import(
+			"../../../../../../lib/audit"
+		);
+		return vi
+			.mocked(recordAuditFromRequest)
+			.mock.calls.filter(
+				([, entry]) =>
+					(entry as { action?: string }).action === "story.pm_pushed",
+			);
+	}
+
+	it("is not recorded for a push skipped because another run linked the story first", async () => {
+		mockSyncStoryToPM.mockResolvedValue({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://pm.example.com/items/88",
+			direction: "push",
+			syncedAt: new Date(),
+			pushSkipped: "already-linked",
+		});
+
+		const result = await push();
+
+		expect(result.success).toBe(true);
+		expect(await pushedAudits()).toHaveLength(0);
+	});
+
+	it("is recorded for a real push, with its link", async () => {
+		mockSyncStoryToPM.mockResolvedValue({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://pm.example.com/items/88",
+			direction: "push",
+			syncedAt: new Date(),
+		});
+
+		await push();
+
+		const audits = await pushedAudits();
+		expect(audits).toHaveLength(1);
+		expect(audits[0]?.[1]).toMatchObject({
+			action: "story.pm_pushed",
+			resource: { type: "story", id: "story-1" },
+			metadata: { externalId: "88" },
+		});
+	});
 });
 
 describe("syncStoryProcedure capability gate", () => {

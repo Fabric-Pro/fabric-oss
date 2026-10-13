@@ -37,6 +37,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				scan: {
+					// A run paused for a ChatGPT plan reset (Fizzy #2770).
+					pausedRunOptions: passthrough,
+					runPausedOnApi: passthrough,
 					grouping: {
 						latest: passthrough,
 						start: passthrough,
@@ -259,6 +262,30 @@ describe("GroupIntoTicketsButton — re-open affordances", () => {
 			screen.getByRole("button", { name: /view last run/i }),
 		);
 		expect(dialogIsOpen()).toBe(true);
+	});
+});
+
+describe("GroupIntoTicketsButton — paused for a ChatGPT plan reset", () => {
+	it("shows the paused state instead of the start button, and Cancel cancels the run", async () => {
+		const user = userEvent.setup();
+		primeGrouping({
+			id: "grp-1",
+			status: "WAITING_FOR_PLAN",
+			resumesAt: "2026-10-12T18:00:00.000Z",
+		});
+		renderButton();
+
+		expect(screen.getByTestId("plan-paused-notice")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: mainButtonName }),
+		).not.toBeInTheDocument();
+
+		const notice = screen.getByTestId("plan-paused-notice");
+		const [cancel] = Array.from(notice.querySelectorAll("button"));
+		await user.click(cancel as HTMLButtonElement);
+		expect(cancelMutate.mock.calls[0][0]).toMatchObject({
+			groupingId: "grp-1",
+		});
 	});
 });
 

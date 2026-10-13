@@ -41,6 +41,10 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	cancelPausedSetupsOfProject,
+	projectSetupIsPaused,
+} from "../../lib/paused-setup";
 import { requireProjectOrganization } from "../../lib/project-organization";
 
 export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
@@ -92,8 +96,16 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Check if analysis is already in progress
-		if (project.codeAnalysisStatus === "SCANNING") {
+		// Check if analysis is already in progress. A setup paused for a
+		// ChatGPT plan reset runs nothing: this one replaces it (Fizzy #2770).
+		if (
+			project.codeAnalysisStatus === "SCANNING" &&
+			!(await projectSetupIsPaused({
+				projectId,
+				organizationId,
+				userId: user.id,
+			}))
+		) {
 			throw new ORPCError("CONFLICT", {
 				message:
 					"Code analysis is already in progress for this project",
@@ -134,11 +146,24 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 			impersonated: isAiImpersonatedRequest(),
 			source: "code-based-project-setup",
 			expirySeconds: 3600,
+			// Bulk work: the agents it delegates to resolve on the
+			// organization's shared ChatGPT plans, never the clicker's own
+			// (Fizzy #2770).
+			jobType: "project-setup",
 		});
 
 		// Start the Temporal workflow. Typed args via ExistingProjectSetupInput
 		// (a `type` import — no @temporalio/workflow runtime is pulled in) so the
 		// new call is type-checked rather than using `as any`.
+		// A setup of this project paused for a ChatGPT plan reset is cancelled
+		// first: the newer setup wins, and the old resume never runs (Fizzy
+		// #2770).
+		await cancelPausedSetupsOfProject({
+			projectId,
+			organizationId,
+			userId: user.id,
+		});
+
 		const client = await getTemporalClient();
 		const workflowId = `code-based-setup-ado-${projectId}-${Date.now()}`;
 
@@ -153,6 +178,9 @@ export const startAzureDevOpsCodeSetupProcedure = tenantProtectedProcedure
 			selectedDocumentTypes: [],
 			projectTypes: (project.projectTypes as string[]) || [],
 			projectName: project.name,
+			// Bulk work: its AI steps run on the organization's shared ChatGPT
+			// plans, never the clicker's own (Fizzy #2770).
+			jobType: "project-setup",
 		};
 
 		const handle = await client.workflow.start(

@@ -42,15 +42,11 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-const matches = (where: {
-	id: string;
-	organizationId: string;
-	status?: Account["status"];
-}) =>
+const matches = (where: Partial<Account>) =>
 	store.account !== null &&
-	store.account.id === where.id &&
-	store.account.organizationId === where.organizationId &&
-	(where.status === undefined || store.account.status === where.status);
+	Object.entries(where).every(
+		([key, value]) => store.account?.[key as keyof Account] === value,
+	);
 
 const notifyNeedsReconnect = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -442,6 +438,9 @@ describe("organization account sign-in", () => {
 		expect(store.writes.at(-1)).toEqual({
 			id: "acc_1",
 			organizationId: "org_a",
+			clientId: "oaiapp_1",
+			encryptedAccessToken: "encrypted:old-access",
+			encryptedRefreshToken: "encrypted:old-refresh",
 			status: "ACTIVE",
 		});
 	});

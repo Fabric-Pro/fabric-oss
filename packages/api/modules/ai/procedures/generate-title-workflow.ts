@@ -89,6 +89,9 @@ export const generateTitleWorkflow = tenantProtectedProcedure
 				firstMessage,
 				userId: user.id,
 				organizationId: chat.organizationId || undefined,
+				// The title of a person's own chat: it may run on their own
+				// ChatGPT plan (Fizzy #2770).
+				planEligible: true,
 			};
 
 			// Start workflow

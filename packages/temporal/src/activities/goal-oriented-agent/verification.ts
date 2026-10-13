@@ -8,6 +8,7 @@
  */
 
 import { generateObject } from "@repo/ai";
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import { z } from "zod";
 import type {
 	AgentVariable,
@@ -41,7 +42,7 @@ const VerificationResultSchema = z.object({
 		.describe("Suggestions for achieving the goal if not met"),
 });
 
-export async function verifyGoalAchievement(
+async function verifyGoalAchievementInJob(
 	input: VerifyGoalInput,
 ): Promise<GoalVerificationResult> {
 	const {
@@ -315,4 +316,15 @@ function formatValue(value: unknown): string {
 	}
 	const json = JSON.stringify(value);
 	return json.length > 200 ? `${json.slice(0, 200)}...` : json;
+}
+
+// Always background work, whatever started the run: a run from before the
+// job-type header, or one a Temporal schedule started, still runs on the
+// organization's shared ChatGPT plans (Fizzy #2770). A run's own job wins.
+export function verifyGoalAchievement(
+	params: Parameters<typeof verifyGoalAchievementInJob>[0],
+): ReturnType<typeof verifyGoalAchievementInJob> {
+	return runWithDefaultAiJobType("external-agent", () =>
+		verifyGoalAchievementInJob(params),
+	);
 }

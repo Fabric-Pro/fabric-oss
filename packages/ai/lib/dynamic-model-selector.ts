@@ -997,8 +997,11 @@ import {
 	updateProviderLastUsed,
 } from "@repo/database";
 import { getTenantAiGatewayBillingState } from "@repo/payments";
-import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
-import { type LanguageModel, wrapLanguageModel } from "ai";
+import {
+	type LanguageModel,
+	type LanguageModelMiddleware,
+	wrapLanguageModel,
+} from "ai";
 // Import from model-factory to avoid circular dependency with index.ts
 import {
 	getEmbeddingModel,
@@ -1008,7 +1011,11 @@ import {
 import { isAiInteractiveRequestFor } from "./chatgpt-plan/interactive-context";
 import { resolveChatGptPlanModel } from "./chatgpt-plan/models";
 import { ChatGptPlanAuthError } from "./chatgpt-plan/oauth";
-import { chatGptPlanSourceForCall } from "./chatgpt-plan/pool";
+import {
+	bulkRunsNeedSharedPlanMessage,
+	chatGptPlanSourceForCall,
+	sharedPlansSkipMembersMessage,
+} from "./chatgpt-plan/pool";
 import { createChatGptPlanModel } from "./chatgpt-plan/provider";
 import { createChatGptPlanRotationMiddleware } from "./chatgpt-plan/rotation";
 import type { PlanSourceRef } from "./chatgpt-plan/sources";
@@ -1019,15 +1026,22 @@ import {
 	resolveProviderApiKey,
 } from "./databricks-oauth";
 import {
-	type DecisionModelFallback,
 	getDecisionModelFallbacks,
-	withGatewayDecisionFallbacks,
+	withDecisionUsageLimits,
 } from "./decision-model-fallback";
 import { wrapDecisionModelWithTelemetry } from "./decision-telemetry";
 import {
+	wrapDecisionModelWithDispatchGuard,
 	wrapEmbeddingModelWithDispatchGuard,
 	wrapModelWithDispatchGuard,
 } from "./dispatch-guard-middleware";
+import { aiApiFallbackApproved, currentAiJobType } from "./job-context";
+import {
+	wrapDecisionModelWithTurnBudget,
+	wrapEmbeddingModelWithTurnBudget,
+	wrapModelWithTurnBudget,
+} from "./turn-budget-middleware";
+import { wrapModelWithUsageLimits } from "./usage-limit-middleware";
 import { getAiBillingCategory } from "./usage-logging";
 import {
 	type AggregateUsageRecord,
@@ -1083,6 +1097,12 @@ export interface AIOperationContext {
 	 * Use a key from AI_JOB_TYPES.
 	 */
 	jobType?: AiJobKey;
+	/**
+	 * This one bulk run may use the organization's provider once every shared
+	 * ChatGPT plan is spent ("Run now on API billing"). Unset follows the run
+	 * the work belongs to (`runWithAiApiFallbackApproved`).
+	 */
+	apiFallbackApproved?: boolean;
 	/**
 	 * Groups the rows of one conversation or meeting (an AgentConversation id,
 	 * a Parlume session id). Recorded verbatim on `AiUsageLog.conversationId`.
@@ -1238,20 +1258,77 @@ export interface AIDecisionModelResult {
 }
 
 /**
+ * A decision call a ChatGPT plan can serve right now. Every caller of
+ * {@link getAIDecisionModelWithMetadata} decides with its language model when
+ * no decision model resolves, and that language model runs on the plan.
+ */
+class DecisionModelDeferredToChatGptPlanError extends AIProviderNotConfiguredError {
+	constructor() {
+		super(
+			"A ChatGPT plan serves this call; deciding with the language model instead of the organization's Vercel AI Gateway.",
+		);
+		this.name = "DecisionModelDeferredToChatGptPlanError";
+	}
+}
+
+/**
+ * Whether a ChatGPT plan serves this call's language model, by the same
+ * rules as that model (Fizzy #3033). When every plan is spent the call
+ * follows the policy for its kind of work: under "Use API billing" (audited)
+ * the gateway decides, otherwise the plan's refusal with its reset time is
+ * thrown — never a quiet move to API billing. A plan that needs reconnecting,
+ * or a fault, reads as no: the gateway decides, as before.
+ *
+ * @throws SubscriptionPlanExhaustedError when every plan is spent and the
+ *   policy stops the work.
+ */
+async function chatGptPlanCanServeDecision(
+	context: AIOperationContext,
+): Promise<boolean> {
+	if (context.excludeChatGptPlan === true) {
+		return false;
+	}
+	try {
+		return (
+			(await chatGptPlanSourceForCall(planRoutingContext(context), {
+				exclude: context.excludePlanSources,
+			})) !== null
+		);
+	} catch (error) {
+		if (error instanceof SubscriptionPlanExhaustedError) {
+			throw error;
+		}
+		return false;
+	}
+}
+
+/**
  * Resolve the organization-configured typed decision model.
  *
  * Decision models (Luna Decisions, Jev) are AI SDK decision models rather
  * than language models, so this cannot use `getAIModelWithMetadata`. It
  * refuses every credential fallback source, to keep a missing organization
  * gateway from using a personal or platform key.
+ *
+ * A ChatGPT plan that can serve the same call comes first (Fizzy #2770): the
+ * call is refused with {@link DecisionModelDeferredToChatGptPlanError}, so the
+ * caller decides with its language model on the plan instead of billing the
+ * gateway. While every plan is spent the gateway decides only where the
+ * spend policy for that work allows API billing; otherwise the plan's
+ * refusal is thrown. Pass the same `jobType` and `planEligible` the caller's
+ * language model gets.
  */
 export async function getAIDecisionModelWithMetadata(
-	context: AIOperationContext,
+	callerContext: AIOperationContext,
 ): Promise<AIDecisionModelResult> {
+	const context = withAmbientJobType(callerContext);
 	if (!context.organizationId) {
 		throw new AIProviderNotConfiguredError(
 			"Decision evaluation requires an organization context and a configured Vercel AI Gateway provider.",
 		);
+	}
+	if (await chatGptPlanCanServeDecision(context)) {
+		throw new DecisionModelDeferredToChatGptPlanError();
 	}
 
 	const providerConfig = await getAiProviderApiKeyByProvider({
@@ -1309,37 +1386,15 @@ export async function getAIDecisionModelWithMetadata(
 	// (Luna -> Jev). An organization that chose its model explicitly gets no
 	// automatic cross-vendor decision-model fallback.
 	//
-	// The gateway can dispatch the request to any fallback, so each one's
-	// HARD limits are checked here, at the same point and with the same
-	// scope as the primary model's check above. A fallback whose limit is
-	// exhausted is left off the request rather than failing it: the primary
-	// model was allowed and still runs. Any other failure of the check
-	// propagates, exactly as it does for the primary.
-	const fallbacks: DecisionModelFallback[] = [];
-	for (const fallback of getDecisionModelFallbacks({
+	// The primary check above makes a model whose limit is already exhausted
+	// fail before any work. It does not cover later calls: callers reuse this
+	// model for many decisions, so `withDecisionUsageLimits` below repeats the
+	// primary check, and checks each fallback, immediately before every
+	// dispatch.
+	const fallbacks = getDecisionModelFallbacks({
 		selectionSource: selection.source,
 		canonicalName: model.canonicalName,
-	})) {
-		try {
-			await assertWithinAiUsageLimits({
-				...limitScope,
-				modelCanonicalName: fallback.canonicalName,
-			});
-			fallbacks.push(fallback);
-		} catch (error) {
-			if (!(error instanceof AiUsageLimitExceededError)) {
-				throw error;
-			}
-			console.warn(
-				"[getAIDecisionModelWithMetadata] usage limit reached for a decision fallback model — omitting it from this request",
-				{
-					organizationId: context.organizationId,
-					fallbackCanonicalName: fallback.canonicalName,
-					limitId: error.limitId,
-				},
-			);
-		}
-	}
+	});
 
 	const apiKey = await resolveProviderApiKey(providerConfig);
 	const billingState = getTenantAiGatewayBillingState({
@@ -1366,45 +1421,71 @@ export async function getAIDecisionModelWithMetadata(
 		billingMode: billingState.mode,
 		billingCustomerId: null,
 	};
-	const trackedEvaluationModel = wrapEvaluationModelWithUsageLogging(
-		// The span wraps the gateway model directly, inside the fallback
-		// wrapper, so it measures exactly one `doDecide` network round trip
-		// (and one span per SDK retry).
-		withGatewayDecisionFallbacks(
-			wrapDecisionModelWithTelemetry(evaluationModel, {
-				provider: metadata.provider,
-				requestModelId: metadata.modelString,
-				requestModelLabel: metadata.canonicalName ?? undefined,
-				organizationId: context.organizationId,
-				projectId: context.projectId,
-				featureKey: context.featureKey,
-				jobType: context.jobType,
-			}),
-			fallbacks,
-		),
-		{
-			userId: context.userId,
-			organizationId: context.organizationId,
-			projectId: context.projectId,
-			provider: metadata.provider,
-			providerModelId: metadata.modelString,
-			modelCanonicalName: metadata.canonicalName ?? undefined,
-			providerConfigId: metadata.configId ?? undefined,
-			taskType: "DECISION" as DbAiTaskType,
-			billingCategory: getAiBillingCategory(metadata),
-			billingCustomerId: metadata.billingCustomerId,
-			featureKey: context.featureKey,
-			promptVersionId: context.promptVersionId,
-			jobType: context.jobType,
-		},
-		{
-			answeringModelCanonicalNames: Object.fromEntries(
-				fallbacks.map((fallback) => [
-					fallback.providerModelId,
-					fallback.canonicalName,
-				]),
+	const organizationId = context.organizationId;
+	// The limit wrapper sits outside the usage-logging wrapper, so a call
+	// refused by a limit writes no usage row. The telemetry span wraps the
+	// gateway model directly, so it measures exactly one `doDecide` network
+	// round trip (and one span per SDK retry); a refused call has no span.
+	//
+	// The same two gates as every language and embedding model above, placed
+	// the same way: the caller's dispatch guard outermost (checked before
+	// each `doDecide`, its abort signal merged with the caller's deadline),
+	// then the usage limits, then the turn token ledger, so a refusal by
+	// either check leaves no reservation. Each physical `doDecide` reserves
+	// as an AUXILIARY request and settles from its usage. A decision takes
+	// no output cap, so its attempts are MEASURED_ONLY. See
+	// turn-budget-middleware.ts.
+	const trackedEvaluationModel = wrapDecisionModelWithDispatchGuard(
+		withDecisionUsageLimits(
+			wrapDecisionModelWithTurnBudget(
+				wrapEvaluationModelWithUsageLogging(
+					wrapDecisionModelWithTelemetry(evaluationModel, {
+						provider: metadata.provider,
+						requestModelId: metadata.modelString,
+						requestModelLabel: metadata.canonicalName ?? undefined,
+						organizationId,
+						projectId: context.projectId,
+						featureKey: context.featureKey,
+						jobType: context.jobType,
+					}),
+					{
+						userId: context.userId,
+						organizationId,
+						projectId: context.projectId,
+						provider: metadata.provider,
+						providerModelId: metadata.modelString,
+						modelCanonicalName: metadata.canonicalName ?? undefined,
+						providerConfigId: metadata.configId ?? undefined,
+						taskType: "DECISION" as DbAiTaskType,
+						billingCategory: getAiBillingCategory(metadata),
+						billingCustomerId: metadata.billingCustomerId,
+						featureKey: context.featureKey,
+						promptVersionId: context.promptVersionId,
+						jobType: context.jobType,
+					},
+					{
+						// Built from the full configured list: a fallback dropped from one
+						// call may still answer a later call that carries it.
+						answeringModelCanonicalNames: Object.fromEntries(
+							fallbacks.map((fallback) => [
+								fallback.providerModelId,
+								fallback.canonicalName,
+							]),
+						),
+					},
+				),
 			),
-		},
+			{
+				primaryCanonicalName: model.canonicalName,
+				fallbacks,
+				organizationId,
+				assertWithinLimits: (modelCanonicalName) =>
+					assertWithinAiUsageLimits({
+						...limitScope,
+						modelCanonicalName,
+					}),
+			},
+		),
 	);
 
 	return {
@@ -1471,6 +1552,22 @@ export async function getAIModel(
 	return result.model;
 }
 
+/** An unset `jobType` follows the job the work runs inside (`runWithAiJobType`). */
+function withAmbientJobType(
+	callerContext: AIOperationContext,
+): AIOperationContext {
+	const context =
+		callerContext.apiFallbackApproved === undefined &&
+		aiApiFallbackApproved()
+			? { ...callerContext, apiFallbackApproved: true }
+			: callerContext;
+	if (context.jobType !== undefined) {
+		return context;
+	}
+	const jobType = currentAiJobType();
+	return jobType ? { ...context, jobType } : context;
+}
+
 /** The context plan routing reads: unset eligibility follows the member's own interactive request. */
 function planRoutingContext(context: AIOperationContext): AIOperationContext {
 	return context.planEligible === undefined &&
@@ -1489,8 +1586,9 @@ function planRoutingContext(context: AIOperationContext): AIOperationContext {
  * rather than quietly billing the organization's provider.
  */
 export async function chatGptPlanServesCall(
-	context: AIOperationContext,
+	callerContext: AIOperationContext,
 ): Promise<boolean> {
+	const context = withAmbientJobType(callerContext);
 	if (context.excludeChatGptPlan === true) {
 		return false;
 	}
@@ -1538,8 +1636,9 @@ export function getAIModelWithMetadata(
 ): Promise<AIModelResult>;
 export async function getAIModelWithMetadata(
 	options: GetAIModelWithMetadataOptions,
-	context: AIOperationContext,
+	callerContext: AIOperationContext,
 ): Promise<AIModelResult | AggregateAIModelResult> {
+	const context = withAmbientJobType(callerContext);
 	const {
 		taskType,
 		complexity,
@@ -1588,7 +1687,19 @@ export async function getAIModelWithMetadata(
 	// Step 2: Validate configuration. A Databricks service-principal config has
 	// no apiKey — check for either credential shape.
 	if (!hasProviderCredentials(config)) {
+		// Ahead of `_error`: for a text task that is always the bare "No AI
+		// provider configured.", which this hint exists to replace.
+		const sharedPlansHint = !context.organizationId
+			? null
+			: routingContext.planEligible === true
+				? await sharedPlansSkipMembersMessage(context.organizationId)
+				: await bulkRunsNeedSharedPlanMessage({
+						userId: context.userId,
+						organizationId: context.organizationId,
+						jobType: context.jobType,
+					});
 		const errorMessage =
+			sharedPlansHint ||
 			config._error ||
 			"No AI provider configured. Please configure an AI provider in Settings → AI Providers.";
 		throw new AIProviderNotConfiguredError(errorMessage);
@@ -1649,14 +1760,17 @@ export async function getAIModelWithMetadata(
 	// BEFORE the model is constructed and the upstream provider is hit. SOFT
 	// limits are evaluated post-record (see logAiUsage → recordAiUsageAndCheckOverage).
 	// Do not strip — every AI invocation must route through this gate.
-	await assertWithinAiUsageLimits({
+	// The same scope is checked again before every request the returned model
+	// makes (see the usage-limit wrapper below).
+	const limitScope = {
 		userId: context.userId,
 		organizationId: context.organizationId ?? null,
 		projectId: context.projectId ?? null,
 		providerConfigId: config.configId,
 		modelCanonicalName: apiModelOverride || config.canonicalName,
 		taskType: mapTaskTypeToDb(taskType as string),
-	});
+	};
+	await assertWithinAiUsageLimits(limitScope);
 
 	// Step 5: Create the model instance.
 	// Resolve the "emits <think> tags" signal from the CANONICAL model identity
@@ -1731,10 +1845,27 @@ export async function getAIModelWithMetadata(
 	// caller's ambient dispatch guard before each physical request and takes
 	// its abort signal. A pass-through when the caller installed no guard.
 	// See dispatch-guard-middleware.ts.
+	//
+	// Inside it, and outside the usage logger, the HARD usage limits are
+	// checked again before each physical request (callers reuse this model
+	// across steps and loops), so a refused request dispatches nothing and
+	// writes no usage row. See usage-limit-middleware.ts.
+	//
+	// Inside both, the turn token ledger reserves each physical request
+	// before it is sent and settles it after, when the guard carries one;
+	// placed there so a refusal by either check above leaves no reservation.
+	// These providers send `maxOutputTokens`, so the ledger's output cap is
+	// enforced. See turn-budget-middleware.ts.
 	const trackedModel = wrapModelWithDispatchGuard(
-		usageLogging === "aggregate"
-			? model
-			: wrapModelWithUsageLogging(model, usageLoggingContext),
+		wrapModelWithUsageLimits(
+			wrapModelWithTurnBudget(
+				usageLogging === "aggregate"
+					? model
+					: wrapModelWithUsageLogging(model, usageLoggingContext),
+				{ enforcesOutputCap: true },
+			),
+			() => assertWithinAiUsageLimits(limitScope),
+		),
 	);
 
 	if (usageLogging === "aggregate") {
@@ -1781,14 +1912,15 @@ async function getChatGptPlanModelWithMetadata(
 		// Only a chat's plan pick; a saved provider model is not the plan's.
 		override: chatGptPlanModelOverride(options.modelOverride) ?? undefined,
 	});
-	await assertWithinAiUsageLimits({
+	const limitScope = {
 		userId: context.userId,
 		organizationId: context.organizationId ?? null,
 		projectId: context.projectId ?? null,
 		providerConfigId,
 		modelCanonicalName: modelId,
 		taskType,
-	});
+	};
+	await assertWithinAiUsageLimits(limitScope);
 
 	const metadata: AIModelMetadata = {
 		modelString: modelId,
@@ -1830,58 +1962,137 @@ async function getChatGptPlanModelWithMetadata(
 		conversationId: context.conversationId,
 		costUsd: 0,
 	};
-	const build = (current: PlanSourceRef) =>
+	type PlanUsageContext = typeof usageLoggingContext;
+	const build = (
+		current: PlanSourceRef,
+		served: PlanUsageContext,
+		requestedOutputTokens?: number,
+	) =>
 		createChatGptPlanModel({
 			userId: context.userId,
 			source: current,
 			modelId,
 			fallbackModelId: fallbackModel,
 			reasoningEffort,
+			// The turn token ledger, on every model a request is physically
+			// sent through: this account's model and its fallback model here,
+			// and each account the rotation moves to (it builds a new plan
+			// model through this same function). Every send — the first, a
+			// rotated one, a fallback — is therefore its own attempt: it is
+			// reserved (and so admitted) before it goes out and settled after,
+			// and one refused after it went out stays charged (UNKNOWN). A
+			// denied reservation throws the ledger's refusal, which neither
+			// the rotation nor the fallback treats as a reason to try again.
+			// The plan strips `maxOutputTokens` before these sends, so they
+			// are MEASURED_ONLY and reserve the output the caller asked for.
+			wrapPhysicalModel: (physical) =>
+				wrapModelWithTurnBudget(physical as unknown as LanguageModel, {
+					enforcesOutputCap: false,
+					requestedOutputTokens,
+				}) as unknown as typeof physical,
+			// The fallback model's own token limits apply to the call it takes
+			// over, on the account serving it (Fizzy #3026).
+			beforeModelFallback: (fallbackModelId) =>
+				assertWithinAiUsageLimits({
+					...limitScope,
+					providerConfigId:
+						current.kind === "org" ? current.accountId : null,
+					modelCanonicalName: fallbackModelId,
+				}),
 			// The usage row names the model that actually answered.
 			onModelFallback: (servedBy) => {
-				usageLoggingContext.providerModelId = servedBy;
-				usageLoggingContext.modelCanonicalName = servedBy;
+				served.providerModelId = servedBy;
+				served.modelCanonicalName = servedBy;
 			},
 		});
 	// A spent plan hands the call to the next one, silently; the usage row
-	// names the account that answered.
+	// names the account that answered. Built per request, with its own usage
+	// context, so neither the rotation nor the account and model a request
+	// was served by carry over to the next request, or to one running
+	// alongside it (Fizzy #3025).
+	const forRequest = (requestedOutputTokens: number | undefined) => {
+		const served: PlanUsageContext = { ...usageLoggingContext };
+		const rotating = wrapLanguageModel({
+			model: build(source, served, requestedOutputTokens) as Parameters<
+				typeof wrapLanguageModel
+			>[0]["model"],
+			middleware: createChatGptPlanRotationMiddleware({
+				source,
+				build: (next) => build(next, served, requestedOutputTokens),
+				repick: async (exclude) =>
+					(
+						await chatGptPlanSourceForCall(context, {
+							exclude: [
+								...(context.excludePlanSources ?? []),
+								...exclude,
+							],
+						})
+					)?.source ?? null,
+				// The account's own token limits apply to the call it takes over.
+				beforeRotate: (next) =>
+					assertWithinAiUsageLimits({
+						...limitScope,
+						providerConfigId:
+							next.kind === "org" ? next.accountId : null,
+					}),
+				onRotated: (next) => {
+					served.providerConfigId =
+						next.kind === "org" ? next.accountId : undefined;
+				},
+			}),
+		});
+		const model =
+			options.usageLogging === "aggregate"
+				? rotating
+				: (wrapModelWithUsageLogging(
+						rotating,
+						served,
+					) as typeof rotating);
+		return { model, served };
+	};
+	// The turn's aggregate row names the account and model of its latest
+	// request.
+	const aggregateContext: PlanUsageContext = { ...usageLoggingContext };
+	const perRequest: LanguageModelMiddleware = {
+		specificationVersion: "v4",
+		wrapGenerate: async ({ params }) => {
+			const request = forRequest(params.maxOutputTokens);
+			try {
+				return await request.model.doGenerate(params);
+			} finally {
+				Object.assign(aggregateContext, request.served);
+			}
+		},
+		wrapStream: async ({ params }) => {
+			const request = forRequest(params.maxOutputTokens);
+			try {
+				return await request.model.doStream(params);
+			} finally {
+				Object.assign(aggregateContext, request.served);
+			}
+		},
+	};
+	// The model wrapped here is never called; each request runs on its own.
 	const model = wrapLanguageModel({
-		model: build(source) as Parameters<
+		model: build(source, { ...usageLoggingContext }) as Parameters<
 			typeof wrapLanguageModel
 		>[0]["model"],
-		middleware: createChatGptPlanRotationMiddleware({
-			source,
-			build,
-			repick: async (exclude) =>
-				(
-					await chatGptPlanSourceForCall(context, {
-						exclude: [
-							...(context.excludePlanSources ?? []),
-							...exclude,
-						],
-					})
-				)?.source ?? null,
-			// The account's own token limits apply to the call it takes over.
-			beforeRotate: (next) =>
-				assertWithinAiUsageLimits({
-					userId: context.userId,
-					organizationId: context.organizationId ?? null,
-					projectId: context.projectId ?? null,
-					providerConfigId:
-						next.kind === "org" ? next.accountId : null,
-					modelCanonicalName: modelId,
-					taskType,
-				}),
-			onRotated: (next) => {
-				usageLoggingContext.providerConfigId =
-					next.kind === "org" ? next.accountId : undefined;
-			},
-		}),
+		middleware: perRequest,
 	});
+	// Per-request limit check, placed as in `getAIModelWithMetadata`. It uses
+	// the account resolved here because every request this model makes starts
+	// on `source`: the rotation middleware sends each request first to the
+	// model built for `source`, and moves it to another account only after
+	// `beforeRotate` has checked that account.
+	//
+	// The turn token ledger is not here, around the request as a whole: it
+	// is on each physical model inside (see `build`), so the first send, a
+	// rotated one and a fallback one are each reserved and settled on their
+	// own, and nothing is reserved twice.
 	const trackedModel = wrapModelWithDispatchGuard(
-		options.usageLogging === "aggregate"
-			? model
-			: wrapModelWithUsageLogging(model, usageLoggingContext),
+		wrapModelWithUsageLimits(model, () =>
+			assertWithinAiUsageLimits(limitScope),
+		),
 	);
 	if (options.usageLogging === "aggregate") {
 		return {
@@ -1889,7 +2100,7 @@ async function getChatGptPlanModelWithMetadata(
 			metadata,
 			trackUsage,
 			recordAggregateUsage: (record) =>
-				recordAggregateUsage(usageLoggingContext, record),
+				recordAggregateUsage(aggregateContext, record),
 		};
 	}
 	return { model: trackedModel, metadata, trackUsage };
@@ -2020,20 +2231,25 @@ export async function getAIEmbeddingModelWithMetadata(
 	// Wrapped in the dispatch guard as well, exactly as language models are
 	// in getAIModelWithMetadata: each physical embed request checks the
 	// caller's ambient guard first.
+	// The turn token ledger (when the guard carries one) reserves each
+	// physical embed request's input and settles its reported tokens.
 	const trackedModel = wrapEmbeddingModelWithDispatchGuard(
-		wrapEmbeddingModelWithUsageLogging(model, {
-			userId: context.userId,
-			organizationId: context.organizationId,
-			projectId: context.projectId,
-			provider: metadata.provider,
-			providerModelId: metadata.modelString,
-			modelCanonicalName: metadata.canonicalName ?? undefined,
-			providerConfigId: metadata.configId ?? undefined,
-			taskType: "EMBEDDING",
-			billingCategory: getAiBillingCategory(metadata),
-			billingCustomerId: metadata.billingCustomerId,
-			jobType: context.jobType,
-		}),
+		wrapEmbeddingModelWithTurnBudget(
+			wrapEmbeddingModelWithUsageLogging(model, {
+				userId: context.userId,
+				organizationId: context.organizationId,
+				projectId: context.projectId,
+				provider: metadata.provider,
+				providerModelId: metadata.modelString,
+				modelCanonicalName: metadata.canonicalName ?? undefined,
+				providerConfigId: metadata.configId ?? undefined,
+				taskType: "EMBEDDING",
+				billingCategory: getAiBillingCategory(metadata),
+				billingCustomerId: metadata.billingCustomerId,
+				featureKey: context.featureKey,
+				jobType: context.jobType,
+			}),
+		),
 	);
 
 	return { model: trackedModel, metadata, trackUsage };

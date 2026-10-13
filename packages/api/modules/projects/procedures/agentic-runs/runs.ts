@@ -25,12 +25,12 @@ import {
 import { describeCostRefusal } from "../../lib/agentic-run-cost";
 import { deriveIdempotentRunId } from "../../lib/agentic-run-idempotency";
 import { describeProductionRunWarning } from "../../lib/agentic-run-production";
-import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature";
 import {
 	isScriptedRunPermitted,
 	resolveAgenticRunMode,
 	resolveSelectedTestCaseIds,
 } from "../../lib/agentic-run-selection";
+import { assertPipelineResultsEnabled } from "../../lib/pipeline-results-feature";
 import { testCaseSelectionSchema } from "../../lib/test-case-selection";
 
 /**
@@ -184,6 +184,9 @@ async function startAgenticRunWorkflow(input: {
 				projectId: input.projectId,
 				organizationId: input.organizationId,
 				userId: input.userId,
+				// A person starts this run over the cases they picked, so its
+				// model calls may use their ChatGPT plan (Fizzy #2770).
+				planEligible: true,
 				runId: input.runId,
 				environmentId: input.environmentId,
 				targetBaseUrl: input.targetBaseUrl,

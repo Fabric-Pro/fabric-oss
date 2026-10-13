@@ -17,6 +17,13 @@
  * lex-max ts observed. Slack `ts` is a zero-padded "seconds.microseconds"
  * string that sorts lexicographically by chronological order, so string
  * comparison suffices.
+ *
+ * When every ChatGPT plan is spent (Fizzy #2770) the run stops paging rather
+ * than skip threads: it fails with the plan's own error type carrying the
+ * progress at the start of the page it was on, and neither completes the
+ * backfill nor moves the channel's cursor. The workflow waits for the reset
+ * and runs again from there; the threads of that page analysed before the
+ * refusal are then skipped as already seen.
  */
 
 import {
@@ -27,6 +34,11 @@ import { getSlackCredentials } from "@repo/integrations/slack";
 import { logger } from "@repo/logs";
 import { Context } from "@temporalio/activity";
 import { CancelledFailure } from "@temporalio/common";
+import {
+	findPlanExhausted,
+	findWorkflowHandledPlanRefusal,
+	planSpentWithProgress,
+} from "../lib/chatgpt-plan-refusal";
 import {
 	JOB_SOURCE,
 	JOB_STEPS,
@@ -58,6 +70,11 @@ export interface BackfillSlackChannelInput {
 	limit?: number;
 	/** Max total root messages to process this run. Default 5_000. */
 	maxMessages?: number;
+	/**
+	 * Where a run stopped by a spent ChatGPT plan left off (Fizzy #2770): the
+	 * progress its plan-spent failure carried.
+	 */
+	resumeFrom?: BackfillSlackChannelProgress;
 }
 
 export interface BackfillSlackChannelOutput {
@@ -80,6 +97,8 @@ interface SlackHistoryMessage {
 	thread_ts?: string;
 	reply_count?: number;
 }
+
+export type BackfillSlackChannelProgress = HeartbeatState;
 
 interface HeartbeatState {
 	/**
@@ -226,6 +245,17 @@ async function callConversationsHistory(params: {
  */
 const BACKFILL_RETRY_ERROR_CLASS = "ActivityFailed";
 
+/**
+ * Shown in place of a failure while the workflow waits for the plan to reset
+ * (Fizzy #2770). The row stays FAILED — the status has no waiting member —
+ * and the Job Hub renders this class as a neutral wait. The resumed run
+ * reopens the row like an activity retry.
+ */
+const PLAN_WAIT_ERROR_CLASS = "ChatGptPlanWait";
+
+/** When the spent plan said it resets, for the Job Hub's waiting note. */
+const planResetAt = new WeakMap<object, Date | null>();
+
 export async function backfillSlackChannelActivity(
 	input: BackfillSlackChannelInput,
 ): Promise<BackfillSlackChannelOutput> {
@@ -236,6 +266,15 @@ export async function backfillSlackChannelActivity(
 		// down and may run it elsewhere, so closing the row would report a
 		// failure for work that is still going.
 		if (isCancellation(error)) {
+			throw error;
+		}
+		if (isPlanSpentFailure(error)) {
+			// A wait, not a broken channel: no failure on the channel row, and
+			// the Job Hub shows the row as waiting for the reset.
+			await jobFail(planWaitNote(error), {
+				sourceId: input.linkedChannelId,
+				errorClass: PLAN_WAIT_ERROR_CLASS,
+			});
 			throw error;
 		}
 		const message = error instanceof Error ? error.message : String(error);
@@ -260,6 +299,52 @@ export async function backfillSlackChannelActivity(
 		}
 		throw error;
 	}
+}
+
+/** The plan-spent failure the run ends with, read by its type. */
+function isPlanSpentFailure(error: unknown): boolean {
+	return (
+		(error as { type?: unknown } | null)?.type ===
+		"SubscriptionPlanExhaustedError"
+	);
+}
+
+/**
+ * Ends the run at a plan refusal, to resume from the start of the page it was
+ * on. Every plan spent leaves under the plan's own type, which the workflow
+ * waits on; a plan that ran out mid-reply with another left is rethrown for
+ * Temporal's own retry, which resumes from the heartbeat recorded here.
+ */
+function stoppedByPlanRefusal(
+	error: unknown,
+	pageStart: HeartbeatState,
+	ctx: Context,
+	at: { channelId: string; threadRootTs: string },
+): unknown {
+	ctx.heartbeat(pageStart);
+	logger.warn("[SlackChannelMonitor] Backfill stopped by a ChatGPT plan", {
+		...at,
+		cursor: pageStart.cursor,
+	});
+	const spent = findPlanExhausted(error);
+	if (!spent) {
+		return error;
+	}
+	const failure = planSpentWithProgress(spent, pageStart);
+	planResetAt.set(failure, spent.resetAt);
+	return failure;
+}
+
+/**
+ * The note on a waiting row: when the plan resets, as an ISO time the Job Hub
+ * formats in the viewer's own zone, or empty when the plan did not say.
+ */
+function planWaitNote(failure: unknown): string {
+	const resetAt =
+		typeof failure === "object" && failure !== null
+			? planResetAt.get(failure)
+			: undefined;
+	return resetAt ? resetAt.toISOString() : "";
 }
 
 /** Cancellation, in either shape Temporal surfaces it. */
@@ -307,7 +392,10 @@ async function runSlackChannelBackfill(
 		sourceType: JOB_SOURCE.slackLinkedChannel,
 		sourceId: linkedChannelId,
 		steps: seedJobSteps([...JOB_STEPS.channelMonitor]),
-		reopenFailedWithClass: BACKFILL_RETRY_ERROR_CLASS,
+		reopenFailedWithClass: [
+			BACKFILL_RETRY_ERROR_CLASS,
+			PLAN_WAIT_ERROR_CLASS,
+		],
 	});
 	await jobStep("fetch", "running", { sourceId: linkedChannelId });
 
@@ -316,16 +404,17 @@ async function runSlackChannelBackfill(
 	const heartbeatDetails = ctx.info.heartbeatDetails as
 		| HeartbeatState
 		| undefined;
-	const state: HeartbeatState = heartbeatDetails ?? {
-		cursor: null,
-		oldest: oldestTs ?? null,
-		maxTs: null,
-		rootsScanned: 0,
-		rootsClaimed: 0,
-		proposalsCreated: 0,
-		rootsSkippedAlreadySeen: 0,
-		rootsSkippedFiltered: 0,
-	};
+	const state: HeartbeatState = heartbeatDetails ??
+		input.resumeFrom ?? {
+			cursor: null,
+			oldest: oldestTs ?? null,
+			maxTs: null,
+			rootsScanned: 0,
+			rootsClaimed: 0,
+			proposalsCreated: 0,
+			rootsSkippedAlreadySeen: 0,
+			rootsSkippedFiltered: 0,
+		};
 
 	const creds = await getSlackCredentials(userId, organizationId);
 
@@ -341,7 +430,10 @@ async function runSlackChannelBackfill(
 
 	while (hasMore && state.rootsScanned < maxMessages) {
 		pageNumber++;
-		ctx.heartbeat(state);
+		// `state.cursor` is still the cursor this page is fetched with, so a
+		// run stopped part-way through the page resumes by fetching it again.
+		const pageStart: HeartbeatState = { ...state };
+		ctx.heartbeat(pageStart);
 		// Keep the job row alive too: a large channel can page for longer than
 		// the watchdog's staleness window while skipping already-seen roots,
 		// which produces no other job write.
@@ -398,6 +490,15 @@ async function runSlackChannelBackfill(
 					state.rootsClaimed++;
 				}
 			} catch (err) {
+				// A plan refusal never reached the model and gave the thread's
+				// claim back. Swallowing it like other failures would page on
+				// and complete the backfill past a thread nothing analysed.
+				if (findWorkflowHandledPlanRefusal(err)) {
+					throw stoppedByPlanRefusal(err, pageStart, ctx, {
+						channelId,
+						threadRootTs,
+					});
+				}
 				const errorMessage =
 					err instanceof Error ? err.message : String(err);
 				logger.error(

@@ -110,6 +110,7 @@ export async function findDueDocumentsActivity(): Promise<FindDueDocumentsOutput
 					cadence: s.cadence,
 					lastRefreshedAt: s.lastRefreshedAt,
 					lastAttemptAt: s.lastAttemptAt,
+					lastRefreshStatus: s.lastRefreshStatus,
 				},
 				now,
 			)

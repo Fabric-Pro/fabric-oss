@@ -46,6 +46,8 @@ const NULLED_CLUSTER = {
 	lastPmSyncStatus: null,
 	lastSyncedPmHash: null,
 	lastPmSyncAttemptAt: null,
+	lastPmSyncAttemptId: null,
+	pmSyncPendingSince: null,
 	lastPmSyncError: null,
 	lastSyncedStatusId: null,
 };
@@ -242,6 +244,163 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					where: { projectId: project.id, externalId: "S-1" },
 				}),
 			).toBe(0);
+		});
+
+		/** Put a story's link into PENDING for one attempt, as an enqueue stamps it. */
+		async function stampPending(
+			storyId: string,
+			attempt: {
+				attemptId: string;
+				attemptAt: Date;
+				pendingSince: Date | null;
+			},
+		) {
+			await db.userStory.update({
+				where: { id: storyId },
+				data: {
+					lastPmSyncStatus: "PENDING",
+					lastPmSyncAttemptAt: attempt.attemptAt,
+					lastPmSyncAttemptId: attempt.attemptId,
+					pmSyncPendingSince: attempt.pendingSince,
+				},
+			});
+		}
+
+		/** The attempt-scoped FAILED compensation an enqueue issues on a failed start. */
+		function compensate(storyId: string, attemptId: string) {
+			return db.userStory.updateMany({
+				where: {
+					id: storyId,
+					lastPmSyncAttemptId: attemptId,
+					lastPmSyncStatus: "PENDING",
+				},
+				data: { lastPmSyncStatus: "FAILED" },
+			});
+		}
+
+		it("transfer-from-duplicate gives a transferred PENDING a fresh attempt and the duplicate's pending-since", async () => {
+			const { project, statusId } = await seedProject();
+			const survivor = await seedStory({
+				projectId: project.id,
+				statusId,
+				link: "S-P1",
+			});
+			const duplicate = await seedStory({
+				projectId: project.id,
+				statusId,
+				link: "D-P1",
+			});
+			const survivorSince = new Date("2026-04-01T00:00:00.000Z");
+			const duplicateSince = new Date("2026-05-02T00:00:00.000Z");
+			await stampPending(survivor.id, {
+				attemptId: "attempt-survivor",
+				attemptAt: survivorSince,
+				pendingSince: survivorSince,
+			});
+			await stampPending(duplicate.id, {
+				attemptId: "attempt-duplicate",
+				attemptAt: new Date("2026-05-02T00:05:00.000Z"),
+				pendingSince: duplicateSince,
+			});
+
+			await mergeDuplicateStories({
+				projectId: project.id,
+				survivorId: survivor.id,
+				duplicateId: duplicate.id,
+				userId: USER_ID,
+				pmLink: "transfer-from-duplicate",
+			});
+
+			const s = await db.userStory.findUnique({
+				where: { id: survivor.id },
+			});
+			expect(s?.lastPmSyncStatus).toBe("PENDING");
+			expect(s?.lastPmSyncAttemptId).toMatch(/^[0-9a-f-]{36}$/);
+			expect(s?.pmSyncPendingSince?.toISOString()).toBe(
+				duplicateSince.toISOString(),
+			);
+			// The survivor's own in-flight attempt compensates late: it no
+			// longer matches, so the transferred PENDING survives.
+			expect(
+				(await compensate(survivor.id, "attempt-survivor")).count,
+			).toBe(0);
+			expect(
+				(await db.userStory.findUnique({ where: { id: survivor.id } }))
+					?.lastPmSyncStatus,
+			).toBe("PENDING");
+		});
+
+		it("transfer-from-duplicate falls back to the duplicate's attempt time for a PENDING stamped before pending-since existed", async () => {
+			const { project, statusId } = await seedProject();
+			const survivor = await seedStory({
+				projectId: project.id,
+				statusId,
+			});
+			const duplicate = await seedStory({
+				projectId: project.id,
+				statusId,
+				link: "D-P2",
+			});
+			const attemptAt = new Date("2026-05-03T00:00:00.000Z");
+			await db.userStory.update({
+				where: { id: duplicate.id },
+				data: {
+					lastPmSyncStatus: "PENDING",
+					lastPmSyncAttemptAt: attemptAt,
+				},
+			});
+
+			await mergeDuplicateStories({
+				projectId: project.id,
+				survivorId: survivor.id,
+				duplicateId: duplicate.id,
+				userId: USER_ID,
+				pmLink: "transfer-from-duplicate",
+			});
+
+			const s = await db.userStory.findUnique({
+				where: { id: survivor.id },
+			});
+			expect(s?.pmSyncPendingSince?.toISOString()).toBe(
+				attemptAt.toISOString(),
+			);
+			expect(s?.lastPmSyncAttemptId).toMatch(/^[0-9a-f-]{36}$/);
+		});
+
+		it("transfer-from-duplicate of a settled link clears the survivor's PENDING bookkeeping", async () => {
+			const { project, statusId } = await seedProject();
+			const survivor = await seedStory({
+				projectId: project.id,
+				statusId,
+				link: "S-P3",
+			});
+			const duplicate = await seedStory({
+				projectId: project.id,
+				statusId,
+				link: "D-P3",
+			});
+			await stampPending(survivor.id, {
+				attemptId: "attempt-survivor",
+				attemptAt: new Date("2026-04-01T00:00:00.000Z"),
+				pendingSince: new Date("2026-04-01T00:00:00.000Z"),
+			});
+
+			await mergeDuplicateStories({
+				projectId: project.id,
+				survivorId: survivor.id,
+				duplicateId: duplicate.id,
+				userId: USER_ID,
+				pmLink: "transfer-from-duplicate",
+			});
+
+			const s = await db.userStory.findUnique({
+				where: { id: survivor.id },
+			});
+			expect(s).toMatchObject({
+				lastPmSyncStatus: "SUCCESS",
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			});
 		});
 
 		it("re-parents the duplicate's tasks and resolves the pending duplicate link", async () => {

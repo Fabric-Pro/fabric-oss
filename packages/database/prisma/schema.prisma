@@ -181,8 +181,8 @@ model User {
   projectContextConversationBundles               ProjectContextConversationBundle[]
   projectContextConversationClaims                ProjectContextConversationClaim[]
   projectContextPendingVectorCleanups             ProjectContextPendingVectorCleanup[]
-  projectContextRepositorySyncs                   ProjectContextRepositorySync[]    @relation("ContextRepositorySyncConfigurer")
-  projectContextRepositorySyncRuns                ProjectContextRepositorySyncRun[] @relation("ContextRepositorySyncRunActor")
+  projectContextRepositorySyncs                   ProjectContextRepositorySync[]          @relation("ContextRepositorySyncConfigurer")
+  projectContextRepositorySyncRuns                ProjectContextRepositorySyncRun[]       @relation("ContextRepositorySyncRunActor")
   projectReadinessItemStates                      ProjectReadinessItemState[]
   projectReadinessVerdicts                        ProjectReadinessVerdict[]
   projectContextSummaries                         ProjectContextSummary[]
@@ -225,8 +225,8 @@ model User {
   promptComments                                  PromptComment[]
   promptCommentVotes                              PromptCommentVote[]
   promptChangeRequests                            PromptChangeRequest[]
-  promptNominationsCreated                        PromptNomination[] @relation("PromptNominationsCreated")
-  promptNominationsReviewed                       PromptNomination[] @relation("PromptNominationsReviewed")
+  promptNominationsCreated                        PromptNomination[]                      @relation("PromptNominationsCreated")
+  promptNominationsReviewed                       PromptNomination[]                      @relation("PromptNominationsReviewed")
   userStoryComments                               UserStoryComment[]
   storyTaskComments                               StoryTaskComment[]
   createdStoryTags                                StoryTag[]
@@ -244,57 +244,57 @@ model User {
   // Roadmap Priority — band changes this user made by hand or triggered.
   storyPriorityChanges StoryPriorityChange[]
 
-  architectureDecisions        ArchitectureDecision[]
-  architectureDecisionComments ArchitectureDecisionComment[]
-  architectureDecisionVersions ArchitectureDecisionVersion[]
-  decisionTypes                DecisionType[]
-  testCases                    TestCase[]
-  testPlans                    TestPlan[]
-  testCaseDraftJobs            TestCaseDraftJob[]
-  testCaseDraftJobsRequested   TestCaseDraftJob[]            @relation("TestCaseDraftJobRequestedBy")
-  testResultEvents             TestResultEvent[]
-  testCaseActivities           TestCaseActivity[]
-  testPipelineRuns             TestPipelineRun[]
-  testFindings                 TestFinding[]
-  testAgenticRuns              TestAgenticRun[]
-  testRunConfigurations        TestRunConfiguration[]
-  testAgenticCaseResults       TestAgenticCaseResult[]
-  testAgenticRunsTriggered     TestAgenticRun[]              @relation("TestAgenticRunTriggeredBy")
-  testPipelineSyncStates       TestPipelineSyncState[]
-  qaSettings                   ProjectQaSettings[]
-  qaOpenQuestions              QaOpenQuestion[]
-  qaSignOffs                   QaSignOff[]
-  pullRequestReviews           PullRequestReview[]
-  pullRequestReviewsRequested  PullRequestReview[]           @relation("PullRequestReviewRequestedBy")
-  pullRequestReviewFindings    PullRequestReviewFinding[]
-  prReviewJudgements           PrReviewJudgement[]
-  qaSignOffsGiven              QaSignOff[]                   @relation("QaSignOffSignedBy")
-  environments                 ProjectEnvironment[]
-  projectQaWebhooks            ProjectQaWebhook[]
-  qaAnalysisVersions           QaAnalysisVersion[]
-  publishingSuggestionCycles   PublishingSuggestionCycle[]
-  publishingTopics             PublishingTopic[]             @relation("PublishingTopicOwner")
-  publishingListPreferences    PublishingListPreference[]
-  publishingDraftReadMarkers   PublishingTopicDraftRead[]
-  publishingTopicsCreated      PublishingTopic[]             @relation("PublishingTopicCreatedBy")
-  publishingSuiteSettings      PublishingSuiteSettings[]
-  publishingNotificationsReceived PublishingNotificationDelivery[]
-  publishingTopicReads PublishingTopicRead[]
-  publishingPlanningAnalyses   PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisTenant")
+  architectureDecisions               ArchitectureDecision[]
+  architectureDecisionComments        ArchitectureDecisionComment[]
+  architectureDecisionVersions        ArchitectureDecisionVersion[]
+  decisionTypes                       DecisionType[]
+  testCases                           TestCase[]
+  testPlans                           TestPlan[]
+  testCaseDraftJobs                   TestCaseDraftJob[]
+  testCaseDraftJobsRequested          TestCaseDraftJob[]                @relation("TestCaseDraftJobRequestedBy")
+  testResultEvents                    TestResultEvent[]
+  testCaseActivities                  TestCaseActivity[]
+  testPipelineRuns                    TestPipelineRun[]
+  testFindings                        TestFinding[]
+  testAgenticRuns                     TestAgenticRun[]
+  testRunConfigurations               TestRunConfiguration[]
+  testAgenticCaseResults              TestAgenticCaseResult[]
+  testAgenticRunsTriggered            TestAgenticRun[]                  @relation("TestAgenticRunTriggeredBy")
+  testPipelineSyncStates              TestPipelineSyncState[]
+  qaSettings                          ProjectQaSettings[]
+  qaOpenQuestions                     QaOpenQuestion[]
+  qaSignOffs                          QaSignOff[]
+  pullRequestReviews                  PullRequestReview[]
+  pullRequestReviewsRequested         PullRequestReview[]               @relation("PullRequestReviewRequestedBy")
+  pullRequestReviewFindings           PullRequestReviewFinding[]
+  prReviewJudgements                  PrReviewJudgement[]
+  qaSignOffsGiven                     QaSignOff[]                       @relation("QaSignOffSignedBy")
+  environments                        ProjectEnvironment[]
+  projectQaWebhooks                   ProjectQaWebhook[]
+  qaAnalysisVersions                  QaAnalysisVersion[]
+  publishingSuggestionCycles          PublishingSuggestionCycle[]
+  publishingTopics                    PublishingTopic[]                 @relation("PublishingTopicOwner")
+  publishingListPreferences           PublishingListPreference[]
+  publishingDraftReadMarkers          PublishingTopicDraftRead[]
+  publishingTopicsCreated             PublishingTopic[]                 @relation("PublishingTopicCreatedBy")
+  publishingSuiteSettings             PublishingSuiteSettings[]
+  publishingNotificationsReceived     PublishingNotificationDelivery[]
+  publishingTopicReads                PublishingTopicRead[]
+  publishingPlanningAnalyses          PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisTenant")
   publishingPlanningAnalysesRequested PublishingTopicPlanningAnalysis[] @relation("PublishingPlanningAnalysisRequestedBy")
-  publishingTopicDrafts        PublishingTopicDraft[]            @relation("PublishingTopicDraftTenant")
-  publishingTopicDraftsRequested PublishingTopicDraft[]          @relation("PublishingTopicDraftRequestedBy")
-  publishingWorkingDrafts      PublishingTopicWorkingDraft[]     @relation("PublishingWorkingDraftTenant")
-  publishingWorkingDraftsUpdated PublishingTopicWorkingDraft[]   @relation("PublishingWorkingDraftUpdatedBy")
-  publishingAnalysisRevisionsTenant PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionTenant")
+  publishingTopicDrafts               PublishingTopicDraft[]            @relation("PublishingTopicDraftTenant")
+  publishingTopicDraftsRequested      PublishingTopicDraft[]            @relation("PublishingTopicDraftRequestedBy")
+  publishingWorkingDrafts             PublishingTopicWorkingDraft[]     @relation("PublishingWorkingDraftTenant")
+  publishingWorkingDraftsUpdated      PublishingTopicWorkingDraft[]     @relation("PublishingWorkingDraftUpdatedBy")
+  publishingAnalysisRevisionsTenant   PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionTenant")
   publishingAnalysisRevisionsAuthored PublishingTopicAnalysisRevision[] @relation("PublishingAnalysisRevisionAuthor")
-  publishingDraftRevisionsTenant PublishingTopicDraftRevision[] @relation("PublishingDraftRevisionTenant")
-  publishingDraftRevisionsAuthored PublishingTopicDraftRevision[] @relation("PublishingDraftRevisionAuthor")
-  publishingTopicDecisions     PublishingTopicDecisionEntry[]
-  authoredPublishingTopicDecisions PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionAuthor")
-  publishingQuestionAssignments  PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignee")
-  publishingQuestionsAssignedOut PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignedBy")
-  publishingQuestionAssigneeRows PublishingTopicQuestionAssignee[]
+  publishingDraftRevisionsTenant      PublishingTopicDraftRevision[]    @relation("PublishingDraftRevisionTenant")
+  publishingDraftRevisionsAuthored    PublishingTopicDraftRevision[]    @relation("PublishingDraftRevisionAuthor")
+  publishingTopicDecisions            PublishingTopicDecisionEntry[]
+  authoredPublishingTopicDecisions    PublishingTopicDecisionEntry[]    @relation("PublishingTopicDecisionAuthor")
+  publishingQuestionAssignments       PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignee")
+  publishingQuestionsAssignedOut      PublishingTopicQuestionAssignee[] @relation("PublishingQuestionAssignedBy")
+  publishingQuestionAssigneeRows      PublishingTopicQuestionAssignee[]
 
   // Notification center relations
   notifications                   Notification[]
@@ -328,16 +328,16 @@ model User {
   diagrams Diagram[]
 
   // Coding Instructions
-  instructionSnapshots         ProjectInstructionSnapshot[] @relation("InstructionSnapshotCreator")
-  reviewedInstructionSnapshots ProjectInstructionSnapshot[] @relation("InstructionSnapshotReviewer")
-  instructionFiles     ProjectInstructionFile[]
-  instructionGitIntentEntries ProjectInstructionGitIntentEntry[] @relation("InstructionGitIntentEntryCreator")
-  instructionRepositorySyncs     ProjectInstructionRepositorySync[]    @relation("InstructionRepositorySyncDelegate")
-  instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("InstructionRepositorySyncRunActor")
+  instructionSnapshots          ProjectInstructionSnapshot[]          @relation("InstructionSnapshotCreator")
+  reviewedInstructionSnapshots  ProjectInstructionSnapshot[]          @relation("InstructionSnapshotReviewer")
+  instructionFiles              ProjectInstructionFile[]
+  instructionGitIntentEntries   ProjectInstructionGitIntentEntry[]    @relation("InstructionGitIntentEntryCreator")
+  instructionRepositorySyncs    ProjectInstructionRepositorySync[]    @relation("InstructionRepositorySyncDelegate")
+  instructionRepositorySyncRuns ProjectInstructionRepositorySyncRun[] @relation("InstructionRepositorySyncRunActor")
 
   // Meeting transcript sync relations
-  linkedMeetings     ProjectLinkedMeeting[]
-  meetingTranscripts ProjectMeetingTranscript[]
+  linkedMeetings         ProjectLinkedMeeting[]
+  meetingTranscripts     ProjectMeetingTranscript[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
@@ -345,14 +345,14 @@ model User {
   // Teams channel monitor relations
   linkedTeamsChannels       ProjectLinkedTeamsChannel[]
   // Teams chat monitor relations
-  linkedTeamsChats         ProjectLinkedTeamsChat[]
+  linkedTeamsChats          ProjectLinkedTeamsChat[]
   // Slack channel monitor relations
-  linkedSlackChannels      ProjectLinkedSlackChannel[]
-  huddleNotes              ProjectSlackHuddleNote[]
-  pendingBacklogProposals  PendingBacklogProposal[]
-  reviewedBacklogProposals PendingBacklogProposal[]    @relation("PendingBacklogProposalReviewer")
-  backlogUpdateSessions    BacklogUpdateSession[]
-  pendingPmStateReviews    PendingPmStateChange[]      @relation("PmStateReviewer")
+  linkedSlackChannels       ProjectLinkedSlackChannel[]
+  huddleNotes               ProjectSlackHuddleNote[]
+  pendingBacklogProposals   PendingBacklogProposal[]
+  reviewedBacklogProposals  PendingBacklogProposal[]    @relation("PendingBacklogProposalReviewer")
+  backlogUpdateSessions     BacklogUpdateSession[]
+  pendingPmStateReviews     PendingPmStateChange[]      @relation("PmStateReviewer")
   stageApproverOf           ProjectStageApprover[]
   stageTransitionsRequested StageTransitionRequest[]    @relation("StageTransitionRequestedBy")
   stageTransitionsReviewed  StageTransitionRequest[]    @relation("StageTransitionReviewedBy")
@@ -402,24 +402,24 @@ model User {
   proposalStylesUpdated ProjectDocumentStyle[] @relation("ProjectDocumentStyleUpdatedBy")
 
   // Brute force protection
-  failedLoginAttempts Int       @default(0)
-  lockedUntil         DateTime?
-  lastFailedLoginAt   DateTime?
+  failedLoginAttempts    Int                     @default(0)
+  lockedUntil            DateTime?
+  lastFailedLoginAt      DateTime?
+  deletedMeetingArchives DeletedMeetingArchive[]
+  assignedTodos          TodoItem[]              @relation("TodoAssignee")
 
   @@map("user")
-  deletedMeetingArchives DeletedMeetingArchive[]
-  assignedTodos          TodoItem[]            @relation("TodoAssignee")
 }
 
 model Session {
-  id                       String    @id @default(cuid())
+  id                       String              @id @default(cuid())
   expiresAt                DateTime
   ipAddress                String?
   userAgent                String?
   userId                   String
   impersonatedBy           String?
   activeOrganizationId     String?
-  token                    String    @unique
+  token                    String              @unique
   createdAt                DateTime
   updatedAt                DateTime
   // Single-use step-up grant for the 2FA MANAGEMENT endpoints (issue #2827).
@@ -432,7 +432,7 @@ model Session {
   // session cookie — so a signed, response-only cookie has to match it; see
   // packages/auth/lib/two-factor-management-step-up.ts.
   twoFactorStepUpGrantedAt DateTime?
-  user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                     User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   oauthRefreshTokens       OauthRefreshToken[]
   oauthAccessTokens        OauthAccessToken[]
 
@@ -757,45 +757,45 @@ model TwoFactor {
 }
 
 model Organization {
-  id                              String                        @id @default(cuid())
-  name                            String
-  slug                            String?                       @unique
-  logo                            String?
-  createdAt                       DateTime
-  metadata                        String?
-  paymentsCustomerId              String?
+  id                               String                        @id @default(cuid())
+  name                             String
+  slug                             String?                       @unique
+  logo                             String?
+  createdAt                        DateTime
+  metadata                         String?
+  paymentsCustomerId               String?
   // IANA TZ name (e.g., "America/Los_Angeles"). NULL falls back to "UTC" at read
   // time (see packages/payments/src/lib/ai-usage-limits.ts:getTenantTimezone).
-  timezone                        String?
-  firecrawlApiKey                 String?
-  firecrawlEnabled                Boolean                       @default(false)
-  firecrawlConfiguredAt           DateTime?
-  firecrawlLastUsedAt             DateTime?
-  azureAiApiKey                   String?
-  azureAiConfiguredAt             DateTime?
-  azureAiEnabled                  Boolean                       @default(false)
-  azureAiEndpoint                 String?
-  azureAiLastUsedAt               DateTime?
-  azureAiModelRouterName          String?
-  azureAiProjectName              String?
-  azureAiRegion                   String?
-  azureAiResourceGroup            String?
-  azureAiSubscriptionId           String?
-  azureAiTenantId                 String?
-  azureAiUseModelRouter           Boolean                       @default(false)
-  useDelegatedExecution           Boolean                       @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
+  timezone                         String?
+  firecrawlApiKey                  String?
+  firecrawlEnabled                 Boolean                       @default(false)
+  firecrawlConfiguredAt            DateTime?
+  firecrawlLastUsedAt              DateTime?
+  azureAiApiKey                    String?
+  azureAiConfiguredAt              DateTime?
+  azureAiEnabled                   Boolean                       @default(false)
+  azureAiEndpoint                  String?
+  azureAiLastUsedAt                DateTime?
+  azureAiModelRouterName           String?
+  azureAiProjectName               String?
+  azureAiRegion                    String?
+  azureAiResourceGroup             String?
+  azureAiSubscriptionId            String?
+  azureAiTenantId                  String?
+  azureAiUseModelRouter            Boolean                       @default(false)
+  useDelegatedExecution            Boolean                       @default(true) // Delegate Fabric AI operations to server instead of executing in Temporal
   // Org-level kill switch for the persistent document-assistant chat history
   // feature. Default true so the feature is on
   // for every existing org; flip to false per-org if the SSR hydration path
   // regresses the document editor.
-  documentAssistantHistoryEnabled Boolean                       @default(true)
+  documentAssistantHistoryEnabled  Boolean                       @default(true)
   // Org-level opt-in for the Feature Maturation V2 three-tab editor (Summary &
   // Questions / Decision Log / Clean Specification). Default true (#1797): V2 is
   // rolled out to all orgs now that every creation path drafts a Clean Spec (#1799).
   // Retained as the per-org kill-switch — flip an org back to false via SQL to
   // disable V2 for it without a deploy. The v1/v2 manual switch a flagged user
   // sees is session-scoped and separate.
-  featureMaturationV2Enabled      Boolean                       @default(true)
+  featureMaturationV2Enabled       Boolean                       @default(true)
   // SUPERSEDED (Fizzy #2300) — no code reads this column. AI answer
   // recommendations are gated by the AI_ANSWER_RECOMMENDATIONS runtime flag, set
   // from the admin console and resolved for a project's organization.
@@ -809,12 +809,12 @@ model Organization {
   // releases: first drop the field here and let that build fully replace every
   // older one, including as a rollback target, then drop the column itself in
   // a later migration.
-  aiAnswerRecommendationsEnabled  Boolean                       @default(false)
+  aiAnswerRecommendationsEnabled   Boolean                       @default(false)
   // SOC 2 CC6.1 — opt-in organization-wide MFA enforcement. When true, members
   // without two-factor enabled are redirected to enroll before they can access
   // this organization's resources. Default false so enabling the feature changes
   // nothing for any existing org until an owner/admin turns it on.
-  requireTwoFactor                Boolean                       @default(false)
+  requireTwoFactor                 Boolean                       @default(false)
   /// Default retention window for soft-deleted attachments, in days (#1749).
   /// null = inherit the server default. Range enforced by a CHECK constraint.
   attachmentRetentionDays          Int?
@@ -826,52 +826,52 @@ model Organization {
   /// this model are untouched — and is made unreachable by REFUSING it at
   /// tenant resolution instead. That is why none of those tables needs a
   /// liveness predicate of its own.
-  deletedAt                       DateTime?
+  deletedAt                        DateTime?
   /// userId that initiated the deletion. Also the recipient of the reminder.
-  deletedBy                       String?
+  deletedBy                        String?
   /// deletedAt + ORGANIZATION_RETENTION_DAYS, STAMPED AT DELETION TIME rather
   /// than computed at purge time. That is what makes "recoverable until <date>"
   /// a promise the system can keep: shortening the window later cannot
   /// retroactively destroy something already in the corridor.
-  scheduledPermanentDeleteAt      DateTime?
+  scheduledPermanentDeleteAt       DateTime?
   /// Set when the 24-48h pre-purge reminder has been sent, so the daily sweep
   /// cannot send it twice.
-  deletionReminderSentAt          DateTime?
-  mcpServers                      MCPServer[]
-  mcpConfigs                      MCPConfig[]
-  aiChatMcpConfigs                AiChatMcpConfig[]
-  authoritySessions               AuthoritySession[]
-  registeredAgentSuggestions      RegisteredAgentSuggestion[]
-  agents                          Agent[]
-  agentTasks                      AgentTask[]
-  aiChats                         AiChat[]
-  aiOutcomeEvents                 AiOutcomeEvent[]
-  azureAgentDeployments           AzureAgentDeployment[]
-  azureAiModelDeployments         AzureAiModelDeployment[]
-  chatDocuments                   ChatDocument[]
-  cloudProviderConfigs            CloudProviderConfig[]
-  invitations                     Invitation[]
-  members                         Member[]
-  ragProviders                    OrganizationRagProvider[]
-  searchProviders                 OrganizationSearchProvider[]
-  projects                        Project[]
-  prompts                         Prompt[]
-  purchases                       Purchase[]
-  sdlcArtifacts                   SDLCArtifact[]
-  sdlcPipelines                   SDLCPipeline[]
-  evalBudget                      OrganizationEvalBudget?
-  workflows                       Workflow[]
-  browserTasks                    BrowserTask[]
-  automationTemplates             AutomationTemplate[]
-  openAPIServices                 OpenAPIService[]
-  openAPIServiceConfigs           OpenAPIServiceConfig[]
-  agentConversations              AgentConversation[]
-  conversationTurns               ConversationTurn[]
-  registeredAgents                RegisteredAgent[]
-  modelPreferences                OrganizationModelPreference[]
-  apiKeys                         OrganizationApiKey[]
-  aiCreditAccount                 AiCreditAccount?
-  aiUsageLimits                   AiUsageLimit[]
+  deletionReminderSentAt           DateTime?
+  mcpServers                       MCPServer[]
+  mcpConfigs                       MCPConfig[]
+  aiChatMcpConfigs                 AiChatMcpConfig[]
+  authoritySessions                AuthoritySession[]
+  registeredAgentSuggestions       RegisteredAgentSuggestion[]
+  agents                           Agent[]
+  agentTasks                       AgentTask[]
+  aiChats                          AiChat[]
+  aiOutcomeEvents                  AiOutcomeEvent[]
+  azureAgentDeployments            AzureAgentDeployment[]
+  azureAiModelDeployments          AzureAiModelDeployment[]
+  chatDocuments                    ChatDocument[]
+  cloudProviderConfigs             CloudProviderConfig[]
+  invitations                      Invitation[]
+  members                          Member[]
+  ragProviders                     OrganizationRagProvider[]
+  searchProviders                  OrganizationSearchProvider[]
+  projects                         Project[]
+  prompts                          Prompt[]
+  purchases                        Purchase[]
+  sdlcArtifacts                    SDLCArtifact[]
+  sdlcPipelines                    SDLCPipeline[]
+  evalBudget                       OrganizationEvalBudget?
+  workflows                        Workflow[]
+  browserTasks                     BrowserTask[]
+  automationTemplates              AutomationTemplate[]
+  openAPIServices                  OpenAPIService[]
+  openAPIServiceConfigs            OpenAPIServiceConfig[]
+  agentConversations               AgentConversation[]
+  conversationTurns                ConversationTurn[]
+  registeredAgents                 RegisteredAgent[]
+  modelPreferences                 OrganizationModelPreference[]
+  apiKeys                          OrganizationApiKey[]
+  aiCreditAccount                  AiCreditAccount?
+  aiUsageLimits                    AiUsageLimit[]
 
   // Workspace relations
   workspaces Workspace[]
@@ -994,7 +994,7 @@ model Organization {
   qaSignOffs                              QaSignOff[]
   pullRequestReviews                      PullRequestReview[]
   pullRequestReviewFindings               PullRequestReviewFinding[]
-  prReviewJudgements           PrReviewJudgement[]
+  prReviewJudgements                      PrReviewJudgement[]
   environments                            ProjectEnvironment[]
   projectQaWebhooks                       ProjectQaWebhook[]
   publishingSuggestionCycles              PublishingSuggestionCycle[]
@@ -1031,11 +1031,11 @@ model Organization {
   diagrams Diagram[]
 
   // Coding Instructions
-  instructionSnapshots ProjectInstructionSnapshot[]
-  instructionFiles     ProjectInstructionFile[]
-  instructionGitIntentEntries ProjectInstructionGitIntentEntry[]
-  instructionRepositorySyncs     ProjectInstructionRepositorySync[]
-  instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[]
+  instructionSnapshots          ProjectInstructionSnapshot[]
+  instructionFiles              ProjectInstructionFile[]
+  instructionGitIntentEntries   ProjectInstructionGitIntentEntry[]
+  instructionRepositorySyncs    ProjectInstructionRepositorySync[]
+  instructionRepositorySyncRuns ProjectInstructionRepositorySyncRun[]
 
   // Frame sharing policy
   canShareFramesPublicly   Boolean  @default(true)
@@ -1045,8 +1045,8 @@ model Organization {
   approvalTemplates ApprovalTemplate[]
 
   // Meeting transcript sync relations
-  linkedMeetings     ProjectLinkedMeeting[]
-  meetingTranscripts ProjectMeetingTranscript[]
+  linkedMeetings         ProjectLinkedMeeting[]
+  meetingTranscripts     ProjectMeetingTranscript[]
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
@@ -1087,7 +1087,7 @@ model Organization {
   cliPromptDismissals CliConnectionPromptDismissal[]
 
   // Members who chose to run their own work here on their ChatGPT plan.
-  chatGptPlanOrgUses ChatGptPlanOrgUse[]
+  chatGptPlanOrgUses     ChatGptPlanOrgUse[]
   // ChatGPT plan accounts the organization connected for shared work, and
   // its pooling policy (Fizzy #2770).
   chatGptPlanOrgAccounts ChatGptPlanOrgAccount[]
@@ -1109,14 +1109,14 @@ model Organization {
   projectDocumentAnalyses ProjectDocumentAnalysis[]
   projectDocumentFindings ProjectDocumentFinding[]
   projectDocumentStyles   ProjectDocumentStyle[]
+  deletedMeetingArchives  DeletedMeetingArchive[]
+  nonMemberContacts       NonMemberContact[]
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
   // migrations/20260910140100_organization_purge_index.
   @@index([scheduledPermanentDeleteAt])
   @@map("organization")
-  deletedMeetingArchives DeletedMeetingArchive[]
-  nonMemberContacts      NonMemberContact[]
 }
 
 // Organization RAG Settings - Default settings that apply to all workspaces in the organization
@@ -1711,26 +1711,37 @@ model Agent {
 }
 
 model AgentTask {
-  id             String          @id @default(cuid())
-  agentId        String
-  userId         String
-  organizationId String?
-  status         String
-  stage          String
-  input          Json
-  state          Json?
-  result         Json?
-  error          String?
-  workflowId     String?
-  runId          String?
-  framework      String
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  completedAt    DateTime?
-  approvals      AgentApproval[]
-  organization   Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  artifacts      SDLCArtifact[]
+  id                  String          @id @default(cuid())
+  agentId             String
+  userId              String
+  organizationId      String?
+  status              String
+  stage               String
+  input               Json
+  state               Json?
+  result              Json?
+  error               String?
+  workflowId          String?
+  runId               String?
+  framework           String
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  completedAt         DateTime?
+  approvals           AgentApproval[]
+  // Paused for a ChatGPT plan reset (status WAITING_FOR_PLAN): when the resume
+  // run starts, how often the run has paused, and when it first did (the
+  // pause cap). `resumeState` holds the saved progress and the resume input.
+  resumesAt           DateTime?
+  pauseCount          Int             @default(0)
+  firstPausedAt       DateTime?
+  resumeState         Json?
+  // "Run now on API billing": who let this one run use the organization's
+  // provider instead of waiting, and when.
+  apiOverrideAt       DateTime?
+  apiOverrideByUserId String?
+  organization        Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  artifacts           SDLCArtifact[]
 
   @@index([userId])
   @@index([organizationId])
@@ -1983,7 +1994,7 @@ enum AgentConversationStatus {
 /// A cancel by key that arrives before the turn exists writes a tombstone:
 /// status CANCELLED, cancelSource CANCELLED_BEFORE_START, no executionId.
 model ConversationTurn {
-  id                  String  @id @default(cuid())
+  id                  String                 @id @default(cuid())
   organizationId      String
   userId              String
   /// The conversation the turn runs in; null for a surface with no
@@ -1997,7 +2008,7 @@ model ConversationTurn {
   /// of the same message).
   clientRequestKey    String
   /// The Temporal workflow id. Null only on a cancel-before-start tombstone.
-  executionId         String? @unique
+  executionId         String?                @unique
   /// Monotonic per conversation (max + 1 under the conversation's lock).
   /// Null on a tombstone.
   generation          Int?
@@ -2020,13 +2031,42 @@ model ConversationTurn {
   responseText       String?
   /// Limit signals the turn ended with (kind/provider/message), if any.
   limitSignalSummary Json?
+  /// Structured record of a token-allowance stop (kind `token_allowance`,
+  /// allowance, measured, outstanding, enforcement, stop reason), written with
+  /// the turn's terminal state. The live stream and a reconnect read the same
+  /// payload. Null when the turn did not stop on its allowance.
+  budgetStop         Json?
+
+  /// Token ledger. The version of the budget contract the turn was
+  /// admitted under; null for a turn with no ledger (admitted before it, or by
+  /// a starter that does not speak it). A provider request reserves against
+  /// the allowance only when this AND the workflow's activity scope both say 1
+  /// (see turn-contract.ts in @repo/temporal).
+  budgetContractVersion     Int?
+  /// The turn's token allowance, frozen at admission from the server-side
+  /// execution mode's `maxTotalTokens`. Never reset by a reconnect, an
+  /// idempotent re-admission or a signal.
+  tokenAllowance            Int?
+  /// Part of `tokenAllowance` that exploration may not use: only the turn's
+  /// finalization request may reserve into it.
+  finalizationReserveTokens Int?
+  /// Sum of settled attempts' reported usage (input incl. cache + output incl.
+  /// reasoning).
+  measuredTokens            BigInt                             @default(0)
+  /// Reservations not yet settled, plus the reservations of attempts whose
+  /// usage is UNKNOWN (kept as a conservative charge, never refunded).
+  outstandingTokens         BigInt                             @default(0)
+  /// ENFORCED while every attempt ran on a model that honours its output cap;
+  /// MEASURED_ONLY once any attempt did not. Null before the first attempt.
+  budgetEnforcement         ConversationTurnBudgetEnforcement?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  conversation AgentConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation AgentConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  attempts     ConversationTurnAttempt[]
 
   @@unique([userId, organizationId, clientRequestKey])
   @@unique([conversationId, generation])
@@ -2043,6 +2083,72 @@ enum ConversationTurnStatus {
   FAILED
   LIMITED
   CANCELLED
+}
+
+enum ConversationTurnBudgetEnforcement {
+  /// Every attempt so far ran with an output cap the provider honours.
+  ENFORCED
+  /// At least one attempt ran on a model that cannot cap its output (the
+  /// ChatGPT plan adapter strips the cap): its usage is measured, not bounded.
+  MEASURED_ONLY
+}
+
+/// One physical model or embedding request a ledgered turn sent (or was about
+/// to send). Reserved before dispatch, settled after. Every row is bound to its
+/// parent turn's organization and user on insert; queries resolve ownership
+/// through the parent turn, never through these copies.
+model ConversationTurnAttempt {
+  /// Fresh for every physical send: each SDK step and each SDK retry.
+  id              String                        @id @default(cuid())
+  turnId          String
+  organizationId  String
+  userId          String
+  /// The parent turn's generation at reservation (null with no conversation).
+  generation      Int?
+  kind            ConversationTurnAttemptKind
+  /// False when the model cannot honour an output cap (MEASURED_ONLY).
+  enforced        Boolean
+  reservedTokens  Int
+  status          ConversationTurnAttemptStatus @default(RESERVED)
+  /// Reported usage, normalized: total input including cache reads and
+  /// writes, counted once; output including reasoning.
+  inputTokens     Int?
+  outputTokens    Int?
+  /// Diagnostic attribution only; never used for authorization.
+  workflowId      String?
+  runId           String?
+  activityId      String?
+  activityAttempt Int?
+  modelId         String?
+
+  createdAt DateTime  @default(now())
+  settledAt DateTime?
+
+  turn ConversationTurn @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@index([turnId])
+  @@map("conversation_turn_attempt")
+}
+
+enum ConversationTurnAttemptKind {
+  /// A main reasoning round.
+  EXPLORATION
+  /// The turn's final answer after a budget stop; may use the reserve.
+  FINALIZATION
+  /// Any other request under the turn (compaction, summaries, embeddings…).
+  AUXILIARY
+}
+
+enum ConversationTurnAttemptStatus {
+  /// Reserved; the request may be in flight. Charged.
+  RESERVED
+  /// Complete usage reported and reconciled into `measuredTokens`.
+  SETTLED
+  /// Dispatched (or possibly dispatched) with no complete usage. The
+  /// reservation stays charged in `outstandingTokens`. Final.
+  UNKNOWN
+  /// Positively never sent; the reservation was refunded.
+  RELEASED
 }
 
 enum ConversationTurnCancelSource {
@@ -2103,16 +2209,16 @@ model SDLCPipeline {
 }
 
 model Project {
-  id                                    String                             @id @default(cuid())
+  id                                    String                      @id @default(cuid())
   name                                  String
   description                           String?
-  heroEmojis                            String[]                           @default([])
+  heroEmojis                            String[]                    @default([])
   heroImageUrl                          String? // AI-generated hero image URL
   goals                                 String?
   techStack                             String[]
   features                              String[]
-  projectTypes                          String[]                           @default([])
-  status                                ProjectStatus                      @default(DRAFT)
+  projectTypes                          String[]                    @default([])
+  status                                ProjectStatus               @default(DRAFT)
   /// Which readiness checklist applies (Fizzy #2165). NULL is meaningful and is
   /// the default for every project that predates this: a project with no phase
   /// is *unjudged* — the panel asks the user to pick one instead of grading it
@@ -2149,11 +2255,11 @@ model Project {
   // the behaviour every project had before this existed.
   logSourceProvider                     String?
   logSourceConfig                       Json?
-  adoStatePollActive                    Boolean                            @default(false)
-  autoPushPmSync                        Boolean                            @default(false)
+  adoStatePollActive                    Boolean                     @default(false)
+  autoPushPmSync                        Boolean                     @default(false)
   /// Per-project opt-in for bidirectional PM attachment sync (Fizzy #1746).
   /// OFF means no attachment ever leaves or enters Fabric via a PM tool.
-  syncAttachments                       Boolean                            @default(false)
+  syncAttachments                       Boolean                     @default(false)
   /// Retention window for soft-deleted attachments, in days (#1749).
   /// null = inherit the organization setting, then the server default.
   attachmentRetentionDays               Int?
@@ -2161,28 +2267,28 @@ model Project {
   attachmentRetentionDaysUpdatedAt      DateTime?
   // Project-level Read-only mode — blocks all outbound writes to
   // connected external sources (PM/doc tools) while enabled; reads/sync-in unaffected
-  readOnlyMode                          Boolean                            @default(false)
+  readOnlyMode                          Boolean                     @default(false)
   lastAdoStatePollAt                    DateTime?
   // PM terminal-status auto-close (card #1360 Phase A)
-  pmTerminalStatuses                    String[]                           @default([])
-  pmAutoCloseEnabled                    Boolean                            @default(false)
+  pmTerminalStatuses                    String[]                    @default([])
+  pmAutoCloseEnabled                    Boolean                     @default(false)
   // Per-project opt-in for pulling the PM tool's mapped status back into
   // UserStory.statusId on the hourly poll (Fizzy #2304). Default false so the
   // feature ships dark — no project changes behavior until an owner opts in.
-  pmStatusSyncEnabled                   Boolean                            @default(false)
+  pmStatusSyncEnabled                   Boolean                     @default(false)
   /// When the status-sync switch last went from off to on: the start of the
   /// current sync session. Last-run writes are conditioned on it (Fizzy #2304).
   pmStatusSyncSessionAt                 DateTime?
   /// Last status-sync run summary, shape `pmStatusSyncLastRunSchema` (Fizzy #2304).
   pmStatusSyncLastRun                   Json?
   // PM custom-field read mapping — project-level feature flag
-  pmFieldMappingEnabled                 Boolean                            @default(false)
+  pmFieldMappingEnabled                 Boolean                     @default(false)
   prdSourceTitle                        String? // Cached title of the source document
   prdSourceUrl                          String? // URL to the source document
-  prdSourceContextId                    String?                            @unique
+  prdSourceContextId                    String?                     @unique
   prdSourceSyncedAt                     DateTime?
   // Meeting Transcript Auto-Sync
-  meetingTranscriptSyncEnabled          Boolean                            @default(false)
+  meetingTranscriptSyncEnabled          Boolean                     @default(false)
   meetingTranscriptSyncIntervalMin      Int?
   meetingTranscriptSyncLastRun          DateTime?
   meetingTranscriptSyncWorkflowId       String?
@@ -2190,20 +2296,20 @@ model Project {
   /// Temporal workflow's arguments at enable-time and unreachable from SQL
   /// until now, so nothing could show whose account a project's sync depended
   /// on — or that it had left (#2355).
-  meetingTranscriptSyncUserId          String?
+  meetingTranscriptSyncUserId           String?
   // Auto-analyze freshly-synced meeting transcripts into feature proposals (opt-in; only effective when meetingTranscriptSyncEnabled is also true)
-  meetingTranscriptAutoAnalyzeEnabled   Boolean                            @default(false)
+  meetingTranscriptAutoAnalyzeEnabled   Boolean                     @default(false)
   // Create-vs-Enrich routing for action items extracted from ingested meetings
   // and monitored chat threads. When OFF (default) every extracted item is
   // proposed as a brand-new ticket — today's capture-as-is behaviour. When ON,
   // each item is evaluated against the project's active tickets and may instead
   // be proposed as an enrichment of the top match, which the reviewer can
   // override before approving.
-  actionItemRoutingEnabled              Boolean                            @default(false)
+  actionItemRoutingEnabled              Boolean                     @default(false)
   // Teams Channel Monitor (feature extraction from linked Teams channels)
-  teamsChannelMonitorEnabled            Boolean                            @default(false)
+  teamsChannelMonitorEnabled            Boolean                     @default(false)
   teamsChannelMonitorIntervalMin        Int?
-  teamsChannelMonitorQuietWindowMin     Int?                               @default(60)
+  teamsChannelMonitorQuietWindowMin     Int?                        @default(60)
   teamsChannelMonitorLastRun            DateTime?
   teamsChannelMonitorWorkflowId         String?
   // Which user's delegated token this monitor runs on. It was frozen into the
@@ -2212,9 +2318,9 @@ model Project {
   // (Fizzy #2355).
   teamsChannelMonitorUserId             String?
   // Teams Chat Monitor (feature extraction from linked Teams group chats)
-  teamsChatMonitorEnabled               Boolean                            @default(false)
+  teamsChatMonitorEnabled               Boolean                     @default(false)
   teamsChatMonitorIntervalMin           Int?
-  teamsChatMonitorQuietWindowMin        Int?                               @default(60)
+  teamsChatMonitorQuietWindowMin        Int?                        @default(60)
   teamsChatMonitorLastRun               DateTime?
   teamsChatMonitorWorkflowId            String?
   // Which user's delegated token this monitor runs on. It was frozen into the
@@ -2223,11 +2329,11 @@ model Project {
   // (Fizzy #2355).
   teamsChatMonitorUserId                String?
   // Slack Channel Monitor (feature extraction from linked Slack channels via Events API)
-  slackChannelMonitorEnabled            Boolean                            @default(false)
+  slackChannelMonitorEnabled            Boolean                     @default(false)
   slackChannelMonitorWorkflowId         String?
   slackChannelMonitorLastRun            DateTime?
-  slackChannelMonitorDebounceMs         Int?                               @default(30000)
-  slackChannelMonitorMaxHoldMs          Int?                               @default(300000)
+  slackChannelMonitorDebounceMs         Int?                        @default(30000)
+  slackChannelMonitorMaxHoldMs          Int?                        @default(300000)
   // Which user's delegated token this monitor runs on. It was frozen into the
   // Temporal workflow's arguments at enable-time and unreachable from SQL, so
   // nothing could show whose account a project depended on, or that it had gone
@@ -2236,7 +2342,7 @@ model Project {
   // Slack Huddle Notes Ingestion (passive AI-Updates context from huddle AI-notes
   // canvases in linked Slack channels — poll-based, forward-only, independent of
   // the event-driven slackChannelMonitor above)
-  slackHuddleIngestEnabled              Boolean                            @default(false)
+  slackHuddleIngestEnabled              Boolean                     @default(false)
   slackHuddleIngestEnabledAt            DateTime? // forward-only lower bound; set on the null→now transition only
   slackHuddleIngestIntervalMin          Int?
   slackHuddleIngestLastRun              DateTime?
@@ -2251,7 +2357,7 @@ model Project {
   implementationDefaultWorkingDirectory String?
   // Website URLs (project-level context for AI; no fetch/parse yet)
   primaryWebsiteUrl                     String? // Primary product/company website (strongly recommended)
-  additionalWebsiteUrls                 String[]                           @default([]) // Additional URLs (docs, marketing, etc.)
+  additionalWebsiteUrls                 String[]                    @default([]) // Additional URLs (docs, marketing, etc.)
   // Code-Based Project Setup (orchestrator scans GitHub repo → generates docs)
   codeAnalysisStatus                    CodeAnalysisStatus?
   codeAnalysisWorkflowId                String? // Temporal workflow ID for tracking
@@ -2260,31 +2366,31 @@ model Project {
   // Per-project monotonic story identifier counter. Allocated atomically inside
   // the same transaction as UserStory.create via UPDATE ... RETURNING. See spec
   // 2026-05-21-roadmap-unique-sequential-ticket-ids.
-  nextStoryNumber                       Int                                @default(1) @map("next_story_number")
+  nextStoryNumber                       Int                         @default(1) @map("next_story_number")
   // Timestamp of the most recent successful duplicate scan (manual roadmap
   // "Scan for duplicates"). Null means never scanned. Telemetry/UX only — it
   // does not gate or alter detection.
   lastDuplicateScanAt                   DateTime?
   // Feature Maturation V2 — Project-level hidden stage configurations
-  hiddenMaturationStatuses              String[]                           @default([])
+  hiddenMaturationStatuses              String[]                    @default([])
   // AI Assistant — how often the document AI Assistant surfaces clarifying
   // questions during analysis/maturation. Admin-configurable; threaded into the
   // agent so MINIMAL genuinely asks less (not just hides). Default BALANCED.
-  clarifyingQuestionFrequency           ClarifyingQuestionFrequency        @default(BALANCED)
+  clarifyingQuestionFrequency           ClarifyingQuestionFrequency @default(BALANCED)
   // QA Strategy — depth tier that parameterizes generated QA Strategy documents.
   // LIGHT = functional/acceptance only; STANDARD adds regression+security(SAST)+browser
   // matrix; STRICT adds DAST framing, performance/SLO, and WCAG 2.1 AA. Default STANDARD.
-  qaStrategyLevel                       QaStrategyLevel                    @default(STANDARD)
+  qaStrategyLevel                       QaStrategyLevel             @default(STANDARD)
   // QA test-case generation — whether Fabric drafts manual
   // test cases for this project's features at all. OFF suppresses every drafting
   // run BEFORE a job is claimed, so no credits are spent (enforced in
   // aiDraftTestCasesProcedure). Default ON.
-  generateManualTestCases               Boolean                            @default(true)
+  generateManualTestCases               Boolean                     @default(true)
   // QA TDD ordering — when ON, the feature editor drafts
   // test cases from the acceptance criteria BEFORE implementation and reviews the
   // requirements against the drafted flows, rather than drafting after review. A
   // UI/ordering preference, not a lifecycle state machine. Default OFF.
-  applyTddApproach                      Boolean                            @default(false)
+  applyTddApproach                      Boolean                     @default(false)
   // Project-tab visibility overrides set by project admins (Fizzy card 1837):
   // { overrides: { [tabId]: boolean } }. true forces a tab visible for every
   // member (opting into a default-hidden optional), false hides it. Protected
@@ -2297,94 +2403,94 @@ model Project {
   // linked test case FAILED opens a BUG (source=PIPELINE_FAILURE) for it, unless
   // one is already open. Default OFF so failures never flood the backlog and
   // existing projects see no behavior change until they opt in.
-  autoCreateBugsFromFailures            Boolean                            @default(false)
-  createdAt                             DateTime                           @default(now())
-  updatedAt                             DateTime                           @updatedAt
-  organization                          Organization?                      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user                                  User                               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  contexts                              ProjectContext[]                   @relation("ProjectContexts")
-  contextPendingVectorCleanups          ProjectContextPendingVectorCleanup[]
-  contextRepositorySync                 ProjectContextRepositorySync?      @relation("ProjectContextRepositorySync")
-  contextRepositorySyncRuns             ProjectContextRepositorySyncRun[]  @relation("ProjectContextRepositorySyncRuns")
-  contextSummaries                      ProjectContextSummary[]
-  prdSourceContext                      ProjectContext?                    @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
+  autoCreateBugsFromFailures      Boolean                              @default(false)
+  createdAt                       DateTime                             @default(now())
+  updatedAt                       DateTime                             @updatedAt
+  organization                    Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                            User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contexts                        ProjectContext[]                     @relation("ProjectContexts")
+  contextPendingVectorCleanups    ProjectContextPendingVectorCleanup[]
+  contextRepositorySync           ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
+  contextRepositorySyncRuns       ProjectContextRepositorySyncRun[]    @relation("ProjectContextRepositorySyncRuns")
+  contextSummaries                ProjectContextSummary[]
+  prdSourceContext                ProjectContext?                      @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
   // Existing rows default to GOVERNED (closest to today's uniform gating); enforcement flags default off.
-  engagementProfile                     EngagementProfile          @default(GOVERNED)
-  engagementProfileUpdatedAt            DateTime?
-  quotedPhases                          String[]                   @default([]) // Phase labels inside the quoted horizon; empty = no horizon configured
-  enforceSpecifyGate                    Boolean                    @default(false)
-  enforceSpikeGate                      Boolean                    @default(false)
-  enforceDiscoveryGate                  Boolean                    @default(false)
-  documentTiersAdvisory                 Boolean                    @default(false)
-  visionPurpose                         String?                    @db.Text
-  visionCoreActions                     String[]                   @default([])
-  visionCycle                           String?
+  engagementProfile               EngagementProfile                    @default(GOVERNED)
+  engagementProfileUpdatedAt      DateTime?
+  quotedPhases                    String[]                             @default([]) // Phase labels inside the quoted horizon; empty = no horizon configured
+  enforceSpecifyGate              Boolean                              @default(false)
+  enforceSpikeGate                Boolean                              @default(false)
+  enforceDiscoveryGate            Boolean                              @default(false)
+  documentTiersAdvisory           Boolean                              @default(false)
+  visionPurpose                   String?                              @db.Text
+  visionCoreActions               String[]                             @default([])
+  visionCycle                     String?
   // Customer outcomes page (Slice 8): token-scoped read-only route; null = not published
-  outcomesShareToken                    String?                    @unique
-  documents                             ProjectDocument[]
-  ragSettings                           ProjectRagSettings?
-  databricksKnowledgeBinding            ProjectDatabricksKnowledgeBinding?
-  scanConfig                            ProjectScanConfig?
-  scans                                 ProjectScan[]
-  scanCheckpoints                       ProjectScanCheckpoint[]
-  scanFindings                          ScanFinding[]
-  scanActivities                        ScanActivity[]
-  scanFindingReviews                    ScanFindingReview[]
-  scanFindingGroupings                  ScanFindingGrouping[]
-  presence                              ProjectPresence[]
-  activities                            ProjectActivity[]
-  userPreferences                       ProjectUserPreference[]
-  functionTags                          ProjectUserFunctionTag[]
-  dailyBriefs                           DailyBrief[]
-  projectBriefCursors                   ProjectBriefCursor[]
-  dailyBriefReleaseNoteExclusions       DailyBriefReleaseNoteExclusion[]
-  documentAutoRefreshSettings           DocumentAutoRefreshSettings[]
-  newsletterSettings                    NewsletterSettings?
-  newsletterSubscribers                 NewsletterSubscriber[]
-  newsletterSends                       NewsletterSend[]
-  newsletterDeliveries                  NewsletterDelivery[]
-  members                               ProjectMember[]
-  invitations                           ProjectInvitation[]
-  storyStatuses                         ProjectStoryStatus[]
-  stories                               UserStory[]
-  storyPriorityChanges                  StoryPriorityChange[]
-  duplicateLinks                        StoryDuplicateLink[]
-  duplicateEmbeddings                   StoryDuplicateEmbedding[]
-  routingEmbeddings                     StoryRoutingEmbedding[]
+  outcomesShareToken              String?                              @unique
+  documents                       ProjectDocument[]
+  ragSettings                     ProjectRagSettings?
+  databricksKnowledgeBinding      ProjectDatabricksKnowledgeBinding?
+  scanConfig                      ProjectScanConfig?
+  scans                           ProjectScan[]
+  scanCheckpoints                 ProjectScanCheckpoint[]
+  scanFindings                    ScanFinding[]
+  scanActivities                  ScanActivity[]
+  scanFindingReviews              ScanFindingReview[]
+  scanFindingGroupings            ScanFindingGrouping[]
+  presence                        ProjectPresence[]
+  activities                      ProjectActivity[]
+  userPreferences                 ProjectUserPreference[]
+  functionTags                    ProjectUserFunctionTag[]
+  dailyBriefs                     DailyBrief[]
+  projectBriefCursors             ProjectBriefCursor[]
+  dailyBriefReleaseNoteExclusions DailyBriefReleaseNoteExclusion[]
+  documentAutoRefreshSettings     DocumentAutoRefreshSettings[]
+  newsletterSettings              NewsletterSettings?
+  newsletterSubscribers           NewsletterSubscriber[]
+  newsletterSends                 NewsletterSend[]
+  newsletterDeliveries            NewsletterDelivery[]
+  members                         ProjectMember[]
+  invitations                     ProjectInvitation[]
+  storyStatuses                   ProjectStoryStatus[]
+  stories                         UserStory[]
+  storyPriorityChanges            StoryPriorityChange[]
+  duplicateLinks                  StoryDuplicateLink[]
+  duplicateEmbeddings             StoryDuplicateEmbedding[]
+  routingEmbeddings               StoryRoutingEmbedding[]
 
-  architectureDecisions      ArchitectureDecision[]
-  decisionTypes              DecisionType[]
-  testCases                  TestCase[]
-  testPlans                  TestPlan[]
-  testCaseDraftJobs          TestCaseDraftJob[]
-  testPipelineRuns           TestPipelineRun[]
-  testFindings               TestFinding[]
-  testAgenticRuns            TestAgenticRun[]
-  testRunConfigurations      TestRunConfiguration[]
-  testAgenticCaseResults     TestAgenticCaseResult[]
-  testCaseScriptRevisions    TestCaseScriptRevision[]
-  testPipelineSyncStates     TestPipelineSyncState[]
-  qaSettings                 ProjectQaSettings?
-  qaOpenQuestions            QaOpenQuestion[]
-  qaSignOffs                 QaSignOff[]
-  pullRequestReviews         PullRequestReview[]
-  pullRequestReviewFindings  PullRequestReviewFinding[]
-  prReviewJudgements           PrReviewJudgement[]
-  environments               ProjectEnvironment[]
-  qaWebhook                  ProjectQaWebhook?
-  qaAnalysisVersions         QaAnalysisVersion[]
-  publishingSuggestionCycles PublishingSuggestionCycle[]
-  publishingTopics           PublishingTopic[]
-  publishingListPreferences  PublishingListPreference[]
-  publishingPlanningAnalyses PublishingTopicPlanningAnalysis[]
-  publishingTopicDecisions   PublishingTopicDecisionEntry[]
+  architectureDecisions       ArchitectureDecision[]
+  decisionTypes               DecisionType[]
+  testCases                   TestCase[]
+  testPlans                   TestPlan[]
+  testCaseDraftJobs           TestCaseDraftJob[]
+  testPipelineRuns            TestPipelineRun[]
+  testFindings                TestFinding[]
+  testAgenticRuns             TestAgenticRun[]
+  testRunConfigurations       TestRunConfiguration[]
+  testAgenticCaseResults      TestAgenticCaseResult[]
+  testCaseScriptRevisions     TestCaseScriptRevision[]
+  testPipelineSyncStates      TestPipelineSyncState[]
+  qaSettings                  ProjectQaSettings?
+  qaOpenQuestions             QaOpenQuestion[]
+  qaSignOffs                  QaSignOff[]
+  pullRequestReviews          PullRequestReview[]
+  pullRequestReviewFindings   PullRequestReviewFinding[]
+  prReviewJudgements          PrReviewJudgement[]
+  environments                ProjectEnvironment[]
+  qaWebhook                   ProjectQaWebhook?
+  qaAnalysisVersions          QaAnalysisVersion[]
+  publishingSuggestionCycles  PublishingSuggestionCycle[]
+  publishingTopics            PublishingTopic[]
+  publishingListPreferences   PublishingListPreference[]
+  publishingPlanningAnalyses  PublishingTopicPlanningAnalysis[]
+  publishingTopicDecisions    PublishingTopicDecisionEntry[]
   publishingQuestionAssignees PublishingTopicQuestionAssignee[]
-  publishingTopicDrafts      PublishingTopicDraft[]
-  publishingWorkingDrafts    PublishingTopicWorkingDraft[]
+  publishingTopicDrafts       PublishingTopicDraft[]
+  publishingWorkingDrafts     PublishingTopicWorkingDraft[]
   publishingAnalysisRevisions PublishingTopicAnalysisRevision[]
-  publishingDraftRevisions   PublishingTopicDraftRevision[]
-  publishingSuiteSettings    PublishingSuiteSettings?
+  publishingDraftRevisions    PublishingTopicDraftRevision[]
+  publishingSuiteSettings     PublishingSuiteSettings?
 
   // Episodic memory relation (conversations scoped to project)
   episodicMemories EpisodicMemory[]
@@ -2414,11 +2520,11 @@ model Project {
   /// stops a published snapshot being deleted. SetNull silently cleared the
   /// pointer instead, so a publish racing a delete left the project with no
   /// published instructions at all.
-  publishedInstructionSnapshotId String?                     @unique
-  publishedInstructionSnapshot   ProjectInstructionSnapshot? @relation("PublishedInstructionSnapshot", fields: [publishedInstructionSnapshotId], references: [id], onDelete: Restrict)
+  publishedInstructionSnapshotId String?                               @unique
+  publishedInstructionSnapshot   ProjectInstructionSnapshot?           @relation("PublishedInstructionSnapshot", fields: [publishedInstructionSnapshotId], references: [id], onDelete: Restrict)
   /// { ignoreGlobs?: string[]; sourceOfTruth?: "UPLOAD" | "REPOSITORY" }
   instructionSettings            Json?
-  instructionSnapshots           ProjectInstructionSnapshot[] @relation("ProjectInstructionSnapshots")
+  instructionSnapshots           ProjectInstructionSnapshot[]          @relation("ProjectInstructionSnapshots")
   instructionRepositorySync      ProjectInstructionRepositorySync?     @relation("ProjectInstructionRepositorySync")
   instructionRepositorySyncRuns  ProjectInstructionRepositorySyncRun[] @relation("ProjectInstructionRepositorySyncRuns")
   instructionProposalBranches    ProjectInstructionProposalBranch[]    @relation("ProjectInstructionProposalBranches")
@@ -2518,6 +2624,7 @@ model Project {
   deletedBy                  String? // userId who initiated the delete
   scheduledPermanentDeleteAt DateTime? // 7 days after deletedAt
   deletionReminderSentAt     DateTime? // Track when reminder email was sent
+  deletedMeetingArchives     DeletedMeetingArchive[]
 
   @@index([userId])
   @@index([deletedAt])
@@ -2527,7 +2634,6 @@ model Project {
   // (PostgreSQL treats NULLs as distinct in standard unique indexes)
   @@index([userId, draftKey, organizationId], map: "project_userId_draftKey_composite_idx")
   @@map("project")
-  deletedMeetingArchives DeletedMeetingArchive[]
 }
 
 model ProjectDocument {
@@ -2868,8 +2974,8 @@ model ProjectContext {
   // a silent overwrite. NULL on every row that did not come through that
   // path; Postgres treats NULLs as distinct, so the unique key leaves them
   // alone.
-  sourcePath String?
-  contentHash String?
+  sourcePath    String?
+  contentHash   String?
   // The git blob id the repository sync last read this row's content from.
   // A sync whose inventory shows the same blob id for this path skips
   // checking the file out and reading it. Written only by the sync's own
@@ -2896,6 +3002,15 @@ model ProjectContext {
   // (migration 20260923150000); the index is its own migration, CONCURRENTLY.
   repositorySyncId String?
 
+  // Set when this row's chunks were embedded WITHOUT their contextual
+  // enrichment because every ChatGPT plan that could serve it was spent
+  // (Fizzy #2770): the earliest time a re-embed may find capacity again (the
+  // plan's reset, or a fallback backoff when the plan named none). The
+  // conversation-bundle embedding sweep re-embeds a bounded batch of due rows;
+  // any embed of the row that enriches every chunk clears it. NULL otherwise.
+  // No index: the due-row scan runs every 15 minutes over one table.
+  contextEnrichmentRetryAt DateTime?
+
   // Tenant isolation (copied from parent Project)
   userId         String?
   organizationId String?
@@ -2919,11 +3034,11 @@ model ProjectContext {
   /// Added by migration 20260826120000.
   ownerKey String? @default(dbgenerated("COALESCE(\"organizationId\", \"userId\")"))
 
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  project      Project       @relation("ProjectContexts", fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+  project        Project                       @relation("ProjectContexts", fields: [projectId], references: [id], onDelete: Cascade)
+  user           User?                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization   Organization?                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   repositorySync ProjectContextRepositorySync? @relation(fields: [repositorySyncId], references: [id], onDelete: SetNull)
 
   // Back-reference for project PRD source binding (one-to-one with Project.prdSourceContextId)
@@ -2936,8 +3051,8 @@ model ProjectContext {
   urlPages ProjectContextUrlPage[]
 
   // Captured conversation bundles and the per-message claims that key them
-  conversationBundles ProjectContextConversationBundle[]
-  conversationClaims  ProjectContextConversationClaim[]
+  conversationBundles      ProjectContextConversationBundle[]
+  conversationClaims       ProjectContextConversationClaim[]
   ownedConversationBundles ProjectContextConversationBundle[] @relation("ProjectContextConversationBundleOwner") @ignore
   ownedConversationClaims  ProjectContextConversationClaim[]  @relation("ProjectContextConversationClaimOwner") @ignore
 
@@ -3034,19 +3149,19 @@ model ProjectReadinessVerdict {
   projectId String
   itemKey   String
 
-  isComplete Boolean
+  isComplete       Boolean
   /// Whether the panel could show the item, so a dependency landing is
   /// distinguishable from the initial seed (Fizzy #2165). Verdict rows are
   /// written for ALL items on a project's first read, so without this an item
   /// becoming reachable looks exactly like the row being created.
-  isVisible  Boolean  @default(false)
+  isVisible        Boolean   @default(false)
   /// When VISIBILITY last flipped. Deliberately separate from `changedAt`:
   /// that column means "when completion flipped" and "recently completed" reads
   /// it, so bumping it because a dependency landed would announce long-finished
   /// items as fresh news — the exact defect this table was corrected for once.
   visibleChangedAt DateTime?
   /// When the verdict last flipped — not when it was last recomputed.
-  changedAt  DateTime @default(now())
+  changedAt        DateTime  @default(now())
 
   // Tenant XOR fields (mirror the parent project — never both set)
   userId         String?
@@ -3143,9 +3258,9 @@ model ProjectContextUrlPage {
 //     column depends on it, since COALESCE over two NULLs is NULL. Prisma does
 //     not read CHECK constraints, so it lives only in the migration.
 model ProjectContextConversationBundle {
-  id              String         @id @default(cuid())
+  id              String          @id @default(cuid())
   parentContextId String
-  parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  parentContext   ProjectContext  @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
   // Do not edit this relation. Prisma cannot express MATCH FULL, so changing
   // its fields or referential actions makes `migrate dev` recreate the
   // constraint without it. If `migrate dev` ever proposes altering this
@@ -3237,9 +3352,9 @@ model ProjectContextConversationBundle {
 // 20260826120200, and the FK is declared as the `@ignore`d `ownerParent`
 // relation, for the reasons given on the bundle model.
 model ProjectContextConversationClaim {
-  id              String         @id @default(cuid())
+  id              String          @id @default(cuid())
   parentContextId String
-  parentContext   ProjectContext @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
+  parentContext   ProjectContext  @relation(fields: [parentContextId], references: [id], onDelete: Cascade)
   // Do not edit this relation; see the note on the bundle model's ownerParent.
   ownerParent     ProjectContext? @relation("ProjectContextConversationClaimOwner", fields: [parentContextId, projectId, ownerKey], references: [id, projectId, ownerKey], onDelete: Cascade, onUpdate: NoAction, map: "project_context_conversation_claim_owner_fkey") @ignore
 
@@ -3448,8 +3563,8 @@ model ProjectContextRepositorySync {
   /// (`packages/database/prisma/queries/repository-sync-subjects.ts`).
   /// Null while the sync is paused: no check is scheduled until a re-configure
   /// clears the pause and sets it due again.
-  nextCheckAt             DateTime? @default(now())
-  failureCount            Int      @default(0)
+  nextCheckAt             DateTime?                @default(now())
+  failureCount            Int                      @default(0)
   automaticPausedReason   ProjectContextSyncPause?
   automaticPausedAt       DateTime?
   suppressedCommitSha     String?
@@ -3465,8 +3580,8 @@ model ProjectContextRepositorySync {
   /// does the same. A re-configure clears it too.
   pendingCommitSha        String?
 
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   project               Project                      @relation("ProjectContextRepositorySync", fields: [projectId], references: [id], onDelete: Cascade)
   organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -4237,6 +4352,9 @@ enum ScanStatus {
   RUNNING
   COMPLETED
   FAILED
+  /// Every shared ChatGPT plan the run may use is spent: the run saved its
+  /// progress and ended; a resume run starts at `resumesAt`.
+  WAITING_FOR_PLAN
 }
 
 // Lifecycle for a finding→tickets grouping run. Distinct from ScanStatus so the
@@ -4250,6 +4368,8 @@ enum GroupingRunStatus {
   APPLYING
   COMPLETED
   FAILED
+  /// Paused until a shared ChatGPT plan resets; resumes at `resumesAt`.
+  WAITING_FOR_PLAN
 }
 
 enum ScanTrigger {
@@ -4371,6 +4491,17 @@ model ProjectScan {
   workflowId                String?
   startedAt                 DateTime?
   completedAt               DateTime?
+  // Paused for a ChatGPT plan reset (status WAITING_FOR_PLAN): when the resume
+  // run starts, how often the run has paused, and when it first did (the
+  // pause cap). `resumeState` holds the saved progress and the resume input.
+  resumesAt                 DateTime?
+  pauseCount                Int            @default(0)
+  firstPausedAt             DateTime?
+  resumeState               Json?
+  // "Run now on API billing": who let this one run use the organization's
+  // provider instead of waiting, and when.
+  apiOverrideAt             DateTime?
+  apiOverrideByUserId       String?
   userId                    String
   organizationId            String?
   createdAt                 DateTime       @default(now())
@@ -4544,26 +4675,37 @@ model ScanActivity {
 // "uncertain" with reasoning — it never mutates a finding. The user applies a
 // subset explicitly. Tenant-scoped + user_owned RLS, like its scan siblings.
 model ScanFindingReview {
-  id             String     @id @default(cuid())
-  projectId      String
-  status         ScanStatus @default(PENDING)
+  id                  String     @id @default(cuid())
+  projectId           String
+  status              ScanStatus @default(PENDING)
   // Proposals JSON: [{ findingId, verdict: "confirmed"|"false_positive"|"uncertain",
   // suggestedStatus?, suggestedSeverity?, reasoning, confidence, evidence? }].
-  proposals      Json?
-  reviewedCount  Int        @default(0)
-  modelName      String?
-  inputTokens    Int?
-  outputTokens   Int?
-  costUsd        Float?
-  durationMs     Int?
-  error          String?    @db.Text
-  workflowId     String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  userId         String
-  organizationId String?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  proposals           Json?
+  reviewedCount       Int        @default(0)
+  modelName           String?
+  inputTokens         Int?
+  outputTokens        Int?
+  costUsd             Float?
+  durationMs          Int?
+  error               String?    @db.Text
+  workflowId          String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  // Paused for a ChatGPT plan reset (status WAITING_FOR_PLAN): when the resume
+  // run starts, how often the run has paused, and when it first did (the
+  // pause cap). `resumeState` holds the saved progress and the resume input.
+  resumesAt           DateTime?
+  pauseCount          Int        @default(0)
+  firstPausedAt       DateTime?
+  resumeState         Json?
+  // "Run now on API billing": who let this one run use the organization's
+  // provider instead of waiting, and when.
+  apiOverrideAt       DateTime?
+  apiOverrideByUserId String?
+  userId              String
+  organizationId      String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -4581,34 +4723,45 @@ model ScanFindingReview {
 // and the headline toast is computed from. Tenant-scoped + user_owned RLS, mirroring
 // its scan siblings.
 model ScanFindingGrouping {
-  id             String            @id @default(cuid())
-  projectId      String
-  scanId         String? // the ProjectScan whose OPEN findings were read at run start (audit/debug only)
-  status         GroupingRunStatus @default(PENDING)
+  id                  String            @id @default(cuid())
+  projectId           String
+  scanId              String? // the ProjectScan whose OPEN findings were read at run start (audit/debug only)
+  status              GroupingRunStatus @default(PENDING)
   // Propose→apply payload. After the propose phase (AWAITING_REVIEW):
   // { proposedCreate[], proposedUpdate[], declinedThemes[], skippedThemes[],
   //   failedThemes[] }. After apply (COMPLETED) the applied themes also carry
   // { createdThemes[], updatedThemes[] } with their story ids.
-  results        Json?
-  createdCount   Int               @default(0)
-  updatedCount   Int               @default(0)
-  skippedCount   Int               @default(0)
-  failedCount    Int               @default(0)
-  themeCount     Int               @default(0) // total distinct (category, ruleSource) themes considered
-  findingCount   Int               @default(0) // total eligible OPEN findings considered
-  modelName      String?
-  inputTokens    Int?
-  outputTokens   Int?
-  costUsd        Float?
-  durationMs     Int?
-  error          String?           @db.Text
-  workflowId     String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  userId         String
-  organizationId String?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  results             Json?
+  createdCount        Int               @default(0)
+  updatedCount        Int               @default(0)
+  skippedCount        Int               @default(0)
+  failedCount         Int               @default(0)
+  themeCount          Int               @default(0) // total distinct (category, ruleSource) themes considered
+  findingCount        Int               @default(0) // total eligible OPEN findings considered
+  modelName           String?
+  inputTokens         Int?
+  outputTokens        Int?
+  costUsd             Float?
+  durationMs          Int?
+  error               String?           @db.Text
+  workflowId          String?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  // Paused for a ChatGPT plan reset (status WAITING_FOR_PLAN): when the resume
+  // run starts, how often the run has paused, and when it first did (the
+  // pause cap). `resumeState` holds the saved progress and the resume input.
+  resumesAt           DateTime?
+  pauseCount          Int               @default(0)
+  firstPausedAt       DateTime?
+  resumeState         Json?
+  // "Run now on API billing": who let this one run use the organization's
+  // provider instead of waiting, and when.
+  apiOverrideAt       DateTime?
+  apiOverrideByUserId String?
+  userId              String
+  organizationId      String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -4718,6 +4871,9 @@ enum AtlasStatus {
   ANALYZING
   READY
   FAILED
+  /// The in-flight run paused for a ChatGPT plan reset; its `AtlasAnalysisRun`
+  /// row says when it resumes.
+  WAITING_FOR_PLAN
 }
 
 enum AtlasGraphMode {
@@ -4926,6 +5082,11 @@ enum AtlasRunStatus {
   RUNNING
   READY
   FAILED
+  /// Approved to resume now on API billing; its resume has not claimed it yet.
+  PENDING
+  /// Every shared ChatGPT plan the run may use is spent: the run saved its
+  /// progress and ended; a resume run starts at `resumesAt`.
+  WAITING_FOR_PLAN
 }
 
 enum AtlasChatVisibility {
@@ -4958,6 +5119,20 @@ model AtlasAnalysisRun {
   startedAt         DateTime       @default(now())
   completedAt       DateTime?
   durationMs        Int?
+
+  // Paused for a ChatGPT plan reset (status WAITING_FOR_PLAN): the workflow
+  // that holds the run (its scheduled or approved resume), when the resume
+  // starts, how often the run has paused, and when it first did (the pause
+  // cap). `resumeState` holds the saved progress and the resume input.
+  workflowId          String?
+  resumesAt           DateTime?
+  pauseCount          Int       @default(0)
+  firstPausedAt       DateTime?
+  resumeState         Json?
+  // "Run now on API billing": who let this one run use the organization's
+  // provider instead of waiting, and when.
+  apiOverrideAt       DateTime?
+  apiOverrideByUserId String?
 
   // Tenant isolation (scalar columns for RLS; cascade handled via `analysis`)
   userId         String
@@ -5305,29 +5480,29 @@ model AtlasEdgeOverrideHistory {
 
 // Linked Meetings - Which recurring meetings are linked to a project for transcript sync
 model ProjectLinkedMeeting {
-  id               String   @id @default(cuid())
-  projectId        String
-  joinUrl          String // Teams meeting join URL (stable across recurring instances)
-  subject          String?
-  organizer        String?
+  id                  String    @id @default(cuid())
+  projectId           String
+  joinUrl             String // Teams meeting join URL (stable across recurring instances)
+  subject             String?
+  organizer           String?
   // Admin toggle: whether this meeting appears in the project Meeting Digest. Default true so
   // all currently-linked meetings show up immediately.
-  includedInDigest Boolean  @default(true)
-  linkedAt         DateTime @default(now())
+  includedInDigest    Boolean   @default(true)
+  linkedAt            DateTime  @default(now())
   // Stopped syncing but deliberately kept: the row, its transcripts and their
   // extracted context all stay live and readable — only the sync stops looking
   // at it. Distinct from unlinking, which destroys the context (Fizzy #2355).
   // Null = actively syncing.
-  deactivatedAt    DateTime?
-  deactivatedById  String?
+  deactivatedAt       DateTime?
+  deactivatedById     String?
   // Failure state, mirroring the three channel-monitor models. Meetings had
   // none, which is why a dead sync looked healthy: the fetch threw, the
   // activity swallowed it, and the run still stamped a clean lastRun (#2355).
-  consecutiveFailures Int      @default(0)
+  consecutiveFailures Int       @default(0)
   lastErrorMessage    String?
   lastErrorAt         DateTime?
-  userId           String?
-  organizationId   String?
+  userId              String?
+  organizationId      String?
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -5421,7 +5596,7 @@ model ParlumeMeetingSession {
   projectId              String
   organizationId         String
   userId                 String
-  agentKind              ParlumeMeetingAgentKind    @default(TEMPLATE_INSTANCE)
+  agentKind              ParlumeMeetingAgentKind     @default(TEMPLATE_INSTANCE)
   agentLabel             String                      @default("Custom Fabric Agent")
   agentInstanceSId       String?
   agentInstanceVersionId String?
@@ -5445,14 +5620,14 @@ model ParlumeMeetingSession {
   finalizedAt            DateTime?
   transcriptContextId    String?                     @unique
   providerDataDeletedAt  DateTime?
-  activeTurnId          String?
+  activeTurnId           String?
   endedAt                DateTime?
   createdAt              DateTime                    @default(now())
   updatedAt              DateTime                    @updatedAt
 
-  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project      Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
   segments     ParlumeMeetingSegment[]
   turns        ParlumeMeetingTurn[]
 
@@ -5464,23 +5639,23 @@ model ParlumeMeetingSession {
 
 /// One bounded response request made from a final meeting utterance.
 model ParlumeMeetingTurn {
-  id             String                    @id @default(cuid())
-  sessionId      String
-  projectId      String
-  organizationId String
-  userId         String
-  dedupeKey      String
-  speakerName    String?
-  speakerId      String?
-  requestText    String                    @db.Text
-  responseText   String?                   @db.Text
-  status         ParlumeMeetingTurnStatus  @default(PENDING)
-  error          String?                   @db.Text
-  startedAt      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
-  voiceGeneration Int                     @default(0)
+  id              String                   @id @default(cuid())
+  sessionId       String
+  projectId       String
+  organizationId  String
+  userId          String
+  dedupeKey       String
+  speakerName     String?
+  speakerId       String?
+  requestText     String                   @db.Text
+  responseText    String?                  @db.Text
+  status          ParlumeMeetingTurnStatus @default(PENDING)
+  error           String?                  @db.Text
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  voiceGeneration Int                      @default(0)
   agentRevision   String?
   firstTextAt     DateTime?
   firstAudioAt    DateTime?
@@ -5554,7 +5729,7 @@ model ParlumeMeetingSegment {
 
   session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([sessionId, dedupeKey])
@@ -5581,20 +5756,20 @@ model ParlumeMeetingSegment {
 /// row is read ONLY by the restore procedure and the recently-deleted list — it
 /// must never be added to a RAG or context read path.
 model DeletedMeetingArchive {
-  id              String   @id @default(cuid())
-  projectId       String
+  id               String   @id @default(cuid())
+  projectId        String
   /// Denormalised so the recently-deleted list renders without rehydrating the payload.
-  joinUrl         String
-  subject         String?
-  transcriptCount Int      @default(0)
-  deletedAt       DateTime @default(now())
-  deletedById     String
+  joinUrl          String
+  subject          String?
+  transcriptCount  Int      @default(0)
+  deletedAt        DateTime @default(now())
+  deletedById      String
   /// deletedAt + 7 days, matching the Project soft-delete window.
   scheduledPurgeAt DateTime
   /// True when the transcript bodies were too large to archive and only
   /// metadata was kept — a deletion is never blocked by an oversized meeting.
-  payloadTruncated Boolean @default(false)
-  payload         Json
+  payloadTruncated Boolean  @default(false)
+  payload          Json
 
   userId         String?
   organizationId String?
@@ -5670,9 +5845,9 @@ model ProjectMeetingTranscript {
   // TODO_BINDING_VERSION so moving that constant invalidates every stamp.
   todosMatchedAt   DateTime?
   todoMatchVersion Int?
-  syncedAt                 DateTime                        @default(now())
-  userId                   String?
-  organizationId           String?
+  syncedAt         DateTime  @default(now())
+  userId           String?
+  organizationId   String?
 
   project         Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
   linkedMeeting   ProjectLinkedMeeting       @relation(fields: [linkedMeetingId], references: [id], onDelete: Cascade)
@@ -6333,7 +6508,7 @@ model PendingBacklogProposal {
   seenChatMessages  ProjectLinkedTeamsChatSeenMessage[]
   seenSlackMessages ProjectLinkedSlackChannelSeenMessage[]
   drafts            BacklogProposalDraft[]
-  applications     PendingBacklogProposalApplication[]
+  applications      PendingBacklogProposalApplication[]
 
   @@index([projectId, status])
   @@index([userId])
@@ -7078,22 +7253,22 @@ model DailyBriefView {
 
 // NewsletterSettings — per-project external release-notes newsletter config (1:1 with Project).
 model NewsletterSettings {
-  id                  String    @id @default(cuid())
-  projectId           String    @unique
-  organizationId      String?
-  userId              String?
-  enabled             Boolean   @default(false)
-  cadence             String    @default("WEEKLY") // WEEKLY | MONTHLY
-  dayOfWeek           Int       @default(1) // 0=Sun..6=Sat, used when cadence=WEEKLY
-  dayOfMonth          Int       @default(1) // 1..28, used when cadence=MONTHLY
-  sendHourUtc         Int       @default(9) // 0..23
-  lastSentAt          DateTime? // advanced only on a successful non-empty send
-  lookbackDays        Int? // null => caller fallback (manual 7 / scheduled 7 weekly,30 monthly); else minimum days 1..365
-  detailLevel         String    @default("STANDARD") // BRIEF | STANDARD | DETAILED — AI newsletter verbosity tier
-  deliveryDestination String    @default("EMAIL") // EMAIL | CHAT | BOTH — where release notes are delivered
-  chatChannels        Json? // NewsletterChatChannel[] — selected chat delivery targets; null/[] = none
+  id                   String    @id @default(cuid())
+  projectId            String    @unique
+  organizationId       String?
+  userId               String?
+  enabled              Boolean   @default(false)
+  cadence              String    @default("WEEKLY") // WEEKLY | MONTHLY
+  dayOfWeek            Int       @default(1) // 0=Sun..6=Sat, used when cadence=WEEKLY
+  dayOfMonth           Int       @default(1) // 1..28, used when cadence=MONTHLY
+  sendHourUtc          Int       @default(9) // 0..23
+  lastSentAt           DateTime? // advanced only on a successful non-empty send
+  lookbackDays         Int? // null => caller fallback (manual 7 / scheduled 7 weekly,30 monthly); else minimum days 1..365
+  detailLevel          String    @default("STANDARD") // BRIEF | STANDARD | DETAILED — AI newsletter verbosity tier
+  deliveryDestination  String    @default("EMAIL") // EMAIL | CHAT | BOTH — where release notes are delivered
+  chatChannels         Json? // NewsletterChatChannel[] — selected chat delivery targets; null/[] = none
   approvalChatChannels Json? // NewsletterApprovalChatChannel[] — review-alert targets; null/[] = no chat alerts (Fizzy #2203)
-  requireApproval     Boolean   @default(false) // when true, every send is held at PENDING_APPROVAL for reviewer sign-off before delivery
+  requireApproval      Boolean   @default(false) // when true, every send is held at PENDING_APPROVAL for reviewer sign-off before delivery
 
   publicWidgetEnabled     Boolean @default(false)
   publicEmbedToken        String? @unique
@@ -7837,21 +8012,21 @@ model UserStory {
   firstHumanEditAt          DateTime?
   // Scope intake provenance. sourceRef is the customer's own line ID (e.g. "VIS-02") — NOT externalId,
   // which is the PM-tool ID used by pm-sync. Partial unique (projectId, sourceRef) enforced in SQL.
-  sourceRef              String?
+  sourceRef                 String?
   // Idempotency key for rows created by applying a proposal change:
   // "proposal:<proposalId>:<changeIndex>". Partial unique enforced in SQL so a
   // retried apply cannot create the row twice (plan §F3).
-  proposalApplicationKey String?
-  sourceDependencyRaw    String? // Raw dependency cell from the source document, e.g. "P1–2"
-  dependsOnRefs          String[]             @default([]) // Explicit item edges by sourceRef
-  dependsOnPhases        String[]             @default([]) // Phase-horizon dependencies, e.g. ["1","2"]
+  proposalApplicationKey    String?
+  sourceDependencyRaw       String? // Raw dependency cell from the source document, e.g. "P1–2"
+  dependsOnRefs             String[]             @default([]) // Explicit item edges by sourceRef
+  dependsOnPhases           String[]             @default([]) // Phase-horizon dependencies, e.g. ["1","2"]
   // Delivery track (SPIKE / DISCOVERY / SPECIFY / DEFER). Set by the classifier (AI) or a human.
-  deliveryTrack          DeliveryTrack        @default(UNCLASSIFIED)
-  trackRationale         String?              @db.Text
-  trackSetBy             TrackSetBy?
-  trackUpdatedAt         DateTime?
+  deliveryTrack             DeliveryTrack        @default(UNCLASSIFIED)
+  trackRationale            String?              @db.Text
+  trackSetBy                TrackSetBy?
+  trackUpdatedAt            DateTime?
   // Proposal estimate confidence (Slice 7). SPIKE items default LOW until a spike is accepted.
-  estimateConfidence     EstimateConfidence?
+  estimateConfidence        EstimateConfidence?
   // Telemetry for AI-generated titles. `aiGeneratedTitle` defaults to false so
   // existing rows are unaffected (forward-looking only — no backfill per
   // Decision 9). `titleSource` is null for legacy rows; populated on insert
@@ -7917,6 +8092,26 @@ model UserStory {
   lastPmSyncStatus             PmSyncStatus?
   lastPmSyncError              String?                 @db.VarChar(500)
   lastPmSyncAttemptAt          DateTime?
+  // The PENDING stamp's attempt: a fresh UUID per enqueue, so a failed start
+  // compensates only its own attempt and never a newer one's PENDING.
+  lastPmSyncAttemptId          String?
+  // PM create claim (Fizzy #3045). A PM create for this row is sent only
+  // after the caller has set `pmCreateClaimId` (a fresh UUID) with a
+  // conditional UPDATE that requires it, and `externalId`, to be null. It is
+  // cleared by the link write that sets `externalId` (scoped to the same
+  // claim), by a definite rejection of the create, by Unlink & re-create, or
+  // by Link to existing item (apply-pm-link.ts), which links the row to the
+  // PM item the user named.
+  // A held claim with no link means a PM item may exist that Fabric could not
+  // link, so the create paths that enforce the claim (single-row story push
+  // today; see pm-create-claim.ts) refuse to create again. Nullable, no backfill.
+  pmCreateClaimId              String?
+  pmCreateClaimedAt            DateTime?
+  // When the item first went PENDING for the current sync. A fresh enqueue
+  // sets it; a stuck-sync watchdog retry keeps it, so the watchdog's give-up
+  // bound is not reset by its own retries. Null on rows stamped before it
+  // existed (the watchdog falls back to lastPmSyncAttemptAt).
+  pmSyncPendingSince           DateTime?
   // PM → Fabric status-sync merge base (Fizzy #2304): the last observed
   // mapped status of the linked ticket (a status id or a `__none__` /
   // `__ambiguous__` / `__terminal__` sentinel), the ticket clock it was
@@ -7981,9 +8176,9 @@ model UserStory {
   createdAt                    DateTime                @default(now())
   updatedAt                    DateTime                @updatedAt
 
-  project                 Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  status                  ProjectStoryStatus        @relation(fields: [statusId], references: [id])
-  sourceMeetingTranscript ProjectMeetingTranscript? @relation("StorySourceMeeting", fields: [sourceMeetingTranscriptId], references: [id], onDelete: SetNull)
+  project                 Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status                  ProjectStoryStatus         @relation(fields: [statusId], references: [id])
+  sourceMeetingTranscript ProjectMeetingTranscript?  @relation("StorySourceMeeting", fields: [sourceMeetingTranscriptId], references: [id], onDelete: SetNull)
   tasks                   StoryTask[]
   versions                FeatureVersion[]
   qaAnalysisVersions      QaAnalysisVersion[]
@@ -8029,6 +8224,8 @@ model UserStory {
   promotedFromFindings         TestFinding[]              @relation("TestFindingPromotedStory")
   prReviewFindings             PullRequestReviewFinding[] @relation("PrReviewFindingStory")
   promotedFromPrReviewFindings PullRequestReviewFinding[] @relation("PrReviewFindingPromotedStory")
+  stageTransitionRequests      StageTransitionRequest[]
+  discoveryRuns                DiscoveryRun[]
 
   // A PARTIAL unique index on (projectId, externalId) WHERE externalId IS NOT
   // NULL is enforced via the hand-written migration
@@ -8043,8 +8240,6 @@ model UserStory {
   // primary guarantee; this constraint guards against bugs in the allocator or
   // out-of-band data writes.
   @@unique([projectId, identifier])
-  stageTransitionRequests StageTransitionRequest[]
-  discoveryRuns           DiscoveryRun[]
   @@index([projectId])
   @@index([statusId])
   @@index([createdById])
@@ -8151,15 +8346,15 @@ enum StoryAttachmentSource {
 ///      files arriving from a PM tool are written LOCKED, so their content
 ///      still never reaches a prompt.
 model StoryAttachment {
-  id             String                     @id @default(cuid())
-  storyId        String
-  filename       String // original name (sanitized at write); used for Content-Disposition
-  mimeType       String // client-declared (pinned at PUT); allowlist-checked, NOT byte-sniffed
-  sizeBytes      Int // authoritative R2 ContentLength; config caps MAX at <= 2 GB
-  storageKey     String                     @unique // story-attachments/{projectId}/{storyId}/{uuid}.{ext}
-  designation    StoryAttachmentDesignation @default(LOCKED)
-  source         StoryAttachmentSource      @default(FABRIC)
-  uploaderUserId String?
+  id                   String                     @id @default(cuid())
+  storyId              String
+  filename             String // original name (sanitized at write); used for Content-Disposition
+  mimeType             String // client-declared (pinned at PUT); allowlist-checked, NOT byte-sniffed
+  sizeBytes            Int // authoritative R2 ContentLength; config caps MAX at <= 2 GB
+  storageKey           String                     @unique // story-attachments/{projectId}/{storyId}/{uuid}.{ext}
+  designation          StoryAttachmentDesignation @default(LOCKED)
+  source               StoryAttachmentSource      @default(FABRIC)
+  uploaderUserId       String?
   /// PM server key of the tool this file came from ("azure-devops" | "jira" |
   /// "fizzy"); NULL for Fabric-origin files. Drives the "From ADO" source label.
   sourceTool           String?
@@ -8185,22 +8380,22 @@ model StoryAttachment {
   /// Consecutive reconcile passes in which this file was absent from the PM
   /// tool's listing. Soft-delete only at 2, so one flaky listing cannot wipe a
   /// story's attachments. Mirrors the missing-streak debounce in pm-state-poll.
-  missingStreak        Int       @default(0)
+  missingStreak        Int                        @default(0)
   /// Cached text extracted from the file, populated lazily on the first AI run
   /// that needs it (never at upload). Character-budgeted BY THE RESOLVER — the
   /// text/pdf/docx extractors ignore the budget option — and carrying a
   /// truncation marker when the budget cut it. NULL = not yet extracted OR not
   /// extractable. See invariant 2 above before adding this to a `select`.
-  extractedText  String?                    @db.Text
+  extractedText        String?                    @db.Text
   /// When extractedText was populated; NULL while unextracted. Deliberately
   /// write-only today — nothing reads it. It is kept because it is the only
   /// way to answer "when was this cached" while debugging a stale-looking AI
   /// answer, and because re-extraction (if the extractor ever changes) needs a
   /// watermark that cannot be backfilled after the fact. Not an oversight.
-  extractedAt    DateTime?
-  createdAt      DateTime                   @default(now())
-  updatedAt      DateTime                   @updatedAt
-  deletedAt      DateTime? // null = live; set = soft-deleted (hidden), pending retention purge (#1702 Part 5)
+  extractedAt          DateTime?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  deletedAt            DateTime? // null = live; set = soft-deleted (hidden), pending retention purge (#1702 Part 5)
 
   story    UserStory @relation(fields: [storyId], references: [id], onDelete: Cascade)
   uploader User?     @relation(fields: [uploaderUserId], references: [id], onDelete: SetNull)
@@ -8639,7 +8834,7 @@ model DecisionLogEntry {
   // CRITICAL: a turn with a `supersededBy` row is retracted. It must never reach
   // an AI surface — see the Temporal feature-decisions handler, which renders
   // thread replies into model context.
-  supersedesId     String?       @unique
+  supersedesId     String?            @unique
   metadata         Json?
   organizationId   String?
   userId           String
@@ -8647,16 +8842,16 @@ model DecisionLogEntry {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  story        UserStory          @relation(fields: [userStoryId], references: [id], onDelete: Cascade)
-  parent       DecisionLogEntry?  @relation("DecisionLogEntryReplies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies      DecisionLogEntry[] @relation("DecisionLogEntryReplies")
+  story        UserStory                  @relation(fields: [userStoryId], references: [id], onDelete: Cascade)
+  parent       DecisionLogEntry?          @relation("DecisionLogEntryReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      DecisionLogEntry[]         @relation("DecisionLogEntryReplies")
   // SetNull, not Cascade: if the superseded turn is ever hard-deleted, the
   // amendment that replaced it is still the live answer and must survive.
-  supersedes   DecisionLogEntry?  @relation("DecisionLogEntrySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
-  supersededBy DecisionLogEntry?  @relation("DecisionLogEntrySupersedes")
+  supersedes   DecisionLogEntry?          @relation("DecisionLogEntrySupersedes", fields: [supersedesId], references: [id], onDelete: SetNull)
+  supersededBy DecisionLogEntry?          @relation("DecisionLogEntrySupersedes")
   assignees    DecisionLogEntryAssignee[]
-  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization?              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   // A FIFTH index exists that Prisma cannot express: the partial
   // `decision_log_entry_open_roots_idx` on ("userStoryId") WHERE status = 'OPEN'
@@ -8818,7 +9013,7 @@ model ArchitectureDecision {
   decisionTypeId    String?
   ownerUserId       String?
   duration          DecisionDuration?
-  priorityFlagged   Boolean   @default(false)
+  priorityFlagged   Boolean           @default(false)
   priorityFlaggedAt DateTime?
 
   // The owner's sign-off. Notifying an owner tells them a decision is theirs;
@@ -8946,10 +9141,10 @@ enum DecisionTypeOrigin {
 /// only when nothing does, so the taxonomy grows with the project's actual
 /// decisions. Archived types stay resolvable on decisions that reference them.
 model DecisionType {
-  id         String              @id @default(cuid())
+  id         String             @id @default(cuid())
   projectId  String
   name       String // display label, e.g. "Architecture", "QA", "Deployment"
-  origin     DecisionTypeOrigin  @default(HUMAN)
+  origin     DecisionTypeOrigin @default(HUMAN)
   archivedAt DateTime?
 
   // Tenant isolation (copied from parent Project)
@@ -8999,22 +9194,22 @@ model PublishingSuggestionCycle {
   // reads as a mismatch and gives every existing project exactly one recovery
   // run after deploy. Stamping this at cycle CREATION would break the first
   // guarantee, which is why it is written nowhere else.
-  preferencesHash    String?
-  temporalWorkflowId String?
-  occurrenceKey      String? // stable per-dispatch-run id (Temporal dispatcher runId); partial-unique on (projectId, occurrenceKey) WHERE NOT NULL for retry-safe cycle idempotency (Codex N2). NULL for manual/legacy rows.
-  error              String?               @db.VarChar(500)
+  preferencesHash            String?
+  temporalWorkflowId         String?
+  occurrenceKey              String? // stable per-dispatch-run id (Temporal dispatcher runId); partial-unique on (projectId, occurrenceKey) WHERE NOT NULL for retry-safe cycle idempotency (Codex N2). NULL for manual/legacy rows.
+  error                      String?   @db.VarChar(500)
   // 1C-2b (§9.7): the notification lifecycle. NON-NULL with a default, deliberately — the default
   // is what classifies a cycle written by any worker that does not know about this feature,
   // whenever it is written, including mid-rolling-deploy. A cycle ENTERS the lifecycle explicitly,
   // by transitioning to PENDING in the same transaction that sets it READY. The value set is
   // enforced twice: a typed writer in publishing-notification-outcome.ts, and a CHECK constraint.
-  notificationOutcome        String @default("NOT_APPLICABLE")
+  notificationOutcome        String    @default("NOT_APPLICABLE")
   // Shared lifecycle version — NOT a per-activity attempt number. The column has several writers
   // drawing attempt numbers from different sequences, so a guard keyed to one writer's private
   // numbering is not a guard (§9.7 rule 4). Activation does NOT bump it: the entry transition is
   // fenced on its own expected value, and leaving the version alone keeps a mid-flight activity's
   // compare-and-swap valid.
-  notificationOutcomeVersion Int    @default(0)
+  notificationOutcomeVersion Int       @default(0)
   // 1C-2d-2a: when the notification lifecycle was ACTIVATED — NOT when the row
   // was created, and NOT `updatedAt`. The ABANDONED sweep's staleness bound is
   // the suggestion workflow's EXECUTION timeout, so the clock has to start at
@@ -9058,13 +9253,13 @@ model PublishingSuggestionCycle {
   // activation still needs no floor, on this argument as much as the discarded
   // "more than two hours of skew" one.
   notificationOutcomeAt      DateTime?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
-  project      Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  topics       PublishingTopic[]
+  project                Project                          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                   User?                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization           Organization?                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  topics                 PublishingTopic[]
   notificationDeliveries PublishingNotificationDelivery[]
   chatDeliveries         PublishingChatDelivery[]
 
@@ -9185,19 +9380,19 @@ model PublishingTopic {
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt
 
-  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?                      @relation("PublishingTopicOwner", fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization?              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  cycle        PublishingSuggestionCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
-  createdBy    User?                      @relation("PublishingTopicCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  readMarkers  PublishingTopicRead[]
-  draftReadMarkers PublishingTopicDraftRead[]
-  planningAnalyses PublishingTopicPlanningAnalysis[]
-  publishingTopicDecisions PublishingTopicDecisionEntry[]
-  drafts       PublishingTopicDraft[]
-  workingDrafts PublishingTopicWorkingDraft[]
-  analysisRevisions PublishingTopicAnalysisRevision[]
-  draftRevisions PublishingTopicDraftRevision[]
+  project                    Project                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                       User?                             @relation("PublishingTopicOwner", fields: [userId], references: [id], onDelete: Cascade)
+  organization               Organization?                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  cycle                      PublishingSuggestionCycle?        @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+  createdBy                  User?                             @relation("PublishingTopicCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  readMarkers                PublishingTopicRead[]
+  draftReadMarkers           PublishingTopicDraftRead[]
+  planningAnalyses           PublishingTopicPlanningAnalysis[]
+  publishingTopicDecisions   PublishingTopicDecisionEntry[]
+  drafts                     PublishingTopicDraft[]
+  workingDrafts              PublishingTopicWorkingDraft[]
+  analysisRevisions          PublishingTopicAnalysisRevision[]
+  draftRevisions             PublishingTopicDraftRevision[]
   draftsInProject            PublishingTopicDraft[]            @relation("PublishingTopicDraftTopicProject") @ignore
   workingDraftsInProject     PublishingTopicWorkingDraft[]     @relation("PublishingTopicWorkingDraftTopicProject") @ignore
   analysisRevisionsInProject PublishingTopicAnalysisRevision[] @relation("PublishingTopicAnalysisRevisionTopicProject") @ignore
@@ -9233,27 +9428,27 @@ model PublishingTopic {
 ///     index above becomes a PERMANENT lock the moment a worker dies between the
 ///     insert and the terminal marker: no user action would ever free the topic.
 model PublishingTopicPlanningAnalysis {
-  id             String                          @id @default(cuid())
-  topicId        String
-  projectId      String
-  organizationId String? // denormalized from the parent topic (XOR)
-  userId         String? // denormalized from the parent topic (XOR — null for org topics)
-  version        Int
-  status         PublishingPlanningAnalysisStatus @default(GENERATING)
-  content        Json? // Zod-validated planning document; null until READY
-  sourceRefs     Json                            @default("{}") // what fed this version, and what failed to
-  model          String?
+  id                 String                           @id @default(cuid())
+  topicId            String
+  projectId          String
+  organizationId     String? // denormalized from the parent topic (XOR)
+  userId             String? // denormalized from the parent topic (XOR — null for org topics)
+  version            Int
+  status             PublishingPlanningAnalysisStatus @default(GENERATING)
+  content            Json? // Zod-validated planning document; null until READY
+  sourceRefs         Json                             @default("{}") // what fed this version, and what failed to
+  model              String?
   /// BOUND | DEFAULT_UNBOUND | DEFAULT_RENDER_FAILED — which prompt actually
   /// shaped this analysis. An analysis built from the default body because a
   /// bound prompt would not render reads exactly like one built from the bound
   /// prompt, so it is the one thing a reader cannot recover from the output.
-  promptSource   String?
-  error          String?                         @db.Text
-  requestedById  String? // authorship, never tenancy
+  promptSource       String?
+  error              String?                          @db.Text
+  requestedById      String? // authorship, never tenancy
   /// Liveness deadline for the reclaim; CHECK-enforced while GENERATING.
   executionTimeoutAt DateTime?
-  createdAt      DateTime                        @default(now())
-  updatedAt      DateTime                        @updatedAt
+  createdAt          DateTime                         @default(now())
+  updatedAt          DateTime                         @updatedAt
 
   topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
   project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -9327,11 +9522,11 @@ model PublishingTopicAnalysisRevision {
   changeSummary         String?
   createdAt             DateTime @default(now())
 
-  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?           @relation("PublishingAnalysisRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
-  author       User?           @relation("PublishingAnalysisRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  topic          PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization   Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?           @relation("PublishingAnalysisRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
+  author         User?           @relation("PublishingAnalysisRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   topicInProject PublishingTopic @relation("PublishingTopicAnalysisRevisionTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_analysis_revision_topic_project_fkey") @ignore
 
   @@unique([topicId, version])
@@ -9418,11 +9613,11 @@ model PublishingTopicDraft {
   createdAt          DateTime                @default(now())
   updatedAt          DateTime                @updatedAt
 
-  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?           @relation("PublishingTopicDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
-  requestedBy  User?           @relation("PublishingTopicDraftRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+  topic               PublishingTopic               @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project             Project                       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization        Organization?                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                User?                         @relation("PublishingTopicDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
+  requestedBy         User?                         @relation("PublishingTopicDraftRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
   topicInProject      PublishingTopic               @relation("PublishingTopicDraftTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_draft_topic_project_fkey") @ignore
   citingWorkingDrafts PublishingTopicWorkingDraft[] @relation("PublishingTopicWorkingDraftSourceDraft") @ignore
 
@@ -9660,11 +9855,11 @@ model PublishingTopicWorkingDraft {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?           @relation("PublishingWorkingDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
-  updatedBy    User?           @relation("PublishingWorkingDraftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  topic          PublishingTopic       @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project        Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization   Organization?         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?                 @relation("PublishingWorkingDraftTenant", fields: [userId], references: [id], onDelete: Cascade)
+  updatedBy      User?                 @relation("PublishingWorkingDraftUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
   topicInProject PublishingTopic       @relation("PublishingTopicWorkingDraftTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_working_draft_topic_project_fkey") @ignore
   // Do not edit this relation. Changing its fields or referential actions
   // makes `migrate dev` recreate the constraint as a plain ON DELETE SET NULL
@@ -9715,14 +9910,14 @@ model PublishingTopicWorkingDraft {
 ///     not require null. Prisma does not read CHECK constraints, so it lives
 ///     only in the migration.
 model PublishingTopicDraftRevision {
-  id                 String                       @id @default(cuid())
+  id                 String                      @id @default(cuid())
   topicId            String
   projectId          String
   organizationId     String? // denormalized from the parent topic (XOR)
   userId             String? // denormalized from the parent topic (XOR)
   postType           PublishingTopicPostType
   version            Int // per (topicId, postType), allocated under the locked project row
-  body               String                       @db.Text // Markdown the user owns
+  body               String                      @db.Text // Markdown the user owns
   kind               PublishingDraftRevisionKind
   /// The GENERATED version this body traces back to, or null when it traces
   /// back to nothing generated. Never derived server-side, for the same reason
@@ -9731,13 +9926,13 @@ model PublishingTopicDraftRevision {
   sourceDraftVersion Int?
   authorUserId       String? // authorship, never tenancy
   changeSummary      String?
-  createdAt          DateTime                     @default(now())
+  createdAt          DateTime                    @default(now())
 
-  topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?           @relation("PublishingDraftRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
-  author       User?           @relation("PublishingDraftRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  topic          PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization   Organization?   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User?           @relation("PublishingDraftRevisionTenant", fields: [userId], references: [id], onDelete: Cascade)
+  author         User?           @relation("PublishingDraftRevisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
   topicInProject PublishingTopic @relation("PublishingTopicDraftRevisionTopicProject", fields: [topicId, projectId], references: [id, projectId], onDelete: Cascade, onUpdate: Cascade, map: "publishing_topic_draft_revision_topic_project_fkey") @ignore
 
   @@unique([topicId, postType, version])
@@ -9820,26 +10015,26 @@ enum PublishingDecisionEntryKind {
 /// Documented here because a shadow-database diff can read it as drift and
 /// try to DROP it.
 model PublishingTopicDecisionEntry {
-  id             String                      @id @default(cuid())
-  topicId        String
-  projectId      String
-  organizationId String?
-  userId         String?
-  parentId       String?
-  authorType     DecisionAuthorType
-  authorUserId   String?
-  status         DecisionStatus              @default(OPEN)
-  kind           PublishingDecisionEntryKind @default(QUESTION)
-  questionId     String?
+  id                     String                      @id @default(cuid())
+  topicId                String
+  projectId              String
+  organizationId         String?
+  userId                 String?
+  parentId               String?
+  authorType             DecisionAuthorType
+  authorUserId           String?
+  status                 DecisionStatus              @default(OPEN)
+  kind                   PublishingDecisionEntryKind @default(QUESTION)
+  questionId             String?
   /// The question's CATEGORY (`CUSTOMER_NAME`, `ASSET_APPROVAL`, …). Stored
   /// rather than re-read from the analysis, because a question answered against
   /// version 1 must still render its own grouping after version 2 supersedes
   /// that analysis.
-  decisionKind   String?
-  subject        String?
-  summary        String?                     @db.Text
-  content        String?                     @db.Text
-  recommendedResponse String?                @db.Text
+  decisionKind           String?
+  subject                String?
+  summary                String?                     @db.Text
+  content                String?                     @db.Text
+  recommendedResponse    String?                     @db.Text
   /// SEVERAL suggested answers, as Feature Maturation offers — `[{ text,
   /// justification }]`, at most four, each justification required.
   ///
@@ -9852,22 +10047,22 @@ model PublishingTopicDecisionEntry {
   /// nothing needs backfilling and a question minted before this reads exactly
   /// as it did. A row with options renders them; a row without renders what it
   /// always did.
-  answerOptions       Json?
+  answerOptions          Json?
   /// The rationale behind the question — why the decision matters, not what
   /// it is. Carried from the analysis's own `whyItMatters` field so a reader
   /// on the Summary & Questions tab sees why to bother, not just what to
   /// answer.
-  whyItMatters   String?                     @db.Text
+  whyItMatters           String?                     @db.Text
   /// Questions an analysis folded into this root because they named the same subject, in fold order. Written by
   /// reconciliation beside `whyItMatters`, whose "Answering this also settles:" paragraphs are their display copy and
   /// are never parsed. Empty for a root nothing was folded into, and for every root folded before this column existed.
-  foldedQuestions        String[] @default([])
+  foldedQuestions        String[]                    @default([])
   /// The `analysisVersion` of the write that set `foldedQuestions`. The list is trusted only while this equals the
   /// root's `analysisVersion`: a build that predates these columns refreshes a root's wording and version without
   /// touching either, and its stale list must not survive under the new wording.
   foldedQuestionsVersion Int?
-  answerSource   AnswerSource?
-  analysisVersion Int?
+  answerSource           AnswerSource?
+  analysisVersion        Int?
   /// Which draft run raised this root, or NULL when the planning analysis did.
   ///
   /// The analysis used to be the only producer, which is why reconciliation can
@@ -9876,19 +10071,19 @@ model PublishingTopicDecisionEntry {
   /// the same kind, and its rows are not the analysis's to retract — so the
   /// reconciler scopes its sweep to `raisedByPostType: null` and a draft-raised
   /// row is minted-if-absent and reactivated, never swept.
-  raisedByPostType PublishingTopicPostType?
-  deletedAt      DateTime?
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @updatedAt
+  raisedByPostType       PublishingTopicPostType?
+  deletedAt              DateTime?
+  createdAt              DateTime                    @default(now())
+  updatedAt              DateTime                    @updatedAt
 
-  topic        PublishingTopic                @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  project      Project                        @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  parent       PublishingTopicDecisionEntry?  @relation("PublishingTopicDecisionReplies", fields: [parentId], references: [id], onDelete: Cascade)
-  replies      PublishingTopicDecisionEntry[] @relation("PublishingTopicDecisionReplies")
+  topic        PublishingTopic                   @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  project      Project                           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  parent       PublishingTopicDecisionEntry?     @relation("PublishingTopicDecisionReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      PublishingTopicDecisionEntry[]    @relation("PublishingTopicDecisionReplies")
   assignees    PublishingTopicQuestionAssignee[]
-  organization Organization?                  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User?                          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  author       User?                          @relation("PublishingTopicDecisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+  organization Organization?                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?                             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  author       User?                             @relation("PublishingTopicDecisionAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
 
   @@index([topicId, createdAt])
   @@index([parentId])
@@ -9976,13 +10171,13 @@ model PublishingTopicQuestionAssignee {
 /// Reading a topic must not bump its `updatedAt`, or opening something would
 /// reorder "Recently Modified" underneath the person reading it.
 model PublishingTopicDraftRead {
-  id             String   @id @default(cuid())
+  id             String                  @id @default(cuid())
   topicId        String
   userId         String
   postType       PublishingTopicPostType
   projectId      String // denormalized from the parent topic, never from ambient context
   organizationId String? // denormalized from the parent topic; null in personal context
-  readAt         DateTime @default(now())
+  readAt         DateTime                @default(now())
 
   topic        PublishingTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
   user         User            @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -10016,13 +10211,13 @@ model PublishingTopicRead {
 // Phase 1C-1: cadence + lookback + notification kill switch. Recommendation
 // preferences land in 1C-1b together with the prompt clause that consumes them.
 model PublishingSuiteSettings {
-  id                   String   @id @default(cuid())
-  projectId            String   @unique
+  id                   String  @id @default(cuid())
+  projectId            String  @unique
   organizationId       String? // denormalized from parent Project
   userId               String? // denormalized from parent Project
-  cadence              String   @default("MANUAL") // MANUAL | WEEKLY | BIWEEKLY | MONTHLY
+  cadence              String  @default("MANUAL") // MANUAL | WEEKLY | BIWEEKLY | MONTHLY
   lookbackDays         Int? // null => engine default (180); else 1..365
-  notificationsEnabled Boolean  @default(true) // project-level kill switch (1C-2)
+  notificationsEnabled Boolean @default(true) // project-level kill switch (1C-2)
   /// Whether the analysis drafts SUGGESTED ANSWERS for the questions it raises.
   ///
   /// Feature Maturation's equivalent is per-feature; this is per PROJECT
@@ -10034,7 +10229,7 @@ model PublishingSuiteSettings {
   ///
   /// On by default: the suggestions are the feature, and a switch that starts
   /// off is a feature nobody finds.
-  autoProposeAnswers   Boolean  @default(true)
+  autoProposeAnswers   Boolean @default(true)
   chatChannels         Json? // 1C-3: PublishingChatChannel[] — selected broadcast targets. NULL or [] means chat is off; there is deliberately no separate boolean, because a second switch could disagree with the selection.
 
   // 1C-1b (§7.1(a), FR8–FR10): the ADVISORY recommendation preferences. They
@@ -10049,16 +10244,16 @@ model PublishingSuiteSettings {
   // `excludedKeywords` is deliberately ABSENT. It is an ENFORCEMENT control and
   // lands together with the deterministic filter that honours it; a stored
   // exclusion with no filter is a switch that visibly does nothing.
-  preferredThemes      String[]                  @default([])
+  preferredThemes     String[]                  @default([])
   // The CLOSED enum, the same one PublishingTopic.suggestedPostTypes stores.
   // Free-form text here would accept a preference the generator can never emit,
   // because what it produces is validated against this very enum.
-  preferredPostTypes   PublishingTopicPostType[] @default([])
-  strategicPriorities  String? // null => no guidance. Free text; line structure is part of the instruction, so it is trimmed but never reflowed.
+  preferredPostTypes  PublishingTopicPostType[] @default([])
+  strategicPriorities String? // null => no guidance. Free text; line structure is part of the instruction, so it is trimmed but never reflowed.
 
-  createdByUserId      String // acting admin; NOT a tenant column, re-homed on every save
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdByUserId String // acting admin; NOT a tenant column, re-homed on every save
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -10235,6 +10430,15 @@ model TestCase {
   lastPmSyncStatus    PmSyncStatus?
   lastPmSyncError     String?       @db.VarChar(500)
   lastPmSyncAttemptAt DateTime?
+  // Same attempt fence and pending-since bound as UserStory's.
+  lastPmSyncAttemptId String?
+  pmSyncPendingSince  DateTime?
+  // Same PM create claim as UserStory's (Fizzy #3045): taken before a
+  // test-case push creates a PM item (createTestCaseInPmWithClaim), cleared by
+  // the link write, a definite rejection, Unlink & re-create, or Link to
+  // existing item.
+  pmCreateClaimId     String?
+  pmCreateClaimedAt   DateTime?
 
   // AI context (mirror ArchitectureDecision.contextId)
   contextId String? // soft pointer to ProjectContext row
@@ -10577,31 +10781,31 @@ enum TestFindingStatus {
 // `lastCommitSha`) advances only on success so a failed fetch never skips runs.
 // Top-level tenant table (XOR), RLS `user_owned`.
 model TestPipelineSyncState {
-  id                String    @id @default(cuid())
-  projectId         String
-  organizationId    String?
-  userId            String?
-  provider          String
-  pipelineKey       String    @default("") // provider-specific pipeline/workflow id ("" = all pipelines)
-  lastRunExternalId String? // high-watermark run id (advances only on success)
-  lastCommitSha     String?
-  pageToken         String?   @db.Text // resumable pagination cursor
-  lastFetchedAt     DateTime? // last SUCCESSFUL fetch — drives the stale badge
-  status            String? // last fetch status (informational)
-  lastError         String?   @db.Text
+  id                   String    @id @default(cuid())
+  projectId            String
+  organizationId       String?
+  userId               String?
+  provider             String
+  pipelineKey          String    @default("") // provider-specific pipeline/workflow id ("" = all pipelines)
+  lastRunExternalId    String? // high-watermark run id (advances only on success)
+  lastCommitSha        String?
+  pageToken            String?   @db.Text // resumable pagination cursor
+  lastFetchedAt        DateTime? // last SUCCESSFUL fetch — drives the stale badge
+  status               String? // last fetch status (informational)
+  lastError            String?   @db.Text
   // The provider's own response body for the last failure, kept apart from the
   // readable sentence in `lastError` so the UI can show one and reveal the other
   // on demand. Joining them produced a sentence with a JSON blob in the middle:
   // unreadable when triaging and unusable when debugging.
-  lastErrorDetail   String?   @db.Text
+  lastErrorDetail      String?   @db.Text
   // The classified failure kind (see `SyncFailureKind` in
   // packages/temporal/src/activities/pipeline-results/sync-failure-classification.ts),
   // stored so a REPEAT of the identical failure state can be detected without
   // string-comparing `lastError` — a rate-limit message embeds a changing
   // reset timestamp, so two consecutive rate-limit failures would otherwise
   // never compare equal and every 15-minute cron tick would read as new.
-  lastErrorKind     String?
-  lastErrorAt       DateTime?
+  lastErrorKind        String?
+  lastErrorAt          DateTime?
   // When the sync attempt that last wrote this row STARTED — not when it
   // committed. Both writers (`recordPipelineSyncFailure` and
   // `advancePipelineSyncState`) compare the incoming attempt's start timestamp
@@ -10613,8 +10817,8 @@ model TestPipelineSyncState {
   // column existed carry no attempt identity, and NULL is treated as
   // always-older so the first write after deploy still lands.
   lastAttemptStartedAt DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -11167,7 +11371,7 @@ model ProjectQaSettings {
   /// a bot muted, and the lenses have always been person-triggered. A team opts
   /// in per project, and the same per-lens switches below still decide which
   /// lenses run.
-  prReviewAutoReviewEnabled       Boolean @default(false)
+  prReviewAutoReviewEnabled Boolean @default(false)
 
   prReviewQaLensEnabled           Boolean @default(true)
   prReviewArchitectureLensEnabled Boolean @default(true)
@@ -12427,9 +12631,9 @@ model PromptVersion {
   bindings         PromptBinding[]
   documentVersions DocumentVersion[]
   nominations      PromptNomination[]
-  prompt           Prompt            @relation(fields: [promptId], references: [id], onDelete: Cascade)
-  user             User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization     Organization?     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  prompt           Prompt             @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  user             User?              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization     Organization?      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([promptId, version])
   @@index([promptId])
@@ -12791,30 +12995,30 @@ model AzureAiModelDeployment {
 }
 
 model CloudProviderConfig {
-  id                  String       @id
-  organizationId      String
-  provider            AIProvider
-  enabled             Boolean      @default(true)
-  isDefault           Boolean      @default(false)
-  isEmbeddingProvider Boolean      @default(false) // Dedicated provider for embeddings (independent of default)
-  purpose             AiProviderPurpose @default(ALL)
-  priority            Int          @default(0)
-  config              Json
-  encryptedApiKey     String?      @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
+  id                    String            @id
+  organizationId        String
+  provider              AIProvider
+  enabled               Boolean           @default(true)
+  isDefault             Boolean           @default(false)
+  isEmbeddingProvider   Boolean           @default(false) // Dedicated provider for embeddings (independent of default)
+  purpose               AiProviderPurpose @default(ALL)
+  priority              Int               @default(0)
+  config                Json
+  encryptedApiKey       String?           @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
   // OAuth M2M (service principal) credentials — currently only Databricks.
   // XOR with `encryptedApiKey`: a row carries either a static key/PAT or a
   // service principal (clientId + encryptedClientSecret), never both.
-  clientId            String?      @map("client_id")
-  encryptedClientSecret String?    @map("encrypted_client_secret")
-  displayName         String?
-  description         String?
-  tags                Json?
-  healthStatus        HealthStatus @default(UNKNOWN)
-  lastHealthCheck     DateTime?
-  lastUsedAt          DateTime?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime
-  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  clientId              String?           @map("client_id")
+  encryptedClientSecret String?           @map("encrypted_client_secret")
+  displayName           String?
+  description           String?
+  tags                  Json?
+  healthStatus          HealthStatus      @default(UNKNOWN)
+  lastHealthCheck       DateTime?
+  lastUsedAt            DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime
+  organization          Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, provider])
   @@index([organizationId, enabled])
@@ -12840,30 +13044,30 @@ model ModelRouterConfig {
 }
 
 model UserCloudProviderConfig {
-  id                  String       @id
-  userId              String
-  provider            AIProvider
-  enabled             Boolean      @default(true)
-  isDefault           Boolean      @default(false)
-  isEmbeddingProvider Boolean      @default(false) // Dedicated provider for embeddings (independent of default)
-  purpose             AiProviderPurpose @default(ALL)
-  priority            Int          @default(0)
-  config              Json
-  encryptedApiKey     String?      @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
+  id                    String            @id
+  userId                String
+  provider              AIProvider
+  enabled               Boolean           @default(true)
+  isDefault             Boolean           @default(false)
+  isEmbeddingProvider   Boolean           @default(false) // Dedicated provider for embeddings (independent of default)
+  purpose               AiProviderPurpose @default(ALL)
+  priority              Int               @default(0)
+  config                Json
+  encryptedApiKey       String?           @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
   // OAuth M2M (service principal) credentials — currently only Databricks.
   // XOR with `encryptedApiKey`: a row carries either a static key/PAT or a
   // service principal (clientId + encryptedClientSecret), never both.
-  clientId            String?      @map("client_id")
-  encryptedClientSecret String?    @map("encrypted_client_secret")
-  displayName         String?
-  description         String?
-  tags                Json?
-  healthStatus        HealthStatus @default(UNKNOWN)
-  lastHealthCheck     DateTime?
-  lastUsedAt          DateTime?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime
-  user                User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clientId              String?           @map("client_id")
+  encryptedClientSecret String?           @map("encrypted_client_secret")
+  displayName           String?
+  description           String?
+  tags                  Json?
+  healthStatus          HealthStatus      @default(UNKNOWN)
+  lastHealthCheck       DateTime?
+  lastUsedAt            DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, provider])
   @@index([provider])
@@ -12900,29 +13104,29 @@ enum ChatGptPlanCredentialStatus {
 /// Only the server refreshes, under `withRefreshLock`, because the refresh
 /// token rotates.
 model ChatGptPlanCredential {
-  id                    String                      @id @default(cuid())
-  userId                String                      @unique
-  email                 String?
+  id                      String                      @id @default(cuid())
+  userId                  String                      @unique
+  email                   String?
   /// The ID token's `sub`; a reconnect as a different ChatGPT account replaces
   /// the row rather than mixing two accounts' tokens.
-  subject               String
-  clientId              String
-  hostId                String
-  encryptedAccessToken  String
-  encryptedRefreshToken String
-  encryptedIdToken      String?
-  accessTokenExpiresAt  DateTime
-  earliestRefreshAt     DateTime?
-  scopes                String[]
-  status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  subject                 String
+  clientId                String
+  hostId                  String
+  encryptedAccessToken    String
+  encryptedRefreshToken   String
+  encryptedIdToken        String?
+  accessTokenExpiresAt    DateTime
+  earliestRefreshAt       DateTime?
+  scopes                  String[]
+  status                  ChatGptPlanCredentialStatus @default(ACTIVE)
   /// Read from the ID token's subscription claims at sign-in and on every
   /// refresh (Fizzy #2770 G7).
-  tier                  ChatGptPlanTier             @default(UNKNOWN)
+  tier                    ChatGptPlanTier             @default(UNKNOWN)
   /// When the paid subscription runs out, per the ID token; null if unknown.
   subscriptionActiveUntil DateTime?
-  lastUsedAt            DateTime?
-  createdAt             DateTime                    @default(now())
-  updatedAt             DateTime                    @updatedAt
+  lastUsedAt              DateTime?
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -12937,19 +13141,19 @@ model ChatGptPlanCredential {
 /// organization, so `per_user_within_org` in `scripts/apply-rls-direct.ts` and
 /// `PER_USER_ORG_TABLES` in `src/tenant-db.ts`.
 model ChatGptPlanOrgUse {
-  id             String   @id @default(cuid())
-  userId         String
-  organizationId String
+  id                    String   @id @default(cuid())
+  userId                String
+  organizationId        String
   /// A row with `enabled: false` is the person's answer to the in-app prompt,
   /// so they are not asked again.
-  enabled        Boolean
+  enabled               Boolean
   /// Also run the work Fabric does on this person's behalf without them —
   /// scheduled reports, daily briefs, agents started from jobs — on the plan.
   /// Only an explicit choice in settings turns it on; it counts against the
   /// plan's limits while they are away.
-  includeBackgroundJobs Boolean @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  includeBackgroundJobs Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -12976,6 +13180,8 @@ enum ChatGptPlanApiFallbackInteractive {
   /// Ask the member whether to run it on the organization's provider.
   ASK
   NEVER
+  /// Run it on the organization's provider, audited, and tell the member.
+  AUTO
 }
 
 /// What background work does when every plan it may use is spent.
@@ -13003,41 +13209,41 @@ enum ChatGptPlanSourceKind {
 /// `ORG_ONLY_TABLES` in `src/tenant-db.ts`. Tokens are encrypted with
 /// `encryptApiKey`, exactly as in `ChatGptPlanCredential`.
 model ChatGptPlanOrgAccount {
-  id                    String                      @id @default(cuid())
-  organizationId        String
-  label                 String
-  connectedByUserId     String
-  email                 String?
+  id                      String                      @id @default(cuid())
+  organizationId          String
+  label                   String
+  connectedByUserId       String
+  email                   String?
   /// The ID token's `sub`. Unique: one ChatGPT account serves at most one
   /// organization.
-  subject               String                      @unique
-  clientId              String
-  hostId                String
-  encryptedAccessToken  String
-  encryptedRefreshToken String
-  encryptedIdToken      String?
-  accessTokenExpiresAt  DateTime
-  earliestRefreshAt     DateTime?
-  scopes                String[]
-  status                ChatGptPlanCredentialStatus @default(ACTIVE)
+  subject                 String                      @unique
+  clientId                String
+  hostId                  String
+  encryptedAccessToken    String
+  encryptedRefreshToken   String
+  encryptedIdToken        String?
+  accessTokenExpiresAt    DateTime
+  earliestRefreshAt       DateTime?
+  scopes                  String[]
+  status                  ChatGptPlanCredentialStatus @default(ACTIVE)
   /// Read from the ID token's subscription claims at sign-in and on every
   /// refresh (Fizzy #2770 G7); an admin may still set it.
-  tier                  ChatGptPlanTier             @default(UNKNOWN)
+  tier                    ChatGptPlanTier             @default(UNKNOWN)
   /// When the paid subscription runs out, per the ID token; null if unknown.
   subscriptionActiveUntil DateTime?
-  enabled               Boolean                     @default(true)
+  enabled                 Boolean                     @default(true)
   /// Also serve the interactive work of members with no usable plan of
-  /// their own. Off until an admin turns it on.
-  serveInteractive      Boolean                     @default(false)
+  /// their own. On for a new account; an admin can limit it to background.
+  serveInteractive        Boolean                     @default(true)
   /// Serve allowlisted background jobs.
-  serveBackground       Boolean                     @default(true)
+  serveBackground         Boolean                     @default(true)
   /// Fair share: the most of this account's window one member's interactive
   /// work may use, as a percent of its budget. Past it the member's work goes
   /// to the organization's other accounts. Null = no cap (Fizzy #2770 D6).
-  maxMemberSharePct     Int?
-  lastUsedAt            DateTime?
-  createdAt             DateTime                    @default(now())
-  updatedAt             DateTime                    @updatedAt
+  maxMemberSharePct       Int?
+  lastUsedAt              DateTime?
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -13051,6 +13257,7 @@ model ChatGptPlanOrgAccount {
 model ChatGptPlanOrgPolicy {
   id                     String                            @id @default(cuid())
   organizationId         String                            @unique
+  /// Retired (Fizzy #2770): accounts serve once the terms are accepted. Nothing reads it.
   poolingEnabled         Boolean                           @default(false)
   apiFallbackInteractive ChatGptPlanApiFallbackInteractive @default(ASK)
   apiFallbackBackground  ChatGptPlanApiFallbackBackground  @default(NEVER)
@@ -13085,12 +13292,47 @@ model ChatGptPlanBudgetObservation {
   sourceId    String
   /// The anchored window the refusal fell in; one observation per window.
   windowStart DateTime
-  /// Uncached input tokens Fabric's calls had used in it.
+  /// Uncached input Fabric's calls had used in it, weighted by model (Sol = 1).
   inputTokens Int
   observedAt  DateTime
+  /// A window that reset with no refusal after Fabric's calls had used more
+  /// than the budget: the real budget is at least `inputTokens`. It raises the
+  /// budget but never counts as calibrated — only a refusal measures the top.
+  lowerBound  Boolean               @default(false)
 
   @@id([sourceKind, sourceId, windowStart])
   @@map("chat_gpt_plan_budget_observation")
+}
+
+/// How well Fabric's window estimate tracked OpenAI, one row per source and
+/// estimated window (Fizzy #2770): the estimate's percent when OpenAI refused,
+/// its peak in a window that reset without a refusal, and how far it sat from
+/// the usage OpenAI reported. Percents are uncapped, of the budget in force.
+///
+/// Keyed by source like `ChatGptPlanBudgetObservation`, so no
+/// `organizationId`, no RLS policy and no foreign key: whoever deletes a
+/// source deletes its rows.
+model ChatGptPlanWindowAccuracy {
+  sourceKind              ChatGptPlanSourceKind
+  sourceId                String
+  windowStart             DateTime
+  /// The budget the percents below are of, Sol-equivalent uncached input.
+  budget                  Int
+  refusedAt               DateTime?
+  refusalEstimatePercent  Float?
+  /// The estimate when the window closed; it only grows inside a window.
+  peakEstimatePercent     Float?
+  settledAt               DateTime?
+  /// The latest usage OpenAI reported in this window, and the estimate then.
+  reportedPercent         Float?
+  estimatePercentAtReport Float?
+  reportedAt              DateTime?
+  /// The largest gap seen in this window, in percentage points.
+  maxDriftPoints          Float?
+  updatedAt               DateTime              @updatedAt
+
+  @@id([sourceKind, sourceId, windowStart])
+  @@map("chat_gpt_plan_window_accuracy")
 }
 
 /// The shared memory of a spent plan window, one row per plan source, so
@@ -13103,16 +13345,28 @@ model ChatGptPlanBudgetObservation {
 /// does not apply. No foreign key either — `sourceId` names a user or an
 /// account by `sourceKind` — so whoever deletes a source deletes its row.
 model ChatGptPlanSourceState {
-  sourceKind               ChatGptPlanSourceKind
-  sourceId                 String
+  sourceKind                     ChatGptPlanSourceKind
+  sourceId                       String
   /// Calls fail fast until then.
-  openUntil                DateTime?
+  openUntil                      DateTime?
   /// When the window resets, when OpenAI said or the ledger estimated.
-  resetAt                  DateTime?
+  resetAt                        DateTime?
   /// Refusals in a row with no reset time; lengthens the next pause.
-  consecutiveUnknownResets Int                   @default(0)
-  lastExhaustedAt          DateTime?
-  updatedAt                DateTime              @updatedAt
+  consecutiveUnknownResets       Int                   @default(0)
+  lastExhaustedAt                DateTime?
+  /// The usage OpenAI last reported for this source in its rate-limit
+  /// headers (`x-codex-primary-*` / `x-codex-secondary-*`, as Codex reads
+  /// them); null until a reply carried them. Percent used, the window's
+  /// length in minutes, and when it resets.
+  reportedPrimaryUsedPercent     Float?
+  reportedPrimaryWindowMinutes   Int?
+  reportedPrimaryResetAt         DateTime?
+  reportedSecondaryUsedPercent   Float?
+  reportedSecondaryWindowMinutes Int?
+  reportedSecondaryResetAt       DateTime?
+  /// When the reply carrying the values above arrived.
+  reportedAt                     DateTime?
+  updatedAt                      DateTime              @updatedAt
 
   @@id([sourceKind, sourceId])
   @@map("chat_gpt_plan_source_state")
@@ -13779,7 +14033,7 @@ enum WorkflowIntegrationUsageScope {
 }
 
 model WorkflowIntegration {
-  id             String                      @id @default(cuid())
+  id             String                        @id @default(cuid())
   workflowId     String? // Optional - can be user/org level
   userId         String
   organizationId String?
@@ -13788,9 +14042,9 @@ model WorkflowIntegration {
   credentials    String // Encrypted JSON
   usageScope     WorkflowIntegrationUsageScope @default(OWNER_ONLY) // Sharing requires explicit owner consent and org administrator authorization
   settings       Json?
-  isActive       Boolean                     @default(true)
-  createdAt      DateTime                    @default(now())
-  updatedAt      DateTime                    @updatedAt
+  isActive       Boolean                       @default(true)
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
   lastUsedAt     DateTime?
 
   // Relations
@@ -15028,16 +15282,16 @@ model NotificationPreference {
 
   // Curated toggles. Each maps to a NotificationCategory (see
   // CATEGORY_TO_TOGGLE in queries/notification-preferences.ts).
-  mentions     Boolean @default(true) // category MENTION
-  replies      Boolean @default(true) // category REPLY
-  assignments  Boolean @default(true) // category ASSIGNMENT
-  status       Boolean @default(true) // category STATUS
-  syncProject  Boolean @default(true) // category PROJECT (PM sync, repo token, scans)
-  aiAgent      Boolean @default(true) // category AGENT
+  mentions              Boolean @default(true) // category MENTION
+  replies               Boolean @default(true) // category REPLY
+  assignments           Boolean @default(true) // category ASSIGNMENT
+  status                Boolean @default(true) // category STATUS
+  syncProject           Boolean @default(true) // category PROJECT (PM sync, repo token, scans)
+  aiAgent               Boolean @default(true) // category AGENT
   publishingSuggestions Boolean @default(true) // category PUBLISHING (in-app bell)
   publishingEmails      Boolean @default(true) // EMAIL channel for publishing suggestions (1C-2c). NOT in CATEGORY_TO_TOGGLE — that map gates the in-app bell only.
-  reportEmails Boolean @default(true) // EMAIL channel: report-run completion/failure. NOT a NotificationCategory toggle — gates email only; the in-app REPORT bell stays always-on.
-  reviewEmails Boolean @default(true) // EMAIL channel: a release-notes draft is awaiting your review. NOT a NotificationCategory toggle — gates email only; the in-app approval-pending bell stays always-on.
+  reportEmails          Boolean @default(true) // EMAIL channel: report-run completion/failure. NOT a NotificationCategory toggle — gates email only; the in-app REPORT bell stays always-on.
+  reviewEmails          Boolean @default(true) // EMAIL channel: a release-notes draft is awaiting your review. NOT a NotificationCategory toggle — gates email only; the in-app approval-pending bell stays always-on.
 
   /// Display-only preference (#2117): render notifications as stacked cards
   /// instead of compact rows. Deliberately NOT part of
@@ -15203,9 +15457,9 @@ model AiUsageLog {
   providerModelId    String // Provider-specific model ID used
 
   // Context
-  taskType       AiTaskType?
-  agentId        String?
-  conversationId String?
+  taskType        AiTaskType?
+  agentId         String?
+  conversationId  String?
   // Product-feature attribution (Fizzy #2230, Phase 1): which user-facing AI
   // feature made this call, and the resolved prompt version it ran with.
   // Nullable by design — untagged call sites write null and tag coverage
@@ -15249,8 +15503,8 @@ model AiUsageLog {
   billingCustomerId        String?
 
   // Status
-  success      Boolean @default(true)
-  errorMessage String?
+  success         Boolean @default(true)
+  errorMessage    String?
   // Gateway/provider failure attribution (Fizzy #2623): the HTTP status code
   // of the failed attempt and a small structured extract of the gateway's
   // routing metadata, so a gateway-side outage can be told apart from a
@@ -18216,8 +18470,8 @@ model BackgroundJob {
   errorClass String?
 
   // Temporal correlation
-  workflowId String
-  runId      String?
+  workflowId   String
+  runId        String?
   // Ordered claim on the row by an execution chain that reuses the workflow id
   // (code indexing): the claiming chain's Temporal start time. A chain relabels
   // runId only when it started no earlier than this; a start path's relabel
@@ -18836,18 +19090,18 @@ model ProjectInstructionSnapshot {
   /// path holds the pointer to a higher version, as a race guard
   /// (`publishInstructionSnapshot`), so nothing may assume the published
   /// version is the newest one.
-  version Int
-  source  ProjectInstructionSource
-  status  ProjectInstructionSnapshotStatus @default(RECEIVING)
+  version              Int
+  source               ProjectInstructionSource
+  status               ProjectInstructionSnapshotStatus @default(RECEIVING)
   /// Full trees are the established upload/import representation. A native
   /// repository operation deliberately stores only its changed intent rows.
-  contentKind ProjectInstructionContentKind @default(FULL_SNAPSHOT)
+  contentKind          ProjectInstructionContentKind    @default(FULL_SNAPSHOT)
   /// Frozen repository configuration identity for a GIT_INTENT. Null for a
   /// full snapshot, whose source identity follows its existing fields.
   repositoryGeneration Int?
   /// The immutable repository commit the GIT_INTENT was based on. Null for a
   /// full snapshot.
-  repositoryBaseSha String?
+  repositoryBaseSha    String?
 
   /// Null for the existing direct-edit/upload flow. A non-null value makes
   /// this snapshot a file proposal whose publication is controlled only by
@@ -18884,15 +19138,15 @@ model ProjectInstructionSnapshot {
   /// (or cleared before this column existed), which means a full read.
   scanRulesVersion        String?
 
-  fileCount     Int     @default(0)
-  storedBytes   Int     @default(0)
-  excludedCount Int     @default(0)
+  fileCount       Int     @default(0)
+  storedBytes     Int     @default(0)
+  excludedCount   Int     @default(0)
   /// The files left out, as [{ path, rule }], capped at `MAX_EXCLUDED_PATHS`
   /// (`@repo/instructions`). `excludedCount` stays the authoritative number: an
   /// empty list beside a non-zero count is a version made before this column.
-  excludedPaths Json    @default("[]")
+  excludedPaths   Json    @default("[]")
   /// sha256 over sorted "path\0sha256\n" lines; set when READY.
-  digest        String?
+  digest          String?
   /// The IDENTITY of the change set this snapshot was derived from: sha256
   /// over the sorted "op\0path\0sha256\n" lines of its `put`/`delete` list.
   /// Written for every derived snapshot; READ only for proposals, where it
@@ -18909,7 +19163,7 @@ model ProjectInstructionSnapshot {
   /// the database-enforced identity of one logical acquisition. A retried
   /// acquisition finds its own row by this key and adopts it instead of
   /// allocating a second version. Null for every other source.
-  syncRunKey              String? @unique
+  syncRunKey String? @unique
 
   /// The ownership token of the check run that may write this row's progress
   /// and verdict. Written by the API (or the sync acquisition) BEFORE the
@@ -18917,14 +19171,14 @@ model ProjectInstructionSnapshot {
   /// required by every write an attempt makes when its input carries one. Null
   /// when no run owns the row (a row whose run failed, and every row that
   /// predates the column).
-  validationAttemptId     String?
+  validationAttemptId String?
   /// How far the running checks have got: the pass, and how many files that
   /// pass has fully decided out of how many. Counts only finished work, in
   /// manifest order; reset when a run claims the row.
-  progressPhase           ProjectInstructionSnapshotProgressPhase?
-  progressDone            Int?
-  progressTotal           Int?
-  progressUpdatedAt       DateTime?
+  progressPhase       ProjectInstructionSnapshotProgressPhase?
+  progressDone        Int?
+  progressTotal       Int?
+  progressUpdatedAt   DateTime?
 
   /// The READY snapshot this one was derived from: an in-tab file edit, a
   /// file added or deleted, or (later) a CLI push. Unchanged files are
@@ -19019,16 +19273,16 @@ model ProjectInstructionSnapshot {
   readyAt     DateTime?
   publishedAt DateTime?
 
-  project      Project      @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation("InstructionSnapshotCreator", fields: [userId], references: [id], onDelete: Cascade)
-  reviewer     User?        @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
-  publishedFor Project?     @relation("PublishedInstructionSnapshot")
-  files        ProjectInstructionFile[]
+  project          Project                            @relation("ProjectInstructionSnapshots", fields: [projectId], references: [id], onDelete: Cascade)
+  organization     Organization                       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             User                               @relation("InstructionSnapshotCreator", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer         User?                              @relation("InstructionSnapshotReviewer", fields: [reviewerUserId], references: [id], onDelete: SetNull)
+  publishedFor     Project?                           @relation("PublishedInstructionSnapshot")
+  files            ProjectInstructionFile[]
   gitIntentEntries ProjectInstructionGitIntentEntry[]
 
-  baseSnapshot      ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
-  derivedSnapshots  ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
+  baseSnapshot     ProjectInstructionSnapshot?  @relation("DerivedInstructionSnapshots", fields: [baseSnapshotId], references: [id], onDelete: SetNull)
+  derivedSnapshots ProjectInstructionSnapshot[] @relation("DerivedInstructionSnapshots")
 
   /// SetNull: only a project cascade deletes a branch, and it deletes the
   /// snapshots with it.
@@ -19080,13 +19334,13 @@ model ProjectInstructionGitIntentEntry {
   baseObjectId String?
   baseMode     Int?
   /// PUT-only immutable staged bytes. DELETE carries no blob reference.
-  storageKey String?
-  sha256     String?
-  size       Int?
-  mimeType   String?
-  isText     Boolean?
-  mode       Int?
-  kind       ProjectInstructionFileKind?
+  storageKey   String?
+  sha256       String?
+  size         Int?
+  mimeType     String?
+  isText       Boolean?
+  mode         Int?
+  kind         ProjectInstructionFileKind?
 
   createdAt DateTime @default(now())
 
@@ -19334,8 +19588,8 @@ model ProjectInstructionFile {
 /// runs act as (the automatic toggle, "Re-enable") keeps it; the publish
 /// fence re-checks the run's own member instead (Fizzy #2744).
 model ProjectInstructionRepositorySync {
-  id                      String   @id @default(cuid())
-  projectId               String   @unique
+  id                      String  @id @default(cuid())
+  projectId               String  @unique
   /// Organization-backed projects only, like the snapshots this produces.
   organizationId          String
   /// The member who last configured it: the delegate automatic runs act as.
@@ -19344,17 +19598,17 @@ model ProjectInstructionRepositorySync {
   /// Branch name, without the `refs/heads/` prefix.
   ref                     String
   /// POSIX, relative, no trailing slash. "" is the repository root.
-  rootPath                String   @default("")
+  rootPath                String  @default("")
   /// On by default: git is the authority, and the published copy follows the
   /// branch. Rows that stored `false` keep it, since it may be deliberate.
-  automatic               Boolean  @default(true)
-  generation              Int      @default(1)
+  automatic               Boolean @default(true)
+  generation              Int     @default(1)
 
   /// Automatic-run scheduling (spec §6.1). Written from PR 1 on, read from PR 2.
   /// Null while the sync is paused: no check is scheduled until a re-configure
   /// clears the pause and sets it due again.
-  nextCheckAt             DateTime? @default(now())
-  failureCount            Int      @default(0)
+  nextCheckAt             DateTime?                    @default(now())
+  failureCount            Int                          @default(0)
   automaticPausedReason   ProjectInstructionSyncPause?
   automaticPausedAt       DateTime?
   suppressedCommitSha     String?
@@ -19372,15 +19626,15 @@ model ProjectInstructionRepositorySync {
   /// Lets members with INSTRUCTION_READ propose to the repository (Fizzy
   /// #2563 spec §2.4, §16.1). Its own procedure writes it and never bumps
   /// `generation`, so a toggle never fails in-flight proposals.
-  allowReaderProposals    Boolean  @default(false)
+  allowReaderProposals    Boolean                      @default(false)
 
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  project               Project                             @relation("ProjectInstructionRepositorySync", fields: [projectId], references: [id], onDelete: Cascade)
-  organization          Organization                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user                  User                                @relation("InstructionRepositorySyncDelegate", fields: [userId], references: [id], onDelete: Cascade)
-  repositoryIntegration ProjectRepositoryIntegration        @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_instruction_repository_sync_integration_fkey")
+  project               Project                      @relation("ProjectInstructionRepositorySync", fields: [projectId], references: [id], onDelete: Cascade)
+  organization          Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                  User                         @relation("InstructionRepositorySyncDelegate", fields: [userId], references: [id], onDelete: Cascade)
+  repositoryIntegration ProjectRepositoryIntegration @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_instruction_repository_sync_integration_fkey")
 
   @@index([automatic, nextCheckAt])
   @@index([organizationId])
@@ -19397,32 +19651,32 @@ model ProjectInstructionRepositorySync {
 /// is a plain column holding the configuration the run was begun under.
 model ProjectInstructionRepositorySyncRun {
   /// runKey = `<syncId>:<workflow run id>`; unique by construction.
-  id             String                           @id
+  id                String                               @id
   /// The sync row's id when the run began; that row may since be gone.
-  syncId         String
-  projectId      String
-  organizationId String
+  syncId            String
+  projectId         String
+  organizationId    String
   /// The acting user: the requester for MANUAL, the delegate otherwise.
-  userId         String
-  generation     Int
-  trigger        ProjectInstructionSyncTrigger
-  startedAt      DateTime
-  finishedAt     DateTime?
-  status         ProjectInstructionSyncRunStatus?
-  error          ProjectInstructionSyncError?
+  userId            String
+  generation        Int
+  trigger           ProjectInstructionSyncTrigger
+  startedAt         DateTime
+  finishedAt        DateTime?
+  status            ProjectInstructionSyncRunStatus?
+  error             ProjectInstructionSyncError?
   /// Closed set: "superseded" only.
-  note           String?
-  commitSha      String?
+  note              String?
+  commitSha         String?
   /// No foreign key: the snapshot may be pruned while the run stays in History.
-  snapshotId     String?
+  snapshotId        String?
   /// Which limit a LIMITS_EXCEEDED run hit: `{ kind, max, actual? }`, numbers
   /// only. Null for every other outcome and for runs recorded before it existed.
-  limitDetail    Json?
+  limitDetail       Json?
   /// When the instruction reaper last claimed this unfinished receipt to ask
   /// Temporal whether its run has ended. Candidates are taken least recently
   /// checked first, so receipts whose runs stay open cannot starve later ones.
   /// Null until first claimed; irrelevant once `finishedAt` is set.
-  reapCheckedAt  DateTime?
+  reapCheckedAt     DateTime?
   /// How far the in-flight run has got. FETCHING and PREPARING carry no
   /// count; COPYING carries files copied out of files to copy. Null once the
   /// run is recorded.
@@ -19431,9 +19685,9 @@ model ProjectInstructionRepositorySyncRun {
   progressTotal     Int?
   progressUpdatedAt DateTime?
 
-  project      Project                          @relation("ProjectInstructionRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization                     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User                             @relation("InstructionRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
+  project      Project      @relation("ProjectInstructionRepositorySyncRuns", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation("InstructionRepositorySyncRunActor", fields: [userId], references: [id], onDelete: Cascade)
 
   // A FIFTH index exists that Prisma cannot express: the partial
   // `project_instruction_sync_run_reap_due_idx` on ("reapCheckedAt" NULLS
@@ -19490,7 +19744,7 @@ model ProjectRepositoryIntegration {
   repositoryOwner String
   repositoryName  String
   defaultBranch   String   @default("main")
-  roleTag         String?  // Role tag/label (e.g., "Legacy", "New", "V1 Reference")
+  roleTag         String? // Role tag/label (e.g., "Legacy", "New", "V1 Reference")
   // Branch the QA pipeline-results sync watches for CI runs. NULL = follow
   // defaultBranch. Separate from defaultBranch because that one also drives code
   // indexing: a team whose CI publishes test reports on `develop` must be able to
@@ -19537,10 +19791,10 @@ model ProjectRepositoryIntegration {
   updatedAt          DateTime @updatedAt
 
   // Relations
-  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  configuredBy User?   @relation("RepoIntegrationConfiguredBy", fields: [configuredByUserId], references: [id], onDelete: SetNull)
+  project                    Project                            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  configuredBy               User?                              @relation("RepoIntegrationConfiguredBy", fields: [configuredByUserId], references: [id], onDelete: SetNull)
   /// Living Memory repository syncs reading from this integration (at most one per project).
-  contextRepositorySyncs ProjectContextRepositorySync[]
+  contextRepositorySyncs     ProjectContextRepositorySync[]
   instructionRepositorySyncs ProjectInstructionRepositorySync[]
 
   @@unique([projectId, provider, repositoryOwner, repositoryName])

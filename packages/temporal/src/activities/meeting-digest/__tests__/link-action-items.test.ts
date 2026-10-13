@@ -1,3 +1,4 @@
+import { RetryError } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	capturedDecisionOutcomes,
@@ -81,6 +82,14 @@ vi.mock("@repo/observability/llm", async () =>
 		await import("../../../../__tests__/test-helpers/decision-outcomes")
 	).observabilityLlmMock(),
 );
+
+const wrappedInRetryError = (limit: Error) =>
+	new RetryError({
+		message:
+			"Failed after 2 attempts with non-retryable error: 'AI usage limit exceeded'",
+		reason: "errorNotRetryable",
+		errors: [new Error("gateway busy"), limit],
+	});
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -1184,6 +1193,27 @@ describe("decision telemetry", () => {
 			["limit_exceeded", "jev-1", 3],
 			["limit_exceeded", "none", undefined],
 		]);
+	});
+
+	it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: limit_exceeded, counted as a verifier failure, no language verifier", async () => {
+		enableDecisionModel();
+		arrangeThreeCandidates();
+		mockDecide.mockRejectedValueOnce(
+			wrappedInRetryError(new AiUsageLimitExceededError()),
+		);
+
+		await expect(linkMeetingActionItemsActivity(baseInput)).rejects.toThrow(
+			/verifier failed for all/,
+		);
+
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([["limit_exceeded", "jev-1", 3]]);
+		expect(mockGenerateObject).not.toHaveBeenCalled();
 	});
 
 	it("records unavailable per candidate when the organization has no decision model", async () => {

@@ -15,6 +15,7 @@ type Tables = {
 	sourceState: Row[];
 	servedModels: Row[];
 	observations: Row[];
+	accuracy?: Row[];
 };
 
 const store = vi.hoisted(() => ({
@@ -46,7 +47,10 @@ function matches(row: Row, where: Row | undefined): boolean {
 }
 
 function delegate(name: keyof Tables) {
-	const rows = () => store.tables[name];
+	const rows = (): Row[] => {
+		store.tables[name] ??= [];
+		return store.tables[name];
+	};
 	const step = (op: string) => {
 		if (store.failOn === `${name}.${op}`) {
 			throw new Error(`${name}.${op} failed`);
@@ -125,16 +129,17 @@ const tx = {
 	chatGptPlanSourceState: delegate("sourceState"),
 	chatGptPlanServedModel: delegate("servedModels"),
 	chatGptPlanBudgetObservation: delegate("observations"),
+	chatGptPlanWindowAccuracy: delegate("accuracy"),
 };
 
 vi.mock("@repo/database/prisma/queries/lib/refresh-lock", () => ({
 	chatGptPlanLockKey: (userId: string) => `chatgpt-plan:${userId}`,
 	// The real one runs `fn` in one transaction: a throw rolls everything back.
 	withRefreshLock: async <T>(
-		key: string,
+		key: string | readonly string[],
 		fn: (t: typeof tx) => Promise<T>,
 	): Promise<T> => {
-		store.lockKeys.push(key);
+		store.lockKeys.push(...(typeof key === "string" ? [key] : key));
 		const snapshot = structuredClone(store.tables);
 		try {
 			return await fn(tx);
@@ -190,6 +195,7 @@ const userState = (sourceKind: string, sourceId: string) => ({
 	observations: [
 		{ sourceKind, sourceId, windowStart: new Date(), inputTokens: 5 },
 	],
+	accuracy: [{ sourceKind, sourceId, windowStart: new Date(), budget: 5 }],
 });
 
 function withOwnPlan(): Tables {
@@ -256,6 +262,7 @@ describe("shareOwnChatGptPlan", () => {
 			"sourceState",
 			"servedModels",
 			"observations",
+			"accuracy",
 		] as const) {
 			expect(store.tables[table]).toEqual([
 				expect.objectContaining({
@@ -352,7 +359,10 @@ describe("takeBackSharedChatGptPlan", () => {
 			accountId: "acc-1",
 		});
 
-		expect(store.lockKeys).toEqual(["chatgpt-plan-org:acc-1"]);
+		expect(store.lockKeys).toEqual([
+			"chatgpt-plan-org:acc-1",
+			"chatgpt-plan:user-1",
+		]);
 		expect(store.tables.accounts).toEqual([]);
 		expect(store.tables.credentials).toEqual([
 			expect.objectContaining({ userId: "user-1", ...SIGN_IN }),
@@ -369,6 +379,7 @@ describe("takeBackSharedChatGptPlan", () => {
 			"sourceState",
 			"servedModels",
 			"observations",
+			"accuracy",
 		] as const) {
 			expect(store.tables[table]).toEqual([
 				expect.objectContaining({
@@ -449,7 +460,10 @@ describe("takeBackSharedChatGptPlan", () => {
 				accountId: "acc-1",
 			}),
 		).rejects.toMatchObject({ reason: "not_found" });
-		expect(store.lockKeys).toEqual(["chatgpt-plan-org:acc-1"]);
+		expect(store.lockKeys).toEqual([
+			"chatgpt-plan-org:acc-1",
+			"chatgpt-plan:user-1",
+		]);
 	});
 
 	it("leaves both sides intact when the delete fails", async () => {

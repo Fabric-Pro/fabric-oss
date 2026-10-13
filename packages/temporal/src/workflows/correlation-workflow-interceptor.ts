@@ -36,11 +36,17 @@ export const TEMPORAL_CORRELATION_HEADER = "x-correlation-id";
 /** Set by `lib/ai-interactive-interceptor.ts`; forwarded the same way. */
 export const TEMPORAL_AI_INTERACTIVE_HEADER = "x-fabric-ai-interactive-user";
 export const TEMPORAL_AI_IMPERSONATED_HEADER = "x-fabric-ai-impersonated-user";
+export const TEMPORAL_AI_JOB_TYPE_HEADER = "x-fabric-ai-job-type";
+export const TEMPORAL_AI_API_FALLBACK_HEADER = "x-fabric-ai-api-fallback";
 
+// Headers are not part of a workflow's command sequence, so forwarding one
+// more needs no `patched()` guard: recorded histories replay unchanged.
 const PROPAGATED_HEADERS = [
 	TEMPORAL_CORRELATION_HEADER,
 	TEMPORAL_AI_INTERACTIVE_HEADER,
 	TEMPORAL_AI_IMPERSONATED_HEADER,
+	TEMPORAL_AI_JOB_TYPE_HEADER,
+	TEMPORAL_AI_API_FALLBACK_HEADER,
 ] as const;
 
 class CorrelationWorkflowInboundInterceptor

@@ -27,10 +27,12 @@ import {
 	markConversationTurnActive,
 } from "@repo/database";
 import type {
+	ExecutionMode,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
 } from "@repo/temporal";
 import { classifyTemporalClientError } from "@repo/temporal/temporal-client-errors";
+import { turnBudgetForExecutionMode } from "@repo/temporal/turn-budget-policy";
 import { v4 as uuidv4 } from "uuid";
 import { isOrchestratorOrganizationMember } from "./run-access";
 
@@ -264,6 +266,7 @@ function terminalForOutput(
 			return "CANCELLED";
 		case "completed":
 			return output.handoffRecommended ||
+				output.budgetStop ||
 				(output.limitSignals?.length ?? 0) > 0
 				? "LIMITED"
 				: "COMPLETED";
@@ -344,6 +347,11 @@ export async function reconcileTurnWithWorkflow(args: {
 				outcome: terminalForOutput(output),
 				terminalReason: `reconciled: ${output?.status ?? "completed"}`,
 				responseText: output?.response ?? null,
+				// The same structured stop the workflow would have written, so
+				// a reconnect renders it without a new-chat workaround.
+				...(output?.budgetStop
+					? { budgetStop: { ...output.budgetStop } }
+					: {}),
 			});
 			return "terminalized";
 		}
@@ -379,6 +387,10 @@ export type ChatTurnAdmission =
  * one still running is a 409 TURN_IN_PROGRESS carrying its executionId
  * (the chat refuses the new message rather than attaching to that turn);
  * a Temporal outage is a retryable 503.
+ *
+ * A new turn is admitted with its token ledger: the allowance of the
+ * server-validated `executionMode` the run will start with, frozen on the
+ * row. A retry of the same key finds the existing turn and changes nothing.
  */
 export async function admitChatTurn(args: {
 	userId: string;
@@ -396,6 +408,9 @@ export async function admitChatTurn(args: {
 			clientRequestKey: args.clientRequestKey,
 			executionId: `orch-${uuidv4()}`,
 			executionMode: args.executionMode,
+			budget: turnBudgetForExecutionMode(
+				args.executionMode as ExecutionMode,
+			),
 		});
 		switch (admitted.outcome) {
 			case "created":
@@ -588,6 +603,9 @@ export async function startTurnWorkflow(args: {
 		executionId,
 		turnId: turn.id,
 		turnContractVersion: TURN_CONTRACT_VERSION,
+		// The ledger fences reservations on it (under the workflow's
+		// `orch-turn-budget-v1` marker); null for a turn with no conversation.
+		turnGeneration: turn.generation,
 	};
 	let handle: unknown;
 	let attached = false;
@@ -683,6 +701,57 @@ export async function startLegacyChatWorkflow(args: {
 }
 
 /** The domain status a stored terminal turn reports to the client. */
+/**
+ * The turn row's structured token-allowance stop, validated for the stream:
+ * the same payload the live `completed` event carries (counts as plain
+ * numbers), or undefined when the row has none or it is malformed.
+ */
+export function turnBudgetStopForStream(
+	value: unknown,
+): OrchestratorWorkflowOutput["budgetStop"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	const count = (key: string): number | null => {
+		const raw = record[key];
+		const parsed =
+			typeof raw === "bigint"
+				? Number(raw)
+				: typeof raw === "number"
+					? raw
+					: Number.NaN;
+		return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+	};
+	const allowance = count("allowance");
+	const measured = count("measured");
+	const outstanding = count("outstanding");
+	if (
+		record.kind !== "token_allowance" ||
+		allowance === null ||
+		measured === null ||
+		outstanding === null
+	) {
+		return undefined;
+	}
+	const enforcement =
+		record.enforcement === "ENFORCED" ||
+		record.enforcement === "MEASURED_ONLY"
+			? record.enforcement
+			: null;
+	return {
+		kind: "token_allowance",
+		allowance,
+		measured,
+		outstanding,
+		enforcement,
+		stopReason:
+			record.stopReason === "finalization_unavailable"
+				? "finalization_unavailable"
+				: "allowance_exhausted",
+	};
+}
+
 export function resultStatusForTurn(
 	status: ConversationTurn["status"],
 ): "completed" | "failed" | "cancelled" {

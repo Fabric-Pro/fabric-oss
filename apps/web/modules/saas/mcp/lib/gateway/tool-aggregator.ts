@@ -14,23 +14,58 @@
 
 import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { boundProjectId, projectBoundTools } from "./project-binding";
+import {
+	PLATFORM_SERVER_NAME,
+	selectionAllowsTool,
+	selectionIncludesServer,
+	selectionRefusalMessage,
+	unknownServerNames,
+	unknownServerNamesMessage,
+	unknownToolNamesMessage,
+} from "./server-selection";
 import type {
 	ConnectedServerInfo,
 	GatewaySession,
 	GatewayToolDefinition,
+	ServerSelection,
 	ToolAnnotations,
 	ToolCallResult,
 } from "./types";
 
-/** Cache TTL for tool aggregation (5 minutes) */
+/** Who a tool list is for: the person and the organization it is cached under. */
+type ToolListOwner = Pick<GatewaySession, "userId" | "organizationId">;
+
+/**
+ * Cache TTL for tool aggregation (5 minutes): how long an aggregated list is
+ * reused. A rebuild reads each connection's stored tool schemas, which have
+ * their own longer lifetime, so this does not bound how old a schema can be.
+ * Which prefix reaches which connection is checked on every read instead
+ * (`routingFingerprint` in `getFullToolList`).
+ */
 const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;
 
-/** In-memory cache for aggregated tool lists per user+org */
+/**
+ * In-memory cache for aggregated tool lists per user+org.
+ *
+ * It holds the full list only. A session's server selection is applied to what
+ * is read from it (`applyServerSelection` in `getAggregatedTools`), never before
+ * it is written, so two clients of the same person with different selections
+ * share one entry and cannot be served each other's narrowed list.
+ *
+ * `routingFingerprint` is the prefix-to-connection mapping of the connection
+ * rows the entry was built from. `getFullToolList` compares it with the
+ * current rows on every read and rebuilds on a difference, so a rename, add,
+ * removal, enable or disable that changes which prefix names which connection
+ * shows up on the next request rather than after the TTL. A change that leaves
+ * every prefix the same, such as a rename that differs only in letter case,
+ * keeps the old display names and descriptions until the TTL.
+ */
 const toolListCache = new Map<
 	string,
 	{
 		tools: GatewayToolDefinition[];
 		servers: ConnectedServerInfo[];
+		routingFingerprint: string;
 		cachedAt: number;
 	}
 >();
@@ -53,8 +88,11 @@ function sanitizePrefix(name: string): string {
 }
 
 /**
- * Get all aggregated tools for a user session.
- * Returns both platform tools and connected server tools.
+ * Get the aggregated tools for a user session: the platform tools and the
+ * connected servers' tools, narrowed to the session's server selection
+ * (`GatewaySession.serverSelection`) by `selectionAllowsTool`. The returned
+ * `servers` keep only the servers the selection names, so a deselected
+ * server's prefix resolves to nothing for a caller that executes through them.
  */
 export async function getAggregatedTools(
 	session: GatewaySession,
@@ -71,16 +109,43 @@ export async function getAggregatedTools(
 		};
 	}
 
-	const cacheKey = getCacheKey(session.userId, session.organizationId);
+	return applyServerSelection(await getFullToolList(session), session);
+}
+
+/**
+ * Every platform tool and every discoverable connected server's tools for this
+ * person and organization, from the shared cache or freshly discovered. The
+ * cache is read and written only here, with the full list, never a selection's.
+ */
+async function getFullToolList(
+	owner: ToolListOwner,
+): Promise<{ tools: GatewayToolDefinition[]; servers: ConnectedServerInfo[] }> {
+	const cacheKey = getCacheKey(owner.userId, owner.organizationId);
 	const cached = toolListCache.get(cacheKey);
 
 	if (cached && Date.now() - cached.cachedAt < TOOL_CACHE_TTL_MS) {
-		return { tools: cached.tools, servers: cached.servers };
+		// Within the TTL the entry is used only while the connections still
+		// map the same prefixes to the same ids. A failure of this query
+		// propagates; it does not fall back to the entry.
+		const { listMcpConfigRoutingForTenant } = await import(
+			"@repo/database"
+		);
+		const current = await listMcpConfigRoutingForTenant({
+			userId: owner.userId,
+			organizationId: owner.organizationId,
+		});
+		if (
+			fingerprintServerPrefixes(assignServerPrefixes(current)) ===
+			cached.routingFingerprint
+		) {
+			return { tools: cached.tools, servers: cached.servers };
+		}
 	}
 
 	// Build fresh tool list
 	const { PLATFORM_TOOL_DEFINITIONS } = await import("./platform-tools");
-	const connectedServers = await discoverConnectedServerTools(session);
+	const { servers: connectedServers, routingFingerprint } =
+		await discoverConnectedServerTools(owner);
 
 	// Build namespaced tools from connected servers
 	const connectedTools: GatewayToolDefinition[] = [];
@@ -103,10 +168,11 @@ export async function getAggregatedTools(
 
 	const allTools = [...PLATFORM_TOOL_DEFINITIONS, ...connectedTools];
 
-	// Cache the result
+	// Cache the full result; a selection is applied after, on the way out.
 	toolListCache.set(cacheKey, {
 		tools: allTools,
 		servers: connectedServers,
+		routingFingerprint,
 		cachedAt: Date.now(),
 	});
 
@@ -114,22 +180,149 @@ export async function getAggregatedTools(
 }
 
 /**
- * Discover tools from all connected MCP servers for this tenant.
- * Uses cached tool schemas from MCPConfig for performance.
+ * Narrow a full tool list to the session's server selection. A session without
+ * one gets the list as it is; otherwise the result is new arrays built with
+ * `filter`, which leaves the ones passed in, which may be the cache's,
+ * untouched.
  */
-async function discoverConnectedServerTools(
+function applyServerSelection(
+	full: { tools: GatewayToolDefinition[]; servers: ConnectedServerInfo[] },
 	session: GatewaySession,
-): Promise<ConnectedServerInfo[]> {
-	const { listMcpConfigsForTenant } = await import("@repo/database");
+): { tools: GatewayToolDefinition[]; servers: ConnectedServerInfo[] } {
+	if ((session.serverSelection ?? null) === null) {
+		return full;
+	}
+	return {
+		tools: full.tools.filter((tool) =>
+			selectionAllowsTool(session, tool.name),
+		),
+		servers: full.servers.filter((server) =>
+			selectionIncludesServer(session, server.toolPrefix),
+		),
+	};
+}
 
-	const configs = await listMcpConfigsForTenant({
-		userId: session.userId,
-		organizationId: session.organizationId,
+/**
+ * The tool prefix of each of the caller's enabled connected servers, as
+ * `getAggregatedTools` names their tools — the names a server selection may
+ * use besides `fabric`. Read from the connection records only: a server whose
+ * tools cannot be discovered right now still has its name.
+ */
+async function listConnectedServerPrefixes(
+	owner: ToolListOwner,
+): Promise<string[]> {
+	const { listMcpConfigRoutingForTenant } = await import("@repo/database");
+	const configs = await listMcpConfigRoutingForTenant({
+		userId: owner.userId,
+		organizationId: owner.organizationId,
 	});
+	return assignServerPrefixes(configs).map(({ prefix }) => prefix);
+}
 
-	const servers: ConnectedServerInfo[] = [];
+/**
+ * Whether a parsed selection names only servers and tools this person has in
+ * this organization; asked when a session is created with one.
+ *
+ * - A server must be `fabric` or the prefix of an enabled connection. Checked
+ *   against the connection records, so a server that cannot be reached still
+ *   counts.
+ * - A `fabric` tool must be a platform tool definition.
+ * - A connected server's tool is checked against that server's tools when they
+ *   can be discovered (the same full list `tools/list` is built from). When the
+ *   server is missing from that list — unreachable, timed out, or offering no
+ *   tools right now — its tool entries are accepted, so an outage does not fail
+ *   the connection; a tool it turns out not to have is then simply not listed.
+ *   The list is the same cached mapping from prefix to connection that
+ *   `tools/list` and `tools/call` route through, so a `server:tool` entry is
+ *   judged by exactly what a later call would reach. `getFullToolList` reuses
+ *   a cached list only after its stored prefix-to-connection fingerprint
+ *   equals one computed from the connections as they are at that read (Fizzy
+ *   #3024), so a rename, add or removal that changes which prefix names which
+ *   connection is seen on the next call. A change
+ *   made after that check, while the request is still running, is not
+ *   covered. The selection narrows what the client sees and grants nothing,
+ *   so a stale verdict cannot widen anyone's access.
+ *
+ * Every problem found is reported together, with the valid names.
+ */
+export async function validateServerSelection(
+	owner: ToolListOwner,
+	selection: ServerSelection,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+	const prefixes = await listConnectedServerPrefixes(owner);
+	const unknownServers = unknownServerNames(selection, prefixes);
+	if (unknownServers.length > 0) {
+		return {
+			ok: false,
+			message: unknownServerNamesMessage(unknownServers, prefixes),
+		};
+	}
+
+	const problems: string[] = [];
+	const platform = selection.find(
+		(entry) => entry.server === PLATFORM_SERVER_NAME,
+	);
+	if (platform && platform.tools !== "*") {
+		const { PLATFORM_TOOL_DEFINITIONS } = await import("./platform-tools");
+		const valid = PLATFORM_TOOL_DEFINITIONS.map((tool) => tool.name);
+		const unknown = platform.tools.filter((tool) => !valid.includes(tool));
+		if (unknown.length > 0) {
+			problems.push(
+				unknownToolNamesMessage(PLATFORM_SERVER_NAME, unknown, valid),
+			);
+		}
+	}
+
+	const connected = selection.filter(
+		(entry) => entry.server !== PLATFORM_SERVER_NAME && entry.tools !== "*",
+	);
+	if (connected.length > 0) {
+		const { servers } = await getFullToolList(owner);
+		for (const entry of connected) {
+			const server = servers.find((s) => s.toolPrefix === entry.server);
+			if (!server || entry.tools === "*") {
+				continue;
+			}
+			const valid = server.tools.map((tool) => tool.name);
+			const unknown = entry.tools.filter((tool) => !valid.includes(tool));
+			if (unknown.length > 0) {
+				problems.push(
+					unknownToolNamesMessage(entry.server, unknown, valid),
+				);
+			}
+		}
+	}
+
+	return problems.length > 0
+		? { ok: false, message: problems.join(" ") }
+		: { ok: true };
+}
+
+/**
+ * Name each enabled connection's tool prefix, in the order given, appending a
+ * counter to a prefix already taken (`github`, `github_2`). The one place
+ * prefixes are assigned, so the names a selection is checked against and the
+ * names the tools are listed under cannot drift apart.
+ *
+ * `fabric` starts out taken: it is the platform tools' name in a server
+ * selection, so a connection named "Fabric" gets `fabric_2`.
+ */
+function assignServerPrefixes<
+	Config extends {
+		enabled: boolean;
+		displayName?: string | null;
+		mcpServer?: { name?: string | null } | null;
+	},
+>(
+	configs: Config[],
+): Array<{ config: Config; serverName: string; prefix: string }> {
+	const assigned: Array<{
+		config: Config;
+		serverName: string;
+		prefix: string;
+	}> = [];
 	// Track used prefixes to avoid collisions
-	const usedPrefixes = new Set<string>();
+	const usedPrefixes = new Set<string>([PLATFORM_SERVER_NAME]);
 
 	for (const config of configs) {
 		if (!config.enabled) {
@@ -149,7 +342,48 @@ async function discoverConnectedServerTools(
 			prefix = `${prefix}_${counter}`;
 		}
 		usedPrefixes.add(prefix);
+		assigned.push({ config, serverName, prefix });
+	}
 
+	return assigned;
+}
+
+/**
+ * The prefix-to-connection mapping as a string that is equal for two sets of
+ * connection rows exactly when they assign the same prefix to the same
+ * connection id. Built from `assignServerPrefixes` output, so it follows the
+ * same enabled filter, naming and collision rules as the tool list.
+ */
+function fingerprintServerPrefixes(
+	assigned: Array<{ config: { id: string }; prefix: string }>,
+): string {
+	return assigned
+		.map(({ config, prefix }) => `${prefix}=${config.id}`)
+		.join("|");
+}
+
+/**
+ * Discover tools from all connected MCP servers for this tenant.
+ * Uses cached tool schemas from MCPConfig for performance.
+ *
+ * Also returns the fingerprint of the connection rows loaded here, which is
+ * the one the cache entry is stored with, so a rename that lands while this
+ * runs differs from it on the next read.
+ */
+async function discoverConnectedServerTools(
+	session: ToolListOwner,
+): Promise<{ servers: ConnectedServerInfo[]; routingFingerprint: string }> {
+	const { listMcpConfigsForTenant } = await import("@repo/database");
+
+	const configs = await listMcpConfigsForTenant({
+		userId: session.userId,
+		organizationId: session.organizationId,
+	});
+
+	const servers: ConnectedServerInfo[] = [];
+	const assigned = assignServerPrefixes(configs);
+
+	for (const { config, serverName, prefix } of assigned) {
 		// Use cached tools if available and not stale (24 hour TTL for cache)
 		const cachedTools = config.cachedTools as Array<{
 			name: string;
@@ -210,7 +444,10 @@ async function discoverConnectedServerTools(
 		}
 	}
 
-	return servers;
+	return {
+		servers,
+		routingFingerprint: fingerprintServerPrefixes(assigned),
+	};
 }
 
 /**
@@ -220,7 +457,7 @@ async function discoverConnectedServerTools(
  */
 async function discoverToolsLive(
 	configId: string,
-	session: GatewaySession,
+	session: ToolListOwner,
 ): Promise<
 	Array<{
 		name: string;
@@ -312,6 +549,23 @@ export async function executeConnectedServerTool(
 					type: "text",
 					text: JSON.stringify({
 						error: "Connected server tools are not available on a connection to one project.",
+					}),
+				},
+			],
+			isError: true,
+		};
+	}
+
+	// Nor a tool the session's selection leaves out, checked here as well as
+	// in the gateway's tools/call routing so no caller of this function can
+	// reach a deselected tool's upstream.
+	if (!selectionAllowsTool(session, namespacedToolName)) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: selectionRefusalMessage(namespacedToolName),
 					}),
 				},
 			],

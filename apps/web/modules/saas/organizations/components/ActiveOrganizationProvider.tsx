@@ -471,6 +471,9 @@ export function ActiveOrganizationProvider({
 				isOrganizationAdmin(activeOrganization, user),
 			isSwitching: switchTarget !== null,
 			switchingToSlug: switchTarget?.slug ?? null,
+			isSessionOnActiveOrganization:
+				!!activeOrganization &&
+				session?.activeOrganizationId === activeOrganization.id,
 			setActiveOrganization,
 			refetchActiveOrganization,
 		}),
@@ -479,6 +482,7 @@ export function ActiveOrganizationProvider({
 			isResolvingOrganization,
 			activeOrganization,
 			activeOrganizationUserRole,
+			session?.activeOrganizationId,
 			user,
 			switchTarget,
 			setActiveOrganization,

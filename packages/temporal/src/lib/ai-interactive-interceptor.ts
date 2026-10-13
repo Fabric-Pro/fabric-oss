@@ -6,8 +6,9 @@
  * `planEligible` through every activity.
  *
  *  1. {@link makeAiInteractiveClientInterceptor} — on `client.workflow.start()`,
- *     stamps {@link TEMPORAL_AI_INTERACTIVE_HEADER} with the input's `userId`,
- *     but only when the starter set `planEligible: true` on the input. The
+ *     stamps {@link TEMPORAL_AI_INTERACTIVE_HEADER} with the input's `userId`
+ *     (or `planUserId`, when the input names the person that way), but only
+ *     when the starter set `planEligible: true` on the input. The
  *     explicit input field stays the one source of truth: no field, no header.
  *     Started while an admin impersonates the member, the run gets
  *     {@link TEMPORAL_AI_IMPERSONATED_HEADER} instead and its input's
@@ -21,12 +22,25 @@
  *     stays on the organization's provider.
  *
  * The header holds a user id only — never a token or key.
+ *
+ * The same chain carries a run's background job (Fizzy #2770):
+ * {@link TEMPORAL_AI_JOB_TYPE_HEADER} is stamped from the input's `jobType`
+ * (or, for a run an activity starts, the job that activity runs as), forwarded
+ * like the user header, and entered with `runWithAiJobType` around each
+ * activity, so every model call of the run that names no job of its own is
+ * that job's — and may run on the organization's shared plans.
  */
 
 import {
 	aiImpersonatedUserId,
 	runWithAiInteractiveContext,
 } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	asAiJobKey,
+	currentAiJobType,
+	runWithAiApiFallbackApproved,
+	runWithAiJobType,
+} from "@repo/ai/lib/job-context";
 import type {
 	Next as ClientNext,
 	WorkflowClientInterceptor,
@@ -50,23 +64,82 @@ export const TEMPORAL_AI_INTERACTIVE_HEADER = "x-fabric-ai-interactive-user";
  * the plan to an agent.
  */
 export const TEMPORAL_AI_IMPERSONATED_HEADER = "x-fabric-ai-impersonated-user";
+/** The background job a run belongs to, from its input's `jobType`. */
+export const TEMPORAL_AI_JOB_TYPE_HEADER = "x-fabric-ai-job-type";
 
-/** The starting user, when the workflow input is explicitly plan-eligible. */
+/**
+ * The starting user, when the workflow input is explicitly plan-eligible.
+ *
+ * The person is the input's `userId`, unless the input names them in
+ * `planUserId`. That field exists for inputs whose `userId` means something
+ * else or is absent: the newsletter send's `userId` is its tenant (null inside
+ * an organization) and Publishing names the person `actorUserId`. A starter
+ * sets `planUserId` to the same id its activities resolve models for, so the
+ * header and the model calls agree; no field name is ever guessed.
+ */
 function interactiveUserFromArgs(args: unknown[]): string | undefined {
 	const first = args[0];
 	if (!first || typeof first !== "object") {
 		return undefined;
 	}
-	const { planEligible, userId } = first as {
+	const { planEligible, planUserId, userId } = first as {
 		planEligible?: unknown;
+		planUserId?: unknown;
 		userId?: unknown;
 	};
-	return planEligible === true && typeof userId === "string" && userId
-		? userId
-		: undefined;
+	if (planEligible !== true) {
+		return undefined;
+	}
+	const person = planUserId !== undefined ? planUserId : userId;
+	return typeof person === "string" && person ? person : undefined;
 }
 
-function decodeUserHeader(
+/**
+ * Set on a bulk run a person let bill the organization's provider once every
+ * shared ChatGPT plan is spent ("Run now on API billing"), from the input's
+ * `allowApiFallback: true`. Only that run and what it starts carry it.
+ */
+export const TEMPORAL_AI_API_FALLBACK_HEADER = "x-fabric-ai-api-fallback";
+
+/** The input's `jobType`, else the job the starting activity runs as. */
+function jobTypeForStart(args: unknown[]) {
+	const first = args[0];
+	const fromInput =
+		first && typeof first === "object"
+			? asAiJobKey((first as { jobType?: unknown }).jobType)
+			: undefined;
+	return fromInput ?? currentAiJobType();
+}
+
+function withJobTypeHeader(input: WorkflowStartInput): WorkflowStartInput {
+	const args = input.options.args ?? [];
+	const jobType = jobTypeForStart(args);
+	const payload = jobType
+		? defaultPayloadConverter.toPayload(jobType)
+		: undefined;
+	const first = args[0];
+	const apiFallback =
+		first &&
+		typeof first === "object" &&
+		(first as { allowApiFallback?: unknown }).allowApiFallback === true
+			? defaultPayloadConverter.toPayload("1")
+			: undefined;
+	if (!payload && !apiFallback) {
+		return input;
+	}
+	return {
+		...input,
+		headers: {
+			...input.headers,
+			...(payload && { [TEMPORAL_AI_JOB_TYPE_HEADER]: payload }),
+			...(apiFallback && {
+				[TEMPORAL_AI_API_FALLBACK_HEADER]: apiFallback,
+			}),
+		},
+	};
+}
+
+function decodeStringHeader(
 	headers: TemporalHeaders | undefined,
 	key: string,
 ): string | undefined {
@@ -106,9 +179,10 @@ function withoutPlanEligibility(input: WorkflowStartInput): WorkflowStartInput {
 export function makeAiInteractiveClientInterceptor(): WorkflowClientInterceptor {
 	return {
 		async start(
-			input: WorkflowStartInput,
+			startInput: WorkflowStartInput,
 			next: ClientNext<WorkflowClientInterceptor, "start">,
 		) {
+			const input = withJobTypeHeader(startInput);
 			const impersonatedUserId = aiImpersonatedUserId();
 			if (impersonatedUserId) {
 				const payload =
@@ -151,7 +225,25 @@ export class AiInteractiveActivityInboundInterceptor
 		input: ActivityExecuteInput,
 		next: ActivityNext<ActivityInboundCallsInterceptor, "execute">,
 	): Promise<unknown> {
-		const impersonatedUserId = decodeUserHeader(
+		const jobType = asAiJobKey(
+			decodeStringHeader(input.headers, TEMPORAL_AI_JOB_TYPE_HEADER),
+		);
+		const asMember = () => this.executeAsMember(input, next);
+		const run =
+			decodeStringHeader(
+				input.headers,
+				TEMPORAL_AI_API_FALLBACK_HEADER,
+			) === "1"
+				? () => runWithAiApiFallbackApproved(asMember)
+				: asMember;
+		return jobType ? runWithAiJobType(jobType, run) : run();
+	}
+
+	private executeAsMember(
+		input: ActivityExecuteInput,
+		next: ActivityNext<ActivityInboundCallsInterceptor, "execute">,
+	): Promise<unknown> {
+		const impersonatedUserId = decodeStringHeader(
 			input.headers,
 			TEMPORAL_AI_IMPERSONATED_HEADER,
 		);
@@ -161,7 +253,7 @@ export class AiInteractiveActivityInboundInterceptor
 				() => next(input),
 			);
 		}
-		const userId = decodeUserHeader(
+		const userId = decodeStringHeader(
 			input.headers,
 			TEMPORAL_AI_INTERACTIVE_HEADER,
 		);

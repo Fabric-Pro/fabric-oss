@@ -21,6 +21,47 @@ function when(date: Date | string | null): string {
 		: "—";
 }
 
+interface Accuracy {
+	refusalEstimatePercents: number[];
+	windowsOverBudgetWithoutRefusal: number;
+	settledWindows: number;
+	latestReported: {
+		estimatePercent: number;
+		reportedPercent: number;
+	} | null;
+	maxDriftPoints: number | null;
+}
+
+/**
+ * How well Fabric's estimate tracked OpenAI: what it said at recent
+ * refusals, windows it overshot without a refusal, and the gap to the usage
+ * ChatGPT reported.
+ */
+function EstimateAccuracy({ accuracy }: { accuracy: Accuracy }) {
+	const refusals = accuracy.refusalEstimatePercents;
+	return (
+		<ul className="space-y-0.5 text-muted-foreground">
+			<li>
+				Refused at:{" "}
+				{refusals.length > 0
+					? refusals.map((pct) => `${Math.round(pct)}%`).join(", ")
+					: "—"}
+			</li>
+			<li>
+				Over 100% without refusal:{" "}
+				{accuracy.windowsOverBudgetWithoutRefusal} of{" "}
+				{accuracy.settledWindows} windows
+			</li>
+			<li>
+				vs ChatGPT:{" "}
+				{accuracy.latestReported
+					? `estimate ${Math.round(accuracy.latestReported.estimatePercent)}% · reported ${Math.round(accuracy.latestReported.reportedPercent)}% · max gap ${Math.round(accuracy.maxDriftPoints ?? 0)} pts`
+					: "no report"}
+			</li>
+		</ul>
+	);
+}
+
 /**
  * Plan health (Fizzy #2770 D6): every organization's shared ChatGPT plan
  * account, read-only, for deployment admins.
@@ -82,6 +123,9 @@ export function ChatgptPlanHealthList() {
 						<th className="px-3 py-2 font-medium" scope="col">
 							Budget
 						</th>
+						<th className="px-3 py-2 font-medium" scope="col">
+							Estimate accuracy (30 days)
+						</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -136,7 +180,15 @@ export function ChatgptPlanHealthList() {
 									: "—"}
 							</td>
 							<td className="px-3 py-2 tabular-nums">
-								{account.windowPercent}%
+								<div>{account.windowPercent}%</div>
+								<div
+									className="text-muted-foreground text-xs"
+									data-testid="chatgpt-plan-health-source"
+								>
+									{account.windowPercentSource === "reported"
+										? `reported by ChatGPT · estimate ${account.estimatedPercent}%`
+										: "estimated"}
+								</div>
 							</td>
 							<td className="px-3 py-2">
 								{when(account.resetsAt)}
@@ -151,6 +203,12 @@ export function ChatgptPlanHealthList() {
 										? " · calibrated"
 										: " · default"}
 								</span>
+							</td>
+							<td
+								className="px-3 py-2 text-xs"
+								data-testid="chatgpt-plan-health-accuracy"
+							>
+								<EstimateAccuracy accuracy={account.accuracy} />
 							</td>
 						</tr>
 					))}

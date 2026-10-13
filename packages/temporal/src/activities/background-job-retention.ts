@@ -7,10 +7,14 @@
  */
 
 import {
+	failAtlasAnalysesLeftWaiting,
 	failOrphanedCodeIndex,
+	failOverdueBulkRunResumes,
+	failOverdueProjectSetupResumes,
 	failStaleBackgroundJobs,
 	failStaleProjectScans,
 	findQuietIndexingCodeIndexes,
+	PAUSED_RUN_RESUME_GRACE_MINUTES,
 	purgeExpiredBackgroundJobs,
 	type QuietIndexingCodeIndex,
 } from "@repo/database";
@@ -259,6 +263,8 @@ export interface FailStaleBackgroundJobsOutput {
 	failedScanCount: number;
 	scanStaleMinutes: number;
 	failedCodeIndexCount: number;
+	/** Runs paused for a plan reset whose resume never started. */
+	failedOverdueResumeCount: number;
 }
 
 /**
@@ -306,6 +312,43 @@ export async function failStaleBackgroundJobsActivity(): Promise<FailStaleBackgr
 		});
 	}
 
+	// Runs paused for a ChatGPT plan reset (Fizzy #2770) are skipped by every
+	// stall window above; one whose resume never started is closed here.
+	let failedOverdueResumeCount = 0;
+	try {
+		for (const kind of [
+			"PROJECT_SCAN",
+			"SCAN_REVIEW",
+			"SCAN_GROUPING",
+			"DOCUMENT_BATCH",
+			"ATLAS_ANALYSIS",
+		] as const) {
+			failedOverdueResumeCount += await failOverdueBulkRunResumes({
+				kind,
+				graceMinutes: PAUSED_RUN_RESUME_GRACE_MINUTES,
+			});
+		}
+		// The Atlas analysis row mirrors its run: one left waiting with no
+		// run to resume it is failed too, or it would read paused forever.
+		failedOverdueResumeCount += await failAtlasAnalysesLeftWaiting();
+		// A setup also closes its project's analysis and queued documents.
+		failedOverdueResumeCount += await failOverdueProjectSetupResumes({
+			graceMinutes: PAUSED_RUN_RESUME_GRACE_MINUTES,
+		});
+	} catch (error) {
+		logger.warn("[BackgroundJobWatchdog] Paused-run sweep failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+	if (failedOverdueResumeCount > 0) {
+		logger.warn(
+			"[BackgroundJobWatchdog] Failed paused runs never resumed",
+			{
+				failedOverdueResumeCount,
+			},
+		);
+	}
+
 	let failedCodeIndexCount = 0;
 	try {
 		failedCodeIndexCount = await failOrphanedCodeIndexes();
@@ -326,5 +369,6 @@ export async function failStaleBackgroundJobsActivity(): Promise<FailStaleBackgr
 		failedScanCount,
 		scanStaleMinutes: PROJECT_SCAN_STALE_MINUTES,
 		failedCodeIndexCount,
+		failedOverdueResumeCount,
 	};
 }

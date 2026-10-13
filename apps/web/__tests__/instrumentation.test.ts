@@ -1,16 +1,6 @@
 /**
- * Startup-wiring tests for `apps/web/instrumentation.ts`.
- *
- * These exist for one contract: the `CRON_SECRET` diagnostic is the *only*
- * remaining signal that the Vercel-scheduled cron jobs are silently dead, now
- * that `isCronRequestAuthorized` has no User-Agent fallback (issue #2883). So
- * it must be reported, and it must be reported before anything that can throw —
- * `validatePartykitConfig` does, and an unrelated PartyKit misconfiguration
- * must not be able to swallow the cron signal.
- *
- * The helper tests in `app/api/cron/lib/__tests__/cron-auth.test.ts` pin the
- * rule itself; deleting the call from `register()`, or moving it below the
- * PartyKit check, would leave those green. This file is what fails instead.
+ * Startup-wiring tests for `apps/web/instrumentation.ts`: OpenTelemetry,
+ * Application Insights log forwarding, storage bootstrap and timing.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,20 +41,10 @@ vi.mock("@repo/config", () => ({
 
 import { register } from "../instrumentation";
 
-function cronErrorCalls(spy: ReturnType<typeof vi.spyOn>): string[] {
-	return spy.mock.calls
-		.map((call) => String(call[0]))
-		.filter((message) => message.includes("CRON_SECRET"));
-}
-
-let errorSpy: ReturnType<typeof vi.spyOn>;
-
 beforeEach(() => {
 	validatePartykitConfigMock.mockReset();
 	ensureBucketsMock.mockReset();
-	errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 	vi.stubEnv("NEXT_RUNTIME", "nodejs");
-	vi.stubEnv("VERCEL_ENV", "production");
 	vi.stubEnv("VERCEL", "1");
 	vi.stubEnv("OTEL_ENABLED", "false");
 	vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "");
@@ -75,51 +55,8 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("register — CRON_SECRET startup diagnostic", () => {
-	it("reports a production deployment with no usable secret", async () => {
-		vi.stubEnv("CRON_SECRET", "");
-
-		await register();
-
-		expect(cronErrorCalls(errorSpy)).toHaveLength(1);
-		expect(cronErrorCalls(errorSpy)[0]).toContain("[env]");
-	});
-
-	it("still reports it when a later startup check throws", async () => {
-		// The ordering guarantee. PartyKit validation throwing must not cost us
-		// the only signal that the cron schedule is dead.
-		vi.stubEnv("CRON_SECRET", "");
-		validatePartykitConfigMock.mockImplementation(() => {
-			throw new Error("partykit misconfigured");
-		});
-
-		await expect(register()).rejects.toThrow("partykit misconfigured");
-
-		expect(cronErrorCalls(errorSpy)).toHaveLength(1);
-	});
-
-	it("stays quiet when the secret is configured", async () => {
-		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
-
-		await register();
-
-		expect(cronErrorCalls(errorSpy)).toEqual([]);
-	});
-
-	it("stays quiet outside the Node.js runtime", async () => {
-		vi.stubEnv("NEXT_RUNTIME", "edge");
-		vi.stubEnv("CRON_SECRET", "");
-
-		await register();
-
-		expect(cronErrorCalls(errorSpy)).toEqual([]);
-		expect(validatePartykitConfigMock).not.toHaveBeenCalled();
-	});
-});
-
 describe("register — Application Insights log forwarding", () => {
 	it("does not build the App Insights client at registration, so the proxy function skips it", async () => {
-		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
 		initAppInsightsLogsMock.mockClear();
 
 		await register();
@@ -128,7 +65,6 @@ describe("register — Application Insights log forwarding", () => {
 	});
 
 	it("starts forwarding under the web app's own cloud role with the first warning", async () => {
-		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
 		initAppInsightsLogsMock.mockClear();
 		await register();
 		const [sink] = addLogSinkMock.mock.calls.at(-1) ?? [];
@@ -197,7 +133,6 @@ describe("register — storage startup", () => {
 describe("register — startup timing", () => {
 	it("reports successful Node registration timing without request identifiers", async () => {
 		// Arrange
-		vi.stubEnv("CRON_SECRET", "a-real-cron-secret");
 		const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
 		vi.spyOn(process, "uptime").mockReturnValue(12.345);
 		vi.spyOn(performance, "now")

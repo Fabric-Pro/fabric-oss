@@ -150,6 +150,26 @@ describe("ensureRunningBackgroundJob", () => {
 		);
 	});
 
+	it("reopens a row failed with any of several classes", async () => {
+		// A backfill reopens both an activity retry's row and the one it left
+		// waiting for a ChatGPT plan reset (Fizzy #2770).
+		findFirstByStatus({ id: "waiting-1", steps: [] });
+
+		const id = await ensureRunningBackgroundJob({
+			...BASE,
+			sourceId: "chan-1",
+			reopenFailedWithClass: ["ActivityFailed", "ChatGptPlanWait"],
+		});
+
+		expect(id).toBe("waiting-1");
+		const failedLookup = backgroundJob.findFirst.mock.calls.find(
+			([query]) => query.where.status === "FAILED",
+		);
+		expect(failedLookup?.[0].where.errorClass).toEqual({
+			in: ["ActivityFailed", "ChatGptPlanWait"],
+		});
+	});
+
 	it("restores steps the close swept to `skipped`, keeping progress that was real", async () => {
 		findFirstByStatus({
 			id: "failed-1",

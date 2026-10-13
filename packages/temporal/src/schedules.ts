@@ -264,6 +264,29 @@ const DOCUMENT_GENERATION_WATCHDOG_WORKFLOW_NAME =
 // Runs on the default `fabric-worker` queue.
 const DOCUMENT_GENERATION_WATCHDOG_CRON_SCHEDULE = "*/10 * * * *";
 
+// Exported because the registration test asserts the complete create()
+// payload against them.
+export const PM_SYNC_STUCK_WATCHDOG_SCHEDULE_ID = "pm-sync-stuck-watchdog";
+export const PM_SYNC_STUCK_WATCHDOG_WORKFLOW_NAME =
+	"pmSyncStuckWatchdogWorkflow";
+// Every 5 minutes — the cadence the web cron it replaces ran at. Retries
+// PM-sync rows left PENDING longer than 10 minutes by a workflow that never
+// ran, and gives up on them 60 minutes after their sync began. Runs on the
+// default `fabric-worker` queue, so it runs in every deployment that runs a
+// worker (the web cron only ran where Vercel Cron triggered it).
+export const PM_SYNC_STUCK_WATCHDOG_CRON_SCHEDULE = "*/5 * * * *";
+
+// Exported because the registration test asserts the complete create()
+// payload against them.
+export const MCP_OAUTH_STATE_CLEANUP_SCHEDULE_ID = "mcp-oauth-state-cleanup";
+export const MCP_OAUTH_STATE_CLEANUP_WORKFLOW_NAME =
+	"mcpOAuthStateCleanupWorkflow";
+// Hourly, the cadence of the Vercel cron it replaces. Purges expired MCP OAuth
+// state rows and expired MCP client session rows. Runs on the default
+// `fabric-worker` queue, so it runs in every deployment that runs a worker
+// (the Vercel cron only ran where Vercel Cron triggered it).
+export const MCP_OAUTH_STATE_CLEANUP_CRON_SCHEDULE = "0 * * * *";
+
 const BACKLOG_APPLY_WATCHDOG_SCHEDULE_ID = "backlog-apply-watchdog";
 const BACKLOG_APPLY_WATCHDOG_WORKFLOW_NAME = "backlogApplyWatchdogWorkflow";
 // Every 5 minutes — recovers PendingBacklogProposal rows stuck mid-apply
@@ -382,6 +405,29 @@ const ATTACHMENT_RETENTION_PURGE_WORKFLOW_NAME =
 // attachment jobs don't contend.
 const ATTACHMENT_RETENTION_PURGE_CRON_SCHEDULE = "15 4 * * *";
 
+// Exported, like the reaper's, because the registration test asserts the
+// COMPLETE create() payload (Fizzy #3038).
+export const CHATGPT_PLAN_SOURCE_SWEEP_SCHEDULE_ID =
+	"chatgpt-plan-source-sweep";
+export const CHATGPT_PLAN_SOURCE_SWEEP_WORKFLOW_NAME =
+	"chatGptPlanSourceSweepWorkflow";
+// Daily at 05:45 UTC — removes per-source ChatGPT plan rows whose user or
+// organization was deleted. 05:45 is free in the 03:00-06:00 UTC quiet window
+// (05:00, 05:15 and 05:30 hold the retention jobs before it, 06:00 the
+// publishing dispatcher). The work is small: a handful of short per-source
+// transactions.
+export const CHATGPT_PLAN_SOURCE_SWEEP_CRON_SCHEDULE = "45 5 * * *";
+// overlap SKIP is safe only because a run is bounded STRICTLY below the
+// interval between triggers, as PUBLISHING_RECONCILE_EXECUTION_TIMEOUT_MS is
+// for the reconcile schedule. A run at its page cap, every activity call at
+// its worst with all retries, takes 50 x 16.5 min = 13.75 h
+// (`chatGptPlanSourceSweepRunWorstCaseMs`); 16 hours lets that finish and
+// terminates anything that wedges past it, still inside the day between
+// triggers. A healthy run takes seconds. The schedule test derives the
+// interval from the cron and the worst case from the budget module, and
+// asserts both sides.
+export const CHATGPT_PLAN_SOURCE_SWEEP_EXECUTION_TIMEOUT_MS = 16 * 60 * 60_000;
+
 const QA_EVIDENCE_RETENTION_SCHEDULE_ID = "qa-evidence-retention";
 const QA_EVIDENCE_RETENTION_WORKFLOW_NAME = "qaEvidenceRetentionWorkflow";
 // Daily at 04:45 UTC — deletes QA run screenshots past their project's window.
@@ -432,6 +478,8 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerWeaveExecutionWatchdogSchedule(scheduleClient);
 		await registerBacklogApplyWatchdogSchedule(scheduleClient);
 		await registerDocumentGenerationWatchdogSchedule(scheduleClient);
+		await registerPmSyncStuckWatchdogSchedule(scheduleClient);
+		await registerMcpOAuthStateCleanupSchedule(scheduleClient);
 		await registerBackgroundJobRetentionSchedule(scheduleClient);
 		await registerMeetingArchiveRetentionSchedule(scheduleClient);
 		await registerBackgroundJobWatchdogSchedule(scheduleClient);
@@ -444,6 +492,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentRetentionPurgeSchedule(scheduleClient);
 		await registerQaEvidenceRetentionSchedule(scheduleClient);
+		await registerChatGptPlanSourceSweepSchedule(scheduleClient);
 		await ensureContextSummarizationSchedules(scheduleClient);
 		// Monitoring schedules
 		await ensureMonitoringSchedules(scheduleClient);
@@ -1824,6 +1873,55 @@ async function registerAttachmentTempOrphanSweepSchedule(
 }
 
 /**
+ * Register the chatgpt-plan-source-sweep schedule (Fizzy #3038).
+ *
+ * Always registered. Idempotent via the stable schedule id, and create-only
+ * like every sibling here: a changed payload does not reach an environment
+ * that already has the schedule.
+ */
+export async function registerChatGptPlanSourceSweepSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: CHATGPT_PLAN_SOURCE_SWEEP_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [CHATGPT_PLAN_SOURCE_SWEEP_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: CHATGPT_PLAN_SOURCE_SWEEP_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+				workflowExecutionTimeout:
+					CHATGPT_PLAN_SOURCE_SWEEP_EXECUTION_TIMEOUT_MS,
+			},
+			policies: {
+				overlap: "SKIP",
+				// One tick, not a backlog: every run reads its candidates fresh.
+				catchupWindow: "1 hour",
+			},
+			state: {
+				paused: false,
+				note: "Deletes ChatGPT plan breaker, served-model, budget-observation and window-accuracy rows whose source is gone (the member's sign-in or the shared account was deleted), each source re-checked under its own lock. Walks every candidate in pages of 50, moving past a source that fails; a run with failures fails.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${CHATGPT_PLAN_SOURCE_SWEEP_SCHEDULE_ID}" registered (daily at 05:45 UTC)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${CHATGPT_PLAN_SOURCE_SWEEP_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
  * Register the attachment-final-orphan-sweep schedule.
  *
  * Always registered (feature is GA). Idempotent via the stable schedule id.
@@ -2274,6 +2372,110 @@ async function registerDocumentGenerationWatchdogSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${DOCUMENT_GENERATION_WATCHDOG_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the hourly MCP OAuth-state / client-session cleanup schedule.
+ *
+ * Deletes expired `MCPOAuthState` and `MCPClientSession` rows. Both are
+ * `deleteMany` on `expiresAt < now`, so a rerun, a skipped tick or a missed
+ * tick loses nothing: `overlap: "SKIP"` and a one-interval catchup window are
+ * safe.
+ *
+ * Idempotent registration via the `ScheduleAlreadyRunning` catch.
+ */
+export async function registerMcpOAuthStateCleanupSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: MCP_OAUTH_STATE_CLEANUP_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [MCP_OAUTH_STATE_CLEANUP_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: MCP_OAUTH_STATE_CLEANUP_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "1 hour",
+			},
+			state: {
+				paused: false,
+				note: "Deletes expired MCP OAuth state rows and expired MCP client session rows. Idempotent: each run deletes whatever has passed its expiry.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${MCP_OAUTH_STATE_CLEANUP_SCHEDULE_ID}" registered (hourly)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${MCP_OAUTH_STATE_CLEANUP_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the stuck PM-sync watchdog schedule.
+ *
+ * Runs every 5 minutes on the `fabric-worker` queue. Finds story, bug and test
+ * case rows left PENDING longer than 10 minutes since their last attempt.
+ * Story-family rows whose workflow id is not running are re-enqueued as the
+ * project owner; any row whose sync began more than 60 minutes ago is stamped
+ * FAILED (`pending_timeout`). Every write is scoped to the attempt the scan
+ * saw.
+ *
+ * `overlap: "SKIP"` is safe: a run is a capped batch of short activities, and
+ * each tick re-reads the rows, so a skipped or missed tick loses nothing. The
+ * catchup window is one interval's worth for the same reason.
+ *
+ * Idempotent registration via the `ScheduleAlreadyRunning` catch.
+ */
+export async function registerPmSyncStuckWatchdogSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: PM_SYNC_STUCK_WATCHDOG_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [PM_SYNC_STUCK_WATCHDOG_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: PM_SYNC_STUCK_WATCHDOG_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [{}],
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "10 minutes",
+			},
+			state: {
+				paused: false,
+				note: "Retries story and bug PM-sync rows left PENDING over 10 minutes whose workflow is not running, and fails any PENDING story, bug or test case (pending_timeout) 60 minutes after its sync began.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${PM_SYNC_STUCK_WATCHDOG_SCHEDULE_ID}" registered (every 5 minutes)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${PM_SYNC_STUCK_WATCHDOG_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

@@ -17,6 +17,7 @@ vi.mock("../../orchestrator/execution/execute-mcp-tool", () => ({
 }));
 
 import {
+	fillJiraCreateArgs,
 	pickDefaultJiraIssueType,
 	resolveAtlassianCloudId,
 	resolveJiraDefaultIssueType,
@@ -114,6 +115,28 @@ describe("resolveAtlassianCloudId", () => {
 		);
 	});
 
+	it("reads a wrapped result such as { resources: [{ id }] }", async () => {
+		executeMcpToolMock.mockResolvedValueOnce(
+			mcpText({
+				resources: [
+					{
+						id: "33333333-3333-4333-8333-333333333333",
+						name: "site-w",
+						url: "https://w",
+					},
+				],
+			}),
+		);
+		const cloudId = await resolveAtlassianCloudId({
+			...BASE,
+			availableTools: [
+				"createJiraIssue",
+				"getAccessibleAtlassianResources",
+			],
+		});
+		expect(cloudId).toBe("33333333-3333-4333-8333-333333333333");
+	});
+
 	it("returns undefined when the resolver tool is absent", async () => {
 		const cloudId = await resolveAtlassianCloudId({
 			...BASE,
@@ -167,6 +190,28 @@ describe("resolveJiraDefaultIssueType", () => {
 		);
 	});
 
+	it("uses listJiraProjectIssueTypesMetadata when present (Rovo v2)", async () => {
+		executeMcpToolMock.mockResolvedValueOnce(
+			mcpText({ total: 6, issueTypes: SAN_ISSUE_TYPES }),
+		);
+		const type = await resolveJiraDefaultIssueType({
+			...BASE,
+			projectKey: "SAN",
+			cloudId: "cloud-1",
+			availableTools: [
+				"createJiraIssue",
+				"listJiraProjectIssueTypesMetadata",
+			],
+		});
+		expect(type).toBe("Story");
+		expect(executeMcpToolMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "listJiraProjectIssueTypesMetadata",
+				args: { cloudId: "cloud-1", projectIdOrKey: "SAN" },
+			}),
+		);
+	});
+
 	it("falls back to 'Task' without a cloudId (and doesn't call the tool)", async () => {
 		const type = await resolveJiraDefaultIssueType({
 			...BASE,
@@ -198,5 +243,110 @@ describe("resolveJiraDefaultIssueType", () => {
 			availableTools: TOOLS,
 		});
 		expect(type).toBe("Task");
+	});
+
+	it("unwraps v2 responses with { data: { issueTypes } }", async () => {
+		executeMcpToolMock.mockResolvedValueOnce(
+			mcpText({ data: { issueTypes: SAN_ISSUE_TYPES } }),
+		);
+		const type = await resolveJiraDefaultIssueType({
+			...BASE,
+			projectKey: "SAN",
+			cloudId: "cloud-1",
+			availableTools: TOOLS,
+		});
+		expect(type).toBe("Story");
+	});
+});
+
+describe("fillJiraCreateArgs", () => {
+	const RESOLVER_TOOLS = [
+		"getAccessibleAtlassianResources",
+		"getJiraProjectIssueTypesMetadata",
+	];
+
+	it("fills issueTypeName for a v1 schema", async () => {
+		executeMcpToolMock
+			.mockResolvedValueOnce(mcpText([{ id: "cloud-1" }]))
+			.mockResolvedValueOnce(mcpText({ issueTypes: SAN_ISSUE_TYPES }));
+		const createArgs: Record<string, unknown> = {};
+		await fillJiraCreateArgs({
+			...BASE,
+			createArgs,
+			createParams: [{ name: "cloudId" }, { name: "issueTypeName" }],
+			projectKey: "SAN",
+			availableTools: RESOLVER_TOOLS,
+		});
+		expect(createArgs.cloudId).toBe("cloud-1");
+		expect(createArgs.issueTypeName).toBe("Story");
+	});
+
+	it("fills issueType for a v2 schema", async () => {
+		executeMcpToolMock
+			.mockResolvedValueOnce(mcpText([{ id: "cloud-1" }]))
+			.mockResolvedValueOnce(
+				mcpText({ data: { issueTypes: SAN_ISSUE_TYPES } }),
+			);
+		const createArgs: Record<string, unknown> = {};
+		await fillJiraCreateArgs({
+			...BASE,
+			createArgs,
+			createParams: [{ name: "cloudId" }, { name: "issueType" }],
+			projectKey: "SAN",
+			availableTools: RESOLVER_TOOLS,
+		});
+		expect(createArgs.cloudId).toBe("cloud-1");
+		expect(createArgs.issueType).toBe("Story");
+	});
+
+	it("uses savedCloudId without calling getAccessibleAtlassianResources", async () => {
+		executeMcpToolMock.mockResolvedValueOnce(
+			mcpText({ issueTypes: SAN_ISSUE_TYPES }),
+		);
+		const createArgs: Record<string, unknown> = {};
+		await fillJiraCreateArgs({
+			...BASE,
+			createArgs,
+			createParams: [{ name: "cloudId" }, { name: "issueType" }],
+			projectKey: "SAN",
+			savedCloudId: "saved-cloud-123",
+			availableTools: RESOLVER_TOOLS,
+		});
+		expect(createArgs.cloudId).toBe("saved-cloud-123");
+		expect(createArgs.issueType).toBe("Story");
+		expect(executeMcpToolMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "getAccessibleAtlassianResources",
+			}),
+		);
+	});
+
+	it("resolves cloudId when existing createArgs has cloudId: ''", async () => {
+		executeMcpToolMock
+			.mockResolvedValueOnce(mcpText([{ id: "cloud-resolved-1" }]))
+			.mockResolvedValueOnce(mcpText({ issueTypes: SAN_ISSUE_TYPES }));
+		const createArgs: Record<string, unknown> = { cloudId: "" };
+		await fillJiraCreateArgs({
+			...BASE,
+			createArgs,
+			createParams: [{ name: "cloudId" }, { name: "issueType" }],
+			projectKey: "SAN",
+			availableTools: RESOLVER_TOOLS,
+		});
+		expect(createArgs.cloudId).toBe("cloud-resolved-1");
+		expect(createArgs.issueType).toBe("Story");
+	});
+
+	it("makes no calls when the tool declares neither parameter", async () => {
+		const createArgs: Record<string, unknown> = {};
+		await fillJiraCreateArgs({
+			...BASE,
+			createArgs,
+			createParams: [{ name: "summary" }, { name: "description" }],
+			projectKey: "SAN",
+			availableTools: RESOLVER_TOOLS,
+		});
+		expect(createArgs).toEqual({});
+		expect(executeMcpToolMock).not.toHaveBeenCalled();
 	});
 });

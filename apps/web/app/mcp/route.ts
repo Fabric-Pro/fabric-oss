@@ -34,6 +34,10 @@ import {
 	type TemplateExecutionInput,
 } from "@repo/temporal";
 import {
+	type McpWorkflowAiRouting,
+	mcpWorkflowAiRouting,
+} from "@saas/mcp/lib/gateway/workflow-ai-routing";
+import {
 	type McpKeyIdentity,
 	recordCliReach,
 	toOrganizationKeyIdentity,
@@ -1679,11 +1683,18 @@ function createTaskId(toolName: string): string {
 	return `mcp-${toolName}-${randomUUID()}`;
 }
 
+/** Who a workflow an MCP tool starts runs for, and where its AI calls run. */
+interface McpWorkflowCaller {
+	userId: string;
+	organizationId?: string;
+	aiRouting: McpWorkflowAiRouting;
+}
+
 async function executeRunBrowserTask(
 	args: Record<string, unknown>,
-	userId: string,
-	organizationId?: string,
+	caller: McpWorkflowCaller,
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+	const { userId, organizationId } = caller;
 	try {
 		const client = await getTemporalClient();
 		const taskId = createTaskId("browser-task");
@@ -1704,7 +1715,7 @@ async function executeRunBrowserTask(
 			{
 				taskQueue: BROWSER_TASK_QUEUE,
 				workflowId: taskId,
-				args: [input],
+				args: [{ ...input, ...caller.aiRouting }],
 			},
 		);
 
@@ -1722,9 +1733,9 @@ async function executeRunBrowserTask(
 
 async function executeRunHybridTask(
 	args: Record<string, unknown>,
-	userId: string,
-	organizationId?: string,
+	caller: McpWorkflowCaller,
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+	const { userId, organizationId } = caller;
 	try {
 		const client = await getTemporalClient();
 		const taskId = createTaskId("hybrid-task");
@@ -1742,7 +1753,7 @@ async function executeRunHybridTask(
 		const handle = await client.workflow.start("hybridExecutionWorkflow", {
 			taskQueue: BROWSER_TASK_QUEUE,
 			workflowId: taskId,
-			args: [input],
+			args: [{ ...input, ...caller.aiRouting }],
 		});
 
 		return { success: true, result: await handle.result() };
@@ -1759,9 +1770,9 @@ async function executeRunHybridTask(
 
 async function executeTemplate(
 	args: Record<string, unknown>,
-	userId: string,
-	organizationId?: string,
+	caller: McpWorkflowCaller,
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+	const { userId, organizationId } = caller;
 	try {
 		const client = await getTemporalClient();
 		const taskId = createTaskId("template");
@@ -1780,7 +1791,7 @@ async function executeTemplate(
 			{
 				taskQueue: BROWSER_TASK_QUEUE,
 				workflowId: taskId,
-				args: [input],
+				args: [{ ...input, ...caller.aiRouting }],
 			},
 		);
 
@@ -1852,9 +1863,9 @@ async function executeListTemplates(
 
 async function executeExtractWebContent(
 	args: Record<string, unknown>,
-	userId: string,
-	organizationId?: string,
+	caller: McpWorkflowCaller,
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+	const { userId, organizationId } = caller;
 	try {
 		const client = await getTemporalClient();
 		const taskId = createTaskId("extract-content");
@@ -1873,7 +1884,7 @@ async function executeExtractWebContent(
 			{
 				taskQueue: BROWSER_TASK_QUEUE,
 				workflowId: taskId,
-				args: [input],
+				args: [{ ...input, ...caller.aiRouting }],
 			},
 		);
 
@@ -1894,6 +1905,11 @@ async function handleBrowserToolCall(
 	toolArgs: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<McpToolResult> {
+	const workflowCaller: McpWorkflowCaller = {
+		userId: session.userId,
+		organizationId: session.organizationId ?? undefined,
+		aiRouting: mcpWorkflowAiRouting(session.credential),
+	};
 	let browserResult:
 		| { success: boolean; result?: unknown; error?: string }
 		| undefined;
@@ -1902,23 +1918,17 @@ async function handleBrowserToolCall(
 		case "run_browser_task":
 			browserResult = await executeRunBrowserTask(
 				toolArgs,
-				session.userId,
-				session.organizationId ?? undefined,
+				workflowCaller,
 			);
 			break;
 		case "run_hybrid_task":
 			browserResult = await executeRunHybridTask(
 				toolArgs,
-				session.userId,
-				session.organizationId ?? undefined,
+				workflowCaller,
 			);
 			break;
 		case "execute_template":
-			browserResult = await executeTemplate(
-				toolArgs,
-				session.userId,
-				session.organizationId ?? undefined,
-			);
+			browserResult = await executeTemplate(toolArgs, workflowCaller);
 			break;
 		case "list_templates":
 			browserResult = await executeListTemplates(
@@ -1930,8 +1940,7 @@ async function handleBrowserToolCall(
 		case "extract_web_content":
 			browserResult = await executeExtractWebContent(
 				toolArgs,
-				session.userId,
-				session.organizationId ?? undefined,
+				workflowCaller,
 			);
 			break;
 	}

@@ -1,11 +1,21 @@
-import { randomUUID } from "node:crypto";
-import { db, isProjectReadOnly, PmSyncStatus } from "@repo/database";
+import { db, isProjectReadOnly } from "@repo/database";
 import {
 	GitLabPmOriginMismatchError,
 	resolveProjectPMConfigForUser,
 } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type { Client as TemporalClient } from "@temporalio/client";
+import {
+	compensatePmSyncStart,
+	newPmSyncPendingStamp,
+	PM_SYNC_START_POLICIES,
+	pmSyncWorkflowId,
+	settleFailedPmSyncStart,
+} from "./pm-sync-start";
 
 export type PmSyncItemType = "epic" | "feature" | "story" | "bug";
 
@@ -27,7 +37,13 @@ export interface EnqueuePmSyncFromActivityResult {
 		| "item-not-found"
 		| "project-not-found"
 		| "read-only-mode"
+		/** No running workflow under the id; the attempt was marked FAILED. */
 		| "temporal-error"
+		/**
+		 * The start threw but may have gone through, and Temporal could not
+		 * say: the item is left PENDING for the stuck-sync watchdog.
+		 */
+		| "start-uncertain"
 		| "db-error";
 	workflowId?: string;
 }
@@ -36,42 +52,29 @@ export interface EnqueuePmSyncFromActivityResult {
 // were dropped. Legacy epic/feature item types are no-ops in the markers
 // below (no row to stamp).
 
+/**
+ * Stamps the item PENDING: the first write of a PM sync. Inside an Advisor
+ * chat turn the turn's stop is checked synchronously immediately before it,
+ * so a stopped turn never begins the sync. Once this stamp is written the
+ * workflow start is part of the same operation and is not checked again
+ * (see `enqueuePmSyncFromActivity`). Returns the attempt id the stamp wrote,
+ * which scopes a failed start's FAILED write to this attempt.
+ */
 async function markPending(
 	itemType: PmSyncItemType,
 	itemId: string,
-): Promise<void> {
+): Promise<string | null> {
 	if (itemType !== "story" && itemType !== "bug") {
-		return;
+		return null;
 	}
+	const stamp = newPmSyncPendingStamp();
+	// No await between this check and the write. A no-op outside a turn.
+	throwIfDispatchStopped();
 	await db.userStory.update({
 		where: { id: itemId },
-		data: {
-			lastPmSyncStatus: PmSyncStatus.PENDING,
-			lastPmSyncAttemptAt: new Date(),
-		},
+		data: stamp.data,
 	});
-}
-
-async function markFailed(
-	itemType: PmSyncItemType,
-	itemId: string,
-	message: string,
-): Promise<void> {
-	if (itemType !== "story" && itemType !== "bug") {
-		return;
-	}
-	await db.userStory.update({
-		where: { id: itemId },
-		data: {
-			lastPmSyncStatus: PmSyncStatus.FAILED,
-			lastPmSyncError:
-				`Failed to enqueue PM sync (Temporal unreachable): ${message}`.slice(
-					0,
-					500,
-				),
-			lastPmSyncAttemptAt: new Date(),
-		},
-	});
+	return stamp.attemptId;
 }
 
 /**
@@ -90,10 +93,25 @@ async function markFailed(
  *
  * Same external behavior:
  *   - Returns `{ enqueued, reason?, workflowId? }`.
- *   - Stamps `lastPmSyncStatus = PENDING` before starting the workflow.
- *   - Stamps `lastPmSyncStatus = FAILED` if the workflow start throws.
+ *   - Stamps `lastPmSyncStatus = PENDING` (with a fresh attempt id) before
+ *     starting the workflow, under the same per-item workflow id and
+ *     policies (`pmSyncWorkflowId`, `PM_SYNC_START_POLICIES`).
+ *   - Settles a start that throws with `settleFailedPmSyncStart`: it
+ *     describes the workflow id; FAILED for this attempt only when Temporal
+ *     has no running workflow under it, PENDING while one is running or
+ *     Temporal cannot say.
  *   - Silently skips when the project has no PM tool configured or the calling
  *     user lacks resolvable MCP credentials (mirrors `enqueuePmSync`).
+ *
+ * Inside an Advisor chat turn (the ambient dispatch guard), the turn's stop
+ * is checked immediately before the PENDING stamp, after every await that
+ * precedes it; a stop found there is thrown, never returned as a `reason`,
+ * and nothing is written or started. The stamp and the workflow start are
+ * one operation: once the stamp is written the start is issued even if the
+ * turn stops meanwhile — nothing after `markPending` checks the stop
+ * (`__tests__/turn-stop-write-adjacency.test.ts`) — so a stop cannot leave
+ * a PENDING stamp with no start behind it. A failed start is handled as it
+ * is outside a turn.
  */
 export async function enqueuePmSyncFromActivity(
 	input: EnqueuePmSyncFromActivityInput,
@@ -180,10 +198,14 @@ export async function enqueuePmSyncFromActivity(
 			return { enqueued: false, reason: "no-pm-config" };
 		}
 
-		await markPending(itemType, itemId);
+		const attemptId = await markPending(itemType, itemId);
 
+		// The same per-item id and policies as `@repo/api`'s enqueue, so a
+		// concurrent enqueue attaches to a running sync instead of racing it
+		// down the CREATE path, and the reconcile step below and the
+		// stuck-sync watchdog can describe this attempt's workflow.
+		const workflowId = pmSyncWorkflowId(itemType, itemId);
 		try {
-			const workflowId = `pm-sync-${itemType}-${itemId}-${randomUUID()}`;
 			const additionalContext =
 				(project.projectManagementAdditionalContext as Record<
 					string,
@@ -195,6 +217,7 @@ export async function enqueuePmSyncFromActivity(
 				{
 					taskQueue: "ai-chat",
 					workflowId,
+					...PM_SYNC_START_POLICIES,
 					args: [
 						{
 							itemId,
@@ -213,6 +236,8 @@ export async function enqueuePmSyncFromActivity(
 								undefined,
 							pushAnyway: false,
 							triggerSource,
+							// Scopes the run's status writes to this attempt.
+							pmSyncAttemptId: attemptId ?? undefined,
 						},
 					],
 				},
@@ -224,26 +249,59 @@ export async function enqueuePmSyncFromActivity(
 			logger.warn("enqueuePmSyncFromActivity: temporal start failed", {
 				itemId,
 				itemType,
+				workflowId,
 				message,
 			});
-			try {
-				await markFailed(itemType, itemId, message);
-			} catch (rollbackError) {
+			const settlement = await settleFailedPmSyncStart({
+				client: temporalClient,
+				workflowId,
+				compensate: async () => {
+					if (attemptId === null) {
+						return;
+					}
+					try {
+						await compensatePmSyncStart({
+							table: "userStory",
+							itemId,
+							attemptId,
+							message,
+						});
+					} catch (rollbackError) {
+						logger.warn(
+							"enqueuePmSyncFromActivity: rollback to FAILED also failed",
+							{
+								itemId,
+								itemType,
+								message:
+									rollbackError instanceof Error
+										? rollbackError.message
+										: String(rollbackError),
+							},
+						);
+					}
+				},
+			});
+			if (settlement === "running") {
+				return { enqueued: true, workflowId };
+			}
+			if (settlement === "uncertain") {
 				logger.warn(
-					"enqueuePmSyncFromActivity: rollback to FAILED also failed",
-					{
-						itemId,
-						itemType,
-						message:
-							rollbackError instanceof Error
-								? rollbackError.message
-								: String(rollbackError),
-					},
+					"enqueuePmSyncFromActivity: start outcome unknown — left PENDING for the stuck-sync watchdog",
+					{ itemId, itemType, workflowId },
 				);
+				return {
+					enqueued: false,
+					reason: "start-uncertain",
+					workflowId,
+				};
 			}
 			return { enqueued: false, reason: "temporal-error" };
 		}
 	} catch (error) {
+		// A chat turn's stop (from the check before the PENDING stamp, or
+		// a read it aborted) is not a database error: rethrown, so the
+		// caller never treats the item as handled. A no-op outside a turn.
+		rethrowIfDispatchStopped(error);
 		logger.warn("enqueuePmSyncFromActivity: unexpected DB error", {
 			itemId,
 			itemType,

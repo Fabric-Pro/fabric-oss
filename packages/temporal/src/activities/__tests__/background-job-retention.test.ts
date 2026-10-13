@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
 	failStaleProjectScans: vi.fn(),
 	findQuietIndexingCodeIndexes: vi.fn(),
 	failOrphanedCodeIndex: vi.fn(),
+	failOverdueBulkRunResumes: vi.fn(),
+	failAtlasAnalysesLeftWaiting: vi.fn(),
+	failOverdueProjectSetupResumes: vi.fn(),
 	getTemporalClient: vi.fn(),
 	describe: vi.fn(),
 	getHandle: vi.fn(),
@@ -17,6 +20,10 @@ vi.mock("@repo/database", () => ({
 	failStaleProjectScans: mocks.failStaleProjectScans,
 	findQuietIndexingCodeIndexes: mocks.findQuietIndexingCodeIndexes,
 	failOrphanedCodeIndex: mocks.failOrphanedCodeIndex,
+	failOverdueBulkRunResumes: mocks.failOverdueBulkRunResumes,
+	failAtlasAnalysesLeftWaiting: mocks.failAtlasAnalysesLeftWaiting,
+	failOverdueProjectSetupResumes: mocks.failOverdueProjectSetupResumes,
+	PAUSED_RUN_RESUME_GRACE_MINUTES: 30,
 }));
 
 vi.mock("../../client", () => ({
@@ -44,6 +51,9 @@ beforeEach(() => {
 	mocks.failStaleProjectScans.mockResolvedValue(0);
 	mocks.findQuietIndexingCodeIndexes.mockResolvedValue([]);
 	mocks.failOrphanedCodeIndex.mockResolvedValue(1);
+	mocks.failOverdueBulkRunResumes.mockResolvedValue(0);
+	mocks.failAtlasAnalysesLeftWaiting.mockResolvedValue(0);
+	mocks.failOverdueProjectSetupResumes.mockResolvedValue(0);
 	mocks.getHandle.mockImplementation(() => ({ describe: mocks.describe }));
 	mocks.getTemporalClient.mockResolvedValue({
 		workflow: { getHandle: mocks.getHandle },
@@ -181,6 +191,65 @@ describe("failStaleBackgroundJobsActivity — project scans", () => {
 
 		expect(result.failedCount).toBe(2);
 		expect(result.failedScanCount).toBe(3);
+	});
+});
+
+describe("failStaleBackgroundJobsActivity — runs paused for a plan reset", () => {
+	it("closes paused scans, reviews, groupings, batches and Atlas runs whose resume never started", async () => {
+		mocks.failOverdueBulkRunResumes.mockImplementation(
+			async ({ kind }: { kind: string }) =>
+				kind === "DOCUMENT_BATCH" ? 2 : 0,
+		);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(
+			mocks.failOverdueBulkRunResumes.mock.calls.map(([args]) => args),
+		).toEqual([
+			{ kind: "PROJECT_SCAN", graceMinutes: 30 },
+			{ kind: "SCAN_REVIEW", graceMinutes: 30 },
+			{ kind: "SCAN_GROUPING", graceMinutes: 30 },
+			{ kind: "DOCUMENT_BATCH", graceMinutes: 30 },
+			{ kind: "ATLAS_ANALYSIS", graceMinutes: 30 },
+		]);
+		expect(result.failedOverdueResumeCount).toBe(2);
+	});
+
+	it("also fails an Atlas analysis left waiting once its run is gone", async () => {
+		mocks.failAtlasAnalysesLeftWaiting.mockResolvedValue(1);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		// After the run sweep, so a run it just failed is no longer counted
+		// as one that could still resume the analysis.
+		expect(
+			mocks.failAtlasAnalysesLeftWaiting.mock.invocationCallOrder[0],
+		).toBeGreaterThan(
+			Math.max(
+				...mocks.failOverdueBulkRunResumes.mock.invocationCallOrder,
+			),
+		);
+		expect(result.failedOverdueResumeCount).toBe(1);
+	});
+
+	it("closes paused project setups, with their project's analysis, through their own sweep", async () => {
+		mocks.failOverdueProjectSetupResumes.mockResolvedValue(1);
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(mocks.failOverdueProjectSetupResumes).toHaveBeenCalledWith({
+			graceMinutes: 30,
+		});
+		expect(result.failedOverdueResumeCount).toBe(1);
+	});
+
+	it("keeps the other sweeps going when it fails", async () => {
+		mocks.failOverdueBulkRunResumes.mockRejectedValue(new Error("db down"));
+
+		const result = await failStaleBackgroundJobsActivity();
+
+		expect(result.failedOverdueResumeCount).toBe(0);
+		expect(mocks.findQuietIndexingCodeIndexes).toHaveBeenCalled();
 	});
 });
 

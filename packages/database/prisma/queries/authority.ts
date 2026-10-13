@@ -12,6 +12,7 @@
  * Tenant isolation follows the standard XOR pattern.
  */
 
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { Prisma } from "../client";
 import { db } from "../client";
 import type {
@@ -918,6 +919,10 @@ async function createAuthorityRequestWithin(
 	const ttlMinutes = input.ttlMinutes ?? 30;
 	const expiresAt = new Date(Date.now() + ttlMinutes * 60 * 1000);
 
+	// Each insert checks the ambient dispatch guard immediately before it is
+	// issued (a no-op outside an Advisor chat turn). A stop thrown here
+	// rejects the transaction callback, so Prisma rolls the session back.
+	throwIfDispatchStopped();
 	const session = await tx.authoritySession.create({
 		data: {
 			userId: input.userId,
@@ -930,6 +935,9 @@ async function createAuthorityRequestWithin(
 		},
 	});
 
+	// After the awaited session insert; `map` issues every grant insert
+	// synchronously, so this one check precedes them all.
+	throwIfDispatchStopped();
 	const grants = await Promise.all(
 		input.grants.map((g) =>
 			tx.authorityGrant.create({
@@ -1218,6 +1226,10 @@ export async function ensureSensitiveOperationAuthority(
 		);
 
 		if (!existingGrant) {
+			// Immediately before the write, after the authority reads above:
+			// an Advisor chat turn that stopped meanwhile raises no request.
+			// The ambient dispatch guard; a no-op outside a turn.
+			throwIfDispatchStopped();
 			await createAuthorityGrant({
 				authoritySessionId: pendingSession.id,
 				providerType,
@@ -1237,6 +1249,8 @@ export async function ensureSensitiveOperationAuthority(
 		};
 	}
 
+	// Immediately before the write (see the grant above).
+	throwIfDispatchStopped();
 	const created = await createAuthorityRequest({
 		userId,
 		organizationId,

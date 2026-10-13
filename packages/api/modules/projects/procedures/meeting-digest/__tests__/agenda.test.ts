@@ -345,6 +345,12 @@ describe("generateAgendaProcedure — behavioural guards", () => {
 				expect.objectContaining({
 					workflowIdConflictPolicy: "FAIL",
 					workflowExecutionTimeout: "10m",
+					args: [
+						expect.objectContaining({
+							userId: "user-1",
+							planEligible: true,
+						}),
+					],
 				}),
 			);
 		});

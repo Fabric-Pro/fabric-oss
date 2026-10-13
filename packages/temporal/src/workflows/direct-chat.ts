@@ -445,11 +445,20 @@ export async function directChatWorkflow(
 		// Graceful degradation (#1644): if the turn failed and tools were in
 		// scope, retry once with tools disabled so the user still gets an
 		// answer instead of a hard error.
+		//
+		// Not when an AI usage limit refused the turn (`usageLimit`): the route
+		// shows the user that limit, rather than a second attempt at the
+		// answer on the same quota. Histories recorded before this marker keep
+		// their rerun, so they replay unchanged.
 		if (
 			!result.success &&
 			mcpToolInfo.length > 0 &&
 			!input.forceDisableTools &&
-			patched("direct-chat-no-tools-retry")
+			patched("direct-chat-no-tools-retry") &&
+			!(
+				result.usageLimit &&
+				patched("direct-chat-usage-limit-no-rerun-v1")
+			)
 		) {
 			const firstError = result.error;
 			// The retry runs without tools, so its own toolCalls are empty

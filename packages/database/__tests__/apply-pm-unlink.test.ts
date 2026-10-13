@@ -1,16 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const tx = vi.hoisted(() => ({
-	userStory: { updateMany: vi.fn() },
+	userStory: { updateMany: vi.fn(), findFirst: vi.fn() },
 	pmTicketMissingStreak: { deleteMany: vi.fn() },
+	$queryRaw: vi.fn(),
 }));
+// The database clock the claim-age cutoff is read from.
+const DB_NOW = new Date("2026-10-13T12:00:00.000Z");
 vi.mock("../prisma/client", () => ({
 	db: { $transaction: vi.fn(async (fn: any) => fn(tx)) },
 }));
 
 import { applyPmUnlink } from "../prisma/queries/apply-pm-unlink";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+	vi.clearAllMocks();
+	tx.$queryRaw.mockResolvedValue([{ now: DB_NOW }]);
+	tx.userStory.findFirst.mockResolvedValue(null);
+});
 
 describe("applyPmUnlink", () => {
 	it("severs the link when externalId + projectId + server match (count 1)", async () => {
@@ -38,6 +45,13 @@ describe("applyPmUnlink", () => {
 		expect(data.pmTicketTerminal).toBe(false);
 		expect(data.pmTicketTerminalStatus).toBeNull();
 		expect(data.version).toBeUndefined(); // NO version bump
+		// The PM-sync attempt bookkeeping goes with the rest of the sync state.
+		expect(data.lastPmSyncStatus).toBeNull();
+		expect(data.lastPmSyncAttemptId).toBeNull();
+		expect(data.pmSyncPendingSince).toBeNull();
+		// Without a claim the caller read, the create claim is left alone.
+		expect(data).not.toHaveProperty("pmCreateClaimId");
+		expect(data).not.toHaveProperty("pmCreateClaimedAt");
 		expect(tx.pmTicketMissingStreak.deleteMany).toHaveBeenCalledWith({
 			where: { projectId: "p1", entityType: "STORY", entityId: "s1" },
 		});
@@ -75,6 +89,52 @@ describe("applyPmUnlink", () => {
 			externalId: "123",
 			externalMcpServerId: "srv-OLD",
 		});
+		expect(tx.pmTicketMissingStreak.deleteMany).not.toHaveBeenCalled();
+	});
+
+	it("with the claim the caller read, requires that exact claim and clears it", async () => {
+		tx.userStory.updateMany.mockResolvedValue({ count: 1 });
+		tx.pmTicketMissingStreak.deleteMany.mockResolvedValue({ count: 0 });
+		const r = await applyPmUnlink({
+			projectId: "p1",
+			entityType: "STORY",
+			entityId: "s1",
+			expectedExternalId: "123",
+			expectedExternalMcpServerId: "srv-1",
+			expectedPmCreateClaimId: "claim-read",
+		});
+		expect(r).toEqual({ applied: true });
+		const { where, data } = tx.userStory.updateMany.mock.calls[0][0];
+		expect(where).toEqual({
+			id: "s1",
+			projectId: "p1",
+			externalId: "123",
+			externalMcpServerId: "srv-1",
+			pmCreateClaimId: "claim-read",
+			// Only once it is older than the recovery bound (DB clock).
+			pmCreateClaimedAt: {
+				lte: new Date(DB_NOW.getTime() - 5 * 60_000),
+			},
+		});
+		expect(data.pmCreateClaimId).toBeNull();
+		expect(data.pmCreateClaimedAt).toBeNull();
+	});
+
+	it("with no claim read (null), applies only while the row holds no claim", async () => {
+		tx.userStory.updateMany.mockResolvedValue({ count: 0 });
+		const r = await applyPmUnlink({
+			projectId: "p1",
+			entityType: "STORY",
+			entityId: "s1",
+			expectedExternalId: "123",
+			expectedExternalMcpServerId: "srv-1",
+			expectedPmCreateClaimId: null,
+		});
+		// A claim taken since the read makes the row not match.
+		expect(r).toEqual({ applied: false });
+		expect(
+			tx.userStory.updateMany.mock.calls[0][0].where.pmCreateClaimId,
+		).toBeNull();
 		expect(tx.pmTicketMissingStreak.deleteMany).not.toHaveBeenCalled();
 	});
 

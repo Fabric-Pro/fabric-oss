@@ -91,13 +91,23 @@ describe("findInFlightAnalysisForIntegration — branch-agnostic run guard", () 
 
 		const where = mockFindFirst.mock.calls[0][0].where;
 		// R2: a re-analysis of an already-READY snapshot keeps `status` = READY,
-		// so the guard must ALSO match via `activeRunStatus` — hence the OR.
+		// so the guard must ALSO match via `activeRunStatus` — hence the OR. A
+		// run paused for a ChatGPT plan reset still holds the row: it resumes
+		// on its own, so a second run must not start beside it.
 		expect(where).toEqual({
 			projectId: "p1",
 			repositoryIntegrationId: "int-1",
 			OR: [
-				{ status: { in: ["PENDING", "ANALYZING"] } },
-				{ activeRunStatus: { in: ["PENDING", "ANALYZING"] } },
+				{
+					status: {
+						in: ["PENDING", "ANALYZING", "WAITING_FOR_PLAN"],
+					},
+				},
+				{
+					activeRunStatus: {
+						in: ["PENDING", "ANALYZING", "WAITING_FOR_PLAN"],
+					},
+				},
 			],
 			organizationId: "org-1",
 		});

@@ -25,6 +25,7 @@ import {
 	setHandler,
 } from "@temporalio/workflow";
 import type { executeMcpTool as ExecuteMcpToolFn } from "../activities/orchestrator/execution/execute-mcp-tool";
+import type { createStoryInPmWithClaim as CreateStoryInPmWithClaimFn } from "../activities/pm-integration/create-story-in-pm-with-claim";
 import type { detectAndStampPmPushConflict as DetectAndStampPmPushConflictFn } from "../activities/pm-integration/detect-pm-push-conflict";
 import type {
 	createOrUpdateStoryFromPMItem as CreateOrUpdateStoryFromPMItemFn,
@@ -41,6 +42,7 @@ import type {
 	CloseStorySyncJobInput,
 } from "../activities/pm-integration/story-sync-job";
 import type { PMToolCapabilities } from "../activities/pm-integration/tool-analyzer";
+import { STORY_SYNC_CREATE_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
 
 // =============================================================================
 // Types
@@ -264,6 +266,17 @@ const {
 	},
 });
 
+// The push create under the PM create claim (`bulk-sync-create-claim-v1`).
+// An attempt sends a create only after taking the story's create claim, so
+// a retry after an attempt that may have sent one finds the claim held (or
+// the story linked) and sends nothing, unless the user's Unlink & re-create
+// cleared that claim first: a retry still outstanding then takes a fresh
+// claim and sends its original create arguments. Every outcome after the
+// claim is taken is returned rather than thrown.
+const { createStoryInPmWithClaim } = proxyActivities<{
+	createStoryInPmWithClaim: typeof CreateStoryInPmWithClaimFn;
+}>(STORY_SYNC_CREATE_ACTIVITY_OPTIONS);
+
 // Fail-fast proxy for PM-connectivity-bound activities that should NOT grind
 // through the heavy 60s × 5 budget when the PM tool is degraded:
 //   - discoverPMToolCapabilities is the preflight gate. If the PM tool can't
@@ -441,6 +454,54 @@ export async function storySyncWorkflow(
 		}
 
 		throw new Error(`MCP tool ${toolName} failed`);
+	}
+
+	// ==========================================================================
+	// Helper: The push create under the PM create claim
+	// ==========================================================================
+
+	/** What every `createStoryInPmWithClaim` call carries besides its action. */
+	function createClaimContext(
+		storyId: string,
+		detectedType: string | undefined,
+	) {
+		return {
+			storyId,
+			projectId,
+			organizationId,
+			userId,
+			mcpConfigId,
+			mcpServerId,
+			// Bound to the PM container's GitLab instance at dispatch.
+			pmTarget: { additionalContext },
+			pmTool: detectedType,
+			toolLabel: detectedType ?? "the PM tool",
+		};
+	}
+
+	/** Count one story's create outcome into the run's progress. */
+	function recordCreateOutcome(
+		story: { id: string; identifier: string },
+		result: {
+			success: boolean;
+			externalId?: string;
+			externalUrl?: string;
+			error?: string;
+		},
+	): void {
+		progress.results.push({
+			storyId: story.id,
+			identifier: story.identifier,
+			success: result.success,
+			externalId: result.externalId,
+			externalUrl: result.externalUrl,
+			error: result.error,
+		});
+		if (result.success) {
+			progress.syncedCount++;
+		} else {
+			progress.failedCount++;
+		}
 	}
 
 	// ==========================================================================
@@ -1280,6 +1341,37 @@ export async function storySyncWorkflow(
 						story.externalUrl,
 						capabilities.detectedType,
 					);
+					// Patched: a story linked to another PM tool is no longer
+					// created again (the new item overwrote the old link). It
+					// fails with the message that offers Unlink & re-create,
+					// recorded on the row as `syncStoryToPM` records it.
+					if (
+						staleLink &&
+						story.externalId &&
+						patched("bulk-sync-create-claim-v1")
+					) {
+						log.warn(
+							"Existing external link belongs to a different PM tool; not creating",
+							{
+								storyId: story.id,
+								identifier: story.identifier,
+								externalUrl: story.externalUrl,
+								detectedType: capabilities.detectedType,
+							},
+						);
+						const refused = await createStoryInPmWithClaim({
+							...createClaimContext(
+								story.id,
+								capabilities.detectedType,
+							),
+							action: "refuse-legacy-link",
+							// The link as judged: its URL is what was judged.
+							externalId: story.externalId,
+							externalUrl: story.externalUrl ?? null,
+						});
+						recordCreateOutcome(story, refused);
+						continue;
+					}
 					if (staleLink) {
 						log.warn(
 							"Existing external link belongs to a different PM tool; clearing stale reference to force create",
@@ -1645,85 +1737,105 @@ export async function storySyncWorkflow(
 								: undefined,
 						});
 
-						const createResult = await executeMcpTool({
-							// Bound to the PM container's GitLab instance at dispatch.
-							pmTarget: { additionalContext },
-							toolName: createTool.toolName,
-							args: createArgs,
-							userId,
-							organizationId,
-							// Read-only mode write-gate — see the
-							// update path above; blocks in-flight bulk creates.
-							projectId,
-							mcpConfigId: mcpConfigId ?? undefined,
-						});
+						// Patched: the create runs in one activity that takes the
+						// story's create claim first, sends the create at most
+						// once and links the row in the write that settles the
+						// claim (`createStoryInPmWithClaim`). The previous
+						// version below could resend a create on an activity
+						// retry, and counted a create with no readable id as
+						// synced while leaving the story unlinked.
+						if (patched("bulk-sync-create-claim-v1")) {
+							const created = await createStoryInPmWithClaim({
+								...createClaimContext(
+									story.id,
+									capabilities.detectedType,
+								),
+								action: "create",
+								toolName: createTool.toolName,
+								createArgs,
+							});
+							recordCreateOutcome(story, created);
+						} else {
+							const createResult = await executeMcpTool({
+								// Bound to the PM container's GitLab instance at dispatch.
+								pmTarget: { additionalContext },
+								toolName: createTool.toolName,
+								args: createArgs,
+								userId,
+								organizationId,
+								// Read-only mode write-gate — see the
+								// update path above; blocks in-flight bulk creates.
+								projectId,
+								mcpConfigId: mcpConfigId ?? undefined,
+							});
 
-						if (createResult.success) {
-							const parsed = parseMcpResponse(
-								createResult.output,
-							) as Record<string, unknown>;
-							const externalId = String(
-								parsed.id ||
-									parsed.card_id ||
-									parsed.issue_id ||
-									parsed.task_id ||
-									"",
-							);
-							// Azure DevOps: URL in _links.web.href
-							const links = parsed._links as
-								| { web?: { href?: string } }
-								| undefined;
-							const externalUrl = String(
-								links?.web?.href ||
-									parsed.url ||
-									parsed.link ||
-									parsed.webUrl ||
-									parsed.web_url ||
-									"",
-							);
+							if (createResult.success) {
+								const parsed = parseMcpResponse(
+									createResult.output,
+								) as Record<string, unknown>;
+								const externalId = String(
+									parsed.id ||
+										parsed.card_id ||
+										parsed.issue_id ||
+										parsed.task_id ||
+										"",
+								);
+								// Azure DevOps: URL in _links.web.href
+								const links = parsed._links as
+									| { web?: { href?: string } }
+									| undefined;
+								const externalUrl = String(
+									links?.web?.href ||
+										parsed.url ||
+										parsed.link ||
+										parsed.webUrl ||
+										parsed.web_url ||
+										"",
+								);
 
-							if (externalId) {
-								await updateStoryExternalRefs({
+								if (externalId) {
+									await updateStoryExternalRefs({
+										storyId: story.id,
+										projectId,
+										externalId,
+										externalUrl: externalUrl || undefined,
+									});
+								}
+
+								progress.results.push({
 									storyId: story.id,
-									projectId,
-									externalId,
+									identifier: story.identifier,
+									success: true,
+									externalId: externalId || undefined,
 									externalUrl: externalUrl || undefined,
 								});
+								progress.syncedCount++;
+							} else {
+								// Extract actual error message from MCP response
+								const mcpError = parseMcpResponse(
+									createResult.output,
+								);
+								const errorDetail =
+									typeof mcpError === "string"
+										? mcpError
+										: typeof mcpError === "object" &&
+												mcpError !== null &&
+												"error" in mcpError
+											? String(
+													(
+														mcpError as Record<
+															string,
+															unknown
+														>
+													).error,
+												)
+											: "Unknown error";
+								throw new Error(
+									`Failed to create work item: ${errorDetail}. ` +
+										"Try changing Work Item Type in Project Settings " +
+										"(Scrum = Product Backlog Item, Agile = User Story, Basic = Issue).",
+								);
 							}
-
-							progress.results.push({
-								storyId: story.id,
-								identifier: story.identifier,
-								success: true,
-								externalId: externalId || undefined,
-								externalUrl: externalUrl || undefined,
-							});
-							progress.syncedCount++;
-						} else {
-							// Extract actual error message from MCP response
-							const mcpError = parseMcpResponse(
-								createResult.output,
-							);
-							const errorDetail =
-								typeof mcpError === "string"
-									? mcpError
-									: typeof mcpError === "object" &&
-											mcpError !== null &&
-											"error" in mcpError
-										? String(
-												(
-													mcpError as Record<
-														string,
-														unknown
-													>
-												).error,
-											)
-										: "Unknown error";
-							throw new Error(
-								`Failed to create work item: ${errorDetail}. ` +
-									"Try changing Work Item Type in Project Settings " +
-									"(Scrum = Product Backlog Item, Agile = User Story, Basic = Issue).",
-							);
 						}
 					} else {
 						throw new Error(

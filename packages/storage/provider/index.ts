@@ -147,6 +147,7 @@ export const getFileMetadata = async (
 	url: string,
 	options?: {
 		bucket?: string;
+		abortSignal?: AbortSignal;
 	},
 ) => {
 	const provider = getStorageProvider();

@@ -28,7 +28,9 @@ export type AnalysisStatus =
 	| "PENDING"
 	| "ANALYZING"
 	| "READY"
-	| "FAILED";
+	| "FAILED"
+	/** The first run paused for a ChatGPT plan reset (Fizzy #2770). */
+	| "WAITING_FOR_PLAN";
 
 /** A repository the user can choose to analyse (R11). */
 export interface RepoOption {
@@ -132,6 +134,13 @@ export interface AtlasStatus {
 	 * set (initial build spinner).
 	 */
 	activeRun: { status: "PENDING" | "ANALYZING"; startedAt: string } | null;
+	/**
+	 * The in-flight run paused because every shared ChatGPT plan it may use is
+	 * spent (Fizzy #2770): it resumes on its own after the reset. Set for a
+	 * first run (`status` WAITING_FOR_PLAN) and for a re-run of a READY
+	 * snapshot alike; `activeRun` is null meanwhile.
+	 */
+	waitingForPlan: boolean;
 	// Latest analysis AI telemetry (cheap denormalised snapshot for the header).
 	analysisModel: string | null;
 	analysisTotalTokens: number | null;
@@ -302,7 +311,14 @@ export interface RequestAnalysisResult {
 
 // ── Analysis history (who / when / commit) ───────────────────────────────────
 
-export type AnalysisRunStatus = "RUNNING" | "READY" | "FAILED";
+export type AnalysisRunStatus =
+	| "RUNNING"
+	| "READY"
+	| "FAILED"
+	/** Approved to resume now on API billing, not yet resumed. */
+	| "PENDING"
+	/** Paused for a ChatGPT plan reset (Fizzy #2770). */
+	| "WAITING_FOR_PLAN";
 export type AnalysisRunMode =
 	| "full"
 	| "incremental"

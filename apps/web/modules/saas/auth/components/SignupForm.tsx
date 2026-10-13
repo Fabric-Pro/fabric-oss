@@ -4,8 +4,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { authClient } from "@repo/auth/client";
 import { config } from "@repo/config";
 import { useAuthErrorMessages } from "@saas/auth/hooks/errors-messages";
-import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { OrganizationInvitationAlert } from "@saas/organizations/components/OrganizationInvitationAlert";
+import { safeRelativePath } from "@shared/lib/safe-redirect";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
@@ -421,6 +421,7 @@ export function SignupForm({
 									{Object.keys(oAuthProviders).map(
 										(providerId) => (
 											<SocialSigninButton
+												callbackURL={redirectPath}
 												key={providerId}
 												provider={
 													providerId as OAuthProvider

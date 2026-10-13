@@ -46,7 +46,7 @@ const handler = (
 )["~orpc"].handler;
 
 describe("audit.taxonomy handler", () => {
-	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge + chatgpt-plan connect/disconnect/organization-use + chatgpt-plan pooling account/policy/terms/api-fallback + chatgpt-plan fallback model + chatgpt-plan share/take-back)", async () => {
+	it("returns the 85 closed action keys, 16 categories, and the 8 error keys (D16, D17 + public-REST-API + Weave-session-lifecycle + story.auto_hidden/auto_unhidden + story.pm_ticket_unlinked + atlas analysis-lifecycle/branch/node-edit/pin/edge + backlog proposal-recovery + project.invitation.widget_dismissed + newsletter-widget-owner-actions + project.meeting_digest.inclusion_changed + userActivity.viewed + project.meeting_digest.action_item_toggled + newsletter-approval-gate + dailyBrief.releaseNote hide/unhide + decision-override + story.reprioritized + featureFlag.updated + qa-finding dismiss/merge additions + document-generation-failure + meeting delete/restore/sync-stop + org restore/purge + chatgpt-plan connect/disconnect/organization-use + chatgpt-plan pooling account/policy/terms/api-fallback + chatgpt-plan fallback model + chatgpt-plan share/take-back + chatgpt-plan paused-run API override + chatgpt-plan interactive api-fallback)", async () => {
 		const result = await handler({
 			context: { user: { id: "user-1", email: "alice@example.com" } },
 			input: {},
@@ -267,12 +267,18 @@ describe("audit.taxonomy handler", () => {
 		// + 2 org.chatgpt_plan.{account_shared_from_personal,
 		// account_returned_to_personal} (one ChatGPT account moving between a
 		// member's own plan and the shared accounts, Fizzy #2770 I1) = 201.
-		expect(result.actions).toHaveLength(201);
+		// + 1 org.chatgpt_plan.interactive_api_fallback_used (a member's own
+		// work moved to the organization's provider under the interactive
+		// "Use API billing" policy, Fizzy #3048) = 203.
+		expect(result.actions).toHaveLength(203);
 		expect(result.actions).toContain(
 			"account.chatgpt_plan.organization_use_changed",
 		);
 		expect(result.actions).toContain("org.chatgpt_plan.terms_acknowledged");
 		expect(result.actions).toContain("org.chatgpt_plan.api_fallback_used");
+		expect(result.actions).toContain(
+			"org.chatgpt_plan.interactive_api_fallback_used",
+		);
 		expect(result.actions).toContain(
 			"project.instructions.pull_request_merge_observed",
 		);

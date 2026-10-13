@@ -177,6 +177,7 @@ export async function generateMaturationSummary({
 		{
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
+			featureKey: "maturation",
 		},
 	);
 

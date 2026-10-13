@@ -179,6 +179,9 @@ describe("native repository instruction writes", () => {
 		});
 		expect(body.proposal).not.toHaveProperty("snapshotId");
 		expect(body.proposal).not.toHaveProperty("version");
+		// The report-back rule moved here from the tool description (Fizzy #2991).
+		expect(body.message).toContain("has not been applied");
+		expect(body.message).toContain("awaiting review");
 		expect(m.getPublishedInstructionSnapshot).not.toHaveBeenCalled();
 	});
 	it("rejects conflicting bases before admission", async () => {

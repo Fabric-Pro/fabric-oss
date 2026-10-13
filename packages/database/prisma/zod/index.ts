@@ -228,7 +228,7 @@ export type AgentScalarFieldEnum = z.infer<typeof AgentScalarFieldEnumSchema>;
 
 // File: AgentTaskScalarFieldEnum.schema.ts
 
-export const AgentTaskScalarFieldEnumSchema = z.enum(['id', 'agentId', 'userId', 'organizationId', 'status', 'stage', 'input', 'state', 'result', 'error', 'workflowId', 'runId', 'framework', 'createdAt', 'updatedAt', 'completedAt'])
+export const AgentTaskScalarFieldEnumSchema = z.enum(['id', 'agentId', 'userId', 'organizationId', 'status', 'stage', 'input', 'state', 'result', 'error', 'workflowId', 'runId', 'framework', 'createdAt', 'updatedAt', 'completedAt', 'resumesAt', 'pauseCount', 'firstPausedAt', 'resumeState', 'apiOverrideAt', 'apiOverrideByUserId'])
 
 export type AgentTaskScalarFieldEnum = z.infer<typeof AgentTaskScalarFieldEnumSchema>;
 
@@ -276,9 +276,15 @@ export type AgentConversationScalarFieldEnum = z.infer<typeof AgentConversationS
 
 // File: ConversationTurnScalarFieldEnum.schema.ts
 
-export const ConversationTurnScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'conversationId', 'scopeConversationId', 'clientRequestKey', 'executionId', 'generation', 'executionMode', 'status', 'startToken', 'cancelRequestedAt', 'cancelRequestedByUserId', 'cancelSource', 'terminalAt', 'terminalReason', 'responseText', 'limitSignalSummary', 'createdAt', 'updatedAt'])
+export const ConversationTurnScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'conversationId', 'scopeConversationId', 'clientRequestKey', 'executionId', 'generation', 'executionMode', 'status', 'startToken', 'cancelRequestedAt', 'cancelRequestedByUserId', 'cancelSource', 'terminalAt', 'terminalReason', 'responseText', 'limitSignalSummary', 'budgetStop', 'budgetContractVersion', 'tokenAllowance', 'finalizationReserveTokens', 'measuredTokens', 'outstandingTokens', 'budgetEnforcement', 'createdAt', 'updatedAt'])
 
 export type ConversationTurnScalarFieldEnum = z.infer<typeof ConversationTurnScalarFieldEnumSchema>;
+
+// File: ConversationTurnAttemptScalarFieldEnum.schema.ts
+
+export const ConversationTurnAttemptScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'generation', 'kind', 'enforced', 'reservedTokens', 'status', 'inputTokens', 'outputTokens', 'workflowId', 'runId', 'activityId', 'activityAttempt', 'modelId', 'createdAt', 'settledAt'])
+
+export type ConversationTurnAttemptScalarFieldEnum = z.infer<typeof ConversationTurnAttemptScalarFieldEnumSchema>;
 
 // File: SDLCArtifactScalarFieldEnum.schema.ts
 
@@ -330,7 +336,7 @@ export type ProjectDocumentStyleScalarFieldEnum = z.infer<typeof ProjectDocument
 
 // File: ProjectContextScalarFieldEnum.schema.ts
 
-export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'sourceBlobOid', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
+export const ProjectContextScalarFieldEnumSchema = z.enum(['id', 'projectId', 'type', 'content', 'qdrantId', 'embeddedAt', 'metadata', 's3Path', 's3Bucket', 'originalFilename', 'mimeType', 'fileSize', 'extractionStatus', 'extractionError', 'extractedAt', 'sourceUrl', 'sourceTitle', 'knowledgeBaseSourceCategory', 'knowledgeBaseSourceCategoryOther', 'urlScope', 'urlMaxPages', 'urlRefreshMode', 'urlNextRefreshAt', 'urlLastSyncedAt', 'urlScheduleId', 'urlActiveWorkflowId', 'sourceType', 'aiInstructions', 'metadataUpdatedAt', 'metadataUpdatedByUserId', 'sourcePath', 'contentHash', 'sourceBlobOid', 'contentUpdatedAt', 'contentUpdatedByUserId', 'repositorySyncId', 'contextEnrichmentRetryAt', 'userId', 'organizationId', 'ownerKey', 'createdAt', 'updatedAt'])
 
 export type ProjectContextScalarFieldEnum = z.infer<typeof ProjectContextScalarFieldEnumSchema>;
 
@@ -468,7 +474,7 @@ export type ProjectScanConfigScalarFieldEnum = z.infer<typeof ProjectScanConfigS
 
 // File: ProjectScanScalarFieldEnum.schema.ts
 
-export const ProjectScanScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'status', 'trigger', 'targetType', 'mode', 'branch', 'securityRequested', 'accessibilityRequested', 'securityFindingCount', 'accessibilityFindingCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ProjectScanScalarFieldEnumSchema = z.enum(['id', 'projectId', 'storyId', 'status', 'trigger', 'targetType', 'mode', 'branch', 'securityRequested', 'accessibilityRequested', 'securityFindingCount', 'accessibilityFindingCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'resumesAt', 'pauseCount', 'firstPausedAt', 'resumeState', 'apiOverrideAt', 'apiOverrideByUserId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ProjectScanScalarFieldEnum = z.infer<typeof ProjectScanScalarFieldEnumSchema>;
 
@@ -492,13 +498,13 @@ export type ScanActivityScalarFieldEnum = z.infer<typeof ScanActivityScalarField
 
 // File: ScanFindingReviewScalarFieldEnum.schema.ts
 
-export const ScanFindingReviewScalarFieldEnumSchema = z.enum(['id', 'projectId', 'status', 'proposals', 'reviewedCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ScanFindingReviewScalarFieldEnumSchema = z.enum(['id', 'projectId', 'status', 'proposals', 'reviewedCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'resumesAt', 'pauseCount', 'firstPausedAt', 'resumeState', 'apiOverrideAt', 'apiOverrideByUserId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ScanFindingReviewScalarFieldEnum = z.infer<typeof ScanFindingReviewScalarFieldEnumSchema>;
 
 // File: ScanFindingGroupingScalarFieldEnum.schema.ts
 
-export const ScanFindingGroupingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'scanId', 'status', 'results', 'createdCount', 'updatedCount', 'skippedCount', 'failedCount', 'themeCount', 'findingCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
+export const ScanFindingGroupingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'scanId', 'status', 'results', 'createdCount', 'updatedCount', 'skippedCount', 'failedCount', 'themeCount', 'findingCount', 'modelName', 'inputTokens', 'outputTokens', 'costUsd', 'durationMs', 'error', 'workflowId', 'startedAt', 'completedAt', 'resumesAt', 'pauseCount', 'firstPausedAt', 'resumeState', 'apiOverrideAt', 'apiOverrideByUserId', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
 
 export type ScanFindingGroupingScalarFieldEnum = z.infer<typeof ScanFindingGroupingScalarFieldEnumSchema>;
 
@@ -540,7 +546,7 @@ export type AtlasEdgeScalarFieldEnum = z.infer<typeof AtlasEdgeScalarFieldEnumSc
 
 // File: AtlasAnalysisRunScalarFieldEnum.schema.ts
 
-export const AtlasAnalysisRunScalarFieldEnumSchema = z.enum(['id', 'analysisId', 'projectId', 'triggeredByUserId', 'mode', 'status', 'branch', 'commitSha', 'commitAt', 'nodeCount', 'edgeCount', 'filesAnalyzed', 'modulesDescribed', 'model', 'promptTokens', 'completionTokens', 'totalTokens', 'costMicroUsd', 'error', 'startedAt', 'completedAt', 'durationMs', 'userId', 'organizationId'])
+export const AtlasAnalysisRunScalarFieldEnumSchema = z.enum(['id', 'analysisId', 'projectId', 'triggeredByUserId', 'mode', 'status', 'branch', 'commitSha', 'commitAt', 'nodeCount', 'edgeCount', 'filesAnalyzed', 'modulesDescribed', 'model', 'promptTokens', 'completionTokens', 'totalTokens', 'costMicroUsd', 'error', 'startedAt', 'completedAt', 'durationMs', 'workflowId', 'resumesAt', 'pauseCount', 'firstPausedAt', 'resumeState', 'apiOverrideAt', 'apiOverrideByUserId', 'userId', 'organizationId'])
 
 export type AtlasAnalysisRunScalarFieldEnum = z.infer<typeof AtlasAnalysisRunScalarFieldEnumSchema>;
 
@@ -888,7 +894,7 @@ export type ProjectStoryStatusScalarFieldEnum = z.infer<typeof ProjectStoryStatu
 
 // File: UserStoryScalarFieldEnum.schema.ts
 
-export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiRecommendationBatchId', 'aiBatchProtectedAt', 'aiBatchProtectedById', 'firstHumanEditAt', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
+export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiRecommendationBatchId', 'aiBatchProtectedAt', 'aiBatchProtectedById', 'firstHumanEditAt', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'lastPmSyncAttemptId', 'pmCreateClaimId', 'pmCreateClaimedAt', 'pmSyncPendingSince', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
 
 export type UserStoryScalarFieldEnum = z.infer<typeof UserStoryScalarFieldEnumSchema>;
 
@@ -1092,7 +1098,7 @@ export type PublishingChatDeliveryScalarFieldEnum = z.infer<typeof PublishingCha
 
 // File: TestCaseScalarFieldEnum.schema.ts
 
-export const TestCaseScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'identifier', 'title', 'description', 'state', 'priority', 'ownerId', 'tags', 'automationStatus', 'order', 'createdById', 'automationRef', 'automationFilePath', 'automationExternalUrl', 'playwrightScript', 'coverageType', 'draftedFromSpecHash', 'proposedSteps', 'proposedAt', 'proposedFrom', 'currentResult', 'lastRunAt', 'lastRunSource', 'lastRunByLabel', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'contextId', 'createdAt', 'updatedAt', 'deletedAt'])
+export const TestCaseScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'identifier', 'title', 'description', 'state', 'priority', 'ownerId', 'tags', 'automationStatus', 'order', 'createdById', 'automationRef', 'automationFilePath', 'automationExternalUrl', 'playwrightScript', 'coverageType', 'draftedFromSpecHash', 'proposedSteps', 'proposedAt', 'proposedFrom', 'currentResult', 'lastRunAt', 'lastRunSource', 'lastRunByLabel', 'externalId', 'externalUrl', 'externalMcpServerId', 'pmAutoSyncEnabled', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'lastPmSyncAttemptId', 'pmSyncPendingSince', 'pmCreateClaimId', 'pmCreateClaimedAt', 'contextId', 'createdAt', 'updatedAt', 'deletedAt'])
 
 export type TestCaseScalarFieldEnum = z.infer<typeof TestCaseScalarFieldEnumSchema>;
 
@@ -1458,13 +1464,19 @@ export type ChatGptPlanOrgPolicyScalarFieldEnum = z.infer<typeof ChatGptPlanOrgP
 
 // File: ChatGptPlanBudgetObservationScalarFieldEnum.schema.ts
 
-export const ChatGptPlanBudgetObservationScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'windowStart', 'inputTokens', 'observedAt'])
+export const ChatGptPlanBudgetObservationScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'windowStart', 'inputTokens', 'observedAt', 'lowerBound'])
 
 export type ChatGptPlanBudgetObservationScalarFieldEnum = z.infer<typeof ChatGptPlanBudgetObservationScalarFieldEnumSchema>;
 
+// File: ChatGptPlanWindowAccuracyScalarFieldEnum.schema.ts
+
+export const ChatGptPlanWindowAccuracyScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'windowStart', 'budget', 'refusedAt', 'refusalEstimatePercent', 'peakEstimatePercent', 'settledAt', 'reportedPercent', 'estimatePercentAtReport', 'reportedAt', 'maxDriftPoints', 'updatedAt'])
+
+export type ChatGptPlanWindowAccuracyScalarFieldEnum = z.infer<typeof ChatGptPlanWindowAccuracyScalarFieldEnumSchema>;
+
 // File: ChatGptPlanSourceStateScalarFieldEnum.schema.ts
 
-export const ChatGptPlanSourceStateScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'openUntil', 'resetAt', 'consecutiveUnknownResets', 'lastExhaustedAt', 'updatedAt'])
+export const ChatGptPlanSourceStateScalarFieldEnumSchema = z.enum(['sourceKind', 'sourceId', 'openUntil', 'resetAt', 'consecutiveUnknownResets', 'lastExhaustedAt', 'reportedPrimaryUsedPercent', 'reportedPrimaryWindowMinutes', 'reportedPrimaryResetAt', 'reportedSecondaryUsedPercent', 'reportedSecondaryWindowMinutes', 'reportedSecondaryResetAt', 'reportedAt', 'updatedAt'])
 
 export type ChatGptPlanSourceStateScalarFieldEnum = z.infer<typeof ChatGptPlanSourceStateScalarFieldEnumSchema>;
 
@@ -2362,6 +2374,24 @@ export const ConversationTurnCancelSourceSchema = z.enum(['USER_STOP', 'CANCELLE
 
 export type ConversationTurnCancelSource = z.infer<typeof ConversationTurnCancelSourceSchema>;
 
+// File: ConversationTurnBudgetEnforcement.schema.ts
+
+export const ConversationTurnBudgetEnforcementSchema = z.enum(['ENFORCED', 'MEASURED_ONLY'])
+
+export type ConversationTurnBudgetEnforcement = z.infer<typeof ConversationTurnBudgetEnforcementSchema>;
+
+// File: ConversationTurnAttemptKind.schema.ts
+
+export const ConversationTurnAttemptKindSchema = z.enum(['EXPLORATION', 'FINALIZATION', 'AUXILIARY'])
+
+export type ConversationTurnAttemptKind = z.infer<typeof ConversationTurnAttemptKindSchema>;
+
+// File: ConversationTurnAttemptStatus.schema.ts
+
+export const ConversationTurnAttemptStatusSchema = z.enum(['RESERVED', 'SETTLED', 'UNKNOWN', 'RELEASED'])
+
+export type ConversationTurnAttemptStatus = z.infer<typeof ConversationTurnAttemptStatusSchema>;
+
 // File: ProjectStatus.schema.ts
 
 export const ProjectStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'ARCHIVED', 'COMPLETED'])
@@ -2532,7 +2562,7 @@ export type FeatureDraftingStage = z.infer<typeof FeatureDraftingStageSchema>;
 
 // File: ScanStatus.schema.ts
 
-export const ScanStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED'])
+export const ScanStatusSchema = z.enum(['PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'WAITING_FOR_PLAN'])
 
 export type ScanStatus = z.infer<typeof ScanStatusSchema>;
 
@@ -2580,7 +2610,7 @@ export type ScanActivityType = z.infer<typeof ScanActivityTypeSchema>;
 
 // File: GroupingRunStatus.schema.ts
 
-export const GroupingRunStatusSchema = z.enum(['PENDING', 'RUNNING', 'AWAITING_REVIEW', 'APPLYING', 'COMPLETED', 'FAILED'])
+export const GroupingRunStatusSchema = z.enum(['PENDING', 'RUNNING', 'AWAITING_REVIEW', 'APPLYING', 'COMPLETED', 'FAILED', 'WAITING_FOR_PLAN'])
 
 export type GroupingRunStatus = z.infer<typeof GroupingRunStatusSchema>;
 
@@ -2592,7 +2622,7 @@ export type CodeIndexStatus = z.infer<typeof CodeIndexStatusSchema>;
 
 // File: AtlasStatus.schema.ts
 
-export const AtlasStatusSchema = z.enum(['NOT_ANALYZED', 'PENDING', 'ANALYZING', 'READY', 'FAILED'])
+export const AtlasStatusSchema = z.enum(['NOT_ANALYZED', 'PENDING', 'ANALYZING', 'READY', 'FAILED', 'WAITING_FOR_PLAN'])
 
 export type AtlasStatus = z.infer<typeof AtlasStatusSchema>;
 
@@ -2616,7 +2646,7 @@ export type AtlasEdgeKind = z.infer<typeof AtlasEdgeKindSchema>;
 
 // File: AtlasRunStatus.schema.ts
 
-export const AtlasRunStatusSchema = z.enum(['RUNNING', 'READY', 'FAILED'])
+export const AtlasRunStatusSchema = z.enum(['RUNNING', 'READY', 'FAILED', 'PENDING', 'WAITING_FOR_PLAN'])
 
 export type AtlasRunStatus = z.infer<typeof AtlasRunStatusSchema>;
 
@@ -3258,7 +3288,7 @@ export type ChatGptPlanTier = z.infer<typeof ChatGptPlanTierSchema>;
 
 // File: ChatGptPlanApiFallbackInteractive.schema.ts
 
-export const ChatGptPlanApiFallbackInteractiveSchema = z.enum(['ASK', 'NEVER'])
+export const ChatGptPlanApiFallbackInteractiveSchema = z.enum(['ASK', 'NEVER', 'AUTO'])
 
 export type ChatGptPlanApiFallbackInteractive = z.infer<typeof ChatGptPlanApiFallbackInteractiveSchema>;
 
@@ -4657,6 +4687,12 @@ export const AgentTaskSchema = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
   completedAt: z.date().nullish(),
+  resumesAt: z.date().nullish(),
+  pauseCount: z.number().int(),
+  firstPausedAt: z.date().nullish(),
+  resumeState: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  apiOverrideAt: z.date().nullish(),
+  apiOverrideByUserId: z.string().nullish(),
 });
 
 export type AgentTaskType = z.infer<typeof AgentTaskSchema>;
@@ -4831,11 +4867,44 @@ export const ConversationTurnSchema = z.object({
   terminalReason: z.string().nullish(),
   responseText: z.string().nullish(),
   limitSignalSummary: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  budgetStop: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  budgetContractVersion: z.number().int().nullish(),
+  tokenAllowance: z.number().int().nullish(),
+  finalizationReserveTokens: z.number().int().nullish(),
+  measuredTokens: z.bigint().default(BigInt(0)),
+  outstandingTokens: z.bigint().default(BigInt(0)),
+  budgetEnforcement: ConversationTurnBudgetEnforcementSchema.nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 
 export type ConversationTurnType = z.infer<typeof ConversationTurnSchema>;
+
+
+// File: ConversationTurnAttempt.schema.ts
+
+export const ConversationTurnAttemptSchema = z.object({
+  id: z.string(),
+  turnId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  generation: z.number().int().nullish(),
+  kind: ConversationTurnAttemptKindSchema,
+  enforced: z.boolean(),
+  reservedTokens: z.number().int(),
+  status: ConversationTurnAttemptStatusSchema.default("RESERVED"),
+  inputTokens: z.number().int().nullish(),
+  outputTokens: z.number().int().nullish(),
+  workflowId: z.string().nullish(),
+  runId: z.string().nullish(),
+  activityId: z.string().nullish(),
+  activityAttempt: z.number().int().nullish(),
+  modelId: z.string().nullish(),
+  createdAt: z.date(),
+  settledAt: z.date().nullish(),
+});
+
+export type ConversationTurnAttemptType = z.infer<typeof ConversationTurnAttemptSchema>;
 
 
 // File: SDLCArtifact.schema.ts
@@ -5160,6 +5229,7 @@ export const ProjectContextSchema = z.object({
   contentUpdatedAt: z.date().nullish(),
   contentUpdatedByUserId: z.string().nullish(),
   repositorySyncId: z.string().nullish(),
+  contextEnrichmentRetryAt: z.date().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
   ownerKey: z.string().nullish(),
@@ -5736,6 +5806,12 @@ export const ProjectScanSchema = z.object({
   workflowId: z.string().nullish(),
   startedAt: z.date().nullish(),
   completedAt: z.date().nullish(),
+  resumesAt: z.date().nullish(),
+  pauseCount: z.number().int(),
+  firstPausedAt: z.date().nullish(),
+  resumeState: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  apiOverrideAt: z.date().nullish(),
+  apiOverrideByUserId: z.string().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
   createdAt: z.date(),
@@ -5830,6 +5906,12 @@ export const ScanFindingReviewSchema = z.object({
   workflowId: z.string().nullish(),
   startedAt: z.date().nullish(),
   completedAt: z.date().nullish(),
+  resumesAt: z.date().nullish(),
+  pauseCount: z.number().int(),
+  firstPausedAt: z.date().nullish(),
+  resumeState: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  apiOverrideAt: z.date().nullish(),
+  apiOverrideByUserId: z.string().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
   createdAt: z.date(),
@@ -5862,6 +5944,12 @@ export const ScanFindingGroupingSchema = z.object({
   workflowId: z.string().nullish(),
   startedAt: z.date().nullish(),
   completedAt: z.date().nullish(),
+  resumesAt: z.date().nullish(),
+  pauseCount: z.number().int(),
+  firstPausedAt: z.date().nullish(),
+  resumeState: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  apiOverrideAt: z.date().nullish(),
+  apiOverrideByUserId: z.string().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
   createdAt: z.date(),
@@ -6067,6 +6155,13 @@ export const AtlasAnalysisRunSchema = z.object({
   startedAt: z.date(),
   completedAt: z.date().nullish(),
   durationMs: z.number().int().nullish(),
+  workflowId: z.string().nullish(),
+  resumesAt: z.date().nullish(),
+  pauseCount: z.number().int(),
+  firstPausedAt: z.date().nullish(),
+  resumeState: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  apiOverrideAt: z.date().nullish(),
+  apiOverrideByUserId: z.string().nullish(),
   userId: z.string(),
   organizationId: z.string().nullish(),
 });
@@ -7424,6 +7519,10 @@ export const UserStorySchema = z.object({
   lastPmSyncStatus: PmSyncStatusSchema.nullish(),
   lastPmSyncError: z.string().nullish(),
   lastPmSyncAttemptAt: z.date().nullish(),
+  lastPmSyncAttemptId: z.string().nullish(),
+  pmCreateClaimId: z.string().nullish(),
+  pmCreateClaimedAt: z.date().nullish(),
+  pmSyncPendingSince: z.date().nullish(),
   pmStatusSyncBaseId: z.string().nullish(),
   pmStatusSyncBaseAt: z.date().nullish(),
   pmStatusSyncBaseLink: z.string().nullish(),
@@ -8249,6 +8348,10 @@ export const TestCaseSchema = z.object({
   lastPmSyncStatus: PmSyncStatusSchema.nullish(),
   lastPmSyncError: z.string().nullish(),
   lastPmSyncAttemptAt: z.date().nullish(),
+  lastPmSyncAttemptId: z.string().nullish(),
+  pmSyncPendingSince: z.date().nullish(),
+  pmCreateClaimId: z.string().nullish(),
+  pmCreateClaimedAt: z.date().nullish(),
   contextId: z.string().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -9553,7 +9656,7 @@ export const ChatGptPlanOrgAccountSchema = z.object({
   tier: ChatGptPlanTierSchema.default("UNKNOWN"),
   subscriptionActiveUntil: z.date().nullish(),
   enabled: z.boolean().default(true),
-  serveInteractive: z.boolean(),
+  serveInteractive: z.boolean().default(true),
   serveBackground: z.boolean().default(true),
   maxMemberSharePct: z.number().int().nullish(),
   lastUsedAt: z.date().nullish(),
@@ -9591,9 +9694,31 @@ export const ChatGptPlanBudgetObservationSchema = z.object({
   windowStart: z.date(),
   inputTokens: z.number().int(),
   observedAt: z.date(),
+  lowerBound: z.boolean(),
 });
 
 export type ChatGptPlanBudgetObservationType = z.infer<typeof ChatGptPlanBudgetObservationSchema>;
+
+
+// File: ChatGptPlanWindowAccuracy.schema.ts
+
+export const ChatGptPlanWindowAccuracySchema = z.object({
+  sourceKind: ChatGptPlanSourceKindSchema,
+  sourceId: z.string(),
+  windowStart: z.date(),
+  budget: z.number().int(),
+  refusedAt: z.date().nullish(),
+  refusalEstimatePercent: z.number().nullish(),
+  peakEstimatePercent: z.number().nullish(),
+  settledAt: z.date().nullish(),
+  reportedPercent: z.number().nullish(),
+  estimatePercentAtReport: z.number().nullish(),
+  reportedAt: z.date().nullish(),
+  maxDriftPoints: z.number().nullish(),
+  updatedAt: z.date(),
+});
+
+export type ChatGptPlanWindowAccuracyType = z.infer<typeof ChatGptPlanWindowAccuracySchema>;
 
 
 // File: ChatGptPlanSourceState.schema.ts
@@ -9605,6 +9730,13 @@ export const ChatGptPlanSourceStateSchema = z.object({
   resetAt: z.date().nullish(),
   consecutiveUnknownResets: z.number().int(),
   lastExhaustedAt: z.date().nullish(),
+  reportedPrimaryUsedPercent: z.number().nullish(),
+  reportedPrimaryWindowMinutes: z.number().int().nullish(),
+  reportedPrimaryResetAt: z.date().nullish(),
+  reportedSecondaryUsedPercent: z.number().nullish(),
+  reportedSecondaryWindowMinutes: z.number().int().nullish(),
+  reportedSecondaryResetAt: z.date().nullish(),
+  reportedAt: z.date().nullish(),
   updatedAt: z.date(),
 });
 

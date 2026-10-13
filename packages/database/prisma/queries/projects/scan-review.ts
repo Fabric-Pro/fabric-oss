@@ -115,6 +115,8 @@ export async function getLatestScanFindingReview(
 			...(opts.status ? { status: opts.status } : {}),
 		},
 		orderBy: { createdAt: "desc" },
+		// A paused run's saved progress is for its resume, not the page.
+		omit: { resumeState: true },
 	});
 }
 
@@ -194,7 +196,7 @@ export async function hasActiveScanReview(projectId: string): Promise<boolean> {
 	const active = await db.scanFindingReview.findFirst({
 		where: {
 			projectId,
-			status: { in: ["PENDING", "RUNNING"] },
+			status: { in: ["PENDING", "RUNNING", "WAITING_FOR_PLAN"] },
 		},
 		select: { id: true },
 	});

@@ -14,6 +14,14 @@
  *   created (a cached client must not serve a newer or revoked grant);
  * - writes go through the credential module in `@repo/database`: a refresh is
  *   a compare-and-set, and no registration is ever created or replaced here.
+ *
+ * Fabric's shared refresh service (`refreshMcpOAuthAccessToken`) is the only
+ * thing that refreshes these grants. `tokens()` never returns a refresh token,
+ * and the SDK's `auth()` refreshes only when it gets one (SDK 1.32.1
+ * `auth.js`, `if (tokens?.refresh_token)`), so on a 401 the SDK goes straight
+ * to `redirectToAuthorization`, which throws `OAuthAuthorizationRequiredError`
+ * on the server. The one refresh-and-resend after a 401 is Fabric's: the
+ * transport fetch in `./client` calls `refreshAfterUnauthorized`.
  */
 
 import type {
@@ -38,10 +46,8 @@ import {
 	refreshMcpOAuthAccessToken,
 	resolveMcpClientAuthMethod,
 	sameAuthorizationServer,
-	saveMcpOAuthRefresh,
-	wipeMcpOAuthTokens,
 } from "@repo/database";
-import { decryptApiKey, encryptApiKey, hashApiKey } from "@repo/utils";
+import { decryptApiKey } from "@repo/utils";
 import {
 	createGitLabConnectionAuthProvider,
 	isGitLabPersonalMcpConfig,
@@ -111,6 +117,31 @@ interface OAuthFlowState {
 
 // Session-scoped storage for OAuth flow state (keyed by configId)
 const oauthFlowStateStore = new Map<string, OAuthFlowState>();
+
+/**
+ * The provider `createOAuthClientProvider` returns for a config Fabric
+ * refreshes itself. The transport fetch in `./client` calls
+ * `refreshAfterUnauthorized` when the MCP server answers a request with 401.
+ */
+export interface FabricRefreshingOAuthClientProvider
+	extends OAuthClientProvider {
+	/**
+	 * After the MCP server rejected `sentAccessToken` with a 401: the access
+	 * token to resend with, or `null` to let the 401 stand (the SDK then ends
+	 * it in `OAuthAuthorizationRequiredError`).
+	 */
+	refreshAfterUnauthorized(sentAccessToken: string): Promise<string | null>;
+}
+
+/** Whether `provider` can refresh after a 401 (see `refreshAfterUnauthorized`). */
+export function isFabricRefreshingProvider(
+	provider: OAuthClientProvider,
+): provider is FabricRefreshingOAuthClientProvider {
+	return (
+		typeof (provider as Partial<FabricRefreshingOAuthClientProvider>)
+			.refreshAfterUnauthorized === "function"
+	);
+}
 
 /**
  * The SDK's `startAuthorization` dereferences `authorization_endpoint` and
@@ -228,13 +259,6 @@ export async function createOAuthClientProvider(
 	 */
 	const generation = expectedGrantGeneration ?? cfg.oauthGrantGeneration;
 
-	/**
-	 * The refresh-token ciphertext this instance last handed the SDK. The
-	 * SDK's own refresh spends that token, so `saveTokens` writes only while
-	 * the row still holds it.
-	 */
-	let handedRefreshCiphertext: string | null = null;
-
 	const authorizationRequired = (message?: string) =>
 		new OAuthAuthorizationRequiredError({
 			configId,
@@ -242,10 +266,6 @@ export async function createOAuthClientProvider(
 			message,
 		});
 
-	/**
-	 * Reload the config and fail closed unless it still holds the grant this
-	 * instance was created for, bound to an authorization server.
-	 */
 	/**
 	 * Reload the config and fail closed unless it still holds the grant this
 	 * instance was created for, and that grant is either bound to an
@@ -294,12 +314,6 @@ export async function createOAuthClientProvider(
 		encryptedOauthClientSecret: string | null;
 		encryptedRefreshToken: string | null;
 	};
-	const clientOf = (row: StoredCredentials) => ({
-		oauthClientId: row.oauthClientId,
-		encryptedOauthClientSecret: row.encryptedOauthClientSecret,
-	});
-	/** The client stored when this instance handed out a refresh token. */
-	let handedClient: ReturnType<typeof clientOf> | null = null;
 
 	/**
 	 * Fail closed — send nothing and flag the config for reconnect — unless
@@ -395,15 +409,11 @@ export async function createOAuthClientProvider(
 				expectedGeneration: generation,
 			});
 			if (outcome.status === "refreshed") {
-				handedRefreshCiphertext = outcome.encryptedRefreshToken;
-				// The refresh service wrote only while the stored client was
-				// this one (its write is fenced on it).
-				handedClient = clientOf(current);
+				// No refresh token: see the module comment.
 				return {
 					access_token: outcome.accessToken,
 					token_type: outcome.tokenType,
 					expires_in: outcome.expiresIn ?? undefined,
-					refresh_token: outcome.refreshToken,
 					scope: outcome.scope ?? undefined,
 					issuer: binding.authorizationServerUrl,
 				} as OAuthTokens;
@@ -421,30 +431,99 @@ export async function createOAuthClientProvider(
 			}
 		}
 
-		// The SDK can send this refresh token itself (on a 401). Hand it out
-		// only when the stored credential set is the one the binding was
-		// written with — the same check the refresh service makes before
-		// sending one.
+		// The access token only, never the refresh token (module comment).
+		// The client and refresh token go to the token endpoint only from the
+		// refresh service, which checks the credential fingerprint first. The
+		// access token is checked here too: when the stored set is not the
+		// one the binding was written with, the access token written
+		// alongside may belong to another authorization server (the Google
+		// Drive STDIO path refuses it on the same check).
 		if (current.encryptedRefreshToken) {
 			await requireIntactCredentials(current, binding);
 		}
-		const refreshToken = current.encryptedRefreshToken
-			? decryptApiKey(current.encryptedRefreshToken)
-			: undefined;
-		handedRefreshCiphertext = current.encryptedRefreshToken;
-		handedClient = clientOf(current);
 		return {
 			access_token: decryptApiKey(current.encryptedAccessToken),
 			token_type: "Bearer",
 			expires_in: tokenExpiresAt
 				? Math.floor((tokenExpiresAt.getTime() - now) / 1000)
 				: undefined,
-			refresh_token: refreshToken,
 			issuer: binding.authorizationServerUrl,
 		} as OAuthTokens;
 	}
 
-	const provider: OAuthClientProvider = {
+	/**
+	 * The stored access token, when the config still holds this instance's
+	 * grant, bound to an AS and not flagged for reconnect; otherwise `null`.
+	 * A grant that changed or became unbound is `null` rather than an error:
+	 * the 401 then stands, and the SDK's `auth()` fails closed on the same
+	 * check (`discoveryState` → `loadBound`).
+	 */
+	async function storedAccessTokenOfThisGrant(): Promise<string | null> {
+		let loaded: Awaited<ReturnType<typeof loadCurrent>>;
+		try {
+			loaded = await loadCurrent();
+		} catch (error) {
+			if (error instanceof OAuthAuthorizationRequiredError) {
+				return null;
+			}
+			throw error;
+		}
+		const { current, binding } = loaded;
+		if (!binding || current.needsReauth || !current.encryptedAccessToken) {
+			return null;
+		}
+		// As `readTokens`: not an access token stored beside a credential set
+		// its binding was not written with (this flags the config).
+		if (current.encryptedRefreshToken) {
+			try {
+				await requireIntactCredentials(current, binding);
+			} catch (error) {
+				if (error instanceof OAuthAuthorizationRequiredError) {
+					return null;
+				}
+				throw error;
+			}
+		}
+		return decryptApiKey(current.encryptedAccessToken);
+	}
+
+	/**
+	 * After the MCP server rejected `sentAccessToken`. Makes at most one
+	 * token-endpoint call, through the shared refresh service, which counts a
+	 * failure strike and condemns the grant only after its three-strike limit.
+	 */
+	async function refreshAfterUnauthorized(
+		sentAccessToken: string,
+	): Promise<string | null> {
+		const stored = await storedAccessTokenOfThisGrant();
+		if (stored === null) {
+			// Bearer-only, needs reconnect, or the grant moved on: never
+			// refreshed from here.
+			return null;
+		}
+		if (stored !== sentAccessToken) {
+			// Another caller or replica already refreshed after the token was
+			// read: resend with that one, spending nothing.
+			return stored;
+		}
+		const outcome = await refreshMcpOAuthAccessToken(configId, {
+			recordFailures: true,
+			expectedGeneration: generation,
+		});
+		if (outcome.status === "refreshed") {
+			return outcome.accessToken;
+		}
+		// Superseded (another refresh won the compare-and-set, or the grant
+		// changed), or failed: another replica's refresh may have rotated the
+		// token, so this one's spend was rejected. Read once more: a newer
+		// token of this grant is used, anything else lets the 401 stand.
+		const reread = await storedAccessTokenOfThisGrant();
+		return reread !== null && reread !== sentAccessToken ? reread : null;
+	}
+
+	const provider: FabricRefreshingOAuthClientProvider = {
+		refreshAfterUnauthorized,
+
 		/**
 		 * The bound authorization server and its metadata, so `auth()` never
 		 * re-discovers where to send credentials.
@@ -473,61 +552,13 @@ export async function createOAuthClientProvider(
 		},
 
 		/**
-		 * Saves tokens the SDK obtained by refreshing (it only ever refreshes
-		 * against the bound token endpoint, see `discoveryState`). Refuses a
-		 * stamp that is not the bound AS, and writes only while the row still
-		 * holds this grant and the refresh token this instance handed out.
+		 * Refuses everything. Tokens for these configs are written only by
+		 * the connect flow and the shared refresh service; the SDK gets no
+		 * refresh token to obtain new ones with, and an authorization-code
+		 * exchange belongs to the connect flow, not to this provider.
 		 */
-		async saveTokens(tokens: OAuthTokens): Promise<void> {
-			const { binding } = await loadBound();
-			const issuer = (tokens as { issuer?: unknown }).issuer;
-			if (
-				typeof issuer !== "string" ||
-				!sameAuthorizationServer(issuer, binding.authorizationServerUrl)
-			) {
-				throw authorizationRequired(
-					`Refusing OAuth tokens for "${serverName}" that were not issued by its bound authorization server.`,
-				);
-			}
-			if (!handedRefreshCiphertext || !handedClient) {
-				// This instance never handed out a refresh token, so this is
-				// not a refresh of its grant. Grants are saved only by the
-				// connect flow.
-				throw authorizationRequired();
-			}
-
-			const effectiveExpiresIn =
-				tokens.expires_in ??
-				getMcpServerDefaultTokenExpiry(serverBaseUrl) ??
-				undefined;
-			const encryptedRefreshToken = tokens.refresh_token
-				? encryptApiKey(tokens.refresh_token)
-				: handedRefreshCiphertext;
-			const outcome = await saveMcpOAuthRefresh({
-				configId,
-				expectedGeneration: generation,
-				expectedRefreshToken: handedRefreshCiphertext,
-				tokens: {
-					encryptedAccessToken: encryptApiKey(tokens.access_token),
-					accessTokenHash: hashApiKey(tokens.access_token),
-					encryptedRefreshToken,
-					tokenExpiresAt: effectiveExpiresIn
-						? new Date(Date.now() + effectiveExpiresIn * 1000)
-						: null,
-				},
-				binding,
-				// Written only while the stored client is still the one the
-				// handed-out refresh token was checked with.
-				client: handedClient,
-			});
-			if (outcome === "written") {
-				handedRefreshCiphertext = encryptedRefreshToken;
-			} else {
-				console.log(
-					"[OAuth Provider] Refreshed tokens dropped: the config's credentials changed meanwhile",
-					{ configId },
-				);
-			}
+		async saveTokens(): Promise<void> {
+			throw authorizationRequired();
 		},
 
 		/**
@@ -669,34 +700,24 @@ export async function createOAuthClientProvider(
 		},
 
 		/**
-		 * The SDK calls this when the AS rejects the grant (`tokens`) or the
-		 * client (`all`). Each durable scope wipes the tokens, increments the
-		 * grant generation and flags the config for reconnect, conditional on
-		 * this instance's grant still being the config's; `client` and `all`
-		 * also clear the client. The binding is kept: only the connect flow
-		 * rebinds. `discovery` and `verifier` make no durable change.
+		 * Makes no durable change for any scope (`verifier` only drops this
+		 * process's in-memory PKCE verifier). The SDK calls this when a token
+		 * request it made is rejected (`invalid_grant`, `invalid_client`). It
+		 * no longer refreshes (`tokens()` hands it no refresh token), and no
+		 * Fabric code asks it for an authorization-code exchange (nothing
+		 * calls the SDK's `auth()` with a code or a transport's `finishAuth`;
+		 * checked by search when this was written, not by a test). A
+		 * wipe here would also skip the strike count and could beat a
+		 * concurrent refresh's compare-and-set, forcing a reconnect on a lost
+		 * race. Only the refresh service's three-strike limit and an explicit
+		 * revoke or reconnect condemn a grant.
 		 */
 		async invalidateCredentials(
 			scope: "all" | "client" | "tokens" | "verifier" | "discovery",
 		): Promise<void> {
 			if (scope === "verifier") {
 				oauthFlowStateStore.delete(configId);
-				return;
 			}
-			if (scope === "discovery") {
-				return;
-			}
-			await wipeMcpOAuthTokens({
-				configId,
-				expectedGeneration: generation,
-				// A rejected refresh token that is no longer the row's (another
-				// refresh rotated it) says nothing about the live one.
-				...(scope === "tokens" && handedRefreshCiphertext
-					? { expectedRefreshToken: handedRefreshCiphertext }
-					: {}),
-				clearClient: scope === "client" || scope === "all",
-				needsReauth: true,
-			});
 		},
 	};
 

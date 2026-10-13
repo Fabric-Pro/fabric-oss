@@ -13,6 +13,7 @@ import { logger } from "@repo/logs";
 import {
 	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 
 const JINA_SEARCH_URL = "https://s.jina.ai";
@@ -63,6 +64,9 @@ export class JinaClient {
 			// refuses before the request, and the request carries the
 			// guard's abort signal beside the timeout's.
 			const signal = await guardDispatch(controller.signal);
+			// Awaiting the record check is itself an await: the guard's
+			// latched stops are checked again in the same run as the send.
+			throwIfDispatchStopped();
 			const timeoutId = setTimeout(
 				() => controller.abort(),
 				this.timeout,
@@ -126,6 +130,9 @@ export class JinaClient {
 			// refuses before the request, and the request carries the
 			// guard's abort signal beside the timeout's.
 			const signal = await guardDispatch(controller.signal);
+			// Awaiting the record check is itself an await: the guard's
+			// latched stops are checked again in the same run as the send.
+			throwIfDispatchStopped();
 			const timeoutId = setTimeout(
 				() => controller.abort(),
 				this.timeout,

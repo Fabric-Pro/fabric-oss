@@ -39,6 +39,10 @@ import {
 import { chatGptPlanExhaustedError } from "@repo/ai/lib/chatgpt-plan/exhaustion-breaker";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
+	aiApiFallbackApproved,
+	currentAiJobType,
+} from "@repo/ai/lib/job-context";
+import {
 	computeMaxOutputTokenBudget,
 	computeScaledOutputTokenBudget,
 	DOCUMENT_GENERATION_FALLBACK_CEILING,
@@ -59,6 +63,7 @@ import {
 	GenerationDependencyProjectNotFoundError,
 	type GenerationRunStartOutcome,
 	getProjectRagSettings,
+	getRetrievableConversationBundleById,
 	hasProjectAccess,
 	listEmbeddedDocumentsForSweep,
 	markDocumentGenerationFailed,
@@ -113,6 +118,8 @@ import {
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { activityLogger } from "./lib/activity-logger";
+import { findPlanExhausted } from "./lib/chatgpt-plan-refusal";
+import { sharedPlansSpentError } from "./lib/chatgpt-plan-shared-spent";
 import {
 	type BackgroundJobStepStatus,
 	JOB_STEPS,
@@ -435,30 +442,86 @@ async function retrieveProjectContextEntries(
 			sampleBaseIds: baseContextIds.slice(0, 3),
 		});
 
-		const contexts = await db.projectContext.findMany({
-			where: {
-				id: { in: baseContextIds },
-			},
-			select: {
-				id: true,
-				content: true,
-				type: true,
-				metadata: true,
-				originalFilename: true,
-				sourceUrl: true,
-				sourceTitle: true,
-				sourceType: true,
-				aiInstructions: true,
-			},
+		// Which hits are captured conversation bundles rather than context rows
+		// (Fizzy #2228). Only the point payload can say: the bundle's row id is
+		// not a `ProjectContext` id, and the channel's own context row is a
+		// pointer with empty `content`, so a bundle hit resolved through the
+		// context table returns nothing to cite.
+		const bundleIdByBaseId = new Map<string, string>();
+		for (const r of results) {
+			if (r.conversationBundleId) {
+				bundleIdByBaseId.set(
+					extractBaseContextId(r.contextId),
+					r.conversationBundleId,
+				);
+			}
+		}
+		const rowIds = baseContextIds.filter((id) => !bundleIdByBaseId.has(id));
+		const bundleHits = baseContextIds.flatMap((baseId) => {
+			const bundleId = bundleIdByBaseId.get(baseId);
+			return bundleId ? [{ baseId, bundleId }] : [];
+		});
+
+		const [contexts, bundles] = await Promise.all([
+			rowIds.length > 0
+				? db.projectContext.findMany({
+						where: {
+							id: { in: rowIds },
+						},
+						select: {
+							id: true,
+							content: true,
+							type: true,
+							metadata: true,
+							originalFilename: true,
+							sourceUrl: true,
+							sourceTitle: true,
+							sourceType: true,
+							aiInstructions: true,
+						},
+					})
+				: Promise.resolve([]),
+			Promise.all(
+				bundleHits.map(({ bundleId }) =>
+					getRetrievableConversationBundleById({
+						bundleId,
+						projectId,
+						tenant: { userId, organizationId },
+					}),
+				),
+			),
+		]);
+
+		// Keyed by the hit's base id, which is what the ordered loop below
+		// looks up.
+		const contextMap = new Map<
+			string,
+			(typeof contexts)[number] | NonNullable<(typeof bundles)[number]>
+		>(contexts.map((c) => [c.id, c]));
+		bundles.forEach((bundle, i) => {
+			if (bundle) {
+				contextMap.set(bundleHits[i].baseId, bundle);
+			}
 		});
 
 		activityLogger.debug("Database query results", {
 			requestedCount: baseContextIds.length,
-			foundCount: contexts.length,
+			foundCount: contextMap.size,
+			bundleCount: bundleHits.length,
 		});
-
-		// Create a map for quick lookup using base context ID
-		const contextMap = new Map(contexts.map((c) => [c.id, c]));
+		// A hit with no row behind it is dropped below without a trace; say so,
+		// since a prompt silently built on fewer sources than were found is what
+		// "my context was ignored" reports come down to.
+		if (contextMap.size < baseContextIds.length) {
+			activityLogger.warn("RAG hits with no context row were dropped", {
+				projectId,
+				hitCount: baseContextIds.length,
+				resolvedCount: contextMap.size,
+				sampleDroppedIds: baseContextIds
+					.filter((id) => !contextMap.has(id))
+					.slice(0, 3),
+			});
+		}
 
 		// Build RetrievedContext array for reranking, preserving Qdrant score order
 		// Use base context ID to look up in map
@@ -1078,6 +1141,12 @@ export async function generateDocumentWithAgent(params: {
 	/** The clicking member's own ChatGPT plan may serve this run (Fizzy #2939). */
 	planEligible?: boolean;
 	/**
+	 * A bulk run that waits for a shared ChatGPT plan's reset (Fizzy #2770):
+	 * a failure while every shared plan is spent leaves as the plan's own
+	 * error, so the workflow's wait fires.
+	 */
+	waitForPlanReset?: boolean;
+	/**
 	 * Artifact mode, for a coordinated Proposal run (Fizzy #2801). The run
 	 * renders exactly this prompt version, ignores `promptId`, never falls
 	 * back to another prompt, and saves finished sections to the document's
@@ -1117,6 +1186,7 @@ export async function generateDocumentWithAgent(params: {
 		hasTeamsIntegration = false,
 		hasSlackIntegration = false,
 		planEligible = false,
+		waitForPlanReset = false,
 		artifact,
 	} = params;
 
@@ -2549,9 +2619,16 @@ ${formattingRules}`;
 		// The member's plan ran out somewhere in this run — in the agent or the
 		// fallback, whose error shapes differ. Surface the one non-retryable
 		// type rather than whichever symptom arrived last (Fizzy #2939).
+		// A bulk run on the shared plans: the agent's refusal reaches here in
+		// whatever shape its stream ended with, so when the error does not
+		// carry the plan's own, the shared plans are asked directly (Fizzy
+		// #2770).
 		const planExhausted = planEligible
 			? chatGptPlanExhaustedError(userId)
-			: null;
+			: waitForPlanReset
+				? (findPlanExhausted(error) ??
+					(await sharedPlansSpentError({ userId, organizationId })))
+				: null;
 		throw planExhausted ?? error;
 	}
 }
@@ -4491,6 +4568,12 @@ export async function issueGenerationToken(params: {
 		source: "project-document-generation",
 		expirySeconds: params.expirySeconds,
 		planEligible: params.planEligible,
+		// A run started as a job (a batch generation) keeps it, so the
+		// reissued token still resolves on the shared plans.
+		jobType: currentAiJobType(),
+		// A run a person let bill the organization's provider ("Run now on
+		// API billing") hands that to the agents it starts.
+		apiFallbackApproved: aiApiFallbackApproved(),
 	});
 	return { aiToken };
 }

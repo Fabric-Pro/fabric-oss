@@ -14,6 +14,7 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 import type { ChatTurnTruncation } from "../lib/chat-turn-truncation";
+import type { ChatGptPlanApiBilling } from "../lib/chatgpt-plan-api-billing";
 import { mergeOrchestratorConversationMetadata } from "../lib/orchestrator-conversation-tools";
 import {
 	type AgentTrajectory,
@@ -51,6 +52,8 @@ export interface OrchestratorExecution {
 	 * Persisted so a reload still says so.
 	 */
 	truncated?: ChatTurnTruncation;
+	/** The turn ran on the organization's API billing (Fizzy #3048). */
+	apiBilling?: ChatGptPlanApiBilling;
 	routingDecision?: {
 		primaryAgent: string;
 		agentName: string;

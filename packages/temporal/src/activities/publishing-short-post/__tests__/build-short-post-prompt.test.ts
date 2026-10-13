@@ -1154,6 +1154,29 @@ describe("composeShortPostPrompt", () => {
 		expect(composed.bodyRecovered).toBe(false);
 	});
 
+	// A body written for prose output was bound on a live environment; a
+	// ChatGPT-plan model answered it with three options and no post text
+	// (Fizzy #2770). The locked contract has to come AFTER that body's rule.
+	it("puts each option's post in its text field even when the body demands a Markdown document", async () => {
+		const composed = await composeShortPostPrompt({
+			...base,
+			templateBody:
+				"- Output MUST be Markdown only.\n\nReturn exactly the following Markdown structure.\n\n### Recommended Option: <Label>\n\n<Post text>",
+			format: "HANDLEBARS",
+		});
+		const bodyRule = composed.prompt.indexOf(
+			"Output MUST be Markdown only",
+		);
+		const contract = composed.prompt.indexOf(
+			"Your response is structured data, not a Markdown document.",
+		);
+
+		expect(contract).toBeGreaterThan(bodyRule);
+		expect(composed.prompt).toContain(
+			'complete post goes in its "text" field, written in Markdown, and is never left\n  empty.',
+		);
+	});
+
 	it("GUARD 1: renders a MARKDOWN-format body as Handlebars anyway", async () => {
 		// MARKDOWN does no templating at all and returns the body verbatim with
 		// NO error set. For a prompt whose entire context arrives as variables,

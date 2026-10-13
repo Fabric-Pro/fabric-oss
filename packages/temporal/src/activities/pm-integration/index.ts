@@ -30,6 +30,7 @@ export {
 	MAX_COMMENTS,
 	type PmComment,
 } from "./fetch-pm-comments";
+export { fillJiraCreateArgs } from "./fetch-pm-hierarchy";
 // Fabric-owned GitLab attachment block (Fizzy #1745) — strip before any
 // remote GitLab description is written into a Fabric story or hashed.
 export { stripAttachmentBlock } from "./gitlab-attachment-block";

@@ -57,6 +57,7 @@ import {
 	GOVERNANCE_FIELDS,
 	userHasProjectPermissionStrict,
 } from "../lib/governance";
+import { cancelPausedSetupsOfProject } from "../lib/paused-setup";
 import { requireProjectOrganization } from "../lib/project-organization";
 
 /**
@@ -1123,7 +1124,29 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			input.repositoryName &&
 			(!previousRepoUrl || repoChanged);
 
-		if (repoJustLinked && project.codeAnalysisStatus !== "SCANNING") {
+		// A setup paused for a ChatGPT plan reset reads SCANNING but runs
+		// nothing: the newly linked repository's setup replaces it (Fizzy
+		// #2770).
+		const replacedPausedSetups =
+			repoJustLinked && project.codeAnalysisStatus === "SCANNING"
+				? await cancelPausedSetupsOfProject({
+						projectId: input.id,
+						organizationId,
+						userId: user.id,
+					}).catch((error: unknown) => {
+						console.error(
+							"[update-project] Failed to cancel a paused setup:",
+							error,
+						);
+						return 0;
+					})
+				: 0;
+
+		if (
+			repoJustLinked &&
+			(project.codeAnalysisStatus !== "SCANNING" ||
+				replacedPausedSetups > 0)
+		) {
 			try {
 				const { issueAIToken } = await import("@repo/ai-token");
 				const aiToken = await issueAIToken({
@@ -1132,6 +1155,9 @@ export const updateProjectProcedure = tenantProtectedProcedure
 					impersonated: isAiImpersonatedRequest(),
 					source: "auto-code-analysis",
 					expirySeconds: 3600,
+					// Bulk work: its AI steps run on the organization's shared
+					// ChatGPT plans, never the clicker's own (Fizzy #2770).
+					jobType: "project-setup",
 				});
 
 				const client = await getTemporalClient();
@@ -1146,6 +1172,9 @@ export const updateProjectProcedure = tenantProtectedProcedure
 							{
 								projectId: input.id,
 								userId: user.id,
+								// Bulk work on the shared ChatGPT plans
+								// (Fizzy #2770), as every setup start is.
+								jobType: "project-setup",
 								organizationId,
 								aiToken,
 								repoUrls: [input.repositoryUrl],

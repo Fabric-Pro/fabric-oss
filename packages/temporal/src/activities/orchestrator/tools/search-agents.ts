@@ -13,6 +13,7 @@
 import { getAgentsWithEmbeddings, updateAgentEmbedding } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { CacheKeys, CacheTTL, RedisCache } from "../../../lib/redis-cache";
 import {
 	rethrowIfTurnStopped,
@@ -342,6 +343,10 @@ async function runAgentSearch(
 					);
 					const embedding = result.embedding;
 
+					// No cache write once the chat turn has stopped or used its
+					// token allowance (a sibling agent's embedding may have
+					// been refused); a no-op outside a turn.
+					throwIfDispatchStopped();
 					// Fire-and-forget: persist to DB (durable L2) with model ID
 					updateAgentEmbedding(
 						agent.agentId,

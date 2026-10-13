@@ -62,6 +62,7 @@ vi.mock("@repo/database", () => ({
 		enableReranking: false,
 	}),
 	markContextAsEmbedded: mocks.markContextAsEmbedded,
+	setContextEnrichmentRetryAt: vi.fn(),
 }));
 
 vi.mock("@repo/logs", () => ({

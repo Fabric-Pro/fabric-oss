@@ -16,7 +16,9 @@ import {
 } from "@repo/ai/lib/chatgpt-plan/pool";
 import { backfillChatGptPlanSubscription } from "@repo/ai/lib/chatgpt-plan/subscription-backfill";
 import {
+	chatGptPlanReportedUsage,
 	getChatGptPlanCredentialStatus,
+	getChatGptPlanSourceStates,
 	getChatGptPlanUserWindow,
 	getChatGptPlanWindowBudget,
 	listChatGptPlanOrganizations,
@@ -146,6 +148,12 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 						kind: "user",
 						userId: user.id,
 					}),
+					chatGptPlanReportedUsage(
+						(
+							await getChatGptPlanSourceStates("USER", [user.id])
+						)[0],
+						new Date(),
+					),
 				)
 			: null;
 		const ownPlanSpent =

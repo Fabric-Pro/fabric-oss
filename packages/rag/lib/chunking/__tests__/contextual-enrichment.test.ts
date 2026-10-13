@@ -127,6 +127,76 @@ describe("enrichChunksWithContext", () => {
 		expect(result[2].contextSummary).toBe("ok again");
 	});
 
+	it("stops asking once every ChatGPT plan is spent and stores the rest as they are", async () => {
+		// Fizzy #2770: the rest would only be refused too.
+		const spent = Object.assign(new Error("Every ChatGPT plan is spent."), {
+			name: "SubscriptionPlanExhaustedError",
+		});
+		const generateContext = vi
+			.fn<(system: string, user: string) => Promise<string>>()
+			.mockResolvedValueOnce("ok")
+			.mockRejectedValueOnce(
+				Object.assign(new Error("retry"), { lastError: spent }),
+			)
+			.mockResolvedValue("never asked");
+
+		const result = await enrichChunksWithContext(chunks, {
+			documentContent: "doc",
+			documentTitle: "t",
+			generateContext,
+		});
+
+		expect(generateContext).toHaveBeenCalledTimes(2);
+		expect(result.map((chunk) => chunk.contextSummary)).toEqual([
+			"ok",
+			"",
+			"",
+		]);
+		expect(result[2].enrichedContent).toBe(chunks[2].content);
+	});
+
+	it("reports a spent plan once, with the window's reset, so the chunks can be re-enriched later", async () => {
+		const resetAt = new Date("2026-10-13T15:00:00.000Z");
+		const spent = Object.assign(new Error("Every ChatGPT plan is spent."), {
+			name: "SubscriptionPlanExhaustedError",
+			resetAt,
+		});
+		const onEnrichmentDeferred = vi.fn();
+
+		await enrichChunksWithContext(chunks, {
+			documentContent: "doc",
+			documentTitle: "t",
+			generateContext: vi
+				.fn<(system: string, user: string) => Promise<string>>()
+				.mockResolvedValueOnce("ok")
+				.mockRejectedValueOnce(
+					Object.assign(new Error("retry"), { cause: spent }),
+				),
+			onEnrichmentDeferred,
+		});
+
+		expect(onEnrichmentDeferred).toHaveBeenCalledTimes(1);
+		expect(onEnrichmentDeferred).toHaveBeenCalledWith({
+			resetAt,
+			unenrichedCount: 2,
+		});
+	});
+
+	it("does not report a deferral for an ordinary failure", async () => {
+		const onEnrichmentDeferred = vi.fn();
+
+		await enrichChunksWithContext(chunks, {
+			documentContent: "doc",
+			documentTitle: "t",
+			generateContext: vi
+				.fn<(system: string, user: string) => Promise<string>>()
+				.mockRejectedValue(new Error("provider outage")),
+			onEnrichmentDeferred,
+		});
+
+		expect(onEnrichmentDeferred).not.toHaveBeenCalled();
+	});
+
 	it("returns an empty array without calling the model for no chunks", async () => {
 		const generateContext = vi.fn();
 		await expect(

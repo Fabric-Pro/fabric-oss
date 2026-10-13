@@ -28,6 +28,7 @@
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { runWithAiJobType } from "@repo/ai/lib/job-context";
 import {
 	findAllByRepoUrl,
 	getProjectQaSettings,
@@ -198,14 +199,20 @@ export async function handleProjectPullRequestWebhook(params: {
 		return { status: 200, handled: false, reason: "auto-review-off" };
 	}
 
+	// Every model call of the review is this job's, so it may run on the
+	// organization's shared ChatGPT plans (Fizzy #2770). It runs in this
+	// process, not in a workflow, so a spent plan fails it (or falls back to
+	// the API under the organization's policy) instead of waiting for a reset.
 	runInBackground(
-		runAutomaticPrReview({
-			projectId: connected.projectId,
-			repositoryIntegrationId: connected.id,
-			prNumber,
-			actingUserId: connected.configuredByUserId,
-			organizationId: connected.project.organizationId,
-		}).then((outcome) => {
+		runWithAiJobType("pr-review", () =>
+			runAutomaticPrReview({
+				projectId: connected.projectId,
+				repositoryIntegrationId: connected.id,
+				prNumber,
+				actingUserId: connected.configuredByUserId,
+				organizationId: connected.project.organizationId,
+			}),
+		).then((outcome) => {
 			logger.info("[pr-review-webhook] automatic review finished", {
 				projectId: connected.projectId,
 				prNumber,

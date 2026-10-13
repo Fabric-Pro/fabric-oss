@@ -445,6 +445,34 @@ describe("unsupported-model fallback (F10)", () => {
 		});
 	});
 
+	it("ends the call with the fallback model's limit refusal, before sending it (Fizzy #3026)", async () => {
+		const baseFetch = vi
+			.fn<typeof fetch>()
+			.mockResolvedValueOnce(unsupported())
+			.mockResolvedValueOnce(sseText("must not run", "gpt-5.6-terra"));
+		const refusal = new Error("token limit reached for gpt-5.6-terra");
+		const beforeModelFallback = vi.fn(async () => {
+			throw refusal;
+		});
+		const onModelFallback = vi.fn();
+		const error = await generateText({
+			model: createChatGptPlanModel({
+				userId: "user-1",
+				modelId: "gpt-5.6-luna",
+				fallbackModelId: "gpt-5.6-terra",
+				beforeModelFallback,
+				onModelFallback,
+				fetchImpl: baseFetch,
+			}),
+			prompt: "x",
+			maxRetries: 0,
+		}).catch((caught: unknown) => caught);
+		expect(error).toBe(refusal);
+		expect(beforeModelFallback).toHaveBeenCalledWith("gpt-5.6-terra");
+		expect(onModelFallback).not.toHaveBeenCalled();
+		expect(baseFetch).toHaveBeenCalledTimes(1);
+	});
+
 	it("fails naming the model, without a retry, when there is no fallback", async () => {
 		const baseFetch = vi.fn<typeof fetch>(async () => unsupported());
 		const error = await generateText({

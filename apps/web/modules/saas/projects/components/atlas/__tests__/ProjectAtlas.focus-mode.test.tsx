@@ -116,6 +116,19 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					...opts,
 				}),
 			},
+			// A run paused for a ChatGPT plan reset (none here).
+			pausedRun: {
+				queryOptions: (opts: { input: unknown }) => ({
+					queryKey: ["cu", "paused-run", opts.input],
+					queryFn: async () => ({ run: null }),
+				}),
+			},
+			runPausedOnApi: {
+				mutationOptions: (opts: Record<string, unknown>) => ({
+					mutationFn: async () => ({ workflowId: "wf" }),
+					...opts,
+				}),
+			},
 			systemGraph: {
 				queryOptions: (opts: { input: unknown }) => ({
 					queryKey: ["cu", "system-graph", opts.input],

@@ -23,11 +23,13 @@ export type ChatgptPlanPoolAccount = ChatgptPlanPool["accounts"][number];
 
 /**
  * The organization's shared ChatGPT plan accounts and pooling policy
- * (Fizzy #2770). The server acts on the SESSION's organization, so the key
- * carries the slug on screen and nothing is fetched mid-switch.
+ * (Fizzy #2770). The server acts on the SESSION's organization, so nothing is
+ * fetched until the session names the organization on screen: the URL commits
+ * before a switch's `setActive` lands, and a fetch in that gap cached the
+ * previous organization's pool under the new one's key.
  */
-export function useChatgptPlanPool(enabled = true) {
-	const { activeOrganization, isSwitching, isResolvingOrganization } =
+export function useChatgptPlanPool() {
+	const { activeOrganization, isSessionOnActiveOrganization } =
 		useActiveOrganization();
 	return useQuery({
 		queryKey: [
@@ -35,11 +37,7 @@ export function useChatgptPlanPool(enabled = true) {
 			activeOrganization?.slug ?? null,
 		],
 		queryFn: () => orpcClient.organizations.chatgptPlanPool.get({}),
-		enabled:
-			enabled &&
-			Boolean(activeOrganization) &&
-			!isSwitching &&
-			!isResolvingOrganization,
+		enabled: isSessionOnActiveOrganization,
 	});
 }
 
@@ -82,6 +80,24 @@ export function useDisconnectChatgptPlanPoolAccount(callbacks: {
 			}),
 		callbacks,
 	);
+}
+
+/**
+ * Tests one shared account with one tiny request (Fizzy #2770). A test can
+ * mark the account for reconnecting or spent, so the pool is read again.
+ */
+export function useTestChatgptPlanPoolAccount() {
+	const queryClient = useQueryClient();
+	return useMutation({
+		mutationFn: (accountId: string) =>
+			orpcClient.organizations.chatgptPlanPool.testAccount({
+				accountId,
+			}),
+		onSettled: () =>
+			queryClient.invalidateQueries({
+				queryKey: chatgptPlanPoolQueryKey,
+			}),
+	});
 }
 
 export function useUpdateChatgptPlanPoolPolicy(callbacks: {

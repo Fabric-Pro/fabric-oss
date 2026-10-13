@@ -15,7 +15,9 @@ import {
  * Discriminated descriptor of how a project's PM tool is configured.
  *
  * - `mcp`: the project pins an MCPConfig that resolves to an enabled config
- *   for the calling user/tenant. The workflow dispatches through MCP.
+ *   for the calling user/tenant. The workflow dispatches through MCP, using
+ *   the resolved config's id (`mcpConfigId`), which is the caller's own
+ *   config for the PM server when the pinned one is a teammate's.
  * - `rest-gitlab`: the project's MCPServer is `gitlab-official` and the
  *   caller has a usable personal GitLab connection, but no MCPConfig is
  *   pinned (GitLab tier doesn't support the official MCP endpoint).
@@ -72,9 +74,14 @@ export async function resolvePmTarget(args: {
 		if (!mcpConfig?.enabled) {
 			return null;
 		}
+		// The RESOLVED row's id, not the project's pinned one: when the pinned
+		// config belongs to another member, `mcpConfig` is the caller's own
+		// config for the same PM server, and the MCP client's caller-scoped
+		// lookup refuses the pinned id. Every consumer dispatches this id, as
+		// the worker's resolvers do (`userMcpConfig.id`).
 		return {
 			kind: "mcp",
-			mcpConfigId: project.projectManagementMcpConfigId,
+			mcpConfigId: mcpConfig.id,
 			mcpConfig,
 		};
 	}

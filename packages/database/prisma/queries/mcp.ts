@@ -819,7 +819,67 @@ export async function getMcpServerByKey(
  *
  * CRITICAL: Never returns configs from both contexts - absolute isolation required
  */
-export async function listMcpConfigsForTenant({
+export async function listMcpConfigsForTenant(opts: {
+	userId?: string;
+	organizationId?: string | null;
+}) {
+	const scope = mcpConfigTenantScope(opts);
+	if (!scope) {
+		return [];
+	}
+
+	return db.mCPConfig.findMany({
+		where: scope.where,
+		include: { mcpServer: true },
+		orderBy: MCP_CONFIG_LIST_ORDER,
+	});
+}
+
+/**
+ * The connections of a tenant with only what names and orders them: `id`,
+ * `enabled`, `displayName` and the server's `name`. The same rows in the same
+ * order as `listMcpConfigsForTenant` (both go through `mcpConfigTenantScope`
+ * and `MCP_CONFIG_LIST_ORDER`), without the large `cachedTools` JSON, so it is
+ * cheap enough to run on every MCP gateway request that has to know which
+ * prefix points at which connection.
+ */
+export async function listMcpConfigRoutingForTenant(opts: {
+	userId?: string;
+	organizationId?: string | null;
+}) {
+	const scope = mcpConfigTenantScope(opts);
+	if (!scope) {
+		return [];
+	}
+
+	return db.mCPConfig.findMany({
+		where: scope.where,
+		select: {
+			id: true,
+			enabled: true,
+			displayName: true,
+			mcpServer: { select: { name: true } },
+		},
+		orderBy: MCP_CONFIG_LIST_ORDER,
+	});
+}
+
+/**
+ * Newest first, ties broken by id so the order is the same on every query.
+ * A tie on `createdAt` would otherwise come back in either order, and the order
+ * decides which connection gets a duplicated name's plain tool prefix.
+ */
+const MCP_CONFIG_LIST_ORDER = [
+	{ createdAt: "desc" as const },
+	{ id: "asc" as const },
+];
+
+/**
+ * The guards and tenant filter shared by the MCP config listings. Returns null
+ * when there is no tenant to list for; throws for an organization without a
+ * user.
+ */
+function mcpConfigTenantScope({
 	userId,
 	organizationId,
 }: {
@@ -827,7 +887,7 @@ export async function listMcpConfigsForTenant({
 	organizationId?: string | null;
 }) {
 	if (!userId && !organizationId) {
-		return [];
+		return null;
 	}
 
 	// Security: org context MUST have a userId to prevent cross-user visibility.
@@ -845,12 +905,7 @@ export async function listMcpConfigsForTenant({
 	const where = organizationId
 		? { organizationId, userId } // Org context: user's own configs within this org
 		: { userId, organizationId: null }; // Personal context: user's personal configs only
-
-	return db.mCPConfig.findMany({
-		where,
-		include: { mcpServer: true },
-		orderBy: { createdAt: "desc" },
-	});
+	return { where };
 }
 
 /**
@@ -916,6 +971,22 @@ export async function getMcpConfigById(
 		},
 		include: { mcpServer: true },
 	});
+}
+
+/**
+ * The config's stored API-key ciphertext (`null` when it holds none), or
+ * `undefined` when the config does not exist. The MCP client cache compares
+ * it with the value a cached client was built from, so a client is not
+ * reused after the key is changed or removed.
+ */
+export async function getMcpConfigEncryptedApiKey(
+	configId: string,
+): Promise<string | null | undefined> {
+	const row = await db.mCPConfig.findUnique({
+		where: { id: configId },
+		select: { encryptedApiKey: true },
+	});
+	return row ? row.encryptedApiKey : undefined;
 }
 
 export async function getMcpConfigForTenantAndServer({
@@ -1463,8 +1534,8 @@ export async function revokeAllOrgOAuthTokens(organizationId: string) {
 }
 
 /**
- * Clean up expired OAuth states
- * Should be called periodically (e.g., every hour)
+ * Clean up expired OAuth states. Run hourly by the Temporal schedule
+ * `mcp-oauth-state-cleanup` (packages/temporal/src/schedules.ts).
  */
 export async function cleanupExpiredOAuthStates() {
 	const now = new Date();
@@ -1478,10 +1549,17 @@ export async function cleanupExpiredOAuthStates() {
 	return result.count;
 }
 
+/**
+ * Delete short-lived MCP client sessions past their `expiresAt`. The only
+ * reader (`getMcpClientSession` via the session `verify` procedure) already
+ * rejects an expired row, and nothing extends `expiresAt` after creation, so
+ * deleting one changes no observable behavior. Returns the number deleted.
+ */
 export async function cleanupExpiredMcpSessions() {
-	await db.mCPClientSession.deleteMany({
+	const result = await db.mCPClientSession.deleteMany({
 		where: { expiresAt: { lt: new Date() } },
 	});
+	return result.count;
 }
 
 export { GITLAB_PERSONAL_MCP_SERVER_KEYS, isGitLabPersonalMcpServerKey };

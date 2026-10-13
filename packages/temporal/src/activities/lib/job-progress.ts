@@ -126,7 +126,7 @@ export interface JobEnsureArgs {
 	 * Reopen this run's own failed row instead of opening a second one. Only
 	 * for one-shot activities Temporal retries — see the writer's docs.
 	 */
-	reopenFailedWithClass?: string;
+	reopenFailedWithClass?: string | readonly string[];
 	/**
 	 * The chain id to label the row with, in place of the current run id — for
 	 * fenced workflows, so later fenced writes match it. Without

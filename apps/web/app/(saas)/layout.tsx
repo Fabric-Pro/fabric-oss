@@ -1,6 +1,10 @@
 import { config } from "@repo/config";
 import { SessionProvider } from "@saas/auth/components/SessionProvider";
 import { sessionQueryKey } from "@saas/auth/lib/api";
+import {
+	loginPathReturningTo,
+	RETURN_TO_HEADER,
+} from "@saas/auth/lib/login-redirect";
 import { getOrganizationList, getSession } from "@saas/auth/lib/server";
 import { ActiveOrganizationProvider } from "@saas/organizations/components/ActiveOrganizationProvider";
 import { organizationListQueryKey } from "@saas/organizations/lib/api";
@@ -11,6 +15,7 @@ import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-tim
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
@@ -27,7 +32,7 @@ export default async function SaaSLayout({ children }: PropsWithChildren) {
 	);
 
 	if (!session) {
-		redirect("/auth/login");
+		redirect(loginPathReturningTo((await headers()).get(RETURN_TO_HEADER)));
 	}
 
 	const queryClient = getServerQueryClient();

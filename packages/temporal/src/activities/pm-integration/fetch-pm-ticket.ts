@@ -1,4 +1,5 @@
 import { logger } from "@repo/logs";
+import { PM_ITEM_FIELDS, unwrapDataEnvelope } from "@repo/utils";
 import { ApplicationFailure } from "@temporalio/common";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { assertPmMcpTargetOrigin } from "../pm-source";
@@ -238,6 +239,8 @@ export async function fetchPmTicket(
 			}
 		}
 	}
+
+	data = unwrapDataEnvelope(data, PM_ITEM_FIELDS);
 
 	const fields = data.fields as Record<string, unknown> | undefined;
 	const links = data._links as

@@ -650,6 +650,36 @@ export async function listContextsForDownload(projectId: string) {
 }
 
 /**
+ * The source contexts of imported documents that still hold a stored file, so
+ * the documents list can offer each document's original upload.
+ *
+ * Scoped to `projectId` like `listContextsForDownload`: the calling procedure
+ * has already proven read access to the project, and a context id from another
+ * project's document never matches. Rows without a storage key (text pasted or
+ * pulled from an integration) are left out — they have no original to offer.
+ */
+export async function listStoredSourceContexts(
+	projectId: string,
+	contextIds: string[],
+) {
+	if (contextIds.length === 0) {
+		return [];
+	}
+	return await db.projectContext.findMany({
+		where: {
+			id: { in: contextIds },
+			projectId,
+			s3Path: { not: null },
+		},
+		select: {
+			id: true,
+			type: true,
+			originalFilename: true,
+		},
+	});
+}
+
+/**
  * Fetch `{ id, name }` for a project under the tenant XOR filter.
  * Returns `null` if the project does not exist or belongs to a different
  * tenant (see spec §6.3).
@@ -2668,6 +2698,71 @@ export async function markContextAsEmbedded(
 		data: {
 			qdrantId,
 			embeddedAt: new Date(),
+		},
+	});
+}
+
+/**
+ * Record the outcome of a context embed's contextual enrichment (Fizzy #2770):
+ * `retryAt` when chunks were stored unenriched because the ChatGPT plan was
+ * spent, `null` when every chunk was enriched. Keyed by id with `updateMany`,
+ * so an id that is not a `ProjectContext` row (a URL page, a conversation
+ * bundle, a summary — embedded through the same path) matches nothing. The
+ * clear touches only a row that carries the marker, so an ordinary embed
+ * writes nothing.
+ */
+export async function setContextEnrichmentRetryAt(
+	contextId: string,
+	retryAt: Date | null,
+): Promise<void> {
+	await db.projectContext.updateMany({
+		where:
+			retryAt === null
+				? { id: contextId, contextEnrichmentRetryAt: { not: null } }
+				: { id: contextId },
+		data: { contextEnrichmentRetryAt: retryAt },
+	});
+}
+
+export interface ContextDueForReenrichment {
+	id: string;
+	projectId: string;
+	userId: string | null;
+	organizationId: string | null;
+	type: string;
+	originalFilename: string | null;
+	mimeType: string | null;
+	sourceUrl: string | null;
+	sourceTitle: string | null;
+	sourcePath: string | null;
+	contextEnrichmentRetryAt: Date | null;
+}
+
+/**
+ * Contexts stored without their contextual enrichment whose retry time has
+ * come, oldest first, at most `limit` (Fizzy #2770). A row embedded again in
+ * the meantime with every chunk enriched has already been cleared.
+ */
+export async function listContextsDueForReenrichment(params: {
+	now: Date;
+	limit: number;
+}): Promise<ContextDueForReenrichment[]> {
+	return db.projectContext.findMany({
+		where: { contextEnrichmentRetryAt: { lte: params.now } },
+		orderBy: { contextEnrichmentRetryAt: "asc" },
+		take: params.limit,
+		select: {
+			id: true,
+			projectId: true,
+			userId: true,
+			organizationId: true,
+			type: true,
+			originalFilename: true,
+			mimeType: true,
+			sourceUrl: true,
+			sourceTitle: true,
+			sourcePath: true,
+			contextEnrichmentRetryAt: true,
 		},
 	});
 }

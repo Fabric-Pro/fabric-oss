@@ -72,6 +72,13 @@ describe("POST /api/internal/ai-usage — shared plan accounts", () => {
 		);
 	});
 
+	it("records the account from a key that also names its sign-in (Fizzy #3037)", async () => {
+		await usage({ planSource: "org:acc-own.0123456789abcdef" });
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ providerConfigId: "acc-own" }),
+		);
+	});
+
 	it("ignores an account of another organization", async () => {
 		expect((await usage({ planSource: "org:acc-elsewhere" })).status).toBe(
 			200,

@@ -967,3 +967,73 @@ export function normalizeUrl(
 	// Can't normalize - return undefined
 	return undefined;
 }
+
+/**
+ * First Atlassian site id from a getAccessibleAtlassianResources result,
+ * whatever its shape (array, { resources }, { cloudId }, JSON string).
+ */
+export function extractAtlassianSiteId(result: unknown): string | null {
+	let data = result;
+	if (typeof data === "string") {
+		try {
+			data = JSON.parse(data);
+		} catch {
+			return null;
+		}
+	}
+	const values =
+		data && typeof data === "object" && !Array.isArray(data)
+			? ["resources", "sites", "values", "results", "items", "data"].map(
+					(k) => (data as Record<string, unknown>)[k],
+				)
+			: [];
+	const arrays = values.filter(Array.isArray) as unknown[][];
+	// Rovo v2 wraps tool results as { data: { … } }.
+	const inner = (data as Record<string, unknown> | null)?.data;
+	if (
+		arrays.length === 0 &&
+		!(data as Record<string, unknown> | null)?.cloudId &&
+		!Array.isArray(data) &&
+		inner &&
+		typeof inner === "object" &&
+		!Array.isArray(inner)
+	) {
+		return extractAtlassianSiteId(inner);
+	}
+	const list = Array.isArray(data)
+		? data
+		: arrays.length > 0
+			? (arrays.find((a) => a.length > 0) ?? [])
+			: data && typeof data === "object"
+				? [data]
+				: [];
+	const first = list[0] as Record<string, unknown> | undefined;
+	const id = first?.cloudId ?? first?.id;
+	return typeof id === "string" && id ? id : null;
+}
+
+/** Fields that mark an object as a PM work item rather than a wrapper. */
+export const PM_ITEM_FIELDS: string[] = [
+	...COMMON_ID_FIELDS,
+	"fields",
+	"title",
+	"name",
+	"summary",
+];
+
+/**
+ * Rovo v2 wraps tool results as `{ data: { … } }`. Returns the inner object
+ * when none of `fields` is set at the top level, otherwise `value` unchanged.
+ */
+export function unwrapDataEnvelope(
+	value: Record<string, unknown>,
+	fields: readonly string[],
+): Record<string, unknown> {
+	if (!value || fields.some((f) => value[f] !== undefined)) {
+		return value;
+	}
+	const inner = value.data;
+	return inner && typeof inner === "object" && !Array.isArray(inner)
+		? (inner as Record<string, unknown>)
+		: value;
+}

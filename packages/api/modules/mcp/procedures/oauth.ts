@@ -177,8 +177,27 @@ export function getOAuthCredentialErrorMessage(
 const KNOWN_DEFAULT_SCOPES: Array<{
 	hostname?: string;
 	serverKey?: string;
+	systemOnly?: boolean;
 	scopes: string[];
 }> = [
+	{
+		serverKey: "atlassian",
+		systemOnly: true,
+		scopes: [
+			"read:jira:agent-interface",
+			"write:jira:agent-interface",
+			"search:jira:agent-interface",
+			"read:confluence:agent-interface",
+			"write:confluence:agent-interface",
+			"search:confluence:agent-interface",
+			"read:bitbucket:agent-interface",
+			"write:bitbucket:agent-interface",
+			"search:rovo:agent-interface",
+			"read:account",
+			"read:me",
+			"offline_access",
+		],
+	},
 	{
 		hostname: "api.githubcopilot.com",
 		scopes: ["repo", "read:org", "read:user"],
@@ -202,7 +221,7 @@ const KNOWN_DEFAULT_SCOPES: Array<{
  */
 function getKnownDefaultScopes(
 	baseUrl: string | null | undefined,
-	serverKey?: string | null,
+	server?: { key?: string | null; isSystemProvided?: boolean | null } | null,
 ): string[] | null {
 	// Try hostname match first (for HTTP/SSE servers with a baseUrl)
 	if (baseUrl) {
@@ -217,10 +236,13 @@ function getKnownDefaultScopes(
 			// Invalid URL, fall through to serverKey match
 		}
 	}
-	// Then try server key match (for STDIO servers with no baseUrl)
+	const serverKey = server?.key;
 	if (serverKey) {
 		for (const entry of KNOWN_DEFAULT_SCOPES) {
-			if (entry.serverKey && entry.serverKey === serverKey) {
+			if (
+				entry.serverKey === serverKey &&
+				(!entry.systemOnly || server?.isSystemProvided !== false)
+			) {
 				return entry.scopes;
 			}
 		}
@@ -539,6 +561,26 @@ export const oauthProcedures = {
 				}
 			}
 
+			if (
+				server.key === "atlassian" &&
+				server.isSystemProvided !== false
+			) {
+				// Atlassian scopes a registered client to the scopes sent at registration.
+				if (!cfg.scopes || cfg.scopes.length === 0) {
+					const atlassianScopes = getKnownDefaultScopes(
+						cfg.baseUrl,
+						server,
+					);
+					if (atlassianScopes?.length) {
+						await db.mCPConfig.update({
+							where: { id: cfg.id },
+							data: { scopes: atlassianScopes },
+						});
+						cfg = { ...cfg, scopes: atlassianScopes };
+					}
+				}
+			}
+
 			// Dynamic client registration at the snapshot's AS. Never for a
 			// GitLab personal server that already holds a client: that
 			// registration may be the issuer of the person's GitLab credential,
@@ -668,7 +710,7 @@ export const oauthProcedures = {
 			// (e.g., GitLab needs api+read_user even when using DCR without env vars).
 			const isKnownEnvServer = envCreds !== null;
 			const hasKnownScopes =
-				getKnownDefaultScopes(cfg.baseUrl, server.key) !== null;
+				getKnownDefaultScopes(cfg.baseUrl, server) !== null;
 			if (
 				(isKnownEnvServer || hasKnownScopes) &&
 				(!cfg.scopes || cfg.scopes.length === 0)
@@ -677,10 +719,7 @@ export const oauthProcedures = {
 				// Discovery endpoints (e.g. Google's OpenID) often return generic scopes
 				// (openid, email, profile) that don't include service-specific permissions
 				// like Drive read access.
-				const knownScopes = getKnownDefaultScopes(
-					cfg.baseUrl,
-					server.key,
-				);
+				const knownScopes = getKnownDefaultScopes(cfg.baseUrl, server);
 				const scopesToUse =
 					knownScopes && knownScopes.length > 0
 						? knownScopes

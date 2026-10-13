@@ -193,6 +193,11 @@ export const refineDraftProcedure = tenantProtectedProcedure
 						postType: input.postType,
 						organizationId: project.organizationId ?? null,
 						actorUserId: context.user.id,
+						// A person clicked and waits for this draft, so it may run on their
+						// own ChatGPT plan (Fizzy #2770). The input names them `actorUserId`;
+						// `planUserId` tells the plan header who that is.
+						planEligible: true,
+						planUserId: context.user.id,
 						currentDraft: claim.baseline,
 						instruction,
 					},

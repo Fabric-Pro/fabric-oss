@@ -33,6 +33,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const hoisted = vi.hoisted(() => ({
 	getAIModelWithMetadata: vi.fn(),
 	transcriptionModel: { current: undefined as unknown },
+	providerConfig: {
+		apiKey: "example-provider-key",
+		provider: "OPENAI_DIRECT",
+		baseUrl: null,
+		enabledProviders: [],
+	},
 }));
 
 vi.mock("@repo/database", () => ({ logAiUsageAsync: vi.fn() }));
@@ -40,12 +46,14 @@ vi.mock("@repo/ai", () => ({
 	// No plan serves this tenant: delegated mode applies as before.
 	chatGptPlanServesCall: vi.fn().mockResolvedValue(false),
 	getAIModelWithMetadata: hoisted.getAIModelWithMetadata,
-	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
-		apiKey: "example-provider-key",
-		provider: "OPENAI_DIRECT",
-		baseUrl: null,
-		enabledProviders: [],
-	}),
+	AIProviderNotConfiguredError: class extends Error {},
+	AUDIO_PROVIDER_REQUIRED: { transcription: "transcription refused" },
+	// Transcription resolves tenant-only; delegated patterns keep the
+	// system resolver.
+	getRAGProviderConfig: vi.fn().mockResolvedValue(hoisted.providerConfig),
+	getSystemRAGProviderConfig: vi
+		.fn()
+		.mockResolvedValue(hoisted.providerConfig),
 	logModelUsageAsync: vi.fn(),
 }));
 vi.mock("@repo/observability", () => ({

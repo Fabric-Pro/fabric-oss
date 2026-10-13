@@ -10,15 +10,41 @@ import {
 import { AlertTriangle, ArrowRight, ChevronDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import type { TurnBudgetStop } from "../../lib/turn-budget-stop";
 
 interface Props {
 	parentConversationId: string;
 	reason: string;
 	summary: string;
+	/**
+	 * The structured token-allowance stop, when the turn stopped on it. It
+	 * decides the card on its own: no "Continue in new chat" action and no
+	 * new-chat suggestion, because the user can ask to continue right here.
+	 */
+	budgetStop?: TurnBudgetStop;
 	organizationId?: string | null;
 	onContinue: (newConversationId: string) => void;
 	onDismiss?: () => void;
 }
+
+/**
+ * Copy for a turn that used its token allowance. The reply above it is a
+ * written answer (`allowance_exhausted`: the answer is sized to the tokens it
+ * had left, so it may draw on only the most recent findings), or a plain list
+ * of what was found (`finalization_unavailable`). The second has several
+ * causes — the final reply did not fit what was left, came back too short
+ * twice, or failed, or the stop came before there was a conversation to
+ * answer from — so its copy names none of them.
+ */
+const TOKEN_ALLOWANCE_STOP_COPY = {
+	title: "This answer used its token allowance",
+	body: {
+		allowance_exhausted:
+			"The reply above was written from what was found before the assistant used the tokens it has for one answer. You can ask it to continue in this chat, or narrow the question.",
+		finalization_unavailable:
+			"The assistant couldn't write a full reply, so the reply above lists what was found. You can ask it to continue in this chat, or narrow the question.",
+	},
+} as const;
 
 /**
  * The orchestrator stops a single answer when it has spent its own step or
@@ -33,12 +59,49 @@ export function ConversationHandoffCard({
 	parentConversationId,
 	reason,
 	summary,
+	budgetStop,
 	organizationId,
 	onContinue,
 	onDismiss,
 }: Props) {
 	const [creating, setCreating] = useState(false);
 	const [summaryOpen, setSummaryOpen] = useState(false);
+
+	if (budgetStop?.kind === "token_allowance") {
+		return (
+			<div className="rounded-lg border border-amber-300/50 bg-amber-50/40 dark:border-amber-700/50 dark:bg-amber-950/20 p-4 mb-3">
+				<div className="flex items-start gap-3">
+					<AlertTriangle
+						className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-500 mt-0.5"
+						aria-hidden="true"
+					/>
+					<div className="flex-1 min-w-0">
+						<h3 className="text-sm font-semibold text-foreground">
+							{TOKEN_ALLOWANCE_STOP_COPY.title}
+						</h3>
+						<p className="mt-1 text-xs text-muted-foreground">
+							{
+								TOKEN_ALLOWANCE_STOP_COPY.body[
+									budgetStop.stopReason
+								]
+							}
+						</p>
+						{onDismiss && (
+							<div className="mt-4 flex flex-wrap items-center gap-2">
+								<Button
+									size="sm"
+									variant="ghost"
+									onClick={onDismiss}
+								>
+									Dismiss
+								</Button>
+							</div>
+						)}
+					</div>
+				</div>
+			</div>
+		);
+	}
 
 	const handleContinue = async () => {
 		setCreating(true);

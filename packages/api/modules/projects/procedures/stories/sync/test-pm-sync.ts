@@ -6,6 +6,7 @@ import {
 } from "@repo/database";
 import { findUsableGitLabConnection } from "@repo/integrations/gitlab";
 import { logger } from "@repo/logs";
+import { PM_ITEM_FIELDS, unwrapDataEnvelope } from "@repo/utils";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
 import {
@@ -199,9 +200,11 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const { discoverPMToolCapabilities, executeMcpTool } = await import(
-			"@repo/temporal"
-		);
+		const {
+			discoverPMToolCapabilities,
+			executeMcpTool,
+			fillJiraCreateArgs,
+		} = await import("@repo/temporal");
 		const additionalContext = (project.projectManagementAdditionalContext ??
 			{}) as Record<string, string>;
 
@@ -223,6 +226,7 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 			containerParam: string;
 			titleParam?: string;
 			descriptionParam?: string;
+			allParams: Array<{ name: string }>;
 			fieldsBased?: {
 				titleKey: string;
 				descriptionKey: string;
@@ -291,6 +295,23 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 			if (typeof additionalContext.account_slug === "string") {
 				createArgs.account_slug = additionalContext.account_slug;
 			}
+		}
+
+		// Rovo's createJiraIssue also needs a cloudId and an issue type.
+		if (capabilities.detectedType === "jira") {
+			await fillJiraCreateArgs({
+				createArgs,
+				createParams: createTool.allParams,
+				projectKey: String(containerId),
+				savedCloudId:
+					typeof additionalContext.cloudId === "string"
+						? additionalContext.cloudId
+						: undefined,
+				mcpConfigId: userMcpConfig.id,
+				userId: user.id,
+				organizationId: project.organizationId || undefined,
+				availableTools: capabilities.availableTools,
+			});
 		}
 
 		// Bound to the container's GitLab instance at dispatch: the config
@@ -366,10 +387,13 @@ export const testPMSyncProcedure = tenantProtectedProcedure
 				).find((c) => c.type === "text");
 				if (textItem?.text) {
 					try {
-						const parsed = JSON.parse(textItem.text) as Record<
-							string,
-							unknown
-						>;
+						const parsed = unwrapDataEnvelope(
+							JSON.parse(textItem.text) as Record<
+								string,
+								unknown
+							>,
+							PM_ITEM_FIELDS,
+						);
 						externalId = String(parsed.id ?? parsed.card_id ?? "");
 						const links = parsed._links as
 							| { web?: { href?: string } }

@@ -37,6 +37,16 @@ import {
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
+import {
+	type BulkRunInputExtras,
+	claimBulkRunResume,
+	pauseBulkRun,
+} from "./lib/bulk-run-pause";
+import {
+	BULK_RUN_PAUSE_PATCH,
+	type ChatGptPlanPause,
+	chatGptPlanPauseOf,
+} from "./lib/chatgpt-plan-wait";
 
 // Activities for status tracking (document generation is in child workflow)
 const {
@@ -44,6 +54,7 @@ const {
 	updateAgentTaskWorkflow,
 	updateAgentTaskStatus,
 	updateProjectDocumentStatus,
+	issueGenerationToken,
 } = proxyActivities<typeof activities>({
 	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "1m",
@@ -55,7 +66,7 @@ const {
 	},
 });
 
-export interface BatchDocumentGenerationInput {
+export interface BatchDocumentGenerationInput extends BulkRunInputExtras {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
@@ -77,7 +88,18 @@ export interface BatchDocumentGenerationOutput {
 		error?: string;
 		evalWorkflowStarted?: boolean; // Indicates if async eval was started
 	}>;
+	/** Paused for a ChatGPT plan reset; a resume run starts at `resumesAt`. */
+	paused?: boolean;
+	resumesAt?: string;
 }
+
+/** What a batch finished before it paused for a plan reset (Fizzy #2770). */
+interface BatchPauseProgress {
+	results: BatchDocumentGenerationOutput["results"];
+}
+
+/** A resumed batch's agent token: the batch's own lifetime. */
+const RESUME_TOKEN_EXPIRY_SECONDS = 1800;
 
 // Intra-phase ordering (lower first). A pure batch-sequencing concern with no
 // prerequisite meaning — nothing here says one document NEEDS another, only
@@ -157,48 +179,83 @@ export async function batchDocumentGenerationWorkflow(
 		runId,
 	});
 
-	// Create single AgentTask for the entire batch
-	let agentTaskId: string | undefined;
-	try {
-		const agentTask = await createAgentTask({
-			agentId: "project_document_generator",
-			userId: input.userId,
-			organizationId: input.organizationId,
-			status: "PENDING",
-			stage: "initializing",
-			input: {
-				projectId: input.projectId,
-				documentCount: input.documents.length,
-				documentTypes: input.documents.map((d) => d.type),
-			},
-			framework: "langgraph",
-		});
-		agentTaskId = agentTask.id;
-
-		await updateAgentTaskWorkflow({
-			id: agentTaskId,
-			workflowId,
-			runId,
-		});
-
-		await updateAgentTaskStatus({
-			id: agentTaskId,
-			status: "RUNNING",
-		});
-
-		log.info("AgentTask created for batch", { agentTaskId });
-	} catch (error) {
-		log.warn("Failed to create AgentTask, continuing without tracking", {
-			error: error instanceof Error ? error.message : "Unknown error",
-		});
-	}
-
 	const results: Array<{
 		documentId: string;
 		status: "success" | "failed";
 		error?: string;
 		evalWorkflowStarted?: boolean;
 	}> = [];
+
+	// A resume after a ChatGPT plan pause (Fizzy #2770) takes its AgentTask
+	// back, keeps what the paused run finished, and mints a fresh agent
+	// token: the batch's own expired during the wait.
+	let aiToken = input.aiToken;
+	let agentTaskId: string | undefined;
+	if (input.resumeOf) {
+		const claim = await claimBulkRunResume<BatchPauseProgress>(
+			"DOCUMENT_BATCH",
+			{ ...input, resumeOf: input.resumeOf },
+		);
+		if (!claim.claimed) {
+			return { success: false, results: [] };
+		}
+		agentTaskId = input.resumeOf.runId;
+		results.push(...(claim.progress?.results ?? []));
+		({ aiToken } = await issueGenerationToken({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			expirySeconds: RESUME_TOKEN_EXPIRY_SECONDS,
+		}));
+	}
+
+	// Create single AgentTask for the entire batch
+	if (!input.resumeOf) {
+		try {
+			const agentTask = await createAgentTask({
+				agentId: "project_document_generator",
+				userId: input.userId,
+				organizationId: input.organizationId,
+				status: "PENDING",
+				stage: "initializing",
+				input: {
+					projectId: input.projectId,
+					documentCount: input.documents.length,
+					documentTypes: input.documents.map((d) => d.type),
+				},
+				framework: "langgraph",
+			});
+			agentTaskId = agentTask.id;
+
+			await updateAgentTaskWorkflow({
+				id: agentTaskId,
+				workflowId,
+				runId,
+			});
+
+			await updateAgentTaskStatus({
+				id: agentTaskId,
+				status: "RUNNING",
+			});
+
+			log.info("AgentTask created for batch", { agentTaskId });
+		} catch (error) {
+			log.warn(
+				"Failed to create AgentTask, continuing without tracking",
+				{
+					error:
+						error instanceof Error
+							? error.message
+							: "Unknown error",
+				},
+			);
+		}
+	}
+
+	// Set when a document's child paused for a plan reset: every document
+	// from there on waits for the batch's resume.
+	let pause: ChatGptPlanPause | null = null;
+	const pendingDocs: typeof input.documents = [];
+	let pausable = false;
 
 	// Generate a single document: status updates → child workflow →
 	// fire-and-forget eval → results.push. Extracted from the former inline
@@ -243,9 +300,14 @@ export async function batchDocumentGenerationWorkflow(
 							documentType: doc.type,
 							userId: input.userId,
 							organizationId: input.organizationId,
-							aiToken: input.aiToken,
+							aiToken,
 							prompt: doc.prompt,
 							promptId: doc.promptId,
+							// Bulk work on the shared ChatGPT plans: a spent plan
+							// waits for its reset (Fizzy #2770). Only the child's
+							// input changes, which replay does not compare.
+							waitForPlanReset: true,
+							...(pausable && { pauseOnPlanSpent: true }),
 							...(attempt?.generationStartedAt && {
 								generationStartedAt:
 									attempt.generationStartedAt,
@@ -346,6 +408,14 @@ export async function batchDocumentGenerationWorkflow(
 				evalWorkflowStarted,
 			});
 		} catch (error: unknown) {
+			// The child paused for a plan reset (Fizzy #2770): the document
+			// waits for the batch's resume instead of failing.
+			const childPause = pausable ? chatGptPlanPauseOf(error) : null;
+			if (childPause) {
+				pause = childPause;
+				pendingDocs.push(doc);
+				return;
+			}
 			// Child workflow threw an exception
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
@@ -400,6 +470,13 @@ export async function batchDocumentGenerationWorkflow(
 	// docs within a phase run in intra-phase `order` (AC-11). See
 	// `fabric/standards/backend/temporal.md` + sibling workflows for the idiom.
 	const useOrdered = patched("batch-doc-intra-phase-ordering-2026-06-12");
+	// A batch with an AgentTask to record it on pauses for a plan reset
+	// instead of waiting hours (Fizzy #2770); only the ordered path, which
+	// every new run takes, knows where it stopped.
+	pausable =
+		useOrdered &&
+		agentTaskId !== undefined &&
+		patched(BULK_RUN_PAUSE_PATCH);
 
 	// Group documents by phase so business docs generate before technical docs,
 	// and technical docs generate before features (USER_STORY).
@@ -444,6 +521,10 @@ export async function batchDocumentGenerationWorkflow(
 
 		if (useOrdered) {
 			for (const doc of phaseDocs) {
+				if (pause) {
+					pendingDocs.push(doc);
+					continue;
+				}
 				await generatePhaseDocument(doc);
 			}
 		} else {
@@ -456,6 +537,49 @@ export async function batchDocumentGenerationWorkflow(
 			phase,
 			documentCount: phaseDocs.length,
 		});
+	}
+
+	if (pause && agentTaskId) {
+		try {
+			const paused = await pauseBulkRun({
+				kind: "DOCUMENT_BATCH",
+				runId: agentTaskId,
+				// Never a credential on the saved input: the resume mints its own.
+				input: { ...input, aiToken: "", documents: pendingDocs },
+				pause,
+				progress: { results } satisfies BatchPauseProgress,
+				queuedDocumentIds: pendingDocs.map((doc) => doc.id),
+			});
+			log.info("Batch paused for a ChatGPT plan reset", {
+				agentTaskId,
+				pendingDocuments: pendingDocs.length,
+				resumesAt: paused.resumesAt,
+			});
+			return {
+				success: false,
+				results,
+				paused: true,
+				resumesAt: paused.resumesAt,
+			};
+		} catch (error) {
+			// The pause cap, or a run cancelled meanwhile: the documents
+			// still waiting fail with the reason.
+			const message =
+				error instanceof Error ? error.message : "Unknown error";
+			for (const doc of pendingDocs) {
+				await updateProjectDocumentStatus({
+					documentId: doc.id,
+					status: "FAILED",
+					progress: 0,
+					error: message,
+				});
+				results.push({
+					documentId: doc.id,
+					status: "failed",
+					error: message,
+				});
+			}
+		}
 	}
 
 	const allSuccess = results.every((r) => r.status === "success");

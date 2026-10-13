@@ -105,6 +105,7 @@ function createMockRequest(
 	return {
 		nextUrl: {
 			pathname: url.pathname,
+			search: new URL(pathname, origin).search,
 			origin,
 			clone: () => {
 				const cloned = new URL(url.toString());
@@ -369,6 +370,41 @@ describe("Middleware (proxy.ts)", () => {
 				"frame-ancestors *",
 			);
 			expect(response.requestHeaders?.get("x-embed-route")).toBe("1");
+		});
+	});
+
+	// Fizzy #3036: the SaaS layout reads the link a signed-out visitor
+	// opened from this header, to send them back to it after login.
+	describe("Return path for the SaaS layout", () => {
+		it("hands the ChatGPT connect link through with its whole query", async () => {
+			const link =
+				"/connect/chatgpt?port=54321&state=state-example&shared=1&org=example-org";
+			const response = await proxy(createMockRequest(link));
+
+			expect(response.type).toBe("next");
+			expect(response.requestHeaders?.get("x-fabric-return-to")).toBe(
+				link,
+			);
+		});
+
+		it("replaces a return path the client sent itself", async () => {
+			const req = createMockRequest("/connect/chatgpt?port=54321");
+			req.headers.set("x-fabric-return-to", "//evil.example");
+			const response = await proxy(req);
+
+			expect(response.requestHeaders?.get("x-fabric-return-to")).toBe(
+				"/connect/chatgpt?port=54321",
+			);
+		});
+
+		it("drops the RSC cache-busting parameter", async () => {
+			const response = await proxy(
+				createMockRequest("/onboarding?_rsc=abc123"),
+			);
+
+			expect(response.requestHeaders?.get("x-fabric-return-to")).toBe(
+				"/onboarding",
+			);
 		});
 	});
 

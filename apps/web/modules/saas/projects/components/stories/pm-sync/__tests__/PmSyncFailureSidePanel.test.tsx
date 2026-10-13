@@ -178,6 +178,257 @@ describe("PmSyncFailureSidePanel", () => {
 		expect(onRetry).not.toHaveBeenCalled();
 	});
 
+	it("for a create that may have landed unlinked: the primary action is an explicit 'Unlink & re-create'", async () => {
+		// The backend refuses every create while the item's create claim is
+		// held, so a plain Retry would only fail again (Fizzy #3045). The
+		// quoted transport error must not turn this into the 404 flow.
+		const onRetry = vi.fn();
+		const onUnlinkRecreate = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<PmSyncFailureSidePanel
+				{...baseProps}
+				error="The create request to fizzy got no definite answer (HTTP 404 from proxy), so a fizzy item may already exist for this item. Check fizzy; if there is none, use Unlink & re-create."
+				onRetry={onRetry}
+				onUnlinkRecreate={onUnlinkRecreate}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/may already have this item/i),
+		).toBeInTheDocument();
+		expect(screen.queryByText(/no longer exists/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Retry sync/i }),
+		).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: /Unlink & re-create/i }),
+		);
+		expect(onUnlinkRecreate).toHaveBeenCalledTimes(1);
+		expect(onRetry).not.toHaveBeenCalled();
+	});
+
+	it("for a legacy link to another PM tool: the primary action is 'Unlink & re-create', not 'Push & relink'", async () => {
+		// The backend never replaces an unstamped link on its own, and a
+		// migrate push cannot replace it either; only Unlink & re-create can.
+		// The message also says "different PM tool", which alone would offer
+		// Push & relink.
+		const onRetry = vi.fn();
+		const onRelink = vi.fn();
+		const onUnlinkRecreate = vi.fn();
+		const user = userEvent.setup();
+		render(
+			<PmSyncFailureSidePanel
+				{...baseProps}
+				error="This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in fizzy. To make a new ticket in fizzy, use Unlink & re-create (the old ticket is not deleted)."
+				onRetry={onRetry}
+				onRelink={onRelink}
+				onUnlinkRecreate={onUnlinkRecreate}
+			/>,
+		);
+
+		expect(
+			screen.getByText(/won't replace it on its own/i),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(/may already have this item/i),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Push & relink/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Retry sync/i }),
+		).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: /Unlink & re-create/i }),
+		);
+		expect(onUnlinkRecreate).toHaveBeenCalledTimes(1);
+		expect(onRelink).not.toHaveBeenCalled();
+		expect(onRetry).not.toHaveBeenCalled();
+	});
+
+	describe("Link to existing item", () => {
+		const UNCONFIRMED =
+			"The create request to fizzy got no definite answer (timed out), so a fizzy item may already exist for this item. Check fizzy; if there is none, use Unlink & re-create.";
+
+		it("is offered beside Unlink & re-create for an unconfirmed create, and links the named item", async () => {
+			const onLinkExisting = vi.fn().mockResolvedValue({ linked: true });
+			const onOpenChange = vi.fn();
+			const onUnlinkRecreate = vi.fn();
+			const user = userEvent.setup();
+			render(
+				<PmSyncFailureSidePanel
+					{...baseProps}
+					error={UNCONFIRMED}
+					onOpenChange={onOpenChange}
+					onUnlinkRecreate={onUnlinkRecreate}
+					onLinkExisting={onLinkExisting}
+				/>,
+			);
+
+			expect(
+				screen.getByText(
+					/if the item is there, Link to existing item/i,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /Unlink & re-create/i }),
+			).toBeInTheDocument();
+			await user.click(
+				screen.getByRole("button", { name: /Link to existing item/i }),
+			);
+			const field = await screen.findByLabelText("Fizzy item ID or key");
+			await waitFor(() => expect(field).toHaveFocus());
+			await user.type(field, " 1234 ");
+			await user.click(screen.getByRole("button", { name: "Link item" }));
+
+			await waitFor(() =>
+				expect(onLinkExisting).toHaveBeenCalledWith("1234"),
+			);
+			await waitFor(() =>
+				expect(onOpenChange).toHaveBeenCalledWith(false),
+			);
+			expect(onUnlinkRecreate).not.toHaveBeenCalled();
+		});
+
+		it("shows the server's refusal in the dialog and keeps the panel open", async () => {
+			const onLinkExisting = vi
+				.fn()
+				.mockRejectedValue(
+					new Error('Item "1234" was not found in the PM tool.'),
+				);
+			const onOpenChange = vi.fn();
+			const user = userEvent.setup();
+			render(
+				<PmSyncFailureSidePanel
+					{...baseProps}
+					error={UNCONFIRMED}
+					onOpenChange={onOpenChange}
+					onUnlinkRecreate={vi.fn()}
+					onLinkExisting={onLinkExisting}
+				/>,
+			);
+
+			await user.click(
+				screen.getByRole("button", { name: /Link to existing item/i }),
+			);
+			await user.type(
+				await screen.findByLabelText("Fizzy item ID or key"),
+				"1234",
+			);
+			await user.click(screen.getByRole("button", { name: "Link item" }));
+
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				'Item "1234" was not found in the PM tool.',
+			);
+			expect(onOpenChange).not.toHaveBeenCalledWith(false);
+		});
+
+		it.each([
+			["Cancel", "cancel"],
+			["Escape", "escape"],
+		] as const)(
+			"returns focus to the opening button when dismissed with %s",
+			async (_label, how) => {
+				const onLinkExisting = vi.fn();
+				const user = userEvent.setup();
+				render(
+					<PmSyncFailureSidePanel
+						{...baseProps}
+						error={UNCONFIRMED}
+						onUnlinkRecreate={vi.fn()}
+						onLinkExisting={onLinkExisting}
+					/>,
+				);
+				const opener = screen.getByRole("button", {
+					name: /Link to existing item/i,
+				});
+				await user.click(opener);
+				await screen.findByLabelText("Fizzy item ID or key");
+
+				if (how === "cancel") {
+					await user.click(
+						screen.getByRole("button", { name: "Cancel" }),
+					);
+				} else {
+					await user.keyboard("{Escape}");
+				}
+
+				await waitFor(() =>
+					expect(
+						screen.queryByLabelText("Fizzy item ID or key"),
+					).not.toBeInTheDocument(),
+				);
+				await waitFor(() => expect(opener).toHaveFocus());
+				expect(onLinkExisting).not.toHaveBeenCalled();
+			},
+		);
+
+		it("is not offered when the caller does not wire it (a linked item)", () => {
+			render(
+				<PmSyncFailureSidePanel
+					{...baseProps}
+					error={UNCONFIRMED}
+					onUnlinkRecreate={vi.fn()}
+				/>,
+			);
+
+			expect(
+				screen.queryByRole("button", {
+					name: /Link to existing item/i,
+				}),
+			).not.toBeInTheDocument();
+			expect(
+				screen.getByText(
+					/if the item isn't there, Unlink & re-create/i,
+				),
+			).toBeInTheDocument();
+		});
+
+		it.each([
+			[
+				"a legacy link to another PM tool",
+				"This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in fizzy. To make a new ticket in fizzy, use Unlink & re-create (the old ticket is not deleted).",
+			],
+			["a deleted card", "Work item 42 does not exist (404)"],
+			["an ordinary failure", "Connection refused"],
+		])("is not offered for %s", (_label, error) => {
+			render(
+				<PmSyncFailureSidePanel
+					{...baseProps}
+					error={error}
+					onUnlinkRecreate={vi.fn()}
+					onLinkExisting={vi.fn()}
+				/>,
+			);
+
+			expect(
+				screen.queryByRole("button", {
+					name: /Link to existing item/i,
+				}),
+			).not.toBeInTheDocument();
+		});
+
+		it("the link dialog has no serious or critical axe violations", async () => {
+			const user = userEvent.setup();
+			const { baseElement } = render(
+				<PmSyncFailureSidePanel
+					{...baseProps}
+					error={UNCONFIRMED}
+					onUnlinkRecreate={vi.fn()}
+					onLinkExisting={vi.fn()}
+				/>,
+			);
+			await user.click(
+				screen.getByRole("button", { name: /Link to existing item/i }),
+			);
+			await screen.findByLabelText("Fizzy item ID or key");
+
+			const results = await axe(baseElement);
+			expect(results).toHaveNoViolations();
+		});
+	});
+
 	it("has no serious or critical axe violations", async () => {
 		const { baseElement } = render(
 			<PmSyncFailureSidePanel {...baseProps} />,

@@ -23,6 +23,9 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 		orpc: {
 			projects: {
 				scan: {
+					// A run paused for a ChatGPT plan reset (Fizzy #2770).
+					pausedRunOptions: passthrough,
+					runPausedOnApi: passthrough,
 					config: { get: passthrough },
 					latest: passthrough,
 					trigger: passthrough,

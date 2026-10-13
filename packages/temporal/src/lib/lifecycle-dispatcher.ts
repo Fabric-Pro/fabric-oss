@@ -1,4 +1,8 @@
 import { db } from "@repo/database";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { getTemporalClient } from "../client";
 
 type LifecycleResource = "story" | "task" | "comment" | "coding_run";
@@ -67,6 +71,12 @@ export async function dispatchLifecycleEvent(
 	const results = await Promise.all(
 		matchingTriggers.map(async (trigger) => {
 			const eventId = `lifecycle-${input.resource}-${input.event}-${input.entityId}-${trigger.id}`;
+			// Immediately before the start, after the trigger lookup and the
+			// client above: inside a chat turn that has stopped (or used its
+			// token allowance) no trigger fires. Outside the catch below, so
+			// the stop is not counted as one failed trigger. A no-op outside
+			// a turn.
+			throwIfDispatchStopped();
 			try {
 				await temporalClient.workflow.start("triggerEventWorkflow", {
 					workflowId: `trigger-event-${eventId}`,
@@ -99,6 +109,7 @@ export async function dispatchLifecycleEvent(
 				});
 				return true;
 			} catch (error) {
+				rethrowIfDispatchStopped(error);
 				console.warn("[LifecycleDispatcher] Failed to start trigger", {
 					triggerId: trigger.id,
 					error:

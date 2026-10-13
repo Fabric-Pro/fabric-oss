@@ -12,6 +12,7 @@
  *   - The typed decision model decides confident stories without the language
  *     classifier, and everything else falls through to it unchanged.
  */
+import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	capturedDecisionOutcomes,
@@ -84,6 +85,14 @@ vi.mock("@repo/observability/llm", async () =>
 	(await import("./test-helpers/decision-outcomes")).observabilityLlmMock(),
 );
 
+const wrappedInRetryError = (limit: Error) =>
+	new RetryError({
+		message:
+			"Failed after 2 attempts with non-retryable error: 'AI usage limit exceeded'",
+		reason: "errorNotRetryable",
+		errors: [new Error("gateway busy"), limit],
+	});
+
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
 }));
@@ -133,6 +142,7 @@ vi.mock("../src/activities/backlog-context/fetch-context", () => ({
 import {
 	classifyDeliveryTracks,
 	LOW_CONFIDENCE_PREFIX,
+	OPEN_QUESTIONS_NOT_DEFERRED_PREFIX,
 	UNTRUSTED_DATA_END,
 	UNTRUSTED_DATA_START,
 } from "../src/activities/delivery-track/classify";
@@ -394,6 +404,29 @@ describe("classifyDeliveryTracks", () => {
 		});
 	});
 
+	it("tags the language-model call with the delivery-track feature key", async () => {
+		queueStories([dbStory({ id: "s-1" })]);
+		modelReturns([
+			{
+				storyId: "s-1",
+				track: "DISCOVERY",
+				rationale: "Borderline.",
+				confidence: 0.9,
+			},
+		]);
+
+		await classifyDeliveryTracks({
+			projectId: "proj-1",
+			storyIds: ["s-1"],
+			userId: "u1",
+		});
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({ featureKey: "delivery-track" }),
+		);
+	});
+
 	it("wraps story text in the untrusted-data delimiter and tells the model to ignore instructions inside", async () => {
 		queueStories([
 			dbStory({
@@ -605,6 +638,126 @@ describe("classifyDeliveryTracks", () => {
 		});
 	});
 
+	describe("open questions never defer", () => {
+		const QA_STORY = dbStory({
+			id: "s-1",
+			identifier: "F-1027",
+			title: "QA #1027 track check",
+			description:
+				"## Overview\nShow the delivery track on the board.\n## Open Questions / Needed Decisions\n- Which tracks appear in the summary?",
+		});
+
+		it("refuses the 10/9 DEFER grounded in open questions and keeps the story on its normal track", async () => {
+			mocks.projectFindFirst.mockResolvedValue({
+				...baseProject,
+				engagementProfile: "GOVERNED",
+			});
+			queueStories([QA_STORY]);
+			const rationale =
+				"Gated on Product decisions: the spec's open questions leave undecided dependencies.";
+			modelReturns([
+				{ storyId: "s-1", track: "DEFER", rationale, confidence: 0.85 },
+			]);
+
+			const out = await classifyDeliveryTracks({
+				projectId: "proj-1",
+				storyIds: ["s-1"],
+				userId: "u1",
+			});
+
+			expect(out.results[0]).toMatchObject({
+				storyId: "s-1",
+				track: "SPECIFY",
+				source: "model",
+			});
+			expect(
+				mocks.userStoryUpdateMany.mock.calls[0][0].data,
+			).toMatchObject({
+				deliveryTrack: "SPECIFY",
+				// The open questions stay visible on the story.
+				trackRationale: `${OPEN_QUESTIONS_NOT_DEFERRED_PREFIX}${rationale}`,
+			});
+		});
+
+		it("under a classifier-default profile the refused DEFER leaves the story unclassified", async () => {
+			queueStories([QA_STORY]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "DEFER",
+					rationale: "Open questions remain unanswered.",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				projectId: "proj-1",
+				storyIds: ["s-1"],
+				userId: "u1",
+			});
+
+			expect(out.results[0]).toMatchObject({ track: "UNCLASSIFIED" });
+			expect(
+				mocks.userStoryUpdateMany.mock.calls[0][0].data.deliveryTrack,
+			).toBe("UNCLASSIFIED");
+		});
+
+		it("keeps an explicit parking DEFER even when decisions are also pending", async () => {
+			queueStories([QA_STORY]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "DEFER",
+					rationale:
+						"The client parked this for a later release; pending decisions are irrelevant until then.",
+					confidence: 0.9,
+				},
+			]);
+
+			const out = await classifyDeliveryTracks({
+				projectId: "proj-1",
+				storyIds: ["s-1"],
+				userId: "u1",
+			});
+
+			expect(out.results[0]).toMatchObject({
+				track: "DEFER",
+				source: "model",
+			});
+		});
+
+		it("tells the model that open questions are never grounds for DEFER", async () => {
+			queueStories([QA_STORY]);
+			modelReturns([
+				{
+					storyId: "s-1",
+					track: "SPECIFY",
+					rationale: "x",
+					confidence: 0.9,
+				},
+			]);
+
+			await classifyDeliveryTracks({
+				projectId: "proj-1",
+				storyIds: ["s-1"],
+				userId: "u1",
+			});
+
+			const prompt: string = mocks.generateObject.mock.calls[0][0].prompt;
+			const deferRow = prompt
+				.split("\n")
+				.find((line) => line.startsWith("| DEFER |"));
+			expect(deferRow).toMatch(/parked/i);
+			expect(deferRow).toMatch(
+				/open questions, pending product decisions and undecided or unconfirmed dependencies NEVER imply DEFER/i,
+			);
+			expect(deferRow).not.toMatch(/blocked by an undecided/i);
+			expect(prompt).not.toMatch(
+				/use DEFER only for explicit exclusions or undecided dependencies/i,
+			);
+		});
+	});
+
 	it("a deferred item in the batch cascades to its dependants (rule c)", async () => {
 		queueStories([
 			dbStory({
@@ -771,6 +924,7 @@ describe("classifyDeliveryTracks", () => {
 				userId: "u1",
 				organizationId: "org-1",
 				projectId: "proj-1",
+				featureKey: "delivery-track",
 			});
 			expect(mocks.experimental_decide).toHaveBeenCalledTimes(1);
 			expect(mocks.generateObject).not.toHaveBeenCalled();
@@ -807,6 +961,23 @@ describe("classifyDeliveryTracks", () => {
 					trackSetBy: "AI",
 				});
 			}
+		});
+
+		it("tells the decision model that open questions are never grounds for DEFER", async () => {
+			enableDecisionModel();
+			queueStories([dbStory({ id: "s-1" })]);
+			decisionAnswers({ story_0: choice("SPECIFY", 0.97) });
+
+			await classifyDeliveryTracks({ ...ORG_INPUT, storyIds: ["s-1"] });
+
+			const { questions } = mocks.experimental_decide.mock.calls[0][0];
+			expect(questions.story_0.criteria.DEFER).toMatch(
+				/open questions, pending product decisions and undecided or unconfirmed dependencies NEVER imply DEFER/i,
+			);
+			expect(questions.story_0.criteria.DEFER).toMatch(/parked/i);
+			expect(questions.story_0.instructions).toMatch(
+				/never for open questions, pending decisions or undecided dependencies/,
+			);
 		});
 
 		it("sends only the uncertain story to the language model", async () => {
@@ -1269,6 +1440,28 @@ describe("classifyDeliveryTracks", () => {
 					["limit_exceeded", "example-decider", 3],
 					["limit_exceeded", "none", 3],
 				]);
+			});
+
+			it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: limit_exceeded for the batch, the unwrapped instance escapes, no language call", async () => {
+				enableNamedDecisionModel();
+				queueStories(THREE_STORIES);
+				const limit = new AiUsageLimitExceededError();
+				mocks.experimental_decide.mockRejectedValueOnce(
+					wrappedInRetryError(limit),
+				);
+
+				const error = await classifyDeliveryTracks({
+					...ORG_INPUT,
+					storyIds: ["s-1", "s-2", "s-3"],
+				}).catch((caught: unknown) => caught);
+
+				expect(error).toBe(limit);
+				expect(
+					capturedDecisionOutcomes.map(
+						({ outcome, model, count }) => [outcome, model, count],
+					),
+				).toEqual([["limit_exceeded", "example-decider", 3]]);
+				expect(mocks.generateObject).not.toHaveBeenCalled();
 			});
 
 			it("labels a refusal by the gateway fallback model with that model, for every story in the batch", async () => {

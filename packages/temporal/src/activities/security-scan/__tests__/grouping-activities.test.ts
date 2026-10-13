@@ -67,6 +67,10 @@ vi.mock("@temporalio/activity", () => ({
 }));
 
 import {
+	PlanSourceRotatedError,
+	SubscriptionPlanExhaustedError,
+} from "@repo/agent-types/chatgpt-plan-fetch";
+import {
 	generateStoryTitleFromDescription,
 	generateText,
 	getAIModelWithMetadata,
@@ -536,6 +540,62 @@ describe("proposeThemeActivity — draft-failure fallback (never throws)", () =>
 				"[Security] Semgrep: js.rule.foo",
 			);
 		}
+	});
+});
+
+// Fizzy #2770: a spent shared ChatGPT plan is the one draft failure that is not
+// degraded — the workflow waits for the reset and drafts the theme again.
+describe("proposeThemeActivity — every shared ChatGPT plan spent", () => {
+	it("rethrows the plan's own error from the body draft, however the AI SDK wrapped it", async () => {
+		const spent = new SubscriptionPlanExhaustedError(
+			"Every ChatGPT plan this work may use has no usage left in this window.",
+			null,
+		);
+		vi.mocked(generateText).mockRejectedValue(
+			Object.assign(new Error("Failed after 1 attempts."), {
+				lastError: spent,
+			}),
+		);
+
+		await expect(
+			proposeThemeActivity({ theme: makeTheme(), ...BASE_PROPOSE_INPUT }),
+		).rejects.toBe(spent);
+		expect(generateStoryTitleFromDescription).not.toHaveBeenCalled();
+	});
+
+	it("rethrows it when model resolution already finds every plan spent", async () => {
+		const spent = new SubscriptionPlanExhaustedError(
+			"No usage left.",
+			null,
+		);
+		vi.mocked(getAIModelWithMetadata).mockRejectedValue(spent);
+
+		await expect(
+			proposeThemeActivity({ theme: makeTheme(), ...BASE_PROPOSE_INPUT }),
+		).rejects.toBe(spent);
+	});
+
+	it("rethrows it from the title step instead of filing a rule-based title", async () => {
+		const spent = new SubscriptionPlanExhaustedError(
+			"No usage left.",
+			null,
+		);
+		vi.mocked(generateStoryTitleFromDescription).mockRejectedValue(spent);
+
+		await expect(
+			proposeThemeActivity({ theme: makeTheme(), ...BASE_PROPOSE_INPUT }),
+		).rejects.toBe(spent);
+	});
+
+	it("still degrades a plan that ran out mid-reply with another left (a retry resolves it)", async () => {
+		vi.mocked(generateText).mockRejectedValue(new PlanSourceRotatedError());
+
+		const result = await proposeThemeActivity({
+			theme: makeTheme(),
+			...BASE_PROPOSE_INPUT,
+		});
+
+		expect(result.outcome).toBe("create");
 	});
 });
 

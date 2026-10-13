@@ -784,6 +784,27 @@ describe("dispatchPublishingSuggestion — triggeredByUserId audit breadcrumb", 
 		const startArgs = mockStart.mock.calls[0][1].args[0];
 		expect(startArgs).not.toHaveProperty("triggeredByUserId");
 	});
+
+	// Fizzy #2770: a clicked scan runs on the organization's shared ChatGPT
+	// plans under its own job, never the project owner's own plan.
+	it("a person's Scan for topics starts the run as the manual publishing job", async () => {
+		await dispatchPublishingSuggestion({
+			projectId: "proj-1",
+			force: true,
+			triggeredByUserId: "user-clicked-42",
+		});
+		const startArgs = mockStart.mock.calls[0][1].args[0];
+		expect(startArgs.jobType).toBe("publishing-suggestion-manual");
+	});
+
+	it("the scheduled sweep, forced by a preferences change or not, names no job of its own", async () => {
+		await dispatchPublishingSuggestion({
+			projectId: "proj-1",
+			force: true,
+		});
+		const startArgs = mockStart.mock.calls[0][1].args[0];
+		expect(startArgs).not.toHaveProperty("jobType");
+	});
 });
 
 // ---------------------------------------------------------------------------

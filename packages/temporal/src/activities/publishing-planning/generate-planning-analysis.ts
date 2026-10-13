@@ -249,6 +249,7 @@ export async function generatePlanningAnalysisActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-planning-analysis",
 		},
 	);

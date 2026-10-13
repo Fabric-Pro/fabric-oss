@@ -34,6 +34,7 @@ import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { buildSidekickPromptCacheRequest } from "./prompt-cache";
+import { sidekickStreamErrorText } from "./stream-error-text";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -324,8 +325,15 @@ export async function POST(request: NextRequest) {
 		// object — the migration guide's positional
 		// `createUIMessageStreamResponse(uiStream)` does not match the shipped
 		// declaration, which destructures `{ stream }`.
+		//
+		// The model checks the usage limits before each step, so a later step
+		// can be refused after the response has started; `onError` sends that
+		// refusal as the limit payload the client toasts, and masks the rest.
 		return createUIMessageStreamResponse({
-			stream: toUIMessageStream({ stream: result.stream }),
+			stream: toUIMessageStream({
+				stream: result.stream,
+				onError: sidekickStreamErrorText,
+			}),
 		});
 	} catch (error) {
 		// AI usage-limit chokepoint hit a HARD limit.

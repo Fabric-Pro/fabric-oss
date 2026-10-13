@@ -125,7 +125,40 @@ const USAGE = { inputTokens: 10, outputTokens: 5 };
 type RoundBehaviour =
 	| "real_round_hanging_provider"
 	| "answer"
-	| "refuse_dispatch";
+	| "refuse_dispatch"
+	/** The main round's request does not fit the turn's token allowance. */
+	| "budget_exhausted";
+
+/** How the finalization synthesis behaves after a budget stop. */
+type FinalizationBehaviour = "answer" | "denied" | "hang_until_cancelled";
+
+/** The ledger reading a budget refusal carries (turn-dispatch.ts). */
+const REFUSAL_SNAPSHOT = {
+	allowance: 500_000,
+	finalizationReserve: 8_000,
+	measured: 470_000,
+	outstanding: 25_000,
+	enforcement: "ENFORCED",
+};
+
+function budgetRefusal() {
+	return ApplicationFailure.create({
+		type: "TurnBudgetExhausted",
+		message: "Turn has used its token allowance",
+		nonRetryable: true,
+		details: [
+			{
+				kind: "EXPLORATION",
+				room: 2_000,
+				needed: 40_000,
+				snapshot: REFUSAL_SNAPSHOT,
+			},
+		],
+	});
+}
+
+/** A synthesis long enough to pass the degenerate-answer check. */
+const FINAL_ANSWER = `## Summary\n\nThe launch is on the 12th. ${"Evidence. ".repeat(30)}`;
 
 interface Recorder {
 	rounds: Array<Record<string, unknown>>;
@@ -136,6 +169,8 @@ interface Recorder {
 	planner: Record<string, Array<Record<string, unknown>>>;
 	/** Set once a hanging planner activity has started. */
 	hangingStarted: boolean;
+	/** Set once the finalization synthesis has started. */
+	finalizationStarted: boolean;
 }
 
 /** How a planner-path activity behaves in a scenario. */
@@ -162,6 +197,20 @@ interface ScenarioOptions {
 	/** The step fails (not a stop), recovery classifies it retryable and
 	 * waits out a back-off (marks hanging) before retrying. */
 	stepFailsRetryably?: boolean;
+	/** The starter's `turnGeneration`. */
+	turnGeneration?: number | null;
+	/** After a budget stop: how the FINALIZATION synthesis behaves. */
+	finalization?: FinalizationBehaviour;
+	/** Cancel the run once the finalization synthesis has started. */
+	cancelDuringFinalization?: boolean;
+	/** The ledger reading the finalization returns (merged over defaults). */
+	finalizationLedger?: Record<string, unknown>;
+	/** The budget stop the terminal write reports it persisted. */
+	/**
+	 * What the fake turn row stores as `budgetStop`: by default the stop the
+	 * terminal write sent; `null` for a row that stores none.
+	 */
+	persistedBudgetStop?: Record<string, unknown> | null;
 }
 
 function turnRefusal() {
@@ -401,6 +450,38 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 		// The round under test.
 		runAgentIteration: vi.fn(async (req: Record<string, unknown>) => {
 			rec.rounds.push(req);
+			if (req.budgetAttemptKind === "FINALIZATION") {
+				rec.finalizationStarted = true;
+				if (opts.finalization === "denied") {
+					throw budgetRefusal();
+				}
+				if (opts.finalization === "hang_until_cancelled") {
+					const ctx = Context.current();
+					ctx.heartbeat();
+					await new Promise<void>((resolveWait) => {
+						const tick = setInterval(() => ctx.heartbeat(), 500);
+						ctx.cancellationSignal.addEventListener("abort", () => {
+							clearInterval(tick);
+							resolveWait();
+						});
+					});
+					throw new CancelledFailure("finalization aborted");
+				}
+				return {
+					type: "response",
+					content: FINAL_ANSWER,
+					usage: USAGE,
+					ledger: {
+						...REFUSAL_SNAPSHOT,
+						measured: 476_000,
+						outstanding: 0,
+						...opts.finalizationLedger,
+					},
+				};
+			}
+			if (behaviour === "budget_exhausted") {
+				throw budgetRefusal();
+			}
 			if (behaviour === "answer") {
 				return { type: "response", content: "The 12th.", usage: USAGE };
 			}
@@ -430,6 +511,13 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 				return {
 					status: opts.finalizedStatus ?? req.outcome,
 					wrote: true,
+					...(opts.persistedBudgetStop === null
+						? {}
+						: opts.persistedBudgetStop
+							? { budgetStop: opts.persistedBudgetStop }
+							: req.budgetStop
+								? { budgetStop: req.budgetStop }
+								: {}),
 				};
 			},
 		),
@@ -488,6 +576,7 @@ async function runScenario(opts: ScenarioOptions) {
 		preloadStarted: false,
 		planner: {},
 		hangingStarted: false,
+		finalizationStarted: false,
 	};
 	if (opts.behaviour === "real_round_hanging_provider") {
 		installHangingProvider();
@@ -504,6 +593,9 @@ async function runScenario(opts: ScenarioOptions) {
 		...(opts.surface ? { surface: opts.surface } : {}),
 		...(opts.withTurn
 			? { turnId: "turn-example-1", turnContractVersion: 1 }
+			: {}),
+		...(opts.turnGeneration !== undefined
+			? { turnGeneration: opts.turnGeneration }
 			: {}),
 	};
 	const worker = await Worker.create({
@@ -549,6 +641,15 @@ async function runScenario(opts: ScenarioOptions) {
 			);
 			await handle.cancel();
 		}
+		if (opts.cancelDuringFinalization) {
+			await vi.waitFor(
+				() => {
+					expect(rec.finalizationStarted).toBe(true);
+				},
+				{ timeout: 30_000, interval: 25 },
+			);
+			await handle.cancel();
+		}
 		const output = await handle
 			.result()
 			.then((value) => ({ ok: true as const, value }))
@@ -562,6 +663,7 @@ async function runScenario(opts: ScenarioOptions) {
 			output,
 			temporalStatus: description.status.name,
 			patchIds: recordedPatchIds(history),
+			history,
 		};
 	});
 	const cancelLatencyMs =
@@ -598,12 +700,14 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		expect(provider.requests).toBe(1);
 		expect(rec.rounds).toHaveLength(1);
 		expect(rec.otherModelCalls).toEqual([]);
-		// The round carried its turn scope.
+		// The round carried its turn scope, with the budget contract a new
+		// run records (`orch-turn-budget-v1`); the input sent no generation.
 		expect(rec.rounds[0]?.turnScope).toEqual({
 			turnId: "turn-example-1",
 			executionId: workflowId,
 			userId: "user-example-1",
 			organizationId: "org-example-1",
+			budgetContractVersion: 1,
 		});
 		// The terminal state was written, as a cancellation.
 		expect(rec.finalized).toHaveLength(1);
@@ -704,6 +808,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 			executionId: workflowId,
 			userId: "user-example-1",
 			organizationId: "org-example-1",
+			budgetContractVersion: 1,
 		};
 		expect(rec.planner.analyzeAndRoute?.[0]?.turnScope).toEqual(scope);
 		expect(rec.planner.createTaskPlan?.[0]?.turnScope).toEqual(scope);
@@ -819,6 +924,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 			executionId: workflowId,
 			userId: "user-example-1",
 			organizationId: "org-example-1",
+			budgetContractVersion: 1,
 		});
 		expect(rec.planner.executeStep).toBeUndefined();
 		expect(rec.finalized[0]).toMatchObject({ outcome: "CANCELLED" });
@@ -916,6 +1022,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 			preloadStarted: false,
 			planner: {},
 			hangingStarted: false,
+			finalizationStarted: false,
 		};
 		const worker = await Worker.create({
 			connection: env.nativeConnection,
@@ -958,4 +1065,358 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		});
 		expect(rec.rounds).toHaveLength(2);
 	}, 120_000);
+});
+
+/**
+ * The history with its completion result rewritten to drop `budgetStop`, as
+ * a run recorded before the stop survived normalization returned it.
+ * Throws when the history has no completion result to rewrite.
+ */
+function withResultWithoutBudgetStop<T>(history: T): T {
+	const copy = structuredClone(history) as {
+		events?: Array<{
+			workflowExecutionCompletedEventAttributes?: {
+				result?: {
+					payloads?: Array<{
+						data?: Uint8Array | string | null;
+					}> | null;
+				} | null;
+			} | null;
+		}> | null;
+	};
+	let rewritten = 0;
+	for (const event of copy.events ?? []) {
+		const payload =
+			event.workflowExecutionCompletedEventAttributes?.result
+				?.payloads?.[0];
+		if (!payload?.data) {
+			continue;
+		}
+		const isString = typeof payload.data === "string";
+		const bytes = isString
+			? Buffer.from(payload.data as string, "base64")
+			: Buffer.from(payload.data as Uint8Array);
+		const parsed = JSON.parse(bytes.toString("utf8")) as Record<
+			string,
+			unknown
+		>;
+		if (!("budgetStop" in parsed)) {
+			throw new Error("the recorded result carries no budgetStop");
+		}
+		delete parsed.budgetStop;
+		const encoded = Buffer.from(JSON.stringify(parsed), "utf8");
+		payload.data = isString
+			? encoded.toString("base64")
+			: new Uint8Array(encoded);
+		rewritten++;
+	}
+	if (rewritten !== 1) {
+		throw new Error(`expected one completion result, found ${rewritten}`);
+	}
+	return copy as T;
+}
+
+/**
+ * The history with the `orch-turn-budget-v1` marker turned into a deprecated
+ * marker of an id no code asks about, which replay skips (as it skips the
+ * markers of a removed `deprecatePatch`): to the code under test the history
+ * holds no budget marker, as one recorded by a worker that predates the
+ * token ledger would. (Deleting the event instead would renumber the
+ * history.)
+ */
+function withoutBudgetMarker<T>(history: T): T {
+	const copy = structuredClone(history) as {
+		events?: Array<{
+			markerRecordedEventAttributes?: {
+				markerName?: string | null;
+				details?: Record<
+					string,
+					{
+						payloads?: Array<{
+							data?: Uint8Array | string | null;
+						}> | null;
+					}
+				> | null;
+			} | null;
+		}> | null;
+	};
+	let renamed = 0;
+	for (const event of copy.events ?? []) {
+		const marker = event.markerRecordedEventAttributes;
+		const payload = marker?.details?.["patch-data"]?.payloads?.[0];
+		if (marker?.markerName !== "core_patch" || !payload?.data) {
+			continue;
+		}
+		const isString = typeof payload.data === "string";
+		const bytes = isString
+			? Buffer.from(payload.data as string, "base64")
+			: Buffer.from(payload.data as Uint8Array);
+		const parsed = JSON.parse(bytes.toString("utf8")) as {
+			id?: string;
+			deprecated?: boolean;
+		};
+		if (parsed.id !== "orch-turn-budget-v1") {
+			continue;
+		}
+		parsed.id = "orch-unrelated-example-v1";
+		parsed.deprecated = true;
+		const encoded = Buffer.from(JSON.stringify(parsed), "utf8");
+		payload.data = isString
+			? encoded.toString("base64")
+			: new Uint8Array(encoded);
+		renamed++;
+	}
+	expect(renamed).toBe(1);
+	return copy as T;
+}
+
+describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () => {
+	it("records the budget marker right after the Planner marker, and carries the generation and contract in the scope", async () => {
+		const { patchIds, rec, workflowId } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			turnGeneration: 3,
+		});
+		expect(patchIds.slice(0, 3)).toEqual([
+			"orch-turn-cancellation-v1",
+			"orch-planner-turn-v1",
+			"orch-turn-budget-v1",
+		]);
+		expect(rec.rounds[0]?.turnScope).toEqual({
+			turnId: "turn-example-1",
+			executionId: workflowId,
+			userId: "user-example-1",
+			organizationId: "org-example-1",
+			generation: 3,
+			budgetContractVersion: 1,
+		});
+		// A main round, for the ledger.
+		expect(rec.rounds[0]?.budgetAttemptKind).toBe("EXPLORATION");
+	}, 120_000);
+
+	it("answers a budget refusal with the FINALIZATION synthesis and ends LIMITED with the structured stop", async () => {
+		const { output, rec } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: null,
+			finalization: "answer",
+		});
+		expect(output.ok).toBe(true);
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(value.status).toBe("completed");
+		expect(value.response).toBe(FINAL_ANSWER);
+		// Exactly the refused round and one finalization, with no tools.
+		expect(rec.rounds).toHaveLength(2);
+		expect(rec.rounds[1]).toMatchObject({
+			budgetAttemptKind: "FINALIZATION",
+			availableTools: {},
+		});
+		expect(rec.rounds[0]?.turnScope).toMatchObject({ generation: null });
+		// The ledger as it stands after the finalization (476,000 measured,
+		// nothing outstanding), not the reading taken at the refusal.
+		expect(value.budgetStop).toEqual({
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 476_000,
+			outstanding: 0,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		});
+		// No new-chat handoff for a token-allowance stop.
+		expect(value.handoffRecommended).toBeUndefined();
+		// The limit signal reports measured usage, never the reservations.
+		expect(value.limitSignals).toEqual([
+			expect.objectContaining({
+				kind: "internal_budget",
+				budgetLimit: "tokens",
+				budget: expect.objectContaining({
+					used: 476_000,
+					total: 500_000,
+				}),
+			}),
+		]);
+		expect(rec.finalized).toHaveLength(1);
+		expect(rec.finalized[0]).toMatchObject({
+			outcome: "LIMITED",
+			terminalReason: "token allowance used",
+			responseText: FINAL_ANSWER,
+			budgetStop: value.budgetStop,
+		});
+		expect(rec.otherModelCalls).toEqual([]);
+	}, 120_000);
+
+	it("reports MEASURED_ONLY when the finalization ran on a model that cannot be capped", async () => {
+		const { output, rec } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "answer",
+			finalizationLedger: { enforcement: "MEASURED_ONLY" },
+		});
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(value.budgetStop).toMatchObject({
+			measured: 476_000,
+			enforcement: "MEASURED_ONLY",
+		});
+		expect(rec.finalized[0]).toMatchObject({
+			budgetStop: expect.objectContaining({
+				enforcement: "MEASURED_ONLY",
+			}),
+		});
+	}, 120_000);
+
+	it("returns the stop exactly as the terminal write persisted it (totals refreshed from the ledger)", async () => {
+		const persisted = {
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 480_000,
+			outstanding: 1_000,
+			enforcement: "MEASURED_ONLY",
+			stopReason: "allowance_exhausted",
+		};
+		const { output } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "answer",
+			persistedBudgetStop: persisted,
+		});
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(value.budgetStop).toEqual(persisted);
+		expect(value.limitSignals).toEqual([
+			expect.objectContaining({
+				kind: "internal_budget",
+				budget: expect.objectContaining({
+					used: 480_000,
+					total: 500_000,
+				}),
+			}),
+		]);
+	}, 120_000);
+
+	it("drops the run's own stop when the turn row stores none, so live output never shows a payload the row lacks", async () => {
+		const { output, rec } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "answer",
+			persistedBudgetStop: null,
+		});
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(rec.finalized[0]).toHaveProperty("budgetStop");
+		expect(value).not.toHaveProperty("budgetStop");
+	}, 120_000);
+
+	it("falls back to the static summary when the finalization is refused too", async () => {
+		const { output, rec } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "denied",
+		});
+		expect(output.ok).toBe(true);
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(value.status).toBe("completed");
+		expect(value.response).toContain("token allowance");
+		expect(value.response).toContain("continue in this chat");
+		expect(value.response).not.toMatch(/new chat/i);
+		expect(value.budgetStop).toMatchObject({
+			kind: "token_allowance",
+			stopReason: "finalization_unavailable",
+		});
+		expect(value.handoffRecommended).toBeUndefined();
+		// The refusal is not retried as a degenerate answer.
+		expect(
+			rec.rounds.filter((r) => r.budgetAttemptKind === "FINALIZATION"),
+		).toHaveLength(1);
+		expect(rec.finalized[0]).toMatchObject({
+			outcome: "LIMITED",
+			budgetStop: expect.objectContaining({
+				stopReason: "finalization_unavailable",
+			}),
+		});
+	}, 120_000);
+
+	it("keeps the stored stop when a Stop recorded after the finalization wins the terminal write: status CANCELLED, payload the row's", async () => {
+		const stored = {
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 476_000,
+			outstanding: 0,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		};
+		const { output, rec, history, workflowId } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "answer",
+			// The finalization finished; the terminal write then found the
+			// Stop recorded meanwhile, stored CANCELLED with the refreshed
+			// stop, and returned what it stored.
+			finalizedStatus: "CANCELLED",
+			persistedBudgetStop: stored,
+		});
+		expect(output.ok).toBe(true);
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(rec.finalized[0]).toMatchObject({ outcome: "LIMITED" });
+		expect(value.status).toBe("cancelled");
+		expect(value.budgetStop).toEqual(stored);
+		expect(value.handoffRecommended).toBeUndefined();
+
+		// Replay safety of the change: the same history with the result the
+		// previous code returned (the stop dropped) replays cleanly, so the
+		// result is not something replay compares.
+		await Worker.runReplayHistory(
+			{ workflowBundle },
+			withResultWithoutBudgetStop(history),
+			workflowId,
+		);
+	}, 180_000);
+
+	it("lets a Stop during the finalization win over LIMITED", async () => {
+		const { output, temporalStatus, rec } = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "hang_until_cancelled",
+			cancelDuringFinalization: true,
+		});
+		expect(output.ok).toBe(true);
+		const value = (output as { value: OrchestratorWorkflowOutput }).value;
+		expect(value.status).toBe("cancelled");
+		expect(temporalStatus).toBe("COMPLETED");
+		expect(rec.finalized[0]).toMatchObject({ outcome: "CANCELLED" });
+	}, 120_000);
+
+	it("replays a history without the budget marker as the legacy run: the budget exit is not taken", async () => {
+		// A normal turn recorded without the marker replays cleanly…
+		const plain = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			turnGeneration: 1,
+		});
+		await Worker.runReplayHistory(
+			{ workflowBundle },
+			withoutBudgetMarker(plain.history),
+			plain.workflowId,
+		);
+		// …while a budget stop recorded under the marker does not: without
+		// it the scope has no contract, so the refusal is not routed to the
+		// budget exit and the finalization activity the history holds is
+		// never scheduled. The marker alone gates the ledger behaviour.
+		const stopped = await runScenario({
+			behaviour: "budget_exhausted",
+			withTurn: true,
+			turnGeneration: 1,
+			finalization: "answer",
+		});
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle },
+				withoutBudgetMarker(stopped.history),
+				stopped.workflowId,
+			),
+		).rejects.toThrow(/[Nn]ondetermin/);
+	}, 180_000);
 });

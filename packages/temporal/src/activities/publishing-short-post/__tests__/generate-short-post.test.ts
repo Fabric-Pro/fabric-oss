@@ -464,6 +464,90 @@ describe("generateShortPostActivity — what it persists", () => {
 		});
 		expect(completeTopicDraft).not.toHaveBeenCalled();
 	});
+
+	// The SDK's message alone ("did not match schema") left a ChatGPT-plan
+	// failure undiagnosable from the run log (Fizzy #2770).
+	it("names the fields the model got wrong when the SDK refuses its answer", async () => {
+		const refused = Object.assign(
+			new Error("No object generated: response did not match schema."),
+			{
+				name: "AI_NoObjectGeneratedError",
+				cause: {
+					cause: {
+						issues: [
+							{
+								path: ["hashtags"],
+								message:
+									"Invalid input: expected array, received null",
+							},
+						],
+					},
+				},
+			},
+		);
+		generateObject.mockRejectedValue(refused);
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_SHORT_POST_SCHEMA_VALIDATION_FAILED",
+			message:
+				"Short post failed schema validation: No object generated: response did not match schema. [hashtags: Invalid input: expected array, received null]",
+		});
+	});
+
+	const refusedAnswer = (texts: string[]) =>
+		Object.assign(
+			new Error("No object generated: response did not match schema."),
+			{
+				name: "AI_NoObjectGeneratedError",
+				text: JSON.stringify({
+					...MODEL_OUTPUT,
+					options: MODEL_OUTPUT.options.map((option, i) => ({
+						...option,
+						text: texts[i],
+					})),
+				}),
+			},
+		);
+
+	// What a ChatGPT plan sent back three runs in a row (Fizzy #2770): the
+	// right shape, every post empty. A retry does not clear that, so it must
+	// not be reported as one that will.
+	it("reports options with no post text at all as their own failure", async () => {
+		generateObject.mockRejectedValue(refusedAnswer(["", " ", ""]));
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_SHORT_POST_NO_POST_TEXT",
+			nonRetryable: true,
+		});
+		expect(completeTopicDraft).not.toHaveBeenCalled();
+	});
+
+	it("keeps one empty option a schema mismatch", async () => {
+		generateObject.mockRejectedValue(
+			refusedAnswer(["", "A post.", "Another post."]),
+		);
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_SHORT_POST_SCHEMA_VALIDATION_FAILED",
+		});
+	});
+
+	it("reports empty options that reach the activity's own check the same way", async () => {
+		generateObject.mockResolvedValue({
+			object: {
+				...MODEL_OUTPUT,
+				options: MODEL_OUTPUT.options.map((option) => ({
+					...option,
+					text: "",
+				})),
+			},
+			usage: {},
+		});
+
+		await expect(run()).rejects.toMatchObject({
+			type: "PUBLISHING_SHORT_POST_NO_POST_TEXT",
+		});
+	});
 });
 
 describe("generateShortPostActivity — a soft-closed question restricts", () => {

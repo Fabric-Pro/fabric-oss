@@ -127,7 +127,7 @@ export async function compactConversationHistoryActivity(
 
 	const { model } = await getAIModelWithMetadata(
 		{ taskType: "SIMPLE" },
-		{ userId, organizationId },
+		{ userId, organizationId, featureKey: "chat-agent" },
 	);
 
 	const transcript = renderMessagesAsTranscript(oldTurns);

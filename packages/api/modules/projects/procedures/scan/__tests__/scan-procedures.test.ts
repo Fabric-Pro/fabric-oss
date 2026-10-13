@@ -567,7 +567,51 @@ describe("triggerScanProcedure — purge re-scan", () => {
 			}
 		).args[0];
 		expect(wfInput.purge).toBeUndefined();
+		// Bulk work: on the shared plans as a scan job, never the clicker's
+		// own plan, still naming who started it (Fizzy #2770).
+		expect(wfInput).toMatchObject({
+			userId: "user-1",
+			jobType: "security-scan",
+		});
+		expect(wfInput).not.toHaveProperty("planEligible");
 	});
+});
+
+describe("startProjectScan — whose plan a scan may use (Fizzy #2770)", () => {
+	const scanArgs = {
+		projectId: "proj-1",
+		storyId: "story-1",
+		targetType: "FEATURE" as const,
+		userId: "user-1",
+		organizationId: "org-1",
+		securityEnabled: true,
+		accessibilityEnabled: false,
+		branch: null,
+	};
+
+	async function startedInput(trigger: "MANUAL" | "MATURATION_GATE") {
+		mockCreateProjectScan.mockResolvedValue({ id: "scan-m" });
+		mockWorkflowStart.mockResolvedValue({ workflowId: "security-scan-m" });
+		const { startProjectScan } = await import("../lib/start-scan");
+		await startProjectScan({ ...scanArgs, trigger });
+		return (
+			mockWorkflowStart.mock.calls[0][1] as {
+				args: Array<Record<string, unknown>>;
+			}
+		).args[0];
+	}
+
+	it.each(["MANUAL", "MATURATION_GATE"] as const)(
+		"runs a %s scan as the scan job on the shared plans, never the starter's own",
+		async (trigger) => {
+			const input = await startedInput(trigger);
+			expect(input).toMatchObject({
+				userId: "user-1",
+				jobType: "security-scan",
+			});
+			expect(input).not.toHaveProperty("planEligible");
+		},
+	);
 });
 
 // =============================================================================
@@ -670,7 +714,10 @@ describe("startReviewProcedure", () => {
 		expect(opts.args[0]).toMatchObject({
 			reviewId: "rev-1",
 			projectId: "proj-1",
+			userId: "user-1",
+			jobType: "security-scan",
 		});
+		expect(opts.args[0]).not.toHaveProperty("planEligible");
 		expect(mockUpdateScanFindingReview).toHaveBeenCalledWith("rev-1", {
 			workflowId: "scan-review-rev-1",
 		});

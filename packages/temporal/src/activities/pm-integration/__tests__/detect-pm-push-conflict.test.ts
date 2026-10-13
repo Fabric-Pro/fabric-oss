@@ -56,7 +56,11 @@ describe("detectAndStampPmPushConflict — fast path (reuses caller capabilities
 		const r = await detectAndStampPmPushConflict(FAST_INPUT);
 		expect(r.hasConflict).toBe(true);
 		expect(fetchPmTicket).toHaveBeenCalledTimes(1);
-		expect(stampPmSyncConflict).toHaveBeenCalledWith("story", "s1");
+		expect(stampPmSyncConflict).toHaveBeenCalledWith(
+			"story",
+			"s1",
+			undefined,
+		);
 		// The whole point: the slow standalone detector is NOT used.
 		expect(previewPmSyncConflict).not.toHaveBeenCalled();
 	});
@@ -94,7 +98,11 @@ describe("detectAndStampPmPushConflict — fallback (no caps / REST)", () => {
 		expect(r.hasConflict).toBe(true);
 		expect(previewPmSyncConflict).toHaveBeenCalledTimes(1);
 		expect(fetchPmTicket).not.toHaveBeenCalled(); // fast path not taken
-		expect(stampPmSyncConflict).toHaveBeenCalledWith("story", "s1");
+		expect(stampPmSyncConflict).toHaveBeenCalledWith(
+			"story",
+			"s1",
+			undefined,
+		);
 	});
 
 	it("delegates + does not stamp when no conflict", async () => {

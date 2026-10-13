@@ -391,6 +391,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"org",
 	),
+	"org.chatgpt_plan.interactive_api_fallback_used": D(
+		"org.chatgpt_plan.interactive_api_fallback_used",
+		"A member's AI work fell back to the organization provider",
+		Key,
+		"warning",
+		"org",
+	),
+	"org.chatgpt_plan.api_override_approved": D(
+		"org.chatgpt_plan.api_override_approved",
+		"A paused bulk run was let run on the organization provider",
+		Key,
+		"warning",
+		"org",
+	),
 	"account.ai_provider.configured": D(
 		"account.ai_provider.configured",
 		"Personal AI provider configured",

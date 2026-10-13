@@ -73,6 +73,7 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
 		activeOrganization: { slug: "example-org" },
+		isSessionOnActiveOrganization: true,
 	}),
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -145,7 +146,6 @@ const PLAN_MODELS = {
 
 const POOL = {
 	policy: {
-		poolingEnabled: true,
 		apiFallbackInteractive: "ASK",
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
@@ -230,7 +230,7 @@ function renderPage({
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	flags.current = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true };
+	flags.current = { CHATGPT_PLAN: true };
 	api.status.mockResolvedValue(statusWith([OPENAI]));
 	api.planModels.mockResolvedValue(PLAN_MODELS);
 	api.setFallback.mockResolvedValue(PLAN_MODELS);
@@ -284,13 +284,19 @@ describe("plan and API provider", () => {
 		);
 	});
 
-	it("sets what background jobs do when every plan is spent; interactive work is fixed", async () => {
+	it("sets what background work does when every plan is spent", async () => {
 		renderPage();
 		const spent = await screen.findByTestId("ai-routing-spent");
-		expect(spent).toHaveTextContent(copy.routing.spentHelpWait);
-		expect(spent).toHaveTextContent(copy.routing.interactiveAsk);
+		expect(spent).toHaveTextContent(
+			`${copy.routing.spentHelpBackgroundWait} ${copy.routing.spentHelpPeopleStopWait}`,
+		);
+		expect(copy.routing.backgroundLabel).toBe("Background work");
+		expect(within(spent).getAllByRole("radio")).toHaveLength(4);
+		const background = within(spent).getByRole("radiogroup", {
+			name: copy.routing.backgroundLabel,
+		});
 		fireEvent.click(
-			within(spent).getByRole("radio", {
+			within(background).getByRole("radio", {
 				name: copy.routing.backgroundApi,
 			}),
 		);
@@ -299,12 +305,142 @@ describe("plan and API provider", () => {
 				apiFallbackBackground: "AUTO",
 			}),
 		);
+		expect(
+			screen.queryByTestId("ai-routing-api-disabled-reason"),
+		).toBeNull();
+	});
+
+	// Fizzy #3048: what people's own work does once every plan is spent.
+	it("sets what people's own work does when every plan is spent, Stop by default", async () => {
+		renderPage();
+		const spent = await screen.findByTestId("ai-routing-spent");
+		const people = within(spent).getByRole("radiogroup", {
+			name: "People's own work",
+		});
+		expect(
+			within(people).getByRole("radio", {
+				name: "Stop and show the reset time",
+			}),
+		).toHaveAttribute("aria-checked", "true");
+		fireEvent.click(
+			within(people).getByRole("radio", { name: "Use API billing" }),
+		);
+		await waitFor(() =>
+			expect(api.updatePolicy).toHaveBeenCalledWith({
+				apiFallbackInteractive: "AUTO",
+			}),
+		);
+	});
+
+	it.each([
+		[
+			"NEVER",
+			"ASK",
+			"Background work pauses and continues when the plan resets. People see when it resets.",
+		],
+		[
+			"AUTO",
+			"ASK",
+			"Background work continues on your API provider, billed to the organization. People see when the plan resets.",
+		],
+		[
+			"NEVER",
+			"AUTO",
+			"Background work pauses and continues when the plan resets. People's work continues on your API provider too, and they see a note that it was billed to the organization.",
+		],
+		[
+			"AUTO",
+			"AUTO",
+			"Background work continues on your API provider, billed to the organization. People's work continues on your API provider too, and they see a note that it was billed to the organization.",
+		],
+	])(
+		"composes the help from background %s and people %s",
+		async (apiFallbackBackground, apiFallbackInteractive, help) => {
+			api.pool.mockResolvedValue({
+				...POOL,
+				policy: {
+					...POOL.policy,
+					apiFallbackBackground,
+					apiFallbackInteractive,
+				},
+			});
+			renderPage();
+			const spent = await screen.findByTestId("ai-routing-spent");
+			await waitFor(() => expect(spent).toHaveTextContent(help));
+		},
+	);
+
+	it("warns that all AI work can be billed, naming people's work only when it moves too", async () => {
+		api.pool.mockResolvedValue({
+			...POOL,
+			policy: { ...POOL.policy, apiFallbackBackground: "AUTO" },
+		});
+		const { unmount } = renderPage();
+		const warning = await screen.findByTestId("ai-routing-auto-warning");
+		expect(warning).toHaveTextContent(
+			"All AI work can be billed to the organization",
+		);
+		expect(warning).toHaveTextContent(
+			"background work (such as security scans, publishing suggestions, scheduled reports and the first import of meeting and channel history)",
+		);
+		expect(warning).not.toHaveTextContent("People's own work moves");
+		unmount();
+
+		api.pool.mockResolvedValue({
+			...POOL,
+			policy: { ...POOL.policy, apiFallbackInteractive: "AUTO" },
+		});
+		renderPage();
+		expect(
+			await screen.findByTestId("ai-routing-auto-warning"),
+		).toHaveTextContent(
+			"People's own work moves to it too, and they see a note under each reply.",
+		);
+	});
+
+	it("shows no warning while both stop", async () => {
+		renderPage();
+		await screen.findByTestId("ai-routing-spent");
+		expect(screen.queryByTestId("ai-routing-auto-warning")).toBeNull();
+	});
+
+	it("keeps what is left for people under Advanced, and saves a new share", async () => {
+		renderPage();
+		const advanced = await screen.findByTestId("ai-routing-advanced");
+		expect(
+			screen.queryByRole("combobox", {
+				name: copy.routing.headroomLabel,
+			}),
+		).toBeNull();
+		fireEvent.click(
+			within(advanced).getByRole("button", {
+				name: en.settings.chatgptPlanPool.advanced,
+			}),
+		);
+		expect(advanced).toHaveTextContent(copy.routing.headroomHelp);
+		const headroom = await screen.findByRole("combobox", {
+			name: copy.routing.headroomLabel,
+		});
+		expect(headroom).toHaveTextContent("40%");
+		fireEvent.click(headroom);
+		fireEvent.click(await screen.findByRole("option", { name: "60%" }));
+		await waitFor(() =>
+			expect(api.updatePolicy).toHaveBeenCalledWith({ headroomPct: 60 }),
+		);
 	});
 
 	it("lists each kind of work with both columns, marking API-only work", async () => {
 		renderPage();
 		const image = await screen.findByTestId("ai-models-row-IMAGE");
 		expect(image).toHaveTextContent(copy.models.notOnPlan);
+		const decision = screen.getByTestId("ai-models-row-DECISION");
+		expect(decision).not.toHaveTextContent(copy.models.notOnPlan);
+		expect(decision).toHaveTextContent(copy.models.decisionOnPlan);
+		expect(
+			within(decision).getByRole("combobox", {
+				name: "Decisions on API billing",
+			}),
+		).toBeInTheDocument();
 		expect(
 			screen.getByTestId("ai-models-plan-not-served-TOOL_CALLING"),
 		).toHaveTextContent(copy.models.noLongerServed);
@@ -471,15 +607,18 @@ describe("plan only (no API provider)", () => {
 		).toBeInTheDocument();
 	});
 
-	it("offers no API billing as a spent-plan fallback", async () => {
+	it("offers no API billing as a spent-plan fallback, and says why", async () => {
 		renderPage();
 		const spent = await screen.findByTestId("ai-routing-spent");
 		expect(spent).toHaveTextContent(copy.routing.spentHelpNoApi);
+		for (const radio of within(spent).getAllByRole("radio", {
+			name: "Use API billing",
+		})) {
+			expect(radio).toBeDisabled();
+		}
 		expect(
-			within(spent).getByRole("radio", {
-				name: copy.routing.backgroundApi,
-			}),
-		).toBeDisabled();
+			screen.getByTestId("ai-routing-api-disabled-reason"),
+		).toHaveTextContent("Needs an API provider. Add one in AI Providers.");
 	});
 
 	// No control that looks clickable where no choice can exist.
@@ -498,7 +637,7 @@ describe("plan only (no API provider)", () => {
 
 	it("merges both columns for work that needs an API provider and never runs on a plan", async () => {
 		renderPage();
-		for (const taskType of ["IMAGE", "AUDIO", "DECISION"]) {
+		for (const taskType of ["IMAGE", "AUDIO"]) {
 			const cell = await screen.findByTestId(
 				`ai-models-unavailable-${taskType}`,
 			);
@@ -511,6 +650,24 @@ describe("plan only (no API provider)", () => {
 				name: "Complex work on a ChatGPT plan",
 			}),
 		).toBeInTheDocument();
+	});
+
+	// Decisions defer to the plan whenever one can serve the call; the API
+	// decision model is only the fallback (Fizzy #2770).
+	it("says decisions run on the plan, not that they need an API provider", async () => {
+		renderPage();
+		const row = await screen.findByTestId("ai-models-row-DECISION");
+		expect(
+			screen.queryByTestId("ai-models-unavailable-DECISION"),
+		).toBeNull();
+		expect(row).not.toHaveTextContent(copy.models.needsApiProvider);
+		expect(
+			within(row).getByTestId("ai-models-plan-decision-DECISION"),
+		).toHaveTextContent(copy.models.decisionOnPlan);
+		expect(row).toHaveTextContent(copy.models.decisionOnPlanHint);
+		expect(
+			within(row).getByTestId("ai-models-api-none-DECISION"),
+		).toHaveTextContent(copy.models.noApiProvider);
 	});
 
 	it("says document search is off and links to add an embeddings key", async () => {
@@ -548,6 +705,22 @@ describe("plan and an embeddings-only gateway key", () => {
 
 	beforeEach(() => {
 		api.status.mockResolvedValue(statusWith([GATEWAY]));
+	});
+
+	it("says API billing needs a provider for chat and generation, not an embeddings-only key", async () => {
+		renderPage();
+		const reason = await screen.findByTestId(
+			"ai-routing-api-disabled-reason",
+		);
+		expect(reason).toHaveTextContent(
+			'Needs an API provider for chat and generation. Your organization\'s only key is set to "Embeddings only" — change that or add a provider in AI Providers.',
+		);
+		const spent = screen.getByTestId("ai-routing-spent");
+		for (const radio of within(spent).getAllByRole("radio", {
+			name: "Use API billing",
+		})) {
+			expect(radio).toBeDisabled();
+		}
 	});
 
 	it("offers the gateway's embedding models in the embeddings row", async () => {
@@ -786,31 +959,30 @@ describe("plan and an embeddings-only gateway key", () => {
 });
 
 describe("without shared accounts", () => {
-	it("marks the step not enabled and leaves the spend policy unchoosable", async () => {
-		flags.current = { CHATGPT_PLAN: true };
+	it("says none are connected and still lets the spend policy be chosen", async () => {
+		api.pool.mockResolvedValue({ ...POOL, accounts: [] });
 		renderPage();
-		expect(
-			await screen.findByTestId("ai-routing-step-shared"),
-		).toHaveTextContent(copy.routing.sharedNotEnabled);
+		const shared = await screen.findByTestId("ai-routing-step-shared");
+		await waitFor(() =>
+			expect(shared).toHaveTextContent(copy.routing.sharedNone),
+		);
 		const spent = screen.getByTestId("ai-routing-spent");
-		expect(spent).toHaveTextContent(copy.routing.spentHelpNoSharing);
+		expect(spent).toHaveTextContent(copy.routing.spentHelpBackgroundWait);
 		expect(
 			within(spent).getByRole("radio", {
 				name: copy.routing.backgroundWait,
 			}),
-		).toBeDisabled();
-		expect(api.pool).not.toHaveBeenCalled();
-		expect(screen.queryByTestId("ai-routing-sharing")).toBeNull();
+		).not.toBeDisabled();
+		expect(screen.queryByRole("switch")).toBeNull();
 	});
 });
 
 describe("sharing and its terms", () => {
-	it("shows the terms to accept, and keeps sharing off until an owner does", async () => {
+	it("shows the terms to accept; accounts wait for them, with no sharing switch", async () => {
 		api.pool.mockResolvedValue({
 			...POOL,
 			policy: {
 				...POOL.policy,
-				poolingEnabled: false,
 				termsAcknowledged: false,
 			},
 			viewer: { isOwner: true },
@@ -818,9 +990,10 @@ describe("sharing and its terms", () => {
 		api.acknowledgeTerms.mockResolvedValue({});
 		renderPage();
 		const terms = await screen.findByTestId("ai-routing-terms");
-		expect(
-			screen.getByRole("switch", { name: copy.routing.sharingQuestion }),
-		).toBeDisabled();
+		expect(screen.getByTestId("ai-routing-step-shared")).toHaveTextContent(
+			copy.routing.sharedNeedsTerms,
+		);
+		expect(screen.queryByRole("switch")).toBeNull();
 		fireEvent.click(
 			within(terms).getByRole("button", {
 				name: en.settings.chatgptPlanPool.acceptTerms,

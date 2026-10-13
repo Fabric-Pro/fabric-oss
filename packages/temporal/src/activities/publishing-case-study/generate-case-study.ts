@@ -81,6 +81,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	raiseAssetConfirmations,
@@ -378,6 +379,7 @@ export async function generateCaseStudyActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-case-study",
 		},
 	);
@@ -417,7 +419,7 @@ export async function generateCaseStudyActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`Case study failed schema validation: ${error.message}`,
+				`Case study failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_CASE_STUDY_SCHEMA_VALIDATION_FAILED",
 			);
 		}

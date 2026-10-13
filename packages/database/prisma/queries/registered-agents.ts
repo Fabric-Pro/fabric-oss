@@ -5,6 +5,7 @@
  * These are separate from the internal Agent model which is for LangGraph agents.
  */
 
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db, Prisma } from "../client";
 import type { RegisteredAgent } from "../generated/client";
 
@@ -341,6 +342,9 @@ export async function reactivateNonProbeableAgents(): Promise<number> {
  * Pass `client` to run inside a caller's transaction, so the merge commits or
  * rolls back with the writes around it.
  *
+ * Inside an Advisor chat turn that has stopped it rejects with the turn's
+ * stop and writes nothing.
+ *
  * A zero-row update raises Prisma's own `P2025` (as the `update` it replaces
  * did) rather than a bespoke error, so the API audit middleware still files a
  * vanished agent as `error.not_found` and callers keep one not-found shape.
@@ -355,6 +359,12 @@ export async function mergeRegisteredAgentMetadata(
 			? Prisma.sql`"agentId" = ${where.agentId}`
 			: Prisma.sql`id = ${where.id}`;
 
+	// Immediately before the write, with no await between: inside an Advisor
+	// chat turn that has stopped, nothing is merged. Callers reach this
+	// after their own awaits (the agent-card fetch before
+	// `updateAgentCardCache`, the embedding before `updateAgentEmbedding`).
+	// The ambient dispatch guard; a no-op outside a turn.
+	throwIfDispatchStopped();
 	const updated = await client.$executeRaw(Prisma.sql`
 		UPDATE "registered_agent"
 		SET metadata = COALESCE(metadata, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb,

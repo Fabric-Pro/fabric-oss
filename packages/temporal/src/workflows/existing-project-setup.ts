@@ -16,12 +16,14 @@
  * Task Queue: "project-documents"
  */
 
+import type { AiJobKey } from "@repo/ai";
 import type { ProjectDocumentType } from "@repo/database";
 import {
 	ApplicationFailure,
 	executeChild,
 	log,
 	ParentClosePolicy,
+	patched,
 	proxyActivities,
 	startChild,
 	workflowInfo,
@@ -37,6 +39,20 @@ import {
 } from "../task-queues";
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
+import {
+	type BulkRunInputExtras,
+	claimBulkRunResume,
+	pauseBulkRun,
+} from "./lib/bulk-run-pause";
+import {
+	BULK_RUN_PAUSE_BEYOND_MS,
+	BULK_RUN_PAUSE_PATCH,
+	type ChatGptPlanPause,
+	chatGptPlanPauseOf,
+	planSpentFailureAsError,
+	untilRunDeadline,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 import { orchestratorExecutionWorkflow } from "./orchestrator";
 
 // Activities with bounded retry (max 5 attempts)
@@ -48,6 +64,10 @@ const {
 	updateProjectRagSettings,
 	createExistingProjectDocumentRecords,
 	logRepoContextAccessedActivity,
+	createAgentTask,
+	updateAgentTaskWorkflow,
+	updateAgentTaskStatus,
+	issueGenerationToken,
 } = proxyActivities<typeof activities>({
 	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	startToCloseTimeout: "5m",
@@ -72,6 +92,36 @@ const { embedCodeAnalysisContext, ingestBacklogForRAG } = proxyActivities<
 	},
 });
 
+// Asks whether every shared ChatGPT plan the run may use is spent, after the
+// code analysis failed without saying why (Fizzy #2770).
+const { assertSharedPlansNotSpentActivity } = proxyActivities<
+	typeof activities
+>({
+	startToCloseTimeout: "1 minute",
+	retry: { maximumAttempts: 3, initialInterval: "2s" },
+});
+
+/** Gates the shared-plan probe above on runs recorded after it existed. */
+const SETUP_PLAN_PROBE_PATCH = "existing-setup-chatgpt-plan-probe-v1";
+
+const ORCHESTRATOR_TIMEOUT_MS = 30 * 60_000;
+
+const DOCUMENT_CHILD_TIMEOUT_MS = 20 * 60_000;
+
+/**
+ * Left after a ChatGPT plan wait: the analysis again, saving and embedding
+ * it, and every document Phase 2 generates. The execution timeout cannot be
+ * caught, so a wait that overran it would leave the project's analysis
+ * status RUNNING.
+ */
+function analysisPlanWaitReserveMs(documentCount: number): number {
+	return (
+		ORCHESTRATOR_TIMEOUT_MS +
+		10 * 60_000 +
+		documentCount * DOCUMENT_CHILD_TIMEOUT_MS
+	);
+}
+
 // Short activities for status updates (max 5 attempts)
 const { updateProjectDocumentStatus } = proxyActivities<typeof activities>({
 	taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
@@ -88,7 +138,7 @@ const { updateProjectDocumentStatus } = proxyActivities<typeof activities>({
 // Input / Output
 // ============================================================================
 
-export interface ExistingProjectSetupInput {
+export interface ExistingProjectSetupInput extends BulkRunInputExtras {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
@@ -104,6 +154,13 @@ export interface ExistingProjectSetupInput {
 		string,
 		{ promptId?: string; customInstructions?: string }
 	>;
+	/**
+	 * The background job the run is (`project-setup` when a person starts
+	 * it), stamped into the job-type header by the client interceptor so its
+	 * AI steps run on the organization's shared plans (Fizzy #2770). The
+	 * workflow itself never reads it.
+	 */
+	jobType?: AiJobKey;
 }
 
 export interface ExistingProjectSetupOutput {
@@ -112,7 +169,33 @@ export interface ExistingProjectSetupOutput {
 	analysisContextId?: string;
 	backlogContextId?: string;
 	error?: string;
+	/** Paused for a ChatGPT plan reset; a resume run starts at `resumesAt`. */
+	paused?: boolean;
+	resumesAt?: string;
 }
+
+/**
+ * What a setup finished before it paused for a ChatGPT plan reset (Fizzy
+ * #2770), so its resume redoes none of it. Ids only, never a credential.
+ */
+interface SetupPauseProgress {
+	analysisDone?: boolean;
+	analysisContextId?: string;
+	backlogDone?: boolean;
+	backlogContextId?: string;
+	/** The document records, once Phase 2 created them. */
+	documents?: Array<{ id: string; type: string }>;
+	/** Documents generated. */
+	documentIds?: string[];
+	/** Documents that ended either way: never generated again. */
+	finishedDocumentIds?: string[];
+}
+
+/** The `agentId` of the setup's run row (`PROJECT_SETUP_AGENT_ID`). */
+const SETUP_RUN_AGENT_ID = "project_setup";
+
+/** A resumed setup's agent token: the run's own lifetime, as at its start. */
+const RESUME_TOKEN_EXPIRY_SECONDS = 7200;
 
 // ============================================================================
 // Prompt Builder (multi-repo)
@@ -300,7 +383,6 @@ export async function existingProjectSetupWorkflow(
 		projectId,
 		userId,
 		organizationId,
-		aiToken,
 		repoUrls,
 		selectedDocumentTypes,
 		projectTypes,
@@ -311,30 +393,98 @@ export async function existingProjectSetupWorkflow(
 		documentPrompts,
 	} = input;
 
-	const { workflowId } = workflowInfo();
+	const { workflowId, runId } = workflowInfo();
 
 	log.info("Existing project setup started", {
 		projectId,
 		repoUrls,
 		selectedDocumentTypes,
 		hasPmConfig: !!pmMcpConfigId,
+		resumeOf: input.resumeOf?.runId,
 	});
 
-	try {
-		// Step 1: Update status to SCANNING
-		await updateProjectCodeAnalysisStatus({
-			projectId,
-			status: "SCANNING",
-			workflowId,
-		});
+	// Pause and resume for a ChatGPT plan reset (Fizzy #2770). A setup with a
+	// run row to record it on pauses when every shared plan is spent for long,
+	// instead of failing, and a resume run continues from what it finished.
+	let aiToken = input.aiToken;
+	let setupRunId: string | undefined;
+	let progress: SetupPauseProgress = {};
+	// A resumed setup writes the project's analysis status only while it is
+	// still this setup's: a setup started since owns it.
+	const ownsAnalysis = input.resumeOf
+		? { onlyIfWorkflowId: input.resumeOf.workflowIdBase }
+		: {};
 
-		// Step 2: Set optimal RAG settings
-		await updateProjectRagSettings({
-			projectId,
-			topK: 50,
-			rerankTopK: 20,
-			enableReranking: true,
-		});
+	try {
+		if (input.resumeOf) {
+			const claim = await claimBulkRunResume<SetupPauseProgress>(
+				"PROJECT_SETUP",
+				{ ...input, resumeOf: input.resumeOf },
+			);
+			if (!claim.claimed) {
+				return { success: false, documentIds: [] };
+			}
+			setupRunId = input.resumeOf.runId;
+			progress = claim.progress ?? {};
+			// The run's own token expired during the wait.
+			({ aiToken } = await issueGenerationToken({
+				userId,
+				organizationId,
+				expirySeconds: RESUME_TOKEN_EXPIRY_SECONDS,
+			}));
+		} else if (patched(BULK_RUN_PAUSE_PATCH)) {
+			// `patched()` is REQUIRED: the run row's activities are new
+			// commands on a path recorded histories already took.
+			try {
+				const task = await createAgentTask({
+					agentId: SETUP_RUN_AGENT_ID,
+					userId,
+					organizationId,
+					status: "PENDING",
+					stage: "initializing",
+					input: {
+						projectId,
+						documentTypes: selectedDocumentTypes,
+					},
+					framework: "temporal",
+				});
+				await updateAgentTaskWorkflow({
+					id: task.id,
+					workflowId,
+					runId,
+				});
+				await updateAgentTaskStatus({ id: task.id, status: "RUNNING" });
+				setupRunId = task.id;
+			} catch (error) {
+				log.warn(
+					"Failed to create the setup's run row; it cannot pause",
+					{
+						error:
+							error instanceof Error
+								? error.message
+								: "Unknown error",
+					},
+				);
+			}
+		}
+		const pausable = setupRunId !== undefined;
+
+		if (!input.resumeOf) {
+			// Step 1: Update status to SCANNING
+			await updateProjectCodeAnalysisStatus({
+				projectId,
+				status: "SCANNING",
+				workflowId,
+			});
+
+			// Step 2: Set optimal RAG settings
+			await updateProjectRagSettings({
+				projectId,
+				topK: 50,
+				rerankTopK: 20,
+				enableReranking: true,
+			});
+		}
 
 		// ================================================================
 		// Phase 1: Parallel — Code Analysis + Backlog Ingest
@@ -342,11 +492,47 @@ export async function existingProjectSetupWorkflow(
 		// ================================================================
 		log.info("Phase 1: Starting parallel code analysis and backlog ingest");
 
-		let analysisContextId: string | undefined;
-		let backlogContextId: string | undefined;
+		let analysisContextId = progress.analysisContextId;
+		let backlogContextId = progress.backlogContextId;
+		let analysisDone = progress.analysisDone === true;
+		let backlogDone = progress.backlogDone === true;
 
-		const hasRepos = repoUrls.length > 0;
-		const hasPmConfig = !!pmMcpConfigId && !!pmContainerId;
+		/**
+		 * Saves what the setup finished and ends it until the plans reset.
+		 * Throws `BulkRunPauseFailed` at the pause cap or when the run was
+		 * cancelled meanwhile.
+		 */
+		const pauseSetup = async (
+			pause: ChatGptPlanPause,
+			saved: SetupPauseProgress,
+			queuedDocumentIds?: string[],
+		): Promise<ExistingProjectSetupOutput> => {
+			const paused = await pauseBulkRun({
+				kind: "PROJECT_SETUP",
+				runId: setupRunId as string,
+				// Never a credential on the saved input: the resume mints its own.
+				input: { ...input, aiToken: "" },
+				pause,
+				progress: saved,
+				...(queuedDocumentIds && { queuedDocumentIds }),
+			});
+			log.info("Project setup paused for a ChatGPT plan reset", {
+				projectId,
+				setupRunId,
+				resumesAt: paused.resumesAt,
+			});
+			return {
+				success: false,
+				documentIds: saved.documentIds ?? [],
+				analysisContextId,
+				backlogContextId,
+				paused: true,
+				resumesAt: paused.resumesAt,
+			};
+		};
+
+		const hasRepos = repoUrls.length > 0 && !analysisDone;
+		const hasPmConfig = !!pmMcpConfigId && !!pmContainerId && !backlogDone;
 
 		// Build parallel tasks — only include tasks that should run
 		const phase1Tasks: Array<Promise<string | null>> = [];
@@ -398,37 +584,88 @@ export async function existingProjectSetupWorkflow(
 						projectName,
 					});
 
-					// Run orchestrator
-					const orchestratorResult = await executeChild(
-						orchestratorExecutionWorkflow,
-						{
-							workflowId: `${workflowId}-orchestrator`,
-							taskQueue: "fabric-orchestrator",
-							args: [
+					// Run orchestrator. Its agents run on the organization's
+					// shared ChatGPT plans; when the analysis fails while every
+					// one is spent, it waits for the reset and runs once more
+					// (Fizzy #2770), within this run's own deadline.
+					// An agent's failure does not say why, so the shared plans
+					// are asked: spent, it fails with the plan's own error and
+					// the wait fires. `patched()` is REQUIRED — the probe is a
+					// new activity on a path histories already recorded.
+					const failIfSharedPlansSpent = async () => {
+						if (patched(SETUP_PLAN_PROBE_PATCH)) {
+							await assertSharedPlansNotSpentActivity({
+								userId,
+								organizationId,
+							});
+						}
+					};
+					let analysisAttempts = 0;
+					const runAnalysis = async () => {
+						const attempt = analysisAttempts++;
+						let result: Awaited<
+							ReturnType<typeof orchestratorExecutionWorkflow>
+						>;
+						try {
+							result = await executeChild(
+								orchestratorExecutionWorkflow,
 								{
-									executionId: `existing-setup-analysis-${projectId}-${Date.now()}`,
-									message: analysisPrompt,
-									history: [],
-									userId,
-									organizationId,
-									executionMode: "balanced" as const,
-									enabledMcpConfigIds: allMcpConfigIds,
+									workflowId:
+										attempt === 0
+											? `${workflowId}-orchestrator`
+											: `${workflowId}-orchestrator-after-plan-wait`,
+									taskQueue: "fabric-orchestrator",
+									args: [
+										{
+											executionId: `existing-setup-analysis-${projectId}-${Date.now()}`,
+											message: analysisPrompt,
+											history: [],
+											userId,
+											organizationId,
+											executionMode: "balanced" as const,
+											enabledMcpConfigIds:
+												allMcpConfigIds,
+										},
+									],
+									workflowExecutionTimeout:
+										ORCHESTRATOR_TIMEOUT_MS,
 								},
-							],
-							workflowExecutionTimeout: "30m",
+							);
+						} catch (error) {
+							await failIfSharedPlansSpent();
+							throw error;
+						}
+						if (result.status !== "completed" || !result.response) {
+							await failIfSharedPlansSpent();
+							throw new Error(
+								`Orchestrator failed: ${result.error || result.status}`,
+							);
+						}
+						return result.response;
+					};
+					const rawAnalysisContent = await withChatGptPlanWait(
+						runAnalysis,
+						{
+							organizationId,
+							// A bulk run never uses the clicker's own plan, so
+							// its reset cannot help.
+							userId: null,
+							maxWaitMs: untilRunDeadline(
+								analysisPlanWaitReserveMs(
+									selectedDocumentTypes.length,
+								),
+							),
+							// A setup that may pause ends with the pause
+							// instead of waiting long or failing.
+							...(pausable && {
+								pauseBeyondMs: BULK_RUN_PAUSE_BEYOND_MS,
+							}),
 						},
-					);
+					).catch((error: unknown) => {
+						// Name the plan rather than "Activity task failed".
+						throw planSpentFailureAsError(error) ?? error;
+					});
 
-					if (
-						orchestratorResult.status !== "completed" ||
-						!orchestratorResult.response
-					) {
-						throw new Error(
-							`Orchestrator failed: ${orchestratorResult.error || orchestratorResult.status}`,
-						);
-					}
-
-					const rawAnalysisContent = orchestratorResult.response;
 					log.info("Code analysis complete", {
 						responseLength: rawAnalysisContent.length,
 					});
@@ -540,11 +777,26 @@ export async function existingProjectSetupWorkflow(
 
 			// Check for failures
 			const failures: string[] = [];
+			let phase1Pause: ChatGptPlanPause | null = null;
 			for (let i = 0; i < results.length; i++) {
 				const result = results[i];
 				const label = phase1Labels[i];
 
-				if (result.status === "fulfilled" && result.value) {
+				if (result.status === "fulfilled") {
+					if (label === "code-analysis") {
+						analysisDone = true;
+					} else if (label === "backlog-ingest") {
+						backlogDone = true;
+					}
+				}
+				const phasePause =
+					pausable && result.status === "rejected"
+						? chatGptPlanPauseOf(result.reason)
+						: null;
+				if (phasePause) {
+					// The analysis paused for a plan reset: not a failure.
+					phase1Pause = phasePause;
+				} else if (result.status === "fulfilled" && result.value) {
 					if (label === "code-analysis") {
 						analysisContextId = result.value;
 					} else if (label === "backlog-ingest") {
@@ -573,12 +825,24 @@ export async function existingProjectSetupWorkflow(
 				await updateProjectCodeAnalysisStatus({
 					projectId,
 					status: "FAILED",
+					...ownsAnalysis,
 				});
 
 				throw ApplicationFailure.nonRetryable(
 					errorMessage,
 					"EXISTING_PROJECT_SETUP_PHASE1_FAILED",
 				);
+			}
+
+			// What finished (the backlog, typically) is kept; the resume
+			// runs the analysis again.
+			if (phase1Pause) {
+				return await pauseSetup(phase1Pause, {
+					analysisDone,
+					analysisContextId,
+					backlogDone,
+					backlogContextId,
+				});
 			}
 		}
 
@@ -599,13 +863,18 @@ export async function existingProjectSetupWorkflow(
 			selectedDocumentTypes.includes(type),
 		);
 
-		// Create all document records
-		const { documents } = await createExistingProjectDocumentRecords({
-			projectId,
-			userId,
-			organizationId,
-			documentTypes: orderedTypes,
-		});
+		// Create all document records — once: a resume finds the paused
+		// run's own.
+		const documents =
+			progress.documents ??
+			(
+				await createExistingProjectDocumentRecords({
+					projectId,
+					userId,
+					organizationId,
+					documentTypes: orderedTypes,
+				})
+			).documents.map((d) => ({ id: d.id, type: d.type }));
 
 		log.info("Document records created", {
 			count: documents.length,
@@ -613,9 +882,23 @@ export async function existingProjectSetupWorkflow(
 		});
 
 		// Generate documents sequentially
-		const documentIds: string[] = [];
+		const documentIds: string[] = [...(progress.documentIds ?? [])];
+		const finishedDocumentIds: string[] = [
+			...(progress.finishedDocumentIds ?? []),
+		];
+		// Set when a document's child paused for a plan reset: every
+		// document from there on waits for the setup's resume.
+		let pause: ChatGptPlanPause | null = null;
+		const pendingDocs: typeof documents = [];
 
 		for (const doc of documents) {
+			if (finishedDocumentIds.includes(doc.id)) {
+				continue;
+			}
+			if (pause) {
+				pendingDocs.push(doc);
+				continue;
+			}
 			log.info("Generating document", {
 				documentId: doc.id,
 				documentType: doc.type,
@@ -649,6 +932,15 @@ export async function existingProjectSetupWorkflow(
 								aiToken,
 								promptId: docPrompt?.promptId,
 								prompt: docPrompt?.customInstructions,
+								// Bulk work on the shared ChatGPT plans: a spent
+								// plan waits for its reset, within this child's
+								// own timeout (Fizzy #2770). Only the child's
+								// input changes, which replay does not compare.
+								waitForPlanReset: true,
+								// A setup that may pause: a long wait ends the
+								// child with the pause, and the setup saves its
+								// place (Fizzy #2770).
+								...(pausable && { pauseOnPlanSpent: true }),
 								...(attempt?.generationStartedAt && {
 									generationStartedAt:
 										attempt.generationStartedAt,
@@ -657,7 +949,7 @@ export async function existingProjectSetupWorkflow(
 								// RAG retrieval finds code analysis + backlog + previously generated docs
 							},
 						],
-						workflowExecutionTimeout: "20m",
+						workflowExecutionTimeout: DOCUMENT_CHILD_TIMEOUT_MS,
 					},
 				);
 
@@ -676,6 +968,7 @@ export async function existingProjectSetupWorkflow(
 				});
 
 				documentIds.push(doc.id);
+				finishedDocumentIds.push(doc.id);
 
 				log.info("Document generated successfully", {
 					documentId: doc.id,
@@ -715,6 +1008,17 @@ export async function existingProjectSetupWorkflow(
 					}
 				}
 			} catch (docError) {
+				// The child paused for a plan reset (Fizzy #2770): the
+				// document waits for the setup's resume instead of failing.
+				const childPause = pausable
+					? chatGptPlanPauseOf(docError)
+					: null;
+				if (childPause) {
+					pause = childPause;
+					pendingDocs.push(doc);
+					continue;
+				}
+				finishedDocumentIds.push(doc.id);
 				const errorMessage =
 					docError instanceof Error
 						? docError.message
@@ -757,12 +1061,56 @@ export async function existingProjectSetupWorkflow(
 			}
 		}
 
+		if (pause) {
+			try {
+				return await pauseSetup(
+					pause,
+					{
+						analysisDone: true,
+						analysisContextId,
+						backlogDone: true,
+						backlogContextId,
+						documents,
+						documentIds,
+						finishedDocumentIds,
+					},
+					pendingDocs.map((doc) => doc.id),
+				);
+			} catch (error) {
+				// The pause cap, or a run cancelled meanwhile: the documents
+				// still waiting fail with the reason.
+				const message =
+					error instanceof Error ? error.message : "Unknown error";
+				for (const doc of pendingDocs) {
+					await updateProjectDocumentStatus({
+						documentId: doc.id,
+						status: "FAILED",
+						progress: 0,
+						error: message,
+					});
+					finishedDocumentIds.push(doc.id);
+				}
+			}
+		}
+
 		// Step final: Update project status
 		const allFailed = documentIds.length === 0 && documents.length > 0;
 		await updateProjectCodeAnalysisStatus({
 			projectId,
 			status: allFailed ? "FAILED" : "COMPLETED",
+			...ownsAnalysis,
 		});
+		if (setupRunId) {
+			await updateAgentTaskStatus({
+				id: setupRunId,
+				status: allFailed ? "FAILED" : "COMPLETED",
+				result: {
+					documentCount: documents.length,
+					successCount: documentIds.length,
+				},
+				completedAt: new Date(),
+			});
+		}
 
 		log.info("Existing project setup complete", {
 			projectId,
@@ -791,9 +1139,18 @@ export async function existingProjectSetupWorkflow(
 			await updateProjectCodeAnalysisStatus({
 				projectId,
 				status: "FAILED",
+				...ownsAnalysis,
 			});
 		} catch {
 			// Best effort
+		}
+		if (setupRunId) {
+			await updateAgentTaskStatus({
+				id: setupRunId,
+				status: "FAILED",
+				error: errorMessage,
+				completedAt: new Date(),
+			});
 		}
 
 		throw ApplicationFailure.nonRetryable(

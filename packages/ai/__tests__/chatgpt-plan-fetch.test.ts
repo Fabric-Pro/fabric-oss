@@ -25,6 +25,7 @@ import {
 } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { notePlanCredentialUsed } from "../lib/chatgpt-plan/credential-capture";
 import {
 	__resetChatGptPlanBreaker,
 	chatGptPlanExhaustedError,
@@ -38,8 +39,8 @@ import {
 // exercises the in-process side only, so no row outlives a run.
 vi.mock("@repo/database", () => ({
 	getChatGptPlanSourceStates: async () => [],
-	recordChatGptPlanSourceExhausted: async () => {},
-	clearChatGptPlanSourceState: async () => {},
+	recordChatGptPlanSourceExhausted: async () => true,
+	markChatGptPlanSourceAnswered: async () => true,
 	getChatGptPlanOrgAccountWindows: async () => new Map(),
 }));
 
@@ -130,7 +131,14 @@ function planModel(
 		apiKey: "chatgpt-plan",
 		baseURL: "https://api.openai.com/v1",
 		fetch: createChatGptPlanFetch({
-			getAccessToken: async () => "access-1",
+			// As the plan model does: the token read names its sign-in.
+			getAccessToken: async () => {
+				notePlanCredentialUsed(
+					{ kind: "user", userId: "user-1" },
+					"sign-in-1",
+				);
+				return "access-1";
+			},
 			onUnauthorized,
 			baseFetch,
 		}),

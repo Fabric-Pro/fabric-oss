@@ -13,6 +13,7 @@
  * lib (`action-item-link-core`, `duplicate-detection`) via `importActual`.
  */
 
+import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	capturedDecisionOutcomes,
@@ -83,6 +84,14 @@ vi.mock("@repo/observability/llm", async () =>
 		await import("../../../__tests__/test-helpers/decision-outcomes")
 	).observabilityLlmMock(),
 );
+
+const wrappedInRetryError = (limit: Error) =>
+	new RetryError({
+		message:
+			"Failed after 2 attempts with non-retryable error: 'AI usage limit exceeded'",
+		reason: "errorNotRetryable",
+		errors: [new Error("gateway busy"), limit],
+	});
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -336,6 +345,28 @@ describe("resolveRoutingModels", () => {
 
 		expect(models.judge.model).toEqual({ id: "judge-model" });
 		expect(models.decisionModel).toBeNull();
+	});
+
+	// Fizzy #2770: routing inside a pooled background job runs both judges as
+	// that job, so neither half of it falls back to the API on its own.
+	it("resolves both judges as the background job it runs inside", async () => {
+		mockGetAIModelWithMetadata.mockResolvedValue({
+			model: { id: "judge-model" },
+			trackUsage: mockTrackUsage,
+		});
+
+		await resolveRoutingModels({
+			...BASE,
+			jobType: "meeting-transcript-sync",
+		});
+
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({ jobType: "meeting-transcript-sync" }),
+		);
+		expect(mockGetDecisionModel).toHaveBeenCalledWith(
+			expect.objectContaining({ jobType: "meeting-transcript-sync" }),
+		);
 	});
 
 	it("resolves a configured decision model", async () => {
@@ -790,6 +821,26 @@ describe("judgeRoutingItem", () => {
 				["failed", "example-decider"],
 				["limit_exceeded", "example-decider"],
 			]);
+		});
+
+		it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: a failed judgement carrying the limit error, limit_exceeded, no language judge", async () => {
+			const decisionModel = await withDecisionModel();
+			const limit = new AiUsageLimitExceededError();
+			mockDecide.mockRejectedValueOnce(wrappedInRetryError(limit));
+
+			const limited = await judge(decisionModel);
+
+			expect(limited.kind).toBe("failed");
+			if (limited.kind === "failed") {
+				expect(limited.error).toBe(limit.message);
+			}
+			expect(
+				capturedDecisionOutcomes.map(({ outcome, model }) => [
+					outcome,
+					model,
+				]),
+			).toEqual([["limit_exceeded", "example-decider"]]);
+			expect(mockGenerateObject).not.toHaveBeenCalled();
 		});
 
 		it("records unavailable for an item judged without a decision model, but nothing when no candidate is shortlisted", async () => {

@@ -1126,6 +1126,9 @@ export function buildWorkflowOutput(
 		// input box, seeded with `summary` as the new conversation's
 		// carried-over context.
 		handoffRecommended: state.pendingHandoff || undefined,
+		// Set when a ledgered turn stopped on its token allowance: the chat
+		// renders it without any new-chat workaround.
+		...(state.budgetStop ? { budgetStop: state.budgetStop } : {}),
 		...(state.truncated ? { truncated: state.truncated } : {}),
 	};
 }

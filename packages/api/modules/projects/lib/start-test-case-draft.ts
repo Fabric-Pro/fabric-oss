@@ -54,6 +54,12 @@ export async function startTestCaseDraft(input: {
 	userId: string;
 	requestedById: string;
 	storyIds: string[];
+	/**
+	 * Set only by the "Draft cases" button, so the run may use the clicker's
+	 * own ChatGPT plan (Fizzy #2770). The automatic Ready-for-Dev run leaves it
+	 * unset: nobody pressed anything, so it stays on the organization's provider.
+	 */
+	planEligible?: boolean;
 }): Promise<StartTestCaseDraftResult> {
 	const claim = await claimTestCaseDraftJob({
 		projectId: input.projectId,
@@ -90,6 +96,7 @@ export async function startTestCaseDraft(input: {
 						userId: input.userId,
 						organizationId: input.organizationId ?? undefined,
 						storyIds: input.storyIds,
+						...(input.planEligible && { planEligible: true }),
 					},
 				],
 			}),

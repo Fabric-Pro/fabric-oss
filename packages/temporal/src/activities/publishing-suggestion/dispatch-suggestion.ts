@@ -589,6 +589,14 @@ export async function runPublishingSuggestionDispatch(
 		// every dispatch has one, and an absent field means "an old history" — a
 		// meaning a live dispatch must never claim.
 		preferences,
+		// A person's "Scan for topics" (only the API passes `triggeredByUserId`;
+		// `force` alone also marks a preferences change on the sweep): its AI
+		// steps run on the organization's shared ChatGPT plans, never the
+		// project owner's own plan (Fizzy #2770). The scheduled payload keeps
+		// its shape.
+		...(triggeredByUserId !== undefined && {
+			jobType: "publishing-suggestion-manual" as const,
+		}),
 	};
 
 	// Job Hub row (Fizzy #1850), opened BEFORE the start rather than after it.

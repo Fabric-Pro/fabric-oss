@@ -1,5 +1,9 @@
 import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database";
+import {
+	PM_SYNC_START_POLICIES,
+	testCaseSyncWorkflowId,
+} from "@repo/temporal/pm-sync-start";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
 import {
@@ -131,18 +135,19 @@ export const syncTestCasesBulkProcedure = tenantProtectedProcedure
 					string
 				> | null;
 
-			// A single-case push ("Sync now" + per-case retry) gets a STABLE
-			// per-case workflow id + USE_EXISTING conflict policy so two rapid or
-			// parallel pushes of the same case de-duplicate onto one run instead of
-			// BOTH creating a PM work item (observed live: a concurrent double-push
-			// created two Fizzy cards, one orphaned). Mirrors the auto-sync path
-			// (enqueue-test-case-auto-sync.ts); a completed run lets the next push
-			// start fresh (ALLOW_DUPLICATE). A multi-case batch keeps a per-call id —
-			// its case selection isn't a stable dedup key.
+			// A single-case push ("Sync now") takes the case's one workflow id
+			// (`testCaseSyncWorkflowId`, shared with auto-sync and Retry) with
+			// USE_EXISTING, so two single-case pushes of the same case attach to
+			// one run instead of BOTH creating a PM work item (observed live: a
+			// concurrent double-push created two Fizzy cards, one orphaned); a
+			// completed run lets the next push start fresh (ALLOW_DUPLICATE). A
+			// multi-case batch keeps a per-call id — its case selection isn't a
+			// stable dedup key; the create claim keeps it from creating a case
+			// another run is creating.
 			const singleCaseId =
 				input.testCaseIds?.length === 1 ? input.testCaseIds[0] : null;
 			const workflowId = singleCaseId
-				? `test-case-sync-${input.projectId}-${singleCaseId}`
+				? testCaseSyncWorkflowId(input.projectId, singleCaseId)
 				: `test-case-sync-${input.projectId}-${Date.now()}`;
 
 			// String workflow name to avoid minification issues in production
@@ -153,14 +158,7 @@ export const syncTestCasesBulkProcedure = tenantProtectedProcedure
 				withCorrelationMemo({
 					taskQueue: "ai-chat",
 					workflowId,
-					...(singleCaseId
-						? {
-								workflowIdReusePolicy:
-									"ALLOW_DUPLICATE" as const,
-								workflowIdConflictPolicy:
-									"USE_EXISTING" as const,
-							}
-						: {}),
+					...(singleCaseId ? PM_SYNC_START_POLICIES : {}),
 					args: [
 						{
 							projectId: input.projectId,

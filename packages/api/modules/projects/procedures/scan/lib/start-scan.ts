@@ -183,6 +183,9 @@ export async function startProjectScan(
 					targetType: args.targetType,
 					mode,
 					userId: args.userId,
+					// Bulk work: runs on the organization's shared ChatGPT plans,
+					// never the clicker's own (Fizzy #2770).
+					jobType: "security-scan",
 					organizationId: args.organizationId ?? null,
 					securityRequested,
 					accessibilityRequested,

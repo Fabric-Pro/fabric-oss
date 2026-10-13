@@ -1,8 +1,11 @@
 /**
  * Business-mode derivation (D2): cluster technical modules into plain-language
  * BUSINESS CAPABILITIES via AI, with a deterministic fallback (group by
- * top-level path) so Business mode is never empty (E10).
+ * top-level path) so Business mode is never empty (E10) — except when every
+ * shared ChatGPT plan is spent: that rethrows the plan's own error, so the
+ * workflow waits for the reset and derives again (Fizzy #2770).
  */
+import { toSubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	AIProviderNotConfiguredError,
 	generateObject,
@@ -156,6 +159,10 @@ export async function deriveBusinessGraph(
 			},
 		);
 	} catch (error) {
+		const spent = toSubscriptionPlanExhaustedError(error);
+		if (spent) {
+			throw spent;
+		}
 		if (!(error instanceof AIProviderNotConfiguredError)) {
 			logger.warn("[atlas] business model resolution error", {
 				error: error instanceof Error ? error.message : String(error),
@@ -227,6 +234,10 @@ export async function deriveBusinessGraph(
 			reasoning: extractReasoningText(result),
 		};
 	} catch (error) {
+		const spent = toSubscriptionPlanExhaustedError(error);
+		if (spent) {
+			throw spent;
+		}
 		logger.warn("[atlas] business derive failed; using fallback", {
 			error: error instanceof Error ? error.message : String(error),
 		});

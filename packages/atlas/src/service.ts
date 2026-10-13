@@ -17,7 +17,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getAIModelWithMetadata, streamText } from "@repo/ai";
 import { listRepositoryBranches } from "@repo/connectors";
-import { recordAudit } from "@repo/database";
+import {
+	bulkRunResumeWorkflowId,
+	cancelPausedBulkRun,
+	getPausedAtlasRun,
+	markAtlasAnalysisResumed,
+	markAtlasAnalysisWaitingForPlan,
+	type PausedAtlasRun,
+	recordAudit,
+} from "@repo/database";
 import {
 	buildAuthCloneUrl,
 	forceReExchangeRepoCredentials,
@@ -574,6 +582,9 @@ export class AtlasService {
 			error: analysis?.error ?? null,
 			inFlightSince: this.computeInFlightSince(analysis),
 			activeRun: this.computeActiveRun(analysis),
+			waitingForPlan:
+				analysis?.status === "WAITING_FOR_PLAN" ||
+				analysis?.activeRunStatus === "WAITING_FOR_PLAN",
 			analysisModel: analysis?.analysisModel ?? null,
 			analysisTotalTokens: analysis?.totalTokens ?? null,
 			analysisCostMicroUsd: analysis?.costMicroUsd ?? null,
@@ -1473,7 +1484,7 @@ export class AtlasService {
 		// Open a RUNNING history row attributed to the triggering user. The
 		// workflow's `finalize` closes out the latest RUNNING run for this
 		// analysis (no workflow-arg change needed).
-		await queries.createAnalysisRun(this.ctx, {
+		const run = await queries.createAnalysisRun(this.ctx, {
 			analysisId: analysis.id,
 			projectId: input.projectId,
 			mode: incremental ? "incremental" : "full",
@@ -1507,6 +1518,7 @@ export class AtlasService {
 				organizationId: this.ctx.organizationId,
 				incremental,
 				fresh,
+				analysisRunId: run.id,
 			},
 			status: await this.getStatus(input),
 		};
@@ -1545,6 +1557,18 @@ export class AtlasService {
 		// Nothing in flight (never started, already finished, or already
 		// cancelled) — idempotent no-op, just report the current status.
 		if (!analysis) {
+			return this.getStatus(input);
+		}
+
+		if (
+			analysis.status === "WAITING_FOR_PLAN" ||
+			analysis.activeRunStatus === "WAITING_FOR_PLAN"
+		) {
+			await this.cancelPausedRun({
+				analysis,
+				projectId: input.projectId,
+				cancelWorkflow: input.cancelWorkflow,
+			});
 			return this.getStatus(input);
 		}
 
@@ -1621,6 +1645,88 @@ export class AtlasService {
 		});
 
 		return this.getStatus(input);
+	}
+
+	/**
+	 * Cancel a run paused for a ChatGPT plan reset (Fizzy #2770): no workflow
+	 * is running, only its scheduled resume, which is stopped best-effort (it
+	 * would find the run cancelled and end on its own). The run ends FAILED
+	 * and the analysis keeps a served READY snapshot, as any cancel does.
+	 */
+	private async cancelPausedRun(args: {
+		analysis: { id: string; repositoryIntegrationId: string | null };
+		projectId: string;
+		cancelWorkflow?: (workflowId: string) => Promise<void>;
+	}): Promise<void> {
+		const { analysis } = args;
+		const run = await this.getPausedRun({
+			projectId: args.projectId,
+			analysisId: analysis.id,
+		});
+		const cancelMessage = "Cancelled by user";
+		const cancelled = run
+			? await cancelPausedBulkRun({
+					kind: "ATLAS_ANALYSIS",
+					runId: run.id,
+					message: cancelMessage,
+				})
+			: null;
+		if (run && !cancelled) {
+			// Its resume claimed it meanwhile: the run is analysing again.
+			return;
+		}
+		await queries.finalizeAnalysis(analysis.id, {
+			status: "FAILED",
+			error: cancelMessage,
+		});
+		const resumeWorkflowId = cancelled
+			? bulkRunResumeWorkflowId(
+					cancelled.resumeState.workflowIdBase,
+					cancelled.pauseCount,
+				)
+			: null;
+		if (resumeWorkflowId && args.cancelWorkflow) {
+			try {
+				await args.cancelWorkflow(resumeWorkflowId);
+			} catch (error) {
+				logger.warn("[atlas] best-effort resume cancel failed", {
+					analysisId: analysis.id,
+					workflowId: resumeWorkflowId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		recordAudit({
+			action: "atlas.analysis.cancelled",
+			severity: "warning",
+			outcome: "success",
+			actor: { type: "user", userId: this.ctx.userId },
+			organizationId: this.ctx.organizationId ?? null,
+			projectId: args.projectId,
+			resource: { type: "atlas_analysis", id: analysis.id },
+			metadata: {
+				repositoryIntegrationId: analysis.repositoryIntegrationId,
+				workflowId: resumeWorkflowId,
+				waitingForPlan: true,
+			},
+		});
+	}
+
+	/**
+	 * The analysis run paused for a ChatGPT plan reset, if one is (Fizzy
+	 * #2770). Scoped to the project and the caller's tenant.
+	 */
+	async getPausedRun(input: {
+		projectId: string;
+		analysisId: string;
+	}): Promise<PausedAtlasRun | null> {
+		return getPausedAtlasRun({
+			analysisId: input.analysisId,
+			projectId: input.projectId,
+			organizationId: this.ctx.organizationId,
+			userId: this.ctx.userId,
+		});
 	}
 
 	// ── Persistent chat conversations (shared & private) ───────────────────────
@@ -2070,9 +2176,25 @@ export class AtlasService {
 
 	async markStatus(input: {
 		analysisId: string;
-		status: "ANALYZING" | "READY" | "FAILED";
+		status: "ANALYZING" | "READY" | "FAILED" | "WAITING_FOR_PLAN";
 		error?: string | null;
+		/**
+		 * With ANALYZING: a resume claimed the run after a ChatGPT plan pause
+		 * (Fizzy #2770); this is its workflow, which a Cancel now stops.
+		 */
+		resumedWorkflowId?: string;
 	}): Promise<void> {
+		if (input.status === "WAITING_FOR_PLAN") {
+			await markAtlasAnalysisWaitingForPlan(input.analysisId);
+			return;
+		}
+		if (input.status === "ANALYZING" && input.resumedWorkflowId) {
+			await markAtlasAnalysisResumed({
+				analysisId: input.analysisId,
+				workflowId: input.resumedWorkflowId,
+			});
+			return;
+		}
 		// R2-aware transitions: ANALYZING advances the background-run marker while
 		// keeping a served READY snapshot visible; FAILED clears the run without
 		// blanking a previously-good snapshot. READY is handled by `finalize`.

@@ -1934,6 +1934,12 @@ export function StoriesRoadmap({ projectId }: Props) {
 			}
 		},
 		onError: (error, variables) => {
+			// A failed sync can still have stamped the row FAILED (a legacy
+			// link to another PM tool, a create Fabric could not confirm):
+			// refetch so the card shows the failure and its recovery action.
+			queryClient.invalidateQueries({
+				queryKey: getStoriesQueryKey(projectId, organizationId),
+			});
 			const errorCode = (
 				error as { data?: { errorCode?: string } } | undefined
 			)?.data?.errorCode;

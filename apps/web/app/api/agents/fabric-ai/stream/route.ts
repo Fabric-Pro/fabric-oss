@@ -5,7 +5,10 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import { chatGptPlanSpentChatResponse } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import {
+	chatGptPlanChatPreflight,
+	withChatGptPlanApiBilling,
+} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -761,12 +764,13 @@ export async function POST(request: NextRequest) {
 		// Every ChatGPT plan serving the member's work is spent: refuse with
 		// when it resets instead of falling through to the organization's
 		// provider, which a plan-only organization does not have (Fizzy #2770).
-		const planSpent = await chatGptPlanSpentChatResponse({
+		// Under "Use API billing" the turn runs there and says so (Fizzy #3048).
+		const planPreflight = await chatGptPlanChatPreflight({
 			userId,
 			organizationId,
 		});
-		if (planSpent) {
-			return planSpent;
+		if (planPreflight && "refusal" in planPreflight) {
+			return planPreflight.refusal;
 		}
 
 		// Get AI model and provider config using centralized entry point
@@ -867,7 +871,7 @@ export async function POST(request: NextRequest) {
 		// Use Temporal workflow for durability and RAG support
 		// SECURITY: Credentials are fetched internally by activities, NOT passed in workflow inputs
 		// Workflow inputs are stored in Temporal's database and visible in Web UI
-		return handleTemporalWorkflow({
+		const response = await handleTemporalWorkflow({
 			message,
 			history,
 			userId,
@@ -890,6 +894,7 @@ export async function POST(request: NextRequest) {
 			modelOverride: modelOverride ?? undefined,
 			conversationId: conversationId ?? undefined,
 		});
+		return withChatGptPlanApiBilling(response, planPreflight);
 	} catch (error) {
 		console.error("[Fabric AI Stream] Error:", error);
 		return new Response(

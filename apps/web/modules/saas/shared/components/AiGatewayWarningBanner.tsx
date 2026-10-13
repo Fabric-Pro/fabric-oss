@@ -132,8 +132,21 @@ export function AiGatewayWarningBanner() {
 	// Absent data means "we do not know", not "nothing is configured". A
 	// failed status call must not put a permanent outage notice on every page.
 	const canResolveProvider = configStatus?.canResolveProvider ?? true;
+	// On a plan the notice is only about embeddings, so an embeddings-only
+	// key — which `canResolveProvider` rightly ignores — already settles it.
+	const embeddingsCovered =
+		ownWorkOnPlan &&
+		Boolean(
+			configStatus?.resolvedEmbeddingProvider ??
+				configStatus?.embeddingProvider,
+		);
 
-	if (isLoading || canResolveProvider || dismissed === undefined) {
+	if (
+		isLoading ||
+		canResolveProvider ||
+		embeddingsCovered ||
+		dismissed === undefined
+	) {
 		return null;
 	}
 

@@ -48,7 +48,8 @@ vi.mock("@repo/ai", () => ({
 }));
 
 const generateText = vi.fn();
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("ai")>()),
 	generateText: (...args: unknown[]) => generateText(...args),
 }));
 
@@ -203,5 +204,46 @@ describe("POST /api/ai/generate-workflow — usage logging", () => {
 			expect.not.objectContaining({ usageLogging: "aggregate" }),
 			expect.anything(),
 		);
+	});
+});
+
+describe("POST /api/ai/generate-workflow — usage limit reached during the call", () => {
+	it("answers 429 AI_USAGE_LIMIT_EXCEEDED when the model's request is refused on an SDK retry", async () => {
+		const { RetryError } = await vi.importActual<typeof import("ai")>("ai");
+		const { AiUsageLimitExceededError } = await import(
+			"@repo/payments/lib/ai-usage-limit-error"
+		);
+		const limit = new AiUsageLimitExceededError({
+			message: "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
+			limitId: "limit-1",
+			dimension: "TOKENS" as never,
+			window: "MONTHLY" as never,
+			used: BigInt(100),
+			max: BigInt(100),
+			manageLimitsUrl: "https://example.com/limits",
+		});
+		generateText.mockRejectedValue(
+			new RetryError({
+				message: "Failed after 2 attempts.",
+				reason: "errorNotRetryable",
+				errors: [new Error("provider overloaded"), limit],
+			}),
+		);
+
+		const res = await generate({ prompt: PROMPT });
+
+		expect(res.status).toBe(429);
+		await expect(res.json()).resolves.toEqual({
+			error: limit.message,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: {
+				limitId: "limit-1",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: "100",
+				max: "100",
+				manageLimitsUrl: "https://example.com/limits",
+			},
+		});
 	});
 });

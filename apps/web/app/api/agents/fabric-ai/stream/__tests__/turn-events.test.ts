@@ -60,6 +60,47 @@ describe("partialTurnEvent", () => {
 	});
 });
 
+describe("a usage limit that refused a later step of the turn", () => {
+	const usageLimit = {
+		message: "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
+		limitId: "limit-1",
+		dimension: "TOKENS" as const,
+		window: "MONTHLY" as const,
+		used: "100",
+		max: "100",
+		manageLimitsUrl: "https://example.com/limits",
+	};
+
+	it("ends the kept partial answer with the structured limit event a refusal at resolution gets", () => {
+		expect(
+			partialTurnEvent({ partialError: usageLimit.message, usageLimit }),
+		).toEqual({
+			type: "error",
+			message: usageLimit.message,
+			partial: true,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: {
+				limitId: "limit-1",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: "100",
+				max: "100",
+				manageLimitsUrl: "https://example.com/limits",
+			},
+		});
+	});
+
+	it("carries the same payload on a failed turn", () => {
+		expect(
+			failedTurnEvent({ error: usageLimit.message, usageLimit }),
+		).toMatchObject({
+			type: "error",
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: { limitId: "limit-1", used: "100", max: "100" },
+		});
+	});
+});
+
 describe("doneTurnEvent", () => {
 	it("flags an answer produced after the tools failed", () => {
 		expect(

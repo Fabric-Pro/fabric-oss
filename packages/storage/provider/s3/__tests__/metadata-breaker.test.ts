@@ -53,6 +53,78 @@ describe("S3 metadata circuit breaker", () => {
 		expect(send.mock.calls[6][0]).toBeInstanceOf(HeadObjectCommand);
 	});
 
+	it("hands the caller's abort signal to the HEAD request", async () => {
+		send.mockResolvedValue({ ContentLength: 12 });
+		const controller = new AbortController();
+
+		await getFileMetadata("existing", {
+			bucket: "instructions",
+			abortSignal: controller.signal,
+		});
+
+		expect(send.mock.calls[0][1]).toEqual({
+			abortSignal: controller.signal,
+		});
+	});
+
+	it("keeps a deadline-bound HEAD from moving the shared breaker either way", async () => {
+		const providerDown = new Error("provider unavailable");
+		const stalled = (
+			_command: unknown,
+			opts?: { abortSignal?: AbortSignal },
+		) =>
+			new Promise((_, reject) => {
+				opts?.abortSignal?.addEventListener("abort", () =>
+					reject(
+						Object.assign(new Error("Request aborted"), {
+							name: "AbortError",
+						}),
+					),
+				);
+			});
+		const cancelledHead = async () => {
+			const controller = new AbortController();
+			const pending = getFileMetadata("stalled", {
+				bucket: "instructions",
+				abortSignal: controller.signal,
+			});
+			controller.abort(new Error("deadline"));
+			await expect(pending).rejects.toThrow(
+				"Could not get file metadata from S3",
+			);
+		};
+
+		// Four genuine failures, then cancellations: they must not clear the
+		// count, so the fifth genuine failure still opens the circuit.
+		send.mockRejectedValue(providerDown);
+		for (let index = 0; index < 4; index++) {
+			await expect(
+				getFileMetadata("existing", { bucket: "instructions" }),
+			).rejects.toThrow("Could not get file metadata from S3");
+		}
+		send.mockImplementation(stalled);
+		for (let index = 0; index < 6; index++) {
+			await cancelledHead();
+		}
+		send.mockReset();
+		send.mockRejectedValue(providerDown);
+		await expect(
+			getFileMetadata("existing", { bucket: "instructions" }),
+		).rejects.toThrow("Could not get file metadata from S3");
+		expect(send).toHaveBeenCalledTimes(1);
+
+		// The circuit is open: a breaker-guarded call is shed without reaching
+		// storage, and cancellations cannot close it.
+		send.mockImplementation(stalled);
+		await cancelledHead();
+		send.mockReset();
+		send.mockResolvedValue({ ContentLength: 12 });
+		await expect(
+			getFileMetadata("existing", { bucket: "instructions" }),
+		).rejects.toThrow("Could not get file metadata from S3");
+		expect(send).not.toHaveBeenCalled();
+	});
+
 	it("still opens the circuit after genuine provider failures", async () => {
 		send.mockRejectedValue(new Error("provider unavailable"));
 		for (let index = 0; index < 5; index++) {

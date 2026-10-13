@@ -73,6 +73,8 @@ export const executeInstanceProcedure = tenantProtectedProcedure
 							executionId: execution.id,
 							instanceId: input.instanceId,
 							userId: context.user.id,
+							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+							planEligible: true,
 							organizationId,
 							parameters: input.parameters,
 						},

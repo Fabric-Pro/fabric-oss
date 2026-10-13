@@ -47,6 +47,7 @@ import {
 import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PlanPausedNotice } from "../PlanPausedNotice";
 import { BranchScanStatusPanel } from "./BranchScanStatusPanel";
 import {
 	formatElapsed,
@@ -62,6 +63,7 @@ import { ScanConfigCard } from "./ScanConfigCard";
 import { ScanFindingsList } from "./ScanFindingsList";
 import { ScanHistoryDialog } from "./ScanHistoryDialog";
 import { ScanPageInfoButton } from "./ScanInfo";
+import { PAUSED_RUN_POLL_MS, usePausedRun } from "./use-paused-run";
 
 type Props = {
 	projectId: string;
@@ -111,18 +113,36 @@ export function SecurityAccessibilityPage({
 				organizationId,
 				...(selectedBranch ? { branch: selectedBranch } : {}),
 			},
-			// Poll while a scan is in-flight; stop once it settles.
+			// Poll while a scan is in-flight; stop once it settles. A scan
+			// paused for a plan reset is polled slowly, to see its resume.
 			refetchInterval: (query) => {
 				const status = query.state.data?.scan?.status as
 					| ScanStatus
 					| undefined;
-				return isScanActive(status) ? 3000 : false;
+				return isScanActive(status)
+					? 3000
+					: status === "WAITING_FOR_PLAN"
+						? PAUSED_RUN_POLL_MS
+						: false;
 			},
 		}),
 	);
 
 	const latestScan = latestQuery.data?.scan ?? null;
 	const scanInFlight = isScanActive(latestScan?.status);
+	// Paused for a ChatGPT plan reset (Fizzy #2770): no new scan starts
+	// until this one resumes, finishes or is cancelled.
+	const scanPaused = latestScan?.status === "WAITING_FOR_PLAN";
+	const pausedRun = usePausedRun({
+		projectId,
+		organizationId,
+		kind: "scan",
+		runId: latestScan?.id,
+		paused: scanPaused,
+		onResumed: () => {
+			latestQuery.refetch();
+		},
+	});
 
 	const config = configQuery.data?.config;
 	// The run button is enabled when ANY of the four scan engines is on — the
@@ -245,6 +265,7 @@ export function SecurityAccessibilityPage({
 	const runDisabled =
 		noScannerEnabled ||
 		scanInFlight ||
+		scanPaused ||
 		triggerMutation.isPending ||
 		scanGate.blocked;
 
@@ -473,13 +494,25 @@ export function SecurityAccessibilityPage({
 			 */}
 			<CapabilityRestoreControl capabilityKeys={["security.run-scan"]} />
 
-			<LastScanSummary
-				scan={latestScan}
-				isLoading={latestQuery.isLoading}
-				onRetry={() => handleRunScan("INCREMENTAL")}
-				retryDisabled={runDisabled}
-				retrying={triggerMutation.isPending}
-			/>
+			{scanPaused && latestScan ? (
+				<PlanPausedNotice
+					resumesAt={latestScan.resumesAt}
+					canRunOnApi={pausedRun.canRunOnApi}
+					askAdminToRunOnApi={pausedRun.askAdminToRunOnApi}
+					onCancel={handleCancelScan}
+					onRunNow={pausedRun.runNow}
+					cancelling={cancelMutation.isPending}
+					runningNow={pausedRun.runningNow}
+				/>
+			) : (
+				<LastScanSummary
+					scan={latestScan}
+					isLoading={latestQuery.isLoading}
+					onRetry={() => handleRunScan("INCREMENTAL")}
+					retryDisabled={runDisabled}
+					retrying={triggerMutation.isPending}
+				/>
+			)}
 
 			<ScanConfigCard
 				projectId={projectId}

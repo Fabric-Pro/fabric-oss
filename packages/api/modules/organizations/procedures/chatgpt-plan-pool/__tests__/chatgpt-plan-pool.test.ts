@@ -8,10 +8,7 @@ import { ORPCError } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	flags: { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true } as Record<
-		string,
-		boolean
-	>,
+	flags: { CHATGPT_PLAN: true } as Record<string, boolean>,
 	role: "admin" as string | null,
 	membershipCalls: [] as unknown[],
 	accounts: vi.fn(),
@@ -34,6 +31,9 @@ vi.mock("../../../../../lib/audit", () => ({
 vi.mock("@repo/database", async () => ({
 	...(await vi.importActual<Record<string, unknown>>(
 		"../../../../../../database/prisma/queries/chatgpt-plan-window",
+	)),
+	...(await vi.importActual<Record<string, unknown>>(
+		"../../../../../../database/prisma/queries/chatgpt-plan-reported-usage",
 	)),
 	isFeatureEnabled: async (key: string) => mocks.flags[key] === true,
 	listChatGptPlanOrgAccounts: mocks.accounts,
@@ -139,7 +139,6 @@ const ACCOUNT = {
 };
 
 const POLICY = {
-	poolingEnabled: false,
 	apiFallbackInteractive: "ASK",
 	apiFallbackBackground: "NEVER",
 	headroomPct: 40,
@@ -155,7 +154,7 @@ const rejection = async (promise: Promise<unknown>) => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true };
+	mocks.flags = { CHATGPT_PLAN: true };
 	mocks.role = "admin";
 	mocks.membershipCalls = [];
 	mocks.accounts.mockResolvedValue([ACCOUNT]);
@@ -166,17 +165,14 @@ beforeEach(() => {
 });
 
 describe("access", () => {
-	it.each([["CHATGPT_PLAN"], ["CHATGPT_PLAN_POOLING"]])(
-		"answers NOT_FOUND when %s is off for the organization",
-		async (flag) => {
-			mocks.flags[flag] = false;
-			const error = await rejection(
-				handler(getChatGptPlanPoolProcedure)({ context: context() }),
-			);
-			expect(error.code).toBe("NOT_FOUND");
-			expect(mocks.accounts).not.toHaveBeenCalled();
-		},
-	);
+	it("answers NOT_FOUND when CHATGPT_PLAN is off for the organization", async () => {
+		mocks.flags.CHATGPT_PLAN = false;
+		const error = await rejection(
+			handler(getChatGptPlanPoolProcedure)({ context: context() }),
+		);
+		expect(error.code).toBe("NOT_FOUND");
+		expect(mocks.accounts).not.toHaveBeenCalled();
+	});
 
 	it("answers NOT_FOUND without an active organization", async () => {
 		const error = await rejection(
@@ -228,6 +224,7 @@ const OPEN_WINDOW = {
 	lastRequestAt: new Date("2026-10-08T03:33:00Z"),
 	requests: 4,
 	inputTokens: 1_000_000,
+	weightedInputTokens: 1_000_000,
 	cachedInputTokens: 250_000,
 	outputTokens: 10,
 	topConsumers: [
@@ -267,6 +264,10 @@ describe("getChatGptPlanPool", () => {
 			cachedInputTokens: 250_000,
 			outputTokens: 10,
 			estimatedPercent: 50,
+			// ChatGPT reported nothing for this account: the estimate shows.
+			percent: 50,
+			percentSource: "estimated",
+			reported: null,
 			// Fizzy #2770 G7: only a Pro plan's budget has no five-hour window.
 			weeklyLimitOnly: false,
 			topConsumers: OPEN_WINDOW.topConsumers,
@@ -340,11 +341,11 @@ describe("getChatGptPlanPool", () => {
 		expect(without.viewer.hasOwnPlan).toBe(false);
 	});
 
-	it("does not offer the interactive fallback, which nothing changes", async () => {
+	it("offers the interactive fallback, which an admin now edits (Fizzy #3048)", async () => {
 		const result = (await handler(getChatGptPlanPoolProcedure)({
 			context: context(),
 		})) as { policy: Record<string, unknown> };
-		expect(result.policy).not.toHaveProperty("apiFallbackInteractive");
+		expect(result.policy.apiFallbackInteractive).toBe("ASK");
 	});
 
 	it("drops a cooling time that has already passed", async () => {
@@ -479,35 +480,6 @@ describe("accounts", () => {
 });
 
 describe("policy and terms", () => {
-	it("refuses pooling on before an owner accepted the terms", async () => {
-		const error = await rejection(
-			handler(updateChatGptPlanPoolPolicyProcedure)({
-				context: context(),
-				input: { poolingEnabled: true },
-			}),
-		);
-		expect(error.code).toBe("PRECONDITION_FAILED");
-		expect(mocks.updatePolicy).not.toHaveBeenCalled();
-	});
-
-	it("turns pooling on once the terms are accepted", async () => {
-		const acknowledged = {
-			...POLICY,
-			termsAcknowledgedById: "owner_1",
-			termsAcknowledgedAt: new Date(NOW - 60_000),
-		};
-		mocks.policy.mockResolvedValue(acknowledged);
-		mocks.updatePolicy.mockResolvedValue({
-			before: acknowledged,
-			after: { ...acknowledged, poolingEnabled: true },
-		});
-		const result = (await handler(updateChatGptPlanPoolPolicyProcedure)({
-			context: context(),
-			input: { poolingEnabled: true },
-		})) as { poolingEnabled: boolean };
-		expect(result.poolingEnabled).toBe(true);
-	});
-
 	it("audits background fallback to the organization's provider as a warning", async () => {
 		mocks.updatePolicy.mockResolvedValue({
 			before: POLICY,
@@ -527,6 +499,48 @@ describe("policy and terms", () => {
 					after: { apiFallbackBackground: "AUTO" },
 				},
 			}),
+		);
+	});
+
+	it("audits people's own work moving to API billing as a warning", async () => {
+		mocks.updatePolicy.mockResolvedValue({
+			before: POLICY,
+			after: { ...POLICY, apiFallbackInteractive: "AUTO" },
+		});
+		const result = (await handler(updateChatGptPlanPoolPolicyProcedure)({
+			context: context(),
+			input: { apiFallbackInteractive: "AUTO" },
+		})) as { apiFallbackInteractive: string };
+		expect(mocks.updatePolicy).toHaveBeenCalledWith({
+			organizationId: expect.any(String),
+			patch: { apiFallbackInteractive: "AUTO" },
+		});
+		expect(result.apiFallbackInteractive).toBe("AUTO");
+		expect(mocks.audit).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				action: "org.chatgpt_plan.policy_changed",
+				severity: "warning",
+				metadata: {
+					before: { apiFallbackInteractive: "ASK" },
+					after: { apiFallbackInteractive: "AUTO" },
+				},
+			}),
+		);
+	});
+
+	it("audits stopping people's work again as info", async () => {
+		mocks.updatePolicy.mockResolvedValue({
+			before: { ...POLICY, apiFallbackInteractive: "AUTO" },
+			after: POLICY,
+		});
+		await handler(updateChatGptPlanPoolPolicyProcedure)({
+			context: context(),
+			input: { apiFallbackInteractive: "ASK" },
+		});
+		expect(mocks.audit).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ severity: "info" }),
 		);
 	});
 

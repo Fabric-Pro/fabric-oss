@@ -100,17 +100,17 @@ describe("detectExternalLinkMismatch", () => {
 		expect(result.resolution).toBe("block");
 	});
 
-	it("clears legacy fizzy.do URL when current tool is azure-devops", () => {
+	it("flags a legacy fizzy.do URL when current tool is azure-devops", () => {
 		const result = detectExternalLinkMismatch({
 			...baseInput,
 			externalId: "03fzkovwwbnhh82sk1hfprp7p",
 			externalUrl: "https://app.fizzy.do/000000/cards/1075",
 			externalMcpServerId: null,
 		});
-		expect(result.resolution).toBe("clear");
+		expect(result.resolution).toBe("legacy-other-tool");
 	});
 
-	it("clears legacy link when baseUrl host doesn't match (custom self-hosted)", () => {
+	it("flags a legacy link when baseUrl host doesn't match (custom self-hosted)", () => {
 		const result = detectExternalLinkMismatch({
 			...baseInput,
 			currentDetectedType: undefined,
@@ -119,7 +119,7 @@ describe("detectExternalLinkMismatch", () => {
 			externalUrl: "https://old-system.somewhere-else.com/ticket/OLD-1",
 			externalMcpServerId: null,
 		});
-		expect(result.resolution).toBe("clear");
+		expect(result.resolution).toBe("legacy-other-tool");
 	});
 
 	it("keeps numeric ADO id when URL host matches current tool (no false-positive)", () => {
@@ -159,5 +159,102 @@ describe("detectExternalLinkMismatch", () => {
 			externalMcpServerId: null,
 		});
 		expect(result.resolution).toBe("ok");
+	});
+});
+
+describe("detectExternalLinkMismatch with a known instance (currentInstanceOrigin)", () => {
+	const selfHosted = {
+		externalMcpServerId: null,
+		activeServerId: "srv-gitlab",
+		currentDetectedType: "gitlab",
+		currentBaseUrl: "https://gitlab.example.com/api/v4",
+		currentInstanceOrigin: "https://gitlab.example.com",
+	};
+
+	it("a gitlab.com link is not this self-hosted instance's issue", () => {
+		const result = detectExternalLinkMismatch({
+			...selfHosted,
+			externalId: "77",
+			externalUrl: "https://gitlab.com/example/project/-/issues/77",
+		});
+		expect(result.resolution).toBe("legacy-other-tool");
+	});
+
+	it("a self-hosted link is not gitlab.com's issue", () => {
+		const result = detectExternalLinkMismatch({
+			...selfHosted,
+			currentBaseUrl: "https://gitlab.com/api/v4",
+			currentInstanceOrigin: "https://gitlab.com",
+			externalId: "77",
+			externalUrl:
+				"https://gitlab.example.com/example/project/-/issues/77",
+		});
+		expect(result.resolution).toBe("legacy-other-tool");
+	});
+
+	it("a link on the instance is used (origin compared case-insensitively)", () => {
+		const result = detectExternalLinkMismatch({
+			...selfHosted,
+			externalId: "42",
+			externalUrl:
+				"https://GitLab.Example.com/example/project/-/issues/42",
+		});
+		expect(result.resolution).toBe("ok");
+	});
+
+	it("a subdomain or another port of the instance is another instance", () => {
+		for (const externalUrl of [
+			"https://www.gitlab.example.com/example/project/-/issues/42",
+			"https://gitlab.example.com:8443/example/project/-/issues/42",
+		]) {
+			expect(
+				detectExternalLinkMismatch({
+					...selfHosted,
+					externalId: "42",
+					externalUrl,
+				}).resolution,
+			).toBe("legacy-other-tool");
+		}
+	});
+
+	it("a link with no URL, or an unreadable one, cannot be placed on the instance", () => {
+		for (const externalUrl of [null, undefined, "", "not a url"]) {
+			expect(
+				detectExternalLinkMismatch({
+					...selfHosted,
+					externalId: "42",
+					externalUrl,
+				}).resolution,
+			).toBe("legacy-other-tool");
+		}
+	});
+
+	it("an unresolved instance (null) refuses every unstamped link", () => {
+		const result = detectExternalLinkMismatch({
+			...selfHosted,
+			currentInstanceOrigin: null,
+			externalId: "42",
+			externalUrl:
+				"https://gitlab.example.com/example/project/-/issues/42",
+		});
+		expect(result.resolution).toBe("legacy-other-tool");
+	});
+
+	it("a stamped link and a row with no link are not judged by instance", () => {
+		expect(
+			detectExternalLinkMismatch({
+				...selfHosted,
+				externalMcpServerId: "srv-gitlab",
+				externalId: "42",
+				externalUrl: null,
+			}).resolution,
+		).toBe("ok");
+		expect(
+			detectExternalLinkMismatch({
+				...selfHosted,
+				externalId: null,
+				externalUrl: null,
+			}).resolution,
+		).toBe("ok");
 	});
 });

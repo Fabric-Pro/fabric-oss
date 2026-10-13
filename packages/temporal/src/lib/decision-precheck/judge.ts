@@ -11,6 +11,7 @@
  */
 
 import type { DecisionConflictFinding } from "@repo/agent-types";
+import type { AiJobKey } from "@repo/ai";
 import {
 	generateObject,
 	getAIModelWithMetadata,
@@ -94,6 +95,8 @@ export interface JudgeDecisionContradictionsInput {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
+	/** The background job whose artifact this judges (Fizzy #2770). */
+	jobType?: AiJobKey;
 	candidates: CandidateDecision[];
 	items: JudgeArtifactItem[];
 }
@@ -295,7 +298,8 @@ function withTimeout<T>(
 export async function judgeDecisionContradictions(
 	input: JudgeDecisionContradictionsInput,
 ): Promise<DecisionConflictFinding[]> {
-	const { projectId, userId, organizationId, candidates, items } = input;
+	const { projectId, userId, organizationId, jobType, candidates, items } =
+		input;
 	if (candidates.length === 0 || items.length === 0) {
 		return [];
 	}
@@ -304,7 +308,7 @@ export async function judgeDecisionContradictions(
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId },
+			{ userId, organizationId, jobType },
 		);
 
 		// Abort the model call when the timeout fires so a slow judge stops

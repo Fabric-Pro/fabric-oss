@@ -61,6 +61,8 @@ const exchange = (body?: unknown) =>
 	);
 
 const SHARED = { kind: "org", organizationId: "org-1", accountId: "acc-1" };
+// The sign-in behind the handed-out token (Fizzy #3037).
+const SIGN_IN = "0123456789abcdef";
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -77,6 +79,7 @@ beforeEach(() => {
 	mocks.getSourceToken.mockResolvedValue({
 		accessToken: "shared-plan-token",
 		expiresAt: new Date(Date.now() + 5 * 60_000),
+		credentialFingerprint: SIGN_IN,
 	});
 });
 
@@ -88,7 +91,8 @@ describe("POST /api/ai/keys/exchange — shared plans", () => {
 		expect(body).toMatchObject({
 			apiKey: "shared-plan-token",
 			provider: "OPENAI_CHATGPT_PLAN",
-			planSource: "org:acc-1",
+			// The plan's key and the sign-in the agent names in a report.
+			planSource: `org:acc-1.${SIGN_IN}`,
 		});
 		expect(mocks.getSourceToken).toHaveBeenCalledWith(SHARED);
 		expect(mocks.getPlanToken).not.toHaveBeenCalled();
@@ -102,6 +106,22 @@ describe("POST /api/ai/keys/exchange — shared plans", () => {
 				"org:acc-1; DROP TABLE",
 				"api:anything",
 				42,
+			],
+		});
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({
+				excludePlanSources: ["org:acc-1", "user:user-1"],
+			}),
+		);
+	});
+
+	it("skips a plan by its key whether or not the agent's key names a sign-in", async () => {
+		await exchange({
+			excludeSources: [
+				`org:acc-1.${SIGN_IN}`,
+				"user:user-1",
+				"org:acc-2.not-a-fingerprint",
 			],
 		});
 		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(

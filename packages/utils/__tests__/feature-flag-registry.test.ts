@@ -1071,37 +1071,11 @@ describe("CHATGPT_PLAN (#2939)", () => {
 });
 
 describe("CHATGPT_PLAN_POOLING (#2770)", () => {
-	// Default OFF: on, an organization's background jobs may leave its own
-	// provider for a shared plan account, so merging this entry must route
-	// nothing anywhere.
-	it("is registered off by default, on its own env var, and org-scopable", () => {
-		expect(isFeatureFlagKey("CHATGPT_PLAN_POOLING")).toBe(true);
-		expect(FEATURE_FLAG_REGISTRY.CHATGPT_PLAN_POOLING).toMatchObject({
-			envVar: "FABRIC_FEATURE_CHATGPT_PLAN_POOLING",
-			default: false,
-			orgScopable: true,
-		});
-	});
-
-	it("is appended after CHATGPT_PLAN", () => {
-		expect(ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN_POOLING")).toBe(
-			ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN") + 1,
-		);
-	});
-
-	it("resolves off when neither an override nor the env var is set", () => {
-		expect(resolveFlag("CHATGPT_PLAN_POOLING", {}, {})).toEqual({
-			enabled: false,
-			source: "default",
-		});
-	});
-
-	it("does not share its env var with any other entry", () => {
-		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
-			([, definition]) =>
-				definition.envVar === "FABRIC_FEATURE_CHATGPT_PLAN_POOLING",
-		);
-		expect(owners.map(([key]) => key)).toEqual(["CHATGPT_PLAN_POOLING"]);
+	// Folded into CHATGPT_PLAN: sharing without plans meant nothing, and the
+	// second switch only added a combination to test. Stored override rows
+	// for the old key are ignored on read.
+	it("is no longer a flag", () => {
+		expect(isFeatureFlagKey("CHATGPT_PLAN_POOLING")).toBe(false);
 	});
 });
 
@@ -1124,9 +1098,7 @@ describe("PROPOSAL_ARTIFACT (#2801)", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
 		expect(
 			ORG_SCOPABLE_FLAG_KEYS.indexOf("PROPOSAL_ARTIFACT"),
-		).toBeGreaterThan(
-			ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN_POOLING"),
-		);
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("CHATGPT_PLAN"));
 	});
 
 	it("resolves off when neither an override nor the env var is set", () => {

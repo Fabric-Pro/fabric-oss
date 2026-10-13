@@ -28,7 +28,6 @@ const db = vi.hoisted(() => ({
 		credentialStatus: "ACTIVE" | "NEEDS_RECONNECT";
 	},
 	policy: {
-		poolingEnabled: true,
 		apiFallbackInteractive: "ASK",
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
@@ -42,6 +41,10 @@ const db = vi.hoisted(() => ({
 	byUser: new Map<string, Record<string, number>>(),
 	resetsAt: new Map<string, Date>(),
 	budgets: new Map<string, number>(),
+	/** Accounts whose budget a real refusal calibrated. */
+	calibrated: new Set<string>(),
+	/** What OpenAI last reported per account, already read for freshness. */
+	reported: new Map<string, unknown>(),
 	open: new Map<string, Date>(),
 	/** The serving source's model list, as last read. */
 	served: [] as Array<{ slug: string; priority: number | null }>,
@@ -51,6 +54,8 @@ const db = vi.hoisted(() => ({
 		displayName: string;
 	}>,
 	failPool: false,
+	/** The organization has an LLM provider of its own to bill. */
+	orgHasLlm: true,
 	audit: vi.fn(),
 }));
 
@@ -99,9 +104,10 @@ vi.mock("@repo/database", () => ({
 					{
 						requests: 1,
 						inputTokens: db.usage.get(id),
+						weightedInputTokens: db.usage.get(id),
 						outputTokens: 0,
 						resetsAt: db.resetsAt.get(id) ?? null,
-						inputTokensByUser: db.byUser.get(id) ?? {},
+						weightedInputTokensByUser: db.byUser.get(id) ?? {},
 					},
 				]),
 		),
@@ -109,31 +115,48 @@ vi.mock("@repo/database", () => ({
 		db.budgets.get(ref.accountId) ?? 750_000,
 	getChatGptPlanWindowBudgets: async (_kind: string, ids: string[]) =>
 		new Map(ids.map((id) => [id, db.budgets.get(id) ?? 750_000])),
+	getChatGptPlanWindowCalibrations: async (_kind: string, ids: string[]) =>
+		new Map(
+			ids.map((id) => [
+				id,
+				{
+					budget: db.budgets.get(id) ?? 750_000,
+					calibrated: db.calibrated.has(id),
+				},
+			]),
+		),
+	chatGptPlanReportedUsage: (row: { sourceId?: string } | null) =>
+		(row?.sourceId && db.reported.get(row.sourceId)) || null,
 	getChatGptPlanSourceStates: async (kind: string, ids: string[]) =>
 		ids
-			.filter((id) => db.open.has(`${kind}:${id}`))
+			.filter((id) => db.open.has(`${kind}:${id}`) || db.reported.has(id))
 			.map((id) => ({
 				sourceKind: kind,
 				sourceId: id,
-				openUntil: db.open.get(`${kind}:${id}`),
-				resetAt: db.open.get(`${kind}:${id}`),
+				openUntil: db.open.get(`${kind}:${id}`) ?? null,
+				resetAt: db.open.get(`${kind}:${id}`) ?? null,
 				consecutiveUnknownResets: 0,
 			})),
-	recordChatGptPlanSourceExhausted: async () => {},
-	clearChatGptPlanSourceState: async () => {},
+	recordChatGptPlanSourceExhausted: async () => true,
+	markChatGptPlanSourceAnswered: async () => true,
 	recordAudit: db.audit,
+	organizationHasLlmApiProvider: async () => db.orgHasLlm,
 }));
 
 import { __resetChatGptPlanBreaker } from "../lib/chatgpt-plan/exhaustion-breaker";
 import { runWithAiInteractiveContext } from "../lib/chatgpt-plan/interactive-context";
 import {
 	__resetChatGptPlanApiFallbackAudit,
+	BULK_PERSON_JOB_TYPES,
+	BULK_RUNS_NEED_SHARED_PLAN_MESSAGE,
+	bulkRunsNeedSharedPlanMessage,
 	chatGptPlanSourceForCall,
 	interactivePlanModel,
 	PLAN_POOL_BACKGROUND_JOB_TYPES,
 	pickChatGptPlanSource,
 	planServesInteractiveWork,
 	sharedPlansServeBackgroundWork,
+	sharedPlansSkipMembersMessage,
 } from "../lib/chatgpt-plan/pool";
 import { __resetChatGptPlanWindowCache } from "../lib/chatgpt-plan/window-cache";
 
@@ -168,12 +191,13 @@ beforeEach(() => {
 	__resetChatGptPlanBreaker();
 	__resetChatGptPlanApiFallbackAudit();
 	vi.clearAllMocks();
-	db.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true };
+	db.flags = { CHATGPT_PLAN: true };
 	db.ownUse = null;
 	db.declined = false;
+	db.orgHasLlm = true;
 	db.policy = {
 		...db.policy,
-		poolingEnabled: true,
+		apiFallbackInteractive: "ASK",
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
 		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
@@ -186,6 +210,8 @@ beforeEach(() => {
 	db.byUser = new Map();
 	db.resetsAt = new Map();
 	db.budgets = new Map();
+	db.calibrated = new Set();
+	db.reported = new Map();
 	db.open = new Map();
 	db.failPool = false;
 });
@@ -274,11 +300,6 @@ describe("no plan at all", () => {
 	it.each([
 		["CHATGPT_PLAN off", () => (db.flags.CHATGPT_PLAN = false)],
 		[
-			"CHATGPT_PLAN_POOLING off",
-			() => (db.flags.CHATGPT_PLAN_POOLING = false),
-		],
-		["pooling off in the policy", () => (db.policy.poolingEnabled = false)],
-		[
 			"terms not acknowledged",
 			() => (db.policy.termsAcknowledgedAt = null),
 		],
@@ -315,7 +336,7 @@ describe("shared accounts", () => {
 		await expect(
 			pickChatGptPlanSource({
 				...background,
-				jobType: "newsletter-curation",
+				jobType: "image-generation",
 			}),
 		).resolves.toBeNull();
 		// Meeting sync and channel monitoring are the organization's own capture
@@ -418,6 +439,8 @@ describe("shared accounts", () => {
 			["acc_1", IN_AN_HOUR],
 			["acc_2", soon],
 		]);
+		// A real refusal calibrated both budgets: the estimate is trusted.
+		db.calibrated = new Set(["acc_1", "acc_2"]);
 		await expect(pickChatGptPlanSource(interactive)).resolves.toMatchObject(
 			{
 				exhausted: true,
@@ -425,6 +448,94 @@ describe("shared accounts", () => {
 				resetAt: soon,
 			},
 		);
+	});
+
+	describe("never blocks on Fabric's estimate alone", () => {
+		const overOnBoth = () => {
+			db.accounts = [
+				account("acc_1", { maxMemberSharePct: 50 }),
+				account("acc_2", { maxMemberSharePct: 50 }),
+			];
+			db.usage = new Map([
+				["acc_1", 900_000],
+				["acc_2", 500_000],
+			]);
+			db.budgets = new Map([
+				["acc_1", 1_000_000],
+				["acc_2", 1_000_000],
+			]);
+			db.byUser = new Map([
+				["acc_1", { user_1: 900_000 }],
+				["acc_2", { user_1: 500_000 }],
+			]);
+		};
+		const reported = (usedPercent: number) => ({
+			window: { usedPercent, windowMinutes: 300, resetsAt: IN_AN_HOUR },
+			weekly: null,
+			observedAt: new Date(),
+			windowFresh: true,
+		});
+
+		it("over share on every uncalibrated account still serves, least used first", async () => {
+			overOnBoth();
+			await expect(pickChatGptPlanSource(interactive)).resolves.toEqual(
+				orgSource("acc_2"),
+			);
+		});
+
+		it("an account within share goes before one over it by the estimate", async () => {
+			overOnBoth();
+			db.accounts.push(account("acc_3", { maxMemberSharePct: 50 }));
+			db.usage.set("acc_3", 950_000);
+			db.budgets.set("acc_3", 1_000_000);
+			db.byUser.set("acc_3", { user_2: 950_000 });
+			await expect(pickChatGptPlanSource(interactive)).resolves.toEqual(
+				orgSource("acc_3"),
+			);
+		});
+
+		it("a fresh report from ChatGPT below the share lets a calibrated account serve", async () => {
+			overOnBoth();
+			db.calibrated = new Set(["acc_1", "acc_2"]);
+			db.reported = new Map([
+				["acc_1", reported(30)],
+				["acc_2", reported(45)],
+			]);
+			await expect(pickChatGptPlanSource(interactive)).resolves.toEqual(
+				orgSource("acc_1"),
+			);
+		});
+
+		it("a fresh report from ChatGPT past the share blocks, calibrated or not", async () => {
+			overOnBoth();
+			db.reported = new Map([
+				["acc_1", reported(80)],
+				["acc_2", reported(60)],
+			]);
+			await expect(
+				pickChatGptPlanSource(interactive),
+			).resolves.toMatchObject({ exhausted: true, resetAt: IN_AN_HOUR });
+		});
+
+		it("background headroom reads the reported share while it is fresh", async () => {
+			db.accounts = [account("acc_1"), account("acc_2")];
+			db.usage = new Map([
+				["acc_1", 100_000],
+				["acc_2", 300_000],
+			]);
+			db.budgets = new Map([
+				["acc_1", 1_000_000],
+				["acc_2", 1_000_000],
+			]);
+			// The estimate calls acc_1 quieter; ChatGPT says it is the busier.
+			db.reported = new Map([
+				["acc_1", reported(90)],
+				["acc_2", reported(20)],
+			]);
+			await expect(pickChatGptPlanSource(background)).resolves.toEqual(
+				orgSource("acc_2"),
+			);
+		});
 	});
 
 	it("compare accounts by the share of their own window budget used", async () => {
@@ -517,6 +628,33 @@ describe("every plan spent", () => {
 		);
 	});
 
+	it("runs one approved background run on the organization's provider under NEVER (Run now on API billing)", async () => {
+		await expect(
+			chatGptPlanSourceForCall({
+				...background,
+				apiFallbackApproved: true,
+			}),
+		).resolves.toBeNull();
+		expect(db.audit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "org.chatgpt_plan.api_fallback_used",
+			}),
+		);
+		// Every other run still waits.
+		await expect(
+			chatGptPlanSourceForCall(background),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+	});
+
+	it("never lets an approval move interactive work to the organization's provider", async () => {
+		await expect(
+			chatGptPlanSourceForCall({
+				...interactive,
+				apiFallbackApproved: true,
+			}),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+	});
+
 	it("never falls back to the organization's provider for interactive work, even under AUTO", async () => {
 		db.policy.apiFallbackBackground = "AUTO";
 		await expect(
@@ -524,19 +662,120 @@ describe("every plan spent", () => {
 		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
 		expect(db.audit).not.toHaveBeenCalled();
 	});
+
+	// Fizzy #3048: "Use API billing" for people's own work.
+	it("runs interactive work on the organization's provider under interactive AUTO, audited once per member and window", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toBeNull();
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toBeNull();
+		expect(db.audit).toHaveBeenCalledTimes(1);
+		expect(db.audit).toHaveBeenCalledWith(
+			expect.objectContaining({
+				action: "org.chatgpt_plan.interactive_api_fallback_used",
+				actor: { type: "user", userId: "user_1" },
+				organizationId: "org_a",
+			}),
+		);
+		await expect(
+			chatGptPlanSourceForCall({ ...interactive, userId: "user_2" }),
+		).resolves.toBeNull();
+		expect(db.audit).toHaveBeenCalledTimes(2);
+	});
+
+	it("covers a spent own plan too under interactive AUTO", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		db.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		db.open.set("USER:user_1", IN_AN_HOUR);
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toBeNull();
+	});
+
+	it("stops interactive work under interactive AUTO when the organization has no LLM provider of its own", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		db.orgHasLlm = false;
+		await expect(
+			chatGptPlanSourceForCall(interactive),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(db.audit).not.toHaveBeenCalled();
+	});
+
+	it("keeps background work waiting under interactive AUTO", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		await expect(
+			chatGptPlanSourceForCall(background),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+	});
+
+	it("names no spent plan model under interactive AUTO, so the organization's models are offered", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		await expect(
+			interactivePlanModel({
+				userId: "user_1",
+				organizationId: "org_a",
+				taskType: "TOOL_CALLING",
+			}),
+		).resolves.toBeNull();
+		db.policy.apiFallbackInteractive = "ASK";
+		await expect(
+			interactivePlanModel({
+				userId: "user_1",
+				organizationId: "org_a",
+				taskType: "TOOL_CALLING",
+			}),
+		).resolves.toMatchObject({ spent: { until: IN_AN_HOUR } });
+	});
 });
 
 describe("PLAN_POOL_BACKGROUND_JOB_TYPES", () => {
 	// The review point for what may spend a shared plan unattended: changing
 	// this list must be a deliberate, reviewed edit.
-	it("is exactly the daily brief, workflow-builder, meeting sync and channel monitor runs", () => {
+	it("is every text job a plan can serve (Fizzy #2770, 2026-10-09)", () => {
 		expect(PLAN_POOL_BACKGROUND_JOB_TYPES).toEqual([
 			"daily-brief",
 			"workflow-builder",
 			"meeting-transcript-sync",
 			"slack-channel-monitor",
 			"teams-channel-monitor",
+			"scheduled-report",
+			"publishing-suggestion",
+			"publishing-suggestion-manual",
+			"newsletter-curation",
+			"living-document-refresh",
+			"context-summarization",
+			"context-enrichment",
+			"pr-review",
+			"parlume-meeting-notes",
+			"fabric-mention",
+			"parlume-live-turn",
+			"weave-reader",
+			"external-agent",
+			"public-api",
+			"security-scan",
+			"batch-document-generation",
+			"project-setup",
+			"atlas-analysis",
 		]);
+	});
+
+	it.each(["image-generation", "transcription"] as const)(
+		"keeps %s off the shared plans",
+		async (jobType) => {
+			await expect(
+				pickChatGptPlanSource({ ...background, jobType }),
+			).resolves.toBeNull();
+		},
+	);
+
+	it.each([
+		"scheduled-report",
+		"living-document-refresh",
+		"public-api",
+	] as const)("serves %s from a shared account", async (jobType) => {
+		await expect(
+			pickChatGptPlanSource({ ...background, jobType }),
+		).resolves.toMatchObject({ source: { kind: "org" } });
 	});
 });
 
@@ -676,7 +915,7 @@ describe("sharedPlansServeBackgroundWork", () => {
 		);
 	});
 
-	it("is false without such an account, with pooling off, or with the flags off", async () => {
+	it("is false without such an account, before the terms are accepted, or with the flag off", async () => {
 		db.accounts = [
 			account("acc_people", { serveBackground: false }),
 			account("acc_reconnect", { status: "NEEDS_RECONNECT" }),
@@ -685,14 +924,169 @@ describe("sharedPlansServeBackgroundWork", () => {
 			false,
 		);
 		db.accounts = [account("acc_bg")];
-		db.policy = { ...db.policy, poolingEnabled: false };
+		db.policy = { ...db.policy, termsAcknowledgedAt: null };
 		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
 			false,
 		);
-		db.policy = { ...db.policy, poolingEnabled: true };
-		db.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: false };
+		db.policy = {
+			...db.policy,
+			termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+		};
+		db.flags = { CHATGPT_PLAN: false };
 		await expect(sharedPlansServeBackgroundWork("org_a")).resolves.toBe(
 			false,
 		);
+	});
+});
+
+// QA 10/9: "No AI provider configured" read as wrong in an org that shares
+// plans none of which serves members.
+describe("sharedPlansSkipMembersMessage", () => {
+	it("explains when working shared accounts serve background jobs only", async () => {
+		db.accounts = [
+			account("acc_bg", { serveInteractive: false }),
+			account("acc_off", { enabled: false, serveInteractive: true }),
+		];
+		await expect(sharedPlansSkipMembersMessage("org_a")).resolves.toMatch(
+			/Serves: Everything/,
+		);
+	});
+
+	it("says nothing when an account serves members, none works, terms are open or plans are off", async () => {
+		db.accounts = [account("acc_people", { serveInteractive: true })];
+		await expect(
+			sharedPlansSkipMembersMessage("org_a"),
+		).resolves.toBeNull();
+		db.accounts = [
+			account("acc_reconnect", {
+				status: "NEEDS_RECONNECT",
+				serveInteractive: false,
+			}),
+		];
+		await expect(
+			sharedPlansSkipMembersMessage("org_a"),
+		).resolves.toBeNull();
+		db.accounts = [account("acc_bg", { serveInteractive: false })];
+		db.policy = { ...db.policy, termsAcknowledgedAt: null };
+		await expect(
+			sharedPlansSkipMembersMessage("org_a"),
+		).resolves.toBeNull();
+		db.policy = {
+			...db.policy,
+			termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+		};
+		db.flags = { CHATGPT_PLAN: false };
+		await expect(
+			sharedPlansSkipMembersMessage("org_a"),
+		).resolves.toBeNull();
+	});
+});
+
+// Product decision 2026-10-09: the bulk runs a person clicks never run on
+// their own plan, and run on the organization's shared accounts as
+// background work, with the pool's headroom.
+describe("bulk runs a person starts", () => {
+	const clicker = { userId: "user_1", organizationId: "org_a" };
+
+	it.each([
+		...BULK_PERSON_JOB_TYPES,
+		"publishing-suggestion-manual",
+	] as const)(
+		"run %s on a shared account, never the clicker's own plan — even with background jobs included",
+		async (jobType) => {
+			db.ownUse = {
+				includeBackgroundJobs: true,
+				credentialStatus: "ACTIVE",
+			};
+			await expect(
+				pickChatGptPlanSource({ ...clicker, jobType }),
+			).resolves.toEqual(orgSource("acc_1"));
+		},
+	);
+
+	it("use only accounts that serve background work, and leave the headroom for people", async () => {
+		db.accounts = [
+			account("acc_people", { serveBackground: false }),
+			account("acc_busy"),
+			account("acc_quiet"),
+		];
+		db.usage.set("acc_busy", 600_000);
+		db.usage.set("acc_quiet", 500_000);
+		db.budgets.set("acc_busy", 750_000);
+		db.budgets.set("acc_quiet", 1_000_000);
+		await expect(
+			pickChatGptPlanSource({ ...clicker, jobType: "project-setup" }),
+		).resolves.toEqual(orgSource("acc_quiet"));
+	});
+
+	// "Wait for reset" fails the call with the plan's own error, which the
+	// workflow waits on; AUTO moves the call to the organization's provider
+	// (Fizzy #2770).
+	it.each([
+		...BULK_PERSON_JOB_TYPES,
+		"publishing-suggestion-manual",
+	] as const)(
+		"follow the spend policy for %s once every shared account is spent",
+		async (jobType) => {
+			db.open.set("ORG:acc_1", IN_AN_HOUR);
+			const run = { ...clicker, jobType };
+			await expect(chatGptPlanSourceForCall(run)).rejects.toBeInstanceOf(
+				SubscriptionPlanExhaustedError,
+			);
+			db.policy.apiFallbackBackground = "AUTO";
+			await expect(chatGptPlanSourceForCall(run)).resolves.toBeNull();
+		},
+	);
+
+	it("go to the organization's provider when no shared account serves background work", async () => {
+		db.ownUse = { includeBackgroundJobs: true, credentialStatus: "ACTIVE" };
+		db.accounts = [account("acc_people", { serveBackground: false })];
+		await expect(
+			chatGptPlanSourceForCall({ ...clicker, jobType: "atlas-analysis" }),
+		).resolves.toBeNull();
+	});
+});
+
+describe("bulkRunsNeedSharedPlanMessage", () => {
+	const failure = {
+		userId: "user_1",
+		organizationId: "org_a",
+		jobType: "security-scan" as const,
+	};
+
+	it("tells a member with their own plan that bulk runs need a shared one", async () => {
+		db.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		await expect(bulkRunsNeedSharedPlanMessage(failure)).resolves.toBe(
+			BULK_RUNS_NEED_SHARED_PLAN_MESSAGE,
+		);
+		expect(BULK_RUNS_NEED_SHARED_PLAN_MESSAGE).toMatch(
+			/Share organization-wide/,
+		);
+	});
+
+	it("says nothing for a member with no plan, another job, or plans off", async () => {
+		await expect(
+			bulkRunsNeedSharedPlanMessage(failure),
+		).resolves.toBeNull();
+		db.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		await expect(
+			bulkRunsNeedSharedPlanMessage({
+				...failure,
+				jobType: "daily-brief",
+			}),
+		).resolves.toBeNull();
+		await expect(
+			bulkRunsNeedSharedPlanMessage({ ...failure, jobType: undefined }),
+		).resolves.toBeNull();
+		db.flags = { CHATGPT_PLAN: false };
+		await expect(
+			bulkRunsNeedSharedPlanMessage(failure),
+		).resolves.toBeNull();
 	});
 });

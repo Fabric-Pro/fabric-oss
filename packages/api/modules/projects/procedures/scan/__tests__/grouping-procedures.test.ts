@@ -217,9 +217,12 @@ describe("startGroupingProcedure", () => {
 			groupingId: "grouping-1",
 			projectId: "proj-1",
 			userId: "user-1",
+			// Bulk work: the shared plans, never the clicker's own (Fizzy #2770).
+			jobType: "security-scan",
 			// The project's organization (Fizzy #2904), not the input's null.
 			organizationId: "org-1",
 		});
+		expect(opts.args[0]).not.toHaveProperty("planEligible");
 		expect(mockUpdateScanFindingGrouping).toHaveBeenCalledWith(
 			"grouping-1",
 			{

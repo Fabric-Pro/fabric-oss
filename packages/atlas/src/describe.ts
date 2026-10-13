@@ -10,7 +10,12 @@
  * `describeModules` also returns accumulated token usage, the resolved model
  * name, and best-effort reasoning text so the workflow can persist analysis
  * telemetry (T3).
+ *
+ * One failure is not degraded: every shared ChatGPT plan spent mid-run. The
+ * batch rethrows the plan's own error, so the workflow waits for the reset and
+ * the retry describes only the modules not yet persisted (Fizzy #2770).
  */
+import { toSubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	AIProviderNotConfiguredError,
 	generateObject,
@@ -188,6 +193,12 @@ export async function describeModules(
 				}
 			});
 		} catch (error) {
+			const spent = toSubscriptionPlanExhaustedError(error);
+			if (spent) {
+				// The batches already described were persisted as they finished.
+				trackUsage();
+				throw spent;
+			}
 			logger.warn("[atlas] module describe batch failed", {
 				error: error instanceof Error ? error.message : String(error),
 				batchStart: i,

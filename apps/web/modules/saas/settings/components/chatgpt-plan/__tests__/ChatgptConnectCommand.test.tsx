@@ -1,6 +1,7 @@
 import en from "@repo/i18n/translations/en.json";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-intl", () => ({
@@ -68,10 +69,60 @@ describe("ChatgptConnectCommand", () => {
 		expect(help).toHaveTextContent("npm i -g @fabricorg/cli");
 	});
 
+	it("does not render a copyable command before the page origin is known", () => {
+		const html = renderToString(
+			<ChatgptConnectCommand sharedOrganizationSlug="example-org" />,
+		);
+		expect(html).not.toContain("fabric connect chatgpt");
+		expect(html).not.toContain("chatgpt-connect-line");
+	});
+
+	it("pins an installed shared-account command to the current page origin", async () => {
+		discovery.current = { status: "loading" };
+		render(<ChatgptConnectCommand sharedOrganizationSlug="example-org" />);
+		const origin = window.location.origin;
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-connect-line"),
+			).toHaveTextContent(
+				`fabric connect chatgpt --org example-org --shared --base-url ${origin}`,
+			),
+		);
+	});
+
+	it("copies the displayed page-bound command", async () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText },
+		});
+		render(<ChatgptConnectCommand sharedOrganizationSlug="example-org" />);
+		const origin = window.location.origin;
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-connect-line"),
+			).toHaveTextContent(
+				`fabric connect chatgpt --org example-org --shared --base-url ${origin}`,
+			),
+		);
+		await userEvent.click(
+			screen.getAllByRole("button", { name: copy.copyCommand })[0],
+		);
+		await waitFor(() =>
+			expect(writeText).toHaveBeenCalledWith(
+				`fabric connect chatgpt --org example-org --shared --base-url ${origin}`,
+			),
+		);
+	});
+
 	it("shows the installed CLI and how to install it when the deployment serves none", async () => {
 		render(<ChatgptConnectCommand />);
-		expect(screen.getByTestId("chatgpt-connect-line")).toHaveTextContent(
-			/^fabric connect chatgpt$/,
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("chatgpt-connect-line"),
+			).toHaveTextContent(
+				`fabric connect chatgpt --base-url ${window.location.origin}`,
+			),
 		);
 		await userEvent.click(
 			screen.getByRole("button", { name: copy.helpLabel }),

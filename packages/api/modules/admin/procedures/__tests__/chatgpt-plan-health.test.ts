@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
 	budgets: vi.fn(),
 	states: vi.fn(),
 	observed: vi.fn(),
+	calibrated: new Set<string>(),
+	accuracy: vi.fn(),
 	backfill: vi.fn(),
 }));
 
@@ -22,7 +24,19 @@ vi.mock("@repo/database", async (importOriginal) => {
 		...actual,
 		listChatGptPlanOrgAccountsForAdmin: mocks.accounts,
 		getChatGptPlanOrgAccountWindows: mocks.windows,
-		getChatGptPlanWindowBudgets: mocks.budgets,
+		getChatGptPlanWindowCalibrations: async (kind: string, ids: string[]) =>
+			new Map(
+				[
+					...((await mocks.budgets(kind, ids)) as Map<
+						string,
+						number
+					>),
+				].map(([id, budget]) => [
+					id,
+					{ budget, calibrated: mocks.calibrated.has(id) },
+				]),
+			),
+		getChatGptPlanAccuracySummaries: mocks.accuracy,
 		getChatGptPlanSourceStates: mocks.states,
 		getChatGptPlanLastObservations: mocks.observed,
 	};
@@ -60,6 +74,8 @@ const row = (id: string, organizationId: string, name: string) => ({
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.calibrated = new Set();
+	mocks.accuracy.mockResolvedValue(new Map());
 	mocks.backfill.mockImplementation(async (rows: unknown[]) => rows);
 });
 
@@ -77,7 +93,11 @@ describe("admin.chatgptPlanHealth.list", () => {
 				new Map(
 					params.accountIds.map((id) => [
 						id,
-						{ inputTokens: id === "acc_1" ? 600_000 : 0, resetsAt },
+						{
+							inputTokens: id === "acc_1" ? 600_000 : 0,
+							weightedInputTokens: id === "acc_1" ? 600_000 : 0,
+							resetsAt,
+						},
 					]),
 				),
 		);
@@ -96,6 +116,7 @@ describe("admin.chatgptPlanHealth.list", () => {
 			},
 		]);
 		mocks.observed.mockResolvedValue(new Map([["acc_1", refusedAt]]));
+		mocks.calibrated = new Set(["acc_1"]);
 
 		const result = (await listChatGptPlanHealthProcedure["~orpc"].handler({
 			input: undefined,
@@ -133,6 +154,69 @@ describe("admin.chatgptPlanHealth.list", () => {
 			}),
 		]);
 		expect(JSON.stringify(result)).not.toContain("encrypted");
+	});
+
+	it("shows ChatGPT's reported usage while fresh, beside the estimate and its accuracy", async () => {
+		const reportedReset = new Date(Date.now() + 90 * 60_000);
+		mocks.accounts.mockResolvedValue([row("acc_1", "org_a", "Example A")]);
+		mocks.windows.mockResolvedValue(
+			new Map([
+				[
+					"acc_1",
+					{
+						inputTokens: 2_000_000,
+						weightedInputTokens: 2_000_000,
+						resetsAt: new Date(Date.now() + 2 * HOUR),
+						topConsumers: [],
+					},
+				],
+			]),
+		);
+		mocks.budgets.mockResolvedValue(new Map([["acc_1", 2_000_000]]));
+		mocks.states.mockResolvedValue([
+			{
+				sourceId: "acc_1",
+				openUntil: null,
+				resetAt: null,
+				lastExhaustedAt: null,
+				reportedPrimaryUsedPercent: 48,
+				reportedPrimaryWindowMinutes: 300,
+				reportedPrimaryResetAt: reportedReset,
+				reportedSecondaryUsedPercent: 12,
+				reportedSecondaryWindowMinutes: 10_080,
+				reportedSecondaryResetAt: null,
+				reportedAt: new Date(Date.now() - 60_000),
+			},
+		]);
+		mocks.observed.mockResolvedValue(new Map());
+		const accuracy = {
+			refusalEstimatePercents: [64],
+			windowsOverBudgetWithoutRefusal: 2,
+			settledWindows: 9,
+			latestReported: null,
+			maxDriftPoints: 52,
+		};
+		mocks.accuracy.mockResolvedValue(new Map([["acc_1", accuracy]]));
+
+		const result = (await listChatGptPlanHealthProcedure["~orpc"].handler({
+			input: undefined,
+			context: {},
+			errors: {},
+		} as never)) as { accounts: Array<Record<string, unknown>> };
+
+		expect(result.accounts[0]).toMatchObject({
+			windowPercent: 48,
+			windowPercentSource: "reported",
+			estimatedPercent: 100,
+			resetsAt: reportedReset,
+			reported: {
+				windowUsedPercent: 48,
+				weeklyUsedPercent: 12,
+				fresh: true,
+			},
+			budgetCalibrated: false,
+			accuracy,
+		});
 	});
 
 	it("fills each account's tier from its stored ID token within that account's own organization", async () => {

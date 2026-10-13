@@ -5,10 +5,8 @@ import {
 	getProviderModelIdForCanonical,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import {
-	chatGptPlanServedSlugs,
-	refreshChatGptPlanServedModelsInBackground,
-} from "./served-models";
+import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
+import { chatGptPlanServedSlugs } from "./served-slugs";
 import type { PlanSourceRef } from "./sources";
 
 /**

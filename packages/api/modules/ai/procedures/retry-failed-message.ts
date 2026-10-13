@@ -125,6 +125,9 @@ export const retryFailedMessage = tenantProtectedProcedure
 				model: undefined, // Use default model
 				organizationId: chat.organizationId || undefined,
 				allMessages: recentMessages,
+				// A person retries their own message: it may run on their own
+				// ChatGPT plan (Fizzy #2770).
+				planEligible: true,
 			};
 
 			// Start the workflow

@@ -97,6 +97,9 @@ export const startReviewProcedure = tenantProtectedProcedure
 							projectId,
 							scanId: scanId ?? null,
 							userId: user.id,
+							// Bulk work: runs on the organization's shared ChatGPT
+							// plans, never the clicker's own (Fizzy #2770).
+							jobType: "security-scan",
 							organizationId,
 						},
 					],

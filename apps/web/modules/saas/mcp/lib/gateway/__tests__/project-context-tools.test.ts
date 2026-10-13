@@ -1939,13 +1939,25 @@ describe("fabric_upsert_project_context", () => {
 		expect(body.error).toMatch(/nothing was written/i);
 	});
 
-	it("tells an agent what a conflict with no current version means", () => {
-		const definition = PLATFORM_TOOL_DEFINITIONS.find(
-			(tool) => tool.name === "fabric_upsert_project_context",
+	// The tool description no longer carries this (Fizzy #2991 cut the
+	// definitions every client resends on each request); the conflict result
+	// itself says it, at the one moment an agent needs it.
+	it("tells an agent what a conflict with no current version means", async () => {
+		mocks.upsertSyncedContext.mockResolvedValue({
+			status: "conflict",
+			contextId: null,
+			sourcePath: "docs/architecture.md",
+			contentHash: "c".repeat(64),
+			current: null,
+		});
+
+		const body = payload(
+			await upsert({ expectedContentHash: "d".repeat(64) }),
 		);
 
-		expect(definition?.description).toMatch(
-			/'current' null.*without expectedContentHash.*'duplicate'.*elsewhere in the project/i,
+		expect(body.current).toBeNull();
+		expect(body.error).toMatch(
+			/without 'expectedContentHash'.*'duplicate'.*elsewhere in the project/i,
 		);
 	});
 

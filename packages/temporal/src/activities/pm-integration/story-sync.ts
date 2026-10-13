@@ -72,11 +72,13 @@ import {
 	findBacklogsListTool,
 	getBaseUrl,
 	normalizeUrl,
+	PM_ITEM_FIELDS,
 	parseWorkItemTypeMapping,
 	READ_ONLY_MODE_MESSAGE,
 	resolveKindFromPmType,
 	resolveWorkItemType,
 	type StoryKindValue,
+	unwrapDataEnvelope,
 } from "@repo/utils";
 import { ApplicationFailure } from "@temporalio/activity";
 import {
@@ -104,20 +106,37 @@ import { descriptionToText } from "./adf";
 import { resolveAdoTool } from "./ado-tool-surface";
 import { refreshAtlassianCloudToken } from "./atlassian-cloud-refresh";
 import { runBoundedWorkerPool } from "./bounded-worker-pool";
+import { isReadableId } from "./created-item-refs";
 import {
+	fillJiraCreateArgs,
 	resolveAdoDefaultTeam,
 	resolveAtlassianCloudId,
-	resolveJiraDefaultIssueType,
 } from "./fetch-pm-hierarchy";
 import { resolveFizzyAccountSlug } from "./fizzy-account-slug";
 import { mayUseMcpConfigCredential } from "./mcp-credential-gate";
+import {
+	acquirePmCreateClaim,
+	claimHeldMessage,
+	createDeadlinePassedMessage,
+	createIndeterminateMessage,
+	isCreateSendDeadlinePassed,
+	isDefiniteMcpCreateRejection,
+	PM_CREATE_SEND_TIMEOUT_MS,
+	releasePmCreateClaim,
+	startPmCreateSendDeadline,
+} from "./pm-create-claim";
+import {
+	describeOrphanCause,
+	recordCreateOrphan,
+	recordCreateUnconfirmed,
+} from "./pm-create-orphan";
 import { NOT_ATTEMPTED_MARKER } from "./pm-fetch-complete";
+import { mcpConfigPmInstanceOrigin } from "./pm-link-instance";
 import { truncateTitleForProvider } from "./pm-title-limits";
 import {
-	belongsToDifferentKnownTool,
-	hostsShareRegistrableDomain,
+	detectExternalLinkMismatch,
+	legacyLinkOtherToolMessage,
 	PM_TOOL_HOST_PATTERNS,
-	safeHost,
 } from "./pm-tool-mismatch";
 import { updateStoryFromPm as updateStory } from "./pm-update-story";
 import { reconcileStoryTerminalStatus } from "./reconcile-story-terminal-status";
@@ -202,12 +221,47 @@ export interface StorySyncInput {
 	 * auto-push flows — those must honour conflict detection.
 	 */
 	forceHashOverride?: boolean;
+	/**
+	 * The attempt id the enqueue stamped before starting the run that makes
+	 * this push (`syncWorkItemToPM` passes it on the GitLab REST path). When
+	 * set, the push's status writes apply only while the row still names this
+	 * attempt; the link and baseline are still written. Unset, a status write
+	 * skips a row that is PENDING for an attempt and is otherwise by id
+	 * (`writePmSyncRunStatus`).
+	 */
+	pmSyncAttemptId?: string;
+	/**
+	 * Set by a caller that records a failed result itself: `syncWorkItemToPM`
+	 * throws it on, and its workflow's catch path stamps FAILED and writes
+	 * the audit row. The GitLab REST legacy-link guard then records nothing,
+	 * so the run leaves one failure audit row.
+	 */
+	failureRecordedByCaller?: boolean;
 }
 
 export type StorySyncErrorCode =
 	| "PM_TOOL_MISMATCH"
+	/**
+	 * A legacy link (no server stamp) points at a different PM tool than the
+	 * active one. Nothing was created or cleared; only the user's Unlink &
+	 * re-create replaces the link. Unlike `PM_TOOL_MISMATCH`, a push with
+	 * `overrideMismatch` does not migrate it.
+	 */
+	| "PM_TOOL_MISMATCH_LEGACY"
 	| "EXTERNAL_ID_NOT_FOUND"
-	| "PM_SYNC_CONFLICT";
+	| "PM_SYNC_CONFLICT"
+	/**
+	 * The push created the item but could not save its link; the row was
+	 * stamped FAILED (`create_orphan`) by id and keeps its create claim.
+	 */
+	| "PM_CREATE_ORPHAN"
+	/**
+	 * The push did not create because the row's create claim was held, or
+	 * its create got no definite answer; the row was stamped FAILED
+	 * (`create_unconfirmed`) by id and keeps its create claim. A PM item may
+	 * already exist for it.
+	 */
+	| "PM_CREATE_UNCONFIRMED";
 
 export interface StorySyncResult {
 	success: boolean;
@@ -219,6 +273,14 @@ export interface StorySyncResult {
 	direction: SyncDirection;
 	/** True when a not-found left the PM link intact (deletion is owned by the poll). */
 	linkPreserved?: boolean;
+	/**
+	 * Set on a push that sent nothing: `already-linked` means another run
+	 * linked the story between this push's read and its create claim, so this
+	 * push created and wrote nothing, and `externalId` / `externalUrl` are
+	 * that run's link. `success` is true. A caller must not report it as this
+	 * caller's push (no `story.pm_pushed` audit row).
+	 */
+	pushSkipped?: "already-linked";
 	/**
 	 * #1360 — terminal-status lifecycle outcome from the per-item pull reconcile.
 	 * Populated only on a successful pull that ran the STORY reconcile; absent on
@@ -1509,7 +1571,7 @@ export function pmLabelValues(story: { labels?: string[] | null }): string[] {
  * @param options.idParamHint - The ID parameter name from the update tool's schema
  *                              (e.g., "card_number" for Fizzy, "issue_key" for Jira)
  */
-function extractExternalInfo(
+export function extractExternalInfo(
 	output: unknown,
 	options?: {
 		baseUrl?: string | null;
@@ -1542,13 +1604,24 @@ function extractExternalInfo(
 		}
 	}
 
+	// Rovo v2 wraps tool results as { data: { … } }.
+	data = unwrapDataEnvelope(data, [
+		...(options?.idParamHint ? [options.idParamHint] : []),
+		...PM_ITEM_FIELDS,
+		...COMMON_URL_FIELDS,
+		"_links",
+	]);
+
 	// DYNAMIC DISCOVERY: Use idParamHint from the update tool's schema first
 	// This allows the system to adapt to any PM tool's ID convention (MCP discovery pattern)
 	// e.g., Fizzy uses "number", Jira uses "issue_key", GitHub uses "issue_number"
 	const { idParamHint } = options || {};
 	let externalId: string | undefined;
 
-	if (idParamHint && data[idParamHint] !== undefined) {
+	// Only a readable value is an id (`isReadableId`): a field holding null,
+	// an object, an array or an empty string is skipped, never stringified
+	// into an id such as "null" or "[object Object]".
+	if (idParamHint && isReadableId(data[idParamHint])) {
 		// Found the exact field from discovered schema
 		externalId = String(data[idParamHint]);
 		logger.info("[Extract] Using dynamically discovered ID field", {
@@ -1559,7 +1632,7 @@ function extractExternalInfo(
 		// Fallback: Try common ID field names from shared patterns
 		// This is only used when idParamHint isn't provided or doesn't match
 		for (const field of COMMON_ID_FIELDS) {
-			if (data[field] !== undefined) {
+			if (isReadableId(data[field])) {
 				externalId = String(data[field]);
 				if (!idParamHint) {
 					logger.info(
@@ -1795,6 +1868,7 @@ export function parsePMItemFromGetOutput(
 			}
 		}
 	}
+	data = unwrapDataEnvelope(data, PM_ITEM_FIELDS);
 	// Azure DevOps: fields["System.Title"], fields["System.Description"]
 	// Jira (Atlassian Rovo): fields.summary, fields.description, fields.status,
 	// fields.labels — everything is nested under `fields`, so without these the
@@ -2554,8 +2628,8 @@ export async function syncStoryToPM(
 		// Hard check: if the story was synced to a known-different MCP server,
 		// block immediately — the externalId belongs to the other tool.
 		// Exception: explicit migration via overrideMismatch (push only) —
-		// the user has confirmed they want to drop the previous link and
-		// create a fresh item in the active tool.
+		// the user has confirmed ("Push & relink") they want to drop the
+		// previous link and create a fresh item in the active tool.
 		if (
 			story.externalMcpServerId &&
 			activeServerId &&
@@ -2596,11 +2670,53 @@ export async function syncStoryToPM(
 					activeServerId,
 				},
 			);
-			await updateStory(storyId, projectId, {
-				externalId: null,
-				externalUrl: null,
-				externalMcpServerId: null,
-			});
+			// Dropped only while the row still carries the stamped link that
+			// was read. A link written since by a create in the active tool
+			// carries the active server's stamp (`activeServerId` is set
+			// here, and the create's link write stamps it), so a second,
+			// stale migration cannot match it, erase it and create again.
+			// The create below still has to take the create claim.
+			try {
+				await updateStory(
+					storyId,
+					projectId,
+					{
+						externalId: null,
+						externalUrl: null,
+						externalMcpServerId: null,
+					},
+					{
+						onlyIfPmLink: {
+							externalId: story.externalId,
+							externalMcpServerId: story.externalMcpServerId,
+						},
+					},
+				);
+			} catch (clearError) {
+				if (
+					clearError instanceof Error &&
+					clearError.name === "StoryLinkChangedError"
+				) {
+					logger.warn(
+						"[Story Sync] PM link changed before the migration; not creating",
+						{
+							storyId,
+							previousServerId: story.externalMcpServerId,
+							previousExternalId: story.externalId,
+						},
+					);
+					await logStoryOutcome("FAILURE", {
+						errorCode: "PM_LINK_CHANGED",
+					});
+					return {
+						success: false,
+						error: "This feature's PM link changed while it was syncing, so Fabric did not create a new item. Sync again to use the current link.",
+						syncedAt: new Date(),
+						direction,
+					};
+				}
+				throw clearError;
+			}
 			externalId = undefined;
 			externalUrl = undefined;
 			// Sync the in-memory copy so downstream stamping logic
@@ -2611,56 +2727,70 @@ export async function syncStoryToPM(
 			story.externalMcpServerId = null;
 		}
 
-		// Legacy fallback: story has externalUrl but no externalMcpServerId.
-		// Use URL-based heuristic to detect cross-tool migrations on push
-		// (clears stale link so we take the create path).
+		// Legacy fallback: the link has no server stamp, so the URL host is
+		// the only signal of which tool it belongs to (the same heuristic as
+		// `syncWorkItemToPM`). A link that points at another tool is neither
+		// pushed to nor replaced: clearing it here and creating could erase a
+		// link a concurrent sync just wrote (an unstamped link cannot be told
+		// apart from a fresh one with the same id) and create a duplicate.
+		// Nothing is sent and the link is kept; the row is stamped FAILED
+		// with the message the sync failure panel offers Unlink & re-create
+		// for, so that action is reachable from every entry point (Sync now
+		// has no workflow to stamp it). Scoped to the run's attempt when it
+		// has one, by id otherwise, like the run's other status writes.
 		if (
-			externalUrl &&
 			!story.externalMcpServerId &&
 			(direction === "push" || direction === "bidirectional")
 		) {
-			const existingHost = safeHost(externalUrl);
-			const currentType = capabilities.detectedType;
-			let mismatch = false;
-			let reason = "";
-
-			// Primary signal: known-tool host patterns via detectedType.
-			// This catches cross-tool migrations (e.g. fizzy.do → dev.azure.com)
-			// even when the MCP has no baseUrl (STDIO transports).
-			if (existingHost && currentType) {
-				if (belongsToDifferentKnownTool(existingHost, currentType)) {
-					mismatch = true;
-					reason = `host ${existingHost} belongs to a different known PM tool than ${currentType}`;
-				}
-			}
-
-			// Secondary signal: baseUrl comparison for custom/self-hosted tools.
-			// Use suffix-aware comparison so host variants of the same instance
-			// (e.g. www.example.com vs example.com) are NOT treated as a mismatch.
-			if (!mismatch && existingHost && pmToolBaseUrl) {
-				const currentHost = safeHost(pmToolBaseUrl);
-				if (
-					currentHost &&
-					!hostsShareRegistrableDomain(existingHost, currentHost)
-				) {
-					mismatch = true;
-					reason = `baseUrl host ${currentHost} does not share a domain with ${existingHost}`;
-				}
-			}
-
-			if (mismatch) {
+			const legacyMismatch = detectExternalLinkMismatch({
+				externalId,
+				externalUrl,
+				externalMcpServerId: story.externalMcpServerId,
+				activeServerId,
+				currentDetectedType: capabilities.detectedType,
+				currentBaseUrl: pmToolBaseUrl,
+				// A personal GitLab config names its instance: a link on
+				// another GitLab instance is not this one's issue.
+				currentInstanceOrigin: mcpConfigPmInstanceOrigin(mcpConfig),
+			});
+			if (legacyMismatch.resolution === "legacy-other-tool") {
 				logger.warn(
-					"[Story Sync] External link belongs to a different PM tool; clearing stale reference and creating fresh task",
+					"[Story Sync] Legacy external link points at a different PM tool; not syncing",
 					{
 						storyId,
 						identifier: story.identifier,
-						existingHost,
-						currentType,
-						reason,
+						currentType: capabilities.detectedType,
+						reason: legacyMismatch.reason,
 					},
 				);
-				externalId = undefined;
-				externalUrl = undefined;
+				const legacyMessage = legacyLinkOtherToolMessage(
+					capabilities.detectedType ?? "the PM tool",
+				);
+				// Writes the FAILURE audit row too. Without an attempt id, only
+				// while the row still has the link and attempt read above: a
+				// relink or a newer run since keeps its state.
+				await recordPmSyncFailure({
+					itemId: storyId,
+					itemType: "story",
+					errorMessage: legacyMessage,
+					errorClass: "PM_TOOL_MISMATCH_LEGACY",
+					triggerSource: "manual-edit",
+					pmTool: capabilities.detectedType ?? undefined,
+					actorUserId: userId,
+					onlyIfAttempt: input.pmSyncAttemptId,
+					onlyIfRowUnchanged: {
+						externalId: story.externalId ?? null,
+						externalMcpServerId: null,
+						lastPmSyncAttemptId: story.lastPmSyncAttemptId ?? null,
+					},
+				});
+				return {
+					success: false,
+					error: legacyMessage,
+					errorCode: "PM_TOOL_MISMATCH_LEGACY" as const,
+					syncedAt: new Date(),
+					direction,
+				};
 			}
 		}
 
@@ -3529,48 +3659,18 @@ export async function syncStoryToPM(
 					}
 				}
 
-				// Atlassian Rovo `createJiraIssue` requires `cloudId` and
-				// `issueTypeName`, neither of which is carried in the project's
-				// container context. Resolve them just-in-time. `cloudId` may
-				// already be present when the picker persisted it on a newer
-				// save (forwarded by the additionalContext loop above); if not,
-				// resolve it via getAccessibleAtlassianResources so a stale or
-				// pre-fix saved config still works.
+				// Rovo's createJiraIssue needs a cloudId and an issue type,
+				// neither of which is in the project's container context.
 				if (detectedType === "jira") {
-					const needsCloudId =
-						createArgs.cloudId == null &&
-						createTool.allParams.some((p) => p.name === "cloudId");
-					const needsIssueType =
-						createArgs.issueTypeName == null &&
-						createTool.allParams.some(
-							(p) => p.name === "issueTypeName",
-						);
-					if (needsCloudId || needsIssueType) {
-						const cloudId =
-							(typeof createArgs.cloudId === "string"
-								? createArgs.cloudId
-								: undefined) ??
-							(await resolveAtlassianCloudId({
-								mcpConfigId,
-								userId,
-								organizationId,
-								availableTools: capabilities.availableTools,
-							}));
-						if (needsCloudId && cloudId) {
-							createArgs.cloudId = cloudId;
-						}
-						if (needsIssueType) {
-							createArgs.issueTypeName =
-								await resolveJiraDefaultIssueType({
-									projectKey: String(containerId),
-									cloudId,
-									mcpConfigId,
-									userId,
-									organizationId,
-									availableTools: capabilities.availableTools,
-								});
-						}
-					}
+					await fillJiraCreateArgs({
+						createArgs,
+						createParams: createTool.allParams,
+						projectKey: String(containerId),
+						mcpConfigId,
+						userId,
+						organizationId,
+						availableTools: capabilities.availableTools,
+					});
 				}
 
 				logger.info("[Story Sync] Calling create tool", {
@@ -3579,16 +3679,128 @@ export async function syncStoryToPM(
 					project: containerId,
 				});
 
-				const createResult = await executeMcpTool({
-					pmTarget: { additionalContext },
-					toolName: createTool.toolName,
-					args: createArgs,
-					userId,
-					organizationId,
-					// Read-only mode write-gate keys off projectId
-					projectId,
-					mcpConfigId,
-				});
+				const toolLabel = capabilities.detectedType ?? "the PM tool";
+				// Another run linked the row since this one read it: nothing
+				// to create, and no unconfirmed create to report. A success
+				// that writes nothing, so no state, audit row or PENDING is
+				// touched. `pushSkipped` tells the caller nothing was sent.
+				const alreadyLinked = (link: {
+					externalId: string;
+					externalUrl: string | null;
+				}): StorySyncResult => {
+					logger.info("pm.sync.create_skipped", {
+						storyId,
+						mcpConfigId,
+						reason: "linked",
+					});
+					return {
+						success: true,
+						externalId: link.externalId,
+						externalUrl: link.externalUrl ?? undefined,
+						syncedAt: new Date(),
+						direction,
+						pushSkipped: "already-linked",
+					};
+				};
+				// FAILED (`create_unconfirmed`) by id, best effort, with its
+				// audit row, only while the row is unlinked and its claim is
+				// held; returned rather than thrown so nothing retries the
+				// create. The row keeps its create claim.
+				const createUnconfirmed = async (
+					errorMessage: string,
+					reason: string,
+				): Promise<StorySyncResult> => {
+					logger.warn("pm.sync.create_unconfirmed", {
+						storyId,
+						mcpConfigId,
+						reason,
+					});
+					const recording = await recordCreateUnconfirmed({
+						itemId: storyId,
+						itemType: "story",
+						errorMessage,
+						triggerSource: "manual-edit",
+						pmTool: capabilities.detectedType ?? undefined,
+						actorUserId: userId,
+					});
+					if (recording.outcome === "linked") {
+						return alreadyLinked(recording);
+					}
+					return {
+						success: false,
+						error: errorMessage,
+						errorCode: "PM_CREATE_UNCONFIRMED",
+						syncedAt: new Date(),
+						direction,
+					};
+				};
+
+				// Started before the claim is asked for, so the claim's
+				// database-clock stamp is read after it: no create is sent
+				// past it (`PM_CREATE_SEND_TIMEOUT_MS`), however long taking
+				// the claim takes.
+				const sendDeadline = startPmCreateSendDeadline();
+				// Immediately before the create request: no create is sent
+				// unless this call took the row's create claim, on a row whose
+				// stored link is null. A row linked since it was read is not
+				// an unconfirmed create.
+				const claim = await acquirePmCreateClaim({ storyId });
+				if ("miss" in claim) {
+					if (claim.miss === "linked") {
+						return alreadyLinked(claim);
+					}
+					if (claim.miss === "missing") {
+						throw ApplicationFailure.nonRetryable(
+							`Story ${storyId} not found in project ${projectId}`,
+						);
+					}
+					return await createUnconfirmed(
+						claimHeldMessage(toolLabel),
+						"claim-held",
+					);
+				}
+				const pmCreateClaimId = claim.claimId;
+
+				let createResult: Awaited<ReturnType<typeof executeMcpTool>>;
+				try {
+					createResult = await executeMcpTool({
+						pmTarget: { additionalContext },
+						toolName: createTool.toolName,
+						args: createArgs,
+						userId,
+						organizationId,
+						// Read-only mode write-gate keys off projectId
+						projectId,
+						mcpConfigId,
+						// A closed connection after the send must not resend it.
+						sendAtMostOnce: true,
+						// Not sent past the claim's send deadline; Fabric stops
+						// waiting for a request in flight there (see
+						// `PM_CREATE_SEND_TIMEOUT_MS`).
+						timeoutMs: PM_CREATE_SEND_TIMEOUT_MS,
+						dispatchDeadline: sendDeadline,
+					});
+				} catch (createError) {
+					// Refused before anything was sent: the instance check.
+					if (
+						createError instanceof ApplicationFailure &&
+						createError.type === "GitLabPmOriginMismatch"
+					) {
+						await releasePmCreateClaim({
+							storyId,
+							claimId: pmCreateClaimId,
+						});
+						throw createError;
+					}
+					// Anything else may have followed the send.
+					return await createUnconfirmed(
+						createIndeterminateMessage(
+							toolLabel,
+							describeOrphanCause(createError),
+						),
+						"create-threw",
+					);
+				}
 
 				if (createResult.success) {
 					// DYNAMIC: Use update tool's idParam to know which field to extract
@@ -3635,7 +3847,8 @@ export async function syncStoryToPM(
 								responsePreview: responseText?.slice(0, 500),
 							},
 						);
-						const errorMessage = `PM tool accepted the request but did not return a work item id. This usually means the item was rejected server-side (e.g. invalid AreaPath/IterationPath). Re-save the project's PM settings and try again. Response: ${
+						// The create claim stays held: the item may exist.
+						const errorMessage = `${toolLabel} accepted the create request but returned no work item id, so this item is not linked. A ${toolLabel} item may already exist for it (some servers report success for a create they rejected, e.g. an invalid AreaPath/IterationPath). Check ${toolLabel}; if there is none, fix the project's PM settings if needed and use Unlink & re-create. Response: ${
 							responseText?.slice(0, 300) ?? "(no response text)"
 						}`;
 						// Stamp `lastPmSyncStatus = FAILED` on the row BEFORE
@@ -3661,6 +3874,10 @@ export async function syncStoryToPM(
 								triggerSource: "manual-edit",
 								pmTool: capabilities.detectedType ?? undefined,
 								actorUserId: userId,
+								// By id whatever the row's attempt or status:
+								// this FAILED records an unlinked ticket and
+								// keeps the watchdog from creating a second one.
+								overridePendingAttempt: true,
 							});
 						} catch (stampError) {
 							logger.warn(
@@ -3683,6 +3900,81 @@ export async function syncStoryToPM(
 						tool: createTool.toolName,
 					});
 
+					// Persist the new external link with a brief retry, in the
+					// same write that clears this call's create claim (scoped to
+					// it). The item already exists in the PM tool, so a short
+					// retry is strictly safer than losing the link. On permanent
+					// failure the row is an orphaned create: FAILED
+					// (`create_orphan`) by id, the claim kept so no later push
+					// creates a second item, and a result returned rather than
+					// thrown.
+					for (
+						let persistAttempt = 1;
+						persistAttempt <= 3;
+						persistAttempt++
+					) {
+						try {
+							await updateStory(
+								storyId,
+								projectId,
+								{
+									externalId,
+									externalUrl,
+									externalMcpServerId:
+										activeServerId ?? undefined,
+								},
+								{ settlesPmCreateClaim: pmCreateClaimId },
+							);
+							break;
+						} catch (persistErr) {
+							logger.warn(
+								"[Story Sync] Failed to persist new external link; retrying",
+								{
+									storyId,
+									externalId,
+									attempt: persistAttempt,
+									error:
+										persistErr instanceof Error
+											? persistErr.message
+											: String(persistErr),
+								},
+							);
+							if (persistAttempt >= 3) {
+								const errorMessage = `Item ${externalId} was created in ${toolLabel} but Fabric could not save its link (${describeOrphanCause(
+									persistErr,
+								)}), so this item is not linked to it. Check ${toolLabel}: use Unlink & re-create only if item ${externalId} was deleted or a second one is wanted.`;
+								logger.warn("pm.sync.create_orphan", {
+									storyId,
+									mcpConfigId,
+									externalId,
+									reason: "link-write-failed",
+								});
+								// By id, best effort (never throws).
+								await recordCreateOrphan({
+									itemId: storyId,
+									itemType: "story",
+									errorMessage,
+									triggerSource: "manual-edit",
+									pmTool:
+										capabilities.detectedType ?? undefined,
+									actorUserId: userId,
+								});
+								return {
+									success: false,
+									externalId,
+									externalUrl,
+									error: errorMessage,
+									errorCode: "PM_CREATE_ORPHAN",
+									syncedAt: new Date(),
+									direction,
+								};
+							}
+							await new Promise((resolve) =>
+								setTimeout(resolve, 200 * persistAttempt),
+							);
+						}
+					}
+
 					// Jira hybrid Cloud — POST-CREATE pass: now that we
 					// have the new issue key, upload images via REST
 					// attachment API and push a second update to swap the
@@ -3692,6 +3984,10 @@ export async function syncStoryToPM(
 					// signed URLs (small, well under the 32 KB ADF text
 					// limit) — Atlassian Media will briefly show
 					// "Preview unavailable" until the second update lands.
+					// Runs only after the link above has committed: this
+					// optional work (and its follow-up update) may take
+					// long or fail, and must neither hold back the write
+					// that settles the create claim nor lose it.
 					if (
 						jiraCloudTarget &&
 						externalId &&
@@ -3777,50 +4073,21 @@ export async function syncStoryToPM(
 							);
 						}
 					}
-
-					// Persist the new external link with a brief retry. If this
-					// write is lost (e.g. a transient DB blip) the story keeps
-					// `externalId = null`, so the NEXT sync re-runs the CREATE path
-					// and creates a DUPLICATE PM ticket. The item already exists in
-					// the PM tool, so a short retry is strictly safer than losing the
-					// link. On permanent failure we re-throw to the function-level
-					// catch, which records a FAILURE row and returns {success:false}
-					// (it does not re-throw, so Temporal never auto-retries the
-					// create — no duplicate from this path).
-					for (
-						let persistAttempt = 1;
-						persistAttempt <= 3;
-						persistAttempt++
-					) {
-						try {
-							await updateStory(storyId, projectId, {
-								externalId,
-								externalUrl,
-								externalMcpServerId:
-									activeServerId ?? undefined,
-							});
-							break;
-						} catch (persistErr) {
-							logger.warn(
-								"[Story Sync] Failed to persist new external link; retrying",
-								{
-									storyId,
-									externalId,
-									attempt: persistAttempt,
-									error:
-										persistErr instanceof Error
-											? persistErr.message
-											: String(persistErr),
-								},
-							);
-							if (persistAttempt >= 3) {
-								throw persistErr;
-							}
-							await new Promise((resolve) =>
-								setTimeout(resolve, 200 * persistAttempt),
-							);
-						}
-					}
+				} else if (isCreateSendDeadlinePassed(createResult)) {
+					// Not sent: its send deadline passed before the request
+					// went out, so nothing exists. Release the claim so the
+					// next push can create; the FAILED this records offers a
+					// retry.
+					logger.warn("pm.sync.create_not_sent", {
+						storyId,
+						mcpConfigId,
+						reason: "send-deadline-passed",
+					});
+					await releasePmCreateClaim({
+						storyId,
+						claimId: pmCreateClaimId,
+					});
+					throw new Error(createDeadlinePassedMessage(toolLabel));
 				} else {
 					// Surface as much of the PM tool's real error as possible.
 					// Join ALL text content items (not just the first) and fall
@@ -3867,9 +4134,26 @@ export async function syncStoryToPM(
 						project: containerId,
 						createArgs,
 						errorDetail,
+						failureKind: createResult.failureKind,
 						// Full raw output — the trimmed `errorDetail` can hide the
 						// real reason when the MCP wrapper swallows it.
 						rawOutput: createResult.output,
+					});
+					if (!isDefiniteMcpCreateRejection(createResult)) {
+						// Sent, and not proven to have created nothing (a
+						// timeout, a transport failure, or any error result
+						// from the server): the item may exist.
+						return await createUnconfirmed(
+							createIndeterminateMessage(toolLabel, errorDetail),
+							"create-indeterminate",
+						);
+					}
+					// Refused before it was sent (tool not found, Read-only
+					// mode, authority, OAuth, no connection): release the
+					// claim so the next push can create.
+					await releasePmCreateClaim({
+						storyId,
+						claimId: pmCreateClaimId,
 					});
 					throw new Error(
 						`Failed to create task in PM tool: ${errorDetail}`,
@@ -4383,7 +4667,10 @@ export async function syncStoryToPM(
 							id: externalId ?? "",
 							title: parsed.title,
 							description: parsed.description ?? null,
-							raw: (rawObj ?? {}) as Record<string, unknown>,
+							raw: unwrapDataEnvelope(
+								rawObj ?? {},
+								PM_ITEM_FIELDS,
+							),
 						};
 						const n = normalizePolledState(summary, {
 							kind: "mcp",
@@ -4553,6 +4840,7 @@ export async function syncStoryToPM(
 			await recordPmSyncSuccessState({
 				itemId: storyId,
 				itemType: "story",
+				pmSyncAttemptId: input.pmSyncAttemptId,
 			});
 		}
 

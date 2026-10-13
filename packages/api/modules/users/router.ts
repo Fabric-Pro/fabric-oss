@@ -16,6 +16,7 @@ import {
 	shareChatGptPlanProcedure,
 	takeBackChatGptPlanProcedure,
 } from "./procedures/chatgpt-plan/share";
+import { testChatGptPlanProcedure } from "./procedures/chatgpt-plan/test-plan";
 import { createAvatarUploadUrl } from "./procedures/create-avatar-upload-url";
 import {
 	getUserDelegationSettingProcedure,
@@ -90,6 +91,7 @@ export const usersRouter = {
 		disconnect: disconnectChatGptPlanProcedure,
 		share: shareChatGptPlanProcedure,
 		takeBack: takeBackChatGptPlanProcedure,
+		test: testChatGptPlanProcedure,
 	},
 	updateLastActiveWorkspace: updateLastActiveWorkspaceProcedure,
 };

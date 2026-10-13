@@ -11,6 +11,7 @@
 import {
 	COMMON_ID_FIELDS,
 	COMMON_NAME_FIELDS,
+	extractAtlassianSiteId,
 	extractContainerType,
 	isContainerListingTool,
 	isTaskCreationTool,
@@ -85,6 +86,10 @@ export interface PMToolCapabilities {
 // NOTE: Common patterns imported from @repo/utils/lib/pm-tool-patterns.ts
 // Local patterns kept only for backwards compatibility with existing code
 
+// Rovo's catalog also has single-item getters (getProject, getTeam) that the
+// generic patterns mistake for listings; use its project listing explicitly.
+const ROVO_PROJECT_LIST_TOOL = /(?:listJiraProjects|getVisibleJiraProjects)$/; // v2, v1
+
 /**
  * Analyze MCP tools to detect PM capabilities
  */
@@ -100,6 +105,16 @@ export function analyzePMToolCapabilities(
 	// actually holds tasks, used to prune unrelated containers below.
 	const taskCreation = detectTaskCreation(tools);
 
+	// Atlassian Rovo: every container tool requires a cloudId provided by
+	// getAccessibleAtlassianResources. Surface it so the fetch can resolve it.
+	const cloudIdResolverTool = tools.find((t) =>
+		/getAccessibleAtlassianResources$/i.test(t.name),
+	)?.name;
+
+	const containerTools = cloudIdResolverTool
+		? tools.filter((t) => ROVO_PROJECT_LIST_TOOL.test(t.name))
+		: tools;
+
 	// Find container listing tools and build hierarchy, then drop containers
 	// unrelated to where tasks live. The Atlassian Rovo server bundles Jira +
 	// Confluence, so a naive scan yields both `project` (Jira) and `space`
@@ -107,15 +122,9 @@ export function analyzePMToolCapabilities(
 	// container, and chaining the unrelated Confluence space ahead of it breaks
 	// the fetch.
 	const containerHierarchy = pruneHierarchyToTaskContainer(
-		detectContainerHierarchy(tools),
+		detectContainerHierarchy(containerTools),
 		taskCreation,
 	);
-
-	// Atlassian Rovo: every container tool requires a cloudId provided by
-	// getAccessibleAtlassianResources. Surface it so the fetch can resolve it.
-	const cloudIdResolverTool = tools.find((t) =>
-		/getAccessibleAtlassianResources$/i.test(t.name),
-	)?.name;
 
 	return {
 		hasPMCapabilities: containerHierarchy.length > 0 || !!taskCreation,
@@ -445,10 +454,8 @@ export async function fetchContainersWithHierarchy(
 	// cloudId (no site chooser). Single-site is the common case; revisit if
 	// multi-site selection is needed.
 	if (options?.cloudIdResolverTool) {
-		const resolved = extractResultArray(
-			await callTool(options.cloudIdResolverTool, {}),
-		);
-		const cloudId = resolved[0]?.id ?? resolved[0]?.cloudId;
+		const raw = await callTool(options.cloudIdResolverTool, {});
+		const cloudId = extractAtlassianSiteId(raw);
 		if (cloudId != null) {
 			additionalContext.cloudId = String(cloudId);
 		}
@@ -615,6 +622,12 @@ function extractResultArray(result: unknown): Array<Record<string, unknown>> {
 			if (Array.isArray(value)) {
 				return value as Array<Record<string, unknown>>;
 			}
+		}
+
+		// Rovo v2 wraps tool results as { data: { … } }.
+		const inner = (result as Record<string, unknown> | null)?.data;
+		if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+			return extractResultArray(inner);
 		}
 	}
 	return [];

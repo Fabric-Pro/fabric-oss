@@ -331,6 +331,28 @@ describe("v1 chats — POST /chats/:id/messages", () => {
 		expect(persistedCall.title).toBe("Generated Title");
 	});
 
+	// Fizzy #2770: an API credential is never a member at a screen. Its turn
+	// is background work on the organization's shared plans, never on the
+	// own plan of the member the key acts as.
+	it.each(["personal", "organization"] as const)(
+		"runs a %s key's turn as public-API background work",
+		async (keyType) => {
+			mockGetAiChatByIdForTenant.mockResolvedValue(
+				chatRow({ messages: [], title: "Kept" }),
+			);
+			const app = makeApp({ keyType });
+			const res = await app.request("/chats/chat-1/messages", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ content: "hi" }),
+			});
+			expect(res.status).toBe(200);
+			const context = mockGetAIModelWithMetadata.mock.calls[0]?.[1];
+			expect(context).toMatchObject({ jobType: "public-api" });
+			expect(context).not.toHaveProperty("planEligible");
+		},
+	);
+
 	it("does NOT re-generate the title on subsequent turns", async () => {
 		mockGetAiChatByIdForTenant.mockResolvedValue(
 			chatRow({
@@ -374,5 +396,61 @@ describe("v1 chats — POST /chats/:id/messages", () => {
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as { error: { code?: string } };
 		expect(body.error.code).toBe("AI_GATEWAY_MISSING");
+	});
+});
+
+describe("v1 chats — POST /chats/:id/messages usage-limit refusal", () => {
+	it("returns 429 AI_USAGE_LIMIT_EXCEEDED when the model's request is refused on an SDK retry", async () => {
+		const { AiUsageLimitExceededError } = await import(
+			"@repo/payments/lib/ai-usage-limit-error"
+		);
+		const { RetryError } = await import("ai");
+		const limit = new AiUsageLimitExceededError({
+			message: "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
+			limitId: "limit-1",
+			dimension: "TOKENS" as never,
+			window: "MONTHLY" as never,
+			used: BigInt(100),
+			max: BigInt(100),
+			manageLimitsUrl: "https://example.com/limits",
+		});
+		mockConvertToModelMessages.mockImplementation(async (msgs) => msgs);
+		mockGetAIModelWithMetadata.mockResolvedValue({
+			model: { id: "mock-model" },
+			trackUsage: () => undefined,
+		});
+		mockGetAiChatByIdForTenant.mockResolvedValue(chatRow());
+		mockGenerateText.mockRejectedValueOnce(
+			new RetryError({
+				message: "Failed after 2 attempts.",
+				reason: "errorNotRetryable",
+				errors: [new Error("provider overloaded"), limit],
+			}),
+		);
+
+		const app = makeApp();
+		const res = await app.request("/chats/chat-1/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ content: "hi" }),
+		});
+
+		expect(res.status).toBe(429);
+		const body = (await res.json()) as {
+			error: { code?: string; message?: string; data?: unknown };
+		};
+		expect(body.error).toEqual({
+			message: limit.message,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: {
+				limitId: "limit-1",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: "100",
+				max: "100",
+				manageLimitsUrl: "https://example.com/limits",
+			},
+		});
+		expect(mockUpdateAiChatForTenant).not.toHaveBeenCalled();
 	});
 });

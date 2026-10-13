@@ -9,6 +9,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mock @repo/agent-core/backend. Explicit mock (no importOriginal) avoids
 // loading real @repo/database, which would keep pg.Pool handles alive
 // past vitest exit (see vitest #4373).
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock(
+	"../src/activities/pm-integration/pm-create-claim",
+	async (importOriginal) => ({
+		...(await importOriginal<object>()),
+		acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+		releasePmCreateClaim: vi.fn(async () => true),
+	}),
+);
+
 vi.mock("@repo/agent-core/backend", () => ({
 	getMcpClient: vi.fn(),
 	getMcpClientResult: vi.fn(),
@@ -79,6 +90,7 @@ vi.mock("@repo/database", () => {
 				findFirst: vi.fn(),
 				findUnique: vi.fn(),
 				update: vi.fn(),
+				updateMany: vi.fn(async () => ({ count: 1 })),
 			},
 			storyTask: { findUnique: vi.fn() },
 			organization: { findUnique: vi.fn() },
@@ -96,6 +108,9 @@ vi.mock("@repo/database", () => {
 		listStoryStatuses: vi.fn(),
 		getStoryById: vi.fn(),
 		getMcpConfigById: vi.fn(),
+		// Read by the GitLab origin check when a test gives the sync an MCP
+		// config; none here is a personal GitLab server.
+		isGitLabPersonalMcpServerKey: () => false,
 		updateStory: vi.fn(),
 		updateTask: vi.fn(),
 		// Read-only mode gate — default: project is writable
@@ -177,6 +192,7 @@ import { getMcpClient, getMcpClientResult } from "@repo/agent-core/backend";
 import {
 	createStory,
 	db,
+	getMcpConfigById,
 	getStoryById,
 	listStoryStatuses,
 	updateStory,
@@ -437,7 +453,7 @@ describe("syncStoryToPM", () => {
 			expect.objectContaining({
 				externalId: "new-card-123",
 			}),
-			{ lastEditedSource: "PM_PULL" },
+			{ lastEditedSource: "PM_PULL", settlesPmCreateClaim: "claim-test" },
 		);
 	});
 
@@ -520,9 +536,16 @@ describe("syncStoryToPM", () => {
 		const result = await syncStoryToPM(input);
 
 		expect(result.success).toBe(true);
-		expect(mockUserStoryUpdate).toHaveBeenCalledWith(
+		// The push time by id; the SUCCESS (no attempt id on this run) kept
+		// off a row that is PENDING for an attempt.
+		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+			where: { id: "story-123" },
+			data: { lastSyncedAt: expect.any(Date) },
+		});
+		const mockUserStoryUpdateMany = vi.mocked(db.userStory.updateMany);
+		expect(mockUserStoryUpdateMany).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "story-123" },
+				where: expect.objectContaining({ id: "story-123" }),
 				data: expect.objectContaining({
 					lastPmSyncStatus: "SUCCESS",
 					lastPmSyncError: null,
@@ -532,7 +555,7 @@ describe("syncStoryToPM", () => {
 		// Must NOT stamp a drift baseline here: the body is transformed
 		// per-PM-tool and a raw-content hash would mismatch the PM read-back
 		// and raise a false CONTENT_DRIFT.
-		const clearCall = mockUserStoryUpdate.mock.calls.find(
+		const clearCall = mockUserStoryUpdateMany.mock.calls.find(
 			(c) => (c[0] as any)?.data?.lastPmSyncStatus === "SUCCESS",
 		);
 		expect((clearCall?.[0] as any)?.data).not.toHaveProperty(
@@ -5768,5 +5791,732 @@ describe("createOrUpdateStoryFromPMItem — kind reverse-mapping on new story (#
 			| undefined;
 		expect(callArgs).toBeDefined();
 		expect(callArgs).not.toHaveProperty("kind");
+	});
+});
+
+// =============================================================================
+// PM create claim (Fizzy #3045) on the inline push path
+// =============================================================================
+
+const claimModule = await import(
+	"../src/activities/pm-integration/pm-create-claim"
+);
+
+describe("syncStoryToPM create claim", () => {
+	const input: StorySyncInput = {
+		storyId: "story-123",
+		projectId: "project-456",
+		mcpConfigId: "mcp-config-789",
+		containerId: "board-abc",
+		direction: "push",
+		userId: "user-123",
+	};
+	const createdOutput = {
+		success: true,
+		output: { id: "new-card-123" },
+		durationMs: 1,
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		setupMcpClientMock();
+		vi.mocked(getStoryById).mockResolvedValue(MOCK_STORY as any);
+		vi.mocked(updateStory).mockResolvedValue({} as any);
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			claimId: "claim-test",
+		});
+	});
+
+	afterEach(() => {
+		// Some cases give the sync an MCP config (its active server).
+		vi.mocked(getMcpConfigById).mockReset();
+		vi.mocked(updateStory).mockReset();
+		vi.mocked(db.userStory.updateMany).mockImplementation((async () => ({
+			count: 1,
+		})) as never);
+		vi.mocked(db.userStory.findUnique).mockReset();
+	});
+
+	// A FAILED stamp by id (`create_orphan`, `update`).
+	const failedStamp = () =>
+		vi
+			.mocked(db.userStory.update)
+			.mock.calls.map(
+				([arg]) =>
+					(arg as { data: Record<string, unknown> }).data ?? {},
+			)
+			.find((data) => data.lastPmSyncStatus === "FAILED");
+	const stampCalls = () =>
+		[
+			...vi.mocked(db.userStory.update).mock.calls,
+			...vi.mocked(db.userStory.updateMany).mock.calls,
+		].map(
+			([arg]) =>
+				arg as {
+					where: Record<string, unknown>;
+					data: Record<string, unknown>;
+				},
+		);
+	// The `create_unconfirmed` FAILED, written under the claim-held fence.
+	const unconfirmedStampCall = () =>
+		stampCalls().find(
+			(call) =>
+				call.data?.lastPmSyncStatus === "FAILED" &&
+				"pmCreateClaimId" in (call.where ?? {}),
+		);
+	const unconfirmedStamp = () => unconfirmedStampCall()?.data;
+	const statusWrites = () =>
+		stampCalls().filter((call) => "lastPmSyncStatus" in (call.data ?? {}));
+	const createSent = () =>
+		vi
+			.mocked(executeMcpTool)
+			.mock.calls.some(
+				([arg]) =>
+					(arg as { toolName: string }).toolName === "create_card",
+			);
+
+	it("a held claim: no create is sent, and the row is stamped FAILED (create_unconfirmed)", async () => {
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			miss: "claimed",
+		});
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_UNCONFIRMED",
+		});
+		expect(
+			vi
+				.mocked(executeMcpTool)
+				.mock.calls.some(
+					([arg]) =>
+						(arg as { toolName: string }).toolName ===
+						"create_card",
+				),
+		).toBe(false);
+		expect(unconfirmedStamp()?.lastPmSyncError).toEqual(
+			expect.stringContaining("may already exist"),
+		);
+		// Overrides any PENDING, but only while the row is unlinked and
+		// its claim is held.
+		expect(unconfirmedStampCall()?.where).toEqual({
+			id: "story-123",
+			externalId: null,
+			pmCreateClaimId: { not: null },
+		});
+		expect(claimModule.acquirePmCreateClaim).toHaveBeenCalledWith({
+			storyId: "story-123",
+		});
+	});
+
+	it("linked by another run since it was read: no create, no create_unconfirmed, no status write", async () => {
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			miss: "linked",
+			externalId: "88",
+			externalUrl: "https://pm.example.com/88",
+		});
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://pm.example.com/88",
+			pushSkipped: "already-linked",
+		});
+		expect(result.errorCode).toBeUndefined();
+		expect(createSent()).toBe(false);
+		// Nothing stamped (so no newer attempt's PENDING is touched), and no
+		// FAILURE audit row.
+		expect(statusWrites()).toEqual([]);
+		expect(mockRecordPmSyncLog).not.toHaveBeenCalledWith(
+			expect.objectContaining({ status: "FAILURE" }),
+		);
+	});
+
+	it("held at the claim attempt but linked before the stamp: the stamp does not apply and the result is benign", async () => {
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			miss: "claimed",
+		});
+		// The claim-held fence matches no row: the claim holder linked it.
+		vi.mocked(db.userStory.updateMany).mockImplementation((async (arg: {
+			where: Record<string, unknown>;
+		}) => ({
+			count: "pmCreateClaimId" in arg.where ? 0 : 1,
+		})) as never);
+		vi.mocked(db.userStory.findUnique).mockImplementation((async () => ({
+			externalId: "88",
+			externalUrl: null,
+		})) as never);
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: true,
+			externalId: "88",
+			pushSkipped: "already-linked",
+		});
+		expect(createSent()).toBe(false);
+		expect(mockRecordPmSyncLog).not.toHaveBeenCalledWith(
+			expect.objectContaining({ status: "FAILURE" }),
+		);
+	});
+
+	it("sends the create at most once", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+
+		await syncStoryToPM(input);
+
+		expect(executeMcpTool).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "create_card",
+				sendAtMostOnce: true,
+				// Cut off at the claim's send ceiling (PM_CREATE_SEND_TIMEOUT_MS).
+				timeoutMs: 50_000,
+			}),
+		);
+	});
+
+	it("an indeterminate create keeps the claim and returns create_unconfirmed", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: false,
+			failureKind: "indeterminate",
+			output: { error: "socket hang up" },
+			durationMs: 1,
+		});
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_UNCONFIRMED",
+		});
+		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+		expect(unconfirmedStamp()?.lastPmSyncError).toEqual(
+			expect.stringContaining("socket hang up"),
+		);
+	});
+
+	it("an error result from the PM tool keeps the claim (it does not prove nothing was created)", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: false,
+			failureKind: "error_result",
+			output: {
+				content: [{ type: "text", text: "board_id is invalid" }],
+				isError: true,
+			},
+			durationMs: 1,
+		});
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_UNCONFIRMED",
+		});
+		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+		expect(unconfirmedStamp()?.lastPmSyncError).toEqual(
+			expect.stringContaining("board_id is invalid"),
+		);
+	});
+
+	it("a create refused before it was sent releases this call's claim", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: false,
+			failureKind: "rejected",
+			output: {
+				error: "Tool not found: create_card (on specified MCP config)",
+			},
+			durationMs: 1,
+		});
+
+		const result = await syncStoryToPM(input);
+
+		expect(result.success).toBe(false);
+		expect(result.error).toEqual(expect.stringContaining("Tool not found"));
+		expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
+			storyId: "story-123",
+			claimId: "claim-test",
+		});
+	});
+
+	describe("the send deadline, started before the claim is asked for", () => {
+		let clock = 1_000_000;
+		beforeEach(() => {
+			clock = 1_000_000;
+			vi.spyOn(performance, "now").mockImplementation(() => clock);
+		});
+		afterEach(() => {
+			vi.mocked(performance.now).mockRestore();
+		});
+
+		it("reaches the create as its dispatchDeadline, counted from before the claim", async () => {
+			vi.mocked(claimModule.acquirePmCreateClaim).mockImplementation(
+				async () => {
+					clock += 10_000;
+					return { claimId: "claim-test" };
+				},
+			);
+			vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+
+			await syncStoryToPM(input);
+
+			expect(executeMcpTool).toHaveBeenCalledWith(
+				expect.objectContaining({
+					toolName: "create_card",
+					dispatchDeadline: 1_000_000 + 50_000,
+				}),
+			);
+		});
+
+		it("a create not sent (its deadline passed) releases the claim and fails with a retry, not create_unconfirmed", async () => {
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: false,
+				failureKind: "deadline_passed",
+				output: { error: "not sent" },
+				durationMs: 1,
+			});
+
+			const result = await syncStoryToPM(input);
+
+			expect(result.success).toBe(false);
+			expect(result.errorCode).toBeUndefined();
+			expect(result.error).toContain("did not send the create to");
+			expect(result.error).not.toMatch(
+				/may already exist|Unlink & re-create/,
+			);
+			expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
+				storyId: "story-123",
+				claimId: "claim-test",
+			});
+			expect(unconfirmedStamp()).toBeUndefined();
+		});
+	});
+
+	it.each([
+		["null", null],
+		["an object", {}],
+		["an array", ["wrong"]],
+	])(
+		"a create answer whose id is %s is not linked to its text: no id read, the claim kept",
+		async (_label, id) => {
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: { id },
+				durationMs: 1,
+			});
+
+			const result = await syncStoryToPM(input);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("returned no work item id");
+			expect(updateStory).not.toHaveBeenCalledWith(
+				"story-123",
+				"project-456",
+				expect.anything(),
+				expect.objectContaining({ settlesPmCreateClaim: "claim-test" }),
+			);
+			expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+		},
+	);
+
+	it("a failed link write is a create_orphan that keeps the claim (no throw into a retry)", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+		vi.mocked(updateStory).mockRejectedValue(
+			new Error("database unavailable"),
+		);
+
+		const result = await syncStoryToPM(input);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_ORPHAN",
+			externalId: "new-card-123",
+		});
+		// Three link attempts, each scoped to the claim.
+		expect(updateStory).toHaveBeenCalledTimes(3);
+		expect(updateStory).toHaveBeenCalledWith(
+			"story-123",
+			"project-456",
+			expect.objectContaining({ externalId: "new-card-123" }),
+			expect.objectContaining({ settlesPmCreateClaim: "claim-test" }),
+		);
+		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+		expect(failedStamp()?.lastPmSyncError).toEqual(
+			expect.stringContaining("new-card-123"),
+		);
+	});
+	describe("a legacy link to another PM tool (no server stamp, another tool's URL)", () => {
+		const legacyStory = {
+			...MOCK_STORY,
+			externalId: "77",
+			externalUrl:
+				"https://dev.azure.com/example-org/example/_workitems/edit/77",
+			externalMcpServerId: null,
+		};
+		const fizzyCapabilities = {
+			hasPMCapabilities: true,
+			detectedType: "fizzy",
+			availableTools: ["create_card", "update_card"],
+			containerHierarchy: [],
+			taskCreation: {
+				toolName: "create_card",
+				containerParam: "board_id",
+				titleParam: "title",
+				descriptionParam: "description",
+				allParams: [],
+			},
+			taskUpdate: {
+				toolName: "update_card",
+				idParam: "card_id",
+				allParams: [],
+			},
+		};
+		const linkWrites = () =>
+			vi
+				.mocked(updateStory)
+				.mock.calls.filter(([, , data]) =>
+					Object.hasOwn(data as object, "externalId"),
+				);
+		const rawStoryWrites = () =>
+			vi
+				.mocked(db.userStory.update)
+				.mock.calls.filter(([arg]) =>
+					Object.hasOwn(
+						(arg as { data?: object }).data ?? {},
+						"externalId",
+					),
+				);
+
+		it.each(["push", "bidirectional"] as const)(
+			"%s: fails, sends nothing to the PM tool, and leaves the link and the claim alone",
+			async (direction) => {
+				// A fresh copy: the sync may update the story it read in memory.
+				vi.mocked(getStoryById).mockImplementation(
+					async () =>
+						({
+							...legacyStory,
+							lastPmSyncAttemptId: "attempt-seen",
+						}) as any,
+				);
+				vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+				vi.mocked(db.userStory.updateMany).mockResolvedValue({
+					count: 1,
+				});
+
+				const result = await syncStoryToPM({
+					...input,
+					direction,
+					capabilities: fizzyCapabilities as any,
+				});
+
+				expect(result).toMatchObject({
+					success: false,
+					errorCode: "PM_TOOL_MISMATCH_LEGACY",
+				});
+				expect(result.error).toEqual(
+					expect.stringContaining(
+						"linked to a ticket in a different PM tool",
+					),
+				);
+				expect(result.error).toEqual(
+					expect.stringContaining("Unlink & re-create"),
+				);
+				// No create, and no update of the other tool's id either.
+				expect(executeMcpTool).not.toHaveBeenCalled();
+				expect(claimModule.acquirePmCreateClaim).not.toHaveBeenCalled();
+				// The stored link is not written, cleared or replaced.
+				expect(linkWrites()).toEqual([]);
+				expect(rawStoryWrites()).toEqual([]);
+				// The row is stamped FAILED with the message the failure panel
+				// offers Unlink & re-create for, so Sync now (which has no
+				// workflow to stamp it) leaves that action reachable. Only
+				// while the row still has the link and attempt read: a relink
+				// or a newer run since keeps its state. Like every write from a
+				// run without an attempt id, never over a row that is PENDING
+				// for an attempt (`writePmSyncStatusUnattempted`).
+				expect(failedStamp()).toBeUndefined();
+				expect(vi.mocked(db.userStory.updateMany)).toHaveBeenCalledWith(
+					{
+						where: {
+							id: input.storyId,
+							externalId: "77",
+							externalMcpServerId: null,
+							lastPmSyncAttemptId: "attempt-seen",
+							OR: [
+								{ lastPmSyncStatus: null },
+								{ lastPmSyncStatus: { not: "PENDING" } },
+								{ lastPmSyncAttemptId: null },
+							],
+						},
+						data: expect.objectContaining({
+							lastPmSyncStatus: "FAILED",
+							lastPmSyncError: result.error,
+						}),
+					},
+				);
+			},
+		);
+
+		it("a run with an attempt id stamps FAILED only for that attempt", async () => {
+			vi.mocked(getStoryById).mockImplementation(
+				async () => ({ ...legacyStory }) as any,
+			);
+			vi.mocked(db.userStory.updateMany).mockResolvedValue({ count: 1 });
+
+			await syncStoryToPM({
+				...input,
+				pmSyncAttemptId: "attempt-1",
+				capabilities: fizzyCapabilities as any,
+			});
+
+			expect(failedStamp()).toBeUndefined();
+			expect(vi.mocked(db.userStory.updateMany)).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						id: input.storyId,
+						lastPmSyncAttemptId: "attempt-1",
+					}),
+					data: expect.objectContaining({
+						lastPmSyncStatus: "FAILED",
+					}),
+				}),
+			);
+		});
+
+		it("overrideMismatch does not migrate it either", async () => {
+			vi.mocked(getStoryById).mockImplementation(
+				async () => ({ ...legacyStory }) as any,
+			);
+			vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+
+			const result = await syncStoryToPM({
+				...input,
+				overrideMismatch: true,
+				capabilities: fizzyCapabilities as any,
+			});
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(executeMcpTool).not.toHaveBeenCalled();
+			expect(linkWrites()).toEqual([]);
+		});
+
+		it("a same-tool card URL behind a proxy base URL is not mistaken for another tool", async () => {
+			// The shared heuristic trusts a known host of the active tool before
+			// comparing against the config's base URL (a Fizzy proxy host vs
+			// app.fizzy.do card URLs), so this legacy link is pushed to as usual.
+			vi.mocked(getStoryById).mockImplementation(
+				async () =>
+					({
+						...legacyStory,
+						externalId: "1075",
+						externalUrl: "https://app.fizzy.do/000000/cards/1075",
+					}) as any,
+			);
+			vi.mocked(getMcpConfigById).mockResolvedValue({
+				id: "mcp-config-789",
+				baseUrl: "https://fizzy-proxy.example.com",
+				mcpServerId: "srv-fizzy",
+				mcpServer: { defaultUrl: null },
+			} as any);
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: { id: "1075" },
+				durationMs: 1,
+			});
+
+			const result = await syncStoryToPM({
+				...input,
+				capabilities: fizzyCapabilities as any,
+			});
+
+			expect(result.errorCode).not.toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(executeMcpTool).toHaveBeenCalledWith(
+				expect.objectContaining({ toolName: "update_card" }),
+			);
+			expect(claimModule.acquirePmCreateClaim).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("a legacy link on another GitLab instance (personal GitLab MCP config)", () => {
+		const gitlabCapabilities = {
+			hasPMCapabilities: true,
+			detectedType: "gitlab",
+			availableTools: ["create_issue", "update_issue"],
+			containerHierarchy: [],
+			taskCreation: {
+				toolName: "create_issue",
+				containerParam: "project_id",
+				titleParam: "title",
+				descriptionParam: "description",
+				allParams: [],
+			},
+			taskUpdate: {
+				toolName: "update_issue",
+				idParam: "issue_iid",
+				allParams: [],
+			},
+		};
+		const selfHostedInput: StorySyncInput = {
+			...input,
+			additionalContext: { gitlabOrigin: "https://gitlab.example.com" },
+			capabilities: gitlabCapabilities as any,
+		};
+		const linkedTo = (externalUrl: string) =>
+			vi.mocked(getStoryById).mockImplementation(
+				async () =>
+					({
+						...MOCK_STORY,
+						externalId: "77",
+						externalUrl,
+						externalMcpServerId: null,
+					}) as any,
+			);
+
+		beforeEach(() => {
+			vi.mocked(getMcpConfigById).mockResolvedValue({
+				id: "mcp-config-789",
+				baseUrl: "https://gitlab.example.com",
+				mcpServerId: "srv-gitlab",
+				mcpServer: { key: "gitlab", defaultUrl: null },
+			} as any);
+			vi.mocked(db.userStory.updateMany).mockResolvedValue({ count: 1 });
+		});
+
+		it("a gitlab.com link is not updated on the self-hosted instance: nothing is sent, legacy failure", async () => {
+			linkedTo("https://gitlab.com/example/project/-/issues/77");
+			vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+
+			const result = await syncStoryToPM(selfHostedInput);
+
+			expect(result).toMatchObject({
+				success: false,
+				errorCode: "PM_TOOL_MISMATCH_LEGACY",
+			});
+			expect(executeMcpTool).not.toHaveBeenCalled();
+			expect(claimModule.acquirePmCreateClaim).not.toHaveBeenCalled();
+		});
+
+		it("a link on the configured instance is still updated", async () => {
+			linkedTo("https://gitlab.example.com/example/project/-/issues/77");
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: { iid: 77 },
+				durationMs: 1,
+			});
+
+			const result = await syncStoryToPM(selfHostedInput);
+
+			expect(result.errorCode).not.toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(executeMcpTool).toHaveBeenCalledWith(
+				expect.objectContaining({ toolName: "update_issue" }),
+			);
+		});
+	});
+
+	describe("a confirmed migration of a link stamped with another server (Push & relink)", () => {
+		const stampedStory = {
+			...MOCK_STORY,
+			externalId: "77",
+			externalUrl: "https://pm-old.example.com/cards/77",
+			externalMcpServerId: "srv-old",
+		};
+
+		beforeEach(() => {
+			vi.mocked(getStoryById).mockImplementation(
+				async () => ({ ...stampedStory }) as any,
+			);
+			vi.mocked(getMcpConfigById).mockResolvedValue({
+				id: "mcp-config-789",
+				baseUrl: null,
+				mcpServerId: "srv-active",
+				mcpServer: { defaultUrl: null },
+			} as any);
+		});
+
+		it("drops the link only while the row still carries that stamped link, then claims and creates", async () => {
+			vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+
+			const result = await syncStoryToPM({
+				...input,
+				overrideMismatch: true,
+			});
+
+			expect(result.success).toBe(true);
+			const clear = vi
+				.mocked(updateStory)
+				.mock.calls.find(
+					([, , data]) =>
+						(data as { externalId?: unknown }).externalId === null,
+				);
+			expect(clear?.[2]).toEqual({
+				externalId: null,
+				externalUrl: null,
+				externalMcpServerId: null,
+			});
+			expect(clear?.[3]).toMatchObject({
+				onlyIfPmLink: {
+					externalId: "77",
+					externalMcpServerId: "srv-old",
+				},
+			});
+			// The new link is stamped with the active server, so a second,
+			// stale migration's scoped clear cannot match it.
+			expect(updateStory).toHaveBeenCalledWith(
+				"story-123",
+				"project-456",
+				expect.objectContaining({
+					externalId: "new-card-123",
+					externalMcpServerId: "srv-active",
+				}),
+				expect.objectContaining({ settlesPmCreateClaim: "claim-test" }),
+			);
+			const clearOrder =
+				vi.mocked(updateStory).mock.invocationCallOrder[
+					vi.mocked(updateStory).mock.calls.indexOf(clear as never)
+				];
+			expect(clearOrder).toBeLessThan(
+				vi.mocked(claimModule.acquirePmCreateClaim).mock
+					.invocationCallOrder[0] ?? 0,
+			);
+		});
+
+		it("a link changed since it was read: nothing is created", async () => {
+			vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
+			vi.mocked(updateStory).mockImplementation(
+				async (_id, _project, _data, ctx) => {
+					if (
+						(ctx as { onlyIfPmLink?: unknown } | undefined)
+							?.onlyIfPmLink !== undefined
+					) {
+						throw Object.assign(new Error("link changed"), {
+							name: "StoryLinkChangedError",
+						});
+					}
+					return {} as any;
+				},
+			);
+
+			const result = await syncStoryToPM({
+				...input,
+				overrideMismatch: true,
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.error).toEqual(
+				expect.stringContaining("link changed while it was syncing"),
+			);
+			expect(claimModule.acquirePmCreateClaim).not.toHaveBeenCalled();
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		});
+
+		it("without overrideMismatch: blocked, nothing cleared", async () => {
+			const result = await syncStoryToPM(input);
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH");
+			expect(executeMcpTool).not.toHaveBeenCalled();
+			expect(updateStory).not.toHaveBeenCalled();
+		});
 	});
 });

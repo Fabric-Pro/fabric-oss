@@ -159,6 +159,10 @@
 		"description": "Manage your application."
 	},
 	"app": {
+		"agentLabels": {
+			"fabricAi": "Fabric AI",
+			"projectSetup": "Project setup"
+		},
 		"shellNotices": {
 			"ariaLabel": "Account and setup notices"
 		},
@@ -198,7 +202,8 @@
 			"status": {
 				"running": "Running",
 				"completed": "Completed",
-				"failed": "Failed"
+				"failed": "Failed",
+				"waitingForPlan": "Waiting"
 			},
 			"stepStatus": {
 				"pending": "Not started",
@@ -263,7 +268,9 @@
 				"title": "No background jobs",
 				"description": "When Fabric monitors a Teams or Slack channel, ingests a repository or document, or suggests publishing topics, its progress appears here."
 			},
-			"aiProviderMissing": "This organization has no AI provider for background work."
+			"aiProviderMissing": "This organization has no AI provider for background work.",
+			"planWait": "Waiting for the ChatGPT plan reset",
+			"planWaitUntil": "Waiting for the ChatGPT plan reset · resumes {time}"
 		},
 		"notifications": {
 			"openLabel": "Notifications",
@@ -1601,6 +1608,8 @@
 						"policy_changed": "ChatGPT plan pooling policy changed",
 						"terms_acknowledged": "ChatGPT plan pooling terms accepted",
 						"api_fallback_used": "Background AI work fell back to the organization provider",
+						"interactive_api_fallback_used": "A member's AI work fell back to the organization provider",
+						"api_override_approved": "A paused bulk run was let run on the organization provider",
 						"fallback_model_changed": "ChatGPT plan fallback model changed"
 					},
 					"restored": "Organization restored",
@@ -2475,7 +2484,7 @@
 			"description": "Run your own AI work in this organization on your ChatGPT plan instead of the organization's provider. Background and scheduled work stays on the organization's provider unless you include it below.",
 			"loadFailed": "Your ChatGPT plan connection could not be loaded.",
 			"notConnected": "No ChatGPT plan is connected.",
-			"howToConnect": "Connect your plan from a terminal with the Fabric CLI. It asks you to approve the connection here in Fabric, opens a ChatGPT sign-in in your browser and stores the connection on your account.",
+			"howToConnect": "Connect your plan from a terminal with the Fabric CLI. First approve the connection here in Fabric, then sign in to ChatGPT in the browser window the CLI opens. Your terminal says when the plan is connected.",
 			"copyCommand": "Copy command",
 			"copied": "Command copied",
 			"copyFailed": "The command could not be copied. Select it and copy it manually.",
@@ -2491,6 +2500,7 @@
 			"turnedOff": "Your ChatGPT plan is off for this organization",
 			"updateFailed": "The setting could not be saved. Try again.",
 			"usageEstimate": "Fabric used about {percent}% of your {hours}-hour window (estimate)",
+			"usageReported": "{percent}% of your {hours}-hour window used (reported by ChatGPT)",
 			"usageEstimateNote": "An estimate from Fabric's own requests only. Your plan's real limits and other usage are shown in",
 			"usageLink": "ChatGPT Settings → Usage",
 			"opensInNewTab": "(opens in a new tab)",
@@ -2508,14 +2518,14 @@
 				"notNow": "Not now",
 				"failed": "Your answer could not be saved. Try again."
 			},
-			"includeBackgroundJobs": "Also use it for background jobs and agents",
-			"backgroundJobsWarningTitle": "Background jobs use your plan while you are away",
-			"backgroundJobsWarning": "Background jobs run when you're not using Fabric, for example scheduled reports, daily briefs and publishing suggestions for projects you own. They count against your ChatGPT plan's 5-hour and weekly limits and can use them up before you start working. This includes AI agents that Fabric starts on your behalf without you, such as scheduled document updates. OpenAI's documentation does not describe this kind of use, so it may change or be restricted.",
-			"backgroundJobsOn": "Background jobs and agents now use your ChatGPT plan here.",
-			"backgroundJobsOff": "Background jobs and agents use the organization's provider again.",
+			"includeBackgroundJobs": "Also use it for background work and agents",
+			"backgroundJobsWarningTitle": "Background work uses your plan while you are away",
+			"backgroundJobsWarning": "Background work runs when you're not using Fabric, for example scheduled reports, daily briefs and publishing suggestions for projects you own. It counts against your ChatGPT plan's 5-hour and weekly limits and can use them up before you start working. This includes AI agents that Fabric starts on your behalf without you, such as scheduled document updates. OpenAI's documentation does not describe this kind of use, so it may change or be restricted.",
+			"backgroundJobsOn": "Background work and agents now use your ChatGPT plan here.",
+			"backgroundJobsOff": "Background work and agents use the organization's provider again.",
 			"connect": {
 				"title": "Connect your ChatGPT plan",
-				"description": "The Fabric CLI asked to connect your ChatGPT plan to your account, {email}. Next it signs you in to ChatGPT on your computer and sends the sign-in here, where it is stored encrypted.",
+				"description": "The Fabric CLI asked to connect your ChatGPT plan to your account, {email}. Approve it here, then sign in to ChatGPT in the browser window the CLI opens. Fabric stores the sign-in encrypted.",
 				"chooseOrganizations": "Use my plan for my own work in",
 				"noOrganizations": "ChatGPT plan isn't enabled for any of your organizations. Ask your Fabric admin to enable it.",
 				"approve": "Connect",
@@ -2523,16 +2533,25 @@
 				"cancel": "Cancel",
 				"failed": "The connection could not be approved. Try again.",
 				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt` again.",
-				"returnToTerminal": "Return to your terminal to finish signing in to ChatGPT. You can close this tab.",
+				"returnToTerminal": "Approved. The Fabric CLI now opens ChatGPT in your browser — sign in with the ChatGPT account you want to connect. Your terminal says when the plan is connected.",
 				"cancelled": "Connection cancelled. You can close this tab.",
-				"close": "Close"
+				"close": "Close",
+				"steps": {
+					"label": "How connecting works",
+					"cli": "You ran the Fabric CLI command in your terminal.",
+					"approve": "Approve the connection here in Fabric.",
+					"chatgpt": "The CLI opens ChatGPT in your browser. Sign in with the ChatGPT account you want to connect.",
+					"chatgptShared": "The CLI opens ChatGPT in your browser. Sign in with the organization's ChatGPT account, not your own.",
+					"terminal": "Return to your terminal. It says when the plan is connected.",
+					"done": "done"
+				}
 			},
 			"connectShared": {
 				"title": "Connect a shared ChatGPT plan account",
-				"description": "The Fabric CLI asked to connect a ChatGPT account that {organization} shares. Next it signs in to ChatGPT on your computer — sign in with the account the organization should share, not your own — and sends the sign-in here, where it is stored encrypted. Admins choose which work it serves in the organization's AI providers settings.",
+				"description": "The Fabric CLI asked to connect a ChatGPT account that {organization} shares. Approve it here, then sign in to ChatGPT in the browser window the CLI opens — with the account the organization should share, not your own. Fabric stores the sign-in encrypted; admins choose which work it serves in the organization's AI providers settings.",
 				"notAllowed": "You can connect a shared ChatGPT plan account only to an organization you administer, with ChatGPT plan pooling enabled.",
 				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt --org <slug> --shared` again.",
-				"returnToTerminal": "Return to your terminal to finish signing in to the shared ChatGPT account. You can close this tab."
+				"returnToTerminal": "Approved. The Fabric CLI now opens ChatGPT in your browser — sign in with the account {organization} should share, not your own. Your terminal says when it is connected."
 			},
 			"sharedFallback": {
 				"title": "Your ChatGPT plan reached its limit",
@@ -2555,9 +2574,9 @@
 			"providerStatus": {
 				"chip": "ChatGPT plan",
 				"ownWork": "Your own AI work in {organization} runs on your ChatGPT plan.",
-				"everythingElse": "The AI provider below serves everything else, such as background jobs and document search.",
+				"everythingElse": "The AI provider below serves everything else, such as background work and document search.",
 				"onlyTitle": "Only your ChatGPT plan is set up",
-				"onlyDescription": "Your own AI work in {organization} runs on your ChatGPT plan. Background jobs and document search need an AI provider: add one below."
+				"onlyDescription": "Your own AI work in {organization} runs on your ChatGPT plan. Background work and document search need an AI provider: add one below."
 			},
 			"subscription": {
 				"tier": {
@@ -2574,33 +2593,46 @@
 			},
 			"weeklyLimitOnly": "No five-hour window on this plan: weekly limit only",
 			"share": {
-				"action": "Share with {organization}",
+				"action": "Share organization-wide",
 				"description": "Make this ChatGPT account one of {organization}'s shared accounts. No new sign-in is needed.",
 				"confirmTitle": "Share your ChatGPT plan with {organization}?",
-				"confirmBody": "It stops being your own plan in every organization and becomes a shared account of {organization}. Its admins manage how it is used; only you can take it back.",
+				"confirmBody": "It stops being your own plan in every organization and becomes a shared account of {organization}: anyone there can run their AI work on its usage. Its admins manage how it is used; only you can stop sharing it.",
 				"confirm": "Share",
 				"shared": "Your ChatGPT plan is now shared with {organization}",
 				"failed": "Couldn't share the ChatGPT plan",
 				"sharedWithTitle": "Shared with {organization}",
-				"sharedWithNote": "Admins of {organization} manage this account. Only you can take it back as your own plan.",
-				"takeBack": "Take back",
-				"takeBackBlocked": "Disconnect your own ChatGPT plan first to take this account back.",
-				"takeBackConfirmTitle": "Take back {account}?",
-				"takeBackConfirmBody": "It becomes your own plan again and stops serving {organization}'s shared work. You can share it again later.",
-				"takenBack": "The account is your own plan again",
-				"takeBackFailed": "Couldn't take the account back"
+				"sharedWithNote": "Admins of {organization} manage this account. Only you can stop sharing it and switch it back to personal use only.",
+				"takeBack": "Stop sharing",
+				"takeBackBlocked": "Disconnect your own ChatGPT plan first to stop sharing this account.",
+				"takeBackConfirmTitle": "Stop sharing {account}?",
+				"takeBackConfirmBody": "It switches to personal use only: it becomes your own plan again and stops serving {organization}'s shared work. You can share it again later.",
+				"takenBack": "The account is back to personal use only",
+				"takeBackFailed": "Couldn't stop sharing the account",
+				"actionTooltip": "Anyone in {organization} can then run their AI work on this plan's usage. You can switch it back to personal use only at any time."
+			},
+			"test": {
+				"button": "Test",
+				"running": "Testing…",
+				"accountLabel": "Test {account}",
+				"works": "Works · {model} · {seconds} s",
+				"needsReconnect": "Needs reconnect",
+				"spent": "Usage limit reached",
+				"spentUntil": "Usage limit reached until {time}",
+				"failed": "Test failed: {message}",
+				"failedGeneric": "Test failed"
 			}
 		},
 		"chatgptPlanPool": {
 			"title": "Shared ChatGPT plans",
-			"description": "ChatGPT accounts the organization shares. Allowlisted background jobs, and where you allow it the own work of members without a plan of their own, run on them instead of the organization's AI provider.",
+			"description": "ChatGPT accounts your organization shares. Fabric runs background work on them, and the work of members who haven't connected their own plan, instead of billing your API provider.",
 			"loadFailed": "The shared ChatGPT plans could not be loaded. Reload the page to try again.",
 			"termsTitle": "Terms for sharing ChatGPT plans",
 			"termsBody": "Sharing a ChatGPT plan across an organization is governed by OpenAI's terms for that plan. By accepting, you confirm that the organization holds the accounts it connects here and may use them for its members' and its background work.",
 			"acceptTerms": "Accept terms",
 			"ownerOnly": "Only an organization owner can accept these terms.",
-			"backgroundAutoWarningTitle": "Background jobs will be billed to the organization",
-			"backgroundAutoWarning": "Once every shared plan is spent, allowlisted background jobs run on the organization's own AI provider without asking anyone. Each switch to it is recorded in the audit log.",
+			"backgroundAutoWarningTitle": "All AI work can be billed to the organization",
+			"backgroundAutoWarning": "Once every shared plan is spent, background work (such as security scans, publishing suggestions, scheduled reports and the first import of meeting and channel history) runs on your API provider without asking. Each switch is recorded in the audit log.",
+			"peopleAutoWarning": "People's own work moves to it too, and they see a note under each reply.",
 			"accountsTitle": "Shared accounts",
 			"accountsDescription": "Each account's status, an estimate of its current five-hour window, and the work it serves.",
 			"emptyAccounts": "No shared account is connected yet. An organization admin connects one from a terminal:",
@@ -2610,15 +2642,15 @@
 			"statusCooling": "Cooling until {time}",
 			"unknownAccount": "Unknown account",
 			"usageEstimate": "About {percent}% of a {hours}-hour window used through Fabric (estimate)",
-			"enabled": "Enabled",
-			"serveInteractive": "Serves the own work of members without a plan",
-			"serveBackground": "Serves allowlisted background jobs",
+			"usageReported": "{percent}% of a {hours}-hour window used (reported by ChatGPT)",
+			"usageEstimateTooltip": "Fabric's estimate of this 5-hour window, based on calls Fabric made. Use outside Fabric isn't counted.",
+			"usageEstimateName": "the usage estimate",
 			"planType": "Plan type",
 			"planTypeDescription": "The account's ChatGPT plan. OpenAI does not report it; it sizes the usage estimate.",
+			"planTypeTooltip": "OpenAI doesn't tell Fabric the plan type. Set it so the usage estimate matches the plan's limits.",
 			"planTypeNotSet": "Not set",
-			"memberShare": "Fair share per member",
-			"memberShareDescription": "The most of this account's window one member's own work may use; past it their work goes to the organization's other accounts.",
-			"memberShareNone": "No cap",
+			"memberShare": "Each member may use",
+			"memberShareDescription": "The most of this account's 5-hour window one member's work can take. Past it, their work moves to the organization's other shared accounts.",
 			"memberSharePercent": "{percent}%",
 			"importHeadsUp": "The first import of this history runs on your organization's shared ChatGPT plans and can use a large share of a plan's five-hour window.",
 			"accountUpdated": "Account updated",
@@ -2631,12 +2663,24 @@
 			"disconnectConfirmDescription": "{label} is signed out at OpenAI and removed from Fabric. Nothing runs on it any more; connect it again with the Fabric CLI to bring it back.",
 			"cancel": "Cancel",
 			"switchLabel": "{setting} — {account}",
+			"tooltipLabel": "About {setting}",
 			"policyLink": "Routing and spend policy → AI Models",
 			"connectedBy": "Connected by {name}",
 			"connectedByYou": "Connected by you",
 			"connectedByUnknown": "Connected by a former member",
-			"takeBack": "Take back as my plan",
-			"takeBackConfirmBody": "It becomes your own plan again and stops serving this organization's shared work. You can share it again later."
+			"takeBack": "Stop sharing",
+			"takeBackConfirmBody": "It switches to personal use only: it becomes your own plan again and stops serving this organization's shared work. You can share it again later.",
+			"serves": "Serves",
+			"servesTooltip": "Which work this account takes. Members who connected their own plan always use it first.",
+			"servesEverything": "Everything",
+			"servesBackground": "Background only",
+			"servesPaused": "Paused",
+			"servesMembersOnly": "Members only",
+			"servesEverythingHelp": "Members without their own plan, and background work.",
+			"servesBackgroundHelp": "Background work only. Members without their own plan can't use this account.",
+			"servesPausedHelp": "Serves nothing until you choose again.",
+			"servesMembersOnlyHelp": "Members without a plan only, set by an earlier version. Choose Everything or Background only to change it.",
+			"advanced": "Advanced"
 		},
 		"aiProviders": {
 			"embeddingsOnly": {
@@ -2654,6 +2698,7 @@
 			"lastRequestResets": "Last request {last} · resets at {reset}",
 			"lastRequestNoWindow": "Last request {last} · no open window",
 			"noOpenWindow": "No open window",
+			"weeklyReported": "Weekly limit: {percent}% used (reported by ChatGPT)",
 			"usedBy": "Used by: {consumers}",
 			"otherConsumer": "Other",
 			"consumers": {
@@ -2670,7 +2715,8 @@
 				"document-generation": "Document generation",
 				"generate-tasks": "Task generation",
 				"enhance-feature": "Enhance feature",
-				"publishing-suite": "Publishing"
+				"publishing-suite": "Publishing",
+				"chatgpt-plan-test": "Plan test"
 			}
 		},
 		"aiModelsRouting": {
@@ -2682,11 +2728,9 @@
 				"ownPlansBody": "Used for that member's own work when they have connected a plan.",
 				"ownPlansCount": "{count, plural, one {# member connected} other {# members connected}}",
 				"sharedTitle": "Shared organization accounts",
-				"sharedBody": "Serve members without a plan and allowlisted background jobs.",
+				"sharedBody": "Used for the work of members who haven't connected their own plan, and for Fabric's background work.",
 				"sharedActive": "{count} active · {percent}% of window used",
 				"sharedNone": "No accounts connected",
-				"sharedOff": "Sharing is off",
-				"sharedNotEnabled": "Not enabled for this organization",
 				"manageShared": "Manage shared accounts",
 				"apiTitle": "API billing",
 				"apiBody": "Used when no plan can serve the request.",
@@ -2695,20 +2739,21 @@
 				"manageProviders": "Manage providers",
 				"addProvider": "Add an API provider",
 				"stepNumber": "Step {number}",
-				"sharingQuestion": "Share accounts with members and background jobs",
-				"sharingHelp": "Shared accounts serve members without a plan of their own and the allowlisted background jobs.",
-				"sharingNeedsTerms": "An organization owner must accept the terms before sharing can be turned on.",
 				"spentQuestion": "When every plan is spent",
-				"spentHelpWait": "Background jobs wait for the window to reset. Interactive work asks the member.",
-				"spentHelpAuto": "Background jobs move to API billing. Interactive work asks the member.",
 				"spentHelpNoApi": "With no API provider, everything waits for the window to reset.",
-				"spentHelpNoSharing": "Applies to the shared accounts. Turn sharing on to choose.",
-				"interactiveLabel": "Interactive work",
-				"interactiveAsk": "Ask the member",
-				"interactiveFixed": "Fixed: a spent plan's refusal already asks the member; their work never moves to API billing on its own.",
-				"backgroundLabel": "Background jobs",
+				"spentHelpBackgroundWait": "Background work pauses and continues when the plan resets.",
+				"spentHelpBackgroundApi": "Background work continues on your API provider, billed to the organization.",
+				"spentHelpPeopleStopWait": "People see when it resets.",
+				"spentHelpPeopleStopApi": "People see when the plan resets.",
+				"spentHelpPeopleApi": "People's work continues on your API provider too, and they see a note that it was billed to the organization.",
+				"backgroundLabel": "Background work",
 				"backgroundWait": "Wait for reset",
 				"backgroundApi": "Use API billing",
+				"peopleLabel": "People's own work",
+				"peopleStop": "Stop and show the reset time",
+				"peopleApi": "Use API billing",
+				"apiNeedsLlmProvider": "Needs an API provider for chat and generation. Your organization's only key is set to \"Embeddings only\" — change that or add a provider in AI Providers.",
+				"apiNeedsProvider": "Needs an API provider. Add one in AI Providers.",
 				"headroomLabel": "Leave for people",
 				"fallbackQuestion": "If the plan stops serving a chosen model",
 				"fallbackHelpRecommended": "Fabric retries once on this model. GPT-6 Astra is the strongest and uses the most of the plan window.",
@@ -2720,7 +2765,9 @@
 				"noFallbackDescription": "Show an error and ask an admin to choose another model.",
 				"saved": "Saved",
 				"saveFailed": "Could not save the change",
-				"loadFailed": "Could not load how AI work runs here"
+				"loadFailed": "Could not load how AI work runs here",
+				"sharedNeedsTerms": "Waiting for an owner to accept the terms",
+				"headroomHelp": "How much of each shared account's window background work leaves for people's own work."
 			},
 			"models": {
 				"label": "Models",
@@ -2742,6 +2789,8 @@
 				"notOnPlan": "Not run on a plan",
 				"noApiProvider": "No API provider for LLM work",
 				"needsApiProvider": "Needs an API provider · not run on a plan",
+				"decisionOnPlan": "Runs on the plan, with the model of the work it decides for",
+				"decisionOnPlanHint": "The API billing model is used only when no plan can serve the call.",
 				"noModelsAvailable": "No models available",
 				"enforced": "Members can't change this",
 				"planSelectLabel": "{task} on a ChatGPT plan",
@@ -3731,6 +3780,7 @@
 				"startedFeature": "Changed to feature — rewriting the body",
 				"startedDescription": "The type changed. The description and acceptance criteria are being redrafted through the new template and will replace what is there now; this takes about a minute.",
 				"tooltipHint": "The description and acceptance criteria are redrafted through the new type's template; the drafting stage resets to DRAFT.",
+				"deferredBlocked": "A deferred item can't change type. Change its delivery track first — a deferred item can only be declined, closed or parked.",
 				"inFlightTitle": "Rewriting the body for the new type",
 				"inFlightBody": "The description and acceptance criteria are being redrafted through the new template. They are read-only until this finishes. The previous version is already in version history.",
 				"completedTitle": "Description and acceptance criteria rewritten",
@@ -3954,6 +4004,7 @@
 				}
 			},
 			"workspace": {
+				"engagementProfileToggle": "Delivery track & estimate confidence",
 				"regenerateTitleAction": "Regenerate title",
 				"regenerateTitleTooltip": "Generate a new title from the description using AI",
 				"regenerateTitleSuccess": "Title updated.",
@@ -5465,7 +5516,18 @@
 				"autoSync": "Auto-sync",
 				"autoSyncAria": "Toggle automatic PM sync for this test case",
 				"statusLabel": "Status",
-				"pushUnsupported": "Your connected PM tool doesn't have native test cases, so test cases can't be synced to it."
+				"pushUnsupported": "Your connected PM tool doesn't have native test cases, so test cases can't be synced to it.",
+				"unlinkRecreate": "Unlink & re-create",
+				"unlinkRecreateTitle": "Unlink and create a new PM item?",
+				"unlinkRecreateMessage": "An earlier push may already have created this test case in your PM tool, or it is linked to an item in a different PM tool. Check your PM tool first. Unlink & re-create drops this test case's PM link and creates a new item; any existing item is not deleted.",
+				"linkExisting": "Link to existing item",
+				"linkExistingTitle": "Link to an existing PM item",
+				"linkExistingDescription": "Enter the ID or key of the item an earlier push created in your PM tool. Fabric checks that it exists, links this test case to it and creates nothing; the next push updates that item.",
+				"linkExistingLabel": "PM item ID or key",
+				"linkExistingPlaceholder": "e.g. 1234 or PROJ-12",
+				"linkExistingSubmit": "Link item",
+				"linkedExisting": "Linked to PM item {id}",
+				"alreadyRunning": "A sync for this test case is already running."
 			},
 			"import": {
 				"title": "Import from PM",
@@ -7410,6 +7472,13 @@
 			"editorLink": "Glossy version",
 			"menuItem": "Glossy version"
 		},
+		"documentDownload": {
+			"originalFile": "Original file (.{extension})",
+			"originalFileNoExtension": "Original file",
+			"originalFileTitle": "Download {filename} exactly as it was uploaded",
+			"originalUnavailable": "The original file is no longer available",
+			"originalFailed": "Couldn't download the original file"
+		},
 		"proposalArtifactEntry": {
 			"libraryPrompt": "Client proposal prompt from the library",
 			"libraryPromptHint": "Proposals are written from the client proposal prompt your organization keeps in the prompt library, so there is no prompt to choose here.",
@@ -8054,6 +8123,23 @@
 				"omittedVisuals": "{count, plural, one {# visual couldn't be rendered and was left out of the download.} other {# visuals couldn't be rendered and were left out of the download.}}",
 				"omittedImages": "{count, plural, one {# image from the document couldn't be loaded and was left out.} other {# images from the document couldn't be loaded and were left out.}}"
 			}
+		},
+		"planPause": {
+			"title": "Paused — waiting for ChatGPT plan reset",
+			"resumesAt": "Resumes at {time}",
+			"resumesSoon": "Resumes shortly",
+			"body": "Every shared ChatGPT plan this work may use is spent. Its progress is saved, and it continues where it stopped once a plan resets.",
+			"pendingDocuments": "{count, plural, one {# document is} other {# documents are}} waiting.",
+			"cancel": "Cancel",
+			"runNow": "Run now on API billing",
+			"runNowHint": "Resumes now on your organization's own AI provider, billed there, for this run only.",
+			"askAdmin": "Need it sooner? Ask an organization admin to run it now on API billing.",
+			"runNowStarted": "Resumed on your organization's AI provider.",
+			"runNowFailed": "Couldn't resume the run: {message}",
+			"cancelled": "Run cancelled.",
+			"cancelFailed": "Couldn't cancel the run: {message}",
+			"status": "Paused",
+			"setupSubject": "Project setup"
 		}
 	},
 	"zod": {

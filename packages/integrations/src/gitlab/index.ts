@@ -14,6 +14,7 @@
  * - Concurrent refresh lock to prevent race conditions
  */
 
+import { throwIfDispatchDeadlinePassed } from "@repo/utils/dispatch-deadline";
 import { scrubSecrets } from "@repo/utils/scrub-secrets";
 import {
 	type GitLabConnectionTokenResult,
@@ -70,9 +71,20 @@ export async function gitlabFetch(
 		headers: gitlabHeaders(token),
 	});
 
-	// The status is checked BEFORE the body is parsed: GitLab sends some errors
-	// as plain text — its rate-limit (429) answer is "Retry later" — and a JSON
-	// parse of that threw a SyntaxError that hid the status from every caller.
+	return readGitLabJsonResponse(response);
+}
+
+/**
+ * The parsed body of a 2xx GitLab answer; a non-2xx answer throws a
+ * `GitLabApiError` carrying its HTTP status, whatever its body.
+ *
+ * The status is checked BEFORE the body is parsed: GitLab sends some errors
+ * as plain text — its rate-limit (429) answer is "Retry later" — and a proxy
+ * in front of an instance can answer with an HTML page. A JSON parse of
+ * either threw a SyntaxError that hid the status from every caller (for a
+ * create, it also hid that GitLab had refused it).
+ */
+async function readGitLabJsonResponse(response: Response): Promise<unknown> {
 	if (!response.ok) {
 		type GitLabErrorBody = { message?: string; error?: string } | null;
 		let data: GitLabErrorBody = null;
@@ -95,9 +107,17 @@ export async function gitlabPost(
 	auth: GitLabAuth,
 	path: string,
 	body: Record<string, unknown>,
+	/** Aborts the request (a caller's send ceiling). */
+	options: { signal?: AbortSignal } = {},
 ): Promise<unknown> {
 	const { token, apiBase } = toGitLabApiCredential(auth);
+	// Past the send deadline of the code sending it (a PM create's, set by
+	// `callPmToolWithFallback`) the POST is not sent: compared with the
+	// clock here, in the same synchronous run as the fetch, on the first
+	// send and on the resend after a 401. No-op outside a deadline scope.
+	throwIfDispatchDeadlinePassed();
 	const response = await gitlabOutboundFetch(`${apiBase}${path}`, {
+		...(options.signal ? { signal: options.signal } : {}),
 		method: "POST",
 		headers: {
 			...gitlabHeaders(token),
@@ -106,17 +126,7 @@ export async function gitlabPost(
 		body: JSON.stringify(body),
 	});
 
-	const data = await response.json();
-
-	if (!response.ok) {
-		const message =
-			(data as { message?: string; error?: string }).message ||
-			(data as { error?: string }).error ||
-			`GitLab API error: ${response.status}`;
-		throw new GitLabApiError(response.status, message);
-	}
-
-	return data;
+	return readGitLabJsonResponse(response);
 }
 
 async function gitlabPut(
@@ -134,17 +144,7 @@ async function gitlabPut(
 		body: JSON.stringify(body),
 	});
 
-	const data = await response.json();
-
-	if (!response.ok) {
-		const message =
-			(data as { message?: string; error?: string }).message ||
-			(data as { error?: string }).error ||
-			`GitLab API error: ${response.status}`;
-		throw new GitLabApiError(response.status, message);
-	}
-
-	return data;
+	return readGitLabJsonResponse(response);
 }
 
 // ============================================================================
@@ -392,6 +392,7 @@ async function createMergeRequest(
 async function createIssue(
 	token: GitLabAuth,
 	args: Record<string, unknown>,
+	options: GitLabToolCallOptions = {},
 ): Promise<unknown> {
 	const { project_id, title, description, labels, assignee_ids } = args as {
 		project_id: string | number;
@@ -420,6 +421,7 @@ async function createIssue(
 		token,
 		`/projects/${encodeURIComponent(project_id)}/issues`,
 		payload,
+		{ signal: options.signal },
 	)) as { web_url?: string; title?: string; iid?: number };
 
 	return {
@@ -1104,9 +1106,21 @@ async function updateIssue(
 	};
 }
 
+/**
+ * Per-call options a tool handler may honour. Only `create_issue` reads
+ * `signal` today (the PM create's send ceiling); the others ignore it.
+ */
+interface GitLabToolCallOptions {
+	signal?: AbortSignal;
+}
+
 const TOOL_HANDLERS: Record<
 	string,
-	(token: GitLabAuth, args: Record<string, unknown>) => Promise<unknown>
+	(
+		token: GitLabAuth,
+		args: Record<string, unknown>,
+		options?: GitLabToolCallOptions,
+	) => Promise<unknown>
 > = {
 	list_projects: listProjects,
 	get_project: getProject,
@@ -1162,7 +1176,7 @@ export async function executeGitLabTool(
 	userId: string,
 	organizationId?: string,
 	projectAccessToken?: string,
-	options: { expectedOrigin?: string } = {},
+	options: { expectedOrigin?: string; signal?: AbortSignal } = {},
 ): Promise<unknown> {
 	const handler = TOOL_HANDLERS[methodName];
 	if (!handler) {
@@ -1207,7 +1221,13 @@ export async function executeGitLabTool(
 	}
 	const apiBase = gitlabApiBaseForOrigin(tokenResult.origin);
 	try {
-		return await handler({ token: tokenResult.accessToken, apiBase }, args);
+		return await handler(
+			{ token: tokenResult.accessToken, apiBase },
+			args,
+			{
+				signal: options.signal,
+			},
+		);
 	} catch (error) {
 		if (!(error instanceof GitLabApiError) || error.status !== 401) {
 			throw error;
@@ -1235,6 +1255,8 @@ export async function executeGitLabTool(
 					"Please reconnect your GitLab account in Settings > Integrations.",
 			);
 		}
-		return handler({ token: refreshed.accessToken, apiBase }, args);
+		return handler({ token: refreshed.accessToken, apiBase }, args, {
+			signal: options.signal,
+		});
 	}
 }

@@ -23,6 +23,7 @@
 import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 export type ScanFailureKind =
+	| "plan_spent"
 	| "rate_limit"
 	| "timeout"
 	| "unavailable"
@@ -75,6 +76,11 @@ export function classifyScanFailure(reasons: unknown[]): ScanFailureKind {
 		return "unknown";
 	}
 
+	// Every shared ChatGPT plan is spent (Fizzy #2770). Ahead of the rate-limit
+	// match: its reason is a window that resets in hours, not minutes.
+	if (/subscriptionplanexhaustederror/.test(blob)) {
+		return "plan_spent";
+	}
 	// Rate limiting / quota — the single most common cause on the shared gateway.
 	if (
 		/rate[\s_-]?limit|\b429\b|too many requests|quota|tokens? per min|\btpm\b/.test(
@@ -102,7 +108,11 @@ export function classifyScanFailure(reasons: unknown[]): ScanFailureKind {
 	return "unknown";
 }
 
+const PLAN_SPENT_HINT =
+	"Every ChatGPT plan this scan may use has no usage left, and none resets within this run's time limit. Run the scan again after the reset.";
+
 const HINTS: Record<Exclude<ScanFailureKind, "unknown">, string> = {
+	plan_spent: PLAN_SPENT_HINT,
 	rate_limit:
 		"The AI model was rate-limited (its request/token quota was exceeded). This is usually temporary — please try again in a few minutes.",
 	timeout:
@@ -125,6 +135,7 @@ export function describeScanFailureReason(reasons: unknown[]): string | null {
  * never call the AI model, so the AI-worded {@link HINTS} would mislead.
  */
 const STEP_HINTS: Record<Exclude<ScanFailureKind, "unknown">, string> = {
+	plan_spent: PLAN_SPENT_HINT,
 	rate_limit:
 		"A service the scan depends on was rate-limited. This is usually temporary — please try again in a few minutes.",
 	timeout:

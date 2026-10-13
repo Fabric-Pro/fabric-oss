@@ -6,7 +6,10 @@
  */
 
 import { db } from "@repo/database";
-import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -135,7 +138,10 @@ export class WorkflowHandler implements StepHandler {
 			`[WorkflowHandler] Triggering workflow: ${targetWorkflow.name}`,
 		);
 
-		// Create execution record
+		// Create execution record — immediately before the write, nothing is
+		// triggered once the chat turn this step serves has stopped or used
+		// its token allowance; a no-op outside a turn.
+		throwIfDispatchStopped();
 		const execution = await db.workflowExecution.create({
 			data: {
 				workflowId: targetWorkflow.id,

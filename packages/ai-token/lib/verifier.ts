@@ -101,6 +101,9 @@ export async function verifyAIToken(
 			src: payload.src as string,
 			...(payload.pe === true && { pe: true as const }),
 			...(payload.imp === true && { imp: true as const }),
+			...(typeof payload.jt === "string" &&
+				payload.jt.length > 0 && { jt: payload.jt }),
+			...(payload.af === true && { af: true as const }),
 		};
 
 		return {

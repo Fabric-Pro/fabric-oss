@@ -15,12 +15,7 @@ import {
 	getTenantContext,
 	StoryVersionConflictError,
 } from "@repo/database";
-// Type-only import. Runtime class loaded lazily inside the error-mapper
-// middleware (see below) to break the @repo/api ↔ @repo/payments
-// module-init cycle: payloads.ts evaluates `NotificationType.STORY_MENTION`
-// at module load, which crashes any test with an incomplete vi.mock for
-// @repo/database.
-import type { AiUsageLimitExceededError as AiUsageLimitExceededErrorType } from "@repo/payments";
+import { aiUsageLimitToORPCError } from "../lib/ai-usage-limit-errors";
 import {
 	peekAuthorizedProject,
 	resolveBoundOrganization,
@@ -161,7 +156,8 @@ export const rateLimitedPublicProcedure = publicProcedure.use(
 
 /**
  * Domain error mapper.
- * Catches `AiUsageLimitExceededError` thrown anywhere downstream of any
+ * Catches `AiUsageLimitExceededError` (bare, or inside the AI SDK's
+ * `RetryError`) thrown anywhere downstream of any
  * protected procedure (typically from `getAIModelWithMetadata` /
  * `getAIEmbeddingModelWithMetadata` per) and re-throws it as
  * a structured `ORPCError` so the client receives `code:
@@ -212,32 +208,14 @@ const domainErrorMapper = os
 					data: { storyId: error.storyId },
 				});
 			}
-			// Duck-type the code first so non-AI errors don't pay the
-			// dynamic-import lookup. Lazy class load breaks the
-			// @repo/api ↔ @repo/payments module-init cycle.
-			if (
-				error &&
-				typeof error === "object" &&
-				"code" in error &&
-				(error as { code: unknown }).code === "AI_USAGE_LIMIT_EXCEEDED"
-			) {
-				const { AiUsageLimitExceededError } = await import(
-					"@repo/payments"
-				);
-				if (error instanceof AiUsageLimitExceededError) {
-					const e: AiUsageLimitExceededErrorType = error;
-					throw new ORPCError("AI_USAGE_LIMIT_EXCEEDED", {
-						message: e.message,
-						data: {
-							limitId: e.limitId,
-							dimension: e.dimension,
-							window: e.window,
-							used: e.used.toString(),
-							max: e.max.toString(),
-							manageLimitsUrl: e.manageLimitsUrl,
-						},
-					});
-				}
+			// Bare, or inside the AI SDK's RetryError when the model's
+			// per-request check refused an SDK retry. The helper loads the
+			// error class from its dependency-free module, not the
+			// @repo/payments index, so no @repo/api ↔ @repo/payments
+			// module-init cycle comes back.
+			const limitRefusal = aiUsageLimitToORPCError(error);
+			if (limitRefusal) {
+				throw limitRefusal;
 			}
 			throw error;
 		}

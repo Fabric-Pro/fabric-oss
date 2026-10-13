@@ -17,6 +17,11 @@ export async function notifySummaryFailureActivity(input: {
 	projectId: string;
 	tenancy: SummaryTenancy;
 	error: string;
+	/**
+	 * Every ChatGPT plan was spent past the run's wait (Fizzy #2770). Nothing
+	 * is broken and the next daily scan retries, so no incident is raised.
+	 */
+	planSpent?: boolean;
 }): Promise<void> {
 	try {
 		await failContextSummary({ id: input.summaryId, error: input.error });
@@ -25,6 +30,10 @@ export async function notifySummaryFailureActivity(input: {
 			summaryId: input.summaryId,
 			error: error instanceof Error ? error.message : String(error),
 		});
+	}
+
+	if (input.planSpent) {
+		return;
 	}
 
 	try {

@@ -1,3 +1,5 @@
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
+
 /** The REST base of gitlab.com — the only instance a bare token may go to. */
 const GITLAB_API_BASE = "https://gitlab.com/api/v4";
 
@@ -132,7 +134,20 @@ function computeRetryAfterMs(response: Response): number | null {
 	return Math.max(0, (resetSec - nowSec) * 1000);
 }
 
+/**
+ * Every request `gitlabRequest` sends: the first, the resend after a 401 and
+ * token refresh, and the resend after a rate-limit wait. A request that can
+ * change something (any method but GET or HEAD) first checks the ambient
+ * dispatch guard, in the same synchronous run as `fetch`: inside an Advisor
+ * chat turn that has stopped or used its token allowance it is refused with
+ * the stop, thrown as it is (outside the try, so never reported as a
+ * network error). A no-op outside a turn.
+ */
 async function safeFetch(url: string, init: RequestInit): Promise<Response> {
+	const method = (init.method ?? "GET").toUpperCase();
+	if (method !== "GET" && method !== "HEAD") {
+		throwIfDispatchStopped();
+	}
 	try {
 		return await fetch(url, init);
 	} catch (err) {

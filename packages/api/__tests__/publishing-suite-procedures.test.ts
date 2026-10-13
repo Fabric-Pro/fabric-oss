@@ -1981,6 +1981,10 @@ describe("generatePlanningAnalysis", () => {
 			// above passed organizationId: null for this org-owned project.
 			organizationId: "org-1",
 			actorUserId: "u1",
+			// A person's click: it may run on their ChatGPT plan, and
+			// `planUserId` names them for the plan header (Fizzy #2770).
+			planEligible: true,
+			planUserId: "u1",
 		});
 	});
 

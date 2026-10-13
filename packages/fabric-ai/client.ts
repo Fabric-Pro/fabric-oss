@@ -15,6 +15,7 @@
 import {
 	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import type {
 	ChatPrompt,
@@ -85,6 +86,9 @@ export class FabricClient {
 		// refuses here, before the timer or the request starts, and the
 		// request carries the guard's abort signal beside the timeout's.
 		const signal = await guardDispatch(controller.signal);
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
 		try {
@@ -264,6 +268,9 @@ export class FabricClient {
 		aiToken: string,
 	): Promise<string> {
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${this.baseUrl}/delegated/search`, {
 			method: "POST",
 			signal,
@@ -296,6 +303,9 @@ export class FabricClient {
 	 */
 	async scrapeUrlDelegated(url: string, aiToken: string): Promise<string> {
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${this.baseUrl}/delegated/scrape`, {
 			method: "POST",
 			signal,
@@ -362,6 +372,9 @@ export class FabricClient {
 
 		// Fabric uses SSE streaming, we need to collect all chunks
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${this.baseUrl}/chat`, {
 			method: "POST",
 			signal,
@@ -450,6 +463,9 @@ export class FabricClient {
 		};
 
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${this.baseUrl}/chat`, {
 			method: "POST",
 			signal,
@@ -575,6 +591,9 @@ export class FabricClient {
 		aiToken: string,
 	): Promise<YouTubeMetadataResponse> {
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/metadata`,
 			{
@@ -612,6 +631,9 @@ export class FabricClient {
 		aiToken: string,
 	): Promise<YouTubeCommentsResponse> {
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/comments`,
 			{
@@ -649,6 +671,9 @@ export class FabricClient {
 		aiToken: string,
 	): Promise<YouTubePlaylistResponse> {
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(
 			`${this.baseUrl}/delegated/youtube/playlist`,
 			{

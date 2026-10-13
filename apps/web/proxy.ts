@@ -1,5 +1,6 @@
 import { routing } from "@i18n/routing";
 import { config as appConfig } from "@repo/config";
+import { RETURN_TO_HEADER } from "@saas/auth/lib/login-redirect";
 import { getSessionCookie } from "better-auth/cookies";
 import { type NextRequest, NextResponse } from "next/server";
 import createMiddleware from "next-intl/middleware";
@@ -212,7 +213,17 @@ export default async function proxy(req: NextRequest) {
 	}
 
 	if (pathsWithoutLocale.some((path) => pathname.startsWith(path))) {
-		return NextResponse.next();
+		// The SaaS layout has no URL of its own; without this a signed-out
+		// visitor loses the link they opened, query and all (Fizzy #3036).
+		const search = new URLSearchParams(req.nextUrl.search);
+		search.delete("_rsc");
+		const query = search.toString();
+		const requestHeaders = new Headers(req.headers);
+		requestHeaders.set(
+			RETURN_TO_HEADER,
+			query ? `${pathname}?${query}` : pathname,
+		);
+		return NextResponse.next({ request: { headers: requestHeaders } });
 	}
 
 	if (!appConfig.ui.marketing.enabled) {

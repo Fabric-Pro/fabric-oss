@@ -214,6 +214,8 @@ function restOnSourceInstance(
 	source: GitLabSource,
 	userId: string,
 	organizationId: string | null,
+	/** Aborts the REST request (a caller's send ceiling). */
+	signal?: AbortSignal,
 ): (method: string, args: Record<string, unknown>) => Promise<unknown> {
 	const expectedOrigin = originOfApiBase(source.credential.apiBase);
 	return async (method, args) => {
@@ -227,7 +229,7 @@ function restOnSourceInstance(
 				userId,
 				organizationId ?? undefined,
 				undefined,
-				{ expectedOrigin },
+				{ expectedOrigin, signal },
 			);
 		} catch (error) {
 			if (error instanceof GitLabConnectionOriginChangedError) {
@@ -611,8 +613,15 @@ export async function createGitLabIssueFromStory(input: {
 	payload: GitLabPMCreatePayload;
 	userId: string;
 	organizationId: string | null;
+	/**
+	 * Aborts the create when it expires (the PM create's send ceiling). It
+	 * reaches the REST request; an expiry is an unknown outcome, not a
+	 * refusal.
+	 */
+	signal?: AbortSignal;
 }): Promise<GitLabPMWriteResult> {
-	const { source, gitlabProjectId, payload, userId, organizationId } = input;
+	const { source, gitlabProjectId, payload, userId, organizationId, signal } =
+		input;
 	const args = buildCreateArgs(gitlabProjectId, payload);
 
 	const raw = (await callMcpWithRestFallback<unknown>({
@@ -627,6 +636,7 @@ export async function createGitLabIssueFromStory(input: {
 				source,
 				userId,
 				organizationId,
+				signal,
 			)("create_issue", args),
 	})) as GitLabIssueWriteResponse;
 
