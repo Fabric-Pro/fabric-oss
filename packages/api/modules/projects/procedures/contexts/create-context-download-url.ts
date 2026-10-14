@@ -4,8 +4,8 @@
  * Generates a short-lived presigned URL so the caller can download a single
  * project context, regardless of its class:
  *
- *   - Class A (`FILE` / `IMAGE` / `DOCUMENT` / `SPREADSHEET`) — presign the
- *     original S3 object directly.
+ *   - Class A (`FILE` / `IMAGE` / `DOCUMENT` / `SPREADSHEET` / `API_SPEC`) —
+ *     presign the original S3 object directly, once it is confirmed present.
  *   - Class B (`TEXT` / planning-surface aliases) — synthesize a `.md`
  *     payload (shared header + `content`) and upload to a per-request temp
  *     key under `downloads/project-contexts/{projectId}/single/`.
@@ -33,8 +33,10 @@ import { randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
 import { getContextById } from "@repo/database";
+import { logger } from "@repo/logs";
 import { getSignedUrl, uploadFile } from "@repo/storage";
 import { buildContentDisposition } from "@repo/utils/attachment";
+import { classifyContext } from "@repo/utils/context-download-class";
 import { z } from "zod";
 import {
 	Permissions,
@@ -44,12 +46,12 @@ import {
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 import { buildContextTextPayload } from "../../lib/build-context-text-payload";
-import { classifyContext } from "../../lib/context-classification";
 import { contextDownloadFilename } from "../../lib/context-download-filename";
 import {
 	buildPathPrefixMarkdown,
 	isPathPrefixLink,
 } from "../../lib/path-prefix-link-markdown";
+import { signOriginalContextFile } from "../../lib/sign-original-context-file";
 import { SINGLE_PRESIGN_EXPIRY_SECONDS } from "./constants";
 
 /** Input schema — spec §6.1. */
@@ -159,6 +161,9 @@ export const createContextDownloadUrlProcedure = tenantProtectedProcedure
 		if (contextClass === "A") {
 			const s3Path = projectContext.s3Path;
 			if (!s3Path || s3Path.length === 0) {
+				logger.warn(
+					`[ContextDownload] Context ${projectContext.id} (${projectContext.type}) in project ${input.projectId} has no stored original file`,
+				);
 				throw new ORPCError("BAD_REQUEST", {
 					message: "This context has no stored file to download",
 					data: { code: "CONTENT_UNAVAILABLE" },
@@ -182,21 +187,13 @@ export const createContextDownloadUrlProcedure = tenantProtectedProcedure
 							mimeType: projectContext.mimeType ?? null,
 						});
 
-			let url: string;
-			try {
-				url = await getSignedUrl(s3Path, {
-					bucket,
-					expiresIn: SINGLE_PRESIGN_EXPIRY_SECONDS,
-					responseContentDisposition:
-						buildContentDisposition(filename),
-					responseContentType: projectContext.mimeType ?? undefined,
-				});
-			} catch (err) {
-				throw new ORPCError("INTERNAL_SERVER_ERROR", {
-					message: "Failed to generate download URL",
-					cause: err,
-				});
-			}
+			const url = await signOriginalContextFile({
+				s3Path,
+				bucket,
+				filename,
+				mimeType: projectContext.mimeType,
+				logLabel: `context ${projectContext.id} in project ${input.projectId}`,
+			});
 
 			return {
 				url,

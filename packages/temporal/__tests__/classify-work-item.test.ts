@@ -13,6 +13,7 @@
  * branching without a live AI provider or DB.
  */
 
+import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	capturedDecisionOutcomes,
@@ -69,6 +70,14 @@ vi.mock("@repo/ai", async () => ({
 vi.mock("@repo/observability/llm", async () =>
 	(await import("./test-helpers/decision-outcomes")).observabilityLlmMock(),
 );
+
+const wrappedInRetryError = (limit: Error) =>
+	new RetryError({
+		message:
+			"Failed after 2 attempts with non-retryable error: 'AI usage limit exceeded'",
+		reason: "errorNotRetryable",
+		errors: [new Error("gateway busy"), limit],
+	});
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -165,6 +174,7 @@ describe("classifyWorkItem", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			projectId: "proj-1",
+			featureKey: "story-classification",
 		});
 		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(mocks.generateObject).not.toHaveBeenCalled();
@@ -250,6 +260,7 @@ describe("classifyWorkItem", () => {
 				userId: "user-1",
 				organizationId: "org-1",
 				projectId: "proj-1",
+				featureKey: "story-classification",
 			},
 		);
 		expect(mocks.generateObject).toHaveBeenCalledOnce();
@@ -740,6 +751,27 @@ describe("classifyWorkItem decision telemetry", () => {
 			["limit_exceeded", "example-decider"],
 			["limit_exceeded", "none"],
 		]);
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+
+	it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: limit_exceeded, the unwrapped instance rethrown, no language call", async () => {
+		const limit = new AiUsageLimitExceededError();
+		mocks.experimental_decide.mockRejectedValueOnce(
+			wrappedInRetryError(limit),
+		);
+
+		const error = await classifyWorkItem(STANDARD_INPUT).catch(
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBe(limit);
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model }) => [
+				outcome,
+				model,
+			]),
+		).toEqual([["limit_exceeded", "example-decider"]]);
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
 		expect(mocks.generateObject).not.toHaveBeenCalled();
 	});
 

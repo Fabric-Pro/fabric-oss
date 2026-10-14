@@ -58,9 +58,11 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	composeShortPostPrompt,
+	everyOptionTextIsEmpty,
 	PUBLISHING_SHORT_POST_AGENT_KEY,
 	PUBLISHING_SHORT_POST_FALLBACK_BODY,
 	PublishingShortPostSchema,
@@ -105,6 +107,29 @@ export interface GenerateShortPostOutput {
 	 * would fail that replay. Absent means "an older run that could not say".
 	 */
 	refusalReason?: DraftCommitRefusal;
+}
+
+/**
+ * Every option came back with no post text. Its own class rather than a schema
+ * mismatch, because the remedy differs: a reshaped answer clears on a retry, a
+ * model with nothing it will write about returns the same empty options again.
+ */
+function noPostTextFailure(detail: string): ApplicationFailure {
+	return ApplicationFailure.nonRetryable(
+		`Short post came back with no post text in any option: ${detail}`,
+		"PUBLISHING_SHORT_POST_NO_POST_TEXT",
+	);
+}
+
+function parseRefusedAnswer(text: string | undefined): unknown {
+	if (!text) {
+		return null;
+	}
+	try {
+		return JSON.parse(text);
+	} catch {
+		return null;
+	}
 }
 
 export async function generateShortPostActivity(
@@ -260,6 +285,7 @@ export async function generateShortPostActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-short-post",
 		},
 	);
@@ -298,8 +324,13 @@ export async function generateShortPostActivity(
 		// run is worth repeating. Re-raised as the same class the check below
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
+			if (everyOptionTextIsEmpty(parseRefusedAnswer(error.text))) {
+				throw noPostTextFailure(
+					`${error.message}${schemaMismatchDetail(error)}`,
+				);
+			}
 			throw ApplicationFailure.nonRetryable(
-				`Short post failed schema validation: ${error.message}`,
+				`Short post failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_SHORT_POST_SCHEMA_VALIDATION_FAILED",
 			);
 		}
@@ -315,6 +346,9 @@ export async function generateShortPostActivity(
 	// renders two options as though three were the contract.
 	const parsed = PublishingShortPostSchema.safeParse(result.object);
 	if (!parsed.success) {
+		if (everyOptionTextIsEmpty(result.object)) {
+			throw noPostTextFailure(parsed.error.message);
+		}
 		throw ApplicationFailure.nonRetryable(
 			`Short post failed schema validation: ${parsed.error.message}`,
 			"PUBLISHING_SHORT_POST_SCHEMA_VALIDATION_FAILED",

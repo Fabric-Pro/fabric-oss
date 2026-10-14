@@ -583,6 +583,225 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		});
 	});
 
+	it("admits a new turn with the token allowance of its validated mode, and hands the workflow the turn's generation", async () => {
+		await readEvents(await post(newTurnBody()));
+
+		expect(m.admitConversationTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				budget: {
+					contractVersion: 1,
+					// balanced: maxTotalTokens 500,000, reserve 8,000 (unchanged).
+					tokenAllowance: 500_000,
+					finalizationReserveTokens: 8_000,
+				},
+			}),
+		);
+		const [, options] = m.start.mock.calls[0] as [
+			string,
+			{ args: [Record<string, unknown>] },
+		];
+		expect(options.args[0]).toMatchObject({ turnGeneration: 1 });
+	});
+
+	it("forwards the structured token-allowance stop on the live completed event", async () => {
+		const budgetStop = {
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 470_000,
+			outstanding: 25_000,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		};
+		m.start.mockImplementation(
+			async (_name: string, opts: { workflowId: string }) =>
+				completedHandle(opts.workflowId, {
+					status: "completed",
+					response: "What I found so far.",
+					toolCalls: [],
+					totalDurationMs: 1,
+					budgetStop,
+				}),
+		);
+
+		const events = await readEvents(await post(newTurnBody()));
+		const completed = events.find((e) => e.type === "completed");
+		expect(completed).toMatchObject({ status: "completed", budgetStop });
+		expect(completed?.handoffRecommended).toBeUndefined();
+	});
+
+	it("restores the structured token-allowance stop when reattaching to a LIMITED turn", async () => {
+		const budgetStop = {
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 470_000,
+			outstanding: 25_000,
+			enforcement: "MEASURED_ONLY",
+			stopReason: "finalization_unavailable",
+		};
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({
+				status: "LIMITED",
+				executionId: EXEC_A,
+				responseText: "What I found so far.",
+				terminalAt: new Date(),
+				// The ledger's own columns are BigInt; none reach the stream.
+				measuredTokens: BigInt(470_000),
+				outstandingTokens: BigInt(25_000),
+				budgetStop,
+			}),
+		);
+
+		const events = await readEvents(
+			await post({ executionId: EXEC_A, organizationId: ORG_ID }),
+		);
+
+		expect(events.find((e) => e.type === "completed")).toMatchObject({
+			status: "completed",
+			response: "What I found so far.",
+			budgetStop,
+		});
+	});
+
+	it("reconstructs on reconnect exactly the stop the live completed event carried", async () => {
+		// The payload as the turn row returns it (jsonb orders keys its own
+		// way); the workflow returns this same stored value as its output.
+		const stored = {
+			kind: "token_allowance",
+			measured: 476_000,
+			allowance: 500_000,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+			outstanding: 3_000,
+		};
+		m.start.mockImplementation(
+			async (_name: string, opts: { workflowId: string }) =>
+				completedHandle(opts.workflowId, {
+					status: "completed",
+					response: "What I found so far.",
+					toolCalls: [],
+					totalDurationMs: 1,
+					budgetStop: stored,
+				}),
+		);
+		const live = (await readEvents(await post(newTurnBody()))).find(
+			(e) => e.type === "completed",
+		);
+
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({
+				status: "LIMITED",
+				executionId: EXEC_A,
+				responseText: "What I found so far.",
+				terminalAt: new Date(),
+				measuredTokens: BigInt(476_000),
+				outstandingTokens: BigInt(3_000),
+				budgetStop: stored,
+			}),
+		);
+		const reconnect = (
+			await readEvents(
+				await post({ executionId: EXEC_A, organizationId: ORG_ID }),
+			)
+		).find((e) => e.type === "completed");
+
+		expect(live?.budgetStop).toEqual(stored);
+		expect(reconnect?.budgetStop).toEqual(live?.budgetStop);
+	});
+
+	it("carries the stored stop of a turn whose Stop won the terminal write, live and on reconnect, with status 'cancelled'", async () => {
+		// Budget finalization finished, then the recorded Stop won the
+		// terminal write: the row stores CANCELLED with the refreshed stop,
+		// and the workflow returns exactly that stored value.
+		const stored = {
+			kind: "token_allowance",
+			measured: 476_000,
+			allowance: 500_000,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+			outstanding: 0,
+		};
+		m.start.mockImplementation(
+			async (_name: string, opts: { workflowId: string }) =>
+				completedHandle(opts.workflowId, {
+					status: "cancelled",
+					response: "What I found so far.",
+					toolCalls: [],
+					totalDurationMs: 1,
+					budgetStop: stored,
+				}),
+		);
+		const live = (await readEvents(await post(newTurnBody()))).find(
+			(e) => e.type === "completed",
+		);
+
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({
+				status: "CANCELLED",
+				executionId: EXEC_A,
+				responseText: "What I found so far.",
+				terminalAt: new Date(),
+				measuredTokens: BigInt(476_000),
+				outstandingTokens: BigInt(0),
+				budgetStop: stored,
+			}),
+		);
+		const reconnect = (
+			await readEvents(
+				await post({ executionId: EXEC_A, organizationId: ORG_ID }),
+			)
+		).find((e) => e.type === "completed");
+
+		expect(live).toMatchObject({ status: "cancelled" });
+		expect(reconnect).toMatchObject({ status: "cancelled" });
+		expect(live?.budgetStop).toEqual(stored);
+		expect(reconnect?.budgetStop).toEqual(stored);
+		// A stopped turn offers no new-chat handoff.
+		expect(live?.handoffRecommended).toBeUndefined();
+	});
+
+	it("carries the stored stop on the error event of a failed turn, live and on reconnect", async () => {
+		const stored = {
+			kind: "token_allowance",
+			allowance: 500_000,
+			measured: 476_000,
+			outstanding: 0,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		};
+		m.start.mockImplementation(
+			async (_name: string, opts: { workflowId: string }) =>
+				completedHandle(opts.workflowId, {
+					status: "failed",
+					error: "The turn had already ended",
+					response: "What I found so far.",
+					toolCalls: [],
+					totalDurationMs: 1,
+					budgetStop: stored,
+				}),
+		);
+		const live = (await readEvents(await post(newTurnBody()))).find(
+			(e) => e.type === "error",
+		);
+
+		m.getConversationTurnForExecution.mockResolvedValue(
+			turnRow({
+				status: "FAILED",
+				executionId: EXEC_A,
+				terminalReason: "The turn had already ended",
+				terminalAt: new Date(),
+				budgetStop: stored,
+			}),
+		);
+		const reconnect = (
+			await readEvents(
+				await post({ executionId: EXEC_A, organizationId: ORG_ID }),
+			)
+		).find((e) => e.type === "error");
+
+		expect(live?.budgetStop).toEqual(stored);
+		expect(reconnect?.budgetStop).toEqual(stored);
+	});
+
 	it("refuses a reattach to another user's turn", async () => {
 		m.getConversationTurnForExecution.mockResolvedValue(null);
 		m.getConversationTurnOwnerForExecution.mockResolvedValue({

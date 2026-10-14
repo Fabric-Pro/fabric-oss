@@ -179,6 +179,7 @@ export {
 export type { AiFeatureKey } from "./lib/feature-keys";
 // --- AI feature invocation tagging (from lib/feature-keys) ---
 export { AI_FEATURE_KEYS } from "./lib/feature-keys";
+export { findAiUsageLimitError } from "./lib/find-usage-limit-error";
 export type { AIProviderMetadata, ProviderConfig } from "./lib/gateway-config";
 // --- Gateway and provider configuration (from lib/gateway-config) ---
 export {
@@ -219,7 +220,10 @@ export {
 // --- Direct-REST OpenAI key resolution (from lib/openai-provider-key) ---
 // For call sites that hit OpenAI's own API directly instead of going through
 // the AI SDK's provider routing (e.g. the TTS endpoint).
-export { resolveOpenAiApiKey } from "./lib/openai-provider-key";
+export {
+	AUDIO_PROVIDER_REQUIRED,
+	resolveOpenAiApiKey,
+} from "./lib/openai-provider-key";
 // --- Output-token budget helper (from lib/output-token-budget) ---
 export {
 	type BudgetMetadata,

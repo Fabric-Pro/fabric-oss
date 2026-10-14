@@ -286,3 +286,149 @@ describe("ConfluencePageSelector — Atlassian Rovo tools", () => {
 		expect(searchCall?.params).toEqual({ cql: 'text ~ "design"' });
 	});
 });
+
+describe("ConfluencePageSelector — Atlassian Rovo v2 tools", () => {
+	const ROVO_V2_TOOLS = [
+		"getAccessibleAtlassianResources",
+		"listConfluenceSpaces",
+		"listConfluenceContent",
+		"searchConfluence",
+		"getConfluenceContent",
+	];
+
+	type Call = { toolName?: string; params?: Record<string, unknown> };
+
+	function rovoV2Fetch(calls: Call[]) {
+		return vi.fn(async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse((init?.body as string) ?? "{}");
+			calls.push({ toolName: body.toolName, params: body.params });
+			let payload: unknown = {};
+			if (body.action === "list_tools") {
+				payload = { tools: ROVO_V2_TOOLS };
+			} else if (body.toolName === "listConfluenceSpaces") {
+				payload = {
+					result: {
+						results: [
+							{ id: "100", key: "ENG", name: "Engineering" },
+						],
+					},
+				};
+			} else if (body.toolName === "listConfluenceContent") {
+				payload = {
+					result: {
+						results: [
+							{ id: "p1", title: "Rovo V2 Page", spaceId: "100" },
+						],
+					},
+				};
+			} else if (body.toolName === "searchConfluence") {
+				payload = {
+					result: {
+						results: [
+							{
+								content: {
+									id: "p2",
+									title: "Found V2 Page",
+									space: { key: "ENG", name: "Engineering" },
+								},
+							},
+						],
+					},
+				};
+			}
+			return { ok: true, json: async () => payload } as Response;
+		});
+	}
+
+	it("detects v2 tools and lists spaces (no 'Missing required tools')", async () => {
+		const calls: Call[] = [];
+		global.fetch = rovoV2Fetch(calls) as unknown as typeof fetch;
+
+		render(<ConfluencePageSelector {...baseProps} onConfirm={vi.fn()} />);
+
+		expect(await screen.findByText("Engineering")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Missing required tools"),
+		).not.toBeInTheDocument();
+	});
+
+	it("sends spaceId and type: 'page' when listing pages via listConfluenceContent", async () => {
+		const calls: Call[] = [];
+		global.fetch = rovoV2Fetch(calls) as unknown as typeof fetch;
+
+		render(<ConfluencePageSelector {...baseProps} onConfirm={vi.fn()} />);
+
+		const space = await screen.findByText("Engineering");
+		await userEvent.click(space);
+		await screen.findByText("Rovo V2 Page");
+
+		const pagesCall = calls.find(
+			(c) => c.toolName === "listConfluenceContent",
+		);
+		expect(pagesCall?.params).toEqual({ spaceId: "100", type: "page" });
+	});
+
+	it("sends cql when searching via searchConfluence", async () => {
+		const calls: Call[] = [];
+		global.fetch = rovoV2Fetch(calls) as unknown as typeof fetch;
+
+		render(<ConfluencePageSelector {...baseProps} onConfirm={vi.fn()} />);
+
+		const searchBox = await screen.findByPlaceholderText(/search/i);
+		await userEvent.type(searchBox, "design");
+
+		await screen.findByText("Found V2 Page");
+
+		const searchCall = calls.find((c) => c.toolName === "searchConfluence");
+		expect(searchCall?.params).toEqual({ cql: 'text ~ "design"' });
+	});
+
+	it("unwraps Rovo v2 nested { data: { results: [...] } } for spaces and pages", async () => {
+		const calls: Call[] = [];
+		global.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+			const body = JSON.parse((init?.body as string) ?? "{}");
+			calls.push({ toolName: body.toolName, params: body.params });
+			let payload: unknown = {};
+			if (body.action === "list_tools") {
+				payload = { tools: ROVO_V2_TOOLS };
+			} else if (body.toolName === "listConfluenceSpaces") {
+				payload = {
+					result: {
+						data: {
+							results: [
+								{
+									id: "200",
+									key: "DOCS",
+									name: "Documentation",
+								},
+							],
+						},
+					},
+				};
+			} else if (body.toolName === "listConfluenceContent") {
+				payload = {
+					result: {
+						data: {
+							results: [
+								{
+									id: "p20",
+									title: "Nested Rovo Page",
+									spaceId: "200",
+								},
+							],
+						},
+					},
+				};
+			}
+			return { ok: true, json: async () => payload } as Response;
+		}) as unknown as typeof fetch;
+
+		render(<ConfluencePageSelector {...baseProps} onConfirm={vi.fn()} />);
+
+		const space = await screen.findByText("Documentation");
+		expect(space).toBeInTheDocument();
+
+		await userEvent.click(space);
+		expect(await screen.findByText("Nested Rovo Page")).toBeInTheDocument();
+	});
+});

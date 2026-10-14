@@ -32,11 +32,13 @@ import {
 	ChatgptPlanSharedHere,
 } from "./ChatgptPlanShare";
 import { ChatgptPlanSubscription } from "./ChatgptPlanSubscription";
+import { ChatgptPlanTestAction } from "./ChatgptPlanTestAction";
 import {
 	useChatgptPlanStatus,
 	useDisconnectChatgptPlan,
 	useSetChatgptPlanBackgroundJobs,
 	useSetChatgptPlanOrganizationUse,
+	useTestChatgptPlan,
 } from "./chatgpt-plan-status";
 import {
 	PlanWindowDetails,
@@ -51,12 +53,18 @@ function UsageMeter({
 	estimate: PlanWindowEstimate & {
 		windowHours: number;
 		estimatedPercent: number;
+		percent?: number;
+		percentSource?: "reported" | "estimated";
 		weeklyLimitOnly?: boolean;
 	};
 }) {
 	const t = useTranslations("settings.chatgptPlan");
+	const reported = estimate.percentSource === "reported";
 	const percent = Math.round(
-		Math.min(100, Math.max(0, estimate.estimatedPercent)),
+		Math.min(
+			100,
+			Math.max(0, estimate.percent ?? estimate.estimatedPercent),
+		),
 	);
 
 	return (
@@ -68,8 +76,13 @@ function UsageMeter({
 				<p className="text-sm">{t("weeklyLimitOnly")}</p>
 			) : (
 				<>
-					<p className="text-sm">
-						{t("usageEstimate", {
+					<p
+						className="text-sm"
+						data-percent-source={
+							reported ? "reported" : "estimated"
+						}
+					>
+						{t(reported ? "usageReported" : "usageEstimate", {
 							percent,
 							hours: estimate.windowHours,
 						})}
@@ -150,6 +163,8 @@ function ChatgptPlanSection() {
 		onError: () => toast.error(t("disconnectFailed")),
 	});
 
+	const test = useTestChatgptPlan();
+
 	return (
 		<section
 			aria-labelledby="chatgpt-plan-heading"
@@ -210,15 +225,23 @@ function ChatgptPlanSection() {
 								tier={query.data.tier ?? null}
 							/>
 						</div>
-						<Button
-							autoLoading={false}
-							onClick={() => setConfirmOpen(true)}
-							size="sm"
-							type="button"
-							variant="outline"
-						>
-							{t("disconnect")}
-						</Button>
+						<div className="flex flex-wrap items-start gap-2">
+							<ChatgptPlanTestAction
+								error={test.error}
+								isPending={test.isPending}
+								onTest={() => test.mutate()}
+								result={test.data}
+							/>
+							<Button
+								autoLoading={false}
+								onClick={() => setConfirmOpen(true)}
+								size="sm"
+								type="button"
+								variant="outline"
+							>
+								{t("disconnect")}
+							</Button>
+						</div>
 					</div>
 
 					{query.data.status === "NEEDS_RECONNECT" ? (

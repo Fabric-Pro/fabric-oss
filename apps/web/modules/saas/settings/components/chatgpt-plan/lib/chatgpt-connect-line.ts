@@ -29,11 +29,8 @@ export interface ChatgptConnectLines {
  * The `fabric connect chatgpt` line for the page a person is looking at
  * (Fizzy #2770), built like the Connect dialog's setup line:
  *
- * - on the address an installed CLI signs in at by default, the plain
- *   `fabric …` line, with the served CLI as the alternative;
- * - anywhere else, the CLI this deployment serves, run with `npx` from its
- *   URL, carrying `--base-url` unless the tarball is baked for this address;
- * - with no CLI served at all, the plain line.
+ * - all commands explicitly target the page's address;
+ * - when available, the deployment's CLI is offered through `npx` from its URL.
  */
 export function chatgptConnectLines(params: {
 	document: CliDiscoveryDocument | null;
@@ -50,6 +47,7 @@ export function chatgptConnectLines(params: {
 					`--org ${quoteShellArgIfNeeded(sharedOrganizationSlug)}`,
 					"--shared",
 				]),
+		`--base-url ${quoteShellArgIfNeeded(origin)}`,
 	];
 	const installed = ["fabric", ...args].join(" ");
 	const served = document
@@ -57,9 +55,6 @@ export function chatgptConnectLines(params: {
 				"npx -y",
 				quoteShellArgIfNeeded(tarballUrlOnOrigin(document, origin)),
 				...args,
-				...(document.origin === origin
-					? []
-					: [`--base-url ${quoteShellArgIfNeeded(origin)}`]),
 			].join(" ")
 		: null;
 

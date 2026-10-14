@@ -276,3 +276,34 @@ describe("without organizationOnly (every existing caller)", () => {
 		);
 	});
 });
+
+/**
+ * The embedding's AiUsageLog row is written by the usage interceptor, from the
+ * context handed to it here — so a project, feature key or job type the caller
+ * supplied has to reach it, or the row lands untagged (Fizzy #2770).
+ */
+describe("embedding usage tags", () => {
+	it("hands the caller's project, feature key and job type to the usage interceptor", async () => {
+		const { wrapEmbeddingModelWithUsageLogging } = await import(
+			"../lib/usage-logging-middleware"
+		);
+
+		await getAIEmbeddingModelWithMetadata({
+			userId: ADMIN,
+			organizationId: ORG,
+			projectId: "proj-1",
+			featureKey: "code-index",
+			jobType: "code-index",
+		});
+
+		expect(wrapEmbeddingModelWithUsageLogging).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				projectId: "proj-1",
+				featureKey: "code-index",
+				jobType: "code-index",
+				taskType: "EMBEDDING",
+			}),
+		);
+	});
+});

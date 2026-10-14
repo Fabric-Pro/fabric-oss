@@ -42,6 +42,8 @@ export const NEWSLETTER_SKIP_REASONS = [
 	"INCOMPLETE_SCAN",
 	"NO_SUBSCRIBERS",
 	"NO_CHAT_TARGETS",
+	// Every ChatGPT plan was spent past the run's wait (Fizzy #2770).
+	"PLAN_SPENT",
 ] as const;
 export type NewsletterSkipReason = (typeof NEWSLETTER_SKIP_REASONS)[number];
 

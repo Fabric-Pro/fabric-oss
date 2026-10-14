@@ -8,10 +8,20 @@ import {
 } from "@repo/agent-types/chatgpt-plan-fetch";
 import { logger } from "@repo/logs";
 import {
+	dispatchSendSignal,
+	getDispatchGuard,
+} from "@repo/utils/dispatch-guard";
+import { waitUntil } from "@vercel/functions";
+import {
 	type LanguageModel,
 	type LanguageModelMiddleware,
 	wrapLanguageModel,
 } from "ai";
+import {
+	capturePlanCredentials,
+	notePlanCredentialUsed,
+	planCredentialUsed,
+} from "./credential-capture";
 import {
 	chatGptPlanExhaustedMessage,
 	chatGptPlanSourceExhaustedError,
@@ -23,13 +33,19 @@ import {
 	type ChatGptPlanReasoningEffort,
 } from "./models";
 import {
+	type ChatGptPlanAccessToken,
 	getChatGptPlanAccessToken,
 	getChatGptPlanSourceAccessToken,
 	refreshChatGptPlanAfterUnauthorized,
 	refreshChatGptPlanSourceAfterUnauthorized,
 } from "./plan-credentials";
+import {
+	noteChatGptPlanReportedUsage,
+	settleChatGptPlanWindowsInBackground,
+} from "./reported-usage";
 import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
 import { type PlanSourceRef, planSourceLogFields } from "./sources";
+import { createChatGptPlanStructuredOutputMiddleware } from "./structured-output";
 
 /**
  * Rules the SDK must see before it builds the request:
@@ -38,7 +54,8 @@ import { type PlanSourceRef, planSourceLogFields } from "./sources";
  * - system messages as developer messages (system items are rejected);
  * - no sampling, output cap, conversation or previous-response options;
  * - non-strict JSON schemas: strict mode demands every property in
- *   `required`, and Fabric's schemas use optional fields;
+ *   `required`, and Fabric's schemas use optional fields (the answers' nulls
+ *   are mapped back by `createChatGptPlanStructuredOutputMiddleware`);
  * - the task's reasoning effort, unless the caller chose one.
  */
 export function createChatGptPlanRequestMiddleware(
@@ -117,16 +134,19 @@ export type PlanCallOptions = Parameters<PlanResponsesModel["doGenerate"]>[0];
  * organization's fallback model (Fizzy #2770 F10). No fallback, the same
  * model, or a refusal of the fallback too ends in
  * {@link ChatGptPlanModelNotServedError}, naming the chosen model. Never loops.
+ * A throw from `beforeModelFallback` (the fallback model's usage limit) ends
+ * the call before the fallback is sent.
  */
 function createChatGptPlanModelFallbackMiddleware(params: {
 	source: PlanSourceRef;
 	modelId: string;
 	fallbackModelId: string | null;
 	buildModel: (modelId: string) => PlanResponsesModel;
+	beforeModelFallback?: (modelId: string) => Promise<void>;
 	onModelFallback?: (modelId: string) => void;
 }): LanguageModelMiddleware {
 	const { fallbackModelId } = params;
-	const fallBack = (error: unknown): PlanResponsesModel => {
+	const fallBack = async (error: unknown): Promise<PlanResponsesModel> => {
 		if (!isUnsupportedModelError(error)) {
 			throw error;
 		}
@@ -136,6 +156,7 @@ function createChatGptPlanModelFallbackMiddleware(params: {
 		if (!fallbackModelId || fallbackModelId === params.modelId) {
 			throw new ChatGptPlanModelNotServedError(params.modelId);
 		}
+		await params.beforeModelFallback?.(fallbackModelId);
 		logger.warn(
 			"[chatgpt-plan] Model not available on this plan; retrying on the fallback",
 			{
@@ -159,7 +180,7 @@ function createChatGptPlanModelFallbackMiddleware(params: {
 			try {
 				return await doGenerate();
 			} catch (error) {
-				retry = fallBack(error);
+				retry = await fallBack(error);
 			}
 			// `ai` and `@ai-sdk/openai` resolve separate provider-type versions.
 			return Promise.resolve(
@@ -171,7 +192,7 @@ function createChatGptPlanModelFallbackMiddleware(params: {
 			try {
 				return await doStream();
 			} catch (error) {
-				retry = fallBack(error);
+				retry = await fallBack(error);
 			}
 			return Promise.resolve(
 				retry.doStream(callParams as PlanCallOptions),
@@ -196,13 +217,20 @@ export function createChatGptPlanExhaustionMiddleware(
 		if (open) {
 			throw open;
 		}
+		// Whatever the call writes about the source is bound to the sign-in
+		// its token came from (Fizzy #3037).
+		const { notes, result: calling } = capturePlanCredentials(call);
 		let result: T;
 		try {
-			result = await call();
+			result = await calling;
 		} catch (error) {
 			const exhausted = toSubscriptionPlanExhaustedError(error);
 			if (exhausted) {
-				await recordChatGptPlanSourceExhausted(ref, exhausted);
+				await recordChatGptPlanSourceExhausted(
+					ref,
+					planCredentialUsed(notes, ref),
+					exhausted,
+				);
 				throw new SubscriptionPlanExhaustedError(
 					chatGptPlanExhaustedMessage(exhausted.resetAt),
 					exhausted.resetAt,
@@ -210,7 +238,11 @@ export function createChatGptPlanExhaustionMiddleware(
 			}
 			throw error;
 		}
-		await noteChatGptPlanSourceAnswered(ref);
+		await noteChatGptPlanSourceAnswered(
+			ref,
+			planCredentialUsed(notes, ref),
+		);
+		settleChatGptPlanWindowsInBackground(ref);
 		return result;
 	};
 	return {
@@ -243,8 +275,26 @@ export interface ChatGptPlanModelOptions {
 	/** The organization's fallback for a model the plan refuses; null for none. */
 	fallbackModelId?: string | null;
 	reasoningEffort?: ChatGptPlanReasoningEffort;
+	/**
+	 * Runs before the call moves to the fallback model; a throw (a usage
+	 * limit on that model) ends the call there instead.
+	 */
+	beforeModelFallback?: (modelId: string) => Promise<void>;
 	/** Told the model that actually served the call after a fallback. */
 	onModelFallback?: (modelId: string) => void;
+	/**
+	 * Applied to every model a request is physically sent through: the plan's
+	 * own model and the fallback model the fallback middleware calls directly.
+	 * The factory wraps each in the turn token ledger here, so every physical
+	 * send — the first, the fallback, and (through the rotation building a new
+	 * plan model) every account it moves to — reserves and settles on its own.
+	 */
+	wrapPhysicalModel?: (model: PlanResponsesModel) => PlanResponsesModel;
+	/**
+	 * Handed each background write of a reply's reported usage, for a caller
+	 * that must not answer before it lands (the plan Test). Never rejects.
+	 */
+	onUsageReport?: (write: Promise<void>) => void;
 	/** For tests; production calls go to api.openai.com. */
 	fetchImpl?: typeof fetch;
 }
@@ -261,7 +311,10 @@ export function createChatGptPlanModel({
 	modelId,
 	fallbackModelId = null,
 	reasoningEffort,
+	beforeModelFallback,
 	onModelFallback,
+	wrapPhysicalModel = (model) => model,
+	onUsageReport,
 	fetchImpl,
 }: ChatGptPlanModelOptions): LanguageModel {
 	// The member's own plan keeps the phase-1 entry points.
@@ -283,28 +336,64 @@ export function createChatGptPlanModel({
 							failed,
 						),
 				};
+	// Each token read tells the call which sign-in it is using.
+	let lastFingerprint: string | undefined;
+	const used = (token: ChatGptPlanAccessToken): string => {
+		notePlanCredentialUsed(source, token.credentialFingerprint);
+		lastFingerprint = token.credentialFingerprint;
+		return token.accessToken;
+	};
+	// Every reply — a 429 included, before it is remapped — may carry the
+	// plan's own usage report; it is stored in the background, kept alive
+	// past the response on Vercel, where a bare promise may never finish.
+	const onResponseHeaders = (status: number, headers: Headers): void => {
+		logChatGptPlanHeaders(status, headers);
+		const write = noteChatGptPlanReportedUsage(source, {
+			status,
+			headers,
+			credentialFingerprint: lastFingerprint,
+		});
+		waitUntil(write);
+		onUsageReport?.(write);
+	};
 	const provider = createOpenAI({
 		apiKey: "chatgpt-plan",
 		// Pinned: OPENAI_BASE_URL must never redirect a plan token.
 		baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
 		fetch: createChatGptPlanFetch({
-			getAccessToken: async () => (await tokens.get()).accessToken,
+			getAccessToken: async () => used(await tokens.get()),
 			onUnauthorized: async (failedToken) =>
-				(await tokens.refresh(failedToken)).accessToken,
-			onResponseHeaders: logChatGptPlanHeaders,
+				used(await tokens.refresh(failedToken)),
+			onResponseHeaders,
+			// Inside an Advisor chat turn (the ambient dispatch guard), every
+			// physical send is checked at the fetch itself, synchronously:
+			// the token lookup and, after a 401, the token refresh are awaited
+			// after the model middleware's check, so a stop latched during
+			// them refuses the send, and the send carries the guard's abort
+			// signal. A resend after a 401 also passes the turn's durable
+			// dispatch check first. It is not reserved again: the 401 billed
+			// nothing, and the one reservation this physical model made
+			// (`wrapPhysicalModel`) covers the one send that is billed. A
+			// no-op outside a turn.
+			beforeSend: dispatchSendSignal,
+			beforeResend: async () => {
+				await getDispatchGuard()?.assertDispatchable();
+			},
 			...(fetchImpl && { baseFetch: fetchImpl }),
 		}),
 	});
 	return wrapLanguageModel({
-		model: provider.responses(modelId),
+		model: wrapPhysicalModel(provider.responses(modelId)),
 		middleware: [
 			createChatGptPlanExhaustionMiddleware(source),
 			createChatGptPlanRequestMiddleware(reasoningEffort),
+			createChatGptPlanStructuredOutputMiddleware(),
 			createChatGptPlanModelFallbackMiddleware({
 				source,
 				modelId,
 				fallbackModelId,
-				buildModel: (id) => provider.responses(id),
+				buildModel: (id) => wrapPhysicalModel(provider.responses(id)),
+				beforeModelFallback,
 				onModelFallback,
 			}),
 		],

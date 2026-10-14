@@ -116,6 +116,32 @@ describe("fetchPmTicket", () => {
 		expect(result?.description).toBe("Set up the repository and CI.");
 	});
 
+	it("parses wrapped v2 Jira ticket ({ data: { fields: { summary, description } } })", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValueOnce({
+			success: true,
+			output: {
+				data: {
+					key: "SAN-11",
+					fields: {
+						summary: "Wrapped Jira Title",
+						description: "Wrapped Jira Description",
+					},
+				},
+			},
+		} as never);
+
+		const result = await fetchPmTicket({
+			...baseInput,
+			capabilities: {
+				...baseCapabilities,
+				detectedType: "jira",
+			} as unknown as PMToolCapabilities,
+		});
+
+		expect(result?.title).toBe("Wrapped Jira Title");
+		expect(result?.description).toBe("Wrapped Jira Description");
+	});
+
 	it("flattens Jira ADF descriptions instead of dropping them", async () => {
 		vi.mocked(executeMcpTool).mockResolvedValueOnce({
 			success: true,

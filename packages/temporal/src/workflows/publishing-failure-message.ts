@@ -52,6 +52,10 @@ const AUTHORED_MESSAGE: ReadonlyMap<string, string> = new Map([
 		"PUBLISHING_ACTOR_INVALID",
 		"The account that started this draft is no longer authorized to generate on this project",
 	],
+	[
+		"PUBLISHING_SHORT_POST_NO_POST_TEXT",
+		"The model returned the three options without any post text, which usually means the topic gave it too little to write about. Add context to the topic — a fuller summary, an answered question or a linked source — then generate again.",
+	],
 	...(
 		[
 			"PUBLISHING_CASE_STUDY_SCHEMA_VALIDATION_FAILED",

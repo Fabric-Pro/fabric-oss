@@ -101,6 +101,7 @@ export const mocks = {
 	resolveCompanyEmbeddingModel: vi.fn(),
 	getSignedUploadUrl: vi.fn(),
 	getSignedUrl: vi.fn(),
+	getFileMetadata: vi.fn(),
 	uploadFile: vi.fn(),
 	decryptApiKey: vi.fn(),
 };
@@ -219,6 +220,7 @@ export function storageModule() {
 			getSignedUploadUrl: mocks.getSignedUploadUrl,
 		}),
 		getSignedUrl: mocks.getSignedUrl,
+		getFileMetadata: mocks.getFileMetadata,
 		uploadFile: mocks.uploadFile,
 	};
 }
@@ -578,6 +580,13 @@ export function resetDefaults(): void {
 		"https://storage.example.com/put",
 	);
 	mocks.getSignedUrl.mockResolvedValue("https://storage.example.com/get");
+	mocks.getFileMetadata.mockResolvedValue({
+		size: 1024,
+		contentType: "application/pdf",
+		uploadedAt: new Date("2026-01-01"),
+		pathname: "stored",
+		url: "https://storage.example.com/stored",
+	});
 	mocks.uploadFile.mockResolvedValue(undefined);
 	mocks.urlPageFindMany.mockResolvedValue([]);
 	mocks.urlPageCount.mockResolvedValue(0);

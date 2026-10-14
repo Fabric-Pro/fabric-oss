@@ -114,7 +114,11 @@ export async function analyzeIntentClarityActivity(
 
 		const model = await getAIModel(
 			{ taskType: "SIMPLE" },
-			{ userId: input.userId, organizationId: input.organizationId },
+			{
+				userId: input.userId,
+				organizationId: input.organizationId,
+				featureKey: "chat-agent",
+			},
 		);
 
 		// Every physical request — the SDK's own retries included — is

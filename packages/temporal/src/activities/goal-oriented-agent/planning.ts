@@ -9,6 +9,7 @@
  */
 
 import { generateObject } from "@repo/ai";
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import { z } from "zod";
 import type {
 	AgentVariable,
@@ -75,7 +76,7 @@ const PlanSchema = z.object({
 	estimatedComplexity: z.enum(["simple", "moderate", "complex"]),
 });
 
-export async function createGoalOrientedPlan(
+async function createGoalOrientedPlanInJob(
 	input: CreateGoalOrientedPlanInput,
 ): Promise<CreateGoalOrientedPlanOutput> {
 	const {
@@ -289,4 +290,15 @@ async function loadMcpToolsForPlanning(
 		console.warn("[GoalOrientedPlanning] Failed to load MCP tools", error);
 		return [];
 	}
+}
+
+// Always background work, whatever started the run: a run from before the
+// job-type header, or one a Temporal schedule started, still runs on the
+// organization's shared ChatGPT plans (Fizzy #2770). A run's own job wins.
+export function createGoalOrientedPlan(
+	params: Parameters<typeof createGoalOrientedPlanInJob>[0],
+): ReturnType<typeof createGoalOrientedPlanInJob> {
+	return runWithDefaultAiJobType("external-agent", () =>
+		createGoalOrientedPlanInJob(params),
+	);
 }

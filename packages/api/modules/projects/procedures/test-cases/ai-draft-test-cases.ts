@@ -147,6 +147,7 @@ export const aiDraftTestCasesProcedure = tenantProtectedProcedure
 			userId: user.id,
 			requestedById: user.id,
 			storyIds,
+			planEligible: true,
 		});
 
 		if (!started.started && started.reason === "blocked") {

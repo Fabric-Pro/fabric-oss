@@ -92,6 +92,8 @@ export const startScopeIntakeProcedure = tenantProtectedProcedure
 						projectId: input.projectId,
 						contextId: input.contextId,
 						userId: user.id,
+						// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+						planEligible: true,
 						organizationId:
 							organizationId ??
 							projectContext.organizationId ??

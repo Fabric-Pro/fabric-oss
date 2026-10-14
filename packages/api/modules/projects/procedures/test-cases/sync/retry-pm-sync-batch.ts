@@ -43,6 +43,12 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 					enqueued: z.boolean(),
 					workflowId: z.string().optional(),
 					reason: z.string().optional(),
+					/**
+					 * With `reason: "pm-recovery-too-recent"`: when the
+					 * item's create claim can be cleared (ISO time; `null`
+					 * when unknown).
+					 */
+					recoverableAt: z.string().nullable().optional(),
 				}),
 			),
 		}),
@@ -96,13 +102,21 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Ownership pre-filter carrying each owned case's current PM link.
+		// Ownership pre-filter carrying each owned case's current PM link and
+		// create claim. A batch retry is a plain retry: it never clears
+		// either (Unlink & re-create is a per-case action).
 		const owned = await db.testCase.findMany({
 			where: {
 				id: { in: input.testCaseIds },
 				projectId: input.projectId,
 			},
-			select: { id: true, externalId: true, externalMcpServerId: true },
+			select: {
+				id: true,
+				externalId: true,
+				externalUrl: true,
+				externalMcpServerId: true,
+				pmCreateClaimId: true,
+			},
 		});
 		const ownedById = new Map(owned.map((c) => [c.id, c]));
 
@@ -117,7 +131,9 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 					projectId: input.projectId,
 					userId: user.id,
 					externalId: link?.externalId ?? null,
+					externalUrl: link?.externalUrl ?? null,
 					externalMcpServerId: link?.externalMcpServerId ?? null,
+					pmCreateClaimId: link?.pmCreateClaimId ?? null,
 				});
 			}),
 		);
@@ -130,6 +146,13 @@ export const retryTestCasePmSyncBatchProcedure = tenantProtectedProcedure
 					enqueued: entry.value.enqueued,
 					workflowId: entry.value.workflowId,
 					reason: entry.value.reason,
+					...(entry.value.reason === "pm-recovery-too-recent"
+						? {
+								recoverableAt:
+									entry.value.recoverableAt?.toISOString() ??
+									null,
+							}
+						: {}),
 				};
 			}
 			return { id, enqueued: false, reason: "temporal-error" };

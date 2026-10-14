@@ -119,8 +119,31 @@ describe("summarizeTopicSuggestions", () => {
 			{
 				userId: "user-1",
 				organizationId: undefined,
+				projectId: "proj-a",
 				jobType: "publishing-suggestion",
 			},
+		);
+	});
+
+	it("runs a clicked scan as the manual publishing job, which only the shared ChatGPT plans serve (Fizzy #2770)", async () => {
+		generateObject.mockResolvedValue({
+			object: { topics: [] },
+			usage: { totalTokens: 1 },
+		});
+
+		await summarizeTopicSuggestions({
+			projectId: "proj-a",
+			organizationId: null,
+			actorUserId: "user-1",
+			context: {},
+			jobType: "publishing-suggestion-manual",
+		});
+
+		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({
+				jobType: "publishing-suggestion-manual",
+			}),
 		);
 	});
 
@@ -199,6 +222,7 @@ describe("summarizeTopicSuggestions", () => {
 			{
 				userId: "user-1",
 				organizationId: "org-1",
+				projectId: "proj-a",
 				jobType: "publishing-suggestion",
 			},
 		);

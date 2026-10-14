@@ -50,6 +50,9 @@ async function startDeliveryTrackClassification(input: {
 					storyIds: [input.storyId],
 					userId: input.userId,
 					organizationId: input.organizationId,
+					// Only ever started by the person creating the story: it may
+					// run on their own ChatGPT plan (Fizzy #2770).
+					planEligible: true,
 				},
 			],
 		});

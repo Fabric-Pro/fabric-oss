@@ -123,6 +123,7 @@ import {
 import { ConvertKindConfirmDialog } from "./ConvertKindConfirmDialog";
 import { DeclinedDuplicateBadge } from "./DeclinedDuplicateBadge";
 import { DuplicateBadge } from "./DuplicateBadge";
+import { isConvertKindBlockedByDefer } from "./lib/convert-kind-availability";
 import { NeedsMoreInfoBadge } from "./NeedsMoreInfoBadge";
 import { GatedSyncMenuItem } from "./pm-sync/GatedSyncMenuItem";
 import { PmSyncCloudToggle } from "./pm-sync/PmSyncCloudToggle";
@@ -131,6 +132,7 @@ import { PmSyncFailureBadge } from "./pm-sync/PmSyncFailureBadge";
 import { PmSyncFailureSidePanel } from "./pm-sync/PmSyncFailureSidePanel";
 import { PmSyncPendingIndicator } from "./pm-sync/PmSyncPendingIndicator";
 import { useInvalidatePmSyncState } from "./pm-sync/use-invalidate-pm-sync-state";
+import { useLinkStoryPmItem } from "./pm-sync/use-link-story-pm-item";
 import { useAiReassessEligibility } from "./priority/useAiReassessEligibility";
 import { useAiReprioritizeStory } from "./priority/useAiReprioritizeStory";
 import { SourceChip } from "./SourceChip";
@@ -549,6 +551,7 @@ function StoryCardImpl({
 	// persisted job row (`useStoryKindRegeneration`), never a local flag: this
 	// row unmounts and remounts freely as the roadmap re-renders and filters.
 	const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+	const convertBlockedByDefer = isConvertKindBlockedByDefer(story);
 	const targetKind: "BUG" | "FEATURE" =
 		story.kind === "BUG" ? "FEATURE" : "BUG";
 	const invalidateAfterRegeneration = useInvalidateStoryAfterRegeneration(
@@ -759,6 +762,15 @@ function StoryCardImpl({
 		},
 	});
 
+	// Link to existing item: link the unlinked story to the PM item an
+	// unconfirmed create made, instead of creating another.
+	const linkPmItemMutation = useLinkStoryPmItem({
+		projectId,
+		storyId: story.id,
+		organizationId: organizationId ?? null,
+		pmToolName,
+	});
+
 	// Relink: an override push that drops the link to the OTHER PM tool and
 	// creates a fresh card in the project's current tool. The failure panel's
 	// primary CTA for a "synced to a different PM tool" (PM_TOOL_MISMATCH) error,
@@ -779,6 +791,9 @@ function StoryCardImpl({
 			invalidatePmSyncState();
 		},
 		onError: (error) => {
+			// The push may have stamped the row FAILED (e.g. a legacy link to
+			// another PM tool); refetch so the failure panel shows it.
+			invalidatePmSyncState();
 			toast.error("Failed to relink", {
 				description:
 					error instanceof Error ? error.message : String(error),
@@ -2140,15 +2155,27 @@ function StoryCardImpl({
 									<DropdownMenuSeparator />
 									{/* F-171: convert-type — flip BUG ↔ FEATURE */}
 									<DropdownMenuItem
+										disabled={convertBlockedByDefer}
 										onClick={(e) => {
 											e.stopPropagation();
 											setConvertDialogOpen(true);
 										}}
 									>
 										<ArrowLeftRightIcon className="size-4 mr-2" />
-										{story.kind === "BUG"
-											? "Change to feature"
-											: "Change to bug"}
+										<span className="flex flex-col">
+											<span>
+												{story.kind === "BUG"
+													? "Change to feature"
+													: "Change to bug"}
+											</span>
+											{convertBlockedByDefer ? (
+												<span className="max-w-56 text-muted-foreground text-xs">
+													{tConvert(
+														"deferredBlocked",
+													)}
+												</span>
+											) : null}
+										</span>
 									</DropdownMenuItem>
 									<DropdownMenuItem
 										disabled={closeReopenMutation.isPending}
@@ -2302,6 +2329,11 @@ function StoryCardImpl({
 					setPmFailurePanelOpen(false);
 				}}
 				isUnlinking={unlinkRecreateMutation.isPending}
+				onLinkExisting={
+					story.externalId
+						? undefined
+						: (id) => linkPmItemMutation.mutateAsync(id)
+				}
 				onRelink={() => {
 					relinkMutation.mutate();
 					setPmFailurePanelOpen(false);

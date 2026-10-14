@@ -29,6 +29,7 @@ import {
 import {
 	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { executeMicrosoftTeamsTool } from "../../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
@@ -785,6 +786,14 @@ export class IntegrationHandler implements StepHandler {
 	}> {
 		const inputs = step.inputs || {};
 
+		// Before any provider call: nothing is sent once the chat turn this
+		// step serves has stopped or used its token allowance; a no-op
+		// outside a turn. An early exit only: every registered operation is
+		// a READ, and each legacy provider method below checks again in the
+		// same synchronous run as each request that writes or bills (its
+		// `fetch`), after whatever it awaited first.
+		throwIfDispatchStopped();
+
 		// Providers with a shared executor are dispatched through the registry,
 		// which validates the operation name, the argument shapes and the
 		// required credential keys before any network call. The switch below
@@ -944,6 +953,11 @@ export class IntegrationHandler implements StepHandler {
 			};
 		}
 
+		// Each write in these provider methods checks the turn in the same
+		// synchronous run as its send (see `executeIntegrationOperation`);
+		// this one outside the try, so its catch never turns the stop into a
+		// failed send.
+		throwIfDispatchStopped();
 		try {
 			const response = await fetch(
 				"https://slack.com/api/chat.postMessage",
@@ -1226,6 +1240,7 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
+				throwIfDispatchStopped();
 				const response = await fetch(
 					`https://api.github.com/repos/${owner}/${repo}/issues`,
 					{
@@ -1358,6 +1373,7 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
+				throwIfDispatchStopped();
 				const response = await gitlabOutboundFetch(
 					`${apiBase}/projects/${encodeURIComponent(projectId)}/issues`,
 					{
@@ -1441,6 +1457,7 @@ export class IntegrationHandler implements StepHandler {
 					};
 				}
 
+				throwIfDispatchStopped();
 				const mrResponse = await gitlabOutboundFetch(
 					`${apiBase}/projects/${encodeURIComponent(projectId)}/merge_requests`,
 					{
@@ -1660,6 +1677,7 @@ export class IntegrationHandler implements StepHandler {
 					}
 				`;
 
+				throwIfDispatchStopped();
 				const response = await fetch("https://api.linear.app/graphql", {
 					method: "POST",
 					headers,
@@ -1721,6 +1739,7 @@ export class IntegrationHandler implements StepHandler {
 			return { success: false, error: "to and subject are required" };
 		}
 
+		throwIfDispatchStopped();
 		const response = await fetch("https://api.resend.com/emails", {
 			method: "POST",
 			headers: {
@@ -1775,6 +1794,9 @@ export class IntegrationHandler implements StepHandler {
 		// (with the reading of its body) when the turn stops. Outside one
 		// `guardDispatch` returns no signal.
 		const signal = await guardDispatch();
+		// Awaiting the record check above is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(
 			"https://api.perplexity.ai/chat/completions",
 			{
@@ -1838,6 +1860,7 @@ export class IntegrationHandler implements StepHandler {
 				? "https://api.firecrawl.dev/v1/crawl"
 				: "https://api.firecrawl.dev/v1/scrape";
 
+		throwIfDispatchStopped();
 		const response = await fetch(endpoint, {
 			method: "POST",
 			headers: {
@@ -1892,6 +1915,9 @@ export class IntegrationHandler implements StepHandler {
 			headers["X-Webhook-Secret"] = credentials.WEBHOOK_SECRET;
 		}
 
+		if (method !== "GET" && method !== "HEAD") {
+			throwIfDispatchStopped();
+		}
 		const response = await fetch(webhookUrl, {
 			method,
 			headers,
@@ -2308,6 +2334,7 @@ export class IntegrationHandler implements StepHandler {
 						saveToSentItems: true,
 					};
 
+					throwIfDispatchStopped();
 					const response = await fetch(`${baseUrl}/me/sendMail`, {
 						method: "POST",
 						headers,
@@ -2430,6 +2457,7 @@ export class IntegrationHandler implements StepHandler {
 						event.onlineMeetingProvider = "teamsForBusiness";
 					}
 
+					throwIfDispatchStopped();
 					const response = await fetch(`${baseUrl}/me/events`, {
 						method: "POST",
 						headers,
@@ -2604,6 +2632,9 @@ export class IntegrationHandler implements StepHandler {
 					};
 			}
 		} catch (error) {
+			// A chat turn's stop (refused at a write's send) is not a failed
+			// Graph call.
+			rethrowIfDispatchStopped(error);
 			return {
 				success: false,
 				error:

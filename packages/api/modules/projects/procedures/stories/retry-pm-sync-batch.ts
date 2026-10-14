@@ -50,6 +50,12 @@ export const retryPmSyncBatchProcedure = tenantProtectedProcedure
 					enqueued: z.boolean(),
 					workflowId: z.string().optional(),
 					reason: z.string().optional(),
+					/**
+					 * With `reason: "pm-recovery-too-recent"`: when the
+					 * item's create claim can be cleared (ISO time; `null`
+					 * when unknown).
+					 */
+					recoverableAt: z.string().nullable().optional(),
 				}),
 			),
 		}),
@@ -77,8 +83,11 @@ export const retryPmSyncBatchProcedure = tenantProtectedProcedure
 			.map((i) => i.id);
 
 		// Widen the ownership pre-filter to carry each owned story's current PM
-		// link so the `unlinkFirst` path can sever it with the row's stored
-		// provenance (the same atomic predicate the single-item path uses).
+		// link and create claim so the `unlinkFirst` path can sever it with the
+		// row's stored provenance (the same atomic predicate the single-item
+		// path uses) and clear only the claim read here, and only once it is
+		// older than PM_CREATE_CLAIM_RECOVERY_MIN_AGE_MS (too recent: the item
+		// is reported `pm-recovery-too-recent` with its `recoverableAt`).
 		// Cross-tenant / missing items are dropped from `filtered` (never
 		// reported), matching the existing behavior.
 		const ownedStories =
@@ -92,12 +101,14 @@ export const retryPmSyncBatchProcedure = tenantProtectedProcedure
 							id: true,
 							externalId: true,
 							externalMcpServerId: true,
+							pmCreateClaimId: true,
 						},
 					})
 				: ([] as Array<{
 						id: string;
 						externalId: string | null;
 						externalMcpServerId: string | null;
+						pmCreateClaimId: string | null;
 					}>);
 		const ownedStoryById = new Map(ownedStories.map((s) => [s.id, s]));
 
@@ -118,6 +129,7 @@ export const retryPmSyncBatchProcedure = tenantProtectedProcedure
 					unlinkFirst: input.unlinkFirst,
 					externalId: owned?.externalId ?? null,
 					externalMcpServerId: owned?.externalMcpServerId ?? null,
+					pmCreateClaimId: owned?.pmCreateClaimId ?? null,
 				});
 			}),
 		);
@@ -131,6 +143,13 @@ export const retryPmSyncBatchProcedure = tenantProtectedProcedure
 					enqueued: entry.value.enqueued,
 					workflowId: entry.value.workflowId,
 					reason: entry.value.reason,
+					...(entry.value.reason === "pm-recovery-too-recent"
+						? {
+								recoverableAt:
+									entry.value.recoverableAt?.toISOString() ??
+									null,
+							}
+						: {}),
 				};
 			}
 			return {

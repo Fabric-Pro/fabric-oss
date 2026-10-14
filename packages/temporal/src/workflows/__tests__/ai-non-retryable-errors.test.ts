@@ -56,6 +56,13 @@ const AI_WORKFLOWS: Array<{
 	aiProxies: number;
 }> = [
 	{
+		// Describe and business derivation share one proxy; a spent plan is
+		// waited out, never retried in seconds (Fizzy #2770).
+		name: "atlas",
+		load: () => import("../atlas"),
+		aiProxies: 1,
+	},
+	{
 		name: "auto-analyze-meeting-transcript",
 		load: () => import("../auto-analyze-meeting-transcript"),
 		aiProxies: 1,
@@ -154,6 +161,16 @@ const AI_WORKFLOWS: Array<{
 	{
 		name: "publishing-suggestion-generation-workflow",
 		load: () => import("../publishing-suggestion-generation-workflow"),
+		aiProxies: 1,
+	},
+	{
+		name: "scan-finding-review",
+		load: () => import("../scan-finding-review"),
+		aiProxies: 1,
+	},
+	{
+		name: "security-finding-grouping",
+		load: () => import("../security-finding-grouping"),
 		aiProxies: 1,
 	},
 	{

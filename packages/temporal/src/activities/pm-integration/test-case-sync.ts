@@ -23,6 +23,7 @@ import {
 	updateTestCasePmRefs,
 } from "@repo/database";
 import { fetchPmTicket } from "./fetch-pm-ticket";
+import { writePmSyncRunStatus } from "./pm-sync-attempt-fence";
 import { computePmHash } from "./pm-sync-hash";
 import { recordPmSyncLog } from "./record-pm-sync-log";
 import { parseTestCaseStepsFromBody } from "./test-case-serializer";
@@ -94,6 +95,15 @@ export interface UpdateTestCaseExternalRefsInput {
 		containerName?: string;
 		additionalContext?: Record<string, string>;
 	};
+	/**
+	 * The attempt id the single-case retry stamped before starting this run.
+	 * The link and baseline are always written by id (the push happened).
+	 * When set, the SUCCESS status lands only while the case still names this
+	 * attempt, so a newer retry's PENDING is left alone. Unset (a batch or
+	 * auto sync), it lands unless the case is PENDING for an attempt, which
+	 * that retry's own run settles.
+	 */
+	pmSyncAttemptId?: string;
 }
 
 /**
@@ -141,22 +151,34 @@ export async function updateTestCaseExternalRefs(
 		}
 	}
 
+	const link = {
+		externalId: input.externalId,
+		...(input.externalUrl !== undefined
+			? { externalUrl: input.externalUrl }
+			: {}),
+		...(input.externalMcpServerId !== undefined
+			? { externalMcpServerId: input.externalMcpServerId }
+			: {}),
+		...(pmHash !== null ? { lastSyncedPmHash: pmHash } : {}),
+		lastSyncedAt: now,
+	};
+	const status = {
+		lastPmSyncStatus: PmSyncStatus.SUCCESS,
+		lastPmSyncError: null,
+		lastPmSyncAttemptAt: now,
+	};
+	// The PM item exists and holds this push whoever owns the status now:
+	// losing the link would orphan it. Only the status write is fenced.
 	await db.testCase.updateMany({
 		where: { id: input.testCaseId, projectId: input.projectId },
-		data: {
-			externalId: input.externalId,
-			...(input.externalUrl !== undefined
-				? { externalUrl: input.externalUrl }
-				: {}),
-			...(input.externalMcpServerId !== undefined
-				? { externalMcpServerId: input.externalMcpServerId }
-				: {}),
-			...(pmHash !== null ? { lastSyncedPmHash: pmHash } : {}),
-			lastSyncedAt: now,
-			lastPmSyncStatus: PmSyncStatus.SUCCESS,
-			lastPmSyncError: null,
-			lastPmSyncAttemptAt: now,
-		},
+		data: link,
+	});
+	await writePmSyncRunStatus({
+		itemType: "testCase",
+		itemId: input.testCaseId,
+		projectId: input.projectId,
+		attemptId: input.pmSyncAttemptId,
+		data: status,
 	});
 }
 

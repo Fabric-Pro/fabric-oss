@@ -26,6 +26,8 @@ const h = vi.hoisted(() => ({
 	delegateToAgent: vi.fn(),
 	fetchCredentialsByIdAndProviderInTenant: vi.fn(),
 	registryExecuteStep: vi.fn(),
+	generateImageActivity: vi.fn(),
+	transcribeAudioActivity: vi.fn(),
 }));
 
 // Explicit mock (no importOriginal): the real @repo/database would keep
@@ -35,15 +37,23 @@ vi.mock("@repo/database", () => ({
 	fetchCredentialsByIdAndProviderInTenant:
 		h.fetchCredentialsByIdAndProviderInTenant,
 	fetchCredentialsByProvider: vi.fn(),
+	logAiUsageAsync: vi.fn(),
 	db: {},
 }));
 
 vi.mock("@repo/ai", () => ({
+	AUDIO_PROVIDER_REQUIRED: { textToSpeech: "text-to-speech refused" },
 	generateText: h.generateText,
 	resolveOpenAiApiKey: h.resolveOpenAiApiKey,
 }));
 
 vi.mock("@repo/storage", () => ({ uploadFile: h.uploadFile }));
+vi.mock("../../../../fabric-ai", () => ({
+	transcribeAudioActivity: h.transcribeAudioActivity,
+}));
+vi.mock("../../../../image-generation", () => ({
+	generateImageActivity: h.generateImageActivity,
+}));
 
 vi.mock("../../../utils", () => ({
 	getAiModel: vi.fn(async () => ({ id: "example-model" })),
@@ -360,6 +370,26 @@ describe("provider requests outside the model factory", () => {
 		expect(init.signal).toBeInstanceOf(AbortSignal);
 	});
 
+	it("OpenAI text-to-speech stores no audio when the activity is cancelled after the speech came back", async () => {
+		const env = new MockActivityEnvironment();
+		// The speech is returned in full; the cancellation lands between it
+		// and the upload.
+		fetchMock.mockImplementation(async () => {
+			env.cancel();
+			return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+		});
+
+		const failure = await env
+			.run(() =>
+				inTurn(() => new FabricAiHandler().execute(ttsContext(true))),
+			)
+			.catch((error: unknown) => error);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(failure).toBeInstanceOf(Error);
+		expect(h.uploadFile).not.toHaveBeenCalled();
+	});
+
 	it("OpenAI text-to-speech without a turn is sent as before, with no signal", async () => {
 		fetchMock.mockResolvedValue(
 			new Response(new Uint8Array([1, 2, 3]), { status: 200 }),
@@ -371,6 +401,80 @@ describe("provider requests outside the model factory", () => {
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe("https://api.openai.com/v1/audio/speech");
 		expect(init.signal).toBeUndefined();
+	});
+
+	it("OpenAI text-to-speech fails the step with the provider message when the organization has no key", async () => {
+		h.resolveOpenAiApiKey.mockResolvedValue("");
+
+		const result = await new FabricAiHandler().execute(ttsContext(false));
+
+		expect(result).toMatchObject({ handled: false });
+		expect(result.error).toContain("text-to-speech refused");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("a refused transcription fails the step with its reason instead of yielding an empty transcript", async () => {
+		h.transcribeAudioActivity.mockResolvedValue({
+			success: false,
+			error: "transcription refused",
+			durationMs: 1,
+		});
+		const input = stepInput(
+			{
+				app: "fabric_transcribe_audio",
+				inputs: { fileContent: "YXVkaW8=", fileName: "meeting.mp3" },
+			},
+			false,
+		);
+
+		const result = await new FabricAiHandler().execute({
+			input,
+			variables: {},
+			toolCalls: [],
+			startTime: Date.now(),
+		});
+
+		expect(result).toMatchObject({ handled: false });
+		expect(result.error).toContain("transcription refused");
+	});
+
+	function imageContext(withTurn: boolean): HandlerContext {
+		const input = stepInput(
+			{
+				app: "fabric_generate_image",
+				inputs: { prompt: "a paper boat", provider: "fal" },
+			},
+			withTurn,
+		);
+		return { input, variables: {}, toolCalls: [], startTime: Date.now() };
+	}
+
+	const IMAGE_RESULT = {
+		success: true,
+		provider: "fal",
+		model: "fal-ai/example",
+		imageUrl: "https://images.example.com/boat.png",
+	};
+
+	it("an image step in a turn hands the turn scope to the image request", async () => {
+		h.generateImageActivity.mockResolvedValue(IMAGE_RESULT);
+
+		await inTurn(() => new FabricAiHandler().execute(imageContext(true)));
+
+		expect(h.generateImageActivity).toHaveBeenCalledWith(
+			expect.objectContaining({ turnScope: TURN_SCOPE }),
+		);
+	});
+
+	it("an image step without a turn carries no turn scope", async () => {
+		h.generateImageActivity.mockResolvedValue(IMAGE_RESULT);
+
+		await new FabricAiHandler().execute(imageContext(false));
+
+		const [params] = h.generateImageActivity.mock.calls[0] as [
+			Record<string, unknown>,
+		];
+		expect(params).not.toHaveProperty("turnScope");
 	});
 
 	function perplexityContext(withTurn: boolean): HandlerContext {

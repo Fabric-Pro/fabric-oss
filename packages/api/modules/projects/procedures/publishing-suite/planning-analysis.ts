@@ -114,6 +114,11 @@ export async function startPlanningAnalysisRun(input: {
 						projectId: project.id,
 						organizationId: project.organizationId ?? null,
 						actorUserId: input.requestedById,
+						// Both ways in are a person's own click — Generate, or marking
+						// the topic Selected — so the run may use their ChatGPT plan
+						// (Fizzy #2770). `planUserId` names them for the plan header.
+						planEligible: true,
+						planUserId: input.requestedById,
 					},
 				],
 			},

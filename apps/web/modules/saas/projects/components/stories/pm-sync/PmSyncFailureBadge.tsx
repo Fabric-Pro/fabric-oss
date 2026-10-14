@@ -50,6 +50,41 @@ export function isPmToolMismatchError(
 	return /different pm tool|different tool|PM_TOOL_MISMATCH/i.test(error);
 }
 
+/**
+ * Whether a PM-sync error means the work item carries a legacy link (one saved
+ * before Fabric recorded which PM server a link belongs to) to a ticket in a
+ * different PM tool than the project's current one. No sync replaces such a
+ * link on its own, and a "Push & relink" cannot migrate it either: only Unlink
+ * & re-create does. Keys on the phrase the backend's message uses ("linked to
+ * a ticket in a different PM tool"). Presentation-only.
+ */
+export function isPmLegacyOtherToolLinkError(
+	error: string | null | undefined,
+): boolean {
+	if (!error) {
+		return false;
+	}
+	return /linked to a ticket in a different PM tool/i.test(error);
+}
+
+/**
+ * Whether a PM-sync error means a PM item may already exist that the work item
+ * is not linked to: the backend's `create_orphan` and `create_unconfirmed`
+ * failures. The work item then keeps a create claim, and every push refuses to
+ * create again until the user clears it, with Unlink & re-create or, while the
+ * item has no PM link, Link to existing item — so a plain retry can never
+ * clear this. Every such message ends by naming Unlink & re-create, which is
+ * what this keys on. Presentation-only.
+ */
+export function isPmCreateUnconfirmedError(
+	error: string | null | undefined,
+): boolean {
+	if (!error) {
+		return false;
+	}
+	return /Unlink & re-create/i.test(error);
+}
+
 type Props = {
 	onClick?: () => void;
 	className?: string;

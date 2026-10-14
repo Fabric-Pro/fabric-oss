@@ -24,6 +24,10 @@ import {
 	parseTurnTruncation,
 } from "../lib/chat-turn-truncation";
 import {
+	type ChatGptPlanApiBilling,
+	readChatGptPlanApiBilling,
+} from "../lib/chatgpt-plan-api-billing";
+import {
 	findToolCallIndex,
 	settleUnfinishedToolCalls,
 	trimHistoryForRequest,
@@ -153,6 +157,11 @@ export interface DirectStreamMessage {
 	 * so under the answer and offers to continue (review F25).
 	 */
 	truncated?: ChatTurnTruncation;
+	/**
+	 * The turn ran on the organization's API billing because every ChatGPT
+	 * plan was spent (Fizzy #3048); the chat says so under the answer.
+	 */
+	apiBilling?: ChatGptPlanApiBilling;
 	/** Pending confirmation for workflow execution */
 	pendingConfirmation?: {
 		workflowId: string;
@@ -733,6 +742,17 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					);
 				}
 
+				const apiBilling = readChatGptPlanApiBilling(response);
+				if (apiBilling) {
+					setMessages((prev) =>
+						prev.map((m) =>
+							m.id === assistantMessage.id
+								? { ...m, apiBilling }
+								: m,
+						),
+					);
+				}
+
 				// Process SSE stream
 				const reader = response.body?.getReader();
 				if (!reader) {
@@ -1118,6 +1138,10 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					// destructive toast and drop the streaming placeholder
 					// — the toast is the single source of truth; nothing
 					// should appear in the chat transcript.
+					//
+					// A `partial` refusal stopped a later step after part of
+					// the answer had streamed: the toast still fires, and the
+					// answer stays, marked as cut off like any partial error.
 					if (data.code === "AI_USAGE_LIMIT_EXCEEDED") {
 						const payload = isAiUsageLimitExceededPayload(
 							data?.data,
@@ -1129,11 +1153,13 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						if (payload) {
 							showAiUsageLimitToastRef.current(payload);
 						}
-						setMessages((prev) =>
-							prev.filter((m) => m.id !== assistantMessageId),
-						);
-						setState({ status: "idle" });
-						break;
+						if (data.partial !== true) {
+							setMessages((prev) =>
+								prev.filter((m) => m.id !== assistantMessageId),
+							);
+							setState({ status: "idle" });
+							break;
+						}
 					}
 					// The cause goes in its own field so a partial answer that
 					// streamed first keeps both: the text, and why it stopped.

@@ -7,8 +7,9 @@ const generateText = vi.fn();
 vi.mock("ai", () => ({
 	generateText: (...a: unknown[]) => generateText(...a),
 }));
+const getAIModel = vi.fn().mockResolvedValue({});
 vi.mock("@repo/ai", () => ({
-	getAIModel: vi.fn().mockResolvedValue({}),
+	getAIModel: (...a: unknown[]) => getAIModel(...a),
 }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -50,6 +51,22 @@ describe("analyzeIntentClarityActivity", () => {
 		expect(res.question).toBe("Which environment should I target?");
 		// 4 supplied → capped to 3.
 		expect(res.options).toEqual(["staging", "production", "local"]);
+	});
+
+	it("tags its model call as chat-agent so the AI Usage page can name it", async () => {
+		generateText.mockResolvedValue({
+			text: JSON.stringify({ needsClarification: false }),
+		});
+
+		await analyzeIntentClarityActivity({
+			message: "deploy it",
+			userId: "u",
+		});
+
+		expect(getAIModel).toHaveBeenCalledWith(
+			{ taskType: "SIMPLE" },
+			expect.objectContaining({ featureKey: "chat-agent" }),
+		);
 	});
 
 	it("returns needsClarification:false when the model judges the request clear", async () => {

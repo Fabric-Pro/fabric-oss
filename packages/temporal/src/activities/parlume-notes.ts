@@ -1,11 +1,18 @@
 import { generateText, getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
+import { findWorkflowHandledPlanRefusal } from "./lib/chatgpt-plan-refusal";
 
 const MAX_NOTES_INPUT_CHARS = 80_000;
 
 export async function writeParlumeNotes(input: {
 	sessionId: string;
+	/**
+	 * The workflow will not try again. Until then a spent ChatGPT plan fails
+	 * the activity with its own error, for the workflow to wait on, and the
+	 * notes are not marked failed.
+	 */
+	finalAttempt?: boolean;
 }): Promise<void> {
 	const session = await db.parlumeMeetingSession.findUnique({
 		where: { id: input.sessionId },
@@ -82,6 +89,10 @@ export async function writeParlumeNotes(input: {
 			},
 		});
 	} catch (error) {
+		const planRefusal = findWorkflowHandledPlanRefusal(error);
+		if (planRefusal && input.finalAttempt !== true) {
+			throw planRefusal;
+		}
 		logger.error("[Parlume] Meeting notes failed", {
 			sessionId: session.id,
 			error: error instanceof Error ? error.message : String(error),

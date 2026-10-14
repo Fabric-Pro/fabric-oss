@@ -230,3 +230,70 @@ describe("POST /api/ai/keys/exchange — a token minted under impersonation", ()
 		expect(impersonated).toBe(false);
 	});
 });
+
+// Fizzy #2770: a bulk run's agents (batch generation, project setup) hold a
+// token naming the run's job, so the exchange resolves on the organization's
+// shared plans for that job, never the member's own.
+describe("POST /api/ai/keys/exchange — a token minted for a job", () => {
+	it("resolves as the token's job, never as the member's own work", async () => {
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ jt: "batch-document-generation" }),
+		);
+		mocks.getAIModelWithMetadata.mockResolvedValue(
+			resolved("OPENROUTER", "openai/gpt-4o-mini"),
+		);
+
+		await exchange();
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			{
+				userId: "user-1",
+				organizationId: "org-1",
+				planEligible: false,
+				jobType: "batch-document-generation",
+			},
+		);
+	});
+
+	it("drops a job this build does not know", async () => {
+		mocks.verifyAIToken.mockResolvedValue(claims({ jt: "not-a-job" }));
+		mocks.getAIModelWithMetadata.mockResolvedValue(
+			resolved("OPENROUTER", "openai/gpt-4o-mini"),
+		);
+
+		await exchange();
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			{ userId: "user-1", organizationId: "org-1", planEligible: false },
+		);
+	});
+
+	it("passes the job's own reason through when nothing can serve it", async () => {
+		const reason =
+			"Scans, project setup, Atlas and batch generation run on your organization's shared ChatGPT plans.";
+		const refusal = new Error(reason);
+		refusal.name = "AIProviderNotConfiguredError";
+		mocks.verifyAIToken.mockResolvedValue(claims({ jt: "project-setup" }));
+		mocks.getAIModelWithMetadata.mockRejectedValue(refusal);
+
+		const response = await exchange();
+
+		expect(response.status).toBe(404);
+		expect(await response.json()).toEqual({ error: reason });
+	});
+
+	it("keeps the generic refusal for a token minted for no job", async () => {
+		const refusal = new Error("No AI provider configured.");
+		refusal.name = "AIProviderNotConfiguredError";
+		mocks.verifyAIToken.mockResolvedValue(claims());
+		mocks.getAIModelWithMetadata.mockRejectedValue(refusal);
+
+		const response = await exchange();
+
+		expect((await response.json()).error).toMatch(
+			/Please configure an AI provider in Settings/,
+		);
+	});
+});

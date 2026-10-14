@@ -32,6 +32,25 @@ export function safeHost(url: string): string | null {
 }
 
 /**
+ * Lower-cased `scheme://host[:port]` of an http(s) URL, or null when it is
+ * unparsable or has no network origin.
+ */
+export function safeOrigin(url: string | null | undefined): string | null {
+	if (!url) {
+		return null;
+	}
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+			return null;
+		}
+		return parsed.origin.toLowerCase();
+	} catch {
+		return null;
+	}
+}
+
+/**
  * True when hosts are equal or one is a subdomain of the other. Avoids false
  * mismatches for same-instance subdomain variants (e.g. `www.example.com` vs
  * `example.com`).
@@ -83,11 +102,18 @@ export function belongsToCurrentKnownTool(
  * tool than the one currently configured. Returns the resolution to apply:
  *
  * - `"ok"` — link belongs here, keep using it.
- * - `"clear"` — link is stale (legacy: no `externalMcpServerId` stamped, but
- *   URL/baseUrl proves a different tool); caller should drop the local
- *   externalId/externalUrl and fall through to the CREATE branch.
+ * - `"legacy-other-tool"` — a legacy link (no `externalMcpServerId`
+ *   stamped) whose URL/baseUrl points at a different tool. The caller must
+ *   neither use it nor replace it: it fails the sync with
+ *   `legacyLinkOtherToolMessage`, and the user drops the link with Unlink &
+ *   re-create. Clearing it automatically and creating could erase a link a
+ *   concurrent sync just wrote (an unstamped link cannot be told apart from
+ *   a fresh one with the same id) and create a duplicate item.
  * - `"block"` — link explicitly belongs to a different MCP server; caller
  *   should surface a clear error (or honor an override flag).
+ *
+ * With `currentInstanceOrigin` set, an unstamped link is judged by instance
+ * rather than by product: see that field.
  */
 export function detectExternalLinkMismatch(input: {
 	externalId: string | null | undefined;
@@ -96,9 +122,20 @@ export function detectExternalLinkMismatch(input: {
 	activeServerId: string | null | undefined;
 	currentDetectedType: string | undefined;
 	currentBaseUrl: string | null | undefined;
+	/**
+	 * The origin of the one instance the active tool's items live on, when
+	 * the caller knows it (a GitLab instance: gitlab.com or self-hosted).
+	 * Set, an unstamped link is used only when its URL has exactly this
+	 * origin. A link on another instance of the same product names an
+	 * unrelated item with the same number, and a link with no readable URL
+	 * cannot be placed on any instance, so both are `"legacy-other-tool"`.
+	 * `null` means the instance could not be resolved, which refuses every
+	 * unstamped link. Unset, the host heuristics below apply.
+	 */
+	currentInstanceOrigin?: string | null;
 }):
 	| { resolution: "ok" }
-	| { resolution: "clear"; reason: string }
+	| { resolution: "legacy-other-tool"; reason: string }
 	| { resolution: "block"; reason: string } {
 	const {
 		externalId,
@@ -127,6 +164,27 @@ export function detectExternalLinkMismatch(input: {
 		};
 	}
 
+	// Unstamped link, known instance: the link's URL must be on it. The
+	// product-level host checks below would accept a gitlab.com link for a
+	// self-hosted GitLab (and vice versa).
+	if (!externalMcpServerId && input.currentInstanceOrigin !== undefined) {
+		const linkOrigin = safeOrigin(externalUrl);
+		const instanceOrigin = safeOrigin(input.currentInstanceOrigin);
+		if (!linkOrigin) {
+			return {
+				resolution: "legacy-other-tool",
+				reason: "unstamped link has no readable URL, so its instance is unknown",
+			};
+		}
+		if (!instanceOrigin || linkOrigin !== instanceOrigin) {
+			return {
+				resolution: "legacy-other-tool",
+				reason: `link origin ${linkOrigin} is not the active instance ${instanceOrigin ?? "(unresolved)"}`,
+			};
+		}
+		return { resolution: "ok" };
+	}
+
 	// Legacy fallback: no externalMcpServerId stamped (row predates the
 	// column). Use URL host to decide.
 	if (!externalMcpServerId && externalUrl) {
@@ -141,7 +199,7 @@ export function detectExternalLinkMismatch(input: {
 			belongsToDifferentKnownTool(existingHost, currentDetectedType)
 		) {
 			return {
-				resolution: "clear",
+				resolution: "legacy-other-tool",
 				reason: `host ${existingHost} belongs to a different known PM tool than ${currentDetectedType}`,
 			};
 		}
@@ -166,7 +224,7 @@ export function detectExternalLinkMismatch(input: {
 				!hostsShareRegistrableDomain(existingHost, currentHost)
 			) {
 				return {
-					resolution: "clear",
+					resolution: "legacy-other-tool",
 					reason: `baseUrl host ${currentHost} does not share a domain with ${existingHost}`,
 				};
 			}
@@ -174,4 +232,14 @@ export function detectExternalLinkMismatch(input: {
 	}
 
 	return { resolution: "ok" };
+}
+
+/**
+ * The sync error for a legacy link that points at a different PM tool
+ * (`"legacy-other-tool"` above). No automatic sync replaces it; the sync
+ * failure panel keys on the phrase "linked to a ticket in a different PM
+ * tool" to offer Unlink & re-create, and the message names that action.
+ */
+export function legacyLinkOtherToolMessage(toolLabel: string): string {
+	return `This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in ${toolLabel}. To make a new ticket in ${toolLabel}, use Unlink & re-create (the old ticket is not deleted).`;
 }

@@ -3,16 +3,19 @@
  * PM-sync rows stuck in PENDING longer than the cutoff (default 10 min).
  *
  * Mocks the Prisma client — no real DB. Covers the itemType mapping
- * (`UserStory.kind === BUG` → `"bug"`, otherwise `"story"`). Stories are the
- * only work-item rows since the Epic/Feature folder tables were dropped.
+ * (`UserStory.kind === BUG` → `"bug"`, otherwise `"story"`, test cases →
+ * `"testCase"`), the attempt id and pending-since bound each item carries,
+ * and the merged oldest-first cap. Stories are the only work-item rows since
+ * the Epic/Feature folder tables were dropped.
  *
  * Run with: pnpm --filter @repo/database test __tests__/find-stuck-pm-sync.test.ts
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { storyFindMany } = vi.hoisted(() => ({
+const { storyFindMany, testCaseFindMany } = vi.hoisted(() => ({
 	storyFindMany: vi.fn(),
+	testCaseFindMany: vi.fn(),
 }));
 
 vi.mock("../prisma/client", async () => {
@@ -24,6 +27,7 @@ vi.mock("../prisma/client", async () => {
 		PmSyncStatus: actual.PmSyncStatus,
 		db: {
 			userStory: { findMany: storyFindMany },
+			testCase: { findMany: testCaseFindMany },
 		},
 	};
 });
@@ -37,6 +41,7 @@ const OLD_ATTEMPT_2 = new Date(NOW.getTime() - 11 * 60 * 1000);
 
 beforeEach(() => {
 	storyFindMany.mockReset();
+	testCaseFindMany.mockReset().mockResolvedValue([]);
 });
 
 describe("findStuckPmSyncItems", () => {
@@ -117,5 +122,155 @@ describe("findStuckPmSyncItems", () => {
 
 		const items = await findStuckPmSyncItems({ olderThan: CUTOFF });
 		expect(items).toEqual([]);
+	});
+
+	it("carries the attempt id and pending-since, falling back to the attempt time for rows stamped before pending-since existed", async () => {
+		const pendingSince = new Date(NOW.getTime() - 50 * 60 * 1000);
+		storyFindMany.mockResolvedValueOnce([
+			{
+				id: "story-new",
+				kind: "FEATURE",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_1,
+				lastPmSyncAttemptId: "attempt-1",
+				pmSyncPendingSince: pendingSince,
+			},
+			{
+				id: "story-legacy",
+				kind: "FEATURE",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_2,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			},
+		]);
+
+		const items = await findStuckPmSyncItems({ olderThan: CUTOFF });
+
+		expect(items).toEqual([
+			{
+				itemId: "story-new",
+				itemType: "story",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_1,
+				lastPmSyncAttemptId: "attempt-1",
+				pendingSince,
+			},
+			{
+				itemId: "story-legacy",
+				itemType: "story",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_2,
+				lastPmSyncAttemptId: null,
+				pendingSince: OLD_ATTEMPT_2,
+			},
+		]);
+		expect(storyFindMany.mock.calls[0]?.[0]).toMatchObject({
+			select: {
+				lastPmSyncAttemptId: true,
+				pmSyncPendingSince: true,
+			},
+		});
+	});
+
+	it("includes live test cases stuck PENDING, merged oldest-first under one cap", async () => {
+		storyFindMany.mockResolvedValueOnce([
+			{
+				id: "story-1",
+				kind: "FEATURE",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_2,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			},
+		]);
+		testCaseFindMany.mockResolvedValueOnce([
+			{
+				id: "case-1",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_1,
+				lastPmSyncAttemptId: "attempt-case",
+				pmSyncPendingSince: OLD_ATTEMPT_1,
+			},
+		]);
+
+		const items = await findStuckPmSyncItems({
+			olderThan: CUTOFF,
+			limit: 1,
+		});
+
+		// The older test case wins the single slot.
+		expect(items).toEqual([
+			{
+				itemId: "case-1",
+				itemType: "testCase",
+				lastPmSyncAttemptAt: OLD_ATTEMPT_1,
+				lastPmSyncAttemptId: "attempt-case",
+				pendingSince: OLD_ATTEMPT_1,
+			},
+		]);
+		expect(testCaseFindMany.mock.calls[0]?.[0]).toMatchObject({
+			where: {
+				lastPmSyncStatus: "PENDING",
+				lastPmSyncAttemptAt: { lt: CUTOFF },
+				deletedAt: null,
+			},
+			take: 1,
+		});
+	});
+
+	it("lists rows past the give-up bound first, even when their last attempt is recent, each row once", async () => {
+		const PENDING_BEFORE = new Date(NOW.getTime() - 60 * 60 * 1000);
+		const retriedRecently = new Date(NOW.getTime() - 2 * 60 * 1000);
+		const overdueStory = {
+			id: "story-overdue",
+			kind: "FEATURE",
+			lastPmSyncAttemptAt: retriedRecently,
+			lastPmSyncAttemptId: "attempt-overdue",
+			pmSyncPendingSince: new Date(NOW.getTime() - 70 * 60 * 1000),
+		};
+		const retryStory = {
+			id: "story-retry",
+			kind: "FEATURE",
+			lastPmSyncAttemptAt: OLD_ATTEMPT_1,
+			lastPmSyncAttemptId: "attempt-retry",
+			pmSyncPendingSince: OLD_ATTEMPT_1,
+		};
+		// Overdue query, then the retry query (which also returns a row the
+		// overdue query found).
+		storyFindMany
+			.mockResolvedValueOnce([overdueStory])
+			.mockResolvedValueOnce([retryStory, overdueStory]);
+		testCaseFindMany.mockResolvedValue([]);
+
+		const items = await findStuckPmSyncItems({
+			olderThan: CUTOFF,
+			pendingBefore: PENDING_BEFORE,
+			limit: 1,
+		});
+
+		// The single slot goes to the overdue row, not the older retry row.
+		expect(items.map((i) => i.itemId)).toEqual(["story-overdue"]);
+		expect(storyFindMany.mock.calls[0]?.[0]).toMatchObject({
+			where: {
+				lastPmSyncStatus: "PENDING",
+				OR: [
+					{ pmSyncPendingSince: { lt: PENDING_BEFORE } },
+					{
+						pmSyncPendingSince: null,
+						lastPmSyncAttemptAt: { lt: PENDING_BEFORE },
+					},
+				],
+			},
+		});
+		expect(testCaseFindMany.mock.calls[0]?.[0]).toMatchObject({
+			where: { deletedAt: null, OR: expect.any(Array) },
+		});
+
+		storyFindMany
+			.mockResolvedValueOnce([overdueStory])
+			.mockResolvedValueOnce([retryStory, overdueStory]);
+		const all = await findStuckPmSyncItems({
+			olderThan: CUTOFF,
+			pendingBefore: PENDING_BEFORE,
+		});
+		expect(all.map((i) => i.itemId)).toEqual([
+			"story-overdue",
+			"story-retry",
+		]);
 	});
 });

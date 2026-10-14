@@ -153,7 +153,8 @@ describe("hasActiveScan — per-branch dedupe", () => {
 		expect(where).toMatchObject({
 			projectId: "proj-1",
 			branch: "master",
-			status: { in: ["PENDING", "RUNNING"] },
+			// A scan paused for a ChatGPT plan reset still holds its branch.
+			status: { in: ["PENDING", "RUNNING", "WAITING_FOR_PLAN"] },
 		});
 	});
 

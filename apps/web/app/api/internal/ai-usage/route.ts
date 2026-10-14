@@ -1,3 +1,5 @@
+import { parseExchangedPlanSource } from "@repo/ai/lib/chatgpt-plan/plan-source-key";
+import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
 	getChatGptPlanOrgAccount,
@@ -37,8 +39,6 @@ const bodySchema = z.object({
 	planSource: z.string().max(160).optional(),
 });
 
-const ORG_PLAN_SOURCE = /^org:([\w-]{1,128})$/;
-
 /**
  * The shared ChatGPT plan account a plan call ran on, as its usage row's
  * `providerConfigId` — only when the account is the token's own
@@ -49,10 +49,11 @@ async function sharedPlanAccountId(params: {
 	planSource: string | undefined;
 	organizationId: string | null | undefined;
 }): Promise<string | undefined> {
-	const accountId =
-		params.provider === "OPENAI_CHATGPT_PLAN"
-			? params.planSource?.match(ORG_PLAN_SOURCE)?.[1]
-			: undefined;
+	const planSource =
+		params.provider === "OPENAI_CHATGPT_PLAN" && params.planSource
+			? parseExchangedPlanSource(params.planSource)
+			: null;
+	const accountId = planSource?.kind === "org" ? planSource.id : undefined;
 	if (!accountId || !params.organizationId) {
 		return undefined;
 	}
@@ -154,7 +155,7 @@ export async function POST(request: Request) {
 			taskType: body.taskType as any,
 			agentId: body.agentId,
 			conversationId: body.conversationId,
-			featureKey: body.featureKey,
+			featureKey: body.featureKey ?? featureKeyForAgentId(body.agentId),
 			promptVersionId: body.promptVersionId,
 			inputTokens: body.inputTokens,
 			outputTokens: body.outputTokens,

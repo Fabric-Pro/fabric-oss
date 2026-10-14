@@ -8,7 +8,7 @@
  * resolution failure) can be exercised without a live GitLab or Postgres.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { resolvePmSource, PMSourceNotFound } = vi.hoisted(() => {
 	class PMSourceNotFound extends Error {
@@ -59,6 +59,14 @@ const { getPmSyncBaseline, stampPmSyncConflict, stampPmSyncSuccess } =
 		stampPmSyncSuccess: vi.fn(),
 	}));
 
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock("../pm-integration/pm-create-claim", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+	releasePmCreateClaim: vi.fn(async () => true),
+}));
+
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn() },
 }));
@@ -85,6 +93,12 @@ vi.mock("../pm-tool-fallback", () => ({ callPmToolWithFallback }));
 // Mock the audit-log writer so we can assert on it without a real DB write
 // (the real `recordPmSyncLog` calls `createPmSyncLog` → @repo/database).
 vi.mock("../pm-integration/record-pm-sync-log", () => ({ recordPmSyncLog }));
+const { recordPmSyncFailure } = vi.hoisted(() => ({
+	recordPmSyncFailure: vi.fn(),
+}));
+vi.mock("../pm-integration/record-pm-sync-state", () => ({
+	recordPmSyncFailure,
+}));
 // Mock the conflict-guard helpers borrowed from the MCP hierarchy-sync path so
 // tests don't need a real Prisma client for the baseline/stamp/conflict writes.
 vi.mock("../pm-integration/hierarchy-sync", () => ({
@@ -117,6 +131,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
+import { db } from "@repo/database";
 import {
 	computeLabelDeltaOnPush,
 	decidePmStatusSync,
@@ -213,6 +228,103 @@ beforeEach(() => {
 });
 
 describe("syncGitLabStoryViaRest", () => {
+	it("a created issue whose link cannot be saved is reported as a create orphan, stamped FAILED by id", async () => {
+		// Thrown, the error would be retried by Temporal, each retry creating
+		// another issue.
+		getStoryById.mockResolvedValue(baseStory());
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "42",
+			externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+			title: "My Feature",
+		});
+		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
+
+		const result = await syncGitLabStoryViaRest(
+			baseInput({ pmSyncAttemptId: "attempt-A" }),
+		);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_ORPHAN",
+		});
+		expect(callPmToolWithFallback).toHaveBeenCalledTimes(1);
+		expect(recordPmSyncFailure).toHaveBeenCalledTimes(1);
+		const [arg] = recordPmSyncFailure.mock.calls[0] as [
+			Record<string, unknown>,
+		];
+		expect(arg).toMatchObject({
+			itemId: "story-1",
+			itemType: "story",
+			errorClass: "create_orphan",
+		});
+		expect(arg.errorMessage).toEqual(expect.stringContaining("42"));
+		expect(arg.onlyIfAttempt).toBeUndefined();
+		expect(stampPmSyncSuccess).not.toHaveBeenCalled();
+	});
+
+	it("a create orphan is still returned when recording its FAILED throws", async () => {
+		getStoryById.mockResolvedValue(baseStory());
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "42",
+			externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+			title: "My Feature",
+		});
+		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
+		recordPmSyncFailure.mockRejectedValueOnce(
+			new Error("audit context read failed"),
+		);
+
+		const result = await syncGitLabStoryViaRest(
+			baseInput({ pmSyncAttemptId: "attempt-A" }),
+		);
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_ORPHAN",
+		});
+		expect(callPmToolWithFallback).toHaveBeenCalledTimes(1);
+	});
+
+	it("a create orphan is still returned when the real recording's audit read throws", async () => {
+		// The real `recordPmSyncFailure`: its FAILED write lands, then the
+		// read of the row for the audit row fails.
+		const actual = await vi.importActual<
+			typeof import("../pm-integration/record-pm-sync-state")
+		>("../pm-integration/record-pm-sync-state");
+		recordPmSyncFailure.mockImplementationOnce(actual.recordPmSyncFailure);
+		const story = db.userStory as unknown as Record<string, unknown>;
+		const userStoryUpdate = vi.fn(async () => ({}));
+		story.update = userStoryUpdate;
+		story.findUnique = vi.fn(async () => {
+			throw new Error("connection reset");
+		});
+		getStoryById.mockResolvedValue(baseStory());
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "42",
+			externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+			title: "My Feature",
+		});
+		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
+
+		try {
+			const result = await syncGitLabStoryViaRest(
+				baseInput({ pmSyncAttemptId: "attempt-A" }),
+			);
+
+			expect(result).toMatchObject({
+				success: false,
+				errorCode: "PM_CREATE_ORPHAN",
+			});
+			expect(userStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1" },
+				data: expect.objectContaining({ lastPmSyncStatus: "FAILED" }),
+			});
+		} finally {
+			delete story.update;
+			delete story.findUnique;
+		}
+	});
+
 	it("push with no externalId creates the item and stamps the link", async () => {
 		getStoryById.mockResolvedValue(baseStory());
 		callPmToolWithFallback.mockResolvedValue({
@@ -236,7 +348,7 @@ describe("syncGitLabStoryViaRest", () => {
 				externalUrl: "https://gitlab.com/group/proj/-/issues/42",
 				externalMcpServerId: "server-1",
 			},
-			{ lastEditedSource: "PM_PULL" },
+			{ lastEditedSource: "PM_PULL", settlesPmCreateClaim: "claim-test" },
 		);
 
 		expect(result.success).toBe(true);
@@ -326,6 +438,96 @@ describe("syncGitLabStoryViaRest", () => {
 		);
 	});
 
+	describe("a confirmed migration (overrideMismatch) of a link stamped with another server", () => {
+		const stamped = () =>
+			baseStory({
+				externalId: "77",
+				externalUrl: "https://pm-old.example.com/cards/77",
+				externalMcpServerId: "a-different-server",
+			});
+
+		it("drops the link only while the row still carries that stamped link, then claims and creates", async () => {
+			getStoryById.mockResolvedValue(stamped());
+			callPmToolWithFallback.mockResolvedValue({
+				externalId: "43",
+				externalUrl: "https://gitlab.com/group/proj/-/issues/43",
+				title: "My Feature",
+			});
+			const { acquirePmCreateClaim } = await import(
+				"../pm-integration/pm-create-claim"
+			);
+
+			const result = await syncGitLabStoryViaRest(
+				baseInput({ overrideMismatch: true }),
+			);
+
+			expect(result.success).toBe(true);
+			const clearCall = updateStory.mock.calls.find(
+				([, , data]: unknown[]) =>
+					(data as { externalId?: unknown }).externalId === null,
+			);
+			expect(clearCall?.[3]).toMatchObject({
+				onlyIfPmLink: {
+					externalId: "77",
+					externalMcpServerId: "a-different-server",
+				},
+			});
+			// The new link is stamped with the active server, which a second,
+			// stale migration's scoped clear cannot match.
+			expect(updateStory).toHaveBeenCalledWith(
+				"story-1",
+				"proj-1",
+				expect.objectContaining({
+					externalId: "43",
+					externalMcpServerId: "server-1",
+				}),
+				expect.objectContaining({ settlesPmCreateClaim: "claim-test" }),
+			);
+			expect(
+				updateStory.mock.invocationCallOrder[
+					updateStory.mock.calls.indexOf(clearCall as never)
+				],
+			).toBeLessThan(
+				vi.mocked(acquirePmCreateClaim).mock.invocationCallOrder[0] ??
+					0,
+			);
+		});
+
+		it("a link changed since it was read: nothing is created", async () => {
+			getStoryById.mockResolvedValue(stamped());
+			updateStory.mockImplementation(
+				async (
+					_id: unknown,
+					_p: unknown,
+					_d: unknown,
+					ctx: unknown,
+				) => {
+					if (
+						(ctx as { onlyIfPmLink?: unknown } | undefined)
+							?.onlyIfPmLink !== undefined
+					) {
+						throw Object.assign(new Error("link changed"), {
+							name: "StoryLinkChangedError",
+						});
+					}
+					return undefined;
+				},
+			);
+			const { acquirePmCreateClaim } = await import(
+				"../pm-integration/pm-create-claim"
+			);
+
+			const result = await syncGitLabStoryViaRest(
+				baseInput({ overrideMismatch: true }),
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/link changed while it was syncing/);
+			expect(acquirePmCreateClaim).not.toHaveBeenCalled();
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+		});
+	});
+
 	it("push with existing externalId updates that item", async () => {
 		getStoryById.mockResolvedValue(
 			baseStory({
@@ -347,6 +549,228 @@ describe("syncGitLabStoryViaRest", () => {
 		expect(call.call.tool).toBe("updateItem");
 		expect(call.call.externalId).toBe("42");
 		expect(result.success).toBe(true);
+	});
+
+	describe("a legacy link (no server stamp) to another PM tool", () => {
+		const legacyAdoRow = () =>
+			baseStory({
+				externalId: "77",
+				externalUrl:
+					"https://dev.azure.com/example-org/example/_workitems/edit/77",
+				externalMcpServerId: null,
+			});
+
+		it.each(["push", "bidirectional"] as const)(
+			"%s: sends nothing to GitLab, keeps the link, and stamps FAILED asking for Unlink & re-create",
+			async (direction) => {
+				// GitLab issue 77 is unrelated to Azure DevOps work item 77.
+				getStoryById.mockResolvedValue(legacyAdoRow());
+				callPmToolWithFallback.mockResolvedValue({
+					externalId: "77",
+					externalUrl: "https://gitlab.com/group/proj/-/issues/77",
+					title: "Someone else's issue",
+				});
+
+				const result = await syncGitLabStoryViaRest(
+					baseInput({ direction, pmSyncAttemptId: "attempt-A" }),
+				);
+
+				expect(result).toMatchObject({
+					success: false,
+					errorCode: "PM_TOOL_MISMATCH_LEGACY",
+				});
+				expect(result.error).toEqual(
+					expect.stringContaining(
+						"linked to a ticket in a different PM tool",
+					),
+				);
+				expect(result.error).toEqual(
+					expect.stringContaining("Unlink & re-create"),
+				);
+				// No read, update or create against GitLab.
+				expect(callPmToolWithFallback).not.toHaveBeenCalled();
+				// The stored link is neither cleared nor replaced.
+				expect(updateStory).not.toHaveBeenCalled();
+				// Persisted, so the failure panel's recovery is reachable;
+				// scoped to the run's attempt.
+				expect(recordPmSyncFailure).toHaveBeenCalledWith(
+					expect.objectContaining({
+						itemId: "story-1",
+						itemType: "story",
+						errorMessage: result.error,
+						onlyIfAttempt: "attempt-A",
+					}),
+				);
+			},
+		);
+
+		it("Sync now (syncStoryToPM, no MCP config) stamps the same failure, only while the row is as read", async () => {
+			getStoryById.mockResolvedValue(
+				baseStory({
+					...legacyAdoRow(),
+					lastPmSyncAttemptId: "attempt-seen",
+				}),
+			);
+
+			const result = await syncStoryToPM(baseInput());
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+			expect(recordPmSyncFailure).toHaveBeenCalledTimes(1);
+			expect(recordPmSyncFailure).toHaveBeenCalledWith(
+				expect.objectContaining({
+					itemId: "story-1",
+					errorMessage: result.error,
+					onlyIfAttempt: undefined,
+					// A relink or a newer run since the read keeps its state.
+					onlyIfRowUnchanged: {
+						externalId: "77",
+						externalMcpServerId: null,
+						lastPmSyncAttemptId: "attempt-seen",
+					},
+				}),
+			);
+		});
+
+		it("a caller that records the failure itself (syncWorkItemToPM) gets the result and no second record", async () => {
+			getStoryById.mockResolvedValue(legacyAdoRow());
+
+			const result = await syncGitLabStoryViaRest(
+				baseInput({
+					pmSyncAttemptId: "attempt-A",
+					failureRecordedByCaller: true,
+				}),
+			);
+
+			expect(result).toMatchObject({
+				success: false,
+				errorCode: "PM_TOOL_MISMATCH_LEGACY",
+			});
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+			expect(recordPmSyncFailure).not.toHaveBeenCalled();
+		});
+
+		it("a gitlab.com link on a project connected to a self-hosted GitLab: nothing is sent, legacy failure", async () => {
+			// Issue 77 on gitlab.example.com is unrelated to gitlab.com's 77.
+			resolvePmSource.mockResolvedValue({
+				...REST_SOURCE,
+				baseUrl: "https://gitlab.example.com/api/v4",
+			});
+			getStoryById.mockResolvedValue(
+				baseStory({
+					externalId: "77",
+					externalUrl:
+						"https://gitlab.com/example/project/-/issues/77",
+					externalMcpServerId: null,
+				}),
+			);
+			callPmToolWithFallback.mockResolvedValue({
+				externalId: "77",
+				externalUrl:
+					"https://gitlab.example.com/example/project/-/issues/77",
+				title: "Someone else's issue",
+			});
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result).toMatchObject({
+				success: false,
+				errorCode: "PM_TOOL_MISMATCH_LEGACY",
+			});
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+			expect(updateStory).not.toHaveBeenCalled();
+			expect(recordPmSyncFailure).toHaveBeenCalledWith(
+				expect.objectContaining({
+					errorClass: "PM_TOOL_MISMATCH_LEGACY",
+					errorMessage: result.error,
+				}),
+			);
+		});
+
+		it("a self-hosted link on a project connected to gitlab.com: nothing is sent, legacy failure", async () => {
+			getStoryById.mockResolvedValue(
+				baseStory({
+					externalId: "77",
+					externalUrl:
+						"https://gitlab.example.com/example/project/-/issues/77",
+					externalMcpServerId: null,
+				}),
+			);
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+		});
+
+		it("an unstamped link with no URL cannot be placed on this instance: nothing is sent, legacy failure", async () => {
+			getStoryById.mockResolvedValue(
+				baseStory({
+					externalId: "77",
+					externalUrl: null,
+					externalMcpServerId: null,
+				}),
+			);
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+			expect(updateStory).not.toHaveBeenCalled();
+		});
+
+		it("uses the GitLab instance's origin: an unknown host on another domain is another tool", async () => {
+			resolvePmSource.mockResolvedValue({
+				...REST_SOURCE,
+				baseUrl: "https://gitlab.example.com/api/v4",
+			});
+			getStoryById.mockResolvedValue(
+				baseStory({
+					externalId: "77",
+					externalUrl: "https://pm.example.org/items/77",
+					externalMcpServerId: null,
+				}),
+			);
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result.errorCode).toBe("PM_TOOL_MISMATCH_LEGACY");
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+		});
+
+		it("a legacy GitLab link on this instance is still updated", async () => {
+			resolvePmSource.mockResolvedValue({
+				...REST_SOURCE,
+				baseUrl: "https://gitlab.example.com/api/v4",
+			});
+			getStoryById.mockResolvedValue(
+				baseStory({
+					externalId: "42",
+					externalUrl:
+						"https://gitlab.example.com/group/proj/-/issues/42",
+					externalMcpServerId: null,
+				}),
+			);
+			callPmToolWithFallback.mockResolvedValue({
+				externalId: "42",
+				externalUrl:
+					"https://gitlab.example.com/group/proj/-/issues/42",
+				title: "My Feature",
+			});
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result.success).toBe(true);
+			expect(callPmToolWithFallback).toHaveBeenCalledWith(
+				expect.objectContaining({
+					call: expect.objectContaining({
+						tool: "updateItem",
+						externalId: "42",
+					}),
+				}),
+			);
+			expect(recordPmSyncFailure).not.toHaveBeenCalled();
+		});
 	});
 
 	it("push on a status transition sends add_labels/remove_labels deltas, not a full-replace labels array", async () => {
@@ -653,9 +1077,11 @@ describe("syncGitLabStoryViaRest", () => {
 			const result = await syncGitLabStoryViaRest(baseInput());
 
 			expect(result.success).toBe(false);
+			// No attempt id in this input: the stamp is by id.
 			expect(stampPmSyncConflict).toHaveBeenCalledWith(
 				"story",
 				"story-1",
+				undefined,
 			);
 			// The actual updateItem call must NOT have happened — only the guard
 			// fetch fired.
@@ -725,6 +1151,48 @@ describe("syncGitLabStoryViaRest", () => {
 				expect.objectContaining({
 					itemType: "story",
 					itemId: "story-1",
+				}),
+			);
+		});
+
+		it("scopes the CONFLICT stamp to the run's attempt id", async () => {
+			getStoryById.mockResolvedValue(linkedStory());
+			getPmSyncBaseline.mockResolvedValue("baseline-hash-from-last-sync");
+			callPmToolWithFallback.mockResolvedValueOnce({
+				title: "Edited in GitLab",
+				description: "Someone touched this on the PM side",
+				externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+				labels: [],
+			});
+
+			await syncGitLabStoryViaRest(
+				baseInput({ pmSyncAttemptId: "attempt-A" }),
+			);
+
+			expect(stampPmSyncConflict).toHaveBeenCalledWith(
+				"story",
+				"story-1",
+				"attempt-A",
+			);
+		});
+
+		it("scopes the SUCCESS stamp to the run's attempt id", async () => {
+			getStoryById.mockResolvedValue(linkedStory());
+			getPmSyncBaseline.mockResolvedValue(null);
+			callPmToolWithFallback.mockResolvedValue({
+				externalId: "42",
+				externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+				title: "My Feature",
+			});
+
+			await syncGitLabStoryViaRest(
+				baseInput({ pmSyncAttemptId: "attempt-A" }),
+			);
+
+			expect(stampPmSyncSuccess).toHaveBeenCalledWith(
+				expect.objectContaining({
+					itemId: "story-1",
+					pmSyncAttemptId: "attempt-A",
 				}),
 			);
 		});
@@ -2355,5 +2823,259 @@ describe("syncGitLabStoryViaRest", () => {
 				]);
 			});
 		});
+	});
+});
+
+const claimModule = await import("../pm-integration/pm-create-claim");
+
+describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
+	beforeEach(() => {
+		getStoryById.mockResolvedValue(baseStory());
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			claimId: "claim-test",
+		});
+	});
+
+	it("a held claim: no issue is created and the story is stamped create_unconfirmed", async () => {
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			miss: "claimed",
+		});
+
+		const result = await syncGitLabStoryViaRest(baseInput());
+
+		expect(callPmToolWithFallback).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_UNCONFIRMED",
+		});
+		expect(recordPmSyncFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				itemId: "story-1",
+				errorClass: "create_unconfirmed",
+				errorMessage: expect.stringContaining("may already exist"),
+				// By id over any PENDING, but only while the story is still
+				// unlinked and its claim is held.
+				overridePendingAttempt: true,
+				onlyIfCreateClaimHeld: true,
+			}),
+		);
+	});
+
+	it("linked by another run since it was read: no issue is created, nothing is recorded", async () => {
+		vi.mocked(claimModule.acquirePmCreateClaim).mockResolvedValue({
+			miss: "linked",
+			externalId: "88",
+			externalUrl: "https://gitlab.example.com/g/p/-/issues/88",
+		});
+
+		const result = await syncGitLabStoryViaRest(baseInput());
+
+		expect(callPmToolWithFallback).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://gitlab.example.com/g/p/-/issues/88",
+			pushSkipped: "already-linked",
+		});
+		expect(result.errorCode).toBeUndefined();
+		// No `create_unconfirmed`, and no other status write either, so a
+		// newer attempt's PENDING is not touched.
+		expect(recordPmSyncFailure).not.toHaveBeenCalled();
+		expect(stampPmSyncSuccess).not.toHaveBeenCalled();
+		expect(updateStory).not.toHaveBeenCalled();
+		expect(recordPmSyncLog).not.toHaveBeenCalled();
+	});
+
+	describe("the send deadline, started before the claim is asked for", () => {
+		// The monotonic clock the deadline is read on, held still unless a
+		// test moves it.
+		let clock = 1_000_000;
+		beforeEach(() => {
+			clock = 1_000_000;
+			vi.spyOn(performance, "now").mockImplementation(() => clock);
+		});
+		afterEach(() => {
+			vi.mocked(performance.now).mockRestore();
+		});
+		/** Taking the claim takes `ms`: its UPDATE's answer is that late. */
+		const claimAnswersAfter = (ms: number) =>
+			vi
+				.mocked(claimModule.acquirePmCreateClaim)
+				.mockImplementation(async () => {
+					clock += ms;
+					return { claimId: "claim-test" };
+				});
+
+		it("carries the deadline to the GitLab POST, and the abort timer ends at it, not a full ceiling after the claim", async () => {
+			claimAnswersAfter(10_000);
+			const timeout = vi.spyOn(AbortSignal, "timeout");
+			try {
+				let seen: { signal?: AbortSignal; dispatchDeadline?: number } =
+					{};
+				callPmToolWithFallback.mockImplementation(
+					async (args: {
+						signal?: AbortSignal;
+						dispatchDeadline?: number;
+					}) => {
+						seen = args;
+						return {
+							externalId: "42",
+							externalUrl:
+								"https://gitlab.com/group/proj/-/issues/42",
+							title: "My Feature",
+						};
+					},
+				);
+
+				await syncGitLabStoryViaRest(baseInput());
+
+				// PM_CREATE_SEND_TIMEOUT_MS from before the claim, of which
+				// taking the claim used 10s.
+				expect(seen.dispatchDeadline).toBe(1_000_000 + 50_000);
+				expect(timeout).toHaveBeenCalledWith(40_000);
+				expect(seen.signal).toBe(timeout.mock.results[0]?.value);
+			} finally {
+				timeout.mockRestore();
+			}
+		});
+
+		it("a claim whose answer came after the ceiling: nothing is sent, the claim is released, and the error offers a retry", async () => {
+			claimAnswersAfter(6 * 60_000);
+
+			const error = await syncGitLabStoryViaRest(baseInput()).then(
+				() => null,
+				(e: unknown) => e as Error,
+			);
+
+			expect(callPmToolWithFallback).not.toHaveBeenCalled();
+			expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
+				storyId: "story-1",
+				claimId: "claim-test",
+			});
+			expect(error?.message).toContain(
+				"Fabric did not send the create to GitLab",
+			);
+			// Nothing was created: not the unconfirmed-create message.
+			expect(error?.message).not.toMatch(
+				/may already exist|Unlink & re-create/,
+			);
+			expect(recordPmSyncFailure).not.toHaveBeenCalledWith(
+				expect.objectContaining({ errorClass: "create_unconfirmed" }),
+			);
+		});
+
+		it("the POST refused by its send-deadline check: the claim is released, not kept as unconfirmed", async () => {
+			const { DispatchDeadlinePassedError } = await import(
+				"@repo/utils/dispatch-deadline"
+			);
+			callPmToolWithFallback.mockRejectedValue(
+				new DispatchDeadlinePassedError(),
+			);
+
+			const error = await syncGitLabStoryViaRest(baseInput()).then(
+				() => null,
+				(e: unknown) => e as Error,
+			);
+
+			expect(error?.message).toContain(
+				"Fabric did not send the create to GitLab",
+			);
+			expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
+				storyId: "story-1",
+				claimId: "claim-test",
+			});
+			expect(recordPmSyncFailure).not.toHaveBeenCalledWith(
+				expect.objectContaining({ errorClass: "create_unconfirmed" }),
+			);
+		});
+	});
+
+	it("a GitLab 4xx rejection releases the claim and is rethrown as before", async () => {
+		const rejected = Object.assign(new Error("title is too long"), {
+			name: "GitLabApiError",
+			status: 422,
+		});
+		callPmToolWithFallback.mockRejectedValue(rejected);
+
+		await expect(syncGitLabStoryViaRest(baseInput())).rejects.toBe(
+			rejected,
+		);
+		expect(claimModule.releasePmCreateClaim).toHaveBeenCalledWith({
+			storyId: "story-1",
+			claimId: "claim-test",
+		});
+	});
+
+	it.each([
+		[
+			"a 5xx",
+			Object.assign(new Error("Bad Gateway"), {
+				name: "GitLabApiError",
+				status: 502,
+			}),
+		],
+		["a network error", new TypeError("fetch failed")],
+		[
+			"the send ceiling's abort",
+			new DOMException(
+				"The operation was aborted due to timeout",
+				"TimeoutError",
+			),
+		],
+	])(
+		"%s keeps the claim and returns create_unconfirmed instead of throwing into a retry",
+		async (_label, error) => {
+			callPmToolWithFallback.mockRejectedValue(error);
+
+			const result = await syncGitLabStoryViaRest(baseInput());
+
+			expect(result).toMatchObject({
+				success: false,
+				errorCode: "PM_CREATE_UNCONFIRMED",
+			});
+			expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+			expect(recordPmSyncFailure).toHaveBeenCalledWith(
+				expect.objectContaining({ errorClass: "create_unconfirmed" }),
+			);
+		},
+	);
+
+	it("a success without a readable issue number is an orphan: no link, the claim kept", async () => {
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "undefined",
+			externalUrl: null,
+			title: "My Feature",
+		});
+
+		const result = await syncGitLabStoryViaRest(baseInput());
+
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_ORPHAN",
+		});
+		expect(updateStory).not.toHaveBeenCalledWith(
+			"story-1",
+			"proj-1",
+			expect.objectContaining({ externalId: expect.anything() }),
+			expect.anything(),
+		);
+		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
+		expect(recordPmSyncFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ errorClass: "create_orphan" }),
+		);
+	});
+
+	it("a failed link write keeps the claim", async () => {
+		callPmToolWithFallback.mockResolvedValue({
+			externalId: "42",
+			externalUrl: "https://gitlab.com/group/proj/-/issues/42",
+			title: "My Feature",
+		});
+		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
+
+		const result = await syncGitLabStoryViaRest(baseInput());
+
+		expect(result).toMatchObject({ errorCode: "PM_CREATE_ORPHAN" });
+		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
 	});
 });

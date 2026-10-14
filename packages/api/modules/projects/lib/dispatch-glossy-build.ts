@@ -266,7 +266,17 @@ export async function dispatchGlossyBuild(
 				// start registered twice, which must not become two runs.
 				workflowIdConflictPolicy: "FAIL",
 				workflowIdReusePolicy: "REJECT_DUPLICATE",
-				args: [workflowInput],
+				// The editor who pressed Build waits for the edition, and every
+				// model call in it runs as them (`startedById`), so it may use
+				// their ChatGPT plan (Fizzy #2770). `planUserId` names them for
+				// the plan header.
+				args: [
+					{
+						...workflowInput,
+						planEligible: true,
+						planUserId: input.userId,
+					},
+				],
 			}),
 		);
 	} catch (error) {

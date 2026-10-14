@@ -30,6 +30,16 @@ const account = (overrides = {}) => ({
 	status: "ACTIVE",
 	enabled: true,
 	windowPercent: 42,
+	windowPercentSource: "estimated",
+	estimatedPercent: 42,
+	reported: null,
+	accuracy: {
+		refusalEstimatePercents: [],
+		windowsOverBudgetWithoutRefusal: 0,
+		settledWindows: 0,
+		latestReported: null,
+		maxDriftPoints: null,
+	},
 	resetsAt: new Date("2026-10-08T15:00:00Z"),
 	coolingUntil: null,
 	lastExhaustedAt: null,
@@ -90,6 +100,50 @@ describe("ChatgptPlanHealthList (Fizzy #2770 D6)", () => {
 		const second = within(rows[1] as HTMLElement);
 		expect(second.getByText("Needs reconnect")).toBeInTheDocument();
 		expect(rows[1]).toHaveTextContent("2M tokens · default");
+	});
+
+	it("marks a window ChatGPT reported, and shows how accurate the estimate was", async () => {
+		list.queryFn.mockResolvedValue({
+			accounts: [
+				account({
+					windowPercent: 48,
+					windowPercentSource: "reported",
+					estimatedPercent: 100,
+					accuracy: {
+						refusalEstimatePercents: [64.4, 91],
+						windowsOverBudgetWithoutRefusal: 2,
+						settledWindows: 9,
+						latestReported: {
+							estimatePercent: 100,
+							reportedPercent: 48,
+						},
+						maxDriftPoints: 52,
+					},
+				}),
+			],
+		});
+		renderList();
+		const [row] = await screen.findAllByTestId("chatgpt-plan-health-row");
+		const cells = within(row as HTMLElement);
+		expect(
+			cells.getByTestId("chatgpt-plan-health-source"),
+		).toHaveTextContent("reported by ChatGPT · estimate 100%");
+		const accuracy = cells.getByTestId("chatgpt-plan-health-accuracy");
+		expect(accuracy).toHaveTextContent("Refused at: 64%, 91%");
+		expect(accuracy).toHaveTextContent(
+			"Over 100% without refusal: 2 of 9 windows",
+		);
+		expect(accuracy).toHaveTextContent(
+			"estimate 100% · reported 48% · max gap 52 pts",
+		);
+	});
+
+	it("says an estimated window is an estimate", async () => {
+		list.queryFn.mockResolvedValue({ accounts: [account()] });
+		renderList();
+		expect(
+			await screen.findByTestId("chatgpt-plan-health-source"),
+		).toHaveTextContent("estimated");
 	});
 
 	it("says so when no organization has a shared account", async () => {

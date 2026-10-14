@@ -1,20 +1,28 @@
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	type ChatGptPlanOrgPolicyValues,
+	getActiveChatGptPlanOrgUse,
 	getCachedChatGptPlanOrgPolicy,
 	getChatGptPlanServedModels,
-	getChatGptPlanWindowBudgets,
+	getChatGptPlanWindowCalibrations,
 	hasDeclinedChatGptPlanInOrganization,
 	isFeatureEnabled,
 	listChatGptPlanModels,
 	listChatGptPlanOrgAccounts,
+	organizationHasLlmApiProvider,
 	recordAudit,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import type { AiJobKey } from "../job-keys";
 import {
+	chatGptPlanAccountUsage,
+	chatGptPlanFairShare,
+	type FairShare,
+} from "./account-usage";
+import {
 	chatGptPlanExhaustedMessage,
 	chatGptPlanSourceExhaustedError,
+	chatGptPlanSourceReportedUsage,
 } from "./exhaustion-breaker";
 import { isAiImpersonatedRequest } from "./interactive-context";
 import { resolveChatGptPlanModel } from "./models";
@@ -36,7 +44,12 @@ import { getCachedChatGptPlanOrgAccountWindows } from "./window-cache";
  * here, the review point for what may spend a shared plan unattended. Meeting
  * sync and channel monitoring are the organization's own capture work, so the
  * accounts it shares may run them; they stay off members' own plans
- * (`OWN_PLAN_BACKGROUND_DENYLIST`). Indexing and other bulk work never join.
+ * (`OWN_PLAN_BACKGROUND_DENYLIST`). Every text job that can run on a plan
+ * joins (product decision, 2026-10-09); the organization's provider stays
+ * the fallback through its spend policy. The bulk runs a person clicks
+ * ({@link BULK_PERSON_JOB_TYPES}) join as background work, so the pool's
+ * headroom keeps a share of every window for people. Off the list on
+ * purpose: the non-text jobs, which a plan cannot serve.
  */
 export const PLAN_POOL_BACKGROUND_JOB_TYPES: readonly AiJobKey[] = [
 	"daily-brief",
@@ -44,7 +57,43 @@ export const PLAN_POOL_BACKGROUND_JOB_TYPES: readonly AiJobKey[] = [
 	"meeting-transcript-sync",
 	"slack-channel-monitor",
 	"teams-channel-monitor",
+	"scheduled-report",
+	"publishing-suggestion",
+	"publishing-suggestion-manual",
+	"newsletter-curation",
+	"living-document-refresh",
+	"context-summarization",
+	"context-enrichment",
+	"pr-review",
+	"parlume-meeting-notes",
+	"fabric-mention",
+	"parlume-live-turn",
+	"weave-reader",
+	"external-agent",
+	"public-api",
+	"security-scan",
+	"batch-document-generation",
+	"project-setup",
+	"atlas-analysis",
 ];
+
+/**
+ * Bulk runs a person starts with one click — scans, batch document
+ * generation, project setup, Atlas analysis. One run can spend a whole
+ * window, so they never run on the clicker's own plan (they are on
+ * `OWN_PLAN_BACKGROUND_DENYLIST`) and run on the organization's shared
+ * accounts as background work instead (product decision, 2026-10-09).
+ */
+export const BULK_PERSON_JOB_TYPES: readonly AiJobKey[] = [
+	"security-scan",
+	"batch-document-generation",
+	"project-setup",
+	"atlas-analysis",
+];
+
+/** Why a bulk run found no provider, for a member who has a plan of their own. */
+export const BULK_RUNS_NEED_SHARED_PLAN_MESSAGE =
+	"Scans, project setup, Atlas and batch generation run on your organization's shared ChatGPT plans. Ask an admin to connect a shared account, or share your own plan: Account settings → AI Providers → Share organization-wide.";
 
 /**
  * A member whose own plan's window is spent has their interactive work served
@@ -65,9 +114,9 @@ export interface ChatGptPlanSourcePick {
 }
 
 /**
- * Plans would serve this call, but every one is spent or excluded. Interactive
- * work keeps today's ASK; background work waits, or — under an AUTO policy —
- * runs on the organization's provider.
+ * Plans would serve this call, but every one is spent or excluded. Each kind
+ * of work follows its own policy: it stops with the reset time (interactive
+ * ASK, background NEVER), or runs on the organization's provider (AUTO).
  */
 export interface ChatGptPlanSourcesExhausted {
 	exhausted: true;
@@ -106,10 +155,13 @@ function earliest(dates: Array<Date | null>): Date | null {
 /**
  * The organization's least-used shared account for this audience. Background
  * work leaves the policy's headroom on every account for people; an account
- * past it serves background work only when every account is. A member's
- * interactive work skips an account whose fair share they have used up
- * (Fizzy #2770 D6); with every account skipped so, it is spent for them
- * until the earliest of those windows resets.
+ * past it serves background work only when every account is. Use is the
+ * share OpenAI reported while that report is fresh, else Fabric's estimate.
+ * A member's interactive work skips an account whose fair share they have
+ * used up (Fizzy #2770 D6) — only when a fresh report or a refusal-calibrated
+ * budget says so; on the estimate alone the account just goes last. With
+ * every account skipped so, it is spent for them until the earliest of those
+ * windows resets.
  */
 async function pickFromPool(params: {
 	organizationId: string;
@@ -118,11 +170,11 @@ async function pickFromPool(params: {
 	exclude: ReadonlySet<string>;
 }): Promise<PoolOutcome> {
 	const { organizationId, audience, exclude } = params;
-	if (!(await isFeatureEnabled("CHATGPT_PLAN_POOLING", organizationId))) {
+	if (!(await isFeatureEnabled("CHATGPT_PLAN", organizationId))) {
 		return NO_POOL;
 	}
 	const policy = await getCachedChatGptPlanOrgPolicy(organizationId);
-	if (!policy.poolingEnabled || policy.termsAcknowledgedAt === null) {
+	if (policy.termsAcknowledgedAt === null) {
 		return NO_POOL;
 	}
 	const serving = (await listChatGptPlanOrgAccounts(organizationId)).filter(
@@ -155,40 +207,49 @@ async function pickFromPool(params: {
 		return { pick: null, exhausted: true, resetAt, policy };
 	}
 	// Each account's open window (an account whose window has reset counts
-	// as unused), as a share of its own budget.
+	// as unused), as a share of its own budget — or as OpenAI reported it,
+	// while that report is fresh.
 	const accountIds = unspent.map((account) => account.id);
-	const [windows, budgets] = await Promise.all([
+	const [windows, calibrations, reports] = await Promise.all([
 		getCachedChatGptPlanOrgAccountWindows(organizationId, accountIds),
-		getChatGptPlanWindowBudgets("ORG", accountIds),
+		getChatGptPlanWindowCalibrations("ORG", accountIds),
+		Promise.all(
+			accountIds.map((id) => chatGptPlanSourceReportedUsage(refOf(id))),
+		),
 	]);
-	const share = (accountId: string) => {
-		const budget = budgets.get(accountId) ?? 0;
-		const used = windows.get(accountId)?.inputTokens ?? 0;
-		return budget > 0 ? used / budget : 0;
-	};
-	const overFairShare = (account: (typeof unspent)[number]) => {
-		if (audience !== "interactive" || !account.maxMemberSharePct) {
-			return false;
-		}
-		const budget = budgets.get(account.id) ?? 0;
-		const mine =
-			windows.get(account.id)?.inputTokensByUser[params.userId] ?? 0;
-		return mine >= (budget * account.maxMemberSharePct) / 100;
-	};
-	const open = unspent.filter((account) => !overFairShare(account));
+	const reportOf = new Map(
+		accountIds.map((id, index) => [id, reports[index]]),
+	);
+	const usage = (accountId: string) =>
+		chatGptPlanAccountUsage({
+			window: windows.get(accountId),
+			calibration: calibrations.get(accountId),
+			reported: reportOf.get(accountId) ?? null,
+			userId: params.userId,
+		});
+	const share = (accountId: string) => usage(accountId).share;
+	const fairShare = (account: (typeof unspent)[number]): FairShare =>
+		audience === "interactive" && account.maxMemberSharePct
+			? chatGptPlanFairShare(usage(account.id), account.maxMemberSharePct)
+			: "within";
+	// Only a fair share the plan's real limits back up blocks a member;
+	// one Fabric's estimate alone says is used up only orders the pick.
+	const open = unspent.filter((account) => fairShare(account) !== "blocked");
 	if (open.length === 0) {
 		return {
 			pick: null,
 			exhausted: true,
 			resetAt: earliest(
-				unspent.map(
-					(account) => windows.get(account.id)?.resetsAt ?? null,
-				),
+				unspent.map((account) => usage(account.id).resetsAt),
 			),
 			policy,
 		};
 	}
-	const byUse = [...open].sort((a, b) => share(a.id) - share(b.id));
+	const overLast = (account: (typeof open)[number]) =>
+		fairShare(account) === "over" ? 1 : 0;
+	const byUse = [...open].sort(
+		(a, b) => overLast(a) - overLast(b) || share(a.id) - share(b.id),
+	);
 	const ceiling = (100 - policy.headroomPct) / 100;
 	const withinHeadroom =
 		audience === "background"
@@ -337,36 +398,70 @@ function ownSpentOutcome(
 export const CHATGPT_PLAN_API_FALLBACK_AUDIT_ACTION =
 	"org.chatgpt_plan.api_fallback_used";
 
-// One audit row per organization and job type per window, per process: a
-// background run makes many model calls, and the fact worth recording is
-// that the organization's provider took over, not each call.
+/** The audit action for a member's own work billed to the organization's provider. */
+export const CHATGPT_PLAN_INTERACTIVE_API_FALLBACK_AUDIT_ACTION =
+	"org.chatgpt_plan.interactive_api_fallback_used";
+
+// One audit row per organization and job type (or member) per window, per
+// process: a run or a chat turn makes many model calls, and the fact worth
+// recording is that the organization's provider took over, not each call.
 const API_FALLBACK_AUDIT_WINDOW_MS = 10 * 60_000;
 const lastApiFallbackAudit = new Map<string, number>();
 
 function auditApiFallback(
 	organizationId: string,
-	jobType: AiJobKey | undefined,
+	by: { jobType: AiJobKey | undefined } | { userId: string },
 	now = Date.now(),
 ): void {
-	const key = `${organizationId}:${jobType ?? ""}`;
+	const member = "userId" in by ? by.userId : null;
+	const key = member
+		? `${organizationId}:user:${member}`
+		: `${organizationId}:${"jobType" in by ? (by.jobType ?? "") : ""}`;
 	const last = lastApiFallbackAudit.get(key);
 	if (last !== undefined && now - last < API_FALLBACK_AUDIT_WINDOW_MS) {
 		return;
 	}
 	lastApiFallbackAudit.set(key, now);
 	recordAudit({
-		action: CHATGPT_PLAN_API_FALLBACK_AUDIT_ACTION,
+		action: member
+			? CHATGPT_PLAN_INTERACTIVE_API_FALLBACK_AUDIT_ACTION
+			: CHATGPT_PLAN_API_FALLBACK_AUDIT_ACTION,
 		category: "org",
 		severity: "warning",
-		actor: { type: "system" },
+		actor: member ? { type: "user", userId: member } : { type: "system" },
 		organizationId,
 		resource: {
 			type: "chatgpt_plan_org_policy",
 			id: organizationId,
 			name: null,
 		},
-		metadata: { jobType: jobType ?? null },
+		metadata: "jobType" in by ? { jobType: by.jobType ?? null } : {},
 	});
+}
+
+/**
+ * Whether a member's own work that found every plan spent runs on the
+ * organization's provider instead (Fizzy #3048): its interactive policy is
+ * "Use API billing" and it has an LLM provider of its own to bill — never a
+ * member's personal key or the platform's. Without one the work stops with
+ * the reset time, as under ASK. A fault reads as no.
+ */
+export async function chatGptPlanInteractiveApiFallback(
+	plan: ChatGptPlanSourcesExhausted,
+	organizationId: string | null | undefined,
+): Promise<boolean> {
+	if (
+		!organizationId ||
+		plan.audience !== "interactive" ||
+		plan.policy?.apiFallbackInteractive !== "AUTO"
+	) {
+		return false;
+	}
+	try {
+		return await organizationHasLlmApiProvider(organizationId);
+	} catch {
+		return false;
+	}
 }
 
 export function __resetChatGptPlanApiFallbackAudit(): void {
@@ -385,11 +480,13 @@ export function chatGptPlanPoolExhaustedMessage(resetAt: Date | null): string {
 /**
  * The plan source for one model call, or null for the organization's
  * provider. When shared plans would serve the call but all are spent it
- * throws `SubscriptionPlanExhaustedError` — interactive work keeps today's
- * ASK, background work waits for a reset — except background work under an
- * AUTO policy, which runs on the organization's provider and is audited. A
- * spent own plan that nothing could stand in for is still returned, so the
- * call fails exactly as it did before shared plans existed.
+ * throws `SubscriptionPlanExhaustedError` — interactive work under ASK,
+ * background work waiting for a reset — except under an AUTO policy for that
+ * kind of work, which runs on the organization's provider and is audited
+ * (for a member's own work, only when the organization has a provider of its
+ * own; that covers a spent own plan too). Otherwise a spent own plan that
+ * nothing could stand in for is still returned, so the call fails exactly as
+ * it did before shared plans existed.
  */
 export async function chatGptPlanSourceForCall(
 	context: PickChatGptPlanSourceContext,
@@ -410,10 +507,18 @@ export async function chatGptPlanSourceForCall(
 	}
 	if (
 		plan.audience === "background" &&
-		plan.policy?.apiFallbackBackground === "AUTO" &&
+		(plan.policy?.apiFallbackBackground === "AUTO" ||
+			context.apiFallbackApproved === true) &&
 		context.organizationId
 	) {
-		auditApiFallback(context.organizationId, context.jobType);
+		auditApiFallback(context.organizationId, { jobType: context.jobType });
+		return null;
+	}
+	if (
+		context.organizationId &&
+		(await chatGptPlanInteractiveApiFallback(plan, context.organizationId))
+	) {
+		auditApiFallback(context.organizationId, { userId: context.userId });
 		return null;
 	}
 	// The member's own plan was in play: it still serves the call, and its
@@ -430,8 +535,8 @@ export async function chatGptPlanSourceForCall(
 
 /**
  * Whether the organization's shared ChatGPT plan accounts would serve its
- * allowlisted background jobs right now — plans on, pooling on with its
- * terms accepted, and an enabled, signed-in account that serves background
+ * allowlisted background jobs right now — plans on, the sharing terms
+ * accepted, and an enabled, signed-in account that serves background
  * work (Fizzy #2770 F3). Said when someone links a channel or a meeting
  * series, whose first history import can take a large share of a window.
  * A fault reads as false: the heads-up is advisory.
@@ -440,15 +545,11 @@ export async function sharedPlansServeBackgroundWork(
 	organizationId: string,
 ): Promise<boolean> {
 	try {
-		const [plan, pooling] = await Promise.all([
-			isFeatureEnabled("CHATGPT_PLAN", organizationId),
-			isFeatureEnabled("CHATGPT_PLAN_POOLING", organizationId),
-		]);
-		if (!plan || !pooling) {
+		if (!(await isFeatureEnabled("CHATGPT_PLAN", organizationId))) {
 			return false;
 		}
 		const policy = await getCachedChatGptPlanOrgPolicy(organizationId);
-		if (!policy.poolingEnabled || policy.termsAcknowledgedAt === null) {
+		if (policy.termsAcknowledgedAt === null) {
 			return false;
 		}
 		const accounts = await listChatGptPlanOrgAccounts(organizationId);
@@ -460,6 +561,69 @@ export async function sharedPlansServeBackgroundWork(
 		);
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * Why a member's own work found no provider, when the organization does
+ * share ChatGPT plans but none of them serves members — "No AI provider
+ * configured" reads as wrong there. Null otherwise; a fault reads as null.
+ */
+export async function sharedPlansSkipMembersMessage(
+	organizationId: string,
+): Promise<string | null> {
+	try {
+		if (!(await isFeatureEnabled("CHATGPT_PLAN", organizationId))) {
+			return null;
+		}
+		const policy = await getCachedChatGptPlanOrgPolicy(organizationId);
+		if (policy.termsAcknowledgedAt === null) {
+			return null;
+		}
+		const working = (
+			await listChatGptPlanOrgAccounts(organizationId)
+		).filter((account) => account.enabled && account.status === "ACTIVE");
+		if (
+			working.length === 0 ||
+			working.some((account) => account.serveInteractive)
+		) {
+			return null;
+		}
+		return "None of your organization's shared ChatGPT plans serves members' own work, and there is no AI provider to fall back on. An admin can set a shared plan to Serves: Everything in Settings → AI Providers.";
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Why a bulk run ({@link BULK_PERSON_JOB_TYPES}) found neither a shared plan
+ * nor a provider, when the member who started it has a ChatGPT plan of their
+ * own here: "No AI provider configured" reads as wrong to someone whose plan
+ * runs their chats. Null otherwise — for any other job, for a member with no
+ * plan, or on a fault.
+ */
+export async function bulkRunsNeedSharedPlanMessage(params: {
+	userId: string;
+	organizationId: string;
+	jobType: AiJobKey | undefined;
+}): Promise<string | null> {
+	if (
+		params.jobType === undefined ||
+		!BULK_PERSON_JOB_TYPES.includes(params.jobType)
+	) {
+		return null;
+	}
+	try {
+		if (!(await isFeatureEnabled("CHATGPT_PLAN", params.organizationId))) {
+			return null;
+		}
+		const use = await getActiveChatGptPlanOrgUse({
+			userId: params.userId,
+			organizationId: params.organizationId,
+		});
+		return use ? BULK_RUNS_NEED_SHARED_PLAN_MESSAGE : null;
+	} catch {
+		return null;
 	}
 }
 
@@ -537,6 +701,15 @@ export async function interactivePlanModel(params: {
 			return null;
 		}
 		if (!("source" in pick)) {
+			// Under "Use API billing" the organization's provider runs it.
+			if (
+				await chatGptPlanInteractiveApiFallback(
+					pick,
+					params.organizationId,
+				)
+			) {
+				return null;
+			}
 			return {
 				model: "",
 				source: pick.ownPlanOnly ? "own" : "shared",

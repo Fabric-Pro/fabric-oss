@@ -11,7 +11,20 @@
 
 import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import type { ScanProgress } from "../activities/security-scan/scan-activities";
 import type { ScanFindingDraft } from "../activities/security-scan/scan-schemas";
+import {
+	type BulkRunInputExtras,
+	claimBulkRunResume,
+	pauseBulkRun,
+} from "./lib/bulk-run-pause";
+import {
+	BULK_RUN_PAUSE_BEYOND_MS,
+	type ChatGptPlanPause,
+	chatGptPlanPauseOf,
+	untilRunDeadline,
+	withChatGptPlanWaitResuming,
+} from "./lib/chatgpt-plan-wait";
 import {
 	describeScanFailureMessage,
 	describeScanFailureReason,
@@ -37,6 +50,8 @@ const {
 	},
 });
 
+const AI_SCANNER_TIMEOUT_MS = 60 * 60_000;
+
 // LLM scanner activities — long timeout + heartbeat, ONE attempt (cost). The
 // adaptive chunked scan can legitimately run up to ~an hour on a rate-limited
 // gateway (it degrades back toward serial under sustained throttling), so
@@ -54,7 +69,7 @@ const { runSecurityScanActivity, runAccessibilityScanActivity } =
 		// isn't killed mid-way (observed: a 197-item accessibility scan on a busy
 		// staging worker exceeded the old 15-min cap and failed "Every scanner
 		// failed").
-		startToCloseTimeout: "60 minutes",
+		startToCloseTimeout: AI_SCANNER_TIMEOUT_MS,
 		heartbeatTimeout: "2 minutes",
 		retry: {
 			initialInterval: "5s",
@@ -63,6 +78,14 @@ const { runSecurityScanActivity, runAccessibilityScanActivity } =
 			maximumAttempts: 1,
 		},
 	});
+
+/**
+ * Left after a ChatGPT plan wait (Fizzy #2770): a whole scanner attempt and
+ * the persist or failure write that ends the run. The execution timeout
+ * cannot be caught, so a wait that overran it would leave the scan's row to
+ * the stall sweep instead of failing it with the plan's message.
+ */
+const PLAN_WAIT_RESERVE_MS = AI_SCANNER_TIMEOUT_MS + 2 * 60_000;
 
 // Semgrep SAST activity — clone + scan is expensive (large repos), so give it a
 // long timeout and DON'T retry hard: a re-clone+re-scan on a transient failure
@@ -99,7 +122,7 @@ const { autoReviewFindingsActivity } = proxyActivities<typeof activities>({
 	},
 });
 
-export interface SecurityAccessibilityScanInput {
+export interface SecurityAccessibilityScanInput extends BulkRunInputExtras {
 	scanId: string;
 	projectId: string;
 	storyId?: string | null;
@@ -134,6 +157,39 @@ export interface SecurityAccessibilityScanOutput {
 	securityFindingCount: number;
 	accessibilityFindingCount: number;
 	error?: string;
+	/** Paused for a ChatGPT plan reset; a resume run starts at `resumesAt`. */
+	paused?: boolean;
+	resumesAt?: string;
+}
+
+type ScannerResult = Awaited<ReturnType<typeof runSecurityScanActivity>>;
+
+/**
+ * Where each AI scanner stood when the scan paused for a plan reset (Fizzy
+ * #2770): finished, or part-way with the items it had scanned. A scanner with
+ * no entry runs from the start on resume; so do Semgrep and the git-history
+ * scan, which spend no plan.
+ */
+interface ScannerPauseState {
+	done?: ScannerResult;
+	progress?: ScanProgress;
+}
+
+export interface ScanPauseProgress {
+	security?: ScannerPauseState;
+	accessibility?: ScannerPauseState;
+}
+
+function scannerPauseState(
+	settled: PromiseSettledResult<ScannerResult | null>,
+): ScannerPauseState | undefined {
+	if (settled.status === "fulfilled") {
+		return settled.value ? { done: settled.value } : undefined;
+	}
+	const progress = chatGptPlanPauseOf(settled.reason)?.progress as
+		| ScanProgress
+		| undefined;
+	return progress ? { progress } : undefined;
 }
 
 export async function securityAccessibilityScanWorkflow(
@@ -162,8 +218,29 @@ export async function securityAccessibilityScanWorkflow(
 	// is itself replay-safe; this gate is about the new control flow it enables.
 	const signalQuality = patched("security-scan-signal-quality-v1");
 
+	// A resume after a ChatGPT plan pause (Fizzy #2770) takes its row back
+	// first, and ends quietly when a Cancel or the other resume got there.
+	let resumed: ScanPauseProgress | undefined;
+	if (input.resumeOf) {
+		const claim = await claimBulkRunResume<ScanPauseProgress>(
+			"PROJECT_SCAN",
+			{ ...input, resumeOf: input.resumeOf },
+		);
+		if (!claim.claimed) {
+			return {
+				success: false,
+				securityFindingCount: 0,
+				accessibilityFindingCount: 0,
+				error: "The scan was no longer waiting to resume.",
+			};
+		}
+		resumed = claim.progress;
+	}
+
 	try {
-		await markScanRunningActivity({ scanId });
+		if (!input.resumeOf) {
+			await markScanRunningActivity({ scanId });
+		}
 
 		const ctx = await gatherScanContextActivity({
 			projectId,
@@ -271,29 +348,64 @@ export async function securityAccessibilityScanWorkflow(
 		// Build each enabled scanner's promise once (disabled → resolve(null)).
 		// Kept in fixed order so the resilient + legacy paths schedule the same
 		// activities in the same sequence (replay-safe).
-		const securityPromise = securityRequested
-			? runSecurityScanActivity({
-					projectId,
-					userId,
-					organizationId,
-					projectName: ctx.projectName,
-					...scanContent,
-					customRules: ctx.securityRules,
-					severityRubric,
-					knowledgePacks,
-				})
-			: Promise.resolve(null);
-		const accessibilityPromise = accessibilityRequested
-			? runAccessibilityScanActivity({
-					projectId,
-					userId,
-					organizationId,
-					projectName: ctx.projectName,
-					...scanContent,
-					customRules: ctx.accessibilityRules,
-					severityRubric,
-				})
-			: Promise.resolve(null);
+		// An AI scanner that finds every shared ChatGPT plan spent waits for
+		// the reset and scans only the items it had not reached (Fizzy
+		// #2770), within the run's own deadline. `userId` is null: this bulk
+		// run never uses the clicker's own plan, so its reset cannot help.
+		// A wait longer than a few minutes, or past the deadline, pauses the
+		// whole scan instead: it saves where each scanner stood and a resume
+		// run continues from there once the plans reset.
+		const planWait = {
+			organizationId,
+			userId: null,
+			maxWaitMs: untilRunDeadline(PLAN_WAIT_RESERVE_MS),
+			pauseBeyondMs: BULK_RUN_PAUSE_BEYOND_MS,
+		};
+		const securityResume = resumed?.security;
+		const accessibilityResume = resumed?.accessibility;
+		const securityPromise = !securityRequested
+			? Promise.resolve(null)
+			: securityResume?.done
+				? Promise.resolve(securityResume.done)
+				: withChatGptPlanWaitResuming<ScanProgress, ScannerResult>(
+						(resume) =>
+							runSecurityScanActivity({
+								projectId,
+								userId,
+								organizationId,
+								projectName: ctx.projectName,
+								...scanContent,
+								customRules: ctx.securityRules,
+								severityRubric,
+								knowledgePacks,
+								...(resume && { resume }),
+							}),
+						{
+							...planWait,
+							resumeFrom: securityResume?.progress,
+						},
+					);
+		const accessibilityPromise = !accessibilityRequested
+			? Promise.resolve(null)
+			: accessibilityResume?.done
+				? Promise.resolve(accessibilityResume.done)
+				: withChatGptPlanWaitResuming<ScanProgress, ScannerResult>(
+						(resume) =>
+							runAccessibilityScanActivity({
+								projectId,
+								userId,
+								organizationId,
+								projectName: ctx.projectName,
+								...scanContent,
+								customRules: ctx.accessibilityRules,
+								severityRubric,
+								...(resume && { resume }),
+							}),
+						{
+							...planWait,
+							resumeFrom: accessibilityResume?.progress,
+						},
+					);
 		// The diff-scope fields are undefined on the un-patched path, so the
 		// activity input serializes identically to a pre-change history.
 		const semgrepPromise = runSemgrep
@@ -348,6 +460,42 @@ export async function securityAccessibilityScanWorkflow(
 			accessibility = accR.status === "fulfilled" ? accR.value : null;
 			semgrep = semR.status === "fulfilled" ? semR.value : null;
 			gitHistory = gitR.status === "fulfilled" ? gitR.value : null;
+
+			// An AI scanner paused for a plan reset (Fizzy #2770): save where
+			// each one stood, schedule the resume, and end without failing.
+			const pauses = [secR, accR].flatMap((settled) => {
+				const pause =
+					settled.status === "rejected"
+						? chatGptPlanPauseOf(settled.reason)
+						: null;
+				return pause ? [pause] : [];
+			});
+			if (pauses.length > 0) {
+				const pause = pauses.reduce<ChatGptPlanPause>(
+					(latest, next) =>
+						next.waitMs > latest.waitMs ? next : latest,
+					pauses[0],
+				);
+				const progress: ScanPauseProgress = {
+					security: scannerPauseState(secR),
+					accessibility: scannerPauseState(accR),
+				};
+				const paused = await pauseBulkRun({
+					kind: "PROJECT_SCAN",
+					runId: scanId,
+					input,
+					pause,
+					progress,
+				});
+				return {
+					success: false,
+					securityFindingCount: 0,
+					accessibilityFindingCount: 0,
+					paused: true,
+					resumesAt: paused.resumesAt,
+				};
+			}
+
 			if (securityRequested && secR.status === "rejected") {
 				failedScanners.push("Security");
 				failedReasons.push(secR.reason);

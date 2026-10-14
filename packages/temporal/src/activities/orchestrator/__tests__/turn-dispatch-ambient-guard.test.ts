@@ -313,7 +313,7 @@ describe("a refused request aborts its siblings under the same guard", () => {
 		checkDispatchable.mockResolvedValue({ ok: false, reason: "cancelled" });
 		const model = wrapModelWithDispatchGuard(providerModel());
 
-		await runWithTurnDispatch(TURN_SCOPE, async () => {
+		const outcome = await runWithTurnDispatch(TURN_SCOPE, async () => {
 			for (let attempt = 0; attempt < 3; attempt++) {
 				const error = await generateText({
 					model,
@@ -322,9 +322,13 @@ describe("a refused request aborts its siblings under the same guard", () => {
 				}).catch((caught: unknown) => caught);
 				expect(isTurnNotDispatchable(error)).toBe(true);
 			}
-		});
+		}).catch((caught: unknown) => caught);
 
 		expect(checkDispatchable).toHaveBeenCalledTimes(1);
+		// The work caught every refusal and returned normally; the activity
+		// still ends as the latched refusal (the same outcome rule applies
+		// to a normal return as to a thrown error).
+		expect(isTurnNotDispatchable(outcome)).toBe(true);
 	});
 });
 

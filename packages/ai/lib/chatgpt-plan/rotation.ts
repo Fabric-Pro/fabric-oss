@@ -6,6 +6,11 @@ import {
 import { logger } from "@repo/logs";
 import type { LanguageModel, LanguageModelMiddleware } from "ai";
 import {
+	capturePlanCredentials,
+	type PlanCredentialsUsed,
+	planCredentialUsed,
+} from "./credential-capture";
+import {
 	chatGptPlanExhaustedMessage,
 	recordChatGptPlanSourceExhausted,
 } from "./exhaustion-breaker";
@@ -23,7 +28,7 @@ const CONTINUE_ON_ANOTHER_PLAN =
 	"The ChatGPT plan ran out mid-reply. Send your message again to continue on another plan.";
 
 export interface ChatGptPlanRotation {
-	/** The source the call starts on. */
+	/** The source every call starts on. */
 	source: PlanSourceRef;
 	/** The next usable source with `exclude` ruled out, or null when none is. */
 	repick: (exclude: ReadonlySet<string>) => Promise<PlanSourceRef | null>;
@@ -39,6 +44,16 @@ export interface ChatGptPlanRotation {
 }
 
 /**
+ * One call's rotation: the source serving it, the sources it spent, and the
+ * sign-in each source's token came from (Fizzy #3037).
+ */
+interface RotationCall {
+	current: PlanSourceRef;
+	exclude: Set<string>;
+	credentials: PlanCredentialsUsed;
+}
+
+/**
  * Moves a call to the next usable plan when the one serving it is spent
  * (Fizzy #2770). Before any output the call is simply sent again on the next
  * plan — the plan fetch turns a failure before output into an error the SDK
@@ -48,35 +63,50 @@ export interface ChatGptPlanRotation {
  * Temporal) to retry, and with `SubscriptionPlanExhaustedError` otherwise.
  * Only a spent window rotates; any other failure, a sign-in that needs
  * reconnecting above all, is final.
+ *
+ * The rotation lives for one call: a model reused across requests starts
+ * each on `source` with nothing ruled out, and overlapping calls never see
+ * each other's (Fizzy #3025).
  */
 export function createChatGptPlanRotationMiddleware(
 	rotation: ChatGptPlanRotation,
 ): LanguageModelMiddleware {
-	let current = rotation.source;
-	const exclude = new Set<string>();
+	const startCall = (): RotationCall => ({
+		current: rotation.source,
+		exclude: new Set<string>(),
+		credentials: new Map(),
+	});
+	// Every attempt notes into the call's own record, so a refusal mid-stream
+	// is bound to the sign-in that served it.
+	const attempt = <T>(call: RotationCall, send: () => PromiseLike<T>) =>
+		capturePlanCredentials(send, call.credentials).result;
 
-	const next = async (error: unknown): Promise<PlanResponsesModel | null> => {
+	const next = async (
+		call: RotationCall,
+		error: unknown,
+	): Promise<PlanResponsesModel | null> => {
 		if (!(error instanceof SubscriptionPlanExhaustedError)) {
 			return null;
 		}
-		exclude.add(planSourceKey(current));
-		const source = await rotation.repick(exclude);
+		call.exclude.add(planSourceKey(call.current));
+		const source = await rotation.repick(call.exclude);
 		// A source already ruled out is offered back only when nothing else is
 		// left; trying it again would go round in circles.
-		if (!source || exclude.has(planSourceKey(source))) {
+		if (!source || call.exclude.has(planSourceKey(source))) {
 			return null;
 		}
 		await rotation.beforeRotate?.(source);
 		logger.info("[chatgpt-plan] Plan spent; moving the call to another", {
-			from: planSourceKey(current),
+			from: planSourceKey(call.current),
 			to: planSourceKey(source),
 		});
-		current = source;
+		call.current = source;
 		rotation.onRotated?.(source);
 		return rotation.build(source) as unknown as PlanResponsesModel;
 	};
 
 	const endOfStream = async (
+		call: RotationCall,
 		part: PlanStreamPart,
 	): Promise<PlanStreamPart> => {
 		if ((part as { type?: string }).type !== "error") {
@@ -88,11 +118,15 @@ export function createChatGptPlanRotationMiddleware(
 		if (!spent) {
 			return part;
 		}
-		await recordChatGptPlanSourceExhausted(current, spent);
-		exclude.add(planSourceKey(current));
-		const another = await rotation.repick(exclude).catch(() => null);
+		await recordChatGptPlanSourceExhausted(
+			call.current,
+			planCredentialUsed(call.credentials, call.current),
+			spent,
+		);
+		call.exclude.add(planSourceKey(call.current));
+		const another = await rotation.repick(call.exclude).catch(() => null);
 		const remains =
-			another !== null && !exclude.has(planSourceKey(another));
+			another !== null && !call.exclude.has(planSourceKey(another));
 		return {
 			type: "error",
 			error: remains
@@ -109,14 +143,15 @@ export function createChatGptPlanRotationMiddleware(
 	return {
 		specificationVersion: "v4",
 		wrapGenerate: async ({ doGenerate, params }) => {
+			const rotationCall = startCall();
 			let call: () => PromiseLike<
 				Awaited<ReturnType<typeof doGenerate>>
 			> = doGenerate;
 			for (;;) {
 				try {
-					return await call();
+					return await attempt(rotationCall, call);
 				} catch (error) {
-					const model = await next(error);
+					const model = await next(rotationCall, error);
 					if (!model) {
 						throw error;
 					}
@@ -129,15 +164,16 @@ export function createChatGptPlanRotationMiddleware(
 			}
 		},
 		wrapStream: async ({ doStream, params }) => {
+			const rotationCall = startCall();
 			let call: () => PromiseLike<Awaited<ReturnType<typeof doStream>>> =
 				doStream;
 			let result: Awaited<ReturnType<typeof doStream>>;
 			for (;;) {
 				try {
-					result = await call();
+					result = await attempt(rotationCall, call);
 					break;
 				} catch (error) {
-					const model = await next(error);
+					const model = await next(rotationCall, error);
 					if (!model) {
 						throw error;
 					}
@@ -154,6 +190,7 @@ export function createChatGptPlanRotationMiddleware(
 						async transform(part, controller) {
 							controller.enqueue(
 								(await endOfStream(
+									rotationCall,
 									part as unknown as PlanStreamPart,
 								)) as unknown as typeof part,
 							);

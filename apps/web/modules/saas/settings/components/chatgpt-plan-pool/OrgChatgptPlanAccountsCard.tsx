@@ -22,17 +22,25 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
-import { Switch } from "@ui/components/switch";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import { InfoIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ChatgptConnectCommand } from "../chatgpt-plan/ChatgptConnectCommand";
 import { ChatgptPlanSubscription } from "../chatgpt-plan/ChatgptPlanSubscription";
+import { ChatgptPlanTestAction } from "../chatgpt-plan/ChatgptPlanTestAction";
 import { useTakeBackChatgptPlan } from "../chatgpt-plan/chatgpt-plan-status";
 import { PlanWindowDetails } from "../chatgpt-plan/PlanWindowDetails";
+import { AdvancedSettings } from "./AdvancedSettings";
 import {
 	type ChatgptPlanPoolAccount,
 	useDisconnectChatgptPlanPoolAccount,
+	useTestChatgptPlanPoolAccount,
 	useUpdateChatgptPlanPoolAccount,
 } from "./chatgpt-plan-pool-queries";
 
@@ -43,16 +51,77 @@ function clock(date: Date | string): string {
 	}).format(new Date(date));
 }
 
-/** The plan types an admin picks from; UNKNOWN reads as "Not set". */
-const PLAN_TIER_OPTIONS = ["UNKNOWN", "PLUS", "PRO", "TEAM", "FREE"] as const;
-type PlanTier = (typeof PLAN_TIER_OPTIONS)[number];
+type PlanTier = ChatgptPlanPoolAccount["tier"];
+
+/**
+ * The plan types an admin picks from; UNKNOWN reads as "Not set". Team and
+ * Free plans cannot serve Fabric's work, so they are not offered — an
+ * account already set to one still shows it.
+ */
+const PLAN_TIER_OPTIONS: readonly PlanTier[] = ["UNKNOWN", "PLUS", "PRO"];
 
 function isPlanTier(value: string): value is PlanTier {
-	return (PLAN_TIER_OPTIONS as readonly string[]).includes(value);
+	return ["UNKNOWN", "PLUS", "PRO", "TEAM", "FREE"].includes(value);
 }
+
+/**
+ * What an account serves, as one choice over its three stored switches
+ * (Fizzy #2770). MEMBERS_ONLY is never offered: it only names an account a
+ * previous version left serving members but not background jobs.
+ */
+type Serves = "EVERYTHING" | "BACKGROUND" | "PAUSED" | "MEMBERS_ONLY";
+
+function servesOf(account: ChatgptPlanPoolAccount): Serves {
+	if (!account.enabled) {
+		return "PAUSED";
+	}
+	if (account.serveInteractive) {
+		return account.serveBackground ? "EVERYTHING" : "MEMBERS_ONLY";
+	}
+	return account.serveBackground ? "BACKGROUND" : "PAUSED";
+}
+
+const SERVES_SWITCHES: Record<
+	Exclude<Serves, "MEMBERS_ONLY">,
+	{ enabled: boolean; serveInteractive?: boolean; serveBackground?: boolean }
+> = {
+	EVERYTHING: {
+		enabled: true,
+		serveInteractive: true,
+		serveBackground: true,
+	},
+	BACKGROUND: {
+		enabled: true,
+		serveInteractive: false,
+		serveBackground: true,
+	},
+	// Keeps what it served, so resuming needs only a new choice.
+	PAUSED: { enabled: false },
+};
 
 /** The fair-share caps an admin picks from, in percent. */
 const MEMBER_SHARE_OPTIONS = [10, 20, 25, 33, 50, 75];
+/** No cap is stored as null and shown as all of the window. */
+const MEMBER_SHARE_ALL = 100;
+
+/** A focusable info mark whose tooltip explains a setting. */
+function InfoTip({ setting, text }: { setting: string; text: string }) {
+	const t = useTranslations("settings.chatgptPlanPool");
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>
+				<button
+					aria-label={t("tooltipLabel", { setting })}
+					className="inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					type="button"
+				>
+					<InfoIcon aria-hidden className="size-3.5" />
+				</button>
+			</TooltipTrigger>
+			<TooltipContent className="max-w-xs">{text}</TooltipContent>
+		</Tooltip>
+	);
+}
 
 function AccountStatus({ account }: { account: ChatgptPlanPoolAccount }) {
 	const t = useTranslations("settings.chatgptPlanPool");
@@ -87,38 +156,18 @@ function AccountRow({
 		onSuccess: () => toast.success(t("accountUpdated")),
 		onError: () => toast.error(t("updateFailed")),
 	});
+	const test = useTestChatgptPlanPoolAccount();
+	const reported = account.usageEstimate.percentSource === "reported";
 	const percent = Math.round(
-		Math.min(100, Math.max(0, account.usageEstimate.estimatedPercent)),
+		Math.min(
+			100,
+			Math.max(
+				0,
+				account.usageEstimate.percent ??
+					account.usageEstimate.estimatedPercent,
+			),
+		),
 	);
-	const toggle = (
-		field: "enabled" | "serveInteractive" | "serveBackground",
-		label: string,
-	) => {
-		const id = `chatgpt-plan-pool-${account.id}-${field}`;
-		return (
-			<div className="flex items-center justify-between gap-4">
-				<Label htmlFor={id}>{label}</Label>
-				<Switch
-					// Every account row repeats the same three settings; the name
-					// says which account a switch belongs to.
-					aria-label={t("switchLabel", {
-						setting: label,
-						account: account.label,
-					})}
-					checked={account[field]}
-					disabled={update.isPending}
-					id={id}
-					onCheckedChange={(checked) =>
-						update.mutate({
-							accountId: account.id,
-							[field]: checked,
-						})
-					}
-				/>
-			</div>
-		);
-	};
-
 	return (
 		<li
 			className="space-y-4 border-border border-t pt-4 first:border-t-0 first:pt-0"
@@ -150,7 +199,14 @@ function AccountRow({
 						tier={account.tier}
 					/>
 				</div>
-				<div className="flex flex-wrap gap-2">
+				<div className="flex flex-wrap items-start gap-2">
+					<ChatgptPlanTestAction
+						accountLabel={account.label}
+						error={test.error}
+						isPending={test.isPending}
+						onTest={() => test.mutate(account.id)}
+						result={test.data}
+					/>
 					{account.viewerIsConnector ? (
 						<div className="space-y-1">
 							<Button
@@ -186,12 +242,31 @@ function AccountRow({
 					<p className="text-sm">{tPlan("weeklyLimitOnly")}</p>
 				) : (
 					<>
-						<p className="text-sm">
-							{t("usageEstimate", {
-								percent,
-								hours: account.usageEstimate.windowHours,
-							})}
-						</p>
+						<div className="flex items-center gap-1.5">
+							<p
+								className="text-sm"
+								data-percent-source={
+									reported ? "reported" : "estimated"
+								}
+							>
+								{t(
+									reported
+										? "usageReported"
+										: "usageEstimate",
+									{
+										percent,
+										hours: account.usageEstimate
+											.windowHours,
+									},
+								)}
+							</p>
+							{reported ? null : (
+								<InfoTip
+									setting={t("usageEstimateName")}
+									text={t("usageEstimateTooltip")}
+								/>
+							)}
+						</div>
 						<Progress
 							aria-hidden="true"
 							className="h-2"
@@ -209,20 +284,31 @@ function AccountRow({
 						update.mutate({ accountId: account.id, tier })
 					}
 				/>
-				{toggle("enabled", t("enabled"))}
-				{toggle("serveInteractive", t("serveInteractive"))}
-				{toggle("serveBackground", t("serveBackground"))}
-				{account.serveInteractive && (
-					<MemberShare
-						account={account}
-						disabled={update.isPending}
-						onChange={(maxMemberSharePct) =>
-							update.mutate({
-								accountId: account.id,
-								maxMemberSharePct,
-							})
-						}
-					/>
+				<ServesChoice
+					account={account}
+					disabled={update.isPending}
+					onChange={(serves) =>
+						update.mutate({
+							accountId: account.id,
+							...SERVES_SWITCHES[serves],
+						})
+					}
+				/>
+				{account.enabled && account.serveInteractive && (
+					<AdvancedSettings
+						testId={`chatgpt-plan-pool-${account.id}-advanced`}
+					>
+						<MemberShare
+							account={account}
+							disabled={update.isPending}
+							onChange={(maxMemberSharePct) =>
+								update.mutate({
+									accountId: account.id,
+									maxMemberSharePct,
+								})
+							}
+						/>
+					</AdvancedSettings>
 				)}
 			</div>
 		</li>
@@ -249,7 +335,13 @@ function PlanType({
 	return (
 		<div className="flex items-center justify-between gap-4">
 			<div className="space-y-1">
-				<Label htmlFor={id}>{t("planType")}</Label>
+				<div className="flex items-center gap-1.5">
+					<Label htmlFor={id}>{t("planType")}</Label>
+					<InfoTip
+						setting={t("planType")}
+						text={t("planTypeTooltip")}
+					/>
+				</div>
 				<p className="text-muted-foreground text-xs">
 					{t("planTypeDescription")}
 				</p>
@@ -274,11 +366,87 @@ function PlanType({
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					{PLAN_TIER_OPTIONS.map((option) => (
+					{(PLAN_TIER_OPTIONS.includes(account.tier)
+						? PLAN_TIER_OPTIONS
+						: [...PLAN_TIER_OPTIONS, account.tier]
+					).map((option) => (
 						<SelectItem key={option} value={option}>
 							{option === "UNKNOWN"
 								? t("planTypeNotSet")
 								: tTier(option)}
+						</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</div>
+	);
+}
+
+/** Which work the account serves, or none while it is paused. */
+function ServesChoice({
+	account,
+	disabled,
+	onChange,
+}: {
+	account: ChatgptPlanPoolAccount;
+	disabled: boolean;
+	onChange: (serves: Exclude<Serves, "MEMBERS_ONLY">) => void;
+}) {
+	const t = useTranslations("settings.chatgptPlanPool");
+	const id = `chatgpt-plan-pool-${account.id}-serves`;
+	const current = servesOf(account);
+	const labels: Record<Serves, string> = {
+		EVERYTHING: t("servesEverything"),
+		BACKGROUND: t("servesBackground"),
+		PAUSED: t("servesPaused"),
+		MEMBERS_ONLY: t("servesMembersOnly"),
+	};
+	const help: Record<Serves, string> = {
+		EVERYTHING: t("servesEverythingHelp"),
+		BACKGROUND: t("servesBackgroundHelp"),
+		PAUSED: t("servesPausedHelp"),
+		MEMBERS_ONLY: t("servesMembersOnlyHelp"),
+	};
+	const options: Serves[] =
+		current === "MEMBERS_ONLY"
+			? ["EVERYTHING", "BACKGROUND", "MEMBERS_ONLY", "PAUSED"]
+			: ["EVERYTHING", "BACKGROUND", "PAUSED"];
+	return (
+		<div className="flex items-center justify-between gap-4">
+			<div className="space-y-1">
+				<div className="flex items-center gap-1.5">
+					<Label htmlFor={id}>{t("serves")}</Label>
+					<InfoTip setting={t("serves")} text={t("servesTooltip")} />
+				</div>
+				<p className="text-muted-foreground text-xs">{help[current]}</p>
+			</div>
+			<Select
+				disabled={disabled}
+				onValueChange={(value) => {
+					if (value in SERVES_SWITCHES) {
+						onChange(value as Exclude<Serves, "MEMBERS_ONLY">);
+					}
+				}}
+				value={current}
+			>
+				<SelectTrigger
+					aria-label={t("switchLabel", {
+						setting: t("serves"),
+						account: account.label,
+					})}
+					className="w-48"
+					id={id}
+				>
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{options.map((option) => (
+						<SelectItem
+							disabled={option === "MEMBERS_ONLY"}
+							key={option}
+							value={option}
+						>
+							{labels[option]}
 						</SelectItem>
 					))}
 				</SelectContent>
@@ -302,11 +470,10 @@ function MemberShare({
 }) {
 	const t = useTranslations("settings.chatgptPlanPool");
 	const id = `chatgpt-plan-pool-${account.id}-member-share`;
-	const current = account.maxMemberSharePct;
-	const options =
-		current === null || MEMBER_SHARE_OPTIONS.includes(current)
-			? MEMBER_SHARE_OPTIONS
-			: [...MEMBER_SHARE_OPTIONS, current].sort((a, b) => a - b);
+	const current = account.maxMemberSharePct ?? MEMBER_SHARE_ALL;
+	const options = [
+		...new Set([...MEMBER_SHARE_OPTIONS, current, MEMBER_SHARE_ALL]),
+	].sort((a, b) => a - b);
 	return (
 		<div className="flex items-center justify-between gap-4">
 			<div className="space-y-1">
@@ -317,10 +484,11 @@ function MemberShare({
 			</div>
 			<Select
 				disabled={disabled}
-				onValueChange={(value) =>
-					onChange(value === "none" ? null : Number(value))
-				}
-				value={current === null ? "none" : String(current)}
+				onValueChange={(value) => {
+					const pct = Number(value);
+					onChange(pct === MEMBER_SHARE_ALL ? null : pct);
+				}}
+				value={String(current)}
 			>
 				<SelectTrigger
 					aria-label={t("switchLabel", {
@@ -333,7 +501,6 @@ function MemberShare({
 					<SelectValue />
 				</SelectTrigger>
 				<SelectContent>
-					<SelectItem value="none">{t("memberShareNone")}</SelectItem>
 					{options.map((pct) => (
 						<SelectItem key={pct} value={String(pct)}>
 							{t("memberSharePercent", { percent: pct })}

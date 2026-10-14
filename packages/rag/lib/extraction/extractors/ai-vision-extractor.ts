@@ -58,7 +58,9 @@ export class AiVisionExtractor implements IDocumentExtractor {
 
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },
-			{ userId, organizationId },
+			// Per-file ingestion work: it may run on the organization's shared
+			// ChatGPT plans (Fizzy #2770).
+			{ userId, organizationId, jobType: "context-enrichment" },
 		);
 
 		const visionPayload = await downscaleForVision(buffer, mimeType);

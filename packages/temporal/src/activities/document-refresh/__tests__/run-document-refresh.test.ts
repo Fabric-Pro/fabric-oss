@@ -1049,6 +1049,33 @@ describe("failure", () => {
 		expect(completeCycleMock).not.toHaveBeenCalled();
 	});
 
+	it("records a spent ChatGPT plan as a skip, not a failure, and still throws it for the workflow's wait", async () => {
+		// Fizzy #2770: nothing is wrong with the document, so it must not read
+		// as a failed refresh nor earn the post-failure backoff.
+		const { SubscriptionPlanExhaustedError } = await import(
+			"@repo/agent-types/chatgpt-plan-fetch"
+		);
+		const spent = new SubscriptionPlanExhaustedError(
+			"Every ChatGPT plan is spent.",
+			null,
+		);
+		runContextUpdateMock.mockRejectedValue(spent);
+
+		await expect(runDocumentRefreshActivity(DUE)).rejects.toBe(spent);
+
+		expect(recordOutcomeMock).toHaveBeenCalledWith(
+			"doc_1",
+			"SKIPPED_PLAN_SPENT",
+			expect.stringContaining("next sweep"),
+		);
+		expect(recordOutcomeMock).not.toHaveBeenCalledWith(
+			"doc_1",
+			"FAILED",
+			expect.anything(),
+		);
+		expect(completeCycleMock).not.toHaveBeenCalled();
+	});
+
 	it("throws when the AI provider is missing, so Temporal retries it", async () => {
 		// Returning here would mark the activity a success and a transient provider
 		// blip would never be retried.

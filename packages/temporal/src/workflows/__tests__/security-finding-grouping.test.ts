@@ -39,6 +39,11 @@ const activityStubs = vi.hoisted(() => ({
 vi.mock("@temporalio/workflow", () => ({
 	proxyActivities: vi.fn(() => activityStubs),
 	workflowInfo: vi.fn(() => ({ workflowId: "wf-grouping-test-1" })),
+	// The ChatGPT plan wait around each theme (Fizzy #2770). Its behaviour is
+	// covered by `bulk-plan-wait.test.ts` in a real workflow environment; here
+	// every failure is not a spent plan, so it passes straight through.
+	patched: vi.fn(() => true),
+	sleep: vi.fn(),
 }));
 
 import type {

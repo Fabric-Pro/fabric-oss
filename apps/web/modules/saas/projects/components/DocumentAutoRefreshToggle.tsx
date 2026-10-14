@@ -95,6 +95,10 @@ const REFRESH_STATUS: Record<
 		label: "Skipped — whoever enabled this lost access to the project",
 		tone: "bad",
 	},
+	SKIPPED_PLAN_SPENT: {
+		label: "Skipped — AI plan limit reached, retries next hour",
+		tone: "neutral",
+	},
 	FAILED: { label: "Last refresh failed", tone: "bad" },
 };
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { config } from "@repo/config";
+import { useAgentLabel } from "@saas/agents/hooks/useAgentLabel";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { ProjectInviteWelcomeWidget } from "@saas/dashboard/components/ProjectInviteWelcomeWidget";
 import { PendingInvitationsBanner } from "@saas/shared/components/PendingInvitationsBanner";
@@ -121,6 +122,7 @@ export function OrganizationDashboard({
 	const { user } = useSession();
 	const router = useRouter();
 	const queryClient = useQueryClient();
+	const formatAgentLabel = useAgentLabel();
 	const basePath = `/app/${organizationSlug}`;
 	const [timeRange, setTimeRange] = useState<TimeRange>("90d");
 
@@ -177,16 +179,7 @@ export function OrganizationDashboard({
 													.toUpperCase() +
 												taskStatus.slice(1);
 
-							const title =
-								task.agentId === "orchestrator"
-									? "Fabric AI"
-									: task.agentId
-											.replace(/_/g, " ")
-											.replace(
-												/\b\w/g,
-												(letter: string) =>
-													letter.toUpperCase(),
-											);
+							const title = formatAgentLabel(task.agentId);
 
 							return {
 								id: task.id,
@@ -280,7 +273,7 @@ export function OrganizationDashboard({
 						(a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
 					)
 				: [],
-		[activity],
+		[activity, formatAgentLabel],
 	);
 
 	// Recent chats

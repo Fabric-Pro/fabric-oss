@@ -25,6 +25,7 @@
 import Module from "node:module";
 import { join, sep } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { AiUsageLimitActivityInboundInterceptor } from "../src/lib/ai-usage-limit-interceptor";
 
 const mocks = vi.hoisted(() => ({
 	create: vi.fn(async (options: Record<string, unknown>) => ({
@@ -198,6 +199,20 @@ describe("worker bootstrap", () => {
 			});
 			expect(options?.activities).toBe(
 				mocks.create.mock.calls[0][0].activities,
+			);
+		}
+	});
+
+	it("unwraps AI usage-limit refusals in every worker's activities, innermost", () => {
+		expect(mocks.create.mock.calls.length).toBeGreaterThan(0);
+		for (const [options] of mocks.create.mock.calls) {
+			const inbound = (
+				options.interceptors as {
+					activityInbound?: Array<(context: never) => unknown>;
+				}
+			)?.activityInbound;
+			expect(inbound?.at(-1)?.({} as never)).toBeInstanceOf(
+				AiUsageLimitActivityInboundInterceptor,
 			);
 		}
 	});

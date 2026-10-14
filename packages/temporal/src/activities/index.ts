@@ -108,14 +108,31 @@ export {
 	failStaleBackgroundJobsActivity,
 	purgeExpiredBackgroundJobsActivity,
 } from "./background-job-retention";
+// ChatGPT plan source-row sweep activity (daily schedule, Fizzy #3038)
+export { sweepChatGptPlanSourceRowsActivity } from "./chatgpt-plan-source-sweep";
 // Audit log sealing activities (opt-in, gated by FABRIC_AUDIT_LOG_SEALING_ENABLED)
 export { sealAuditLogActivity } from "./audit-log-seal";
 // Authority session cleanup activities
 export { expireAuthoritySessionsActivity } from "./authority-cleanup";
+// MCP OAuth-state / client-session cleanup activity (hourly schedule)
+export {
+	cleanupExpiredMcpOAuthStatesActivity,
+	type McpOAuthStateCleanupResult,
+} from "./mcp-oauth-state-cleanup";
 export * from "./automation-template";
 // Backlog apply watchdog activities (every-5-min cron — recovers proposals stuck mid-apply)
 export * from "./backlog-apply-watchdog-activities";
 export * from "./document-generation-watchdog-activities";
+// Stuck PM-sync watchdog activities (every-5-min schedule — retries or gives up
+// on PM-sync rows left PENDING). Named exports only: the module's constants
+// must not become schedulable activities.
+export {
+	findStuckPmSyncRowsActivity,
+	giveUpStuckPmSyncActivity,
+	probeStuckPmSyncActivity,
+	retryStuckPmSyncActivity,
+	type StuckPmSyncRow,
+} from "./pm-sync-stuck-watchdog-activities";
 // Backlog-context activities are exported through withOrganizationLogContext:
 // each run is wrapped in its input's organization log context so every log
 // line it emits carries Properties["organizationId"] for tenant-scoped
@@ -229,9 +246,17 @@ export const fetchApplicationLogsForBacklog = withOrganizationLogContext(
 	fetchApplicationLogsForBacklogImpl,
 );
 export * from "./browser-automation";
+// Bulk runs pause for a ChatGPT plan reset and resume later (Fizzy #2770)
+export {
+	claimBulkRunResumeActivity,
+	pauseBulkRunActivity,
+} from "./bulk-run-pause";
 export * from "./chat-activities";
 // How long background work waits for a ChatGPT plan window to reset (Fizzy #2770)
-export { estimatePlanPoolResetActivity } from "./chatgpt-plan-wait";
+export {
+	assertSharedPlansNotSpentActivity,
+	estimatePlanPoolResetActivity,
+} from "./chatgpt-plan-wait";
 // Code-Based Project Setup activities (GitHub MCP + orchestrator → docs)
 export * from "./code-based-setup";
 // Code Indexing activities (Phase 2: AST-aware code indexing)
@@ -352,6 +377,12 @@ export {
 } from "./context-embedding";
 // Context Summarization activities (compressed project-history digests)
 export * from "./context-summarization";
+// Re-embeds project contexts stored without their contextual enrichment while
+// the ChatGPT plan was spent (Fizzy #2770); runs in the bundle sweep's schedule
+export {
+	type ReenrichDeferredContextsResult,
+	reenrichDeferredContextsActivity,
+} from "./context-reenrichment-sweep";
 // Conversation-bundle embedding recovery (scheduled sweep over captured channel
 // bundles whose embed failed or crashed — Fizzy #2228)
 export {
@@ -983,6 +1014,7 @@ export {
 	createOrUpdateStoryFromPMItem,
 	deleteStoriesNotInPMList,
 	discoverPMToolCapabilities,
+	discoverPMToolCapabilitiesResult,
 	fetchPMItemsByIds,
 	getPMToolCapabilities,
 	getStoriesToSync,
@@ -994,6 +1026,9 @@ export {
 	syncTaskToPM,
 	updateStoryExternalRefs,
 } from "./pm-integration/story-sync";
+// storySyncWorkflow's push create under the PM create claim, behind
+// `patched("bulk-sync-create-claim-v1")`.
+export { createStoryInPmWithClaim } from "./pm-integration/create-story-in-pm-with-claim";
 // Closes the PM_STORY_SYNC job row from storySyncWorkflow's `finally`.
 export { closeStorySyncJob } from "./pm-integration/story-sync-job";
 // PM Integration - Test case sync activities (QA feature)
@@ -1002,6 +1037,9 @@ export {
 	getTestCasesToSync,
 	updateTestCaseExternalRefs,
 } from "./pm-integration/test-case-sync";
+// testCaseSyncWorkflow's push create under the PM create claim, behind
+// `patched("test-case-sync-create-claim-v1")`.
+export { createTestCaseInPmWithClaim } from "./pm-integration/create-test-case-in-pm-with-claim";
 // PM Integration - Test case EXECUTION result push (deferred). Proxied by
 // `testCaseSyncWorkflow` behind `patched("test-case-execution-sync-v1")`.
 export { pushTestCaseExecutionToPM } from "./pm-integration/test-execution-sync";

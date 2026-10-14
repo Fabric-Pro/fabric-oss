@@ -94,6 +94,12 @@ describe("formatNewsletterSendStatus", () => {
 		expect(
 			formatNewsletterSendStatus("SKIPPED_EMPTY", "NO_SUBSCRIBERS"),
 		).toEqual({ label: "No subscribers", variant: "warning" });
+		expect(
+			formatNewsletterSendStatus("SKIPPED_EMPTY", "PLAN_SPENT"),
+		).toEqual({
+			label: "AI plan limit reached — next send retries",
+			variant: "secondary",
+		});
 	});
 	it("falls back for null/unknown skip reason and unknown status", () => {
 		expect(formatNewsletterSendStatus("SKIPPED_EMPTY", null)).toEqual({

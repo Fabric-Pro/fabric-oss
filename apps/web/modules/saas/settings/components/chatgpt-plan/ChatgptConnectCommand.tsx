@@ -7,6 +7,7 @@ import {
 	PopoverContent,
 	PopoverTrigger,
 } from "@ui/components/popover";
+import { Skeleton } from "@ui/components/skeleton";
 import { CheckIcon, CopyIcon, InfoIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
@@ -74,12 +75,12 @@ export function ChatgptConnectCommand({
 	useEffect(() => {
 		setOrigin(window.location.origin);
 	}, []);
+	if (origin === "") {
+		return <Skeleton className="h-10 w-full" />;
+	}
 
 	const lines = chatgptConnectLines({
-		document:
-			discovery.status === "ready" && origin !== ""
-				? discovery.document
-				: null,
+		document: discovery.status === "ready" ? discovery.document : null,
 		origin,
 		sharedOrganizationSlug,
 	});

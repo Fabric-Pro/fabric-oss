@@ -16,6 +16,8 @@
 
 import { proxyActivities } from "@temporalio/workflow";
 import type * as slackChannelMonitorActivities from "../activities/slack-channel-monitor";
+import type { BackfillSlackChannelProgress } from "../activities/slack-channel-monitor/backfill-slack-channel";
+import { withChatGptPlanWaitResuming } from "./lib/chatgpt-plan-wait";
 
 const { backfillSlackChannelActivity } = proxyActivities<
 	typeof slackChannelMonitorActivities
@@ -71,19 +73,38 @@ export async function slackChannelBackfillWorkflow(
 ): Promise<SlackChannelBackfillOutput> {
 	const oldestTs = resolveOldestTs(input);
 
-	return backfillSlackChannelActivity({
-		projectId: input.projectId,
-		linkedChannelId: input.linkedChannelId,
-		slackTeamId: input.slackTeamId,
-		channelId: input.channelId,
-		channelDisplayName: input.channelName,
-		channelWebUrl: input.channelWebUrl,
-		userId: input.userId,
-		organizationId: input.organizationId,
-		oldestTs,
-		limit: input.limit,
-		maxMessages: input.maxMessages,
-	});
+	// Thread analysis may run on a shared ChatGPT plan (Fizzy #2770). When
+	// every plan is spent the activity stops paging and reports where it was;
+	// this waits for the reset and runs it again from there, so no thread is
+	// skipped and the backfill completes only once all of them were analysed.
+	// The helper's own `patched()` keeps older histories unchanged, and the
+	// resume field is spread so a first attempt's input is as before.
+	return withChatGptPlanWaitResuming<
+		BackfillSlackChannelProgress,
+		SlackChannelBackfillOutput
+	>(
+		(resume) =>
+			backfillSlackChannelActivity({
+				projectId: input.projectId,
+				linkedChannelId: input.linkedChannelId,
+				slackTeamId: input.slackTeamId,
+				channelId: input.channelId,
+				channelDisplayName: input.channelName,
+				channelWebUrl: input.channelWebUrl,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				oldestTs,
+				limit: input.limit,
+				maxMessages: input.maxMessages,
+				...(resume && { resumeFrom: resume }),
+			}),
+		{
+			organizationId: input.organizationId,
+			// Channel monitoring never runs on a member's own plan, so that
+			// plan's reset must not decide the wait.
+			userId: null,
+		},
+	);
 }
 
 function resolveOldestTs(input: SlackChannelBackfillInput): string | undefined {

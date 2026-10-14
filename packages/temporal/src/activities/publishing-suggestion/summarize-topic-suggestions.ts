@@ -55,6 +55,7 @@ import type { TemplateFormat } from "@repo/utils";
 import { Context } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { z } from "zod";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { jobStep } from "../lib/job-progress";
 import { boundContextToBudget } from "./lib/byte-bound";
 import { buildPublishingPreferencesClause } from "./preferences-clause";
@@ -120,6 +121,8 @@ export interface SummarizeTopicSuggestionsInput {
 	 * means, so the two paths converge on a byte-identical prompt.
 	 */
 	preferences?: PublishingPreferencesSnapshot;
+	/** Set on a scan a person clicked; the scheduled sweep's key otherwise. */
+	jobType?: "publishing-suggestion-manual";
 }
 
 export interface SummarizeTopicSuggestionsOutput {
@@ -178,7 +181,8 @@ async function runSummarizeTopicSuggestions(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
-			jobType: "publishing-suggestion",
+			projectId,
+			jobType: input.jobType ?? "publishing-suggestion",
 		},
 	);
 
@@ -299,6 +303,10 @@ async function runSummarizeTopicSuggestions(
 			schema: LlmOutputSchema,
 			prompt: finalPrompt,
 		});
+	} catch (error) {
+		// However the AI SDK wrapped it, a spent ChatGPT plan leaves under its
+		// own type, which the workflow waits on (Fizzy #2770).
+		throw findWorkflowHandledPlanRefusal(error) ?? error;
 	} finally {
 		clearInterval(heartbeatInterval);
 	}

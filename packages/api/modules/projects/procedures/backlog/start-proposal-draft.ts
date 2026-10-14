@@ -111,6 +111,8 @@ export const startProposalDraftProcedure = tenantProtectedProcedure
 								projectId: input.projectId,
 								organizationId: organizationId ?? undefined,
 								userId: user.id,
+								// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+								planEligible: true,
 								title: draftable.title,
 								description: draftable.description,
 								acceptanceCriteria:

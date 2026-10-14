@@ -23,20 +23,28 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("../lib/chatgpt-plan/plan-credentials", () => ({
-	getChatGptPlanAccessToken: async () => ({ accessToken: "own-token" }),
+	getChatGptPlanAccessToken: async () => ({
+		accessToken: "own-token",
+		credentialFingerprint: "own-sign-in",
+	}),
 	getChatGptPlanSourceAccessToken: async () => ({
 		accessToken: "account-token",
+		credentialFingerprint: "account-sign-in",
 	}),
 }));
 
 import {
 	__resetChatGptPlanServedModelProbes,
 	CHATGPT_PLAN_SERVED_MODELS_MAX_AGE_MS,
-	chatGptPlanServedSlugs,
 	parseChatGptPlanModelList,
 	refreshChatGptPlanServedModels,
+	refreshChatGptPlanServedModelsInBackground,
 	refreshStaleChatGptPlanServedModels,
 } from "../lib/chatgpt-plan/served-models";
+import {
+	chatGptPlanServedSlugs,
+	invalidateChatGptPlanServedSlugs,
+} from "../lib/chatgpt-plan/served-slugs";
 
 const listResponse = (body: unknown = fixture) =>
 	new Response(JSON.stringify(body), {
@@ -48,7 +56,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	__resetChatGptPlanServedModelProbes();
 	db.ensure.mockResolvedValue([]);
-	db.replace.mockResolvedValue(undefined);
+	db.replace.mockResolvedValue(true);
 	db.served.mockResolvedValue([]);
 });
 
@@ -129,6 +137,9 @@ describe("refreshChatGptPlanServedModels", () => {
 			sourceId: "acc_1",
 			models: parseChatGptPlanModelList(fixture),
 			checkedAt: now,
+			// Stored only while the account still has the sign-in it listed
+			// with (Fizzy #3037).
+			credentialFingerprint: "account-sign-in",
 		});
 	});
 
@@ -225,12 +236,180 @@ describe("background refresh and lookups", () => {
 		await chatGptPlanServedSlugs(source);
 		const fetchImpl = vi.fn<typeof fetch>(async () => listResponse());
 		await refreshChatGptPlanServedModels(source, {
-			accessToken: "access-1",
+			token: {
+				accessToken: "access-1",
+				credentialFingerprint: "sign-in-1",
+			},
 			fetchImpl,
 		});
+		expect(db.replace).toHaveBeenCalledWith(
+			expect.objectContaining({ credentialFingerprint: "sign-in-1" }),
+		);
 		db.served.mockResolvedValue([{ slug: "gpt-6-astra" }]);
 		await expect(chatGptPlanServedSlugs(source)).resolves.toEqual(
 			new Set(["gpt-6-astra"]),
 		);
+	});
+
+	it("keeps this process's list when a replaced sign-in's list was dropped", async () => {
+		const source = { kind: "user", userId: "user_1" } as const;
+		db.served.mockResolvedValue([{ slug: "gpt-5.6-sol" }]);
+		await chatGptPlanServedSlugs(source);
+		db.replace.mockResolvedValue(false);
+		await refreshChatGptPlanServedModels(source, {
+			fetchImpl: async () => listResponse(),
+		});
+		await expect(chatGptPlanServedSlugs(source)).resolves.toEqual(
+			new Set(["gpt-5.6-sol"]),
+		);
+		expect(db.served).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Fizzy #3037: work begun before a sign-in changed must not stand in for, or
+// overwrite, what the new sign-in reads.
+describe("after the sign-in changes", () => {
+	const source = { kind: "user", userId: "user_1" } as const;
+
+	function pendingFetch() {
+		const calls: Array<() => void> = [];
+		const spy = vi.spyOn(globalThis, "fetch").mockImplementation(
+			() =>
+				new Promise<Response>((resolve) => {
+					calls.push(() => resolve(listResponse()));
+				}),
+		);
+		return { calls, spy };
+	}
+
+	it("does not hold back a probe with the new sign-in's token behind one already in flight", async () => {
+		const { calls, spy } = pendingFetch();
+		try {
+			// Began before the replacement, with the source's own token.
+			refreshChatGptPlanServedModelsInBackground(source);
+			await vi.waitFor(() => expect(calls).toHaveLength(1));
+			// The connect's probe with the replacement's token.
+			refreshChatGptPlanServedModelsInBackground(source, {
+				token: {
+					accessToken: "replacement-token",
+					credentialFingerprint: "replacement-sign-in",
+				},
+			});
+			await vi.waitFor(() => expect(calls).toHaveLength(2));
+			expect(spy.mock.calls[1]?.[1]).toEqual({
+				headers: { authorization: "Bearer replacement-token" },
+			});
+			for (const resolve of calls) {
+				resolve();
+			}
+			await vi.waitFor(() => expect(db.replace).toHaveBeenCalledTimes(2));
+			expect(
+				db.replace.mock.calls.map(
+					([call]) => call.credentialFingerprint,
+				),
+			).toEqual(
+				expect.arrayContaining(["own-sign-in", "replacement-sign-in"]),
+			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("still runs one probe at a time for the same sign-in", async () => {
+		const { calls, spy } = pendingFetch();
+		try {
+			const token = {
+				accessToken: "replacement-token",
+				credentialFingerprint: "replacement-sign-in",
+			};
+			refreshChatGptPlanServedModelsInBackground(source, { token });
+			refreshChatGptPlanServedModelsInBackground(source, { token });
+			refreshChatGptPlanServedModelsInBackground(source);
+			refreshChatGptPlanServedModelsInBackground(source);
+			await vi.waitFor(() => expect(calls).toHaveLength(2));
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(calls).toHaveLength(2);
+			for (const resolve of calls) {
+				resolve();
+			}
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it.each([
+		["lands", () => db.replace.mockResolvedValue(true)],
+		[
+			"fails without saying whether it landed",
+			() => db.replace.mockRejectedValue(new Error("connection lost")),
+		],
+	])(
+		"does not cache a list read before a replace that %s",
+		async (_, outcome) => {
+			let finishRead!: (rows: Array<{ slug: string }>) => void;
+			db.served.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						finishRead = resolve;
+					}),
+			);
+			const reading = chatGptPlanServedSlugs(source);
+			await vi.waitFor(() => expect(db.served).toHaveBeenCalledTimes(1));
+			outcome();
+			await refreshChatGptPlanServedModels(source, {
+				fetchImpl: async () => listResponse(),
+			}).catch(() => {});
+			finishRead([{ slug: "before-the-replace" }]);
+			await reading;
+			db.served.mockResolvedValue([{ slug: "after-the-replace" }]);
+			await expect(chatGptPlanServedSlugs(source)).resolves.toEqual(
+				new Set(["after-the-replace"]),
+			);
+		},
+	);
+
+	it("does not cache a list read before the sign-in changed", async () => {
+		let finishRead!: (rows: Array<{ slug: string }>) => void;
+		db.served.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finishRead = resolve;
+				}),
+		);
+		const reading = chatGptPlanServedSlugs(source);
+		await vi.waitFor(() => expect(db.served).toHaveBeenCalledTimes(1));
+		invalidateChatGptPlanServedSlugs(source);
+		finishRead([{ slug: "old-account-model" }]);
+		// The read that began earlier still answers its own caller.
+		await expect(reading).resolves.toEqual(new Set(["old-account-model"]));
+		db.served.mockResolvedValue([]);
+		await expect(chatGptPlanServedSlugs(source)).resolves.toBeNull();
+		expect(db.served).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not keep a list cached by a read that finished before a replace landed", async () => {
+		let landReplace!: (stored: boolean) => void;
+		db.replace.mockImplementationOnce(
+			() =>
+				new Promise<boolean>((resolve) => {
+					landReplace = resolve;
+				}),
+		);
+		const refreshing = refreshChatGptPlanServedModels(source, {
+			fetchImpl: async () => listResponse(),
+		});
+		await vi.waitFor(() => expect(db.replace).toHaveBeenCalledTimes(1));
+		// Runs to completion while the replace is still pending: caches it.
+		db.served.mockResolvedValueOnce([{ slug: "before-the-replace" }]);
+		await expect(chatGptPlanServedSlugs(source)).resolves.toEqual(
+			new Set(["before-the-replace"]),
+		);
+		landReplace(true);
+		await refreshing;
+		db.served.mockResolvedValue([{ slug: "after-the-replace" }]);
+		await expect(chatGptPlanServedSlugs(source)).resolves.toEqual(
+			new Set(["after-the-replace"]),
+		);
+		expect(db.served).toHaveBeenCalledTimes(2);
 	});
 });

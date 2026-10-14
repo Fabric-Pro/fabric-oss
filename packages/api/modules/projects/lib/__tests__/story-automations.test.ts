@@ -100,6 +100,9 @@ describe("fireColumnAutomations", () => {
 		expect(input).toMatchObject({
 			executionMode: "balanced",
 			userId: "user-1",
+			// The person who moved the story: the run and the token its
+			// delegated agents get may use their ChatGPT plan (Fizzy #2770).
+			planEligible: true,
 			organizationId: "org-a",
 			projectId: "project-1",
 			userStoryId: "story-1",

@@ -185,6 +185,7 @@ export async function refineWorkingDraftActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-refine",
 		},
 	);

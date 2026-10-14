@@ -19,6 +19,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { RetrievedContext } from "../project-contexts/retrieval";
 import { getRerankerConfig, isCohereAvailable } from "./config";
 import { CohereRerankerProvider } from "./providers/cohere";
@@ -184,6 +185,8 @@ export async function rerankContexts(
 
 		return { contexts: rerankedContexts, stats };
 	} catch (error) {
+		// A chat turn's stop is not a failed rerank to pass through.
+		rethrowIfDispatchStopped(error);
 		logger.error(`[Reranking] Failed: ${error}`);
 
 		// On error, return original contexts unchanged

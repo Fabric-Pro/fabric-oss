@@ -172,7 +172,18 @@ export const sendNowProcedure = tenantProtectedProcedure
 				withCorrelationMemo({
 					taskQueue: "fabric-worker",
 					workflowId: `newsletter-send-${send.id}`,
-					args: [args],
+					// A person pressed Send now and the curation runs as them
+					// (`triggeredByUserId`), so it may use their ChatGPT plan
+					// (Fizzy #2770). `userId` here is the tenant, null inside an
+					// organization, so `planUserId` names the person for the plan
+					// header. Scheduled sends set neither.
+					args: [
+						{
+							...args,
+							planEligible: true,
+							planUserId: context.user.id,
+						},
+					],
 					workflowExecutionTimeout: "15m",
 				}),
 			);

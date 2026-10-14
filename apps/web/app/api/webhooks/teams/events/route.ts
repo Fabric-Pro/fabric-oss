@@ -585,6 +585,10 @@ export async function POST(request: NextRequest) {
 					channelId: channelId || conversationId,
 					userId,
 					organizationId: organizationId ?? undefined,
+					// Every agent turn of the thread runs as a background job,
+					// on the organization's shared ChatGPT plans when they
+					// serve it (Fizzy #2770).
+					jobType: "fabric-mention",
 				},
 			],
 		});

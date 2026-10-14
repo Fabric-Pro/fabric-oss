@@ -11,6 +11,10 @@ export interface PlanWindowEstimate {
 		key: string | null;
 		percent: number;
 	}>;
+	/** What ChatGPT itself last reported, when it did. */
+	reported?: {
+		weeklyUsedPercent: number | null;
+	} | null;
 }
 
 function clock(date: Date | string): string {
@@ -60,6 +64,15 @@ export function PlanWindowDetails({
 									`${label(consumer)} ${consumer.percent}%`,
 							)
 							.join(" · "),
+					})}
+				</p>
+			) : null}
+			{typeof estimate.reported?.weeklyUsedPercent === "number" ? (
+				<p data-testid="chatgpt-plan-window-weekly">
+					{t("weeklyReported", {
+						percent: Math.round(
+							estimate.reported.weeklyUsedPercent,
+						),
 					})}
 				</p>
 			) : null}

@@ -6,6 +6,8 @@ export * from "./prisma/queries/frame-edit-history";
 export * from "./prisma/queries/frame-sharing";
 // Frame templates
 export * from "./prisma/queries/frame-templates";
+// Turn token ledger admission arithmetic (pure: room + reservation plan)
+export * from "./prisma/queries/lib/conversation-turn-room";
 // Owner-scoped template schedule inheritance (pure: D3 tenant-isolation helper)
 export * from "./prisma/queries/lib/owner-scoped-schedule";
 // Report instance scheduling (pure: normalization + next-run math)

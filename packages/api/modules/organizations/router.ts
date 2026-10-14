@@ -24,6 +24,7 @@ import {
 	acknowledgeChatGptPlanPoolTermsProcedure,
 	disconnectChatGptPlanPoolAccountProcedure,
 	getChatGptPlanPoolProcedure,
+	testChatGptPlanPoolAccountProcedure,
 	updateChatGptPlanPoolAccountProcedure,
 	updateChatGptPlanPoolPolicyProcedure,
 } from "./procedures/chatgpt-plan-pool";
@@ -110,6 +111,7 @@ export const organizationsRouter = {
 		get: getChatGptPlanPoolProcedure,
 		updateAccount: updateChatGptPlanPoolAccountProcedure,
 		disconnectAccount: disconnectChatGptPlanPoolAccountProcedure,
+		testAccount: testChatGptPlanPoolAccountProcedure,
 		updatePolicy: updateChatGptPlanPoolPolicyProcedure,
 		acknowledgeTerms: acknowledgeChatGptPlanPoolTermsProcedure,
 	},

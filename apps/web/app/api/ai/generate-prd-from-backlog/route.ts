@@ -7,9 +7,9 @@
 
 import { getAIModelWithMetadata } from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import { auth } from "@repo/auth";
-import { AiUsageLimitExceededError } from "@repo/payments";
 import { streamText } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
@@ -223,16 +223,31 @@ export async function POST(req: NextRequest) {
 			promptChars: prompt.length + system.length,
 		});
 
-		const result = await streamText({
+		// A failed request ends the stream with an error part rather than a
+		// throw; keep the first one so a usage-limit refusal (the model checks
+		// the limits before each request) can be answered as such below.
+		let streamError: unknown;
+		const result = streamText({
 			model,
 			prompt,
 			instructions: system,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			onError: ({ error }) => {
+				streamError ??= error;
+				console.error("[AI Generate PRD] Stream error:", error);
+			},
 		});
 
 		let fullText = "";
 		for await (const textPart of result.textStream) {
 			fullText += textPart;
+		}
+
+		// Nothing has been sent yet (the reply is one JSON body), so a limit
+		// refusal can still be the same 429 a refusal at resolution gets.
+		const streamLimitError = findAiUsageLimitError(streamError);
+		if (streamLimitError) {
+			throw streamLimitError;
 		}
 
 		const usage = await result.usage;
@@ -268,22 +283,23 @@ export async function POST(req: NextRequest) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Internal server error";
 
-		// AI usage-limit chokepoint hit a HARD limit.
-		// Surface the rich payload so the PRD-builder
+		// AI usage-limit chokepoint hit a HARD limit, at model resolution or
+		// during the stream. Surface the rich payload so the PRD-builder
 		// client renders the shared destructive toast instead of falling
 		// through to the generic 500 path.
-		if (error instanceof AiUsageLimitExceededError) {
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
 			return new Response(
 				JSON.stringify({
-					error: error.message,
+					error: limitError.message,
 					code: "AI_USAGE_LIMIT_EXCEEDED",
 					data: {
-						limitId: error.limitId,
-						dimension: error.dimension,
-						window: error.window,
-						used: error.used.toString(),
-						max: error.max.toString(),
-						manageLimitsUrl: error.manageLimitsUrl,
+						limitId: limitError.limitId,
+						dimension: limitError.dimension,
+						window: limitError.window,
+						used: limitError.used.toString(),
+						max: limitError.max.toString(),
+						manageLimitsUrl: limitError.manageLimitsUrl,
 					},
 				}),
 				{

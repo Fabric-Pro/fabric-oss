@@ -28,6 +28,8 @@ import {
 	getChatGptPlanAgentConfig,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { runWithAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { parseExchangedPlanSource } from "@repo/ai/lib/chatgpt-plan/plan-source-key";
+import { asAiJobKey } from "@repo/ai/lib/job-context";
 import {
 	AI_TOKEN_HEADER,
 	getRemainingValidity,
@@ -59,22 +61,25 @@ interface ExchangeResponse {
 	planSource?: string;
 }
 
-// An opaque plan key from the agent: `user:<id>` or `org:<id>`. Only an
-// exclusion; one naming no plan of this token's member or organization
-// matches nothing in the resolver.
-const PLAN_SOURCE_KEY = /^(user|org):[\w-]{1,128}$/;
-
-/** The plans the agent asks to skip, read from an optional JSON body. */
+/**
+ * The plans the agent asks to skip, read from an optional JSON body: the
+ * opaque keys this endpoint handed out, `user:<id>` or `org:<id>`, with or
+ * without the sign-in fingerprint (Fizzy #3037), which an exclusion ignores.
+ * Only an exclusion; one naming no plan of this token's member or
+ * organization matches nothing in the resolver.
+ */
 async function readExcludedSources(request: Request): Promise<string[]> {
 	try {
 		const body = (await request.json()) as { excludeSources?: unknown };
 		return Array.isArray(body?.excludeSources)
 			? body.excludeSources
-					.filter(
-						(key): key is string =>
-							typeof key === "string" &&
-							PLAN_SOURCE_KEY.test(key),
-					)
+					.flatMap((key: unknown) => {
+						const parsed =
+							typeof key === "string"
+								? parseExchangedPlanSource(key)
+								: null;
+						return parsed ? [parsed.key] : [];
+					})
 					.slice(0, 20)
 			: [];
 	} catch {
@@ -151,6 +156,10 @@ export async function POST(
 		});
 
 		const excludePlanSources = await readExcludedSources(request);
+		// The job the token was minted for: a bulk run a person started
+		// resolves as that job, on the organization's shared plans, never the
+		// member's own (Fizzy #2770). An unknown key is dropped.
+		const jobType = asAiJobKey(claims.jt);
 
 		// Get AI model with metadata using centralized entry point
 		// This handles provider resolution, model selection, and usage tracking
@@ -165,6 +174,12 @@ export async function POST(
 						userId,
 						organizationId,
 						planEligible: claims.pe === true,
+						...(jobType && { jobType }),
+						// A bulk run a person let bill the organization's
+						// provider once every shared plan is spent.
+						...(claims.af === true && {
+							apiFallbackApproved: true,
+						}),
 						...(excludePlanSources.length > 0 && {
 							excludePlanSources,
 						}),
@@ -197,9 +212,20 @@ export async function POST(
 				organizationId,
 				error: error instanceof Error ? error.message : error,
 			});
+			// A job's own reason (a bulk run with no shared plan to run on)
+			// says what to do; otherwise the generic sentence.
+			const jobReason =
+				jobType &&
+				error instanceof Error &&
+				error.name === "AIProviderNotConfiguredError" &&
+				error.message
+					? error.message
+					: null;
 			return NextResponse.json(
 				{
-					error: "No AI provider configured. Please configure an AI provider in Settings.",
+					error:
+						jobReason ??
+						"No AI provider configured. Please configure an AI provider in Settings.",
 				},
 				{ status: 404 },
 			);

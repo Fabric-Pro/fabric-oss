@@ -5,6 +5,8 @@
  * items outside a configured quoted horizon, or deferred dependencies. A
  * phase label alone never defers (EST-03 is Phase 2 and must NOT defer).
  */
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	applyDeterministicTrackRules,
@@ -114,6 +116,58 @@ describe("applyDeterministicTrackRules — DEFER rules", () => {
 		}
 	});
 
+	/**
+	 * The generated feature template has a "### Out of Scope" section listing
+	 * what the item will NOT do. Its heading and bullets used to defer every
+	 * templated story ("Marked out of scope in the title or description").
+	 */
+	it("ignores the template's Out of Scope section — it lists sub-items, not the item", () => {
+		const description = [
+			"## Scope",
+			"",
+			"### In Scope",
+			"",
+			"-   Send due-date reminder emails to the agreed recipients.",
+			"",
+			"### Out of Scope",
+			"",
+			"-   Reminder channels other than email.",
+			"-   Recurring reminders are deferred to a later release.",
+			"",
+			"#### Excluded integrations",
+			"",
+			"-   Calendar sync.",
+			"",
+			"## Key Decisions",
+			"",
+			"-   The reminder channel is email.",
+		].join("\n");
+		const result = applyDeterministicTrackRules(
+			story({
+				title: "Add email reminders for tasks due tomorrow",
+				description,
+			}),
+			{ quotedPhases: [] },
+		);
+		expect("track" in result).toBe(false);
+	});
+
+	it("still defers on a marker in the body after an Out of Scope section closes", () => {
+		const description = [
+			"### Out of Scope",
+			"",
+			"-   Reminder channels other than email.",
+			"",
+			"## Status",
+			"",
+			"This whole item is out of scope for the current engagement.",
+		].join("\n");
+		const result = applyDeterministicTrackRules(story({ description }), {
+			quotedPhases: [],
+		});
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+
 	it("does not treat substrings such as 'excludedFlag' as a marker", () => {
 		const result = applyDeterministicTrackRules(
 			story({ description: "Set excludedFlag=false on import." }),
@@ -199,5 +253,150 @@ describe("applyDeterministicTrackRules — DISCOVERY candidates", () => {
 			{ quotedPhases: [] },
 		);
 		expect(result).toMatchObject({ track: "DEFER" });
+	});
+});
+
+describe("applyDeterministicTrackRules — open questions never defer", () => {
+	// The drafted-spec shape of the story QA saw deferred: the sections a
+	// fresh spec carries, with deferral words only inside the undecided ones.
+	const draftedSpec = [
+		"## Overview",
+		"Show each story's delivery track on the board.",
+		"## Dependencies / Risks",
+		"- Depends on the Product decision about track colours; may be excluded from v1.",
+		"## Open Questions / Needed Decisions",
+		"- Should the track badge be deferred to the next release?",
+		"- Which tracks are excluded from the summary?",
+		"## Assumptions",
+		"- Deferred items are hidden by default.",
+	].join("\n");
+
+	it("the 10/9 drafted-spec story is not deferred by its open questions", () => {
+		const result = applyDeterministicTrackRules(
+			story({ title: "QA #1027 track check", description: draftedSpec }),
+			{ quotedPhases: [] },
+		);
+		expect("track" in result).toBe(false);
+		expect(result).toEqual({ candidate: null });
+	});
+
+	it("an out-of-scope marker outside the question sections still defers", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				title: "QA #1027 track check",
+				description: `This story is out of scope for this engagement.\n${draftedSpec}`,
+			}),
+			{ quotedPhases: [] },
+		);
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+
+	it("a deferral under a later, unrelated heading is still read", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				description: `${draftedSpec}\n## Status\nDeferred until phase 3.`,
+			}),
+			{ quotedPhases: [] },
+		);
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+});
+
+describe("applyDeterministicTrackRules — scope boundaries inside the spec never defer", () => {
+	// Verbatim description of the drafted-spec story QA saw deferred on 10/12:
+	// "…tasks outside the next-day boundary are excluded." under a use case.
+	const stagingSpec = readFileSync(
+		path.join(
+			__dirname,
+			"fixtures",
+			"delivery-track-scope-boundary-spec.txt",
+		),
+		"utf-8",
+	);
+
+	it("the 10/12 drafted-spec story is not deferred by a use-case exclusion", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				title: "QA #1053 open questions",
+				description: stagingSpec,
+			}),
+			{ quotedPhases: [] },
+		);
+		expect("track" in result).toBe(false);
+	});
+
+	it("a plain statement that the story is out of scope still defers", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				description:
+					"Out of scope for this release — parked until next quarter.",
+			}),
+			{ quotedPhases: [] },
+		);
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+
+	it("a marker in the title still defers a fully drafted spec", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				title: "[Out of scope] Due-date email reminders",
+				description: stagingSpec,
+			}),
+			{ quotedPhases: [] },
+		);
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+
+	it("a status line in the description still defers", () => {
+		const result = applyDeterministicTrackRules(
+			story({ description: `**Status:** Parked\n\n${stagingSpec}` }),
+			{ quotedPhases: [] },
+		);
+		expect(result).toMatchObject({ track: "DEFER" });
+	});
+
+	it("an inline Out of scope / Deferred sub-feature list does not defer", () => {
+		const description = [
+			"Send an email when a task is due tomorrow.",
+			"",
+			"**Out of scope:** SMS and push reminders.",
+			"Deferred: recurring reminders and digest emails.",
+			"",
+			"Excluded:",
+			"- Calendar sync.",
+		].join("\n");
+		const result = applyDeterministicTrackRules(story({ description }), {
+			quotedPhases: [],
+		});
+		expect("track" in result).toBe(false);
+	});
+
+	it("prose excluding part of the behaviour does not defer", () => {
+		const result = applyDeterministicTrackRules(
+			story({
+				description:
+					"Reminders cover tasks due tomorrow. Undated tasks are excluded, and overdue tasks are not in scope.",
+			}),
+			{ quotedPhases: [] },
+		);
+		expect("track" in result).toBe(false);
+	});
+
+	it("a use case or requirement section is never read for the item's status", () => {
+		const description = [
+			"## Use Cases",
+			"",
+			"### UC1: Reschedule a reminder",
+			"",
+			"- Edge case: the feature is deferred for archived projects.",
+			"",
+			"## Acceptance Criteria",
+			"",
+			"- Out of scope for this release: reminders for overdue tasks.",
+		].join("\n");
+		const result = applyDeterministicTrackRules(story({ description }), {
+			quotedPhases: [],
+		});
+		expect("track" in result).toBe(false);
 	});
 });

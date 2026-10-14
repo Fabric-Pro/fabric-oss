@@ -28,8 +28,10 @@ import {
 import { Loader2Icon, TicketIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PlanPausedNotice } from "../PlanPausedNotice";
 import { GroupingResultsDialog } from "./GroupingResultsDialog";
 import { type GroupingRunStatus, isGroupingRunning } from "./lib";
+import { PAUSED_RUN_POLL_MS, usePausedRun } from "./use-paused-run";
 
 const GROUPING_TOOLTIP_COPY =
 	"Groups your open Security and Accessibility findings by theme into backlog tickets — one ticket per theme. You review and choose which to create before anything is written; nothing is duplicated on a rerun.";
@@ -58,7 +60,11 @@ export function GroupIntoTicketsButton({
 				const status = query.state.data?.grouping?.status as
 					| GroupingRunStatus
 					| undefined;
-				return isGroupingRunning(status) ? 3000 : false;
+				return isGroupingRunning(status)
+					? 3000
+					: status === "WAITING_FOR_PLAN"
+						? PAUSED_RUN_POLL_MS
+						: false;
 			},
 		}),
 	);
@@ -67,6 +73,18 @@ export function GroupIntoTicketsButton({
 	const status = grouping?.status as GroupingRunStatus | undefined;
 	const groupingRunning = isGroupingRunning(status);
 	const awaitingReview = status === "AWAITING_REVIEW";
+	// Paused for a ChatGPT plan reset (Fizzy #2770).
+	const groupingPaused = status === "WAITING_FOR_PLAN";
+	const pausedRun = usePausedRun({
+		projectId,
+		organizationId,
+		kind: "grouping",
+		runId: grouping?.id,
+		paused: groupingPaused,
+		onResumed: () => {
+			latestGroupingQuery.refetch();
+		},
+	});
 
 	const startMutation = useMutation(
 		orpc.projects.scan.grouping.start.mutationOptions({
@@ -143,6 +161,22 @@ export function GroupIntoTicketsButton({
 	};
 
 	const busy = groupingRunning || startMutation.isPending || awaitingResult;
+
+	if (groupingPaused && grouping) {
+		return (
+			<PlanPausedNotice
+				inline
+				resumesAt={grouping.resumesAt}
+				canRunOnApi={pausedRun.canRunOnApi}
+				askAdminToRunOnApi={pausedRun.askAdminToRunOnApi}
+				onCancel={handleCancel}
+				onRunNow={pausedRun.runNow}
+				cancelling={cancelMutation.isPending}
+				runningNow={pausedRun.runningNow}
+			/>
+		);
+	}
+
 	const noOpenFindings = openFindingCount === 0;
 	// A run awaiting review blocks starting a new one (server would CONFLICT) —
 	// steer the user to the review instead.

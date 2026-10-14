@@ -67,6 +67,31 @@ describe("Connect a shared ChatGPT plan account", () => {
 		expect(target.searchParams.get("state")).toBe("state-example");
 	});
 
+	it("tells the admin to sign in with the organization's ChatGPT account, not their own (Fizzy #3052)", async () => {
+		render(
+			<ConnectSharedChatgptPlanForm
+				organization={{ slug: "example-org", name: "Example Org" }}
+				port={54321}
+				state="state-example"
+			/>,
+		);
+		expect(
+			screen.getByText(connectCopy.steps.chatgptShared),
+		).toBeInTheDocument();
+		expect(screen.queryByText(connectCopy.steps.chatgpt)).toBeNull();
+		await userEvent.click(
+			screen.getByRole("button", { name: connectCopy.approve }),
+		);
+		expect(
+			await screen.findByText(
+				copy.returnToTerminal.replace("{organization}", "Example Org"),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(connectCopy.steps.chatgptShared).closest("li"),
+		).toHaveAttribute("aria-current", "step");
+	});
+
 	it("refuses an organization the person does not administer, and lets the CLI stop waiting", async () => {
 		render(
 			<ConnectSharedChatgptPlanForm

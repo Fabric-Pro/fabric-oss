@@ -52,9 +52,42 @@ export interface GatewaySession {
 	 * loosened by anything here.
 	 */
 	scopes: string[];
+	/**
+	 * The servers and tools this session's client asked to see, by the
+	 * `servers` query parameter of the URL it opened the session at. Absent or
+	 * null means every server. Set by `createGatewaySession` and `readonly`
+	 * after that, so a later request's query string does not move it;
+	 * `./server-selection` reads it. It narrows what the client sees and may
+	 * call, and grants nothing.
+	 */
+	readonly serverSelection?: ServerSelection | null;
+	/**
+	 * How `tools/list` presents this session's tools, by the `mode` query
+	 * parameter of the URL it was opened at: every tool (`full`, also when
+	 * absent) or three meta-tools that search, describe and call them
+	 * (`discovery`, see `./discovery-tools`). Set by `createGatewaySession` and
+	 * `readonly` after that, like `serverSelection`. It changes presentation
+	 * only: what a session may call is the same in either mode.
+	 */
+	readonly toolListMode?: ToolListMode;
 	createdAt: Date;
 	expiresAt: Date;
 }
+
+/** See `GatewaySession.toolListMode`. */
+export type ToolListMode = "full" | "discovery";
+
+/**
+ * A session's server selection: one entry per server named, with every tool of
+ * it (`"*"`) or only the tools listed. `server` is `fabric` for the platform
+ * tools or a connected server's tool prefix; a listed tool is the full platform
+ * name for `fabric`, and the server's own name (what follows `<prefix>__`) for a
+ * connected server. Parsed by `parseServerSelection` in `./server-selection`.
+ */
+export type ServerSelection = ReadonlyArray<{
+	readonly server: string;
+	readonly tools: "*" | readonly string[];
+}>;
 
 /** The MCP tool annotations the gateway reads. A server's own claims, not Fabric's. */
 export interface ToolAnnotations {

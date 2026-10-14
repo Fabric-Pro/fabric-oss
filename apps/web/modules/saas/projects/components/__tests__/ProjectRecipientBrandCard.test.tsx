@@ -172,8 +172,8 @@ describe("ProjectRecipientBrandCard", () => {
 		api.get.mockResolvedValue(savedBrand(2));
 		renderCard({ gate: false, proposalArtifactGate: true });
 
-		expect(await screen.findByLabelText("name")).toHaveValue(
-			"Example Corp",
+		await waitFor(() =>
+			expect(screen.getByLabelText("name")).toHaveValue("Example Corp"),
 		);
 		expect(api.get).toHaveBeenCalledWith({ projectId: PROJECT_ID });
 		// No Glossy cover exists for such an organization, so the card says
@@ -215,8 +215,8 @@ describe("ProjectRecipientBrandCard", () => {
 		api.get.mockResolvedValue(savedBrand(3));
 		renderCard();
 
-		expect(await screen.findByLabelText("name")).toHaveValue(
-			"Example Corp",
+		await waitFor(() =>
+			expect(screen.getByLabelText("name")).toHaveValue("Example Corp"),
 		);
 		expect(screen.getByLabelText("website")).toHaveValue(
 			"https://example.com",

@@ -448,7 +448,10 @@ describe("generateCaseStudyActivity — tenancy and actor revalidation", () => {
 
 		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			expect.objectContaining({ jobType: "publishing-case-study" }),
+			expect.objectContaining({
+				jobType: "publishing-case-study",
+				projectId: "proj-1",
+			}),
 		);
 	});
 });

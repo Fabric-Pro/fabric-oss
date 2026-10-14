@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock("../pm-create-claim", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+	releasePmCreateClaim: vi.fn(async () => true),
+}));
+
 vi.mock("@temporalio/activity", async () => {
 	const actual = await vi.importActual<object>("@temporalio/activity");
 	return {
@@ -42,6 +50,18 @@ vi.mock("@repo/config", () => ({
 		},
 	},
 }));
+
+/**
+ * The `where` a status write from a run without an attempt id adds: it skips a
+ * row that is PENDING for an attempt (`writePmSyncStatusUnattempted`).
+ */
+const UNLESS_PENDING_FOR_AN_ATTEMPT = {
+	OR: [
+		{ lastPmSyncStatus: null },
+		{ lastPmSyncStatus: { not: "PENDING" } },
+		{ lastPmSyncAttemptId: null },
+	],
+};
 
 const { userStoryUpdateMock, userStoryUpdateManyMock } = vi.hoisted(() => ({
 	userStoryUpdateMock: vi.fn(),
@@ -114,7 +134,12 @@ vi.mock("../story-sync", async () => {
 	};
 });
 
-import { getStoryById, updateStory, upsertPendingChange } from "@repo/database";
+import {
+	db,
+	getStoryById,
+	updateStory,
+	upsertPendingChange,
+} from "@repo/database";
 import { executeMcpTool } from "../../orchestrator/execution/execute-mcp-tool";
 import { normalizePolledState } from "../extract-pm-item-state";
 import {
@@ -193,7 +218,7 @@ describe("syncWorkItemToPM", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		userStoryUpdateMock.mockResolvedValue({});
-		userStoryUpdateManyMock.mockResolvedValue({});
+		userStoryUpdateManyMock.mockResolvedValue({ count: 1 });
 		vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
 			makeCapabilities() as never,
 		);
@@ -282,6 +307,165 @@ describe("syncWorkItemToPM", () => {
 		expect(args).not.toHaveProperty("description");
 	});
 
+	it("Jira v2 create → fills cloudId and issueType on executeMcpTool", async () => {
+		vi.mocked(discoverPMToolCapabilities).mockResolvedValue({
+			hasPMCapabilities: true,
+			detectedType: "jira",
+			availableTools: [
+				"createJiraIssue",
+				"getAccessibleAtlassianResources",
+				"getJiraProjectIssueTypesMetadata",
+			],
+			taskCreation: {
+				toolName: "createJiraIssue",
+				containerParam: "projectKey",
+				titleParam: "summary",
+				descriptionParam: "description",
+				fieldsBased: undefined,
+				allParams: [{ name: "cloudId" }, { name: "issueType" }],
+			},
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue(
+			makeStory({ externalId: null, lastSyncedPmHash: null }) as never,
+		);
+		vi.mocked(executeMcpTool).mockImplementation(async (args: unknown) => {
+			const { toolName } = args as { toolName: string };
+			if (toolName === "getAccessibleAtlassianResources") {
+				return {
+					success: true,
+					output: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify([{ id: "cloud-42" }]),
+							},
+						],
+					},
+				} as never;
+			}
+			if (toolName === "getJiraProjectIssueTypesMetadata") {
+				return {
+					success: true,
+					output: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									data: {
+										issueTypes: [
+											{ name: "Story", subtask: false },
+										],
+									},
+								}),
+							},
+						],
+					},
+				} as never;
+			}
+			if (toolName === "createJiraIssue") {
+				return {
+					success: true,
+					output: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									data: { id: "10001", key: "SAN-1" },
+								}),
+							},
+						],
+					},
+				} as never;
+			}
+			return { success: true, output: {} } as never;
+		});
+
+		const result = await syncWorkItemToPM(baseInput);
+
+		expect(result.status).toBe("SUCCESS");
+		expect(result.externalId).toBe("10001");
+		const createCall = vi
+			.mocked(executeMcpTool)
+			.mock.calls.find(
+				([arg]) =>
+					(arg as { toolName: string }).toolName ===
+					"createJiraIssue",
+			);
+		expect(createCall).toBeDefined();
+		const createArgs = (
+			createCall as [{ args: Record<string, unknown> }]
+		)[0].args;
+		expect(createArgs).toMatchObject({
+			projectKey: "board-1",
+			cloudId: "cloud-42",
+			issueType: "Story",
+			summary: STORY_TITLE,
+			description: STORY_DESCRIPTION,
+		});
+	});
+
+	it("ADO create → executeMcpTool args are unchanged and do not leak cloudId or issueType", async () => {
+		vi.mocked(discoverPMToolCapabilities).mockResolvedValue({
+			hasPMCapabilities: true,
+			detectedType: "azure-devops",
+			availableTools: ["wit_create_work_item"],
+			taskCreation: {
+				toolName: "wit_create_work_item",
+				containerParam: "project",
+				fieldsBased: {
+					workItemTypeParam: "workItemType",
+					fieldsParam: "fields",
+					titleKey: "System.Title",
+					descriptionKey: "System.Description",
+				},
+				allParams: [
+					{ name: "project" },
+					{ name: "workItemType" },
+					{ name: "fields" },
+				],
+			},
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue(
+			makeStory({ externalId: null, lastSyncedPmHash: null }) as never,
+		);
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: {
+				id: 1234,
+				_links: {
+					web: {
+						href: "https://dev.azure.com/tf/proj/_workitems/edit/1234",
+					},
+				},
+			},
+		} as never);
+
+		const result = await syncWorkItemToPM({
+			...baseInput,
+			containerName: "MyProject",
+		});
+
+		expect(result.status).toBe("SUCCESS");
+		const createCall = vi
+			.mocked(executeMcpTool)
+			.mock.calls.find(
+				([arg]) =>
+					(arg as { toolName: string }).toolName ===
+					"wit_create_work_item",
+			);
+		expect(createCall).toBeDefined();
+		const createArgs = (
+			createCall as [{ args: Record<string, unknown> }]
+		)[0].args;
+		expect(createArgs).not.toHaveProperty("cloudId");
+		expect(createArgs).not.toHaveProperty("issueType");
+		expect(createArgs).toMatchObject({
+			project: "MyProject",
+			workItemType: "User Story",
+			fields: expect.any(Array),
+		});
+	});
+
 	it("null baseline → pushes and stamps SUCCESS", async () => {
 		vi.mocked(getStoryById).mockResolvedValue(
 			makeStory({ lastSyncedPmHash: null }) as never,
@@ -293,17 +477,54 @@ describe("syncWorkItemToPM", () => {
 		expect(executeMcpTool).toHaveBeenCalledWith(
 			expect.objectContaining({ toolName: "update_card" }),
 		);
-		expect(userStoryUpdateMock).toHaveBeenCalledWith(
+		// Without an attempt id: the baseline by id, the SUCCESS unless the
+		// row is PENDING for an attempt.
+		expect(userStoryUpdateMock).toHaveBeenCalledWith({
+			where: { id: STORY_ID },
+			data: {
+				lastSyncedPmHash: computePmHash(STORY_TITLE, STORY_DESCRIPTION),
+				lastSyncedAt: expect.any(Date),
+			},
+		});
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith({
+			where: { id: STORY_ID, ...UNLESS_PENDING_FOR_AN_ATTEMPT },
+			data: expect.objectContaining({
+				lastPmSyncStatus: "SUCCESS",
+				lastPmSyncError: null,
+			}),
+		});
+	});
+
+	it("with the run's attempt id: baseline by id, SUCCESS scoped to that attempt", async () => {
+		vi.mocked(getStoryById).mockResolvedValue(
+			makeStory({ lastSyncedPmHash: null }) as never,
+		);
+		userStoryUpdateManyMock.mockResolvedValue({ count: 1 });
+
+		const result = await syncWorkItemToPM({
+			...baseInput,
+			pmSyncAttemptId: "attempt-A",
+		});
+
+		expect(result.status).toBe("SUCCESS");
+		// The push happened: its baseline is written whoever owns the status.
+		expect(userStoryUpdateMock).toHaveBeenCalledWith({
+			where: { id: STORY_ID },
+			data: {
+				lastSyncedPmHash: computePmHash(STORY_TITLE, STORY_DESCRIPTION),
+				lastSyncedAt: expect.any(Date),
+			},
+		});
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith({
+			where: { id: STORY_ID, lastPmSyncAttemptId: "attempt-A" },
+			data: expect.objectContaining({
+				lastPmSyncStatus: "SUCCESS",
+				lastPmSyncError: null,
+			}),
+		});
+		expect(userStoryUpdateMock).not.toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: STORY_ID },
-				data: expect.objectContaining({
-					lastSyncedPmHash: computePmHash(
-						STORY_TITLE,
-						STORY_DESCRIPTION,
-					),
-					lastPmSyncStatus: "SUCCESS",
-					lastPmSyncError: null,
-				}),
+				data: expect.objectContaining({ lastPmSyncStatus: "SUCCESS" }),
 			}),
 		);
 	});
@@ -330,8 +551,9 @@ describe("syncWorkItemToPM", () => {
 		const result = await syncWorkItemToPM(baseInput);
 
 		expect(result.status).toBe("SUCCESS");
-		expect(userStoryUpdateMock).toHaveBeenCalledWith(
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				where: { id: STORY_ID, ...UNLESS_PENDING_FOR_AN_ATTEMPT },
 				data: expect.objectContaining({
 					lastPmSyncStatus: "SUCCESS",
 				}),
@@ -366,8 +588,9 @@ describe("syncWorkItemToPM", () => {
 			([arg]) => (arg as { toolName: string }).toolName === "update_card",
 		);
 		expect(updateCalled).toBe(false);
-		expect(userStoryUpdateMock).toHaveBeenCalledWith(
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				where: { id: STORY_ID, ...UNLESS_PENDING_FOR_AN_ATTEMPT },
 				data: expect.objectContaining({
 					lastPmSyncStatus: "CONFLICT",
 				}),
@@ -429,8 +652,9 @@ describe("syncWorkItemToPM", () => {
 			([arg]) => (arg as { toolName: string }).toolName === "update_card",
 		);
 		expect(updateCalled).toBe(true);
-		expect(userStoryUpdateMock).toHaveBeenCalledWith(
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
+				where: { id: STORY_ID, ...UNLESS_PENDING_FOR_AN_ATTEMPT },
 				data: expect.objectContaining({
 					lastPmSyncStatus: "SUCCESS",
 				}),
@@ -450,11 +674,15 @@ describe("syncWorkItemToPM", () => {
 		await expect(syncWorkItemToPM(baseInput)).rejects.toMatchObject({
 			type: "PmUpdateError",
 		});
-		expect(userStoryUpdateMock).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				data: expect.objectContaining({ lastPmSyncStatus: "SUCCESS" }),
-			}),
-		);
+		for (const write of [userStoryUpdateMock, userStoryUpdateManyMock]) {
+			expect(write).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						lastPmSyncStatus: "SUCCESS",
+					}),
+				}),
+			);
+		}
 	});
 
 	// Fix 1: an on-demand push that 404s (the linked PM card was deleted) must
@@ -594,11 +822,15 @@ describe("syncWorkItemToPM", () => {
 		});
 
 		await expect(syncWorkItemToPM(baseInput)).rejects.toThrow();
-		expect(userStoryUpdateMock).not.toHaveBeenCalledWith(
-			expect.objectContaining({
-				data: expect.objectContaining({ lastPmSyncStatus: "SUCCESS" }),
-			}),
-		);
+		for (const write of [userStoryUpdateMock, userStoryUpdateManyMock]) {
+			expect(write).not.toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						lastPmSyncStatus: "SUCCESS",
+					}),
+				}),
+			);
+		}
 	});
 
 	// Round-trip: the hash baseline must equal what fetchPmTicket reads back
@@ -1032,7 +1264,7 @@ describe("syncWorkItemToPM", () => {
 			},
 		};
 
-		it("legacy story with Fizzy URL + no externalMcpServerId → clears stale link, takes CREATE path", async () => {
+		it("legacy story with Fizzy URL + no externalMcpServerId → fails asking for Unlink & re-create; no create, link untouched", async () => {
 			vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
 				adoCapabilities as never,
 			);
@@ -1046,59 +1278,39 @@ describe("syncWorkItemToPM", () => {
 					lastSyncedPmHash: null,
 				}) as never,
 			);
-			vi.mocked(executeMcpTool).mockImplementation(
-				async (args: unknown) => {
-					const { toolName } = args as { toolName: string };
-					if (toolName === "wit_create_work_item") {
-						return {
-							success: true,
-							output: {
-								id: 1234,
-								_links: {
-									web: {
-										href: "https://dev.azure.com/tf/proj/_workitems/edit/1234",
-									},
-								},
-							},
-						} as never;
-					}
-					return { success: true, output: {} } as never;
-				},
-			);
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: { id: 1234 },
+			} as never);
+			const { acquirePmCreateClaim } = await import("../pm-create-claim");
 
-			const result = await syncWorkItemToPM({
+			const failure = await syncWorkItemToPM({
 				...baseInput,
 				containerName: "MyProject",
-			});
+			}).catch((error: unknown) => error);
 
-			expect(result.status).toBe("SUCCESS");
-			const toolNames = vi
-				.mocked(executeMcpTool)
-				.mock.calls.map(
-					([arg]) => (arg as { toolName: string }).toolName,
-				);
-			expect(toolNames).toContain("wit_create_work_item");
-			expect(toolNames).not.toContain("wit_update_work_item");
-			// Stale link should have been nulled out before the create.
-			expect(vi.mocked(updateStory)).toHaveBeenCalledWith(
-				STORY_ID,
-				PROJECT_ID,
-				expect.objectContaining({
-					externalId: null,
-					externalUrl: null,
-					externalMcpServerId: null,
-				}),
-				{ lastEditedSource: "PM_PULL" },
+			// Thrown non-retryable, like the stamped-mismatch block, so the
+			// workflow stamps FAILED with this message.
+			expect(failure).toMatchObject({
+				type: "PmToolMismatchError",
+				nonRetryable: true,
+			});
+			expect((failure as Error).message).toMatch(
+				/linked to a ticket in a different PM tool/,
 			);
-			// And after the create succeeds, the new ADO id should be
-			// stamped back (URL extraction depends on
-			// `extractExternalInfo` behavior tested elsewhere).
-			expect(vi.mocked(updateStory)).toHaveBeenCalledWith(
-				STORY_ID,
-				PROJECT_ID,
-				expect.objectContaining({ externalId: "1234" }),
-				{ lastEditedSource: "PM_PULL" },
-			);
+			expect((failure as Error).message).toMatch(/Unlink & re-create/);
+			// Nothing sent to the PM tool: no create, no update of the other
+			// tool's id.
+			expect(executeMcpTool).not.toHaveBeenCalled();
+			expect(acquirePmCreateClaim).not.toHaveBeenCalled();
+			// The stored link is neither cleared nor replaced.
+			expect(
+				vi
+					.mocked(updateStory)
+					.mock.calls.filter(([, , data]) =>
+						Object.hasOwn(data as object, "externalId"),
+					),
+			).toEqual([]);
 		});
 
 		it("story with externalMcpServerId pointing at a different active server → throws PmToolMismatchError, no PM call", async () => {
@@ -1164,6 +1376,69 @@ describe("syncWorkItemToPM", () => {
 				);
 			expect(toolNames).toContain("wit_update_work_item");
 			expect(toolNames).not.toContain("wit_create_work_item");
+		});
+
+		describe("a legacy link and a personal GitLab config on a self-hosted instance", () => {
+			const gitlabCapabilities = {
+				...makeCapabilities(),
+				detectedType: "gitlab",
+			};
+			const selfHostedConfig = () => {
+				vi.mocked(db.mCPConfig.findFirst).mockResolvedValueOnce({
+					baseUrl: "https://gitlab.example.com",
+					mcpServerId: "srv-gitlab",
+					mcpServer: { defaultUrl: null, key: "gitlab" },
+				} as never);
+			};
+			const linkedTo = (externalUrl: string) =>
+				vi.mocked(getStoryById).mockResolvedValue(
+					makeStory({
+						externalId: "77",
+						externalUrl,
+						externalMcpServerId: null,
+						lastSyncedPmHash: null,
+					}) as never,
+				);
+
+			it("a gitlab.com link → PmToolMismatchError, nothing sent to the instance", async () => {
+				vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
+					gitlabCapabilities as never,
+				);
+				selfHostedConfig();
+				linkedTo("https://gitlab.com/example/project/-/issues/77");
+
+				await expect(syncWorkItemToPM(baseInput)).rejects.toMatchObject(
+					{
+						type: "PmToolMismatchError",
+						nonRetryable: true,
+						message: expect.stringMatching(
+							/linked to a ticket in a different PM tool/,
+						),
+					},
+				);
+				expect(executeMcpTool).not.toHaveBeenCalled();
+			});
+
+			it("a link on the instance → updates", async () => {
+				vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
+					gitlabCapabilities as never,
+				);
+				selfHostedConfig();
+				linkedTo(
+					"https://gitlab.example.com/example/project/-/issues/77",
+				);
+
+				const result = await syncWorkItemToPM(baseInput);
+
+				expect(result.status).toBe("SUCCESS");
+				const toolNames = vi
+					.mocked(executeMcpTool)
+					.mock.calls.map(
+						([arg]) => (arg as { toolName: string }).toolName,
+					);
+				expect(toolNames).toContain("update_card");
+				expect(toolNames).not.toContain("create_card");
+			});
 		});
 	});
 
@@ -1474,6 +1749,7 @@ describe("stampPmSyncSuccess — pmCanonicalHash baseline", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		userStoryUpdateMock.mockResolvedValue({});
+		userStoryUpdateManyMock.mockResolvedValue({ count: 1 });
 	});
 
 	it("baselines lastSyncedPmHash from pmCanonicalHash (the readback) when provided", async () => {
@@ -1490,8 +1766,13 @@ describe("stampPmSyncSuccess — pmCanonicalHash baseline", () => {
 				where: { id: STORY_ID },
 				data: expect.objectContaining({
 					lastSyncedPmHash: "READBACK_HASH",
-					lastPmSyncStatus: "SUCCESS",
 				}),
+			}),
+		);
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: STORY_ID, ...UNLESS_PENDING_FOR_AN_ATTEMPT },
+				data: expect.objectContaining({ lastPmSyncStatus: "SUCCESS" }),
 			}),
 		);
 	});
@@ -1539,7 +1820,7 @@ describe("failed-media placeholders are stripped before the AI-update push", () 
 	beforeEach(() => {
 		vi.clearAllMocks();
 		userStoryUpdateMock.mockResolvedValue({});
-		userStoryUpdateManyMock.mockResolvedValue({});
+		userStoryUpdateManyMock.mockResolvedValue({ count: 1 });
 		vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
 			makeCapabilities() as never,
 		);

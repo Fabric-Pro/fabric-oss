@@ -1,3 +1,4 @@
+import type { AiJobKey } from "@repo/ai";
 import { executeChild, proxyActivities } from "@temporalio/workflow";
 import type * as fabricMentionActivities from "../activities/fabric-mention-comments";
 import type { DirectChatWorkflowInput } from "../types";
@@ -10,6 +11,8 @@ export interface FabricMentionReplyWorkflowInput {
 	commentId: string;
 	userId: string;
 	organizationId?: string;
+	/** Read by the AI job-type interceptor; every model call of the run is this job's. */
+	jobType?: AiJobKey;
 }
 
 export interface FabricMentionReplyWorkflowOutput {

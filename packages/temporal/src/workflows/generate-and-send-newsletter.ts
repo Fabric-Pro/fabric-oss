@@ -27,6 +27,11 @@ import type {
 	sendNewsletterEmailsActivity as SendEmailsFn,
 } from "../activities/newsletter";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import {
+	planSpentFailureAsError,
+	untilRunDeadline,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 import { APPROVAL_CHAT_RETRY } from "./newsletter-approval-chat-retry";
 import { APPROVAL_EMAIL_RETRY } from "./newsletter-approval-email-retry";
 import { computeDeliveryOutcome } from "./newsletter-delivery-outcome";
@@ -194,6 +199,22 @@ const { sendNewsletterChatMessagesActivity } = proxyActivities<{
 	},
 });
 
+/**
+ * A scheduled send runs under a 15-minute execution timeout
+ * (`dispatch-newsletter-send.ts`), which a plan wait of hours would overrun
+ * silently, leaving the send row unfinalized. Behind this patch the wait is
+ * capped at the run's deadline, and a send every plan stayed spent for is
+ * finalized as skipped instead of failed (Fizzy #2770). Read only once a
+ * curation was refused, so a run that never hits a spent plan records no
+ * marker.
+ */
+const NEWSLETTER_PLAN_DEADLINE_PATCH = "newsletter-plan-wait-deadline";
+// What the run needs after the wait: curation once more, then delivery.
+const NEWSLETTER_PLAN_WAIT_RESERVE_MS = 8 * 60_000;
+const untilNewsletterDeadline = untilRunDeadline(
+	NEWSLETTER_PLAN_WAIT_RESERVE_MS,
+);
+
 export async function generateAndSendNewsletterWorkflow(
 	input: GenerateAndSendNewsletterInput,
 ): Promise<GenerateAndSendNewsletterOutput> {
@@ -258,15 +279,31 @@ export async function generateAndSendNewsletterWorkflow(
 						? "NO_ACTIVE_REPOS"
 						: "NO_RELEASES";
 			}
-			({ content, aiUsageTokens } =
-				await curateNewsletterFromReleasesActivity({
+			// A scheduled send's curation may run on a shared ChatGPT plan
+			// (Fizzy #2770): when every plan is spent it waits for a reset and
+			// curates once more. "Send now" is a person's click and is not held.
+			// `trigger` is workflow input, so the branch is replay-safe, and the
+			// helper's own `patched()` keeps older histories unchanged.
+			const curate = () =>
+				curateNewsletterFromReleasesActivity({
 					projectId,
 					organizationId,
 					userId: triggeredByUserId,
 					projectName,
 					releases: sel.releases, // [] → curate returns hasMajorFeatures=false → SKIPPED_EMPTY below
 					detailLevel,
-				}));
+				});
+			({ content, aiUsageTokens } =
+				input.trigger === "SCHEDULED"
+					? await withChatGptPlanWait(curate, {
+							organizationId,
+							userId: triggeredByUserId,
+							maxWaitMs: () =>
+								patched(NEWSLETTER_PLAN_DEADLINE_PATCH)
+									? untilNewsletterDeadline()
+									: undefined,
+						})
+					: await curate());
 		} else {
 			// LEGACY PR-based branch — preserved VERBATIM for replay of pre-patch
 			// histories (same activity NAMES, COUNT, ORDER). Do NOT edit.
@@ -516,6 +553,28 @@ export async function generateAndSendNewsletterWorkflow(
 
 		return { status, sentCount };
 	} catch (error) {
+		// Every plan stayed spent past the run's wait: nothing went wrong and
+		// nothing was sent, so the send is skipped like an incomplete scan —
+		// `lastSentAt` stays put and the next send covers this window.
+		const planSpent = planSpentFailureAsError(error);
+		if (
+			planSpent &&
+			input.trigger === "SCHEDULED" &&
+			patched(NEWSLETTER_PLAN_DEADLINE_PATCH)
+		) {
+			log.warn("[Newsletter] skipped: every ChatGPT plan is spent", {
+				sendId,
+			});
+			await finalizeNewsletterSendActivity({
+				sendId,
+				projectId,
+				status: "SKIPPED_EMPTY",
+				skipReason: "PLAN_SPENT",
+				errorMessage: planSpent.message,
+				aiUsageTokens: null,
+			});
+			return { status: "SKIPPED_EMPTY", sentCount: 0 };
+		}
 		const errMsg = error instanceof Error ? error.message : String(error);
 		log.error("[Newsletter] generation failed", { sendId, error: errMsg });
 		try {

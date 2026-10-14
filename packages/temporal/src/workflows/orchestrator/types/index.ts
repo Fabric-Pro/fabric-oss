@@ -100,14 +100,20 @@ export type {
 export type {
 	ApprovalHistoryEntry,
 	ApprovalSignalData,
+	OrchestratorBudgetAttemptKind,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
 	OrchestratorTurnScope,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
 	PlanningAuditSummary,
+	TurnBudgetStop,
+	TurnLedgerSnapshot,
 } from "./workflow-io.types";
-export { ORCHESTRATOR_TURN_CONTRACT_VERSION } from "./workflow-io.types";
+export {
+	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
+	ORCHESTRATOR_TURN_CONTRACT_VERSION,
+} from "./workflow-io.types";
 // =============================================================================
 // Workspace Types
 // =============================================================================

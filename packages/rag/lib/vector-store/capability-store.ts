@@ -13,6 +13,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { ensureCollection } from "../collection-manager";
 import { generatePointId } from "../utils";
 import { qdrantClient } from "./client";
@@ -170,6 +171,9 @@ export async function upsertCapability(
 		logger.debug(`[CapabilityStore] Upserted capability: ${capability.id}`);
 		return true;
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error("[CapabilityStore] Failed to upsert capability:", error);
 		return false;
 	}
@@ -219,6 +223,11 @@ export async function upsertCapabilities(
 					},
 				}));
 
+				// Inside a chat turn that has stopped (or used its token
+				// allowance) no point is written: the client checks the write
+				// as it sends it (vector-store/client.ts). The collection
+				// lookup above provisions outside the turn's guard, since
+				// other callers may share it.
 				await qdrantClient.upsert(collectionName, {
 					wait: true,
 					points,
@@ -226,6 +235,8 @@ export async function upsertCapabilities(
 
 				totalSuccess += orgCapabilities.length;
 			} catch (error) {
+				// A turn stop is not one organization's failed batch.
+				rethrowIfDispatchStopped(error);
 				logger.error(
 					`[CapabilityStore] Failed to upsert capabilities for org ${orgId}:`,
 					error,
@@ -239,6 +250,7 @@ export async function upsertCapabilities(
 		);
 		return { success: totalSuccess, failed: totalFailed };
 	} catch (error) {
+		rethrowIfDispatchStopped(error);
 		logger.error("[CapabilityStore] Failed to upsert capabilities:", error);
 		return { success: 0, failed: capabilities.length };
 	}
@@ -263,6 +275,9 @@ export async function deleteCapability(
 		logger.debug(`[CapabilityStore] Deleted capability: ${capabilityId}`);
 		return true;
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error("[CapabilityStore] Failed to delete capability:", error);
 		return false;
 	}
@@ -314,6 +329,9 @@ export async function deleteCapabilitiesByServer(
 		);
 		return typeof result === "object" ? 1 : 0;
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error(
 			"[CapabilityStore] Failed to delete capabilities by server:",
 			error,
@@ -355,6 +373,9 @@ export async function deleteCapabilitiesByTenant(
 		);
 		return 1;
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error(
 			"[CapabilityStore] Failed to delete capabilities by tenant:",
 			error,
@@ -404,6 +425,9 @@ export async function deleteCapabilitiesByConfigId(
 		);
 		return 1;
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error(
 			"[CapabilityStore] Failed to delete capabilities by configId:",
 			error,
@@ -491,6 +515,9 @@ export async function searchCapabilities(
 			score: result.score,
 		}));
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error("[CapabilityStore] Failed to search capabilities:", error);
 		return [];
 	}
@@ -563,6 +590,9 @@ export async function getCapabilitiesByTenant(
 			score: 1.0, // No semantic score for scroll
 		}));
 	} catch (error) {
+		// A chat turn's stop (from the client's write boundary or a
+		// request it aborted) is handed back, not turned into a result.
+		rethrowIfDispatchStopped(error);
 		logger.error(
 			"[CapabilityStore] Failed to get capabilities by tenant:",
 			error,

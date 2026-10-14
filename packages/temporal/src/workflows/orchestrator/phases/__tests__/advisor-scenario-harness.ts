@@ -5,6 +5,7 @@
  * activity proxy itself (vi.mock is per file) and passes its mocks in.
  */
 
+import { ApplicationFailure } from "@temporalio/common";
 import { vi } from "vitest";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
 import type { IterativeTurnOptions } from "../../turn-contract";
@@ -190,7 +191,20 @@ async function fakeMcp(req: {
 export type Call = { name: string; args: Record<string, unknown> };
 export type Step =
 	| { calls: Call[] }
-	| { answer: string }
+	| {
+			answer: string;
+			/** The token-ledger reading the round returns (ledgered turns). */
+			ledger?: Record<string, unknown>;
+	  }
+	/**
+	 * The turn's token ledger refuses this round's request: the activity
+	 * fails with `TurnBudgetExhausted` carrying the attempt kind and `ledger`
+	 * as the reading.
+	 */
+	| {
+			refuse: "EXPLORATION" | "FINALIZATION";
+			ledger: Record<string, unknown>;
+	  }
 	| ((history: IterativeMessage[]) => Step);
 
 export interface Seen {
@@ -199,6 +213,10 @@ export interface Seen {
 	/** The per-call host note sent beside the system prompt, if any. */
 	turnNotice?: string;
 	tools: string[];
+	/** The ledger attempt kind the round was sent with, if any. */
+	budgetAttemptKind?: string;
+	/** The user's request a finalization round was sent with, if any. */
+	finalizationQuestion?: string;
 }
 
 export interface TurnOptions {
@@ -241,6 +259,12 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 			systemPrompt: req.systemPrompt,
 			turnNotice: req.turnNotice,
 			tools: Object.keys(req.availableTools),
+			...(req.budgetAttemptKind
+				? { budgetAttemptKind: req.budgetAttemptKind }
+				: {}),
+			...("finalizationQuestion" in req
+				? { finalizationQuestion: req.finalizationQuestion }
+				: {}),
 		});
 		let step = queue.shift();
 		while (typeof step === "function") {
@@ -250,8 +274,28 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		if (!step) {
 			throw new Error("model script exhausted");
 		}
+		if ("refuse" in step) {
+			throw ApplicationFailure.create({
+				type: "TurnBudgetExhausted",
+				message: "Turn has used its token allowance",
+				nonRetryable: true,
+				details: [
+					{
+						kind: step.refuse,
+						room: 0,
+						needed: 9_000,
+						snapshot: step.ledger,
+					},
+				],
+			});
+		}
 		if ("answer" in step) {
-			return { type: "response", content: step.answer, usage };
+			return {
+				type: "response",
+				content: step.answer,
+				usage,
+				...(step.ledger ? { ledger: step.ledger } : {}),
+			};
 		}
 		return {
 			type: "tool_calls",

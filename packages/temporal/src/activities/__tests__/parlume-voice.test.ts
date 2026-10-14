@@ -11,7 +11,12 @@ const logAiUsageAsync = vi.hoisted(() => vi.fn());
 const getAISpeechModel = vi.hoisted(() => vi.fn());
 const generateSpeech = vi.hoisted(() => vi.fn());
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	AUDIO_PROVIDER_REQUIRED: (
+		await vi.importActual<
+			typeof import("@repo/ai/lib/openai-provider-key")
+		>("@repo/ai/lib/openai-provider-key")
+	).AUDIO_PROVIDER_REQUIRED,
 	getAISpeechModel,
 	resolveOpenAiApiKey,
 }));
@@ -470,8 +475,10 @@ describe("Parlume spoken responses", () => {
 		);
 	});
 
-	it("does not generate speech without a voice key", async () => {
-		resolveOpenAiApiKey.mockResolvedValue(null);
+	it("refuses with the provider message when the organization has no voice key", async () => {
+		// The org has neither a gateway nor an OpenAI key; Fabric's own key is
+		// never a fallback, so nothing is synthesized.
+		resolveOpenAiApiKey.mockResolvedValue("");
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -481,7 +488,9 @@ describe("Parlume spoken responses", () => {
 				response: "Hello",
 				voiceGeneration: 3,
 			}),
-		).rejects.toThrow("voice is not configured");
+		).rejects.toThrow(
+			"Parlume voice needs an AI provider for your organization. Add an OpenAI or Vercel AI Gateway API key in Settings → AI Providers. ChatGPT plans serve text only.",
+		);
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(logAiUsageAsync).not.toHaveBeenCalled();
 	});

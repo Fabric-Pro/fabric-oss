@@ -9,10 +9,19 @@
  * rate-limit errors under burst load no longer silently skip detection.
  *
  * Never throws: failing to enqueue is logged and swallowed, exactly like the
- * old inline guard, so it can never break the create flow that calls it.
+ * old inline guard, so it can never break the create flow that calls it. The
+ * one exception is an Advisor chat turn's stop: inside a turn (the ambient
+ * dispatch guard) the stop is checked immediately before the workflow start,
+ * after the availability probe and the client lookup, and a stop is thrown
+ * rather than swallowed, so a stopped turn starts nothing and is not told the
+ * detection was merely skipped.
  */
 
 import { logger } from "@repo/logs";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { getTemporalClient, isTemporalAvailable } from "../client";
 
 const TASK_QUEUE = "ai-chat";
@@ -46,6 +55,8 @@ export async function triggerDuplicateDetection(
 
 		const client = await getTemporalClient();
 		const workflowId = `dup-detect-${projectId}-${Date.now()}`;
+		// Immediately before the start (see the header).
+		throwIfDispatchStopped();
 		const handle = await client.workflow.start("detectDuplicatesWorkflow", {
 			taskQueue: TASK_QUEUE,
 			workflowId,
@@ -66,6 +77,7 @@ export async function triggerDuplicateDetection(
 		});
 		return { workflowId: handle.workflowId };
 	} catch (err) {
+		rethrowIfDispatchStopped(err);
 		logger.warn(
 			"[Auto Dup Detect] failed to enqueue detection workflow (non-blocking)",
 			{

@@ -211,7 +211,13 @@ describe("updateTestCaseExternalRefs", () => {
 			>;
 			// No `baseline` → no readback → leave lastSyncedPmHash untouched.
 			expect(data).not.toHaveProperty("lastSyncedPmHash");
-			expect(data.lastPmSyncStatus).toBe("SUCCESS");
+			// The link and baseline land first, by id; the SUCCESS is a
+			// second write, kept off a case that is PENDING for an attempt.
+			expect(data).not.toHaveProperty("lastPmSyncStatus");
+			expect(updateManySpy.mock.calls[1][0]).toMatchObject({
+				where: { id: "tc-1", projectId: "proj-1" },
+				data: { lastPmSyncStatus: "SUCCESS" },
+			});
 			expect(mocks.fetchPmTicket).not.toHaveBeenCalled();
 		} finally {
 			updateManySpy.mockRestore();
@@ -260,7 +266,13 @@ describe("updateTestCaseExternalRefs", () => {
 					"<ol><li>rendered</li></ol>",
 				),
 			);
-			expect(data.lastPmSyncStatus).toBe("SUCCESS");
+			// The link and baseline land first, by id; the SUCCESS is a
+			// second write, kept off a case that is PENDING for an attempt.
+			expect(data).not.toHaveProperty("lastPmSyncStatus");
+			expect(updateManySpy.mock.calls[1][0]).toMatchObject({
+				where: { id: "tc-1", projectId: "proj-1" },
+				data: { lastPmSyncStatus: "SUCCESS" },
+			});
 		} finally {
 			updateManySpy.mockRestore();
 		}
@@ -288,7 +300,13 @@ describe("updateTestCaseExternalRefs", () => {
 				unknown
 			>;
 			expect(data).not.toHaveProperty("lastSyncedPmHash");
-			expect(data.lastPmSyncStatus).toBe("SUCCESS");
+			// The link and baseline land first, by id; the SUCCESS is a
+			// second write, kept off a case that is PENDING for an attempt.
+			expect(data).not.toHaveProperty("lastPmSyncStatus");
+			expect(updateManySpy.mock.calls[1][0]).toMatchObject({
+				where: { id: "tc-1", projectId: "proj-1" },
+				data: { lastPmSyncStatus: "SUCCESS" },
+			});
 		} finally {
 			updateManySpy.mockRestore();
 		}

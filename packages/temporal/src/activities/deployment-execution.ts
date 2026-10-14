@@ -10,6 +10,7 @@
  * execution model that is observable, durable, and reuses existing infrastructure.
  */
 
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
 	appendTemplateMessage,
 	filterWorkspaceIdsForTenant,
@@ -484,7 +485,7 @@ export async function fetchKnowledge(params: {
  * - AI model: getConfiguredAIModel uses tenant-isolated API key resolution
  * - All config IDs come from deployment config which is already tenant-isolated
  */
-export async function invokeDeploymentAgent(params: {
+async function invokeDeploymentAgentInJob(params: {
 	executionId: string;
 	context: ExecutionContext;
 	input: Record<string, unknown>;
@@ -884,4 +885,15 @@ export async function saveConversationMessages(params: {
 		});
 		// Don't throw - this is a non-critical operation
 	}
+}
+
+// Always background work, whatever started the run: a run from before the
+// job-type header, or one a Temporal schedule started, still runs on the
+// organization's shared ChatGPT plans (Fizzy #2770). A run's own job wins.
+export function invokeDeploymentAgent(
+	params: Parameters<typeof invokeDeploymentAgentInJob>[0],
+): ReturnType<typeof invokeDeploymentAgentInJob> {
+	return runWithDefaultAiJobType("external-agent", () =>
+		invokeDeploymentAgentInJob(params),
+	);
 }

@@ -55,6 +55,7 @@ import { GatedSyncMenuItem } from "./GatedSyncMenuItem";
 import { isPmTicketMissingError } from "./PmSyncFailureBadge";
 import { PmSyncFailureSidePanel } from "./PmSyncFailureSidePanel";
 import { useInvalidatePmSyncState } from "./use-invalidate-pm-sync-state";
+import { useLinkStoryPmItem } from "./use-link-story-pm-item";
 
 export interface PmSyncChipProps {
 	storyId: string;
@@ -214,6 +215,11 @@ export function PmSyncChip({
 			);
 		},
 		onError: (error, vars) => {
+			// A failed sync can still have stamped the row FAILED (a legacy
+			// link to another PM tool, a create Fabric could not confirm):
+			// refetch so the chip opens the failure panel and its recovery
+			// action instead of only this toast.
+			invalidate();
 			const code = (
 				error as { data?: { errorCode?: string } } | undefined
 			)?.data?.errorCode;
@@ -295,6 +301,13 @@ export function PmSyncChip({
 			}),
 	});
 
+	const linkMutation = useLinkStoryPmItem({
+		projectId,
+		storyId,
+		organizationId,
+		pmToolName,
+	});
+
 	if (hasPmIntegration === undefined) {
 		return null;
 	}
@@ -358,7 +371,8 @@ export function PmSyncChip({
 		toggleAutoSync.isPending ||
 		syncMutation.isPending ||
 		retryMutation.isPending ||
-		recreateMutation.isPending;
+		recreateMutation.isPending ||
+		linkMutation.isPending;
 
 	const openCard = () => {
 		if (validUrl) {
@@ -566,6 +580,11 @@ export function PmSyncChip({
 					setFailurePanelOpen(false);
 				}}
 				isUnlinking={recreateMutation.isPending}
+				onLinkExisting={
+					externalId
+						? undefined
+						: (id) => linkMutation.mutateAsync(id)
+				}
 				onRelink={() => {
 					syncMutation.mutate({
 						direction: "push",

@@ -24,6 +24,9 @@ const h = vi.hoisted(() => ({
 	getRAGProviderConfig: vi.fn(),
 	physical: { count: 0, aborted: false },
 	hangUntilAborted: { value: false },
+	/** Runs once a physical request has answered. */
+	afterRequest: { current: undefined as (() => void) | undefined },
+	uploadFile: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -35,13 +38,14 @@ vi.mock("@repo/database", () => ({
 vi.mock("@repo/storage", () => ({
 	downloadFile: h.downloadFile,
 	getSignedUrl: vi.fn().mockResolvedValue("https://signed.example/image.png"),
-	uploadFile: vi.fn().mockResolvedValue(undefined),
+	uploadFile: h.uploadFile,
 }));
 
 /** One physical provider request; hangs until aborted when asked to. */
 async function physicalRequest(signal: AbortSignal | undefined) {
 	h.physical.count++;
 	if (!h.hangUntilAborted.value) {
+		h.afterRequest.current?.();
 		return;
 	}
 	await new Promise<void>((_resolve, reject) => {
@@ -116,6 +120,7 @@ vi.mock("@repo/ai", async () => {
 	};
 });
 
+import { runWithDispatchGuard } from "@repo/utils/dispatch-guard";
 import { generateImageActivity } from "../image-generation";
 
 const TURN_SCOPE = {
@@ -136,6 +141,9 @@ beforeEach(() => {
 	h.physical.count = 0;
 	h.physical.aborted = false;
 	h.hangUntilAborted.value = false;
+	h.afterRequest.current = undefined;
+	h.uploadFile.mockReset();
+	h.uploadFile.mockResolvedValue(undefined);
 	h.checkDispatchable.mockReset();
 	h.checkDispatchable.mockImplementation(async () =>
 		cancelled ? { ok: false, reason: "cancelled" } : { ok: true },
@@ -315,5 +323,91 @@ describe("generateImageActivity — a cancelled activity aborts the in-flight re
 		const outcome = await running;
 		expect(falAborted).toBe(true);
 		expect(outcome).toBeInstanceOf(CancelledFailure);
+	});
+});
+
+describe("generateImageActivity — nothing is stored once the turn stops", () => {
+	it.each([
+		["gateway multimodal", NANO_BANANA],
+		["gateway image API", IMAGE_API_MODEL],
+	])(
+		"%s: an activity cancelled after the image came back uploads nothing and reports cancelled",
+		async (_path, gatewayModel) => {
+			const env = new MockActivityEnvironment();
+			// The image is generated and returned in full; the cancellation
+			// lands between it and the upload.
+			h.afterRequest.current = () => env.cancel();
+			const outcome = await env
+				.run(generateImageActivity, {
+					prompt: "a paper boat",
+					provider: "gateway" as const,
+					gatewayModel,
+					userId: TURN_SCOPE.userId,
+					organizationId: TURN_SCOPE.organizationId,
+					turnScope: TURN_SCOPE,
+				})
+				.then(
+					(value) => ({ resolvedWith: value }),
+					(err: unknown) => err,
+				);
+			expect(h.physical.count).toBe(1);
+			expect(outcome).toBeInstanceOf(CancelledFailure);
+			expect(h.uploadFile).not.toHaveBeenCalled();
+		},
+	);
+
+	it("a run without a turn uploads the image as before", async () => {
+		const outcome = (await run({
+			prompt: "a paper boat",
+			provider: "gateway",
+			gatewayModel: NANO_BANANA,
+			userId: TURN_SCOPE.userId,
+			organizationId: TURN_SCOPE.organizationId,
+		})) as { resolvedWith: { success: boolean } };
+		expect(outcome.resolvedWith.success).toBe(true);
+		expect(h.uploadFile).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("generateImageActivity — called without a turn scope inside a turn's guard", () => {
+	const STOP = new Error("the chat turn stopped");
+	let stopped = false;
+	const guard = {
+		key: "turn-example-1",
+		assertDispatchable: async () => undefined,
+		abortSignal: () => undefined,
+		rethrowIfStopped: (error: unknown) => {
+			if (error === STOP) {
+				throw error;
+			}
+		},
+		throwIfStopped: () => {
+			if (stopped) {
+				throw STOP;
+			}
+		},
+	};
+
+	beforeEach(() => {
+		stopped = false;
+	});
+
+	it("FAL: a stop latched during credential resolution sends nothing", async () => {
+		const fetchSpy = vi.fn(async () => new Response("{}"));
+		global.fetch = fetchSpy as unknown as typeof fetch;
+		h.fetchCredentialsByProvider.mockImplementation(async () => {
+			stopped = true;
+			return { FAL_API_KEY: "fal-key" };
+		});
+		const outcome = await runWithDispatchGuard(guard, () =>
+			run({
+				prompt: "a paper boat",
+				provider: "fal",
+				userId: TURN_SCOPE.userId,
+				organizationId: TURN_SCOPE.organizationId,
+			}),
+		);
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(outcome).toBe(STOP);
 	});
 });

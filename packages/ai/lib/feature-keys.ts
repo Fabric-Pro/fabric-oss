@@ -76,6 +76,52 @@ export const AI_FEATURE_KEYS = [
 	 * carries the Parlume session id so spend rolls up per meeting.
 	 */
 	"parlume",
+	/**
+	 * The Test button on a ChatGPT plan's settings card (Fizzy #2770): one
+	 * tiny request that checks the plan answers. Tagged so the window's
+	 * "Used by" line names it rather than counting it as someone's work.
+	 */
+	"chatgpt-plan-test",
+	/**
+	 * Code index embeddings: the repository files a project's code index
+	 * chunks and embeds (Fizzy #2770). Tagged so AI Usage attributes that
+	 * spend to the project instead of an untagged embedding bucket.
+	 */
+	"code-index",
+	/**
+	 * The `fabric_text_to_speech` tool, wherever it runs: chat, agent turns
+	 * and orchestrator workflow steps.
+	 */
+	"text-to-speech",
+	/** Audio and video transcription. */
+	"transcription",
+	/** Delivery-track classification of a project's stories. */
+	"delivery-track",
+	/** Document quality scoring (document evaluation metrics). */
+	"document-quality",
+	/** Story kind classification (feature, bug, ...) of a new work item. */
+	"story-classification",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
+
+/**
+ * Out-of-process agents whose model calls all serve one feature. Their usage
+ * rows arrive with an `agentId` (sometimes suffixed, e.g.
+ * `project_document_generator:budget_gate`) but no feature key.
+ */
+const AGENT_FEATURE_KEYS: ReadonlyMap<string, AiFeatureKey> = new Map([
+	["project_document_generator", "document-generation"],
+	["backlog_updater", "backlog-update"],
+]);
+
+/** The feature an agent's usage row belongs to, judged by its agent id. */
+export function featureKeyForAgentId(
+	agentId: string | null | undefined,
+): AiFeatureKey | undefined {
+	if (!agentId) {
+		return undefined;
+	}
+	const [baseAgentId] = agentId.split(":");
+	return AGENT_FEATURE_KEYS.get(baseAgentId);
+}

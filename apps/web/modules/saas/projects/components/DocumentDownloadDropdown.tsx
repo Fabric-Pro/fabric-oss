@@ -14,6 +14,7 @@ import {
 import {
 	DownloadIcon,
 	FileCodeIcon,
+	FileDownIcon,
 	FileTextIcon,
 	Loader2Icon,
 	SparklesIcon,
@@ -34,7 +35,9 @@ import {
 	renderMermaidToPng,
 	toSlug,
 	triggerBlobDownload,
+	triggerUrlDownload,
 } from "../lib/markdown-to-document";
+import { getOrpcCode } from "./field-mapping/orpc-error";
 
 interface Props {
 	documentId: string;
@@ -55,7 +58,32 @@ interface Props {
 	 * once a published legacy edition is confirmed (Fizzy #2801).
 	 */
 	glossyHref?: string;
+	/**
+	 * The file an imported document was converted from, when it was an upload
+	 * whose original is still stored (Fizzy #2280). The list resolves it on the
+	 * server; present, the menu offers that file as uploaded ahead of the
+	 * Markdown, PDF and Word exports of the converted text.
+	 */
+	sourceFile?: { contextId: string; filename: string | null } | null;
 	className?: string;
+}
+
+/** The extension the original file was uploaded with, without the dot. */
+function fileExtension(filename: string | null): string | null {
+	const dot = filename?.lastIndexOf(".") ?? -1;
+	if (!filename || dot <= 0 || dot === filename.length - 1) {
+		return null;
+	}
+	return filename.slice(dot + 1).toLowerCase();
+}
+
+/** The source was deleted, or its stored object is gone, since the list loaded. */
+function isOriginalGone(err: unknown): boolean {
+	if (getOrpcCode(err) === "NOT_FOUND") {
+		return true;
+	}
+	const data = (err as { data?: { code?: unknown } } | null)?.data;
+	return data?.code === "CONTENT_UNAVAILABLE";
 }
 
 /** The Glossy item, below a separator from the downloads. */
@@ -154,8 +182,10 @@ export function DocumentDownloadDropdown({
 	documentType,
 	organizationId,
 	glossyHref,
+	sourceFile,
 	className,
 }: Props) {
+	const t = useTranslations("projects.documentDownload");
 	const [isLoading, setIsLoading] = useState(false);
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	// The href carries the gate; the type check keeps an ineligible
@@ -177,6 +207,37 @@ export function DocumentDownloadDropdown({
 		// Re-resolve S3 signed URLs so they're fresh for export
 		content = await resolveS3Urls(content, projectId, documentId);
 		return content;
+	};
+
+	const handleDownloadOriginal = async (e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!sourceFile) {
+			return;
+		}
+		setIsLoading(true);
+		try {
+			const res = await orpcClient.projects.contexts.createDownloadUrl({
+				contextId: sourceFile.contextId,
+				projectId,
+				organizationId,
+			});
+			// Only an uploaded file (Class A) is signed as stored. Any other class
+			// is Markdown built from extracted text, which must not be saved
+			// under the original's name.
+			if (res.contextClass !== "A") {
+				toast.error(t("originalUnavailable"));
+				return;
+			}
+			triggerUrlDownload(res.url, res.filename);
+		} catch (err: unknown) {
+			toast.error(
+				isOriginalGone(err)
+					? t("originalUnavailable")
+					: t("originalFailed"),
+			);
+		} finally {
+			setIsLoading(false);
+		}
 	};
 
 	const handleDownloadMd = async (e: React.MouseEvent) => {
@@ -297,6 +358,8 @@ export function DocumentDownloadDropdown({
 		}
 	};
 
+	const originalExtension = fileExtension(sourceFile?.filename ?? null);
+
 	return (
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
@@ -315,7 +378,32 @@ export function DocumentDownloadDropdown({
 					)}
 				</Button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="end" className="w-44">
+			<DropdownMenuContent
+				align="end"
+				className={sourceFile ? "w-52" : "w-44"}
+			>
+				{sourceFile && (
+					<>
+						<DropdownMenuItem
+							onClick={handleDownloadOriginal}
+							title={
+								sourceFile.filename
+									? t("originalFileTitle", {
+											filename: sourceFile.filename,
+										})
+									: undefined
+							}
+						>
+							<FileDownIcon className="mr-2 size-4" />
+							{originalExtension
+								? t("originalFile", {
+										extension: originalExtension,
+									})
+								: t("originalFileNoExtension")}
+						</DropdownMenuItem>
+						<DropdownMenuSeparator />
+					</>
+				)}
 				<DropdownMenuItem onClick={handleDownloadMd}>
 					<FileCodeIcon className="mr-2 size-4" />
 					Markdown (.md)

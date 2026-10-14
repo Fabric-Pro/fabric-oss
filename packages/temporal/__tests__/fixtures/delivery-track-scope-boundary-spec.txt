@@ -1,0 +1,155 @@
+## Feature Narrative
+
+### Feature Story
+
+As a task assignee,  
+I want an email reminder when my task is due tomorrow,  
+so that I can prepare to complete it by its due date.
+
+### Overview
+
+Add email reminders for tasks due on the next calendar day. Reminders target task assignees. Recipient-role eligibility, timezone, scheduling, user preferences, and delivery behavior require Product decisions before implementation can be completed.
+
+### Benefit Hypothesis
+
+If assignees receive reminders before their tasks are due,  
+then fewer deadlines will be overlooked,  
+because upcoming work is surfaced outside the task board.
+
+## Scope
+
+### In Scope
+
+- Evaluate task due dates for next-day email reminders.
+- Deliver reminders to eligible task assignees.
+- Exclude undated tasks and tasks outside the next-day date boundary.
+- Define recipient eligibility, reminder timing, email presentation, and preference behavior.
+- Define handling of changed deadlines and repeated evaluations.
+
+### Out of Scope
+
+- Changes to the weekly progress summary or CSV export.
+- Reminder channels other than email.
+- Reminders for tasks due today, overdue tasks, or tasks due later than tomorrow.
+
+## Key Decisions
+
+- Task assignees are the intended recipients, as specified by the feature title and user description. Role-based restrictions remain unresolved.
+- Tasks without a due date must not be presented as due tomorrow, consistent with TC-010.
+- Tasks due today are excluded from next-day reminders, consistent with TC-007.
+- Retrieved test cases explicitly defer unresolved delivery policies to Product; their fixtures are not approved configuration values.
+
+## Use Cases
+
+### UC1: Receive an upcoming-deadline reminder
+
+- Primary actor: An eligible task assignee.
+- Preconditions: The task has a due date; Product-approved timing, timezone, eligibility, and recipient rules are implemented.
+- Main flow:
+  1. The reminder process evaluates tasks at the approved execution time.
+  2. It selects eligible tasks due on the next calendar day in the approved timezone.
+  3. It sends emails to their eligible assignees using the approved grouping and content rules.
+- Alternate flows / edge cases:
+  - Undated tasks and tasks outside the next-day boundary are excluded.
+  - Multiple qualifying tasks follow the approved grouping policy.
+  - Tasks changed after an evaluation follow the approved late-change and repeat-notification rules.
+- Expected outcome: The assignee receives reminders identifying the qualifying tasks.
+
+## Requirements
+
+### Functional Requirements
+
+- FR1: Evaluate tasks for email reminders using the Product-approved schedule and timezone rule.
+- FR2: Select tasks whose due date is the next calendar day relative to the evaluation date, subject to approved eligibility rules. Do not interpret “tomorrow” as an unspecified rolling 24-hour window.
+- FR3: Exclude tasks with no due date, tasks due today, and tasks due outside tomorrow.
+- FR4: Send reminders to eligible task assignees according to the approved role and preference policies.
+- FR5: Represent every selected task in the delivered reminder content. Grouping and message counts require Product approval.
+- FR6: Ensure reminder content distinguishes separate tasks with identical titles. The identifying fields or link mechanism require Product approval.
+- FR7: Apply approved rules for due-date or assignee changes after evaluation and for previously reminded tasks that become eligible again.
+
+### Permissions / Roles
+
+- Assignee targeting is required; whether all assignee roles qualify remains unresolved.
+- Per-user opt-out behavior remains unresolved.
+
+### Data & Validation Rules
+
+- Determine tomorrow using the approved timezone and calendar-date boundaries.
+- Do not infer a due date for undated tasks.
+- For timestamp-backed deadlines, apply the next-day interval from local midnight inclusive to the following local midnight exclusive.
+
+## PM/BA Blocking Gaps
+
+- Recipient and preference policy is incomplete.
+  - Impact: Recipient selection and suppression cannot be finalized.
+  - Decision needed / owner: Product must specify role eligibility, opt-out behavior, and handling of unassigned tasks or assignees without deliverable email addresses.
+- Evaluation and eligibility policy is incomplete.
+  - Impact: Selection boundaries, scheduling, and lifecycle-state tests cannot be finalized.
+  - Decision needed / owner: Product must approve timezone, execution timing, and eligible task states.
+- Email presentation is unapproved.
+  - Impact: Message counts, content, task identification, and empty-result behavior cannot be finalized.
+  - Decision needed / owner: Product must approve grouping, template content, and whether an empty email is sent.
+- Late-change and repeat-notification policy is incomplete.
+  - Impact: Rescheduling and repeated evaluation outcomes cannot be finalized; TC-011 remains blocked.
+  - Decision needed / owner: Product must approve these behaviors.
+
+## Proposed Implementation Tasks
+
+- Implement next-day selection and assignee targeting after policy approval.
+- Integrate scheduled execution and email delivery with the approved grouping, content, and preference rules.
+- Implement approved late-change and repeat-notification behavior.
+- Add tests for date boundaries, undated tasks, multiple tasks, identical titles, and rescheduled deadlines.
+
+## Dev Investigation Items
+
+- Inspect due-date storage and existing timezone handling to determine date-only versus timestamp-backed selection.
+- Identify available scheduling, email delivery, and preference infrastructure.
+- Determine retry and duplicate-prevention mechanisms compatible with the approved repeat-notification policy.
+- Identify existing task identifiers or links suitable for distinguishing identical titles.
+
+## Open Questions
+
+- Q: Which roles receive reminders?
+    - Why it matters: Assignees are the target recipients, but role restrictions are undecided.
+    - Owner/decider: Product
+- Q: Which timezone determines the “due tomorrow” cutoff?
+    - Why it matters: The date boundary must be deterministic for selection and testing.
+    - Owner/decider: Product
+- Q: Should reminders be opt-out per user?
+    - Why it matters: Preference behavior and recipient suppression are undecided.
+    - Owner/decider: Product
+- Q: At what time and frequency should reminder evaluations run?
+    - Why it matters: The retrieved daily-run test assumes an approved schedule but supplies no approved value.
+    - Owner/decider: Product
+- Q: Which task states qualify for reminders, and how should unassigned tasks or assignees without deliverable email addresses be handled?
+    - Why it matters: These rules determine eligibility and delivery outcomes.
+    - Owner/decider: Product
+- Q: Should emails be sent per task or grouped per assignee, and should any email be sent when no tasks qualify?
+    - Why it matters: Message counts and empty-result behavior are undefined.
+    - Owner/decider: Product
+- Q: What email subject, body, and task-identification fields or links should be approved for delivery?
+    - Why it matters: Content and differentiation of similarly named tasks require approval.
+    - Owner/decider: Product
+- Q: How should due-date or assignee changes after evaluation affect same-day sends and subsequent reminders for previously reminded tasks?
+    - Why it matters: Late-change and repeat-notification behavior is explicitly unresolved in TC-011.
+    - Owner/decider: Product
+
+## Release Planning
+
+- Resolve the Product policy gaps and extend acceptance coverage before implementation sign-off.
+- Validate the selected timezone and schedule, recipient rules, email content, and changed-task behavior before enabling delivery.
+- Reconcile TC-004, TC-005, TC-007, TC-010, and TC-011 with the approved policies; do not treat their blocked preconditions as settled decisions.
+
+## Release Notes
+
+Task assignees can receive email reminders for eligible tasks due tomorrow.
+
+## Source Index
+
+- User-provided feature title and description, including QA #1053 open questions.
+- Team Task Tracker project context.
+- TC-004: Identify all eligible tasks using the approved email grouping.
+- TC-005: Distinguish similarly named tasks in reminder content.
+- TC-007: Exclude a task due today at the lower date boundary.
+- TC-010: Keep undated tasks out of reminders when no tasks qualify.
+- TC-011: Evaluate a task rescheduled after the previous daily run.

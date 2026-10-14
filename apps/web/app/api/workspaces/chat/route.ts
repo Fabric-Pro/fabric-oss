@@ -8,8 +8,8 @@ import {
 	logModelUsageAsync,
 } from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { db, hasWorkspaceAccess } from "@repo/database";
-import { AiUsageLimitExceededError } from "@repo/payments";
 import { generateSparseVector, searchWorkspaceChunks } from "@repo/rag";
 import { getSession } from "@saas/auth/lib/server";
 import { embed } from "ai";
@@ -356,22 +356,24 @@ ${getCurrentDateContext()}`;
 			sources: sources.length > 0 ? sources : undefined,
 		});
 	} catch (error) {
-		// AI usage-limit chokepoint hit a HARD limit.
-		// Surface the rich payload so the workspace-
-		// chat client renders the shared destructive toast instead of a
-		// generic 500.
-		if (error instanceof AiUsageLimitExceededError) {
+		// AI usage-limit chokepoint hit a HARD limit, at model resolution or
+		// at the check the model repeats before each request (inside the AI
+		// SDK's RetryError when it refused a retry). Surface the rich payload
+		// so the workspace-chat client renders the shared destructive toast
+		// instead of a generic 500.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
 			return NextResponse.json(
 				{
-					error: error.message,
+					error: limitError.message,
 					code: "AI_USAGE_LIMIT_EXCEEDED",
 					data: {
-						limitId: error.limitId,
-						dimension: error.dimension,
-						window: error.window,
-						used: error.used.toString(),
-						max: error.max.toString(),
-						manageLimitsUrl: error.manageLimitsUrl,
+						limitId: limitError.limitId,
+						dimension: limitError.dimension,
+						window: limitError.window,
+						used: limitError.used.toString(),
+						max: limitError.max.toString(),
+						manageLimitsUrl: limitError.manageLimitsUrl,
 					},
 				},
 				{ status: 429 },

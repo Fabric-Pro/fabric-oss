@@ -40,6 +40,10 @@ import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
 import { describeScanFailureReason } from "../../workflows/scan-failure-hint";
 import {
+	findPlanExhausted,
+	planSpentWithProgress,
+} from "../lib/chatgpt-plan-refusal";
+import {
 	type RateLimitVerdict,
 	runChunksAdaptive,
 	verdictFromLimitSignal,
@@ -121,13 +125,23 @@ export function chunkScanItems(
 	items: ScanContentItem[],
 	targetChars: number = CHUNK_TARGET_CHARS,
 ): string[] {
-	const chunks: string[] = [];
+	return packScanItems(items, targetChars).map((chunk) => chunk.text);
+}
+
+/** {@link chunkScanItems}, keeping the keys of the items in each chunk. */
+function packScanItems(
+	items: ScanContentItem[],
+	targetChars: number = CHUNK_TARGET_CHARS,
+): Array<{ text: string; keys: string[] }> {
+	const chunks: Array<{ text: string; keys: string[] }> = [];
 	let current: string[] = [];
+	let currentKeys: string[] = [];
 	let currentLen = 0;
 	const flush = () => {
 		if (current.length > 0) {
-			chunks.push(current.join("\n\n"));
+			chunks.push({ text: current.join("\n\n"), keys: currentKeys });
 			current = [];
+			currentKeys = [];
 			currentLen = 0;
 		}
 	};
@@ -139,7 +153,7 @@ export function chunkScanItems(
 		// A single item at/over budget is its own chunk (don't split items).
 		if (text.length >= targetChars) {
 			flush();
-			chunks.push(text);
+			chunks.push({ text, keys: [item.key] });
 			continue;
 		}
 		// Starting this item would overflow the current chunk → flush first.
@@ -147,6 +161,7 @@ export function chunkScanItems(
 			flush();
 		}
 		current.push(text);
+		currentKeys.push(item.key);
 		// +2 for the "\n\n" join between items.
 		currentLen += text.length + 2;
 	}
@@ -227,6 +242,21 @@ export interface RunScanInput {
 	severityRubric?: ScanSeverityRubricPrompt[];
 	/** Knowledge packs appended to the SECURITY prompt only (knowledge text). */
 	knowledgePacks?: ScanKnowledgePackPrompt[];
+	/** What an earlier attempt scanned before every shared plan ran out. */
+	resume?: ScanProgress;
+}
+
+/**
+ * What a scanner finished before every shared ChatGPT plan ran out (Fizzy
+ * #2770), carried by its plan-spent failure so the retry after the workflow's
+ * wait scans only the rest. Keyed by item rather than chunk: the retry reloads
+ * the items hours later, and repacking shifts chunk boundaries.
+ */
+export interface ScanProgress {
+	doneItemKeys: string[];
+	findings: ScanFindingDraft[];
+	inputTokens: number;
+	outputTokens: number;
 }
 
 export interface PersistScanResultsInput {
@@ -419,19 +449,27 @@ async function runScan(
 	category: "SECURITY" | "ACCESSIBILITY",
 	input: RunScanInput,
 ): Promise<ScanRunResult> {
-	const { projectId, userId, organizationId, projectName } = input;
+	const { projectId, userId, organizationId, projectName, resume } = input;
 
 	// Map-reduce over content chunks: pack items into ~14k-char chunks (item
 	// boundaries respected; a giant item is its own chunk) and scan them with
 	// bounded parallelism — the "multiple parallel scan agents per project".
-	const chunks = chunkScanItems(await loadScanItems(input));
+	// A retry after a plan wait skips the items an earlier attempt scanned.
+	const doneBefore = new Set(resume?.doneItemKeys ?? []);
+	const packed = packScanItems(
+		(await loadScanItems(input)).filter(
+			(item) => !doneBefore.has(item.key),
+		),
+	);
+	const chunks = packed.map((chunk) => chunk.text);
 	if (chunks.length === 0) {
-		// Nothing to scan (empty project / fully-filtered incremental run).
+		// Nothing to scan (empty project / fully-filtered incremental run), or
+		// nothing left after a plan wait.
 		return {
-			findings: [],
+			findings: resume?.findings ?? [],
 			modelName: null,
-			inputTokens: 0,
-			outputTokens: 0,
+			inputTokens: resume?.inputTokens ?? 0,
+			outputTokens: resume?.outputTokens ?? 0,
 		};
 	}
 
@@ -524,10 +562,19 @@ async function runScan(
 	// Underlying per-chunk errors, kept so a wholesale failure can tell the user
 	// *why* (rate-limited / timed out / unavailable) instead of a bare count.
 	const chunkErrors: unknown[] = [];
+	// Set by the first chunk that finds every shared ChatGPT plan spent (Fizzy
+	// #2770): no chunk starts after it, and the scanner hands what it finished
+	// to the workflow, which waits for the reset and scans the rest.
+	const plan: { spent: ReturnType<typeof findPlanExhausted> } = {
+		spent: null,
+	};
 	try {
 		const out = await runChunksAdaptive<string, ChunkResult>(
 			chunks,
 			(chunk) => {
+				if (plan.spent) {
+					return Promise.reject(plan.spent);
+				}
 				const request = buildRequest(chunk);
 				return generateObject({
 					model,
@@ -551,7 +598,15 @@ async function runScan(
 				initialConcurrency: SCAN_INITIAL_CONCURRENCY,
 				minConcurrency: 1,
 				maxConcurrency: SCAN_MAX_CONCURRENCY,
-				classify: verdictFromScanError,
+				classify: (error) => {
+					const spent = findPlanExhausted(error);
+					if (spent) {
+						// Terminal for the chunk: no retry inside this attempt.
+						plan.spent ??= spent;
+						return { rateLimited: false, hardQuota: true };
+					}
+					return verdictFromScanError(error);
+				},
 				onSettled: (index) => {
 					try {
 						heartbeat(
@@ -597,7 +652,8 @@ async function runScan(
 	// then degrades it to a "didn't finish" note instead of recording a
 	// misleading clean (zero-finding) result. Surface the dominant cause so the
 	// failure reads as the transient AI-capacity event it almost always is.
-	if (failedChunks.length === chunks.length) {
+	// A spent plan is reported below instead, with what the scanner finished.
+	if (!plan.spent && failedChunks.length === chunks.length) {
 		const hint = describeScanFailureReason(chunkErrors);
 		throw new Error(
 			`All ${chunks.length} ${category.toLowerCase()} scan chunk(s) failed to complete.${
@@ -659,11 +715,34 @@ async function runScan(
 		projectId,
 	});
 
+	const allFindings = [...(resume?.findings ?? []), ...findings];
+	const totalInputTokens = (resume?.inputTokens ?? 0) + inputTokens;
+	const totalOutputTokens = (resume?.outputTokens ?? 0) + outputTokens;
+	if (plan.spent) {
+		const progress: ScanProgress = {
+			doneItemKeys: [
+				...doneBefore,
+				...packed.flatMap((chunk, index) =>
+					chunkResults[index] ? chunk.keys : [],
+				),
+			],
+			findings: allFindings,
+			inputTokens: totalInputTokens,
+			outputTokens: totalOutputTokens,
+		};
+		logger.info("[SecurityScan] Every shared plan is spent; pausing", {
+			category,
+			projectId,
+			doneItems: progress.doneItemKeys.length,
+		});
+		throw planSpentWithProgress(plan.spent, progress);
+	}
+
 	return {
-		findings,
+		findings: allFindings,
 		modelName: metadata.modelString ?? null,
-		inputTokens,
-		outputTokens,
+		inputTokens: totalInputTokens,
+		outputTokens: totalOutputTokens,
 	};
 }
 

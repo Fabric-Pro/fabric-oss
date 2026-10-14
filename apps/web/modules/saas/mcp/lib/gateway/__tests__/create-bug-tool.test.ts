@@ -262,6 +262,9 @@ describe("fabric_create_bug — dedup", () => {
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 		// Nothing to back-fill when the caller sent no fingerprint.
 		expect(mocks.updateMany).not.toHaveBeenCalled();
+		// Moved here from the tool description (Fizzy #2991): a hit must not
+		// read as an invitation to file again under another title.
+		expect(body.message).toContain("do not resend with a reworded title");
 	});
 
 	it("back-fills the caller's fingerprint onto a title-matched bug that has none", async () => {
@@ -724,13 +727,21 @@ describe("fabric_create_bug — creation", () => {
 			kind: "BUG",
 			fingerprint: "sha256:abc123",
 		});
+		expect(body.message).toBe("Filed bug 42.");
 	});
 
 	it("defaults priority to P2_MEDIUM and stores a null fingerprint when omitted", async () => {
-		await executePlatformTool(
-			"fabric_create_bug",
-			{ projectId: "proj-1", title: "Some failure" },
-			session,
+		const body = payload(
+			await executePlatformTool(
+				"fabric_create_bug",
+				{ projectId: "proj-1", title: "Some failure" },
+				session,
+			),
+		);
+		// Moved here from the tool description (Fizzy #2991): a filing with
+		// no fingerprint is told why the next one should carry it.
+		expect(body.message).toMatch(
+			/No fingerprint was sent.*stable fingerprint/,
 		);
 
 		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(

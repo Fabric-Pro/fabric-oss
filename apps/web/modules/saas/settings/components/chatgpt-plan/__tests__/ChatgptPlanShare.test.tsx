@@ -2,7 +2,7 @@
  * The member's own ChatGPT plan card and sharing (Fizzy #2770 I1): an own plan
  * can be shared with the organization on screen when the server allows it,
  * and a shared account the member connected there is shown read-only with
- * the take-back only they may use.
+ * the stop-sharing only they may use.
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -43,6 +43,7 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
 		activeOrganization:
 			activeSlug.current === null ? null : { slug: activeSlug.current },
+		isSessionOnActiveOrganization: activeSlug.current !== null,
 	}),
 }));
 
@@ -163,10 +164,9 @@ describe("sharing an own ChatGPT plan", () => {
 		status.mockResolvedValue(CONNECTED);
 		renderWithClient(<ChatgptPlanSettings />);
 
+		expect(copy.action).toBe("Share organization-wide");
 		await userEvent.click(
-			await screen.findByRole("button", {
-				name: "Share with Example Org",
-			}),
+			await screen.findByRole("button", { name: copy.action }),
 		);
 		expect(share).not.toHaveBeenCalled();
 		await confirmIn(
@@ -198,9 +198,7 @@ describe("sharing an own ChatGPT plan", () => {
 		renderWithClient(<ChatgptPlanSettings />);
 
 		await userEvent.click(
-			await screen.findByRole("button", {
-				name: "Share with Example Org",
-			}),
+			await screen.findByRole("button", { name: copy.action }),
 		);
 		await confirmIn(/Share your ChatGPT plan/, copy.confirm);
 		await waitFor(() =>
@@ -212,7 +210,7 @@ describe("sharing an own ChatGPT plan", () => {
 });
 
 describe("a shared account the member connected", () => {
-	it("is shown read-only with Take back, which runs after confirming", async () => {
+	it("is shown read-only with Stop sharing, which runs after confirming", async () => {
 		status.mockResolvedValue({
 			...BASE,
 			connected: false,
@@ -235,7 +233,10 @@ describe("a shared account the member connected", () => {
 			screen.getByRole("button", { name: copy.takeBack }),
 		);
 		expect(takeBack).not.toHaveBeenCalled();
-		await confirmIn(/Take back/, copy.takeBack);
+		await confirmIn(
+			new RegExp(`Stop sharing ${SHARED_ACCOUNT.label}\\?`),
+			copy.takeBack,
+		);
 
 		await waitFor(() =>
 			expect(takeBack).toHaveBeenCalledWith({ accountId: "acc-1" }),
@@ -243,7 +244,7 @@ describe("a shared account the member connected", () => {
 		expect(toasts.success).toHaveBeenCalledWith(copy.takenBack);
 	});
 
-	it("cannot be taken back while the member has an own plan, and says why", async () => {
+	it("cannot stop sharing while the member has an own plan, and says why", async () => {
 		status.mockResolvedValue({
 			...CONNECTED,
 			canShare: false,

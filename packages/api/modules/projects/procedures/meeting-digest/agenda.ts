@@ -251,6 +251,8 @@ export const generateAgendaProcedure = tenantProtectedProcedure
 						projectId: input.projectId,
 						organizationId: organizationId ?? null,
 						userId: user.id,
+						// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+						planEligible: true,
 						linkedMeetingId: input.linkedMeetingId,
 					},
 				],

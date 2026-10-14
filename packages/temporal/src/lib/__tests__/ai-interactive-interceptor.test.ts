@@ -9,6 +9,11 @@ import {
 	isAiInteractiveRequestFor,
 	runWithAiInteractiveContext,
 } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	aiApiFallbackApproved,
+	currentAiJobType,
+	runWithAiJobType,
+} from "@repo/ai/lib/job-context";
 import { defaultPayloadConverter } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,15 +26,19 @@ vi.mock("@repo/ai", () => ({
 
 import { resolveEvalModel } from "../../activities/document-eval/mastra-config";
 import {
+	TEMPORAL_AI_API_FALLBACK_HEADER as WORKFLOW_SIDE_API_FALLBACK_HEADER,
 	TEMPORAL_AI_INTERACTIVE_HEADER as WORKFLOW_SIDE_HEADER,
 	TEMPORAL_AI_IMPERSONATED_HEADER as WORKFLOW_SIDE_IMPERSONATED_HEADER,
+	TEMPORAL_AI_JOB_TYPE_HEADER as WORKFLOW_SIDE_JOB_TYPE_HEADER,
 	interceptors as workflowInterceptors,
 } from "../../workflows/correlation-workflow-interceptor";
 import {
 	AiInteractiveActivityInboundInterceptor,
 	makeAiInteractiveClientInterceptor,
+	TEMPORAL_AI_API_FALLBACK_HEADER,
 	TEMPORAL_AI_IMPERSONATED_HEADER,
 	TEMPORAL_AI_INTERACTIVE_HEADER,
+	TEMPORAL_AI_JOB_TYPE_HEADER,
 } from "../ai-interactive-interceptor";
 
 type Headers = Record<string, unknown>;
@@ -102,6 +111,59 @@ describe("makeAiInteractiveClientInterceptor", () => {
 			expect(decode(await startHeaders([input]))).toBeUndefined();
 		}
 		expect(decode(await startHeaders([]))).toBeUndefined();
+	});
+
+	it("stamps `planUserId` over `userId` when the input names the person that way", async () => {
+		// Publishing: no `userId`, the person is `actorUserId`.
+		expect(
+			decode(
+				await startHeaders([
+					{
+						actorUserId: "user-1",
+						planUserId: "user-1",
+						planEligible: true,
+					},
+				]),
+			),
+		).toBe("user-1");
+		// Newsletter: `userId` is the tenant, null inside an organization.
+		expect(
+			decode(
+				await startHeaders([
+					{
+						userId: null,
+						triggeredByUserId: "user-1",
+						planUserId: "user-1",
+						planEligible: true,
+					},
+				]),
+			),
+		).toBe("user-1");
+		// A tenant owner in `userId` never wins over the named person.
+		expect(
+			decode(
+				await startHeaders([
+					{
+						userId: "owner",
+						planUserId: "user-1",
+						planEligible: true,
+					},
+				]),
+			),
+		).toBe("user-1");
+	});
+
+	it("never guesses the person from another field", async () => {
+		for (const input of [
+			{ actorUserId: "user-1", planEligible: true },
+			{ startedById: "user-1", planEligible: true },
+			{ userId: null, triggeredByUserId: "user-1", planEligible: true },
+			{ userId: "owner", planUserId: "", planEligible: true },
+			{ userId: "owner", planUserId: null, planEligible: true },
+			{ planUserId: "user-1" },
+		]) {
+			expect(decode(await startHeaders([input]))).toBeUndefined();
+		}
 	});
 
 	it("keeps the caller's other headers", async () => {
@@ -358,5 +420,133 @@ describe("a run started while an admin acts as the member", () => {
 				() => isAiInteractiveRequestFor("user-1"),
 			),
 		).toBe(false);
+	});
+});
+
+// Fizzy #2770: a background job's type rides the same chain, so every model
+// call of the run (an agent turn, a chat child workflow, a follow-on judge)
+// is that job's and may run on the organization's shared plans.
+describe("the run's background job type", () => {
+	const decodeJob = (headers: Headers): unknown => {
+		const payload = headers[TEMPORAL_AI_JOB_TYPE_HEADER];
+		return payload === undefined
+			? undefined
+			: defaultPayloadConverter.fromPayload(payload as never);
+	};
+	const observeJob = (headers: Headers) =>
+		new AiInteractiveActivityInboundInterceptor().execute(
+			{ headers, args: [] } as never,
+			(async () => currentAiJobType()) as never,
+		);
+
+	it("is stamped from the input's jobType, and only a known one", async () => {
+		expect(
+			decodeJob(
+				await startHeaders([
+					{ userId: "u", jobType: "fabric-mention" },
+				]),
+			),
+		).toBe("fabric-mention");
+		expect(
+			decodeJob(await startHeaders([{ userId: "u", jobType: "nope" }])),
+		).toBeUndefined();
+		expect(
+			decodeJob(await startHeaders([{ userId: "u" }])),
+		).toBeUndefined();
+	});
+
+	it("is inherited by a run started inside a job", async () => {
+		const headers = await runWithAiJobType("external-agent", () =>
+			startHeaders([{ userId: "u" }]),
+		);
+		expect(decodeJob(headers)).toBe("external-agent");
+	});
+
+	it("is forwarded to activities and child workflows under the same header name", async () => {
+		expect(WORKFLOW_SIDE_JOB_TYPE_HEADER).toBe(TEMPORAL_AI_JOB_TYPE_HEADER);
+		const headers = await startHeaders([
+			{ userId: "u", jobType: "living-document-refresh" },
+		]);
+		for (const hop of [
+			"scheduleActivity",
+			"startChildWorkflowExecution",
+		] as const) {
+			expect(decodeJob(await forwardThroughWorkflow(headers, hop))).toBe(
+				"living-document-refresh",
+			);
+		}
+	});
+
+	it("is the ambient job of the activity body", async () => {
+		const headers = await startHeaders([
+			{ userId: "u", jobType: "pr-review" },
+		]);
+		await expect(observeJob(headers)).resolves.toBe("pr-review");
+		await expect(observeJob({})).resolves.toBeUndefined();
+	});
+});
+
+// Fizzy #2770: "Run now on API billing" lets one paused bulk run bill the
+// organization's provider. The approval rides the same chain as the job type,
+// from the resume's input to every activity of that run, and to nothing else.
+describe("a run approved to bill the organization's provider", () => {
+	const observeApproval = (headers: Headers) =>
+		new AiInteractiveActivityInboundInterceptor().execute(
+			{ headers, args: [] } as never,
+			(async () => [
+				aiApiFallbackApproved(),
+				currentAiJobType(),
+			]) as never,
+		);
+
+	it("is stamped only from an explicit allowApiFallback: true", async () => {
+		const approved = await startHeaders([
+			{ userId: "u", jobType: "security-scan", allowApiFallback: true },
+		]);
+		expect(approved[TEMPORAL_AI_API_FALLBACK_HEADER]).toBeDefined();
+		expect(
+			(await startHeaders([{ userId: "u", allowApiFallback: "yes" }]))[
+				TEMPORAL_AI_API_FALLBACK_HEADER
+			],
+		).toBeUndefined();
+		expect(
+			(await startHeaders([{ userId: "u", jobType: "security-scan" }]))[
+				TEMPORAL_AI_API_FALLBACK_HEADER
+			],
+		).toBeUndefined();
+	});
+
+	it("is forwarded to activities and child workflows under the same header name", async () => {
+		expect(WORKFLOW_SIDE_API_FALLBACK_HEADER).toBe(
+			TEMPORAL_AI_API_FALLBACK_HEADER,
+		);
+		const headers = await startHeaders([
+			{ userId: "u", jobType: "security-scan", allowApiFallback: true },
+		]);
+		for (const hop of [
+			"scheduleActivity",
+			"startChildWorkflowExecution",
+		] as const) {
+			expect(
+				(await forwardThroughWorkflow(headers, hop))[
+					TEMPORAL_AI_API_FALLBACK_HEADER
+				],
+			).toBeDefined();
+		}
+	});
+
+	it("is the activity body's approval, beside its job", async () => {
+		const headers = await startHeaders([
+			{ userId: "u", jobType: "security-scan", allowApiFallback: true },
+		]);
+		await expect(observeApproval(headers)).resolves.toEqual([
+			true,
+			"security-scan",
+		]);
+		await expect(
+			observeApproval(
+				await startHeaders([{ userId: "u", jobType: "security-scan" }]),
+			),
+		).resolves.toEqual([false, "security-scan"]);
 	});
 });

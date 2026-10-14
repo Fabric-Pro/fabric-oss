@@ -1,6 +1,10 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
-import { getAISpeechModel, resolveOpenAiApiKey } from "@repo/ai";
+import {
+	AUDIO_PROVIDER_REQUIRED,
+	getAISpeechModel,
+	resolveOpenAiApiKey,
+} from "@repo/ai";
 import { db, getBuiltInToolConfig, isFeatureEnabled } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
@@ -388,8 +392,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 		});
 		if (!(await hasParlumeVoice(context.user.id, project.organizationId))) {
 			throw new ORPCError("CONFLICT", {
-				message:
-					"Parlume needs a voice before it can join: configure a Vercel AI Gateway or OpenAI Direct provider for this organization.",
+				message: AUDIO_PROVIDER_REQUIRED.parlumeVoice,
 			});
 		}
 		const streamToken = randomBytes(32).toString("base64url");

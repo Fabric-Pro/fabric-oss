@@ -31,6 +31,7 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
 		activeOrganization: { slug: "example-org" },
+		isSessionOnActiveOrganization: true,
 	}),
 }));
 

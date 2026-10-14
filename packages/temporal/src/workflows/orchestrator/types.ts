@@ -17,6 +17,8 @@ import type {
 	TaskPlan as TaskPlanType,
 	TaskStep as TaskStepType,
 	TrajectoryStep as TrajectoryStepType,
+	TurnBudgetStop as TurnBudgetStopType,
+	TurnLedgerSnapshot as TurnLedgerSnapshotType,
 } from "./types/index";
 import type { McpDefaultToolSignal } from "./types/mcp-default-tool-signal.types";
 
@@ -48,6 +50,7 @@ export type {
 	McpDefaultToolInvokedPayload,
 	McpDefaultToolSignal,
 	McpDefaultToolSurface,
+	OrchestratorBudgetAttemptKind,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
 	OrchestratorTurnScope,
@@ -63,6 +66,8 @@ export type {
 	TaskStep,
 	Trajectory,
 	TrajectoryStep,
+	TurnBudgetStop,
+	TurnLedgerSnapshot,
 } from "./types/index";
 
 // Re-export constants needed by workflow
@@ -70,6 +75,7 @@ export {
 	AGENT_REGISTRY,
 	DEFAULT_ALTK_CONFIG,
 	EXECUTION_MODE_CONFIGS,
+	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
 	ORCHESTRATOR_TURN_CONTRACT_VERSION,
 	usesIterativeExecution,
 } from "./types/index";
@@ -395,6 +401,20 @@ export interface WorkflowState {
 	 * `handoffRecommended` for the frontend's "Continue in new chat" CTA.
 	 */
 	pendingHandoff: { reason: string; summary: string } | null;
+	/**
+	 * Set when a ledgered turn stopped on its token allowance; carried to the
+	 * workflow output, the turn row and the stream (see `TurnBudgetStop`).
+	 */
+	budgetStop?: TurnBudgetStopType;
+	/**
+	 * The latest token-ledger reading an activity returned (ledgered turns
+	 * only). Its presence means the ledger, not `iterationCosts`, admits the
+	 * turn's tokens: the workflow keeps `iterationCosts` for progress, the
+	 * wrap-up warning and the iteration limit. It may be conservatively high
+	 * while a request's settlement is still in flight (that request counts
+	 * at its reservation, in `outstanding`, until the settlement lands).
+	 */
+	turnLedger?: TurnLedgerSnapshotType;
 	/**
 	 * Set when the final answer stopped at the output-token ceiling rather
 	 * than finishing (review F25). Surfaced as `truncated` on the output.

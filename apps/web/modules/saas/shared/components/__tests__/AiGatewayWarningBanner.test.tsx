@@ -125,11 +125,20 @@ function renderBanner(queryClient = makeClient()) {
 function status({
 	canResolveProvider,
 	isConfigured = canResolveProvider,
+	resolvedEmbeddingProvider = null,
+	embeddingProvider = null,
 }: {
 	canResolveProvider: boolean;
 	isConfigured?: boolean;
+	resolvedEmbeddingProvider?: string | null;
+	embeddingProvider?: string | null;
 }) {
-	return { canResolveProvider, isConfigured };
+	return {
+		canResolveProvider,
+		isConfigured,
+		resolvedEmbeddingProvider,
+		embeddingProvider,
+	};
 }
 
 /**
@@ -761,6 +770,48 @@ describe("AiGatewayWarningBanner — a member served by a shared ChatGPT account
 			screen.getByText(
 				"Your chat, agents, and document generation run on your organization's shared ChatGPT plan here. Document search needs embeddings, which only a provider key gives: add an OpenAI, Vercel AI Gateway, OpenRouter, or compatible key to use it.",
 			),
+		).toBeInTheDocument();
+	});
+	it("stays silent when an embeddings-only key already serves document search", async () => {
+		sharedPlanMock.mockReturnValue(true);
+		getStatusMock.mockResolvedValue(
+			status({
+				canResolveProvider: false,
+				isConfigured: true,
+				resolvedEmbeddingProvider: "VERCEL_GATEWAY",
+				embeddingProvider: "VERCEL_GATEWAY",
+			}),
+		);
+
+		const { queryClient } = renderBanner();
+
+		// Settled, not merely asked: the notice renders a tick after the
+		// answer lands, so checking on the call alone passes either way.
+		await waitFor(() =>
+			expect(
+				queryClient.getQueryState(["aiConfigStatus", ORG_ID])?.status,
+			).toBe("success"),
+		);
+		expect(
+			screen.queryByText("Document search needs an AI provider"),
+		).toBeNull();
+		expect(screen.queryByText("AI provider required")).toBeNull();
+	});
+
+	it("keeps the full warning off a plan even with an embeddings-only key", async () => {
+		getStatusMock.mockResolvedValue(
+			status({
+				canResolveProvider: false,
+				isConfigured: true,
+				resolvedEmbeddingProvider: "VERCEL_GATEWAY",
+				embeddingProvider: "VERCEL_GATEWAY",
+			}),
+		);
+
+		renderBanner();
+
+		expect(
+			await screen.findByText("AI provider required"),
 		).toBeInTheDocument();
 	});
 });

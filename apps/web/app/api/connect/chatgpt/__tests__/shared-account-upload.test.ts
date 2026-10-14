@@ -257,7 +257,7 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		const response = await post(await orgTicket());
 		expect(response.status).toBe(409);
 		expect((await response.json()).error).toMatch(
-			/already your own plan.*Share with this organization/,
+			/already your own plan.*Share organization-wide/,
 		);
 		expect(state.upsertAccount).not.toHaveBeenCalled();
 	});
@@ -292,11 +292,11 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		expect(response.status).toBe(409);
 		const body = await response.json();
 		expect(body.error).toMatch(/already shared by an organization/);
-		expect(body.error).not.toMatch(/Take back/);
+		expect(body.error).not.toMatch(/Stop sharing/);
 		expect(state.upsertOwn).not.toHaveBeenCalled();
 	});
 
-	it("points the member who shared the account to Take back instead", async () => {
+	it("points the member who shared the account to Stop sharing instead", async () => {
 		state.sharedSubjects.add("shared-subject");
 		state.sharedConnector = "user-member";
 		const { ticket } = await createChatGptPlanUploadTicket({
@@ -306,7 +306,7 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		const response = await post(ticket);
 		expect(response.status).toBe(409);
 		expect((await response.json()).error).toMatch(
-			/You already share this ChatGPT account.*Take back/,
+			/You already share this ChatGPT account.*Stop sharing/,
 		);
 		expect(state.upsertOwn).not.toHaveBeenCalled();
 	});

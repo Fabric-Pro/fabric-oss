@@ -140,6 +140,15 @@ vi.mock("@repo/temporal", () => ({
 	getTemporalClient: (...args: unknown[]) => mockGetTemporalClient(...args),
 }));
 
+const mockProjectSetupIsPaused = vi.fn();
+const mockCancelPausedSetupsOfProject = vi.fn();
+vi.mock("../../lib/paused-setup", () => ({
+	projectSetupIsPaused: (...args: unknown[]) =>
+		mockProjectSetupIsPaused(...args),
+	cancelPausedSetupsOfProject: (...args: unknown[]) =>
+		mockCancelPausedSetupsOfProject(...args),
+}));
+
 vi.mock("@repo/utils", () => ({
 	encryptApiKey: (value: string | undefined) => {
 		if (!value) {
@@ -312,6 +321,19 @@ describe("startExistingSetupProcedure — Azure DevOps repo URLs", () => {
 		};
 		// The ADO URL survives — it is NOT dropped.
 		expect(args.repoUrls).toEqual([ADO_URL]);
+		// Bulk work: the run and its agents' token are the setup job, on the
+		// shared plans, never the clicker's own (Fizzy #2770).
+		expect(args).toMatchObject({
+			userId: expect.any(String),
+			jobType: "project-setup",
+		});
+		expect(args).not.toHaveProperty("planEligible");
+		expect(mockIssueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ jobType: "project-setup" }),
+		);
+		expect(mockIssueAIToken.mock.calls[0]?.[0]).not.toHaveProperty(
+			"planEligible",
+		);
 	});
 
 	it("does NOT recreate the ADO integration (deliberate no-op; the picker already created it)", async () => {
@@ -1659,5 +1681,59 @@ describe("startExistingSetupProcedure — tenant comes from the project", () => 
 		expect(mockWorkflowStart).not.toHaveBeenCalled();
 		expect(mockProjectUpdate).not.toHaveBeenCalled();
 		expect(mockLogRepoIntegrationActivity).not.toHaveBeenCalled();
+	});
+});
+
+describe("startExistingSetupProcedure — a setup paused for a ChatGPT plan reset", () => {
+	const input = {
+		projectId: "p1",
+		organizationId: "org-1",
+		repoUrls: [ADO_URL],
+		selectedDocumentTypes: [],
+		projectTypes: ["web"],
+		projectName: "Proj",
+	};
+
+	beforeEach(() => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-1",
+			name: "Proj",
+			codeAnalysisStatus: "SCANNING",
+			defaultBranch: "main",
+			projectManagementMcpConfigId: null,
+			projectManagementContainerId: null,
+			projectManagementAdditionalContext: null,
+		});
+	});
+
+	it("cancels the paused setup first, then starts the new one: the newer setup wins", async () => {
+		mockProjectSetupIsPaused.mockResolvedValue(true);
+		mockCancelPausedSetupsOfProject.mockResolvedValue(1);
+		const handler = await loadHandler();
+
+		await expect(
+			handler({ input, context: baseContext }),
+		).resolves.toMatchObject({ status: "SCANNING" });
+
+		expect(mockCancelPausedSetupsOfProject).toHaveBeenCalledWith({
+			projectId: "p1",
+			organizationId: "org-1",
+			userId: "user-1",
+		});
+		expect(
+			mockCancelPausedSetupsOfProject.mock.invocationCallOrder[0],
+		).toBeLessThan(mockWorkflowStart.mock.invocationCallOrder[0]);
+	});
+
+	it("still refuses while a setup is really running", async () => {
+		mockProjectSetupIsPaused.mockResolvedValue(false);
+		const handler = await loadHandler();
+
+		await expect(
+			handler({ input, context: baseContext }),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(mockCancelPausedSetupsOfProject).not.toHaveBeenCalled();
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
 	});
 });

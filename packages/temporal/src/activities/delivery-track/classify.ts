@@ -36,6 +36,7 @@ import {
 	logModelUsageAsync,
 	recordDecisionOutcome,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	type DeliveryTrack,
 	db,
@@ -57,6 +58,8 @@ import { retrieveProjectRagContext } from "../backlog-context/fetch-context";
 export const CLASSIFICATION_BATCH_SIZE = 25;
 export const LOW_CONFIDENCE_THRESHOLD = 0.6;
 export const LOW_CONFIDENCE_PREFIX = "Low confidence: ";
+export const OPEN_QUESTIONS_NOT_DEFERRED_PREFIX =
+	"Open questions do not defer: ";
 
 /**
  * Typed decision fast path, mirroring `lib/classify-work-item.ts` and
@@ -81,6 +84,54 @@ export const UNTRUSTED_DATA_END = "<<<END_UNTRUSTED_STORY_DATA>>>";
 
 export const OUT_OF_SCOPE_PATTERN =
 	/\b(out of scope|not in scope|excluded|deferred)\b/i;
+
+/**
+ * A description statement about the ITEM ITSELF being parked — not a scope
+ * boundary describing what the feature covers ("undated tasks are
+ * excluded"). Three shapes:
+ *  - a status line: "Status: Deferred", "**Status:** Parked";
+ *  - a sentence or line that opens with the state: "Out of scope for this
+ *    release — parked until next quarter.", "Deferred until phase 3." A state
+ *    word followed by a colon ("Out of scope: SMS") is a list label
+ *    introducing sub-features, so it does not count;
+ *  - the item as subject: "This story is deferred", "The whole feature is
+ *    out of scope".
+ */
+const ITEM_OUT_OF_SCOPE_PATTERN = new RegExp(
+	[
+		String.raw`^\s*(?:[-*+]\s+)?[*_]*status[*_\s]*[:\-–—][*_\s]*(?:out of scope|not in scope|deferred|parked|on hold|won'?t do)\b`,
+		String.raw`(?:^|[.!?]\s+)[*_]*(?:out of scope|not in scope|deferred|parked|on hold|won'?t do)\b(?![*_\s]*:)`,
+		String.raw`\b(?:this|the)\s+(?:(?:whole|entire)\s+)?(?:story|feature|item|epic|ticket|work item)\s+(?:is|was|has been|will be|remains|stays)\s+(?:(?:now|currently|temporarily)\s+)?(?:out of scope|not in scope|excluded|deferred|parked|on hold)\b`,
+	].join("|"),
+	"im",
+);
+
+/**
+ * Headings of sections that list what is still undecided about an item —
+ * open questions, needed decisions, dependencies, risks, assumptions. A
+ * freshly drafted spec almost always has one, so nothing in them may defer it.
+ */
+export const UNDECIDED_SECTION_HEADING_PATTERN =
+	/\b(questions?|decisions?|dependencies|dependency|risks?|assumptions?)\b/i;
+
+/**
+ * Headings of spec sections that describe the feature's behaviour — use
+ * cases, requirements, acceptance criteria, flows. A scope boundary in them
+ * ("tasks outside the next-day boundary are excluded") is about what the
+ * feature does, never about whether the item itself is in scope.
+ */
+const SPEC_SECTION_HEADING_PATTERN =
+	/\b(use cases?|uc\d+|requirements?|acceptance criteria|scenarios?|flows?|edge cases?|test cases?)\b/i;
+
+/**
+ * A model DEFER whose rationale rests on open questions or undecided
+ * dependencies, with none of the explicit-deferral grounds. Such a verdict is
+ * not accepted: an item with open questions still needs work, not parking.
+ */
+const UNDECIDED_RATIONALE_PATTERN =
+	/\b(open questions?|unanswered|undecided|unresolved|pending (product )?decisions?|(product )?decisions? (needed|required|pending|outstanding)|awaiting (a )?(product )?decisions?|gated on|unconfirmed)\b/i;
+const EXPLICIT_DEFERRAL_RATIONALE_PATTERN =
+	/\b(out of scope|not in scope|excluded|parked|horizon|later (phase|release|version)|next (phase|release|version)|post[- ]mvp|won'?t do|not now|depends on \S+, which is deferred|deferred (item|story|feature|dependency))\b/i;
 
 export const DISCOVERY_KEYWORD_PATTERN =
 	/\b(sso|oauth|auth(entication|orization)?|permission|role|tenant|erp|api|integration|webhook|pii|gdpr|hipaa|payment|billing|identity)\b/i;
@@ -165,11 +216,53 @@ export function getPhaseLabel(labels: readonly string[]): string | null {
 	return null;
 }
 
+const MARKDOWN_HEADING_PATTERN = /^\s{0,3}(#{1,6})\s+(.*)$/;
+
+/**
+ * Drop markdown heading lines, and the whole body of any section headed as a
+ * scope exclusion ("Out of Scope", "Not in scope", "Excluded", "Deferred"),
+ * as something still undecided ("Open Questions / Needed Decisions",
+ * "Dependencies / Risks", "Assumptions") or as the feature's behaviour ("Use
+ * Cases", "Requirements", "Acceptance Criteria"), up to the next heading of
+ * the same or a higher level.
+ *
+ * The generated feature template carries a "### Out of Scope" section listing
+ * what THIS item will not do. Its heading and bullets are about sub-items, not
+ * the item itself, so matching them deferred every templated story. The same
+ * holds for an open question such as "Should export be deferred to v2?".
+ */
+function withoutScopeExclusionSections(description: string): string {
+	const kept: string[] = [];
+	let skipUntilLevel: number | null = null;
+	for (const line of description.split("\n")) {
+		const heading = MARKDOWN_HEADING_PATTERN.exec(line);
+		if (heading) {
+			const level = heading[1].length;
+			if (skipUntilLevel !== null && level > skipUntilLevel) {
+				continue;
+			}
+			skipUntilLevel =
+				OUT_OF_SCOPE_PATTERN.test(heading[2]) ||
+				UNDECIDED_SECTION_HEADING_PATTERN.test(heading[2]) ||
+				SPEC_SECTION_HEADING_PATTERN.test(heading[2])
+					? level
+					: null;
+			continue;
+		}
+		if (skipUntilLevel === null) {
+			kept.push(line);
+		}
+	}
+	return kept.join("\n");
+}
+
 /**
  * Deterministic pre-rules. Pure — no I/O.
  *
  * DEFER only when:
- *  (a) the title or description marks the item out of scope,
+ *  (a) the title carries an out-of-scope marker, or the description states
+ *      that the item itself is out of scope or parked (see
+ *      `ITEM_OUT_OF_SCOPE_PATTERN`) outside its spec sections,
  *  (b) the project has a quoted horizon AND the story's phase is outside it
  *      AND the story is P3_LOW, or
  *  (c) a `dependsOnRefs` target in the same project is itself DEFER.
@@ -185,7 +278,12 @@ export function applyDeterministicTrackRules(
 	const text = `${story.title}\n${story.description ?? ""}`;
 
 	// (a) explicit out-of-scope marker
-	if (OUT_OF_SCOPE_PATTERN.test(text)) {
+	if (
+		OUT_OF_SCOPE_PATTERN.test(story.title) ||
+		ITEM_OUT_OF_SCOPE_PATTERN.test(
+			withoutScopeExclusionSections(story.description ?? ""),
+		)
+	) {
 		return {
 			track: "DEFER",
 			rationale: "Marked out of scope in the title or description.",
@@ -228,6 +326,17 @@ export function applyDeterministicTrackRules(
 	return { candidate: null };
 }
 
+/**
+ * True when a model's DEFER rationale cites only open questions, pending
+ * decisions or undecided dependencies — none of the explicit-deferral grounds.
+ */
+export function isDeferForOpenQuestionsOnly(rationale: string): boolean {
+	return (
+		UNDECIDED_RATIONALE_PATTERN.test(rationale) &&
+		!EXPLICIT_DEFERRAL_RATIONALE_PATTERN.test(rationale)
+	);
+}
+
 // =============================================================================
 // Prompt
 // =============================================================================
@@ -257,7 +366,7 @@ const TRACK_TABLE = `| Track | Classify when |
 | SPIKE | Feasibility or desirability is unverified; novel AI/UX; the answer would change scope or estimate |
 | DISCOVERY | Touches auth, authz, tenancy, an external system or regulated data; depends on an unconfirmed API or contract |
 | SPECIFY | Deterministic rules, calculations, CRUD with known inputs; the customer has already specified it |
-| DEFER | Explicitly out of scope, outside the engagement's quoted horizon, or blocked by an undecided dependency. A phase label alone NEVER implies DEFER |`;
+| DEFER | Explicitly out of scope or parked for later, outside the engagement's quoted horizon, or depends on an item that is itself deferred. Open questions, pending product decisions and undecided or unconfirmed dependencies NEVER imply DEFER — classify the work they belong to. A phase label alone NEVER implies DEFER |`;
 
 /** Neutralise delimiter look-alikes inside untrusted text. */
 function sanitizeUntrusted(text: string): string {
@@ -349,7 +458,7 @@ ${UNTRUSTED_DATA_START}
 ${untrustedBlock}
 ${UNTRUSTED_DATA_END}
 
-For each storyId in the batch list: the track (SPIKE, DISCOVERY, SPECIFY or DEFER), a rationale of at most 300 characters grounded in the story text, and a confidence between 0 and 1. Prefer SPECIFY when the behaviour is fully determined. Use DEFER only for explicit exclusions or undecided dependencies — never because of a phase label alone.`;
+For each storyId in the batch list: the track (SPIKE, DISCOVERY, SPECIFY or DEFER), a rationale of at most 300 characters grounded in the story text, and a confidence between 0 and 1. Prefer SPECIFY when the behaviour is fully determined. Use DEFER only for explicit exclusions or parking — never because the story has open questions, needs product decisions, or has undecided dependencies, and never because of a phase label alone.`;
 }
 
 // =============================================================================
@@ -422,7 +531,7 @@ const TRACK_CRITERION_TEXT: Record<AssignableTrack, string> = {
 		"Touches auth, authz, tenancy, an external system or regulated data; depends on an unconfirmed API or contract.",
 	SPECIFY:
 		"Deterministic rules, calculations, or CRUD with known inputs; the customer has already specified it.",
-	DEFER: "Explicitly out of scope, outside the engagement's quoted horizon, or blocked by an undecided dependency. A phase label alone NEVER implies DEFER.",
+	DEFER: "Explicitly out of scope or parked for later, outside the engagement's quoted horizon, or depends on an item that is itself deferred. Open questions, pending product decisions and undecided or unconfirmed dependencies NEVER imply DEFER — classify the work they belong to. A phase label alone NEVER implies DEFER.",
 };
 
 /** The choice options offered to the decision model, keyed by track. */
@@ -524,7 +633,7 @@ async function decideBatchTracks(params: {
 		storyIdByKey.set(key, story.id);
 		questions[key] = {
 			type: "choice",
-			instructions: `Apply classifierPolicy to the story keyed "${key}" in stories, and judge only that story. Choose the one delivery track that fits it. Prefer SPECIFY when the behaviour is fully determined; use DEFER only for explicit exclusions or undecided dependencies.`,
+			instructions: `Apply classifierPolicy to the story keyed "${key}" in stories, and judge only that story. Choose the one delivery track that fits it. Prefer SPECIFY when the behaviour is fully determined; use DEFER only for explicit exclusions or parking, never for open questions, pending decisions or undecided dependencies.`,
 			criteria: TRACK_DECISION_CRITERIA,
 		};
 		return {
@@ -562,8 +671,11 @@ async function decideBatchTracks(params: {
 			capture,
 			count: stories.length,
 		});
-		if (error instanceof AiUsageLimitExceededError) {
-			throw error;
+		// A limit refused before an SDK retry arrives wrapped in a RetryError;
+		// the unwrapped instance escapes.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
 		}
 		logger.warn(
 			"[DeliveryTrack] Decision evaluation unavailable; using the language model",
@@ -778,7 +890,7 @@ export async function classifyDeliveryTracks(
 	// ---- Pass 2: model -------------------------------------------------------
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "COMPLEX" },
-		{ userId, organizationId },
+		{ userId, organizationId, featureKey: "delivery-track" },
 	);
 
 	logger.info("[DeliveryTrack] Using AI model", {
@@ -801,6 +913,7 @@ export async function classifyDeliveryTracks(
 			userId,
 			organizationId,
 			projectId,
+			featureKey: "delivery-track",
 		});
 	} catch (error) {
 		if (error instanceof AiUsageLimitExceededError) {
@@ -1019,15 +1132,28 @@ export async function classifyDeliveryTracks(
 				let track: DeliveryTrack = item.track;
 				let rationale = item.rationale;
 				let source: TrackClassificationResult["source"] = "model";
+				const fallbackTrack: DeliveryTrack =
+					profileConfig.defaultTrack === "CLASSIFIER"
+						? "UNCLASSIFIED"
+						: profileConfig.defaultTrack;
 
 				if (item.confidence < LOW_CONFIDENCE_THRESHOLD) {
 					source = "low_confidence";
-					track =
-						profileConfig.defaultTrack === "CLASSIFIER"
-							? "UNCLASSIFIED"
-							: profileConfig.defaultTrack;
+					track = fallbackTrack;
 					rationale =
 						`${LOW_CONFIDENCE_PREFIX}${item.rationale}`.slice(
+							0,
+							300,
+						);
+				} else if (
+					item.track === "DEFER" &&
+					isDeferForOpenQuestionsOnly(item.rationale)
+				) {
+					// The rationale keeps the open questions visible on the
+					// story; only the DEFER verdict is refused.
+					track = fallbackTrack;
+					rationale =
+						`${OPEN_QUESTIONS_NOT_DEFERRED_PREFIX}${item.rationale}`.slice(
 							0,
 							300,
 						);

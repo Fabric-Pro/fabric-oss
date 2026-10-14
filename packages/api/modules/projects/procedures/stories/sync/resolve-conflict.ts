@@ -42,6 +42,10 @@ function enqueueReasonToPmError(
 		case "no-pm-config":
 			return { kind: "MISSING" };
 		case "temporal-error":
+		// The start may have gone through but Temporal could not confirm it;
+		// the item stays PENDING. Not a success, so the conflict flag stays
+		// and the user is told to retry (a retry attaches to a running sync).
+		case "start-uncertain":
 		case "db-error":
 			return { kind: "TRANSIENT" };
 		default:
@@ -72,8 +76,14 @@ function enqueueReasonToPmError(
  *    the merged content. The same handler thus covers both "Use Fabric" and
  *    "accept merge"; the only difference is whether an override is present.
  *
- * In both cases `lastPmSyncStatus` is reset from CONFLICT to SUCCESS so
- * auto-push can resume on the next status move.
+ * REMOTE resets `lastPmSyncStatus` from CONFLICT to SUCCESS so auto-push
+ * can resume on the next status move. LOCAL does not clear anything: a
+ * successful enqueue has already stamped the row PENDING for its push (the
+ * stamp is written before `enqueued: true` can be returned), and that push
+ * settles the row itself. A SUCCESS written over it would hide the push from
+ * the stuck-sync watchdog, or erase a CONFLICT the push found again. Either
+ * way the original conflict no longer shows, so the result is
+ * `cleared: true`.
  */
 export async function resolveConflictHandler(args: {
 	itemId: string;
@@ -147,7 +157,8 @@ export async function resolveConflictHandler(args: {
 				pmError: enqueueReasonToPmError(enqueueResult.reason),
 			};
 		}
-		await clearPmSyncConflictFlag({ itemType, itemId });
+		// The enqueue stamped the row PENDING for this push, which settles
+		// it; nothing to clear here.
 	}
 	return { cleared: true };
 }

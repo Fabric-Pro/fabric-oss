@@ -14,6 +14,10 @@
 import type { LettaClient } from "@repo/letta";
 import { getLettaClient } from "@repo/letta";
 import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
+import {
 	type LettaSecurityContext,
 	logSecurityEvent,
 	MAX_CACHE_ENTRY_SIZE,
@@ -293,6 +297,11 @@ export async function cacheToolResult(
 	};
 
 	try {
+		// Inside a chat turn that has stopped (or used its token allowance)
+		// nothing is cached: checked before the rate-limit bookkeeping and
+		// again immediately before each memory write below, after the reads
+		// that precede it. A no-op outside a turn.
+		throwIfDispatchStopped();
 		// ✅ Security: Validate operation (rate limit + ownership)
 		const validationResult = await validateLettaOperation(
 			securityContext,
@@ -385,6 +394,7 @@ export async function cacheToolResult(
 					return;
 				}
 
+				throwIfDispatchStopped();
 				await client.updateMemoryBlock(
 					input.lettaAgentId,
 					"tool_cache",
@@ -415,6 +425,7 @@ export async function cacheToolResult(
 			return;
 		}
 
+		throwIfDispatchStopped();
 		await client.updateMemoryBlock(
 			input.lettaAgentId,
 			"tool_cache",
@@ -431,6 +442,8 @@ export async function cacheToolResult(
 			`💾 [Letta Cache] Stored ${input.success ? "successful" : "failed"} result for ${input.toolName}`,
 		);
 	} catch (error) {
+		// A turn stop is not a cache failure to log past.
+		rethrowIfDispatchStopped(error);
 		logSecurityEvent("cache", securityContext, {
 			operation: "cacheToolResult",
 			success: false,

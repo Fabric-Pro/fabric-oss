@@ -194,6 +194,10 @@ export async function fireColumnAutomations(
 								executionId,
 								executionMode: "balanced",
 								userId: transition.userId,
+								// The person who moved the story started this run, so
+								// its AI steps — and the token any delegated agent
+								// gets — may use their ChatGPT plan (Fizzy #2770).
+								planEligible: true,
 								organizationId,
 								message: prompt,
 								projectId: transition.projectId,

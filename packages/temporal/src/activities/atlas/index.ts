@@ -58,14 +58,19 @@ export interface AtlasStructureResult {
 export async function atlasMarkStatusActivity(
 	input: TenantInput & {
 		analysisId: string;
-		status: "ANALYZING" | "READY" | "FAILED";
+		status: "ANALYZING" | "READY" | "FAILED" | "WAITING_FOR_PLAN";
 		error?: string | null;
+		/** A resume claimed the run after a ChatGPT plan pause (Fizzy #2770). */
+		resumedWorkflowId?: string;
 	},
 ): Promise<void> {
 	await service(input).markStatus({
 		analysisId: input.analysisId,
 		status: input.status,
 		error: input.error ?? null,
+		...(input.resumedWorkflowId && {
+			resumedWorkflowId: input.resumedWorkflowId,
+		}),
 	});
 }
 

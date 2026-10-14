@@ -38,12 +38,20 @@ import {
 	executeIterativePhase,
 	executePlanningPhase,
 } from "./phases";
+import { summarizeAccomplishments } from "./phases/iterative-execution";
+import {
+	LEDGER_SIGNAL_MESSAGE,
+	ledgerSnapshotFromRefusal,
+	recordTurnBudgetStop,
+} from "./turn-budget";
 import {
 	type IterativeTurnOptions,
 	isCancellationFailure,
+	isTurnBudgetExhausted,
 	PLANNER_TURN_PATCH,
 	rethrowTurnStop,
 	settleAllForTurn,
+	TURN_BUDGET_PATCH,
 	TURN_CANCELLATION_PATCH,
 	type TurnStopReason,
 	turnNotDispatchableReason,
@@ -56,6 +64,7 @@ import {
 	createInitialState,
 	DEFAULT_ALTK_CONFIG,
 	EXECUTION_MODE_CONFIGS,
+	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
 	type OrchestratorWorkflowInput,
 	type OrchestratorWorkflowOutput,
 	type PendingApprovalInfo,
@@ -206,6 +215,7 @@ function turnOutcomeFor(
 			return "CANCELLED";
 		case "completed":
 			return output.handoffRecommended ||
+				output.budgetStop ||
 				(output.limitSignals?.length ?? 0) > 0
 				? "LIMITED"
 				: "COMPLETED";
@@ -255,6 +265,10 @@ export async function orchestratorExecutionWorkflow(
 	// Recorded on every new run, whatever its mode; consulted only for the
 	// Planner (see PLANNER_TURN_PATCH for why it exists).
 	const plannerTurnContract = patched(PLANNER_TURN_PATCH);
+	// Recorded on every new run; consulted only for a run with a turn. A
+	// history without it replays the turn unledgered (see TURN_BUDGET_PATCH
+	// for the rollout rules).
+	const turnBudgetContract = patched(TURN_BUDGET_PATCH);
 	// A chat turn's scope. Only a run with a turn changes behaviour: the
 	// non-chat starters (story automations, Weave, project setup) send no
 	// turnId and keep their legacy cancellation handling. The turn contract
@@ -283,6 +297,20 @@ export async function orchestratorExecutionWorkflow(
 					// A turn always has an organization; an empty one can match
 					// no turn row, so every dispatch check fails closed.
 					organizationId: input.organizationId ?? "",
+					// The token ledger contract, and the generation it fences
+					// on (null for a turn with no conversation). Only under
+					// the budget marker, so an older history replays with the
+					// scope it sent; a starter that sends no generation leaves
+					// it uncompared.
+					...(turnBudgetContract
+						? {
+								...(input.turnGeneration !== undefined
+									? { generation: input.turnGeneration }
+									: {}),
+								budgetContractVersion:
+									ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
+							}
+						: {}),
 				}
 			: undefined;
 	const turn: TurnRuntime = {
@@ -294,7 +322,7 @@ export async function orchestratorExecutionWorkflow(
 
 	let output: OrchestratorWorkflowOutput | undefined;
 	let continuedAsNew = false;
-	let persistedStatus: string | null = null;
+	let persisted: PersistedTurnState = { status: null };
 	try {
 		output = await runOrchestratorExecution(input, turn);
 	} catch (error) {
@@ -306,7 +334,7 @@ export async function orchestratorExecutionWorkflow(
 		throw error;
 	} finally {
 		if (turnScope && !continuedAsNew) {
-			persistedStatus = await writeTurnTerminalState(
+			persisted = await writeTurnTerminalState(
 				turnScope,
 				output,
 				turn.stop,
@@ -317,24 +345,101 @@ export async function orchestratorExecutionWorkflow(
 	// finished but before the terminal write ends the turn CANCELLED
 	// (the ordering rule), and the run must report what was persisted, or
 	// the live stream and a later reattach would disagree.
-	return normalizeToPersistedStatus(output, persistedStatus);
+	return normalizeToPersistedStatus(
+		withPersistedBudgetStop(output, persisted.budgetStop),
+		persisted.status,
+		turnBudgetContract,
+	);
+}
+
+/** What the terminal write reports it persisted. */
+interface PersistedTurnState {
+	status: string | null;
+	/**
+	 * The token-allowance stop exactly as the turn row stores it (absent
+	 * when it stores none, or when the write could not be made).
+	 */
+	budgetStop?: OrchestratorWorkflowOutput["budgetStop"];
+}
+
+/**
+ * The output carrying the token-allowance stop exactly as the turn row
+ * stores it, so the live stream and a reconnect show the same payload: the
+ * stored one replaces the run's own, on the first write and on a retry, and
+ * when the row stores none (or the write failed) the run's own is dropped
+ * rather than shown. The ledger's `internal_budget` signal then reports the
+ * stored measured totals. A run that recorded no stop is returned as it is,
+ * so nothing changes for a run without the budget marker.
+ */
+function withPersistedBudgetStop(
+	output: OrchestratorWorkflowOutput,
+	budgetStop: OrchestratorWorkflowOutput["budgetStop"],
+): OrchestratorWorkflowOutput {
+	if (!output.budgetStop) {
+		return output;
+	}
+	if (!budgetStop) {
+		const { budgetStop: _local, ...withoutStop } = output;
+		return withoutStop;
+	}
+	const budget = {
+		used: budgetStop.measured,
+		total: budgetStop.allowance,
+		usagePercentage:
+			budgetStop.allowance > 0
+				? Math.min(budgetStop.measured / budgetStop.allowance, 1)
+				: 1,
+	};
+	return {
+		...output,
+		budgetStop,
+		...(output.limitSignals
+			? {
+					limitSignals: output.limitSignals.map((signal) =>
+						signal.kind === "internal_budget" &&
+						signal.budgetLimit === "tokens" &&
+						signal.message === LEDGER_SIGNAL_MESSAGE
+							? { ...signal, budget }
+							: signal,
+					),
+				}
+			: {}),
+	};
 }
 
 /**
  * Align the domain result with the terminal status the turn record holds.
  * Keeps the response as the turn's partial text; a cancelled or failed turn
  * offers no "continue in new chat".
+ *
+ * The token-allowance stop is the row's own stored value by now
+ * (`withPersistedBudgetStop`), and it is kept whatever the status, so the
+ * result, the live stream and a reconnect carry exactly what the row stores
+ * — a turn whose budget finalization finished just before a recorded Stop
+ * won stores its stop with CANCELLED. Whether the chat shows a budget card
+ * is decided by the status, not by dropping the payload.
+ *
+ * Replay: before this, the payload was dropped here. A run's output carries
+ * a `budgetStop` only when the run recorded one, which only happens under
+ * the budget marker (TURN_BUDGET_PATCH), so keeping it changes the output
+ * of marker runs only; `budgetContract` makes that explicit. Only the
+ * returned value changes — no command, activity or timer — and Temporal
+ * does not compare a workflow's result on replay, so recorded histories
+ * replay unchanged.
  */
 function normalizeToPersistedStatus(
 	output: OrchestratorWorkflowOutput,
 	persistedStatus: string | null,
+	budgetContract: boolean,
 ): OrchestratorWorkflowOutput {
+	const budgetStop = budgetContract ? output.budgetStop : undefined;
 	if (persistedStatus === "CANCELLED" && output.status !== "cancelled") {
 		return {
 			...output,
 			status: "cancelled",
 			error: "Execution cancelled",
 			handoffRecommended: undefined,
+			budgetStop,
 		};
 	}
 	if (persistedStatus === "FAILED" && output.status === "completed") {
@@ -343,6 +448,7 @@ function normalizeToPersistedStatus(
 			status: "failed",
 			error: output.error ?? "The turn had already ended",
 			handoffRecommended: undefined,
+			budgetStop,
 		};
 	}
 	return output;
@@ -369,7 +475,7 @@ async function writeTurnTerminalState(
 	turnScope: NonNullable<IterativeTurnOptions["turnScope"]>,
 	output: OrchestratorWorkflowOutput | undefined,
 	stop: TurnStopReason | null,
-): Promise<string | null> {
+): Promise<PersistedTurnState> {
 	const outcome = turnOutcomeFor(output);
 	const terminalReason =
 		outcome === "CANCELLED"
@@ -380,7 +486,10 @@ async function writeTurnTerminalState(
 					output?.status ??
 					"failed")
 				: outcome === "LIMITED"
-					? (output?.handoffRecommended?.reason ?? "limit reached")
+					? output?.budgetStop
+						? "token allowance used"
+						: (output?.handoffRecommended?.reason ??
+							"limit reached")
 					: "completed";
 	try {
 		const written = await CancellationScope.nonCancellable(() =>
@@ -402,16 +511,22 @@ async function writeTurnTerminalState(
 							),
 						}
 					: {}),
+				...(output?.budgetStop
+					? { budgetStop: output.budgetStop }
+					: {}),
 			}),
 		);
-		return written.status;
+		return {
+			status: written.status,
+			...(written.budgetStop ? { budgetStop: written.budgetStop } : {}),
+		};
 	} catch (error) {
 		log.error("Failed to write the chat turn's terminal state", {
 			turnId: turnScope.turnId,
 			outcome,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return null;
+		return { status: null };
 	}
 }
 
@@ -1346,6 +1461,34 @@ async function runOrchestratorExecution(
 					refusal,
 				});
 				return buildWorkflowOutput(state, "failed", exitErrorMessage);
+			}
+			if (
+				turnOptions.turnScope?.budgetContractVersion !== undefined &&
+				isTurnBudgetExhausted(error)
+			) {
+				// The token ledger refused a request outside the iterative
+				// loop's own budget exit (initialization, the Planner): no
+				// conversation to synthesize from, so the turn answers with
+				// the static summary of what it did, and ends LIMITED.
+				recordTurnBudgetStop(
+					state,
+					ledgerSnapshotFromRefusal(error),
+					"finalization_unavailable",
+				);
+				state.status = "completed";
+				exitReason = "success";
+				log.warn("Orchestrator turn used its token allowance", {
+					executionId,
+				});
+				return buildWorkflowOutput(
+					state,
+					"completed",
+					undefined,
+					summarizeAccomplishments(state, {
+						includeFindings: true,
+						tokenAllowance: true,
+					}),
+				);
 			}
 		}
 		state.status = "failed";

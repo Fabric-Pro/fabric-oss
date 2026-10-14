@@ -4,7 +4,8 @@
 		"@aws-sdk/lib-storage": "^3.1094.0",
 		"@aws-sdk/s3-request-presigner": "^3.1094.0",
 		"@repo/logs": "workspace:*",
-		"@repo/observability": "workspace:*"
+		"@repo/observability": "workspace:*",
+		"@repo/utils": "workspace:*"
 	},
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",

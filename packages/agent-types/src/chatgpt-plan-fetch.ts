@@ -56,6 +56,14 @@ export function chatGptPlanModelOverride(
 export const CHATGPT_PLAN_EXHAUSTED_CODE =
 	"subscription_sharing_usage_limit_exceeded";
 
+/**
+ * Set on a chat stream whose turn runs on the organization's API billing
+ * because every ChatGPT plan is spent (Fizzy #3048). Its value is when the
+ * plans reset, as ISO 8601, or empty when that is unknown.
+ */
+export const CHATGPT_PLAN_API_BILLING_HEADER =
+	"x-fabric-chatgpt-plan-api-billing";
+
 // The AI SDK retries 408/409/429/5xx. OpenAI asks apps not to repeat these,
 // so they are surfaced with a non-retryable status; the real status travels in
 // x-chatgpt-plan-original-status and the code stays in the body.
@@ -468,6 +476,24 @@ export interface ChatGptPlanFetchOptions {
 	 * OpenAI said.
 	 */
 	onExhausted?: (refusal: { resetAt: Date | null }) => Promise<string | null>;
+	/**
+	 * The caller's stop check, run synchronously immediately before EVERY
+	 * physical send this fetch makes — the first, the resend after a 401 and
+	 * token refresh, and the resend on another plan's token — with nothing
+	 * awaited between it and the send. It throws to refuse the send (the
+	 * error reaches the caller unchanged) and returns the abort signal to
+	 * send with, given the request's own (undefined for none). This package
+	 * has no dependencies, so the caller supplies it (`@repo/ai` passes the
+	 * Advisor turn's dispatch guard).
+	 */
+	beforeSend?: (signal: AbortSignal | undefined) => AbortSignal | undefined;
+	/**
+	 * Awaited before each RESEND, after the token refresh or the move to
+	 * another plan's token and before {@link beforeSend}: the caller's
+	 * admission check for a send the check before the first one did not
+	 * see. A throw ends the call there.
+	 */
+	beforeResend?: () => Promise<void>;
 	baseFetch?: typeof fetch;
 }
 
@@ -501,6 +527,8 @@ export function createChatGptPlanFetch({
 	onUnauthorized,
 	onResponseHeaders,
 	onExhausted,
+	beforeSend,
+	beforeResend,
 	baseFetch = fetch,
 }: ChatGptPlanFetchOptions): typeof fetch {
 	return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
@@ -526,17 +554,30 @@ export function createChatGptPlanFetch({
 			? JSON.stringify(transformResponsesBody(original))
 			: init?.body;
 
-		const send = async (token: string) => {
+		// The one place a request leaves: every send — first, after a 401,
+		// on another plan — passes the caller's stop check here, in the same
+		// synchronous run as `baseFetch`.
+		const send = (token: string) => {
 			const headers = new Headers(init?.headers);
 			headers.set("authorization", `Bearer ${token}`);
-			return baseFetch(input, { ...init, headers, body });
+			const signal = beforeSend
+				? beforeSend(init?.signal ?? undefined)
+				: init?.signal;
+			return baseFetch(input, {
+				...init,
+				headers,
+				body,
+				...(signal ? { signal } : {}),
+			});
 		};
 
 		const attempt = async (token: string): Promise<Response> => {
 			let response = await send(token);
 			if (response.status === 401 && onUnauthorized) {
 				await response.body?.cancel();
-				response = await send(await onUnauthorized(token));
+				const refreshed = await onUnauthorized(token);
+				await beforeResend?.();
+				response = await send(refreshed);
 			}
 			try {
 				onResponseHeaders?.(response.status, response.headers);
@@ -564,6 +605,7 @@ export function createChatGptPlanFetch({
 			return first;
 		}
 		await first.body?.cancel();
+		await beforeResend?.();
 		return attempt(next);
 	}) as typeof fetch;
 }

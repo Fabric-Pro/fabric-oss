@@ -527,6 +527,43 @@ export function buildShortPostVariables({
  * never the rule: these locked clauses do not otherwise mention code names,
  * private links or ticket IDs, so voiding the rule would loosen this type.
  */
+/**
+ * Where each part of an option goes, stated where an override cannot remove it.
+ *
+ * A bound body written for prose output ("Output MUST be Markdown only", then a
+ * Markdown skeleton with `<Post text>` slots) contradicts the structured output
+ * this prompt runs with. Claude resolves that by putting the post in `text`; a
+ * ChatGPT-plan model resolved it by returning the right shape with every
+ * `text` empty, three times out of three (Fizzy #2770). Planning & Analysis
+ * carries the same rule in its output contract.
+ */
+const OPTION_FIELDS_CONTRACT = `- Your response is structured data, not a Markdown document. Each option's
+  complete post goes in its "text" field, written in Markdown, and is never left
+  empty. An instruction above to output Markdown only, or to follow a Markdown
+  layout, describes what goes INSIDE these fields: the post in "text", its label
+  in "label", its character count in "estimatedCharacters", hashtags in
+  "hashtags" and missing facts in "inputsNeeded".`;
+
+/**
+ * Whether a model answer has options and every one of them came back without
+ * post text — the model wrote nothing, rather than writing the wrong shape.
+ *
+ * Takes `unknown` because it reads the answer the schema REFUSED.
+ */
+export function everyOptionTextIsEmpty(answer: unknown): boolean {
+	if (typeof answer !== "object" || answer === null) {
+		return false;
+	}
+	const { options } = answer as { options?: unknown };
+	if (!Array.isArray(options) || options.length === 0) {
+		return false;
+	}
+	return options.every((option) => {
+		const text = (option as { text?: unknown } | null)?.text;
+		return typeof text === "string" && text.trim().length === 0;
+	});
+}
+
 export function buildShortPostLockedClauses(
 	restrictedSubjects: string[] = [],
 ): string {
@@ -573,6 +610,7 @@ ${THIN_SUMMARY_IS_RAW_MATERIAL}
 - Every label must be DIFFERENT from the other two. The label is how a person
   picks one option over another, so reusing one makes the choice meaningless and
   the run is rejected rather than saved.
+${OPTION_FIELDS_CONTRACT}
 - Do NOT treat a customer name, customer logo, customer or stakeholder quote,
   screenshot, internal UI capture, outcome metric, or AI voice or video likeness
   as approved for publication. Where one would strengthen the post, write around

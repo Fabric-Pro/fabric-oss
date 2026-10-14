@@ -83,6 +83,22 @@ export interface ContextualEnrichmentOptions {
 	 * (default: {@link DEFAULT_MAX_DOCUMENT_CONTEXT_CHARS})
 	 */
 	maxDocumentContextChars?: number;
+
+	/**
+	 * Called once, after the last chunk, when enrichment stopped because every
+	 * ChatGPT plan that could serve it is spent (Fizzy #2770). The chunks are
+	 * still returned — unenriched from that point on — so a caller that keeps
+	 * them can record that they are owed their context.
+	 */
+	onEnrichmentDeferred?: (deferral: EnrichmentDeferral) => void;
+}
+
+/** Enrichment skipped for a spent ChatGPT plan, not for a failure. */
+export interface EnrichmentDeferral {
+	/** When the plan's window resets, if the provider said; null otherwise. */
+	resetAt: Date | null;
+	/** How many chunks were stored without their context. */
+	unenrichedCount: number;
 }
 
 /**
@@ -106,6 +122,7 @@ export interface TenantBackedContextualEnrichmentOptions {
 	organizationId?: string;
 	projectId?: string;
 	maxDocumentContextChars?: number;
+	onEnrichmentDeferred?: (deferral: EnrichmentDeferral) => void;
 }
 
 const CONTEXT_INSTRUCTIONS = `You are a document context specialist. Your task is to provide a brief context sentence for a text chunk, situating it within the larger document.
@@ -197,6 +214,46 @@ ${neutralizeDelimiters(chunkContent)}
 Provide a brief context sentence for this chunk:`;
 }
 
+function unenriched(chunk: TextChunk): EnrichedChunk {
+	return {
+		...chunk,
+		contextSummary: "",
+		enrichedContent: chunk.content,
+		originalContent: chunk.content,
+	};
+}
+
+/**
+ * The refusal every spent ChatGPT plan ends a call with, however the AI SDK
+ * wrapped it, with the window's reset when it carries one. Read by name: the
+ * class lives in a package this one does not load. Null for anything else.
+ */
+function planSpentRefusal(error: unknown): { resetAt: Date | null } | null {
+	let current: unknown = error;
+	for (let depth = 0; depth < 6 && current; depth++) {
+		if (typeof current !== "object") {
+			return null;
+		}
+		const wrapper = current as {
+			name?: unknown;
+			resetAt?: unknown;
+			lastError?: unknown;
+			cause?: unknown;
+		};
+		if (wrapper.name === "SubscriptionPlanExhaustedError") {
+			return {
+				resetAt:
+					wrapper.resetAt instanceof Date &&
+					!Number.isNaN(wrapper.resetAt.getTime())
+						? wrapper.resetAt
+						: null,
+			};
+		}
+		current = wrapper.lastError ?? wrapper.cause;
+	}
+	return null;
+}
+
 /**
  * Enrich chunks with document-level context.
  *
@@ -216,6 +273,7 @@ export async function enrichChunksWithContext(
 		documentTitle,
 		generateContext,
 		maxDocumentContextChars = DEFAULT_MAX_DOCUMENT_CONTEXT_CHARS,
+		onEnrichmentDeferred,
 	} = options;
 
 	if (chunks.length === 0) {
@@ -235,10 +293,17 @@ export async function enrichChunksWithContext(
 	);
 
 	const enrichedChunks: EnrichedChunk[] = [];
+	let planSpent: { resetAt: Date | null } | null = null;
 
 	// Process chunks sequentially to avoid overwhelming the LLM
 	// (could be parallelized with rate limiting for faster throughput)
 	for (const chunk of chunks) {
+		// Once every ChatGPT plan is spent (Fizzy #2770) the rest would only be
+		// refused too: they are stored as they are, without asking again.
+		if (planSpent) {
+			enrichedChunks.push(unenriched(chunk));
+			continue;
+		}
 		try {
 			const contextSummary = await generateContext(
 				systemPrompt,
@@ -255,16 +320,14 @@ export async function enrichChunksWithContext(
 				originalContent: chunk.content,
 			});
 		} catch (error) {
-			logger.warn(
-				`[ContextualEnrichment] Failed to enrich chunk ${chunk.index}, using original: ${error}`,
-			);
+			planSpent = planSpentRefusal(error);
+			if (!planSpent) {
+				logger.warn(
+					`[ContextualEnrichment] Failed to enrich chunk ${chunk.index}, using original: ${error}`,
+				);
+			}
 			// Fall back to original content if enrichment fails
-			enrichedChunks.push({
-				...chunk,
-				contextSummary: "",
-				enrichedContent: chunk.content,
-				originalContent: chunk.content,
-			});
+			enrichedChunks.push(unenriched(chunk));
 		}
 	}
 
@@ -272,6 +335,17 @@ export async function enrichChunksWithContext(
 	const enrichedCount = enrichedChunks.filter(
 		(c) => c.contextSummary.length > 0,
 	).length;
+	if (planSpent) {
+		const unenrichedCount = chunks.length - enrichedCount;
+		logger.warn(
+			`[ContextualEnrichment] Every ChatGPT plan is spent: stored ${unenrichedCount}/${chunks.length} chunks of "${documentTitle}" without context`,
+			{ unenrichedCount, resetAt: planSpent.resetAt?.toISOString() },
+		);
+		onEnrichmentDeferred?.({
+			resetAt: planSpent.resetAt,
+			unenrichedCount,
+		});
+	}
 	logger.info(
 		`[ContextualEnrichment] Enriched ${enrichedCount}/${chunks.length} chunks in ${durationMs}ms`,
 	);
@@ -295,6 +369,7 @@ export async function enrichChunksWithTenantContext(
 		documentContent,
 		documentTitle,
 		maxDocumentContextChars: options.maxDocumentContextChars,
+		onEnrichmentDeferred: options.onEnrichmentDeferred,
 		generateContext: async (systemPrompt, userPrompt) => {
 			const { model, metadata, trackUsage } =
 				await getAIModelWithMetadata(
@@ -302,7 +377,9 @@ export async function enrichChunksWithTenantContext(
 						taskType: "SIMPLE",
 						complexity: "simple",
 					},
-					{ userId, organizationId },
+					// Per-chunk ingestion work: it may run on the organization's
+					// shared ChatGPT plans (Fizzy #2770).
+					{ userId, organizationId, jobType: "context-enrichment" },
 				);
 
 			const generationStart = Date.now();

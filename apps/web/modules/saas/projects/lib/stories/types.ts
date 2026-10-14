@@ -407,7 +407,7 @@ export const DELIVERY_TRACK_META: Record<
 		label: "Deferred",
 		shortLabel: "Defer",
 		description:
-			"Out of scope, outside the quoted horizon, or blocked by an undecided dependency. Cannot start.",
+			"Out of scope, parked, outside the quoted horizon, or depends on a deferred item. Cannot start.",
 		tone: "muted",
 		order: 4,
 	},

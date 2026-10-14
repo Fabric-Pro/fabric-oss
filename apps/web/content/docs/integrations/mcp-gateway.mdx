@@ -675,12 +675,135 @@ Each user only sees tools from MCP servers **they personally connected** in thei
 - In **org context** → sees tools from servers connected within that organization
 - Personal connections never appear in org context, and vice versa
 
+### Choose Which Servers a Client Sees
+
+By default a client of the organization-wide gateway gets every platform tool
+and every tool of each connected server. To give one client fewer, add the
+`servers` parameter to the URL it connects to, with the servers, or single
+tools, it should see separated by commas:
+
+```
+https://your-fabric.com/api/mcp-gateway?servers=fabric
+https://your-fabric.com/api/mcp-gateway?servers=fabric,linear
+https://your-fabric.com/api/mcp-gateway?servers=github_2
+https://your-fabric.com/api/mcp-gateway?servers=fabric,fizzy:fizzy_get_cards,fizzy:fizzy_create_card
+```
+
+Each entry is one of:
+
+- `name` or `name:*`: every tool of that server.
+- `name:tool`: only that tool. `tool` is the name the server itself gives the
+  tool, which is what follows `<prefix>__` in the gateway's name for it: the
+  Fizzy server's `fizzy__fizzy_get_cards` is `fizzy:fizzy_get_cards`. For
+  `fabric`, use the full platform name, such as `fabric:fabric_list_projects`.
+  Several `name:tool` entries for one server add up, and `name` (or `name:*`)
+  alongside them means the whole server.
+
+- `fabric` names the platform tools (`fabric_*`).
+- Any other name is a connected server's **prefix**: the part before `__` in
+  its tool names. `linear__list_issues` belongs to `linear`. A server's prefix
+  comes from its connection's name: lowercased, each run of characters other
+  than letters and digits turned into one `_`, and cut to 30 characters. When
+  two connections would share a prefix, the second gets `_2`, the third `_3`,
+  and so on. `fabric` is kept for the platform tools, so a connection named
+  "Fabric" gets `fabric_2`. Renaming a connection changes its prefix, so
+  update any URL that names it.
+- Server names are case-insensitive. Tool names are case-sensitive and must be
+  written exactly as the server gives them. Spaces around either are ignored,
+  and repeating an entry has no effect.
+- Leave the parameter out to see every server, as before.
+
+The selection is read once, when the client's session starts, and holds for the
+whole session. The tools outside it are left out of `tools/list` and a call to
+one is refused with an error, even by its exact name. After
+`fabric_switch_organization`, a selected server that the new organization does
+not have contributes no tools. The selection comes from the connection URL.
+If the gateway replaces the session because your credential now resolves to
+another organization, the client's next request, which carries the same URL,
+gets a new session with the same selection, checked again in the new
+organization. If the URL names a server or tool that organization lacks, the
+request fails with the same error as an `initialize` would, and so does every
+retry with that URL. Connect without the parameter to see every server.
+
+If the parameter is empty, has an empty entry or an entry with nothing after
+`:` (such as `fizzy:`), or names a server you do not have in the organization
+the session runs in, the connection fails at `initialize` with an error that
+names the bad entries and lists the valid server names, rather than quietly
+offering fewer tools. A `fabric:<tool>` entry that is not a platform tool fails
+the same way. A `<server>:<tool>` entry for a connected server is checked
+against that server's tools: if the tool is not one of them, the error lists the
+server's tools, or, when it has more than 25, says how many there are and how to
+see them. If the server's tools cannot be discovered when the session starts,
+because the server is unreachable or does not answer in time and Fabric holds
+no earlier list of them, the entry is accepted so that an outage does not stop
+the connection; a tool the server turns
+out not to have is then simply never listed. A project's URL
+(`/api/mcp-gateway/projects/<project-id>`) has no connected servers to choose
+from and refuses the parameter.
+
+<Callout type="info">
+The parameter narrows what one client sees and may call. It is not a
+permission: connecting without it shows every tool your permissions allow. It
+grants nothing and takes away no permission: each call to a selected tool is
+still checked against your scopes, project access and
+[runtime authority](#runtime-authority), and a platform tool you leave out (such as `fabric_request_authority`) is simply not
+available on that connection.
+</Callout>
+
+### Discovery Mode for Clients With a Tool Limit
+
+Some clients cannot take the gateway's full tool list. Windsurf stops at 100
+tools, VS Code Copilot at 128, and ChatGPT connectors limit how much text the
+tool definitions may take. For a client like that, add `mode=discovery` to the
+URL it connects to. Both the organization-wide URL and a project's URL accept
+it:
+
+```
+https://your-fabric.com/api/mcp-gateway?mode=discovery
+https://your-fabric.com/api/mcp-gateway?mode=discovery&servers=fabric,linear
+https://your-fabric.com/api/mcp-gateway/projects/<project-id>?mode=discovery
+```
+
+In discovery mode `tools/list` returns three tools instead of every tool:
+
+| Tool | What it does |
+|---|---|
+| `search_tools` | Finds tools by keywords in their names and descriptions (`query`, and an optional `limit`, default 10, at most 25). Each match has its name, a one-line summary, its server, its read-only and destructive hints, and whether it needs runtime authority. The result also says how many tools matched in all. |
+| `get_tool_schema` | Returns one tool's full definition (`name`): its description, input schema, hints, and whether it needs runtime authority. |
+| `call_tool` | Runs a tool (`name`, with its own arguments in `arguments`). |
+
+A client can also call a tool by its real name once it knows it, as in full
+mode.
+
+Discovery mode changes how tools are presented, not what a connection may do.
+It combines with `servers`: search and schema cover only the selected servers
+and tools, and, at a project's URL, only that project's tools. They also leave
+out any tool your API key's or sign-in's scopes do not reach. Every
+`call_tool` call is checked exactly as a direct call to that tool is, against
+your scopes, the server selection, project access and
+[runtime authority](#runtime-authority). A tool that search lists can still be
+refused when it is called, for example because a project is not yours to edit,
+because the tool checks a further scope of its own, or because authority has
+not been approved yet.
+
+The mode is read once, when the client's session starts, and holds for the
+whole session. A later request that adds, drops or changes the parameter does
+not change the mode of the session it quotes. To switch modes, reconnect with a
+different URL. Any value other than `discovery` fails the connection at
+`initialize` with an error that names the accepted value.
+
+Sessions are kept in the memory of the Fabric instance that created them. If a
+session is lost, for example after a restart, the client's next request starts
+a new one from the same URL, with the same mode and selection. Runtime
+authority approved for the old session is bound to that session and does not
+carry over, so request it again.
+
 ## Runtime Authority
 
 Connected server tools are protected by **runtime authority** — a Pipes-style session-scoped authorization model. This means:
 
 1. **Credentials are persistent** — your MCP server connections stay configured
-2. **Runtime access is ephemeral** — AI agents must request temporary permission before using tools
+2. **Runtime access is ephemeral** — AI agents must request temporary permission before calling a tool that writes; read-only tools run without it
 3. **Approval is human-only** — agents can request authority, but only humans can approve it
 
 ### The Authority Flow
@@ -692,7 +815,7 @@ sequenceDiagram
     participant UI as Fabric UI
     participant DB as Authority DB
 
-    AI->>GW: Call linear__list_issues
+    AI->>GW: Call linear__create_issue
     GW->>DB: Check authority for "linear"
     DB-->>GW: No active grant
     GW-->>AI: Error: Authority required
@@ -711,7 +834,7 @@ sequenceDiagram
     GW->>DB: Check status
     DB-->>AI: {status: "ACTIVE", grants: [...]}
 
-    AI->>GW: Call linear__list_issues
+    AI->>GW: Call linear__create_issue
     GW->>DB: Check authority for "linear"
     DB-->>GW: WRITE grant active
     GW->>GW: Execute via MCP client
@@ -728,15 +851,31 @@ sequenceDiagram
 
 ### Authority Metadata in tools/list
 
-Connected tools include metadata indicating their authority status:
+Connected tools include metadata saying whether a call needs authority. A read-only tool
+runs without a grant:
 
 ```json
 {
   "name": "linear__list_issues",
   "description": "[Linear] List issues",
   "_meta": {
+    "requiresAuthority": false,
+    "providerKey": "linear"
+  }
+}
+```
+
+A tool that writes needs one. `providerAuthorityStatus` says whether the session has any
+approved grant for the provider; a grant limited to other tools, to reads or to one request
+can still refuse the call:
+
+```json
+{
+  "name": "linear__create_issue",
+  "description": "[Linear] Create a new issue",
+  "_meta": {
     "requiresAuthority": true,
-    "authorityStatus": "granted",
+    "providerAuthorityStatus": "granted",
     "providerKey": "linear"
   }
 }

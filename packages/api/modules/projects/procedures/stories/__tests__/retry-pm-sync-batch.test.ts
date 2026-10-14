@@ -24,6 +24,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		workflowStart: vi.fn(),
 		resolvePMConfigForUser: vi.fn(),
 		applyPmUnlink: vi.fn(),
+		clearPmCreateClaim: vi.fn(async () => ({ cleared: false })),
 		pendingUpdateMany: vi.fn(),
 	};
 	return { handlers, mocks };
@@ -33,6 +34,7 @@ vi.mock("@repo/database", () => ({
 	isGitLabPersonalMcpServerKey: (key: string | null | undefined) =>
 		key === "gitlab" || key === "gitlab-official",
 	applyPmUnlink: mocks.applyPmUnlink,
+	clearPmCreateClaim: mocks.clearPmCreateClaim,
 	isPmServerIdKeySentinel: (id: string) =>
 		typeof id === "string" && id.startsWith("key:"),
 	readPmServerIdKeySentinel: (id: string) =>
@@ -127,11 +129,13 @@ describe("retryPmSyncBatchProcedure — unlinkFirst (bulk Re-push)", () => {
 				id: "story-1",
 				externalId: "EXT-1",
 				externalMcpServerId: "srv-1",
+				pmCreateClaimId: null,
 			},
 			{
 				id: "story-2",
 				externalId: "EXT-2",
 				externalMcpServerId: "srv-2",
+				pmCreateClaimId: "claim-2",
 			},
 		]);
 
@@ -159,6 +163,7 @@ describe("retryPmSyncBatchProcedure — unlinkFirst (bulk Re-push)", () => {
 				entityId: "story-1",
 				expectedExternalId: "EXT-1",
 				expectedExternalMcpServerId: "srv-1",
+				expectedPmCreateClaimId: null,
 			}),
 		);
 		expect(mocks.applyPmUnlink).toHaveBeenCalledWith(
@@ -166,6 +171,17 @@ describe("retryPmSyncBatchProcedure — unlinkFirst (bulk Re-push)", () => {
 				entityId: "story-2",
 				expectedExternalId: "EXT-2",
 				expectedExternalMcpServerId: "srv-2",
+				// Each row's own claim, read in the ownership query.
+				expectedPmCreateClaimId: "claim-2",
+			}),
+		);
+		expect(mocks.userStoryFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: { in: ["story-1", "story-2"] },
+					projectId: "project-1",
+				},
+				select: expect.objectContaining({ pmCreateClaimId: true }),
 			}),
 		);
 		// Each item dismisses its now-stale FLAG_MISSING proposal.
@@ -236,6 +252,119 @@ describe("retryPmSyncBatchProcedure — unlinkFirst (bulk Re-push)", () => {
 		expect(byId.get("story-2")?.enqueued).toBe(false);
 		expect(byId.get("story-3")?.enqueued).toBe(true);
 		expect(result.enqueuedCount).toBe(2);
+	});
+
+	it("an item whose claim changed since the read is reported stale and not enqueued; its siblings are", async () => {
+		mocks.userStoryFindMany.mockResolvedValue([
+			{
+				id: "story-1",
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-read",
+			},
+			{
+				id: "story-2",
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-2",
+			},
+		]);
+		// story-1's claim was replaced after the read (a newer push holds it).
+		mocks.clearPmCreateClaim.mockImplementation(
+			async ({ storyId }: { storyId: string }) => ({
+				cleared: storyId === "story-2",
+			}),
+		);
+
+		const result = (await handlers.retryPmSyncBatch({
+			input: {
+				projectId: "project-1",
+				items: [
+					{ id: "story-1", itemType: "story" as const },
+					{ id: "story-2", itemType: "story" as const },
+				],
+				unlinkFirst: true,
+				organizationId: null,
+			},
+			context: ctx,
+		})) as {
+			enqueuedCount: number;
+			results: Array<{ id: string; enqueued: boolean; reason?: string }>;
+		};
+
+		expect(mocks.clearPmCreateClaim).toHaveBeenCalledWith({
+			projectId: "project-1",
+			storyId: "story-1",
+			claimId: "claim-read",
+		});
+		const byId = new Map(result.results.map((r) => [r.id, r]));
+		expect(byId.get("story-1")).toMatchObject({
+			enqueued: false,
+			reason: "pm-recovery-stale",
+		});
+		expect(byId.get("story-2")?.enqueued).toBe(true);
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+	});
+
+	it("an item whose claim is too recent to clear is reported with the time and not enqueued; its siblings are", async () => {
+		mocks.userStoryFindMany.mockResolvedValue([
+			{
+				id: "story-1",
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-read",
+			},
+			{
+				id: "story-2",
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-2",
+			},
+		]);
+		mocks.clearPmCreateClaim.mockImplementation(
+			async ({ storyId }: { storyId: string }) =>
+				storyId === "story-2"
+					? { cleared: true }
+					: {
+							cleared: false,
+							claimTooRecent: {
+								recoverableAt: new Date(
+									"2026-10-13T12:05:00.000Z",
+								),
+							},
+						},
+		);
+
+		const result = (await handlers.retryPmSyncBatch({
+			input: {
+				projectId: "project-1",
+				items: [
+					{ id: "story-1", itemType: "story" as const },
+					{ id: "story-2", itemType: "story" as const },
+				],
+				unlinkFirst: true,
+				organizationId: null,
+			},
+			context: ctx,
+		})) as {
+			results: Array<{
+				id: string;
+				enqueued: boolean;
+				reason?: string;
+				recoverableAt?: string | null;
+			}>;
+		};
+
+		const byId = new Map(result.results.map((r) => [r.id, r]));
+		expect(byId.get("story-1")).toEqual({
+			id: "story-1",
+			itemType: "story",
+			enqueued: false,
+			workflowId: undefined,
+			reason: "pm-recovery-too-recent",
+			recoverableAt: "2026-10-13T12:05:00.000Z",
+		});
+		expect(byId.get("story-2")?.enqueued).toBe(true);
 	});
 
 	it("does not unlink when unlinkFirst is false (plain bulk retry)", async () => {

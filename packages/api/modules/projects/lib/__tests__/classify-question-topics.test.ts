@@ -1,4 +1,4 @@
-import { Experimental_DecisionRefusalError } from "ai";
+import { Experimental_DecisionRefusalError, RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	capturedDecisionOutcomes,
@@ -39,6 +39,14 @@ vi.mock("@repo/observability/llm", async () =>
 );
 
 vi.mock("@repo/logs", () => ({ logger: { info: vi.fn(), warn: vi.fn() } }));
+
+const wrappedInRetryError = (limit: Error) =>
+	new RetryError({
+		message:
+			"Failed after 2 attempts with non-retryable error: 'AI usage limit exceeded'",
+		reason: "errorNotRetryable",
+		errors: [new Error("gateway busy"), limit],
+	});
 
 vi.mock("@repo/payments/lib/ai-usage-limit-error", () => ({
 	AiUsageLimitExceededError,
@@ -721,6 +729,28 @@ describe("decision telemetry", () => {
 			["limit_exceeded", "example-decider", 2],
 			["limit_exceeded", "none", 3],
 		]);
+	});
+
+	it("treats a limit error the SDK wrapped in a RetryError like an unwrapped one: all Other, limit_exceeded, no language fallback", async () => {
+		mocks.experimental_decide.mockRejectedValueOnce(
+			wrappedInRetryError(new AiUsageLimitExceededError()),
+		);
+
+		const out = await classifyQuestionTopics({
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
+
+		expect(out).toEqual(["Other", "Other"]);
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(
+			capturedDecisionOutcomes.map(({ outcome, model, count }) => [
+				outcome,
+				model,
+				count,
+			]),
+		).toEqual([["limit_exceeded", "example-decider", 2]]);
 	});
 
 	it("records unavailable per question when no decision model resolves", async () => {

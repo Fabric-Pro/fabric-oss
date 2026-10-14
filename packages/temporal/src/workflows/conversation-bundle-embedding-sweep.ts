@@ -20,7 +20,8 @@
  * silent.
  */
 
-import { proxyActivities } from "@temporalio/workflow";
+import { log, patched, proxyActivities } from "@temporalio/workflow";
+import type * as reenrichmentActivities from "../activities/context-reenrichment-sweep";
 import type * as activities from "../activities/conversation-bundle-embedding-sweep";
 
 const { sweepConversationBundleEmbeddingsActivity } = proxyActivities<
@@ -46,6 +47,25 @@ const { sweepConversationBundleEmbeddingsActivity } = proxyActivities<
 	},
 });
 
+/**
+ * Re-embeds project contexts stored without their contextual enrichment while
+ * the ChatGPT plan was spent (Fizzy #2770). It rides this schedule because it
+ * is the same kind of work — finishing an embed that did not complete — and
+ * needs no cadence of its own. One attempt: the next tick is the retry.
+ */
+const { reenrichDeferredContextsActivity } = proxyActivities<
+	typeof reenrichmentActivities
+>({
+	// The activity starts no new row after three minutes; this leaves a large
+	// context room to finish its sequential per-chunk enrichment.
+	startToCloseTimeout: "8 minutes",
+	heartbeatTimeout: "2 minutes",
+	retry: { maximumAttempts: 1 },
+});
+
+/** Gates the re-enrichment pass, which histories recorded before it lack. */
+const CONTEXT_REENRICHMENT_PATCH_ID = "context-reenrichment-sweep-v1";
+
 export type ConversationBundleEmbeddingSweepInput =
 	activities.SweepConversationBundleEmbeddingsInput;
 export type ConversationBundleEmbeddingSweepOutput =
@@ -54,5 +74,16 @@ export type ConversationBundleEmbeddingSweepOutput =
 export async function conversationBundleEmbeddingSweepWorkflow(
 	input: ConversationBundleEmbeddingSweepInput = {},
 ): Promise<ConversationBundleEmbeddingSweepOutput> {
-	return await sweepConversationBundleEmbeddingsActivity(input);
+	const result = await sweepConversationBundleEmbeddingsActivity(input);
+	if (patched(CONTEXT_REENRICHMENT_PATCH_ID)) {
+		// Its own failure must not fail the bundle sweep that already ran.
+		try {
+			await reenrichDeferredContextsActivity();
+		} catch (error) {
+			log.warn("Context re-enrichment pass failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return result;
 }

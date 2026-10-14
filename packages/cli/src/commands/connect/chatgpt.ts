@@ -98,6 +98,39 @@ function open(url: string, what: string): void {
 	} catch {}
 }
 
+function signInAccount(shared: boolean): string {
+	return shared
+		? "the ChatGPT account the organization shares, not your own"
+		: "the ChatGPT account you want to connect";
+}
+
+/** The steps, in the order the person meets them (Fizzy #3052). */
+export function connectSteps(shared: boolean): string {
+	const account = signInAccount(shared);
+	return [
+		"Connecting takes two steps in your browser:",
+		"  1. Approve the connection in Fabric.",
+		`  2. Sign in to ChatGPT with ${account}.`,
+		"This terminal says when the plan is connected.",
+		"",
+	].join("\n");
+}
+
+/**
+ * The tab the Fabric approval lands on. A ChatGPT sign-in still follows, so it
+ * must not read as the end of the connection.
+ */
+export function approvedPage(shared: boolean): {
+	title: string;
+	body: string;
+} {
+	const account = signInAccount(shared);
+	return {
+		title: "Approved in Fabric",
+		body: `Next, your browser opens ChatGPT: sign in with ${account}. Your terminal says when the plan is connected. You can close this tab.`,
+	};
+}
+
 /** Step 1: the person approves in Fabric; the ticket comes back to this machine. */
 async function approveInFabric(
 	origin: string,
@@ -108,6 +141,7 @@ async function approveInFabric(
 		state,
 		callbackPath: FABRIC_APPROVAL_CALLBACK_PATH,
 		codeParam: "ticket",
+		successPage: approvedPage(sharedOrganizationSlug !== undefined),
 	});
 	const port = Number(new URL(listener.redirectUri).port);
 	open(
@@ -179,12 +213,14 @@ async function connect(opts: ConnectOptions): Promise<void> {
 		}
 	}
 
+	process.stdout.write(connectSteps(sharedOrganizationSlug !== undefined));
 	let ticket: string;
 	try {
 		ticket = await approveInFabric(origin, sharedOrganizationSlug);
 	} catch (err: unknown) {
 		printError((err as Error).message, 1);
 	}
+	process.stdout.write("Approved in Fabric.\n");
 
 	let result: ChatGptPlanUploadResult | ChatGptPlanSharedUploadResult;
 	try {

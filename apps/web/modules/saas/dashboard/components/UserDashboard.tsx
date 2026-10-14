@@ -1,6 +1,7 @@
 "use client";
 
 import { config } from "@repo/config";
+import { useAgentLabel } from "@saas/agents/hooks/useAgentLabel";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { ProjectInviteWelcomeWidget } from "@saas/dashboard/components/ProjectInviteWelcomeWidget";
 import { PendingInvitationsBanner } from "@saas/shared/components/PendingInvitationsBanner";
@@ -109,6 +110,7 @@ export function UserDashboard() {
 	const { user } = useSession();
 	const router = useRouter();
 	const queryClient = useQueryClient();
+	const formatAgentLabel = useAgentLabel();
 	const [timeRange, setTimeRange] = useState<TimeRange>("90d");
 
 	const since = useMemo(() => timeRangeToSince(timeRange), [timeRange]);
@@ -158,16 +160,7 @@ export function UserDashboard() {
 													.toUpperCase() +
 												taskStatus.slice(1);
 
-							const title =
-								task.agentId === "orchestrator" ||
-								task.agentId === "fabric-ai" ||
-								task.agentId === "fabric_ai"
-									? "Fabric AI"
-									: task.agentId
-											.replace(/[-_]/g, " ")
-											.replace(/\b\w/g, (l) =>
-												l.toUpperCase(),
-											);
+							const title = formatAgentLabel(task.agentId);
 
 							return {
 								id: task.id,
@@ -254,7 +247,7 @@ export function UserDashboard() {
 						(a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
 					)
 				: [],
-		[activity],
+		[activity, formatAgentLabel],
 	);
 
 	// Recent chats

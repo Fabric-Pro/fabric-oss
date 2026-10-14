@@ -113,6 +113,7 @@ describe("aiDraftTestCasesProcedure", () => {
 						projectId: "p1",
 						storyIds: ["s1"],
 						userId: "u1",
+						planEligible: true,
 					}),
 				],
 			}),

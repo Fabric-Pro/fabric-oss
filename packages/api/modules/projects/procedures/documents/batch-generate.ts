@@ -204,6 +204,10 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 			source: "batch-document-generation",
 			// Use longer expiry for batch operations (30 minutes)
 			expirySeconds: 1800,
+			// Bulk work: the agents writing the documents resolve on the
+			// organization's shared ChatGPT plans, never the clicker's own
+			// (Fizzy #2770).
+			jobType: "batch-document-generation",
 		});
 
 		// Start batch generation workflow
@@ -218,6 +222,9 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 					{
 						projectId,
 						userId: user.id,
+						// Bulk work: its AI steps run on the organization's shared
+						// ChatGPT plans, never the clicker's own (Fizzy #2770).
+						jobType: "batch-document-generation",
 						organizationId: project.organizationId || undefined,
 						aiToken, // Pass pre-issued token to workflow
 						documents: createdDocuments.map((doc, index) => ({

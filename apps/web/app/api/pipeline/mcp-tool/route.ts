@@ -15,6 +15,7 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
 	injectAtlassianCloudId,
+	resolveAtlassianSiteId,
 	toolDeclaresCloudId,
 } from "./atlassian-cloud-id";
 
@@ -299,21 +300,28 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		// Atlassian Rovo tools require a cloudId the OAuth flow already resolved
-		// and persisted on the config. Inject it for tools that declare the param
-		// (only when the caller didn't already supply one) so callers — the
-		// Confluence page picker, content fetcher, etc. — don't each re-resolve it.
+		// Rovo tools need a cloudId. Use the stored Atlassian Cloud id, otherwise
+		// resolve it via Rovo and cache it per config and grant generation.
 		let execParams: Record<string, unknown> = params;
 		if (params?.cloudId == null && toolDeclaresCloudId(tool)) {
 			const config = await getMcpConfigById(mcpConfigId, {
 				userId: session.user.id,
 				organizationId: resolvedOrganizationId,
 			});
-			execParams = injectAtlassianCloudId(
-				params,
-				tool,
-				config?.atlassianCloudCloudId,
-			);
+			const isSystemAtlassian =
+				config?.mcpServer?.key === "atlassian" &&
+				config.mcpServer.isSystemProvided;
+			const siteId = await resolveAtlassianSiteId({
+				storedSiteId: config?.atlassianCloudCloudId,
+				resolverTool: isSystemAtlassian
+					? tools.getAccessibleAtlassianResources
+					: null,
+				cacheKey: config
+					? `${config.id}:${config.oauthGrantGeneration}`
+					: undefined,
+				parseResult: parseMcpResult,
+			});
+			execParams = injectAtlassianCloudId(params, tool, siteId);
 		}
 
 		// Execute the tool through the shared external-dispatch funnel — a

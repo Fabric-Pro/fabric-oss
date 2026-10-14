@@ -45,6 +45,15 @@ vi.mock("@repo/temporal", () => ({
 // so stub it to avoid pulling the temporal workflow bundle.
 vi.mock("@repo/temporal/workflows", () => ({}));
 
+const mockProjectSetupIsPaused = vi.fn();
+const mockCancelPausedSetupsOfProject = vi.fn();
+vi.mock("../../../lib/paused-setup", () => ({
+	projectSetupIsPaused: (...args: unknown[]) =>
+		mockProjectSetupIsPaused(...args),
+	cancelPausedSetupsOfProject: (...args: unknown[]) =>
+		mockCancelPausedSetupsOfProject(...args),
+}));
+
 // withCorrelationMemo just augments + returns its options object.
 vi.mock("../../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: (options: unknown) => options,
@@ -89,6 +98,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mockIssueAIToken.mockResolvedValue("ai-token-123");
 	mockListProjectRepoIntegrations.mockResolvedValue([]);
+	mockProjectSetupIsPaused.mockResolvedValue(false);
+	mockCancelPausedSetupsOfProject.mockResolvedValue(0);
 	mockWorkflowStart.mockResolvedValue({
 		workflowId: "wf-1",
 		firstExecutionRunId: "run-1",
@@ -150,6 +161,34 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 		});
 
 		expect(mockWorkflowStart).not.toHaveBeenCalled();
+		expect(mockCancelPausedSetupsOfProject).not.toHaveBeenCalled();
+	});
+
+	it("cancels a setup paused for a ChatGPT plan reset first, then starts the new one", async () => {
+		mockProjectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: "org-1",
+			name: "Proj",
+			repositoryOwner: "my-org",
+			repositoryName: "repo",
+			codeAnalysisStatus: "SCANNING",
+		});
+		mockProjectSetupIsPaused.mockResolvedValue(true);
+		mockCancelPausedSetupsOfProject.mockResolvedValue(1);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({ input: { projectId: "p1" }, context: baseContext }),
+		).resolves.toMatchObject({ status: "SCANNING" });
+
+		expect(mockCancelPausedSetupsOfProject).toHaveBeenCalledWith({
+			projectId: "p1",
+			organizationId: "org-1",
+			userId: "user-1",
+		});
+		expect(
+			mockCancelPausedSetupsOfProject.mock.invocationCallOrder[0],
+		).toBeLessThan(mockWorkflowStart.mock.invocationCallOrder[0]);
 	});
 
 	it("starts existingProjectSetupWorkflow with the ACTIVE ADO repo URLs and returns SCANNING", async () => {
@@ -221,6 +260,16 @@ describe("startAzureDevOpsCodeSetupProcedure", () => {
 		expect(args.projectTypes).toEqual(["WEB_APP"]);
 		expect(args.projectName).toBe("Proj");
 		expect(args.aiToken).toBe("ai-token-123");
+		// Bulk work: the run and its agents' token are the setup job, on the
+		// shared plans, never the clicker's own (Fizzy #2770).
+		expect(args).toMatchObject({ jobType: "project-setup" });
+		expect(args).not.toHaveProperty("planEligible");
+		expect(mockIssueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ jobType: "project-setup" }),
+		);
+		expect(mockIssueAIToken.mock.calls[0]?.[0]).not.toHaveProperty(
+			"planEligible",
+		);
 	});
 
 	it("falls back to the legacy repositoryUrl when no ADO integration row surfaces a URL", async () => {

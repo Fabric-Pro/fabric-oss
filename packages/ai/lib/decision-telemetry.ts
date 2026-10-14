@@ -26,12 +26,12 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { llmInstrumentation } from "@repo/observability/llm";
-import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import {
 	Experimental_DecisionRefusalError,
 	InvalidResponseDataError,
 } from "ai";
 import { SYSTEM_DEFAULT_DECISION_FALLBACKS } from "./decision-model-fallback";
+import { findAiUsageLimitError } from "./find-usage-limit-error";
 import type { DecisionModelInstance } from "./usage-logging-middleware";
 
 export interface DecisionTelemetryContext {
@@ -350,7 +350,8 @@ export function decisionAnswerConfidence(answer: unknown): number | undefined {
 /**
  * Outcome for a decision call that threw, classified by SDK identity and never
  * by message text:
- * - `AiUsageLimitExceededError`: a usage limit.
+ * - `AiUsageLimitExceededError`, bare or inside the SDK's `RetryError` (see
+ *   `findAiUsageLimitError`): a usage limit.
  * - `Experimental_DecisionRefusalError`: the model refused a question.
  * - `InvalidResponseDataError`: the response was rejected as invalid. In
  *   `experimental_decide` this is the only class thrown for answer validation
@@ -364,7 +365,7 @@ export function decisionOutcomeForError(
 	error: unknown,
 ): "limit_exceeded" | "refused" | "malformed" | "failed" {
 	try {
-		if (error instanceof AiUsageLimitExceededError) {
+		if (findAiUsageLimitError(error)) {
 			return "limit_exceeded";
 		}
 		if (Experimental_DecisionRefusalError.isInstance(error)) {

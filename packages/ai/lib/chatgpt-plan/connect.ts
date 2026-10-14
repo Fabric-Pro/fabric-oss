@@ -16,14 +16,15 @@ import {
 	storeChatGptPlanOrgAccount,
 } from "./plan-credentials";
 import { refreshChatGptPlanServedModelsInBackground } from "./served-models";
+import { invalidateChatGptPlanSourceCaches } from "./source-caches";
 
 /** The uploader already shares this account; moving it back needs no sign-in (Fizzy #2770 I1). */
 const CHATGPT_PLAN_ALREADY_SHARED_BY_YOU =
-	"You already share this ChatGPT account with an organization. To use it as your own plan, open that organization and choose Take back on your ChatGPT plan in Account settings → AI Providers.";
+	"You already share this ChatGPT account with an organization. To use it as your own plan, open that organization and choose Stop sharing on your ChatGPT plan in Account settings → AI Providers.";
 
 /** The uploader's own plan; sharing it needs no new sign-in (Fizzy #2770 I1). */
 const CHATGPT_PLAN_ALREADY_YOUR_OWN =
-	"This ChatGPT account is already your own plan. To share it, choose Share with this organization on your ChatGPT plan in Account settings → AI Providers — no new sign-in needed.";
+	"This ChatGPT account is already your own plan. To share it, choose Share organization-wide on your ChatGPT plan in Account settings → AI Providers — no new sign-in needed.";
 
 export const CHATGPT_PLAN_NOT_ENABLED =
 	"ChatGPT plan isn't enabled for any of your organizations. Ask your Fabric admin to enable it.";
@@ -133,7 +134,7 @@ export async function connectChatGptPlan(params: {
 		return { ok: false, status: 403, error: CHATGPT_PLAN_NOT_ENABLED };
 	}
 
-	await storeChatGptPlanCredential({
+	const stored = await storeChatGptPlanCredential({
 		userId,
 		email: claims.email ?? null,
 		subject: claims.sub,
@@ -149,11 +150,18 @@ export async function connectChatGptPlan(params: {
 		},
 		scopes: upload.scopes,
 	});
-	// Which models this plan serves, for the pickers; never holds up the connect.
-	refreshChatGptPlanServedModelsInBackground(
-		{ kind: "user", userId },
-		{ accessToken: upload.accessToken },
-	);
+	// The user key can now identify a different account. Same-account
+	// reconnects reload their retained state; replacements reload clean state.
+	const source = { kind: "user", userId } as const;
+	invalidateChatGptPlanSourceCaches(source);
+	// Which models this plan serves, for the pickers; never holds up the
+	// connect. Bound to this sign-in, so a later replacement drops it.
+	refreshChatGptPlanServedModelsInBackground(source, {
+		token: {
+			accessToken: upload.accessToken,
+			credentialFingerprint: stored.credentialFingerprint,
+		},
+	});
 
 	await Promise.all(
 		enabledHere.map((org) =>
@@ -267,7 +275,7 @@ export async function connectChatGptPlanOrgAccount(params: {
 	}
 
 	const existing = await listChatGptPlanOrgAccounts(organizationId);
-	let stored: { id: string; created: boolean };
+	let stored: Awaited<ReturnType<typeof storeChatGptPlanOrgAccount>>;
 	try {
 		stored = await storeChatGptPlanOrgAccount({
 			organizationId,
@@ -296,7 +304,12 @@ export async function connectChatGptPlanOrgAccount(params: {
 
 	refreshChatGptPlanServedModelsInBackground(
 		{ kind: "org", organizationId, accountId: stored.id },
-		{ accessToken: upload.accessToken },
+		{
+			token: {
+				accessToken: upload.accessToken,
+				credentialFingerprint: stored.credentialFingerprint,
+			},
+		},
 	);
 
 	const label =

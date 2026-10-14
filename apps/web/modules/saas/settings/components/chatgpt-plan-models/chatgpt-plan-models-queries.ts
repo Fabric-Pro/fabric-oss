@@ -16,10 +16,11 @@ export type ChatgptPlanModelTask = ChatgptPlanModels["tasks"][number];
 
 /**
  * The organization's ChatGPT plan model per task (Fizzy #2770). The server
- * reads the SESSION's organization, so the key carries the slug on screen.
+ * reads the SESSION's organization, so nothing is fetched until the session
+ * names the organization on screen (see `useChatgptPlanPool`).
  */
 export function useChatgptPlanModels(enabled = true) {
-	const { activeOrganization, isSwitching, isResolvingOrganization } =
+	const { activeOrganization, isSessionOnActiveOrganization } =
 		useActiveOrganization();
 	return useQuery({
 		queryKey: [
@@ -27,11 +28,7 @@ export function useChatgptPlanModels(enabled = true) {
 			activeOrganization?.slug ?? null,
 		],
 		queryFn: () => orpcClient.organizations.chatgptPlanModels.get({}),
-		enabled:
-			enabled &&
-			Boolean(activeOrganization) &&
-			!isSwitching &&
-			!isResolvingOrganization,
+		enabled: enabled && isSessionOnActiveOrganization,
 	});
 }
 

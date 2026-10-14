@@ -2499,6 +2499,7 @@ export async function analyzeContextAndPropose(
 			projectId,
 			userId,
 			organizationId,
+			jobType,
 		});
 		proposal.changes = routingResult.changes;
 		routedEnrichCount = routingResult.enriched;
@@ -2573,6 +2574,7 @@ export async function analyzeContextAndPropose(
 				projectId,
 				userId,
 				organizationId,
+				jobType,
 				artifact: {
 					surface: "backlog_proposal",
 					items: buildBacklogPrecheckItems(proposal.changes),

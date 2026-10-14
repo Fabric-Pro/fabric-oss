@@ -114,6 +114,46 @@ describe("Connect ChatGPT plan page", () => {
 		).toBeInTheDocument();
 	});
 
+	it("lists the steps in order with the approval as the current one (Fizzy #3052)", () => {
+		render(
+			<ConnectChatgptPlanForm
+				email="dev@example.com"
+				organizations={ORGS}
+				port={54321}
+				state="state-example"
+			/>,
+		);
+		const steps = screen.getAllByRole("listitem");
+		expect(steps.map((step) => step.textContent)).toEqual([
+			`${copy.steps.cli} (${copy.steps.done})`,
+			`2${copy.steps.approve}`,
+			`3${copy.steps.chatgpt}`,
+			`4${copy.steps.terminal}`,
+		]);
+		expect(steps[1]).toHaveAttribute("aria-current", "step");
+	});
+
+	it("moves to the ChatGPT sign-in once approved", async () => {
+		render(
+			<ConnectChatgptPlanForm
+				email="dev@example.com"
+				organizations={ORGS}
+				port={54321}
+				state="state-example"
+			/>,
+		);
+		await userEvent.click(
+			screen.getByRole("checkbox", { name: "Example Org" }),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.approve }),
+		);
+		await screen.findByText(copy.returnToTerminal);
+		expect(
+			screen.getByText(copy.steps.chatgpt).closest("li"),
+		).toHaveAttribute("aria-current", "step");
+	});
+
 	it("refuses a link without the CLI's port and state", () => {
 		render(
 			<ConnectChatgptPlanForm

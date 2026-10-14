@@ -14,6 +14,7 @@
  * cascade-document-assistant.test.ts.
  */
 
+import { runWithDispatchGuard } from "@repo/utils/dispatch-guard";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { db, Prisma } from "../prisma/client";
 import {
@@ -128,6 +129,50 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					allocateNextStoryNumber(tx, "nonexistent-project-id"),
 				),
 			).rejects.toThrow(/not found/i);
+		});
+
+		it("commits nothing when an Advisor chat turn stops while the story row is inserted: the row and the identifier both roll back", async () => {
+			const project = await seedProject({ nextStoryNumber: 7 });
+			// The turn's dispatch guard: its stop lands between createStory's
+			// checks, after the INSERT ran and before the commit (the third
+			// check: before the allocation, before the insert, before the
+			// commit, with the default status already seeded).
+			const STOP = new Error("the chat turn stopped");
+			let checks = 0;
+			const throwIfStopped = () => {
+				checks += 1;
+				if (checks >= 3) {
+					throw STOP;
+				}
+			};
+			const guard = {
+				key: "turn-example-1",
+				assertDispatchable: async () => undefined,
+				abortSignal: () => undefined,
+				rethrowIfStopped: throwIfStopped,
+				throwIfStopped,
+			};
+
+			await expect(
+				runWithDispatchGuard(guard, () =>
+					createStory({
+						projectId: project.id,
+						title: "Stopped story",
+						createdById: USER_ID,
+						source: "CUSTOM_AGENT",
+					}),
+				),
+			).rejects.toBe(STOP);
+
+			expect(checks).toBe(3);
+			expect(
+				await db.userStory.count({ where: { projectId: project.id } }),
+			).toBe(0);
+			const refreshed = await db.project.findUnique({
+				where: { id: project.id },
+				select: { nextStoryNumber: true },
+			});
+			expect(refreshed?.nextStoryNumber).toBe(7);
 		});
 
 		it("produces 50 unique sequential identifiers under 50 concurrent createStory calls (AC6)", async () => {

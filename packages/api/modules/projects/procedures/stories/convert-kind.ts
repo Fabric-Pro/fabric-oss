@@ -46,6 +46,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { mapStageTransitionError } from "../../lib/stage-transition-errors";
 import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields";
 
 /**
@@ -55,6 +56,9 @@ import { stripInternalStoryFields } from "../../lib/strip-internal-story-fields"
  * workflow arguments.
  */
 const STORY_KIND_CONVERSION_ENTRY_POINT = "typeConversionRegeneration";
+
+const CONVERT_DEFERRED_ITEM_MESSAGE =
+	"A deferred item can't change type. Change its delivery track first — a deferred item can only be declined, closed or parked.";
 
 /**
  * Deterministic, per-work-item workflow id.
@@ -179,28 +183,46 @@ export const convertStoryKindProcedure = tenantProtectedProcedure
 			};
 		}
 
+		// The snap to DRAFT below is a stage transition, and a DEFER-track item
+		// may only move to DECLINED / CLOSED / PLACEHOLDER. Refuse it here in
+		// words the toast can show, rather than letting the choke point's
+		// readiness error escape as a 500.
+		if (
+			existing.deliveryTrack === "DEFER" &&
+			existing.draftingStage !== "DRAFT"
+		) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message: CONVERT_DEFERRED_ITEM_MESSAGE,
+			});
+		}
+
 		const targetKind: StoryKind = input.targetKind;
 
-		const story = await updateStory(
-			input.storyId,
-			input.projectId,
-			{
-				kind: targetKind,
-				// Snap to DRAFT so the per-kind stage envelope is always
-				// satisfied post-convert.
-				draftingStage: "DRAFT",
-			},
-			{
-				userId: user.id,
-				// A personal project reads as `null` on the row and `undefined`
-				// in the tenant context; both mean the same absence.
-				organizationId: organizationId ?? undefined,
-				changedBy: user.id,
-				lastEditedSource: "MANUAL",
-				lastEditedByName: user.name ?? null,
-				changeDescription: `Converted ${existing.kind} → ${targetKind}`,
-			},
-		);
+		let story: Awaited<ReturnType<typeof updateStory>>;
+		try {
+			story = await updateStory(
+				input.storyId,
+				input.projectId,
+				{
+					kind: targetKind,
+					// Snap to DRAFT so the per-kind stage envelope is always
+					// satisfied post-convert.
+					draftingStage: "DRAFT",
+				},
+				{
+					userId: user.id,
+					// A personal project reads as `null` on the row and `undefined`
+					// in the tenant context; both mean the same absence.
+					organizationId: organizationId ?? undefined,
+					changedBy: user.id,
+					lastEditedSource: "MANUAL",
+					lastEditedByName: user.name ?? null,
+					changeDescription: `Converted ${existing.kind} → ${targetKind}`,
+				},
+			);
+		} catch (error) {
+			throw mapStageTransitionError(error);
+		}
 
 		/**
 		 * The flip has landed; the body rewrite follows it asynchronously.
@@ -247,6 +269,8 @@ export const convertStoryKindProcedure = tenantProtectedProcedure
 							// customized template stops being the one that runs.
 							organizationId,
 							userId: user.id,
+							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+							planEligible: true,
 							// Diagnostic only. The activity reads the kind back
 							// off the stored row, because a caller-supplied kind
 							// is a claim rather than a fact; this carries what

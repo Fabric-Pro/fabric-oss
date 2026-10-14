@@ -36,7 +36,40 @@ const activityStubs = vi.hoisted(() => ({
 	createOrUpdateStoryFromPMItem: vi.fn(),
 	deleteStoriesNotInPMList: vi.fn(),
 	executeMcpTool: vi.fn(),
+	createStoryInPmWithClaim: vi.fn(),
 	closeStorySyncJob: vi.fn(),
+}));
+
+/**
+ * The story the bulk push creates, for the real `createStoryInPmWithClaim`
+ * (its project check and create claim); nothing else reads `userStory`.
+ */
+const story = vi.hoisted(() => ({
+	row: null as Record<string, unknown> | null,
+}));
+const fakeUserStory = vi.hoisted(() => ({
+	findFirst: async () => (story.row ? { ...story.row } : null),
+	findUnique: async () => (story.row ? { ...story.row } : null),
+	update: async ({ data }: { data: Record<string, unknown> }) =>
+		Object.assign(story.row ?? {}, data),
+	updateMany: async ({
+		where,
+		data,
+	}: {
+		where: Record<string, unknown>;
+		data: Record<string, unknown>;
+	}) => {
+		const row = story.row;
+		const match =
+			row !== null &&
+			Object.entries(where).every(
+				([key, value]) => (row[key] ?? null) === value,
+			);
+		if (match) {
+			Object.assign(row, data);
+		}
+		return { count: match ? 1 : 0 };
+	},
 }));
 
 vi.mock("@temporalio/workflow", async () => {
@@ -64,21 +97,43 @@ vi.mock("@temporalio/activity", async () => {
 	};
 });
 
-vi.mock("@repo/database", async (importOriginal) => ({
-	...(await importOriginal<object>()),
-	getMcpConfigById: vi.fn(async () => {
-		state.reads++;
-		const current = state.config;
-		if (state.reads >= state.moveAfterReads && state.movedTo) {
-			state.config = state.movedTo;
-		}
-		return current;
-	}),
-	getValidAccessToken: vi.fn(async () => "api-key"),
-	// The organization gate on the config owner (Fizzy #2903): a member whose
-	// role allows MCP read and connect.
-	canConnectOrganizationMcpConfigs: vi.fn(async () => true),
-	canReadOrganizationMcpConfigs: vi.fn(async () => true),
+vi.mock("@repo/database", async (importOriginal) => {
+	const actual = await importOriginal<{ db: object }>();
+	return {
+		...actual,
+		// The claim stamp is read from the database clock (`takeClaim`).
+		readDatabaseClock: vi.fn(async () => new Date()),
+		db: new Proxy(actual.db, {
+			get: (target, key, receiver) =>
+				key === "userStory"
+					? fakeUserStory
+					: key === "$transaction"
+						? // The bulk create's link and status write: no test
+							// here makes a write inside it fail, so the client
+							// writes the one row directly.
+							async (fn: (tx: object) => Promise<unknown>) =>
+								fn({ userStory: fakeUserStory })
+						: Reflect.get(target, key, receiver),
+		}),
+		getMcpConfigById: vi.fn(async () => {
+			state.reads++;
+			const current = state.config;
+			if (state.reads >= state.moveAfterReads && state.movedTo) {
+				state.config = state.movedTo;
+			}
+			return current;
+		}),
+		getValidAccessToken: vi.fn(async () => "api-key"),
+		// The organization gate on the config owner (Fizzy #2903): a member whose
+		// role allows MCP read and connect.
+		canConnectOrganizationMcpConfigs: vi.fn(async () => true),
+		canReadOrganizationMcpConfigs: vi.fn(async () => true),
+	};
+});
+
+// The link write after a create (the real one is tested in @repo/database).
+vi.mock("../pm-update-story", () => ({
+	updateStoryFromPm: vi.fn(async () => ({})),
 }));
 
 vi.mock("@repo/mcp/lib/server-url-guard", () => ({
@@ -156,7 +211,12 @@ async function fakeGitLabMcpServer(
 						text: JSON.stringify(
 							message.params?.name === "list_issues"
 								? []
-								: { iid: 7 },
+								: {
+										id: 1007,
+										iid: 7,
+										web_url:
+											"https://gitlab.com/example-org/app/-/issues/7",
+									},
 						),
 					},
 				],
@@ -187,7 +247,9 @@ vi.mock("../../shared/oauth-tool-executors", () => ({
 import { clearMcpClientCache, getCachedMcpClientForConfig } from "@repo/mcp";
 import { storySyncWorkflow } from "../../../workflows/story-sync-workflow";
 import { executeMcpTool } from "../../orchestrator/execution/execute-mcp-tool";
+import { createStoryInPmWithClaim } from "../create-story-in-pm-with-claim";
 import { fetchPmTicket } from "../fetch-pm-ticket";
+import { updateStoryFromPm } from "../pm-update-story";
 import { fetchPMItemsByIds, listWorkItemsFromPM } from "../story-sync";
 
 function gitlabConfig(baseUrl: string) {
@@ -254,6 +316,18 @@ beforeEach(async () => {
 	state.requests = [];
 	state.executed = [];
 	activityStubs.executeMcpTool.mockImplementation(executeMcpTool);
+	activityStubs.createStoryInPmWithClaim.mockImplementation(
+		createStoryInPmWithClaim,
+	);
+	story.row = {
+		id: "story-1",
+		projectId: "proj-1",
+		project: { organizationId: "org-1", userId: "user-1" },
+		externalId: null,
+		externalMcpServerId: null,
+		lastPmSyncAttemptId: null,
+		pmCreateClaimId: null,
+	};
 	activityStubs.listWorkItemsFromPM.mockImplementation(listWorkItemsFromPM);
 	activityStubs.deleteStoriesNotInPMList.mockResolvedValue({
 		deletedCount: 3,
@@ -437,16 +511,19 @@ describe("workflow dispatch after a completed preflight", () => {
 		});
 
 		// The dispatch carried the container's instance from workflow input.
-		expect(activityStubs.executeMcpTool).toHaveBeenCalledWith(
+		expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledWith(
 			expect.objectContaining({
 				toolName: "create_issue",
 				pmTarget: { additionalContext: undefined },
 			}),
 		);
 		expect(output.syncedCount).toBe(0);
+		expect(output.failedCount).toBe(1);
 		expect(state.requests).toEqual([]);
 		expect(state.executed).toEqual([]);
 		expect(activityStubs.updateStoryExternalRefs).not.toHaveBeenCalled();
+		// Refused before anything was sent, so the claim is released.
+		expect(story.row?.pmCreateClaimId).toBeNull();
 	});
 
 	it("storySyncWorkflow push: creates on the container's instance when nothing moved", async () => {
@@ -475,6 +552,19 @@ describe("workflow dispatch after a completed preflight", () => {
 		});
 
 		expect(state.executed).toEqual(["create_issue"]);
+		// Linked in the write that settles this run's claim.
+		expect(updateStoryFromPm).toHaveBeenCalledWith(
+			"story-1",
+			"proj-1",
+			{
+				externalId: "1007",
+				externalUrl: "https://gitlab.com/example-org/app/-/issues/7",
+				externalMcpServerId: "srv-gitlab",
+			},
+			{ settlesPmCreateClaim: expect.any(String) },
+			// The transaction the SUCCESS status commits in.
+			expect.anything(),
+		);
 	});
 });
 

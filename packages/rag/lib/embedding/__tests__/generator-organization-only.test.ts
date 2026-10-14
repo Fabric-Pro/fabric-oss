@@ -109,6 +109,7 @@ describe("organizationOnly", () => {
 			expect(context).toEqual({
 				userId: "user-1",
 				organizationId: "org-1",
+				projectId: "proj-1",
 			});
 			expect(context).not.toHaveProperty("organizationOnly");
 		}

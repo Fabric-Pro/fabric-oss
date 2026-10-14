@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { parsePMItemFromGetOutput } from "../story-sync";
+import { extractExternalInfo, parsePMItemFromGetOutput } from "../story-sync";
 
 // MCP tools return { content: [{ type: "text", text: "<json>" }] }
 const wrap = (value: unknown) => ({
@@ -69,6 +69,33 @@ describe("parsePMItemFromGetOutput — Jira (Rovo) nested fields", () => {
 		expect(parsed.title).toBe("Initial Git Setup");
 		expect(parsed.description).toBe("Big Picture\n\nSet up the repo.");
 	});
+
+	it("unwraps Rovo v2 responses wrapped in data envelope", () => {
+		const v2Wrapped = {
+			data: {
+				key: "SAN-11",
+				fields: {
+					summary: "Wrapped Summary",
+					description: "Wrapped Description",
+				},
+			},
+		};
+		const parsed = parsePMItemFromGetOutput(wrap(v2Wrapped));
+		expect(parsed.title).toBe("Wrapped Summary");
+		expect(parsed.description).toBe("Wrapped Description");
+	});
+
+	it("extracts externalId from wrapped v2 response with data.id", () => {
+		const v2Issue = {
+			data: {
+				id: "10001",
+				key: "EX-1",
+				self: "https://example.atlassian.net/rest/api/3/issue/10001",
+			},
+		};
+		const parsed = parsePMItemFromGetOutput(wrap(v2Issue));
+		expect(parsed.externalId).toBe("10001");
+	});
 });
 
 describe("parsePMItemFromGetOutput — existing providers still parse (regression)", () => {
@@ -100,5 +127,28 @@ describe("parsePMItemFromGetOutput — existing providers still parse (regressio
 		expect(parsed.columnName).toBe("Doing");
 		expect(parsed.columnId).toBe("col-2");
 		expect(parsed.labels).toEqual(["x"]);
+	});
+});
+
+describe("extractExternalInfo — envelope unwrapping safety", () => {
+	it("keeps the top-level URL when output contains { url, data: { ... } }", () => {
+		const result = extractExternalInfo({
+			url: "https://example.atlassian.net/browse/PROJ-1",
+			data: {
+				id: "10001",
+				url: "https://example.atlassian.net/rest/api/3/issue/10001",
+			},
+		});
+		expect(result.externalUrl).toBe(
+			"https://example.atlassian.net/browse/PROJ-1",
+		);
+	});
+
+	it("does not take the inner ID when output contains { title, data: { id } }", () => {
+		const result = extractExternalInfo({
+			title: "Existing Work Item",
+			data: { id: "inner-10001" },
+		});
+		expect(result.externalId).toBeUndefined();
 	});
 });

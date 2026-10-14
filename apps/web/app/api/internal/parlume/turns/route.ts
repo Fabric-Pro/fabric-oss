@@ -131,7 +131,10 @@ export async function POST(request: NextRequest) {
 			taskQueue: "fabric-worker",
 			workflowId: `parlume-turn-${turn.id}`,
 			workflowIdConflictPolicy: "USE_EXISTING",
-			args: [{ turnId: turn.id }],
+			// Every model call of the turn runs as this background job, on the
+			// organization's shared ChatGPT plans when they serve it, without
+			// waiting for a reset: a late voice reply is useless (Fizzy #2770).
+			args: [{ turnId: turn.id, jobType: "parlume-live-turn" }],
 		});
 		return NextResponse.json({ accepted: true });
 	} catch {

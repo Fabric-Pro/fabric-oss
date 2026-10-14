@@ -346,6 +346,7 @@ describe("retryFailedProposalProcedure — dedup-guard", () => {
 		expect(payload?.approvedChanges).toHaveLength(1);
 		expect(payload?.approvedChanges[0]?.title.to).toBe("New feature");
 		expect(payload?.approvedChangeIndexes).toEqual([0]);
+		expect(payload).toMatchObject({ userId: "user-1", planEligible: true });
 	});
 
 	it("skips changes whose index is already in appliedChangeIndexes", async () => {

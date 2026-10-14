@@ -217,6 +217,12 @@ async function applyRLS() {
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
+			// One model request a turn reserved against its token allowance —
+			// bound on insert to the turn's member and organization.
+			{
+				name: "conversation_turn_attempt",
+				policy: "per_user_within_org",
+			},
 			// Document Assistant chat history (spec 2026-05-19 §3.5 FR-20).
 			// Tenant-floor only — visibility (SHARED vs PRIVATE) is enforced
 			// at the procedure layer so project teammates can still read each

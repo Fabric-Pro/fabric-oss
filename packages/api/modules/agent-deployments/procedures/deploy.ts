@@ -182,6 +182,10 @@ export const deployProcedure = tenantProtectedProcedure
 							instanceId: input.instanceId,
 							userId,
 							organizationId,
+							// Every run the supervisor starts inherits this job, so
+							// the deployment's model calls may run on the
+							// organization's shared ChatGPT plans (Fizzy #2770).
+							jobType: "external-agent",
 							config: {
 								maxConcurrentExecutions:
 									deployment.maxConcurrentExecutions,

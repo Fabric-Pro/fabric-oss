@@ -8,22 +8,43 @@ import {
 	CollapsibleTrigger,
 } from "@ui/components/collapsible";
 import { cn } from "@ui/lib";
-import { formatDistanceToNow } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import {
 	AlertTriangleIcon,
 	CheckCircle2Icon,
 	ChevronDownIcon,
 	CircleIcon,
+	ClockIcon,
 	Loader2Icon,
 	MinusCircleIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import type { JobListItem, JobStep, JobStepStatus } from "../hooks/use-jobs";
-import { formatJobCounts } from "../lib/format-job";
+import { formatJobCounts, planWaitResumesAt } from "../lib/format-job";
 
-function StatusBadge({ status }: { status: JobListItem["status"] }) {
+function StatusBadge({
+	status,
+	waitingForPlan,
+}: {
+	status: JobListItem["status"];
+	waitingForPlan: boolean;
+}) {
 	const t = useTranslations("app.jobs");
+
+	if (waitingForPlan) {
+		return (
+			<Badge
+				variant="secondary"
+				role="status"
+				aria-label={t("status.waitingForPlan")}
+				className="gap-1.5"
+			>
+				<ClockIcon className="size-3" aria-hidden="true" />
+				{t("status.waitingForPlan")}
+			</Badge>
+		);
+	}
 
 	if (status === "RUNNING") {
 		return (
@@ -181,6 +202,10 @@ export function JobCard({ job }: { job: JobListItem }) {
 	const completedSteps = job.steps.filter(
 		(step) => step.status === "completed" || step.status === "skipped",
 	).length;
+	// Waiting for a ChatGPT plan reset reads as FAILED in the row's status but
+	// is a pause the run resumes from (Fizzy #2770), so it is shown neutrally.
+	const planResumesAt = planWaitResumesAt(job);
+	const waitingForPlan = planResumesAt !== undefined;
 
 	return (
 		<Collapsible
@@ -188,7 +213,7 @@ export function JobCard({ job }: { job: JobListItem }) {
 			onOpenChange={setOpen}
 			className={cn(
 				"rounded-lg border bg-card px-4 py-3",
-				job.status === "FAILED"
+				job.status === "FAILED" && !waitingForPlan
 					? "border-destructive/30"
 					: "border-border",
 			)}
@@ -202,7 +227,10 @@ export function JobCard({ job }: { job: JobListItem }) {
 						{t(`kinds.${job.kind}`)} · {job.projectName}
 					</p>
 				</div>
-				<StatusBadge status={job.status} />
+				<StatusBadge
+					status={job.status}
+					waitingForPlan={waitingForPlan}
+				/>
 			</div>
 
 			{counts.length > 0 ? (
@@ -211,7 +239,15 @@ export function JobCard({ job }: { job: JobListItem }) {
 				</p>
 			) : null}
 
-			{job.error ? (
+			{waitingForPlan ? (
+				<p className="mt-2 text-xs text-muted-foreground">
+					{planResumesAt
+						? t("planWaitUntil", {
+								time: format(planResumesAt, "HH:mm"),
+							})
+						: t("planWait")}
+				</p>
+			) : job.error ? (
 				<p className="mt-2 text-xs text-destructive">
 					{job.error === AI_PROVIDER_NOT_CONFIGURED
 						? t("aiProviderMissing")

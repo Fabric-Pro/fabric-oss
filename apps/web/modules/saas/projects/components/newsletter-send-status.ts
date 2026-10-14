@@ -66,6 +66,11 @@ export function formatNewsletterSendStatus(
 					return { label: "No subscribers", variant: "warning" };
 				case "NO_CHAT_TARGETS":
 					return { label: "No chat channels", variant: "warning" };
+				case "PLAN_SPENT":
+					return {
+						label: "AI plan limit reached — next send retries",
+						variant: "secondary",
+					};
 				default:
 					return { label: "Skipped", variant: "secondary" };
 			}

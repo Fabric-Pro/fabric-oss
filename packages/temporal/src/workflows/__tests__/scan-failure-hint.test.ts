@@ -25,6 +25,18 @@ describe("classifyScanFailure", () => {
 		expect(classifyScanFailure([])).toBe("unknown");
 	});
 
+	it("names a spent ChatGPT plan ahead of a rate limit (Fizzy #2770)", () => {
+		const failure = wrap(
+			"Activity task failed",
+			ApplicationFailure.nonRetryable(
+				"Every ChatGPT plan this work may use has no usage left; the quota resets at 14:00 UTC.",
+				"SubscriptionPlanExhaustedError",
+			),
+		);
+		expect(classifyScanFailure([failure])).toBe("plan_spent");
+		expect(describeScanFailureReason([failure])).toContain("ChatGPT plan");
+	});
+
 	it("returns 'unknown' when nothing matches", () => {
 		expect(classifyScanFailure([new Error("boom: schema mismatch")])).toBe(
 			"unknown",

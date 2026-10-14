@@ -2912,13 +2912,14 @@ async function seedEnterpriseMcpServers() {
 			name: "Atlassian (Jira & Confluence)",
 			description:
 				"Connect to Jira for issue tracking and Confluence for documentation via Atlassian's official Rovo MCP server. One OAuth connection unlocks both.",
-			defaultUrl: "https://mcp.atlassian.com/v1/mcp",
+			defaultUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 			docsUrl:
 				"https://support.atlassian.com/atlassian-rovo-mcp-server/docs/",
 			transport: "HTTP" as const,
 			authMethods: ["OAUTH2"] as ("NONE" | "API_KEY" | "OAUTH2")[],
+			// v2 login server; current ID is listed at /.well-known/oauth-protected-resource/v2/mcp
 			oauthDiscoveryUrl:
-				"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+				"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 			iconUrl:
 				"https://wac-cdn.atlassian.com/assets/img/favicons/atlassian/favicon.png",
 			author: "Atlassian",

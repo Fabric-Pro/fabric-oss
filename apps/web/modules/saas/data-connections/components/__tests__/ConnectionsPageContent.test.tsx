@@ -78,6 +78,10 @@ vi.mock("@shared/lib/orpc-client", () => ({
 import type { FeatureFlagKey } from "@repo/utils/feature-flag-registry";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
+import {
+	getProviderMetadata,
+	HIDDEN_INTEGRATION_PROVIDERS,
+} from "../../lib/providers";
 import { ConnectionsPageContent } from "../ConnectionsPageContent";
 
 const listIntegrationsMock = orpcClient.workflows.integrations
@@ -181,7 +185,7 @@ beforeEach(() => {
 
 describe("ConnectionsPageContent — Databricks Vector Search catalog card", () => {
 	it("links the Gmail card to provider settings even without an action plugin", async () => {
-		renderPage();
+		renderPage([{ provider: "GMAIL", hasCredentials: true }]);
 		expect(
 			await screen.findByRole("link", { name: /Gmail/i }),
 		).toHaveAttribute("href", expect.stringContaining("/providers/GMAIL"));
@@ -793,5 +797,66 @@ describe("ConnectionsPageContent — Add connection menu", () => {
 			"href",
 			"/app/example-org/settings/api-keys",
 		);
+	});
+});
+
+describe("ConnectionsPageContent — hidden integrations", () => {
+	it("does not render any of the eleven unconfigured providers by default", async () => {
+		renderPage();
+		await screen.findByRole("link", { name: /GitHub/i });
+
+		for (const provider of HIDDEN_INTEGRATION_PROVIDERS) {
+			const metadata = getProviderMetadata(provider);
+			expect(
+				screen.queryByRole("link", {
+					name: new RegExp(metadata.name, "i"),
+				}),
+			).not.toBeInTheDocument();
+		}
+	});
+
+	it("omits the Data Warehouses heading when both of its providers are hidden", async () => {
+		renderPage();
+		await screen.findByRole("link", { name: /GitHub/i });
+
+		expect(screen.queryByText("Data Warehouses")).not.toBeInTheDocument();
+	});
+
+	it("still shows Google Drive and Microsoft 365 under Cloud Storage", async () => {
+		renderPage();
+		expect(await screen.findByText("Cloud Storage")).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", { name: /Google Drive/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("link", { name: /Microsoft 365/i }),
+		).toBeInTheDocument();
+	});
+
+	it("renders a working provider such as GitHub by default", async () => {
+		renderPage();
+		expect(
+			await screen.findByRole("link", { name: /GitHub/i }),
+		).toBeInTheDocument();
+	});
+
+	it("still renders a hidden provider when an active connection exists", async () => {
+		renderPage([], {
+			data: [
+				{
+					id: "sf-conn-1",
+					provider: "SNOWFLAKE",
+					status: "CONNECTED",
+					name: "Snowflake Warehouse",
+				},
+			],
+			isLoading: false,
+			error: null,
+		});
+
+		expect(
+			await screen.findByRole("link", { name: /Snowflake/i }),
+		).toBeInTheDocument();
+		expect(screen.getByText("Data Warehouses")).toBeInTheDocument();
 	});
 });

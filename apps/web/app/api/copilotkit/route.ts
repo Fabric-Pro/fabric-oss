@@ -62,7 +62,10 @@ import {
 	chatGptPlanApiBillingOption,
 	chatGptPlanSpentError,
 } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
-import { pickChatGptPlanSource } from "@repo/ai/lib/chatgpt-plan/pool";
+import {
+	chatGptPlanInteractiveApiFallback,
+	pickChatGptPlanSource,
+} from "@repo/ai/lib/chatgpt-plan/pool";
 import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
@@ -816,6 +819,7 @@ export async function POST(req: NextRequest) {
 
 		let tenantConfig: TenantConfig;
 		let agentOnPlan: boolean;
+		let planEligible: boolean;
 		let planModelHint: string | null = null;
 		try {
 			tenantConfig = await getTenantConfig(
@@ -832,8 +836,21 @@ export async function POST(req: NextRequest) {
 				organizationId,
 				planEligible: true,
 			});
-			agentOnPlan = plan !== null;
-			if (plan && "exhausted" in plan && (await isAgentRunRequest(req))) {
+			// Under "Use API billing" a spent plan hands the agents to the
+			// organization's provider (Fizzy #3048); the exchange, still
+			// resolving the member's own work, makes the same call and audits it.
+			const apiFallback =
+				plan !== null &&
+				"exhausted" in plan &&
+				(await chatGptPlanInteractiveApiFallback(plan, organizationId));
+			planEligible = plan !== null;
+			agentOnPlan = plan !== null && !apiFallback;
+			if (
+				plan &&
+				"exhausted" in plan &&
+				!apiFallback &&
+				(await isAgentRunRequest(req))
+			) {
 				return planExhaustedResponse(
 					chatGptPlanSpentError(plan),
 					chatGptPlanApiBillingOption(
@@ -842,7 +859,7 @@ export async function POST(req: NextRequest) {
 					),
 				);
 			}
-			if (plan) {
+			if (plan && agentOnPlan) {
 				// The task the key exchange resolves for agents, on the plan the
 				// pick chose, so the hint and the model the agent finally uses
 				// agree. Inside this try: a plan that serves no usable model is
@@ -959,7 +976,7 @@ export async function POST(req: NextRequest) {
 				expirySeconds: AI_TOKEN_TTL_SECONDS,
 				// The same decision as the hints above: never while an admin
 				// acts as the member (Fizzy #2939).
-				planEligible: agentOnPlan,
+				planEligible,
 			});
 		} catch (error) {
 			logger.error("[CopilotKit] Failed to issue AI token", { error });

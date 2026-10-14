@@ -16,6 +16,7 @@ import {
 	// Constants
 	COMMON_ID_FIELDS,
 	detectPMType,
+	extractAtlassianSiteId,
 	extractContainerType,
 	extractIdFromResponse,
 	extractNameFromResponse,
@@ -36,6 +37,7 @@ import {
 	pmDetectedTypeDisplayName,
 	pmServerKeyToDetectedType,
 	TASK_ID_PARAM_PATTERNS,
+	unwrapDataEnvelope,
 } from "../lib/pm-tool-patterns";
 
 // =============================================================================
@@ -1231,5 +1233,134 @@ describe("pmServerKeyToDetectedType", () => {
 				pmServerKeyToDetectedType("azure-devops"),
 			),
 		).toBe("Azure DevOps");
+	});
+});
+
+describe("extractAtlassianSiteId", () => {
+	it("extracts id or cloudId from a plain array", () => {
+		expect(
+			extractAtlassianSiteId([
+				{ id: "11111111-1111-4111-8111-111111111111" },
+			]),
+		).toBe("11111111-1111-4111-8111-111111111111");
+		expect(
+			extractAtlassianSiteId([
+				{ cloudId: "22222222-2222-4222-8222-222222222222" },
+			]),
+		).toBe("22222222-2222-4222-8222-222222222222");
+	});
+
+	it("extracts id from { resources: [...] } and { items: [...] }", () => {
+		expect(
+			extractAtlassianSiteId({
+				resources: [{ id: "33333333-3333-4333-8333-333333333333" }],
+			}),
+		).toBe("33333333-3333-4333-8333-333333333333");
+		expect(
+			extractAtlassianSiteId({
+				items: [{ id: "44444444-4444-4444-8444-444444444444" }],
+			}),
+		).toBe("44444444-4444-4444-8444-444444444444");
+		expect(
+			extractAtlassianSiteId({
+				resources: [],
+				items: [{ id: "55555555-5555-4555-8555-555555555555" }],
+			}),
+		).toBe("55555555-5555-4555-8555-555555555555");
+	});
+
+	it("extracts cloudId from Rovo v2 nested { data: { resources: [...] } }", () => {
+		expect(
+			extractAtlassianSiteId({
+				data: {
+					resources: [
+						{
+							cloudId: "11111111-1111-4111-8111-111111111111",
+							url: "https://example.atlassian.net",
+						},
+					],
+				},
+			}),
+		).toBe("11111111-1111-4111-8111-111111111111");
+	});
+
+	it("extracts cloudId from a single object", () => {
+		expect(
+			extractAtlassianSiteId({
+				cloudId: "66666666-6666-4666-8666-666666666666",
+			}),
+		).toBe("66666666-6666-4666-8666-666666666666");
+		expect(
+			extractAtlassianSiteId({
+				cloudId: "66666666-6666-4666-8666-666666666666",
+				data: { foo: "bar" },
+			}),
+		).toBe("66666666-6666-4666-8666-666666666666");
+		expect(
+			extractAtlassianSiteId({
+				id: "77777777-7777-4777-8777-777777777777",
+			}),
+		).toBe("77777777-7777-4777-8777-777777777777");
+	});
+
+	it("extracts from a JSON string", () => {
+		expect(
+			extractAtlassianSiteId(
+				JSON.stringify([
+					{ id: "88888888-8888-4888-8888-888888888888" },
+				]),
+			),
+		).toBe("88888888-8888-4888-8888-888888888888");
+		expect(
+			extractAtlassianSiteId(
+				JSON.stringify({
+					resources: [
+						{ cloudId: "99999999-9999-4999-8999-999999999999" },
+					],
+				}),
+			),
+		).toBe("99999999-9999-4999-8999-999999999999");
+	});
+
+	it("returns null when no id is present", () => {
+		expect(extractAtlassianSiteId([{ foo: "bar" }])).toBeNull();
+		expect(extractAtlassianSiteId({})).toBeNull();
+		expect(extractAtlassianSiteId({ resources: [] })).toBeNull();
+		expect(
+			extractAtlassianSiteId({ id: "page-1", resources: [] }),
+		).toBeNull();
+	});
+
+	it("returns null for garbage input", () => {
+		expect(extractAtlassianSiteId(null)).toBeNull();
+		expect(extractAtlassianSiteId(undefined)).toBeNull();
+		expect(extractAtlassianSiteId(123)).toBeNull();
+		expect(extractAtlassianSiteId("not json")).toBeNull();
+		expect(extractAtlassianSiteId("")).toBeNull();
+	});
+});
+
+describe("unwrapDataEnvelope", () => {
+	it("unwraps {data:{id}}", () => {
+		const wrapped = { data: { id: "123", key: "PROJ-1" } };
+		expect(unwrapDataEnvelope(wrapped, COMMON_ID_FIELDS)).toEqual({
+			id: "123",
+			key: "PROJ-1",
+		});
+	});
+
+	it("keeps the top level when an id is present", () => {
+		const topLevel = { id: "top-123", data: { id: "inner-456" } };
+		expect(unwrapDataEnvelope(topLevel, COMMON_ID_FIELDS)).toBe(topLevel);
+	});
+
+	it("ignores an array data", () => {
+		const arrayData = { data: [{ id: "item-1" }] };
+		expect(unwrapDataEnvelope(arrayData, COMMON_ID_FIELDS)).toBe(arrayData);
+	});
+
+	it("leaves an object without data unchanged", () => {
+		const noData = { foo: "bar", other: 123 };
+		expect(unwrapDataEnvelope(noData, COMMON_ID_FIELDS)).toBe(noData);
 	});
 });

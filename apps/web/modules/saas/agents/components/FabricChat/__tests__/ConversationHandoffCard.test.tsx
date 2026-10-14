@@ -50,4 +50,73 @@ describe("<ConversationHandoffCard>", () => {
 			screen.getByText("This conversation has reached its context limit"),
 		).toBeInTheDocument();
 	});
+
+	it.each(["allowance_exhausted", "finalization_unavailable"] as const)(
+		"offers no new chat for a token-allowance stop and says the user can continue here (%s)",
+		(stopReason) => {
+			const { container } = render(
+				<ConversationHandoffCard
+					parentConversationId="conv-1"
+					// Even a reason that reads like a step-budget stop: the
+					// structured kind decides, never the wording.
+					reason="Token budget exceeded: 512000/500000"
+					summary=""
+					budgetStop={{
+						kind: "token_allowance",
+						allowance: 500_000,
+						measured: 470_000,
+						outstanding: 25_000,
+						enforcement: "ENFORCED",
+						stopReason,
+					}}
+					onContinue={vi.fn()}
+				/>,
+			);
+
+			expect(
+				screen.getByText("This answer used its token allowance"),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(/ask it to continue in this chat/),
+			).toBeInTheDocument();
+			expect(screen.queryByRole("button")).toBeNull();
+			expect(container.textContent).not.toMatch(/new chat|fresh chat/i);
+			// No token counts: the copy says what happened, not the numbers.
+			expect(container.textContent).not.toMatch(/\d{3},?\d{3}/);
+		},
+	);
+
+	it.each([
+		["allowance_exhausted", /was written from what was found/],
+		["finalization_unavailable", /couldn't write a full reply/],
+	] as const)(
+		"says whether the reply is a written answer or a list of findings (%s)",
+		(stopReason, copy) => {
+			render(
+				<ConversationHandoffCard
+					parentConversationId="conv-1"
+					reason=""
+					summary=""
+					budgetStop={{
+						kind: "token_allowance",
+						allowance: 500_000,
+						measured: 470_000,
+						outstanding: 25_000,
+						enforcement: "ENFORCED",
+						stopReason,
+					}}
+					onContinue={vi.fn()}
+				/>,
+			);
+
+			expect(screen.getByText(copy)).toBeInTheDocument();
+			// The static list has causes other than the allowance (a reply
+			// that came back too short, or failed), so it blames none.
+			if (stopReason === "finalization_unavailable") {
+				expect(
+					screen.queryByText(/enough tokens|token allowance left/i),
+				).toBeNull();
+			}
+		},
+	);
 });

@@ -23,11 +23,14 @@ const mocks = vi.hoisted(() => ({
 	logAiUsageAsync: vi.fn(),
 	isFeatureEnabled: vi.fn(),
 	activeUse: vi.fn(),
+	embeddingProvider: vi.fn(),
 	createPlanModel: vi.fn(),
 	providerModelIdFor: vi.fn(
 		async (_canonical: string, _provider: string) => null as string | null,
 	),
 	resolvePlanModel: vi.fn(),
+	orgPolicy: vi.fn(),
+	orgAccounts: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -35,7 +38,7 @@ vi.mock("@repo/database", () => ({
 	getActiveModels: vi.fn(),
 	getAiProviderApiKey: mocks.getAiProviderApiKey,
 	getAiProviderApiKeyByProvider: vi.fn(),
-	getEmbeddingProviderConfig: vi.fn(),
+	getEmbeddingProviderConfig: mocks.embeddingProvider,
 	getModelForTask: mocks.getModelForTask,
 	getProviderModelIdForCanonical: mocks.providerModelIdFor,
 	getSystemAiProviderApiKey: vi.fn(),
@@ -45,6 +48,8 @@ vi.mock("@repo/database", () => ({
 	logAiUsageAsync: mocks.logAiUsageAsync,
 	isFeatureEnabled: mocks.isFeatureEnabled,
 	getActiveChatGptPlanOrgUse: mocks.activeUse,
+	getCachedChatGptPlanOrgPolicy: mocks.orgPolicy,
+	listChatGptPlanOrgAccounts: mocks.orgAccounts,
 }));
 
 vi.mock("@repo/payments", () => ({
@@ -85,10 +90,12 @@ vi.mock("../lib/chatgpt-plan/models", () => ({
 }));
 
 import { runWithAiInteractiveContext } from "../lib/chatgpt-plan/interactive-context";
+import { BULK_RUNS_NEED_SHARED_PLAN_MESSAGE } from "../lib/chatgpt-plan/pool";
 import {
 	chatGptPlanServesCall,
 	getAIModelWithMetadata,
 } from "../lib/dynamic-model-selector";
+import { runWithAiJobType } from "../lib/job-context";
 
 const USAGE = {
 	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -165,6 +172,8 @@ beforeEach(() => {
 					: { model: "gpt-6-astra", reasoningEffort: "medium" },
 	);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
+	mocks.orgPolicy.mockResolvedValue({ termsAcknowledgedAt: null });
+	mocks.orgAccounts.mockResolvedValue([]);
 	mocks.activeUse.mockResolvedValue({
 		includeBackgroundJobs: false,
 		credentialStatus: "ACTIVE",
@@ -574,5 +583,121 @@ describe("getAIModelWithMetadata — a plan pick on the API path", () => {
 		);
 		expect(resolved.metadata.selectionSource).toBe("override");
 		expect(resolved.metadata.modelString).toContain("claude-sonnet-5");
+	});
+});
+
+// QA 10/9: a member's own work in an org whose shared plans serve background
+// jobs only was refused as "No AI provider configured".
+describe("getAIModelWithMetadata — shared plans that skip members", () => {
+	const NO_PROVIDER = { ...ORG_GATEWAY, provider: null, apiKey: null };
+	const BACKGROUND_ONLY = {
+		id: "acc-bg",
+		enabled: true,
+		status: "ACTIVE",
+		serveInteractive: false,
+		serveBackground: true,
+	};
+
+	beforeEach(() => {
+		mocks.activeUse.mockResolvedValue(null);
+		mocks.getAiProviderApiKey.mockResolvedValue(NO_PROVIDER);
+		mocks.orgPolicy.mockResolvedValue({
+			termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+			headroomPct: 40,
+			apiFallbackBackground: "NEVER",
+		});
+	});
+
+	it("says why instead of 'No AI provider configured'", async () => {
+		mocks.orgAccounts.mockResolvedValue([BACKGROUND_ONLY]);
+		await expect(
+			getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE),
+		).rejects.toThrow(/Serves: Everything/);
+	});
+
+	it("keeps the plain refusal when no shared account is in play", async () => {
+		mocks.orgAccounts.mockResolvedValue([]);
+		await expect(
+			getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE),
+		).rejects.toThrow(/No AI provider configured/);
+	});
+});
+
+// Product decision 2026-10-09: a bulk run a person clicks (a scan, a batch,
+// a setup, an Atlas analysis) never runs on their own plan. With no shared
+// account serving background work it runs on the organization's provider;
+// with neither, the refusal says what to do.
+describe("getAIModelWithMetadata — bulk runs a person starts", () => {
+	const NO_PROVIDER = { ...ORG_GATEWAY, provider: null, apiKey: null };
+	const PEOPLE_ONLY = {
+		id: "acc-people",
+		enabled: true,
+		status: "ACTIVE",
+		serveInteractive: true,
+		serveBackground: false,
+	};
+	const BULK = {
+		userId: "user-1",
+		organizationId: "org-1",
+		jobType: "batch-document-generation" as const,
+	};
+
+	beforeEach(() => {
+		// The clicker has a plan of their own, background jobs included.
+		mocks.activeUse.mockResolvedValue({
+			includeBackgroundJobs: true,
+			credentialStatus: "ACTIVE",
+		});
+		mocks.orgPolicy.mockResolvedValue({
+			termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
+			headroomPct: 40,
+			apiFallbackBackground: "NEVER",
+		});
+		mocks.orgAccounts.mockResolvedValue([PEOPLE_ONLY]);
+		mocks.embeddingProvider.mockResolvedValue({ provider: null });
+	});
+
+	it("runs on the organization's provider when no shared account serves background work, never the clicker's plan", async () => {
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			BULK,
+		);
+		expect(resolved.metadata.provider).toBe("VERCEL_GATEWAY");
+		expect(mocks.createPlanModel).not.toHaveBeenCalled();
+	});
+
+	it("tells a member with their own plan to use a shared one when there is no provider either", async () => {
+		mocks.getAiProviderApiKey.mockResolvedValue(NO_PROVIDER);
+		await expect(
+			getAIModelWithMetadata({ taskType: "CHAT" }, BULK),
+		).rejects.toThrow(BULK_RUNS_NEED_SHARED_PLAN_MESSAGE);
+	});
+
+	it("does the same for a run's job carried by the job-type header", async () => {
+		mocks.getAiProviderApiKey.mockResolvedValue(NO_PROVIDER);
+		await expect(
+			runWithAiJobType("security-scan", () =>
+				getAIModelWithMetadata(
+					{ taskType: "CHAT" },
+					{ userId: "user-1", organizationId: "org-1" },
+				),
+			),
+		).rejects.toThrow(BULK_RUNS_NEED_SHARED_PLAN_MESSAGE);
+	});
+
+	it("counts an embeddings-only key as no provider", async () => {
+		mocks.getAiProviderApiKey.mockResolvedValue(NO_PROVIDER);
+		mocks.embeddingProvider.mockResolvedValue(ORG_GATEWAY);
+		await expect(
+			getAIModelWithMetadata({ taskType: "CHAT" }, BULK),
+		).rejects.toThrow(BULK_RUNS_NEED_SHARED_PLAN_MESSAGE);
+	});
+
+	it("keeps the plain refusal for a member with no plan of their own", async () => {
+		mocks.activeUse.mockResolvedValue(null);
+		mocks.getAiProviderApiKey.mockResolvedValue(NO_PROVIDER);
+		await expect(
+			getAIModelWithMetadata({ taskType: "CHAT" }, BULK),
+		).rejects.toThrow(/^No AI provider configured/);
 	});
 });

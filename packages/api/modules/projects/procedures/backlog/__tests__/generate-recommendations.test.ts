@@ -157,6 +157,7 @@ describe("backlog.generateRecommendations", () => {
 					{
 						projectId: "p1",
 						userId: "u1",
+						planEligible: true,
 						organizationId: "org-1",
 						entryPoint: "DO_BOTH_AFTER_PULL",
 						requestedAt: expect.any(String),

@@ -167,6 +167,7 @@ describe("startScopeIntake", () => {
 						projectId: "proj-A",
 						contextId: "ctx-1",
 						userId: "user-1",
+						planEligible: true,
 						organizationId: "org-1",
 					}),
 				],

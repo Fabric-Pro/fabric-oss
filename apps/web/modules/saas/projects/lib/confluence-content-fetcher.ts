@@ -165,6 +165,11 @@ export function normalizeConfluenceContent(raw: unknown): string {
 		return obj.markdown;
 	}
 
+	// Rovo v2 wraps tool results as { data: { … } }.
+	if (obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)) {
+		return normalizeConfluenceContent(obj.data);
+	}
+
 	return JSON.stringify(raw);
 }
 
@@ -206,6 +211,11 @@ function extractConfluenceTitle(result: unknown): string | undefined {
 		if (typeof title === "string" && title.trim().length > 0) {
 			return title.trim();
 		}
+		// Rovo v2 wraps tool results as { data: { … } }.
+		const inner = (data as { data?: unknown }).data;
+		if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+			return extractConfluenceTitle(inner);
+		}
 	}
 
 	return undefined;
@@ -227,6 +237,7 @@ function extractConfluenceTitle(result: unknown): string | undefined {
  * pages-in-space listing and silently return junk.
  */
 const GET_PAGE_EXACT = [
+	"getconfluencecontent",
 	"getconfluencepage",
 	"confluence_get_page",
 	"get_page",
@@ -297,26 +308,30 @@ export async function fetchConfluencePageContent(params: {
 		return { content: "", title: defaultTitle, contentFetchFailed: true };
 	}
 
-	// Step 3: fetch the page content. Atlassian Rovo's getConfluencePage uses a
-	// strict schema (just `pageId`; cloudId is injected server-side and the body
-	// is returned by default), so sending the community servers' extra params
-	// (`id`, `page_id`, `expand`) risks a validation rejection. Send the minimal
+	// Step 3: fetch the page content. Atlassian Rovo v2's getConfluenceContent
+	// takes content_id; Rovo v1's getConfluencePage uses pageId (cloudId is injected
+	// server-side and the body is returned by default), so sending the community servers'
+	// extra params (`id`, `page_id`, `expand`) risks a validation rejection. Send the minimal
 	// shape for Rovo, and keep the broad shotgun for everything else.
-	const isRovoGetPage = getPageTool.toLowerCase() === "getconfluencepage";
+	const lowerTool = getPageTool.toLowerCase();
+	const isRovoV1GetPage = lowerTool === "getconfluencepage";
+	const isRovoV2GetPage = lowerTool === "getconfluencecontent";
 	const contentResponse = await fetch("/api/pipeline/mcp-tool", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
 			mcpConfigId,
 			toolName: getPageTool,
-			params: isRovoGetPage
-				? { pageId }
-				: {
-						id: pageId,
-						page_id: pageId,
-						pageId,
-						expand: "body.storage",
-					},
+			params: isRovoV2GetPage
+				? { content_id: pageId }
+				: isRovoV1GetPage
+					? { pageId }
+					: {
+							id: pageId,
+							page_id: pageId,
+							pageId,
+							expand: "body.storage",
+						},
 			organizationId: organizationId ?? undefined,
 		}),
 	});

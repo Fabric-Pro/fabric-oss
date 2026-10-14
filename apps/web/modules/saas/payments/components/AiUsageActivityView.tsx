@@ -75,7 +75,13 @@ import {
 	ZoomOutIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { memo, useEffect, useMemo, useState } from "react";
+import {
+	memo,
+	useEffect,
+	useMemo,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	Area,
 	AreaChart,
@@ -186,10 +192,9 @@ function formatTz(d: Date | string, pattern: string, tz: Timezone): string {
 	return format(date, pattern);
 }
 
-function tzSuffix(tz: Timezone): string {
-	if (tz === "utc") {
-		return "UTC";
-	}
+const LOCAL_TZ_FALLBACK = "Local";
+
+function resolveLocalTzName(): string {
 	// Browser short TZ name (e.g. "PDT", "GMT+1") for local context.
 	try {
 		const dtf = new Intl.DateTimeFormat(undefined, {
@@ -201,7 +206,27 @@ function tzSuffix(tz: Timezone): string {
 			return name;
 		}
 	} catch {}
-	return "Local";
+	return LOCAL_TZ_FALLBACK;
+}
+
+const subscribeToNothing = () => () => {};
+
+/**
+ * The viewer's short timezone name. The server resolves a zone name in its
+ * own zone, not the viewer's, so the server render and the hydrating client
+ * both say "Local" and the real name follows right after hydration —
+ * reading it on the first render is a hydration mismatch (React #418).
+ */
+function useLocalTzName(): string {
+	return useSyncExternalStore(
+		subscribeToNothing,
+		resolveLocalTzName,
+		() => LOCAL_TZ_FALLBACK,
+	);
+}
+
+function tzSuffix(tz: Timezone, localTzName: string): string {
+	return tz === "utc" ? "UTC" : localTzName;
 }
 
 function useTimezone() {
@@ -437,6 +462,7 @@ export function AiUsageActivityView({
 }) {
 	const tTooltips = useTranslations("tooltips.common");
 	const [tz, setTz] = useTimezone();
+	const localTzName = useLocalTzName();
 	const [period, setPeriod] = useState<PeriodKey>("30d");
 	const [customRange, setCustomRange] = useState<DateRange>({
 		from: undefined,
@@ -1120,7 +1146,7 @@ export function AiUsageActivityView({
 					<div className="text-[11px] uppercase tracking-wider text-muted-foreground/70">
 						{periodLabel}{" "}
 						<span className="font-medium text-primary">
-							{tzSuffix(tz)}
+							{tzSuffix(tz, localTzName)}
 						</span>
 					</div>
 				</div>
@@ -1464,7 +1490,7 @@ export function AiUsageActivityView({
 												>
 													<TableCell
 														className="whitespace-nowrap pl-6 text-sm"
-														title={`${formatTz(createdAt, "PPpp", tz)} ${tzSuffix(tz)}`}
+														title={`${formatTz(createdAt, "PPpp", tz)} ${tzSuffix(tz, localTzName)}`}
 													>
 														<div className="font-medium">
 															{formatDistanceToNow(
@@ -1746,7 +1772,7 @@ export function AiUsageActivityView({
 											"PPpp",
 											tz,
 										)}{" "}
-										{tzSuffix(tz)}
+										{tzSuffix(tz, localTzName)}
 									</SheetDescription>
 								</SheetHeader>
 								<dl className="mt-6 space-y-4 px-4 text-sm">
@@ -1829,7 +1855,7 @@ export function AiUsageActivityView({
 										value={
 											selectedRow.provider ===
 											CHATGPT_PLAN_PROVIDER
-												? `${formatUsdFromMicros(selectedRow.costMicroUsd)} · covered by the member's ChatGPT plan`
+												? `${formatUsdFromMicros(selectedRow.costMicroUsd)} · covered by a ChatGPT plan`
 												: formatUsdFromMicros(
 														selectedRow.costMicroUsd,
 													)
@@ -1921,7 +1947,7 @@ function BillingSourceSplit({
 					) : null}
 				</span>
 			),
-			note: `${planShare} of requests · covered by members' own plans`,
+			note: `${planShare} of requests · covered by ChatGPT plans (own and shared)`,
 		},
 		{
 			key: "api",
@@ -3249,6 +3275,7 @@ const ChartTooltipContent = memo(function ChartTooltipContent({
 	payload,
 	label,
 	tz,
+	localTzName,
 }: {
 	active?: boolean;
 	payload?: Array<{
@@ -3256,6 +3283,7 @@ const ChartTooltipContent = memo(function ChartTooltipContent({
 	}>;
 	label?: string;
 	tz: Timezone;
+	localTzName: string;
 }) {
 	if (!active || !payload?.length) {
 		return null;
@@ -3268,7 +3296,9 @@ const ChartTooltipContent = memo(function ChartTooltipContent({
 	return (
 		<div className="rounded-md border border-border bg-popover px-3 py-2 text-xs text-foreground shadow-md">
 			<div className="mb-1.5 font-medium">
-				{label ? `${formatTz(label, "PPp", tz)} ${tzSuffix(tz)}` : ""}
+				{label
+					? `${formatTz(label, "PPp", tz)} ${tzSuffix(tz, localTzName)}`
+					: ""}
 			</div>
 			<dl className="grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5 tabular-nums">
 				<dt className="text-muted-foreground">Cost</dt>
@@ -3361,6 +3391,7 @@ function UsageTrendChart({
 	 */
 	limitOverlays: ChartLimitOverlay[];
 }) {
+	const localTzName = useLocalTzName();
 	// Visual zoom window — independent of the table's filter window.
 	const [zoom, setZoom] = useState<{ from: Date; to: Date } | null>(null);
 	// Drag-to-select state for in-chart zoom.
@@ -3555,7 +3586,7 @@ function UsageTrendChart({
 									<span className="font-medium text-primary">
 										{formatTz(viewFrom, "MMM d, HH:mm", tz)}{" "}
 										→ {formatTz(viewTo, "MMM d, HH:mm", tz)}{" "}
-										{tzSuffix(tz)}
+										{tzSuffix(tz, localTzName)}
 									</span>
 								</>
 							) : null}
@@ -3738,6 +3769,7 @@ function UsageTrendChart({
 											}
 											label={p.label as string}
 											tz={tz}
+											localTzName={localTzName}
 										/>
 									)}
 								/>

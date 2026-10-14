@@ -52,6 +52,7 @@ import {
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import { findPlanExhausted } from "../lib/chatgpt-plan-refusal";
 import {
 	buildDeterministicTail,
 	buildNewFindingsSummary,
@@ -361,7 +362,8 @@ export type ProposeThemeOutcome =
  * ticket with genuinely new findings -> `update` (an incremental comment,
  * drafted but not posted); an existing ticket with nothing new -> `skip`;
  * no ticket -> `create`. Never throws for an AI hiccup — the body degrades to
- * a deterministic fallback.
+ * a deterministic fallback — except when every shared ChatGPT plan is spent:
+ * that throws the plan's own error, for the workflow to wait on.
  */
 export async function proposeThemeActivity(
 	input: ProposeThemeInput,
@@ -607,6 +609,13 @@ async function draftNarrative(
 			},
 		};
 	} catch (error) {
+		// Every shared ChatGPT plan is spent: the workflow waits for the reset
+		// and drafts this theme again, rather than filing the fallback text
+		// (Fizzy #2770).
+		const spent = findPlanExhausted(error);
+		if (spent) {
+			throw spent;
+		}
 		logger.warn(
 			"[SecurityFindingGrouping] Ticket body drafting failed — falling back to deterministic narrative",
 			{
@@ -681,6 +690,10 @@ async function generateThemeTitle(
 			theme,
 		);
 	} catch (error) {
+		const spent = findPlanExhausted(error);
+		if (spent) {
+			throw spent;
+		}
 		logger.warn(
 			"[SecurityFindingGrouping] Title generation failed — using rule-based fallback",
 			{ ruleSource: theme.ruleSource, error: errorMessage(error) },

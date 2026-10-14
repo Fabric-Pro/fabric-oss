@@ -806,7 +806,7 @@ export async function failScanIfActive(
 		where: {
 			id: scanId,
 			projectId,
-			status: { in: ["PENDING", "RUNNING"] },
+			status: { in: ["PENDING", "RUNNING", "WAITING_FOR_PLAN"] },
 		},
 		data: { status: "FAILED", error, completedAt: new Date() },
 	});
@@ -844,6 +844,8 @@ export async function getLatestProjectScan(
 			...(opts.branch !== undefined ? { branch: opts.branch } : {}),
 		},
 		orderBy: { createdAt: "desc" },
+		// A paused scan's saved progress is for its resume, not the page.
+		omit: { resumeState: true },
 		// Include the user who triggered the scan so the page can show "started
 		// by <name>" alongside the live running-scan timer.
 		include: {
@@ -862,6 +864,7 @@ export async function listProjectScans(
 		where: { projectId },
 		orderBy: { createdAt: "desc" },
 		take: Math.min(opts.limit ?? 20, 100),
+		omit: { resumeState: true },
 	});
 }
 
@@ -1413,7 +1416,7 @@ export async function hasActiveScan(
 			// Provided (incl. `null` for no-repo scans) ⇒ scope to that branch;
 			// omitted ⇒ any branch (current behavior).
 			...(opts.branch !== undefined ? { branch: opts.branch } : {}),
-			status: { in: ["PENDING", "RUNNING"] },
+			status: { in: ["PENDING", "RUNNING", "WAITING_FOR_PLAN"] },
 		},
 		select: { id: true },
 	});

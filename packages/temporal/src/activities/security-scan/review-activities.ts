@@ -34,6 +34,10 @@ import {
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
 import {
+	findPlanExhausted,
+	planSpentWithProgress,
+} from "../lib/chatgpt-plan-refusal";
+import {
 	buildFindingReviewRequest,
 	mapRawReviewToProposal,
 	type ReviewFindingInput,
@@ -151,6 +155,20 @@ export interface RunFindingReviewInput {
 	organizationId?: string | null;
 	findings: ReviewFindingInput[];
 	rubric: string;
+	/** What an earlier attempt judged before every shared plan ran out. */
+	resume?: FindingReviewProgress;
+}
+
+/**
+ * What an on-demand review finished before every shared ChatGPT plan ran out
+ * (Fizzy #2770), carried by its plan-spent failure so the retry after the
+ * workflow's wait judges only the rest.
+ */
+export interface FindingReviewProgress {
+	judgedFindingIds: string[];
+	proposals: ReviewProposal[];
+	inputTokens: number;
+	outputTokens: number;
 }
 
 export interface RunFindingReviewOutput {
@@ -273,11 +291,15 @@ const DEFAULT_SEVERITY_RUBRIC = `- CRITICAL: Directly exploitable with severe im
  * On-demand review activity — judges the findings the review workflow gathered
  * (every OPEN finding). Thin wrapper over {@link runAdversarialReview}, which the
  * auto-review activity also reuses.
+ *
+ * When every shared ChatGPT plan runs out part-way it stops and fails with the
+ * plan's own type, carrying the findings already judged (Fizzy #2770): the
+ * workflow waits for the reset and the retry judges only the rest.
  */
 export async function runFindingReviewActivity(
 	input: RunFindingReviewInput,
 ): Promise<RunFindingReviewOutput> {
-	return runAdversarialReview(input);
+	return runAdversarialReview(input, { stopWhenPlanSpent: true });
 }
 
 /**
@@ -285,15 +307,20 @@ export async function runFindingReviewActivity(
  * heartbeated, `Promise.allSettled` so one judge failure doesn't sink the run.
  * Aggregates proposals + token totals. Resolves the AI model once and reuses it
  * across calls (same model/usage logging as the scanner). Shared by the on-demand
- * review activity and the auto-review activity.
+ * review activity and the auto-review activity. Only the on-demand review stops
+ * on a spent plan; the auto-review keeps whatever it judged.
  */
 async function runAdversarialReview(
 	input: RunFindingReviewInput,
+	options: { stopWhenPlanSpent?: boolean } = {},
 ): Promise<RunFindingReviewOutput> {
-	const { projectId, userId, organizationId, rubric } = input;
-	const findings = input.findings.slice(0, MAX_FINDINGS_PER_REVIEW);
+	const { projectId, userId, organizationId, rubric, resume } = input;
+	const judgedBefore = new Set(resume?.judgedFindingIds ?? []);
+	const findings = input.findings
+		.slice(0, MAX_FINDINGS_PER_REVIEW)
+		.filter((finding) => !judgedBefore.has(finding.id));
 
-	if (findings.length === 0) {
+	if (findings.length === 0 && !resume) {
 		return {
 			proposals: [],
 			reviewedCount: 0,
@@ -356,10 +383,12 @@ async function runAdversarialReview(
 	}, 30_000);
 
 	const start = Date.now();
-	const proposals: ReviewProposal[] = [];
+	const proposals: ReviewProposal[] = [...(resume?.proposals ?? [])];
+	// This attempt's own usage; an earlier attempt logged its own.
 	let inputTokens = 0;
 	let outputTokens = 0;
-	let reviewedCount = 0;
+	const judgedFindingIds = [...judgedBefore];
+	let planSpent: ReturnType<typeof findPlanExhausted> = null;
 
 	/** Judge a single finding; returns its proposal + token usage (or null). */
 	const judgeOne = async (
@@ -397,6 +426,11 @@ async function runAdversarialReview(
 				outputTokens: result.usage?.outputTokens ?? 0,
 			};
 		} catch (error) {
+			// Every shared plan is spent: the finding is left unjudged for the
+			// retry after the workflow's wait, not passed over.
+			if (options.stopWhenPlanSpent && findPlanExhausted(error)) {
+				throw error;
+			}
 			// One finding failing the judge must not sink the whole review; it
 			// simply gets no proposal (the user keeps the finding as-is).
 			logger.warn("[ScanReview] Judge failed for a finding", {
@@ -417,13 +451,21 @@ async function runAdversarialReview(
 			const settled = await Promise.allSettled(
 				batch.map((f) => judgeOne(f)),
 			);
-			for (const r of settled) {
-				if (r.status === "fulfilled" && r.value) {
+			for (let index = 0; index < settled.length; index++) {
+				const r = settled[index];
+				if (r.status === "rejected") {
+					planSpent ??= findPlanExhausted(r.reason);
+					continue;
+				}
+				if (r.value) {
 					proposals.push(r.value.proposal);
 					inputTokens += r.value.inputTokens;
 					outputTokens += r.value.outputTokens;
 				}
-				reviewedCount += 1;
+				judgedFindingIds.push(batch[index].id);
+			}
+			if (planSpent) {
+				break;
 			}
 			heartbeat(
 				`reviewed ${Math.min(i + REVIEW_CONCURRENCY, findings.length)} of ${findings.length} findings`,
@@ -450,6 +492,23 @@ async function runAdversarialReview(
 		projectId,
 	});
 
+	const totalInputTokens = (resume?.inputTokens ?? 0) + inputTokens;
+	const totalOutputTokens = (resume?.outputTokens ?? 0) + outputTokens;
+	if (planSpent) {
+		const progress: FindingReviewProgress = {
+			judgedFindingIds,
+			proposals,
+			inputTokens: totalInputTokens,
+			outputTokens: totalOutputTokens,
+		};
+		logger.info("[ScanReview] Every shared plan is spent; pausing", {
+			projectId,
+			judged: judgedFindingIds.length,
+		});
+		throw planSpentWithProgress(planSpent, progress);
+	}
+
+	const reviewedCount = judgedFindingIds.length;
 	logger.info("[ScanReview] Review complete", {
 		projectId,
 		reviewedCount,
@@ -463,8 +522,8 @@ async function runAdversarialReview(
 		proposals,
 		reviewedCount,
 		modelName: metadata.modelString ?? null,
-		inputTokens,
-		outputTokens,
+		inputTokens: totalInputTokens,
+		outputTokens: totalOutputTokens,
 	};
 }
 

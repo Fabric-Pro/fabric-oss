@@ -42,10 +42,15 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	getMcpConfigByIdInternal: async () => state.config,
 	getOauthState: async () => state.oauthState,
 	clearRefreshFailures: vi.fn(async () => undefined),
+	createOauthState: vi.fn(async () => undefined),
 	deleteOauthState: vi.fn(async () => undefined),
 	saveMcpOAuthGrant: vi.fn(async () => {
 		throw new Error("a GitLab personal config never stores its own token");
 	}),
+	replaceMcpOAuthRegistration: vi.fn(async () => ({
+		written: true,
+		config: state.config,
+	})),
 	getOrganizationById: vi.fn(async () => null),
 }));
 
@@ -609,5 +614,85 @@ describe("mcp.oauth.callback — GitLab personal server on a self-hosted instanc
 		expect(safeFetchOutbound).not.toHaveBeenCalled();
 		expect(fetchMock).not.toHaveBeenCalled();
 		expect(persistGitLabToken).not.toHaveBeenCalled();
+	});
+});
+
+describe("mcp.oauth.start — legacy GitLab row", () => {
+	it("auto-populates default scopes for legacy gitlab server with isSystemProvided: false", async () => {
+		const legacyServer = {
+			id: "srv-legacy",
+			key: "gitlab",
+			isSystemProvided: false,
+			defaultUrl: "https://example.com/api/mcp/gitlab",
+		};
+		const cfgId = "cfg-legacy-gitlab";
+		const configRow = {
+			id: cfgId,
+			userId: "user-2",
+			organizationId: "org-example",
+			mcpServerId: legacyServer.id,
+			baseUrl: "https://example.com/api/mcp/gitlab",
+			oauthClientId: "app-client",
+			encryptedOauthClientSecret: null,
+			dcrClientMetadata: { token_endpoint_auth_method: "none" },
+			encryptedAccessToken: null,
+			encryptedRefreshToken: null,
+			tokenExpiresAt: null,
+			needsReauth: false,
+			enabled: true,
+			authType: "OAUTH2",
+			scopes: [] as string[],
+			oauthBinding: null,
+			oauthGrantGeneration: 0,
+			mcpServer: legacyServer,
+			createdAt: new Date("2026-01-01T00:00:00Z"),
+			updatedAt: new Date("2026-01-01T00:00:00Z"),
+		};
+
+		state.fake = createGitLabFakeDb({
+			mCPServer: [legacyServer],
+			mCPConfig: [configRow],
+			workflowIntegration: [
+				{
+					id: "wi-legacy",
+					userId: "user-2",
+					organizationId: "org-example",
+					provider: "GITLAB",
+					name: "GitLab",
+					workflowId: null,
+					isActive: true,
+					credentials: encryptedCredential({
+						access_token: "wi-access",
+						refresh_token: "wi-refresh",
+						expires_in: 7200,
+						token_obtained_at: new Date().toISOString(),
+						issuer: {
+							kind: "app",
+							clientId: "app-client",
+							origin: "https://gitlab.example.com",
+						},
+						connectionGeneration: 1,
+					}),
+					settings: {},
+					createdAt: new Date("2026-01-01T00:00:00Z"),
+					updatedAt: new Date("2026-01-01T00:00:00Z"),
+				},
+			],
+		});
+		state.config = configRow;
+
+		const result = await handlerOf(oauthProcedures.start)({
+			input: {
+				configId: cfgId,
+				redirectUri: "https://example.com/api/mcp/oauth/callback",
+			},
+			context: { user: { id: "user-2" } },
+		});
+
+		expect(result).toHaveProperty("authorizationUrl");
+		const updatedConfig = await state.fake.db.mCPConfig.findUnique({
+			where: { id: cfgId },
+		});
+		expect(updatedConfig?.scopes).toEqual(["api", "read_user"]);
 	});
 });

@@ -890,3 +890,38 @@ describe("generateStoryTitleFromDescription", () => {
 		);
 	});
 });
+
+describe("generateStoryTitleFromDescription — inside a chat turn's dispatch guard", () => {
+	it("rethrows a stop or token-allowance refusal instead of falling back to an untitled story", async () => {
+		const { runWithDispatchGuard } = await import(
+			"@repo/utils/dispatch-guard"
+		);
+		class TurnRefusal extends Error {}
+		const refusal = new TurnRefusal("allowance used");
+		mockGenerateObject.mockRejectedValue(refusal);
+		mockGenerateText.mockRejectedValue(refusal);
+
+		const outcome = await runWithDispatchGuard(
+			{
+				key: "turn-1",
+				assertDispatchable: async () => undefined,
+				abortSignal: () => undefined,
+				rethrowIfStopped: (error) => {
+					if (error instanceof TurnRefusal) {
+						throw error;
+					}
+				},
+			},
+			() =>
+				generateStoryTitleFromDescription(
+					"Users can export their reports as PDF.",
+					"FEATURE",
+					STUB_CONTEXT,
+				),
+		).catch((error: unknown) => error);
+
+		expect(outcome).toBe(refusal);
+		// Not retried another way.
+		expect(mockGenerateText).not.toHaveBeenCalled();
+	});
+});

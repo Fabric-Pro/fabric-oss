@@ -275,6 +275,7 @@ describe("projects.discovery.start", () => {
 					expect.objectContaining({
 						discoveryRunId: "run-1",
 						userId: "user-1",
+						planEligible: true,
 						organizationId: "org-1",
 						sources: { repo: true, mcpConfigIds: ["cfg-1"] },
 						story: { identifier: "F-007", title: "SSO login" },

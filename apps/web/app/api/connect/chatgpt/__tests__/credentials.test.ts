@@ -12,7 +12,7 @@ type Row = { id: string; identifier: string; value: string; expiresAt: Date };
 
 const state = vi.hoisted(() => ({
 	rows: [] as Row[],
-	upsert: vi.fn(),
+	upsert: vi.fn(async () => ({ id: "cred_1" })),
 	setOrgUse: vi.fn(),
 	organizations: vi.fn(),
 	verifyIdToken: vi.fn(),

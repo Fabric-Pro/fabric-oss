@@ -32,6 +32,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		workflowStart: vi.fn(),
 		resolvePMConfigForUser: vi.fn(),
 		applyPmUnlink: vi.fn(),
+		clearPmCreateClaim: vi.fn(),
 		pendingUpdateMany: vi.fn(),
 		clearPmSyncFailure: vi.fn(),
 		clearPmSyncFailures: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@repo/database", () => ({
 		key === "gitlab" || key === "gitlab-official",
 	updateStory: mocks.updateStory,
 	applyPmUnlink: mocks.applyPmUnlink,
+	clearPmCreateClaim: mocks.clearPmCreateClaim,
 	clearPmSyncFailure: mocks.clearPmSyncFailure,
 	clearPmSyncFailures: mocks.clearPmSyncFailures,
 	// `preview-pm-sync-conflicts` now resolves the project PM tool via the
@@ -520,6 +522,7 @@ describe("retryPmSyncProcedure (Task 4.6)", () => {
 			.mockResolvedValueOnce({
 				externalId: "EXT-1",
 				externalMcpServerId: "srv-1",
+				pmCreateClaimId: null,
 			})
 			// enqueuePmSync inner lookup — unlinked now; forceInitialPush lets it
 			// proceed to the CREATE path instead of short-circuiting on no-external-id.
@@ -550,6 +553,8 @@ describe("retryPmSyncProcedure (Task 4.6)", () => {
 				entityId: "story-1",
 				expectedExternalId: "EXT-1",
 				expectedExternalMcpServerId: "srv-1",
+				// Scoped to the claim read with the link (none here).
+				expectedPmCreateClaimId: null,
 			}),
 		);
 		// Dismisses the now-stale "ticket missing" proposal so the Review Center
@@ -573,6 +578,226 @@ describe("retryPmSyncProcedure (Task 4.6)", () => {
 				workflowId: "wf-recreate-1",
 			}),
 		);
+		// The unlink itself handles the create claim; no separate clear.
+		expect(mocks.clearPmCreateClaim).not.toHaveBeenCalled();
+	});
+
+	it("unlinkFirst on a legacy link to another PM tool (no server stamp) severs it by its null stamp and arms the re-create push", async () => {
+		// The sync refuses this row on its own (it neither updates nor
+		// replaces an unstamped link to another tool), so Unlink & re-create
+		// is the way to a new item.
+		mocks.userStoryFindFirst
+			.mockResolvedValueOnce({
+				externalId: "77",
+				externalMcpServerId: null,
+				pmCreateClaimId: null,
+			})
+			.mockResolvedValueOnce({ id: "story-1", externalId: null });
+		mocks.applyPmUnlink.mockResolvedValue({ applied: true });
+		mocks.pendingUpdateMany.mockResolvedValue({ count: 0 });
+		mocks.projectFindUnique.mockResolvedValue({
+			id: "project-1",
+			organizationId: null,
+			projectManagementMcpConfigId: "mcp-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: null,
+			projectManagementAdditionalContext: null,
+		});
+		mocks.userStoryUpdate.mockResolvedValue({});
+		mocks.workflowStart.mockResolvedValue({ workflowId: "wf-recreate-3" });
+
+		const result = await handlers.retryPmSync({
+			input: { ...input, unlinkFirst: true },
+			context: ctx,
+		});
+
+		expect(mocks.applyPmUnlink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				entityId: "story-1",
+				expectedExternalId: "77",
+				expectedExternalMcpServerId: null,
+			}),
+		);
+		expect(result).toEqual(
+			expect.objectContaining({
+				enqueued: true,
+				workflowId: "wf-recreate-3",
+			}),
+		);
+		expect(mocks.applyPmUnlink.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.workflowStart.mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("unlinkFirst on an unlinked story clears its PM create claim before the re-create push", async () => {
+		// A create that may have landed unlinked holds the claim, and every
+		// push refuses to create while it does (Fizzy #3045).
+		mocks.userStoryFindFirst
+			.mockResolvedValueOnce({
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-read",
+			})
+			.mockResolvedValueOnce({ id: "story-1", externalId: null });
+		mocks.clearPmCreateClaim.mockResolvedValue({ cleared: true });
+		mocks.projectFindUnique.mockResolvedValue({
+			id: "project-1",
+			organizationId: null,
+			projectManagementMcpConfigId: "mcp-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: null,
+			projectManagementAdditionalContext: null,
+		});
+		mocks.userStoryUpdate.mockResolvedValue({});
+		mocks.workflowStart.mockResolvedValue({ workflowId: "wf-recreate-2" });
+
+		const result = await handlers.retryPmSync({
+			input: { ...input, unlinkFirst: true },
+			context: ctx,
+		});
+
+		// Only the claim the request read.
+		expect(mocks.clearPmCreateClaim).toHaveBeenCalledWith({
+			projectId: "project-1",
+			storyId: "story-1",
+			claimId: "claim-read",
+		});
+		expect(mocks.applyPmUnlink).not.toHaveBeenCalled();
+		expect(result).toEqual(expect.objectContaining({ enqueued: true }));
+		// Cleared before the push was started.
+		expect(
+			mocks.clearPmCreateClaim.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.workflowStart.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	it("unlinkFirst refuses with CONFLICT and enqueues nothing when the claim it read is gone", async () => {
+		// Another recovery cleared the claim this request read, and that
+		// recovery's push has taken a new claim: it may already have sent a
+		// create, so its claim stays and no second push is started.
+		mocks.userStoryFindFirst.mockResolvedValueOnce({
+			externalId: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+		});
+		mocks.clearPmCreateClaim.mockResolvedValue({ cleared: false });
+
+		const error = await handlers
+			.retryPmSync({
+				input: { ...input, unlinkFirst: true },
+				context: ctx,
+			})
+			.catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		expect((error as ORPCError<string, unknown>).code).toBe("CONFLICT");
+		expect((error as ORPCError<string, unknown>).data).toEqual({
+			errorCode: "PM_RECOVERY_STALE",
+		});
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.userStoryUpdate).not.toHaveBeenCalled();
+	});
+
+	it("unlinkFirst refuses with CONFLICT PM_RECOVERY_TOO_RECENT, saying when, while the claim it read is too recent to clear", async () => {
+		mocks.userStoryFindFirst.mockResolvedValueOnce({
+			externalId: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+		});
+		mocks.clearPmCreateClaim.mockResolvedValue({
+			cleared: false,
+			claimTooRecent: {
+				recoverableAt: new Date("2026-10-13T12:04:10.000Z"),
+			},
+		});
+
+		const error = await handlers
+			.retryPmSync({
+				input: { ...input, unlinkFirst: true },
+				context: ctx,
+			})
+			.catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		const e = error as ORPCError<string, unknown>;
+		expect(e.code).toBe("CONFLICT");
+		expect(e.data).toEqual({
+			errorCode: "PM_RECOVERY_TOO_RECENT",
+			recoverableAt: "2026-10-13T12:04:10.000Z",
+		});
+		expect(e.message).toBe(
+			"A push may still be creating this item in your PM tool. Try again after 12:05 UTC.",
+		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("unlinkFirst refuses with CONFLICT and enqueues nothing when the link or claim no longer matches", async () => {
+		mocks.userStoryFindFirst.mockResolvedValueOnce({
+			externalId: "EXT-1",
+			externalMcpServerId: "srv-1",
+			pmCreateClaimId: null,
+		});
+		mocks.applyPmUnlink.mockResolvedValue({ applied: false });
+
+		await expect(
+			handlers.retryPmSync({
+				input: { ...input, unlinkFirst: true },
+				context: ctx,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(mocks.pendingUpdateMany).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("unlinkFirst on an unlinked story with no claim clears nothing and arms the push", async () => {
+		mocks.userStoryFindFirst
+			.mockResolvedValueOnce({
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: null,
+			})
+			.mockResolvedValueOnce({ id: "story-1", externalId: null });
+		mocks.projectFindUnique.mockResolvedValue({
+			id: "project-1",
+			organizationId: null,
+			projectManagementMcpConfigId: "mcp-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: null,
+			projectManagementAdditionalContext: null,
+		});
+		mocks.userStoryUpdate.mockResolvedValue({});
+		mocks.workflowStart.mockResolvedValue({ workflowId: "wf-recreate-4" });
+
+		const result = await handlers.retryPmSync({
+			input: { ...input, unlinkFirst: true },
+			context: ctx,
+		});
+
+		expect(mocks.clearPmCreateClaim).not.toHaveBeenCalled();
+		expect(result).toEqual(expect.objectContaining({ enqueued: true }));
+	});
+
+	it("a plain retry leaves the create claim alone", async () => {
+		mocks.userStoryFindFirst
+			.mockResolvedValueOnce({
+				externalId: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-held",
+			})
+			.mockResolvedValueOnce({ id: "story-1", externalId: null });
+		mocks.projectFindUnique.mockResolvedValue({
+			id: "project-1",
+			organizationId: null,
+			projectManagementMcpConfigId: "mcp-1",
+			projectManagementContainerId: "container-1",
+			projectManagementContainerName: null,
+			projectManagementAdditionalContext: null,
+		});
+		mocks.userStoryUpdate.mockResolvedValue({});
+		mocks.workflowStart.mockResolvedValue({ workflowId: "wf-retry-2" });
+
+		await handlers.retryPmSync({ input, context: ctx });
+
+		expect(mocks.clearPmCreateClaim).not.toHaveBeenCalled();
 	});
 
 	it("rejects with NOT_FOUND for cross-tenant story", async () => {

@@ -8,7 +8,6 @@
 import {
 	type AIOperationContext,
 	isStepCount,
-	resolveOpenAiApiKey,
 	streamText,
 	tool,
 } from "@repo/ai";
@@ -27,6 +26,7 @@ import type { AccountDefinition } from "@repo/mcp-registry";
 import { getBaseUrl } from "@repo/utils";
 import { Context, heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../lib/redis-publisher";
+import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { getAgentMemoryTools } from "../agent-memory";
 import { createRunAgentTool } from "../agentic-loop";
 import { createBuiltInTools } from "../direct-chat/built-in-tools";
@@ -914,47 +914,18 @@ async function loadBuiltInToolsForAgent(
 					}
 
 					const { uploadFile } = await import("@repo/storage");
-					// This path calls OpenAI's TTS endpoint directly, so it needs the
-					// tenant's OpenAI key specifically, decrypted — not whichever
-					// provider the tenant's default model selection resolved to.
-					const openAiApiKey = await resolveOpenAiApiKey({
+					const speech = await synthesizeToolSpeech({
 						userId,
 						organizationId,
+						text: ttsText,
+						voice: ttsVoice,
+						speed: ttsSpeed,
 					});
-
-					if (!openAiApiKey) {
-						return {
-							error: "No OpenAI API key configured for text-to-speech",
-						};
+					if (!speech.ok) {
+						return { error: speech.error };
 					}
 
-					const response = await fetch(
-						"https://api.openai.com/v1/audio/speech",
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${openAiApiKey}`,
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify({
-								model: "tts-1",
-								input: ttsText.substring(0, 4096),
-								voice: ttsVoice,
-								speed: Math.min(4.0, Math.max(0.25, ttsSpeed)),
-								response_format: "mp3",
-							}),
-						},
-					);
-
-					if (!response.ok) {
-						return {
-							error: `TTS API error ${response.status}: ${await response.text()}`,
-						};
-					}
-
-					const audioBuffer = Buffer.from(
-						await response.arrayBuffer(),
-					);
+					const audioBuffer = speech.audio;
 					const audioKey = `tts/${userId}/${Date.now()}.mp3`;
 					await uploadFile(audioKey, audioBuffer, {
 						bucket:

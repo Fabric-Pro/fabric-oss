@@ -37,6 +37,7 @@ import { orpcClient } from "../../../../shared/lib/orpc-client";
 import { buildStoryDetailsRoute } from "../../lib/stories/routes";
 import { PRIORITY_OPTIONS, type UserStory } from "../../lib/stories/types";
 import { ConvertKindConfirmDialog } from "./ConvertKindConfirmDialog";
+import { isConvertKindBlockedByDefer } from "./lib/convert-kind-availability";
 import { useAiReassessEligibility } from "./priority/useAiReassessEligibility";
 import { useAiReprioritizeStory } from "./priority/useAiReprioritizeStory";
 import { StoryKindRegenerationBadge } from "./StoryKindRegenerationBadge";
@@ -78,6 +79,7 @@ export function StoryActionsMenu({
 	const queryClient = useQueryClient();
 	const tConvert = useTranslations("projects.stories.convertKind");
 	const isClosed = story.draftingStage === "CLOSED";
+	const convertBlockedByDefer = isConvertKindBlockedByDefer(story);
 	const targetKind: "BUG" | "FEATURE" =
 		story.kind === "BUG" ? "FEATURE" : "BUG";
 	const [convertDialogOpen, setConvertDialogOpen] = useState(false);
@@ -360,15 +362,25 @@ export function StoryActionsMenu({
 					</DropdownMenuSub>
 
 					<DropdownMenuItem
+						disabled={convertBlockedByDefer}
 						onClick={(e) => {
 							e.stopPropagation();
 							setConvertDialogOpen(true);
 						}}
 					>
 						<ArrowLeftRightIcon className="mr-2 size-4" />
-						{story.kind === "BUG"
-							? "Change to feature"
-							: "Change to bug"}
+						<span className="flex flex-col">
+							<span>
+								{story.kind === "BUG"
+									? "Change to feature"
+									: "Change to bug"}
+							</span>
+							{convertBlockedByDefer ? (
+								<span className="max-w-56 text-muted-foreground text-xs">
+									{tConvert("deferredBlocked")}
+								</span>
+							) : null}
+						</span>
 					</DropdownMenuItem>
 
 					<DropdownMenuItem

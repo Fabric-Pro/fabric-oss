@@ -60,7 +60,7 @@ export async function proposeNativeInstructionChange(input: {
 			deletedFiles: result.deleteCount,
 		},
 		message:
-			"The change was submitted as a repository pull-request suggestion. It has not been applied to the target branch.",
+			"The change was submitted as a repository pull-request suggestion. It has not been applied to the target branch: tell the user it is awaiting review in the configured provider.",
 	};
 }
 

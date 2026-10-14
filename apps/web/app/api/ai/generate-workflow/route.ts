@@ -7,12 +7,12 @@
 
 import { getAIModelWithMetadata } from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	forbiddenOrganizationResponse,
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import { auth } from "@repo/auth";
-import { AiUsageLimitExceededError } from "@repo/payments";
 import { generateText } from "ai";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
@@ -238,21 +238,23 @@ export async function POST(req: NextRequest) {
 		const errorMessage =
 			error instanceof Error ? error.message : "Internal server error";
 
-		// AI usage-limit chokepoint hit a HARD limit.
-		// Surface the rich payload so the workflow
-		// builder client renders the shared destructive toast.
-		if (error instanceof AiUsageLimitExceededError) {
+		// AI usage-limit chokepoint hit a HARD limit, at model resolution or
+		// at the check the model repeats before each request (inside the AI
+		// SDK's RetryError when it refused a retry). Surface the rich payload
+		// so the workflow builder client renders the shared destructive toast.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
 			return new Response(
 				JSON.stringify({
-					error: error.message,
+					error: limitError.message,
 					code: "AI_USAGE_LIMIT_EXCEEDED",
 					data: {
-						limitId: error.limitId,
-						dimension: error.dimension,
-						window: error.window,
-						used: error.used.toString(),
-						max: error.max.toString(),
-						manageLimitsUrl: error.manageLimitsUrl,
+						limitId: limitError.limitId,
+						dimension: limitError.dimension,
+						window: limitError.window,
+						used: limitError.used.toString(),
+						max: limitError.max.toString(),
+						manageLimitsUrl: limitError.manageLimitsUrl,
 					},
 				}),
 				{
@@ -434,6 +436,12 @@ Respond with a JSON object only, no markdown or code fences.`;
 		// Validate with Zod schema
 		return GeneratedWorkflowSchema.parse(parsed);
 	} catch (error: unknown) {
+		// A usage-limit refusal goes on unwrapped, so the handler answers
+		// with the limit rather than a generic failure.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
+		}
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		console.error("[AI Workflow Generation] AI SDK error:", error);

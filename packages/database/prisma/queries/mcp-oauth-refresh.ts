@@ -2,7 +2,8 @@
  * The one refresh path for an MCP config's own OAuth grant.
  *
  * Shared by `getValidAccessToken`, the `@repo/mcp` OAuth provider (its
- * proactive refresh) and the `mcp.oauth.refresh` procedure. It:
+ * proactive refresh, and its refresh after the MCP server answers 401) and
+ * the `mcp.oauth.refresh` procedure. It:
  *
  * - takes ONE snapshot of the config (generation, binding, client, auth
  *   method, refresh token) and uses only it;
@@ -36,6 +37,12 @@ export type McpOAuthRefreshedTokens = {
 	encryptedRefreshToken: string;
 	/** Effective lifetime in seconds (provider value or known default). */
 	expiresIn: number | null;
+	/**
+	 * The `tokenExpiresAt` written to the row with this token set. Callers
+	 * that hand the expiry on should use this value rather than compute their
+	 * own from `expiresIn`, so it matches what a later read of the row gives.
+	 */
+	tokenExpiresAt: Date | null;
 	tokenType: string;
 	scope: string | null;
 	/** The generation the refresh was made under (unchanged by it). */
@@ -365,6 +372,9 @@ async function doRefresh(
 		? encryptApiKey(result.refreshToken)
 		: spentEncryptedRefreshToken;
 
+	const tokenExpiresAt = expiresIn
+		? new Date(Date.now() + expiresIn * 1000)
+		: null;
 	const saved = await saveMcpOAuthRefresh({
 		configId,
 		expectedGeneration: generation,
@@ -373,9 +383,7 @@ async function doRefresh(
 			encryptedAccessToken: encryptApiKey(result.accessToken),
 			accessTokenHash: hashApiKey(result.accessToken),
 			encryptedRefreshToken,
-			tokenExpiresAt: expiresIn
-				? new Date(Date.now() + expiresIn * 1000)
-				: null,
+			tokenExpiresAt,
 		},
 		binding: spentBinding,
 		client: {
@@ -397,6 +405,7 @@ async function doRefresh(
 		refreshToken,
 		encryptedRefreshToken,
 		expiresIn: expiresIn ?? null,
+		tokenExpiresAt,
 		tokenType: result.tokenType || "Bearer",
 		scope: result.scope,
 		generation,

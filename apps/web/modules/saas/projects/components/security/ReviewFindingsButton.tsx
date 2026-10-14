@@ -25,12 +25,14 @@ import {
 import { Loader2Icon, SparklesIcon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { PlanPausedNotice } from "../PlanPausedNotice";
 import { isScanActive, type ScanStatus } from "./lib";
 import {
 	type FindingTitleLookup,
 	type ReviewDecision,
 	ReviewProposalsDialog,
 } from "./ReviewProposalsDialog";
+import { PAUSED_RUN_POLL_MS, usePausedRun } from "./use-paused-run";
 
 /**
  * Informational tooltip copy for the "Review findings" trigger — calm/advisory
@@ -74,13 +76,29 @@ export function ReviewFindingsButton({
 				const status = query.state.data?.review?.status as
 					| ScanStatus
 					| undefined;
-				return isScanActive(status) ? 3000 : false;
+				return isScanActive(status)
+					? 3000
+					: status === "WAITING_FOR_PLAN"
+						? PAUSED_RUN_POLL_MS
+						: false;
 			},
 		}),
 	);
 
 	const review = latestReviewQuery.data?.review ?? null;
 	const reviewRunning = isScanActive(review?.status);
+	// Paused for a ChatGPT plan reset (Fizzy #2770).
+	const reviewPaused = review?.status === "WAITING_FOR_PLAN";
+	const pausedRun = usePausedRun({
+		projectId,
+		organizationId,
+		kind: "review",
+		runId: review?.id,
+		paused: reviewPaused,
+		onResumed: () => {
+			latestReviewQuery.refetch();
+		},
+	});
 
 	const startMutation = useMutation(
 		orpc.projects.scan.review.start.mutationOptions({
@@ -207,6 +225,21 @@ export function ReviewFindingsButton({
 	};
 
 	const busy = reviewRunning || startMutation.isPending || awaitingResult;
+
+	if (reviewPaused && review) {
+		return (
+			<PlanPausedNotice
+				inline
+				resumesAt={review.resumesAt}
+				canRunOnApi={pausedRun.canRunOnApi}
+				askAdminToRunOnApi={pausedRun.askAdminToRunOnApi}
+				onCancel={handleCancel}
+				onRunNow={pausedRun.runNow}
+				cancelling={cancelMutation.isPending}
+				runningNow={pausedRun.runningNow}
+			/>
+		);
+	}
 	const noOpenFindings = openFindingCount === 0;
 	const disabled = busy || noOpenFindings;
 

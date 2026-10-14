@@ -66,6 +66,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"BrowserTask", // A user's browser-automation jobs
 	"AgentConversation", // A user's conversation with an agent
 	"ConversationTurn", // One Advisor chat turn of a user's conversation
+	"ConversationTurnAttempt", // One model request a user's chat turn reserved
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
 	"ProjectUserPreference", // Per-user-per-project settings

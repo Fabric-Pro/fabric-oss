@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { z } from "zod";
 import { db, type Prisma } from "../client";
 import type { AgentWorkspaceFile, FrameShareScope } from "../generated/client";
@@ -168,6 +169,10 @@ export async function createFrame(input: CreateFrameInput) {
 	});
 
 	const content = JSON.stringify(document, null, 2);
+	// Immediately before the write: inside an Advisor chat turn that has
+	// stopped, nothing is created (the ambient dispatch guard; a no-op
+	// outside a turn).
+	throwIfDispatchStopped();
 	const file = await db.agentWorkspaceFile.create({
 		data: {
 			conversationId: input.conversationId,
@@ -311,6 +316,10 @@ export async function updateFrame(input: UpdateFrameInput) {
 	});
 	const content = JSON.stringify(nextDocument, null, 2);
 
+	// Immediately before the write, after the read above: inside an Advisor
+	// chat turn that has stopped, nothing is written (the ambient dispatch
+	// guard; a no-op outside a turn).
+	throwIfDispatchStopped();
 	const updated = await db.agentWorkspaceFile.update({
 		where: { id: existing.id, projectId: input.projectId },
 		data: {
@@ -343,6 +352,8 @@ export async function publishFrame(input: {
 	if (!existing) {
 		return null;
 	}
+	// Immediately before the write (see updateFrame).
+	throwIfDispatchStopped();
 	const updated = await db.agentWorkspaceFile.update({
 		where: { id: existing.id, projectId: input.projectId },
 		data: {

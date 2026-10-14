@@ -17,8 +17,8 @@ vi.mock("@repo/logs", () => ({ logger }));
 
 vi.mock("@repo/database", () => ({
 	getChatGptPlanSourceStates: async () => [],
-	recordChatGptPlanSourceExhausted: async () => {},
-	clearChatGptPlanSourceState: async () => {},
+	recordChatGptPlanSourceExhausted: async () => true,
+	markChatGptPlanSourceAnswered: async () => true,
 	getChatGptPlanOrgAccountWindows: async () => new Map(),
 	getUserModelPreference: vi.fn(),
 	getModelForTask: vi.fn(),

@@ -1,5 +1,9 @@
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
+import {
+	PM_SYNC_START_POLICIES,
+	testCaseSyncWorkflowId,
+} from "@repo/temporal/pm-sync-start";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { classifyTestCaseSyncSupport } from "./pm-test-case-sync-capability";
 import { resolvePmTarget } from "./resolve-pm-target";
@@ -116,17 +120,23 @@ export async function enqueueTestCaseAutoSync(
 				string
 			> | null) ?? undefined;
 
-		// Stable per-case workflow id so rapid successive edits de-duplicate
-		// (USE_EXISTING) instead of racing parallel pushes; a completed run lets
-		// the next edit start a fresh push (ALLOW_DUPLICATE).
-		const workflowId = `test-case-autosync-${input.projectId}-${input.testCaseId}`;
+		// The case's one workflow id, shared with single-case Sync now and
+		// Retry, so an auto-sync never runs beside one of those for the same
+		// case: rapid edits, or an edit during a single-case Sync now or Retry,
+		// attach to the running push (USE_EXISTING); a completed run lets the
+		// next edit start a fresh push (ALLOW_DUPLICATE). A multi-case push has
+		// its own id and can overlap it; the create claim covers that. An edit made after the running push read the
+		// case is pushed by the next edit or Sync now.
+		const workflowId = testCaseSyncWorkflowId(
+			input.projectId,
+			input.testCaseId,
+		);
 		const handle = await client.workflow.start(
 			"testCaseSyncWorkflow",
 			withCorrelationMemo({
 				taskQueue: "ai-chat",
 				workflowId,
-				workflowIdReusePolicy: "ALLOW_DUPLICATE",
-				workflowIdConflictPolicy: "USE_EXISTING",
+				...PM_SYNC_START_POLICIES,
 				args: [
 					{
 						projectId: input.projectId,

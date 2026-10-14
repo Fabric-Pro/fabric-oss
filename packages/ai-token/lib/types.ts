@@ -36,6 +36,19 @@ export interface AITokenClaims {
 	 * the member chose. Never present together with `pe`.
 	 */
 	imp?: true;
+	/**
+	 * The background job the token's work belongs to (an `AiJobKey`), so the
+	 * exchange resolves it as that job — on the organization's shared ChatGPT
+	 * plans when the job may use them (Fizzy #2770). Absent for work that
+	 * belongs to no job.
+	 */
+	jt?: string;
+	/**
+	 * A person let the token's bulk run use the organization's provider once
+	 * every shared ChatGPT plan is spent ("Run now on API billing"). Absent
+	 * for every other token.
+	 */
+	af?: true;
 }
 
 /**
@@ -61,6 +74,10 @@ export interface IssueTokenOptions {
 	 * (`isAiImpersonatedRequest()` inside a request or a Temporal run).
 	 */
 	impersonated: boolean;
+	/** The background job the token's work belongs to, written as `jt`. */
+	jobType?: string;
+	/** The run may bill the organization's provider, written as `af`. */
+	apiFallbackApproved?: boolean;
 }
 
 /**

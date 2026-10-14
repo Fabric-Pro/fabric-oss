@@ -22,7 +22,12 @@ vi.mock("@repo/utils", () => ({
 	encryptApiKey: (v: string) => v,
 }));
 
-import { GitLabApiError, gitlabFetch } from "../index";
+import {
+	executeGitLabTool,
+	GitLabApiError,
+	gitlabFetch,
+	gitlabPost,
+} from "../index";
 
 describe("gitlabFetch", () => {
 	const originalFetch = global.fetch;
@@ -86,5 +91,92 @@ describe("gitlabFetch", () => {
 			status: 429,
 			message: "GitLab API error: 429",
 		});
+	});
+});
+
+// The same status-first rule for the write helpers. A create refused with a
+// non-JSON body must reach the caller as a 4xx `GitLabApiError`: the story
+// sync treats that as a definite rejection and releases the story's PM create
+// claim, where a SyntaxError would hold it (Fizzy #3045).
+describe("gitlabPost / gitlabPut", () => {
+	const originalFetch = global.fetch;
+	const fetchMock = vi.fn();
+	beforeEach(() => {
+		global.fetch = fetchMock as unknown as typeof fetch;
+	});
+	afterEach(() => {
+		global.fetch = originalFetch;
+		fetchMock.mockReset();
+	});
+
+	it("an HTML 403 on a POST is a GitLabApiError with status 403", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response("<html><body>Forbidden</body></html>", {
+				status: 403,
+				headers: { "Content-Type": "text/html" },
+			}),
+		);
+
+		const error = await gitlabPost("tok", "/projects/1/issues", {
+			title: "Checkout",
+		}).catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(GitLabApiError);
+		expect(error).toMatchObject({
+			status: 403,
+			message: "GitLab API error: 403",
+		});
+	});
+
+	it("a POST's JSON error body keeps its status and message", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response(
+				JSON.stringify({ message: { title: ["is too long"] } }),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			),
+		);
+
+		const error = await gitlabPost("tok", "/projects/1/issues", {
+			title: "x",
+		}).catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(GitLabApiError);
+		expect(error).toMatchObject({ status: 400 });
+	});
+
+	it("a POST's 2xx body is returned parsed", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response(JSON.stringify({ iid: 8 }), {
+				status: 201,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await expect(
+			gitlabPost("tok", "/projects/1/issues", { title: "x" }),
+		).resolves.toEqual({ iid: 8 });
+	});
+
+	it("a plain-text 429 on a PUT (update_issue) is a GitLabApiError with status 429", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response("Retry later\n", {
+				status: 429,
+				headers: { "Content-Type": "text/plain" },
+			}),
+		);
+
+		const error = await executeGitLabTool(
+			"update_issue",
+			{ project_id: "1", issue_iid: 7, title: "Checkout" },
+			"user-1",
+			undefined,
+			"project-token",
+		).catch((e: unknown) => e);
+
+		expect(error).toBeInstanceOf(GitLabApiError);
+		expect(error).toMatchObject({ status: 429 });
 	});
 });

@@ -17,12 +17,14 @@ const mocks = vi.hoisted(() => ({
 	stateDeleteMany: vi.fn(),
 	servedDeleteMany: vi.fn(),
 	observationDeleteMany: vi.fn(),
+	accuracyDeleteMany: vi.fn(),
 	policyFindUnique: vi.fn(),
 	policyUpsert: vi.fn(),
 }));
 
 vi.mock("../prisma/client", () => {
 	const db = {
+		$executeRaw: vi.fn(async () => 1),
 		chatGptPlanOrgAccount: {
 			findUnique: mocks.accountFindUnique,
 			findFirst: mocks.accountFindFirst,
@@ -36,6 +38,7 @@ vi.mock("../prisma/client", () => {
 		chatGptPlanBudgetObservation: {
 			deleteMany: mocks.observationDeleteMany,
 		},
+		chatGptPlanWindowAccuracy: { deleteMany: mocks.accuracyDeleteMany },
 		chatGptPlanOrgPolicy: {
 			findUnique: mocks.policyFindUnique,
 			upsert: mocks.policyUpsert,
@@ -242,6 +245,9 @@ describe("organization filter on reads and writes by account id", () => {
 		expect(mocks.observationDeleteMany).toHaveBeenCalledWith({
 			where: { sourceKind: "ORG", sourceId: "acc_1" },
 		});
+		expect(mocks.accuracyDeleteMany).toHaveBeenCalledWith({
+			where: { sourceKind: "ORG", sourceId: "acc_1" },
+		});
 	});
 
 	it("leaves the breaker row alone when the account is not this organization's", async () => {
@@ -260,13 +266,12 @@ describe("organization filter on reads and writes by account id", () => {
 });
 
 describe("getChatGptPlanOrgPolicy", () => {
-	it("answers pooling off and nothing acknowledged when there is no row", async () => {
+	it("answers nothing acknowledged when there is no row", async () => {
 		mocks.policyFindUnique.mockResolvedValue(null);
 		await expect(getChatGptPlanOrgPolicy("org_a")).resolves.toEqual(
 			DEFAULT_CHATGPT_PLAN_ORG_POLICY,
 		);
 		expect(DEFAULT_CHATGPT_PLAN_ORG_POLICY).toMatchObject({
-			poolingEnabled: false,
 			apiFallbackInteractive: "ASK",
 			apiFallbackBackground: "NEVER",
 			termsAcknowledgedAt: null,

@@ -159,3 +159,46 @@ describe("StoryActionsMenu — AI entry eligibility", () => {
 		).not.toBeInTheDocument();
 	});
 });
+
+/**
+ * The type conversion snaps the stage to DRAFT, which a deferred item may not
+ * do — the server refuses it. The entry stays visible but disabled, with the
+ * reason, rather than offering a click that ends in an error toast.
+ */
+describe("StoryActionsMenu — Change to bug on a deferred item", () => {
+	async function openMenu(target: UserStory) {
+		const user = userEvent.setup();
+		render(
+			<StoryActionsMenu
+				story={target}
+				projectId="p-1"
+				organizationId={null}
+			/>,
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={new QueryClient()}>
+						{children}
+					</QueryClientProvider>
+				),
+			},
+		);
+		await user.click(screen.getByRole("button"));
+		return screen.findByRole("menuitem", { name: /change to bug/i });
+	}
+
+	it("disables the entry and says why on a deferred item outside DRAFT", async () => {
+		const item = await openMenu(
+			story({ deliveryTrack: "DEFER", draftingStage: "PLACEHOLDER" }),
+		);
+		expect(item).toHaveAttribute("data-disabled");
+		// Translations resolve to their key in this suite.
+		expect(item).toHaveTextContent("deferredBlocked");
+	});
+
+	it("offers it on an item that is not deferred", async () => {
+		const item = await openMenu(
+			story({ deliveryTrack: "SPECIFY", draftingStage: "PLACEHOLDER" }),
+		);
+		expect(item).not.toHaveAttribute("data-disabled");
+	});
+});

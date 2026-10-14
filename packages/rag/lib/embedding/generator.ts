@@ -155,6 +155,10 @@ export async function generateEmbedding(
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
 		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
+		// The usage interceptor writes the AiUsageLog row from this context.
+		projectId: tenantContext.projectId,
+		featureKey: tenantContext.featureKey,
+		jobType: tenantContext.jobType,
 	});
 
 	logger.info("[EmbeddingGenerator] Resolved embedding model", {
@@ -330,6 +334,10 @@ export async function generateEmbeddings(
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
 		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
+		// The usage interceptor writes the AiUsageLog row from this context.
+		projectId: tenantContext.projectId,
+		featureKey: tenantContext.featureKey,
+		jobType: tenantContext.jobType,
 	});
 
 	// Track usage (fire-and-forget)

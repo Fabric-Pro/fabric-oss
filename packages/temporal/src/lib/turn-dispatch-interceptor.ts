@@ -14,6 +14,13 @@
  * before. An activity whose scope is not in its first argument (a positional
  * activity) calls `runWithTurnDispatch` itself.
  *
+ * Under the `orch-turn-budget-v1` marker the scope also carries the turn's
+ * `generation` and `budgetContractVersion`, and a model-calling activity's
+ * first argument may carry `budgetAttemptKind` (EXPLORATION for a main
+ * round, FINALIZATION for the synthesis after a stop). Both are reconstructed
+ * here, from the workflow-set input only; a malformed value is dropped, which
+ * leaves the request unledgered (no contract) or AUXILIARY (no kind).
+ *
  * Modeled on {@link ProjectContextActivityInboundInterceptor}. Activities run
  * in normal Node context, so `node:async_hooks` is safe here; workflow code
  * must never import this file.
@@ -28,6 +35,7 @@ import {
 	runWithTurnDispatch,
 	type TurnScope,
 } from "../activities/orchestrator/turn-dispatch";
+import type { OrchestratorBudgetAttemptKind } from "../workflows/orchestrator/types";
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
@@ -59,12 +67,35 @@ export function extractTurnScope(
 	) {
 		return undefined;
 	}
+	const generation = candidate.generation;
+	const budgetContractVersion = candidate.budgetContractVersion;
 	return {
 		turnId: candidate.turnId,
 		executionId: candidate.executionId,
 		userId: candidate.userId,
 		organizationId: candidate.organizationId,
+		...(generation === null || Number.isInteger(generation)
+			? { generation: generation as number | null }
+			: {}),
+		...(Number.isInteger(budgetContractVersion)
+			? { budgetContractVersion: budgetContractVersion as number }
+			: {}),
 	};
+}
+
+/**
+ * The `budgetAttemptKind` on the activity's first object argument, when it
+ * is one the workflow sets; undefined (AUXILIARY) otherwise.
+ */
+export function extractBudgetAttemptKind(
+	input: Pick<ActivityExecuteInput, "args">,
+): OrchestratorBudgetAttemptKind | undefined {
+	const first = input.args?.[0];
+	if (!first || typeof first !== "object") {
+		return undefined;
+	}
+	const kind = (first as { budgetAttemptKind?: unknown }).budgetAttemptKind;
+	return kind === "EXPLORATION" || kind === "FINALIZATION" ? kind : undefined;
 }
 
 export class TurnDispatchActivityInboundInterceptor
@@ -78,6 +109,8 @@ export class TurnDispatchActivityInboundInterceptor
 		if (!turnScope) {
 			return next(input);
 		}
-		return runWithTurnDispatch(turnScope, () => next(input));
+		return runWithTurnDispatch(turnScope, () => next(input), {
+			attemptKind: extractBudgetAttemptKind(input),
+		});
 	}
 }

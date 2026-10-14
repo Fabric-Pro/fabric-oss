@@ -64,6 +64,21 @@ export function triggerBlobDownload(blob: Blob, filename: string): void {
 }
 
 /**
+ * Save a file from a signed storage URL. The bytes go straight from storage to
+ * disk, untouched; the filename comes from the URL's `Content-Disposition`, with
+ * `filename` as the fallback a same-origin URL honours.
+ */
+export function triggerUrlDownload(url: string, filename: string): void {
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	a.rel = "noopener";
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+}
+
+/**
  * Matches an ordered-list line, tolerating a serializer-escaped period
  * (`38\\. GIVEN …`). The escape appears when a list item lost its list role
  * upstream; exports must still render it as a numbered item rather than

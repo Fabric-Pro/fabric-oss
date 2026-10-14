@@ -173,6 +173,32 @@ describe("analyzeProcedure — the capability door", () => {
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 	});
 
+	it("starts the analysis as the clicker's own plan-eligible work", async () => {
+		// Every model call in the run resolves as the plan's `userId`, so the
+		// flag lets the clicker's ChatGPT plan serve it (Fizzy #2770).
+		mocks.requestAnalysis.mockResolvedValue({
+			analysisId: "analysis_example",
+			status: "PENDING",
+			workflowName: "atlasAnalysisWorkflow",
+			taskQueue: "fabric-worker",
+			workflowId: "atlas-analysis-example",
+			workflowArgs: {
+				analysisId: "analysis_example",
+				userId: "user_example",
+			},
+		});
+
+		await runAnalyze();
+
+		expect(mocks.workflowStart.mock.calls[0]?.[1].args).toEqual([
+			{
+				analysisId: "analysis_example",
+				userId: "user_example",
+				jobType: "atlas-analysis",
+			},
+		]);
+	});
+
 	it("is inert with the flag off — no evidence read, no refusal", async () => {
 		mocks.isFeatureEnabled.mockResolvedValue(false);
 		mocks.gatherCapabilityEvidence.mockResolvedValue(

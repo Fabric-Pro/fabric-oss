@@ -152,3 +152,44 @@ describe("a ChatGPT plan refusal anywhere in a protected procedure", () => {
 		});
 	});
 });
+
+describe("an AI usage-limit refusal anywhere in a protected procedure", () => {
+	it("reaches the client as AI_USAGE_LIMIT_EXCEEDED when the SDK wrapped it in a RetryError", async () => {
+		const { AiUsageLimitExceededError } = await import(
+			"@repo/payments/lib/ai-usage-limit-error"
+		);
+		const { RetryError } = await import("ai");
+		const refusing = protectedProcedure.handler(async () => {
+			throw new RetryError({
+				message: "Failed after 2 attempts.",
+				reason: "errorNotRetryable",
+				errors: [
+					new Error("provider overloaded"),
+					new AiUsageLimitExceededError({
+						message:
+							"AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
+						limitId: "limit-1",
+						dimension: "TOKENS" as never,
+						window: "MONTHLY" as never,
+						used: BigInt(100),
+						max: BigInt(100),
+						manageLimitsUrl: "https://example.com/limits",
+					}),
+				],
+			});
+		});
+		await expect(
+			call(refusing, undefined, { context: { headers: new Headers() } }),
+		).rejects.toMatchObject({
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: {
+				limitId: "limit-1",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: "100",
+				max: "100",
+				manageLimitsUrl: "https://example.com/limits",
+			},
+		});
+	});
+});

@@ -16,6 +16,10 @@ import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl as getS3SignedUrl } from "@aws-sdk/s3-request-presigner";
 import { logger } from "@repo/logs";
 import { withProviderBreaker } from "@repo/observability";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type {
 	CopyFileHandler,
 	DeleteFileHandler,
@@ -289,6 +293,16 @@ export const uploadFile: UploadFileHandler = async (
 			body = Buffer.concat(chunks);
 		}
 
+		// Inside an Advisor chat turn that has stopped or used its token
+		// allowance (the ambient dispatch guard), nothing is uploaded:
+		// checked after the body was read, in the same synchronous run as the
+		// send (the breaker calls `client.send` without awaiting first, except
+		// in its half-open state, where it waits for its probe — a
+		// third-party wait inside the send). Not inside the breaker's
+		// callback: the breaker counts every throw there as an S3 failure,
+		// and five refused uploads in a row would open it for every caller.
+		// A no-op outside a turn.
+		throwIfDispatchStopped();
 		await withProviderBreaker("aws_s3", "put_object", () =>
 			client.send(
 				new PutObjectCommand({
@@ -310,6 +324,8 @@ export const uploadFile: UploadFileHandler = async (
 			size: body.length,
 		};
 	} catch (e) {
+		// A chat turn's stop is handed back as itself, not as a failed upload.
+		rethrowIfDispatchStopped(e);
 		logger.error(e);
 		throw new Error("Could not upload file to S3");
 	}
@@ -553,26 +569,32 @@ export const getFileMetadata: GetFileMetadataHandler = async (url, options) => {
 			key = url;
 		}
 
-		const response = await withProviderBreaker(
-			"aws_s3",
-			"head_object",
-			async () => {
-				try {
-					return await client.send(
-						new HeadObjectCommand({
-							Bucket: bucket,
-							Key: key,
-						}),
-					);
-				} catch (error) {
-					// A missing object is a successful existence check, not a provider outage.
-					if (error instanceof Error && error.name === "NotFound") {
-						return null;
-					}
-					throw error;
+		const head = async () => {
+			try {
+				return await client.send(
+					new HeadObjectCommand({
+						Bucket: bucket,
+						Key: key,
+					}),
+					{ abortSignal: options?.abortSignal },
+				);
+			} catch (error) {
+				// A missing object is a successful existence check, not a provider outage.
+				if (error instanceof Error && error.name === "NotFound") {
+					return null;
 				}
-			},
-		);
+				throw error;
+			}
+		};
+		// A HEAD the caller bounds with its own deadline runs outside the shared
+		// breaker. It cannot hang, so there is nothing for the breaker to shed,
+		// and none of its outcomes should move the circuit every other S3
+		// operation shares: a cancellation counted as a failure would shut out
+		// working uploads, and counted as a success it would clear real
+		// failures or close a half-open circuit storage never answered.
+		const response = options?.abortSignal
+			? await head()
+			: await withProviderBreaker("aws_s3", "head_object", head);
 		if (response === null) {
 			return null;
 		}

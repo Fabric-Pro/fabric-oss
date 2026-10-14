@@ -5,12 +5,12 @@
  * These are tools from the "Fabric AI" virtual server discovered via semantic search.
  */
 
-import { resolveOpenAiApiKey } from "@repo/ai";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
-	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { synthesizeToolSpeech } from "../../../../lib/text-to-speech";
 import {
 	createFirstClassFrame,
 	getFirstClassFrame,
@@ -619,13 +619,22 @@ export class FabricAiHandler implements StepHandler {
 					},
 				);
 
+				// A failed transcription fails the step with its reason (e.g. the
+				// organization has no key that can transcribe) instead of
+				// handing the next step an empty transcript.
+				if (!transcribeResult.success) {
+					throw new Error(
+						transcribeResult.error || "Transcription failed",
+					);
+				}
+
 				result = transcribeResult.transcript || "";
 				toolCalls.push({
 					id: `fabric-transcribe-${Date.now()}`,
 					name: toolName,
 					args: { fileName, model },
 					result: { textLength: result.length },
-					status: transcribeResult.success ? "success" : "error",
+					status: "success",
 					durationMs: transcribeResult.durationMs,
 				});
 				break;
@@ -842,6 +851,9 @@ export class FabricAiHandler implements StepHandler {
 					gatewayModel,
 					userId: input.userId,
 					organizationId: input.organizationId,
+					// A Planner step serving a chat turn: the image request
+					// checks the turn before it is sent.
+					...(input.turnScope ? { turnScope: input.turnScope } : {}),
 				});
 
 				if (!imageResult.success) {
@@ -1099,56 +1111,24 @@ export class FabricAiHandler implements StepHandler {
 					"@repo/storage"
 				);
 
-				// This path calls OpenAI's TTS endpoint directly, so it needs the
-				// tenant's OpenAI key specifically, decrypted — not whichever
-				// provider the tenant's default model selection resolved to.
-				const openAiApiKey = await resolveOpenAiApiKey({
+				const speech = await synthesizeToolSpeech({
 					userId: input.userId,
 					organizationId: input.organizationId,
+					text: ttsText,
+					voice: ttsVoice,
+					speed: ttsSpeed,
 				});
-
-				if (!openAiApiKey) {
-					throw new Error(
-						"No OpenAI API key configured for text-to-speech",
-					);
+				if (!speech.ok) {
+					throw new Error(speech.error);
 				}
 
-				// Call OpenAI TTS. Built outside the model factory, so in a chat
-				// turn the request is checked against the turn record first and
-				// aborted (with the reading of its body) when the turn stops;
-				// outside one `guardDispatch` returns no signal.
-				const ttsSignal = await guardDispatch();
-				const ttsResponse = await fetch(
-					"https://api.openai.com/v1/audio/speech",
-					{
-						method: "POST",
-						signal: ttsSignal,
-						headers: {
-							Authorization: `Bearer ${openAiApiKey}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify({
-							model: "tts-1",
-							input: ttsText.substring(0, 4096), // TTS limit
-							voice: ttsVoice,
-							speed: Math.min(4.0, Math.max(0.25, ttsSpeed)),
-							response_format: "mp3",
-						}),
-					},
-				);
-
-				if (!ttsResponse.ok) {
-					const errText = await ttsResponse.text();
-					throw new Error(
-						`TTS API error ${ttsResponse.status}: ${errText}`,
-					);
-				}
-
-				const audioBuffer = Buffer.from(
-					await ttsResponse.arrayBuffer(),
-				);
+				const audioBuffer = speech.audio;
 				const audioKey = `tts/${input.userId}/${Date.now()}.mp3`;
 
+				// Immediately before the upload, after the speech request and
+				// the reading of its body: nothing is stored once the chat turn
+				// this step serves has stopped. A no-op outside a turn.
+				throwIfDispatchStopped();
 				await uploadAudio(audioKey, audioBuffer, {
 					bucket:
 						process.env.NEXT_PUBLIC_CHAT_DOCUMENTS_BUCKET_NAME ||
@@ -1366,6 +1346,10 @@ export class FabricAiHandler implements StepHandler {
 					},
 				};
 
+				// Immediately before the write: nothing is created once the
+				// chat turn this step serves has stopped or used its token
+				// allowance; a no-op outside a turn.
+				throwIfDispatchStopped();
 				const asanaResp = await fetch(
 					"https://app.asana.com/api/1.0/tasks",
 					{
@@ -1493,6 +1477,7 @@ export class FabricAiHandler implements StepHandler {
 					(stepInputs?.attributes as Record<string, unknown>) || {};
 				const attioCreateStartTime = Date.now();
 
+				throwIfDispatchStopped();
 				const attioCreateResp = await fetch(
 					`https://api.attio.com/v2/objects/${attioObjectType}/records`,
 					{
@@ -1625,6 +1610,7 @@ export class FabricAiHandler implements StepHandler {
 					);
 				}
 
+				throwIfDispatchStopped();
 				const frontCreateResp = await fetch(
 					`https://api2.frontapp.com/channels/${frontChannelId || "default"}/messages`,
 					{

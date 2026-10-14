@@ -14,6 +14,8 @@ import {
 	generateText,
 	getAIModelWithMetadata,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { runWithAiJobType } from "@repo/ai/lib/job-context";
 import {
 	createAiChat,
 	deleteAiChatForTenant,
@@ -322,6 +324,12 @@ export function registerChatRoutes(
 				{
 					userId: ctx.userId,
 					organizationId: chat.organizationId ?? undefined,
+					// The caller is an API credential, never a member at a
+					// screen: the turn runs as background work, on the
+					// organization's shared ChatGPT plans when they serve it
+					// (Fizzy #2770). A key's member is its creator, so it never
+					// runs on that member's own plan.
+					jobType: "public-api",
 				},
 			);
 		} catch (err) {
@@ -375,23 +383,24 @@ export function registerChatRoutes(
 			});
 			assistantText = text;
 		} catch (err) {
-			// AI usage-limit chokepoint can also be hit during the
-			// generateText call itself (e.g., a different limit applies
-			// at invocation time). Mirror the same structured-envelope
-			// response as the model-resolution catch above.
-			if (err instanceof AiUsageLimitExceededError) {
+			// The model checks the usage limits again before each request it
+			// sends, so a limit reached since resolution refuses here. A refusal
+			// on an SDK retry arrives inside a RetryError, so unwrap it, and
+			// mirror the structured envelope of the model-resolution catch above.
+			const limitError = findAiUsageLimitError(err);
+			if (limitError) {
 				return c.json(
 					{
 						error: {
-							message: err.message,
+							message: limitError.message,
 							code: "AI_USAGE_LIMIT_EXCEEDED",
 							data: {
-								limitId: err.limitId,
-								dimension: err.dimension,
-								window: err.window,
-								used: err.used.toString(),
-								max: err.max.toString(),
-								manageLimitsUrl: err.manageLimitsUrl,
+								limitId: limitError.limitId,
+								dimension: limitError.dimension,
+								window: limitError.window,
+								used: limitError.used.toString(),
+								max: limitError.max.toString(),
+								manageLimitsUrl: limitError.manageLimitsUrl,
 							},
 						},
 					},
@@ -421,11 +430,13 @@ export function registerChatRoutes(
 		let nextTitle: string | undefined;
 		if (!chat.title && existing.length === 0) {
 			try {
-				nextTitle = await generateChatTitle(content, {
-					userId: ctx.userId,
-					organizationId: chat.organizationId ?? undefined,
-					projectId: chat.projectId ?? undefined,
-				});
+				nextTitle = await runWithAiJobType("public-api", () =>
+					generateChatTitle(content, {
+						userId: ctx.userId,
+						organizationId: chat.organizationId ?? undefined,
+						projectId: chat.projectId ?? undefined,
+					}),
+				);
 			} catch {
 				nextTitle =
 					content.length > 50

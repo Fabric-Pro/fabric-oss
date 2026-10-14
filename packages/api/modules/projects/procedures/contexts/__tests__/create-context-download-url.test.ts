@@ -7,6 +7,10 @@
  *   - Class B happy path (synthesized `.md`, shared header, upload+presign).
  *   - Class C happy path (synthesized `.txt`, integration suffix).
  *   - Missing `s3Path` on Class A → BAD_REQUEST / CONTENT_UNAVAILABLE.
+ *   - Class A object gone from storage → BAD_REQUEST / CONTENT_UNAVAILABLE,
+ *     logged, never signed. A check storage did not answer → retriable
+ *     SERVICE_UNAVAILABLE, never signed and never reported as missing.
+ *   - `API_SPEC` (an uploaded OpenAPI file) → the original, like any file.
  *   - Empty `content` on Class B/C → BAD_REQUEST / CONTENT_UNAVAILABLE.
  *   - Cross-tenant `contextId` → NOT_FOUND.
  *   - Wrong `projectId` for valid `contextId` → NOT_FOUND (IDOR).
@@ -41,9 +45,21 @@ vi.mock("@repo/config", () => ({
 
 const mockGetSignedUrl = vi.fn();
 const mockUploadFile = vi.fn();
+const mockGetFileMetadata = vi.fn();
 vi.mock("@repo/storage", () => ({
 	getSignedUrl: (...args: unknown[]) => mockGetSignedUrl(...args),
 	uploadFile: (...args: unknown[]) => mockUploadFile(...args),
+	getFileMetadata: (...args: unknown[]) => mockGetFileMetadata(...args),
+}));
+
+const mockLoggerWarn = vi.fn();
+vi.mock("@repo/logs", () => ({
+	logger: {
+		warn: (...args: unknown[]) => mockLoggerWarn(...args),
+		info: vi.fn(),
+		error: vi.fn(),
+		debug: vi.fn(),
+	},
 }));
 
 vi.mock("../../../../organizations/lib/membership", () => ({
@@ -99,6 +115,14 @@ beforeEach(() => {
 	mockGetSignedUrl.mockReset();
 	mockUploadFile.mockReset();
 	mockUrlPagesFindMany.mockReset();
+	mockGetFileMetadata.mockReset();
+	mockGetFileMetadata.mockResolvedValue({
+		size: 1024,
+		contentType: "application/pdf",
+		uploadedAt: new Date("2026-04-15T00:00:00Z"),
+		pathname: "stored",
+		url: "https://s3.test/stored",
+	});
 });
 
 describe("createContextDownloadUrl — Class A (binary)", () => {
@@ -174,6 +198,177 @@ describe("createContextDownloadUrl — Class A (binary)", () => {
 			data: expect.objectContaining({ code: "CONTENT_UNAVAILABLE" }),
 		});
 		expect(mockGetSignedUrl).not.toHaveBeenCalled();
+		expect(mockLoggerWarn).toHaveBeenCalledWith(
+			expect.stringContaining("ctx-2"),
+		);
+	});
+
+	it("refuses and logs when the original object is gone from storage", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce({
+			id: "ctx-gone",
+			projectId: "proj-1",
+			type: "FILE",
+			s3Path: "projects/proj-1/ctx-gone.json",
+			s3Bucket: "test-bucket",
+			originalFilename: "spec.json",
+			mimeType: "application/json",
+			content: null,
+			createdAt: new Date(),
+			metadata: {},
+		} as any);
+		mockGetFileMetadata.mockResolvedValueOnce(null);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { contextId: "ctx-gone", projectId: "proj-1" },
+				context: personalContext,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: expect.objectContaining({ code: "CONTENT_UNAVAILABLE" }),
+		});
+		expect(mockGetFileMetadata).toHaveBeenCalledWith(
+			"projects/proj-1/ctx-gone.json",
+			expect.objectContaining({ bucket: "test-bucket" }),
+		);
+		expect(mockGetSignedUrl).not.toHaveBeenCalled();
+		expect(mockLoggerWarn).toHaveBeenCalledWith(
+			expect.stringContaining("is missing from storage"),
+		);
+	});
+
+	it("neither signs nor calls the file missing when storage does not answer the check", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce({
+			id: "ctx-flaky",
+			projectId: "proj-1",
+			type: "FILE",
+			s3Path: "projects/proj-1/ctx-flaky.pdf",
+			s3Bucket: "test-bucket",
+			originalFilename: "report.pdf",
+			mimeType: "application/pdf",
+			content: null,
+			createdAt: new Date(),
+			metadata: {},
+		} as any);
+		mockGetFileMetadata.mockRejectedValueOnce(
+			new Error("Could not get file metadata from S3"),
+		);
+
+		const handler = await loadHandler();
+		const error = await handler({
+			input: { contextId: "ctx-flaky", projectId: "proj-1" },
+			context: personalContext,
+		}).catch((err: unknown) => err);
+
+		expect(error).toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+		expect((error as { data?: { code?: string } }).data?.code).not.toBe(
+			"CONTENT_UNAVAILABLE",
+		);
+		expect(mockGetSignedUrl).not.toHaveBeenCalled();
+		expect(mockLoggerWarn).toHaveBeenCalledWith(
+			expect.stringContaining("Could not confirm"),
+		);
+	});
+
+	it("gives up on a check storage never answers instead of hanging the download", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getContextById).mockResolvedValueOnce({
+				id: "ctx-stalled",
+				projectId: "proj-1",
+				type: "FILE",
+				s3Path: "projects/proj-1/ctx-stalled.pdf",
+				s3Bucket: "test-bucket",
+				originalFilename: "report.pdf",
+				mimeType: "application/pdf",
+				content: null,
+				createdAt: new Date(),
+				metadata: {},
+			} as any);
+			mockGetFileMetadata.mockReturnValueOnce(new Promise(() => {}));
+
+			const handler = await loadHandler();
+			const settled = handler({
+				input: { contextId: "ctx-stalled", projectId: "proj-1" },
+				context: personalContext,
+			}).catch((err: unknown) => err);
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			expect(await settled).toMatchObject({
+				code: "SERVICE_UNAVAILABLE",
+			});
+			expect(mockGetSignedUrl).not.toHaveBeenCalled();
+			// The stalled request itself is cancelled, not left running.
+			const [, options] = mockGetFileMetadata.mock.calls[0] as [
+				string,
+				{ bucket: string; abortSignal: AbortSignal },
+			];
+			expect(options.bucket).toBe("test-bucket");
+			expect(options.abortSignal.aborted).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("reports a signing failure as a server error", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce({
+			id: "ctx-sign",
+			projectId: "proj-1",
+			type: "FILE",
+			s3Path: "projects/proj-1/ctx-sign.pdf",
+			s3Bucket: "test-bucket",
+			originalFilename: "report.pdf",
+			mimeType: "application/pdf",
+			content: null,
+			createdAt: new Date(),
+			metadata: {},
+		} as any);
+		mockGetSignedUrl.mockRejectedValueOnce(new Error("signer down"));
+
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: { contextId: "ctx-sign", projectId: "proj-1" },
+				context: personalContext,
+			}),
+		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+	});
+
+	it("returns an uploaded OpenAPI file (API_SPEC) as the original, not extracted text", async () => {
+		vi.mocked(getContextById).mockResolvedValueOnce({
+			id: "ctx-spec",
+			projectId: "proj-1",
+			type: "API_SPEC",
+			s3Path: "projects/proj-1/ctx-spec.json",
+			s3Bucket: "test-bucket",
+			originalFilename: "petstore.json",
+			mimeType: "application/json",
+			content: "GET /pets — List all pets",
+			createdAt: new Date(),
+			metadata: {},
+		} as any);
+		mockGetSignedUrl.mockResolvedValueOnce("https://s3.test/signed-spec");
+
+		const handler = await loadHandler();
+		const result = (await handler({
+			input: { contextId: "ctx-spec", projectId: "proj-1" },
+			context: personalContext,
+		})) as { url: string; filename: string; contextClass: string };
+
+		expect(result).toMatchObject({
+			url: "https://s3.test/signed-spec",
+			filename: "petstore.json",
+			contextClass: "A",
+		});
+		expect(mockGetSignedUrl).toHaveBeenCalledWith(
+			"projects/proj-1/ctx-spec.json",
+			expect.objectContaining({
+				bucket: "test-bucket",
+				responseContentType: "application/json",
+			}),
+		);
+		expect(mockUploadFile).not.toHaveBeenCalled();
 	});
 });
 

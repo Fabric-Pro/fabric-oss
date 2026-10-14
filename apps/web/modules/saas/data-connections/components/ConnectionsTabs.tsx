@@ -194,7 +194,7 @@ export function ConnectionsTabs({
 				>
 					{MCP_ACCESS_LINK_LABEL}
 				</Link>
-				.
+				. <span className="italic">(https://fabric.pro/mcp)</span>
 			</div>
 			<ConnectionsPageContent
 				addHref={addHref}

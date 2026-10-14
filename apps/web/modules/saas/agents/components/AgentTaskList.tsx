@@ -1,5 +1,6 @@
 "use client";
 
+import { useAgentLabel } from "@saas/agents/hooks/useAgentLabel";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -153,14 +154,6 @@ function toHistoryItemsFromConversation(conversation: {
 	return [];
 }
 
-function formatAgentLabel(agentId: string): string {
-	if (agentId === "orchestrator" || agentId === "fabric-ai") {
-		return "Fabric AI";
-	}
-
-	return agentId.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
-}
-
 /**
  * Agent Task List Component
  *
@@ -171,6 +164,7 @@ export function AgentTaskList({
 	agentId,
 	status,
 }: AgentTaskListProps) {
+	const formatAgentLabel = useAgentLabel();
 	const { data, isLoading, error } = useQuery({
 		queryKey: ["agents", "history", { organizationId, agentId, status }],
 		queryFn: async () => {

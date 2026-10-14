@@ -5,6 +5,7 @@
  * Uses the shared agent executor for tool calling.
  */
 
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import type {
 	AgentVariable,
 	ExecutedStep,
@@ -54,7 +55,7 @@ export interface ExecuteGoalStepOutput {
 	};
 }
 
-export async function executeGoalStep(
+async function executeGoalStepInJob(
 	input: ExecuteGoalStepInput,
 ): Promise<ExecuteGoalStepOutput> {
 	const {
@@ -250,4 +251,15 @@ function extractOutputs(
 	}
 
 	return outputs;
+}
+
+// Always background work, whatever started the run: a run from before the
+// job-type header, or one a Temporal schedule started, still runs on the
+// organization's shared ChatGPT plans (Fizzy #2770). A run's own job wins.
+export function executeGoalStep(
+	params: Parameters<typeof executeGoalStepInJob>[0],
+): ReturnType<typeof executeGoalStepInJob> {
+	return runWithDefaultAiJobType("external-agent", () =>
+		executeGoalStepInJob(params),
+	);
 }

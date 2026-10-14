@@ -776,6 +776,53 @@ describe("sendNow — detail-level override resolution", () => {
 			}),
 		);
 	});
+
+	it("names the clicker for their ChatGPT plan while the tenant `userId` stays null in an organization", async () => {
+		// The curation runs as `triggeredByUserId`; `userId` is the tenant and is
+		// null in an organization, so the plan header needs `planUserId` — and
+		// overwriting `userId` would break the tenant scoping (Fizzy #2770).
+		mockProjectFindUnique.mockResolvedValue({
+			id: "proj-1",
+			name: "Acme",
+			organizationId: "org-9",
+			userId: "owner-1",
+		});
+		mockFindRecentNonFailedSend.mockResolvedValue(null);
+		mockIsTemporalAvailable.mockResolvedValue(true);
+		mockGetNewsletterSettings.mockResolvedValue({
+			cadence: "WEEKLY",
+			lookbackDays: null,
+			lastSentAt: null,
+			detailLevel: "STANDARD",
+		});
+		mockCreateOrGetNewsletterSend.mockResolvedValue({
+			send: { id: "send-org", temporalWorkflowId: null },
+			created: true,
+		});
+		mockWorkflowStart.mockResolvedValue({
+			workflowId: "newsletter-send-send-org",
+		});
+
+		await sendNow({
+			input: { projectId: "proj-1", organizationId: "org-9" },
+			context: orgContext,
+		});
+
+		expect(mockWorkflowStart).toHaveBeenCalledWith(
+			"generateAndSendNewsletterWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						organizationId: "org-9",
+						userId: null,
+						triggeredByUserId: "user-1",
+						planEligible: true,
+						planUserId: "user-1",
+					}),
+				],
+			}),
+		);
+	});
 });
 
 describe("sendNow — delivery destination threading", () => {

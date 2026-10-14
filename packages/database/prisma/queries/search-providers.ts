@@ -3,6 +3,7 @@
  * Used for web search, deep research, video search, etc.
  */
 
+import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { db } from "../client";
 
 // ============================================================================
@@ -188,6 +189,10 @@ export async function incrementOrganizationSearchProviderUsage({
 	providerName: string;
 	cost: number;
 }) {
+	// Immediately before the write: the web search that is being counted
+	// was awaited by the caller, and an Advisor chat turn may have stopped
+	// during it. The ambient dispatch guard; a no-op outside a turn.
+	throwIfDispatchStopped();
 	return await db.organizationSearchProvider.update({
 		where: {
 			organizationId_providerName: {
@@ -418,6 +423,8 @@ export async function incrementUserSearchProviderUsage({
 	providerName: string;
 	cost: number;
 }) {
+	// Immediately before the write (see the organization counter above).
+	throwIfDispatchStopped();
 	return await db.userSearchProvider.upsert({
 		where: {
 			userId_providerName: {

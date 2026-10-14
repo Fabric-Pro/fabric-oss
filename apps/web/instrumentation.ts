@@ -36,18 +36,6 @@ export async function register() {
 	// Only run on server-side (Node.js runtime)
 	if (process.env.NEXT_RUNTIME === "nodejs") {
 		const registerStartedAt = performance.now();
-		// Report a production deployment that cannot run its cron schedule
-		// because CRON_SECRET is missing. Deliberately first: the cron gate has
-		// no fallback any more, so this is the only signal that those jobs are
-		// silently dead, and every check below it can throw.
-		const { describeMissingCronSecret } = await import(
-			"./app/api/cron/lib/cron-auth"
-		);
-		const missingCronSecret = describeMissingCronSecret();
-		if (missingCronSecret) {
-			console.error(`[env] ${missingCronSecret}`);
-		}
-
 		// Fail fast on invalid PartyKit/collaboration configuration before the
 		// app starts serving — see Fizzy #1722 (FR-9/FR-10).
 		const { validatePartykitConfig } = await import(

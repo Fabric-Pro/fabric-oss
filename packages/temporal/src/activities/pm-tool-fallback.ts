@@ -10,6 +10,7 @@ import {
 	updateGitLabIssueFromStory,
 } from "@repo/integrations/gitlab/pm-adapter";
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils";
+import { runWithDispatchDeadline } from "@repo/utils/dispatch-deadline";
 import { ApplicationFailure } from "@temporalio/common";
 import type { PMSource } from "./pm-source";
 
@@ -58,8 +59,29 @@ export async function callPmToolWithFallback(args: {
 	 * is the final Fabric-owned code before the GitLab REST call.
 	 */
 	fabricProjectId?: string | null;
+	/**
+	 * Aborts a GitLab REST `createItem` request in flight when it expires
+	 * (the PM create's send ceiling, `PM_CREATE_SEND_TIMEOUT_MS`); the
+	 * signal is forwarded to the REST request. Other calls ignore it.
+	 */
+	signal?: AbortSignal;
+	/**
+	 * The latest the REST request may be sent, on this process's monotonic
+	 * clock (a PM create's `startPmCreateSendDeadline`). The GitLab POST
+	 * compares the clock with it immediately before `fetch` and, past it,
+	 * throws `DispatchDeadlinePassedError` without sending.
+	 */
+	dispatchDeadline?: number;
 }): Promise<unknown> {
-	const { source, call, userId, organizationId, fabricProjectId } = args;
+	const {
+		source,
+		call,
+		userId,
+		organizationId,
+		fabricProjectId,
+		signal,
+		dispatchDeadline,
+	} = args;
 
 	if (
 		(call.tool === "createItem" || call.tool === "updateItem") &&
@@ -76,11 +98,16 @@ export async function callPmToolWithFallback(args: {
 		credential: { token: source.token, apiBase: source.baseUrl },
 	};
 
-	try {
-		return await dispatchRest(gitlabSource, source.projectId, call, {
+	const send = () =>
+		dispatchRest(gitlabSource, source.projectId, call, {
 			userId,
 			organizationId,
+			signal,
 		});
+	try {
+		return await (dispatchDeadline === undefined
+			? send()
+			: runWithDispatchDeadline(dispatchDeadline, send));
 	} catch (error) {
 		// The adapter keeps every request on the instance `resolvePmSource`
 		// checked; a connection that moved to another one since is refused,
@@ -102,9 +129,13 @@ async function dispatchRest(
 	},
 	gitlabProjectId: string,
 	call: PMToolCall,
-	tenant: { userId: string; organizationId: string | null },
+	tenant: {
+		userId: string;
+		organizationId: string | null;
+		signal?: AbortSignal;
+	},
 ): Promise<unknown> {
-	const { userId, organizationId } = tenant;
+	const { userId, organizationId, signal } = tenant;
 	switch (call.tool) {
 		case "listWorkItems":
 			return listGitLabIssuesForPM({
@@ -129,6 +160,7 @@ async function dispatchRest(
 				payload: call.payload as never,
 				userId,
 				organizationId,
+				signal,
 			});
 		case "updateItem":
 			return updateGitLabIssueFromStory({

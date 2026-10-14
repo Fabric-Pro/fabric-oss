@@ -782,9 +782,9 @@ describe("Enterprise MCP Server Registry", () => {
 			name: "Atlassian (Jira & Confluence)",
 			transport: "HTTP", // URL ends with /mcp
 			authMethods: ["OAUTH2"],
-			defaultUrl: "https://mcp.atlassian.com/v1/mcp",
+			defaultUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 			oauthDiscoveryUrl:
-				"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+				"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 		},
 		{
 			key: "notion-remote",
@@ -807,9 +807,11 @@ describe("Enterprise MCP Server Registry", () => {
 
 		expect(atlassian).toBeDefined();
 		expect(atlassian?.transport).toBe("HTTP");
-		expect(atlassian?.defaultUrl).toBe("https://mcp.atlassian.com/v1/mcp");
+		expect(atlassian?.defaultUrl).toBe(
+			"https://mcp.atlassian.com/v2/mcp?tools=all",
+		);
 		expect(atlassian?.oauthDiscoveryUrl).toBe(
-			"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+			"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 		);
 	});
 

@@ -13,8 +13,9 @@
  * timestamps are stamped inside activities; the start-site `Date.now()` for the
  * workflowId lives in the API procedure. New command-producing logic is gated
  * behind `patched()`: the drift-guard sequence behind
- * `patched("test-case-sync-v1")` and the execution-result push (step 3b) behind
- * its own `patched("test-case-execution-sync-v1")`.
+ * `patched("test-case-sync-v1")`, the execution-result push (step 3b) behind
+ * its own `patched("test-case-execution-sync-v1")`, and the create under the
+ * PM create claim behind `patched("test-case-sync-create-claim-v1")`.
  */
 
 import {
@@ -29,6 +30,7 @@ import {
 } from "@temporalio/workflow";
 
 import type { executeMcpTool as ExecuteMcpToolFn } from "../activities/orchestrator/execution/execute-mcp-tool";
+import type { createTestCaseInPmWithClaim as CreateTestCaseInPmWithClaimFn } from "../activities/pm-integration/create-test-case-in-pm-with-claim";
 import type { detectAndStampPmPushConflict as DetectAndStampPmPushConflictFn } from "../activities/pm-integration/detect-pm-push-conflict";
 import type { recordPmSyncFailure as RecordPmSyncFailureFn } from "../activities/pm-integration/record-pm-sync-state";
 import type {
@@ -50,6 +52,7 @@ import type {
 } from "../activities/pm-integration/test-case-sync";
 import type { TestResultValue } from "../activities/pm-integration/test-execution-serializer";
 import type { pushTestCaseExecutionToPM as PushTestCaseExecutionToPMFn } from "../activities/pm-integration/test-execution-sync";
+import { TEST_CASE_SYNC_CREATE_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
 
 // =============================================================================
 // Types
@@ -72,6 +75,17 @@ export interface TestCaseSyncWorkflowInput {
 	direction: "push" | "pull";
 	/** Pull only: import only these specific PM external IDs (selective pull). */
 	pmExternalIds?: string[];
+	/**
+	 * Single-case retry only: the attempt id the retry stamped on the case
+	 * before starting this run. It scopes the case's status writes (SUCCESS,
+	 * CONFLICT, FAILED) to that attempt, so a late write from this run cannot
+	 * overwrite a newer retry's PENDING; the link and baseline are still
+	 * written. Applied only when `testCaseIds` names exactly one case, since
+	 * the attempt belongs to that case's row. Absent (batch and auto sync),
+	 * a status write skips a case that is PENDING for an attempt and is
+	 * otherwise by id (`writePmSyncRunStatus`).
+	 */
+	pmSyncAttemptId?: string;
 }
 
 export interface TestCaseSyncProgress {
@@ -154,6 +168,16 @@ const {
 	},
 });
 
+// The push create under the PM create claim (`test-case-sync-create-claim-v1`).
+// An attempt sends a create only after taking the case's create claim, so a
+// retry after an attempt that may have sent one finds the claim held (or the
+// case linked) and sends nothing, unless the user's Unlink & re-create
+// cleared that claim first. Every outcome after the claim is taken is
+// returned, and recorded on the case, by the activity.
+const { createTestCaseInPmWithClaim } = proxyActivities<{
+	createTestCaseInPmWithClaim: typeof CreateTestCaseInPmWithClaimFn;
+}>(TEST_CASE_SYNC_CREATE_ACTIVITY_OPTIONS);
+
 // Fail-fast proxy for PM-connectivity-bound activities — bound the preflight +
 // the best-effort drift guard so a degraded PM tool aborts quickly instead of
 // grinding through the heavy 60s × 5 budget per item.
@@ -207,6 +231,14 @@ export async function testCaseSyncWorkflow(
 		organizationId,
 		direction,
 	} = input;
+
+	// The attempt a single-case retry stamped belongs to that case alone.
+	const attemptCaseId =
+		input.pmSyncAttemptId && input.testCaseIds?.length === 1
+			? input.testCaseIds[0]
+			: undefined;
+	const attemptFor = (caseId: string): string | undefined =>
+		caseId === attemptCaseId ? input.pmSyncAttemptId : undefined;
 
 	let cancelled = false;
 	const progress: TestCaseSyncProgress = {
@@ -557,6 +589,7 @@ export async function testCaseSyncWorkflow(
 								organizationId,
 								externalId: row.externalId,
 								capabilities,
+								pmSyncAttemptId: attemptFor(row.id),
 							});
 						conflictDetected = conflictCheck.hasConflict;
 					}
@@ -604,6 +637,7 @@ export async function testCaseSyncWorkflow(
 						externalId: row.externalId,
 						externalUrl: row.externalUrl ?? undefined,
 						externalMcpServerId: mcpServerId,
+						pmSyncAttemptId: attemptFor(row.id),
 						// Stamp a post-push drift baseline so the NEXT push can
 						// detect a PM-side edit (was a v1 gap → PM edits silently
 						// overwritten). MCP path only (readback needs get).
@@ -641,6 +675,69 @@ export async function testCaseSyncWorkflow(
 						stepsField,
 						additionalContext,
 					});
+					// Patched: the create runs in one activity that takes the
+					// case's create claim first, sends the create at most once
+					// and links the case in the write that settles the claim
+					// (`createTestCaseInPmWithClaim`). It records every
+					// outcome on the case itself, so a failure is counted
+					// here and not stamped again by the catch below. The
+					// previous version below could resend a create on an
+					// activity retry, and counted a create with no readable
+					// id as synced while leaving the case unlinked.
+					if (patched("test-case-sync-create-claim-v1")) {
+						const created = await createTestCaseInPmWithClaim({
+							testCaseId: row.id,
+							projectId,
+							organizationId,
+							userId,
+							mcpConfigId,
+							mcpServerId,
+							// Bound to the PM container's GitLab instance at dispatch.
+							pmTarget: { additionalContext },
+							pmTool: capabilities.detectedType,
+							toolLabel:
+								capabilities.detectedType ?? "the PM tool",
+							toolName: capabilities.taskCreation.toolName,
+							createArgs,
+							pmSyncAttemptId: attemptFor(row.id),
+							// The post-create drift baseline (see the update
+							// branch), read back after the link commits.
+							baseline: mcpConfigId
+								? {
+										mcpConfigId,
+										capabilities,
+										userId,
+										organizationId,
+										containerId: containerValue,
+										containerName,
+										additionalContext,
+									}
+								: undefined,
+						});
+						if (!created.success) {
+							log.error("Failed to create test case in PM", {
+								testCaseId: row.id,
+								identifier: row.identifier,
+								outcome: created.outcome,
+								error: created.error,
+							});
+						}
+						progress.results.push({
+							testCaseId: row.id,
+							identifier: row.identifier,
+							success: created.success,
+							outcome: created.success ? "synced" : "failed",
+							externalId: created.externalId,
+							externalUrl: created.externalUrl,
+							error: created.error,
+						});
+						if (created.success) {
+							progress.syncedCount++;
+						} else {
+							progress.failedCount++;
+						}
+						continue;
+					}
 					const createResult = await executeMcpTool({
 						// Bound to the PM container's GitLab instance at dispatch.
 						pmTarget: { additionalContext },
@@ -668,6 +765,7 @@ export async function testCaseSyncWorkflow(
 							externalId,
 							externalUrl: externalUrl || undefined,
 							externalMcpServerId: mcpServerId,
+							pmSyncAttemptId: attemptFor(row.id),
 							// Stamp a post-push drift baseline (see the update branch)
 							// so a later push detects a PM-side edit on this new item.
 							baseline: mcpConfigId
@@ -716,6 +814,7 @@ export async function testCaseSyncWorkflow(
 							errorMessage,
 							errorClass: "push_failed",
 							triggerSource: "manual-edit",
+							onlyIfAttempt: attemptFor(row.id),
 						});
 					} catch (stampError) {
 						log.warn("Failed to stamp test case FAILED state", {

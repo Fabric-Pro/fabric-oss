@@ -401,7 +401,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.chatgpt_plan.policy_changed",
 		description:
-			"An admin changed how the organization pools its ChatGPT plan accounts: pooling on or off, what happens when every plan is spent, or the headroom kept for people. Values before and after are in the metadata.",
+			"An admin changed how the organization pools its ChatGPT plan accounts: what happens when every plan is spent, or the headroom kept for people. Values before and after are in the metadata.",
 	},
 	{
 		key: "org.chatgpt_plan.fallback_model_changed",
@@ -426,6 +426,22 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.org.chatgpt_plan.api_fallback_used",
 		description:
 			"Every shared ChatGPT plan was spent, and the policy lets background work run on the organization's own AI provider, so this job was billed there. The job type is in the metadata.",
+	},
+	{
+		key: "org.chatgpt_plan.interactive_api_fallback_used",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.interactive_api_fallback_used",
+		description:
+			"Every ChatGPT plan that serves this member was spent, and the policy lets people's own work use API billing, so their work ran on the organization's own AI provider. In the Advisor chats the member also sees a note under the reply. The member is the actor.",
+	},
+	{
+		key: "org.chatgpt_plan.api_override_approved",
+		categoryId: "org",
+		labelKey:
+			"settings.auditLog.actions.org.chatgpt_plan.api_override_approved",
+		description:
+			"A member chose Run now on API billing for a scan, review, grouping or batch generation that was paused waiting for a ChatGPT plan reset. That one run resumes at once on the organization's own AI provider; the policy is unchanged. The run kind and project are in the metadata.",
 	},
 	{
 		key: "org.todo.created",

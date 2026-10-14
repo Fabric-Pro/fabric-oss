@@ -7,6 +7,7 @@
  * - slackMentionHandlerWorkflow
  */
 
+import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
 	db,
 	hasProjectAccess,
@@ -240,7 +241,7 @@ export async function saveSlackThreadMappingContext({
  * as the trigger owner. This is consistent with the rest of the trigger
  * system's identity model.
  */
-export async function invokeAgent({
+async function invokeAgentInJob({
 	agentId,
 	message,
 	context,
@@ -1013,4 +1014,15 @@ export async function matchTriggerForChannel({
 		userId: match.userId,
 		organizationId: match.organizationId,
 	};
+}
+
+// Always background work, whatever started the run: a run from before the
+// job-type header, or one a Temporal schedule started, still runs on the
+// organization's shared ChatGPT plans (Fizzy #2770). A run's own job wins.
+export function invokeAgent(
+	params: Parameters<typeof invokeAgentInJob>[0],
+): ReturnType<typeof invokeAgentInJob> {
+	return runWithDefaultAiJobType("external-agent", () =>
+		invokeAgentInJob(params),
+	);
 }

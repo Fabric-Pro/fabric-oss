@@ -24,11 +24,15 @@ vi.mock("@repo/database", async () => ({
 	...(await vi.importActual<Record<string, unknown>>(
 		"../../../../../../database/prisma/queries/chatgpt-plan-window",
 	)),
+	...(await vi.importActual<Record<string, unknown>>(
+		"../../../../../../database/prisma/queries/chatgpt-plan-reported-usage",
+	)),
 	getChatGptPlanCredentialStatus: mocks.status,
 	listChatGptPlanOrganizations: mocks.organizations,
 	setChatGptPlanOrgUse: mocks.setUse,
 	getChatGptPlanUserWindow: mocks.usage,
 	getChatGptPlanWindowBudget: async () => 2_000_000,
+	getChatGptPlanSourceStates: async () => [],
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/subscription-backfill", () => ({
@@ -214,6 +218,7 @@ describe("users.chatgptPlan.status", () => {
 			lastRequestAt: new Date("2026-10-08T07:00:00Z"),
 			requests: 4,
 			inputTokens: 200_000,
+			weightedInputTokens: 200_000,
 			cachedInputTokens: 0,
 			outputTokens: 2_000,
 			topConsumers: [],
@@ -253,6 +258,7 @@ describe("users.chatgptPlan.status", () => {
 			lastRequestAt: null,
 			requests: 0,
 			inputTokens: 0,
+			weightedInputTokens: 0,
 			cachedInputTokens: 0,
 			outputTokens: 0,
 			topConsumers: [],

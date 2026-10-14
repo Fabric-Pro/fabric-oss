@@ -103,6 +103,9 @@ export const startGroupingProcedure = tenantProtectedProcedure
 							groupingId: grouping.id,
 							projectId,
 							userId: user.id,
+							// Bulk work: runs on the organization's shared ChatGPT
+							// plans, never the clicker's own (Fizzy #2770).
+							jobType: "security-scan",
 							organizationId,
 						},
 					],

@@ -66,21 +66,58 @@ export async function getPmSyncItemState(args: {
  * Clear the PM-sync CONFLICT flag on a single work item: set
  * `lastPmSyncStatus` to SUCCESS and drop the stored error so auto-push can
  * resume on the next status move.
+ *
+ * Applies only while the row is still CONFLICT. After a LOCAL resolution's
+ * successful enqueue the row is already PENDING for that push, so this is a
+ * no-op there and the push settles the row itself; overwriting the PENDING
+ * with SUCCESS would also hide the push from the stuck-sync watchdog.
+ * Resolves whether a row was changed.
  */
 export async function clearPmSyncConflictFlag(args: {
 	itemType: PmSyncItemType;
 	itemId: string;
-}): Promise<void> {
+}): Promise<boolean> {
 	if (!isStoryItemType(args.itemType)) {
-		return;
+		return false;
 	}
-	await db.userStory.update({
-		where: { id: args.itemId },
+	const { count } = await db.userStory.updateMany({
+		where: { id: args.itemId, lastPmSyncStatus: PmSyncStatus.CONFLICT },
 		data: {
 			lastPmSyncStatus: PmSyncStatus.SUCCESS,
 			lastPmSyncError: null,
 		},
 	});
+	return count > 0;
+}
+
+/**
+ * Mark a story-family row's PM sync FAILED with `error`, unless the row is
+ * PENDING. For a FAILED written by a caller that has stamped no attempt of
+ * its own (the enqueue's "no usable PM config" branches): a PENDING row
+ * belongs to another enqueue whose sync is in flight. A NULL status is
+ * matched explicitly, because in SQL `status <> 'PENDING'` is never true for
+ * NULL (`__tests__/pm-sync-terminal-writes.integration.test.ts` runs this
+ * against Postgres). Resolves how many rows changed.
+ */
+export async function markPmSyncFailedUnlessPending(args: {
+	itemId: string;
+	error: string;
+}): Promise<number> {
+	const { count } = await db.userStory.updateMany({
+		where: {
+			id: args.itemId,
+			OR: [
+				{ lastPmSyncStatus: null },
+				{ lastPmSyncStatus: { not: PmSyncStatus.PENDING } },
+			],
+		},
+		data: {
+			lastPmSyncStatus: PmSyncStatus.FAILED,
+			lastPmSyncError: args.error,
+			lastPmSyncAttemptAt: new Date(),
+		},
+	});
+	return count;
 }
 
 /**
@@ -119,6 +156,8 @@ export async function clearPmSyncFailure(args: {
 			data: {
 				lastPmSyncStatus: null,
 				lastPmSyncError: null,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
 			},
 		});
 		return { cleared: count };
@@ -135,6 +174,8 @@ export async function clearPmSyncFailure(args: {
 		data: {
 			lastPmSyncStatus: null,
 			lastPmSyncError: null,
+			lastPmSyncAttemptId: null,
+			pmSyncPendingSince: null,
 		},
 	});
 	return { cleared: count };
@@ -173,6 +214,8 @@ export async function clearPmSyncFailures(args: {
 			data: {
 				lastPmSyncStatus: null,
 				lastPmSyncError: null,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
 			},
 		});
 		return { cleared: count };
@@ -186,6 +229,8 @@ export async function clearPmSyncFailures(args: {
 		data: {
 			lastPmSyncStatus: null,
 			lastPmSyncError: null,
+			lastPmSyncAttemptId: null,
+			pmSyncPendingSince: null,
 		},
 	});
 	return { cleared: count };

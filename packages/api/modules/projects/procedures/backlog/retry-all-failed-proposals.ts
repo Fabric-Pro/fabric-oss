@@ -333,6 +333,8 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 								projectId: input.projectId,
 								userId: user.id,
 								approvedByName: user.name ?? null,
+								// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+								planEligible: true,
 								organizationId:
 									organizationId ??
 									project.organizationId ??

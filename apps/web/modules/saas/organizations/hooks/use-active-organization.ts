@@ -40,6 +40,7 @@ export const useActiveOrganization = () => {
 			isResolvingOrganization: false,
 			isSwitching: false,
 			switchingToSlug: null,
+			isSessionOnActiveOrganization: false,
 		} satisfies ActiveOrganizationContextType;
 	}
 

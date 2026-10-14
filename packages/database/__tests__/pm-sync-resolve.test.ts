@@ -136,22 +136,35 @@ describe("getPmSyncItemState", () => {
 
 describe("clearPmSyncConflictFlag", () => {
 	it.each(["story", "bug"] as const)(
-		"coalesces itemType=%s to db.userStory",
+		"coalesces itemType=%s to db.userStory, scoped to a CONFLICT row",
 		async (itemType) => {
-			storyUpdate.mockResolvedValue({});
-			await clearPmSyncConflictFlag({ itemType, itemId: "story_1" });
-			expect(storyUpdate).toHaveBeenCalledWith({
-				where: { id: "story_1" },
+			storyUpdateMany.mockResolvedValue({ count: 1 });
+			const cleared = await clearPmSyncConflictFlag({
+				itemType,
+				itemId: "story_1",
+			});
+			expect(cleared).toBe(true);
+			expect(storyUpdateMany).toHaveBeenCalledWith({
+				where: { id: "story_1", lastPmSyncStatus: "CONFLICT" },
 				data: { lastPmSyncStatus: "SUCCESS", lastPmSyncError: null },
 			});
+			expect(storyUpdate).not.toHaveBeenCalled();
 		},
 	);
+
+	it("resolves false when the row is no longer CONFLICT", async () => {
+		storyUpdateMany.mockResolvedValue({ count: 0 });
+		await expect(
+			clearPmSyncConflictFlag({ itemType: "story", itemId: "story_1" }),
+		).resolves.toBe(false);
+	});
 
 	it.each(["epic", "feature"] as const)(
 		"no-ops for legacy itemType=%s (folder tables dropped)",
 		async (itemType) => {
 			await clearPmSyncConflictFlag({ itemType, itemId: "legacy_1" });
 			expect(storyUpdate).not.toHaveBeenCalled();
+			expect(storyUpdateMany).not.toHaveBeenCalled();
 		},
 	);
 });
@@ -172,7 +185,12 @@ describe("clearPmSyncFailure", () => {
 					projectId: "proj_1",
 					lastPmSyncStatus: "FAILED",
 				},
-				data: { lastPmSyncStatus: null, lastPmSyncError: null },
+				data: {
+					lastPmSyncStatus: null,
+					lastPmSyncError: null,
+					lastPmSyncAttemptId: null,
+					pmSyncPendingSince: null,
+				},
 			});
 			expect(result).toEqual({ cleared: 1 });
 		},
@@ -218,7 +236,12 @@ describe("clearPmSyncFailure", () => {
 				// have no clearPmSyncConflictFlag path, so Dismiss handles both.
 				lastPmSyncStatus: { in: ["FAILED", "CONFLICT"] },
 			},
-			data: { lastPmSyncStatus: null, lastPmSyncError: null },
+			data: {
+				lastPmSyncStatus: null,
+				lastPmSyncError: null,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			},
 		});
 		expect(storyUpdateMany).not.toHaveBeenCalled();
 		expect(result).toEqual({ cleared: 1 });
@@ -238,7 +261,12 @@ describe("clearPmSyncFailures (bulk)", () => {
 				projectId: "proj_1",
 				lastPmSyncStatus: "FAILED",
 			},
-			data: { lastPmSyncStatus: null, lastPmSyncError: null },
+			data: {
+				lastPmSyncStatus: null,
+				lastPmSyncError: null,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			},
 		});
 		expect(result).toEqual({ cleared: 2 });
 	});
@@ -265,7 +293,12 @@ describe("clearPmSyncFailures (bulk)", () => {
 				projectId: "proj_1",
 				lastPmSyncStatus: { in: ["FAILED", "CONFLICT"] },
 			},
-			data: { lastPmSyncStatus: null, lastPmSyncError: null },
+			data: {
+				lastPmSyncStatus: null,
+				lastPmSyncError: null,
+				lastPmSyncAttemptId: null,
+				pmSyncPendingSince: null,
+			},
 		});
 		expect(storyUpdateMany).not.toHaveBeenCalled();
 		expect(result).toEqual({ cleared: 2 });

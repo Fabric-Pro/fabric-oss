@@ -96,6 +96,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	raiseAssetConfirmations,
@@ -394,6 +395,7 @@ export async function generateWebinarScriptActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-webinar-script",
 		},
 	);
@@ -433,7 +435,7 @@ export async function generateWebinarScriptActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`Webinar script failed schema validation: ${error.message}`,
+				`Webinar script failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_WEBINAR_SCRIPT_SCHEMA_VALIDATION_FAILED",
 			);
 		}

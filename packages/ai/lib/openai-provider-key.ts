@@ -24,12 +24,29 @@ import {
 } from "./databricks-oauth";
 
 /**
+ * What a person is told when audio is refused because their organization has no
+ * provider key that can serve it. Audio never runs on Fabric's own key, so each
+ * surface names the keys that would make it work.
+ */
+export const AUDIO_PROVIDER_REQUIRED = {
+	/** The `fabric_text_to_speech` tool, which calls OpenAI directly. */
+	textToSpeech:
+		"Voice needs an AI provider for your organization. Add an OpenAI API key in Settings → AI Providers. ChatGPT plans serve text only.",
+	/** Parlume speaks through the organization's AI Gateway or OpenAI key. */
+	parlumeVoice:
+		"Parlume voice needs an AI provider for your organization. Add an OpenAI or Vercel AI Gateway API key in Settings → AI Providers. ChatGPT plans serve text only.",
+	/** Transcription runs on the organization's OpenAI or Groq key. */
+	transcription:
+		"Transcription needs an AI provider for your organization. Add an OpenAI or Groq API key in Settings → AI Providers. ChatGPT plans serve text only.",
+} as const;
+
+/**
  * Resolve the plaintext OpenAI API key to use for a direct OpenAI REST call.
  *
- * Falls back to `process.env.OPENAI_API_KEY` when the tenant has no
- * OPENAI_DIRECT provider config, or the config carries no usable credential.
- * Returns `""` when neither source has a key — callers already handle that
- * case by erroring clearly.
+ * Only the tenant's own OPENAI_DIRECT provider config counts: there is no
+ * fallback to Fabric's platform `OPENAI_API_KEY`, because a tenant's audio
+ * never runs on Fabric's own key. Returns `""` when the tenant has no usable
+ * OpenAI credential; callers refuse with {@link AUDIO_PROVIDER_REQUIRED}.
  */
 export async function resolveOpenAiApiKey({
 	userId,
@@ -53,5 +70,5 @@ export async function resolveOpenAiApiKey({
 		});
 	}
 
-	return process.env.OPENAI_API_KEY || "";
+	return "";
 }

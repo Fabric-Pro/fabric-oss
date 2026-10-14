@@ -102,3 +102,78 @@ describe("templateInstanceExecutionWorkflow — self-cancel backstop", () => {
 		).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("templateInstanceExecutionWorkflow — a spent ChatGPT plan (Fizzy #2770)", () => {
+	// Shaped as Temporal hands a workflow the failure of a plan-refused step.
+	const planSpent = () =>
+		Object.assign(new Error("Activity task failed"), {
+			name: "ActivityFailure",
+			cause: {
+				type: "SubscriptionPlanExhaustedError",
+				message: "Every ChatGPT plan is spent.",
+			},
+		});
+
+	beforeEach(async () => {
+		const workflow = await import("@temporalio/workflow");
+		// Every gate on except the plan wait, whose sleep this harness lacks.
+		vi.mocked(workflow.patched).mockImplementation(
+			(id: string) => id !== "chatgpt-plan-wait",
+		);
+		activityStubs.updateInstanceExecutionStatus.mockResolvedValue(true);
+	});
+
+	const failedWith = async (
+		error: Error,
+		input: TemplateInstanceExecutionInput,
+	) => {
+		activityStubs.fetchTemplateInstanceWithTemplate.mockRejectedValue(
+			error,
+		);
+		await expect(
+			templateInstanceExecutionWorkflow(input),
+		).rejects.toThrow();
+		expect(
+			activityStubs.updateInstanceExecutionStatus,
+		).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED" }));
+	};
+
+	it("does not tell the owner a scheduled run failed, since its next tick retries it", async () => {
+		await failedWith(planSpent(), {
+			...INPUT,
+			jobType: "scheduled-report",
+		});
+
+		expect(activityStubs.sendReportExecutionEmail).not.toHaveBeenCalled();
+		expect(
+			activityStubs.emitReportExecutionNotification,
+		).not.toHaveBeenCalled();
+		expect(
+			activityStubs.updateInstanceExecutionStatus,
+		).toHaveBeenCalledWith(
+			expect.objectContaining({ error: "Every ChatGPT plan is spent." }),
+		);
+	});
+
+	it("still emails the owner when a scheduled run fails for another reason", async () => {
+		await failedWith(new Error("All data sources failed"), {
+			...INPUT,
+			jobType: "scheduled-report",
+		});
+
+		expect(activityStubs.sendReportExecutionEmail).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "FAILED" }),
+		);
+		expect(
+			activityStubs.emitReportExecutionNotification,
+		).toHaveBeenCalledWith(expect.objectContaining({ status: "FAILED" }));
+	});
+
+	it("still emails the owner of an Execute-now run the plan refused, which nothing retries", async () => {
+		await failedWith(planSpent(), INPUT);
+
+		expect(activityStubs.sendReportExecutionEmail).toHaveBeenCalledWith(
+			expect.objectContaining({ status: "FAILED" }),
+		);
+	});
+});

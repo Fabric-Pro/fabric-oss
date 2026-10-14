@@ -323,9 +323,14 @@ export class A2AClient {
 			if (external?.aborted) {
 				throw external.reason;
 			}
-			// Runs immediately before every attempt, the network retries
-			// below included (e.g. a durable dispatch check).
+			// Runs before every attempt, the network retries below included
+			// (e.g. a durable dispatch check).
 			await control?.beforeAttempt?.();
+			// The caller's synchronous stop check, last before the send: the
+			// asynchronous callback above is awaited, and a stop can land
+			// while it resolves. Outside the try, so it is thrown as it is,
+			// never wrapped or retried as a network failure.
+			control?.throwIfStopped?.();
 			const controller = new AbortController();
 			const timeoutId = setTimeout(
 				() => controller.abort(),
@@ -483,12 +488,19 @@ export class A2AClient {
 
 /**
  * Caller control over one A2A request: a signal that aborts it (and stops
- * the client's own network retries), and a hook run immediately before
- * every attempt, retries included.
+ * the client's own network retries), an asynchronous hook awaited before
+ * every attempt, retries included, and a synchronous stop check run after
+ * that hook, in the same synchronous run as each attempt's `fetch`.
  */
 export interface A2ARequestControl {
 	signal?: AbortSignal;
 	beforeAttempt?: () => Promise<void>;
+	/**
+	 * Throws to refuse the attempt. Called immediately before each `fetch`,
+	 * with nothing awaited in between, so a stop that lands while
+	 * `beforeAttempt` resolves still keeps the request from being sent.
+	 */
+	throwIfStopped?: () => void;
 }
 
 export class A2AClientError extends Error {

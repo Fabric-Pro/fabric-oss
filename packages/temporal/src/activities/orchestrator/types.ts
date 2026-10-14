@@ -285,7 +285,55 @@ export interface ExecuteMcpToolInput {
 	 * before anything is sent, cached client or not. Other servers ignore it.
 	 */
 	pmTarget?: { additionalContext?: unknown };
+	/**
+	 * The call must not reach the tool twice (a PM create). Without it, a
+	 * connection that closes during the call is reopened and the call sent
+	 * again; with it, a call that was already sent is not resent and comes
+	 * back as an `indeterminate` failure instead.
+	 */
+	sendAtMostOnce?: boolean;
+	/**
+	 * The latest the call may be sent, on this process's monotonic clock
+	 * (`@repo/utils/dispatch-deadline`; a PM create's
+	 * `startPmCreateSendDeadline`). Compared with the clock immediately
+	 * before the tool is called and, on the MCP transports, immediately
+	 * before the tool-call request is handed to `fetch`; past it nothing is
+	 * sent and the call fails as `deadline_passed`. The call's timer also
+	 * ends at it (or at `timeoutMs`, whichever comes first): Fabric stops
+	 * waiting for a request in flight, which fails as `indeterminate`. The
+	 * abort reaches a STDIO request; on the HTTP and SSE transports the
+	 * request already handed to fetch is abandoned on Fabric's side, not
+	 * torn down. The check when the
+	 * call starts and the timer apply on every route; the checks before the
+	 * tool is called and before its request is sent run on the generic MCP
+	 * server route (the one PM tools use) only.
+	 */
+	dispatchDeadline?: number;
 }
+
+/**
+ * How a failed call failed, where `executeMcpTool` can tell (generic MCP
+ * servers; unset on the other routes and on success):
+ * - `rejected`: the call was refused before it was sent, so it did not run:
+ *   tool not found, Read-only mode, runtime authority, OAuth authorization
+ *   required, the `create_view` argument check, or a failure to connect to
+ *   the server or list its tools.
+ * - `error_result`: the call was sent and the server answered with an error
+ *   result. That says the server reports a failure, not that nothing took
+ *   effect: a wrapper can report an upstream timeout or 5xx this way.
+ * - `indeterminate`: the call was sent and no answer came back (a timeout, a
+ *   thrown transport error, a closed connection), so it may have taken effect.
+ * - `deadline_passed`: the call was not sent because its `dispatchDeadline`
+ *   had passed before the request was handed to `fetch`, so it did not run.
+ * Only `rejected` and `deadline_passed` are evidence that the call did not
+ * run. A caller that must not repeat a write treats every other value, and
+ * unset, as possibly done.
+ */
+export type McpToolFailureKind =
+	| "rejected"
+	| "error_result"
+	| "indeterminate"
+	| "deadline_passed";
 
 export interface ExecuteMcpToolOutput {
 	output: unknown;
@@ -313,6 +361,8 @@ export interface ExecuteMcpToolOutput {
 	 * Only returned when the caller set `requestRuntimeAuthority`.
 	 */
 	authorityRequired?: RuntimeAuthorityRequest;
+	/** Set on some failures; see {@link McpToolFailureKind}. */
+	failureKind?: McpToolFailureKind;
 }
 
 export interface RuntimeAuthorityRequest {

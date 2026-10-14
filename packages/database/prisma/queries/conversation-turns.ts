@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "../client";
 import type {
 	ConversationTurn,
+	ConversationTurnBudgetEnforcement,
 	ConversationTurnCancelSource,
 	ConversationTurnStatus,
 	Prisma,
@@ -106,6 +107,21 @@ export interface AdmitConversationTurnInput {
 	/** The execution id to use if a NEW turn is created. */
 	executionId: string;
 	executionMode: string;
+	/**
+	 * The token ledger a NEW turn is admitted with: the budget contract
+	 * version, the allowance (the validated server-side execution mode's
+	 * `maxTotalTokens`) and the part of it held back for finalization. Written
+	 * only when the turn is created, so a retry of the same key, a reconnect
+	 * or a signal never resets it. Omitted, the turn has no ledger.
+	 */
+	budget?: ConversationTurnBudgetAdmission;
+}
+
+/** See `AdmitConversationTurnInput.budget`. */
+export interface ConversationTurnBudgetAdmission {
+	contractVersion: number;
+	tokenAllowance: number;
+	finalizationReserveTokens: number;
 }
 
 export type AdmitConversationTurnResult =
@@ -150,6 +166,20 @@ export async function admitConversationTurn(
 	}
 	if (!args.executionId) {
 		throw new Error("admitConversationTurn requires an executionId");
+	}
+	const budget = args.budget;
+	if (
+		budget &&
+		!(
+			Number.isInteger(budget.contractVersion) &&
+			Number.isInteger(budget.tokenAllowance) &&
+			Number.isInteger(budget.finalizationReserveTokens) &&
+			budget.tokenAllowance > 0 &&
+			budget.finalizationReserveTokens >= 0 &&
+			budget.finalizationReserveTokens < budget.tokenAllowance
+		)
+	) {
+		throw new Error("admitConversationTurn received an invalid budget");
 	}
 	const conversationId = args.conversationId || null;
 
@@ -232,6 +262,14 @@ export async function admitConversationTurn(
 					executionMode: args.executionMode,
 					status: "START_PENDING",
 					startToken: randomUUID(),
+					...(budget
+						? {
+								budgetContractVersion: budget.contractVersion,
+								tokenAllowance: budget.tokenAllowance,
+								finalizationReserveTokens:
+									budget.finalizationReserveTokens,
+							}
+						: {}),
 				},
 			});
 			return { outcome: "created", turn };
@@ -511,6 +549,26 @@ export async function requestConversationTurnCancel(
 // Terminal state
 // ============================================================================
 
+/**
+ * The token-allowance stop a terminal write is asked to persist: why the
+ * turn stopped, and the workflow's own last ledger reading. The reading is
+ * a fallback only — for a ledgered turn the write replaces it with the
+ * ledger's totals as they stand under the turn row's lock.
+ */
+export interface ConversationTurnBudgetStopRequest {
+	stopReason: "allowance_exhausted" | "finalization_unavailable";
+	allowance: number;
+	measured: number;
+	outstanding: number;
+	enforcement: ConversationTurnBudgetEnforcement | null;
+}
+
+/** The structured token-allowance stop a turn row stores (`budgetStop`). */
+export interface ConversationTurnBudgetStop
+	extends ConversationTurnBudgetStopRequest {
+	kind: "token_allowance";
+}
+
 export interface FinalizeConversationTurnInput {
 	turnId: string;
 	executionId: string;
@@ -522,93 +580,167 @@ export interface FinalizeConversationTurnInput {
 	/** The answer, or the partial text a cancelled run produced. */
 	responseText?: string | null;
 	limitSignalSummary?: Prisma.InputJsonValue;
+	/**
+	 * The structured token-allowance stop, when the run stopped on its
+	 * allowance. Kept with a cancelled ending too, as the record of what the
+	 * turn had used.
+	 */
+	budgetStop?: ConversationTurnBudgetStopRequest;
 }
 
 export type FinalizeConversationTurnResult =
-	| { outcome: "finalized"; status: ConversationTurnTerminalStatus }
-	| { outcome: "already_terminal"; status: ConversationTurnStatus }
+	| {
+			outcome: "finalized";
+			status: ConversationTurnTerminalStatus;
+			/** The `budgetStop` the row now stores, read back from the write. */
+			budgetStop: Prisma.JsonValue | null;
+	  }
+	| {
+			outcome: "already_terminal";
+			status: ConversationTurnStatus;
+			/** The `budgetStop` the row stores (from its first terminal write). */
+			budgetStop: Prisma.JsonValue | null;
+	  }
 	| { outcome: "not_found" };
+
+/**
+ * The stop as persisted: for a ledgered turn, the ledger's totals and
+ * enforcement as they stand under the turn row's lock (so it agrees with the
+ * ledger at the moment of the write, whatever the workflow last read); for a
+ * turn without a ledger, the workflow's own reading.
+ */
+function budgetStopUnderLock(
+	row: {
+		tokenAllowance: number | null;
+		measuredTokens: bigint;
+		outstandingTokens: bigint;
+		budgetEnforcement: ConversationTurnBudgetEnforcement | null;
+	},
+	request: ConversationTurnBudgetStopRequest,
+): ConversationTurnBudgetStop {
+	const ledgered = row.tokenAllowance !== null;
+	return {
+		kind: "token_allowance",
+		allowance: ledgered
+			? (row.tokenAllowance as number)
+			: request.allowance,
+		measured: ledgered ? Number(row.measuredTokens) : request.measured,
+		outstanding: ledgered
+			? Number(row.outstandingTokens)
+			: request.outstanding,
+		enforcement: ledgered ? row.budgetEnforcement : request.enforcement,
+		stopReason: request.stopReason,
+	};
+}
 
 /**
  * Write a turn's terminal state. Ordering rule: if a cancel was recorded
  * before this write, the turn ends CANCELLED (keeping `responseText` as its
  * partial result); otherwise the first terminal write wins and later ones
  * change nothing.
+ *
+ * One transaction under the turn row's lock (`FOR UPDATE`, the lock the
+ * cancel and every ledger transition also take), so the status check, the
+ * budget stop's totals and the write see one state. The result carries the
+ * `budgetStop` exactly as the row stores it — read back from this write, or
+ * from the first terminal write when the turn had already ended — so a
+ * retried write whose first attempt committed returns the payload that
+ * attempt stored, never one built from newer ledger totals.
  */
 export async function finalizeConversationTurn(
 	args: FinalizeConversationTurnInput,
 ): Promise<FinalizeConversationTurnResult> {
-	const where = {
-		id: args.turnId,
-		executionId: args.executionId,
-		userId: args.userId,
-		organizationId: args.organizationId,
-	};
-	const shared = {
-		terminalReason: args.terminalReason ?? null,
-		responseText: args.responseText ?? null,
-		...(args.limitSignalSummary !== undefined
-			? { limitSignalSummary: args.limitSignalSummary }
-			: {}),
-	};
+	return db.$transaction(
+		async (tx): Promise<FinalizeConversationTurnResult> => {
+			const locked = await tx.$queryRaw<Array<{ id: string }>>`
+				SELECT "id" FROM "conversation_turn"
+				WHERE "id" = ${args.turnId}
+				FOR UPDATE`;
+			if (locked.length === 0) {
+				return { outcome: "not_found" };
+			}
+			const row = await tx.conversationTurn.findUnique({
+				where: { id: args.turnId },
+				select: {
+					id: true,
+					executionId: true,
+					userId: true,
+					organizationId: true,
+					status: true,
+					budgetStop: true,
+					tokenAllowance: true,
+					measuredTokens: true,
+					outstandingTokens: true,
+					budgetEnforcement: true,
+				},
+			});
+			if (
+				!row ||
+				row.executionId !== args.executionId ||
+				row.userId !== args.userId ||
+				row.organizationId !== args.organizationId
+			) {
+				return { outcome: "not_found" };
+			}
+			if (isTerminalConversationTurnStatus(row.status)) {
+				return {
+					outcome: "already_terminal",
+					status: row.status,
+					budgetStop: row.budgetStop ?? null,
+				};
+			}
 
-	// Two passes at most: a cancel recorded between the two UPDATEs below
-	// makes the second match nothing, and the re-read sends it back to the
-	// first.
-	for (let pass = 0; pass < 2; pass++) {
-		const terminalAt = new Date();
-		const cancelled = await db.conversationTurn.updateMany({
-			where: { ...where, status: "CANCEL_REQUESTED" },
-			data: {
-				...shared,
-				status: "CANCELLED",
-				terminalAt,
-				terminalReason: args.terminalReason ?? "cancelled",
-			},
-		});
-		if (cancelled.count === 1) {
-			return { outcome: "finalized", status: "CANCELLED" };
-		}
-
-		const ended = await db.conversationTurn.updateMany({
-			where: { ...where, status: { in: ["START_PENDING", "ACTIVE"] } },
-			data: {
-				...shared,
-				status: args.outcome,
-				terminalAt,
-				// A native Temporal cancel nobody recorded first still ends
-				// the turn as a cancellation, attributed to the workflow.
-				...(args.outcome === "CANCELLED"
+			const terminalAt = new Date();
+			const shared = {
+				terminalReason: args.terminalReason ?? null,
+				responseText: args.responseText ?? null,
+				...(args.limitSignalSummary !== undefined
+					? { limitSignalSummary: args.limitSignalSummary }
+					: {}),
+				...(args.budgetStop !== undefined
 					? {
-							cancelRequestedAt: terminalAt,
-							cancelSource: "WORKFLOW_CANCELLED" as const,
+							budgetStop: {
+								...budgetStopUnderLock(row, args.budgetStop),
+							},
 						}
 					: {}),
-			},
-		});
-		if (ended.count === 1) {
-			return { outcome: "finalized", status: args.outcome };
-		}
-
-		const row = await db.conversationTurn.findFirst({
-			where,
-			select: { status: true },
-		});
-		if (!row) {
-			return { outcome: "not_found" };
-		}
-		if (row.status !== "CANCEL_REQUESTED") {
-			return { outcome: "already_terminal", status: row.status };
-		}
-	}
-	// Unreachable in practice: CANCEL_REQUESTED only ever moves to CANCELLED.
-	const row = await db.conversationTurn.findFirst({
-		where,
-		select: { status: true },
-	});
-	return row
-		? { outcome: "already_terminal", status: row.status }
-		: { outcome: "not_found" };
+			};
+			const data: Prisma.ConversationTurnUpdateInput =
+				row.status === "CANCEL_REQUESTED"
+					? {
+							...shared,
+							status: "CANCELLED",
+							terminalAt,
+							terminalReason: args.terminalReason ?? "cancelled",
+						}
+					: {
+							...shared,
+							status: args.outcome,
+							terminalAt,
+							// A native Temporal cancel nobody recorded first
+							// still ends the turn as a cancellation, attributed
+							// to the workflow.
+							...(args.outcome === "CANCELLED"
+								? {
+										cancelRequestedAt: terminalAt,
+										cancelSource:
+											"WORKFLOW_CANCELLED" as const,
+									}
+								: {}),
+						};
+			const written = await tx.conversationTurn.update({
+				where: { id: row.id },
+				data,
+				select: { status: true, budgetStop: true },
+			});
+			return {
+				outcome: "finalized",
+				status: written.status as ConversationTurnTerminalStatus,
+				budgetStop: written.budgetStop ?? null,
+			};
+		},
+		{ maxWait: 5_000, timeout: 10_000 },
+	);
 }
 
 /**
@@ -666,6 +798,26 @@ export interface ConversationTurnScope {
 	executionId: string;
 	userId: string;
 	organizationId: string;
+	/**
+	 * The turn's generation as the workflow carries it: a number, or null for
+	 * a turn with no conversation. Undefined when the workflow does not carry
+	 * one (a run started before the budget contract), and then not compared.
+	 */
+	generation?: number | null;
+}
+
+/**
+ * True when the scope's generation, if it carries one, is the row's. A
+ * scope without one (undefined) is not compared.
+ */
+export function conversationTurnGenerationMatches(
+	scope: Pick<ConversationTurnScope, "generation">,
+	rowGeneration: number | null,
+): boolean {
+	return (
+		scope.generation === undefined ||
+		(scope.generation ?? null) === rowGeneration
+	);
 }
 
 export type ConversationTurnDispatchVerdict =
@@ -675,7 +827,8 @@ export type ConversationTurnDispatchVerdict =
 /**
  * May this turn make another model request? Read immediately before each
  * one. The turn must exist, match the execution, user and organization the
- * workflow carries, and be ACTIVE. A plain read, not a lock held across the
+ * workflow carries (and its generation, when the workflow carries one), and
+ * be ACTIVE. A plain read, not a lock held across the
  * request: a cancel that commits after this read does not stop the request
  * it approved (Temporal's cancel aborts that one).
  *
@@ -693,6 +846,7 @@ export async function checkConversationTurnDispatchable(
 				executionId: true,
 				userId: true,
 				organizationId: true,
+				generation: true,
 				status: true,
 			},
 		});
@@ -700,7 +854,8 @@ export async function checkConversationTurnDispatchable(
 			!turn ||
 			turn.executionId !== scope.executionId ||
 			turn.userId !== scope.userId ||
-			turn.organizationId !== scope.organizationId
+			turn.organizationId !== scope.organizationId ||
+			!conversationTurnGenerationMatches(scope, turn.generation)
 		) {
 			return { ok: false, reason: "scope_mismatch" };
 		}

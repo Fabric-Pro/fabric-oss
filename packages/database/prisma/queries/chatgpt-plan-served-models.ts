@@ -14,6 +14,7 @@ import type {
 	ChatGptPlanServedModel,
 	ChatGptPlanSourceKind,
 } from "../generated/client";
+import { withChatGptPlanCredentialFence } from "./lib/chatgpt-plan-credential-fence";
 
 export type { ChatGptPlanServedModel };
 
@@ -56,31 +57,41 @@ export interface ChatGptPlanListedModel {
 	priority: number | null;
 }
 
-/** Replaces the source's served list with what it listed at `checkedAt`. */
-export async function replaceChatGptPlanServedModels(params: {
+/**
+ * Replaces the source's served list with what it listed at `checkedAt`,
+ * unless the source's sign-in changed since the listing read its token
+ * (Fizzy #3037). True when it was replaced.
+ */
+export function replaceChatGptPlanServedModels(params: {
 	sourceKind: ChatGptPlanSourceKind;
 	sourceId: string;
 	models: ChatGptPlanListedModel[];
 	checkedAt: Date;
-}): Promise<void> {
+	/** The sign-in whose token listed the models. */
+	credentialFingerprint: string;
+}): Promise<boolean> {
 	const { sourceKind, sourceId, models, checkedAt } = params;
-	await db.$transaction([
-		db.chatGptPlanServedModel.deleteMany({
-			where: { sourceKind, sourceId },
-		}),
-		db.chatGptPlanServedModel.createMany({
-			data: models.map((model) => ({
-				sourceKind,
-				sourceId,
-				slug: model.slug,
-				displayName: model.displayName,
-				description: model.description,
-				priority: model.priority,
-				checkedAt,
-			})),
-			skipDuplicates: true,
-		}),
-	]);
+	return withChatGptPlanCredentialFence(
+		{ sourceKind, sourceId },
+		params.credentialFingerprint,
+		async (tx) => {
+			await tx.chatGptPlanServedModel.deleteMany({
+				where: { sourceKind, sourceId },
+			});
+			await tx.chatGptPlanServedModel.createMany({
+				data: models.map((model) => ({
+					sourceKind,
+					sourceId,
+					slug: model.slug,
+					displayName: model.displayName,
+					description: model.description,
+					priority: model.priority,
+					checkedAt,
+				})),
+				skipDuplicates: true,
+			});
+		},
+	);
 }
 
 export async function getChatGptPlanServedModels(

@@ -89,7 +89,10 @@ The response includes an `Mcp-Session-Id` header for subsequent requests.
 
 ### tools/list
 
-Returns all available tools.
+Returns all available tools. A session opened with `?mode=discovery` (on
+either URL) gets three meta-tools instead, `search_tools`, `get_tool_schema`
+and `call_tool`, which find, describe and run the same tools; see
+[Discovery Mode](/docs/integrations/mcp-gateway#discovery-mode-for-clients-with-a-tool-limit).
 
 ```json
 {
@@ -105,7 +108,7 @@ Returns all available tools.
   tools below
 - **Connected server tools** (`{prefix}__{tool}`) — from your MCP server connections
 
-Connected tools include `_meta` with authority status:
+Connected tools include `_meta` saying whether a call needs runtime authority:
 
 ```json
 {
@@ -114,11 +117,17 @@ Connected tools include `_meta` with authority status:
   "inputSchema": { "..." },
   "_meta": {
     "requiresAuthority": true,
-    "authorityStatus": "missing",
+    "providerAuthorityStatus": "missing",
     "providerKey": "linear"
   }
 }
 ```
+
+`requiresAuthority` is `false` for a tool the gateway treats as read-only, which runs
+without a grant; such a tool carries no `providerAuthorityStatus`.
+`providerAuthorityStatus` is `granted` when the session has any approved grant for the
+provider. It is not a promise for that tool, since a grant covers an access level and can
+be limited to some tools or to one request.
 
 ### tools/call
 
@@ -139,7 +148,7 @@ Execute a tool.
 }
 ```
 
-For connected server tools, authority must be active:
+A connected server tool that writes needs active authority; a read-only one runs without it:
 
 ```json
 {
@@ -147,8 +156,8 @@ For connected server tools, authority must be active:
   "id": 4,
   "method": "tools/call",
   "params": {
-    "name": "linear__list_issues",
-    "arguments": { "project": "ABC" }
+    "name": "linear__create_issue",
+    "arguments": { "project": "ABC", "title": "Example issue" }
   }
 }
 ```
@@ -319,7 +328,7 @@ POST /api/rpc/mcp.authority.revoke
 | `-32700` | Parse error (malformed JSON) |
 | `-32600` | Invalid JSON-RPC version |
 | `-32601` | Method not found |
-| `-32602` | Missing required parameters |
+| `-32602` | Missing required parameters, a `servers` selection the gateway cannot honour (see [Choose Which Servers a Client Sees](/docs/integrations/mcp-gateway#choose-which-servers-a-client-sees)), or a `mode` other than `discovery` (see [Discovery Mode](/docs/integrations/mcp-gateway#discovery-mode-for-clients-with-a-tool-limit)) |
 | `-32603` | Internal error |
 
 ## Rate Limits

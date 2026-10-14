@@ -58,6 +58,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	composeLinkedInPostPrompt,
@@ -259,6 +260,7 @@ export async function generateLinkedInPostActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-linkedin-post",
 		},
 	);
@@ -298,7 +300,7 @@ export async function generateLinkedInPostActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`LinkedIn post failed schema validation: ${error.message}`,
+				`LinkedIn post failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_LINKEDIN_POST_SCHEMA_VALIDATION_FAILED",
 			);
 		}

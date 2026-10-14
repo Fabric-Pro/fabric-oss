@@ -6,7 +6,11 @@
  */
 
 import { requireServiceUrl } from "@repo/utils";
-import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	getDispatchGuard,
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -142,6 +146,15 @@ export class WeaveQueryHandler implements StepHandler {
 			{
 				userId: input.userId,
 				organizationId: input.organizationId ?? null,
+			},
+			{
+				// The Weave reader answers with its own model calls. Inside a
+				// chat turn that has stopped or used its token allowance the
+				// client sends nothing (checked in the same synchronous run as
+				// each attempt's `fetch`, after the project read above), and
+				// the turn's stop aborts the request. No-ops outside a turn.
+				throwIfStopped: throwIfDispatchStopped,
+				signal: getDispatchGuard()?.abortSignal(),
 			},
 		);
 

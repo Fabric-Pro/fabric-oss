@@ -1,5 +1,6 @@
 import type { ChatGptPlanSourceKey } from "@repo/database";
 import { chatGptPlanLockKey } from "@repo/database/prisma/queries/lib/refresh-lock";
+import { chatGptPlanOrgAccountLockKey } from "@repo/database/prisma/queries/lib/refresh-lock-key";
 
 /**
  * One ChatGPT plan a call can run on (Fizzy #2770): a member's own plan, or
@@ -36,7 +37,7 @@ export function planSourceStateKey(ref: PlanSourceRef): ChatGptPlanSourceKey {
 export function chatGptPlanSourceLockKey(ref: PlanSourceRef): string {
 	return ref.kind === "user"
 		? chatGptPlanLockKey(ref.userId)
-		: `chatgpt-plan-org:${ref.accountId}`;
+		: chatGptPlanOrgAccountLockKey(ref.accountId);
 }
 
 /** What a log line may say about a source: ids only. */

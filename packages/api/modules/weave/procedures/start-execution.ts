@@ -321,6 +321,10 @@ export const startExecutionProcedure = protectedProcedure
 							message: `Execute weave plan: ${plan.name}`,
 							history: [],
 							userId,
+							// A person starts this plan's execution, so its AI
+							// steps — and the token each Weave agent gets — may
+							// use their ChatGPT plan (Fizzy #2770).
+							planEligible: true,
 							organizationId: projectOrganizationId,
 							executionMode: "weave",
 							projectId: plan.projectId,

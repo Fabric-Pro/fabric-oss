@@ -102,6 +102,15 @@ describe("normalizeConfluenceContent", () => {
 		expect(normalizeConfluenceContent(result)).toBe("Atlas body");
 	});
 
+	it("unwraps Rovo v2 nested { data: { body: ... } }", () => {
+		const result = {
+			data: {
+				body: { storage: { value: "<p>Rovo v2 body</p>" } },
+			},
+		};
+		expect(normalizeConfluenceContent(result)).toBe("Rovo v2 body");
+	});
+
 	it("falls back to JSON.stringify for an unrecognized object", () => {
 		const result = { someUnknownField: 123 };
 		expect(normalizeConfluenceContent(result)).toBe(JSON.stringify(result));
@@ -272,6 +281,32 @@ describe("fetchConfluencePageContent", () => {
 		expect(contentBody.params).toEqual({ pageId: "page-123" });
 	});
 
+	it("picks getConfluenceContent for Rovo v2 and sends { content_id }", async () => {
+		mockFetch
+			.mockResolvedValueOnce(
+				mockToolsResponse([
+					"listConfluenceContent",
+					"getConfluencePageFooterComments",
+					"getConfluenceContent",
+				]),
+			)
+			.mockResolvedValueOnce(
+				mockContentResponse({
+					title: "Rovo V2 Page",
+					body: { storage: { value: "<p>Rovo v2 body</p>" } },
+				}),
+			);
+
+		const result = await fetchConfluencePageContent(baseParams);
+
+		expect(result.content).toBe("Rovo v2 body");
+		const contentBody = JSON.parse(
+			(mockFetch.mock.calls[1][1] as RequestInit).body as string,
+		);
+		expect(contentBody.toolName).toBe("getConfluenceContent");
+		expect(contentBody.params).toEqual({ content_id: "page-123" });
+	});
+
 	it("fails cleanly when only non-content page tools exist (no get-page tool)", async () => {
 		mockFetch
 			.mockResolvedValueOnce(
@@ -288,5 +323,23 @@ describe("fetchConfluencePageContent", () => {
 		expect(result.contentFetchFailed).toBe(true);
 		// No content call is made when no real get-page tool is found.
 		expect(mockFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("unwraps Rovo v2 nested { data: { title, body } }", async () => {
+		mockFetch
+			.mockResolvedValueOnce(mockToolsResponse(["getConfluencePage"]))
+			.mockResolvedValueOnce(
+				mockContentResponse({
+					data: {
+						title: "Nested Rovo Title",
+						body: { storage: { value: "<p>Nested Rovo body</p>" } },
+					},
+				}),
+			);
+
+		const result = await fetchConfluencePageContent(baseParams);
+
+		expect(result.content).toBe("Nested Rovo body");
+		expect(result.title).toBe("Nested Rovo Title");
 	});
 });

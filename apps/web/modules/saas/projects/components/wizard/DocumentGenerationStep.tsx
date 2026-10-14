@@ -40,6 +40,7 @@ import { startTransition, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PromptSelector } from "../../../prompts/components/PromptSelector";
 import { DocumentsList } from "../DocumentsList";
+import { PausedBatchNotice } from "../PausedBatchNotice";
 import {
 	alignBatchDocuments,
 	type DocumentSelection,
@@ -633,6 +634,11 @@ export function DocumentGenerationStep({
 
 	return (
 		<div className="space-y-6">
+			{/* A batch paused for a ChatGPT plan reset (Fizzy #2770). */}
+			<PausedBatchNotice
+				projectId={projectId}
+				organizationId={organizationId}
+			/>
 			{/* Header */}
 			<div>
 				<div className="flex items-center gap-2 mb-2">

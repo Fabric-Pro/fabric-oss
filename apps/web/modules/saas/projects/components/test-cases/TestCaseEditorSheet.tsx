@@ -831,6 +831,7 @@ export function TestCaseEditorSheet({
 									projectId={projectId}
 									organizationId={organizationId}
 									testCaseId={detail.id}
+									externalId={detail.externalId}
 									pmAutoSyncEnabled={pmAutoSyncEnabled}
 									onToggle={setPmAutoSyncEnabled}
 									lastPmSyncStatus={detail.lastPmSyncStatus}

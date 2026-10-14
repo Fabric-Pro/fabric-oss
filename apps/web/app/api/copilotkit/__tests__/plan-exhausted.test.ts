@@ -11,6 +11,7 @@ const RESET = new Date("2026-10-08T16:37:00.000Z");
 
 const mocks = vi.hoisted(() => ({
 	pickChatGptPlanSource: vi.fn(),
+	interactiveApiFallback: vi.fn(),
 	resolvePlanModel: vi.fn(),
 	resolveCopilotOrgModel: vi.fn(),
 	handleRequest: vi.fn(),
@@ -87,6 +88,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/models", () => ({
 
 vi.mock("@repo/ai/lib/chatgpt-plan/pool", () => ({
 	pickChatGptPlanSource: mocks.pickChatGptPlanSource,
+	chatGptPlanInteractiveApiFallback: mocks.interactiveApiFallback,
 	chatGptPlanPoolExhaustedMessage: () =>
 		"Every ChatGPT plan this work may use has no usage left in this window.",
 }));
@@ -166,6 +168,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.resolveCopilotOrgModel.mockResolvedValue(PROVIDER_MODEL);
 	mocks.resolvePlanModel.mockResolvedValue({ model: "gpt-5" });
+	mocks.interactiveApiFallback.mockResolvedValue(false);
 	// Reading the body proves the route's peek left it unread.
 	mocks.handleRequest.mockImplementation(async (req: Request) => {
 		await req.text();
@@ -193,6 +196,28 @@ describe("/api/copilotkit — every ChatGPT plan for the member's work is spent"
 			apiBillingOption: true,
 		});
 		expect(mocks.handleRequest).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #3048: "Use API billing" for people's own work.
+	it("runs the agents on the organization's provider under the interactive AUTO policy", async () => {
+		const spent = {
+			exhausted: true,
+			audience: "interactive",
+			policy: { apiFallbackInteractive: "AUTO" },
+			resetAt: RESET,
+		};
+		mocks.pickChatGptPlanSource.mockResolvedValue(spent);
+		mocks.interactiveApiFallback.mockResolvedValue(true);
+
+		const response = await call("agent/run");
+
+		expect(response.status).toBe(200);
+		expect(mocks.handleRequest).toHaveBeenCalled();
+		expect(mocks.resolvePlanModel).not.toHaveBeenCalled();
+		expect(mocks.interactiveApiFallback).toHaveBeenCalledWith(
+			spent,
+			expect.anything(),
+		);
 	});
 
 	it("uses the member's own plan's sentence when only it was in play", async () => {

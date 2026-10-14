@@ -9,6 +9,7 @@ import type { AiJobKey } from "@repo/ai";
 import { logger } from "@repo/logs";
 import { generateEmbedding } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { getHandlerForDataSource, inferDataSourceType } from "./handlers";
 import {
 	buildRagContextPrompt,
@@ -525,6 +526,14 @@ export async function executeAiAnalysis(
 				usedRag: !!qdrantCollectionId,
 			});
 		} catch (error) {
+			// A scheduled run's spent ChatGPT plan is its workflow's to handle:
+			// it waits for a reset and runs the analysis once more (Fizzy #2770).
+			const planRefusal = jobType
+				? findWorkflowHandledPlanRefusal(error)
+				: null;
+			if (planRefusal) {
+				throw planRefusal;
+			}
 			const errorMessage =
 				error instanceof Error
 					? `${error.name}: ${error.message}`

@@ -31,6 +31,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock("../pm-create-claim", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+	releasePmCreateClaim: vi.fn(async () => true),
+}));
+
 vi.mock("@temporalio/activity", async () => {
 	const actual = await vi.importActual<object>("@temporalio/activity");
 	return {

@@ -31,12 +31,11 @@ const MEMBER_ROLES = ["owner", "admin", "member"];
 
 /** Whether the organization takes shared ChatGPT plans from its members now. */
 async function sharingOpen(organizationId: string): Promise<boolean> {
-	const [plan, pooling, policy] = await Promise.all([
+	const [plan, policy] = await Promise.all([
 		isFeatureEnabled("CHATGPT_PLAN", organizationId),
-		isFeatureEnabled("CHATGPT_PLAN_POOLING", organizationId),
 		getChatGptPlanOrgPolicy(organizationId),
 	]);
-	return plan && pooling && policy.termsAcknowledgedAt !== null;
+	return plan && policy.termsAcknowledgedAt !== null;
 }
 
 export const chatGptPlanSharedHereSchema = z.object({

@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PropsWithChildren, ReactNode } from "react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments: vi.fn() } } },
@@ -240,6 +240,7 @@ vi.mock("next-intl", () => ({
 	},
 }));
 
+import { ENGAGEMENT_PROFILE_METADATA_STORAGE_KEY } from "../../../hooks/useEngagementProfileExpanded";
 import { StoryWorkspacePage } from "../StoryWorkspacePage";
 
 describe("StoryWorkspacePage Focus Mode Integration", () => {
@@ -249,6 +250,10 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 		queryClient = new QueryClient({
 			defaultOptions: { queries: { retry: false } },
 		});
+	});
+
+	beforeEach(() => {
+		localStorage.clear();
 	});
 
 	function Wrapper({ children }: PropsWithChildren) {
@@ -313,5 +318,88 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 		expect(metadataRow).toBeVisible();
 		expect(metadataRow).not.toHaveClass("hidden");
 		expect(metadataRow).toHaveAttribute("aria-hidden", "false");
+	});
+
+	it("collapses engagement profile metadata row by default and expands/collapses via manual toggle", async () => {
+		const user = userEvent.setup();
+		render(
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await screen.findByText("Foundry Test Bench");
+		const toggle = screen.getByTestId("engagement-profile-metadata-toggle");
+		expect(toggle).toBeInTheDocument();
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+		// Delivery track selector is in the DOM (mounted) but not visible because content is hidden
+		const trackSelector = screen.getByTestId("delivery-track-selector");
+		expect(trackSelector).toBeInTheDocument();
+		expect(trackSelector).not.toBeVisible();
+
+		// Click toggle to expand
+		await user.click(toggle);
+
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
+		expect(trackSelector).toBeVisible();
+		expect(
+			localStorage.getItem(ENGAGEMENT_PROFILE_METADATA_STORAGE_KEY),
+		).toBe("true");
+
+		// Click toggle again to collapse
+		await user.click(toggle);
+
+		expect(toggle).toHaveAttribute("aria-expanded", "false");
+		expect(trackSelector).not.toBeVisible();
+		expect(
+			localStorage.getItem(ENGAGEMENT_PROFILE_METADATA_STORAGE_KEY),
+		).toBe("false");
+	});
+
+	it("preserves manual expanded state across Focus Mode enter and exit", async () => {
+		const user = userEvent.setup();
+		render(
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>,
+			{ wrapper: Wrapper },
+		);
+
+		await screen.findByText("Foundry Test Bench");
+		const toggle = screen.getByTestId("engagement-profile-metadata-toggle");
+		const trackSelector = screen.getByTestId("delivery-track-selector");
+
+		// Expand the row manually
+		await user.click(toggle);
+		expect(trackSelector).toBeVisible();
+
+		// Enter Focus Mode
+		const focusToggle = screen.getByRole("button", { name: "Focus Mode" });
+		await user.click(focusToggle);
+
+		// Outer row is hidden in Focus Mode
+		const metadataRow = screen.getByTestId(
+			"engagement-profile-metadata-row",
+		);
+		expect(metadataRow).not.toBeVisible();
+
+		// Exit Focus Mode
+		const exitToggle = screen.getByRole("button", {
+			name: "Exit Focus Mode",
+		});
+		await user.click(exitToggle);
+
+		// Outer row is visible again, and inner content remains expanded.
+		expect(metadataRow).toBeVisible();
+		expect(trackSelector).toBeVisible();
+		expect(
+			localStorage.getItem(ENGAGEMENT_PROFILE_METADATA_STORAGE_KEY),
+		).toBe("true");
 	});
 });

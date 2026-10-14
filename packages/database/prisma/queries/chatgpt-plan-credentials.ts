@@ -17,6 +17,9 @@ import type {
 	ChatGptPlanTier,
 } from "../generated/client";
 import { isFeatureEnabled } from "./feature-flags";
+import { chatGptPlanLockKey, withRefreshLock } from "./lib/refresh-lock";
+
+type CredentialTx = Parameters<Parameters<typeof withRefreshLock>[1]>[0];
 
 export type { ChatGptPlanCredential, ChatGptPlanCredentialStatus };
 
@@ -64,33 +67,53 @@ export function getChatGptPlanCredentialStatus(userId: string) {
 /**
  * Stores a fresh sign-in. A new sign-in always clears NEEDS_RECONNECT, and
  * replaces every token, so a reconnect as a different ChatGPT account never
- * keeps the old account's refresh token. A first own plan starts with no
- * breaker, served-model or calibration rows: any left under this member's key
- * belong to a plan they shared or disconnected, and an open breaker among
- * them would read the new plan as spent (Fizzy #2770 I1).
+ * keeps the old account's refresh token. A first or different own plan starts
+ * with no breaker, served-model or calibration rows: any left under this
+ * member's key belong to an earlier account or a plan they shared or
+ * disconnected. Same-account reconnects retain those rows and any omitted
+ * subscription fields. Returns the stored row's id.
  */
-export async function upsertChatGptPlanCredential(
+export function upsertChatGptPlanCredential(
 	input: ChatGptPlanCredentialWrite,
-): Promise<void> {
+): Promise<{ id: string }> {
 	const { userId, ...fields } = input;
-	await db.$transaction(async (tx) => {
+	return withRefreshLock(chatGptPlanLockKey(userId), async (tx) => {
 		const existing = await tx.chatGptPlanCredential.findUnique({
 			where: { userId },
-			select: { id: true },
+			select: { subject: true, email: true },
 		});
-		if (existing) {
-			await tx.chatGptPlanCredential.update({
-				where: { userId },
-				data: { ...fields, status: "ACTIVE" },
-			});
-			return;
+		const email = normalizeChatGptPlanEmail(input.email);
+		const sameAccount =
+			existing !== null &&
+			(existing.subject === input.subject ||
+				(email !== null &&
+					email === normalizeChatGptPlanEmail(existing.email)));
+		if (!sameAccount) {
+			const source = { sourceKind: "USER" as const, sourceId: userId };
+			await tx.chatGptPlanSourceState.deleteMany({ where: source });
+			await tx.chatGptPlanServedModel.deleteMany({ where: source });
+			await tx.chatGptPlanBudgetObservation.deleteMany({ where: source });
+			await tx.chatGptPlanWindowAccuracy.deleteMany({ where: source });
 		}
-		const source = { sourceKind: "USER" as const, sourceId: userId };
-		await tx.chatGptPlanSourceState.deleteMany({ where: source });
-		await tx.chatGptPlanServedModel.deleteMany({ where: source });
-		await tx.chatGptPlanBudgetObservation.deleteMany({ where: source });
-		await tx.chatGptPlanCredential.create({
+		if (existing) {
+			return tx.chatGptPlanCredential.update({
+				where: { userId },
+				data: {
+					...fields,
+					status: "ACTIVE",
+					...(!sameAccount && {
+						tier: input.tier ?? "UNKNOWN",
+						subscriptionActiveUntil:
+							input.subscriptionActiveUntil ?? null,
+						lastUsedAt: null,
+					}),
+				},
+				select: { id: true },
+			});
+		}
+		return tx.chatGptPlanCredential.create({
 			data: { userId, ...fields, status: "ACTIVE" },
+			select: { id: true },
 		});
 	});
 }
@@ -147,18 +170,24 @@ export async function findChatGptPlanPersonalAccountOwner(
 export async function deleteChatGptPlanCredential(
 	userId: string,
 ): Promise<boolean> {
-	const [{ count }] = await db.$transaction([
-		db.chatGptPlanCredential.deleteMany({ where: { userId } }),
-		db.chatGptPlanSourceState.deleteMany({
-			where: { sourceKind: "USER", sourceId: userId },
-		}),
-		db.chatGptPlanServedModel.deleteMany({
-			where: { sourceKind: "USER", sourceId: userId },
-		}),
-		db.chatGptPlanBudgetObservation.deleteMany({
-			where: { sourceKind: "USER", sourceId: userId },
-		}),
-	]);
+	return withRefreshLock(chatGptPlanLockKey(userId), (tx) =>
+		deleteChatGptPlanCredentialUnderLock(tx, userId),
+	);
+}
+
+/** The caller must hold this user's source lock for the whole operation. */
+export async function deleteChatGptPlanCredentialUnderLock(
+	tx: CredentialTx,
+	userId: string,
+): Promise<boolean> {
+	const { count } = await tx.chatGptPlanCredential.deleteMany({
+		where: { userId },
+	});
+	const where = { sourceKind: "USER" as const, sourceId: userId };
+	await tx.chatGptPlanSourceState.deleteMany({ where });
+	await tx.chatGptPlanServedModel.deleteMany({ where });
+	await tx.chatGptPlanBudgetObservation.deleteMany({ where });
+	await tx.chatGptPlanWindowAccuracy.deleteMany({ where });
 	return count > 0;
 }
 

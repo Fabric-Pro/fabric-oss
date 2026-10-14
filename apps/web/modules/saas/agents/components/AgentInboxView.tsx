@@ -1,5 +1,6 @@
 "use client";
 
+import { useAgentLabel } from "@saas/agents/hooks/useAgentLabel";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { formatRelativeTime } from "@saas/shared/lib/format-time";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -128,6 +129,7 @@ export function AgentInboxView({
 		organizationIdProp ?? orgContext.organizationId ?? null;
 	const basePath = basePathProp ?? orgContext.basePath ?? "/app";
 	const [status, setStatus] = useState<InboxStatus>("all");
+	const formatAgentLabel = useAgentLabel();
 
 	const { data, isLoading } = useQuery(
 		orpc.agents.inbox.list.queryOptions({
@@ -216,6 +218,12 @@ export function AgentInboxView({
 							const TypeIcon = typeConfig.icon;
 							const StatusIcon = statusConfig.icon;
 							const href = buildProjectHref(basePath, item);
+							const agentId = item.metadata?.agentId;
+							const title =
+								item.type === "agent_task" &&
+								typeof agentId === "string"
+									? formatAgentLabel(agentId)
+									: item.title;
 
 							return (
 								<li key={item.id} className="p-5">
@@ -231,7 +239,7 @@ export function AgentInboxView({
 										<div className="min-w-0 flex-1">
 											<div className="flex flex-wrap items-center gap-2">
 												<p className="font-medium text-foreground text-sm">
-													{item.title}
+													{title}
 												</p>
 												<Badge
 													variant="secondary"

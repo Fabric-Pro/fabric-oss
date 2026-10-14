@@ -22,6 +22,10 @@ import { linkRepositoriesProcedure } from "./procedures/link-repositories";
 import { listRepositoriesProcedure } from "./procedures/list-repositories";
 import { atlasNodeProcedure } from "./procedures/node";
 import { nodeHistoryProcedure } from "./procedures/node-history";
+import {
+	atlasPausedRunProcedure,
+	atlasRunPausedOnApiProcedure,
+} from "./procedures/paused-run";
 import { remapSoloProcedure } from "./procedures/remap-solo";
 import { remapSystemProcedure } from "./procedures/remap-system";
 import { restoreEdgeProcedure } from "./procedures/restore-edge";
@@ -54,6 +58,10 @@ export const atlasRouter = {
 	edgeHistory: edgeHistoryProcedure,
 	analyze: analyzeProcedure,
 	cancelAnalysis: cancelAnalysisProcedure,
+	// A run paused for a ChatGPT plan reset (Fizzy #2770); Cancel is
+	// `cancelAnalysis`.
+	pausedRun: atlasPausedRunProcedure,
+	runPausedOnApi: atlasRunPausedOnApiProcedure,
 	history: atlasHistoryProcedure,
 	saveLayout: saveLayoutProcedure,
 	branches: {

@@ -57,6 +57,10 @@ export async function startFabricMentionReplyWorkflow(input: {
 					commentId: input.commentId,
 					userId: input.userId,
 					organizationId: input.organizationId ?? undefined,
+					// No one waits at a screen for this reply: it runs as a
+					// background job, on the organization's shared ChatGPT
+					// plans when they serve it (Fizzy #2770).
+					jobType: "fabric-mention",
 				},
 			],
 		}),

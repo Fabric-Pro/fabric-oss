@@ -16,6 +16,14 @@ vi.mock("../../lib/cancel-telemetry", () => ({
 	emitCancelEvent: vi.fn(),
 }));
 
+const showAiUsageLimitToast = vi.fn();
+vi.mock("@saas/payments/lib/ai-usage-limit-toast", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@saas/payments/lib/ai-usage-limit-toast")
+	>()),
+	useShowAiUsageLimitToast: () => showAiUsageLimitToast,
+}));
+
 import {
 	applyToolResult,
 	type DirectStreamMessage,
@@ -75,8 +83,11 @@ function makeSseResponse() {
 	return { response, enqueueLine, enqueueDone };
 }
 
-function startTurn() {
+function startTurn(headers?: Record<string, string>) {
 	const sse = makeSseResponse();
+	if (headers) {
+		Object.assign(sse.response, { headers: new Headers(headers) });
+	}
 	const fetchSpy = vi
 		.spyOn(global, "fetch")
 		.mockImplementation(((..._args: unknown[]) =>
@@ -170,6 +181,62 @@ describe("applyToolResult — matching by id (F12)", () => {
 			"running",
 			"running",
 		]);
+	});
+});
+
+describe("useDirectStream — a usage limit that refuses the turn", () => {
+	const LIMIT_DATA = {
+		limitId: "limit-1",
+		dimension: "TOKENS",
+		window: "MONTHLY",
+		used: "100",
+		max: "100",
+		manageLimitsUrl: "https://example.com/limits",
+	};
+	const LIMIT_MESSAGE = "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)";
+
+	it("keeps the answer that streamed before a later step was refused, and shows the limit toast", async () => {
+		showAiUsageLimitToast.mockClear();
+		const { hook, send, finish, last } = startTurn();
+
+		await send({ type: "text", content: "Here is the first part." });
+		await send({
+			type: "error",
+			message: LIMIT_MESSAGE,
+			partial: true,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: LIMIT_DATA,
+		});
+		await send({ type: "done" });
+		await finish();
+
+		expect(showAiUsageLimitToast).toHaveBeenCalledWith(LIMIT_DATA);
+		expect(last()).toMatchObject({
+			role: "assistant",
+			content: "Here is the first part.",
+			isError: true,
+			errorMessage: LIMIT_MESSAGE,
+			streamStatus: "error",
+		});
+		expect(hook.result.current.state.status).toBe("error");
+	});
+
+	it("drops the placeholder for a refusal before any answer, as before", async () => {
+		showAiUsageLimitToast.mockClear();
+		const { hook, send, finish } = startTurn();
+
+		await send({
+			type: "error",
+			message: LIMIT_MESSAGE,
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: LIMIT_DATA,
+		});
+		await finish();
+
+		expect(showAiUsageLimitToast).toHaveBeenCalledWith(LIMIT_DATA);
+		expect(
+			hook.result.current.messages.filter((m) => m.role === "assistant"),
+		).toEqual([]);
 	});
 });
 
@@ -377,5 +444,24 @@ describe("useDirectStream — the first send after a reset", () => {
 		await act(async () => {
 			enqueueDone();
 		});
+	});
+});
+
+// Fizzy #3048: the turn ran on the organization's API billing.
+describe("useDirectStream — a reply on API billing", () => {
+	it("marks the reply with the plans' reset from the stream's header", async () => {
+		const turn = startTurn({
+			"x-fabric-chatgpt-plan-api-billing": "2026-10-13T17:50:00.000Z",
+		});
+		await turn.finish();
+		expect(turn.last().apiBilling).toEqual({
+			resetAt: "2026-10-13T17:50:00.000Z",
+		});
+	});
+
+	it("leaves a reply on a plan unmarked", async () => {
+		const turn = startTurn();
+		await turn.finish();
+		expect(turn.last().apiBilling).toBeUndefined();
 	});
 });

@@ -21,6 +21,7 @@ const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		projectFindUnique: vi.fn(),
 		testCaseFindFirst: vi.fn(),
+		testCaseFindMany: vi.fn(),
 		mcpServerFindUnique: vi.fn(),
 		workflowIntegrationFindFirst: vi.fn(),
 		resolvePMConfigForUser: vi.fn(),
@@ -44,7 +45,10 @@ vi.mock("@repo/database", () => ({
 		key === "gitlab" || key === "gitlab-official",
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
-		testCase: { findFirst: mocks.testCaseFindFirst },
+		testCase: {
+			findFirst: mocks.testCaseFindFirst,
+			findMany: mocks.testCaseFindMany,
+		},
 		mCPServer: { findUnique: mocks.mcpServerFindUnique },
 		workflowIntegration: {
 			findFirst: mocks.workflowIntegrationFindFirst,
@@ -70,6 +74,7 @@ vi.mock("@repo/temporal", () => ({
 // this test file (one level deeper than the procedure that imports it).
 vi.mock("../../../../lib/retry-pm-sync-item", () => ({
 	retryPmSyncItem: mocks.retryPmSyncItem,
+	PM_RECOVERY_STALE_MESSAGE: "stale message",
 }));
 
 vi.mock("../../../../../../orpc/procedures", () => {
@@ -99,6 +104,7 @@ vi.mock("../../../../../../orpc/procedures", () => {
 
 import { dismissTestCasePmSyncFailureProcedure } from "../dismiss-pm-sync-failure";
 import { retryTestCasePmSyncProcedure } from "../retry-pm-sync";
+import { retryTestCasePmSyncBatchProcedure } from "../retry-pm-sync-batch";
 import { syncTestCasesBulkProcedure } from "../sync-test-cases-bulk";
 
 type Proc = {
@@ -108,6 +114,7 @@ type Proc = {
 const bulk = syncTestCasesBulkProcedure as unknown as Proc;
 const dismiss = dismissTestCasePmSyncFailureProcedure as unknown as Proc;
 const retry = retryTestCasePmSyncProcedure as unknown as Proc;
+const retryBatch = retryTestCasePmSyncBatchProcedure as unknown as Proc;
 
 const ctx = { user: { id: "u1" }, session: {}, tenantContext: {} };
 
@@ -353,6 +360,152 @@ describe("retryTestCasePmSyncProcedure", () => {
 		});
 	});
 
+	it("Unlink & re-create passes the link (id, URL, server) and create claim read with the case", async () => {
+		mocks.testCaseFindFirst.mockResolvedValue({
+			id: "tc1",
+			externalId: null,
+			externalUrl: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+			project: {
+				organizationId: null,
+				projectManagementMcpServerId: "srv-1",
+				projectManagementMcpConfigId: "mcp-1",
+			},
+		});
+		mocks.retryPmSyncItem.mockResolvedValue({
+			enqueued: true,
+			workflowId: "test-case-sync-p1-tc1",
+		});
+
+		await retry.handler({
+			input: { projectId: "p1", testCaseId: "tc1", unlinkFirst: true },
+			context: ctx,
+		});
+
+		expect(mocks.testCaseFindFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({
+					externalId: true,
+					externalUrl: true,
+					externalMcpServerId: true,
+					pmCreateClaimId: true,
+				}),
+			}),
+		);
+		expect(mocks.retryPmSyncItem).toHaveBeenCalledWith(
+			expect.objectContaining({
+				itemType: "testCase",
+				unlinkFirst: true,
+				externalId: null,
+				externalUrl: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-read",
+			}),
+		);
+	});
+
+	it("a plain retry does not ask for Unlink & re-create", async () => {
+		mocks.testCaseFindFirst.mockResolvedValue({
+			id: "tc1",
+			externalId: null,
+			externalUrl: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+			project: {
+				organizationId: null,
+				projectManagementMcpServerId: "srv-1",
+				projectManagementMcpConfigId: "mcp-1",
+			},
+		});
+		mocks.retryPmSyncItem.mockResolvedValue({ enqueued: true });
+
+		await retry.handler({
+			input: { projectId: "p1", testCaseId: "tc1" },
+			context: ctx,
+		});
+
+		// The handler runs without the input schema here, so the default
+		// (false) is not applied: anything but true is a plain retry.
+		const [arg] = mocks.retryPmSyncItem.mock.calls[0] as [
+			{ unlinkFirst?: boolean; pmCreateClaimId: string | null },
+		];
+		expect(arg.unlinkFirst).toBeFalsy();
+		expect(arg.pmCreateClaimId).toBe("claim-read");
+	});
+
+	it("reports a stale Unlink & re-create as CONFLICT with the recovery message", async () => {
+		mocks.testCaseFindFirst.mockResolvedValue({
+			id: "tc1",
+			externalId: null,
+			externalUrl: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+			project: {
+				organizationId: null,
+				projectManagementMcpServerId: "srv-1",
+				projectManagementMcpConfigId: "mcp-1",
+			},
+		});
+		mocks.retryPmSyncItem.mockResolvedValue({
+			enqueued: false,
+			reason: "pm-recovery-stale",
+		});
+
+		await expect(
+			retry.handler({
+				input: {
+					projectId: "p1",
+					testCaseId: "tc1",
+					unlinkFirst: true,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: "stale message",
+		});
+	});
+
+	it("maps a claim too recent to clear to CONFLICT PM_RECOVERY_TOO_RECENT with the time", async () => {
+		mocks.testCaseFindFirst.mockResolvedValue({
+			id: "tc1",
+			externalId: null,
+			externalUrl: null,
+			externalMcpServerId: null,
+			pmCreateClaimId: "claim-read",
+			project: {
+				organizationId: null,
+				projectManagementMcpServerId: "srv-1",
+				projectManagementMcpConfigId: "mcp-1",
+			},
+		});
+		mocks.retryPmSyncItem.mockResolvedValue({
+			enqueued: false,
+			reason: "pm-recovery-too-recent",
+			recoverableAt: new Date("2026-10-13T12:05:00.000Z"),
+		});
+
+		await expect(
+			retry.handler({
+				input: {
+					projectId: "p1",
+					testCaseId: "tc1",
+					unlinkFirst: true,
+				},
+				context: ctx,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message:
+				"A push may still be creating this item in your PM tool. Try again after 12:05 UTC.",
+			data: {
+				errorCode: "PM_RECOVERY_TOO_RECENT",
+				recoverableAt: "2026-10-13T12:05:00.000Z",
+			},
+		});
+	});
+
 	it("throws NOT_FOUND and never retries when the case is absent", async () => {
 		mocks.testCaseFindFirst.mockResolvedValue(null);
 
@@ -394,5 +547,84 @@ describe("retryTestCasePmSyncProcedure", () => {
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mocks.retryPmSyncItem).not.toHaveBeenCalled();
+	});
+});
+
+describe("retryTestCasePmSyncBatchProcedure", () => {
+	it("retries each owned case with the link and create claim read with it, never as Unlink & re-create", async () => {
+		mocks.projectFindUnique.mockResolvedValue({
+			id: "p1",
+			organizationId: null,
+			projectManagementMcpServerId: "srv-1",
+			projectManagementMcpConfigId: "mcp-1",
+			projectManagementAdditionalContext: null,
+		});
+		mocks.testCaseFindMany.mockResolvedValue([
+			{
+				id: "tc1",
+				externalId: "EXT-1",
+				externalUrl: "https://pm.example.com/cards/1",
+				externalMcpServerId: "srv-1",
+				pmCreateClaimId: null,
+			},
+			{
+				id: "tc2",
+				externalId: null,
+				externalUrl: null,
+				externalMcpServerId: null,
+				pmCreateClaimId: "claim-2",
+			},
+		]);
+		mocks.retryPmSyncItem
+			.mockResolvedValueOnce({ enqueued: true, workflowId: "wf-1" })
+			.mockResolvedValueOnce({
+				enqueued: false,
+				reason: "already-running",
+				workflowId: "test-case-sync-p1-tc2",
+			});
+
+		const res = (await retryBatch.handler({
+			input: { projectId: "p1", testCaseIds: ["tc1", "tc2", "foreign"] },
+			context: ctx,
+		})) as { enqueuedCount: number; results: unknown[] };
+
+		expect(mocks.testCaseFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({
+					externalUrl: true,
+					pmCreateClaimId: true,
+				}),
+			}),
+		);
+		expect(mocks.retryPmSyncItem).toHaveBeenCalledTimes(2);
+		expect(mocks.retryPmSyncItem).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				itemId: "tc2",
+				itemType: "testCase",
+				pmCreateClaimId: "claim-2",
+				externalUrl: null,
+			}),
+		);
+		for (const [arg] of mocks.retryPmSyncItem.mock.calls) {
+			expect((arg as { unlinkFirst?: boolean }).unlinkFirst).toBeFalsy();
+		}
+		expect(res).toEqual({
+			enqueuedCount: 1,
+			results: [
+				{
+					id: "tc1",
+					enqueued: true,
+					workflowId: "wf-1",
+					reason: undefined,
+				},
+				{
+					id: "tc2",
+					enqueued: false,
+					workflowId: "test-case-sync-p1-tc2",
+					reason: "already-running",
+				},
+			],
+		});
 	});
 });

@@ -26,6 +26,16 @@ const { handlers, mocks } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	StageTransitionBlockedError: class StageTransitionBlockedError extends Error {
+		readonly code = "STAGE_TRANSITION_BLOCKED";
+		readonly toStage = "DRAFT";
+		readonly missing = ["DEFERRED"];
+		readonly advisory = [];
+		readonly effectiveTrack = "DEFER";
+	},
+	GovernedActorRequiredError: class GovernedActorRequiredError extends Error {},
+	StageTransitionConflictError: class StageTransitionConflictError extends Error {},
+	StageApprovalError: class StageApprovalError extends Error {},
 	db: {
 		userStory: { findUnique: mocks.userStoryFindUnique },
 		project: { findUnique: mocks.projectFindUnique },
@@ -212,6 +222,99 @@ describe("convertStoryKindProcedure — the flip", () => {
 	});
 });
 
+/**
+ * The snap to DRAFT is a stage transition, and the choke point lets a
+ * DEFER-track item move only to its parking stages. That refusal used to escape
+ * as a bare 500 ("Internal server error") with nothing the toast could explain.
+ */
+describe("convertStoryKindProcedure — a deferred item", () => {
+	it("refuses a deferred item outside DRAFT with PRECONDITION_FAILED and a sentence the toast can show, writing nothing", async () => {
+		mocks.userStoryFindUnique.mockResolvedValue({
+			id: "story-1",
+			kind: "FEATURE",
+			title: "Add email reminders",
+			draftingStage: "PLACEHOLDER",
+			deliveryTrack: "DEFER",
+			status: { id: "s1" },
+			tasks: [],
+		});
+
+		const error = await (
+			handlers.convertKind({
+				input: baseInput,
+				context: baseContext,
+			}) as Promise<unknown>
+		).then(
+			() => null,
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		expect((error as ORPCError<string, unknown>).code).toBe(
+			"PRECONDITION_FAILED",
+		);
+		expect((error as Error).message).toMatch(
+			/deferred item can't change type/,
+		);
+		expect(mocks.updateStory).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.createBackgroundJob).not.toHaveBeenCalled();
+	});
+
+	it("still converts a deferred item already in DRAFT — the snap is then no transition at all", async () => {
+		mocks.userStoryFindUnique.mockResolvedValue({
+			id: "story-1",
+			kind: "FEATURE",
+			title: "Add email reminders",
+			draftingStage: "DRAFT",
+			deliveryTrack: "DEFER",
+			status: { id: "s1" },
+			tasks: [],
+		});
+		mocks.updateStory.mockResolvedValue({ id: "story-1", kind: "BUG" });
+
+		await handlers.convertKind({ input: baseInput, context: baseContext });
+
+		expect(mocks.updateStory).toHaveBeenCalledTimes(1);
+	});
+
+	it("maps any other blocked transition from the choke point to a typed error, not a 500", async () => {
+		const { StageTransitionBlockedError } = await import("@repo/database");
+		mocks.userStoryFindUnique.mockResolvedValue({
+			id: "story-1",
+			kind: "FEATURE",
+			title: "Add email reminders",
+			draftingStage: "SANITY_CHECK",
+			deliveryTrack: "SPECIFY",
+			status: { id: "s1" },
+			tasks: [],
+		});
+		mocks.updateStory.mockRejectedValue(
+			new (
+				StageTransitionBlockedError as unknown as new (
+					message: string,
+				) => Error
+			)("Transition to DRAFT blocked: DEFERRED"),
+		);
+
+		const error = await (
+			handlers.convertKind({
+				input: baseInput,
+				context: baseContext,
+			}) as Promise<unknown>
+		).then(
+			() => null,
+			(caught: unknown) => caught,
+		);
+
+		expect(error).toBeInstanceOf(ORPCError);
+		expect((error as ORPCError<string, unknown>).code).toBe(
+			"PRECONDITION_FAILED",
+		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+});
+
 describe("convertStoryKindProcedure — the regeneration", () => {
 	/**
 	 * ═══════════════════════════════════════════════════════════════════════
@@ -319,6 +422,7 @@ describe("convertStoryKindProcedure — the regeneration", () => {
 			projectId: "proj-1",
 			organizationId: "org-A",
 			userId: "user-1",
+			planEligible: true,
 			targetKind: "BUG",
 			entryPoint: "typeConversionRegeneration",
 		});

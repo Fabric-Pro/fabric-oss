@@ -35,6 +35,10 @@ import type { markSummaryGeneratingActivity as MarkGeneratingFn } from "../activ
 import type { notifySummaryFailureActivity as NotifyFailureFn } from "../activities/context-summarization/notify-summary-failure";
 import type { persistSummaryActivity as PersistFn } from "../activities/context-summarization/persist-summary";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import {
+	planSpentFailureAsError,
+	withChatGptPlanWait,
+} from "./lib/chatgpt-plan-wait";
 
 export interface ContextSummarizationInput {
 	projectId: string;
@@ -148,14 +152,27 @@ export async function contextSummarizationWorkflow(
 
 		// Map-reduce over ALL eligible context, chronologically, in bounded
 		// batches; checkpoints each batch so a retry resumes rather than restarts.
-		const generated = await generateSummaryActivity({
-			summaryId,
-			projectId: input.projectId,
-			projectName: fetched.projectName,
-			tenancy,
-			snapshotThrough: created.snapshotThrough,
-			sourceSelection: input.sources,
-		});
+		// An automatic run may fold on a shared ChatGPT plan (Fizzy #2770):
+		// when every plan is spent it waits for a reset and resumes from its
+		// checkpoint. A person's manual run is not held. `trigger` is workflow
+		// input, so the branch is replay-safe, and the helper's own `patched()`
+		// keeps older histories unchanged.
+		const generate = () =>
+			generateSummaryActivity({
+				summaryId: created.summaryId,
+				projectId: input.projectId,
+				projectName: fetched.projectName,
+				tenancy,
+				snapshotThrough: created.snapshotThrough,
+				sourceSelection: input.sources,
+			});
+		const generated =
+			input.trigger === "AUTO"
+				? await withChatGptPlanWait(generate, {
+						organizationId: input.organizationId,
+						userId: input.userId,
+					})
+				: await generate();
 
 		await persistSummaryActivity({
 			summaryId,
@@ -211,7 +228,13 @@ export async function contextSummarizationWorkflow(
 			return { summaryId, status: "CANCELLED" };
 		}
 
-		const message = error instanceof Error ? error.message : String(error);
+		// A spent plan (Fizzy #2770) carries the plan's own sentence, which its
+		// activity failure does not, and raises no incident: the next daily scan
+		// retries it. Arguments only, so no `patched()`.
+		const planSpent = planSpentFailureAsError(error);
+		const failure = planSpent ?? error;
+		const message =
+			failure instanceof Error ? failure.message : String(failure);
 		log.error("[Context Summarization] run failed", {
 			projectId: input.projectId,
 			summaryId,
@@ -225,6 +248,7 @@ export async function contextSummarizationWorkflow(
 					projectId: input.projectId,
 					tenancy,
 					error: message,
+					...(planSpent && { planSpent: true }),
 				});
 			} catch (notifyError) {
 				log.error(

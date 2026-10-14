@@ -190,6 +190,8 @@ export async function getLatestScanFindingGrouping(
 			...(opts.status ? { status: opts.status } : {}),
 		},
 		orderBy: { createdAt: "desc" },
+		// A paused run's saved progress is for its resume, not the page.
+		omit: { resumeState: true },
 	});
 }
 
@@ -301,7 +303,13 @@ export async function hasActiveScanFindingGrouping(
 			// second run start until the current proposals are applied/declined
 			// or the run is cancelled.
 			status: {
-				in: ["PENDING", "RUNNING", "AWAITING_REVIEW", "APPLYING"],
+				in: [
+					"PENDING",
+					"RUNNING",
+					"AWAITING_REVIEW",
+					"APPLYING",
+					"WAITING_FOR_PLAN",
+				],
 			},
 		},
 		select: { id: true },

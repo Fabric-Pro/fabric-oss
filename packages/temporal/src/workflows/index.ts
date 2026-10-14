@@ -90,6 +90,8 @@ export * from "./browser-automation";
 export * from "./browser-rag-ingestion";
 export * from "./chat-message";
 export * from "./chat-title-generation";
+// ChatGPT plan source-row sweep workflow (scheduled daily, Fizzy #3038)
+export { chatGptPlanSourceSweepWorkflow } from "./chatgpt-plan-source-sweep";
 // Code-Based Project Setup workflow (orchestrator → docs from GitHub)
 export {
 	type CodeBasedProjectSetupInput,
@@ -140,8 +142,6 @@ export {
 	type ContextEmbeddingWorkflowOutput,
 	contextEmbeddingWorkflow,
 } from "./context-embedding";
-export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
-export { parlumeNotesWorkflow } from "./parlume-notes";
 // Context Summarization scan workflow (daily auto-trigger sweep)
 export { contextSummarizationScanWorkflow } from "./context-summarization-scan-workflow";
 // Context Summarization workflow (compressed project-history digest)
@@ -427,6 +427,11 @@ export {
 	matchMeetingActionItemOwnersWorkflow,
 } from "./match-meeting-action-item-owners";
 export * from "./mcp-health-check";
+// MCP OAuth-state / client-session cleanup workflow (hourly schedule)
+export {
+	type McpOAuthStateCleanupOutput,
+	mcpOAuthStateCleanupWorkflow,
+} from "./mcp-oauth-state-cleanup";
 // MCP Server Ingestion workflow (Phase 1: Semantic Server Selection)
 export {
 	type McpServerIngestionInput,
@@ -529,6 +534,8 @@ export {
 	type OrganizationDeleteCleanupWorkflowOutput,
 	organizationDeleteCleanupWorkflow,
 } from "./organization-deletion";
+export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
+export { parlumeNotesWorkflow } from "./parlume-notes";
 // QA pipeline-results sync (cards 1834/1688) — live pull of CI Test Runs into the
 // ingestion engine + RCA→BUG.
 export {
@@ -563,6 +570,13 @@ export {
 	type PmSyncSingleStoryWorkflowOutput,
 	pmSyncSingleStoryWorkflow,
 } from "./pm-sync-single-story-workflow";
+// Stuck PM-sync watchdog workflow (every-5-min schedule — retries or gives up
+// on PM-sync rows left PENDING by a workflow that never ran)
+export {
+	type PmSyncStuckWatchdogInput,
+	type PmSyncStuckWatchdogOutput,
+	pmSyncStuckWatchdogWorkflow,
+} from "./pm-sync-stuck-watchdog";
 export * from "./project-context-embedding";
 // Project context processing workflow (post-creation uploads: extract + embed)
 export {
@@ -586,13 +600,13 @@ export {
 } from "./project-deletion";
 export * from "./project-document-generation";
 export { projectInstructionReaperWorkflow } from "./project-instruction-reaper";
-export { projectRepositorySyncFollowUpWorkflow } from "./project-repository-sync-follow-up";
 // Coding Instructions automatic sync poll (spec §6.1). Named, like the sync.
 export { projectInstructionRepositoryPollWorkflow } from "./project-instruction-repository-poll";
 // Coding Instructions repository sync (design 2026-09-23 §5.2). Named, not
 // `export *`: only the workflow function belongs in the bundle's registry.
 export { projectInstructionRepositorySyncWorkflow } from "./project-instruction-repository-sync";
 export * from "./project-instruction-snapshot";
+export { projectRepositorySyncFollowUpWorkflow } from "./project-repository-sync-follow-up";
 // Internal Analysis of a coordinated Proposal (Fizzy #2801), started by the
 // document generation child workflow. Named: only the workflow function
 // belongs in the bundle's registry.

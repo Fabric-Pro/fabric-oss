@@ -5,11 +5,10 @@
  * Every procedure acts on the session's active organization, resolved
  * server-side; nothing in the input names an organization. Organization
  * admins and owners manage the accounts and the policy; only an owner may
- * acknowledge the terms, and pooling cannot be turned on before that. Nobody
- * acting as another user may accept the terms, change the policy, or change
- * or disconnect an account. With
- * `CHATGPT_PLAN` or `CHATGPT_PLAN_POOLING` off for the organization every
- * procedure answers NOT_FOUND. Tokens never leave the server.
+ * acknowledge the terms, and no shared account serves anyone before that.
+ * Nobody acting as another user may accept the terms, change the policy, or
+ * change or disconnect an account. With `CHATGPT_PLAN` off for the
+ * organization every procedure answers NOT_FOUND. Tokens never leave the server.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -19,6 +18,7 @@ import {
 	acknowledgeChatGptPlanOrgTerms,
 	type ChatGptPlanOrgAccountSummary,
 	type ChatGptPlanOrgPolicyValues,
+	chatGptPlanReportedUsage,
 	getChatGptPlanCredentialStatus,
 	getChatGptPlanOrgAccountWindows,
 	getChatGptPlanOrgPolicy,
@@ -32,6 +32,10 @@ import {
 } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
+import {
+	chatGptPlanTestResultSchema,
+	runChatGptPlanTest,
+} from "../../../../lib/chatgpt-plan-test";
 import {
 	chatGptPlanUsageEstimateSchema,
 	toChatGptPlanUsageEstimate,
@@ -50,11 +54,12 @@ const EMPTY_WINDOW = {
 	resetsAt: null,
 	requests: 0,
 	inputTokens: 0,
+	weightedInputTokens: 0,
 	cachedInputTokens: 0,
 	outputTokens: 0,
 	lastRequestAt: null,
 	topConsumers: [],
-	inputTokensByUser: {},
+	weightedInputTokensByUser: {},
 };
 
 const OWNER_ONLY_TERMS = "Only an organization owner can accept these terms.";
@@ -65,12 +70,8 @@ interface PoolCaller {
 	role: string;
 }
 
-async function poolingAvailable(organizationId: string): Promise<boolean> {
-	const [plan, pooling] = await Promise.all([
-		isFeatureEnabled("CHATGPT_PLAN", organizationId),
-		isFeatureEnabled("CHATGPT_PLAN_POOLING", organizationId),
-	]);
-	return plan && pooling;
+function poolingAvailable(organizationId: string): Promise<boolean> {
+	return isFeatureEnabled("CHATGPT_PLAN", organizationId);
 }
 
 /**
@@ -117,6 +118,8 @@ function refuseImpersonated(context: {
 
 const tierSchema = z.enum(["UNKNOWN", "PLUS", "PRO", "FREE", "TEAM"]);
 const backgroundFallbackSchema = z.enum(["NEVER", "AUTO"]);
+/** What a member's own work does once every plan is spent: stop (ASK) or API billing (AUTO). */
+const interactiveFallbackSchema = z.enum(["ASK", "NEVER", "AUTO"]);
 
 const accountSchema = z.object({
 	id: z.string(),
@@ -144,7 +147,7 @@ const accountSchema = z.object({
 });
 
 const policySchema = z.object({
-	poolingEnabled: z.boolean(),
+	apiFallbackInteractive: interactiveFallbackSchema,
 	apiFallbackBackground: backgroundFallbackSchema,
 	headroomPct: z.number(),
 	termsAcknowledged: z.boolean(),
@@ -155,7 +158,7 @@ function toPolicyOutput(
 	policy: ChatGptPlanOrgPolicyValues,
 ): z.infer<typeof policySchema> {
 	return {
-		poolingEnabled: policy.poolingEnabled,
+		apiFallbackInteractive: policy.apiFallbackInteractive,
 		apiFallbackBackground: policy.apiFallbackBackground,
 		headroomPct: policy.headroomPct,
 		termsAcknowledged: policy.termsAcknowledgedAt !== null,
@@ -224,13 +227,12 @@ export const getChatGptPlanPoolProcedure = tenantProtectedProcedure
 				]),
 				getChatGptPlanCredentialStatus(context.user.id),
 			]);
-		const openUntil = new Map(
-			states.map((state) => [state.sourceId, state.openUntil]),
-		);
+		const stateOf = new Map(states.map((state) => [state.sourceId, state]));
 		return {
 			accounts: accounts.map((account) => {
 				const window = windows.get(account.id);
-				const cooling = openUntil.get(account.id) ?? null;
+				const state = stateOf.get(account.id);
+				const cooling = state?.openUntil ?? null;
 				return {
 					id: account.id,
 					label: account.label,
@@ -253,6 +255,7 @@ export const getChatGptPlanPoolProcedure = tenantProtectedProcedure
 					usageEstimate: toChatGptPlanUsageEstimate(
 						window ?? EMPTY_WINDOW,
 						budgets.get(account.id) ?? 0,
+						chatGptPlanReportedUsage(state, new Date(now)),
 					),
 				};
 			}),
@@ -387,8 +390,44 @@ export const disconnectChatGptPlanPoolAccountProcedure =
 			return { disconnected: true as const };
 		});
 
+/**
+ * Tests one of the organization's shared accounts with one tiny real request
+ * (Fizzy #2770). Like a real call on it, a test can mark the account for
+ * reconnecting (telling its admins) or remember its spent window, so it is
+ * an admin's own act.
+ */
+export const testChatGptPlanPoolAccountProcedure = tenantProtectedProcedure
+	.use(requirePermission(Permissions.ORG_UPDATE))
+	.route({
+		method: "POST",
+		path: "/organizations/chatgpt-plan-pool/accounts/test",
+		tags: ["Organizations"],
+		summary: "Test a shared ChatGPT plan account",
+		description:
+			"Send one tiny request to a shared ChatGPT plan account and report whether it answered, needs a reconnect, or has its usage limit reached",
+	})
+	.input(z.object({ accountId: z.string().min(1) }))
+	.output(chatGptPlanTestResultSchema)
+	.handler(async ({ context, input }) => {
+		refuseImpersonated(context);
+		const { organizationId, userId } = await requirePoolAdmin(context);
+		const account = (await listChatGptPlanOrgAccounts(organizationId)).find(
+			(candidate) => candidate.id === input.accountId,
+		);
+		if (!account) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "No such ChatGPT plan account in this organization",
+			});
+		}
+		return runChatGptPlanTest({
+			userId,
+			organizationId,
+			source: { kind: "org", organizationId, accountId: account.id },
+		});
+	});
+
 const POLICY_FIELDS = [
-	"poolingEnabled",
+	"apiFallbackInteractive",
 	"apiFallbackBackground",
 	"headroomPct",
 ] as const;
@@ -401,11 +440,12 @@ export const updateChatGptPlanPoolPolicyProcedure = tenantProtectedProcedure
 		tags: ["Organizations"],
 		summary: "Update the ChatGPT plan pooling policy",
 		description:
-			"Turn pooling of the organization's shared ChatGPT plan accounts on or off, and choose what happens when every plan is spent",
+			"Choose what background work and people's own work do when every ChatGPT plan is spent, and how much of each window background work leaves for people",
 	})
 	.input(
 		z.object({
-			poolingEnabled: z.boolean().optional(),
+			// NEVER stays readable but is no longer offered.
+			apiFallbackInteractive: z.enum(["ASK", "AUTO"]).optional(),
 			apiFallbackBackground: backgroundFallbackSchema.optional(),
 			headroomPct: z.number().int().min(0).max(90).optional(),
 		}),
@@ -414,15 +454,6 @@ export const updateChatGptPlanPoolPolicyProcedure = tenantProtectedProcedure
 	.handler(async ({ context, input }) => {
 		refuseImpersonated(context);
 		const { organizationId } = await requirePoolAdmin(context);
-		if (input.poolingEnabled === true) {
-			const current = await getChatGptPlanOrgPolicy(organizationId);
-			if (current.termsAcknowledgedAt === null) {
-				throw new ORPCError("PRECONDITION_FAILED", {
-					message:
-						"An organization owner must accept the pooling terms before pooling can be turned on.",
-				});
-			}
-		}
 		const { before, after } = await updateChatGptPlanOrgPolicy({
 			organizationId,
 			patch: input,
@@ -435,11 +466,11 @@ export const updateChatGptPlanPoolPolicyProcedure = tenantProtectedProcedure
 				action: "org.chatgpt_plan.policy_changed",
 				category: "org",
 				outcome: "success",
-				// Background work billed to the organization's provider without
-				// anyone asking is the setting an auditor looks for.
+				// Work billed to the organization's provider without anyone
+				// asking is the setting an auditor looks for.
 				severity:
 					after.apiFallbackBackground === "AUTO" ||
-					(after.poolingEnabled && !before.poolingEnabled)
+					after.apiFallbackInteractive === "AUTO"
 						? "warning"
 						: "info",
 				organizationId,
@@ -469,7 +500,7 @@ export const acknowledgeChatGptPlanPoolTermsProcedure = tenantProtectedProcedure
 		tags: ["Organizations"],
 		summary: "Accept the ChatGPT plan pooling terms",
 		description:
-			"An organization owner accepts the terms for sharing ChatGPT plan accounts across the organization; pooling cannot be turned on before this",
+			"An organization owner accepts the terms for sharing ChatGPT plan accounts across the organization; no shared account serves anyone before this",
 	})
 	.output(policySchema)
 	.handler(async ({ context }) => {

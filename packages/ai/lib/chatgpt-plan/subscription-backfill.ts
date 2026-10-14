@@ -74,41 +74,54 @@ export function resetChatGptPlanSubscriptionBackfill(): void {
 	attempted.clear();
 }
 
-async function readStoredIdToken(ref: PlanSourceRef): Promise<string | null> {
-	const row =
-		ref.kind === "user"
-			? await db.chatGptPlanCredential.findUnique({
-					where: { userId: ref.userId },
-					select: { encryptedIdToken: true },
-				})
-			: await db.chatGptPlanOrgAccount.findFirst({
-					where: {
-						id: ref.accountId,
-						organizationId: ref.organizationId,
-					},
-					select: { encryptedIdToken: true },
-				});
-	return row?.encryptedIdToken ?? null;
+/** The stored ID token, with the sign-in it belongs to. */
+interface StoredSignIn {
+	id: string;
+	subject: string;
+	encryptedIdToken: string | null;
+}
+
+function readStoredSignIn(ref: PlanSourceRef): Promise<StoredSignIn | null> {
+	const select = { id: true, subject: true, encryptedIdToken: true };
+	return ref.kind === "user"
+		? db.chatGptPlanCredential.findUnique({
+				where: { userId: ref.userId },
+				select,
+			})
+		: db.chatGptPlanOrgAccount.findFirst({
+				where: {
+					id: ref.accountId,
+					organizationId: ref.organizationId,
+				},
+				select,
+			});
 }
 
 /**
  * Writes one field only while the row still lacks it, so an admin's tier or a
- * concurrent refresh's value always wins.
+ * concurrent refresh's value always wins — and only while the row is still
+ * the sign-in whose token was read (Fizzy #3037). It is one UPDATE of that
+ * row, which Postgres serializes with the replacement's UPDATE or the
+ * disconnect's DELETE of it: if they commit first, the row no longer
+ * matches; if this commits first, the replacement resets these fields (see
+ * `upsertChatGptPlanCredential`) or the disconnect deletes the row.
  */
 async function writeIfStillMissing(
 	ref: PlanSourceRef,
+	signIn: StoredSignIn,
 	guard: { tier: "UNKNOWN" } | { subscriptionActiveUntil: null },
 	data: ChatGptPlanSubscription,
 ): Promise<boolean> {
+	const sameSignIn = { id: signIn.id, subject: signIn.subject };
 	const { count } =
 		ref.kind === "user"
 			? await db.chatGptPlanCredential.updateMany({
-					where: { userId: ref.userId, ...guard },
+					where: { userId: ref.userId, ...sameSignIn, ...guard },
 					data,
 				})
 			: await db.chatGptPlanOrgAccount.updateMany({
 					where: {
-						id: ref.accountId,
+						...sameSignIn,
 						organizationId: ref.organizationId,
 						...guard,
 					},
@@ -119,6 +132,7 @@ async function writeIfStillMissing(
 
 async function persist(
 	ref: PlanSourceRef,
+	signIn: StoredSignIn,
 	filled: ChatGptPlanSubscription,
 ): Promise<ChatGptPlanSubscription> {
 	const written: ChatGptPlanSubscription = {};
@@ -126,6 +140,7 @@ async function persist(
 		filled.tier &&
 		(await writeIfStillMissing(
 			ref,
+			signIn,
 			{ tier: "UNKNOWN" },
 			{ tier: filled.tier },
 		))
@@ -136,6 +151,7 @@ async function persist(
 		filled.subscriptionActiveUntil &&
 		(await writeIfStillMissing(
 			ref,
+			signIn,
 			{ subscriptionActiveUntil: null },
 			{ subscriptionActiveUntil: filled.subscriptionActiveUntil },
 		))
@@ -160,19 +176,21 @@ export async function backfillChatGptPlanSubscription<
 		return row;
 	}
 	try {
-		const encrypted = await readStoredIdToken(ref);
-		if (!encrypted) {
+		const signIn = await readStoredSignIn(ref);
+		if (!signIn?.encryptedIdToken) {
 			rememberAttempt(key, Number.POSITIVE_INFINITY);
 			return row;
 		}
-		const idToken = decryptApiKey(encrypted);
+		const idToken = decryptApiKey(signIn.encryptedIdToken);
 		logChatGptPlanIdTokenShape("backfill", ref, idToken);
 		const filled = missingSubscriptionFields(
 			row,
 			readChatGptPlanSubscription(idToken),
 		);
 		const written =
-			Object.keys(filled).length > 0 ? await persist(ref, filled) : {};
+			Object.keys(filled).length > 0
+				? await persist(ref, signIn, filled)
+				: {};
 		rememberAttempt(key, Number.POSITIVE_INFINITY);
 		return Object.keys(written).length > 0 ? { ...row, ...written } : row;
 	} catch {

@@ -12,7 +12,7 @@
  * Execution modes:
  * - hybrid: Uses user's configured AI provider (respects gateway settings)
  * - delegated: Passes user's API key to Fabric AI (requires Fabric AI modification)
- * - full: Uses Fabric AI's configured API keys
+ * - full: transcribes as hybrid; audio never runs on Fabric's own keys
  *
  * Supported providers and models:
  * - OpenAI: whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe
@@ -21,7 +21,13 @@
 
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
-import { getSystemRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	type AiFeatureKey,
+	AUDIO_PROVIDER_REQUIRED,
+	getRAGProviderConfig,
+	type RAGProviderConfig,
+} from "@repo/ai";
 import { logAiUsageAsync } from "@repo/database";
 import type { AIProvider } from "@repo/database/prisma/generated/client";
 import { logger } from "@repo/logs";
@@ -30,6 +36,7 @@ import {
 	getDispatchGuard,
 	guardDispatch,
 	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import {
 	type TranscriptionModel as SdkTranscriptionModel,
@@ -38,6 +45,8 @@ import {
 import { createFabricClient } from "./client";
 import { executeFabricPattern, getFabricAIMode } from "./executor";
 import type { FabricAIMode, FabricConfig, FabricPattern } from "./types";
+
+const TRANSCRIPTION_FEATURE_KEY = "transcription" satisfies AiFeatureKey;
 
 /** Maximum file size for OpenAI Whisper API (25MB) */
 export const MAX_AUDIO_FILE_SIZE = 25 * 1024 * 1024;
@@ -202,6 +211,7 @@ function logTranscriptionUsage(
 			providerModelId: result.metadata.model,
 			taskType: "AUDIO",
 			jobType: "transcription",
+			featureKey: TRANSCRIPTION_FEATURE_KEY,
 			inputTokens: 0,
 			outputTokens: 0,
 			totalTokens: 0,
@@ -244,13 +254,37 @@ function guardTranscriptionModel(
 			const doGenerate = (
 				target as unknown as { doGenerate: TranscriptionDoGenerate }
 			).doGenerate.bind(target);
-			return async (options: { abortSignal?: AbortSignal }) =>
-				doGenerate({
-					...options,
-					abortSignal: await guardDispatch(options.abortSignal),
-				});
+			return async (options: { abortSignal?: AbortSignal }) => {
+				const abortSignal = await guardDispatch(options.abortSignal);
+				// The guard's latched stops, in the same synchronous run as
+				// the provider call (awaiting the record check is an await).
+				throwIfDispatchStopped();
+				return doGenerate({ ...options, abortSignal });
+			};
 		},
 	});
+}
+
+/**
+ * The tenant's own provider, decrypted, for a transcription. Audio never runs
+ * on Fabric's own key, so this goes through the tenant-only resolver even
+ * though transcription runs in a background activity; a tenant with no
+ * provider is refused with a message naming the remedy.
+ */
+async function resolveTranscriptionProvider(
+	userContext: UserContext,
+): Promise<RAGProviderConfig> {
+	try {
+		return await getRAGProviderConfig({
+			userId: userContext.userId,
+			organizationId: userContext.organizationId ?? undefined,
+		});
+	} catch (error) {
+		if (error instanceof AIProviderNotConfiguredError) {
+			throw new Error(AUDIO_PROVIDER_REQUIRED.transcription);
+		}
+		throw error;
+	}
 }
 
 /** Providers that support transcription */
@@ -307,16 +341,7 @@ async function transcribeHybrid(
 			throw new Error("User context required for hybrid mode");
 		}
 
-		// Get user's AI provider configuration using centralized entry point.
-		// SYSTEM side: nobody is waiting here — transcription is only reachable
-		// through the `transcribeAudio` temporal activity, where a refusal is
-		// retried five times before failing the workflow.
-		const providerConfig = await getSystemRAGProviderConfig({
-			userId: userContext.userId,
-			organizationId: userContext.organizationId ?? undefined,
-		});
-
-		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
+		const providerConfig = await resolveTranscriptionProvider(userContext);
 		const apiKey = providerConfig.apiKey;
 
 		// Determine which provider to use for transcription
@@ -443,15 +468,7 @@ async function transcribeDelegated(
 			throw new Error("User context required for delegated mode");
 		}
 
-		// Get user's API key for delegation using centralized entry point.
-		// SYSTEM side, same reason as the hybrid path above: this runs inside the
-		// transcription activity, not on a request a person is holding open.
-		const providerConfig = await getSystemRAGProviderConfig({
-			userId: userContext.userId,
-			organizationId: userContext.organizationId ?? undefined,
-		});
-
-		// providerConfig.apiKey is already decrypted by getSystemRAGProviderConfig()
+		const providerConfig = await resolveTranscriptionProvider(userContext);
 		const apiKey = providerConfig.apiKey;
 
 		// Create Fabric client
@@ -475,6 +492,9 @@ async function transcribeDelegated(
 
 		// Call Fabric AI's delegated transcription endpoint
 		const signal = await guardDispatch();
+		// Awaiting the record check is itself an await: the guard's
+		// latched stops are checked again in the same run as the send.
+		throwIfDispatchStopped();
 		const response = await fetch(`${baseUrl}/transcribe/delegated`, {
 			method: "POST",
 			signal,
@@ -538,94 +558,6 @@ async function transcribeDelegated(
 }
 
 // ============================================================================
-// Full Mode - Uses Fabric AI's own configured API keys
-// ============================================================================
-
-/**
- * Transcribe audio using full mode
- *
- * Uses Fabric AI server's own API keys. No user isolation.
- */
-async function transcribeFull(
-	fileContent: Buffer | Blob,
-	fileName: string,
-	model: TranscriptionModel,
-	fabricConfig?: Partial<FabricConfig>,
-	language?: string,
-): Promise<TranscriptionResult> {
-	const startTime = Date.now();
-	const { modelName } = parseModelString(model);
-
-	try {
-		const fabricClient = createFabricClient(fabricConfig);
-		const baseUrl = fabricClient.getBaseUrl();
-		const fabricApiKey = fabricClient.getApiKey();
-
-		// Convert Buffer to Uint8Array for FormData
-		const fileData = Buffer.isBuffer(fileContent)
-			? new Uint8Array(fileContent)
-			: fileContent;
-
-		// Create form data
-		const formData = new FormData();
-		formData.append("file", new Blob([fileData]), fileName);
-		formData.append("model", modelName);
-		if (language) {
-			formData.append("language", language);
-		}
-
-		// Call Fabric AI's transcription endpoint
-		const signal = await guardDispatch();
-		const response = await fetch(`${baseUrl}/transcribe`, {
-			method: "POST",
-			signal,
-			headers: fabricApiKey ? { "X-API-Key": fabricApiKey } : {},
-			body: formData,
-		});
-
-		if (!response.ok) {
-			const errorBody = await response.text();
-			throw new Error(
-				`Fabric transcription error (${response.status}): ${errorBody}`,
-			);
-		}
-
-		const result = (await response.json()) as {
-			transcript: string;
-			language?: string;
-			duration?: number;
-		};
-
-		return {
-			transcript: result.transcript,
-			success: true,
-			metadata: {
-				model: modelName,
-				executionMode: "full",
-				durationMs: Date.now() - startTime,
-				language: result.language,
-				audioDurationSeconds: result.duration,
-			},
-		};
-	} catch (err) {
-		// A stop leaves as an error, never as a failed result.
-		rethrowIfDispatchStopped(err);
-		const errorMessage = err instanceof Error ? err.message : String(err);
-		logger.error("Full mode transcription failed", { error: errorMessage });
-		return {
-			transcript: "",
-			success: false,
-			error: errorMessage,
-			metadata: {
-				model: modelName,
-				executionMode: "full",
-				durationMs: Date.now() - startTime,
-			},
-		};
-	}
-}
-
-// ============================================================================
 // Main Transcription Function
 // ============================================================================
 
@@ -635,7 +567,7 @@ async function transcribeFull(
  * Automatically routes to the correct mode based on configuration:
  * - hybrid: Uses user's AI Gateway or direct provider (respects user config)
  * - delegated: Uses Fabric AI with user's credentials
- * - full: Uses Fabric AI's own API keys
+ * - full: transcribes as hybrid — audio never runs on Fabric's own keys
  *
  * @param fileContent - Audio file content as Buffer or Blob
  * @param fileName - Original file name (for extension detection)
@@ -689,6 +621,9 @@ export async function transcribeAudio(
 	let result: TranscriptionResult;
 	switch (mode) {
 		case "hybrid":
+		// Full mode would transcribe on Fabric AI's own keys; a tenant's audio
+		// never runs on Fabric's key, so it uses the tenant's provider instead.
+		case "full":
 			result = await transcribeHybrid(
 				fileContent,
 				fileName,
@@ -704,16 +639,6 @@ export async function transcribeAudio(
 				fileName,
 				model,
 				userContext,
-				fabricConfig,
-				language,
-			);
-			break;
-
-		case "full":
-			result = await transcribeFull(
-				fileContent,
-				fileName,
-				model,
 				fabricConfig,
 				language,
 			);

@@ -117,11 +117,12 @@ vi.mock("@orpc/server", () => ({
 const ATLASSIAN_AUTH_SERVER_METADATA = {
 	// The issuer names the AS the document is served for (RFC 8414 §3.3);
 	// its endpoints may live on another host, as Atlassian's do.
-	issuer: "https://mcp.atlassian.com",
-	authorization_endpoint: "https://mcp.atlassian.com/v1/authorize",
-	token_endpoint: "https://cf.mcp.atlassian.com/v1/token",
-	registration_endpoint: "https://cf.mcp.atlassian.com/v1/register",
-	revocation_endpoint: "https://cf.mcp.atlassian.com/v1/token",
+	issuer: "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+	authorization_endpoint: "https://auth.atlassian.com/authorize",
+	token_endpoint: "https://auth.atlassian.com/oauth/token",
+	registration_endpoint:
+		"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register",
+	revocation_endpoint: "https://auth.atlassian.com/oauth/revoke",
 	response_types_supported: ["code"],
 	response_modes_supported: ["query"],
 	grant_types_supported: ["authorization_code", "refresh_token"],
@@ -143,7 +144,7 @@ function makeAtlassianConfig(overrides: Record<string, unknown> = {}) {
 		id: "cfg-atlassian-1",
 		userId: "user-1",
 		organizationId: null,
-		baseUrl: "https://mcp.atlassian.com/v1/mcp",
+		baseUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 		oauthClientId: null,
 		encryptedOauthClientSecret: null,
 		dcrRegistrationEndpoint: null,
@@ -155,11 +156,12 @@ function makeAtlassianConfig(overrides: Record<string, unknown> = {}) {
 		mcpServer: {
 			id: "srv-atlassian",
 			key: "atlassian",
+			isSystemProvided: true,
 			oauthDiscoveryUrl:
-				"https://mcp.atlassian.com/.well-known/oauth-authorization-server",
+				"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 			oauthAuthorizationEndpoint: null,
 			oauthTokenEndpoint: null,
-			defaultUrl: "https://mcp.atlassian.com/v1/mcp",
+			defaultUrl: "https://mcp.atlassian.com/v2/mcp?tools=all",
 		},
 		...overrides,
 	};
@@ -217,7 +219,10 @@ function makeAtlassianFetchImpl(opts: { dcrFails?: boolean } = {}) {
 				jsonResponse(ATLASSIAN_AUTH_SERVER_METADATA),
 			);
 		}
-		if (url === "https://cf.mcp.atlassian.com/v1/register") {
+		if (
+			url ===
+			"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register"
+		) {
 			if (opts.dcrFails) {
 				return Promise.resolve(
 					jsonResponse(
@@ -278,7 +283,7 @@ beforeEach(() => {
 });
 
 describe("oauthProcedures.start — Atlassian discovery → DCR → authorize URL", () => {
-	it("hits mcp.atlassian.com for discovery, NOT auth.atlassian.com", async () => {
+	it("hits the v2 discovery document URL at auth.atlassian.com", async () => {
 		safeFetchOutboundMock.mockImplementation(makeAtlassianFetchImpl());
 
 		// Pre-DCR config has null oauthClientId; post-DCR refresh returns the
@@ -299,20 +304,18 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		const handler = await loadStartHandler();
 		await handler({ input, context });
 
-		// Every URL containing /.well-known/ is mcp.atlassian.com-prefixed.
 		const wellKnownCalls = safeFetchOutboundMock.mock.calls.filter(
 			(call: unknown[]) =>
 				typeof call[0] === "string" &&
-				(call[0] as string).includes("/.well-known/"),
+				call[0].includes("/.well-known/"),
 		);
-		expect(wellKnownCalls.length).toBeGreaterThan(0);
-		for (const call of wellKnownCalls) {
-			expect(call[0] as string).toMatch(/^https:\/\/mcp\.atlassian\.com/);
-			expect(call[0] as string).not.toMatch(/auth\.atlassian\.com/);
-		}
+		expect(wellKnownCalls).toHaveLength(1);
+		expect(wellKnownCalls[0][0]).toBe(
+			"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+		);
 	});
 
-	it("posts the right DCR shape to cf.mcp.atlassian.com/v1/register", async () => {
+	it("posts the right DCR shape to auth.atlassian.com/.../dcr/register", async () => {
 		safeFetchOutboundMock.mockImplementation(makeAtlassianFetchImpl());
 
 		getMcpConfigByIdInternalMock
@@ -333,7 +336,8 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 
 		const dcrCall = safeFetchOutboundMock.mock.calls.find(
 			(call: unknown[]) =>
-				call[0] === "https://cf.mcp.atlassian.com/v1/register",
+				call[0] ===
+				"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register",
 		);
 		expect(dcrCall).toBeDefined();
 		const init = dcrCall?.[1] as RequestInit & { body: string };
@@ -372,8 +376,8 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		const result = await handler({ input, context });
 
 		const url = new URL(result.authorizationUrl);
-		expect(url.origin).toBe("https://mcp.atlassian.com");
-		expect(url.pathname).toBe("/v1/authorize");
+		expect(url.origin).toBe("https://auth.atlassian.com");
+		expect(url.pathname).toBe("/authorize");
 		expect(url.searchParams.get("response_type")).toBe("code");
 		expect(url.searchParams.get("client_id")).toBe(
 			"atlassian-dcr-client-id",
@@ -455,7 +459,7 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		}
 	});
 
-	it("does not auto-populate scopes for Atlassian (not in KNOWN_DEFAULT_SCOPES)", async () => {
+	it("auto-populates default scopes for Atlassian from KNOWN_DEFAULT_SCOPES", async () => {
 		safeFetchOutboundMock.mockImplementation(makeAtlassianFetchImpl());
 
 		getMcpConfigByIdInternalMock
@@ -474,16 +478,25 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		const handler = await loadStartHandler();
 		await handler({ input, context });
 
-		// `db.mCPConfig.update` is only called by the scope auto-population
-		// block (not by DCR — that uses `replaceMcpOAuthRegistration`). Atlassian
-		// shouldn't trigger it.
-		const scopeUpdateCalls = dbMcpConfigUpdateMock.mock.calls.filter(
-			(call: unknown[]) => {
-				const args = call[0] as { data?: { scopes?: unknown } };
-				return args?.data?.scopes !== undefined;
+		expect(dbMcpConfigUpdateMock).toHaveBeenCalledWith({
+			where: { id: "cfg-atlassian-1" },
+			data: {
+				scopes: [
+					"read:jira:agent-interface",
+					"write:jira:agent-interface",
+					"search:jira:agent-interface",
+					"read:confluence:agent-interface",
+					"write:confluence:agent-interface",
+					"search:confluence:agent-interface",
+					"read:bitbucket:agent-interface",
+					"write:bitbucket:agent-interface",
+					"search:rovo:agent-interface",
+					"read:account",
+					"read:me",
+					"offline_access",
+				],
 			},
-		);
-		expect(scopeUpdateCalls).toHaveLength(0);
+		});
 	});
 
 	it("registers, binds and starts against ONE authorization server, and hands it to the callback", async () => {
@@ -507,6 +520,16 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		const handler = await loadStartHandler();
 		await handler({ input, context });
 
+		// On a first-time connect, the registration request body includes scope with the 12 scopes.
+		const dcrCall = safeFetchOutboundMock.mock.calls.find((call) =>
+			String(call[0]).includes("/dcr/register"),
+		);
+		expect(dcrCall).toBeDefined();
+		const dcrBody = JSON.parse(dcrCall?.[1]?.body as string);
+		expect(dcrBody.scope).toBe(
+			"read:jira:agent-interface write:jira:agent-interface search:jira:agent-interface read:confluence:agent-interface write:confluence:agent-interface search:confluence:agent-interface read:bitbucket:agent-interface write:bitbucket:agent-interface search:rovo:agent-interface read:account read:me offline_access",
+		);
+
 		// The registration replaces the client in one conditional write and
 		// binds it to the AS it was registered at.
 		expect(replaceMcpOAuthRegistrationMock).toHaveBeenCalledTimes(1);
@@ -519,14 +542,15 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		// Bound to the AS Fabric fetched the metadata for, with the
 		// document's token endpoint.
 		expect(write.binding).toMatchObject({
-			authorizationServerUrl: "https://mcp.atlassian.com",
-			tokenEndpoint: "https://cf.mcp.atlassian.com/v1/token",
+			authorizationServerUrl:
+				"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+			tokenEndpoint: "https://auth.atlassian.com/oauth/token",
 		});
 		// The registration response is stored from an allowlist; the secret
 		// and the issuer claimed by the response are not copied, and the
 		// requested auth method is recorded when the response names none.
 		expect(write.client.dcrClientMetadata).toEqual({
-			issuer: "https://mcp.atlassian.com",
+			issuer: "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
 			token_endpoint_auth_method: "client_secret_basic",
 		});
 
@@ -542,7 +566,9 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		expect(state.expectedGrantGeneration).toBe(1);
 		expect(state.authorizationServerSnapshot).toMatchObject({
 			clientId: "atlassian-dcr-client-id",
-			binding: { tokenEndpoint: "https://cf.mcp.atlassian.com/v1/token" },
+			binding: {
+				tokenEndpoint: "https://auth.atlassian.com/oauth/token",
+			},
 		});
 	});
 
@@ -552,7 +578,8 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
 		safeFetchOutboundMock.mockImplementation((url: string) =>
-			url === "https://cf.mcp.atlassian.com/v1/register"
+			url ===
+			"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register"
 				? Promise.resolve(
 						jsonResponse(
 							{
@@ -603,7 +630,8 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
 		safeFetchOutboundMock.mockImplementation((url: string) =>
-			url === "https://cf.mcp.atlassian.com/v1/register"
+			url ===
+			"https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3/dcr/register"
 				? Promise.resolve(
 						jsonResponse(
 							{
@@ -624,5 +652,134 @@ describe("oauthProcedures.start — Atlassian discovery → DCR → authorize UR
 		expect(logged).not.toContain("leaked-in-error-body");
 		expect(logged).toContain("client_secret");
 		errorSpy.mockRestore();
+	});
+
+	it("does not auto-populate default scopes for a custom (isSystemProvided: false) atlassian server", async () => {
+		safeFetchOutboundMock.mockImplementation(makeAtlassianFetchImpl());
+
+		const customServer = {
+			id: "srv-custom-atlassian",
+			key: "atlassian",
+			isSystemProvided: false,
+			defaultUrl: "https://custom.example.com/mcp",
+			oauthDiscoveryUrl:
+				"https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+		};
+
+		getMcpConfigByIdInternalMock
+			.mockResolvedValueOnce(
+				makeAtlassianConfig({
+					baseUrl: "https://custom.example.com/mcp",
+					mcpServer: customServer,
+					atlassianCloudCloudId:
+						"11111111-1111-4111-8111-111111111111",
+					encryptedAtlassianCloudAccessToken: null,
+				}),
+			)
+			.mockResolvedValueOnce(
+				makeAtlassianConfig({
+					baseUrl: "https://custom.example.com/mcp",
+					mcpServer: customServer,
+					atlassianCloudCloudId:
+						"11111111-1111-4111-8111-111111111111",
+					encryptedAtlassianCloudAccessToken: null,
+					oauthClientId: "atlassian-dcr-client-id",
+					encryptedOauthClientSecret:
+						"encrypted:atlassian-dcr-secret",
+					dcrClientMetadata: {
+						token_endpoint_auth_method: "client_secret_basic",
+					},
+				}),
+			);
+
+		const handler = await loadStartHandler();
+		await handler({ input, context });
+
+		const scopeUpdates = dbMcpConfigUpdateMock.mock.calls.filter(
+			(call: unknown[]) => {
+				const args = call[0] as { data?: { scopes?: unknown } };
+				return args?.data?.scopes !== undefined;
+			},
+		);
+		expect(scopeUpdates).toHaveLength(0);
+	});
+
+	it("fills default scopes when empty before DCR registration", async () => {
+		safeFetchOutboundMock.mockImplementation(makeAtlassianFetchImpl());
+
+		getMcpConfigByIdInternalMock
+			.mockResolvedValueOnce(
+				makeAtlassianConfig({
+					atlassianCloudCloudId:
+						"11111111-1111-4111-8111-111111111111",
+					encryptedAtlassianCloudAccessToken: null,
+					scopes: [],
+				}),
+			)
+			.mockResolvedValueOnce(
+				makeAtlassianConfig({
+					atlassianCloudCloudId:
+						"11111111-1111-4111-8111-111111111111",
+					oauthClientId: "atlassian-dcr-client-id",
+					encryptedOauthClientSecret:
+						"encrypted:atlassian-dcr-secret",
+					dcrClientMetadata: {
+						token_endpoint_auth_method: "client_secret_basic",
+					},
+					scopes: [],
+				}),
+			);
+
+		const handler = await loadStartHandler();
+		await handler({ input, context });
+
+		expect(dbMcpConfigUpdateMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "cfg-atlassian-1" },
+				data: expect.objectContaining({
+					scopes: expect.arrayContaining([
+						"read:jira:agent-interface",
+					]),
+				}),
+			}),
+		);
+
+		const dcrCall = safeFetchOutboundMock.mock.calls.find(([url]) =>
+			String(url).endsWith("/dcr/register"),
+		);
+		const body = JSON.parse(dcrCall?.[1]?.body as string);
+		expect(body.scope).toContain("read:jira:agent-interface");
+	});
+
+	it("does not auto-populate default scopes on a non-Atlassian server", async () => {
+		safeFetchOutboundMock.mockResolvedValue(
+			jsonResponse({}, { status: 404 }),
+		);
+
+		getMcpConfigByIdInternalMock.mockResolvedValue(
+			makeSlackConfig({
+				scopes: [],
+			}),
+		);
+
+		const handler = await loadStartHandler();
+		await expect(
+			handler({
+				input: {
+					...input,
+					configId: "cfg-slack-1",
+					autoDiscoverAndRegister: false,
+				},
+				context,
+			}),
+		).rejects.toThrow(/OAuth client ID not configured/);
+
+		const scopeUpdates = dbMcpConfigUpdateMock.mock.calls.filter(
+			(call: unknown[]) => {
+				const args = call[0] as { data?: { scopes?: unknown } };
+				return args?.data?.scopes !== undefined;
+			},
+		);
+		expect(scopeUpdates).toHaveLength(0);
 	});
 });

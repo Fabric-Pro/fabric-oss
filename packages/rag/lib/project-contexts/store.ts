@@ -26,6 +26,13 @@ import type {
 } from "./types";
 
 /**
+ * The point types the Phase-2 code index writes. They
+ * have no `ProjectContext` row, so context retrieval can never resolve them;
+ * code is searched on its own through `code-search.ts`.
+ */
+const CODE_INDEX_CONTEXT_TYPES = ["CODE_FILE", "CODE_FILE_SUMMARY"];
+
+/**
  * Get the collection name for project contexts based on organization
  */
 async function getProjectCollection(
@@ -290,6 +297,16 @@ export async function searchSimilarProjectContexts(
 				is_null: { key: "documentId" },
 			});
 		}
+
+		// Code-index points never hydrate into a context (no row to read), yet
+		// on an indexed repository they are nearly every point in the project
+		// and would fill all `topK` slots, leaving the caller with nothing.
+		filter.must_not = [
+			{
+				key: "contextType",
+				match: { any: CODE_INDEX_CONTEXT_TYPES },
+			},
+		];
 
 		// Hybrid search: use prefetch + RRF if sparse vector available
 		let searchResult: Array<{
@@ -683,7 +700,7 @@ export async function deleteProjectCodeIndexVectors(
 					{ key: "projectId", match: { value: projectId } },
 					{
 						key: "contextType",
-						match: { any: ["CODE_FILE", "CODE_FILE_SUMMARY"] },
+						match: { any: CODE_INDEX_CONTEXT_TYPES },
 					},
 					...repoScopeTerms(repositoryIntegrationId),
 				],
@@ -735,7 +752,7 @@ export async function deleteProjectCodeIndexVectorsForPaths(
 					{ key: "projectId", match: { value: projectId } },
 					{
 						key: "contextType",
-						match: { any: ["CODE_FILE", "CODE_FILE_SUMMARY"] },
+						match: { any: CODE_INDEX_CONTEXT_TYPES },
 					},
 					{ key: "filePath", match: { any: filePaths } },
 					...repoScopeTerms(repositoryIntegrationId),

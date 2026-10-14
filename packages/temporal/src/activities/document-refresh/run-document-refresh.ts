@@ -1,3 +1,4 @@
+import { runWithAiJobType } from "@repo/ai/lib/job-context";
 import {
 	buildDocumentLink,
 	clearRefreshProposal,
@@ -22,6 +23,10 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "../../lib/update-with-context-core";
+import {
+	findPlanExhausted,
+	findWorkflowHandledPlanRefusal,
+} from "../lib/chatgpt-plan-refusal";
 import type { DueDocument } from "./find-due-documents";
 import { applyDocumentRefreshSideEffects } from "./lib/side-effects";
 
@@ -74,9 +79,20 @@ export type RefreshOutcome =
 const SUSPICIOUS_SHRINK_RATIO = 0.5;
 const SHRINK_GUARD_MIN_CHARS = 500;
 
-export async function runDocumentRefreshActivity(
+const PLAN_SPENT_SUMMARY =
+	"Every ChatGPT plan this refresh may use has no usage left in this window. It will retry on the next sweep.";
+
+export function runDocumentRefreshActivity(
 	due: DueDocument,
 ): Promise<RefreshOutcome> {
+	// Every model call of the refresh is this job's, so it may run on the
+	// organization's shared ChatGPT plans (Fizzy #2770).
+	return runWithAiJobType("living-document-refresh", () =>
+		refreshDocument(due),
+	);
+}
+
+async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 	heartbeat("runDocumentRefresh");
 
 	try {
@@ -356,17 +372,27 @@ export async function runDocumentRefreshActivity(
 		return { status: "COMMITTED", summary: result.summary };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		logger.error("[DocumentRefresh] Refresh failed", {
-			documentId: due.documentId,
-			error: message,
-		});
-		await recordRefreshOutcome(due.documentId, "FAILED", message).catch(
-			() => {
-				/* the settings row may be gone; the throw below is what matters */
-			},
+		// A spent ChatGPT plan is not a failing document (Fizzy #2770): it is
+		// recorded as skipped, which the sweep retries without the backoff.
+		// The workflow's wait and retry overwrite it if a plan frees up.
+		const planSpent = findPlanExhausted(error) !== null;
+		logger[planSpent ? "warn" : "error"](
+			planSpent
+				? "[DocumentRefresh] Skipped: every ChatGPT plan is spent"
+				: "[DocumentRefresh] Refresh failed",
+			{ documentId: due.documentId, error: message },
 		);
+		await recordRefreshOutcome(
+			due.documentId,
+			planSpent ? "SKIPPED_PLAN_SPENT" : "FAILED",
+			planSpent ? PLAN_SPENT_SUMMARY : message,
+		).catch(() => {
+			/* the settings row may be gone; the throw below is what matters */
+		});
 		// Rethrow so Temporal records the failure and applies its retry policy.
-		throw error;
+		// A spent ChatGPT plan leaves under its own type, which the workflow
+		// waits on (Fizzy #2770).
+		throw findWorkflowHandledPlanRefusal(error) ?? error;
 	}
 }
 

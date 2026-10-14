@@ -70,6 +70,8 @@ export async function startLoopbackListener(options: {
 	preferredPort?: number;
 	/** The query parameter carrying the grant; `code` unless the sender names another. */
 	codeParam?: string;
+	/** What the browser shows once the grant arrived, when more follows than a terminal. */
+	successPage?: { title: string; body: string };
 }): Promise<LoopbackListener> {
 	const callbackPath = options.callbackPath ?? CALLBACK_PATH;
 	let settle: (outcome: CallbackResult | { error: Error }) => void = () => {};
@@ -145,8 +147,9 @@ export async function startLoopbackListener(options: {
 			.writeHead(200, FINAL_PAGE_HEADERS)
 			.end(
 				PAGE(
-					"Signed in",
-					"You can close this tab and return to your terminal.",
+					options.successPage?.title ?? "Signed in",
+					options.successPage?.body ??
+						"You can close this tab and return to your terminal.",
 				),
 				() => settle({ code, params: url.searchParams }),
 			);

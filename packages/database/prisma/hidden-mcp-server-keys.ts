@@ -24,6 +24,7 @@ export const HIDDEN_SYSTEM_MCP_SERVER_KEYS = [
 	"airtable",
 	"brave-search",
 	"everything",
+	"fabric",
 ] as const;
 
 const HIDDEN_KEY_SET: ReadonlySet<string> = new Set(

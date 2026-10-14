@@ -34,6 +34,7 @@
  * error resolves to a `"failed"` judgement rather than a retry.
  */
 
+import type { AiJobKey } from "@repo/ai";
 import {
 	createDecisionCapture,
 	experimental_decide,
@@ -43,6 +44,7 @@ import {
 	recordDecisionOutcome,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 // Subpath import (not the @repo/ai root) so it stays UNMOCKED in tests that
 // mock the root module — the uniform rule across the budget call sites.
 import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
@@ -60,7 +62,6 @@ import {
 	upsertStoryDuplicateEmbeddings,
 } from "@repo/database";
 import { logger } from "@repo/logs";
-import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { generateEmbeddings } from "@repo/rag";
 import { renderTemplate, type TemplateFormat } from "@repo/utils";
 import { z } from "zod";
@@ -288,8 +289,11 @@ async function evaluateRouting(params: {
 			decisionModel,
 			capture,
 		});
-		if (error instanceof AiUsageLimitExceededError) {
-			throw error;
+		// A limit refused before an SDK retry arrives wrapped in a RetryError;
+		// the unwrapped instance escapes.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
 		}
 		logger.warn(
 			`${logPrefix} decision evaluation unavailable; using language judge`,
@@ -678,8 +682,14 @@ export async function resolveRoutingModels(params: {
 	organizationId?: string;
 	projectId: string;
 	logPrefix: string;
+	/**
+	 * The background job routing runs inside, so both judges run where that
+	 * job does: on the organization's shared ChatGPT plans when it may
+	 * (Fizzy #2770). Unset for a person's own click.
+	 */
+	jobType?: AiJobKey;
 }): Promise<RoutingModels> {
-	const { userId, organizationId, projectId, logPrefix } = params;
+	const { userId, organizationId, projectId, logPrefix, jobType } = params;
 
 	// COMPLEX, matching `detect-duplicate-stories.ts`: the SIMPLE tier does not
 	// reliably satisfy a `generateObject` schema in the worker runtime, and a
@@ -687,7 +697,7 @@ export async function resolveRoutingModels(params: {
 	// like a clean evaluation.
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "COMPLEX" },
-		{ userId, organizationId, featureKey: "backlog-update" },
+		{ userId, organizationId, featureKey: "backlog-update", jobType },
 	);
 
 	// Optional typed decision model. It is a fast path, not a dependency: an
@@ -704,6 +714,7 @@ export async function resolveRoutingModels(params: {
 			userId,
 			organizationId,
 			projectId,
+			jobType,
 		});
 	} catch (error) {
 		decisionModel = null;

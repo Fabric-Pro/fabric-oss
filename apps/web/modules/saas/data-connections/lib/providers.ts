@@ -468,6 +468,30 @@ export const PROVIDER_CATEGORIES = [
 	},
 ];
 
+/** No working setup yet: hidden from the Connections grid. */
+export const HIDDEN_INTEGRATION_PROVIDERS: readonly DataConnectionProvider[] = [
+	"S3",
+	"GOOGLE_STORAGE",
+	"R2",
+	"DROPBOX",
+	"GMAIL",
+	"AIRTABLE",
+	"CODA",
+	"GITBOOK",
+	"SNOWFLAKE",
+	"BIGQUERY",
+	"GONG",
+];
+
+const HIDDEN_INTEGRATION_PROVIDER_SET: ReadonlySet<DataConnectionProvider> =
+	new Set(HIDDEN_INTEGRATION_PROVIDERS);
+
+export function isHiddenIntegrationProvider(
+	provider: DataConnectionProvider,
+): boolean {
+	return HIDDEN_INTEGRATION_PROVIDER_SET.has(provider);
+}
+
 export function getProviderMetadata(
 	provider: DataConnectionProvider,
 ): ProviderMetadata {

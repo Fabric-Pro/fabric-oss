@@ -1,4 +1,8 @@
-import { getAISpeechModel, resolveOpenAiApiKey } from "@repo/ai";
+import {
+	AUDIO_PROVIDER_REQUIRED,
+	getAISpeechModel,
+	resolveOpenAiApiKey,
+} from "@repo/ai";
 import { logAiUsageAsync } from "@repo/database";
 import { generateSpeech } from "ai";
 import { z } from "zod";
@@ -336,7 +340,7 @@ async function synthesizeSpeech(
 	}
 	throw lastError instanceof Error
 		? lastError
-		: new Error("Parlume voice is not configured.");
+		: new Error(AUDIO_PROVIDER_REQUIRED.parlumeVoice);
 }
 
 export async function speakParlumeResponse(

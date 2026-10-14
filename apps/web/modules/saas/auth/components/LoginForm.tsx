@@ -553,6 +553,7 @@ export function LoginForm({
 									Object.keys(oAuthProviders).map(
 										(providerId) => (
 											<SocialSigninButton
+												callbackURL={redirectPath}
 												key={providerId}
 												provider={
 													providerId as OAuthProvider

@@ -8,10 +8,7 @@ import { ORPCError } from "@orpc/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-	flags: { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true } as Record<
-		string,
-		boolean
-	>,
+	flags: { CHATGPT_PLAN: true } as Record<string, boolean>,
 	terms: new Date("2026-10-01T00:00:00Z") as Date | null,
 	role: "member" as string | null,
 	accounts: vi.fn(),
@@ -126,7 +123,7 @@ const ACCOUNT = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true };
+	mocks.flags = { CHATGPT_PLAN: true };
 	mocks.terms = new Date("2026-10-01T00:00:00Z");
 	mocks.role = "member";
 	mocks.accounts.mockResolvedValue([]);
@@ -155,7 +152,7 @@ describe("share", () => {
 	});
 
 	it.each([
-		["a flag is off", () => (mocks.flags.CHATGPT_PLAN_POOLING = false)],
+		["the flag is off", () => (mocks.flags.CHATGPT_PLAN = false)],
 		["the terms are not accepted", () => (mocks.terms = null)],
 	])("refuses when %s", async (_case, arrange) => {
 		arrange();
@@ -221,9 +218,9 @@ describe("take back", () => {
 		);
 	});
 
-	// Pooling may since have been switched off: the account is still theirs.
-	it("works without the pooling flag", async () => {
-		mocks.flags.CHATGPT_PLAN_POOLING = false;
+	// Plans may since have been switched off: the account is still theirs.
+	it("works with the plan flag off", async () => {
+		mocks.flags.CHATGPT_PLAN = false;
 		await handler(takeBackChatGptPlanProcedure)({
 			context: context(),
 			input: { accountId: "acc-1" },

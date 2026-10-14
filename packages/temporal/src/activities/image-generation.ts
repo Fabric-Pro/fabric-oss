@@ -15,12 +15,18 @@
 import { fetchCredentialsByProvider, logAiUsageAsync } from "@repo/database";
 import { downloadFile, getSignedUrl, uploadFile } from "@repo/storage";
 import {
+	dispatchSendSignal,
+	getDispatchGuard,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
+import {
 	activityAbortSignal,
 	assertTurnDispatchable,
 	guardTurnImageModel,
 	guardTurnModel,
 	rethrowIfTurnStopped,
 	type TurnScope,
+	throwIfTurnStopped,
 } from "./orchestrator/turn-dispatch";
 
 export interface ImageGenerationParams {
@@ -177,6 +183,8 @@ export async function generateImageActivity(
 		if (turnScope) {
 			rethrowIfTurnStopped(error);
 		}
+		// Called inside a turn's guard without a scope: its stop likewise.
+		rethrowIfDispatchStopped(error);
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		console.error(
@@ -420,6 +428,7 @@ async function generateWithGateway(params: {
 			organizationId,
 			startTime,
 			text: result.text || undefined,
+			turnScope,
 		});
 	}
 
@@ -467,6 +476,7 @@ async function generateWithGateway(params: {
 		userId,
 		organizationId,
 		startTime,
+		turnScope,
 	});
 }
 
@@ -478,6 +488,7 @@ async function uploadGatewayImage(params: {
 	organizationId?: string;
 	startTime: number;
 	text?: string;
+	turnScope?: TurnScope;
 }): Promise<ImageGenerationResult> {
 	const {
 		buffer,
@@ -487,6 +498,7 @@ async function uploadGatewayImage(params: {
 		organizationId,
 		startTime,
 		text,
+		turnScope,
 	} = params;
 	const extension = mediaType.split("/")[1] || "png";
 	const timestamp = Date.now();
@@ -498,6 +510,12 @@ async function uploadGatewayImage(params: {
 		`[ImageGeneration] Uploading gateway image to storage: ${storagePath}`,
 	);
 
+	// Immediately before the upload, after the image came back: in a chat
+	// turn nothing is stored once the turn has stopped or the activity was
+	// cancelled. A run without a turn uploads as before.
+	if (turnScope) {
+		throwIfTurnStopped();
+	}
 	await uploadFile(storagePath, buffer, {
 		bucket: GENERATED_IMAGES_BUCKET,
 		contentType: mediaType,
@@ -567,11 +585,19 @@ async function generateWithFal(params: {
 		`[ImageGeneration] FAL request: model=${falModel}, size=${imageSize}, steps=${numInferenceSteps}`,
 	);
 
-	// Immediately before the request, after the credential lookup above.
+	// Immediately before the request, after the credential lookup above:
+	// the turn record, then (in the same synchronous run as the send) the
+	// turn guard's latched stops; the request carries the activity's
+	// cancellation and the guard's stop.
 	if (turnScope) {
 		await assertTurnDispatchable(turnScope);
+		throwIfTurnStopped();
 	}
-	const falSignal = turnScope ? activityAbortSignal() : undefined;
+	// Without a turn scope a caller inside a turn's guard is still checked:
+	// `dispatchSendSignal` throws its latched stop (a no-op with no guard).
+	const falSignal = turnScope
+		? activityAbortSignal(getDispatchGuard()?.abortSignal())
+		: dispatchSendSignal();
 	const response = await fetch(`https://fal.run/${falModel}`, {
 		...(falSignal ? { signal: falSignal } : {}),
 		method: "POST",
@@ -665,10 +691,14 @@ async function generateWithGemini(params: {
 		: "";
 	const fullPrompt = `${prompt}${aspectPrompt}`;
 
+	// As for FAL above.
 	if (turnScope) {
 		await assertTurnDispatchable(turnScope);
+		throwIfTurnStopped();
 	}
-	const geminiSignal = turnScope ? activityAbortSignal() : undefined;
+	const geminiSignal = turnScope
+		? activityAbortSignal(getDispatchGuard()?.abortSignal())
+		: dispatchSendSignal();
 	const response = await ai.models.generateContent({
 		model: geminiModel,
 		contents: fullPrompt,
@@ -717,6 +747,10 @@ async function generateWithGemini(params: {
 		`[ImageGeneration] Uploading Gemini image to storage: ${storagePath}`,
 	);
 
+	// Immediately before the upload (see uploadGatewayImage).
+	if (turnScope) {
+		throwIfTurnStopped();
+	}
 	await uploadFile(storagePath, imageBuffer, {
 		bucket: GENERATED_IMAGES_BUCKET,
 		contentType: mimeType,

@@ -12,6 +12,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // catches common nested shapes, and the atomicity guard never stamps
 // SUCCESS when extraction produced no externalId.
 
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock("../pm-create-claim", async (importOriginal) => ({
+	...(await importOriginal<object>()),
+	acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+	releasePmCreateClaim: vi.fn(async () => true),
+}));
+
 vi.mock("@temporalio/activity", async () => {
 	const actual = await vi.importActual<object>("@temporalio/activity");
 	return {
@@ -215,7 +223,7 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 	beforeEach(() => {
 		vi.clearAllMocks();
 		userStoryUpdateMock.mockResolvedValue({});
-		userStoryUpdateManyMock.mockResolvedValue({});
+		userStoryUpdateManyMock.mockResolvedValue({ count: 1 });
 		featureUpdateMock.mockResolvedValue({});
 		featureUpdateManyMock.mockResolvedValue({});
 		epicUpdateMock.mockResolvedValue({});
@@ -246,12 +254,13 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 			STORY_ID,
 			PROJECT_ID,
 			expect.objectContaining({ externalId: "1075" }),
-			{ lastEditedSource: "PM_PULL" },
+			{ lastEditedSource: "PM_PULL", settlesPmCreateClaim: "claim-test" },
 		);
-		// SUCCESS stamp landed.
-		expect(userStoryUpdateMock).toHaveBeenCalledWith(
+		// SUCCESS stamp issued (a run without an attempt id: through
+		// `updateMany`, kept off a row that is PENDING for an attempt).
+		expect(userStoryUpdateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: STORY_ID },
+				where: expect.objectContaining({ id: STORY_ID }),
 				data: expect.objectContaining({
 					lastPmSyncStatus: "SUCCESS",
 					lastPmSyncError: null,
@@ -292,7 +301,7 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 				externalId: "1075",
 				externalUrl: "https://app.fizzy.do/000000/cards/1075",
 			}),
-			{ lastEditedSource: "PM_PULL" },
+			{ lastEditedSource: "PM_PULL", settlesPmCreateClaim: "claim-test" },
 		);
 	});
 
@@ -318,9 +327,7 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 				itemId: STORY_ID,
 				itemType: "story",
 				errorClass: "create_orphan",
-				errorMessage: expect.stringContaining(
-					"could not extract its id",
-				),
+				errorMessage: expect.stringContaining("could not read its id"),
 				pmTool: "fizzy",
 			}),
 		);
@@ -340,6 +347,100 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 			PROJECT_ID,
 			expect.objectContaining({ externalId: expect.any(String) }),
 		);
+	});
+
+	it("create_orphan FAILED lands by id even for a run carrying an attempt id", async () => {
+		// The FAILED records that an unlinked ticket exists; it is what stops a
+		// stuck-sync watchdog from creating a second one, so a newer
+		// attempt's PENDING must not make it skip.
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: {},
+		} as never);
+
+		await syncWorkItemToPM({ ...baseInput, pmSyncAttemptId: "attempt-A" });
+
+		expect(recordPmSyncFailureMock).toHaveBeenCalledTimes(1);
+		const [arg] = recordPmSyncFailureMock.mock.calls[0] as [
+			Record<string, unknown>,
+		];
+		expect(arg.errorClass).toBe("create_orphan");
+		expect(arg.onlyIfAttempt).toBeUndefined();
+		expect(arg.onlyIfPendingAttempt).toBeUndefined();
+	});
+
+	it("a created ticket whose link cannot be saved is a create_orphan, not a retryable throw", async () => {
+		// A throw here would be retried by Temporal, each retry creating
+		// another ticket.
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: {
+				result: {
+					card_id: "1075",
+					webUrl: "https://app.fizzy.do/000000/cards/1075",
+				},
+			},
+		} as never);
+		// The link write retries three times before giving up.
+		vi.mocked(updateStory)
+			.mockRejectedValueOnce(new Error("database unavailable"))
+			.mockRejectedValueOnce(new Error("database unavailable"))
+			.mockRejectedValueOnce(new Error("database unavailable"));
+
+		const result = await syncWorkItemToPM({
+			...baseInput,
+			pmSyncAttemptId: "attempt-A",
+		});
+
+		expect(result.status).toBe("FAILED");
+		expect(recordPmSyncFailureMock).toHaveBeenCalledTimes(1);
+		const [arg] = recordPmSyncFailureMock.mock.calls[0] as [
+			Record<string, unknown>,
+		];
+		expect(arg.errorClass).toBe("create_orphan");
+		expect(arg.errorMessage).toEqual(expect.stringContaining("1075"));
+		expect(arg.onlyIfAttempt).toBeUndefined();
+	});
+
+	it("an unreadable create response still returns create_orphan when recording the FAILED throws", async () => {
+		// Temporal would retry a throw, and the retry would create again.
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: {},
+		} as never);
+		recordPmSyncFailureMock.mockRejectedValueOnce(
+			new Error("audit context read failed"),
+		);
+
+		const result = await syncWorkItemToPM(baseInput);
+
+		expect(result.status).toBe("FAILED");
+		expect(result.status === "FAILED" && result.error).toEqual(
+			expect.stringContaining("could not read its id"),
+		);
+		expect(executeMcpTool).toHaveBeenCalledTimes(1);
+	});
+
+	it("a failed link write still returns create_orphan when recording the FAILED throws", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: { id: "1075" },
+		} as never);
+		vi.mocked(updateStory)
+			.mockRejectedValueOnce(new Error("database unavailable"))
+			.mockRejectedValueOnce(new Error("database unavailable"))
+			.mockRejectedValueOnce(new Error("database unavailable"));
+		recordPmSyncFailureMock.mockRejectedValueOnce(
+			new Error("audit context read failed"),
+		);
+
+		const result = await syncWorkItemToPM(baseInput);
+
+		expect(result.status).toBe("FAILED");
+		expect(result.status === "FAILED" && result.error).toEqual(
+			expect.stringContaining("1075"),
+		);
+		expect(executeMcpTool).toHaveBeenCalledTimes(1);
 	});
 
 	it("CREATE response with id under a different wrapper ({ result: { card_id: '1075' } }) → nested probing finds it via COMMON_ID_FIELDS", async () => {

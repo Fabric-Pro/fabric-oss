@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = {
 	id: string;
+	subject: string;
 	organizationId?: string;
 	userId?: string;
 	tier: string;
@@ -21,6 +22,7 @@ const store = vi.hoisted(() => ({
 	failReads: false,
 	inFlight: 0,
 	maxInFlight: 0,
+	afterRead: undefined as (() => void) | undefined,
 }));
 
 vi.mock("@repo/utils", () => ({
@@ -58,7 +60,15 @@ vi.mock("@repo/database/prisma/client", () => {
 			const row = store.rows.find((candidate) =>
 				matches(candidate, where),
 			);
-			return row ? { encryptedIdToken: row.encryptedIdToken } : null;
+			// What commits between the read and the backfill's write.
+			store.afterRead?.();
+			return row
+				? {
+						id: row.id,
+						subject: row.subject,
+						encryptedIdToken: row.encryptedIdToken,
+					}
+				: null;
 		},
 		updateMany: async ({
 			where,
@@ -116,6 +126,7 @@ const orgRef = {
 function orgRow(overrides: Partial<Row> = {}): Row {
 	return {
 		id: "acc_1",
+		subject: "subject-1",
 		organizationId: "org_a",
 		tier: "UNKNOWN",
 		subscriptionActiveUntil: null,
@@ -143,6 +154,7 @@ beforeEach(() => {
 	store.failReads = false;
 	store.inFlight = 0;
 	store.maxInFlight = 0;
+	store.afterRead = undefined;
 	resetChatGptPlanSubscriptionBackfill();
 	vi.mocked(logger.info).mockClear();
 	vi.mocked(logger.warn).mockClear();
@@ -167,9 +179,15 @@ describe("backfillChatGptPlanSubscription", () => {
 		});
 		expect(store.reads).toEqual([{ id: "acc_1", organizationId: "org_a" }]);
 		expect(store.writes.map((write) => write.where)).toEqual([
-			{ id: "acc_1", organizationId: "org_a", tier: "UNKNOWN" },
 			{
 				id: "acc_1",
+				subject: "subject-1",
+				organizationId: "org_a",
+				tier: "UNKNOWN",
+			},
+			{
+				id: "acc_1",
+				subject: "subject-1",
 				organizationId: "org_a",
 				subscriptionActiveUntil: null,
 			},
@@ -315,6 +333,7 @@ describe("backfillChatGptPlanSubscription", () => {
 		store.rows = [
 			{
 				id: "cred_1",
+				subject: "subject-1",
 				userId: "user_1",
 				tier: "UNKNOWN",
 				subscriptionActiveUntil: null,
@@ -332,7 +351,75 @@ describe("backfillChatGptPlanSubscription", () => {
 		expect(result.tier).toBe("FREE");
 		expect(store.writes[0]?.where).toEqual({
 			userId: "user_1",
+			id: "cred_1",
+			subject: "subject-1",
 			tier: "UNKNOWN",
+		});
+	});
+
+	// Fizzy #3037: the token read is the old sign-in's; what commits before
+	// the write decides whether it may land.
+	describe("when the sign-in changes after its token was read", () => {
+		const ownRow = (overrides: Partial<Row> = {}): Row => ({
+			id: "cred_1",
+			subject: "subject-1",
+			userId: "user_1",
+			tier: "UNKNOWN",
+			subscriptionActiveUntil: null,
+			encryptedIdToken: PLUS_TOKEN,
+			...overrides,
+		});
+		const ownRef = { kind: "user", userId: "user_1" } as const;
+		const ownView = {
+			tier: "UNKNOWN" as const,
+			subscriptionActiveUntil: null,
+			updatedAt: VERSION,
+		};
+
+		it("leaves a different account's replacement row as reset", async () => {
+			store.rows = [ownRow()];
+			store.afterRead = () => {
+				store.rows = [
+					ownRow({ subject: "subject-2", encryptedIdToken: null }),
+				];
+			};
+			const result = await backfillChatGptPlanSubscription(
+				ownRef,
+				ownView,
+			);
+			expect(result).toBe(ownView);
+			expect(store.rows[0]).toMatchObject({
+				subject: "subject-2",
+				tier: "UNKNOWN",
+				subscriptionActiveUntil: null,
+			});
+		});
+
+		it("leaves a reconnect after a disconnect untouched, even as the same account", async () => {
+			store.rows = [ownRow()];
+			store.afterRead = () => {
+				store.rows = [ownRow({ id: "cred_2", encryptedIdToken: null })];
+			};
+			await backfillChatGptPlanSubscription(ownRef, ownView);
+			expect(store.rows[0]).toMatchObject({
+				id: "cred_2",
+				tier: "UNKNOWN",
+				subscriptionActiveUntil: null,
+			});
+		});
+
+		it("leaves a replaced shared account untouched", async () => {
+			store.rows = [orgRow()];
+			store.afterRead = () => {
+				store.rows = [
+					orgRow({ subject: "subject-2", encryptedIdToken: null }),
+				];
+			};
+			await backfillChatGptPlanSubscription(orgRef, publicView(orgRow()));
+			expect(store.rows[0]).toMatchObject({
+				tier: "UNKNOWN",
+				subscriptionActiveUntil: null,
+			});
 		});
 	});
 

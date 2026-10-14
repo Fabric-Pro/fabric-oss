@@ -11,6 +11,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Mock @repo/agent-core/backend.
 // Avoid importOriginal — it triggers loading the real @repo/database
 // (PrismaPg pool) and hangs the vitest exit phase (vitest #4373).
+// The create claim (`pm-create-claim.ts`) has its own tests
+// (pm-create-claim.test.ts); here every create takes it.
+vi.mock(
+	"../src/activities/pm-integration/pm-create-claim",
+	async (importOriginal) => ({
+		...(await importOriginal<object>()),
+		acquirePmCreateClaim: vi.fn(async () => ({ claimId: "claim-test" })),
+		releasePmCreateClaim: vi.fn(async () => true),
+	}),
+);
+
 vi.mock("@repo/agent-core/backend", () => ({
 	getMcpClient: vi.fn(),
 	getMcpClientResult: vi.fn(),

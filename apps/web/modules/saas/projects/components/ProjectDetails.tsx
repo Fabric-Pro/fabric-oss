@@ -78,6 +78,7 @@ import { AgentActivityTab } from "./AgentActivityTab";
 import { InstructionDraftsProvider } from "./instructions/InstructionDrafts";
 import { loadCodingInstructionsTab } from "./instructions/lib/coding-instructions-warmup";
 // ProjectHeader is always visible, keep static import
+import { PausedSetupNotice, usePausedSetup } from "./PausedSetupNotice";
 import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
 import { ProjectSectionHero } from "./ProjectSectionHero";
@@ -115,6 +116,11 @@ const ProjectOverview = dynamic(
 const DocumentsList = dynamic(
 	() => import("./DocumentsList").then((m) => m.DocumentsList),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
+);
+
+const PausedBatchNotice = dynamic(
+	() => import("./PausedBatchNotice").then((m) => m.PausedBatchNotice),
+	{ loading: () => null, ssr: false },
 );
 
 const ProjectContextsList = dynamic(
@@ -310,6 +316,10 @@ function CodeAnalysisBanner({
 
 	const phase = statusData?.phase;
 	const status = statusData?.codeAnalysisStatus;
+	// A setup paused for a ChatGPT plan reset (Fizzy #2770) is still under
+	// way — the analysis reads SCANNING — but nothing is running until then.
+	const pausedSetupQuery = usePausedSetup({ projectId, organizationId });
+	const pausedSetup = pausedSetupQuery.data?.setup ?? null;
 
 	// When status transitions to completed or failed, notify parent
 	useEffect(() => {
@@ -334,6 +344,19 @@ function CodeAnalysisBanner({
 	}
 	if (!status || status === "COMPLETED" || status === "FAILED") {
 		return null;
+	}
+	if (pausedSetup) {
+		return (
+			<PausedSetupNotice
+				projectId={projectId}
+				organizationId={organizationId}
+				setup={pausedSetup}
+				onChanged={() => {
+					pausedSetupQuery.refetch();
+					onComplete();
+				}}
+			/>
+		);
 	}
 
 	const phaseLabel =
@@ -1430,14 +1453,22 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 							<ReleaseNotesList project={project} />
 						)}
 						{activeTab === "documents" && (
-							<DocumentsList
-								projectId={projectId}
-								enableDelete
-								// The permission the document update itself
-								// enforces. Reading the role here left out
-								// project admins, who hold it too.
-								canEdit={project.canUpdateProject}
-							/>
+							<div className="space-y-6">
+								{/* A batch generation paused for a ChatGPT
+								    plan reset (Fizzy #2770). */}
+								<PausedBatchNotice
+									projectId={projectId}
+									organizationId={organizationId}
+								/>
+								<DocumentsList
+									projectId={projectId}
+									enableDelete
+									// The permission the document update itself
+									// enforces. Reading the role here left out
+									// project admins, who hold it too.
+									canEdit={project.canUpdateProject}
+								/>
+							</div>
 						)}
 						{activeTab === "decisions" && (
 							<DecisionsList

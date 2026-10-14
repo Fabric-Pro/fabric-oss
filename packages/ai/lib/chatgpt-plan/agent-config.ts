@@ -12,6 +12,7 @@ import {
 	getChatGptPlanAccessToken,
 	getChatGptPlanSourceAccessToken,
 } from "./plan-credentials";
+import { exchangedPlanSourceKey } from "./plan-source-key";
 import { type PlanSourceRef, planSourceKey } from "./sources";
 
 /**
@@ -34,7 +35,11 @@ export type ChatGptPlanAgentConfigResult =
 			ok: true;
 			config: ChatGptPlanAgentConfig;
 			expiresAt: Date;
-			/** The plan's opaque key, for the agent to exclude after a refusal. */
+			/**
+			 * The plan's opaque key and the fingerprint of the sign-in behind
+			 * `apiKey`, for the agent to exclude after a refusal and to name
+			 * in its report of one (Fizzy #3037).
+			 */
 			planSource: string;
 	  }
 	| {
@@ -74,7 +79,10 @@ export async function getChatGptPlanAgentConfig(params: {
 		return {
 			ok: true,
 			expiresAt: token.expiresAt,
-			planSource: planSourceKey(source),
+			planSource: exchangedPlanSourceKey(
+				planSourceKey(source),
+				token.credentialFingerprint,
+			),
 			config: {
 				provider: "OPENAI_CHATGPT_PLAN",
 				apiKey: token.accessToken,

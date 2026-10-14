@@ -38,6 +38,7 @@ const activityStubs = vi.hoisted(() => ({
 	createOrUpdateStoryFromPMItem: vi.fn(),
 	deleteStoriesNotInPMList: vi.fn(),
 	executeMcpTool: vi.fn(),
+	createStoryInPmWithClaim: vi.fn(),
 	closeStorySyncJob: vi.fn(),
 }));
 
@@ -410,9 +411,25 @@ describe("storySyncWorkflow — pull orchestration", () => {
 // Push tests
 // =============================================================================
 
+/**
+ * `patched` answering false for one patch id: runs the workflow's old branch.
+ * This tests that branch's orchestration only; replay compatibility is not
+ * covered here (see `__tests__/replay-validation.test.ts`).
+ */
+function recordedBefore(patchId: string) {
+	patchedMock.mockImplementation((id: string) => id !== patchId);
+}
+
 describe("storySyncWorkflow — push orchestration", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		patchedMock.mockImplementation(() => true);
+		activityStubs.createStoryInPmWithClaim.mockResolvedValue({
+			success: true,
+			externalId: "new-1",
+			externalUrl: "https://gitlab.example/issues/new-1",
+			outcome: "created",
+		});
 		activityStubs.getStoriesToSync.mockResolvedValue([
 			{
 				id: "story-1",
@@ -472,7 +489,8 @@ describe("storySyncWorkflow — push orchestration", () => {
 		expect(activityStubs.executeMcpTool).not.toHaveBeenCalled();
 	});
 
-	it("MCP push regression: full Fizzy capabilities → workflow creates via executeMcpTool", async () => {
+	it("old branch (patched false for bulk-sync-create-claim-v1): full Fizzy capabilities → workflow creates via executeMcpTool", async () => {
+		recordedBefore("bulk-sync-create-claim-v1");
 		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
 			MCP_FIZZY_CAPABILITIES,
 		);
@@ -505,6 +523,185 @@ describe("storySyncWorkflow — push orchestration", () => {
 				externalId: "new-1",
 			}),
 		);
+		expect(activityStubs.createStoryInPmWithClaim).not.toHaveBeenCalled();
+	});
+
+	it("bulk-sync-create-claim-v1: the create goes through createStoryInPmWithClaim with the built create args", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_FIZZY_CAPABILITIES,
+		);
+
+		const output = await storySyncWorkflow({
+			projectId: "proj-5",
+			mcpServerId: "srv-fizzy",
+			mcpConfigId: "cfg-1",
+			containerId: "board-xyz",
+			userId: "user-2",
+			organizationId: "org-2",
+			direction: "push",
+			additionalContext: { account_slug: "example-org" },
+		});
+
+		expect(patchedMock).toHaveBeenCalledWith("bulk-sync-create-claim-v1");
+		expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledTimes(1);
+		expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledWith({
+			action: "create",
+			storyId: "story-1",
+			projectId: "proj-5",
+			organizationId: "org-2",
+			userId: "user-2",
+			mcpConfigId: "cfg-1",
+			mcpServerId: "srv-fizzy",
+			pmTarget: { additionalContext: { account_slug: "example-org" } },
+			pmTool: "fizzy",
+			toolLabel: "fizzy",
+			toolName: "create_card",
+			createArgs: {
+				board_id: "board-xyz",
+				title: "First story",
+				description: "<p>Body</p>",
+			},
+		});
+		// Neither the bare create nor the unclaimed link write runs.
+		expect(activityStubs.executeMcpTool).not.toHaveBeenCalled();
+		expect(activityStubs.updateStoryExternalRefs).not.toHaveBeenCalled();
+		expect(output).toMatchObject({
+			success: true,
+			syncedCount: 1,
+			failedCount: 0,
+			results: [
+				{
+					storyId: "story-1",
+					identifier: "F-1",
+					success: true,
+					externalId: "new-1",
+					externalUrl: "https://gitlab.example/issues/new-1",
+				},
+			],
+		});
+	});
+
+	it("bulk-sync-create-claim-v1: a create the activity could not confirm is counted as failed with its message", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_FIZZY_CAPABILITIES,
+		);
+		activityStubs.createStoryInPmWithClaim.mockResolvedValue({
+			success: false,
+			error: "a fizzy item may already exist for it",
+			outcome: "create-unconfirmed",
+		});
+
+		const output = await storySyncWorkflow({
+			projectId: "proj-5",
+			mcpServerId: "srv-fizzy",
+			mcpConfigId: "cfg-1",
+			containerId: "board-xyz",
+			userId: "user-2",
+			organizationId: "org-2",
+			direction: "push",
+		});
+
+		expect(output).toMatchObject({
+			success: false,
+			syncedCount: 0,
+			failedCount: 1,
+			results: [
+				{
+					storyId: "story-1",
+					success: false,
+					error: "a fizzy item may already exist for it",
+				},
+			],
+		});
+	});
+
+	describe("a story linked to another PM tool", () => {
+		const fizzyLinkedStory = {
+			id: "story-legacy",
+			identifier: "F-9",
+			title: "Legacy story",
+			description: "Body",
+			externalId: "card-7",
+			externalUrl: "https://app.fizzy.do/example-org/cards/7",
+		};
+		const adoInput = {
+			projectId: "proj-6",
+			mcpServerId: "srv-ado",
+			mcpConfigId: "cfg-ado",
+			containerId: "MyProject",
+			userId: "user-1",
+			organizationId: "org-1",
+			direction: "push" as const,
+		};
+
+		beforeEach(() => {
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+				ADO_CAPABILITIES,
+			);
+			activityStubs.getStoriesToSync.mockResolvedValue([
+				fizzyLinkedStory,
+			]);
+			activityStubs.createStoryInPmWithClaim.mockResolvedValue({
+				success: false,
+				error: "This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in azure-devops.",
+				outcome: "legacy-other-tool",
+			});
+		});
+
+		it("bulk-sync-create-claim-v1: is refused, not created, and counted as failed", async () => {
+			const output = await storySyncWorkflow(adoInput);
+
+			expect(
+				activityStubs.createStoryInPmWithClaim,
+			).toHaveBeenCalledTimes(1);
+			expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledWith(
+				expect.objectContaining({
+					action: "refuse-legacy-link",
+					storyId: "story-legacy",
+					externalId: "card-7",
+					projectId: "proj-6",
+					toolLabel: "azure-devops",
+				}),
+			);
+			expect(activityStubs.executeMcpTool).not.toHaveBeenCalled();
+			expect(
+				activityStubs.updateStoryExternalRefs,
+			).not.toHaveBeenCalled();
+			expect(output).toMatchObject({
+				success: false,
+				syncedCount: 0,
+				failedCount: 1,
+				results: [
+					{
+						storyId: "story-legacy",
+						success: false,
+						error: expect.stringContaining(
+							"linked to a ticket in a different PM tool",
+						),
+					},
+				],
+			});
+		});
+
+		it("old branch (patched false for bulk-sync-create-claim-v1): still creates and relinks, as it did", async () => {
+			recordedBefore("bulk-sync-create-claim-v1");
+			activityStubs.executeMcpTool.mockResolvedValue(adoCreateResult());
+
+			await storySyncWorkflow(adoInput);
+
+			expect(
+				activityStubs.createStoryInPmWithClaim,
+			).not.toHaveBeenCalled();
+			expect(activityStubs.executeMcpTool).toHaveBeenCalledWith(
+				expect.objectContaining({ toolName: "wit_create_work_item" }),
+			);
+			expect(activityStubs.updateStoryExternalRefs).toHaveBeenCalledWith(
+				expect.objectContaining({
+					storyId: "story-legacy",
+					externalId: "99",
+				}),
+			);
+		});
 	});
 });
 
@@ -555,6 +752,12 @@ const ADO_CAPABILITIES = {
 };
 
 function lastCreateArgs() {
+	const claimed = activityStubs.createStoryInPmWithClaim.mock.calls.find(
+		(c: any[]) => c[0]?.toolName === "wit_create_work_item",
+	);
+	if (claimed) {
+		return claimed[0]?.createArgs as Record<string, unknown> | undefined;
+	}
 	const calls = activityStubs.executeMcpTool.mock.calls;
 	const call = calls.find(
 		(c: any[]) => c[0]?.toolName === "wit_create_work_item",
@@ -679,6 +882,7 @@ describe("storySyncWorkflow — pull workItemType threading (#1305)", () => {
 describe("storySyncWorkflow — push workItemType resolution via enableTypeMapping (#1305)", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		patchedMock.mockImplementation(() => true);
 		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
 			ADO_CAPABILITIES,
 		);
@@ -693,10 +897,15 @@ describe("storySyncWorkflow — push workItemType resolution via enableTypeMappi
 			},
 		]);
 		activityStubs.executeMcpTool.mockResolvedValue(adoCreateResult());
+		activityStubs.createStoryInPmWithClaim.mockResolvedValue({
+			success: true,
+			externalId: "99",
+			outcome: "created",
+		});
 		activityStubs.updateStoryExternalRefs.mockResolvedValue(undefined);
 	});
 
-	it("flag on + mapping { FEATURE: 'Epic' } + kind='FEATURE' → executeMcpTool called with workItemType='Epic'", async () => {
+	it("flag on + mapping { FEATURE: 'Epic' } + kind='FEATURE' → the create is sent with workItemType='Epic'", async () => {
 		const output = await storySyncWorkflow({
 			projectId: "proj-wt-1",
 			mcpServerId: "srv-ado",
@@ -714,10 +923,10 @@ describe("storySyncWorkflow — push workItemType resolution via enableTypeMappi
 		expect(output.success).toBe(true);
 		expect(output.syncedCount).toBe(1);
 
-		expect(activityStubs.executeMcpTool).toHaveBeenCalledWith(
+		expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledWith(
 			expect.objectContaining({
 				toolName: "wit_create_work_item",
-				args: expect.objectContaining({ workItemType: "Epic" }),
+				createArgs: expect.objectContaining({ workItemType: "Epic" }),
 			}),
 		);
 	});

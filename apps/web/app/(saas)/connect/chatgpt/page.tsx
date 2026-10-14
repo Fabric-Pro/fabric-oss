@@ -3,6 +3,7 @@ import {
 	getChatGptPlanOrgModelChoices,
 	listChatGptPlanOrganizations,
 } from "@repo/database";
+import { loginPathReturningTo } from "@saas/auth/lib/login-redirect";
 import { getSession } from "@saas/auth/lib/server";
 import {
 	ConnectChatgptPlanForm,
@@ -35,6 +36,20 @@ function parseSlug(raw: string | string[] | undefined): string | null {
 	return typeof raw === "string" && /^[\w-]{1,200}$/.test(raw) ? raw : null;
 }
 
+/** This page's own URL, so signing in first returns to it (Fizzy #3036). */
+function connectPath(
+	params: Record<string, string | string[] | undefined>,
+): string {
+	const query = new URLSearchParams();
+	for (const [key, value] of Object.entries(params)) {
+		for (const item of [value ?? []].flat()) {
+			query.append(key, item);
+		}
+	}
+	const search = query.toString();
+	return search ? `/connect/chatgpt?${search}` : "/connect/chatgpt";
+}
+
 /**
  * Where `fabric connect chatgpt` sends the person to approve the connection
  * (Fizzy #2939). The session proves who they are; approving mints a one-time
@@ -45,11 +60,10 @@ export default async function ConnectChatgptPlanPage({
 }: {
 	searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-	const session = await getSession();
+	const [session, params] = await Promise.all([getSession(), searchParams]);
 	if (!session) {
-		redirect("/auth/login");
+		redirect(loginPathReturningTo(connectPath(params)));
 	}
-	const params = await searchParams;
 	const port = parsePort(params.port);
 	const state = parseState(params.state);
 

@@ -9,7 +9,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
 	flags: {} as Record<string, boolean>,
-	policy: { poolingEnabled: true, apiFallbackBackground: "NEVER" },
+	policy: {
+		termsAcknowledgedAt: new Date(0),
+		apiFallbackBackground: "NEVER",
+	},
 	accounts: [] as Array<Record<string, unknown>>,
 	states: new Map<string, Date>(),
 }));
@@ -39,8 +42,11 @@ const account = (id: string, overrides = {}) => ({
 });
 
 beforeEach(() => {
-	db.flags = { CHATGPT_PLAN: true, CHATGPT_PLAN_POOLING: true };
-	db.policy = { poolingEnabled: true, apiFallbackBackground: "NEVER" };
+	db.flags = { CHATGPT_PLAN: true };
+	db.policy = {
+		termsAcknowledgedAt: new Date(0),
+		apiFallbackBackground: "NEVER",
+	};
 	db.accounts = [account("acc-1"), account("acc-2")];
 	db.states = new Map();
 });
@@ -89,10 +95,13 @@ describe("estimatePlanPoolResetActivity", () => {
 	});
 
 	it("does not wait when the organization lets background work use its provider", async () => {
-		db.policy = { poolingEnabled: true, apiFallbackBackground: "AUTO" };
+		db.policy = {
+			termsAcknowledgedAt: new Date(0),
+			apiFallbackBackground: "AUTO",
+		};
 		db.states.set("ORG:acc-1", new Date(Date.now() + 90 * MINUTE));
 		await expect(
 			estimatePlanPoolResetActivity({ organizationId: "org-1" }),
-		).resolves.toEqual({ waitMs: 0, jitterMs: 0 });
+		).resolves.toEqual({ waitMs: 0, jitterMs: 0, resetKnown: true });
 	});
 });

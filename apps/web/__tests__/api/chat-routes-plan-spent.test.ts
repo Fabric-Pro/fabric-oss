@@ -3,6 +3,8 @@
  * spent (Fizzy #2770): Direct and Orchestrator answer the plan's own 429 with
  * when it resets, before model resolution, so a plan-only organization never
  * reads "No AI provider configured" and no run starts that can only fail.
+ * Under the interactive "Use API billing" policy the turn runs, and its
+ * stream carries the reset so the chat can say so (Fizzy #3048).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,10 +18,16 @@ vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
 }));
 
-vi.mock("@repo/ai/lib/chatgpt-plan/plan-spent-response", () => ({
-	chatGptPlanSpentChatResponse: (...args: unknown[]) =>
-		planSpentMock(...args),
-}));
+vi.mock(
+	"@repo/ai/lib/chatgpt-plan/plan-spent-response",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@repo/ai/lib/chatgpt-plan/plan-spent-response")
+		>()),
+		chatGptPlanChatPreflight: (...args: unknown[]) =>
+			planSpentMock(...args),
+	}),
+);
 
 vi.mock("@repo/api/lib/rate-limit", () => ({
 	checkRateLimit: vi.fn(async () => ({
@@ -98,12 +106,12 @@ beforeEach(() => {
 		session: { activeOrganizationId: ORGANIZATION_ID },
 	});
 	getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
-	planSpentMock.mockResolvedValue(
-		new Response(JSON.stringify(SPENT_BODY), {
+	planSpentMock.mockResolvedValue({
+		refusal: new Response(JSON.stringify(SPENT_BODY), {
 			status: 429,
 			headers: { "Content-Type": "application/json" },
 		}),
-	);
+	});
 });
 
 describe.each([
@@ -131,3 +139,36 @@ describe.each([
 		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
 });
+
+describe.each([
+	["Direct", "../../app/api/agents/fabric-ai/stream/route"],
+	[
+		"Orchestrator",
+		"../../app/api/agents/fabric-ai/orchestrator-temporal/stream/route",
+	],
+])(
+	"POST %s stream under the interactive Use API billing policy",
+	(_mode, path) => {
+		it("runs the turn and marks its stream with the plans' reset", async () => {
+			planSpentMock.mockResolvedValue({
+				apiBilling: { resetAt: new Date(SPENT_BODY.resetAt) },
+			});
+			const { POST } = (await import(path)) as {
+				POST: (request: never) => Promise<Response>;
+			};
+			const response = await POST(
+				postBody({ message: "Hello", organizationId: ORGANIZATION_ID }),
+			);
+
+			expect(response.status).toBe(200);
+			expect(response.headers.get("Content-Type")).toBe(
+				"text/event-stream",
+			);
+			expect(
+				response.headers.get("x-fabric-chatgpt-plan-api-billing"),
+			).toBe(SPENT_BODY.resetAt);
+			expect(getAIModelWithMetadataMock).toHaveBeenCalled();
+			await response.body?.cancel();
+		});
+	},
+);

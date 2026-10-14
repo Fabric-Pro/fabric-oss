@@ -10,6 +10,10 @@ import {
 	publishFrame,
 	updateFrame,
 } from "@repo/database";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { Context, heartbeat } from "@temporalio/activity";
 import { streamText } from "ai";
 import { agentToolProjectScope } from "./agent-tool-runtime";
@@ -459,7 +463,10 @@ async function generateSlideOutline(input: {
 						: "",
 			}));
 		}
-	} catch {
+	} catch (error) {
+		// Inside a chat turn, a stop or a token-allowance refusal is not a
+		// failed outline to replace with defaults (a no-op outside a turn).
+		rethrowIfDispatchStopped(error);
 		// fall through to defaults
 	}
 
@@ -521,7 +528,10 @@ async function generateFrameBlock(input: {
 			.replace(/^```(?:html|json|mermaid|markdown)?\n?/, "")
 			.replace(/\n?```$/, "")
 			.trim();
-	} catch {
+	} catch (error) {
+		// Inside a chat turn, a stop or a token-allowance refusal is not a
+		// failed block to replace with placeholder content.
+		rethrowIfDispatchStopped(error);
 		content = "";
 	}
 
@@ -677,6 +687,9 @@ export async function createFirstClassFrame(input: {
 		blocks = [block];
 	}
 
+	// Immediately before the write: nothing is created once the chat turn
+	// this runs in has stopped or used its token allowance.
+	throwIfDispatchStopped();
 	const frame = await createFrame({
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -736,6 +749,7 @@ export async function updateFirstClassFrame(input: {
 		return { error: refusal };
 	}
 
+	throwIfDispatchStopped();
 	const frame = await updateFrame({
 		id: validated.value.frameId,
 		userId: input.userId,
@@ -865,6 +879,7 @@ export async function shareFirstClassFrame(input: {
 		return { error: refusal };
 	}
 
+	throwIfDispatchStopped();
 	const frame = await publishFrame({
 		id: frameId,
 		userId: input.userId,

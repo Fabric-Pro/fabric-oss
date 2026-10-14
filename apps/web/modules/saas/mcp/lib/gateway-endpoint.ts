@@ -35,6 +35,18 @@
  *   - Platform tools: `fabric_*` (e.g., fabric_list_projects, fabric_get_document)
  *   - Connected server tools: `{prefix}__{tool}` (e.g., linear__list_issues)
  *
+ * Server selection (organization-wide URL only):
+ *   - `?servers=fabric,linear` limits a session to the named servers — `fabric`
+ *     for the platform tools, a connected server by its prefix — and
+ *     `?servers=linear:list_issues` to one tool of a server. Read once, when
+ *     the session is created; see `./gateway/server-selection`.
+ *
+ * Discovery mode (both URLs):
+ *   - `?mode=discovery` lists three meta-tools (`search_tools`,
+ *     `get_tool_schema`, `call_tool`) instead of every tool, for clients that
+ *     cannot take the full list. Read once, when the session is created; see
+ *     `./gateway/discovery-tools`.
+ *
  * @see https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
  */
 
@@ -63,16 +75,46 @@ import {
 	getGatewaySession,
 	type JsonRpcRequest,
 	updateSessionOrganization,
+	validateServerSelection,
 } from "@saas/mcp/lib/gateway";
 import {
-	classifyConnectedToolAccess,
 	enforceAuthority,
 	generateRequestFingerprint,
 	resolveProviderKeyFromToolPrefix,
 } from "@saas/mcp/lib/gateway/authority-service";
+import {
+	CALL_TOOL_NAME,
+	DISCOVERY_TOOL_DEFINITIONS,
+	GET_TOOL_SCHEMA_NAME,
+	getToolSchema,
+	isDiscoveryToolName,
+	type ParsedToolListMode,
+	parseCallToolArguments,
+	parseToolListMode,
+	SEARCH_TOOLS_NAME,
+	searchTools,
+} from "@saas/mcp/lib/gateway/discovery-tools";
 import { boundProjectId } from "@saas/mcp/lib/gateway/project-binding";
+import {
+	formatServerSelection,
+	type ParsedServerSelection,
+	PLATFORM_SERVER_NAME,
+	parseServerSelection,
+	SERVER_SELECTION_PARAM,
+	selectionAllowsTool,
+	selectionRefusalMessage,
+} from "@saas/mcp/lib/gateway/server-selection";
+import {
+	connectedToolScope,
+	isPlatformToolName,
+	toolRequiresAuthority,
+} from "@saas/mcp/lib/gateway/tool-eligibility";
 import { scopeSatisfied } from "@saas/mcp/lib/gateway/tool-scope";
-import type { GatewayCredential } from "@saas/mcp/lib/gateway/types";
+import type {
+	GatewayCredential,
+	ServerSelection,
+	ToolCallResult,
+} from "@saas/mcp/lib/gateway/types";
 import {
 	type McpKeyIdentity,
 	recordCliReach,
@@ -762,11 +804,44 @@ function sameCredentialAuthority(
  * under a new session id. It bought churn and no authorization. Membership is
  * settled during authentication instead, on every branch, where failing it
  * actually refuses.
+ *
+ * A new session takes its server selection from `selection`, the `servers`
+ * parameter of the request that creates it, whatever its method: this function
+ * is the only place the gateway creates a session, so a client that skips
+ * `initialize` gets the same parsing. A selection naming a server the caller
+ * does not have refuses the request and creates nothing. A reused session keeps
+ * the selection it was created with, and the request's own parameter is not
+ * read.
+ *
+ * A session replaced because it no longer matches the caller's organization,
+ * project or credential is a new session like any other: its selection comes from the
+ * `servers` parameter of the request that replaces it, validated in the
+ * organization it is created in, and a selection that does not fit there is
+ * refused with -32602. The old session's selection is not carried over. A
+ * client that keeps its URL re-sends the same parameter, so it gets the same
+ * selection checked again in the new organization; one that drops the
+ * parameter gets nothing it could not get by connecting fresh, because the
+ * selection narrows what the client sees and grants no access.
+ *
+ * The tool-list mode (`mode`, see `./gateway/discovery-tools`) follows the
+ * same rules: a new session, replacement included, takes it from the request
+ * that creates it, a value other than `discovery` refuses that request and
+ * creates nothing, and a reused session keeps the mode it was created with.
  */
 async function getOrCreateSession(
 	mcpSessionId: string | null,
 	authResult: AuthResult,
-): Promise<{ session: GatewaySession; sessionId: string; isNew: boolean }> {
+	selection: ParsedServerSelection,
+	toolListMode: ParsedToolListMode,
+): Promise<
+	| {
+			ok: true;
+			session: GatewaySession;
+			sessionId: string;
+			isNew: boolean;
+	  }
+	| { ok: false; message: string }
+> {
 	// Try existing session from the centralized session store
 	if (mcpSessionId) {
 		const existing = getGatewaySession(mcpSessionId);
@@ -784,6 +859,7 @@ async function getOrCreateSession(
 				// its client.
 				if (sameCredentialAuthority(existing, authResult)) {
 					return {
+						ok: true,
 						session: existing,
 						sessionId: mcpSessionId,
 						isNew: false,
@@ -799,6 +875,15 @@ async function getOrCreateSession(
 		}
 	}
 
+	if (toolListMode.kind === "invalid") {
+		return { ok: false, message: toolListMode.message };
+	}
+
+	const serverSelection = await resolveServerSelection(selection, authResult);
+	if (!serverSelection.ok) {
+		return serverSelection;
+	}
+
 	// Create new session
 	const session = await createGatewaySession({
 		userId: authResult.userId,
@@ -809,9 +894,41 @@ async function getOrCreateSession(
 		role: authResult.role,
 		credential: authResult.credential,
 		scopes: authResult.scopes,
+		serverSelection: serverSelection.entries,
+		toolListMode: toolListMode.mode,
 	});
 
-	return { session, sessionId: session.sessionId, isNew: true };
+	return { ok: true, session, sessionId: session.sessionId, isNew: true };
+}
+
+/**
+ * The server selection a new session is created with: null for every server,
+ * or the entries asked for once `validateServerSelection` finds each server and
+ * tool in the organization the session runs in. A malformed entry or an unknown
+ * name is refused, with the valid names, rather than leaving the client with
+ * fewer tools than it asked for and no word why.
+ */
+async function resolveServerSelection(
+	selection: ParsedServerSelection,
+	authResult: AuthResult,
+): Promise<
+	| { ok: true; entries: ServerSelection | null }
+	| { ok: false; message: string }
+> {
+	if (selection.kind === "all") {
+		return { ok: true, entries: null };
+	}
+	if (selection.kind === "invalid") {
+		return { ok: false, message: selection.message };
+	}
+	const validated = await validateServerSelection(
+		{
+			userId: authResult.userId,
+			organizationId: authResult.organizationId,
+		},
+		selection.entries,
+	);
+	return validated.ok ? { ok: true, entries: selection.entries } : validated;
 }
 
 // ─── JSON-RPC Helpers ───────────────────────────────────────────────────────
@@ -1042,12 +1159,36 @@ export async function handleGatewayPost(
 		});
 	}
 
+	// The `servers` parameter chooses among the organization-wide gateway's
+	// servers. A project's URL has its platform tools and no connected server,
+	// so there is nothing there to choose, and naming a selection is refused
+	// rather than ignored.
+	const searchParams = new URL(request.url).searchParams;
+	const selection = parseServerSelection(searchParams);
+	if (binding && selection.kind !== "all") {
+		return jsonRpcError(
+			rpcRequest.id,
+			-32602,
+			`The "${SERVER_SELECTION_PARAM}" parameter is not available on a project's URL: a connection to one project has that project's platform tools and no connected servers. Remove the parameter.`,
+		);
+	}
+
+	// The `mode` parameter is read on both URLs. Like the selection, it is
+	// applied only when this request creates the session.
+	const toolListMode = parseToolListMode(searchParams);
+
 	// Get or create MCP session
 	const incomingSessionId = request.headers.get("mcp-session-id");
-	const { session, sessionId } = await getOrCreateSession(
+	const opened = await getOrCreateSession(
 		incomingSessionId,
 		authResult,
+		selection,
+		toolListMode,
 	);
+	if (!opened.ok) {
+		return jsonRpcError(rpcRequest.id, -32602, opened.message);
+	}
+	const { session, sessionId } = opened;
 
 	// A method this gateway does not serve is refused before anything is
 	// recorded: an unsupported call is not a CLI connection, however valid the
@@ -1384,20 +1525,65 @@ const BOOTSTRAP_SECTION =
 	"Never push secrets, `.env` files or generated output, and tell the developer what you pushed.\n\n";
 
 const AUTHORITY_SECTION =
-	"## Runtime authority (required for connected server tools)\n" +
-	"Connected server tools require runtime authority before use. Platform tools (fabric_*) are always available.\n" +
+	"## Runtime authority (required for connected server tools that write)\n" +
+	"Connected server tools that write require runtime authority before use; read-only ones and platform tools (fabric_*) do not.\n" +
 	"1. Call `fabric_request_authority` with the providers and access levels you need\n" +
 	"2. The user must approve in the Fabric UI (approval is human-only)\n" +
 	"3. Call `fabric_check_authority` to see when approval is granted\n" +
-	"4. Once approved, connected server tools become callable for the session duration\n" +
+	"4. Once approved, matching calls are allowed within the grant's access level, tool limits and lifetime\n" +
 	"5. Authority expires automatically or can be revoked with `fabric_revoke_authority`\n\n" +
-	"Tools in the tools/list response include `_meta.requiresAuthority` and `_meta.authorityStatus` " +
-	"to indicate which tools need authority and whether it's currently granted.";
+	"Connected tools in the tools/list response carry `_meta.requiresAuthority`, which says whether a call needs authority. " +
+	"Those that do also carry `_meta.providerAuthorityStatus`, which says whether this session has any approved grant for the tool's provider. " +
+	"It is not a promise for that tool: a grant covers an access level and may be limited to some tools or to one request, so a call can still be refused.";
+
+/**
+ * The line that tells a client which servers its selection kept, so the
+ * guidance below, which names platform tools and connected servers generally,
+ * is not read as a promise that every one is here. Empty without a selection.
+ */
+function serverSelectionSection(session: GatewaySession): string {
+	const selection = session.serverSelection ?? null;
+	if (selection === null) {
+		return "";
+	}
+	const platform = selection.find(
+		(entry) => entry.server === PLATFORM_SERVER_NAME,
+	);
+	const platformNote =
+		platform === undefined
+			? " The platform tools (`fabric_*`) are not included, so guidance below that names them does not apply to this connection."
+			: platform.tools === "*"
+				? ""
+				: " Only the platform tools it names are included, so guidance below that names other `fabric_*` tools does not apply to this connection.";
+	return `This connection was opened with a server selection (${SERVER_SELECTION_PARAM}=${formatServerSelection(selection)}): only the servers and tools it names are listed and callable.${platformNote}\n\n`;
+}
+
+/**
+ * The section that tells a discovery-mode client how to reach the tools the
+ * rest of the instructions name, since its tool list holds only the three
+ * meta-tools. Empty in full mode.
+ */
+function discoveryModeSection(session: GatewaySession): string {
+	if (session.toolListMode !== "discovery") {
+		return "";
+	}
+	const example =
+		boundProjectId(session) === null
+			? "fabric_get_identity"
+			: "fabric_get_project";
+	return (
+		"## Discovery mode\n" +
+		`This connection lists three tools instead of its full tool list. Find tools with \`${SEARCH_TOOLS_NAME}\`, read a tool's definition with \`${GET_TOOL_SCHEMA_NAME}\`, and run it with \`${CALL_TOOL_NAME}\`, or call it by its real name once you know it. ` +
+		`Every tool these instructions name, such as \`${example}\`, is reached that way. ` +
+		`\`${SEARCH_TOOLS_NAME}\` and \`${GET_TOOL_SCHEMA_NAME}\` report whether a tool needs runtime authority.\n\n`
+	);
+}
 
 /**
  * The handshake's `instructions`: the organization-wide gateway's text as it
  * always was, or a project connection's, which says which project it is for and
- * leaves out what a connection to one project does not have.
+ * leaves out what a connection to one project does not have. Either is led by
+ * the discovery-mode section when the session was opened in that mode.
  */
 function gatewayInstructions(
 	clientName: string | undefined,
@@ -1406,6 +1592,8 @@ function gatewayInstructions(
 	const projectId = boundProjectId(session);
 	if (projectId === null) {
 		return (
+			discoveryModeSection(session) +
+			serverSelectionSection(session) +
 			ORGANIZATION_INTRODUCTION +
 			codingInstructionsSection(clientName, null) +
 			BOOTSTRAP_SECTION +
@@ -1413,6 +1601,7 @@ function gatewayInstructions(
 		);
 	}
 	return (
+		discoveryModeSection(session) +
 		projectIntroduction(projectId) +
 		codingInstructionsSection(clientName, projectId) +
 		BOOTSTRAP_SECTION
@@ -1447,6 +1636,25 @@ async function handleToolsList(
 	session: GatewaySession,
 	sessionId: string,
 ): Promise<NextResponse> {
+	// Discovery mode lists the three meta-tools and nothing else; the session's
+	// own tools are reached through them (see `handleDiscoveryToolCall`).
+	if (session.toolListMode === "discovery") {
+		return jsonRpcSuccess(
+			id,
+			{
+				tools: DISCOVERY_TOOL_DEFINITIONS.map((tool) => ({
+					name: tool.name,
+					description: tool.description,
+					inputSchema: tool.inputSchema,
+					...(tool.annotations
+						? { annotations: tool.annotations }
+						: {}),
+				})),
+			},
+			sessionId,
+		);
+	}
+
 	try {
 		const { tools, servers } = await getAggregatedTools(session);
 
@@ -1490,13 +1698,25 @@ async function handleToolsList(
 					? (resolveProviderKeyFromToolPrefix(prefix, servers)
 							?.providerKey ?? `custom:${prefix}`)
 					: `custom:${prefix}`;
-				const isAuthorized = authorizedProviders.has(providerKey);
+				// The classifier `enforceAuthority` uses: a read passes it
+				// without a grant, so only a write is marked as needing one.
+				const requiresAuthority = toolRequiresAuthority(session, t);
 
 				return {
 					...base,
 					_meta: {
-						requiresAuthority: true,
-						authorityStatus: isAuthorized ? "granted" : "missing",
+						requiresAuthority,
+						// Provider-wide, not per tool: a grant also matches on
+						// access level, tool scope and, for a one-shot grant, the
+						// request, so a write shown "granted" can still be refused.
+						...(requiresAuthority
+							? {
+									providerAuthorityStatus:
+										authorizedProviders.has(providerKey)
+											? "granted"
+											: "missing",
+								}
+							: {}),
 						providerKey,
 					},
 				};
@@ -1525,13 +1745,102 @@ async function handleToolsCall(
 		return jsonRpcError(id, -32602, "Missing tool name", sessionId);
 	}
 
-	try {
-		let result: {
-			content: Array<{ type: string; text: string }>;
-			isError?: boolean;
-		};
+	// The meta-tools exist only in discovery mode. In full mode their names
+	// reach the dispatch below and are answered "Unknown tool", as before the
+	// mode existed.
+	const result =
+		session.toolListMode === "discovery" && isDiscoveryToolName(toolName)
+			? await handleDiscoveryToolCall(
+					toolName,
+					toolArgs,
+					session,
+					sessionId,
+				)
+			: await dispatchToolCall(toolName, toolArgs, session, sessionId);
+	return jsonRpcSuccess(id, result, sessionId);
+}
 
-		if (toolName.startsWith("fabric_")) {
+/**
+ * Run one of discovery mode's meta-tools. `search_tools` and
+ * `get_tool_schema` read the session's aggregated tool list, the one
+ * `tools/list` and `dispatchToolCall` use. `call_tool` hands the named tool
+ * and its own arguments to `dispatchToolCall` with this request's session id,
+ * so it is checked and run as a direct call to that tool is.
+ */
+async function handleDiscoveryToolCall(
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	session: GatewaySession,
+	sessionId: string,
+): Promise<ToolCallResult> {
+	if (toolName === CALL_TOOL_NAME) {
+		const call = parseCallToolArguments(toolArgs);
+		if (!call.ok) {
+			return call.result;
+		}
+		return dispatchToolCall(call.name, call.arguments, session, sessionId);
+	}
+
+	try {
+		const { tools } = await getAggregatedTools(session);
+		return toolName === SEARCH_TOOLS_NAME
+			? searchTools(session, tools, toolArgs)
+			: getToolSchema(session, tools, toolArgs);
+	} catch (error) {
+		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "Tool execution failed because of an internal error.",
+					}),
+				},
+			],
+			isError: true,
+		};
+	}
+}
+
+/**
+ * Check and run one tool call: the server selection, then the platform tool,
+ * the project-bound refusal, or the connected tool with its scope check,
+ * runtime-authority gate and one-shot grant consumption. A direct
+ * `tools/call` and discovery mode's `call_tool` both run here, so the two
+ * cannot be checked differently.
+ *
+ * `sessionId` is the gateway session id of the HTTP request: the authority
+ * gate binds grants to it, and an organization switch is written back to it.
+ */
+export async function dispatchToolCall(
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	session: GatewaySession,
+	sessionId: string,
+): Promise<ToolCallResult> {
+	try {
+		let result: ToolCallResult;
+
+		// A tool the session's server selection leaves out is refused before
+		// any branch below can run it, request authority for it or contact its
+		// server. The selection is fixed when the session is created
+		// (`GatewaySession.serverSelection` is readonly), so nothing between
+		// this check and the dispatch can change its answer. Both executors
+		// repeat it, for any caller that reaches them another way.
+		if (!selectionAllowsTool(session, toolName)) {
+			result = {
+				content: [
+					{
+						type: "text" as const,
+						text: JSON.stringify({
+							error: selectionRefusalMessage(toolName),
+							hint: `The "${SERVER_SELECTION_PARAM}" parameter is read when a session is created. Connect with a URL that names this tool or its server, or without the parameter, to use it.`,
+						}),
+					},
+				],
+				isError: true,
+			};
+		} else if (isPlatformToolName(toolName)) {
 			// Platform tool
 			result = await executePlatformTool(toolName, toolArgs, session);
 
@@ -1581,14 +1890,13 @@ async function handleToolsCall(
 			// or write by the same classification the authority gate uses, and
 			// the key or sign-in must hold the matching scope before a runtime
 			// grant is even considered. An OAuth agent cannot hold `mcp:write`.
-			const requiredScope =
-				classifyConnectedToolAccess(
-					toolName,
-					annotations,
-					session.credential,
-				) === "READ"
-					? ({ scope: "mcp:read", kind: "read" } as const)
-					: ({ scope: "mcp:write", kind: "write" } as const);
+			// `connectedToolScope` is the check discovery mode's search
+			// filters on (`./gateway/tool-eligibility`).
+			const requiredScope = connectedToolScope(
+				toolName,
+				annotations,
+				session.credential,
+			);
 			if (
 				!scopeSatisfied(
 					session.scopes,
@@ -1596,21 +1904,17 @@ async function handleToolsCall(
 					session.credential,
 				)
 			) {
-				return jsonRpcSuccess(
-					id,
-					{
-						content: [
-							{
-								type: "text" as const,
-								text: JSON.stringify({
-									error: `This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
-								}),
-							},
-						],
-						isError: true,
-					},
-					sessionId,
-				);
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: JSON.stringify({
+								error: `This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
+							}),
+						},
+					],
+					isError: true,
+				};
 			}
 
 			// Generate request fingerprint for one-shot grant matching
@@ -1694,24 +1998,20 @@ async function handleToolsCall(
 			};
 		}
 
-		return jsonRpcSuccess(id, result, sessionId);
+		return result;
 	} catch (error) {
 		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
 
-		return jsonRpcSuccess(
-			id,
-			{
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({
-							error: "Tool execution failed because of an internal error.",
-						}),
-					},
-				],
-				isError: true,
-			},
-			sessionId,
-		);
+		return {
+			content: [
+				{
+					type: "text",
+					text: JSON.stringify({
+						error: "Tool execution failed because of an internal error.",
+					}),
+				},
+			],
+			isError: true,
+		};
 	}
 }

@@ -214,6 +214,11 @@
 			"import": "./lib/dispatch-guard.ts",
 			"default": "./lib/dispatch-guard.ts"
 		},
+		"./dispatch-deadline": {
+			"types": "./lib/dispatch-deadline.ts",
+			"import": "./lib/dispatch-deadline.ts",
+			"default": "./lib/dispatch-deadline.ts"
+		},
 		"./read-only-mode": {
 			"types": "./lib/read-only-mode.ts",
 			"import": "./lib/read-only-mode.ts",
@@ -263,6 +268,11 @@
 			"types": "./lib/attachment.ts",
 			"import": "./lib/attachment.ts",
 			"default": "./lib/attachment.ts"
+		},
+		"./context-download-class": {
+			"types": "./lib/context-download-class.ts",
+			"import": "./lib/context-download-class.ts",
+			"default": "./lib/context-download-class.ts"
 		},
 		"./ai-chat-attachment": {
 			"types": "./lib/ai-chat-attachment.ts",

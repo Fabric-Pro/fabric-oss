@@ -4,6 +4,7 @@ import {
 } from "@repo/database";
 import { Prisma } from "@repo/database/prisma/client";
 import { withRefreshLock } from "@repo/database/prisma/queries/lib/refresh-lock";
+import { invalidateChatGptPlanSourceCaches } from "./source-caches";
 import { chatGptPlanSourceLockKey } from "./sources";
 
 /**
@@ -16,8 +17,9 @@ import { chatGptPlanSourceLockKey } from "./sources";
  * it records from now on.
  *
  * Each move runs under the old source's refresh lock, inside that lock's
- * transaction: a refresh token is single-use, and a refresh racing the move
- * would otherwise store its rotated token on a row the move just deleted.
+ * transaction. Take-back also locks the user destination. A refresh token is
+ * single-use: a refresh racing the move would otherwise store its rotated
+ * token on a row the move just deleted.
  */
 
 export type ChatGptPlanMoveFailure =
@@ -50,9 +52,11 @@ async function moveSourceRows(
 	await tx.chatGptPlanSourceState.deleteMany({ where: to });
 	await tx.chatGptPlanServedModel.deleteMany({ where: to });
 	await tx.chatGptPlanBudgetObservation.deleteMany({ where: to });
+	await tx.chatGptPlanWindowAccuracy.deleteMany({ where: to });
 	await tx.chatGptPlanSourceState.updateMany({ where: from, data: to });
 	await tx.chatGptPlanServedModel.updateMany({ where: from, data: to });
 	await tx.chatGptPlanBudgetObservation.updateMany({ where: from, data: to });
+	await tx.chatGptPlanWindowAccuracy.updateMany({ where: from, data: to });
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -77,8 +81,9 @@ export async function shareOwnChatGptPlan(params: {
 	label: string;
 }): Promise<{ accountId: string }> {
 	const { userId, organizationId, label } = params;
+	let moved: { accountId: string };
 	try {
-		return await withRefreshLock(
+		moved = await withRefreshLock(
 			chatGptPlanSourceLockKey({ kind: "user", userId }),
 			async (tx) => {
 				const own = await tx.chatGptPlanCredential.findUnique({
@@ -144,6 +149,14 @@ export async function shareOwnChatGptPlan(params: {
 		}
 		throw error;
 	}
+	// Both keys now name other rows than this process may have cached.
+	invalidateChatGptPlanSourceCaches({ kind: "user", userId });
+	invalidateChatGptPlanSourceCaches({
+		kind: "org",
+		organizationId,
+		accountId: moved.accountId,
+	});
+	return moved;
 }
 
 /**
@@ -163,11 +176,16 @@ export async function takeBackSharedChatGptPlan(params: {
 	const { userId, organizationId, accountId } = params;
 	try {
 		await withRefreshLock(
-			chatGptPlanSourceLockKey({
-				kind: "org",
-				organizationId,
-				accountId,
-			}),
+			// Shared before own is the global order for operations taking both.
+			// The destination must also exclude connect/disconnect until commit.
+			[
+				chatGptPlanSourceLockKey({
+					kind: "org",
+					organizationId,
+					accountId,
+				}),
+				chatGptPlanSourceLockKey({ kind: "user", userId }),
+			],
 			async (tx) => {
 				const account = await tx.chatGptPlanOrgAccount.findFirst({
 					where: { id: accountId, organizationId },
@@ -237,4 +255,10 @@ export async function takeBackSharedChatGptPlan(params: {
 		}
 		throw error;
 	}
+	invalidateChatGptPlanSourceCaches({
+		kind: "org",
+		organizationId,
+		accountId,
+	});
+	invalidateChatGptPlanSourceCaches({ kind: "user", userId });
 }

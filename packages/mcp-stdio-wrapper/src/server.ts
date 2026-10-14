@@ -12,11 +12,12 @@
  *
  * Security:
  * - Internal-only middleware restricts access to private network
- * - Credentials passed via headers, injected as env vars to spawned processes
+ * - Credentials passed in the request body, injected as env vars to spawned
+ *   processes; a pooled process is replaced when they change
  * - Process-per-user isolation
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serve } from "@hono/node-server";
@@ -33,6 +34,7 @@ import {
 import { resolvePreinstalledCommand } from "./preinstalled-command";
 import {
 	getProcessPool,
+	hashCredentials,
 	type ProcessPoolConfig,
 	shutdownProcessPool,
 } from "./process-pool";
@@ -59,6 +61,12 @@ const McpCallRequestSchema = z.object({
 	configId: z.string(),
 	/** Credential environment variables (never logged) */
 	credentials: z.record(z.string(), z.string()).optional(),
+	/**
+	 * How fresh `credentials` are, compared element by element
+	 * (`compareCredentialsVersions`). A call whose credentials are older than
+	 * the pooled process's gets a process of its own instead of replacing it.
+	 */
+	credentialsVersion: z.array(z.number().finite()).max(8).optional(),
 });
 
 export type McpCallRequest = z.infer<typeof McpCallRequestSchema>;
@@ -91,10 +99,11 @@ async function materializeCredentialFiles(
 		return { resolved: credentials, cleanupPaths: [] };
 	}
 
-	const tmpDir = join(tmpdir(), `gdrive-mcp-${configId}-${Date.now()}`);
+	// A unique directory per creation: two creations for one config can run
+	// at once (each set of credentials gets its own process), and must not
+	// write over or delete each other's files. mkdtemp creates it with 0o700.
+	const tmpDir = await mkdtemp(join(tmpdir(), `gdrive-mcp-${configId}-`));
 	try {
-		await mkdir(tmpDir, { recursive: true, mode: 0o700 });
-
 		const resolved = { ...credentials };
 		// Remove the JSON content keys — they should not be passed as env vars
 		delete resolved.__GDRIVE_OAUTH_KEYS_JSON;
@@ -254,15 +263,21 @@ export function createServer(config: ServerConfig = {}): Hono {
 			organizationId,
 			configId,
 			credentials,
+			credentialsVersion,
 		} = request;
 
 		console.log(
 			`[MCP Call] method=${method}, configId=${configId}, userId=${userId.slice(0, 8)}...`,
 		);
 
+		// Set once the pool hands back a process, so a failure removes that
+		// process only (not a replacement started with newer credentials).
+		let transport: Awaited<ReturnType<typeof pool.getOrCreate>> | undefined;
 		try {
-			// Get or create transport using the pool's race-condition-safe method
-			const transport = await pool.getOrCreate(
+			// Get or create transport using the pool's race-condition-safe
+			// method. A pooled process started with other credentials (a
+			// refreshed token, a revoke or a reconnect) is replaced.
+			transport = await pool.getOrCreate(
 				userId,
 				organizationId ?? undefined,
 				configId,
@@ -341,6 +356,8 @@ export function createServer(config: ServerConfig = {}): Hono {
 
 					return { transport: newTransport, cleanupPaths };
 				},
+				hashCredentials(credentials),
+				credentialsVersion,
 			);
 
 			// Execute the MCP method
@@ -370,10 +387,19 @@ export function createServer(config: ServerConfig = {}): Hono {
 		} catch (error) {
 			console.error("[MCP Call] Error:", error);
 
-			// If the transport failed, remove it from pool so next request creates a fresh one
-			await pool
-				.remove(userId, organizationId ?? undefined, configId)
-				.catch(() => {});
+			// If the transport failed, remove it from pool so next request
+			// creates a fresh one. A failed creation pooled nothing: the factory
+			// already closed its process and deleted its files.
+			if (transport) {
+				await pool
+					.remove(
+						userId,
+						organizationId ?? undefined,
+						configId,
+						transport,
+					)
+					.catch(() => {});
+			}
 
 			return c.json(
 				{
@@ -385,6 +411,12 @@ export function createServer(config: ServerConfig = {}): Hono {
 				},
 				500,
 			);
+		} finally {
+			// Return the lease `getOrCreate` took: a process replaced while
+			// this request ran is closed once its last request is done.
+			if (transport) {
+				await pool.release(transport).catch(() => {});
+			}
 		}
 	});
 

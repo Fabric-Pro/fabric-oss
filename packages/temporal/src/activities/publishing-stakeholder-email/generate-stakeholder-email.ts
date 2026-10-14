@@ -109,6 +109,7 @@ import { collectPlanningContext } from "../publishing-planning/collect-planning-
 import {
 	assertGenerationActorAuthorized,
 	resolveContributorNames,
+	schemaMismatchDetail,
 } from "../publishing-shared";
 import {
 	boundSettledApprovals,
@@ -403,6 +404,7 @@ export async function generateStakeholderEmailActivity(
 		{
 			userId: actorUserId,
 			organizationId: organizationId ?? undefined,
+			projectId,
 			jobType: "publishing-stakeholder-email",
 		},
 	);
@@ -442,7 +444,7 @@ export async function generateStakeholderEmailActivity(
 		// raises, so both paths reach the same sentence.
 		if (NoObjectGeneratedError.isInstance(error)) {
 			throw ApplicationFailure.nonRetryable(
-				`Stakeholder email failed schema validation: ${error.message}`,
+				`Stakeholder email failed schema validation: ${error.message}${schemaMismatchDetail(error)}`,
 				"PUBLISHING_STAKEHOLDER_EMAIL_SCHEMA_VALIDATION_FAILED",
 			);
 		}

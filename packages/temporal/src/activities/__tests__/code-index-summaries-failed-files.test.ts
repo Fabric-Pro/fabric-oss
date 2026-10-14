@@ -97,6 +97,23 @@ describe("generateFileSummariesActivity — failedFiles", () => {
 		expect(result).toMatchObject({ summariesCreated: 2, failedFiles: 0 });
 	});
 
+	// Fizzy #2770: code-index embeddings landed in AI Usage with no project and
+	// no feature. The tags ride the tenant context into the usage row.
+	it("tags its embeddings with the project and the code-index keys", async () => {
+		await generateFileSummariesActivity({
+			...INPUT,
+			files: [file("a.ts", "export const a = 1;")],
+		});
+
+		expect(rag.generateEmbeddings).toHaveBeenCalledWith(expect.any(Array), {
+			userId: "user-1",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			featureKey: "code-index",
+			jobType: "code-index",
+		});
+	});
+
 	it("counts each unreadable file once", async () => {
 		const result = await generateFileSummariesActivity({
 			...INPUT,

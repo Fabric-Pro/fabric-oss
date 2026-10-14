@@ -194,6 +194,28 @@ describe("contextSummarizationWorkflow — degradation boundary", () => {
 		expect(activityStubs.embedSummaryActivity).not.toHaveBeenCalled();
 	});
 
+	it("records a spent ChatGPT plan with its own sentence and asks for no incident", async () => {
+		// Fizzy #2770: the shape Temporal gives a plan-spent activity failure.
+		const failure = Object.assign(new Error("Activity task failed"), {
+			name: "ActivityFailure",
+			cause: {
+				type: "SubscriptionPlanExhaustedError",
+				message: "Every ChatGPT plan is spent.",
+			},
+		});
+		activityStubs.generateSummaryActivity.mockRejectedValue(failure);
+
+		const out = await contextSummarizationWorkflow(INPUT);
+
+		expect(out).toEqual({ summaryId: "sum-1", status: "FAILED" });
+		expect(activityStubs.notifySummaryFailureActivity).toHaveBeenCalledWith(
+			expect.objectContaining({
+				error: "Every ChatGPT plan is spent.",
+				planSpent: true,
+			}),
+		);
+	});
+
 	it("does not raise a failure incident when there is no pending row yet", async () => {
 		// createPending itself throws before a summaryId exists → nothing to flip.
 		activityStubs.createPendingSummaryActivity.mockRejectedValue(

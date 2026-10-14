@@ -238,7 +238,15 @@ describe("startExecution — deterministic workflow id", () => {
 			"orchestratorExecutionWorkflow",
 			expect.objectContaining({
 				workflowId: "weave-exec-exec-1",
-				args: [expect.objectContaining({ weaveExecutionId: "exec-1" })],
+				// A person starts the execution: its steps, and the token each
+				// Weave agent gets, may use their ChatGPT plan (Fizzy #2770).
+				args: [
+					expect.objectContaining({
+						weaveExecutionId: "exec-1",
+						userId: "user-1",
+						planEligible: true,
+					}),
+				],
 			}),
 		);
 		expect(mockDb.weaveExecution.update).toHaveBeenCalledWith({

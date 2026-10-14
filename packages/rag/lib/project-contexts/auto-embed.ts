@@ -25,6 +25,7 @@ import {
 	getOrganizationRagSettings,
 	getProjectRagSettings,
 	markContextAsEmbedded,
+	setContextEnrichmentRetryAt,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
@@ -33,6 +34,7 @@ import {
 	chunkDescribedOpenApiSpec,
 	chunkText,
 	detectContentType,
+	type EnrichmentDeferral,
 	enrichChunksWithTenantContext,
 	routeContentForChunking,
 	type TextChunk,
@@ -116,6 +118,43 @@ export interface EmbedResult {
  * 2048 chars ≈ 512 tokens - the recommended baseline chunk size
  */
 const CHUNKING_THRESHOLD = 2048;
+
+/**
+ * How long a context stored without its enrichment waits before a re-embed is
+ * tried, when the spent plan did not say when its window resets.
+ */
+const ENRICHMENT_RETRY_FALLBACK_MS = 60 * 60 * 1000;
+
+/** When a deferred enrichment may be retried: the plan's reset, or a backoff. */
+function enrichmentRetryAt(
+	deferral: EnrichmentDeferral,
+	now: Date = new Date(),
+): Date {
+	return deferral.resetAt && deferral.resetAt.getTime() > now.getTime()
+		? deferral.resetAt
+		: new Date(now.getTime() + ENRICHMENT_RETRY_FALLBACK_MS);
+}
+
+/**
+ * Record on the context row whether its chunks still owe their contextual
+ * enrichment (Fizzy #2770). Best-effort: the vectors are already written, and
+ * a missed marker costs only retrieval quality, never the embed.
+ */
+async function recordEnrichmentOutcome(
+	contextId: string,
+	deferral: EnrichmentDeferral | null,
+): Promise<void> {
+	try {
+		await setContextEnrichmentRetryAt(
+			contextId,
+			deferral ? enrichmentRetryAt(deferral) : null,
+		);
+	} catch (error) {
+		logger.warn(
+			`[AutoEmbed] Could not record the enrichment outcome of context ${contextId}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+}
 
 /**
  * Map database ChunkSplitMethod to chunking strategy
@@ -508,6 +547,8 @@ async function embedContext(
 		if (!skipDbUpdate) {
 			await markContextAsEmbedded(contextId, qdrantId);
 		}
+		// A single chunk is never enriched, so nothing is owed any more.
+		await recordEnrichmentOutcome(contextId, null);
 
 		logger.info(
 			`[AutoEmbed] Successfully embedded context ${contextId} (single chunk)`,
@@ -624,12 +665,16 @@ async function embedWithChunking(
 			contentType: contentInfo.type,
 		});
 	}
+	let enrichmentDeferral: EnrichmentDeferral | null = null;
 	const enrichedChunks = await enrichChunksWithTenantContext(chunks, {
 		documentContent: content,
 		documentTitle: metadata?.filename || contextId,
 		userId,
 		organizationId,
 		projectId,
+		onEnrichmentDeferred: (deferral) => {
+			enrichmentDeferral = deferral;
+		},
 	});
 
 	logger.info(
@@ -751,6 +796,10 @@ async function embedWithChunking(
 	if (firstQdrantId && !skipDbUpdate) {
 		await markContextAsEmbedded(contextId, firstQdrantId);
 	}
+	// Written whatever `skipDbUpdate` says: the re-embed path skips the mark
+	// above for a ProjectContext row that still owes its enrichment, and on a
+	// row in another table the write matches nothing.
+	await recordEnrichmentOutcome(contextId, enrichmentDeferral);
 
 	logger.info(
 		`[AutoEmbed] Successfully embedded context ${contextId}: ${successCount}/${enrichedChunks.length} chunks`,

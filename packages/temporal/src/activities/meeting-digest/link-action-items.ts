@@ -41,6 +41,7 @@ import {
 	recordDecisionOutcome,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	ACTION_ITEM_LINK_VERSION,
 	type AutoLinkRow,
@@ -397,6 +398,7 @@ export async function linkMeetingActionItemsActivity(
 			userId,
 			organizationId: organizationId ?? undefined,
 			projectId,
+			jobType: "meeting-transcript-sync",
 		});
 	} catch (err) {
 		if (err instanceof AiUsageLimitExceededError) {
@@ -518,7 +520,9 @@ export async function linkMeetingActionItemsActivity(
 					capture,
 					count: candidates.length,
 				});
-				if (err instanceof AiUsageLimitExceededError) {
+				// A limit refused before an SDK retry arrives wrapped in a
+				// RetryError, and counts the same.
+				if (findAiUsageLimitError(err)) {
 					// The one decision failure that must NOT be retried through
 					// the language verifier: doing so would bill the very spend
 					// the limit refused. Counted as a verifier failure against

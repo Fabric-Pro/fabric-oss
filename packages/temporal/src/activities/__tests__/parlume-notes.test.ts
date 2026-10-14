@@ -1,3 +1,4 @@
+import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { writeParlumeNotes } from "../parlume-notes";
 
@@ -77,5 +78,45 @@ describe("Parlume meeting notes", () => {
 			}),
 		);
 		expect(mocks.trackUsage).toHaveBeenCalledOnce();
+	});
+
+	// Fizzy #2770: the notes may run on a shared ChatGPT plan, and the
+	// workflow waits for a reset when every plan is spent.
+	it("hands a spent plan to the workflow to wait on, without marking the notes failed", async () => {
+		const leaf = new SubscriptionPlanExhaustedError("No usage left", null);
+		mocks.generateText.mockRejectedValue(
+			Object.assign(new Error("Failed after 1 attempt."), {
+				name: "AI_RetryError",
+				lastError: leaf,
+				errors: [leaf],
+			}),
+		);
+
+		await expect(
+			writeParlumeNotes({ sessionId: "session-1" }),
+		).rejects.toBe(leaf);
+		expect(mocks.getModel).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ jobType: "parlume-meeting-notes" }),
+		);
+		expect(mocks.contextUpdate).not.toHaveBeenCalled();
+	});
+
+	it("marks the notes failed when the attempt after the wait is spent too", async () => {
+		mocks.generateText.mockRejectedValue(
+			new SubscriptionPlanExhaustedError("No usage left", null),
+		);
+
+		await writeParlumeNotes({ sessionId: "session-1", finalAttempt: true });
+
+		expect(mocks.contextUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: {
+					metadata: expect.objectContaining({
+						parlumeNotesStatus: "FAILED",
+					}),
+				},
+			}),
+		);
 	});
 });

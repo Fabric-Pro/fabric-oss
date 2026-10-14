@@ -151,6 +151,8 @@ export type GetFileMetadataHandler = (
 	url: string,
 	options?: {
 		bucket?: string;
+		/** Cancels the HEAD request itself, not just the wait for it. */
+		abortSignal?: AbortSignal;
 	},
 ) => Promise<{
 	size: number;

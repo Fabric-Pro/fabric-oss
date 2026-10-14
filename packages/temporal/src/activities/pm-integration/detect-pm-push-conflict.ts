@@ -28,6 +28,14 @@ export interface DetectAndStampPmPushConflictInput
 	 * — the single biggest cost when checking many items in a bulk loop.
 	 */
 	capabilities?: PMToolCapabilities;
+	/**
+	 * The attempt id of the run doing the push. When set, the CONFLICT stamp
+	 * applies only while the row still names this attempt (a newer enqueue's
+	 * PENDING is left alone); drift is still reported. Unset (a batch or auto
+	 * sync), the stamp is by id unless the row is PENDING for an attempt,
+	 * whose own run records its outcome; drift is still reported.
+	 */
+	pmSyncAttemptId?: string;
 }
 
 /**
@@ -97,7 +105,11 @@ export async function detectAndStampPmPushConflict(
 		if (computePmHash(snapshot.title, snapshot.description) === baseline) {
 			return { hasConflict: false };
 		}
-		await stampPmSyncConflict(itemType, input.itemId);
+		await stampPmSyncConflict(
+			itemType,
+			input.itemId,
+			input.pmSyncAttemptId,
+		);
 		return { hasConflict: true };
 	}
 
@@ -118,7 +130,11 @@ export async function detectAndStampPmPushConflict(
 	// original `isStoryLike` behavior: epic/feature conflicts are detected but
 	// not stamped here.
 	if (result.hasConflict && isStampable) {
-		await stampPmSyncConflict(itemType, input.itemId);
+		await stampPmSyncConflict(
+			itemType,
+			input.itemId,
+			input.pmSyncAttemptId,
+		);
 	}
 	return { hasConflict: result.hasConflict };
 }

@@ -29,9 +29,24 @@ const INTEGRATION_TESTS = [
 	// (advisory locks and conditional UPDATEs; a mocked client cannot show
 	// either honoured).
 	"__tests__/conversation-turn-admission.integration.test.ts",
+	// Conversation turn token ledger: reservations and settlements under the
+	// turn row lock (a mocked client cannot show the lock honoured).
+	"__tests__/conversation-turn-ledger.integration.test.ts",
 	// Advisor turn saves racing on one conversation under a row lock
 	// (Fizzy #2949); a mocked client cannot show the lock honoured.
 	"__tests__/save-conversation-turn.integration.test.ts",
+	// PM-sync status writes outside a run: which rows a NULL-aware
+	// "not PENDING" predicate matches (a mocked client cannot show SQL's
+	// three-valued comparison).
+	"__tests__/pm-sync-terminal-writes.integration.test.ts",
+	// Link to existing item: the conditional link write (a NULL claim
+	// matched exactly, a NULL status not read as PENDING) and the partial
+	// unique index on (projectId, externalId), which a mocked client cannot
+	// raise.
+	"__tests__/apply-pm-link.integration.test.ts",
+	// Unlink & re-create's claim clears refuse a claim younger than the
+	// recovery bound by the database clock (and one with no timestamp).
+	"__tests__/apply-pm-unlink-claim-age.integration.test.ts",
 	// Excalidraw default-MCP backfill migration replay.
 	// Requires DATABASE_URL to run the migration's data-write steps
 	// against a real Postgres. The test's

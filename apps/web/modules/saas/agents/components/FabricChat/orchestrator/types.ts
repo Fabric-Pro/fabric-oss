@@ -13,6 +13,7 @@ import type {
 	TaskStep,
 } from "@repo/temporal";
 import type { ChatTurnTruncation } from "../../../lib/chat-turn-truncation";
+import type { ChatGptPlanApiBilling } from "../../../lib/chatgpt-plan-api-billing";
 import type { ClarificationTurn } from "../../../lib/clarification-turns";
 
 interface ConversationDetail {
@@ -249,6 +250,8 @@ export interface CompletedExecution {
 	clarifications?: ClarificationTurn[];
 	/** The answer stopped at the output-token ceiling (review F25). */
 	truncated?: ChatTurnTruncation;
+	/** The turn ran on the organization's API billing (Fizzy #3048). */
+	apiBilling?: ChatGptPlanApiBilling;
 	plan?: {
 		id: string;
 		description: string;

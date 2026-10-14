@@ -29,6 +29,12 @@ export interface AtlasWorkflowInput {
 	 * false / default behaviour).
 	 */
 	fresh?: boolean;
+	/**
+	 * The run's history row, which is also what pauses for a ChatGPT plan
+	 * reset (Fizzy #2770). Absent on runs started before it existed: those
+	 * wait for the reset in the run instead of pausing.
+	 */
+	analysisRunId?: string;
 }
 
 export interface StartAnalysisPlan {

@@ -95,6 +95,7 @@ describe("startAnalysisProcedure intakeMode", () => {
 		expect(options.args[0]).toMatchObject({
 			projectId: "p1",
 			userId: "u1",
+			planEligible: true,
 			organizationId: "org-1",
 			userPrompt: baseInput.userPrompt,
 			intakeMode: "explore",

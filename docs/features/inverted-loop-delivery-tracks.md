@@ -300,7 +300,7 @@ Tenant-db + RLS registration.
 - Approve/reject: `projects.stories.stageRequests.{list,approve,reject}` with **`STORY_STAGE_APPROVE`**, and the approver must be in `ProjectStageApprover` (or an owner when the list is empty). Requester ≠ approver, no exceptions; a one-person project under `GOVERNED` is a misconfiguration surfaced in the UI.
 - Approval re-runs `transitionStory` with `reason: "approval"` inside the same transaction that flips the request to `APPROVED` (readiness re-evaluated at approval time).
 - Document tiers (`wizard/documents.ts:19-27`): when `documentTiersAdvisory`, `USER_STORY.prerequisites = []` and `getPrerequisiteHint` is advisory copy.
-- Enforcement flags per track (§1.1). Readiness panel always visible; `StartWorkButton` shows gaps and is disabled only when the relevant flag is on; hidden for `DEFER`.
+- Enforcement flags per track (§1.1). Readiness panel rendered in collapsible engagement profile row (hidden in Focus Mode); `StartWorkButton` shows gaps and is disabled only when the relevant flag is on; hidden for `DEFER`.
 
 **Tests (fail-closed).** SPECIFY without AC blocked when flag on, allowed with flag off but shown as advisory. SPIKE/DISCOVERY gates likewise. Generic update, enhance, restore, MCP create, Weave start-execution, kanban sync, queueForKanban all blocked under enforcement (one test per writer). GOVERNED: request created, story unchanged; self-approval rejected; non-approver rejected; approval re-runs readiness and fails if evidence vanished. Concurrency: two simultaneous transitions on one story → one wins the compare-and-swap; the other re-reads and receives `CONFLICT`. Readiness returns not-ready when evidence lookup throws.
 

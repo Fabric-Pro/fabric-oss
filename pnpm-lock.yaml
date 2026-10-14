@@ -1697,6 +1697,9 @@ importers:
       '@repo/utils':
         specifier: workspace:*
         version: link:../utils
+      '@vercel/functions':
+        specifier: ^3.6.2
+        version: 3.6.2(@aws-sdk/credential-provider-web-identity@3.972.74)
       ai:
         specifier: ^7.0.131
         version: 7.0.131(zod@4.3.6)
@@ -1931,6 +1934,9 @@ importers:
 
   packages/atlas:
     dependencies:
+      '@repo/agent-types':
+        specifier: workspace:*
+        version: link:../agent-types
       '@repo/ai':
         specifier: workspace:*
         version: link:../ai
@@ -2499,6 +2505,10 @@ importers:
         version: 5.9.3
 
   packages/letta:
+    dependencies:
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../utils
     devDependencies:
       '@types/node':
         specifier: ^20.14.0
@@ -3001,6 +3011,9 @@ importers:
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../utils
     devDependencies:
       '@repo/tsconfig':
         specifier: workspace:*
@@ -28969,7 +28982,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@20.19.27)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@26.1.0(bufferutil@4.0.9)(supports-color@10.2.2)(utf-8-validate@5.0.10))(vite@7.3.6(@types/node@20.19.27)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@29.0.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.20.6)(yaml@2.9.0))
 
   '@vitest/expect@4.1.11':
     dependencies:

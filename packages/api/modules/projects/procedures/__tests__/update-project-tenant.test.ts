@@ -56,6 +56,11 @@ vi.mock("../../lib/code-indexing-trigger", () => ({
 		mockStartCodeIndexing(...a),
 	cancelCodeIndexingForRepo: vi.fn(),
 }));
+const mockCancelPausedSetups = vi.fn();
+vi.mock("../../lib/paused-setup", () => ({
+	cancelPausedSetupsOfProject: (...a: unknown[]) =>
+		mockCancelPausedSetups(...a),
+}));
 vi.mock("../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: (options: unknown) => options,
 }));
@@ -119,6 +124,67 @@ beforeEach(() => {
 	mockIssueAIToken.mockResolvedValue("ai-token");
 	mockWorkflowStart.mockResolvedValue({ workflowId: "wf-1" });
 	mockStartCodeIndexing.mockResolvedValue({ started: 0, skipped: [] });
+	mockCancelPausedSetups.mockResolvedValue(0);
+});
+
+describe("updateProjectProcedure — relinking a repository starts a setup (Fizzy #2770)", () => {
+	const relink = {
+		id: "proj-1",
+		repositoryUrl: "https://github.com/example-org/repo",
+		repositoryOwner: "example-org",
+		repositoryName: "repo",
+	};
+	const context = { user: { id: "user-1" }, session: { id: "s" } };
+
+	function analysisReads(codeAnalysisStatus: string) {
+		mockUpdateProject.mockResolvedValue({
+			id: "proj-1",
+			name: "Proj",
+			codeAnalysisStatus,
+			projectTypes: [],
+		});
+	}
+
+	it("runs it as project-setup work, on the shared ChatGPT plans", async () => {
+		const handler = await loadHandler();
+		await handler({ input: relink, context });
+
+		expect(mockIssueAIToken).toHaveBeenCalledWith(
+			expect.objectContaining({ jobType: "project-setup" }),
+		);
+		const [workflowType, options] = mockWorkflowStart.mock.calls[0];
+		expect(workflowType).toBe("existingProjectSetupWorkflow");
+		expect((options as { args: unknown[] }).args[0]).toMatchObject({
+			jobType: "project-setup",
+		});
+	});
+
+	it("cancels a setup paused for a plan reset first, then starts the new one", async () => {
+		analysisReads("SCANNING");
+		mockCancelPausedSetups.mockResolvedValue(1);
+
+		const handler = await loadHandler();
+		await handler({ input: relink, context });
+
+		expect(mockCancelPausedSetups).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: PROJECT_ORG,
+			userId: "user-1",
+		});
+		expect(mockWorkflowStart).toHaveBeenCalledTimes(1);
+		expect(mockCancelPausedSetups.mock.invocationCallOrder[0]).toBeLessThan(
+			mockWorkflowStart.mock.invocationCallOrder[0],
+		);
+	});
+
+	it("starts nothing while a setup is really running", async () => {
+		analysisReads("SCANNING");
+
+		const handler = await loadHandler();
+		await handler({ input: relink, context });
+
+		expect(mockWorkflowStart).not.toHaveBeenCalled();
+	});
 });
 
 describe("updateProjectProcedure — tenant comes from the project", () => {

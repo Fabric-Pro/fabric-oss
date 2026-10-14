@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 	routeContentForChunking: vi.fn(),
 	getProjectRagSettings: vi.fn(),
 	markContextAsEmbedded: vi.fn(),
+	setContextEnrichmentRetryAt: vi.fn(),
 }));
 
 vi.mock("../store", () => ({
@@ -53,6 +54,7 @@ vi.mock("@repo/database", () => ({
 	getProjectRagSettings: mocks.getProjectRagSettings,
 	getDefaultRagSettings: vi.fn(),
 	markContextAsEmbedded: mocks.markContextAsEmbedded,
+	setContextEnrichmentRetryAt: mocks.setContextEnrichmentRetryAt,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -212,5 +214,93 @@ describe("reembedProjectContext", () => {
 			[pointFor("ctx-1-chunk-0"), pointFor("ctx-1-chunk-1")],
 			ORG,
 		);
+	});
+});
+
+describe("embedProjectContext — enrichment owed after a spent ChatGPT plan (Fizzy #2770)", () => {
+	beforeEach(() => {
+		mocks.listProjectContextPointIds.mockResolvedValue([]);
+		mocks.chunkText.mockReturnValue(chunks(3));
+	});
+
+	it("records the plan's reset on the row when chunks were stored unenriched", async () => {
+		const resetAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+		mocks.enrichChunksWithTenantContext.mockImplementation(
+			async (
+				input: Array<{ index: number; content: string }>,
+				opts: {
+					onEnrichmentDeferred?: (d: {
+						resetAt: Date | null;
+						unenrichedCount: number;
+					}) => void;
+				},
+			) => {
+				opts.onEnrichmentDeferred?.({
+					resetAt,
+					unenrichedCount: input.length,
+				});
+				return input.map((chunk) => ({
+					...chunk,
+					enrichedContent: chunk.content,
+					originalContent: chunk.content,
+				}));
+			},
+		);
+
+		const result = await reembedProjectContext(options(LONG));
+
+		expect(result.success).toBe(true);
+		expect(mocks.setContextEnrichmentRetryAt).toHaveBeenCalledWith(
+			"ctx-1",
+			resetAt,
+		);
+	});
+
+	it("falls back to a backoff when the plan named no reset", async () => {
+		mocks.enrichChunksWithTenantContext.mockImplementation(
+			async (
+				input: Array<{ index: number; content: string }>,
+				opts: {
+					onEnrichmentDeferred?: (d: {
+						resetAt: Date | null;
+						unenrichedCount: number;
+					}) => void;
+				},
+			) => {
+				opts.onEnrichmentDeferred?.({
+					resetAt: null,
+					unenrichedCount: input.length,
+				});
+				return input.map((chunk) => ({
+					...chunk,
+					enrichedContent: chunk.content,
+					originalContent: chunk.content,
+				}));
+			},
+		);
+		const before = Date.now();
+
+		await reembedProjectContext(options(LONG));
+
+		const retryAt = mocks.setContextEnrichmentRetryAt.mock
+			.calls[0][1] as Date;
+		expect(retryAt.getTime()).toBeGreaterThan(before + 30 * 60 * 1000);
+	});
+
+	it("clears the marker when every chunk was enriched", async () => {
+		await reembedProjectContext(options(LONG));
+
+		expect(mocks.setContextEnrichmentRetryAt).toHaveBeenCalledWith(
+			"ctx-1",
+			null,
+		);
+	});
+
+	it("records nothing when the embed fails", async () => {
+		mocks.storeProjectContext.mockRejectedValue(new Error("qdrant down"));
+
+		await reembedProjectContext(options(LONG));
+
+		expect(mocks.setContextEnrichmentRetryAt).not.toHaveBeenCalled();
 	});
 });

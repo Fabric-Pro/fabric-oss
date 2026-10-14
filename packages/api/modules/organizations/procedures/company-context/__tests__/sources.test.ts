@@ -2625,6 +2625,60 @@ describe("downloading", () => {
 		).toBe("BAD_REQUEST");
 	});
 
+	it("refuses to sign a file whose original object is gone from storage", async () => {
+		storeSources([
+			sourceRow({
+				id: "src_lost",
+				type: "FILE",
+				s3Path: `${ORG}/company-context/lost.pdf`,
+				s3Bucket: "contexts-bucket",
+				originalFilename: "lost.pdf",
+			}),
+		]);
+		mocks.getFileMetadata.mockResolvedValueOnce(null);
+
+		expect(
+			await rejection(
+				call(
+					createCompanyContextDownloadUrlProcedure,
+					{ organizationId: ORG, sourceId: "src_lost" },
+					"u_member",
+				),
+			),
+		).toBe("BAD_REQUEST");
+		expect(mocks.getFileMetadata).toHaveBeenCalledWith(
+			`${ORG}/company-context/lost.pdf`,
+			expect.objectContaining({ bucket: "contexts-bucket" }),
+		);
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("returns a retriable error, not a signed link, when storage does not answer the check", async () => {
+		storeSources([
+			sourceRow({
+				id: "src_file",
+				type: "FILE",
+				s3Path: `${ORG}/company-context/deck.pdf`,
+				s3Bucket: "contexts-bucket",
+				originalFilename: "deck.pdf",
+			}),
+		]);
+		mocks.getFileMetadata.mockRejectedValueOnce(
+			new Error("Could not get file metadata from S3"),
+		);
+
+		expect(
+			await rejection(
+				call(
+					createCompanyContextDownloadUrlProcedure,
+					{ organizationId: ORG, sourceId: "src_file" },
+					"u_member",
+				),
+			),
+		).toBe("SERVICE_UNAVAILABLE");
+		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+
 	it("exports a website's crawled pages as one Markdown file under the organization's prefix", async () => {
 		storeSources([
 			sourceRow({

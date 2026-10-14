@@ -43,6 +43,7 @@ import {
 import {
 	type DataConnectionProvider,
 	getProviderMetadata,
+	isHiddenIntegrationProvider,
 	PROVIDER_CATEGORIES,
 } from "../lib/providers";
 import { ActionOnlyProviderCard } from "./ActionOnlyProviderCard";
@@ -295,9 +296,17 @@ export function ConnectionsPageContent({
 	const allProviders = useMemo(
 		() =>
 			PROVIDER_CATEGORIES.flatMap((c) => c.providers).filter(
-				(p) => linearIntegrationEnabled || p !== "LINEAR",
+				(p) =>
+					(linearIntegrationEnabled || p !== "LINEAR") &&
+					(!isHiddenIntegrationProvider(p) ||
+						searchConnectedProviders.has(p) ||
+						actionConnectedProviders.has(p)),
 			),
-		[linearIntegrationEnabled],
+		[
+			linearIntegrationEnabled,
+			searchConnectedProviders,
+			actionConnectedProviders,
+		],
 	);
 
 	const filteredProviders = useMemo(() => {

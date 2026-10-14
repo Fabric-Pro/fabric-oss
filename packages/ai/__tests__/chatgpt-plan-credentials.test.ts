@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = {
+	id: string;
 	userId: string;
 	clientId: string;
 	encryptedAccessToken: string;
@@ -42,11 +43,23 @@ const tx = vi.hoisted(() => ({
 			store.row = { ...(store.row as Row), ...data };
 			return { ...store.row };
 		},
-		updateMany: async ({ data }: { data: Partial<Row> }) => {
-			if (store.row) {
-				store.row = { ...store.row, ...data };
+		updateMany: async ({
+			where,
+			data,
+		}: {
+			where: Partial<Row>;
+			data: Partial<Row>;
+		}) => {
+			if (
+				!store.row ||
+				!Object.entries(where).every(
+					([key, value]) => store.row?.[key as keyof Row] === value,
+				)
+			) {
+				return { count: 0 };
 			}
-			return { count: store.row ? 1 : 0 };
+			store.row = { ...store.row, ...data };
+			return { count: 1 };
 		},
 	},
 }));
@@ -78,8 +91,11 @@ const deleteSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/database", () => ({
 	getChatGptPlanCredential: async () => (store.row ? { ...store.row } : null),
-	upsertChatGptPlanCredential: vi.fn(),
-	deleteChatGptPlanCredential: async (userId: string) => {
+	upsertChatGptPlanCredential: vi.fn(async () => ({ id: "cred_1" })),
+	deleteChatGptPlanCredentialUnderLock: async (
+		_tx: unknown,
+		userId: string,
+	) => {
 		deleteSpy(userId);
 		const had = store.row !== null;
 		store.row = null;
@@ -100,6 +116,7 @@ const NOW = Date.parse("2026-10-06T12:00:00Z");
 
 function row(overrides: Partial<Row> = {}): Row {
 	return {
+		id: "example-credential",
 		userId: "user_1",
 		clientId: "oaiapp_1",
 		encryptedAccessToken: "encrypted:old-access",

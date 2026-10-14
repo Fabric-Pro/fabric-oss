@@ -38,6 +38,10 @@ import {
 	recoveredAcceptanceCriteria,
 	separateEmbeddedAcceptanceCriteria,
 } from "@repo/utils/clean-spec-content";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { z } from "zod";
 import { classifyWorkItem } from "./classify-work-item";
 import {
@@ -421,6 +425,9 @@ async function draftFeatureWithAI({
 		}
 		return separated;
 	} catch (error) {
+		// Inside a chat turn, a stop or a token-allowance refusal is not a
+		// drafting failure to fall back from with a raw-field story.
+		rethrowIfDispatchStopped(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			return null;
 		}
@@ -832,6 +839,10 @@ export async function createStoryFromProposal(
 				storyKind: effectiveKind,
 			},
 		);
+		// Nothing is created once the chat turn this runs in has stopped or
+		// used its token allowance: refused here, and `createStory` checks
+		// again immediately before each of its writes, after its own reads.
+		throwIfDispatchStopped();
 		const story = await createStory({
 			projectId: params.projectId,
 			statusId: params.statusId,
@@ -906,6 +917,13 @@ export async function createStoryFromProposal(
 	const liveResult =
 		liveSettled.status === "fulfilled" ? liveSettled.value : null;
 
+	// A context fetch refused because the chat turn stopped or used its
+	// token allowance is not a missing context to draft without.
+	for (const settled of [projectSettled, ragSettled, liveSettled]) {
+		if (settled.status === "rejected") {
+			rethrowIfDispatchStopped(settled.reason);
+		}
+	}
 	if (ragSettled.status === "rejected") {
 		logger.warn("[createStoryFromProposal] RAG context fetch failed", {
 			error:
@@ -986,6 +1004,10 @@ export async function createStoryFromProposal(
 			effectiveKind === "BUG" && !params.title.trim()
 				? "Untitled bug"
 				: params.title;
+		// Nothing is created once the chat turn this runs in has stopped or
+		// used its token allowance: refused here, and `createStory` checks
+		// again immediately before each of its writes, after its own reads.
+		throwIfDispatchStopped();
 		const story = await createStory({
 			projectId: params.projectId,
 			statusId: params.statusId,
@@ -1041,6 +1063,8 @@ export async function createStoryFromProposal(
 		resolvedTitle,
 	);
 
+	// Refused here and checked again inside `createStory` (see above).
+	throwIfDispatchStopped();
 	const story = await createStory({
 		projectId: params.projectId,
 		statusId: params.statusId,
@@ -1072,6 +1096,9 @@ export async function createStoryFromProposal(
 		trackSetBy: params.trackSetBy,
 	});
 
+	// Immediately before the write: `createFeatureVersion` awaits nothing
+	// before its upsert.
+	throwIfDispatchStopped();
 	const version = await createFeatureVersion({
 		storyId: story.id,
 		version: 1,

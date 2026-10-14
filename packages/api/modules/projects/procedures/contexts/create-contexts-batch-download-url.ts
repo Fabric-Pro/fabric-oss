@@ -94,6 +94,7 @@ import {
 	getSignedUrl,
 	putObjectStream,
 } from "@repo/storage";
+import { classifyContext } from "@repo/utils/context-download-class";
 import archiver from "archiver";
 import { z } from "zod";
 import {
@@ -104,10 +105,7 @@ import {
 } from "../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 import { buildContextTextPayload } from "../../lib/build-context-text-payload";
-import {
-	classifyContext,
-	dedupeFilename,
-} from "../../lib/context-classification";
+import { dedupeFilename } from "../../lib/context-classification";
 import { contextDownloadFilename } from "../../lib/context-download-filename";
 import {
 	buildContextDownloadManifest,

@@ -16,12 +16,14 @@ import {
 	Experimental_DecisionRefusalError,
 	experimental_decide,
 	InvalidResponseDataError,
+	RetryError,
 } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createDecisionCapture,
 	decisionAnswerConfidence,
 	decisionModelLabel,
+	decisionOutcomeForError,
 	recordDecisionOutcome,
 	wrapDecisionModelWithTelemetry,
 } from "../decision-telemetry";
@@ -486,6 +488,34 @@ describe("recordDecisionOutcome", () => {
 			"refused",
 		]);
 		expect(await everythingExported()).not.toContain(SENTINEL);
+	});
+
+	it("classifies a usage limit the SDK wrapped in a RetryError as limit_exceeded, and any other RetryError as failed", () => {
+		const limit = new AiUsageLimitExceededError({
+			message: "limit",
+			limitId: "limit-1",
+			dimension: "COST_USD" as never,
+			window: "MONTHLY" as never,
+			used: BigInt(1),
+			max: BigInt(1),
+			manageLimitsUrl: "https://example.com/limits",
+		});
+		const retry = (errors: unknown[]) =>
+			new RetryError({
+				message: "Failed after 2 attempts",
+				reason: "errorNotRetryable",
+				errors,
+			});
+
+		expect(decisionOutcomeForError(retry([new Error("a"), limit]))).toBe(
+			"limit_exceeded",
+		);
+		expect(decisionOutcomeForError(retry([limit, new Error("b")]))).toBe(
+			"limit_exceeded",
+		);
+		expect(
+			decisionOutcomeForError(retry([new Error("a"), new Error("b")])),
+		).toBe("failed");
 	});
 
 	it("treats an error before any decision model was resolved as unavailable, but keeps a usage limit", async () => {

@@ -18,6 +18,7 @@ import type { AtlasStatus } from "@repo/atlas/types";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { format } from "date-fns";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NAVIGATE_TO_SETTINGS_TAB_EVENT } from "../../settings-tab-navigation";
 
@@ -178,6 +179,7 @@ function renderBar(
 		repositories?: NonNullable<AtlasStatus["repository"]>[];
 		repositoryIntegrationId?: string | null;
 		onRepoChange?: (id: string | null) => void;
+		planPausedResumesAt?: string | null;
 	},
 ) {
 	const queryClient = new QueryClient({
@@ -198,6 +200,7 @@ function renderBar(
 				repositories={extra?.repositories}
 				repositoryIntegrationId={extra?.repositoryIntegrationId}
 				onRepoChange={extra?.onRepoChange}
+				planPausedResumesAt={extra?.planPausedResumesAt}
 			/>
 		</QueryClientProvider>,
 	);
@@ -239,6 +242,44 @@ beforeEach(() => {
 // ----------------------------------------------------------------------------
 // Credential state machine
 // ----------------------------------------------------------------------------
+
+describe("AtlasStatusBar — re-run paused for a ChatGPT plan reset", () => {
+	it("disables Re-analyse and says when the paused run resumes", async () => {
+		const user = userEvent.setup();
+		const resumesAt = "2026-10-12T18:00:00.000Z";
+		renderBar(buildStatus({ waitingForPlan: true }), {
+			planPausedResumesAt: resumesAt,
+		});
+
+		const reanalyze = screen.getByRole("button", { name: /reanalyze/ });
+		expect(reanalyze).toBeDisabled();
+
+		await user.hover(reanalyze.closest("span") as HTMLElement);
+		const time = format(new Date(resumesAt), "HH:mm");
+		const tips = await screen.findAllByText(
+			`title · resumesAt:${JSON.stringify({ time })}`,
+		);
+		expect(tips.length).toBeGreaterThan(0);
+	});
+
+	it("says it resumes shortly before the resume time loads", async () => {
+		const user = userEvent.setup();
+		renderBar(buildStatus({ waitingForPlan: true }));
+
+		const reanalyze = screen.getByRole("button", { name: /reanalyze/ });
+		expect(reanalyze).toBeDisabled();
+		await user.hover(reanalyze.closest("span") as HTMLElement);
+		expect(
+			(await screen.findAllByText("title · resumesSoon")).length,
+		).toBeGreaterThan(0);
+	});
+
+	it("keeps Re-analyse enabled when nothing is paused", () => {
+		renderBar(buildStatus({ waitingForPlan: false }));
+
+		expect(screen.getByRole("button", { name: /reanalyze/ })).toBeEnabled();
+	});
+});
 
 describe("AtlasStatusBar — credential states", () => {
 	it("ACTIVE: no credential chip, no Reconnect, Re-analyse enabled", () => {

@@ -51,6 +51,21 @@ describe("publishingFailureDetail", () => {
 		expect(detail.detail).toContain("received");
 	});
 
+	it("tells the reader to add context when a short post came back with no post text", () => {
+		const detail = publishingFailureDetail(
+			ApplicationFailure.nonRetryable(
+				'Short post came back with no post text in any option: [{"path":["options",0,"text"]}]',
+				"PUBLISHING_SHORT_POST_NO_POST_TEXT",
+			),
+		);
+
+		expect(detail.message).toContain("Add context to the topic");
+		expect(detail.message).not.toContain(
+			"Generating again usually clears it",
+		);
+		expect(detail.detail).toContain("no post text");
+	});
+
 	it("gives an unknown failure the neutral message, and keeps its text for the log", () => {
 		// Fail-closed, and the direction that matters: a failure class nobody
 		// thought about must not start rendering third-party text by being

@@ -10,6 +10,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { runOutsideDispatchGuard } from "@repo/utils/dispatch-guard";
 import {
 	DISTANCE_METRIC,
 	qdrantClient,
@@ -380,6 +381,13 @@ async function createCollection(
 
 		collectionLayoutCache.delete(collectionName);
 	} catch (error) {
+		// The creation may have gone through before the failure (a create
+		// that timed out after Qdrant applied it, or a 409 because another
+		// worker created it first). Drop the cached "does not exist" from the
+		// check before it, so the next call asks Qdrant again instead of
+		// trying to create the collection for the rest of the cache's TTL.
+		collectionExistsCache.delete(collectionName);
+		collectionLayoutCache.delete(collectionName);
 		logger.error(
 			`[CollectionManager] Failed to create collection ${collectionName}: ${error}`,
 		);
@@ -521,11 +529,30 @@ async function ensurePayloadIndexes(
 /**
  * Ensure a collection exists, creating it if necessary
  *
+ * Provisioning — creating the collection, its payload indexes, enabling
+ * sparse vectors — runs outside the caller's dispatch guard
+ * (`runOutsideDispatchGuard`). It carries none of the caller's content, and
+ * concurrent callers share one in-flight creation (`collectionsBeingCreated`),
+ * so a stop belonging to one caller (an Advisor chat turn that was stopped)
+ * must neither refuse it nor reach the others through that shared promise.
+ * A stopped turn's own content write after this (its point upsert or
+ * delete) is still refused by the Qdrant client's check
+ * (`vector-store/client.ts`).
+ *
  * @param baseCollection - The base collection name
  * @param organizationId - Optional organization ID for org-specific collections
  * @returns The collection name (created if necessary)
  */
-export async function ensureCollection(
+export function ensureCollection(
+	baseCollection: BaseCollectionName,
+	organizationId?: string | null,
+): Promise<string> {
+	return runOutsideDispatchGuard(() =>
+		provisionCollection(baseCollection, organizationId),
+	);
+}
+
+async function provisionCollection(
 	baseCollection: BaseCollectionName,
 	organizationId?: string | null,
 ): Promise<string> {
@@ -559,18 +586,24 @@ export async function ensureCollection(
 	return collectionName;
 }
 
-export async function getCollectionLayout(
+/**
+ * The collection's layout, provisioning it first. Runs outside the caller's
+ * dispatch guard, as `ensureCollection` does and for the same reason.
+ */
+export function getCollectionLayout(
 	baseCollection: BaseCollectionName,
 	organizationId?: string | null,
 ): Promise<CollectionLayout> {
-	const collectionName = await ensureCollection(
-		baseCollection,
-		organizationId,
-	);
-	return ensureHybridCompatibility(
-		collectionName,
-		COLLECTION_CONFIGS[baseCollection],
-	);
+	return runOutsideDispatchGuard(async () => {
+		const collectionName = await provisionCollection(
+			baseCollection,
+			organizationId,
+		);
+		return ensureHybridCompatibility(
+			collectionName,
+			COLLECTION_CONFIGS[baseCollection],
+		);
+	});
 }
 
 /**

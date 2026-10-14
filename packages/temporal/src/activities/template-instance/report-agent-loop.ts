@@ -19,6 +19,7 @@ import { withRollingCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { db, resolveReportMcpConfig } from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
+import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import {
 	boundGatheredData,
 	DEFAULT_GATHERED_DATA_MAX_BYTES,
@@ -2232,6 +2233,14 @@ export async function executeAgentDataGatheringLoop(
 			mcpDiagnostics: diagnostics,
 		};
 	} catch (error) {
+		// A scheduled run's spent ChatGPT plan is its workflow's to handle: it
+		// waits for a reset and runs the loop once more (Fizzy #2770).
+		const planRefusal = jobType
+			? findWorkflowHandledPlanRefusal(error)
+			: null;
+		if (planRefusal) {
+			throw planRefusal;
+		}
 		console.error(
 			`[AgentLoop] ===== EXECUTION FAILED (${executionId}) =====`,
 		);

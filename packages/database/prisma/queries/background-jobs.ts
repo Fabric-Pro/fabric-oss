@@ -400,7 +400,7 @@ export async function openExclusiveBackgroundJob(
  */
 export async function ensureRunningBackgroundJob(
 	args: CreateBackgroundJobArgs & {
-		reopenFailedWithClass?: string;
+		reopenFailedWithClass?: string | readonly string[];
 		/**
 		 * Make an ORDERED claim for the chain in `runId`, started at this time.
 		 * For workflows that reuse one workflow id across execution chains and
@@ -455,7 +455,10 @@ export async function ensureRunningBackgroundJob(
 					workflowId: args.workflowId,
 					sourceId,
 					status: "FAILED",
-					errorClass: args.reopenFailedWithClass,
+					errorClass:
+						typeof args.reopenFailedWithClass === "string"
+							? args.reopenFailedWithClass
+							: { in: [...args.reopenFailedWithClass] },
 				},
 				orderBy: { createdAt: "desc" },
 				// `steps` is selected because the close that failed this row swept

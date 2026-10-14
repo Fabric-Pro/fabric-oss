@@ -10,6 +10,7 @@ import {
 	ChatgptPlanModelList,
 	type ChatgptPlanModelListTask,
 } from "../chatgpt-plan-models/ChatgptPlanModelList";
+import { ChatgptConnectSteps } from "./ChatgptConnectSteps";
 
 const CLI_CALLBACK_PATH = "/fabric/callback";
 
@@ -126,11 +127,22 @@ export function ConnectChatgptPlanForm({
 		);
 	}
 
-	if (status === "done" || status === "cancelled") {
+	if (status === "cancelled") {
 		return (
 			<p className="text-sm" role="status">
-				{status === "done" ? t("returnToTerminal") : t("cancelled")}
+				{t("cancelled")}
 			</p>
+		);
+	}
+
+	if (status === "done") {
+		return (
+			<div className="space-y-5">
+				<p className="text-sm" role="status">
+					{t("returnToTerminal")}
+				</p>
+				<ChatgptConnectSteps current={3} />
+			</div>
 		);
 	}
 
@@ -142,6 +154,8 @@ export function ConnectChatgptPlanForm({
 					{t("description", { email })}
 				</p>
 			</div>
+
+			<ChatgptConnectSteps current={2} />
 
 			<fieldset className="space-y-3">
 				<legend className="mb-2 font-medium text-sm">
@@ -207,7 +221,7 @@ export function ConnectChatgptPlanForm({
 /**
  * `fabric connect chatgpt --org <slug> --shared` (Fizzy #2770): an admin
  * connects a ChatGPT account the organization shares. `organization` is null
- * when the person does not administer it or pooling is off there.
+ * when the person does not administer it or ChatGPT plans are off there.
  */
 export function ConnectSharedChatgptPlanForm({
 	organization,
@@ -282,13 +296,24 @@ export function ConnectSharedChatgptPlanForm({
 		}
 	};
 
-	if (status === "done" || status === "cancelled") {
+	if (status === "cancelled") {
 		return (
 			<p className="text-sm" role="status">
-				{status === "done"
-					? t("returnToTerminal")
-					: tConnect("cancelled")}
+				{tConnect("cancelled")}
 			</p>
+		);
+	}
+
+	if (status === "done") {
+		return (
+			<div className="space-y-5">
+				<p className="text-sm" role="status">
+					{t("returnToTerminal", {
+						organization: organization.name,
+					})}
+				</p>
+				<ChatgptConnectSteps current={3} shared />
+			</div>
 		);
 	}
 
@@ -300,6 +325,8 @@ export function ConnectSharedChatgptPlanForm({
 					{t("description", { organization: organization.name })}
 				</p>
 			</div>
+
+			<ChatgptConnectSteps current={2} shared />
 
 			{organization.models && organization.models.length > 0 ? (
 				<div className="space-y-1">

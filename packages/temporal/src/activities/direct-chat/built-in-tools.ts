@@ -5,7 +5,7 @@
  * Agent-bound chats can opt into explicit Fabric tool IDs for deterministic behavior.
  */
 
-import { resolveOpenAiApiKey, tool } from "@repo/ai";
+import { tool } from "@repo/ai";
 import {
 	canCreateProjectStory,
 	db,
@@ -17,8 +17,13 @@ import {
 import { createProvider, type WebSearchResult } from "@repo/search";
 import { uploadFile } from "@repo/storage";
 import { decryptApiKey, getBaseUrl } from "@repo/utils";
+import {
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { z } from "zod";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
+import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
@@ -224,7 +229,9 @@ async function createWebSearchTool(
 						category: "general",
 					});
 
-					// Fire-and-forget: increment usage count without blocking the result
+					// Fire-and-forget: increment usage count without blocking the result.
+					// Inside a chat turn that stopped during the search, the helper
+					// refuses the write itself; the rejection is only logged.
 					(organizationId
 						? incrementOrganizationSearchProviderUsage({
 								organizationId,
@@ -1325,7 +1332,11 @@ export async function createFabricTool(
 						const slug = await slugP;
 
 						// Best-effort telemetry persistence — story creation must
-						// not fail on a metadata-write hiccup.
+						// not fail on a metadata-write hiccup. Each write from
+						// here on first checks that the chat turn this runs in
+						// has not stopped or used its token allowance (outside
+						// the try, so the catch never absorbs the stop).
+						throwIfDispatchStopped();
 						try {
 							await db.userStory.update({
 								where: { id: result.story.id },
@@ -1348,7 +1359,10 @@ export async function createFabricTool(
 						// Dispatch the same story.created lifecycle event the
 						// API procedure sends — otherwise lifecycle-triggered
 						// agents/automations fire for manual Add Feature but
-						// silently miss tool-created stories.
+						// silently miss tool-created stories. The helper reads
+						// the triggers first and checks the turn again
+						// immediately before each workflow start.
+						throwIfDispatchStopped();
 						dispatchLifecycleEvent({
 							resource: "story",
 							event: "created",
@@ -1376,11 +1390,20 @@ export async function createFabricTool(
 						// a typed reason if the calling user lacks resolvable
 						// MCP credentials, so this is safe to call
 						// unconditionally inside the gate. Fire-and-forget:
-						// failure stamps `lastPmSyncStatus = FAILED` on the
-						// row and surfaces via the existing roadmap badge.
+						// a failed start whose workflow Temporal has no record
+						// of stamps `lastPmSyncStatus = FAILED` on the row
+						// (surfaced via the roadmap badge); one whose outcome
+						// Temporal could not confirm stays PENDING for the
+						// stuck-sync watchdog.
 						if (pmConfigured) {
 							const itemTypeForEnqueue =
 								result.story.kind === "BUG" ? "bug" : "story";
+							// Refuses the whole push up front; the helper reads
+							// the project and the user's credentials first, and
+							// checks the turn again immediately before the
+							// PENDING stamp; once stamped, the workflow start
+							// goes out with it.
+							throwIfDispatchStopped();
 							try {
 								const temporalClient =
 									await getTemporalClient();
@@ -1404,6 +1427,9 @@ export async function createFabricTool(
 									},
 								);
 							} catch (enqueueErr) {
+								// A turn stop is not a failed push to log past:
+								// the duplicate detection below must not start.
+								rethrowIfDispatchStopped(enqueueErr);
 								logger.warn(
 									"[fabric_create_story] enqueuePmSyncFromActivity threw — story persisted without sync attempt",
 									{
@@ -1429,6 +1455,9 @@ export async function createFabricTool(
 						// embedding/LLM blip is retried with backoff. Confirmed
 						// pairs become PENDING StoryDuplicateLinks → the same roadmap
 						// "Possible duplicate" chip + Merge/Dismiss dialog.
+						// The helper checks the turn again immediately before
+						// the workflow start, after its availability probe.
+						throwIfDispatchStopped();
 						await triggerDuplicateDetection({
 							projectId,
 							userId,
@@ -1451,6 +1480,7 @@ export async function createFabricTool(
 							aiDrafted: result.aiDrafted,
 						};
 					} catch (error) {
+						rethrowIfDispatchStopped(error);
 						logger.error("fabric_create_story failed", error);
 						return {
 							error:
@@ -1614,48 +1644,20 @@ export async function createFabricTool(
 						};
 					}
 
-					// This path calls OpenAI's TTS endpoint directly, so it needs the
-					// tenant's OpenAI key specifically, decrypted — not whichever
-					// provider the tenant's default model selection resolved to.
-					const openAiApiKey = await resolveOpenAiApiKey({
+					const speech = await synthesizeToolSpeech({
 						userId,
 						organizationId,
+						text,
+						voice,
+						speed,
 					});
-
-					if (!openAiApiKey) {
-						return {
-							error: "No OpenAI API key configured for text-to-speech",
-						};
+					if (!speech.ok) {
+						return { error: speech.error };
 					}
 
-					const response = await fetch(
-						"https://api.openai.com/v1/audio/speech",
-						{
-							method: "POST",
-							headers: {
-								Authorization: `Bearer ${openAiApiKey}`,
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify({
-								model: "tts-1",
-								input: text.substring(0, 4096),
-								voice,
-								speed: Math.min(4.0, Math.max(0.25, speed)),
-								response_format: "mp3",
-							}),
-						},
-					);
-
-					if (!response.ok) {
-						return {
-							error: `TTS API error ${response.status}: ${await response.text()}`,
-						};
-					}
-
-					const audioBuffer = Buffer.from(
-						await response.arrayBuffer(),
-					);
+					const audioBuffer = speech.audio;
 					const audioKey = `tts/${userId}/${Date.now()}.mp3`;
+					throwIfDispatchStopped();
 					await uploadFile(audioKey, audioBuffer, {
 						bucket:
 							process.env

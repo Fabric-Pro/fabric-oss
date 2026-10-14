@@ -32,6 +32,7 @@ import {
 	getAIModelWithMetadata,
 	recordDecisionOutcome,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import type { MaturationTenantFilter } from "@repo/database";
 import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
@@ -288,7 +289,8 @@ export async function classifyQuestionTopics({
 				capture,
 				count: questions.length,
 			});
-			if (error instanceof AiUsageLimitExceededError) {
+			// A limit refused before an SDK retry arrives wrapped in a RetryError.
+			if (findAiUsageLimitError(error)) {
 				// Nothing has been decided yet, so there is nothing to keep;
 				// retrying through the language model would bill the very
 				// spend the limit refused.

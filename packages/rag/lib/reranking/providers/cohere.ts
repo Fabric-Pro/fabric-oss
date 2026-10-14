@@ -12,6 +12,10 @@
  */
 
 import { logger } from "@repo/logs";
+import {
+	guardDispatch,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type {
 	RerankerConfig,
 	RerankerProvider,
@@ -94,6 +98,15 @@ export class CohereRerankerProvider implements RerankerProvider {
 		const startTime = Date.now();
 
 		try {
+			// A paid provider request made outside the model factory: inside
+			// a dispatch guard (an Advisor chat turn) it is checked against
+			// the turn first, then against the guard's latched stops in the
+			// same synchronous run as the send, and it carries the guard's
+			// abort signal beside its timeout. Unchanged outside a guard.
+			const signal = await guardDispatch(
+				AbortSignal.timeout(this.timeout),
+			);
+			throwIfDispatchStopped();
 			const response = await fetch(`${this.baseUrl}/rerank`, {
 				method: "POST",
 				headers: {
@@ -108,7 +121,7 @@ export class CohereRerankerProvider implements RerankerProvider {
 					top_n: Math.min(topK, documentsToRerank.length),
 					return_documents: false,
 				}),
-				signal: AbortSignal.timeout(this.timeout),
+				signal,
 			});
 
 			if (!response.ok) {

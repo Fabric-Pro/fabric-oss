@@ -135,8 +135,10 @@ import {
 	shapePastedImageForAi,
 } from "../../lib/chat-image-upload";
 import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
+import { parseChatGptPlanApiBilling } from "../../lib/chatgpt-plan-api-billing";
 import { formatClarificationTurn } from "../../lib/clarification-turns";
 import { getSelectedOrchestratorToolIds } from "../../lib/orchestrator-conversation-tools";
+import { budgetStopToShow } from "../../lib/turn-budget-stop";
 // CUGA-specific components
 import { type CugaExecutionState, CugaExecutionView } from "../cuga";
 import { CarriedOverContextBanner } from "./CarriedOverContextBanner";
@@ -189,6 +191,7 @@ import {
 	type ToolCallItem,
 	ToolCallList,
 } from "./shared";
+import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
 
@@ -743,6 +746,9 @@ export function FabricTemporalOrchestratorChat({
 		onStopFailed: handleStopFailed,
 		onTurnRefused: handleTurnRefused,
 	});
+	// The token-allowance stop a card shows: only a completed turn's (a
+	// stopped turn keeps its stored stop and shows none).
+	const shownBudgetStop = budgetStopToShow(state.status, state.budgetStop);
 
 	// F2 — chat scope for the Excalidraw auto-insert
 	// button. The Loom orchestrator carries `attachedProjectId` +
@@ -1190,6 +1196,7 @@ export function FabricTemporalOrchestratorChat({
 							? exec.clarifications
 							: undefined,
 						truncated: parseTurnTruncation(exec.truncated),
+						apiBilling: parseChatGptPlanApiBilling(exec.apiBilling),
 						completedAt: new Date(
 							exec.completedAt || exec.startedAt,
 						),
@@ -1563,6 +1570,8 @@ export function FabricTemporalOrchestratorChat({
 					// So a reload still says the answer stopped at the
 					// output ceiling (review F25).
 					truncated: state.result?.truncated,
+					// ...and that it was billed to the organization (Fizzy #3048).
+					apiBilling: state.apiBilling,
 					// Include artifacts for persistence
 					artifacts: artifacts?.filter(
 						(a) => a.content && a.content.length > 100,
@@ -1818,6 +1827,7 @@ export function FabricTemporalOrchestratorChat({
 						? [...state.answeredClarifications]
 						: undefined,
 				truncated: state.result?.truncated,
+				apiBilling: state.apiBilling,
 				plan: state.plan
 					? {
 							id: state.plan.id,
@@ -3395,6 +3405,14 @@ export function FabricTemporalOrchestratorChat({
 														</Response>
 													)}
 
+												{execution.apiBilling && (
+													<ApiBillingNotice
+														apiBilling={
+															execution.apiBilling
+														}
+													/>
+												)}
+
 												{/* The answer stopped at the output ceiling
 												    (review F25). Continue is offered only on
 												    the latest turn of a reloaded thread. */}
@@ -4367,6 +4385,24 @@ export function FabricTemporalOrchestratorChat({
 									</div>
 								)}
 
+							{/* The live turn runs on API billing (Fizzy
+							    #3048). Once it moves into the completed
+							    list, that entry shows it instead. */}
+							{state.apiBilling &&
+								!completedExecutions.some(
+									(e) =>
+										e != null && e.id === state.executionId,
+								) && (
+									<div className="flex gap-3">
+										<div className="w-8 shrink-0" />
+										<div className="flex-1 min-w-0">
+											<ApiBillingNotice
+												apiBilling={state.apiBilling}
+											/>
+										</div>
+									</div>
+								)}
+
 							{/* The live answer stopped at the output ceiling
 							    (review F25). Once the turn moves into the
 							    completed list, that entry shows it instead. */}
@@ -4500,13 +4536,22 @@ export function FabricTemporalOrchestratorChat({
 							carried-over context, then navigates the user there. */}
 						{/* Never for a stopped turn: it ended because the user
 							stopped it, not because the thread ran out of budget. */}
-						{state.handoffRecommended &&
+						{/* A turn that used its token allowance shows the same
+							card with no new-chat action: the user continues
+							here. Only a completed turn: a stopped one keeps its
+							stored stop but shows no budget card. */}
+						{(state.handoffRecommended || shownBudgetStop) &&
 							state.status !== "cancelled" &&
 							conversationId && (
 								<ConversationHandoffCard
 									parentConversationId={conversationId}
-									reason={state.handoffRecommended.reason}
-									summary={state.handoffRecommended.summary}
+									reason={
+										state.handoffRecommended?.reason ?? ""
+									}
+									summary={
+										state.handoffRecommended?.summary ?? ""
+									}
+									budgetStop={shownBudgetStop}
 									organizationId={organizationId}
 									onContinue={(newConversationId) => {
 										onConversationCreated?.(

@@ -123,6 +123,7 @@ import { orpcClient } from "../../../../shared/lib/orpc-client";
 import { useDiffPreview } from "../../hooks/use-diff-view-mode";
 import { useDocumentAssistantHistoryRealtimeSync } from "../../hooks/useDocumentAssistantHistory";
 import { useDocumentAssistantHistoryEnabled } from "../../hooks/useDocumentAssistantHistoryEnabled";
+import { useEngagementProfileExpanded } from "../../hooks/useEngagementProfileExpanded";
 import { contextEntryBytes } from "../../lib/ai-context-budget";
 import { buildCleanSpecRefreshMessage } from "../../lib/clean-spec-refresh-message";
 import {
@@ -207,6 +208,7 @@ import { DiscoveryPanel } from "./DiscoveryPanel";
 import { EstimateConfidenceSelector } from "./EstimateConfidenceSelector";
 import { FeatureTransitionDialog } from "./FeatureTransitionDialog";
 import { FeatureVersionHistory } from "./FeatureVersionHistory";
+import { isConvertKindBlockedByDefer } from "./lib/convert-kind-availability";
 import { ConfirmChangeSummaryCard } from "./maturation/ConfirmChangeSummaryCard";
 import { DecisionLogPanel } from "./maturation/DecisionLogPanel";
 import { QaPanel } from "./maturation/QaPanel";
@@ -637,6 +639,10 @@ export function StoryWorkspace({
 	const sessionUser = user;
 	const { organizationId, basePath } = useOrganizationContext();
 	const { isFocusMode } = useFocusMode();
+	const {
+		isExpanded: isMetadataExpanded,
+		toggleExpanded: toggleMetadataExpanded,
+	} = useEngagementProfileExpanded();
 	// Cross-tab BroadcastChannel listener: mirrors the wiring in
 	// DocumentEditor.tsx so the StoryWorkspace surface (USER_STORY scope)
 	// also picks up history mutations from sibling tabs.
@@ -2848,6 +2854,7 @@ export function StoryWorkspace({
 	// through the new type's template. The mutation resolving means the TYPE
 	// changed, nothing more; the rewrite is followed below.
 	const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+	const convertBlockedByDefer = isConvertKindBlockedByDefer(story);
 	const targetConvertKind: "BUG" | "FEATURE" =
 		story.kind === "BUG" ? "FEATURE" : "BUG";
 
@@ -6080,68 +6087,98 @@ export function StoryWorkspace({
 								<div
 									data-testid="engagement-profile-metadata-row"
 									className={cn(
-										"space-y-3 border-b px-6 py-3",
+										"border-b px-6 py-2",
 										isFocusMode && "hidden",
 									)}
 									hidden={isFocusMode}
 									aria-hidden={isFocusMode}
 									inert={isFocusMode ? true : undefined}
 								>
-									<div className="flex flex-wrap items-start gap-4">
-										<DeliveryTrackSelector
-											projectId={projectId}
-											storyId={story.id}
-											track={
-												story.deliveryTrack ??
-												"UNCLASSIFIED"
-											}
-											rationale={story.trackRationale}
-											setBy={story.trackSetBy}
-											disabled={isAiLoading}
-											className="max-w-md"
+									<Button
+										type="button"
+										variant="ghost"
+										size="sm"
+										onClick={toggleMetadataExpanded}
+										className="-ml-2 h-7 px-2 text-xs text-muted-foreground"
+										aria-expanded={isMetadataExpanded}
+										aria-controls="engagement-profile-metadata-content"
+										data-testid="engagement-profile-metadata-toggle"
+									>
+										{tWorkspace("engagementProfileToggle")}
+										<ChevronDownIcon
+											className={cn(
+												"size-3.5 transition-transform duration-200",
+												isMetadataExpanded &&
+													"rotate-180",
+											)}
 										/>
-										<EstimateConfidenceSelector
+									</Button>
+
+									<div
+										id="engagement-profile-metadata-content"
+										hidden={!isMetadataExpanded}
+										className={cn(
+											"space-y-3 pt-2 pb-1",
+											!isMetadataExpanded && "hidden",
+										)}
+									>
+										<div className="flex flex-wrap items-start gap-4">
+											<DeliveryTrackSelector
+												projectId={projectId}
+												storyId={story.id}
+												track={
+													story.deliveryTrack ??
+													"UNCLASSIFIED"
+												}
+												rationale={story.trackRationale}
+												setBy={story.trackSetBy}
+												disabled={isAiLoading}
+												className="max-w-md"
+											/>
+											<EstimateConfidenceSelector
+												projectId={projectId}
+												storyId={story.id}
+												confidence={
+													story.estimateConfidence ??
+													null
+												}
+												deliveryTrack={
+													story.deliveryTrack ??
+													"UNCLASSIFIED"
+												}
+												disabled={isAiLoading}
+												className="max-w-md"
+											/>
+										</div>
+										<ReadinessPanel
 											projectId={projectId}
 											storyId={story.id}
-											confidence={
-												story.estimateConfidence ?? null
+											organizationId={organizationId}
+											version={story.version}
+											canManageGovernance={
+												projectData?.project
+													?.canManageGovernance ??
+												projectData?.project
+													?.userRole === "owner"
 											}
-											deliveryTrack={
-												story.deliveryTrack ??
-												"UNCLASSIFIED"
-											}
-											disabled={isAiLoading}
-											className="max-w-md"
+											settingsHref={buildProjectSettingsRoute(
+												basePath,
+												projectId,
+											)}
+										/>
+										<DiscoveryPanel
+											projectId={projectId}
+											storyId={story.id}
+											organizationId={organizationId}
+											deliveryTrack={story.deliveryTrack}
+										/>
+										<StoryEvidence
+											projectId={projectId}
+											storyId={story.id}
+											organizationId={organizationId}
+											className="max-w-2xl"
 										/>
 									</div>
-									<ReadinessPanel
-										projectId={projectId}
-										storyId={story.id}
-										organizationId={organizationId}
-										version={story.version}
-										canManageGovernance={
-											projectData?.project
-												?.canManageGovernance ??
-											projectData?.project?.userRole ===
-												"owner"
-										}
-										settingsHref={buildProjectSettingsRoute(
-											basePath,
-											projectId,
-										)}
-									/>
-									<DiscoveryPanel
-										projectId={projectId}
-										storyId={story.id}
-										organizationId={organizationId}
-										deliveryTrack={story.deliveryTrack}
-									/>
-									<StoryEvidence
-										projectId={projectId}
-										storyId={story.id}
-										organizationId={organizationId}
-										className="max-w-2xl"
-									/>
 								</div>
 							)}
 							{!isUserGenerationActive &&
@@ -6814,15 +6851,30 @@ export function StoryWorkspace({
 														<Button
 															size="sm"
 															variant="outline"
-															onClick={() =>
+															onClick={() => {
+																// Focusable (aria-disabled, not disabled)
+																// so the tooltip can say why.
+																if (
+																	convertBlockedByDefer
+																) {
+																	return;
+																}
 																setConvertDialogOpen(
 																	true,
-																)
-															}
+																);
+															}}
 															disabled={
 																convertKindMutation.isPending
 															}
-															className="h-8 gap-1.5 text-xs"
+															aria-disabled={
+																convertBlockedByDefer ||
+																undefined
+															}
+															className={cn(
+																"h-8 gap-1.5 text-xs",
+																convertBlockedByDefer &&
+																	"cursor-not-allowed opacity-50",
+															)}
 														>
 															<ArrowLeftRightIcon className="size-3" />
 															{story.kind ===
@@ -6842,7 +6894,9 @@ export function StoryWorkspace({
 														    is no longer true. */}
 														<p className="text-xs text-muted-foreground">
 															{tConvertKind(
-																"tooltipHint",
+																convertBlockedByDefer
+																	? "deferredBlocked"
+																	: "tooltipHint",
 															)}
 														</p>
 													</TooltipContent>

@@ -134,6 +134,8 @@ export const extractInsightsProcedure = tenantProtectedProcedure
 							projectId: input.projectId,
 							organizationId,
 							userId: user.id,
+							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
+							planEligible: true,
 							transcriptCuid: transcript.id,
 							force: input.force ?? false,
 						},

@@ -109,7 +109,7 @@ describe("resolveConflict", () => {
 		expect(result.pmError).toBeUndefined();
 	}, 30000);
 
-	it("LOCAL resolution enqueues push with forceHashOverride and clears flag", async () => {
+	it("LOCAL resolution enqueues push with forceHashOverride and leaves the row to that push", async () => {
 		const { resolveConflictHandler } = await import(
 			"../../../../packages/api/modules/projects/procedures/stories/sync/resolve-conflict"
 		);
@@ -134,10 +134,9 @@ describe("resolveConflict", () => {
 		expect(importFromPmMock).not.toHaveBeenCalled();
 		// Plain "Use Fabric" — no merged description written.
 		expect(writePmSyncItemContentMock).not.toHaveBeenCalled();
-		expect(clearPmSyncConflictFlagMock).toHaveBeenCalledWith({
-			itemType: "story",
-			itemId: "story_1",
-		});
+		// The enqueue stamped PENDING for the push; a SUCCESS written over it
+		// would hide that push from the stuck-sync watchdog.
+		expect(clearPmSyncConflictFlagMock).not.toHaveBeenCalled();
 		expect(result.cleared).toBe(true);
 		expect(result.pmError).toBeUndefined();
 	});
@@ -188,10 +187,7 @@ describe("resolveConflict", () => {
 					forceHashOverride: true,
 				}),
 			);
-			expect(clearPmSyncConflictFlagMock).toHaveBeenCalledWith({
-				itemType,
-				itemId: `${itemType}_1`,
-			});
+			expect(clearPmSyncConflictFlagMock).not.toHaveBeenCalled();
 		},
 	);
 

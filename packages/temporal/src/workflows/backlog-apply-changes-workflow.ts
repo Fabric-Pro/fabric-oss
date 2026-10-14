@@ -46,6 +46,7 @@ import {
 	isPmTicketMissingError,
 } from "./backlog-apply-outcome";
 import { BACKLOG_APPLY_CANCELLED_TYPE } from "./backlog-constants";
+import { BACKLOG_APPLY_SYNC_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
 import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 import { shouldSkipFlatPmSync } from "./pm-sync-item-gate";
 import { computePmSyncOutage, type PmSyncOutage } from "./pm-sync-outage";
@@ -211,24 +212,7 @@ const { applyBacklogChanges } = proxyActivities<{
 
 const { syncWorkItemToPM } = proxyActivities<{
 	syncWorkItemToPM: typeof SyncWorkItemToPMFn;
-}>({
-	startToCloseTimeout: "60 seconds",
-	heartbeatTimeout: "30 seconds",
-	retry: {
-		initialInterval: "2s",
-		maximumInterval: "30s",
-		backoffCoefficient: 2,
-		maximumAttempts: 5,
-		nonRetryableErrorTypes: [
-			"PmAuthError",
-			"PmNotFoundError",
-			"PmCapabilitiesError",
-			"PmCreateError",
-			"PmUpdateError",
-			"PmStampError",
-		],
-	},
-});
+}>(BACKLOG_APPLY_SYNC_ACTIVITY_OPTIONS);
 
 const { discoverPMToolCapabilities } = proxyActivities<{
 	discoverPMToolCapabilities: typeof DiscoverPMToolCapabilitiesFn;
@@ -737,9 +721,9 @@ export async function backlogApplyChangesWorkflow(
 							} else if (syncResult.status === "FAILED") {
 								// `syncWorkItemToPM` already stamped
 								// `lastPmSyncStatus = FAILED` via
-								// `recordPmSyncFailure({ errorClass:
-								// "create_orphan" })` before returning, so we
-								// do NOT re-stamp here. Push to the apply
+								// `recordPmSyncFailure` (`create_orphan` or
+								// `create_unconfirmed`, carried on the result)
+								// before returning, so we do NOT re-stamp here. Push to the apply
 								// result + surface to `progress.errors` so the
 								// approve flow's success summary reflects the
 								// failure instead of silently dropping it
@@ -750,7 +734,9 @@ export async function backlogApplyChangesWorkflow(
 									storyId: itemId,
 									itemType,
 									status: "FAILED",
-									errorClass: "create_orphan",
+									errorClass:
+										syncResult.errorClass ??
+										"create_orphan",
 									message: syncResult.error,
 								});
 								progress.errors.push(

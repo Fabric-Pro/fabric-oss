@@ -16,19 +16,43 @@ const { findMany, observations } = vi.hoisted(() => ({
 	},
 }));
 
+const sourceStates = vi.hoisted(() => ({
+	findMany: vi.fn(async (_args: unknown) => [] as unknown[]),
+	findUnique: vi.fn(async (_args: unknown) => null as unknown),
+}));
+
 const tiers = vi.hoisted(() => ({
 	accounts: vi.fn(async (_args: unknown) => [] as unknown[]),
 	credential: vi.fn(async (_args: unknown) => null as unknown),
 }));
 
-vi.mock("../prisma/client", () => ({
-	db: {
+// The shared account's current sign-in, as the observation's fence reads it.
+const signIn = vi.hoisted(() => ({
+	current: { id: "acc_1", subject: "subject-1" } as {
+		id: string;
+		subject: string;
+	} | null,
+}));
+
+vi.mock("../prisma/client", () => {
+	const db = {
 		aiUsageLog: { findMany },
 		chatGptPlanBudgetObservation: observations,
-		chatGptPlanOrgAccount: { findMany: tiers.accounts },
+		chatGptPlanOrgAccount: {
+			findMany: tiers.accounts,
+			findUnique: async () => signIn.current,
+		},
 		chatGptPlanCredential: { findUnique: tiers.credential },
-	},
-}));
+		chatGptPlanSourceState: sourceStates,
+		$executeRaw: async () => 1,
+	};
+	return {
+		db: {
+			...db,
+			$transaction: async (work: (tx: typeof db) => unknown) => work(db),
+		},
+	};
+});
 
 import {
 	CHATGPT_PLAN_DEFAULT_WINDOW_INPUT_TOKENS,
@@ -38,6 +62,8 @@ import {
 	CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS,
 	type ChatGptPlanWindowCall,
 	calibratedChatGptPlanBudget,
+	chatGptPlanKnownWindowReset,
+	chatGptPlanModelWeight,
 	chatGptPlanWindowPercent,
 	computeChatGptPlanWindow,
 	getChatGptPlanOrgAccountWindows,
@@ -46,8 +72,17 @@ import {
 	getChatGptPlanWindowBudgets,
 	recordChatGptPlanBudgetObservation,
 } from "../prisma/queries/chatgpt-plan-window";
+import { chatGptPlanCredentialFingerprint } from "../prisma/queries/lib/chatgpt-plan-credential-fence";
 
 const at = (iso: string) => new Date(`2026-10-08T${iso}Z`);
+
+/** A calibration row recorded at a real refusal. */
+const refusal = (sourceId: string, inputTokens: number) => ({
+	sourceId,
+	inputTokens,
+	observedAt: new Date("2026-10-11T00:00:00Z"),
+	lowerBound: false,
+});
 
 function call(
 	createdAt: Date,
@@ -264,7 +299,7 @@ describe("window queries", () => {
 			],
 			at("02:00:00"),
 		);
-		expect(window.inputTokensByUser).toEqual({
+		expect(window.weightedInputTokensByUser).toEqual({
 			user_1: 3_000,
 			user_2: 500,
 		});
@@ -298,9 +333,9 @@ describe("calibrated window budget (Fizzy #2770 D6)", () => {
 
 	it("replaces the default only for sources with observations", async () => {
 		observations.findMany.mockResolvedValue([
-			{ sourceId: "acc_1", inputTokens: 1_100_000 },
-			{ sourceId: "acc_1", inputTokens: 1_300_000 },
-			{ sourceId: "acc_1", inputTokens: 1_200_000 },
+			refusal("acc_1", 1_100_000),
+			refusal("acc_1", 1_300_000),
+			refusal("acc_1", 1_200_000),
 		]);
 		const budgets = await getChatGptPlanWindowBudgets("ORG", [
 			"acc_1",
@@ -316,21 +351,32 @@ describe("calibrated window budget (Fizzy #2770 D6)", () => {
 				sourceId: { in: ["acc_1", "acc_2"] },
 				windowStart: { gte: expect.any(Date) },
 			},
-			orderBy: { windowStart: "desc" },
+			orderBy: { observedAt: "desc" },
 		});
 	});
 
-	it("keeps the first observation of a window", async () => {
-		await recordChatGptPlanBudgetObservation({
-			source: {
-				kind: "org",
-				organizationId: "org_a",
-				accountId: "acc_1",
-			},
-			windowStart: at("01:00:00"),
-			inputTokens: 1_234_567.4,
-			observedAt: at("03:00:00"),
+	const observation = (credentialFingerprint: string) => ({
+		source: {
+			kind: "org" as const,
+			organizationId: "org_a",
+			accountId: "acc_1",
+		},
+		windowStart: at("01:00:00"),
+		inputTokens: 1_234_567.4,
+		observedAt: at("03:00:00"),
+		credentialFingerprint,
+	});
+	const sameSignIn = () =>
+		chatGptPlanCredentialFingerprint({
+			id: "acc_1",
+			subject: "subject-1",
 		});
+
+	it("keeps the first observation of a window", async () => {
+		signIn.current = { id: "acc_1", subject: "subject-1" };
+		await expect(
+			recordChatGptPlanBudgetObservation(observation(sameSignIn())),
+		).resolves.toBe(true);
 		expect(observations.createMany).toHaveBeenCalledWith({
 			data: [
 				{
@@ -343,6 +389,23 @@ describe("calibrated window budget (Fizzy #2770 D6)", () => {
 			],
 			skipDuplicates: true,
 		});
+	});
+
+	// Fizzy #3037: a refusal the previous sign-in met teaches the new one
+	// nothing, and nothing is left under a deleted account.
+	it.each([
+		[
+			"reconnected under another subject",
+			{ id: "acc_1", subject: "subject-2" },
+		],
+		["deleted", null],
+	])("records nothing once the account was %s", async (_, current) => {
+		observations.createMany.mockClear();
+		signIn.current = current;
+		await expect(
+			recordChatGptPlanBudgetObservation(observation(sameSignIn())),
+		).resolves.toBe(false);
+		expect(observations.createMany).not.toHaveBeenCalled();
 	});
 });
 
@@ -385,9 +448,9 @@ describe("window budget by tier", () => {
 			{ id: "acc-pro", tier: "PRO" },
 		]);
 		observations.findMany.mockResolvedValue([
-			{ sourceId: "acc-plus", inputTokens: 1_400_000 },
-			{ sourceId: "acc-free", inputTokens: 60_000 },
-			{ sourceId: "acc-pro", inputTokens: 300_000 },
+			refusal("acc-plus", 1_400_000),
+			refusal("acc-free", 60_000),
+			refusal("acc-pro", 300_000),
 		]);
 		const budgets = await getChatGptPlanWindowBudgets("ORG", [
 			"acc-plus",
@@ -402,18 +465,14 @@ describe("window budget by tier", () => {
 			CHATGPT_PLAN_NO_WINDOW_INPUT_TOKENS,
 		);
 
-		observations.findMany.mockResolvedValue([
-			{ sourceId: "acc-free", inputTokens: 900_000 },
-		]);
+		observations.findMany.mockResolvedValue([refusal("acc-free", 900_000)]);
 		const capped = await getChatGptPlanWindowBudgets("ORG", ["acc-free"]);
 		expect(capped.get("acc-free")).toBe(
 			CHATGPT_PLAN_FREE_WINDOW_INPUT_TOKENS,
 		);
 
 		// One refusal caused by use outside Fabric cannot collapse it.
-		observations.findMany.mockResolvedValue([
-			{ sourceId: "acc-free", inputTokens: 1_000 },
-		]);
+		observations.findMany.mockResolvedValue([refusal("acc-free", 1_000)]);
 		const floored = await getChatGptPlanWindowBudgets("ORG", ["acc-free"]);
 		expect(floored.get("acc-free")).toBe(
 			CHATGPT_PLAN_FREE_WINDOW_INPUT_TOKENS / 10,
@@ -425,5 +484,218 @@ describe("window budget by tier", () => {
 		await expect(
 			getChatGptPlanWindowBudget({ kind: "user", userId: "user_1" }),
 		).resolves.toBe(CHATGPT_PLAN_FREE_WINDOW_INPUT_TOKENS);
+	});
+});
+
+// Fizzy #2770 G8: the budget is in Sol-equivalent tokens, weighted by model.
+describe("model-weighted window", () => {
+	/** A window's uncached input split across models, one call per model. */
+	function mix(
+		start: Date,
+		uncachedByModel: Record<string, number>,
+	): ChatGptPlanWindowCall[] {
+		return Object.entries(uncachedByModel).map(([model, tokens], index) =>
+			call(new Date(start.getTime() + index * 60_000), {
+				inputTokens: tokens,
+				providerModelId: model,
+			}),
+		);
+	}
+
+	it("weighs a model by its family: Astra over Sol over Luna, anything else 1", () => {
+		expect(chatGptPlanModelWeight("gpt-6-astra")).toBe(2.5);
+		expect(chatGptPlanModelWeight("gpt-6.1-sol")).toBe(1);
+		expect(chatGptPlanModelWeight("gpt-5.6-sol")).toBe(1);
+		expect(chatGptPlanModelWeight("gpt-6-luna")).toBe(0.5);
+		expect(chatGptPlanModelWeight("gpt-6-astra-2026-09-30")).toBe(2.5);
+		expect(chatGptPlanModelWeight("gpt-7-nova")).toBe(1);
+		expect(chatGptPlanModelWeight(null)).toBe(1);
+	});
+
+	it("reads the 2026-10-08 Astra-heavy window as ChatGPT did: 86% after 885k uncached", () => {
+		const window = computeChatGptPlanWindow(
+			mix(at("12:00:00"), {
+				"gpt-6-astra": 557_550,
+				"gpt-6.1-sol": 327_450,
+			}),
+			at("14:00:00"),
+		);
+
+		expect(window.inputTokens).toBe(885_000);
+		expect(
+			chatGptPlanWindowPercent(
+				window,
+				CHATGPT_PLAN_DEFAULT_WINDOW_INPUT_TOKENS,
+			),
+		).toBe(86);
+	});
+
+	it("keeps the Sol-only window that was never refused well short of spent", () => {
+		const window = computeChatGptPlanWindow(
+			mix(at("01:37:00"), { "gpt-6.1-sol": 853_000 }),
+			at("04:00:00"),
+		);
+		expect(
+			chatGptPlanWindowPercent(
+				window,
+				CHATGPT_PLAN_DEFAULT_WINDOW_INPUT_TOKENS,
+			),
+		).toBe(43);
+	});
+
+	it("weighs each member's fair share by the models they used", () => {
+		const window = computeChatGptPlanWindow(
+			[
+				call(at("01:00:00"), {
+					userId: "user_1",
+					providerModelId: "gpt-6-astra",
+				}),
+				call(at("01:10:00"), {
+					userId: "user_2",
+					providerModelId: "gpt-6-luna",
+				}),
+			],
+			at("02:00:00"),
+		);
+		expect(window.weightedInputTokensByUser).toEqual({
+			user_1: 2_500,
+			user_2: 500,
+		});
+	});
+
+	it("calibrates only from refusals recorded in weighted tokens", async () => {
+		observations.findMany.mockClear();
+		await getChatGptPlanWindowBudgets("ORG", ["acc_1"]);
+		const where = observations.findMany.mock.calls[0][0] as {
+			where: { windowStart: { gte: Date } };
+		};
+		expect(where.where.windowStart.gte.getTime()).toBeGreaterThanOrEqual(
+			new Date("2026-10-10T00:00:00Z").getTime(),
+		);
+	});
+});
+
+// Fizzy #2770 G9: a reset OpenAI reported anchors the window chain.
+describe("windows anchored on a known reset", () => {
+	/** An account used every half hour since 08:00: never a five-hour gap. */
+	function continuous(until: Date): ChatGptPlanWindowCall[] {
+		const calls: ChatGptPlanWindowCall[] = [];
+		for (
+			let time = at("08:00:00").getTime();
+			time <= until.getTime();
+			time += 30 * 60_000
+		) {
+			calls.push(call(new Date(time)));
+		}
+		return calls;
+	}
+	const reset = at("17:50:09");
+	const refused = { resetAt: reset, lastExhaustedAt: at("16:48:00") };
+
+	it("chains from the reset instead of drifting with the lookback", () => {
+		const now = at("20:45:00");
+		const lookback = continuous(now).filter(
+			(c) => c.createdAt.getTime() >= now.getTime() - 10 * 60 * 60_000,
+		);
+
+		// From the oldest call in the lookback the chain reads 16:00–21:00.
+		expect(computeChatGptPlanWindow(lookback, now).resetsAt).toEqual(
+			at("21:00:00"),
+		);
+		const anchored = computeChatGptPlanWindow(lookback, now, reset);
+		expect(anchored.windowStart).toEqual(at("18:00:00"));
+		expect(anchored.resetsAt).toEqual(at("23:00:00"));
+		expect(anchored.requests).toBe(6);
+	});
+
+	it("before the reset, is the window the reset closes", () => {
+		const now = at("17:00:00");
+		const window = computeChatGptPlanWindow(continuous(now), now, reset);
+		expect(window.windowStart).toEqual(at("12:50:09"));
+		expect(window.resetsAt).toEqual(reset);
+		// 13:00 through 17:00.
+		expect(window.requests).toBe(9);
+	});
+
+	it("trusts only a five-hour reset OpenAI reported, within a day", () => {
+		const now = at("20:45:00");
+		expect(
+			chatGptPlanKnownWindowReset(
+				{ ...refused, consecutiveUnknownResets: 0 },
+				now,
+			),
+		).toEqual(reset);
+		// Fabric's own estimate.
+		expect(
+			chatGptPlanKnownWindowReset(
+				{ ...refused, consecutiveUnknownResets: 1 },
+				now,
+			),
+		).toBeNull();
+		// The weekly limit's reset.
+		expect(
+			chatGptPlanKnownWindowReset(
+				{
+					resetAt: new Date(reset.getTime() + 4 * 24 * 60 * 60_000),
+					lastExhaustedAt: at("16:48:00"),
+					consecutiveUnknownResets: 0,
+				},
+				now,
+			),
+		).toBeNull();
+		expect(
+			chatGptPlanKnownWindowReset(
+				{ ...refused, consecutiveUnknownResets: 0 },
+				new Date(reset.getTime() + 25 * 60 * 60_000),
+			),
+		).toBeNull();
+		expect(chatGptPlanKnownWindowReset(null, now)).toBeNull();
+	});
+
+	it("widens an anchored account's lookback to its reset, and only that account's", async () => {
+		const now = new Date(reset.getTime() + 14 * 60 * 60_000);
+		sourceStates.findMany.mockResolvedValueOnce([
+			{ sourceId: "acc_1", ...refused, consecutiveUnknownResets: 0 },
+		]);
+		findMany.mockResolvedValueOnce([
+			{ ...call(at("18:00:00")), providerConfigId: "acc_1" },
+			{ ...call(at("18:00:00")), providerConfigId: "acc_2" },
+		]);
+
+		const windows = await getChatGptPlanOrgAccountWindows({
+			organizationId: "org_a",
+			accountIds: ["acc_1", "acc_2"],
+			now,
+		});
+
+		expect(sourceStates.findMany.mock.calls.at(-1)?.[0]).toMatchObject({
+			where: { sourceKind: "ORG", sourceId: { in: ["acc_1", "acc_2"] } },
+		});
+		expect(findMany.mock.calls.at(-1)?.[0].where.createdAt).toEqual({
+			gte: reset,
+		});
+		expect(windows.get("acc_1")?.lastRequestAt).toEqual(at("18:00:00"));
+		expect(windows.get("acc_2")?.lastRequestAt).toBeNull();
+	});
+
+	it("anchors a member's own plan on its own reset", async () => {
+		const now = at("17:00:00");
+		sourceStates.findUnique.mockResolvedValueOnce({
+			...refused,
+			consecutiveUnknownResets: 0,
+		});
+		findMany.mockResolvedValueOnce(continuous(now));
+
+		const window = await getChatGptPlanUserWindow({
+			userId: "user_1",
+			now,
+		});
+
+		expect(sourceStates.findUnique.mock.calls.at(-1)?.[0]).toMatchObject({
+			where: {
+				sourceKind_sourceId: { sourceKind: "USER", sourceId: "user_1" },
+			},
+		});
+		expect(window.resetsAt).toEqual(reset);
 	});
 });
