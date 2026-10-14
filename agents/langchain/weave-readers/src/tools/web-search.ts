@@ -81,7 +81,9 @@ export function createWebSearchTools(): ToolSet {
 						headers: {
 							"User-Agent":
 								"Mozilla/5.0 (compatible; FabricWeaveSpindle/1.0)",
-							Accept: "text/html,text/plain,application/json",
+							// Prefer markdown: sites that offer it (e.g. Cloudflare's
+							// Markdown for Agents) usually return fewer tokens than HTML.
+							Accept: "text/markdown,text/html;q=0.9,text/plain;q=0.8,application/json;q=0.8",
 						},
 						signal: controller.signal,
 						redirect: "follow",
@@ -103,6 +105,10 @@ export function createWebSearchTools(): ToolSet {
 					if (contentType.includes("application/json")) {
 						const json = await response.json();
 						text = JSON.stringify(json, null, 2);
+					} else if (contentType.includes("text/markdown")) {
+						// Already model-ready; stripping tags would eat
+						// angle-bracket text such as `Array<string>`.
+						text = await response.text();
 					} else {
 						const raw = await response.text();
 						text = stripHtmlTags(raw);

@@ -187,7 +187,9 @@ export function createWebFetchTools(): ToolSet {
 					const response = await fetch(url, {
 						headers: {
 							"User-Agent": "FabricWeaveWarp/1.0 (RFC Fetcher)",
-							Accept: "text/html,text/plain,application/xhtml+xml,application/xml",
+							// Prefer markdown when the site offers it; a markdown
+							// response takes the raw (non-HTML) branch below.
+							Accept: "text/markdown,text/html;q=0.9,text/plain;q=0.8,application/xhtml+xml;q=0.8,application/xml;q=0.8",
 						},
 						signal: controller.signal,
 						redirect: "follow",

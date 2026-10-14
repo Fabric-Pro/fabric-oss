@@ -1,5 +1,12 @@
 const FRAME_BYTES = 1_920;
 const MAX_BYTES = 6 * 1024 * 1024;
+// 24 kHz, 16-bit mono.
+const BYTES_PER_MS = 48;
+// The bot plays what it has buffered and goes silent the moment the buffer
+// runs dry, so a reply paced at exactly real time stutters on every late
+// frame. Staying this far ahead absorbs network and timer jitter while
+// keeping barge-in quick: at most this much audio plays after an interrupt.
+const LEAD_MS = 500;
 
 export async function playParlumePcm(input: {
 	body: ReadableStream<Uint8Array>;
@@ -7,15 +14,21 @@ export async function playParlumePcm(input: {
 	send: (frame: Uint8Array) => void;
 	declaredLength: number | null;
 	pause?: (milliseconds: number) => Promise<void>;
+	now?: () => number;
 }): Promise<{ played: boolean; interrupted: boolean; firstAudioAt?: number }> {
 	const reader = input.body.getReader();
 	const pause =
 		input.pause ??
 		((milliseconds) =>
 			new Promise((resolve) => setTimeout(resolve, milliseconds)));
+	const now = input.now ?? Date.now;
 	let pending = new Uint8Array(0);
 	let total = 0;
 	let firstAudioAt: number | undefined;
+	// When the bot finishes playing everything sent so far. Pacing against
+	// this absolute clock, rather than sleeping a frame's length after each
+	// send, keeps late timers from accumulating into gaps.
+	let playsUntil = 0;
 	try {
 		while (input.isCurrent()) {
 			const { done, value } = await reader.read();
@@ -46,8 +59,15 @@ export async function playParlumePcm(input: {
 				}
 				consumed += frame.length;
 				input.send(frame);
-				firstAudioAt ??= Date.now();
-				await pause((frame.length / 48_000) * 1000);
+				const sentAt = now();
+				firstAudioAt ??= sentAt;
+				// A drained buffer (synthesis stalled) restarts from now.
+				playsUntil =
+					Math.max(playsUntil, sentAt) + frame.length / BYTES_PER_MS;
+				const ahead = playsUntil - sentAt - LEAD_MS;
+				if (ahead > 0) {
+					await pause(ahead);
+				}
 			}
 			pending = pending.slice(consumed);
 			if (done && input.isCurrent()) {

@@ -1,5 +1,12 @@
 # fabric-app
 
+## 1.16.22
+
+### Patch Changes
+
+- 3923a89: Parlume replies play smoothly in meetings: the bridge now keeps half a second of speech queued at the bot instead of feeding it at exactly real time.
+- 3923a89: The research agents' page-reading tools now ask websites for Markdown before HTML, so sites that serve Markdown to AI agents return a smaller, cleaner page, and a Markdown page reaches the agent unchanged instead of losing text that looks like HTML tags.
+
 ## 1.16.21
 
 ### Patch Changes
