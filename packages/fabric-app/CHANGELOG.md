@@ -1,5 +1,24 @@
 # fabric-app
 
+## 1.16.23
+
+### Patch Changes
+
+- 163de8f: Agents reading a web page with the Scrape URL tool now use the organization's configured scraper provider (Firecrawl, Jina, Tavily, Exa or Cloudflare Browser Rendering) instead of only a Jina key.
+- 163de8f: Agents searching the web with the Search Web tools now use the organization's configured search provider (Exa, Parallel, Tavily, Firecrawl or Jina) instead of only a Jina key.
+- 163de8f: Organizations can now add Cloudflare Browser Rendering as a search provider with an account ID and API token, and single-page URL sources can use it to scrape pages that need JavaScript to render.
+- 163de8f: URL context sources can crawl a path prefix with Cloudflare Browser Rendering: the crawl starts at the given page and follows its links under the same path, up to the page limit.
+- 163de8f: Path-prefix website crawls now follow sub-page links written as bare `www.` text on https sites, instead of skipping them as links to a different site.
+- 163de8f: Add a Request connection button to the Connections page so users can request an integration or MCP server that is not yet available.
+- 163de8f: Living Memory sync can now name folders agents may write to, each opening a pull request or, by admin opt-in, pushing directly; writing comes later.
+- 163de8f: Parlume speaks to meetings at 16 kHz, the rate Meeting BaaS's own speaking bot uses, and wakes when addressed by name at the start of a phrase.
+- 163de8f: Parlume streams audio to the meeting bot continuously in real time, silence between replies, so Teams no longer garbles its voice from bursts and gaps.
+- 163de8f: Parlume feeds meeting audio to the bot at twice real time, as Meeting BaaS's own speaking bot does, so the bot holds a full playback buffer.
+- 163de8f: Parlume sends audio to the meeting bot only while it is speaking, removing a ~40 s delay that streaming silence between replies caused.
+- 163de8f: Organization Firecrawl keys are now read only from the search provider settings; the retired organization-level Firecrawl key endpoints have been removed.
+- 163de8f: Saving or removing a search or scraper provider API key now records an audit-log entry, and the masked key shown after saving a provider matches the one shown when the settings are reloaded.
+- 163de8f: Re-syncing, retrying and rescheduling a URL context source now uses whichever search provider with scraping the workspace has enabled, instead of requiring a Firecrawl key, so sources added with Jina, Tavily, Exa or Cloudflare Browser Rendering keep working after they are added.
+
 ## 1.16.22
 
 ### Patch Changes

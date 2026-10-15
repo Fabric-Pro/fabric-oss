@@ -160,8 +160,59 @@ describe("parent-scoped RLS policy SQL", () => {
 		});
 	});
 
-	it("registers exactly the two supported parent-scoped kinds", () => {
+	describe("memory_write_parent (project_memory_write_entry)", () => {
+		const sql = buildParentScopedPolicySQL(
+			"project_memory_write_entry",
+			"memory_write_parent",
+		);
+		const normalized = normalize(sql);
+
+		it("creates the tenant_isolation policy on the right table", () => {
+			expect(normalized).toContain(
+				'CREATE POLICY tenant_isolation ON "project_memory_write_entry"',
+			);
+		});
+
+		it("joins the parent write via an EXISTS sub-select on writeId", () => {
+			expect(normalized).toContain(
+				'EXISTS ( SELECT 1 FROM "project_memory_write" AS w WHERE w."id" = "project_memory_write_entry"."writeId"',
+			);
+		});
+
+		it("includes the organization tenant branch", () => {
+			expect(normalized).toContain(
+				`WHEN 'organization' THEN w."organizationId" = current_tenant_id()`,
+			);
+		});
+
+		it("includes the personal tenant branch requiring a null organizationId", () => {
+			expect(normalized).toContain(
+				`WHEN 'personal' THEN w."userId" = current_user_id() AND w."organizationId" IS NULL`,
+			);
+		});
+
+		it("denies by default when there is no tenant context", () => {
+			expect(normalized).toContain("ELSE false");
+		});
+
+		it("applies the same predicate to USING and WITH CHECK", () => {
+			const { using, withCheck } = splitPolicy(sql);
+			expect(using).toContain('FROM "project_memory_write" AS w');
+			expect(withCheck).toContain('FROM "project_memory_write" AS w');
+			expect(withCheck).toContain("ELSE false");
+		});
+
+		it("never reads tenant columns off the child row", () => {
+			const unqualified = normalized.match(
+				/(?<!\.)"(organizationId|userId)"/g,
+			);
+			expect(unqualified).toBeNull();
+		});
+	});
+
+	it("registers exactly the three supported parent-scoped kinds", () => {
 		expect(Object.keys(PARENT_SCOPED_POLICIES).sort()).toEqual([
+			"memory_write_parent",
 			"project_parent",
 			"proposal_parent",
 		]);
@@ -187,6 +238,9 @@ describe("parent-scoped RLS policy SQL", () => {
 		);
 		expect(normalized).toMatch(
 			/name: "pending_backlog_proposal_application", policy: "proposal_parent",? \}/,
+		);
+		expect(normalized).toMatch(
+			/name: "project_memory_write_entry", policy: "memory_write_parent",? \}/,
 		);
 	});
 });
@@ -274,6 +328,46 @@ describe("getParentScopedFilter (tenant-db extension)", () => {
 				});
 			},
 		);
+	});
+
+	it("scopes ProjectMemoryWriteEntry through its write, by organization or by user and null org", async () => {
+		await runWithTenantContext(
+			createOrganizationContext("org-3", "user-3"),
+			async () => {
+				expect(
+					getParentScopedFilter("ProjectMemoryWriteEntry"),
+				).toEqual({
+					write: { organizationId: "org-3" },
+				});
+			},
+		);
+		await runWithTenantContext(
+			createPersonalContext("user-3"),
+			async () => {
+				expect(
+					getParentScopedFilter("ProjectMemoryWriteEntry"),
+				).toEqual({
+					write: { userId: "user-3", organizationId: null },
+				});
+			},
+		);
+	});
+
+	it("ORs in the project carve-out for a guest through the write, as for a proposal", async () => {
+		const ctx = createPersonalContext("guest-2");
+		ctx.allowedProjectIds.push("proj-host");
+		await runWithTenantContext(ctx, async () => {
+			expect(getParentScopedFilter("ProjectMemoryWriteEntry")).toEqual({
+				OR: [
+					{ write: { userId: "guest-2", organizationId: null } },
+					{ write: { projectId: { in: ["proj-host"] } } },
+				],
+			});
+		});
+	});
+
+	it("returns no filter for ProjectMemoryWriteEntry without a tenant context", () => {
+		expect(getParentScopedFilter("ProjectMemoryWriteEntry")).toBeNull();
 	});
 
 	it("does not leak Org A rows into an Org B context", async () => {

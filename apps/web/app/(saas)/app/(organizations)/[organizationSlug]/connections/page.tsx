@@ -1,3 +1,5 @@
+import { config } from "@repo/config";
+import { isMailConfigured } from "@repo/mail";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { ConnectionsTabs } from "@saas/data-connections/components/ConnectionsTabs";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
@@ -43,6 +45,9 @@ export default async function ConnectionsPage({ params }: Props) {
 				addHref={`/app/${organizationSlug}/settings/integrations/add`}
 				settingsBasePath={`/app/${organizationSlug}/settings/integrations`}
 				apiKeysHref={`/app/${organizationSlug}/settings/api-keys`}
+				requestConnectionEnabled={
+					Boolean(config.support.email) && isMailConfigured()
+				}
 			/>
 		</div>
 	);

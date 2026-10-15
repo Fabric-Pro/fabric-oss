@@ -1138,7 +1138,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		{
 			name: "fabric_scrape_url",
 			description:
-				"Scrape content from a web page and convert it to clean, LLM-friendly markdown. Works with articles, documentation, blog posts, and other web content. Uses Jina AI for high-quality extraction.",
+				"Scrape content from a web page and convert it to clean, LLM-friendly markdown. Works with articles, documentation, blog posts, and other web content. Uses the workspace's configured scraper provider.",
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -1197,7 +1197,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		{
 			name: "fabric_web_search",
 			description:
-				"Search the web using Jina AI and return relevant results. Good for finding current information, research, or discovering relevant content.",
+				"Search the web with the workspace's configured search provider and return relevant results. Good for finding current information, research, or discovering relevant content.",
 			inputSchema: {
 				type: "object",
 				properties: {

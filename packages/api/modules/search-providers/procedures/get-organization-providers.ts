@@ -3,7 +3,6 @@ import {
 	getOrganizationById,
 	getOrganizationSearchProviders,
 } from "@repo/database";
-import { decryptApiKey, maskApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
@@ -11,6 +10,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { maskStoredApiKey } from "../lib/provider-key";
 
 /**
  * Get all search provider configurations for an organization
@@ -71,21 +71,7 @@ export const getOrganizationProviders = tenantProtectedProcedure
 		const providers = await getOrganizationSearchProviders(organizationId);
 
 		return providers.map((provider) => {
-			let maskedKey: string | null = null;
-			if (provider.encryptedApiKey) {
-				try {
-					const decryptedKey = decryptApiKey(
-						provider.encryptedApiKey,
-					);
-					maskedKey = maskApiKey(decryptedKey);
-				} catch (error) {
-					console.error(
-						"[Search Providers] Failed to decrypt API key:",
-						error,
-					);
-					maskedKey = "***";
-				}
-			}
+			const maskedKey = maskStoredApiKey(provider.encryptedApiKey);
 
 			return {
 				id: provider.id,

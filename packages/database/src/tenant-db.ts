@@ -143,6 +143,8 @@ const USER_OWNED_TABLES = new Set([
 	"ProjectContextPendingVectorCleanup",
 	"ProjectContextRepositorySync", // Living Memory repository sync configuration
 	"ProjectContextRepositorySyncRun", // Living Memory repository sync run receipts
+	"ProjectContextWriteTarget", // Living Memory write folders (ADR-022)
+	"ProjectMemoryWrite", // Living Memory write receipts (ADR-022)
 	"ProjectReadinessItemState", // Manual readiness item states — snooze / not applicable / help requested
 	"ProjectReadinessVerdict", // Last computed readiness verdict per item, for "recently completed"
 	"BackgroundJob", // Job Hub — background job progress rows (tenant XOR + projectId)
@@ -325,6 +327,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	ProjectContextPendingVectorCleanup: "projectId",
 	ProjectContextRepositorySync: "projectId",
 	ProjectContextRepositorySyncRun: "projectId",
+	ProjectContextWriteTarget: "projectId",
+	ProjectMemoryWrite: "projectId",
 	ProjectReadinessItemState: "projectId",
 	ProjectReadinessVerdict: "projectId",
 	BackgroundJob: "projectId",
@@ -410,7 +414,8 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
  * `userId` / `organizationId`.
  *
  * Defense in depth for these tables comes from three places:
- *  1. Database: the `project_parent` / `proposal_parent` RLS policies applied
+ *  1. Database: the `project_parent` / `proposal_parent` /
+ *     `memory_write_parent` RLS policies applied
  *     by `scripts/apply-rls-direct.ts` (SQL built in
  *     `scripts/rls-policy-sql.ts`), which re-use the parent's `user_owned`
  *     predicate through an EXISTS join.
@@ -421,20 +426,28 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
  *     directly and skips the parent lookup.
  *
  * Key = Prisma model name. `relation` = the to-one relation field pointing at
- * the parent. Both parents follow the `user_owned` shape (org context filters
+ * the parent. Every parent follows the `user_owned` shape (org context filters
  * by organizationId; personal context filters by userId + organizationId
  * IS NULL), so `getParentScopedFilter` builds that predicate directly rather
  * than recursing through `getTenantFilter`.
  */
 const PARENT_SCOPED_TABLES: Record<
 	string,
-	{ relation: string; projectPath: "projectId" | "proposal.projectId" }
+	{
+		relation: string;
+		projectPath: "projectId" | "proposal.projectId" | "write.projectId";
+	}
 > = {
 	// project_stage_approver.userId is the *approver*, not a tenant column.
 	ProjectStageApprover: { relation: "project", projectPath: "projectId" },
 	PendingBacklogProposalApplication: {
 		relation: "proposal",
 		projectPath: "proposal.projectId",
+	},
+	// The paths of a Living Memory write (ADR-022): tenancy is the write's.
+	ProjectMemoryWriteEntry: {
+		relation: "write",
+		projectPath: "write.projectId",
 	},
 };
 
@@ -491,7 +504,11 @@ export function getParentScopedFilter(
 		const guestFilter =
 			parent.projectPath === "projectId"
 				? { projectId: { in: ctx.allowedProjectIds } }
-				: { proposal: { projectId: { in: ctx.allowedProjectIds } } };
+				: {
+						[parent.relation]: {
+							projectId: { in: ctx.allowedProjectIds },
+						},
+					};
 		return { OR: [tenantFilter, guestFilter] };
 	}
 

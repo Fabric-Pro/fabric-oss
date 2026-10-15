@@ -542,6 +542,21 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"User revoked a connected coding agent — its consent and every token issued under it were deleted, so its next request is refused.",
 	},
 	{
+		key: "account.integration.config_updated",
+		categoryId: "account",
+		labelKey:
+			"settings.auditLog.actions.account.integration.config_updated",
+		description:
+			"A personal search or scraper provider key or setting was saved. The row records the provider and whether a new key was supplied; the key and the endpoint are never recorded.",
+	},
+	{
+		key: "account.integration.disconnected",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.integration.disconnected",
+		description:
+			"A personal search or scraper provider key was removed. The row records the provider only.",
+	},
+	{
 		key: "account.chatgpt_plan.connected",
 		categoryId: "account",
 		labelKey: "settings.auditLog.actions.account.chatgpt_plan.connected",
@@ -918,6 +933,30 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.context.repository_sync_disabled",
 		description:
 			'The project\'s Living Memory stopped syncing from a repository: the configuration was removed and the files it had brought in were kept as ordinary synced files. `metadata.reason` is "user" when a member turned it off, or "integration_disconnected" when the repository it read from was disconnected; `metadata.managedCount` is how many files were released. A run in progress at that moment stops at its next step without writing.',
+	},
+	{
+		key: "project.context.write_target_created",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.write_target_created",
+		description:
+			"Named a folder of the project's Living Memory sync that agents' files are written into. `metadata.mode` is PULL_REQUEST, where each write opens a pull request that a person merges, or DIRECT_PUSH, where agents commit to the synced branch themselves; DIRECT_PUSH can only be chosen by a project admin or owner, and this row is who turned it on and when. `metadata.folder` is the repository folder. No file content is recorded.",
+	},
+	{
+		key: "project.context.write_target_updated",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.write_target_updated",
+		description:
+			"Changed the folder or the mode of a Living Memory write folder. `metadata.previousMode` and `metadata.previousFolder` are what it was, `metadata.mode` and `metadata.folder` what it is now, and `metadata.version` the new version of the folder. A change to DIRECT_PUSH, or a re-pointing of a DIRECT_PUSH folder, is when agents gain the right to commit to the synced branch without a pull request there, and needs a project admin or owner. No file content is recorded.",
+	},
+	{
+		key: "project.context.write_target_deleted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.write_target_deleted",
+		description:
+			"Removed a Living Memory write folder, so agents can no longer write into it. `metadata.folder` and `metadata.mode` are what it was. Files already written stay in the repository, and the record of each write already admitted through it is kept.",
 	},
 	{
 		key: "project.document_generation.failed",

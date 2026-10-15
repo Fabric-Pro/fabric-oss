@@ -4,6 +4,7 @@ import {
 	getSearchEndpointBlockReason,
 	type TestConnectionResult,
 } from "@repo/search";
+import { parseCloudflareAccountId } from "@repo/utils/cloudflare-browser-rendering";
 import { z } from "zod";
 import {
 	Permissions,
@@ -18,6 +19,7 @@ const VALID_PROVIDERS = [
 	"youtube",
 	"jina",
 	"parallel",
+	"cloudflare",
 ];
 
 /**
@@ -65,6 +67,19 @@ export const testProviderConnection = tenantProtectedProcedure
 					message: `Provider endpoint rejected: ${blockReason}`,
 				});
 			}
+		}
+
+		// Cloudflare's account ID arrives as the account-scoped endpoint, and
+		// the test request is sent there with the token: refuse a malformed one
+		// before anything is sent.
+		if (
+			providerName === "cloudflare" &&
+			!parseCloudflareAccountId(endpoint)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Cloudflare Browser Rendering needs a valid account ID: the endpoint must be https://api.cloudflare.com/client/v4/accounts/ followed by the 32-character account ID.",
+			});
 		}
 
 		// Create provider instance

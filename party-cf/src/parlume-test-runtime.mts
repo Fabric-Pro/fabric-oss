@@ -61,7 +61,10 @@ export function loadParlumeModule(
 		crypto,
 		fetch,
 		console: { info() {}, warn() {}, error() {}, log() {} },
-		setTimeout,
+		// The audio outlet ticks for as long as a bot is connected; its timers
+		// must not keep a finished test process alive.
+		setTimeout: (run: () => void, milliseconds: number) =>
+			setTimeout(run, milliseconds).unref(),
 		clearTimeout,
 	});
 	return exports;

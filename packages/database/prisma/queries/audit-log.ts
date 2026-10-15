@@ -173,6 +173,11 @@ export const AUDIT_ACTIONS = [
 	"account.ai_provider.embedding_changed",
 	"account.ai_provider.enabled_providers_changed",
 	"account.ai_provider.deleted",
+	// A person saved a third-party search or scraper provider key in their own
+	// account (Fizzy #3074). Never the key in the metadata.
+	"account.integration.config_updated",
+	// ... and removed one (Fizzy #3074).
+	"account.integration.disconnected",
 	// A person connected or disconnected their own ChatGPT plan, or changed
 	// whether it serves their work (and their background jobs and agents) in
 	// one organization (Fizzy #2939). Never a token in the metadata.
@@ -302,6 +307,15 @@ export const AUDIT_ACTIONS = [
 	"project.context.repository_sync_started",
 	"project.context.repository_sync_completed",
 	"project.context.repository_sync_disabled",
+	// Living Memory write folders (ADR-022): the folders of the sync that
+	// agents' files are written into, and whether each opens a pull request or
+	// pushes directly. Folder and mode only, with the previous values on an
+	// update; never a credential or file content. Turning direct push on is the
+	// row to look for: it is the one change that lets agents commit to the
+	// synced branch without a pull request.
+	"project.context.write_target_created",
+	"project.context.write_target_updated",
+	"project.context.write_target_deleted",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.
@@ -974,6 +988,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "org.integration.connected":
 			return "ADMIN_INTEGRATION_ADDED";
 		case "org.integration.disconnected":
+		case "account.integration.disconnected":
 			return "ADMIN_INTEGRATION_REMOVED";
 		case "org.ai_provider.deleted":
 		case "account.ai_provider.deleted":
@@ -990,6 +1005,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "account.ai_provider.default_changed":
 		case "account.ai_provider.embedding_changed":
 		case "account.ai_provider.enabled_providers_changed":
+		case "account.integration.config_updated":
 			return "DATA_UPDATE";
 		case "audit.viewed":
 		case "userActivity.viewed":

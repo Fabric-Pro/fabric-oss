@@ -10,8 +10,8 @@
  * `getEnabledUserSearchProviders`: `isDefault: true` first, then by `priority`
  * (ascending — lower = higher precedence in this schema), then by `createdAt`.
  *
- * `requireCrawl: true` filters to crawl-capable providers only (Firecrawl in
- * v1.1) — used by the PATH_PREFIX server-side pre-flight.
+ * `requireCrawl: true` filters to crawl-capable providers only (Firecrawl and
+ * Cloudflare) — used by the PATH_PREFIX server-side pre-flight.
  *
  * Returns `null` when no candidate qualifies, so the caller can throw the
  * appropriate typed BAD_REQUEST (`SCRAPE_PROVIDER_NOT_CONFIGURED` /
@@ -22,6 +22,7 @@ import {
 	getEnabledUserSearchProviders,
 } from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
+import { createCloudflareScraper } from "./scrapers/cloudflare-scraper";
 import { createExaScraper } from "./scrapers/exa-scraper";
 import { createFirecrawlScraper } from "./scrapers/firecrawl-scraper";
 import { createJinaScraper } from "./scrapers/jina-scraper";
@@ -48,6 +49,7 @@ export interface GetWebScraperArgs {
 interface SearchProviderRow {
 	providerName: string;
 	encryptedApiKey: string | null;
+	endpoint?: string | null;
 	enabled: boolean;
 	isDefault: boolean;
 	priority: number;
@@ -60,12 +62,18 @@ interface SearchProviderRow {
  * re-running the DB query (the workflow passes `providerName` + `apiKey`
  * through the activity input).
  *
- * Returns `null` for providers we cannot scrape with (`parallel`). Callers
- * should treat that as "no candidate available".
+ * `endpoint` is the provider row's stored endpoint. Only Cloudflare reads it:
+ * its account ID lives there, and without a valid account endpoint no
+ * Cloudflare adapter is built.
+ *
+ * Returns `null` for providers we cannot scrape with (`parallel`, or
+ * `cloudflare` without a valid account endpoint). Callers should treat that
+ * as "no candidate available".
  */
 export function createScraperByName(
 	providerName: WebScraperProviderName,
 	apiKey: string,
+	endpoint?: string | null,
 ): WebScraper | null {
 	switch (providerName) {
 		case "firecrawl":
@@ -76,6 +84,8 @@ export function createScraperByName(
 			return createTavilyScraper(apiKey);
 		case "exa":
 			return createExaScraper(apiKey);
+		case "cloudflare":
+			return createCloudflareScraper(apiKey, endpoint);
 		case "parallel":
 			// Not supported as a URL-context scraper in v1.1.
 			return null;
@@ -139,6 +149,7 @@ export async function getWebScraperForTenant(
 	return createScraperByName(
 		picked.providerName as WebScraperProviderName,
 		apiKey,
+		picked.endpoint,
 	);
 }
 

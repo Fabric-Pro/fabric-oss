@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/server";
 import { updateUserFirecrawlKey } from "@repo/database";
 import { encryptApiKey, isValidApiKeyFormat } from "@repo/utils";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
 	Permissions,
 	requirePermission,
@@ -29,7 +30,8 @@ export const updateUserFirecrawlKeyProcedure = tenantProtectedProcedure
 			message: z.string(),
 		}),
 	)
-	.handler(async ({ context: { user }, input: { apiKey, enabled } }) => {
+	.handler(async ({ context, input: { apiKey, enabled } }) => {
+		const { user } = context;
 		// Validate API key format
 		if (!isValidApiKeyFormat(apiKey)) {
 			throw new ORPCError("BAD_REQUEST", {
@@ -46,6 +48,23 @@ export const updateUserFirecrawlKeyProcedure = tenantProtectedProcedure
 			userId: user.id,
 			apiKey: encryptedKey,
 			enabled,
+		});
+
+		// Personal credential write: records `enabled` only, never the key.
+		recordAuditFromRequest(context, {
+			action: "account.integration.config_updated",
+			category: "account",
+			organizationId: null,
+			resource: {
+				type: "integration",
+				id: "firecrawl",
+				name: "firecrawl",
+			},
+			metadata: {
+				provider: "firecrawl",
+				keyChanged: true,
+				enabled,
+			},
 		});
 
 		return {

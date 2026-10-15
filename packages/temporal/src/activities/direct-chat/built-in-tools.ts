@@ -9,14 +9,12 @@ import { tool } from "@repo/ai";
 import {
 	canCreateProjectStory,
 	db,
-	getMergedSearchProviderConfigs,
-	getSearchProviderConfig,
 	incrementOrganizationSearchProviderUsage,
 	incrementUserSearchProviderUsage,
 } from "@repo/database";
 import { createProvider, type WebSearchResult } from "@repo/search";
 import { uploadFile } from "@repo/storage";
-import { decryptApiKey, getBaseUrl } from "@repo/utils";
+import { getBaseUrl } from "@repo/utils";
 import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
@@ -25,6 +23,7 @@ import { z } from "zod";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
+import { resolveSearchProviderForTenant } from "../lib/get-search-provider";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
@@ -106,93 +105,15 @@ interface CreateBuiltInToolsOptions extends BuiltInToolContext {
 	preferredRepositoryUrl?: string;
 }
 
-async function getSearchProvider(
-	userId: string,
-	organizationId?: string,
-): Promise<{ apiKey: string; providerName: string } | null> {
-	const configs = await getMergedSearchProviderConfigs({
-		userId,
-		organizationId,
-	});
-
-	const defaultProvider = configs.find(
-		(c) => c.isDefault && c.enabled && c.encryptedApiKey,
-	);
-	if (defaultProvider) {
-		try {
-			const encryptedApiKey = defaultProvider.encryptedApiKey;
-			if (!encryptedApiKey) {
-				return null;
-			}
-			return {
-				apiKey: decryptApiKey(encryptedApiKey),
-				providerName: defaultProvider.providerName,
-			};
-		} catch (error) {
-			logger.error("Failed to decrypt default search provider API key", {
-				error,
-				providerName: defaultProvider.providerName,
-			});
-		}
-	}
-
-	for (const config of configs) {
-		if (config.enabled && config.encryptedApiKey) {
-			try {
-				return {
-					apiKey: decryptApiKey(config.encryptedApiKey),
-					providerName: config.providerName,
-				};
-			} catch (error) {
-				logger.error("Failed to decrypt search provider API key", {
-					error,
-					providerName: config.providerName,
-				});
-			}
-		}
-	}
-
-	const fallbackPriority = ["exa", "parallel", "tavily", "firecrawl"];
-	const configuredNames = new Set(configs.map((c) => c.providerName));
-
-	for (const providerName of fallbackPriority) {
-		if (configuredNames.has(providerName)) {
-			continue;
-		}
-
-		const config = await getSearchProviderConfig({
-			userId,
-			organizationId: organizationId || undefined,
-			providerName,
-		});
-
-		if (config?.encryptedApiKey && config.enabled) {
-			try {
-				return {
-					apiKey: decryptApiKey(config.encryptedApiKey),
-					providerName,
-				};
-			} catch (error) {
-				logger.error(
-					"Failed to decrypt fallback search provider API key",
-					{
-						error,
-						providerName,
-					},
-				);
-			}
-		}
-	}
-
-	return null;
-}
-
 async function createWebSearchTool(
 	toolName: "webSearch" | "fabric_web_search",
 	userId: string,
 	organizationId?: string,
 ): Promise<Record<string, unknown>> {
-	const providerConfig = await getSearchProvider(userId, organizationId);
+	const providerConfig = await resolveSearchProviderForTenant(
+		userId,
+		organizationId,
+	);
 	if (!providerConfig) {
 		return {};
 	}
@@ -208,8 +129,7 @@ async function createWebSearchTool(
 	return {
 		[toolName]: tool({
 			// One description for both names: the shared `fabric_web_search`
-			// definition describes the orchestrator's Jina-backed tool, not this
-			// one, which runs on the workspace's configured search provider.
+			// definition is written for the orchestrator, not for this tool.
 			description:
 				"Search the web with the workspace's configured search provider. Returns up to maxResults results, each with title, URL and snippet, plus page content, published date and author when the provider supplies them. Use it for current events, recent information, or facts the workspace does not hold. On failure it returns success: false with an error message and no results.",
 			inputSchema: z.object({

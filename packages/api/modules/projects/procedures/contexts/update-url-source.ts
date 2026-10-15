@@ -8,28 +8,24 @@
  * into, out of, or between scheduled modes we route through the
  * `updateUrlSourceSchedule` helper which wraps `ScheduleClient` from
  * `packages/temporal/src/schedules/url-source-schedule.ts`. Switching INTO
- * a scheduled mode requires a Firecrawl API key — the activity sandbox
- * can't reach the credential store at fire-time, so the schedule's args
- * embed the decrypted key. Missing key on switch-in surfaces as a typed
- * BAD_REQUEST with the same `FIRECRAWL_NOT_CONFIGURED` payload the dialog
- * already consumes.
+ * a scheduled mode requires a scraper key — the activity sandbox can't reach
+ * the credential store at fire-time, so the schedule's args embed the
+ * decrypted key together with the provider name and endpoint it belongs to.
+ * The provider is the one `processLink` would choose (the first enabled
+ * scrape-capable one, or crawl-capable for a path prefix), resolved by
+ * `resolveUrlSourceProvider`. None configured surfaces as the typed
+ * BAD_REQUEST (`SCRAPE_PROVIDER_NOT_CONFIGURED` /
+ * `CRAWL_PROVIDER_NOT_CONFIGURED`) the dialog already consumes.
  */
 import { ORPCError } from "@orpc/server";
-import {
-	db,
-	getContextById,
-	getSearchProviderConfig,
-	hasProjectAccess,
-} from "@repo/database";
+import { db, getContextById, hasProjectAccess } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
 	cadenceNextFireUtc,
 	getScheduleClient,
 	isScheduledMode,
-	MissingFirecrawlKeyError,
 	updateUrlSourceSchedule,
 } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
@@ -41,6 +37,11 @@ import {
 	assertKnowledgeBaseCategoryIsDescribed,
 	knowledgeBaseCategoryInputFields,
 } from "./knowledge-base-category";
+import {
+	providerWorkflowArgs,
+	resolveUrlSourceProvider,
+	type UrlSourceProvider,
+} from "./lib/url-source-provider";
 
 const URL_SCOPE_VALUES = ["SINGLE_PAGE", "PATH_PREFIX"] as const;
 const URL_REFRESH_MODE_VALUES = [
@@ -60,63 +61,6 @@ type UrlSourceScope = (typeof URL_SCOPE_VALUES)[number];
 const MIN_MAX_PAGES = 1;
 const MAX_MAX_PAGES = 500;
 const DEFAULT_MAX_PAGES = 200;
-
-interface FirecrawlNotConfiguredData {
-	code: "FIRECRAWL_NOT_CONFIGURED";
-	settingsPath: string;
-}
-
-function buildFirecrawlSettingsPath(orgSlug: string | null): string {
-	return orgSlug
-		? `/app/${orgSlug}/settings/search-providers`
-		: "/app/settings/search-providers";
-}
-
-async function resolveFirecrawlApiKey(args: {
-	userId: string;
-	organizationId: string | undefined;
-}): Promise<string | null> {
-	const config = await getSearchProviderConfig({
-		userId: args.userId,
-		organizationId: args.organizationId,
-		providerName: "firecrawl",
-	});
-	if (!config || !config.enabled || !config.encryptedApiKey) {
-		return null;
-	}
-	try {
-		return decryptApiKey(config.encryptedApiKey);
-	} catch (error) {
-		logger.error(
-			`[UpdateUrlSource] Failed to decrypt Firecrawl key: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-		return null;
-	}
-}
-
-async function buildFirecrawlNotConfiguredError(args: {
-	organizationId: string | undefined;
-}): Promise<ORPCError<"BAD_REQUEST", FirecrawlNotConfiguredData>> {
-	let orgSlug: string | null = null;
-	if (args.organizationId) {
-		const org = await db.organization.findUnique({
-			where: { id: args.organizationId },
-			select: { slug: true },
-		});
-		orgSlug = org?.slug ?? null;
-	}
-	const data: FirecrawlNotConfiguredData = {
-		code: "FIRECRAWL_NOT_CONFIGURED",
-		settingsPath: buildFirecrawlSettingsPath(orgSlug),
-	};
-	return new ORPCError("BAD_REQUEST", {
-		message:
-			"URL sources need a Firecrawl API key. Configure it in Settings → Search Providers to enable scheduled re-syncs.",
-		data,
-	});
-}
 
 export const updateUrlSourceProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_UPDATE))
@@ -286,20 +230,16 @@ export const updateUrlSourceProcedure = tenantProtectedProcedure
 				const effectiveMaxPages =
 					input.maxPages ?? existing.urlMaxPages ?? DEFAULT_MAX_PAGES;
 
-				// Resolve the Firecrawl key only when we're going to need
-				// it (switching INTO a scheduled mode). The delete path
-				// doesn't need it.
-				let apiKey: string | null = null;
+				// Resolve the scraper only when we're going to need it
+				// (switching INTO a scheduled mode). The delete path doesn't
+				// need it. The scope is the one the schedule will run with.
+				let provider: UrlSourceProvider | null = null;
 				if (isScheduledMode(newMode)) {
-					apiKey = await resolveFirecrawlApiKey({
-						userId: user.id,
+					provider = await resolveUrlSourceProvider({
 						organizationId,
+						userId: user.id,
+						scope: effectiveScope,
 					});
-					if (!apiKey) {
-						throw await buildFirecrawlNotConfiguredError({
-							organizationId,
-						});
-					}
 				}
 
 				try {
@@ -317,7 +257,9 @@ export const updateUrlSourceProcedure = tenantProtectedProcedure
 							organizationId: organizationId ?? null,
 							parentSourceTitle:
 								input.label ?? existing.sourceTitle ?? null,
-							apiKey,
+							...(provider
+								? providerWorkflowArgs(provider)
+								: { apiKey: null }),
 						},
 						scheduleClient,
 					);
@@ -325,13 +267,6 @@ export const updateUrlSourceProcedure = tenantProtectedProcedure
 					scheduleAction = result.action;
 					data.urlScheduleId = nextScheduleId;
 				} catch (error) {
-					if (error instanceof MissingFirecrawlKeyError) {
-						// Defensive — we already checked above, but the
-						// helper enforces the invariant too.
-						throw await buildFirecrawlNotConfiguredError({
-							organizationId,
-						});
-					}
 					const message =
 						error instanceof Error ? error.message : String(error);
 					logger.error(

@@ -7,9 +7,10 @@
  *   - Translate provider errors into the right `ApplicationFailure` kind
  *     (retryable vs non-retryable) using the same FIRECRAWL_* type prefix
  *     the workflow's classifier keys off.
- *   - Refuse non-firecrawl providers up-front (only firecrawl has /v1/map).
+ *   - Return no URLs for cloudflare without any network call (no listing
+ *     endpoint; the workflow discovers pages by following links).
+ *   - Refuse other non-firecrawl providers up-front.
  */
-import { ApplicationFailure } from "@temporalio/activity";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockMapSiteUrls } = vi.hoisted(() => ({
@@ -128,6 +129,25 @@ describe("firecrawlMapActivity", () => {
 		},
 	);
 
+	it("returns no URLs for cloudflare and makes no network call", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		try {
+			const result = await firecrawlMapActivity({
+				url: "https://help.acme.com/hc/en-us",
+				apiKey: "cf-test",
+				providerName: "cloudflare",
+				includePaths: ["/hc/en-us"],
+				limit: 50,
+			});
+
+			expect(result).toEqual({ urls: [] });
+			expect(mockMapSiteUrls).not.toHaveBeenCalled();
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
 	it("refuses non-firecrawl providers (only /v1/map exists)", async () => {
 		// /v1/map is Firecrawl-specific. Defensive guard so a misrouted
 		// PATH_PREFIX (which should never select another provider) fails
@@ -138,7 +158,10 @@ describe("firecrawlMapActivity", () => {
 				apiKey: "fc",
 				providerName: "jina",
 			}),
-		).rejects.toBeInstanceOf(ApplicationFailure);
+		).rejects.toMatchObject({
+			type: "FIRECRAWL_UNKNOWN",
+			nonRetryable: true,
+		});
 
 		// Important: the underlying mapSiteUrls helper is NOT called for
 		// unsupported providers — the activity fails fast before hitting it.

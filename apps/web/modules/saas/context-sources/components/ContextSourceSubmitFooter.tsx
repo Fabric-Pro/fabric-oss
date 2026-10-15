@@ -100,7 +100,7 @@ export function ContextSourceSubmitFooter({
 	const submitTooltip = linkTabUnconfigured
 		? "Configure a search provider in Settings → Search Providers to add URL sources."
 		: linkTabPathPrefixNeedsCrawl
-			? "Path-prefix crawls require Firecrawl. Configure Firecrawl in Settings → Search Providers, or pick Single page."
+			? "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. Configure one in Settings → Search Providers, or pick Single page."
 			: linkTabBulkBlocked && bulkOverLimit
 				? `Batches are limited to ${URL_BULK_MAX_LINES} URLs at a time.`
 				: linkTabBulkBlocked && bulkInvalidCount > 0

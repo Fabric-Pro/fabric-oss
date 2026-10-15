@@ -69,12 +69,14 @@ export function ConnectionsTabs({
 	settingsBasePath,
 	apiKeysHref,
 	organizationId,
+	requestConnectionEnabled,
 }: {
 	addHref: string;
 	/** Where provider and action detail pages live (they stay under Settings). */
 	settingsBasePath: string;
 	apiKeysHref: string;
 	organizationId?: string | null;
+	requestConnectionEnabled?: boolean;
 }) {
 	const router = useRouter();
 	const pathname = usePathname();
@@ -203,6 +205,7 @@ export function ConnectionsTabs({
 				basePath={pathname}
 				toolbarStart={typeTabs}
 				view={tab}
+				requestConnectionEnabled={requestConnectionEnabled}
 			/>
 			{tab === "mcp" ? (
 				<div className="border-t border-border pt-8">

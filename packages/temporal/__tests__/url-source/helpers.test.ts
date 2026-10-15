@@ -19,6 +19,7 @@ import {
 	computeNextRefreshAt,
 	deriveIncludePaths,
 	extractInPrefixLinks,
+	filterInPrefixLinks,
 	isPermanentScrapeFailure,
 } from "../../src/workflows/url-source-crawl";
 
@@ -362,5 +363,98 @@ https://help.acme.com/hc/en-us/articles/1`;
 		);
 		expect(result).toContain("https://help.acme.com/hc/en-us/articles/1");
 		expect(result).toContain("https://help.acme.com/careers/openings");
+	});
+});
+
+describe("filterInPrefixLinks", () => {
+	const parentUrl = "https://example.com/docs";
+	const prefix = ["/docs"];
+
+	// Each case is a list of absolute URLs. Written into markdown as
+	// `[x](url)` links, `extractInPrefixLinks` must keep exactly what
+	// `filterInPrefixLinks` keeps from the list itself: the two paths of the
+	// crawl's link-following step apply one filter.
+	const cases: Array<{
+		name: string;
+		links: string[];
+		parent?: string;
+		includePaths?: string[];
+	}> = [
+		{
+			name: "same origin, in and out of the prefix",
+			links: [
+				"https://example.com/docs/a",
+				"https://example.com/docs",
+				"https://example.com/docs-old/x",
+				"https://example.com/blog/post",
+			],
+		},
+		{
+			name: "cross-origin and other-scheme hosts",
+			links: [
+				"https://other.example.com/docs/a",
+				"http://example.com/docs/a",
+				"https://example.com:8443/docs/a",
+				"https://example.com/docs/b",
+			],
+		},
+		{
+			name: "fragments, duplicates, query strings and trailing slashes",
+			links: [
+				"https://example.com/docs/a#one",
+				"https://example.com/docs/a#two",
+				"https://example.com/docs/a",
+				"https://example.com/docs/b?page=2",
+				"https://example.com/docs/c/",
+			],
+		},
+		{
+			name: "no includePaths keeps every same-origin URL",
+			links: [
+				"https://example.com/docs/a",
+				"https://example.com/blog/post",
+				"https://other.example.com/x",
+			],
+			includePaths: [],
+		},
+		{
+			name: "a malformed parent keeps nothing",
+			links: ["https://example.com/docs/a"],
+			parent: "not-a-url",
+		},
+	];
+
+	for (const c of cases) {
+		it(`matches extractInPrefixLinks on absolute links: ${c.name}`, () => {
+			const parent = c.parent ?? parentUrl;
+			const include = c.includePaths ?? prefix;
+			const markdown = c.links.map((l) => `[x](${l})`).join("\n");
+			const fromList = filterInPrefixLinks(c.links, parent, include);
+			expect(fromList).toEqual(
+				extractInPrefixLinks(markdown, parent, include),
+			);
+		});
+	}
+
+	it("keeps in-prefix, same-origin links normalised in input order", () => {
+		expect(
+			filterInPrefixLinks(
+				[
+					"https://example.com/docs/b#x",
+					"https://example.com/blog/post",
+					"https://example.com/docs/a",
+					"https://other.example.com/docs/c",
+					"https://example.com/docs/b",
+				],
+				parentUrl,
+				prefix,
+			),
+		).toEqual(["https://example.com/docs/b", "https://example.com/docs/a"]);
+	});
+
+	it("drops entries that are not absolute URLs", () => {
+		expect(
+			filterInPrefixLinks(["/docs/a", "docs/b", ""], parentUrl, prefix),
+		).toEqual([]);
 	});
 });

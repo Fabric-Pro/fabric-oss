@@ -271,6 +271,7 @@ const NOT_CONFIGURED_DISABLED = [
 // Jina-only (commit 3 of 3): scrape-capable but NOT crawl-capable.
 // PATH_PREFIX radio must be disabled in this configuration.
 const JINA_ONLY_ROWS = [row({ providerName: "jina" })];
+const CLOUDFLARE_ONLY_ROWS = [row({ providerName: "cloudflare" })];
 
 // ── detectUrlScope unit table ────────────────────────────────────────────
 
@@ -532,6 +533,32 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		await user.click(getTabTrigger("link"));
 		const indicator = await screen.findByTestId("url-source-indexing-with");
 		expect(indicator).toHaveTextContent(/Indexing with Firecrawl/i);
+	});
+
+	it("enables PATH_PREFIX and names Cloudflare as the crawl provider when it is the only scraper", async () => {
+		getUserSearchProvidersMock.mockResolvedValue(CLOUDFLARE_ONLY_ROWS);
+		const user = userEvent.setup();
+		wrap(
+			<ContextUploaderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={vi.fn()}
+			/>,
+		);
+
+		await user.click(getTabTrigger("link"));
+		const urlInput = await screen.findByLabelText("URL");
+		await user.type(urlInput, "https://help.acme.com/hc/en-us");
+		urlInput.blur();
+
+		await waitFor(() => {
+			expect(
+				screen.getByRole("radio", { name: /Path-prefix/i }),
+			).toHaveAttribute("data-state", "checked");
+		});
+		expect(
+			screen.getByTestId("url-source-indexing-with"),
+		).toHaveTextContent(/Indexing with Cloudflare Browser Rendering/i);
 	});
 
 	it("disables the PATH_PREFIX radio when only non-crawl-capable providers are enabled", async () => {
@@ -878,7 +905,8 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		getUserSearchProvidersMock.mockResolvedValue(CONFIGURED_ROWS);
 		processLinkMock.mockRejectedValueOnce({
 			data: { code: "CRAWL_PROVIDER_NOT_CONFIGURED" },
-			message: "Path-prefix crawls currently require Firecrawl.",
+			message:
+				"Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering.",
 		});
 		const user = userEvent.setup();
 		wrap(
@@ -902,7 +930,7 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		await waitFor(() => {
 			expect(
 				screen.getByText(
-					/Path-prefix crawls currently require Firecrawl/i,
+					/Path-prefix crawls require Firecrawl or Cloudflare/i,
 				),
 			).toBeInTheDocument();
 		});

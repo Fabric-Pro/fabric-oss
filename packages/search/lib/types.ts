@@ -135,6 +135,11 @@ export interface SearchProviderMetadata {
 	rateLimit?: number;
 	/** Approximate cost per search (USD) */
 	costPerSearch?: number;
+	/**
+	 * Whether the provider can run a web search. Absent means it can; a
+	 * scrape-only provider sets `false` so search-provider selection skips it.
+	 */
+	supportsSearch?: boolean;
 }
 
 /**

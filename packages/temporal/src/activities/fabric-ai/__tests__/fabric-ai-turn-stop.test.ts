@@ -2,15 +2,17 @@
  * Advisor Stop during a Fabric AI tool (web search, scraping, patterns).
  *
  * These activities run inside `executeMcpTool`, under the chat turn's
- * dispatch guard, and each of them catches failures: a delegated request
- * that fails falls back to the user's Jina key and then to the Fabric AI
- * server, and the outer catch returns `{ success: false }`, which
- * `executeMcpTool` would hand to the model as a tool error. In a turn
- * (run here with the real turn guard, as the worker's interceptor runs it) a
- * stop must leave the activity as an error and start no fallback; with no
- * turn the fallbacks are unchanged.
+ * dispatch guard, and each of them catches failures: a failed provider
+ * search or scrape falls back to the Fabric AI server, and the outer catch
+ * returns `{ success: false }`, which `executeMcpTool` would hand to the
+ * model as a tool error. In a turn (run here with the real turn guard, as the
+ * worker's interceptor runs it) a stop must leave the activity as an error
+ * and start no fallback; with no turn the fallbacks are unchanged.
  *
- * `fetch` is mocked at the global boundary; `@repo/fabric-ai` is real.
+ * `fetch` is mocked at the global boundary and `@repo/fabric-ai` is real.
+ * The search provider is a stub (search providers send their own requests
+ * and take no abort signal), so a search stop is delivered as a cancellation
+ * while the stub is pending.
  */
 
 import { getDispatchGuard } from "@repo/utils/dispatch-guard";
@@ -21,7 +23,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	checkDispatchable: vi.fn(),
 	getEffectiveDelegationSetting: vi.fn(),
+	getEnabledOrganizationSearchProviders: vi.fn(),
+	getEnabledUserSearchProviders: vi.fn(),
+	getMergedSearchProviderConfigs: vi.fn(),
 	getSearchProviderConfig: vi.fn(),
+	providerSearch: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	issueAIToken: vi.fn(),
 }));
@@ -31,6 +37,10 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	checkConversationTurnDispatchable: h.checkDispatchable,
 	getEffectiveDelegationSetting: h.getEffectiveDelegationSetting,
+	getEnabledOrganizationSearchProviders:
+		h.getEnabledOrganizationSearchProviders,
+	getEnabledUserSearchProviders: h.getEnabledUserSearchProviders,
+	getMergedSearchProviderConfigs: h.getMergedSearchProviderConfigs,
 	getSearchProviderConfig: h.getSearchProviderConfig,
 	logAiUsageAsync: vi.fn(),
 }));
@@ -41,6 +51,10 @@ vi.mock("@repo/ai", () => ({
 		provider: "OPENAI_DIRECT",
 	}),
 	logModelUsageAsync: vi.fn(),
+}));
+vi.mock("@repo/search", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/search")>()),
+	createProvider: () => ({ search: h.providerSearch }),
 }));
 vi.mock("@repo/ai-token", () => ({ issueAIToken: h.issueAIToken }));
 vi.mock("@repo/utils", () => ({
@@ -100,11 +114,39 @@ beforeEach(() => {
 	}
 	h.checkDispatchable.mockResolvedValue({ ok: true });
 	h.getEffectiveDelegationSetting.mockResolvedValue(true);
-	h.getSearchProviderConfig.mockResolvedValue({
+	h.getSearchProviderConfig.mockResolvedValue(null);
+	// Rows exist for the turn's organization only.
+	h.getMergedSearchProviderConfigs.mockImplementation(
+		async (args: { organizationId?: string | null }) =>
+			args.organizationId === USER.organizationId
+				? [
+						{
+							providerName: "exa",
+							encryptedApiKey: "exa-key",
+							endpoint: null,
+							enabled: true,
+							isDefault: true,
+							priority: 0,
+							source: "organization",
+						},
+					]
+				: [],
+	);
+	// Scraping resolves its provider through getWebScraperForTenant: an
+	// organization with Jina as its default scraper.
+	const jinaProviderRow = {
+		providerName: "jina",
 		encryptedApiKey: "jina-key",
+		endpoint: null,
 		enabled: true,
-		source: "user",
-	});
+		isDefault: true,
+		priority: 0,
+		createdAt: new Date(),
+	};
+	h.getEnabledOrganizationSearchProviders.mockResolvedValue([
+		jinaProviderRow,
+	]);
+	h.getEnabledUserSearchProviders.mockResolvedValue([jinaProviderRow]);
 	h.issueAIToken.mockResolvedValue("example-ai-token");
 	fetchMock = hangingFetch();
 	vi.stubGlobal("fetch", fetchMock);
@@ -134,27 +176,49 @@ async function cancelDuringFirstRequest(
 	return running;
 }
 
+/**
+ * Like `cancelDuringFirstRequest`, for a search the stubbed provider is
+ * serving: the provider search stays pending until the Stop reaches the
+ * activity, then fails the way a dropped connection would.
+ */
+async function cancelDuringProviderSearch(
+	body: () => Promise<unknown>,
+): Promise<unknown> {
+	const env = new MockActivityEnvironment();
+	let fail: (error: Error) => void = () => undefined;
+	h.providerSearch.mockImplementation(
+		() =>
+			new Promise((_resolve, reject) => {
+				fail = reject;
+			}),
+	);
+	const running = env
+		.run(() => runWithTurnDispatch(TURN_SCOPE, body))
+		.then(
+			(value) => ({ resolvedWith: value }),
+			(error: unknown) => error,
+		);
+	await vi.waitFor(() => expect(h.providerSearch).toHaveBeenCalledTimes(1));
+	env.cancel();
+	fail(new TypeError("fetch failed"));
+	return running;
+}
+
 describe("a Stop while a Fabric AI tool's request is in flight", () => {
-	it("web search: the delegated request is aborted and no fallback runs", async () => {
-		const outcome = await cancelDuringFirstRequest(() =>
+	it("web search: a provider failure after the Stop is not a { success: false } result", async () => {
+		const outcome = await cancelDuringProviderSearch(() =>
 			searchWebActivity({ question: "q", ...USER }),
 		);
 
 		expect(outcome).toBeInstanceOf(CancelledFailure);
-		expect(String(fetchMock.mock.calls[0][0])).toContain(
-			"/delegated/search",
-		);
-		expect(
-			(fetchMock.mock.calls[0][1] as RequestInit).signal?.aborted,
-		).toBe(true);
-		// The delegated catch did not go on to the user's Jina key or the
-		// Fabric AI server.
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(h.getSearchProviderConfig).not.toHaveBeenCalled();
+		expect(h.providerSearch).toHaveBeenCalledTimes(1);
+		expect(h.getMergedSearchProviderConfigs).toHaveBeenCalledWith(USER);
+		// No fallback to the Fabric AI server.
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("search and analyze: no fallback search and no analysis", async () => {
-		const outcome = await cancelDuringFirstRequest(() =>
+		const outcome = await cancelDuringProviderSearch(() =>
 			searchAndAnalyzeActivity({
 				question: "q",
 				pattern: "summarize",
@@ -163,8 +227,8 @@ describe("a Stop while a Fabric AI tool's request is in flight", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(CancelledFailure);
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(h.getSearchProviderConfig).not.toHaveBeenCalled();
+		expect(h.providerSearch).toHaveBeenCalledTimes(1);
+		expect(fetchMock).not.toHaveBeenCalled();
 		expect(h.getAIModelWithMetadata).not.toHaveBeenCalled();
 	});
 
@@ -178,8 +242,8 @@ describe("a Stop while a Fabric AI tool's request is in flight", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(CancelledFailure);
+		expect(String(fetchMock.mock.calls[0][0])).toContain("r.jina.ai");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(h.getSearchProviderConfig).not.toHaveBeenCalled();
 		expect(h.getAIModelWithMetadata).not.toHaveBeenCalled();
 	});
 
@@ -189,6 +253,9 @@ describe("a Stop while a Fabric AI tool's request is in flight", () => {
 		);
 
 		expect(outcome).toBeInstanceOf(CancelledFailure);
+		expect(h.getEnabledOrganizationSearchProviders).toHaveBeenCalledWith(
+			"org-example-1",
+		);
 		expect(String(fetchMock.mock.calls[0][0])).toContain("r.jina.ai");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
@@ -227,33 +294,54 @@ describe("a Stop recorded before a Fabric AI tool's request", () => {
 			"TurnNotDispatchable",
 		);
 		expect(fetchMock).not.toHaveBeenCalled();
-		expect(h.getSearchProviderConfig).not.toHaveBeenCalled();
+		expect(h.providerSearch).not.toHaveBeenCalled();
+	});
+
+	it("search and analyze: the provider search is not started", async () => {
+		h.checkDispatchable.mockResolvedValue({
+			ok: false,
+			reason: "cancelled",
+		});
+
+		const outcome = await runWithTurnDispatch(TURN_SCOPE, () =>
+			searchAndAnalyzeActivity({
+				question: "q",
+				pattern: "summarize",
+				...USER,
+			}),
+		).then(
+			(value) => ({ resolvedWith: value }),
+			(error: unknown) => error,
+		);
+
+		expect(outcome).toBeInstanceOf(ApplicationFailure);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(h.providerSearch).not.toHaveBeenCalled();
+		expect(h.getAIModelWithMetadata).not.toHaveBeenCalled();
 	});
 });
 
 describe("with no turn, the fallbacks are unchanged", () => {
-	it("web search: a failed delegated request still falls back to the user's Jina key", async () => {
+	it("search and analyze: a failed provider search still falls back to the Fabric AI server", async () => {
 		expect(getDispatchGuard()).toBeUndefined();
-		fetchMock.mockImplementation(async (url: unknown) => {
-			if (String(url).includes("/delegated/search")) {
-				throw new TypeError("fetch failed");
-			}
-			return new Response("search results", { status: 200 });
+		h.providerSearch.mockRejectedValue(new TypeError("fetch failed"));
+		h.getAIModelWithMetadata.mockRejectedValue(new Error("model stub"));
+		fetchMock.mockImplementation(
+			async () => new Response('{"content":"server results"}'),
+		);
+
+		await searchAndAnalyzeActivity({
+			question: "q",
+			pattern: "summarize",
+			...USER,
 		});
 
-		const result = await searchWebActivity({ question: "q", ...USER });
-
-		expect(result).toMatchObject({
-			success: true,
-			results: "search results",
-		});
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(String(fetchMock.mock.calls[1][0])).toContain("s.jina.ai");
+		expect(h.providerSearch).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0][0])).toContain("/search");
 	});
 
 	it("web search: a failure everywhere is still a { success: false } result", async () => {
-		h.getEffectiveDelegationSetting.mockResolvedValue(false);
-		fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+		h.providerSearch.mockRejectedValue(new TypeError("fetch failed"));
 
 		const result = await searchWebActivity({ question: "q", ...USER });
 

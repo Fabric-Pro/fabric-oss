@@ -82,7 +82,7 @@ describe("startParlumeMeetingBot", () => {
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
 						input_url:
 							"wss://bridge.fabric.example/live/session-1?token=stream-token",
-						audio_frequency: 24_000,
+						audio_frequency: 16_000,
 					},
 					timeout_config: {
 						waiting_room_timeout: 180,

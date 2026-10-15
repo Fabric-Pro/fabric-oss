@@ -58,11 +58,6 @@ import {
 } from "./procedures/deletion";
 import { getOrganizationDocumentAssistantHistorySettingProcedure } from "./procedures/document-assistant-history-setting";
 import { getOrganizationFeatureMaturationV2SettingProcedure } from "./procedures/feature-maturation-v2-setting";
-import { deleteOrganizationFirecrawlKeyProcedure } from "./procedures/firecrawl/delete-key";
-import { getOrganizationFirecrawlConfigProcedure } from "./procedures/firecrawl/get-config";
-import { getOrganizationFirecrawlKeyProcedure } from "./procedures/firecrawl/get-key";
-import { testOrganizationFirecrawlKeyProcedure } from "./procedures/firecrawl/test-key";
-import { updateOrganizationFirecrawlKeyProcedure } from "./procedures/firecrawl/update-key";
 import { generateOrganizationSlug } from "./procedures/generate-organization-slug";
 import { getFrameSharingPolicyProcedure } from "./procedures/get-frame-sharing-policy";
 import { getGuestOrganizationProcedure } from "./procedures/get-guest-organization";
@@ -154,13 +149,6 @@ export const organizationsRouter = {
 		// routes flagged orgs to the three-tab editor. No `update` mutation
 		// (flag flipped via SQL for internal-first rollout, §9 / §15).
 		get: getOrganizationFeatureMaturationV2SettingProcedure,
-	},
-	firecrawl: {
-		getConfig: getOrganizationFirecrawlConfigProcedure,
-		getKey: getOrganizationFirecrawlKeyProcedure,
-		updateKey: updateOrganizationFirecrawlKeyProcedure,
-		deleteKey: deleteOrganizationFirecrawlKeyProcedure,
-		testKey: testOrganizationFirecrawlKeyProcedure,
 	},
 	// Organization deletion is a timed corridor rather than an event
 	// (Fizzy #2462), so it is OUR flow rather than the auth library's: request

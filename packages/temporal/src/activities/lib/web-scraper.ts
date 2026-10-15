@@ -9,6 +9,8 @@
  *   - `jina`      (scrape only — r.jina.ai/<url>)
  *   - `tavily`    (scrape only — /extract)
  *   - `exa`       (scrape only — /contents)
+ *   - `cloudflare` (scrape only — Browser Rendering /markdown; the account
+ *                  ID travels as the provider row's endpoint)
  *
  * `parallel` is recognised by name so callers can surface a clear "not
  * supported yet" message; no adapter ships in this commit.
@@ -93,6 +95,7 @@ export type WebScraperProviderName =
 	| "jina"
 	| "tavily"
 	| "exa"
+	| "cloudflare"
 	| "parallel";
 
 /**
@@ -124,6 +127,7 @@ export const WEB_SCRAPER_DISPLAY_NAMES: Record<WebScraperProviderName, string> =
 		jina: "Jina AI",
 		tavily: "Tavily",
 		exa: "Exa",
+		cloudflare: "Cloudflare Browser Rendering",
 		parallel: "Parallel",
 	};
 
@@ -139,15 +143,19 @@ export const SCRAPE_CAPABLE_PROVIDERS: readonly WebScraperProviderName[] = [
 	"jina",
 	"tavily",
 	"exa",
+	"cloudflare",
 ] as const;
 
 /**
- * Provider names that can crawl a path-prefix. Currently Firecrawl only.
+ * Provider names that can crawl a path-prefix: Firecrawl (via /v1/map) and
+ * Cloudflare Browser Rendering (no page listing; the workflow discovers pages
+ * by following in-prefix links from each scraped page).
  * Used by the picker's `requireCrawl` filter and by the UI's PATH_PREFIX
  * radio gate.
  */
 export const CRAWL_CAPABLE_PROVIDERS: readonly WebScraperProviderName[] = [
 	"firecrawl",
+	"cloudflare",
 ] as const;
 
 export function isScrapeCapableProvider(

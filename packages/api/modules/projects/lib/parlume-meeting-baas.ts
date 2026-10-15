@@ -168,12 +168,14 @@ export async function startParlumeMeetingBot(input: {
 			// Raw audio both ways on one socket: the bot streams the mixed
 			// meeting audio to the bridge and plays whatever the bridge sends
 			// back. The provider's transcription mode never plays returned
-			// audio, so the bridge transcribes the meeting itself.
+			// audio, so the bridge transcribes the meeting itself. At the 24 kHz
+			// default the bot played replies chopped into ~25 ms bursts every
+			// 48 ms; Meeting BaaS's own speaking bot always runs at 16 kHz.
 			streaming_config: {
 				mode: "audio",
 				output_url: bridgeUrl,
 				input_url: bridgeUrl,
-				audio_frequency: 24_000,
+				audio_frequency: 16_000,
 			},
 			// Three minutes unadmitted or alone is the provider's floor for a
 			// meeting that never happened. Silence cannot go below five minutes

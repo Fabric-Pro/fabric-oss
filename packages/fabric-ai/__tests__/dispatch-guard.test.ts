@@ -185,8 +185,6 @@ describe("a stopped guard: no request is sent", () => {
 	const client = () => createFabricClient({ baseUrl: BASE_URL });
 	const requests: Array<[string, () => Promise<unknown>]> = [
 		["scrapeUrl (timed client request)", () => client().scrapeUrl("u")],
-		["searchWebDelegated", () => client().searchWebDelegated("q", "t")],
-		["scrapeUrlDelegated", () => client().scrapeUrlDelegated("u", "t")],
 		[
 			"executePattern",
 			() => client().executePattern({ input: "i", pattern: "summarize" }),
@@ -534,8 +532,8 @@ describe("with no guard, behaviour is unchanged", () => {
 	it("raw requests are sent with no signal, as before", async () => {
 		fetchMock.mockResolvedValue(Response.json({ content: "results" }));
 
-		await createFabricClient({ baseUrl: BASE_URL }).searchWebDelegated(
-			"q",
+		await createFabricClient({ baseUrl: BASE_URL }).getYouTubeMetadata(
+			"u",
 			"t",
 		);
 

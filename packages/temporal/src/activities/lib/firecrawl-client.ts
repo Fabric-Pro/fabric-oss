@@ -14,6 +14,11 @@
  * (see `getSearchProviderConfig` + `decryptApiKey`). This module never
  * touches the database or the encryption helpers.
  */
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { z } from "zod";
 
 const FIRECRAWL_API_BASE = "https://api.firecrawl.dev/v1";
@@ -738,6 +743,10 @@ export async function crawlSite(
 
 		for (const r of batchResults) {
 			if (r.status !== "fulfilled") {
+				// Inside a dispatch guard a page scrape rejects with the
+				// guard's stop; skipping it would turn the stop into a
+				// partial or failed crawl result.
+				rethrowIfDispatchStopped(r.reason);
 				continue;
 			}
 			if (r.value.success) {
@@ -923,6 +932,15 @@ async function firecrawlFetch(
 
 	let response: Response;
 	try {
+		// Inside a dispatch guard (an Advisor chat turn) a stopped guard
+		// refuses before the request, and the request carries the guard's
+		// abort signal beside the timeout's. Outside a guard this returns the
+		// timeout's signal unchanged. Every Firecrawl request (scrape and map)
+		// goes through this helper.
+		const signal = await guardDispatch(controller.signal);
+		// Awaiting the guard is itself an await: the latched stops are
+		// checked again in the same run as the send.
+		throwIfDispatchStopped();
 		response = await fetch(endpoint, {
 			method,
 			headers: {
@@ -930,10 +948,13 @@ async function firecrawlFetch(
 				"Content-Type": "application/json",
 			},
 			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: controller.signal,
+			signal,
 		});
 	} catch (error) {
 		clearTimeout(timeoutHandle);
+		// A stop leaves as an error: a { success: false } result would be
+		// taken for a failed scrape.
+		rethrowIfDispatchStopped(error);
 		const aborted =
 			error instanceof Error &&
 			(error.name === "AbortError" || /abort/i.test(error.message));
@@ -994,6 +1015,8 @@ async function firecrawlFetch(
 		rawText = await response.text();
 		parsedBody = rawText.length === 0 ? {} : JSON.parse(rawText);
 	} catch (error) {
+		// The guard's signal also aborts the body read.
+		rethrowIfDispatchStopped(error);
 		return {
 			ok: false,
 			error: {

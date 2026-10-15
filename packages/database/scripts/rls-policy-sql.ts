@@ -11,7 +11,10 @@
  * only production consumer.
  */
 
-export type ParentScopedPolicyKind = "project_parent" | "proposal_parent";
+export type ParentScopedPolicyKind =
+	| "project_parent"
+	| "proposal_parent"
+	| "memory_write_parent";
 
 export interface ParentScopedPolicyConfig {
 	/** Parent table name as it exists in Postgres (already snake-cased). */
@@ -31,8 +34,10 @@ export interface ParentScopedPolicyConfig {
  *   (e.g. `project_stage_approver`).
  * - `proposal_parent` → child rows hang off `pending_backlog_proposal` via
  *   `proposalId` (e.g. `pending_backlog_proposal_application`).
+ * - `memory_write_parent` → child rows hang off `project_memory_write` via
+ *   `writeId` (`project_memory_write_entry`, ADR-022).
  *
- * Both parents use the `user_owned` policy shape, so the predicate below
+ * Every parent uses the `user_owned` policy shape, so the predicate below
  * mirrors the `user_owned` case in `apply-rls-direct.ts` exactly.
  */
 export const PARENT_SCOPED_POLICIES: Record<
@@ -50,6 +55,12 @@ export const PARENT_SCOPED_POLICIES: Record<
 		parentAlias: "b",
 		parentKeyColumn: "id",
 		childKeyColumn: "proposalId",
+	},
+	memory_write_parent: {
+		parentTable: "project_memory_write",
+		parentAlias: "w",
+		parentKeyColumn: "id",
+		childKeyColumn: "writeId",
 	},
 };
 

@@ -419,6 +419,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"org",
 	),
+	"account.integration.config_updated": D(
+		"account.integration.config_updated",
+		"Personal integration config updated",
+		Key,
+		"info",
+		"org",
+	),
+	"account.integration.disconnected": D(
+		"account.integration.disconnected",
+		"Personal integration disconnected",
+		Unplug,
+		"warning",
+		"org",
+	),
 	"account.chatgpt_plan.connected": D(
 		"account.chatgpt_plan.connected",
 		"ChatGPT plan connected",

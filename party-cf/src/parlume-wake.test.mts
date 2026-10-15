@@ -60,7 +60,31 @@ test("does not wake for partial words or ordinary mentions", () => {
 		"Hey, problem with the build.",
 		"Hey team, what is the name of the project?",
 		"Hi everyone.",
+		"Fabric is slow today.",
+		"Fabric's roadmap looks fine.",
+		"Efficient, as always.",
+		"Use Fabric, it works.",
 	]) {
 		assert.equal(parseParlumeWake(text), null);
 	}
+});
+
+test("wakes for the name opening a turn as an address", () => {
+	assert.equal(
+		parseParlumeWake("Fabric, what is the name of the project?"),
+		"what is the name of the project?",
+	);
+	assert.equal(parseParlumeWake("Parlume: summarize."), "summarize.");
+	assert.equal(parseParlumeWake("Fabric Parlume, summarize."), "summarize.");
+	// A lone address arms the speaker's next segment.
+	assert.equal(parseParlumeWake("Fabric."), "");
+});
+
+test("wakes when transcription fuses the greeting onto the name", () => {
+	// Verbatim from a staging transcript on 2026-10-14.
+	assert.equal(
+		parseParlumeWake("Efabric described this project in three sentences."),
+		"described this project in three sentences.",
+	);
+	assert.equal(parseParlumeWake("Heyfabric, summarize."), "summarize.");
 });

@@ -270,7 +270,23 @@ describe("audit.taxonomy handler", () => {
 		// + 1 org.chatgpt_plan.interactive_api_fallback_used (a member's own
 		// work moved to the organization's provider under the interactive
 		// "Use API billing" policy, Fizzy #3048) = 203.
-		expect(result.actions).toHaveLength(203);
+		// + 1 account.integration.config_updated (a personal search or scraper
+		// provider key saved, Fizzy #3074) = 204.
+		// + 1 account.integration.disconnected (that key removed) = 205.
+		// + 3 project.context.write_target_{created, updated, deleted} (the
+		// folders of a project's Living Memory sync that agents' files are
+		// written into, and whether each opens a pull request or pushes
+		// directly; folder and mode, never file content, ADR-022) = 208.
+		expect(result.actions).toHaveLength(208);
+		expect(result.actions).toContain(
+			"project.context.write_target_created",
+		);
+		expect(result.actions).toContain(
+			"project.context.write_target_updated",
+		);
+		expect(result.actions).toContain(
+			"project.context.write_target_deleted",
+		);
 		expect(result.actions).toContain(
 			"account.chatgpt_plan.organization_use_changed",
 		);

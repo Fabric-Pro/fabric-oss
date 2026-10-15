@@ -1,6 +1,10 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
-import { playParlumePcm } from "./parlume-pcm";
+import {
+	ParlumeAudioOutlet,
+	parlumePcmConverter,
+	readParlumeSpeech,
+} from "./parlume-pcm";
 import { ParlumeSpeakerTimeline } from "./parlume-speakers";
 import {
 	authenticateParlumeStreamMessage,
@@ -139,6 +143,7 @@ interface MeetingAudio {
 export class Parlume extends Server<Env> {
 	private connections = new Map<Connection, StreamConnection>();
 	private audio = new Map<Connection, MeetingAudio>();
+	private outlets = new Map<Connection, ParlumeAudioOutlet>();
 	private speakers = new ParlumeSpeakerTimeline();
 	private inFlightFinalSegments = new Set<Promise<void>>();
 	private finalSegmentChain = Promise.resolve();
@@ -173,6 +178,9 @@ export class Parlume extends Server<Env> {
 
 	private async interruptResponse(state: StreamConnection): Promise<void> {
 		this.turnEndpoint.cancel();
+		for (const outlet of this.outlets.values()) {
+			outlet.clear();
+		}
 		this.playbackEpoch++;
 		this.playbackActive = false;
 		this.responsePending = false;
@@ -306,6 +314,20 @@ export class Parlume extends Server<Env> {
 			...meta,
 			sampleRate: handshake.sampleRate,
 		});
+		this.outlets.get(conn)?.stop();
+		this.outlets.delete(conn);
+		if (!parlumePcmConverter(handshake.sampleRate)) {
+			log("warn", "speech.unsupported_rate", {
+				...meta,
+				sampleRate: handshake.sampleRate,
+			});
+			return;
+		}
+		const outlet = new ParlumeAudioOutlet({
+			sampleRate: handshake.sampleRate,
+			send: (frame) => conn.send(frame),
+		});
+		this.outlets.set(conn, outlet);
 	}
 
 	private receiveAudio(
@@ -430,6 +452,8 @@ export class Parlume extends Server<Env> {
 	async onClose(conn: Connection, code?: number, reason?: string) {
 		this.audio.get(conn)?.transcriber.close();
 		this.audio.delete(conn);
+		this.outlets.get(conn)?.stop();
+		this.outlets.delete(conn);
 		const state = this.connections.get(conn);
 		this.connections.delete(conn);
 		log("info", "stream.closed", {
@@ -614,6 +638,18 @@ export class Parlume extends Server<Env> {
 				{ status: 409 },
 			);
 		}
+		const outlet = this.outlets.get(connection);
+		const converter = outlet && parlumePcmConverter(outlet.sampleRate);
+		if (!outlet || !converter) {
+			log("warn", "speech.unsupported_rate", {
+				sessionId: this.name,
+				sampleRate: this.audio.get(connection)?.sampleRate ?? null,
+			});
+			return Response.json(
+				{ error: "Bot audio format unavailable" },
+				{ status: 409 },
+			);
+		}
 		const epoch = Number(
 			request.headers.get("x-parlume-voice-generation") ??
 				this.playbackEpoch,
@@ -629,15 +665,31 @@ export class Parlume extends Server<Env> {
 		}
 		this.playbackActive = true;
 		const startedAt = Date.now();
+		const isCurrent = () =>
+			epoch === this.playbackEpoch && this.connections.has(connection);
+		let firstAudioAt: number | undefined;
 		try {
-			const result = await playParlumePcm({
+			const complete = await readParlumeSpeech({
 				body: request.body,
 				declaredLength: length,
-				isCurrent: () =>
-					epoch === this.playbackEpoch &&
-					this.connections.has(connection),
-				send: (frame) => connection.send(frame),
+				converter,
+				isCurrent,
+				enqueue: (bytes) => {
+					if (bytes.length > 0) {
+						firstAudioAt ??= Date.now();
+						outlet.enqueue(bytes);
+					}
+				},
+			}).catch((error: unknown) => {
+				outlet.clear();
+				throw error;
 			});
+			if (complete) {
+				outlet.end();
+				await outlet.drained();
+			}
+			const played = complete && isCurrent();
+			const result = { played, interrupted: !played, firstAudioAt };
 			const confirmationSpeakerId = request.headers.get(
 				"x-parlume-confirmation-speaker",
 			);
@@ -653,6 +705,7 @@ export class Parlume extends Server<Env> {
 				played: result.played,
 				interrupted: result.interrupted,
 				declaredBytes: length,
+				sampleRate: outlet.sampleRate,
 				playbackMs: Date.now() - startedAt,
 			});
 			return Response.json(result);

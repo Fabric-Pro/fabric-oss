@@ -1,5 +1,6 @@
 import { deleteUserFirecrawlKey } from "@repo/database";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
 	Permissions,
 	requirePermission,
@@ -21,8 +22,20 @@ export const deleteUserFirecrawlKeyProcedure = tenantProtectedProcedure
 			message: z.string(),
 		}),
 	)
-	.handler(async ({ context: { user } }) => {
-		await deleteUserFirecrawlKey(user.id);
+	.handler(async ({ context }) => {
+		await deleteUserFirecrawlKey(context.user.id);
+
+		recordAuditFromRequest(context, {
+			action: "account.integration.disconnected",
+			category: "account",
+			organizationId: null,
+			resource: {
+				type: "integration",
+				id: "firecrawl",
+				name: "firecrawl",
+			},
+			metadata: { provider: "firecrawl" },
+		});
 
 		return {
 			success: true,

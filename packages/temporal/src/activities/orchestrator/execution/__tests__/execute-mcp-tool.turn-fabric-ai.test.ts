@@ -3,12 +3,12 @@
  * the real Fabric AI activities and client underneath (only `fetch` and the
  * stores are mocked).
  *
- * The tool's first request fails in an ordinary way and the turn is stopped
- * before its fallback request: the fallback's own dispatch check refuses it,
- * and that stop must leave executeMcpTool as the refusal, not come back as
- * the Jina client's `{ success: false }` and from there as a tool error the
- * model works around. Without a turn the same failures still end as an
- * ordinary tool error.
+ * The tenant's configured search provider is Jina (a row under its
+ * organization only), so the real Jina client sends the request. The turn is
+ * stopped before that request: its dispatch check refuses it, and the stop
+ * must leave executeMcpTool as the refusal, not come back as a
+ * `{ success: false }` tool error the model works around. Without a turn the
+ * same upstream failure still ends as an ordinary tool error.
  */
 
 import { ApplicationFailure } from "@temporalio/common";
@@ -23,6 +23,24 @@ const h = vi.hoisted(() => ({
 	isProjectReadOnly: vi.fn(async () => false),
 	generateImageActivity: vi.fn(),
 	checkDispatchable: vi.fn(),
+	// Rows exist for org-1 only: a lookup that drops the organization finds
+	// no provider and the tool would go to the Fabric AI server instead.
+	getMergedSearchProviderConfigs: vi.fn(
+		async (args: { userId: string; organizationId?: string | null }) =>
+			args.organizationId === "org-1"
+				? [
+						{
+							providerName: "jina",
+							encryptedApiKey: "jina-key",
+							endpoint: null,
+							enabled: true,
+							isDefault: true,
+							priority: 0,
+							source: "organization",
+						},
+					]
+				: [],
+	),
 }));
 
 vi.mock("@repo/mcp", () => ({
@@ -49,11 +67,8 @@ vi.mock("@repo/database", () => ({
 	ensureSensitiveOperationAuthority: h.ensureSensitiveOperationAuthority,
 	resolveCanonicalProviderKey: (key: string) => key.toLowerCase(),
 	checkConversationTurnDispatchable: h.checkDispatchable,
-	getEffectiveDelegationSetting: vi.fn(async () => true),
-	getSearchProviderConfig: vi.fn(async () => ({
-		encryptedApiKey: "jina-key",
-		enabled: true,
-	})),
+	getMergedSearchProviderConfigs: h.getMergedSearchProviderConfigs,
+	getSearchProviderConfig: vi.fn(async () => null),
 	logAiUsageAsync: vi.fn(),
 }));
 vi.mock("@repo/ai", () => ({
@@ -132,11 +147,9 @@ function webSearch(withTurn: boolean) {
 }
 
 describe("fabric_web_search in a chat turn", () => {
-	it("a stop met by the fallback request leaves as the refusal, not as a tool error", async () => {
-		// Launch check and the delegated request pass; the Stop is recorded
-		// before the fallback to the user's Jina key.
+	it("a stop met before the provider request leaves as the refusal, not as a tool error", async () => {
+		// The launch check passes; the Stop is recorded before the search.
 		h.checkDispatchable
-			.mockResolvedValueOnce({ ok: true })
 			.mockResolvedValueOnce({ ok: true })
 			.mockResolvedValue({ ok: false, reason: "cancelled" });
 
@@ -151,20 +164,21 @@ describe("fabric_web_search in a chat turn", () => {
 		expect((outcome as ApplicationFailure).type).toBe(
 			"TurnNotDispatchable",
 		);
-		// Only the delegated request was sent: not the Jina fallback, and not
-		// the Fabric AI server fallback after it.
-		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(String(fetchMock.mock.calls[0][0])).toContain(
-			"/delegated/search",
-		);
+		// Neither the Jina request nor a Fabric AI server fallback was sent.
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(h.getMergedSearchProviderConfigs).toHaveBeenCalledWith({
+			userId: "u1",
+			organizationId: "org-1",
+		});
 	});
 
-	it("without a turn, the same failures still end as an ordinary tool error", async () => {
+	it("without a turn, an upstream failure still ends as an ordinary tool error", async () => {
 		const result = await webSearch(false);
 
 		expect(result.success).toBe(false);
-		// Delegated, then the user's Jina key; each failed and was reported.
-		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// One request, to the configured provider (Jina), reported as failed.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(String(fetchMock.mock.calls[0][0])).toContain("s.jina.ai");
 		expect(h.checkDispatchable).not.toHaveBeenCalled();
 	});
 });

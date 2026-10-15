@@ -388,6 +388,24 @@ export const ProjectContextRepositorySyncRunScalarFieldEnumSchema = z.enum(['id'
 
 export type ProjectContextRepositorySyncRunScalarFieldEnum = z.infer<typeof ProjectContextRepositorySyncRunScalarFieldEnumSchema>;
 
+// File: ProjectContextWriteTargetScalarFieldEnum.schema.ts
+
+export const ProjectContextWriteTargetScalarFieldEnumSchema = z.enum(['id', 'syncId', 'projectId', 'organizationId', 'userId', 'folder', 'mode', 'directPushEnabledById', 'directPushEnabledAt', 'version', 'createdAt', 'updatedAt'])
+
+export type ProjectContextWriteTargetScalarFieldEnum = z.infer<typeof ProjectContextWriteTargetScalarFieldEnumSchema>;
+
+// File: ProjectMemoryWriteScalarFieldEnum.schema.ts
+
+export const ProjectMemoryWriteScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'targetId', 'targetVersion', 'folder', 'mode', 'ref', 'repositoryIntegrationId', 'oauthClientId', 'via', 'message', 'digest', 'status', 'outcome', 'createdAt', 'settledAt'])
+
+export type ProjectMemoryWriteScalarFieldEnum = z.infer<typeof ProjectMemoryWriteScalarFieldEnumSchema>;
+
+// File: ProjectMemoryWriteEntryScalarFieldEnum.schema.ts
+
+export const ProjectMemoryWriteEntryScalarFieldEnumSchema = z.enum(['id', 'writeId', 'path', 'op', 'ifMatchOid', 'stagedKey', 'bytes', 'sha256'])
+
+export type ProjectMemoryWriteEntryScalarFieldEnum = z.infer<typeof ProjectMemoryWriteEntryScalarFieldEnumSchema>;
+
 // File: ProjectContextSummaryScalarFieldEnum.schema.ts
 
 export const ProjectContextSummaryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'content', 'status', 'trigger', 'coveredThrough', 'snapshotThrough', 'coveredContextCount', 'tokenCount', 'references', 'engineVersion', 'stats', 'sourceSelection', 'manualEdit', 'editedByUserId', 'spentInputTokens', 'spentOutputTokens', 'spentCostMicroUsd', 'model', 'error', 'triggeredByUserId', 'qdrantId', 'embeddedAt', 'supersededById', 'userId', 'organizationId', 'createdAt', 'updatedAt'])
@@ -2535,6 +2553,30 @@ export type ProjectContextSyncRunStatus = z.infer<typeof ProjectContextSyncRunSt
 export const ProjectContextSyncErrorSchema = z.enum(['NOT_CONFIGURED', 'INTEGRATION_UNAVAILABLE', 'PERMISSION_DENIED', 'RUN_IN_PROGRESS', 'REF_MISSING', 'PATHS_MISSING', 'LIMITS_EXCEEDED', 'CLONE_FAILED', 'STORE_FAILED', 'CONFIGURATION_CHANGED', 'SUPERSEDED', 'INTERRUPTED', 'IGNORE_RULE_REJECTED'])
 
 export type ProjectContextSyncError = z.infer<typeof ProjectContextSyncErrorSchema>;
+
+// File: ProjectContextWriteMode.schema.ts
+
+export const ProjectContextWriteModeSchema = z.enum(['PULL_REQUEST', 'DIRECT_PUSH'])
+
+export type ProjectContextWriteMode = z.infer<typeof ProjectContextWriteModeSchema>;
+
+// File: ProjectMemoryWriteVia.schema.ts
+
+export const ProjectMemoryWriteViaSchema = z.enum(['MCP', 'CLI'])
+
+export type ProjectMemoryWriteVia = z.infer<typeof ProjectMemoryWriteViaSchema>;
+
+// File: ProjectMemoryWriteStatus.schema.ts
+
+export const ProjectMemoryWriteStatusSchema = z.enum(['PENDING', 'COMMITTED', 'PULL_REQUEST', 'CONFLICT', 'REFUSED', 'FAILED'])
+
+export type ProjectMemoryWriteStatus = z.infer<typeof ProjectMemoryWriteStatusSchema>;
+
+// File: ProjectMemoryWriteOp.schema.ts
+
+export const ProjectMemoryWriteOpSchema = z.enum(['PUT', 'DELETE'])
+
+export type ProjectMemoryWriteOp = z.infer<typeof ProjectMemoryWriteOpSchema>;
 
 // File: ContextSummaryStatus.schema.ts
 
@@ -5427,6 +5469,68 @@ export const ProjectContextRepositorySyncRunSchema = z.object({
 });
 
 export type ProjectContextRepositorySyncRunType = z.infer<typeof ProjectContextRepositorySyncRunSchema>;
+
+
+// File: ProjectContextWriteTarget.schema.ts
+
+export const ProjectContextWriteTargetSchema = z.object({
+  id: z.string(),
+  syncId: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  folder: z.string(),
+  mode: ProjectContextWriteModeSchema.default("PULL_REQUEST"),
+  directPushEnabledById: z.string().nullish(),
+  directPushEnabledAt: z.date().nullish(),
+  version: z.number().int().default(1),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectContextWriteTargetType = z.infer<typeof ProjectContextWriteTargetSchema>;
+
+
+// File: ProjectMemoryWrite.schema.ts
+
+export const ProjectMemoryWriteSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  targetId: z.string(),
+  targetVersion: z.number().int(),
+  folder: z.string(),
+  mode: ProjectContextWriteModeSchema,
+  ref: z.string(),
+  repositoryIntegrationId: z.string(),
+  oauthClientId: z.string().nullish(),
+  via: ProjectMemoryWriteViaSchema,
+  message: z.string(),
+  digest: z.string(),
+  status: ProjectMemoryWriteStatusSchema.default("PENDING"),
+  outcome: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  createdAt: z.date(),
+  settledAt: z.date().nullish(),
+});
+
+export type ProjectMemoryWriteType = z.infer<typeof ProjectMemoryWriteSchema>;
+
+
+// File: ProjectMemoryWriteEntry.schema.ts
+
+export const ProjectMemoryWriteEntrySchema = z.object({
+  id: z.string(),
+  writeId: z.string(),
+  path: z.string(),
+  op: ProjectMemoryWriteOpSchema,
+  ifMatchOid: z.string().nullish(),
+  stagedKey: z.string().nullish(),
+  bytes: z.number().int().nullish(),
+  sha256: z.string().nullish(),
+});
+
+export type ProjectMemoryWriteEntryType = z.infer<typeof ProjectMemoryWriteEntrySchema>;
 
 
 // File: ProjectContextSummary.schema.ts

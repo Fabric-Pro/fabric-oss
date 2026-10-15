@@ -204,6 +204,33 @@ describe("createUrlSourceSchedule", () => {
 		});
 	});
 
+	it("carries providerName and providerEndpoint into the workflow args, and omits an absent endpoint", async () => {
+		const endpoint =
+			"https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef";
+		const { client, create } = makeFakeClient();
+		await createUrlSourceSchedule(
+			{
+				...baseArgs,
+				scope: "SINGLE_PAGE",
+				providerName: "cloudflare",
+				providerEndpoint: endpoint,
+				refreshMode: "DAILY",
+			},
+			client,
+		);
+		await createUrlSourceSchedule(
+			{ ...baseArgs, providerName: "firecrawl", refreshMode: "DAILY" },
+			client,
+		);
+		expect(create.mock.calls[0][0].action.args[0]).toMatchObject({
+			providerName: "cloudflare",
+			providerEndpoint: endpoint,
+		});
+		expect(create.mock.calls[1][0].action.args[0]).not.toHaveProperty(
+			"providerEndpoint",
+		);
+	});
+
 	it("uses the WEEKLY cron when refreshMode is WEEKLY", async () => {
 		const { client, create } = makeFakeClient();
 		await createUrlSourceSchedule(

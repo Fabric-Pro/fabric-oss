@@ -30,6 +30,7 @@ export {
 export {
 	assertSearchEndpointAllowed,
 	BaseSearchProvider,
+	CloudflareBrowserRenderingProvider,
 	createProvider,
 	createProvidersFromConfig,
 	ExaSearchProvider,
@@ -40,6 +41,7 @@ export {
 	getProviderMetadata,
 	getSearchEndpointBlockReason,
 	type ISearchProvider,
+	isWebSearchCapableProvider,
 	JinaSearchProvider,
 	ParallelSearchProvider,
 	searchProviderRegistry,

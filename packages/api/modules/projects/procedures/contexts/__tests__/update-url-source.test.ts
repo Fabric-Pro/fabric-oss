@@ -5,8 +5,12 @@
  *   - Only fields the caller supplied are patched (sparse update).
  *   - Cadence change DAILY → WEEKLY routes through `updateUrlSourceSchedule`
  *     and persists the returned `scheduleId`.
- *   - Switching INTO a scheduled mode without a Firecrawl key → BAD_REQUEST
- *     with `FIRECRAWL_NOT_CONFIGURED` payload.
+ *   - Switching INTO a scheduled mode resolves the scraper like `processLink`
+ *     does and hands the schedule its `providerName` (+ `providerEndpoint`)
+ *     alongside the key — any enabled scrape-capable provider, from the
+ *     organization's or the user's own providers, never both.
+ *   - Switching INTO a scheduled mode with no usable provider → BAD_REQUEST
+ *     with `SCRAPE_PROVIDER_NOT_CONFIGURED` / `CRAWL_PROVIDER_NOT_CONFIGURED`.
  *   - Switching OUT of a scheduled mode to ONCE → schedule deleted,
  *     `urlScheduleId` cleared to null.
  *   - NOT_FOUND when contextId is for a different tenant (XOR).
@@ -18,7 +22,8 @@ const {
 	mockHasProjectAccess,
 	mockGetContextById,
 	mockProjectContextUpdate,
-	mockGetSearchProviderConfig,
+	mockGetEnabledOrgProviders,
+	mockGetEnabledUserProviders,
 	mockOrgFindUnique,
 	mockDecryptApiKey,
 	mockGetScheduleClient,
@@ -28,7 +33,8 @@ const {
 	mockHasProjectAccess: vi.fn(),
 	mockGetContextById: vi.fn(),
 	mockProjectContextUpdate: vi.fn(),
-	mockGetSearchProviderConfig: vi.fn(),
+	mockGetEnabledOrgProviders: vi.fn(),
+	mockGetEnabledUserProviders: vi.fn(),
 	mockOrgFindUnique: vi.fn(),
 	mockDecryptApiKey: vi.fn(),
 	mockGetScheduleClient: vi.fn(),
@@ -42,7 +48,8 @@ vi.mock("@repo/database", () => ({
 		organization: { findUnique: mockOrgFindUnique },
 	},
 	getContextById: mockGetContextById,
-	getSearchProviderConfig: mockGetSearchProviderConfig,
+	getEnabledOrganizationSearchProviders: mockGetEnabledOrgProviders,
+	getEnabledUserSearchProviders: mockGetEnabledUserProviders,
 	hasProjectAccess: mockHasProjectAccess,
 }));
 
@@ -129,6 +136,22 @@ const personalCtx = {
 	user: { id: "user-1" },
 	session: { activeOrganizationId: undefined },
 };
+
+function providerRow(
+	providerName: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		providerName,
+		encryptedApiKey: `enc-${providerName}`,
+		endpoint: null,
+		enabled: true,
+		isDefault: false,
+		priority: 1,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		...overrides,
+	};
+}
 
 const SCHEDULED = new Set(["DAILY", "WEEKLY", "MONTHLY"]);
 
@@ -319,12 +342,9 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 			urlRefreshMode: "DAILY",
 			urlScheduleId: "url-source-schedule-ctx-sched",
 		});
-		mockGetSearchProviderConfig.mockResolvedValue({
-			encryptedApiKey: "enc-key",
-			endpoint: null,
-			enabled: true,
-			source: "user",
-		});
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
 		mockUpdateUrlSourceSchedule.mockResolvedValue({
 			scheduleId: "url-source-schedule-ctx-sched",
 			action: "updated",
@@ -356,6 +376,7 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 				oldRefreshMode: "DAILY",
 				newRefreshMode: "WEEKLY",
 				apiKey: "decrypted-fc-key",
+				providerName: "firecrawl",
 			}),
 			expect.anything(),
 		);
@@ -408,7 +429,8 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 		expect(result.urlScheduleId).toBeNull();
 		// Switching OUT of scheduled doesn't need an apiKey — assert the
 		// procedure didn't try to resolve one.
-		expect(mockGetSearchProviderConfig).not.toHaveBeenCalled();
+		expect(mockGetEnabledUserProviders).not.toHaveBeenCalled();
+		expect(mockGetEnabledOrgProviders).not.toHaveBeenCalled();
 		// `urlNextRefreshAt` must be cleared to null when switching to
 		// ONCE so the sidebar's "Next refresh" row collapses to em-dash.
 		expect(mockProjectContextUpdate).toHaveBeenCalledWith(
@@ -433,12 +455,9 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 			urlRefreshMode: "ONCE",
 			urlScheduleId: null,
 		});
-		mockGetSearchProviderConfig.mockResolvedValue({
-			encryptedApiKey: "enc-key",
-			endpoint: null,
-			enabled: true,
-			source: "user",
-		});
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
 		mockUpdateUrlSourceSchedule.mockResolvedValue({
 			scheduleId: "url-source-schedule-ctx-stamp",
 			action: "created",
@@ -472,9 +491,10 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 		);
 	});
 
-	it("ONCE → DAILY without a Firecrawl key returns BAD_REQUEST FIRECRAWL_NOT_CONFIGURED", async () => {
+	/** A SINGLE_PAGE source on ONCE, ready to be switched to DAILY. */
+	function mockOnceSource(overrides: Record<string, unknown> = {}) {
 		mockGetContextById.mockResolvedValue({
-			id: "ctx-no-key",
+			id: "ctx-once-src",
 			projectId: "proj-1",
 			type: "LINK",
 			sourceTitle: "Docs",
@@ -483,22 +503,154 @@ describe("updateUrlSource — cadence change schedule lifecycle", () => {
 			urlMaxPages: null,
 			urlRefreshMode: "ONCE",
 			urlScheduleId: null,
+			...overrides,
 		});
-		mockGetSearchProviderConfig.mockResolvedValue(null);
+		mockUpdateUrlSourceSchedule.mockResolvedValue({
+			scheduleId: "url-source-schedule-ctx-once-src",
+			action: "created",
+		});
+		mockProjectContextUpdate.mockResolvedValue({
+			id: "ctx-once-src",
+			sourceTitle: "Docs",
+			urlScope: "SINGLE_PAGE",
+			urlMaxPages: null,
+			urlRefreshMode: "DAILY",
+			urlScheduleId: "url-source-schedule-ctx-once-src",
+		});
+	}
+
+	const dailyInput = {
+		contextId: "ctx-once-src",
+		projectId: "proj-1",
+		refreshMode: "DAILY" as const,
+	};
+
+	it("ONCE → DAILY with a non-Firecrawl provider hands the schedule that provider", async () => {
+		mockOnceSource();
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("jina")]);
+		mockDecryptApiKey.mockImplementation((v: string) => `dec:${v}`);
+
+		const handler = await loadHandler();
+		await handler({ input: dailyInput, context: personalCtx });
+
+		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				newRefreshMode: "DAILY",
+				apiKey: "dec:enc-jina",
+				providerName: "jina",
+			}),
+			expect.anything(),
+		);
+		const [args] = mockUpdateUrlSourceSchedule.mock.calls[0];
+		expect(args).not.toHaveProperty("providerEndpoint");
+	});
+
+	it("ONCE → DAILY passes the Cloudflare account endpoint to the schedule", async () => {
+		mockOnceSource();
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("cloudflare", { endpoint: "account-123" }),
+		]);
+
+		const handler = await loadHandler();
+		await handler({ input: dailyInput, context: personalCtx });
+
+		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerName: "cloudflare",
+				providerEndpoint: "account-123",
+			}),
+			expect.anything(),
+		);
+	});
+
+	it("resolves the scraper for the scope the schedule will run with", async () => {
+		mockOnceSource();
+		// Jina ranks first but cannot crawl: switching the source to a path
+		// prefix in the same save must pick Firecrawl.
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("jina", { isDefault: true }),
+			providerRow("firecrawl"),
+		]);
+
+		const handler = await loadHandler();
+		await handler({
+			input: { ...dailyInput, scope: "PATH_PREFIX" },
+			context: personalCtx,
+		});
+
+		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				scope: "PATH_PREFIX",
+				providerName: "firecrawl",
+			}),
+			expect.anything(),
+		);
+	});
+
+	it("reads the user's providers, never the organization's, with no organization", async () => {
+		mockOnceSource();
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("exa")]);
+
+		const handler = await loadHandler();
+		await handler({ input: dailyInput, context: personalCtx });
+
+		expect(mockGetEnabledUserProviders).toHaveBeenCalledWith("user-1");
+		expect(mockGetEnabledOrgProviders).not.toHaveBeenCalled();
+		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({ providerName: "exa" }),
+			expect.anything(),
+		);
+	});
+
+	it("reads the organization's providers, never the user's, inside an organization", async () => {
+		mockOnceSource();
+		mockGetEnabledOrgProviders.mockResolvedValue([providerRow("tavily")]);
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
+
+		const handler = await loadHandler();
+		await handler({
+			input: { ...dailyInput, organizationId: "org-1" },
+			context: personalCtx,
+		});
+
+		expect(mockGetEnabledOrgProviders).toHaveBeenCalledWith("org-1");
+		expect(mockGetEnabledUserProviders).not.toHaveBeenCalled();
+		expect(mockUpdateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({ providerName: "tavily" }),
+			expect.anything(),
+		);
+	});
+
+	it("ONCE → DAILY with no scrape provider returns BAD_REQUEST SCRAPE_PROVIDER_NOT_CONFIGURED", async () => {
+		mockOnceSource();
+		mockGetEnabledUserProviders.mockResolvedValue([]);
 
 		const handler = await loadHandler();
 		await expect(
-			handler({
-				input: {
-					contextId: "ctx-no-key",
-					projectId: "proj-1",
-					refreshMode: "DAILY",
-				},
-				context: personalCtx,
-			}),
+			handler({ input: dailyInput, context: personalCtx }),
 		).rejects.toMatchObject({
 			code: "BAD_REQUEST",
-			data: { code: "FIRECRAWL_NOT_CONFIGURED" },
+			data: { code: "SCRAPE_PROVIDER_NOT_CONFIGURED" },
+		});
+		expect(mockUpdateUrlSourceSchedule).not.toHaveBeenCalled();
+		expect(mockProjectContextUpdate).not.toHaveBeenCalled();
+	});
+
+	it("ONCE → DAILY on a path-prefix source with only a scrape-only provider returns CRAWL_PROVIDER_NOT_CONFIGURED", async () => {
+		mockOnceSource({ urlScope: "PATH_PREFIX", urlMaxPages: 50 });
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("jina")]);
+
+		const handler = await loadHandler();
+		await expect(
+			handler({ input: dailyInput, context: personalCtx }),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: { code: "CRAWL_PROVIDER_NOT_CONFIGURED" },
 		});
 		expect(mockUpdateUrlSourceSchedule).not.toHaveBeenCalled();
 		expect(mockProjectContextUpdate).not.toHaveBeenCalled();

@@ -235,6 +235,7 @@ type UrlSourceProviderName =
 	| "jina"
 	| "tavily"
 	| "exa"
+	| "cloudflare"
 	| "parallel";
 
 interface ScheduledUrlCrawlArgs {
@@ -248,6 +249,7 @@ interface ScheduledUrlCrawlArgs {
 	organizationId: string | null;
 	apiKey: string;
 	providerName?: UrlSourceProviderName;
+	providerEndpoint?: string;
 	urlRefreshMode: UrlRefreshMode;
 	parentSourceTitle?: string | null;
 	mode: "scheduled";
@@ -271,6 +273,11 @@ export interface CreateUrlSourceScheduleArgs {
 	 * to fire correctly.
 	 */
 	providerName?: UrlSourceProviderName;
+	/**
+	 * Optional. The chosen provider row's stored endpoint, carried into the
+	 * workflow args; Cloudflare keeps its account ID there.
+	 */
+	providerEndpoint?: string;
 	refreshMode: UrlRefreshMode;
 	parentSourceTitle?: string | null;
 	/**
@@ -332,6 +339,9 @@ export async function createUrlSourceSchedule(
 		apiKey: args.apiKey,
 		...(args.providerName !== undefined
 			? { providerName: args.providerName }
+			: {}),
+		...(args.providerEndpoint !== undefined
+			? { providerEndpoint: args.providerEndpoint }
 			: {}),
 		urlRefreshMode: args.refreshMode,
 		parentSourceTitle: args.parentSourceTitle ?? null,
@@ -398,6 +408,8 @@ export interface UpdateUrlSourceScheduleArgs {
 	apiKey?: string | null;
 	/** Optional — carried through to the schedule's workflow args. */
 	providerName?: UrlSourceProviderName;
+	/** Optional — carried through to the schedule's workflow args. */
+	providerEndpoint?: string;
 }
 
 export interface UpdateUrlSourceScheduleResult {
@@ -460,6 +472,9 @@ export async function updateUrlSourceSchedule(
 				...(args.providerName !== undefined
 					? { providerName: args.providerName }
 					: {}),
+				...(args.providerEndpoint !== undefined
+					? { providerEndpoint: args.providerEndpoint }
+					: {}),
 				refreshMode: args.newRefreshMode,
 				parentSourceTitle: args.parentSourceTitle,
 				...(args.owner ? { owner: args.owner } : {}),
@@ -493,6 +508,9 @@ export async function updateUrlSourceSchedule(
 			apiKey: args.apiKey,
 			...(args.providerName !== undefined
 				? { providerName: args.providerName }
+				: {}),
+			...(args.providerEndpoint !== undefined
+				? { providerEndpoint: args.providerEndpoint }
 				: {}),
 			// Guarded above (`newScheduled` true and we returned early for null).
 			refreshMode: args.newRefreshMode as UrlRefreshMode,

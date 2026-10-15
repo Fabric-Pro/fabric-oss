@@ -1,13 +1,15 @@
 import { ORPCError } from "@orpc/server";
 import { upsertUserSearchProvider } from "@repo/database";
 import { getSearchEndpointBlockReason } from "@repo/search";
-import { encryptApiKey, isValidApiKeyFormat, maskApiKey } from "@repo/utils";
+import { encryptApiKey, isValidApiKeyFormat } from "@repo/utils";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../lib/audit";
 import {
 	Permissions,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { maskStoredApiKey } from "../lib/provider-key";
 
 const VALID_PROVIDERS = [
 	"exa",
@@ -57,7 +59,7 @@ export const updateUserProvider = tenantProtectedProcedure
 	)
 	.handler(
 		async ({
-			context: { user },
+			context,
 			input: {
 				providerName,
 				apiKey,
@@ -67,6 +69,7 @@ export const updateUserProvider = tenantProtectedProcedure
 				enabled,
 			},
 		}) => {
+			const { user } = context;
 			// Validate provider name
 			if (!VALID_PROVIDERS.includes(providerName)) {
 				throw new ORPCError("BAD_REQUEST", {
@@ -108,14 +111,38 @@ export const updateUserProvider = tenantProtectedProcedure
 				enabled,
 			});
 
+			// Non-secret facts only: never the key, its ciphertext or mask, and
+			// no endpoint text in any form (a path can carry a secret).
+			const auditMetadata = {
+				providerName,
+				keyChanged: Boolean(apiKey),
+				endpointSupplied: endpoint != null,
+				endpointConfigured: Boolean(updated.endpoint),
+				enabled: updated.enabled,
+				isDefault: updated.isDefault,
+				priority: updated.priority,
+			};
+			recordAuditFromRequest(context, {
+				action: "account.integration.config_updated",
+				category: "account",
+				organizationId: null,
+				resource: {
+					type: "integration",
+					id: providerName,
+					name: providerName,
+				},
+				metadata: auditMetadata,
+			});
+
 			return {
 				success: true,
 				provider: {
 					id: updated.id,
 					providerName: updated.providerName,
-					maskedApiKey: updated.encryptedApiKey
-						? maskApiKey(updated.encryptedApiKey)
-						: null,
+					maskedApiKey: maskStoredApiKey(
+						updated.encryptedApiKey,
+						apiKey,
+					),
 					endpoint: updated.endpoint,
 					isDefault: updated.isDefault,
 					priority: updated.priority,

@@ -62,7 +62,6 @@ vi.mock("@repo/database", () => ({
 	getOrganizationSearchProviders: (...a: unknown[]) =>
 		mocks.getOrganizationSearchProviders(...a),
 	getUserSearchProviders: vi.fn(async () => []),
-	getOrganizationFirecrawlConfig: vi.fn(async () => null),
 	getUserFirecrawlConfig: vi.fn(async () => null),
 }));
 vi.mock("../../../../lib/rate-limit", () => ({

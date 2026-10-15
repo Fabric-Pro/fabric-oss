@@ -78,13 +78,15 @@ export function UrlSourceTabContent({
 		setScopeUserOverridden,
 		errors,
 		setErrors,
-		// True ⇔ a crawl-capable provider (Firecrawl) is enabled.
+		// True ⇔ a crawl-capable provider (Firecrawl or Cloudflare
+		// Browser Rendering) is enabled.
 		hasCrawlCapable,
 		// True ⇔ at least one scrape-capable provider (FC / Jina / Tavily /
 		// Exa) is enabled.
 		hasAnyScrapeCapable,
 		// The provider that *would* be picked for SINGLE_PAGE / fallback.
 		scrapeProviderName,
+		crawlProviderName,
 		preflightLoading,
 		noticeSettingsPath,
 		noticeOverride,
@@ -131,7 +133,8 @@ export function UrlSourceTabContent({
 		string | null
 	>(null);
 
-	// PATH_PREFIX requires a crawl-capable provider (Firecrawl in v1.1).
+	// PATH_PREFIX requires a crawl-capable provider (Firecrawl or Cloudflare
+	// Browser Rendering).
 	// When none is enabled we disable the radio entirely AND make the blur
 	// auto-detect fall back to SINGLE_PAGE — picking PATH_PREFIX silently
 	// would produce a submit-time error that's harder to debug than a
@@ -233,8 +236,8 @@ export function UrlSourceTabContent({
 					</div>
 					<p className="text-sm text-foreground">
 						{noticeKind === "no-crawl"
-							? "Path-prefix crawls currently require Firecrawl. "
-							: "URL sources need a search provider with scraping (Firecrawl, Jina, Tavily, or Exa). "}
+							? "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. "
+							: "URL sources need a search provider with scraping (Firecrawl, Jina, Tavily, Exa, or Cloudflare Browser Rendering). "}
 						Configure one in{" "}
 						<Link
 							href={noticeSettingsPath}
@@ -525,8 +528,9 @@ export function UrlSourceTabContent({
 								</span>
 							</TooltipTrigger>
 							<TooltipContent>
-								Path-prefix crawls require Firecrawl. Configure
-								Firecrawl in Settings → Search Providers.
+								Path-prefix crawls require Firecrawl or
+								Cloudflare Browser Rendering. Configure one in
+								Settings → Search Providers.
 							</TooltipContent>
 						</Tooltip>
 					) : (
@@ -832,14 +836,14 @@ export function UrlSourceTabContent({
 			)}
 
 			{/* Provider indicator — names the provider that would be picked
-			    server-side. PATH_PREFIX always shows Firecrawl (crawl-only
-			    capability in v1.1); SINGLE_PAGE shows whatever the picker
-			    would prefer. Hidden when no provider qualifies (the notice
+			    server-side. PATH_PREFIX shows the crawl-capable provider the
+			    picker would choose (Firecrawl or Cloudflare); SINGLE_PAGE
+			    shows whatever the picker would prefer. Hidden when no provider qualifies (the notice
 			    card already explains that case). */}
 			{(() => {
 				const effectiveProvider =
 					values.scope === "PATH_PREFIX"
-						? "firecrawl"
+						? crawlProviderName
 						: scrapeProviderName;
 				if (!effectiveProvider) {
 					return null;

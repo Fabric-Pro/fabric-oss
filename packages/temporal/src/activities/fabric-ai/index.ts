@@ -18,11 +18,11 @@
  * Set mode via FABRIC_AI_MODE environment variable.
  */
 
-import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
 	analyzeYouTube,
 	checkFabricAIHealth,
 	createFabricClient,
+	createJinaClient,
 	executeFabricPattern as executePattern,
 	extractYouTubeTranscript as extractTranscript,
 	type FabricAIMode,
@@ -36,7 +36,12 @@ import {
 	transcribeAudio,
 } from "@repo/fabric-ai";
 import { logger } from "@repo/logs";
-import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { createProvider, type SearchResult } from "@repo/search";
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 
 export interface ExecuteFabricPatternInput {
 	pattern: FabricPattern;
@@ -584,15 +589,17 @@ export async function transcribeAndAnalyzeActivity(
 }
 
 // ============================================================================
-// Web Scraping and Search Activities (via Fabric AI + Jina AI)
+// Web Scraping and Search Activities
+// (scraping: the tenant's configured scraper, else the Fabric AI server;
+// search: Jina AI, else the Fabric AI server)
 // ============================================================================
 
 export interface ScrapeUrlInput {
 	/** URL to scrape */
 	url: string;
-	/** User ID for Jina API key resolution */
+	/** User ID for scrape provider resolution */
 	userId?: string;
-	/** Organization ID for Jina API key resolution */
+	/** Organization ID for scrape provider resolution */
 	organizationId?: string;
 }
 
@@ -608,9 +615,9 @@ export interface ScrapeAndAnalyzeInput {
 	url: string;
 	/** Pattern to execute on the scraped content */
 	pattern: FabricPattern;
-	/** User ID for API key resolution (required for hybrid mode) */
+	/** User ID for API key and scrape provider resolution (required for hybrid mode) */
 	userId: string;
-	/** Organization ID for API key resolution */
+	/** Organization ID for API key and scrape provider resolution */
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
@@ -685,11 +692,74 @@ export interface SearchAndAnalyzeOutput {
 	};
 }
 
+const SEARCH_MAX_RESULTS = 10;
+
+/** Renders provider results as markdown: title, URL, then content or snippet. */
+function formatSearchResults(results: SearchResult[]): string {
+	return results
+		.map((result) => {
+			const body = (result.content || result.snippet || "").trim();
+			return [`## ${result.title}`, result.url, body]
+				.filter(Boolean)
+				.join("\n\n");
+		})
+		.join("\n\n---\n\n");
+}
+
+/**
+ * Runs one search on the tenant's resolved provider and returns markdown, or
+ * null when the provider cannot be built. Throws on any failure (including a
+ * Jina `{ success: false }`) so callers choose between a failure result and a
+ * fallback.
+ *
+ * Jina goes through `JinaClient`, which returns the Reader's full markdown
+ * unchanged; the registry's Jina provider reduces each hit to a 500-character
+ * snippet. Other providers go through `createProvider`. Provider requests
+ * cannot be aborted mid-flight, so the stop check runs first (a no-op outside
+ * a dispatch guard).
+ */
+async function searchWithTenantProvider(
+	providerConfig: { apiKey: string; providerName: string },
+	question: string,
+): Promise<string | null> {
+	logger.info(`[Fabric AI] Searching via ${providerConfig.providerName}`);
+	if (providerConfig.providerName === "jina") {
+		await guardDispatch();
+		throwIfDispatchStopped();
+		const result = await createJinaClient({
+			apiKey: providerConfig.apiKey,
+		}).search(question);
+		if (!result.success) {
+			throw new Error(result.error ?? "Jina search failed");
+		}
+		return result.content;
+	}
+
+	const provider = createProvider(
+		providerConfig.providerName,
+		providerConfig.apiKey,
+	);
+	if (!provider) {
+		return null;
+	}
+	await guardDispatch();
+	throwIfDispatchStopped();
+	const response = await provider.search(question, {
+		maxResults: SEARCH_MAX_RESULTS,
+		category: "general",
+	});
+	return formatSearchResults(response.results);
+}
+
 /**
  * Scrape a URL to clean, LLM-friendly markdown
  *
- * Uses Jina AI Reader (https://r.jina.ai/) with user's API key.
- * Falls back to Fabric AI server if no user credentials provided.
+ * Uses the scraper the tenant has configured under Settings > Search
+ * Providers (Firecrawl, Jina, Tavily, Exa or Cloudflare Browser Rendering),
+ * chosen by `getWebScraperForTenant`: default provider first, then priority.
+ * A failed scrape is returned as `{ success: false }` with no fallback.
+ * Falls back to the Fabric AI server when no user ID is provided or the
+ * tenant has no scrape-capable provider.
  * No AI processing - just returns the scraped content.
  */
 export async function scrapeUrlActivity(
@@ -699,49 +769,47 @@ export async function scrapeUrlActivity(
 	logger.info(`[Fabric AI] Scraping URL: ${input.url}`);
 
 	try {
-		// If user credentials provided, use direct Jina client with their API key
+		// If user credentials provided, use the tenant's configured scraper
 		if (input.userId) {
-			const { getSearchProviderConfig } = await import("@repo/database");
-			const { decryptApiKey } = await import("@repo/utils");
-			const { createJinaClient } = await import("@repo/fabric-ai");
+			const { getWebScraperForTenant } = await import(
+				"../lib/get-web-scraper"
+			);
 
-			const jinaConfig = await getSearchProviderConfig({
+			const scraper = await getWebScraperForTenant({
 				userId: input.userId,
-				organizationId: input.organizationId,
-				providerName: "jina",
+				organizationId: input.organizationId ?? null,
+				requireCrawl: false,
 			});
 
-			if (jinaConfig?.encryptedApiKey) {
-				const apiKey = decryptApiKey(jinaConfig.encryptedApiKey);
-				const jinaClient = createJinaClient({ apiKey });
-				const result = await jinaClient.scrape(input.url);
+			if (scraper) {
+				const result = await scraper.scrapeUrl(input.url);
 
 				const durationMs = Date.now() - startTime;
 				logger.info(
-					`[Fabric AI] Scrape completed via Jina client in ${durationMs}ms`,
+					`[Fabric AI] Scrape completed via ${scraper.providerName} in ${durationMs}ms`,
 				);
 
 				if (!result.success) {
 					return {
 						success: false,
-						error: result.error,
+						error: result.error.message,
 						durationMs,
 					};
 				}
 
 				return {
 					success: true,
-					content: result.content,
+					content: result.data.markdown,
 					durationMs,
 				};
 			}
 
 			logger.warn(
-				"[Fabric AI] No Jina API key configured for user, falling back to Fabric AI server",
+				"[Fabric AI] No scrape provider configured for tenant, falling back to Fabric AI server",
 			);
 		}
 
-		// Fallback to Fabric AI server (requires server to have Jina key configured)
+		// Fallback to Fabric AI server (requires server to have a scrape key configured)
 		const client = createFabricClient();
 		const content = await client.scrapeUrl(input.url);
 
@@ -775,9 +843,10 @@ export async function scrapeUrlActivity(
 /**
  * Scrape a URL and analyze with a Fabric pattern
  *
- * Execution mode determined by user's delegation setting:
- * - Delegated: Routes to Fabric AI server's /delegated/scrape (user's Jina key via token exchange)
- * - Direct: Uses user's Jina API key directly, falls back to Fabric AI server
+ * Scrapes with the tenant's configured scraper (`getWebScraperForTenant`),
+ * falling back to the Fabric AI server when none is configured, no user ID
+ * is provided, or the scrape fails. The user's delegation setting is not
+ * consulted.
  */
 export async function scrapeAndAnalyzeActivity(
 	input: ScrapeAndAnalyzeInput,
@@ -794,103 +863,45 @@ export async function scrapeAndAnalyzeActivity(
 	try {
 		let scrapedContent: string | null = null;
 
-		// Check delegation setting to determine execution mode
-		let useDelegatedExecution = true; // Default to delegated
+		// Try the tenant's configured scraper
 		if (input.userId) {
-			const { getEffectiveDelegationSetting } = await import(
-				"@repo/database"
+			const { getWebScraperForTenant } = await import(
+				"../lib/get-web-scraper"
 			);
-			useDelegatedExecution = await getEffectiveDelegationSetting({
+
+			const scraper = await getWebScraperForTenant({
 				userId: input.userId,
-				organizationId: input.organizationId,
+				organizationId: input.organizationId ?? null,
+				requireCrawl: false,
 			});
-			logger.info(
-				`[Fabric AI] Delegation setting: ${useDelegatedExecution ? "delegated" : "direct"}`,
-			);
-		}
 
-		if (useDelegatedExecution && input.userId) {
-			// Delegated mode: Use Fabric AI server's delegated endpoint with token exchange
-			logger.info(
-				"[Fabric AI] Using delegated mode for scraping via Fabric AI server",
-			);
-
-			try {
-				// Issue AI token for this user
-				const { issueAIToken } = await import("@repo/ai-token");
-				const aiToken = await issueAIToken({
-					userId: input.userId,
-					organizationId: input.organizationId,
-					impersonated: isAiImpersonatedRequest(),
-					source: "fabric-ai-scrape",
-				});
-
-				const fabricClient = createFabricClient();
-				scrapedContent = await fabricClient.scrapeUrlDelegated(
-					input.url,
-					aiToken,
+			if (scraper) {
+				logger.info(
+					`[Fabric AI] Using ${scraper.providerName} scraper for scraping`,
 				);
-				logger.info("[Fabric AI] Scrape completed via delegated mode", {
-					contentLength: scrapedContent.length,
-				});
-			} catch (delegatedError) {
-				// A stop is not a delegated failure: falling back would send
-				// a second request for a stopped turn.
-				rethrowIfDispatchStopped(delegatedError);
-				// Fall back to direct mode if delegated fails
-				logger.warn(
-					`[Fabric AI] Delegated scrape failed, falling back to direct mode: ${delegatedError}`,
-				);
-			}
-		}
+				const scrapeResult = await scraper.scrapeUrl(input.url);
 
-		if (!scrapedContent) {
-			// Direct mode: Try to use user's Jina API key directly
-			if (input.userId) {
-				const { getSearchProviderConfig } = await import(
-					"@repo/database"
-				);
-				const { decryptApiKey } = await import("@repo/utils");
-				const { createJinaClient } = await import("@repo/fabric-ai");
-
-				const jinaConfig = await getSearchProviderConfig({
-					userId: input.userId,
-					organizationId: input.organizationId,
-					providerName: "jina",
-				});
-
-				if (jinaConfig?.encryptedApiKey) {
-					const apiKey = decryptApiKey(jinaConfig.encryptedApiKey);
+				if (scrapeResult.success) {
+					scrapedContent = scrapeResult.data.markdown;
 					logger.info(
-						"[Fabric AI] Using direct Jina client for scraping",
+						`[Fabric AI] Scrape completed via ${scraper.providerName} scraper`,
+						{ contentLength: scrapedContent.length },
 					);
-					const jinaClient = createJinaClient({ apiKey });
-					const scrapeResult = await jinaClient.scrape(input.url);
-
-					if (scrapeResult.success) {
-						scrapedContent = scrapeResult.content;
-						logger.info(
-							"[Fabric AI] Scrape completed via direct Jina client",
-							{
-								contentLength: scrapedContent.length,
-							},
-						);
-					} else {
-						logger.warn(
-							`[Fabric AI] Direct Jina scrape failed: ${scrapeResult.error}`,
-						);
-					}
+				} else {
+					logger.warn(
+						`[Fabric AI] ${scraper.providerName} scrape failed: ${scrapeResult.error.message}`,
+					);
 				}
 			}
+		}
 
-			// Fall back to Fabric AI server if no Jina key or scrape failed
-			if (!scrapedContent) {
-				logger.info(
-					"[Fabric AI] Falling back to Fabric AI server for scraping",
-				);
-				const fabricClient = createFabricClient();
-				scrapedContent = await fabricClient.scrapeUrl(input.url);
-			}
+		// Fall back to Fabric AI server if no scrape provider or scrape failed
+		if (!scrapedContent) {
+			logger.info(
+				"[Fabric AI] Falling back to Fabric AI server for scraping",
+			);
+			const fabricClient = createFabricClient();
+			scrapedContent = await fabricClient.scrapeUrl(input.url);
 		}
 
 		// Now execute the pattern with the scraped content
@@ -948,12 +959,14 @@ export async function scrapeAndAnalyzeActivity(
 }
 
 /**
- * Search the web using Jina AI
+ * Search the web
  *
- * Execution mode determined by user's delegation setting:
- * - Delegated: Routes to Fabric AI server's /delegated/search with X-AI-Token
- *   (Fabric AI server exchanges token to get user's Jina API key)
- * - Direct: Uses user's Jina API key directly via JinaClient
+ * Uses the search provider the tenant has configured under Settings > Search
+ * Providers (`resolveSearchProviderForTenant`): default provider first, then
+ * any other enabled one. Results are returned as markdown. A provider error
+ * is returned as `{ success: false }` with no fallback. Falls back to the
+ * Fabric AI server when no user ID is provided or no search provider is
+ * configured. The user's delegation setting is not consulted.
  */
 export async function searchWebActivity(
 	input: SearchWebInput,
@@ -965,46 +978,22 @@ export async function searchWebActivity(
 	});
 
 	try {
-		// Check delegation setting to determine execution mode
-		let useDelegatedExecution = true; // Default to delegated
 		if (input.userId) {
-			const { getEffectiveDelegationSetting } = await import(
-				"@repo/database"
+			const { resolveSearchProviderForTenant } = await import(
+				"../lib/get-search-provider"
 			);
-			useDelegatedExecution = await getEffectiveDelegationSetting({
-				userId: input.userId,
-				organizationId: input.organizationId,
-			});
-			logger.info(
-				`[Fabric AI] Delegation setting: ${useDelegatedExecution ? "delegated" : "direct"}`,
+			const providerConfig = await resolveSearchProviderForTenant(
+				input.userId,
+				input.organizationId,
 			);
-		}
+			const results = providerConfig
+				? await searchWithTenantProvider(providerConfig, input.question)
+				: null;
 
-		if (useDelegatedExecution && input.userId) {
-			// Delegated mode: Use Fabric AI server's delegated endpoint with token exchange
-			logger.info(
-				"[Fabric AI] Using delegated mode for search via Fabric AI server",
-			);
-
-			try {
-				// Issue AI token for this user
-				const { issueAIToken } = await import("@repo/ai-token");
-				const aiToken = await issueAIToken({
-					userId: input.userId,
-					organizationId: input.organizationId,
-					impersonated: isAiImpersonatedRequest(),
-					source: "fabric-ai-search",
-				});
-
-				const client = createFabricClient();
-				const results = await client.searchWebDelegated(
-					input.question,
-					aiToken,
-				);
-
+			if (providerConfig && results !== null) {
 				const durationMs = Date.now() - startTime;
 				logger.info(
-					`[Fabric AI] Search completed via delegated mode in ${durationMs}ms`,
+					`[Fabric AI] Search completed via ${providerConfig.providerName} in ${durationMs}ms`,
 				);
 
 				return {
@@ -1012,68 +1001,10 @@ export async function searchWebActivity(
 					results,
 					durationMs,
 				};
-			} catch (delegatedError) {
-				// A stop is not a delegated failure: falling back would send
-				// a second request for a stopped turn.
-				rethrowIfDispatchStopped(delegatedError);
-				// Fall back to direct mode if delegated fails
-				logger.warn(
-					`[Fabric AI] Delegated search failed, falling back to direct mode: ${delegatedError}`,
-				);
-			}
-		}
-
-		// Direct mode: Try to use user's Jina API key directly
-		if (input.userId) {
-			logger.info("[Fabric AI] Looking up Jina API key for direct mode");
-			const { getSearchProviderConfig } = await import("@repo/database");
-			const { decryptApiKey } = await import("@repo/utils");
-			const { createJinaClient } = await import("@repo/fabric-ai");
-
-			const jinaConfig = await getSearchProviderConfig({
-				userId: input.userId,
-				organizationId: input.organizationId,
-				providerName: "jina",
-			});
-
-			logger.info("[Fabric AI] Jina config lookup result", {
-				found: !!jinaConfig,
-				hasApiKey: !!jinaConfig?.encryptedApiKey,
-				enabled: jinaConfig?.enabled,
-				source: jinaConfig?.source,
-			});
-
-			if (jinaConfig?.encryptedApiKey) {
-				const apiKey = decryptApiKey(jinaConfig.encryptedApiKey);
-				logger.info("[Fabric AI] Using direct Jina client for search");
-				const jinaClient = createJinaClient({ apiKey });
-				const result = await jinaClient.search(input.question);
-
-				const durationMs = Date.now() - startTime;
-				logger.info("[Fabric AI] Direct Jina search result", {
-					success: result.success,
-					error: result.error,
-					contentLength: result.content?.length,
-					durationMs,
-				});
-
-				if (!result.success) {
-					return {
-						success: false,
-						error: result.error,
-						durationMs,
-					};
-				}
-
-				return {
-					success: true,
-					results: result.content,
-					durationMs,
-				};
 			}
 
 			logger.warn(
-				"[Fabric AI] No Jina API key configured for user, falling back to Fabric AI server",
+				"[Fabric AI] No search provider configured for tenant, falling back to Fabric AI server",
 			);
 		} else {
 			logger.warn(
@@ -1081,7 +1012,7 @@ export async function searchWebActivity(
 			);
 		}
 
-		// Fallback to Fabric AI server (non-delegated - requires server to have Jina key)
+		// Fallback to Fabric AI server (requires the server to have a search key)
 		logger.info("[Fabric AI] Falling back to Fabric AI server for search");
 		const client = createFabricClient();
 		const results = await client.searchWeb(input.question);
@@ -1116,9 +1047,10 @@ export async function searchWebActivity(
 /**
  * Search the web and analyze results with a Fabric pattern
  *
- * Execution mode determined by user's delegation setting:
- * - Delegated: Routes to Fabric AI server's /delegated/search (user's Jina key via token exchange)
- * - Direct: Uses user's Jina API key directly, falls back to Fabric AI server
+ * Searches with the tenant's configured search provider
+ * (`resolveSearchProviderForTenant`), falling back to the Fabric AI server
+ * when none is configured, no user ID is provided, or the provider fails or
+ * returns nothing. The user's delegation setting is not consulted.
  */
 export async function searchAndAnalyzeActivity(
 	input: SearchAndAnalyzeInput,
@@ -1135,105 +1067,49 @@ export async function searchAndAnalyzeActivity(
 	try {
 		let searchResults: string | null = null;
 
-		// Check delegation setting to determine execution mode
-		let useDelegatedExecution = true; // Default to delegated
 		if (input.userId) {
-			const { getEffectiveDelegationSetting } = await import(
-				"@repo/database"
+			const { resolveSearchProviderForTenant } = await import(
+				"../lib/get-search-provider"
 			);
-			useDelegatedExecution = await getEffectiveDelegationSetting({
-				userId: input.userId,
-				organizationId: input.organizationId,
-			});
-			logger.info(
-				`[Fabric AI] Delegation setting: ${useDelegatedExecution ? "delegated" : "direct"}`,
+			const providerConfig = await resolveSearchProviderForTenant(
+				input.userId,
+				input.organizationId,
 			);
-		}
-
-		if (useDelegatedExecution && input.userId) {
-			// Delegated mode: Use Fabric AI server's delegated endpoint with token exchange
-			logger.info(
-				"[Fabric AI] Using delegated mode for search via Fabric AI server",
-			);
-
-			try {
-				// Issue AI token for this user
-				const { issueAIToken } = await import("@repo/ai-token");
-				const aiToken = await issueAIToken({
-					userId: input.userId,
-					organizationId: input.organizationId,
-					impersonated: isAiImpersonatedRequest(),
-					source: "fabric-ai-search-analyze",
-				});
-
-				const fabricClient = createFabricClient();
-				searchResults = await fabricClient.searchWebDelegated(
-					input.question,
-					aiToken,
-				);
-				logger.info("[Fabric AI] Search completed via delegated mode", {
-					contentLength: searchResults.length,
-				});
-			} catch (delegatedError) {
-				// A stop is not a delegated failure: falling back would send
-				// a second request for a stopped turn.
-				rethrowIfDispatchStopped(delegatedError);
-				// Fall back to direct mode if delegated fails
-				logger.warn(
-					`[Fabric AI] Delegated search failed, falling back to direct mode: ${delegatedError}`,
-				);
-			}
-		}
-
-		if (!searchResults) {
-			// Direct mode: Try to use user's Jina API key directly
-			if (input.userId) {
-				const { getSearchProviderConfig } = await import(
-					"@repo/database"
-				);
-				const { decryptApiKey } = await import("@repo/utils");
-				const { createJinaClient } = await import("@repo/fabric-ai");
-
-				const jinaConfig = await getSearchProviderConfig({
-					userId: input.userId,
-					organizationId: input.organizationId,
-					providerName: "jina",
-				});
-
-				if (jinaConfig?.encryptedApiKey) {
-					const apiKey = decryptApiKey(jinaConfig.encryptedApiKey);
-					logger.info(
-						"[Fabric AI] Using direct Jina client for search",
-					);
-					const jinaClient = createJinaClient({ apiKey });
-					const searchResult = await jinaClient.search(
+			if (providerConfig) {
+				try {
+					const formatted = await searchWithTenantProvider(
+						providerConfig,
 						input.question,
 					);
-
-					if (searchResult.success) {
-						searchResults = searchResult.content;
+					if (formatted) {
+						searchResults = formatted;
 						logger.info(
-							"[Fabric AI] Search completed via direct Jina client",
-							{
-								contentLength: searchResults.length,
-							},
+							`[Fabric AI] Search completed via ${providerConfig.providerName}`,
+							{ contentLength: formatted.length },
 						);
 					} else {
 						logger.warn(
-							`[Fabric AI] Direct Jina search failed: ${searchResult.error}`,
+							`[Fabric AI] ${providerConfig.providerName} search returned no results`,
 						);
 					}
+				} catch (searchError) {
+					// A stop is not a provider failure: falling back would send
+					// a second request for a stopped turn.
+					rethrowIfDispatchStopped(searchError);
+					logger.warn(
+						`[Fabric AI] ${providerConfig.providerName} search failed: ${searchError}`,
+					);
 				}
 			}
+		}
 
-			// Fall back to Fabric AI server if no Jina key or search failed
-			if (!searchResults) {
-				logger.info(
-					"[Fabric AI] Falling back to Fabric AI server for search",
-				);
-				const fabricClient = createFabricClient();
-				searchResults = await fabricClient.searchWeb(input.question);
-			}
+		// Fall back to Fabric AI server if no search provider or the search failed
+		if (!searchResults) {
+			logger.info(
+				"[Fabric AI] Falling back to Fabric AI server for search",
+			);
+			const fabricClient = createFabricClient();
+			searchResults = await fabricClient.searchWeb(input.question);
 		}
 
 		// Now execute the pattern with the search results

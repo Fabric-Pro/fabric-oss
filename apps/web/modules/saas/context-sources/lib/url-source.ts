@@ -388,14 +388,15 @@ export function summariseBulkParse(raw: string): {
 // URL contexts now route to any scrape-capable search provider configured
 // for the tenant. The pre-flight reads the unified `searchProviders.get*`
 // rows the same way commit 1 did, but accepts Firecrawl / Jina / Tavily /
-// Exa as equivalent. PATH_PREFIX still requires Firecrawl (only crawl-
-// capable provider in v1.1) — the scope radio gates on that separately.
+// Exa / Cloudflare Browser Rendering as equivalent. PATH_PREFIX requires Firecrawl or Cloudflare Browser Rendering (the
+// crawl-capable providers) — the scope radio gates on that separately.
 
 export type UrlSourceProviderName =
 	| "firecrawl"
 	| "jina"
 	| "tavily"
 	| "exa"
+	| "cloudflare"
 	| "parallel";
 
 const SCRAPE_CAPABLE_PROVIDERS: readonly UrlSourceProviderName[] = [
@@ -403,10 +404,12 @@ const SCRAPE_CAPABLE_PROVIDERS: readonly UrlSourceProviderName[] = [
 	"jina",
 	"tavily",
 	"exa",
+	"cloudflare",
 ] as const;
 
 const CRAWL_CAPABLE_PROVIDERS: readonly UrlSourceProviderName[] = [
 	"firecrawl",
+	"cloudflare",
 ] as const;
 
 export const PROVIDER_DISPLAY_NAMES: Record<UrlSourceProviderName, string> = {
@@ -414,6 +417,7 @@ export const PROVIDER_DISPLAY_NAMES: Record<UrlSourceProviderName, string> = {
 	jina: "Jina AI",
 	tavily: "Tavily",
 	exa: "Exa",
+	cloudflare: "Cloudflare Browser Rendering",
 	parallel: "Parallel",
 };
 
