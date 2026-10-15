@@ -1,16 +1,15 @@
 import {
-	getOrganizationFirecrawlConfig,
 	getOrganizationSearchProviders,
 	getUserFirecrawlConfig,
 	getUserSearchProviders,
 } from "@repo/database";
-import { decryptApiKey, maskApiKey } from "@repo/utils";
 import { z } from "zod";
 import {
 	Permissions,
 	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { maskStoredApiKey } from "../lib/provider-key";
 
 /**
  * Get all search provider configurations for the current user or organization
@@ -19,7 +18,8 @@ import {
  * - If organizationId is provided, returns org search providers
  * - Otherwise, returns user's personal search providers
  *
- * Also checks for legacy Firecrawl config for backward compatibility
+ * Personal context also includes the user's legacy Firecrawl config for
+ * backward compatibility
  */
 export const getUserProviders = tenantProtectedProcedure
 	// Against the organization named in the input, which is the one whose
@@ -82,21 +82,7 @@ export const getUserProviders = tenantProtectedProcedure
 
 			const result = providers.map((provider) => {
 				// Decrypt and mask API key before returning
-				let maskedKey: string | null = null;
-				if (provider.encryptedApiKey) {
-					try {
-						const decryptedKey = decryptApiKey(
-							provider.encryptedApiKey,
-						);
-						maskedKey = maskApiKey(decryptedKey);
-					} catch (error) {
-						console.error(
-							"[Search Providers] Failed to decrypt API key:",
-							error,
-						);
-						maskedKey = "***";
-					}
-				}
+				const maskedKey = maskStoredApiKey(provider.encryptedApiKey);
 
 				return {
 					id: provider.id,
@@ -113,16 +99,15 @@ export const getUserProviders = tenantProtectedProcedure
 			});
 
 			// Check for legacy Firecrawl config
-			// This provides backward compatibility until users/orgs migrate to the new system
+			// This provides backward compatibility until users migrate to the new system
 			const hasFirecrawlInNewSystem = result.some(
 				(p) => p.providerName === "firecrawl",
 			);
 
-			if (!hasFirecrawlInNewSystem) {
-				// TENANT ISOLATION: Check legacy Firecrawl in the appropriate context
-				const legacyFirecrawl = isOrgContext
-					? await getOrganizationFirecrawlConfig(organizationId)
-					: await getUserFirecrawlConfig(user.id);
+			// Only personal context has a legacy Firecrawl key; organizations
+			// use unified search provider rows exclusively.
+			if (!hasFirecrawlInNewSystem && !isOrgContext) {
+				const legacyFirecrawl = await getUserFirecrawlConfig(user.id);
 
 				if (
 					legacyFirecrawl?.firecrawlApiKey &&
@@ -131,24 +116,12 @@ export const getUserProviders = tenantProtectedProcedure
 					console.log(
 						`[Search Providers] Found legacy Firecrawl config in ${contextType} context, including in response`,
 					);
-					let maskedKey: string | null = null;
-					try {
-						const decryptedKey = decryptApiKey(
-							legacyFirecrawl.firecrawlApiKey,
-						);
-						maskedKey = maskApiKey(decryptedKey);
-					} catch (error) {
-						console.error(
-							"[Search Providers] Failed to decrypt legacy Firecrawl key:",
-							error,
-						);
-						maskedKey = "***";
-					}
+					const maskedKey = maskStoredApiKey(
+						legacyFirecrawl.firecrawlApiKey,
+					);
 
 					result.push({
-						id: isOrgContext
-							? `legacy-firecrawl-org-${organizationId}`
-							: `legacy-firecrawl-${user.id}`,
+						id: `legacy-firecrawl-${user.id}`,
 						providerName: "firecrawl",
 						maskedApiKey: maskedKey,
 						endpoint: null,

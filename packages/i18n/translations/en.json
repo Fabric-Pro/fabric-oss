@@ -1652,6 +1652,10 @@
 						"enabled_providers_changed": "AI gateway allowed providers changed",
 						"deleted": "AI provider deleted"
 					},
+					"integration": {
+						"config_updated": "Personal integration config updated",
+						"disconnected": "Personal integration disconnected"
+					},
 					"chatgpt_plan": {
 						"connected": "ChatGPT plan connected",
 						"disconnected": "ChatGPT plan disconnected",
@@ -1750,7 +1754,10 @@
 						"repository_sync_configured": "Living Memory repository sync configured",
 						"repository_sync_started": "Living Memory repository sync started",
 						"repository_sync_completed": "Living Memory repository sync finished",
-						"repository_sync_disabled": "Living Memory repository sync turned off"
+						"repository_sync_disabled": "Living Memory repository sync turned off",
+						"write_target_created": "Living Memory write folder added",
+						"write_target_updated": "Living Memory write folder changed",
+						"write_target_deleted": "Living Memory write folder removed"
 					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",

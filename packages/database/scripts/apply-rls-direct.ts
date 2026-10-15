@@ -322,6 +322,19 @@ async function applyRLS() {
 				name: "project_context_repository_sync_run",
 				policy: "user_owned",
 			},
+			// Living Memory write folders and their receipts (ADR-022). The
+			// receipts carry no foreign key to the folders, so each table is
+			// registered in its own right; an entry has no tenant columns and
+			// inherits its write's.
+			{
+				name: "project_context_write_target",
+				policy: "user_owned",
+			},
+			{ name: "project_memory_write", policy: "user_owned" },
+			{
+				name: "project_memory_write_entry",
+				policy: "memory_write_parent",
+			},
 			{ name: "project_readiness_item_state", policy: "user_owned" }, // Manual readiness states (snooze / not applicable / help requested)
 			{ name: "project_readiness_verdict", policy: "user_owned" }, // Last computed readiness verdict per item
 			{ name: "project_context_summary", policy: "user_owned" }, // Compressed project-history summaries
@@ -1399,6 +1412,15 @@ async function applyRLS() {
 						policySQL = buildParentScopedPolicySQL(
 							table.name,
 							"proposal_parent",
+						);
+						break;
+
+					case "memory_write_parent":
+						// Same again, with `project_memory_write` (also
+						// `user_owned`) as the parent.
+						policySQL = buildParentScopedPolicySQL(
+							table.name,
+							"memory_write_parent",
 						);
 						break;
 

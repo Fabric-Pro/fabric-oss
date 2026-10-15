@@ -4,21 +4,23 @@
  * Manual re-sync: flips the parent ProjectContext row back to PENDING and
  * kicks off `urlSourceCrawlWorkflow` with `mode: 'manual-resync'`.
  *
- * Same Firecrawl pre-flight as `processLink` so a revoked key surfaces
- * the SAME `FIRECRAWL_NOT_CONFIGURED` notice the dialog shows — no
- * second UI surface to keep in sync.
+ * Same scraper pre-flight as `processLink` (`resolveUrlSourceProvider`): the
+ * tenant's first enabled provider that can scrape — or crawl, for a path
+ * prefix — is chosen fresh on every re-sync, so a tenant on Jina, Tavily, Exa
+ * or Cloudflare can re-sync like one on Firecrawl, and a missing provider
+ * surfaces the SAME `SCRAPE_PROVIDER_NOT_CONFIGURED` /
+ * `CRAWL_PROVIDER_NOT_CONFIGURED` notice the dialog shows — no second UI
+ * surface to keep in sync.
  */
 import { ORPCError } from "@orpc/server";
 import {
 	db,
 	getContextById,
-	getSearchProviderConfig,
 	hasProjectAccess,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -27,20 +29,13 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	providerWorkflowArgs,
+	resolveUrlSourceProvider,
+} from "./lib/url-source-provider";
 
 const URL_CONTEXT_TASK_QUEUE = "project-documents";
 const URL_CRAWL_WORKFLOW_NAME = "urlSourceCrawlWorkflow";
-
-interface FirecrawlNotConfiguredData {
-	code: "FIRECRAWL_NOT_CONFIGURED";
-	settingsPath: string;
-}
-
-function buildFirecrawlSettingsPath(orgSlug: string | null): string {
-	return orgSlug
-		? `/app/${orgSlug}/settings/search-providers`
-		: "/app/settings/search-providers";
-}
 
 export const resyncUrlSourceProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_UPDATE))
@@ -118,53 +113,15 @@ export const resyncUrlSourceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Pre-flight Firecrawl key. Same shape as processLink so the UI's
-		// notice card renders identically whether we're adding or
-		// re-syncing.
-		const firecrawlConfig = await getSearchProviderConfig({
-			userId: user.id,
+		// Pre-flight the scraper, before anything is written, so a missing
+		// provider leaves the row exactly as it was. The key travels in the
+		// workflow args (the activity sandbox can't reach the credential
+		// store).
+		const provider = await resolveUrlSourceProvider({
 			organizationId,
-			providerName: "firecrawl",
+			userId: user.id,
+			scope: existing.urlScope ?? "SINGLE_PAGE",
 		});
-		if (
-			!firecrawlConfig ||
-			!firecrawlConfig.enabled ||
-			!firecrawlConfig.encryptedApiKey
-		) {
-			let orgSlug: string | null = null;
-			if (organizationId) {
-				const org = await db.organization.findUnique({
-					where: { id: organizationId },
-					select: { slug: true },
-				});
-				orgSlug = org?.slug ?? null;
-			}
-			const data: FirecrawlNotConfiguredData = {
-				code: "FIRECRAWL_NOT_CONFIGURED",
-				settingsPath: buildFirecrawlSettingsPath(orgSlug),
-			};
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"URL sources need a Firecrawl API key. Configure it in Settings → Search Providers to re-sync.",
-				data,
-			});
-		}
-
-		// Decrypt the Firecrawl key for the workflow args (the workflow
-		// embeds the key in its activity calls — Group 4 contract).
-		let firecrawlApiKey: string;
-		try {
-			firecrawlApiKey = decryptApiKey(firecrawlConfig.encryptedApiKey);
-		} catch (error) {
-			logger.error(
-				`[ResyncUrlSource] Failed to decrypt Firecrawl key: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Failed to read Firecrawl API key",
-			});
-		}
 
 		// Flip status to PENDING and clear any prior error so the UI's red
 		// badge resets immediately. The workflow will move us to EXTRACTING
@@ -195,7 +152,7 @@ export const resyncUrlSourceProcedure = tenantProtectedProcedure
 							projectId: input.projectId,
 							userId: user.id,
 							organizationId: organizationId ?? null,
-							apiKey: firecrawlApiKey,
+							...providerWorkflowArgs(provider),
 							urlRefreshMode:
 								existing.urlRefreshMode ?? undefined,
 							parentSourceTitle: existing.sourceTitle ?? null,

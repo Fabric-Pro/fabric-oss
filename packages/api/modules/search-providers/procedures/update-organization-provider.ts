@@ -1,17 +1,21 @@
 import { ORPCError } from "@orpc/server";
 import {
 	getOrganizationById,
+	getOrganizationSearchProvider,
 	upsertOrganizationSearchProvider,
 } from "@repo/database";
 import { getSearchEndpointBlockReason } from "@repo/search";
-import { encryptApiKey, isValidApiKeyFormat, maskApiKey } from "@repo/utils";
+import { encryptApiKey, isValidApiKeyFormat } from "@repo/utils";
+import { parseCloudflareAccountId } from "@repo/utils/cloudflare-browser-rendering";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../lib/audit";
 import {
 	Permissions,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { maskStoredApiKey } from "../lib/provider-key";
 
 const VALID_PROVIDERS = [
 	"exa",
@@ -20,6 +24,7 @@ const VALID_PROVIDERS = [
 	"youtube",
 	"parallel",
 	"jina",
+	"cloudflare",
 ];
 
 /**
@@ -62,7 +67,7 @@ export const updateOrganizationProvider = tenantProtectedProcedure
 	)
 	.handler(
 		async ({
-			context: { user },
+			context,
 			input: {
 				organizationId,
 				providerName,
@@ -73,6 +78,7 @@ export const updateOrganizationProvider = tenantProtectedProcedure
 				enabled,
 			},
 		}) => {
+			const { user } = context;
 			// Verify organization exists
 			const organization = await getOrganizationById(organizationId);
 
@@ -113,6 +119,27 @@ export const updateOrganizationProvider = tenantProtectedProcedure
 				}
 			}
 
+			// Cloudflare Browser Rendering keeps its account ID in `endpoint`, as
+			// the account-scoped API base URL. Check the endpoint the row will
+			// hold after this write: the incoming one, or the stored one when
+			// the update leaves it out (the upsert keeps it then).
+			if (providerName === "cloudflare") {
+				const effectiveEndpoint =
+					endpoint ||
+					(
+						await getOrganizationSearchProvider({
+							organizationId,
+							providerName,
+						})
+					)?.endpoint;
+				if (!parseCloudflareAccountId(effectiveEndpoint)) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Cloudflare Browser Rendering needs a valid account ID: the endpoint must be https://api.cloudflare.com/client/v4/accounts/ followed by the 32-character account ID.",
+					});
+				}
+			}
+
 			// Encrypt API key if provided
 			let encryptedApiKey: string | undefined;
 			if (apiKey) {
@@ -136,14 +163,38 @@ export const updateOrganizationProvider = tenantProtectedProcedure
 				enabled,
 			});
 
+			// Non-secret facts only: never the key, its ciphertext or mask, and
+			// no endpoint text in any form (a path can carry a secret).
+			const auditMetadata = {
+				providerName,
+				keyChanged: Boolean(apiKey),
+				endpointSupplied: endpoint != null,
+				endpointConfigured: Boolean(updated.endpoint),
+				enabled: updated.enabled,
+				isDefault: updated.isDefault,
+				priority: updated.priority,
+			};
+			recordAuditFromRequest(context, {
+				action: "org.integration.config_updated",
+				category: "org",
+				organizationId,
+				resource: {
+					type: "integration",
+					id: providerName,
+					name: providerName,
+				},
+				metadata: auditMetadata,
+			});
+
 			return {
 				success: true,
 				provider: {
 					id: updated.id,
 					providerName: updated.providerName,
-					maskedApiKey: updated.encryptedApiKey
-						? maskApiKey(updated.encryptedApiKey)
-						: null,
+					maskedApiKey: maskStoredApiKey(
+						updated.encryptedApiKey,
+						apiKey,
+					),
 					endpoint: updated.endpoint,
 					isDefault: updated.isDefault,
 					priority: updated.priority,

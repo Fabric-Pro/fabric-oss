@@ -127,10 +127,10 @@ export function useUrlSourceForm({
 	// Reads the unified search-providers table — the same rows `processLink`
 	// reads server-side. Returns:
 	//   - `scrapeProvider`: picked provider for SINGLE_PAGE / fallback.
-	//   - `crawlProvider`: picked provider for PATH_PREFIX (Firecrawl only).
-	//   - `hasAnyScrapeCapable`: true ⇔ any enabled Firecrawl/Jina/Tavily/Exa
-	//     row exists (drives the notice gate).
-	//   - `hasCrawlCapable`: true ⇔ Firecrawl is enabled (drives the
+	//   - `crawlProvider`: picked provider for PATH_PREFIX (Firecrawl or
+	//     Cloudflare Browser Rendering).
+	//   - `hasAnyScrapeCapable`: true ⇔ any enabled scrape-capable row exists (drives the notice gate).
+	//   - `hasCrawlCapable`: true ⇔ Firecrawl or Cloudflare is enabled (drives the
 	//     PATH_PREFIX radio gate).
 	// Refetch on window focus and re-mount so a user who toggles a key in
 	// another tab sees the notice update without a full reload.
@@ -167,6 +167,8 @@ export function useUrlSourceForm({
 	const hasCrawlCapable = providersConfigQuery.data?.hasCrawlCapable ?? false;
 	const scrapeProviderName =
 		providersConfigQuery.data?.scrapeProviderName ?? null;
+	const crawlProviderName =
+		providersConfigQuery.data?.crawlProviderName ?? null;
 
 	// Pre-built settings path for the notice CTA. The org slug determines
 	// the prefix per spec §9.1 — `/app/settings/search-providers` for
@@ -467,6 +469,7 @@ export function useUrlSourceForm({
 		hasAnyScrapeCapable,
 		hasCrawlCapable,
 		scrapeProviderName,
+		crawlProviderName,
 		preflightLoading:
 			providersConfigQuery.isLoading || providersConfigQuery.isFetching,
 		/** Submit whichever mode is showing: the single URL or the pasted list. */

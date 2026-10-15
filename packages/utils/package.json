@@ -179,6 +179,11 @@
 			"import": "./lib/clean-spec-content.ts",
 			"default": "./lib/clean-spec-content.ts"
 		},
+		"./cloudflare-browser-rendering": {
+			"types": "./lib/cloudflare-browser-rendering.ts",
+			"import": "./lib/cloudflare-browser-rendering.ts",
+			"default": "./lib/cloudflare-browser-rendering.ts"
+		},
 		"./markdown-heading": {
 			"types": "./lib/markdown-heading.ts",
 			"import": "./lib/markdown-heading.ts",

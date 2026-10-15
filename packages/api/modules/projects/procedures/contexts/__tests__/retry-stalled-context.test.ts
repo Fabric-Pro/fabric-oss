@@ -9,13 +9,17 @@
  *   - A live integration, whose status never moves, is refused.
  *   - NOT_FOUND for cross-tenant addressing; the org comes from the session.
  *   - A dead run's job rows are closed, so the banner's clock restarts.
+ *   - A link crawl restarts with the scraper `processLink` would choose —
+ *     any enabled scrape-capable provider, with its endpoint — from the
+ *     organization's providers, or the user's own with no organization.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockHasProjectAccess,
 	mockGetContextById,
-	mockGetSearchProviderConfig,
+	mockGetEnabledOrgProviders,
+	mockGetEnabledUserProviders,
 	mockUpdateContextExtractionStatus,
 	mockOrgFindUnique,
 	mockProjectContextUpdate,
@@ -29,7 +33,8 @@ const {
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
 	mockGetContextById: vi.fn(),
-	mockGetSearchProviderConfig: vi.fn(),
+	mockGetEnabledOrgProviders: vi.fn(),
+	mockGetEnabledUserProviders: vi.fn(),
 	mockUpdateContextExtractionStatus: vi.fn(),
 	mockOrgFindUnique: vi.fn(),
 	mockProjectContextUpdate: vi.fn(),
@@ -54,7 +59,8 @@ vi.mock("@repo/database", () => ({
 	createBackgroundJob: mockCreateBackgroundJob,
 	failBackgroundJob: mockFailBackgroundJob,
 	getContextById: mockGetContextById,
-	getSearchProviderConfig: mockGetSearchProviderConfig,
+	getEnabledOrganizationSearchProviders: mockGetEnabledOrgProviders,
+	getEnabledUserSearchProviders: mockGetEnabledUserProviders,
 	hasProjectAccess: mockHasProjectAccess,
 	seedSteps: (keys: string[]) => keys.map((key) => ({ key })),
 	updateContextExtractionStatus: mockUpdateContextExtractionStatus,
@@ -139,16 +145,38 @@ function row(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function providerRow(
+	providerName: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		providerName,
+		encryptedApiKey: `enc-${providerName}`,
+		endpoint: null,
+		enabled: true,
+		isDefault: false,
+		priority: 1,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		...overrides,
+	};
+}
+
+const linkRow = (overrides: Record<string, unknown> = {}) =>
+	row({
+		type: "LINK",
+		s3Path: null,
+		sourceUrl: "https://example.com/docs",
+		...overrides,
+	});
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
 	mockGetContextById.mockResolvedValue(row());
 	mockBackgroundJobFindMany.mockResolvedValue([]);
 	mockDecryptApiKey.mockReturnValue("decrypted-fc-key");
-	mockGetSearchProviderConfig.mockResolvedValue({
-		encryptedApiKey: "k",
-		enabled: true,
-	});
+	mockGetEnabledOrgProviders.mockResolvedValue([providerRow("firecrawl")]);
+	mockGetEnabledUserProviders.mockResolvedValue([]);
 	mockUpdateContextExtractionStatus.mockResolvedValue(undefined);
 	mockTemporalWorkflowStart.mockResolvedValue(undefined);
 	mockDescribe.mockResolvedValue({ status: { name: "COMPLETED" } });
@@ -227,6 +255,7 @@ describe("retryStalled — dispatch", () => {
 			scope: "PATH_PREFIX",
 			maxPages: 50,
 			apiKey: "decrypted-fc-key",
+			providerName: "firecrawl",
 			mode: "manual-resync",
 		});
 		expect(mockProjectContextUpdate).toHaveBeenCalledWith({
@@ -272,22 +301,94 @@ describe("retryStalled — dispatch", () => {
 		expect(result.dispatch).toBe("crawl");
 	});
 
-	it("refuses a link retry without a Firecrawl key, leaving the row untouched", async () => {
-		mockGetContextById.mockResolvedValue(
-			row({
-				type: "LINK",
-				s3Path: null,
-				sourceUrl: "https://example.com/docs",
-			}),
-		);
-		mockGetSearchProviderConfig.mockResolvedValue(null);
+	it("refuses a link retry with no scrape provider, leaving the row untouched", async () => {
+		mockGetContextById.mockResolvedValue(linkRow());
+		mockGetEnabledOrgProviders.mockResolvedValue([]);
 		const handler = await loadHandler();
 
 		await expect(handler({ input, context: orgCtx })).rejects.toMatchObject(
-			{ code: "BAD_REQUEST", data: { code: "FIRECRAWL_NOT_CONFIGURED" } },
+			{
+				code: "BAD_REQUEST",
+				data: { code: "SCRAPE_PROVIDER_NOT_CONFIGURED" },
+			},
 		);
 		expect(mockProjectContextUpdateMany).not.toHaveBeenCalled();
 		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	});
+
+	it("restarts a single-page link with a non-Firecrawl provider when it is the only one", async () => {
+		mockGetContextById.mockResolvedValue(
+			linkRow({ urlScope: "SINGLE_PAGE" }),
+		);
+		mockGetEnabledOrgProviders.mockResolvedValue([providerRow("jina")]);
+		mockDecryptApiKey.mockImplementation((v: string) => `dec:${v}`);
+		const handler = await loadHandler();
+
+		const result = await handler({ input, context: orgCtx });
+
+		expect(result.dispatch).toBe("crawl");
+		const [, options] = mockTemporalWorkflowStart.mock.calls[0];
+		expect(options.args[0]).toMatchObject({
+			apiKey: "dec:enc-jina",
+			providerName: "jina",
+		});
+		expect(options.args[0]).not.toHaveProperty("providerEndpoint");
+	});
+
+	it("passes the Cloudflare account endpoint along with the provider", async () => {
+		mockGetContextById.mockResolvedValue(
+			linkRow({ urlScope: "SINGLE_PAGE" }),
+		);
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			providerRow("cloudflare", { endpoint: "account-123" }),
+		]);
+		const handler = await loadHandler();
+
+		await handler({ input, context: orgCtx });
+
+		const [, options] = mockTemporalWorkflowStart.mock.calls[0];
+		expect(options.args[0]).toMatchObject({
+			providerName: "cloudflare",
+			providerEndpoint: "account-123",
+		});
+	});
+
+	it("refuses a path-prefix link retry when only a scrape-only provider is enabled", async () => {
+		mockGetContextById.mockResolvedValue(
+			linkRow({ urlScope: "PATH_PREFIX" }),
+		);
+		mockGetEnabledOrgProviders.mockResolvedValue([providerRow("jina")]);
+		const handler = await loadHandler();
+
+		await expect(handler({ input, context: orgCtx })).rejects.toMatchObject(
+			{
+				code: "BAD_REQUEST",
+				data: { code: "CRAWL_PROVIDER_NOT_CONFIGURED" },
+			},
+		);
+		expect(mockProjectContextUpdateMany).not.toHaveBeenCalled();
+		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	});
+
+	it("reads the user's providers, never the organization's, with no organization", async () => {
+		mockGetContextById.mockResolvedValue(
+			linkRow({ organizationId: null, urlScope: "SINGLE_PAGE" }),
+		);
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("exa")]);
+		const handler = await loadHandler();
+
+		await handler({
+			input,
+			context: { user: { id: "user-1" }, session: {} },
+		});
+
+		expect(mockGetEnabledUserProviders).toHaveBeenCalledWith("user-1");
+		expect(mockGetEnabledOrgProviders).not.toHaveBeenCalled();
+		const [, options] = mockTemporalWorkflowStart.mock.calls[0];
+		expect(options.args[0]).toMatchObject({ providerName: "exa" });
 	});
 
 	it("embeds a row holding its own text again, without shipping the body", async () => {

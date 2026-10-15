@@ -5,14 +5,14 @@
  * re-running the entire parent's crawl. The PM ask: when a path-prefix
  * crawl has some COMPLETED and some FAILED pages, the user can hit a
  * Retry button on each failed row to re-scrape just that page instead of
- * paying Firecrawl credits to re-crawl every sibling.
+ * paying scraper credits to re-crawl every sibling.
  *
  * Delegates to the existing `urlSourceCrawlWorkflow` with
  * `mode: 'retry-single-page'` and `retryPageUrl` set. The workflow's
  * retry branch:
  *   1. Calls `firecrawlScrapeActivity(retryPageUrl, ...)` with the same
  *      scrapeOptions as the parent's crawl (the activity is provider-
- *      agnostic — it just reuses the parent's `providerName` + apiKey).
+ *      agnostic — it dispatches on the `providerName` + apiKey it is given).
  *   2. Calls `upsertUrlPageActivity` in `manual-resync` semantics so
  *      content + extractionStatus are overwritten even on hash match.
  *   3. Calls `embedUrlPageActivity` to re-embed the page into Qdrant.
@@ -26,15 +26,9 @@
  * page by id.
  */
 import { ORPCError } from "@orpc/server";
-import {
-	db,
-	getContextById,
-	getSearchProviderConfig,
-	hasProjectAccess,
-} from "@repo/database";
+import { db, getContextById, hasProjectAccess } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -43,20 +37,13 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import {
+	providerWorkflowArgs,
+	resolveUrlSourceProvider,
+} from "./lib/url-source-provider";
 
 const URL_CONTEXT_TASK_QUEUE = "project-documents";
 const URL_CRAWL_WORKFLOW_NAME = "urlSourceCrawlWorkflow";
-
-interface FirecrawlNotConfiguredData {
-	code: "FIRECRAWL_NOT_CONFIGURED";
-	settingsPath: string;
-}
-
-function buildFirecrawlSettingsPath(orgSlug: string | null): string {
-	return orgSlug
-		? `/app/${orgSlug}/settings/search-providers`
-		: "/app/settings/search-providers";
-}
 
 export const resyncUrlPageProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.CONTEXT_UPDATE))
@@ -144,58 +131,21 @@ export const resyncUrlPageProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Pre-flight Firecrawl key — same shape as resyncUrlSource so the
-		// UI's notice card renders identically. We resolve the key here
-		// (not in the workflow) because the worker sandbox can't reach
-		// the credential store and the activity needs a literal key.
+		// Pre-flight the scraper — same resolver as `resyncUrlSource`, so the
+		// UI's notice card renders identically. We resolve the key here (not
+		// in the workflow) because the worker sandbox can't reach the
+		// credential store and the activity needs a literal key.
 		//
-		// Note: `parent.metadata.scraperProvider` records which provider
-		// crawled originally, but the retry today always uses Firecrawl
-		// for parity with `resyncUrlSource`. If we add multi-provider
-		// scrape (Jina/Tavily) for child retries this is the spot to
-		// resolve the original provider via `getSearchProviderConfig`.
-		const firecrawlConfig = await getSearchProviderConfig({
-			userId: user.id,
+		// One page needs only a provider that can scrape, whatever the
+		// parent's scope: a path-prefix parent crawled with Firecrawl can have
+		// a failed page retried through Jina, say, when that is what the
+		// tenant now has. `parent.metadata.scraperProvider` records which
+		// provider crawled originally; it is a record, not a pin.
+		const provider = await resolveUrlSourceProvider({
 			organizationId,
-			providerName: "firecrawl",
+			userId: user.id,
+			scope: "SINGLE_PAGE",
 		});
-		if (
-			!firecrawlConfig ||
-			!firecrawlConfig.enabled ||
-			!firecrawlConfig.encryptedApiKey
-		) {
-			let orgSlug: string | null = null;
-			if (organizationId) {
-				const org = await db.organization.findUnique({
-					where: { id: organizationId },
-					select: { slug: true },
-				});
-				orgSlug = org?.slug ?? null;
-			}
-			const data: FirecrawlNotConfiguredData = {
-				code: "FIRECRAWL_NOT_CONFIGURED",
-				settingsPath: buildFirecrawlSettingsPath(orgSlug),
-			};
-			throw new ORPCError("BAD_REQUEST", {
-				message:
-					"URL sources need a Firecrawl API key. Configure it in Settings → Search Providers to retry pages.",
-				data,
-			});
-		}
-
-		let firecrawlApiKey: string;
-		try {
-			firecrawlApiKey = decryptApiKey(firecrawlConfig.encryptedApiKey);
-		} catch (error) {
-			logger.error(
-				`[ResyncUrlPage] Failed to decrypt Firecrawl key: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
-			);
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Failed to read Firecrawl API key",
-			});
-		}
 
 		// Flip the child row's status to PENDING optimistically. The
 		// workflow's upsert activity rewrites the content and clears the
@@ -227,7 +177,7 @@ export const resyncUrlPageProcedure = tenantProtectedProcedure
 							projectId: input.projectId,
 							userId: user.id,
 							organizationId: organizationId ?? null,
-							apiKey: firecrawlApiKey,
+							...providerWorkflowArgs(provider),
 							urlRefreshMode: parent.urlRefreshMode ?? undefined,
 							parentSourceTitle: parent.sourceTitle ?? null,
 							mode: "retry-single-page",

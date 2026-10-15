@@ -168,6 +168,7 @@ function providerRow(overrides: {
 	isDefault?: boolean;
 	priority?: number;
 	encryptedApiKey?: string | null;
+	endpoint?: string | null;
 	createdAt?: Date;
 }) {
 	return {
@@ -176,6 +177,7 @@ function providerRow(overrides: {
 		isDefault: overrides.isDefault ?? false,
 		priority: overrides.priority ?? 100,
 		encryptedApiKey: overrides.encryptedApiKey ?? "enc-fc-key",
+		endpoint: overrides.endpoint ?? null,
 		createdAt: overrides.createdAt ?? new Date("2024-01-01"),
 	};
 }
@@ -687,6 +689,133 @@ describe("processContextLink — multi-provider routing", () => {
 				args: [expect.objectContaining({ providerName: "exa" })],
 			}),
 		);
+	});
+});
+
+describe("processContextLink — Cloudflare Browser Rendering", () => {
+	const CLOUDFLARE_ENDPOINT =
+		"https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef";
+	const CLOUDFLARE_ROWS = [
+		providerRow({
+			providerName: "cloudflare",
+			isDefault: true,
+			encryptedApiKey: "enc-cf",
+			endpoint: CLOUDFLARE_ENDPOINT,
+		}),
+	];
+
+	it("treats a Cloudflare row as scrape-capable and passes its endpoint to the workflow and schedule", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue(CLOUDFLARE_ROWS);
+		mockDecryptApiKey.mockReturnValue("decrypted-cf-token");
+		mockCreateLinkContext.mockResolvedValue({ id: "ctx-cf" });
+		mockCreateUrlSourceSchedule.mockResolvedValue({
+			scheduleId: "url-source-ctx-cf",
+		});
+
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "proj-1",
+				organizationId: "org-1",
+				url: "https://example.com/app",
+				scope: "SINGLE_PAGE",
+				refreshMode: "DAILY",
+			},
+			context: orgCtx,
+		});
+
+		expect(mockCreateLinkContext).toHaveBeenCalledWith(
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					scraperProvider: "cloudflare",
+				}),
+			}),
+		);
+		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+			"urlSourceCrawlWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						providerName: "cloudflare",
+						providerEndpoint: CLOUDFLARE_ENDPOINT,
+						apiKey: "decrypted-cf-token",
+					}),
+				],
+			}),
+		);
+		expect(mockCreateUrlSourceSchedule).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerName: "cloudflare",
+				providerEndpoint: CLOUDFLARE_ENDPOINT,
+			}),
+			expect.anything(),
+		);
+	});
+
+	it("accepts PATH_PREFIX when Cloudflare is the only provider (links are followed by the workflow)", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue(CLOUDFLARE_ROWS);
+		mockCreateLinkContext.mockResolvedValue({ id: "ctx-cf-crawl" });
+		const handler = await loadHandler();
+
+		await handler({
+			input: {
+				projectId: "proj-1",
+				organizationId: "org-1",
+				url: "https://example.com/docs/",
+				scope: "PATH_PREFIX",
+			},
+			context: orgCtx,
+		});
+
+		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+			"urlSourceCrawlWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						scope: "PATH_PREFIX",
+						providerName: "cloudflare",
+						providerEndpoint: CLOUDFLARE_ENDPOINT,
+					}),
+				],
+			}),
+		);
+	});
+
+	it("rejects PATH_PREFIX when Jina is the only provider", async () => {
+		mockGetEnabledUserProviders.mockResolvedValue(
+			CONFIGURED_JINA_ONLY_ROWS,
+		);
+		const handler = await loadHandler();
+
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					url: "https://example.com/docs/",
+					scope: "PATH_PREFIX",
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			data: { code: "CRAWL_PROVIDER_NOT_CONFIGURED" },
+		});
+		expect(mockCreateLinkContext).not.toHaveBeenCalled();
+		expect(mockTemporalWorkflowStart).not.toHaveBeenCalled();
+	});
+
+	it("omits providerEndpoint for a row without one", async () => {
+		mockGetEnabledUserProviders.mockResolvedValue(
+			CONFIGURED_JINA_ONLY_ROWS,
+		);
+		const handler = await loadHandler();
+		await handler({
+			input: { projectId: "proj-1", url: "https://example.com" },
+			context: personalCtx,
+		});
+		const args = mockTemporalWorkflowStart.mock.calls[0]?.[1]?.args?.[0];
+		expect(args).toBeDefined();
+		expect(args).not.toHaveProperty("providerEndpoint");
 	});
 });
 

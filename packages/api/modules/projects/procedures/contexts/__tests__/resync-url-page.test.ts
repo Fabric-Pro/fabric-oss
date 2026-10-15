@@ -5,7 +5,10 @@
  * Covers:
  *   - Happy path: child row flipped to PENDING, workflow started with
  *     `mode: 'retry-single-page'` + the page's URL.
- *   - Firecrawl revocation surfaces the SAME BAD_REQUEST payload as
+ *   - The scraper is any enabled scrape-capable provider (a path-prefix
+ *     parent's page does not need a crawler), with its endpoint, from the
+ *     organization's providers or the user's own — never both.
+ *   - No scrape provider surfaces the SAME BAD_REQUEST payload as
  *     `resyncUrlSource` so the dialog can re-use its notice card.
  *   - Cross-tenant page id → NOT_FOUND (child row XOR filter).
  *   - Cross-tenant parent context id → NOT_FOUND.
@@ -16,7 +19,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	mockHasProjectAccess,
 	mockGetContextById,
-	mockGetSearchProviderConfig,
+	mockGetEnabledOrgProviders,
+	mockGetEnabledUserProviders,
 	mockProjectContextUrlPageFindFirst,
 	mockProjectContextUrlPageUpdate,
 	mockOrgFindUnique,
@@ -25,7 +29,8 @@ const {
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
 	mockGetContextById: vi.fn(),
-	mockGetSearchProviderConfig: vi.fn(),
+	mockGetEnabledOrgProviders: vi.fn(),
+	mockGetEnabledUserProviders: vi.fn(),
 	mockProjectContextUrlPageFindFirst: vi.fn(),
 	mockProjectContextUrlPageUpdate: vi.fn(),
 	mockOrgFindUnique: vi.fn(),
@@ -42,7 +47,8 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	getContextById: mockGetContextById,
-	getSearchProviderConfig: mockGetSearchProviderConfig,
+	getEnabledOrganizationSearchProviders: mockGetEnabledOrgProviders,
+	getEnabledUserSearchProviders: mockGetEnabledUserProviders,
 	hasProjectAccess: mockHasProjectAccess,
 }));
 
@@ -116,6 +122,28 @@ const orgCtx = {
 	session: { activeOrganizationId: "org-1" },
 };
 
+function providerRow(
+	providerName: string,
+	overrides: Record<string, unknown> = {},
+) {
+	return {
+		providerName,
+		encryptedApiKey: `enc-${providerName}`,
+		endpoint: null,
+		enabled: true,
+		isDefault: false,
+		priority: 1,
+		createdAt: new Date("2026-01-01T00:00:00.000Z"),
+		...overrides,
+	};
+}
+
+const pageInput = {
+	pageId: "page-1",
+	parentContextId: "ctx-1",
+	projectId: "proj-1",
+};
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockHasProjectAccess.mockResolvedValue(true);
@@ -130,12 +158,8 @@ beforeEach(() => {
 		urlMaxPages: 100,
 		urlRefreshMode: "WEEKLY",
 	});
-	mockGetSearchProviderConfig.mockResolvedValue({
-		encryptedApiKey: "k",
-		endpoint: null,
-		enabled: true,
-		source: "user",
-	});
+	mockGetEnabledUserProviders.mockResolvedValue([providerRow("firecrawl")]);
+	mockGetEnabledOrgProviders.mockResolvedValue([providerRow("firecrawl")]);
 	mockProjectContextUrlPageFindFirst.mockResolvedValue({
 		id: "page-1",
 		pageUrl: "https://example.com/docs/article-1",
@@ -179,6 +203,7 @@ describe("resyncUrlPage — happy path", () => {
 						mode: "retry-single-page",
 						retryPageUrl: "https://example.com/docs/article-1",
 						apiKey: "decrypted-fc-key",
+						providerName: "firecrawl",
 					}),
 				],
 			}),
@@ -215,23 +240,101 @@ describe("resyncUrlPage — happy path", () => {
 	});
 });
 
-describe("resyncUrlPage — Firecrawl revocation", () => {
-	it("returns BAD_REQUEST FIRECRAWL_NOT_CONFIGURED when key is revoked", async () => {
-		mockGetSearchProviderConfig.mockResolvedValue(null);
+describe("resyncUrlPage — scraper provider", () => {
+	it("retries a path-prefix parent's page with a non-Firecrawl provider when it is the only one", async () => {
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("jina")]);
+		mockDecryptApiKey.mockImplementation((v: string) => `dec:${v}`);
+		const handler = await loadHandler();
+
+		await handler({ input: pageInput, context: personalCtx });
+
+		const [, options] = mockTemporalWorkflowStart.mock.calls[0] as [
+			string,
+			{ args: Array<Record<string, unknown>> },
+		];
+		expect(options.args[0]).toMatchObject({
+			scope: "PATH_PREFIX",
+			mode: "retry-single-page",
+			apiKey: "dec:enc-jina",
+			providerName: "jina",
+		});
+		expect(options.args[0]).not.toHaveProperty("providerEndpoint");
+	});
+
+	it("passes the Cloudflare account endpoint along with the provider", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			providerRow("cloudflare", { endpoint: "account-123" }),
+		]);
+		const handler = await loadHandler();
+
+		await handler({
+			input: { ...pageInput, organizationId: "org-1" },
+			context: orgCtx,
+		});
+
+		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+			"urlSourceCrawlWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						providerName: "cloudflare",
+						providerEndpoint: "account-123",
+					}),
+				],
+			}),
+		);
+	});
+
+	it("reads the user's providers, never the organization's, with no organization", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
+		mockGetEnabledUserProviders.mockResolvedValue([providerRow("tavily")]);
+		const handler = await loadHandler();
+
+		await handler({ input: pageInput, context: personalCtx });
+
+		expect(mockGetEnabledUserProviders).toHaveBeenCalledWith("user-1");
+		expect(mockGetEnabledOrgProviders).not.toHaveBeenCalled();
+		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+			"urlSourceCrawlWorkflow",
+			expect.objectContaining({
+				args: [expect.objectContaining({ providerName: "tavily" })],
+			}),
+		);
+	});
+
+	it("reads the organization's providers, never the user's, inside an organization", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([providerRow("exa")]);
+		mockGetEnabledUserProviders.mockResolvedValue([
+			providerRow("firecrawl"),
+		]);
+		const handler = await loadHandler();
+
+		await handler({
+			input: { ...pageInput, organizationId: "org-1" },
+			context: orgCtx,
+		});
+
+		expect(mockGetEnabledOrgProviders).toHaveBeenCalledWith("org-1");
+		expect(mockGetEnabledUserProviders).not.toHaveBeenCalled();
+		expect(mockTemporalWorkflowStart).toHaveBeenCalledWith(
+			"urlSourceCrawlWorkflow",
+			expect.objectContaining({
+				args: [expect.objectContaining({ providerName: "exa" })],
+			}),
+		);
+	});
+
+	it("returns BAD_REQUEST SCRAPE_PROVIDER_NOT_CONFIGURED when no provider is enabled", async () => {
+		mockGetEnabledUserProviders.mockResolvedValue([]);
 		const handler = await loadHandler();
 
 		await expect(
-			handler({
-				input: {
-					pageId: "page-1",
-					parentContextId: "ctx-1",
-					projectId: "proj-1",
-				},
-				context: personalCtx,
-			}),
+			handler({ input: pageInput, context: personalCtx }),
 		).rejects.toMatchObject({
 			code: "BAD_REQUEST",
-			data: { code: "FIRECRAWL_NOT_CONFIGURED" },
+			data: { code: "SCRAPE_PROVIDER_NOT_CONFIGURED" },
 		});
 
 		// Should NOT have flipped status — we bailed before mutating.

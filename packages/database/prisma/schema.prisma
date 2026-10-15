@@ -183,6 +183,8 @@ model User {
   projectContextPendingVectorCleanups             ProjectContextPendingVectorCleanup[]
   projectContextRepositorySyncs                   ProjectContextRepositorySync[]          @relation("ContextRepositorySyncConfigurer")
   projectContextRepositorySyncRuns                ProjectContextRepositorySyncRun[]       @relation("ContextRepositorySyncRunActor")
+  projectContextWriteTargets                      ProjectContextWriteTarget[]             @relation("ContextWriteTargetEditor")
+  projectMemoryWrites                             ProjectMemoryWrite[]                    @relation("MemoryWriteActor")
   projectReadinessItemStates                      ProjectReadinessItemState[]
   projectReadinessVerdicts                        ProjectReadinessVerdict[]
   projectContextSummaries                         ProjectContextSummary[]
@@ -929,6 +931,8 @@ model Organization {
   projectContextPendingVectorCleanups     ProjectContextPendingVectorCleanup[]
   projectContextRepositorySyncs           ProjectContextRepositorySync[]
   projectContextRepositorySyncRuns        ProjectContextRepositorySyncRun[]
+  projectContextWriteTargets              ProjectContextWriteTarget[]
+  projectMemoryWrites                     ProjectMemoryWrite[]
   projectReadinessItemStates              ProjectReadinessItemState[]
   projectReadinessVerdicts                ProjectReadinessVerdict[]
   projectContextSummaries                 ProjectContextSummary[]
@@ -2412,6 +2416,8 @@ model Project {
   contextPendingVectorCleanups    ProjectContextPendingVectorCleanup[]
   contextRepositorySync           ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
   contextRepositorySyncRuns       ProjectContextRepositorySyncRun[]    @relation("ProjectContextRepositorySyncRuns")
+  contextWriteTargets             ProjectContextWriteTarget[]          @relation("ProjectContextWriteTargets")
+  memoryWrites                    ProjectMemoryWrite[]                 @relation("ProjectMemoryWrites")
   contextSummaries                ProjectContextSummary[]
   prdSourceContext                ProjectContext?                      @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
@@ -3589,6 +3595,9 @@ model ProjectContextRepositorySync {
   repositoryIntegration ProjectRepositoryIntegration @relation(fields: [repositoryIntegrationId], references: [id], onDelete: Cascade, map: "project_context_repository_sync_integration_fkey")
   /// The rows this sync authored. Deleting the configuration releases them.
   contexts              ProjectContext[]
+  /// The folders agents' files are written into (ADR-022). Deleting the
+  /// configuration deletes them; their write receipts stay.
+  writeTargets          ProjectContextWriteTarget[]
 
   @@index([automatic, nextCheckAt])
   @@index([organizationId])
@@ -3656,6 +3665,139 @@ model ProjectContextRepositorySyncRun {
   @@index([organizationId])
   @@index([userId])
   @@map("project_context_repository_sync_run")
+}
+
+/// How agents' files reach a Living Memory write folder (ADR-022).
+/// PULL_REQUEST opens a pull request against the sync's branch; DIRECT_PUSH
+/// commits to the branch itself and is an explicit project-admin opt-in.
+enum ProjectContextWriteMode {
+  PULL_REQUEST
+  DIRECT_PUSH
+}
+
+/// Where a write stands. PENDING until the write workflow settles it;
+/// COMMITTED is a direct push, PULL_REQUEST a pull request opened, CONFLICT a
+/// path that changed under the caller, REFUSED a write the tip rules out, and
+/// FAILED one the provider or the workflow could not finish.
+enum ProjectMemoryWriteStatus {
+  PENDING
+  COMMITTED
+  PULL_REQUEST
+  CONFLICT
+  REFUSED
+  FAILED
+}
+
+/// The surface a write came in through.
+enum ProjectMemoryWriteVia {
+  MCP
+  CLI
+}
+
+enum ProjectMemoryWriteOp {
+  PUT
+  DELETE
+}
+
+/// A folder inside a project's Living Memory sync that agents' files are
+/// written into (ADR-022): at most ten per sync, none inside another, each
+/// inside the sync's selection and never an instruction folder. `mode` says
+/// how files land; turning on DIRECT_PUSH needs PROJECT_SETTINGS_EDIT and
+/// records who did and when. `version` is bumped by every edit, so a write
+/// admitted against one version is recognisably not the next one's. Deleting
+/// the sync deletes its targets, but not their receipts (`ProjectMemoryWrite`).
+model ProjectContextWriteTarget {
+  id                    String                  @id @default(cuid())
+  syncId                String
+  projectId             String
+  /// Organization-backed projects only, like the sync.
+  organizationId        String
+  /// The member who last edited it.
+  userId                String
+  /// Canonical repository-relative POSIX folder.
+  folder                String
+  mode                  ProjectContextWriteMode @default(PULL_REQUEST)
+  /// Who turned DIRECT_PUSH on, and when. Both null in PULL_REQUEST mode. A
+  /// plain column: the record outlives the member's account.
+  directPushEnabledById String?
+  directPushEnabledAt   DateTime?
+  version               Int                     @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sync         ProjectContextRepositorySync @relation(fields: [syncId], references: [id], onDelete: Cascade)
+  project      Project                      @relation("ProjectContextWriteTargets", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                         @relation("ContextWriteTargetEditor", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([syncId, folder])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([userId])
+  @@map("project_context_write_target")
+}
+
+/// One admitted request to write files into a Living Memory write folder: its
+/// receipt (ADR-022). `folder`, `mode`, `ref` and `repositoryIntegrationId`
+/// are frozen at admission, so the receipt says what was asked of the
+/// repository as it stood. Deliberately NO foreign key to the target: a
+/// receipt outlives the target and its sync, so `targetId` is a plain column,
+/// as `ProjectContextRepositorySyncRun.syncId` is. `digest` identifies the
+/// request (`(userId, digest, createdAt)` finds a retry).
+model ProjectMemoryWrite {
+  id                      String                   @id @default(cuid())
+  projectId               String
+  organizationId          String
+  /// The member the write acts for.
+  userId                  String
+  targetId                String
+  targetVersion           Int
+  folder                  String
+  mode                    ProjectContextWriteMode
+  ref                     String
+  repositoryIntegrationId String
+  /// The OAuth client the request came through, when it came through one.
+  oauthClientId           String?
+  via                     ProjectMemoryWriteVia
+  message                 String
+  digest                  String
+  status                  ProjectMemoryWriteStatus @default(PENDING)
+  /// What the workflow settled: commit, pull request, per-path verdicts.
+  outcome                 Json?
+
+  createdAt DateTime  @default(now())
+  settledAt DateTime?
+
+  project      Project                   @relation("ProjectMemoryWrites", fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                      @relation("MemoryWriteActor", fields: [userId], references: [id], onDelete: Cascade)
+  entries      ProjectMemoryWriteEntry[]
+
+  @@index([projectId, createdAt])
+  @@index([userId, digest, createdAt])
+  @@index([organizationId])
+  @@map("project_memory_write")
+}
+
+/// One path of a memory write. Carries no tenant columns of its own: its
+/// tenancy is its write's (`memory_write_parent` in `rls-policy-sql.ts`).
+/// PUT keeps its staged bytes' key, size and hash, DELETE keeps none.
+model ProjectMemoryWriteEntry {
+  id         String               @id @default(cuid())
+  writeId    String
+  path       String
+  op         ProjectMemoryWriteOp
+  /// The blob id the caller last saw at this path; absent means create-only.
+  ifMatchOid String?
+  stagedKey  String?
+  bytes      Int?
+  sha256     String?
+
+  write ProjectMemoryWrite @relation(fields: [writeId], references: [id], onDelete: Cascade)
+
+  @@unique([writeId, path])
+  @@map("project_memory_write_entry")
 }
 
 // Compressed project-history summary. Holds an LLM-generated digest of a project's

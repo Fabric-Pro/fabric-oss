@@ -11,6 +11,7 @@ import { getProcedure } from "./procedures/get";
 import { linkFromWorkflowIntegrationProcedure } from "./procedures/link-workflow-integration";
 import { listProcedure } from "./procedures/list";
 import { notionProcedures } from "./procedures/notion";
+import { requestConnectionProcedure } from "./procedures/request-connection";
 import { resourcesProcedures } from "./procedures/resources";
 import { scheduleProcedures } from "./procedures/schedule";
 import { syncProcedures } from "./procedures/sync";
@@ -23,6 +24,7 @@ export const dataConnectionsRouter = {
 	create: createProcedure,
 	update: updateProcedure,
 	delete: deleteProcedure,
+	request: requestConnectionProcedure,
 	linkWorkflow: linkFromWorkflowIntegrationProcedure,
 
 	// Sync operations

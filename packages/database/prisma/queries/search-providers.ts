@@ -449,7 +449,8 @@ export async function incrementUserSearchProviderUsage({
 /**
  * Get a specific search provider's API key with XOR tenant isolation.
  * Returns the decrypted API key or null if not configured.
- * Also checks legacy Firecrawl config on User/Organization models.
+ * Also checks the legacy Firecrawl config on the User model (organizations
+ * use only the unified OrganizationSearchProvider rows).
  *
  * TENANT ISOLATION (XOR Pattern):
  * - ORGANIZATION CONTEXT (organizationId provided): Only org configs, NO user fallback
@@ -467,7 +468,7 @@ export async function getSearchProviderConfig({
 	encryptedApiKey: string | null;
 	endpoint: string | null;
 	enabled: boolean;
-	source: "user" | "organization" | "legacy-user" | "legacy-organization";
+	source: "user" | "organization" | "legacy-user";
 } | null> {
 	// XOR PATTERN: Check context-specific configs ONLY
 	// Personal configs NEVER leak into org context and vice versa
@@ -486,24 +487,6 @@ export async function getSearchProviderConfig({
 			};
 		}
 
-		// Check legacy Firecrawl on organization if requesting firecrawl
-		if (providerName === "firecrawl") {
-			const org = await db.organization.findUnique({
-				where: { id: organizationId },
-				select: {
-					firecrawlApiKey: true,
-					firecrawlEnabled: true,
-				},
-			});
-			if (org?.firecrawlApiKey && org.firecrawlEnabled) {
-				return {
-					encryptedApiKey: org.firecrawlApiKey,
-					endpoint: null,
-					enabled: true,
-					source: "legacy-organization",
-				};
-			}
-		}
 		// NO FALLBACK to user config in org context - return null if not found
 		return null;
 	}

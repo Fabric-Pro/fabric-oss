@@ -6,6 +6,7 @@
 import { logger } from "@repo/logs";
 import type { ProviderConfig, SearchProviderMetadata } from "../types";
 import type { BaseSearchProvider } from "./base";
+import { CloudflareBrowserRenderingProvider } from "./cloudflare";
 import { ExaSearchProvider } from "./exa";
 import { FirecrawlSearchProvider } from "./firecrawl";
 import { JinaSearchProvider } from "./jina";
@@ -45,7 +46,27 @@ export const searchProviderRegistry: Record<
 		metadata: new JinaSearchProvider().metadata,
 		create: (apiKey, endpoint) => new JinaSearchProvider(apiKey, endpoint),
 	},
+	cloudflare: {
+		metadata: new CloudflareBrowserRenderingProvider().metadata,
+		create: (apiKey, endpoint) =>
+			new CloudflareBrowserRenderingProvider(apiKey, endpoint),
+	},
 };
+
+/**
+ * Whether a configured provider can serve web search: it is in the registry,
+ * so `createProvider` can build it, and its metadata does not say
+ * `supportsSearch: false` (Cloudflare Browser Rendering only scrapes). A name
+ * outside the registry, such as `youtube`, is not search-capable here.
+ */
+export function isWebSearchCapableProvider(providerName: string): boolean {
+	const registered = Object.hasOwn(searchProviderRegistry, providerName)
+		? searchProviderRegistry[providerName]
+		: undefined;
+	return (
+		registered !== undefined && registered.metadata.supportsSearch !== false
+	);
+}
 
 /**
  * Get list of all available provider names
@@ -137,6 +158,7 @@ export async function getConfiguredProviders(
 
 // Export provider classes
 export { BaseSearchProvider, type ISearchProvider } from "./base";
+export { CloudflareBrowserRenderingProvider } from "./cloudflare";
 export { ExaSearchProvider } from "./exa";
 export { FirecrawlSearchProvider } from "./firecrawl";
 export { JinaSearchProvider } from "./jina";

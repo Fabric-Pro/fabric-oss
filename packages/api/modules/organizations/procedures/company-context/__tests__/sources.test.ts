@@ -948,6 +948,35 @@ describe("adding sources", () => {
 			data: { code: "CRAWL_PROVIDER_NOT_CONFIGURED" },
 		});
 	});
+
+	it("processLink carries a Cloudflare row's account endpoint into the crawl", async () => {
+		const endpoint =
+			"https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef";
+		mocks.getEnabledOrganizationSearchProviders.mockResolvedValue([
+			{
+				providerName: "cloudflare",
+				encryptedApiKey: "encrypted",
+				endpoint,
+				enabled: true,
+				isDefault: true,
+				priority: 0,
+				createdAt: new Date("2026-01-01"),
+			},
+		]);
+
+		await call(
+			processCompanyContextLinkProcedure,
+			{ organizationId: ORG, url: "https://example.com/app" },
+			"u_admin",
+		);
+
+		const options = expectCompanyStart(0, "urlSourceCrawlWorkflow");
+		expect(options.args[0]).toMatchObject({
+			providerName: "cloudflare",
+			providerEndpoint: endpoint,
+			scope: "SINGLE_PAGE",
+		});
+	});
 });
 
 describe("editing a source's type label and AI instructions", () => {

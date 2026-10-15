@@ -5,7 +5,7 @@
  * Covers:
  *   1. XOR tenancy — org context never touches user providers and vice versa.
  *   2. Scrape-capable filter — `parallel` / `youtube` are skipped.
- *   3. Crawl-capable filter — `requireCrawl: true` only picks Firecrawl.
+ *   3. Crawl-capable filter — `requireCrawl: true` only picks Firecrawl or Cloudflare.
  *   4. Ordering — `isDefault: true` first, then priority ASC, then createdAt ASC
  *      (mirrors `getEnabledOrganizationSearchProviders` ordering).
  *   5. Disabled / missing-key rows are skipped.
@@ -37,9 +37,13 @@ vi.mock("@repo/utils", () => ({
 }));
 
 import {
+	createScraperByName,
 	getPreferredScrapeProviderName,
 	getWebScraperForTenant,
 } from "../get-web-scraper";
+
+const CLOUDFLARE_ENDPOINT =
+	"https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef";
 
 interface RowOverrides {
 	providerName: string;
@@ -47,6 +51,7 @@ interface RowOverrides {
 	isDefault?: boolean;
 	priority?: number;
 	encryptedApiKey?: string | null;
+	endpoint?: string | null;
 	createdAt?: Date;
 }
 
@@ -61,6 +66,7 @@ function row(overrides: RowOverrides) {
 		isDefault: overrides.isDefault ?? false,
 		priority: overrides.priority ?? 100,
 		encryptedApiKey: encryptedApiKey ?? null,
+		endpoint: overrides.endpoint ?? null,
 		createdAt: overrides.createdAt ?? new Date("2024-01-01"),
 	};
 }
@@ -146,6 +152,24 @@ describe("getWebScraperForTenant — provider filtering", () => {
 		expect(scraper?.providerName).toBe("firecrawl");
 	});
 
+	it("picks Cloudflare when requireCrawl=true and it is the only crawl-capable provider", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			row({ providerName: "jina", isDefault: true }),
+			row({
+				providerName: "cloudflare",
+				priority: 10,
+				endpoint: CLOUDFLARE_ENDPOINT,
+			}),
+		]);
+
+		const scraper = await getWebScraperForTenant({
+			userId: "user-1",
+			organizationId: "org-1",
+			requireCrawl: true,
+		});
+		expect(scraper?.providerName).toBe("cloudflare");
+	});
+
 	it("returns null when requireCrawl=true and only non-crawl providers exist", async () => {
 		mockGetEnabledOrgProviders.mockResolvedValue([
 			row({ providerName: "jina" }),
@@ -221,5 +245,71 @@ describe("getPreferredScrapeProviderName", () => {
 			requireCrawl: false,
 		});
 		expect(name).toBeNull();
+	});
+});
+
+describe("Cloudflare Browser Rendering rows", () => {
+	it("builds a Cloudflare scraper from a row with a valid account endpoint", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			row({
+				providerName: "cloudflare",
+				isDefault: true,
+				endpoint: CLOUDFLARE_ENDPOINT,
+			}),
+			row({ providerName: "jina", priority: 10 }),
+		]);
+
+		const scraper = await getWebScraperForTenant({
+			userId: "user-1",
+			organizationId: "org-1",
+			requireCrawl: false,
+		});
+		expect(scraper?.providerName).toBe("cloudflare");
+	});
+
+	it("builds no scraper from a Cloudflare row without an endpoint", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			row({ providerName: "cloudflare", isDefault: true }),
+		]);
+
+		const scraper = await getWebScraperForTenant({
+			userId: "user-1",
+			organizationId: "org-1",
+			requireCrawl: false,
+		});
+		expect(scraper).toBeNull();
+	});
+
+	it("is picked for a path-prefix crawl (links are followed by the workflow)", async () => {
+		mockGetEnabledOrgProviders.mockResolvedValue([
+			row({
+				providerName: "cloudflare",
+				isDefault: true,
+				endpoint: CLOUDFLARE_ENDPOINT,
+			}),
+		]);
+
+		const scraper = await getWebScraperForTenant({
+			userId: "user-1",
+			organizationId: "org-1",
+			requireCrawl: true,
+		});
+		expect(scraper?.providerName).toBe("cloudflare");
+	});
+
+	it("createScraperByName needs a valid account endpoint for Cloudflare only", () => {
+		expect(
+			createScraperByName("cloudflare", "token", CLOUDFLARE_ENDPOINT)
+				?.providerName,
+		).toBe("cloudflare");
+		expect(createScraperByName("cloudflare", "token")).toBeNull();
+		expect(
+			createScraperByName(
+				"cloudflare",
+				"token",
+				"https://api.example.com",
+			),
+		).toBeNull();
+		expect(createScraperByName("jina", "token")?.providerName).toBe("jina");
 	});
 });

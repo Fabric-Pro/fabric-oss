@@ -6,6 +6,13 @@
 const GREETING = /\b(?:hey|hi|hay)\b[\s,]*/gi;
 const NEXT_WORD = /^[\s,]*([a-z']+)/i;
 const TRAILING_PUNCTUATION = /^[\s,.:;!?–—-]+/;
+// A name opening the turn as an address also wakes: followed by punctuation
+// ("Fabric, what…", a lone "Fabric."), or with the greeting fused onto it
+// ("Efabric described…", how a quick "Hey Fabric" was transcribed). A turn
+// that merely starts with the product's name ("Fabric is slow") does not.
+const OPENING_WORD = /^[\s"'“]*([a-z']+)/i;
+const ADDRESS_PUNCTUATION = /^[,.:;!?]/;
+const FUSED_GREETING = /^(?:h?e+y?|h?a+y?|hi)(?=[fp])/i;
 const FABRIC = new Set(["fbrk"]);
 const PARLUME = new Set(["prlm", "prlmn"]);
 
@@ -18,7 +25,37 @@ function skeleton(word: string): string {
 		.replace(/(.)\1+/g, "$1");
 }
 
+function isName(word: string): boolean {
+	const name = skeleton(word);
+	return FABRIC.has(name) || PARLUME.has(name);
+}
+
+function parseOpeningAddress(text: string): string | null {
+	const opening = OPENING_WORD.exec(text);
+	if (!opening) {
+		return null;
+	}
+	const fused = FUSED_GREETING.exec(opening[1]);
+	if (!isName(fused ? opening[1].slice(fused[0].length) : opening[1])) {
+		return null;
+	}
+	let consumed = opening[0].length;
+	const second = NEXT_WORD.exec(text.slice(consumed));
+	if (second && PARLUME.has(skeleton(second[1]))) {
+		consumed += second[0].length;
+	}
+	const rest = text.slice(consumed);
+	if (!fused && !ADDRESS_PUNCTUATION.test(rest.trimStart())) {
+		return null;
+	}
+	return rest.replace(TRAILING_PUNCTUATION, "").trim();
+}
+
 export function parseParlumeWake(text: string): string | null {
+	const addressed = parseOpeningAddress(text);
+	if (addressed !== null) {
+		return addressed;
+	}
 	for (const greeting of text.matchAll(GREETING)) {
 		const rest = text.slice(greeting.index + greeting[0].length);
 		const first = NEXT_WORD.exec(rest);

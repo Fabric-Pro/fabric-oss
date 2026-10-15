@@ -313,8 +313,12 @@ export async function getContextRepositorySyncForUpdate(
 	return rows[0] ?? null;
 }
 
-/** Lock 1 by project, for the configuration changes that start from it. */
-async function lockContextRepositorySyncByProject(
+/**
+ * Lock 1 by project, for the configuration changes that start from it —
+ * configure and disable here, and the write-folder changes that must not
+ * interleave with either (`context-write-targets.ts`).
+ */
+export async function lockContextRepositorySyncByProject(
 	tx: Prisma.TransactionClient,
 	scope: { projectId: string; organizationId: string },
 ): Promise<LockedContextRepositorySync | null> {

@@ -25,9 +25,14 @@
  * under the requested path; the workflow handles that by scraping the root
  * URL directly (mirrors `crawlSite`'s zero-URL fallback).
  *
- * Activity name kept Firecrawl-specific because /v1/map is
- * a Firecrawl-only endpoint today; other providers in the `WebScraper`
- * abstraction don't have an equivalent.
+ * The activity name is historical: it was registered when /v1/map was the
+ * only discovery path, and renaming it would break replay of old workflow
+ * histories. Only Firecrawl is listed through a provider endpoint here. This
+ * integration does not use Cloudflare Browser Rendering's own listing
+ * endpoints (`/links`, `/crawl`): for `cloudflare` this returns
+ * `{ urls: [] }` without any network call and the workflow discovers pages
+ * by following in-prefix links from each scraped page. Any other provider is
+ * rejected with a non-retryable failure.
  */
 import { ApplicationFailure } from "@temporalio/activity";
 import { activityLogger } from "../lib/activity-logger";
@@ -37,7 +42,7 @@ import type { WebScraperProviderName } from "../lib/web-scraper";
 export interface FirecrawlMapActivityInput {
 	url: string;
 	apiKey: string;
-	/** Optional — defaults to `firecrawl`. Only firecrawl is supported today. */
+	/** Optional — defaults to `firecrawl`. `firecrawl` maps via /v1/map; `cloudflare` returns no URLs. */
 	providerName?: WebScraperProviderName;
 	includePaths?: string[];
 	excludePaths?: string[];
@@ -88,9 +93,23 @@ export async function firecrawlMapActivity(
 
 	activityLogger.info("URL map activity start", { url, providerName, limit });
 
-	// /v1/map is Firecrawl-specific. If a non-Firecrawl provider is ever
-	// selected for path-prefix, the workflow should pre-validate and refuse
-	// before scheduling this activity — but be defensive here too.
+	// This integration lists no pages for Cloudflare Browser Rendering (it
+	// does not use Cloudflare's /links or /crawl). Return an empty list: the
+	// workflow then scrapes the root URL and its link-following loop queues
+	// same-origin, in-prefix links from each scraped page, capped at
+	// maxPages. The scrape activity reports those links (`discoveredLinks`),
+	// read from the page's markdown with a parser and resolved against the
+	// page URL; the markdown itself is stored as the provider returned it.
+	if (providerName === "cloudflare") {
+		activityLogger.info(
+			"URL map skipped for cloudflare: pages are discovered by following links",
+			{ url, providerName },
+		);
+		return { urls: [] };
+	}
+
+	// /v1/map is Firecrawl-specific. Any other provider selected for
+	// path-prefix is rejected here, defensively.
 	if (providerName !== "firecrawl") {
 		throw ApplicationFailure.nonRetryable(
 			`Provider "${providerName}" does not support URL discovery via /v1/map`,

@@ -96,6 +96,7 @@ import { listContextsProcedure } from "./procedures/contexts/list-contexts";
 import { listContextSummaryHistoryProcedure } from "./procedures/contexts/list-summary-history";
 import { listContextSummarySourcesProcedure } from "./procedures/contexts/list-summary-sources";
 import { listUrlPagesProcedure } from "./procedures/contexts/list-url-pages";
+import { validateMemoryWriteProcedure } from "./procedures/contexts/memory-writes/validate";
 import { processContextFileProcedure } from "./procedures/contexts/process-context-file";
 import { processContextLinkProcedure } from "./procedures/contexts/process-context-link";
 import { configureContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/configure";
@@ -103,6 +104,10 @@ import { disableContextRepositorySyncProcedure } from "./procedures/contexts/rep
 import { getContextRepositorySyncProcedure } from "./procedures/contexts/repository-sync/get";
 import { listContextRepositoryTreeProcedure } from "./procedures/contexts/repository-sync/list-tree";
 import { syncContextRepositoryNowProcedure } from "./procedures/contexts/repository-sync/sync-now";
+import { createContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/create";
+import { deleteContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/delete";
+import { listContextWriteTargetsProcedure } from "./procedures/contexts/repository-sync/write-targets/list";
+import { updateContextWriteTargetProcedure } from "./procedures/contexts/repository-sync/write-targets/update";
 import { resolveContextSummaryReferenceProcedure } from "./procedures/contexts/resolve-summary-reference";
 import { restoreContextSummaryVersionProcedure } from "./procedures/contexts/restore-summary-version";
 import { resyncUrlPageProcedure } from "./procedures/contexts/resync-url-page";
@@ -992,6 +997,19 @@ export const projectsRouter = {
 			configure: configureContextRepositorySyncProcedure,
 			syncNow: syncContextRepositoryNowProcedure,
 			disable: disableContextRepositorySyncProcedure,
+			// Folders of the sync that agents' files are written into
+			// (ADR-022)
+			writeTargets: {
+				list: listContextWriteTargetsProcedure,
+				create: createContextWriteTargetProcedure,
+				update: updateContextWriteTargetProcedure,
+				delete: deleteContextWriteTargetProcedure,
+			},
+		},
+		// Admission for a write into one of those folders (ADR-022); checks
+		// only, nothing is persisted
+		memoryWrites: {
+			validate: validateMemoryWriteProcedure,
 		},
 		// URL Context Sources (spec 2026-05-13-url-context-sources)
 		updateUrlSource: updateUrlSourceProcedure,

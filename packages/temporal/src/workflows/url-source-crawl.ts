@@ -55,6 +55,7 @@ import {
 	contextOwnerTaskQueue,
 	resolveContextOwner,
 } from "../lib/context-owner";
+import { filterInPrefixLinks } from "../lib/in-prefix-links";
 import {
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
@@ -284,6 +285,7 @@ export type UrlSourceProviderName =
 	| "jina"
 	| "tavily"
 	| "exa"
+	| "cloudflare"
 	| "parallel";
 
 export interface UrlSourceCrawlWorkflowInput {
@@ -302,6 +304,12 @@ export interface UrlSourceCrawlWorkflowInput {
 	 * continue to work — the activities default to Firecrawl when absent.
 	 */
 	providerName?: UrlSourceProviderName;
+	/**
+	 * The chosen provider row's stored endpoint, carried to the scrape
+	 * activity. Optional data only: absent for runs started before it existed
+	 * and for providers without one. Cloudflare keeps its account ID here.
+	 */
+	providerEndpoint?: string;
 	urlRefreshMode?: UrlRefreshMode;
 	parentSourceTitle?: string | null;
 	mode?: UrlCrawlMode;
@@ -367,6 +375,10 @@ export function deriveIncludePaths(url: string): string[] {
 	return [trimmed];
 }
 
+// The shared filter lives in a workflow-safe module the scrape activity
+// also imports; re-exported here, where the crawl's other helpers live.
+export { filterInPrefixLinks };
+
 /**
  * Extract URLs from scraped markdown that point at the same origin and
  * sit under the same path prefix as the parent crawl. Used to grow the
@@ -378,29 +390,25 @@ export function deriveIncludePaths(url: string): string[] {
  * same sequence because: same markdown input → same regex matches →
  * same filter outputs → same dedupe order.
  *
- * Normalisation rules:
- *  - Strip URL fragments (`#section`) so multiple anchors in a page don't
- *    each become their own scrape target.
- *  - Match Firecrawl's `/v1/map` output shape: keep query strings (some
- *    docs platforms use them as page selectors) and don't normalise
- *    trailing slashes (the prefix filter already handles both forms).
+ * Kept exactly as it was for histories without the
+ * `url-source-activity-discovered-links-2026-10-14` marker. Newer runs
+ * take a page's links from the scrape activity's `discoveredLinks`
+ * (read with a Markdown parser, relative links resolved) and pass them
+ * through `filterInPrefixLinks` instead.
+ *
+ * Normalisation rules: see `filterInPrefixLinks`.
  *
  * Match shapes:
  *  - Markdown links: `[label](https://…)`
  *  - Bare URLs in the body
- *
- * Filter pipeline per URL: parsable → same-origin as `parentUrl` →
- * pathname matches at least one of `includePaths` (when non-empty;
- * mirrors `matchesPrefix` in firecrawl-client.ts).
  */
 export function extractInPrefixLinks(
 	markdown: string,
 	parentUrl: string,
 	includePaths?: readonly string[],
 ): string[] {
-	let parentOrigin: string;
 	try {
-		parentOrigin = new URL(parentUrl).origin;
+		new URL(parentUrl);
 	} catch {
 		return [];
 	}
@@ -422,37 +430,7 @@ export function extractInPrefixLinks(
 		raw.add(m[0]);
 	}
 
-	const out: string[] = [];
-	const seenNormalised = new Set<string>();
-	for (const candidate of raw) {
-		let u: URL;
-		try {
-			u = new URL(candidate);
-		} catch {
-			continue;
-		}
-		if (u.origin !== parentOrigin) {
-			continue;
-		}
-		u.hash = ""; // strip fragments
-		if (includePaths && includePaths.length > 0) {
-			const ok = includePaths.some(
-				(prefix) =>
-					u.pathname === prefix ||
-					u.pathname.startsWith(`${prefix}/`),
-			);
-			if (!ok) {
-				continue;
-			}
-		}
-		const normalised = u.toString();
-		if (seenNormalised.has(normalised)) {
-			continue;
-		}
-		seenNormalised.add(normalised);
-		out.push(normalised);
-	}
-	return out;
+	return filterInPrefixLinks(raw, parentUrl, includePaths);
 }
 
 /**
@@ -567,6 +545,7 @@ export async function urlSourceCrawlWorkflow(
 		organizationId,
 		apiKey,
 		providerName,
+		providerEndpoint,
 		urlRefreshMode,
 		parentSourceTitle,
 		mode = "initial",
@@ -802,6 +781,9 @@ export async function urlSourceCrawlWorkflow(
 					url: targetUrl,
 					apiKey,
 					...(providerName !== undefined ? { providerName } : {}),
+					...(providerEndpoint !== undefined
+						? { providerEndpoint }
+						: {}),
 				});
 			} catch (scrapeError) {
 				await recordRetryFailure(scrapeError, "fetch");
@@ -867,6 +849,7 @@ export async function urlSourceCrawlWorkflow(
 				url,
 				apiKey,
 				...(providerName !== undefined ? { providerName } : {}),
+				...(providerEndpoint !== undefined ? { providerEndpoint } : {}),
 			});
 
 			// Store markdown directly on the parent row (matches the legacy
@@ -1101,20 +1084,65 @@ export async function urlSourceCrawlWorkflow(
 				"url-source-keep-failed-pages-2026-10-05",
 			);
 
+			// Where the link-following step (below) reads a page's links:
+			// from the scrape activity's `discoveredLinks` — destinations a
+			// Markdown parser found, relative ones resolved against the page,
+			// none from code or link titles — instead of matching absolute
+			// URLs in the markdown. It adds no command, but which links are
+			// followed decides which scrapes are scheduled, so a history
+			// recorded before this deploy must keep the markdown matching
+			// for its whole run. Evaluated once, here, like `followLinks`.
+			// Under it the loop's scrape asks for the links (`discoverLinks`
+			// below); the request is only an input, which replay does not
+			// compare, so it changes no command either.
+			const linksFromActivity = patched(
+				"url-source-activity-discovered-links-2026-10-14",
+			);
+
 			while (queue.length > 0) {
 				const targetUrl = queue.shift() as string;
+				// Ask the activity for this page's links only when the
+				// link-following step below will read them: a result records
+				// what it returns in the history. The activity returns only
+				// links the step would keep (same filter, `filterInPrefixLinks`)
+				// and at most `maxPages` of them. That cap loses nothing the
+				// step could queue: of the first `maxPages` distinct links at
+				// most `seenUrls.size` are already seen, which leaves at least
+				// the `maxPages - seenUrls.size` the step may still add. The
+				// activity also drops over-long links and stops at a byte
+				// budget that keeps its result under Temporal's payload
+				// limit, so a page with very long or very many links can
+				// yield fewer; with no room at all the field is absent and
+				// the step falls back to matching the page's Markdown.
+				const discoverLinks =
+					followLinks && linksFromActivity && seenUrls.size < maxPages
+						? {
+								parentUrl: url,
+								...(includePaths.length > 0
+									? { includePaths }
+									: {}),
+								limit: maxPages,
+							}
+						: undefined;
 				let page: {
 					pageUrl: string;
 					pageTitle: string | null;
 					markdown: string;
 					etag?: string;
 					lastModifiedHeader?: string;
+					discoveredLinks?: string[];
 				};
 				try {
 					page = await firecrawlScrapeForCrawlActivity({
 						url: targetUrl,
 						apiKey,
 						...(providerName !== undefined ? { providerName } : {}),
+						...(providerEndpoint !== undefined
+							? { providerEndpoint }
+							: {}),
+						...(discoverLinks !== undefined
+							? { discoverLinks }
+							: {}),
 					});
 				} catch (scrapeError) {
 					log.warn("[UrlSourceCrawl] per-url scrape failed", {
@@ -1250,12 +1278,26 @@ export async function urlSourceCrawlWorkflow(
 				// sequence — old histories don't have these and would
 				// trip non-determinism on replay. Legacy workflows skip
 				// the block entirely; only fresh ones explore links.
+				//
+				// Under `linksFromActivity` the candidates are the scrape
+				// activity's `discoveredLinks` when the result has them; a
+				// result from a worker without the field (mid-rollout) falls
+				// back to matching the markdown, as older runs always do.
 				if (followLinks && seenUrls.size < maxPages) {
-					const newLinks = extractInPrefixLinks(
-						page.markdown,
-						url,
-						includePaths.length > 0 ? includePaths : undefined,
-					);
+					const prefixFilter =
+						includePaths.length > 0 ? includePaths : undefined;
+					const newLinks =
+						linksFromActivity && Array.isArray(page.discoveredLinks)
+							? filterInPrefixLinks(
+									page.discoveredLinks,
+									url,
+									prefixFilter,
+								)
+							: extractInPrefixLinks(
+									page.markdown,
+									url,
+									prefixFilter,
+								);
 					for (const link of newLinks) {
 						if (seenUrls.size >= maxPages) {
 							break;

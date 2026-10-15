@@ -24,7 +24,9 @@
  *
  * - a row with a stored original (`s3Path`: uploads, and Google Docs, which
  *   are exported to storage) is re-extracted from it, as a retry;
- * - a link is crawled again;
+ * - a link is crawled again, with whichever scraper the tenant has enabled
+ *   now (the same choice `processLink` makes), not necessarily the one it
+ *   was first added with;
  * - anything else that holds its own text is embedded again from the row.
  *
  * A row with none of those has nothing to retry from, and says so.
@@ -35,14 +37,12 @@ import {
 	db,
 	failBackgroundJob,
 	getContextById,
-	getSearchProviderConfig,
 	hasProjectAccess,
 	seedSteps,
 	updateContextExtractionStatus,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -53,6 +53,10 @@ import {
 } from "../../../../orpc/procedures";
 import { STALL_MINUTES_BY_SOURCE } from "../../../capabilities/thresholds";
 import { hasExtractionLifecycle } from "../../lib/extraction-lifecycle";
+import {
+	providerWorkflowArgs,
+	resolveUrlSourceProvider,
+} from "./lib/url-source-provider";
 
 const TASK_QUEUE = "project-documents";
 
@@ -176,11 +180,16 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// The crawl carries the key in its arguments. Read before anything is
-		// written, so a missing key leaves the row exactly as it was.
-		const firecrawlApiKey =
+		// The crawl carries the scraper and its key in its arguments. Resolved
+		// before anything is written, so a missing provider leaves the row
+		// exactly as it was.
+		const crawlProvider =
 			dispatch === "crawl"
-				? await readFirecrawlKey(user.id, organizationId)
+				? await resolveUrlSourceProvider({
+						organizationId,
+						userId: user.id,
+						scope: existing.urlScope ?? "SINGLE_PAGE",
+					})
 				: null;
 
 		// Claim the row: restart its clock and clear the dead run's message, so
@@ -277,7 +286,9 @@ export const retryStalledContextProcedure = tenantProtectedProcedure
 								projectId: input.projectId,
 								userId: user.id,
 								organizationId: organizationId ?? null,
-								apiKey: firecrawlApiKey,
+								...(crawlProvider
+									? providerWorkflowArgs(crawlProvider)
+									: {}),
 								urlRefreshMode:
 									existing.urlRefreshMode ?? undefined,
 								parentSourceTitle: existing.sourceTitle ?? null,
@@ -354,49 +365,5 @@ async function isWorkflowRunning(workflowId: string): Promise<boolean> {
 		return description.status.name === "RUNNING";
 	} catch {
 		return false;
-	}
-}
-
-/** The crawl's Firecrawl key, with the same refusal the add-link dialog shows. */
-async function readFirecrawlKey(
-	userId: string,
-	organizationId: string | undefined,
-): Promise<string> {
-	const config = await getSearchProviderConfig({
-		userId,
-		organizationId,
-		providerName: "firecrawl",
-	});
-	if (!config || !config.enabled || !config.encryptedApiKey) {
-		let orgSlug: string | null = null;
-		if (organizationId) {
-			const org = await db.organization.findUnique({
-				where: { id: organizationId },
-				select: { slug: true },
-			});
-			orgSlug = org?.slug ?? null;
-		}
-		throw new ORPCError("BAD_REQUEST", {
-			message:
-				"URL sources need a Firecrawl API key. Configure it in Settings → Search Providers to retry.",
-			data: {
-				code: "FIRECRAWL_NOT_CONFIGURED",
-				settingsPath: orgSlug
-					? `/app/${orgSlug}/settings/search-providers`
-					: "/app/settings/search-providers",
-			},
-		});
-	}
-	try {
-		return decryptApiKey(config.encryptedApiKey);
-	} catch (error) {
-		logger.error(
-			`[RetryStalledContext] Failed to decrypt Firecrawl key: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-		throw new ORPCError("INTERNAL_SERVER_ERROR", {
-			message: "Failed to read Firecrawl API key",
-		});
 	}
 }

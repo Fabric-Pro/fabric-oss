@@ -1353,6 +1353,10 @@
 						"enabled_providers_changed": "Aktivierte Anbieter eines KI-Anbieters geändert",
 						"deleted": "KI-Anbieter gelöscht"
 					},
+					"integration": {
+						"config_updated": "Persönliche Integrationskonfiguration aktualisiert",
+						"disconnected": "Persönliche Integration getrennt"
+					},
 					"chatgpt_plan": {
 						"connected": "ChatGPT-Plan verbunden",
 						"disconnected": "ChatGPT-Plan getrennt",

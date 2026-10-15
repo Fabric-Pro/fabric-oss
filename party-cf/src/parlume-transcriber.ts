@@ -1,6 +1,6 @@
 // Audio held while the transcription stream (re)connects: five seconds at
-// 24 kHz 16-bit mono. Older audio is dropped rather than replayed late.
-const MAX_PENDING_BYTES = 24_000 * 2 * 5;
+// 16 kHz 16-bit mono. Older audio is dropped rather than replayed late.
+const MAX_PENDING_BYTES = 16_000 * 2 * 5;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000];
 
 /** Times are epoch milliseconds on the provider's audio clock. */

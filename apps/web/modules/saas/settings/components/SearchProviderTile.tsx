@@ -33,6 +33,7 @@ const PROVIDER_SITES: Record<string, string> = {
 	jina: "https://jina.ai",
 	youtube: "https://www.youtube.com",
 	parallel: "https://parallel.ai",
+	cloudflare: "https://www.cloudflare.com",
 };
 
 function siteFor(provider: SearchProviderSummary): string | null {
@@ -72,10 +73,14 @@ export function SearchProviderTile({
 }) {
 	const isConfigured = Boolean(config);
 	const isEnabled = config?.enabled ?? false;
+	// Cloudflare Browser Rendering bills by browser time on the Cloudflare
+	// account, not per search, so neither "Free" nor a per-search price fits.
 	const price =
-		provider.costPerSearch === 0
-			? "Free"
-			: `$${provider.costPerSearch}/search`;
+		provider.name === "cloudflare"
+			? "Billed by Cloudflare"
+			: provider.costPerSearch === 0
+				? "Free"
+				: `$${provider.costPerSearch}/search`;
 
 	return (
 		<div className="app-surface flex items-start gap-3 rounded-xl p-4">

@@ -48,6 +48,7 @@ import {
 } from "../lib/providers";
 import { ActionOnlyProviderCard } from "./ActionOnlyProviderCard";
 import { IntegrationTile, ProviderCard } from "./ProviderCard";
+import { RequestConnectionDialog } from "./RequestConnectionDialog";
 
 type McpRegistryServer = {
 	id: string;
@@ -182,6 +183,7 @@ interface ConnectionsPageContentProps {
 	 * screen share one line.
 	 */
 	toolbarStart?: ReactNode;
+	requestConnectionEnabled?: boolean;
 }
 
 export function ConnectionsPageContent({
@@ -190,6 +192,7 @@ export function ConnectionsPageContent({
 	apiKeysHref,
 	toolbarStart,
 	view = "all",
+	requestConnectionEnabled = false,
 }: ConnectionsPageContentProps) {
 	const { organizationId } = useOrganizationContext();
 	const { data: connections, isLoading, error } = useConnections();
@@ -496,38 +499,43 @@ export function ConnectionsPageContent({
 			{/* Toolbar: what to show on the left, how to add more on the right. */}
 			<div className="flex flex-wrap items-center justify-between gap-3">
 				{toolbarStart ?? <span aria-hidden="true" />}
-				<DropdownMenu>
-					<DropdownMenuTrigger asChild>
-						<Button data-onboarding-target="integrations-add">
-							Add connection
-							<ChevronDown
-								className="ml-1 size-4"
-								aria-hidden="true"
-							/>
-						</Button>
-					</DropdownMenuTrigger>
-					<DropdownMenuContent align="end">
-						<DropdownMenuItem
-							onSelect={() => {
-								searchRef.current?.focus();
-								searchRef.current?.scrollIntoView({
-									block: "center",
-									behavior: "smooth",
-								});
-							}}
-						>
-							Browse integrations
-						</DropdownMenuItem>
-						<DropdownMenuItem asChild>
-							<Link href={`${basePath}?tab=mcp`}>
-								Add MCP server
-							</Link>
-						</DropdownMenuItem>
-						<DropdownMenuItem asChild>
-							<Link href={apiKeysHref}>Create API key</Link>
-						</DropdownMenuItem>
-					</DropdownMenuContent>
-				</DropdownMenu>
+				<div className="flex flex-wrap items-center gap-2">
+					{requestConnectionEnabled ? (
+						<RequestConnectionDialog />
+					) : null}
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button data-onboarding-target="integrations-add">
+								Add connection
+								<ChevronDown
+									className="ml-1 size-4"
+									aria-hidden="true"
+								/>
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							<DropdownMenuItem
+								onSelect={() => {
+									searchRef.current?.focus();
+									searchRef.current?.scrollIntoView({
+										block: "center",
+										behavior: "smooth",
+									});
+								}}
+							>
+								Browse integrations
+							</DropdownMenuItem>
+							<DropdownMenuItem asChild>
+								<Link href={`${basePath}?tab=mcp`}>
+									Add MCP server
+								</Link>
+							</DropdownMenuItem>
+							<DropdownMenuItem asChild>
+								<Link href={apiKeysHref}>Create API key</Link>
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
+				</div>
 			</div>
 
 			{/* Filters: one row. Search grows; the capability and status

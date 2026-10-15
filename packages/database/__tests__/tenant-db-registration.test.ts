@@ -68,6 +68,58 @@ describe("Living Memory repository sync tables are registered on the tenant path
 });
 
 /**
+ * Living Memory write folders (ADR-022). The folder and its receipt carry
+ * `organizationId`, `userId` and `projectId`; unregistered, they fail OPEN on
+ * the tenant path. A write's paths carry none of the three, so they are
+ * parent-scoped: tenancy is the write's, through the `write` relation, and
+ * the RLS policy joins to `project_memory_write`. A user-owned policy there
+ * would compare columns the table does not have.
+ */
+describe("Living Memory write lane tables are registered on the tenant path", () => {
+	it.each(["ProjectContextWriteTarget", "ProjectMemoryWrite"])(
+		"%s is user-owned and project-scoped",
+		(model) => {
+			expect(
+				setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+			).toContain(model);
+			expect(tenantDb).toMatch(new RegExp(`\\b${model}: "projectId",`));
+		},
+	);
+	it.each(["project_context_write_target", "project_memory_write"])(
+		"%s has a user_owned RLS policy",
+		(table) => {
+			expect(rls).toMatch(
+				new RegExp(
+					`\\{\\s*name: "${table}",\\s*policy: "user_owned",?\\s*\\}`,
+				),
+			);
+		},
+	);
+
+	it("ProjectMemoryWriteEntry is parent-scoped through its write, never user-owned", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).not.toContain("ProjectMemoryWriteEntry");
+		expect(tenantDb).not.toMatch(/\bProjectMemoryWriteEntry: "projectId",/);
+		expect(tenantDb).toMatch(
+			/ProjectMemoryWriteEntry: \{\s*relation: "write",\s*projectPath: "write\.projectId",?\s*\}/,
+		);
+		expect(rls).toMatch(
+			/\{\s*name: "project_memory_write_entry",\s*policy: "memory_write_parent",?\s*\}/,
+		);
+	});
+
+	it("the entry model has no tenant columns for a user-owned policy to compare", () => {
+		const body = schema.slice(
+			schema.indexOf("model ProjectMemoryWriteEntry {"),
+		);
+		const model = body.slice(0, body.indexOf("\n}"));
+
+		expect(model).not.toMatch(/^\s*(organizationId|userId|projectId)\s/m);
+	});
+});
+
+/**
  * #2340. The suite above matches a bare substring anywhere in tenant-db.ts,
  * which cannot tell one registration set from another — a model listed in the
  * wrong set would still pass it. These cases slice the actual set literals, so

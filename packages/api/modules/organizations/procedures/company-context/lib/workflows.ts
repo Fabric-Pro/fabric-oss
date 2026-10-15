@@ -16,7 +16,6 @@
 import { ORPCError } from "@orpc/server";
 import {
 	claimCompanyLinkSourceCrawl,
-	getEnabledOrganizationSearchProviders,
 	releaseCompanyContextSourceClaim,
 	updateCompanyLinkSourceCrawlState,
 } from "@repo/database";
@@ -32,16 +31,12 @@ import {
 	ScheduleAlreadyRunning,
 	ScheduleNotFoundError,
 } from "@repo/temporal";
-import { decryptApiKey } from "@repo/utils";
 import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
 import {
-	buildSearchProvidersSettingsPath,
-	DEFAULT_MAX_PAGES,
-	type ProviderNotConfiguredData,
-	pickEnabledProvider,
-	resolveOrgSlug,
-	type UrlSourceProviderName,
-} from "../../../../projects/procedures/contexts/process-context-link";
+	resolveUrlSourceProvider,
+	type UrlSourceProvider,
+} from "../../../../projects/procedures/contexts/lib/url-source-provider";
+import { DEFAULT_MAX_PAGES } from "../../../../projects/procedures/contexts/process-context-link";
 import {
 	isWorkflowAlreadyStartedError,
 	isWorkflowNotFoundError,
@@ -227,66 +222,27 @@ export async function startCompanyContextDeletion(params: {
 // Website crawls
 // ============================================================================
 
-/** The scraper a crawl runs with, and its decrypted key. */
-export interface CompanyCrawlProvider {
-	providerName: UrlSourceProviderName;
-	apiKey: string;
-}
+/** The scraper a crawl runs with, its decrypted key and its stored endpoint. */
+export type CompanyCrawlProvider = UrlSourceProvider;
 
 /**
- * The organization's scraper for a crawl of `scope`, chosen exactly as a
- * project's `processLink` chooses one, with the same BAD_REQUEST codes when
- * none is configured: any scrape-capable provider for a single page, a
- * crawl-capable one for a path prefix. Company context is organization-owned,
- * so only the organization's providers count.
+ * The organization's scraper for a crawl of `scope`, chosen by the same
+ * resolver a project's `processLink` and its follow-ups use, with the same
+ * BAD_REQUEST codes when none is configured: any scrape-capable provider for a
+ * single page, a crawl-capable one for a path prefix. Company context is
+ * organization-owned, so only the organization's providers count: the resolver
+ * is given no user.
  */
-export async function resolveCompanyCrawlProvider(
+export function resolveCompanyCrawlProvider(
 	organizationId: string,
 	scope: "SINGLE_PAGE" | "PATH_PREFIX",
 ): Promise<CompanyCrawlProvider> {
-	const providers =
-		await getEnabledOrganizationSearchProviders(organizationId);
-
-	const notConfigured = async (
-		code: ProviderNotConfiguredData["code"],
-		message: string,
-	): Promise<never> => {
-		const data: ProviderNotConfiguredData = {
-			code,
-			settingsPath: buildSearchProvidersSettingsPath(
-				await resolveOrgSlug(organizationId),
-			),
-		};
-		throw new ORPCError("BAD_REQUEST", { message, data });
-	};
-
-	if (!pickEnabledProvider(providers, false)) {
-		return notConfigured(
-			"SCRAPE_PROVIDER_NOT_CONFIGURED",
-			"Website sources need a search provider with scraping (Firecrawl, Jina, Tavily, or Exa). Configure one in Settings → Search Providers.",
-		);
-	}
-	const chosen = pickEnabledProvider(providers, scope === "PATH_PREFIX");
-	if (!chosen?.encryptedApiKey) {
-		return notConfigured(
-			"CRAWL_PROVIDER_NOT_CONFIGURED",
-			"Path-prefix crawls currently require Firecrawl. Configure Firecrawl in Settings → Search Providers, or pick Single page.",
-		);
-	}
-
-	const providerName = chosen.providerName as UrlSourceProviderName;
-	try {
-		return { providerName, apiKey: decryptApiKey(chosen.encryptedApiKey) };
-	} catch (error) {
-		logger.error(
-			`[CompanyContext] Failed to decrypt the ${providerName} API key: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-		throw new ORPCError("INTERNAL_SERVER_ERROR", {
-			message: `Failed to read ${providerName} API key`,
-		});
-	}
+	return resolveUrlSourceProvider({
+		organizationId,
+		userId: null,
+		scope,
+		sourceNoun: "Website sources",
+	});
 }
 
 /** Why a crawl runs, as `urlSourceCrawlWorkflow` names it. */
@@ -347,6 +303,9 @@ export async function startCompanyUrlCrawl(params: {
 						organizationId,
 						apiKey: provider.apiKey,
 						providerName: provider.providerName,
+						...(provider.providerEndpoint
+							? { providerEndpoint: provider.providerEndpoint }
+							: {}),
 						urlRefreshMode: source.urlRefreshMode ?? undefined,
 						parentSourceTitle: source.sourceTitle ?? null,
 						mode,
@@ -495,6 +454,9 @@ export async function scheduleCompanyUrlRefresh(params: {
 				organizationId,
 				apiKey: provider.apiKey,
 				providerName: provider.providerName,
+				...(provider.providerEndpoint
+					? { providerEndpoint: provider.providerEndpoint }
+					: {}),
 				refreshMode: source.urlRefreshMode,
 				parentSourceTitle: source.sourceTitle ?? null,
 				owner: companyOwner(organizationId),

@@ -31,6 +31,7 @@ type Bridge = {
 	onConnect(conn: unknown, ctx: { request: { url: string } }): Promise<void>;
 	onMessage(conn: unknown, message: string | ArrayBuffer): Promise<void>;
 	onRequest(request: Request): Promise<Response>;
+	onClose(conn: unknown, code?: number, reason?: string): Promise<void>;
 };
 
 function meeting() {
@@ -89,9 +90,9 @@ function meeting() {
 			},
 		},
 	);
-	const frames: number[] = [];
+	const frames: Uint8Array[] = [];
 	const bot = {
-		send: (frame: Uint8Array) => frames.push(frame.byteLength),
+		send: (frame: Uint8Array) => frames.push(frame),
 		close: () => {},
 	};
 	return { bridge, bot, flux, frames, requests, transcription };
@@ -180,9 +181,14 @@ test("a reply is played on the same socket the bot streams from", async () => {
 	});
 	await bridge.onMessage(
 		bot,
-		JSON.stringify({ bot_id: "bot-1", sample_rate: 24_000, start_time: 1 }),
+		JSON.stringify({ bot_id: "bot-1", sample_rate: 16_000, start_time: 1 }),
 	);
 
+	// The bridge's outlet timers are unreferenced; this keeps the loop alive
+	// while the reply plays out in real time.
+	const keepAlive = setInterval(() => {}, 1_000);
+	// 80 ms of 24 kHz speech at a steady non-zero level.
+	const speech = new Uint8Array(new Int16Array(1_920).fill(1_000).buffer);
 	const response = await bridge.onRequest(
 		new Request(
 			"https://bridge.example.com/parties/parlume/session-1?action=speak",
@@ -193,14 +199,20 @@ test("a reply is played on the same socket the bot streams from", async () => {
 					"content-type": "audio/pcm",
 					"x-parlume-voice-generation": "0",
 				},
-				body: new Uint8Array(3_840),
+				body: speech,
 			},
 		),
 	);
+	clearInterval(keepAlive);
 
 	assert.equal(response.status, 200);
 	const result = await response.json();
 	assert.equal(result.played, true);
 	assert.equal(result.interrupted, false);
-	assert.deepEqual(frames, [1_920, 1_920]);
+	// The bot gets the reply, and only the reply, as four 20 ms frames at its
+	// 16 kHz rate.
+	assert.equal(frames.length, 4);
+	assert.ok(frames.every((frame) => frame.byteLength === 640));
+	assert.ok(frames.every((frame) => frame.some((byte) => byte !== 0)));
+	await bridge.onClose(bot, 1000, "done");
 });

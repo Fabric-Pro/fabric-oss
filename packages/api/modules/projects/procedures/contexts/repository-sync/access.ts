@@ -10,7 +10,10 @@
  * `organizationId`, nor the session's active one, which for a member of
  * several organizations need not be the project's — and whether the caller
  * could configure (for `get`, which shows integrations only to them). It
- * refuses on the gate's own terms, so the two can never disagree.
+ * refuses on the gate's own terms, so the two can never disagree. The write
+ * folders (ADR-022) take one more fact from the same resolution: whether the
+ * caller may turn on direct push (`PROJECT_SETTINGS_EDIT`, project admin and
+ * up).
  *
  * A personal project (`organizationId: null`) is FORBIDDEN: the sync is
  * organization-scoped (its rows require an organization), and the null arm
@@ -25,7 +28,11 @@ export async function resolveContextSyncAccess(
 	projectId: string,
 	userId: string,
 	required: Permission,
-): Promise<{ organizationId: string; canConfigure: boolean }> {
+): Promise<{
+	organizationId: string;
+	canConfigure: boolean;
+	canEnableDirectPush: boolean;
+}> {
 	const access = await resolveEffectiveProjectPermissions(projectId, userId);
 	if (!access) {
 		throw new ORPCError("NOT_FOUND", {
@@ -48,5 +55,6 @@ export async function resolveContextSyncAccess(
 	return {
 		organizationId: access.organizationId,
 		canConfigure: holds(Permissions.CONTEXT_CREATE),
+		canEnableDirectPush: holds(Permissions.PROJECT_SETTINGS_EDIT),
 	};
 }

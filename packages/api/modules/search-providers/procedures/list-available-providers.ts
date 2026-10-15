@@ -108,5 +108,18 @@ export const listAvailableProviders = publicProcedure
 				supportedCategories: ["general", "news"],
 				costPerSearch: 0.001,
 			},
+			{
+				name: "cloudflare",
+				displayName: "Cloudflare Browser Rendering",
+				description:
+					"Renders pages in a headless browser and returns them as Markdown, so JavaScript-heavy pages scrape fully. Used for single-page URL sources; it does not search the web.",
+				docsUrl:
+					"https://developers.cloudflare.com/browser-rendering/rest-api/markdown-endpoint/",
+				requiresApiKey: true,
+				supportsContentRetrieval: true,
+				supportsImageSearch: false,
+				supportedCategories: [],
+				costPerSearch: 0,
+			},
 		];
 	});

@@ -116,7 +116,9 @@ function renderWithClient(
  * ordering claim a stubbed child cannot make — that this component puts the
  * toolbar above its provider grid — is pinned against real markup.
  */
-function renderPageWithToolbar() {
+function renderPageWithToolbar(
+	props: { requestConnectionEnabled?: boolean } = {},
+) {
 	mockUseOrganizationContext.mockReturnValue({ organizationId: null });
 	mockUseMonitoringFeatureFlag.mockReturnValue(false);
 	mockUseProviderHealth.mockReturnValue({
@@ -138,6 +140,7 @@ function renderPageWithToolbar() {
 			settingsBasePath="/app/settings/integrations"
 			apiKeysHref="/app/example-org/settings/api-keys"
 			toolbarStart={<div data-testid="toolbar-slot" />}
+			{...props}
 		/>,
 	);
 }
@@ -858,5 +861,21 @@ describe("ConnectionsPageContent — hidden integrations", () => {
 			await screen.findByRole("link", { name: /Snowflake/i }),
 		).toBeInTheDocument();
 		expect(screen.getByText("Data Warehouses")).toBeInTheDocument();
+	});
+});
+
+describe("ConnectionsPageContent — request connection", () => {
+	it("does not render the Request connection button by default", () => {
+		renderPageWithToolbar();
+		expect(
+			screen.queryByRole("button", { name: /request connection/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders the Request connection button when requestConnectionEnabled is true", () => {
+		renderPageWithToolbar({ requestConnectionEnabled: true });
+		expect(
+			screen.getByRole("button", { name: /request connection/i }),
+		).toBeInTheDocument();
 	});
 });

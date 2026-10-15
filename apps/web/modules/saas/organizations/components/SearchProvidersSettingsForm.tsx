@@ -1,5 +1,10 @@
 "use client";
 
+import {
+	cloudflareAccountEndpoint,
+	isCloudflareAccountId,
+	parseCloudflareAccountId,
+} from "@repo/utils/cloudflare-browser-rendering";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { SearchProviderTile } from "@saas/settings/components/SearchProviderTile";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
@@ -59,6 +64,9 @@ export function SearchProvidersSettingsForm({
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [apiKey, setApiKey] = useState("");
 	const [endpoint, setEndpoint] = useState("");
+	// Cloudflare Browser Rendering stores its account ID as the endpoint; the
+	// dialog asks for the ID and composes the endpoint from it.
+	const [accountId, setAccountId] = useState("");
 	const [enabled, setEnabled] = useState(true);
 	const [isDefault, setIsDefault] = useState(false);
 	const [isTesting, setIsTesting] = useState(false);
@@ -118,6 +126,7 @@ export function SearchProvidersSettingsForm({
 			setSelectedProvider(null);
 			setApiKey("");
 			setEndpoint("");
+			setAccountId("");
 		},
 		onError: (error) => {
 			toast.error("Failed to save provider configuration", {
@@ -157,8 +166,23 @@ export function SearchProvidersSettingsForm({
 		},
 	});
 
+	const isCloudflare = selectedProvider?.name === "cloudflare";
+	const normalizedAccountId = accountId.trim().toLowerCase();
+	const accountIdValid = isCloudflareAccountId(normalizedAccountId);
+	const showAccountIdError =
+		isCloudflare && accountId !== "" && !accountIdValid;
+
+	// The endpoint sent on test and save: composed from the account ID for
+	// Cloudflare (null until the ID is valid), the custom endpoint otherwise.
+	const effectiveEndpoint = isCloudflare
+		? accountIdValid
+			? cloudflareAccountEndpoint(normalizedAccountId)
+			: null
+		: endpoint || null;
+	const endpointReady = !isCloudflare || accountIdValid;
+
 	const handleTestConnection = async () => {
-		if (!selectedProvider || !apiKey) {
+		if (!selectedProvider || !apiKey || !endpointReady) {
 			return;
 		}
 
@@ -167,7 +191,7 @@ export function SearchProvidersSettingsForm({
 			await testConnectionMutation.mutateAsync({
 				providerName: selectedProvider.name,
 				apiKey,
-				endpoint: endpoint || undefined,
+				endpoint: effectiveEndpoint ?? undefined,
 			});
 		} finally {
 			setIsTesting(false);
@@ -175,14 +199,14 @@ export function SearchProvidersSettingsForm({
 	};
 
 	const handleSave = () => {
-		if (!selectedProvider) {
+		if (!selectedProvider || !endpointReady) {
 			return;
 		}
 
 		updateMutation.mutate({
 			providerName: selectedProvider.name,
 			apiKey: apiKey || undefined,
-			endpoint: endpoint || null,
+			endpoint: effectiveEndpoint,
 			enabled,
 			isDefault,
 		});
@@ -195,6 +219,11 @@ export function SearchProvidersSettingsForm({
 		);
 		setApiKey("");
 		setEndpoint(existingConfig?.endpoint || "");
+		setAccountId(
+			provider.name === "cloudflare"
+				? (parseCloudflareAccountId(existingConfig?.endpoint) ?? "")
+				: "",
+		);
 		setEnabled(existingConfig?.enabled ?? false);
 		setIsDefault(existingConfig?.isDefault ?? false);
 	};
@@ -208,6 +237,9 @@ export function SearchProvidersSettingsForm({
 	const getProviderCategory = (provider: Provider): string => {
 		if (provider.name === "youtube") {
 			return "Video Search";
+		}
+		if (provider.name === "cloudflare") {
+			return "Web Scraping";
 		}
 		if (provider.supportedCategories.includes("academic")) {
 			return "Academic Search";
@@ -345,19 +377,38 @@ export function SearchProvidersSettingsForm({
 					<div className="space-y-4">
 						{/* API Key Input */}
 						<div className="space-y-2">
-							<Label htmlFor="apiKey">API Key</Label>
+							<Label htmlFor="apiKey">
+								{isCloudflare ? "API token" : "API Key"}
+							</Label>
 							<div className="relative">
 								<Input
 									id="apiKey"
 									type={showApiKey ? "text" : "password"}
 									value={apiKey}
 									onChange={(e) => setApiKey(e.target.value)}
-									placeholder="Enter API key"
+									placeholder={
+										isCloudflare
+											? "Enter API token"
+											: "Enter API key"
+									}
+									autoComplete="off"
+									aria-describedby={
+										isCloudflare ||
+										selectedProvider?.docsUrl
+											? "apiKey-help"
+											: undefined
+									}
 									className="pr-10"
 								/>
 								<button
 									type="button"
 									onClick={() => setShowApiKey(!showApiKey)}
+									aria-label={
+										showApiKey
+											? "Hide the key"
+											: "Show the key"
+									}
+									aria-pressed={showApiKey}
 									className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground hover:text-foreground"
 								>
 									{showApiKey ? (
@@ -367,44 +418,117 @@ export function SearchProvidersSettingsForm({
 									)}
 								</button>
 							</div>
-							{selectedProvider?.docsUrl && (
-								<p className="text-muted-foreground text-xs">
-									Get your API key from{" "}
+							{isCloudflare ? (
+								<p
+									id="apiKey-help"
+									className="text-muted-foreground text-xs"
+								>
+									Create a Cloudflare API token with the
+									Browser Rendering - Edit permission (named
+									Browser Run - Edit in newer dashboards).{" "}
 									<a
-										href={selectedProvider.docsUrl}
+										href="https://developers.cloudflare.com/fundamentals/api/get-started/create-token/"
 										target="_blank"
 										rel="noopener noreferrer"
 										className="text-primary hover:underline"
 									>
-										{selectedProvider.displayName} Console
+										How to create a token
 									</a>
 								</p>
+							) : (
+								selectedProvider?.docsUrl && (
+									<p
+										id="apiKey-help"
+										className="text-muted-foreground text-xs"
+									>
+										Get your API key from{" "}
+										<a
+											href={selectedProvider.docsUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+											className="text-primary hover:underline"
+										>
+											{selectedProvider.displayName}{" "}
+											Console
+										</a>
+									</p>
+								)
 							)}
 						</div>
 
-						{/* Endpoint Input (for custom endpoints) */}
-						<div className="space-y-2">
-							<Label htmlFor="endpoint">
-								Custom Endpoint (Optional)
-							</Label>
-							<Input
-								id="endpoint"
-								type="url"
-								value={endpoint}
-								onChange={(e) => setEndpoint(e.target.value)}
-								placeholder="https://api.example.com"
-							/>
-							<p className="text-muted-foreground text-xs">
-								Leave empty to use the default endpoint
-							</p>
-						</div>
+						{isCloudflare ? (
+							/* Account ID (stored as the account-scoped endpoint) */
+							<div className="space-y-2">
+								<Label htmlFor="cloudflareAccountId">
+									Account ID
+								</Label>
+								<Input
+									id="cloudflareAccountId"
+									type="text"
+									value={accountId}
+									onChange={(e) =>
+										setAccountId(e.target.value)
+									}
+									placeholder="32-character account ID"
+									autoComplete="off"
+									spellCheck={false}
+									required
+									aria-invalid={showAccountIdError}
+									aria-describedby={
+										showAccountIdError
+											? "cloudflareAccountId-help cloudflareAccountId-error"
+											: "cloudflareAccountId-help"
+									}
+								/>
+								<p
+									id="cloudflareAccountId-help"
+									className="text-muted-foreground text-xs"
+								>
+									Shown on your Cloudflare dashboard's account
+									overview.
+								</p>
+								{showAccountIdError && (
+									<p
+										id="cloudflareAccountId-error"
+										role="alert"
+										className="text-destructive text-xs"
+									>
+										An account ID is 32 characters, using
+										only 0-9 and a-f.
+									</p>
+								)}
+							</div>
+						) : (
+							/* Endpoint Input (for custom endpoints) */
+							<div className="space-y-2">
+								<Label htmlFor="endpoint">
+									Custom Endpoint (Optional)
+								</Label>
+								<Input
+									id="endpoint"
+									type="url"
+									value={endpoint}
+									onChange={(e) =>
+										setEndpoint(e.target.value)
+									}
+									placeholder="https://api.example.com"
+									aria-describedby="endpoint-help"
+								/>
+								<p
+									id="endpoint-help"
+									className="text-muted-foreground text-xs"
+								>
+									Leave empty to use the default endpoint
+								</p>
+							</div>
+						)}
 
 						{/* Test Connection Button */}
 						<Button
 							variant="outline"
 							className="w-full"
 							onClick={handleTestConnection}
-							disabled={!apiKey || isTesting}
+							disabled={!apiKey || !endpointReady || isTesting}
 						>
 							{isTesting ? (
 								<>
@@ -433,7 +557,9 @@ export function SearchProvidersSettingsForm({
 									Set as Default
 								</Label>
 								<p className="text-muted-foreground text-xs">
-									Use this provider for all search operations
+									{isCloudflare
+										? "Prefer this provider when scraping URL sources. Web search keeps using your other providers."
+										: "Use this provider for all search operations"}
 								</p>
 							</div>
 							<Switch
@@ -453,7 +579,11 @@ export function SearchProvidersSettingsForm({
 						</Button>
 						<Button
 							onClick={handleSave}
-							disabled={updateMutation.isPending || !apiKey}
+							disabled={
+								updateMutation.isPending ||
+								!apiKey ||
+								!endpointReady
+							}
 						>
 							{updateMutation.isPending ? (
 								<>

@@ -20,6 +20,11 @@
  *   - body mentions "robots" / "disallow" → ROBOTS_BLOCKED
  *   - anything else → UNKNOWN
  */
+import {
+	guardDispatch,
+	rethrowIfDispatchStopped,
+	throwIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import type {
 	WebScrapeError,
 	WebScrapeOptions,
@@ -101,6 +106,14 @@ export function createJinaScraper(apiKey: string): WebScraper {
 
 			let response: Response;
 			try {
+				// Inside a dispatch guard (an Advisor chat turn) a stopped
+				// guard refuses before the request, and the request carries
+				// the guard's abort signal beside the timeout's. Outside a
+				// guard this returns the timeout's signal unchanged.
+				const signal = await guardDispatch(controller.signal);
+				// Awaiting the guard is itself an await: the latched stops
+				// are checked again in the same run as the send.
+				throwIfDispatchStopped();
 				// The Reader API URL is built by appending the *encoded* target
 				// URL as a path segment. Encoding the colons/slashes here would
 				// double-encode — pass the literal URL string, as the docs do.
@@ -110,10 +123,13 @@ export function createJinaScraper(apiKey: string): WebScraper {
 						Authorization: `Bearer ${apiKey}`,
 						Accept: "application/json",
 					},
-					signal: controller.signal,
+					signal,
 				});
 			} catch (error) {
 				clearTimeout(timeoutHandle);
+				// A stop leaves as an error: a { success: false } result
+				// would be taken for a failed scrape.
+				rethrowIfDispatchStopped(error);
 				const aborted =
 					error instanceof Error &&
 					(error.name === "AbortError" ||
@@ -140,7 +156,11 @@ export function createJinaScraper(apiKey: string): WebScraper {
 			}
 
 			const statusCode = response.status;
-			const rawText = await response.text().catch(() => "");
+			const rawText = await response.text().catch((error: unknown) => {
+				// The guard's signal also aborts the body read.
+				rethrowIfDispatchStopped(error);
+				return "";
+			});
 
 			if (!response.ok) {
 				return {
