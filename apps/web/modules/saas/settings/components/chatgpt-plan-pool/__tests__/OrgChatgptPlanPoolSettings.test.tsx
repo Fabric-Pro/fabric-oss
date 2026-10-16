@@ -409,8 +409,10 @@ describe("Shared ChatGPT plans settings", () => {
 			name: "Each member may use — Shared plan 1",
 		});
 		expect(share).toHaveTextContent("25%");
+		// Fizzy #3049: what 100% means, that the share is measured against an
+		// estimate, and where the work goes past it.
 		expect(advanced).toHaveTextContent(
-			"The most of this account's 5-hour window one member's work can take. Past it, their work moves to the organization's other shared accounts.",
+			"100% (the default) means no per-member limit. The share is measured against Fabric's own estimate of the 5-hour window, because OpenAI doesn't report remaining usage, so it is approximate. Past it, that member's work moves to the organization's other shared accounts.",
 		);
 
 		// No cap is all of the window: 100% stores null.
@@ -478,6 +480,32 @@ describe("Shared ChatGPT plans settings", () => {
 		});
 		act(() => trigger.focus());
 		expect((await screen.findAllByText(text)).length).toBeGreaterThan(0);
+	});
+
+	// Fizzy #3049: the fair-share setting carries the same info mark as its
+	// neighbours, reachable by keyboard once Advanced is open.
+	it("explains the member share in a tooltip a keyboard reaches", async () => {
+		poolWith({
+			accounts: [{ ...ACCOUNT, serveInteractive: true }],
+		});
+		renderSettings();
+		const advanced = await screen.findByTestId(
+			"chatgpt-plan-pool-acc-1-advanced",
+		);
+		await userEvent.click(
+			within(advanced).getByRole("button", { name: copy.advanced }),
+		);
+		const trigger = await screen.findByRole("button", {
+			name: "About Each member may use",
+		});
+		act(() => trigger.focus());
+		expect(
+			(
+				await screen.findAllByText(
+					"Caps how much of this account's 5-hour window one member's own work can use, so one person can't spend it for everyone else.",
+				)
+			).length,
+		).toBeGreaterThan(0);
 	});
 
 	it("offers no fair share on a paused account", async () => {

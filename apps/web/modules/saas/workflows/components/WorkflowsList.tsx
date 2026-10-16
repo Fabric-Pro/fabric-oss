@@ -7,7 +7,14 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { SearchInput } from "@ui/components/search-input";
 import { cn } from "@ui/lib";
-import { GridIcon, ListIcon, PlusIcon, SearchIcon } from "lucide-react";
+import {
+	ClockIcon,
+	GridIcon,
+	ListIcon,
+	PlusIcon,
+	SearchIcon,
+} from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -19,10 +26,12 @@ type ViewMode = "grid" | "list";
 
 export function WorkflowsList() {
 	const router = useRouter();
+	const t = useTranslations("workflows.list");
 	const { organizationId, basePath } = useOrganizationContext();
 	const [searchQuery, setSearchQuery] = useState("");
 	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
 	const [statusFilter, setStatusFilter] = useState<string>("all");
+	const [scheduledOnly, setScheduledOnly] = useState(false);
 	const [viewMode, setViewMode] = useState<ViewMode>("grid");
 
 	const workflowsBasePath = `${basePath}/workflows`;
@@ -55,6 +64,7 @@ export function WorkflowsList() {
 				limit: 50,
 				offset: 0,
 				search: debouncedSearch || undefined,
+				triggerType: scheduledOnly ? "SCHEDULE" : undefined,
 				status:
 					statusFilter === "all"
 						? undefined
@@ -76,6 +86,9 @@ export function WorkflowsList() {
 	const pausedCount = workflows.filter((w) => w.status === "PAUSED").length;
 	const archivedCount = workflows.filter(
 		(w) => w.status === "ARCHIVED",
+	).length;
+	const scheduledCount = workflows.filter(
+		(w) => w.triggerType === "SCHEDULE",
 	).length;
 
 	return (
@@ -148,6 +161,20 @@ export function WorkflowsList() {
 				>
 					Archived ({archivedCount})
 				</button>
+				<button
+					type="button"
+					aria-pressed={scheduledOnly}
+					onClick={() => setScheduledOnly((current) => !current)}
+					className={cn(
+						"flex items-center gap-1.5 rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+						scheduledOnly
+							? "border border-border bg-accent text-foreground"
+							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+					)}
+				>
+					<ClockIcon className="h-3.5 w-3.5" aria-hidden="true" />
+					{t("scheduled")} ({scheduledCount})
+				</button>
 			</div>
 
 			{/* Actions Bar */}
@@ -206,16 +233,18 @@ export function WorkflowsList() {
 			) : workflows.length === 0 ? (
 				<div className="text-center py-12">
 					<p className="text-muted-foreground mb-4">
-						{searchQuery || statusFilter !== "all"
+						{searchQuery || statusFilter !== "all" || scheduledOnly
 							? "No workflows found matching your filters"
 							: "No workflows yet. Create your first workflow to get started!"}
 					</p>
-					{!searchQuery && statusFilter === "all" && (
-						<Button onClick={handleCreateWorkflow}>
-							<PlusIcon className="h-4 w-4 mr-2" />
-							Create Your First Workflow
-						</Button>
-					)}
+					{!searchQuery &&
+						statusFilter === "all" &&
+						!scheduledOnly && (
+							<Button onClick={handleCreateWorkflow}>
+								<PlusIcon className="h-4 w-4 mr-2" />
+								Create Your First Workflow
+							</Button>
+						)}
 				</div>
 			) : (
 				<div

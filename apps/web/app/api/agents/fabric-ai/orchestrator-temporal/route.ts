@@ -19,6 +19,7 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import {
 	abandonConversationTurnStart,
@@ -465,6 +466,13 @@ export async function POST(request: NextRequest) {
 			// is unconditional; the completion-phase activity guards on
 			// `conversationId === undefined` to no-op.
 			conversationId: conversationId ?? undefined,
+			// Fabric MCP only lets the agent runtime act for a person whose turn
+			// this route vouched for; the workflow only carries the grant.
+			actingGrant: mintActingGrantForTurn({
+				userId,
+				organizationId,
+				conversationId,
+			}),
 		};
 
 		if (!turn) {

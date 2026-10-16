@@ -286,11 +286,12 @@ async function doRefresh(
 	let spentBinding = binding;
 
 	// Cross-process rotation race: another replica may have rotated the
-	// refresh token while this request was in flight. Retry ONCE with the
-	// reloaded token — but only when the reload shows the SAME grant (same
-	// generation and binding). The retry reuses this snapshot's endpoint,
-	// client and secret; anything else means the credentials changed and this
-	// refresh stops.
+	// refresh token while this request was in flight. When the reload shows
+	// the SAME grant (same generation and binding) with a rotated token, use
+	// the access token the winner stored; only when that is missing or expired,
+	// retry ONCE with the rotated token. The retry reuses this snapshot's
+	// endpoint, client and secret; anything else means the credentials changed
+	// and this refresh stops.
 	const looksLikeRotationRace =
 		!result.ok &&
 		(isPermanentGrantFailure(result.errorCode) ||
@@ -324,6 +325,35 @@ async function doRefresh(
 			reloaded.encryptedOauthClientSecret ===
 				snapshot.encryptedOauthClientSecret
 		) {
+			// The winning refresh stored a fresh access token beside the
+			// rotated refresh token. Use it: spending the winner's refresh token
+			// again costs a rotation, and a provider that detects refresh-token
+			// reuse may revoke the whole grant family.
+			const expiresAt = reloaded.tokenExpiresAt;
+			if (
+				reloaded.encryptedAccessToken &&
+				!reloaded.needsReauth &&
+				(!expiresAt || expiresAt.getTime() > Date.now())
+			) {
+				console.log(
+					"[MCP OAuth] invalid_grant after a parallel refresh rotated the token; using the access token it stored",
+					{ configId },
+				);
+				return {
+					status: "refreshed",
+					accessToken: decryptApiKey(reloaded.encryptedAccessToken),
+					refreshToken: reloadedRefreshToken,
+					encryptedRefreshToken: reloaded.encryptedRefreshToken,
+					expiresIn: expiresAt
+						? Math.floor((expiresAt.getTime() - Date.now()) / 1000)
+						: null,
+					tokenExpiresAt: expiresAt,
+					tokenType: "Bearer",
+					scope: null,
+					generation,
+					binding: reloadedBinding,
+				};
+			}
 			console.log(
 				"[MCP OAuth] invalid_grant after a parallel refresh rotated the token; retrying once with the rotated token",
 				{ configId },

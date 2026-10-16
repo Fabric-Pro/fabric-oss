@@ -700,6 +700,16 @@ describe("the handshake", () => {
 		expect(instructions).toContain("## Bootstrap a project");
 	});
 
+	it("names the Living Memory write tools and stays within the 4,096 character budget", async () => {
+		for (const client of ["claude-code", "codex", "unknown-client"]) {
+			const instructions = await instructionsAt(PROJECT_ONE, client);
+
+			expect(instructions).toContain("fabric_memory_targets");
+			expect(instructions).toContain("fabric_memory_write");
+			expect(instructions.length, client).toBeLessThan(4096);
+		}
+	});
+
 	it("carries the project in the setup offer's init line", async () => {
 		const instructions = await instructionsAt(PROJECT_ONE);
 

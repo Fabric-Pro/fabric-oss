@@ -2,6 +2,7 @@ import {
 	type AccountRedirectProps,
 	redirectIntoOrganization,
 } from "@saas/organizations/lib/account-route-redirect";
+import { PERSONAL_AI_PROVIDERS_TAB } from "@saas/settings/lib/personal-ai-providers-path";
 
 /**
  * Everything that used to live under `/app/settings/**`.
@@ -25,12 +26,13 @@ import {
  * account would land on the page that deletes the organization. All four go to
  * `settings/account/*`, which says whose they are.
  *
- * A fifth joins them: `ai-providers`. A provider key saved without an
- * organization is not personal-context data being dropped — it belongs to the
- * person, and the resolver still honours it inside an organization that has
- * none of its own. So the old link goes to the account page that now holds it,
- * NOT to the organization's page of the same name, which is a different set of
- * keys owned by someone else (Fizzy #1875, R12).
+ * `ai-providers` is the one slug that keeps its name but not its meaning. A
+ * provider key saved without an organization is not personal-context data
+ * being dropped — it belongs to the person, and the resolver still honours it
+ * inside an organization that has none of its own (Fizzy #1875, R12). So the
+ * old link opens the organization's AI Providers page on its Personal tab,
+ * where those keys now live (Fizzy #3082), NOT on the organization's tab, which
+ * is a different set of keys owned by someone else.
  *
  * The rest keep their slug. Their personal-context data is being dropped, so
  * the organization's page of the same name is the only one left to show.
@@ -39,7 +41,7 @@ import {
 /**
  * Old personal slug to its home inside an organization.
  *
- * Only the account-global five need naming; everything else keeps its slug, and
+ * Only the account-global four need naming; everything else keeps its slug, and
  * a path already shaped `account/...` passes through — that is what a link
  * built from the current base path looks like when it resolves outside an
  * organization.
@@ -49,7 +51,6 @@ const ACCOUNT_GLOBAL: Record<string, string> = {
 	security: "account/security",
 	notifications: "account/notifications",
 	"danger-zone": "account/danger-zone",
-	"ai-providers": "account/ai-providers",
 };
 
 export default async function PersonalSettingsRedirect({
@@ -57,7 +58,12 @@ export default async function PersonalSettingsRedirect({
 	searchParams,
 }: AccountRedirectProps) {
 	const { path } = await params;
-	const query = await searchParams;
+	const requested = await searchParams;
+	// The personal keys page became a tab of the organization's page.
+	const query =
+		(path ?? []).join("/") === "ai-providers"
+			? { ...requested, tab: PERSONAL_AI_PROVIDERS_TAB }
+			: requested;
 
 	return redirectIntoOrganization(
 		"settings",

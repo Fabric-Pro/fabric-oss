@@ -262,14 +262,32 @@ export interface DirectChatToolCall {
 }
 
 /**
- * Workflow confirmation request (for workflow execution approval)
+ * A tool waiting for the person's yes (`requiresConfirmation`): the tool and
+ * the exact arguments it would run with, and the draft of what it would do
+ * when the tool can say.
  */
-export interface DirectChatWorkflowConfirmation {
-	workflowId: string;
-	workflowName: string;
-	description?: string;
+interface DirectChatToolConfirmation {
 	message: string;
+	toolName: string;
+	args: Record<string, unknown>;
+	draft?: unknown;
 }
+
+/**
+ * The older confirmation of the in-process workflow tools that non-interactive
+ * callers keep: it carries only the workflow it would start.
+ */
+interface DirectChatWorkflowStartConfirmation {
+	message: string;
+	workflowId: string;
+	workflowName?: string;
+	description?: string;
+}
+
+/** What a turn asks the person to approve; told apart by `toolName` or `workflowId`. */
+export type DirectChatWorkflowConfirmation =
+	| DirectChatToolConfirmation
+	| DirectChatWorkflowStartConfirmation;
 
 /**
  * Progress event emitted during workflow execution
@@ -410,6 +428,35 @@ export interface DirectChatWorkflowInput {
 	 * sent users to Settings for tools that were connected all along.
 	 */
 	toolFailureSummary?: string;
+	/**
+	 * Set only by the Advisor's stream route, where a person is chatting: the
+	 * turn takes the workflow tools and the frame tools from Fabric MCP, as an
+	 * external coding agent does, instead of carrying its own copies. Every
+	 * other caller leaves it unset and keeps the tools it always had.
+	 */
+	fabricPlatformTools?: boolean;
+	/**
+	 * Proof from the stream route that this turn acts for this user in this
+	 * organization, which Fabric MCP requires of the agent runtime. Minted by the
+	 * route; the worker only carries it. Without it the turn has no Fabric tools.
+	 */
+	actingGrant?: string;
+	/**
+	 * Where the chat was opened: the workspace the page belongs to and whether
+	 * the page is itself an artifact or workspace surface. Tools read it as
+	 * the default placement for what they create; it never widens access.
+	 */
+	workspaceId?: string;
+	surface?: "artifact" | "workspace";
+	/**
+	 * A call the person approved in the chat card, with exactly the arguments
+	 * the card showed. The turn runs it first and tells the model the result,
+	 * so the approval is one decision and not a request to repeat itself.
+	 */
+	approvedToolCall?: {
+		toolName: string;
+		args: Record<string, unknown>;
+	};
 }
 
 /**

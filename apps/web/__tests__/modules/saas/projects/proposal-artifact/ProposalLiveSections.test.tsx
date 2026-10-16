@@ -4,11 +4,13 @@
  *
  * Pinned here: finished sections render through the editor's own markdown
  * pipeline (headings as headings, mermaid as a diagram, raw HTML never as
- * markup) inside the artifact typography wrapper; a "writing next section"
- * line follows them; one polite region says how many sections are ready and
- * nothing moves focus; before the first section the pane hosts the generation
- * progress (the queued wait, a Retry once a run stalls) above the previous
- * body, dimmed, or a skeleton for a new document — never a blank pane.
+ * markup); with the Proposal theme on (Fizzy #2946) the document, and only
+ * the document, sits on the theme's paper, with the pane as the desk around
+ * it; a "writing next section" line follows them; one polite region says how
+ * many sections are ready and nothing moves focus; before the first section
+ * the pane hosts the generation progress (the queued wait, a Retry once a run
+ * stalls) above the previous body, dimmed, or a skeleton for a new document —
+ * never a blank pane.
  *
  * The read-only editor is the real Tiptap one with the editor's extensions,
  * and `next-intl` resolves the real en.json, so a missing string fails.
@@ -50,11 +52,18 @@ vi.mock("next-intl", async () => {
 
 import messages from "@repo/i18n/translations/en.json";
 import {
+	buildProposalThemeTokens,
+	NEUTRAL_THEME,
+	resolveThemePaint,
+	themeCustomProperties,
+} from "@repo/utils/proposal-artifact/theme-tokens";
+import {
 	countLiveSections,
-	PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
 	ProposalLiveSections,
 	type ProposalLiveSectionsProps,
 } from "@saas/projects/components/proposal-artifact/ProposalLiveSections";
+import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
+import type { CSSProperties } from "react";
 
 const copy = messages.projects.proposalArtifactPage.live;
 
@@ -71,6 +80,32 @@ const TWO_SECTIONS = [
 ].join("\n");
 
 const NOW = new Date("2026-10-07T12:00:00.000Z");
+
+/** What the page hands the pane while the theme is on: the neutral paint. */
+const THEME_ROOT_PROPS: ProposalThemeRootProps = {
+	className: "proposal-theme",
+	"data-proposal-theme": "live",
+	style: themeCustomProperties(
+		resolveThemePaint(
+			buildProposalThemeTokens({
+				organization: null,
+				style: null,
+				brandKit: null,
+				recipient: null,
+			}),
+		),
+	) as CSSProperties,
+};
+
+const THEME_ROOT = '.proposal-theme[data-proposal-theme="live"]';
+
+function themeRoot(container: HTMLElement): HTMLElement {
+	const root = container.querySelector<HTMLElement>(THEME_ROOT);
+	if (!root) {
+		throw new Error("no theme root");
+	}
+	return root;
+}
 
 function renderPane(overrides: Partial<ProposalLiveSectionsProps> = {}) {
 	const props: ProposalLiveSectionsProps = {
@@ -137,13 +172,38 @@ describe("ProposalLiveSections — live sections", () => {
 		expect(screen.queryByText(copy.writingNext)).not.toBeInTheDocument();
 	});
 
-	it("wears the artifact typography wrapper around the rendered document", async () => {
-		const { container } = renderPane({ liveContent: TWO_SECTIONS });
+	it("puts the document on the theme's paper, with the pane as the desk and the run's line outside it", async () => {
+		const { container } = renderPane({
+			liveContent: TWO_SECTIONS,
+			themeRootProps: THEME_ROOT_PROPS,
+		});
 		await screen.findByRole("heading", { level: 2, name: "Scope" });
 
 		const pane = screen.getByTestId("proposal-live-sections");
-		expect(pane).toHaveClass(PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS);
-		expect(pane).toContainElement(container.querySelector(".tiptap"));
+		const root = themeRoot(container);
+		expect(root.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+		expect(root.style.getPropertyValue("--pa-ink")).toBe(NEUTRAL_THEME.ink);
+		expect(root).toContainElement(container.querySelector(".tiptap"));
+		expect(
+			within(root).getByRole("heading", { level: 2, name: "Timeline" }),
+		).toBeInTheDocument();
+		// The desk keeps the app's surface; the paper is painted only from the
+		// theme's own properties, never from a colour utility of its own.
+		expect(pane).toHaveClass("bg-background");
+		expect(pane).not.toHaveClass("proposal-theme");
+		expect(root.className).not.toMatch(/(^|\s)(bg|text)-/);
+		expect(root).not.toContainElement(screen.getByText(copy.writingNext));
+		expect(root).not.toContainElement(sectionsRegion(container));
+	});
+
+	it("leaves the document unthemed while the theme is off", async () => {
+		const { container } = renderPane({ liveContent: TWO_SECTIONS });
+		await screen.findByRole("heading", { level: 2, name: "Scope" });
+
+		expect(container.querySelector(".proposal-theme")).toBeNull();
+		expect(container.querySelector("[data-proposal-theme]")).toBeNull();
 	});
 
 	it("draws a mermaid fence as a diagram, not as a code block", async () => {
@@ -299,6 +359,30 @@ describe("ProposalLiveSections — before the first section", () => {
 				.closest(".opacity-60"),
 		).not.toBeNull();
 		expect(screen.queryByText(copy.newDocument)).not.toBeInTheDocument();
+	});
+
+	it("puts the dimmed previous body on the paper, with the progress and its label on the desk", async () => {
+		const { container } = renderPane({
+			status: "GENERATING",
+			progress: 35,
+			liveContent: null,
+			savedContent: "## Old scope\n\nThe earlier version.",
+			themeRootProps: THEME_ROOT_PROPS,
+		});
+		await screen.findByRole("heading", { level: 2, name: "Old scope" });
+
+		const root = themeRoot(container);
+		expect(root).toContainElement(screen.getByText("The earlier version."));
+		// The paper dims as a whole.
+		expect(root.parentElement).toHaveClass("opacity-60");
+		expect(root).not.toContainElement(
+			screen.getByRole("region", {
+				name: "Document generation progress",
+			}),
+		);
+		expect(root).not.toContainElement(
+			screen.getByText(copy.previousVersion),
+		);
 	});
 
 	it("offers Retry once a run stalls, and hands the click to the page", async () => {

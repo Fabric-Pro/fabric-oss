@@ -1,11 +1,17 @@
 /**
  * What a signed-in coding agent may be granted, and where it may use it.
  *
- * This is the same ceiling the Connect dialog's "coding instructions" API key
+ * This is the ceiling the Connect dialog's "coding instructions" API key
  * carries: read, and propose changes that are held for review. Nothing here
- * publishes, writes MCP tools or acts as a wildcard — those stay behind an
- * organization API key an administrator minted on purpose, and an agent can
- * never be registered with them (`clientRegistrationAllowedScopes`).
+ * publishes coding instructions, writes MCP tools or acts as a wildcard —
+ * those stay behind an organization API key an administrator minted on
+ * purpose, and an agent can never be registered with them
+ * (`clientRegistrationAllowedScopes`).
+ *
+ * The one deliberate exception to propose-only is `memory:write` (ADR-022): it
+ * writes files into the Living Memory folders an administrator named, and on a
+ * folder set to direct push the commit lands on the synced branch with no
+ * review. It is never a default, and a person approves it by name.
  *
  * Pure constants, and no import that reaches a server: the consent page, the
  * gateway and the CLI all read them, and none should pull in the auth server to
@@ -22,6 +28,7 @@ const OAUTH_SCOPE_MCP_READ = "mcp:read";
 const OAUTH_SCOPE_INSTRUCTIONS_READ = "instructions:read";
 const OAUTH_SCOPE_INSTRUCTIONS_WRITE = "instructions:write";
 const OAUTH_SCOPE_REPOSITORIES_READ = "repositories:read";
+const OAUTH_SCOPE_MEMORY_WRITE = "memory:write";
 const OAUTH_SCOPE_OFFLINE_ACCESS = "offline_access";
 
 /** Every scope the authorization server understands. */
@@ -30,13 +37,15 @@ export const OAUTH_SCOPES = [
 	OAUTH_SCOPE_INSTRUCTIONS_READ,
 	OAUTH_SCOPE_INSTRUCTIONS_WRITE,
 	OAUTH_SCOPE_REPOSITORIES_READ,
+	OAUTH_SCOPE_MEMORY_WRITE,
 	OAUTH_SCOPE_OFFLINE_ACCESS,
 ] as const;
 
 /**
- * Existing MCP and ordinary CLI grants. Full repository Git transport is an
- * explicit, separately consented capability because it can expose repository
- * history outside the coding-instructions tree.
+ * Existing MCP and ordinary CLI grants. Full repository Git transport and
+ * Living Memory writes are explicit, separately consented capabilities:
+ * the first can expose repository history outside the coding-instructions
+ * tree, the second can commit to the synced branch.
  */
 export const OAUTH_DEFAULT_SCOPES = [
 	OAUTH_SCOPE_MCP_READ,

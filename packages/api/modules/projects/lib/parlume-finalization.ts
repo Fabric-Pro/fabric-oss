@@ -1,10 +1,10 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingSessionStatus } from "@repo/database/prisma/generated/enums";
-import { parlumeLog } from "./parlume-log";
 import {
 	deleteParlumeMeetingBotData,
 	getParlumeBridgeSettings,
-} from "./parlume-meeting-baas";
+} from "./parlume-attendee";
+import { parlumeLog } from "./parlume-log";
 import {
 	recordParlumeMeetingProviderUsage,
 	resolveParlumeMeetingEnd,
@@ -64,6 +64,7 @@ export async function finalizeParlumeSession(
 			terminalCallbackAt: true,
 			leaveRequestedAt: true,
 			captureStoppedAt: true,
+			finalizedAt: true,
 			transcriptContextId: true,
 		},
 	});
@@ -73,7 +74,13 @@ export async function finalizeParlumeSession(
 
 	let transcriptContextId = session.transcriptContextId;
 	let finalizedNow = false;
-	if (!transcriptContextId && session.status !== "ENDED") {
+	// A session finalizes once: its provider usage is recorded at that moment, so
+	// a later call (a watchdog or a redelivered callback) must not claim it again.
+	if (
+		!transcriptContextId &&
+		session.status !== "ENDED" &&
+		!session.finalizedAt
+	) {
 		const claimed = await db.parlumeMeetingSession.updateMany({
 			where: {
 				id: session.id,
@@ -85,7 +92,7 @@ export async function finalizeParlumeSession(
 				OR: [
 					{ status: { in: finalizableStatuses } },
 					...(options.preserveFailure
-						? [{ status: failedStatus }]
+						? [{ status: failedStatus, finalizedAt: null }]
 						: []),
 					{
 						status: "FINALIZING",
@@ -155,7 +162,7 @@ export async function finalizeParlumeSession(
 						userId: session.userId,
 						organizationId: session.organizationId,
 						metadata: {
-							provider: "meetingbaas",
+							provider: "attendee",
 							parlumeSessionId: session.id,
 							parlumeNotesStatus: "PENDING",
 						},
@@ -216,7 +223,7 @@ export async function finalizeParlumeSession(
 					type: "MEETING_TRANSCRIPT",
 					metadata: {
 						sourceTitle: "Parlume meeting transcript",
-						provider: "meetingbaas",
+						provider: "attendee",
 						parlumeSessionId: session.id,
 					},
 				},

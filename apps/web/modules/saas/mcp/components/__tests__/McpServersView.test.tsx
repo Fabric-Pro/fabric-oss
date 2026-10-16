@@ -57,10 +57,12 @@ const mockToastSuccess = vi.fn();
 const mockCheckOAuthStatuses = vi.fn();
 
 const mockToastInfo = vi.fn();
+const mockToastError = vi.fn();
+
 vi.mock("sonner", () => ({
 	toast: {
 		info: (...args: unknown[]) => mockToastInfo(...args),
-		error: vi.fn(),
+		error: (...args: unknown[]) => mockToastError(...args),
 		success: (...args: unknown[]) => mockToastSuccess(...args),
 	},
 }));
@@ -603,5 +605,185 @@ describe("McpServersView — registry list badge for a GitLab server", () => {
 		);
 		expect(row("GitLab").queryByText("API Key")).not.toBeInTheDocument();
 		expect(row("PostgreSQL").getByText("API Key")).toBeInTheDocument();
+	});
+});
+
+describe("McpServersView — Twilio credential input", () => {
+	// Built at runtime so secret scanners don't flag these fake test IDs.
+	const FAKE_ACCOUNT_SID = `AC${"0".repeat(32)}`;
+	const FAKE_API_KEY_SID = `SK${"0".repeat(32)}`;
+
+	const twilioServer = {
+		id: "server-twilio",
+		key: "twilio",
+		name: "Twilio",
+		description: "Twilio connector",
+		transport: "STDIO",
+		defaultUrl: null,
+		command: "npx -y @twilio-alpha/mcp@0.7.0",
+		authMethods: ["API_KEY"],
+	};
+
+	const otherApiKeyServer = {
+		id: "server-slack-mcp",
+		key: "slack-mcp",
+		name: "Slack MCP",
+		description: "Slack MCP connector",
+		transport: "STDIO",
+		command: "npx -y @modelcontextprotocol/server-slack",
+		authMethods: ["API_KEY"],
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockListConfigs.mockResolvedValue([]);
+		mockListRegistry.mockResolvedValue([
+			...mockRegistryServers,
+			twilioServer,
+			otherApiKeyServer,
+		]);
+	});
+
+	it("shows the three labelled fields for Twilio server", async () => {
+		renderWithClient(
+			<McpServersView
+				organizationId={MOCK_ORG_ID}
+				initialRegistrySearch="Twilio"
+			/>,
+		);
+
+		const dialog = await screen.findByRole("dialog", {
+			name: /add twilio/i,
+		});
+
+		expect(
+			within(dialog).getByLabelText("Account SID"),
+		).toBeInTheDocument();
+		expect(within(dialog).getByLabelText("Account SID")).toHaveAttribute(
+			"autocomplete",
+			"off",
+		);
+		expect(
+			within(dialog).getByLabelText("API Key SID"),
+		).toBeInTheDocument();
+		expect(within(dialog).getByLabelText("API Key SID")).toHaveAttribute(
+			"autocomplete",
+			"off",
+		);
+		const secretInput = within(dialog).getByLabelText("API Key Secret");
+		expect(secretInput).toBeInTheDocument();
+		expect(secretInput).toHaveAttribute("type", "password");
+		expect(secretInput).toHaveAttribute("autocomplete", "new-password");
+		expect(
+			within(dialog).getByText(
+				/Find your Account SID in the Twilio Console/,
+			),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).queryByRole("button", {
+				name: /test connection/i,
+			}),
+		).not.toBeInTheDocument();
+	});
+
+	it("keeps the default API key placeholder and hides Twilio fields for other servers", async () => {
+		renderWithClient(
+			<McpServersView
+				organizationId={MOCK_ORG_ID}
+				initialRegistrySearch="Slack MCP"
+			/>,
+		);
+
+		const dialog = await screen.findByRole("dialog", {
+			name: /add slack mcp/i,
+		});
+
+		expect(
+			within(dialog).getByPlaceholderText("Enter your API key..."),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).queryByLabelText("Account SID"),
+		).not.toBeInTheDocument();
+		expect(
+			within(dialog).queryByLabelText("API Key SID"),
+		).not.toBeInTheDocument();
+		expect(
+			within(dialog).queryByLabelText("API Key Secret"),
+		).not.toBeInTheDocument();
+	});
+
+	it("combines the three fields into the saved key", async () => {
+		mockUpsertConfig.mockResolvedValue({ id: "cfg-twilio", enabled: true });
+		renderWithClient(
+			<McpServersView
+				organizationId={MOCK_ORG_ID}
+				initialRegistrySearch="Twilio"
+			/>,
+		);
+
+		const dialog = await screen.findByRole("dialog", {
+			name: /add twilio/i,
+		});
+
+		fireEvent.change(within(dialog).getByLabelText("Account SID"), {
+			target: { value: FAKE_ACCOUNT_SID },
+		});
+		fireEvent.change(within(dialog).getByLabelText("API Key SID"), {
+			target: { value: FAKE_API_KEY_SID },
+		});
+		fireEvent.change(within(dialog).getByLabelText("API Key Secret"), {
+			target: { value: "secret123" },
+		});
+
+		fireEvent.click(
+			within(dialog).getByRole("button", { name: /^save$/i }),
+		);
+
+		await waitFor(() => {
+			expect(mockUpsertConfig).toHaveBeenCalledWith(
+				expect.objectContaining({
+					apiKey: `${FAKE_ACCOUNT_SID}/${FAKE_API_KEY_SID}:secret123`,
+				}),
+			);
+		});
+	});
+
+	it("shows an error and saves nothing when given a bad Account SID", async () => {
+		renderWithClient(
+			<McpServersView
+				organizationId={MOCK_ORG_ID}
+				initialRegistrySearch="Twilio"
+			/>,
+		);
+
+		const dialog = await screen.findByRole("dialog", {
+			name: /add twilio/i,
+		});
+
+		fireEvent.change(within(dialog).getByLabelText("Account SID"), {
+			target: { value: `BC${"0".repeat(32)}` },
+		});
+		fireEvent.change(within(dialog).getByLabelText("API Key SID"), {
+			target: { value: FAKE_API_KEY_SID },
+		});
+		fireEvent.change(within(dialog).getByLabelText("API Key Secret"), {
+			target: { value: "secret123" },
+		});
+
+		fireEvent.click(
+			within(dialog).getByRole("button", { name: /^save$/i }),
+		);
+
+		await waitFor(() => {
+			expect(mockToastError).toHaveBeenCalledWith(
+				"Failed to save MCP server",
+				expect.objectContaining({
+					description: expect.stringMatching(
+						/Account SID should start with AC/,
+					),
+				}),
+			);
+		});
+		expect(mockUpsertConfig).not.toHaveBeenCalled();
 	});
 });

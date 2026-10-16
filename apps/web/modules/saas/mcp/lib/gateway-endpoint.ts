@@ -14,6 +14,12 @@
  * it may reuse.
  *
  * Authentication:
+ *   - Service credential: `X-Agent-Service-Token` (the shared agent service
+ *     secret) with `X-Fabric-Acting-User`, `X-Fabric-Acting-Organization` and
+ *     the `X-Fabric-Acting-Grant` the web route minted for the chat turn, used
+ *     by Fabric's own agent runtime. Membership of the named organization is
+ *     re-read on every request and the session holds only
+ *     `SERVICE_CREDENTIAL_SCOPES`; see `./gateway/service-auth`.
  *   - OAuth access token: `Authorization: Bearer fat_xxx`, obtained by signing
  *     in from the agent (discovery starts at the `WWW-Authenticate` challenge on
  *     a 401). Bound to the organization chosen at consent, or to the one
@@ -24,7 +30,8 @@
  *   - Organization context: `X-Organization-Id` header — optional, and honoured
  *     only when the authenticated caller is a member of the organization it
  *     names. A personal key that names none resolves to the caller's own
- *     organization; see `authenticateRequest`.
+ *     organization, and a browser session that names none keeps the one it
+ *     last switched into; see `authenticateRequest`.
  *
  * MCP Protocol:
  *   - POST: JSON-RPC requests (initialize, tools/list, tools/call, etc.)
@@ -59,6 +66,8 @@ import {
 	resolveOAuthProjectGrantTarget,
 	verifyOAuthAccessToken,
 } from "@repo/database";
+import { FABRIC_SERVICE_HEADERS } from "@repo/temporal/fabric-mcp-service-headers";
+import { PAGE_FRAME_HEADER } from "@repo/temporal/fabric-page-tool-definitions";
 import { getBaseUrl } from "@repo/utils";
 import {
 	buildProjectResource,
@@ -94,6 +103,7 @@ import {
 	SEARCH_TOOLS_NAME,
 	searchTools,
 } from "@saas/mcp/lib/gateway/discovery-tools";
+import { checkPageCall } from "@saas/mcp/lib/gateway/page-call-guard";
 import { boundProjectId } from "@saas/mcp/lib/gateway/project-binding";
 import {
 	formatServerSelection,
@@ -105,12 +115,20 @@ import {
 	selectionRefusalMessage,
 } from "@saas/mcp/lib/gateway/server-selection";
 import {
+	authenticateServiceRequest,
+	type ServiceAuthOutcome,
+} from "@saas/mcp/lib/gateway/service-auth";
+import {
 	connectedToolScope,
 	isPlatformToolName,
 	toolRequiresAuthority,
 } from "@saas/mcp/lib/gateway/tool-eligibility";
-import { scopeSatisfied } from "@saas/mcp/lib/gateway/tool-scope";
+import {
+	credentialSubject,
+	scopeSatisfied,
+} from "@saas/mcp/lib/gateway/tool-scope";
 import type {
+	GatewayActingContext,
 	GatewayCredential,
 	ServerSelection,
 	ToolCallResult,
@@ -170,6 +188,8 @@ interface AuthResult {
 	role: "user" | "admin";
 	/** What proved this identity. See `GatewayCredential`. */
 	credential: GatewayCredential;
+	/** Set only by the service credential. See `GatewayActingContext`. */
+	actingContext?: GatewayActingContext;
 	/**
 	 * Scopes the presenting key was granted. A browser session gets `["*"]`:
 	 * no key chose scopes, and the interactive checks that already govern the
@@ -225,6 +245,7 @@ interface AuthResult {
 type AuthOutcome =
 	| { status: "authenticated"; authResult: AuthResult }
 	| { status: "unauthenticated" }
+	| Extract<ServiceAuthOutcome, { status: "service_unauthorized" }>
 	| {
 			/**
 			 * A genuine OAuth token, issued for another resource than the URL it
@@ -241,7 +262,8 @@ type AuthOutcome =
 				| "not_a_member"
 				| "ambiguous_organization"
 				| "no_membership"
-				| "project_not_accessible";
+				| "project_not_accessible"
+				| "service_context_required";
 			message: string;
 	  };
 
@@ -352,6 +374,12 @@ async function authenticateRequest(
 	binding: GatewayBinding | null,
 ): Promise<AuthOutcome> {
 	const authHeader = request.headers.get("authorization");
+
+	// 0. Fabric's own agent runtime. The header alone selects the branch, so a
+	// wrong secret is refused here rather than read as some other credential.
+	if (request.headers.has(FABRIC_SERVICE_HEADERS.token)) {
+		return authenticateServiceRequest(request, binding);
+	}
 
 	// 1a. Personal API key (Bearer fab_xxx) — the key names a user and no
 	// tenant, so this path decides the organization instead of returning none.
@@ -610,9 +638,12 @@ async function authenticateRequest(
 	// that removal. FR4 admits no code path that resolves to no organization,
 	// and this was the last one.
 	//
-	// The organization header is still not read here: the session's value was
-	// validated when the user switched into it, and a browser client that wants
-	// another tenant switches again.
+	// The organization header names the organization of the page the browser
+	// is on. The session's own value is one field shared by every tab (the
+	// last tab to switch wins), so a person with a tab open in each of two
+	// organizations would otherwise have one tab's page reading the other's
+	// data. The header is honoured only for a member (below); with none, the
+	// session's value is used as before.
 	const session = await auth.api.getSession({ headers: request.headers });
 	if (!session?.user) {
 		return UNAUTHENTICATED;
@@ -645,7 +676,10 @@ async function authenticateRequest(
 	// revoked, so it is confirmed here, where failing it can refuse. It used to
 	// be checked during session reuse, which was too late to do anything but
 	// re-issue the session in the same organization.
-	const browserOrganizationId = session.session.activeOrganizationId ?? null;
+	const browserOrganizationId =
+		request.headers.get(ORGANIZATION_HEADER)?.trim() ||
+		session.session.activeOrganizationId ||
+		null;
 	const { isOrganizationMember, resolveUserOrganization } = await import(
 		"@repo/database"
 	);
@@ -769,11 +803,22 @@ async function releaseGatewaySession(sessionId: string): Promise<void> {
 	deleteGatewaySession(sessionId);
 }
 
+/** The agent row a signed-in agent's request is made through; absent for every other credential. */
+function oauthClientIdOf(authResult: AuthResult): string | undefined {
+	const identity = authResult.keyIdentity;
+	return identity?.credentialKind === "OAUTH_CLIENT"
+		? identity.credentialId
+		: undefined;
+}
+
 function sameCredentialAuthority(
 	session: GatewaySession,
 	authResult: AuthResult,
 ): boolean {
-	if (session.credential !== authResult.credential) {
+	if (
+		session.credential !== authResult.credential ||
+		session.oauthClientId !== oauthClientIdOf(authResult)
+	) {
 		return false;
 	}
 	const granted = new Set(session.scopes);
@@ -893,6 +938,13 @@ async function getOrCreateSession(
 		email: authResult.email,
 		role: authResult.role,
 		credential: authResult.credential,
+		oauthClientId: oauthClientIdOf(authResult),
+		actingContext: authResult.actingContext,
+		// The agent runtime proves itself on every request and names the page
+		// and run it acts from on every request, so there is nothing a stored
+		// session could remember that the request does not say again — and a
+		// session per chat turn would only pile up.
+		persist: authResult.credential !== "service",
 		scopes: authResult.scopes,
 		serverSelection: serverSelection.entries,
 		toolListMode: toolListMode.mode,
@@ -1021,6 +1073,15 @@ async function authenticateGatewayRequest(
 			},
 		);
 	}
+	if (authOutcome.status === "service_unauthorized") {
+		// The runtime's secret was accepted but the turn it acts for was not
+		// vouched for. A plain 401 with the reason: an OAuth challenge would
+		// send a client looking for a sign-in this credential never uses.
+		return NextResponse.json(
+			{ error: authOutcome.message, reason: authOutcome.reason },
+			{ status: 401 },
+		);
+	}
 	if (authOutcome.status === "refused") {
 		// Never 401: the credentials were accepted, the tenancy was not, and
 		// presenting the same key again unchanged will not help. Which of the
@@ -1037,6 +1098,8 @@ async function authenticateGatewayRequest(
 		//   project_not_accessible -> 403: at a project's URL, the project is
 		//     missing, deleted or not the caller's to read, and which of the
 		//     three is not said.
+		//   service_context_required -> 400: the agent runtime did not say
+		//     whom it acts for; naming them on the acting headers fixes it.
 		//
 		// `reason` is the machine-readable half, so a client can tell "name one
 		// of yours" from "you have none to name" without matching on prose.
@@ -1044,7 +1107,10 @@ async function authenticateGatewayRequest(
 			{ error: authOutcome.message, reason: authOutcome.reason },
 			{
 				status:
-					authOutcome.reason === "ambiguous_organization" ? 400 : 403,
+					authOutcome.reason === "ambiguous_organization" ||
+					authOutcome.reason === "service_context_required"
+						? 400
+						: 403,
 			},
 		);
 	}
@@ -1236,6 +1302,7 @@ export async function handleGatewayPost(
 				rpcRequest.params,
 				session,
 				sessionId,
+				request.headers.get(PAGE_FRAME_HEADER),
 			);
 
 		case "ping":
@@ -1521,6 +1588,7 @@ const BOOTSTRAP_SECTION =
 	"1. Set the project's description with `fabric_update_project`\n" +
 	"2. Push the README, architecture notes, design rules and team conventions with `fabric_upsert_project_context`, one call per file, using the file's repo-relative path as `sourcePath` so a later push of the same file updates it rather than adding a duplicate\n" +
 	"3. Before replacing a file that is already there, read its `contentHash` with fabric_get_project_context or fabric_list_project_contexts and pass it as `expectedContentHash`; a `conflict` means someone else changed it, so read it again and merge rather than overwrite\n" +
+	"Specs and working notes that belong in the repository go through `fabric_memory_targets` and `fabric_memory_write` where the project has write folders.\n" +
 	"Keep coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks, rules, scripts) out of it. Propose uploaded instruction changes with `fabric_propose_project_instruction_change`; repository instruction changes belong in native Git and provider pull requests. " +
 	"Never push secrets, `.env` files or generated output, and tell the developer what you pushed.\n\n";
 
@@ -1688,6 +1756,7 @@ async function handleToolsList(
 				description: t.description,
 				inputSchema: t.inputSchema,
 				...(t.annotations ? { annotations: t.annotations } : {}),
+				...(t._meta ? { _meta: t._meta } : {}),
 			};
 
 			// Add authority metadata for connected server tools
@@ -1732,17 +1801,39 @@ async function handleToolsList(
 	}
 }
 
+/**
+ * `pageFrameId` is the page the host page makes this call for, from the
+ * `x-fabric-page-frame` header, or null for any other caller. A call for a page
+ * is held to the page's own rules before anything else is looked at: see
+ * `./gateway/page-call-guard`. That includes discovery's meta-tools, which a
+ * page does not declare and so cannot reach.
+ */
 async function handleToolsCall(
 	id: string | number,
 	params: Record<string, unknown> | undefined,
 	session: GatewaySession,
 	sessionId: string,
+	pageFrameId: string | null,
 ): Promise<NextResponse> {
 	const toolName = params?.name as string;
-	const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+	let toolArgs = (params?.arguments || {}) as Record<string, unknown>;
 
-	if (!toolName) {
+	if (!toolName || typeof toolName !== "string") {
 		return jsonRpcError(id, -32602, "Missing tool name", sessionId);
+	}
+
+	if (pageFrameId !== null) {
+		const checked = await checkPageCall(
+			pageFrameId,
+			toolName,
+			toolArgs,
+			session,
+			isPlatformToolName,
+		);
+		if (!checked.ok) {
+			return jsonRpcSuccess(id, checked.result, sessionId);
+		}
+		toolArgs = checked.args;
 	}
 
 	// The meta-tools exist only in discovery mode. In full mode their names
@@ -1820,6 +1911,18 @@ export async function dispatchToolCall(
 ): Promise<ToolCallResult> {
 	try {
 		let result: ToolCallResult;
+
+		if (session.credential === "service") {
+			console.info("[MCP Gateway] service tool call", {
+				tool: toolName,
+				credential: session.credential,
+				userId: session.userId,
+				organizationId: session.organizationId,
+				conversationId: session.actingContext?.conversationId,
+				sourceRunType: session.actingContext?.sourceRunType,
+				sourceRunId: session.actingContext?.sourceRunId,
+			});
+		}
 
 		// A tool the session's server selection leaves out is refused before
 		// any branch below can run it, request authority for it or contact its
@@ -1909,7 +2012,7 @@ export async function dispatchToolCall(
 						{
 							type: "text" as const,
 							text: JSON.stringify({
-								error: `This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
+								error: `This ${credentialSubject(session.credential)} does not have the "${requiredScope.scope}" scope required by ${toolName}.`,
 							}),
 						},
 					],

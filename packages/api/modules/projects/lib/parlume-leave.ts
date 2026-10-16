@@ -1,11 +1,11 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingEndReason } from "@repo/database/prisma/generated/enums";
-import { parlumeLog } from "./parlume-log";
 import {
 	getParlumeBridgeSettings,
 	leaveParlumeMeetingBot,
 	type ParlumeMeetingBotLeaveResult,
-} from "./parlume-meeting-baas";
+} from "./parlume-attendee";
+import { parlumeLog } from "./parlume-log";
 
 const leavableStatuses = [
 	"JOINING",

@@ -1,8 +1,8 @@
-import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
 import {
 	getParlumeBridgeSettings,
 	leaveParlumeMeetingBot,
-} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
+} from "@repo/api/modules/projects/lib/parlume-attendee";
+import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";

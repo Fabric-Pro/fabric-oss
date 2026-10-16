@@ -249,6 +249,84 @@ describe.skipIf(!databaseUrl)("Better Auth 1.7 database compatibility", () => {
 		).toEqual(defaults);
 	});
 
+	it("adds memory write to the installed API and gateway resource policies only", async () => {
+		const migration = readFileSync(
+			resolve(
+				migrations,
+				"20261016120000_memory_write_oauth_resource_scope/migration.sql",
+			),
+			"utf8",
+		);
+		await backfill();
+		const defaults = [
+			"mcp:read",
+			"instructions:read",
+			"instructions:write",
+			"offline_access",
+		];
+		const rows = [
+			[
+				"api",
+				"https://example.com/api/v1",
+				[...defaults, "repositories:read"],
+				false,
+			],
+			["mcp", "https://example.com/api/mcp-gateway", defaults, false],
+			[
+				"mcp-slash",
+				"https://example.com/api/mcp-gateway/",
+				defaults,
+				false,
+			],
+			["custom", "https://other.example/api/v1", defaults, false],
+			["narrow", "https://example.com/api/v1/narrow", defaults, false],
+		];
+		for (const [id, identifier, scopes, disabled] of rows) {
+			await client.query(
+				'INSERT INTO oauth_resource (id, identifier, name, "allowedScopes", disabled) VALUES ($1, $2, $1, $3, $4)',
+				[id, identifier, scopes, disabled],
+			);
+		}
+		const grants = await client.query(
+			"SELECT row_to_json(t) AS row FROM oauth_refresh_token t",
+		);
+		await client.query(migration);
+		await client.query(migration);
+		const scopesOf = async (id: string) =>
+			(
+				await client.query(
+					'SELECT "allowedScopes" FROM oauth_resource WHERE id = $1',
+					[id],
+				)
+			).rows[0].allowedScopes;
+		expect(await scopesOf("api")).toEqual([
+			...defaults,
+			"repositories:read",
+			"memory:write",
+		]);
+		expect(await scopesOf("mcp")).toEqual([...defaults, "memory:write"]);
+		expect(await scopesOf("mcp-slash")).toEqual([
+			...defaults,
+			"memory:write",
+		]);
+		expect(await scopesOf("custom")).toEqual(defaults);
+		expect(await scopesOf("narrow")).toEqual(defaults);
+		expect(
+			(
+				await client.query(
+					"SELECT row_to_json(t) AS row FROM oauth_refresh_token t",
+				)
+			).rows,
+		).toEqual(grants.rows);
+
+		await client.query(
+			'UPDATE oauth_resource SET "allowedScopes" = $1, disabled = true WHERE id = $2',
+			[defaults, "api"],
+		);
+		await client.query(migration);
+		expect(await scopesOf("api")).toEqual(defaults);
+	});
+
 	it("expands the schema while preserving legacy client and grant reads", async () => {
 		const rows = await client.query(
 			'SELECT public, type, "applicationType" FROM oauth_client ORDER BY id',

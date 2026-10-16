@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -102,5 +102,25 @@ describe("resolvePreinstalledCommand", () => {
 			),
 			null,
 		);
+	});
+});
+
+describe("Twilio preinstalled MCP pin", () => {
+	it("pins the same Twilio version in Dockerfile and seed.ts", async () => {
+		const dockerfile = await readFile(
+			new URL("../../Dockerfile", import.meta.url),
+			"utf8",
+		);
+		const seed = await readFile(
+			new URL("../../../database/prisma/seed.ts", import.meta.url),
+			"utf8",
+		);
+
+		const dockerMatch = dockerfile.match(/@twilio-alpha\/mcp@([^\s\\]+)/);
+		const seedMatch = seed.match(/@twilio-alpha\/mcp@([^\s"']+)/);
+
+		assert.ok(dockerMatch, "Dockerfile pins @twilio-alpha/mcp");
+		assert.ok(seedMatch, "seed.ts pins @twilio-alpha/mcp");
+		assert.equal(dockerMatch[1], seedMatch[1]);
 	});
 });

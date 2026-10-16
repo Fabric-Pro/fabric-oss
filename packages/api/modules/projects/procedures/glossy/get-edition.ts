@@ -10,6 +10,7 @@ import {
 	getOrganizationBrandColor,
 	getRecipientBrand,
 	isRecipientLogoKeyForProject,
+	trustedOrganizationLogoKey,
 } from "@repo/database";
 import {
 	LOGO_MAX_INPUT_BYTES,
@@ -28,6 +29,7 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { signOrganizationLogoRead } from "../../lib/brand-logo-reads";
 import { isGlossyHolderGone } from "../../lib/dispatch-glossy-build";
 import {
 	GLOSSY_INELIGIBLE_REASONS,
@@ -40,12 +42,12 @@ import {
 	readGlossyEditionContent,
 	readGlossyLastOptions,
 } from "../../lib/glossy-access";
+import { requireGlossyEnabled } from "../../lib/glossy-feature";
 import {
 	presentRecipientBrand,
 	recipientBrandBucket,
 	recipientBrandOutputSchema,
 } from "../../lib/recipient-brand";
-import { requireGlossyEnabled } from "../../lib/glossy-feature";
 
 /**
  * Signed reads of the document's own images and both logos, for one page
@@ -452,25 +454,25 @@ async function loadPreparer(
  * Anything else (a URL of its own, a nested or leading-slash path, another
  * key) is null before storage is touched, so the cover shows the name
  * alone; the Glossy render fetches no remote image (KTD16).
+ * The check is `trustedOrganizationLogoKey`, the one the Proposal theme
+ * uses too.
  */
 async function organizationLogo(
 	logo: string | null,
 	organizationId: string,
 	inline: boolean,
 ): Promise<string | null> {
-	if (logo !== `${organizationId}.png`) {
+	const key = trustedOrganizationLogoKey(logo, organizationId);
+	if (!key) {
 		return null;
 	}
 	const bucket = config.storage.bucketNames.avatars;
-	const inlined = inline ? await readLogoAsDataUri(logo, bucket) : null;
+	const inlined = inline ? await readLogoAsDataUri(key, bucket) : null;
 	if (inlined) {
 		return inlined;
 	}
 	try {
-		return await getStorageProvider().getSignedUrl(logo, {
-			bucket,
-			expiresIn: SIGNED_READ_TTL_SECONDS,
-		});
+		return await signOrganizationLogoRead(key, SIGNED_READ_TTL_SECONDS);
 	} catch {
 		return null;
 	}

@@ -43,6 +43,7 @@ import { registerInstructionRoutes } from "./instructions";
 import { registerIntegrationRoutes } from "./integrations";
 import { registerKnowledgeRoutes } from "./knowledge";
 import { registerMcpRoutes } from "./mcp";
+import { registerMemoryWriteRoutes } from "./memory-writes";
 import { registerProjectRoutes } from "./projects";
 import { registerPromptRoutes } from "./prompts";
 import { registerReportRoutes } from "./reports";
@@ -72,6 +73,7 @@ const CLI_SCOPES = [
 	"instructions:read",
 	"instructions:write",
 	"repositories:read",
+	"memory:write",
 	"reports:read",
 	"reports:write",
 	"skills:read",
@@ -444,6 +446,7 @@ export function createPublicV1Routes() {
 	registerInstructionRoutes(app);
 	registerInstructionCheckoutRoutes(app);
 	registerContextRoutes(app);
+	registerMemoryWriteRoutes(app);
 
 	return app;
 }

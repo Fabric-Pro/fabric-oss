@@ -35,6 +35,7 @@ Available node types with their required configuration fields:
    - config fields:
      - triggerType: "manual" | "schedule" | "webhook" | "event" (required)
      - scheduleExpression: cron expression (when triggerType is "schedule")
+     - scheduleTimezone: IANA time zone the cron is read in, e.g. "Europe/Berlin" (when triggerType is "schedule"; defaults to "UTC")
 
 2. ai-generate-text
    - Generate text using AI
@@ -122,6 +123,30 @@ Available node types with their required configuration fields:
     - outputs: { output: string, text: string, result: any, data: any, toolName: string, serverName: string }
     - Use {{MCP Tool.output}} or {{MCP Tool.text}} for the result as string
 
+12. agent-task
+    - Run an unattended AI agent that can call the user's MCP servers and write up the result. Use it when the user wants a report or page produced by an agent that reads their tools, usually on a schedule.
+    - Give it the label "Agent Task" so {{Agent Task.html}} resolves.
+    - config fields:
+      - prompt: What the agent should do (required). Output of earlier nodes is given to the agent as data automatically; do not put {{...}} references in the prompt.
+      - systemPrompt: Optional instructions about behaviour
+      - mcpConfigIds: Array of the user's configured MCP server IDs the agent may call (use [] when none are known; never invent IDs)
+      - builtInToolNames: Array of built-in capability IDs, e.g. "project-context" (default [])
+      - maxIterations: 1-10 (default 10)
+      - outputFormat: "html" | "markdown" (default "html")
+    - outputs: { text: string, html: string (outputFormat html), markdown: string (outputFormat markdown) }
+    - Do not use it for a single tool call: use mcp-tool. A schedule that runs an agent-task must run no more often than every 15 minutes.
+
+13. publish-frame
+    - Save a result as a frame (a versioned page) on the project's Artifacts tab. Put it after an agent-task so the agent's page is kept.
+    - Give it the label "Publish Frame".
+    - config fields:
+      - title: Frame title (required)
+      - content: What to publish, normally "{{Agent Task.html}}" (required)
+      - format: "html" | "markdown" (default "html")
+      - surface: "artifact" | "workspace" (default "artifact"; an artifact needs the workflow to belong to a project)
+      - mode: "new-version" (one frame, a new version each run) | "new-frame" (default "new-version")
+    - outputs: { frameId: string, title: string, url: string }
+
 Variable References - IMPORTANT:
 - Use {{NodeLabel.field}} to reference outputs from previous nodes
 - The NodeLabel is the label shown in the node (e.g., "Generate Text", "MCP Tool", "Firecrawl Search")
@@ -132,6 +157,8 @@ Variable References - IMPORTANT:
   - firecrawl-scrape: {{NodeLabel.content}}, {{NodeLabel.metadata}}
   - firecrawl-search: {{NodeLabel.results}}
   - mcp-tool: {{NodeLabel.output}}, {{NodeLabel.text}}, {{NodeLabel.result}}
+  - agent-task: {{NodeLabel.html}}, {{NodeLabel.markdown}}, {{NodeLabel.text}}
+  - publish-frame: {{NodeLabel.frameId}}, {{NodeLabel.url}}
   - linear-create-ticket: {{NodeLabel.issueId}}, {{NodeLabel.issueUrl}}
   - slack-send: {{NodeLabel.ts}}, {{NodeLabel.channel}}
   - email-send: {{NodeLabel.messageId}}

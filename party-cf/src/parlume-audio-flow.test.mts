@@ -29,23 +29,35 @@ class FakeFlux {
 type Bridge = {
 	onStart(): Promise<void>;
 	onConnect(conn: unknown, ctx: { request: { url: string } }): Promise<void>;
-	onMessage(conn: unknown, message: string | ArrayBuffer): Promise<void>;
+	onMessage(
+		conn: unknown,
+		message: string | ArrayBuffer | ArrayBufferView,
+	): Promise<void>;
 	onRequest(request: Request): Promise<Response>;
 	onClose(conn: unknown, code?: number, reason?: string): Promise<void>;
 };
 
-function meeting() {
+function meeting(
+	options: {
+		verify?: () => Promise<Response>;
+		aura?: (text: string, index: number) => Response | Promise<Response>;
+	} = {},
+) {
+	const auraCalls: Array<{ inputs: unknown; options: unknown }> = [];
 	const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
 	const fetch = async (url: unknown, init: unknown) => {
 		const path = new URL(String(url)).pathname;
 		const body = JSON.parse(String((init as RequestInit).body));
 		requests.push({ path, body });
 		if (path.endsWith("/verify-stream")) {
-			return Response.json({
-				valid: true,
-				hardStopAt: new Date(Date.now() + 3_600_000).toISOString(),
-				streamGeneration: 1,
-			});
+			return (
+				(await options.verify?.()) ??
+				Response.json({
+					valid: true,
+					hardStopAt: new Date(Date.now() + 3_600_000).toISOString(),
+					streamGeneration: 1,
+				})
+			);
 		}
 		return Response.json({ accepted: true });
 	};
@@ -64,6 +76,7 @@ function meeting() {
 		delete: async (key: string) => data.delete(key),
 		setAlarm: async () => {},
 	};
+	const meetingOptions = options;
 	const flux = new FakeFlux();
 	const transcription: Array<{
 		model: string;
@@ -84,18 +97,38 @@ function meeting() {
 					inputs: unknown,
 					options: unknown,
 				) => {
+					if (model === "@cf/deepgram/aura-2-en") {
+						auraCalls.push({ inputs, options });
+						const text = (inputs as { text: string }).text;
+						return (
+							(await meetingOptions.aura?.(
+								text,
+								auraCalls.length - 1,
+							)) ?? new Response(new Uint8Array(4_800))
+						);
+					}
 					transcription.push({ model, inputs, options });
 					return { status: 101, webSocket: flux };
 				},
 			},
 		},
 	);
-	const frames: Uint8Array[] = [];
+	const sent: string[] = [];
+	const closed: number[] = [];
 	const bot = {
-		send: (frame: Uint8Array) => frames.push(frame),
-		close: () => {},
+		send: (message: string) => sent.push(message),
+		close: (code: number) => closed.push(code),
 	};
-	return { bridge, bot, flux, frames, requests, transcription };
+	return {
+		bridge,
+		bot,
+		flux,
+		sent,
+		closed,
+		requests,
+		transcription,
+		auraCalls,
+	};
 }
 
 // Objects built inside the sandboxed bridge have that realm's prototypes.
@@ -103,46 +136,87 @@ const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("the bot's audio is transcribed, attributed, and a woken request reaches Fabric", async () => {
-	const { bridge, bot, flux, requests, transcription } = meeting();
-	await bridge.onStart();
-	await bridge.onConnect(bot, {
-		request: {
-			url: "wss://bridge.example.com/parties/parlume/session-1?token=stream-token",
+const STREAM_URL =
+	"wss://bridge.example.com/parties/parlume/session-1?token=stream-token";
+
+// Attendee's mixed-audio message: one 10 ms chunk at 16 kHz, stamped when it
+// was packaged. Flux receives the meeting audio in 80 ms batches.
+function audio(
+	timestampMs: number,
+	options: { botId?: string; sampleRate?: number; bytes?: number } = {},
+) {
+	const { botId = "bot_abc123", sampleRate = 16_000, bytes = 320 } = options;
+	return JSON.stringify({
+		trigger: "realtime_audio.mixed",
+		bot_id: botId,
+		data: {
+			chunk: Buffer.alloc(bytes).toString("base64"),
+			timestamp_ms: timestampMs,
+			sample_rate: sampleRate,
 		},
 	});
-	await bridge.onMessage(
-		bot,
-		JSON.stringify({
-			protocol_version: 1,
-			bot_id: "bot-1",
-			offset: 0,
-			sample_rate: 24_000,
-			start_time: 1_000_000,
+}
+
+function control(
+	action: string,
+	body: unknown,
+	headers: Record<string, string> = {},
+) {
+	return new Request(
+		`https://bridge.example.com/parties/parlume/session-1?action=${action}`,
+		{
+			method: "POST",
+			headers: {
+				Authorization: "Bearer service-secret",
+				"content-type": "application/json",
+				...headers,
+			},
+			body: JSON.stringify(body),
+		},
+	);
+}
+
+test("the bot's audio is verified on its first chunk, transcribed, attributed, and a woken request reaches Fabric", async () => {
+	const { bridge, bot, flux, requests, transcription } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	// Eight 10 ms chunks covering 1_000_000-1_000_080 on Attendee's clock.
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	const speakers = await bridge.onRequest(
+		control("speakers", {
+			updates: [
+				{
+					name: "Dev One",
+					id: "participant-1",
+					timestamp: 1_000_400,
+					isSpeaking: true,
+				},
+			],
 		}),
 	);
-	await bridge.onMessage(
-		bot,
-		JSON.stringify([
-			{ name: "Dev One", id: 1, timestamp: 1_000_400, isSpeaking: true },
-		]),
-	);
-	await bridge.onMessage(bot, new ArrayBuffer(4_800));
 	await flush();
 
+	assert.equal(speakers.status, 200);
 	assert.deepEqual(
 		requests.find((r) => r.path.endsWith("/verify-stream"))?.body,
-		{ sessionId: "session-1", streamToken: "stream-token", botId: "bot-1" },
+		{
+			sessionId: "session-1",
+			streamToken: "stream-token",
+			botId: "bot_abc123",
+		},
 	);
+	assert.equal(transcription.length, 1);
 	assert.equal(transcription[0]?.model, "@cf/deepgram/flux");
 	assert.deepEqual(plain(transcription[0]?.options), { websocket: true });
 	assert.deepEqual(plain(transcription[0]?.inputs), {
 		encoding: "linear16",
-		sample_rate: "24000",
+		sample_rate: "16000",
 		keyterm: "Parlume",
 	});
 	assert.equal(flux.accepted, true);
-	assert.deepEqual(flux.sent, [4_800]);
+	assert.deepEqual(flux.sent, [2_560]);
 
 	flux.turn({
 		event: "EndOfTurn",
@@ -156,10 +230,10 @@ test("the bot's audio is transcribed, attributed, and a woken request reaches Fa
 
 	assert.deepEqual(requests.find((r) => r.path.endsWith("/segments"))?.body, {
 		sessionId: "session-1",
-		botId: "bot-1",
+		botId: "bot_abc123",
 		text: "Hey Fabric, what is the name of the project?",
 		speakerName: "Dev One",
-		speakerId: "1",
+		speakerId: "participant-1",
 		utteranceStartMs: 500,
 		utteranceEndMs: 2_346,
 	});
@@ -167,28 +241,283 @@ test("the bot's audio is transcribed, attributed, and a woken request reaches Fa
 	await sleep(700);
 	const turn = requests.find((r) => r.path.endsWith("/turns"))?.body;
 	assert.equal(turn?.text, "what is the name of the project?");
-	assert.equal(turn?.speakerId, "1");
-	assert.equal(turn?.botId, "bot-1");
+	assert.equal(turn?.speakerId, "participant-1");
+	assert.equal(turn?.botId, "bot_abc123");
 });
 
-test("a reply is played on the same socket the bot streams from", async () => {
-	const { bridge, bot, frames } = meeting();
+test("a request that carries its own question is handed to Fabric at Flux's end of turn, with no extra wait", async () => {
+	const { bridge, bot, flux, requests } = meeting();
 	await bridge.onStart();
-	await bridge.onConnect(bot, {
-		request: {
-			url: "wss://bridge.example.com/parties/parlume/session-1?token=stream-token",
-		},
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	await flush();
+	const dispatched = () => requests.some((r) => r.path.endsWith("/turns"));
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.5,
+		audio_window_end: 2.3,
+		transcript: "Hey Fabric, what is the name of the project?",
 	});
+	await sleep(100);
+
+	assert.equal(dispatched(), true, "dispatched well inside the old 600 ms");
+	assert.equal(
+		requests.find((r) => r.path.endsWith("/turns"))?.body.text,
+		"what is the name of the project?",
+	);
+});
+
+test("a request that follows a bare wake phrase is held briefly, and only words hold it open", async () => {
+	const { bridge, bot, flux, requests } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	await flush();
+	const dispatched = () =>
+		requests.filter((r) => r.path.endsWith("/turns")).length;
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.5,
+		audio_window_end: 1.2,
+		transcript: "Hey Fabric.",
+	});
+	await sleep(100);
+	assert.equal(dispatched(), 0, "a bare wake phrase has no request yet");
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 3,
+		transcript: "How many items are on the roadmap?",
+	});
+	await sleep(150);
+	flux.turn({
+		event: "StartOfTurn",
+		turn_index: 2,
+		audio_window_start: 3.1,
+		audio_window_end: 3.2,
+		transcript: "",
+	});
+	await sleep(100);
+	assert.equal(dispatched(), 0, "an empty start of turn does not hold it");
+	await sleep(150);
+	assert.equal(dispatched(), 1, "dispatched after the short quiet window");
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 3,
+		audio_window_start: 5,
+		audio_window_end: 5.5,
+		transcript: "Hey Fabric.",
+	});
+	await sleep(50);
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 4,
+		audio_window_start: 6,
+		audio_window_end: 7,
+		transcript: "And how many are done?",
+	});
+	await sleep(200);
+	flux.turn({
+		event: "Update",
+		turn_index: 5,
+		audio_window_start: 7.2,
+		audio_window_end: 7.5,
+		transcript: "and how many",
+	});
+	await sleep(200);
+	assert.equal(dispatched(), 1, "a continuing speaker holds the request");
+	await sleep(300);
+	assert.equal(dispatched(), 2);
+});
+
+test("chunks that arrive while the stream is being verified are verified once and transcribed in order", async () => {
+	let releaseVerification: () => void = () => {};
+	const { bridge, bot, flux, requests, closed } = meeting({
+		verify: () =>
+			new Promise<Response>((resolve) => {
+				releaseVerification = () =>
+					resolve(
+						Response.json({
+							valid: true,
+							hardStopAt: new Date(
+								Date.now() + 3_600_000,
+							).toISOString(),
+							streamGeneration: 1,
+						}),
+					);
+			}),
+	});
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+
+	const arrivals = [
+		bridge.onMessage(bot, audio(1_000_080, { bytes: 2_560 })),
+		bridge.onMessage(bot, audio(1_000_180, { bytes: 3_200 })),
+		bridge.onMessage(bot, audio(1_000_300, { bytes: 3_840 })),
+	];
+	await flush();
+	assert.equal(
+		requests.filter((r) => r.path.endsWith("/verify-stream")).length,
+		1,
+	);
+	assert.deepEqual(flux.sent, []);
+
+	releaseVerification();
+	await Promise.all(arrivals);
+	await flush();
+
+	assert.equal(
+		requests.filter((r) => r.path.endsWith("/verify-stream")).length,
+		1,
+	);
+	assert.deepEqual(flux.sent, [2_560, 3_200, 3_840]);
+	assert.deepEqual(closed, []);
+});
+
+test("a chunk from a bot Fabric does not recognise closes the stream and is never transcribed", async () => {
+	const { bridge, bot, flux, closed, transcription } = meeting({
+		verify: async () => new Response(null, { status: 403 }),
+	});
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+
+	await bridge.onMessage(bot, audio(1_000_010, { botId: "bot_other" }));
+	await flush();
+
+	assert.deepEqual(closed, [4001]);
+	assert.deepEqual(flux.sent, []);
+	assert.equal(transcription.length, 0);
+});
+
+test("a later chunk that names another bot closes the stream", async () => {
+	const { bridge, bot, closed } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	await bridge.onMessage(bot, audio(1_000_010));
+
+	await bridge.onMessage(bot, audio(1_000_020, { botId: "bot_other" }));
+
+	assert.deepEqual(closed, [4001]);
+});
+
+test("a message that is not Attendee audio closes an unverified stream and is ignored once verified", async () => {
+	const unverified = meeting();
+	await unverified.bridge.onStart();
+	await unverified.bridge.onConnect(unverified.bot, {
+		request: { url: STREAM_URL },
+	});
+	await unverified.bridge.onMessage(unverified.bot, '{"event":"other"}');
+	assert.deepEqual(unverified.closed, [4002]);
+
+	const verified = meeting();
+	await verified.bridge.onStart();
+	await verified.bridge.onConnect(verified.bot, {
+		request: { url: STREAM_URL },
+	});
+	await verified.bridge.onMessage(verified.bot, audio(1_000_010));
+	await verified.bridge.onMessage(verified.bot, '{"event":"other"}');
+	await verified.bridge.onMessage(verified.bot, "not json");
+	assert.deepEqual(verified.closed, []);
+});
+
+test("binary frames are not the provider's audio and are never transcribed", async () => {
+	const { bridge, bot, flux } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	await bridge.onMessage(bot, audio(1_000_080, { bytes: 2_560 }));
+	await flush();
+
+	await bridge.onMessage(bot, new ArrayBuffer(2_560));
+	await bridge.onMessage(bot, new Uint8Array(2_560));
+	await flush();
+
+	assert.deepEqual(flux.sent, [2_560]);
+});
+
+test("the transcriber restarts at the rate the bot reports", async () => {
+	const { bridge, bot, transcription } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+
+	// 80 ms at 24 kHz, twice, then 80 ms at 16 kHz.
 	await bridge.onMessage(
 		bot,
-		JSON.stringify({ bot_id: "bot-1", sample_rate: 16_000, start_time: 1 }),
+		audio(1_000_080, { sampleRate: 24_000, bytes: 3_840 }),
 	);
+	await bridge.onMessage(
+		bot,
+		audio(1_000_160, { sampleRate: 24_000, bytes: 3_840 }),
+	);
+	await flush();
+	assert.equal(transcription.length, 1);
+
+	await bridge.onMessage(
+		bot,
+		audio(1_000_240, { sampleRate: 16_000, bytes: 2_560 }),
+	);
+	await flush();
+
+	assert.deepEqual(
+		transcription.map((call) => plain(call.inputs).sample_rate),
+		["24000", "16000"],
+	);
+});
+
+test("speaker updates need the service secret and a well-formed body", async () => {
+	const { bridge } = meeting();
+	await bridge.onStart();
+	const update = {
+		name: "Dev One",
+		id: "participant-1",
+		timestamp: 1_000_400,
+		isSpeaking: true,
+	};
+
+	const unauthorized = await bridge.onRequest(
+		control(
+			"speakers",
+			{ updates: [update] },
+			{ Authorization: "Bearer wrong" },
+		),
+	);
+	const malformed = await bridge.onRequest(
+		control("speakers", { updates: [{ name: "Broken" }] }),
+	);
+	const missing = await bridge.onRequest(control("speakers", { update }));
+	const accepted = await bridge.onRequest(
+		control("speakers", { updates: [update] }),
+	);
+
+	assert.equal(unauthorized.status, 401);
+	assert.equal(malformed.status, 400);
+	assert.equal(missing.status, 400);
+	assert.equal(accepted.status, 200);
+	assert.deepEqual(plain(await accepted.json()), { accepted: 1 });
+});
+
+test("a reply is played as 100 ms JSON frames on the socket the bot streams from", async () => {
+	const { bridge, bot, sent } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	await bridge.onMessage(bot, audio(1_000_010));
+	await flush();
 
 	// The bridge's outlet timers are unreferenced; this keeps the loop alive
 	// while the reply plays out in real time.
 	const keepAlive = setInterval(() => {}, 1_000);
-	// 80 ms of 24 kHz speech at a steady non-zero level.
-	const speech = new Uint8Array(new Int16Array(1_920).fill(1_000).buffer);
+	// 200 ms of 24 kHz speech at a steady non-zero level.
+	const speech = new Uint8Array(new Int16Array(4_800).fill(1_000).buffer);
 	const response = await bridge.onRequest(
 		new Request(
 			"https://bridge.example.com/parties/parlume/session-1?action=speak",
@@ -209,10 +538,272 @@ test("a reply is played on the same socket the bot streams from", async () => {
 	const result = await response.json();
 	assert.equal(result.played, true);
 	assert.equal(result.interrupted, false);
-	// The bot gets the reply, and only the reply, as four 20 ms frames at its
-	// 16 kHz rate.
-	assert.equal(frames.length, 4);
-	assert.ok(frames.every((frame) => frame.byteLength === 640));
-	assert.ok(frames.every((frame) => frame.some((byte) => byte !== 0)));
+	// 300 ms of silence for the bot's unmute, then the reply as two frames.
+	const messages = sent.map((message) => JSON.parse(message));
+	assert.equal(messages.length, 5);
+	for (const message of messages) {
+		assert.deepEqual(Object.keys(message), ["trigger", "data"]);
+		assert.equal(message.trigger, "realtime_audio.bot_output");
+		assert.equal(message.data.sample_rate, 24_000);
+		assert.equal(Buffer.from(message.data.chunk, "base64").length, 4_800);
+	}
+	const silent = messages.map((message) =>
+		Buffer.from(message.data.chunk, "base64").every((byte) => byte === 0),
+	);
+	assert.deepEqual(silent, [true, true, true, false, false]);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("a reply before the bot has streamed any meeting audio is refused", async () => {
+	const { bridge, bot, sent } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+
+	const response = await bridge.onRequest(
+		new Request(
+			"https://bridge.example.com/parties/parlume/session-1?action=speak",
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer service-secret",
+					"content-type": "audio/pcm",
+					"x-parlume-voice-generation": "0",
+				},
+				body: new Uint8Array(4_800),
+			},
+		),
+	);
+
+	assert.equal(response.status, 409);
+	assert.deepEqual(sent, []);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+function say(
+	sentences: string[],
+	headers: Record<string, string> = {},
+	generation = "0",
+) {
+	return new Request(
+		"https://bridge.example.com/parties/parlume/session-1?action=say",
+		{
+			method: "POST",
+			headers: {
+				Authorization: "Bearer service-secret",
+				"content-type": "application/x-ndjson",
+				"x-parlume-voice-generation": generation,
+				...headers,
+			},
+			body: sentences
+				.map((text) => `${JSON.stringify({ text })}\n`)
+				.join(""),
+		},
+	);
+}
+
+async function connectedMeeting(options: Parameters<typeof meeting>[0] = {}) {
+	const harness = meeting(options);
+	await harness.bridge.onStart();
+	await harness.bridge.onConnect(harness.bot, {
+		request: { url: STREAM_URL },
+	});
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await harness.bridge.onMessage(harness.bot, audio(end));
+	}
+	await flush();
+	return harness;
+}
+
+test("sentences sent as text are synthesized by Aura and played as frames on the bot's socket", async () => {
+	const { bridge, bot, sent, auraCalls } = await connectedMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+
+	const response = await bridge.onRequest(
+		say(["The plan is ready.", "Two items remain."]),
+	);
+	clearInterval(keepAlive);
+
+	assert.equal(response.status, 200);
+	const result = plain(await response.json());
+	assert.equal(result.played, true);
+	assert.equal(result.interrupted, false);
+	assert.equal(typeof result.firstAudioAt, "number");
+	assert.equal(result.failedAt, undefined);
+	assert.deepEqual(
+		result.sentences.map((s: { chars: number; ok: boolean }) => [
+			s.chars,
+			s.ok,
+		]),
+		[
+			[18, true],
+			[17, true],
+		],
+	);
+	assert.deepEqual(
+		auraCalls.map((call) => plain(call.inputs)),
+		[
+			{
+				text: "The plan is ready.",
+				speaker: "orpheus",
+				encoding: "linear16",
+				container: "none",
+				sample_rate: 24_000,
+			},
+			{
+				text: "Two items remain.",
+				speaker: "orpheus",
+				encoding: "linear16",
+				container: "none",
+				sample_rate: 24_000,
+			},
+		],
+	);
+	// 300 ms preroll, then two 100 ms clips (4,800 bytes each is 100 ms of
+	// 24 kHz speech) as 100 ms frames.
+	const frames = sent.map((message) => JSON.parse(message));
+	assert.equal(frames.length, 3 + 2);
+	for (const frame of frames) {
+		assert.equal(frame.trigger, "realtime_audio.bot_output");
+		assert.equal(frame.data.sample_rate, 24_000);
+	}
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("say is refused without the service secret, the right content type or a current voice generation", async () => {
+	const { bridge, bot } = await connectedMeeting();
+
+	const unauthorized = await bridge.onRequest(
+		say(["Hi."], { Authorization: "Bearer wrong" }),
+	);
+	const wrongType = await bridge.onRequest(
+		say(["Hi."], { "content-type": "audio/pcm" }),
+	);
+	const stale = await bridge.onRequest(say(["Hi."], {}, "7"));
+
+	assert.equal(unauthorized.status, 401);
+	assert.equal(wrongType.status, 400);
+	assert.equal(stale.status, 200);
+	assert.deepEqual(plain(await stale.json()), {
+		played: false,
+		interrupted: true,
+	});
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("say before the bot has streamed any meeting audio is refused", async () => {
+	const { bridge, bot, auraCalls } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+
+	const response = await bridge.onRequest(say(["Hi."]));
+
+	assert.equal(response.status, 409);
+	assert.equal(auraCalls.length, 0);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("when Aura fails the bridge reports where, so the worker can speak the rest", async () => {
+	const { bridge, bot, sent } = await connectedMeeting({
+		aura: (_text, index) =>
+			index === 1
+				? new Response("unavailable", { status: 503 })
+				: new Response(new Uint8Array(4_800)),
+	});
+	const keepAlive = setInterval(() => {}, 1_000);
+
+	const response = await bridge.onRequest(
+		say(["First sentence.", "Second sentence.", "Third sentence."]),
+	);
+	clearInterval(keepAlive);
+
+	assert.equal(response.status, 200);
+	const result = plain(await response.json());
+	assert.equal(result.played, false);
+	assert.equal(result.interrupted, false);
+	assert.equal(result.failedAt, 1);
+	assert.match(result.error, /HTTP 503/);
+	assert.ok(sent.length > 0, "the sentence before the failure was played");
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("a failed say leaves the reply pending for the worker's fallback on the same generation", async () => {
+	const { bridge, bot } = await connectedMeeting({
+		aura: () => new Response("unavailable", { status: 500 }),
+	});
+	const keepAlive = setInterval(() => {}, 1_000);
+
+	const failed = plain(await (await bridge.onRequest(say(["Hi."]))).json());
+	const speech = new Uint8Array(new Int16Array(2_400).fill(1_000).buffer);
+	const fallback = await bridge.onRequest(
+		new Request(
+			"https://bridge.example.com/parties/parlume/session-1?action=speak",
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer service-secret",
+					"content-type": "audio/pcm",
+					"x-parlume-voice-generation": "0",
+				},
+				body: speech,
+			},
+		),
+	);
+	clearInterval(keepAlive);
+
+	assert.equal(failed.failedAt, 0);
+	assert.equal(fallback.status, 200);
+	assert.equal((await fallback.json()).played, true);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("speech from another participant mid-sentence silences a say reply and ends it as interrupted", async () => {
+	const { bridge, bot, flux, sent } = await connectedMeeting({
+		aura: () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					async start(controller) {
+						for (let part = 0; part < 20; part++) {
+							controller.enqueue(new Uint8Array(4_800));
+							await sleep(40);
+						}
+						controller.close();
+					},
+				}),
+			),
+	});
+	const keepAlive = setInterval(() => {}, 1_000);
+	await bridge.onRequest(
+		control("speakers", {
+			updates: [
+				{
+					name: "Dev One",
+					id: "participant-1",
+					timestamp: 1_000_005,
+					isSpeaking: true,
+				},
+			],
+		}),
+	);
+
+	const playing = bridge.onRequest(say(["A rather long sentence."]));
+	await sleep(250);
+	const framesBefore = sent.length;
+	flux.turn({
+		event: "Update",
+		turn_index: 9,
+		audio_window_start: 0.02,
+		audio_window_end: 0.05,
+		transcript: "wait",
+	});
+	await flush();
+	const response = await playing;
+	clearInterval(keepAlive);
+
+	const result = plain(await response.json());
+	assert.equal(result.played, false);
+	assert.equal(result.interrupted, true);
+	assert.equal(result.failedAt, undefined);
+	assert.ok(framesBefore > 0, "it was speaking when interrupted");
+	assert.ok(sent.length < framesBefore + 6, "playback stopped");
 	await bridge.onClose(bot, 1000, "done");
 });

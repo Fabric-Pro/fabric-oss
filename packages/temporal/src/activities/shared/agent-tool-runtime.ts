@@ -31,7 +31,16 @@ export interface AgentToolRuntime {
 	};
 	abortSignal?: AbortSignal;
 	onText?: (text: string) => void;
+	/**
+	 * Tools this run adds to the agent's own, under the `parlume` source. They
+	 * run through `invoke` like any other, so the runtime decides what each may
+	 * do.
+	 */
+	tools?: Record<string, unknown>;
 }
+
+/** The `configId` the runtime's own tools carry in an invocation's source. */
+export const RUNTIME_TOOL_CONFIG_ID = "parlume";
 
 interface ExecutableTool {
 	description?: string;
@@ -120,6 +129,14 @@ export async function prepareAgentTools(
 	if (runtime.prepared) {
 		return runtime.prepared(tools, sources);
 	}
+	const withRuntimeTools: Record<string, AgentToolSource> = { ...sources };
+	for (const [name, definition] of Object.entries(runtime.tools ?? {})) {
+		tools[name] = definition;
+		withRuntimeTools[name] = {
+			configId: RUNTIME_TOOL_CONFIG_ID,
+			originalName: name,
+		};
+	}
 	for (const [name, definition] of Object.entries(tools)) {
 		if (!isExecutableAgentTool(definition)) {
 			delete tools[name];
@@ -135,7 +152,7 @@ export async function prepareAgentTools(
 					args: args[0],
 					callId: toolCallId(args[1]),
 					delegates: definition.approvalBoundary === "delegation",
-					source: sources[name] ?? {
+					source: withRuntimeTools[name] ?? {
 						configId: "builtin",
 						originalName: name,
 					},

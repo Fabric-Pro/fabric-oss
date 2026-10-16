@@ -5,6 +5,11 @@
  * Checks for common issues like empty workflows, disconnected nodes, and cycles.
  */
 
+import {
+	AGENT_TASK_NODE_TYPE,
+	PUBLISH_FRAME_NODE_TYPE,
+} from "@repo/temporal/workflow-node-types";
+
 interface WorkflowNode {
 	id: string;
 	type: string;
@@ -145,11 +150,60 @@ export function validateWorkflowBeforeExecution(
 		}
 	}
 
+	// An agent task's only durable output is a frame; without a Publish Frame
+	// downstream, what it wrote is dropped when the run ends. A warning, not an
+	// error: an agent whose job is its tool calls is a legitimate graph.
+	for (const agentTask of realNodes.filter(
+		(n) => n.type === AGENT_TASK_NODE_TYPE,
+	)) {
+		if (
+			!leadsToNodeType(
+				agentTask.id,
+				PUBLISH_FRAME_NODE_TYPE,
+				nodeMap,
+				typedEdges,
+			)
+		) {
+			const label = (agentTask.data?.label as string) || agentTask.id;
+			warnings.push(
+				`Agent task "${label}" does not lead to a Publish Frame step, so its result will not be saved.`,
+			);
+		}
+	}
+
 	return {
 		valid: errors.length === 0,
 		errors,
 		warnings,
 	};
+}
+
+/** Whether any node of `type` is reachable by following edges from `startId`. */
+function leadsToNodeType(
+	startId: string,
+	type: string,
+	nodeMap: Map<string, WorkflowNode>,
+	edges: WorkflowEdge[],
+): boolean {
+	const seen = new Set<string>([startId]);
+	const pending = [startId];
+	for (
+		let current = pending.pop();
+		current !== undefined;
+		current = pending.pop()
+	) {
+		for (const edge of edges) {
+			if (edge.source !== current || seen.has(edge.target)) {
+				continue;
+			}
+			if (nodeMap.get(edge.target)?.type === type) {
+				return true;
+			}
+			seen.add(edge.target);
+			pending.push(edge.target);
+		}
+	}
+	return false;
 }
 
 /**

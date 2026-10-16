@@ -20,14 +20,22 @@
  *   the analysis too unless a run is still writing; the end of a run
  *   refetches the analysis without one; a nudge for another document does
  *   nothing;
- * - the Analysis tab's indicator, the library prompt label, the Glossy link
- *   rule and the typography wrapper, including its computed sizes.
+ * - the Analysis tab's indicator, the library prompt label and the Glossy link
+ *   rule;
+ * - the shared Proposal theme (Fizzy #2946): worn by a member's and a project
+ *   guest's Main alike, inside the editor's content and the live pane's
+ *   document, never on the region that also holds the chat; neutral while the
+ *   tokens are pending, the document's own once they arrive, and off for a
+ *   Business Case (no request) or when the server refuses.
  *
- * `@tanstack/react-query` is real; the document and the analysis come from
- * mutable fixtures behind mocked oRPC clients. `DocumentEditor` is a stand-in
- * that keeps the state the real one keeps across a run — whether it started a
- * regeneration and what the body was then — so losing its instance shows up
- * as a lost review.
+ * `@tanstack/react-query` is real; the document, the analysis and the theme
+ * tokens come from mutable fixtures behind mocked oRPC clients.
+ * `DocumentEditor` is a stand-in that keeps the state the real one keeps
+ * across a run — whether it started a regeneration and what the body was
+ * then — so losing its instance shows up as a lost review. It puts the theme
+ * root where the real one does, on the box around its content; that the box
+ * holds neither the diff preview panes nor the chat is pinned against the
+ * real editor in `DocumentEditor.proposal-artifact.test.tsx`.
  */
 
 import { readFileSync } from "node:fs";
@@ -52,7 +60,7 @@ const fixtures = vi.hoisted(() => ({
 		boolean
 	>,
 	isGuest: false,
-	userRole: "editor",
+	userRole: "editor" as string | null,
 	aiSidebarExpanded: false,
 	presence: {
 		onDocumentChange: undefined as undefined | ((event: unknown) => void),
@@ -66,6 +74,7 @@ const fixtures = vi.hoisted(() => ({
 		getDocument: vi.fn(),
 		getAnalysis: vi.fn(),
 		getGlossy: vi.fn(),
+		getThemeTokens: vi.fn(),
 		generate: vi.fn(),
 	},
 }));
@@ -144,6 +153,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 			proposalArtifact: {
 				getAnalysis: (input: unknown) =>
 					fixtures.api.getAnalysis(input),
+				getThemeTokens: (input: unknown) =>
+					fixtures.api.getThemeTokens(input),
 			},
 			glossy: {
 				get: (input: unknown) => fixtures.api.getGlossy(input),
@@ -206,7 +217,9 @@ vi.mock(
 	"@saas/projects/components/proposal-artifact/ProposalAnalysisPanel",
 	() => ({
 		ProposalAnalysisPanel: (props: { isGenerating: boolean }) => (
-			<p>Analysis panel{props.isGenerating ? " (generating)" : ""}</p>
+			<p data-props={Object.keys(props).sort().join(",")}>
+				Analysis panel{props.isGenerating ? " (generating)" : ""}
+			</p>
 		),
 	}),
 );
@@ -236,6 +249,8 @@ vi.mock("@saas/projects/components/DocumentEditor", async () => {
 		promptSelectorReplacement?: ReactNode;
 		suppressGenerationOverlay?: boolean;
 		attachToServerRun?: boolean;
+		contentThemeProps?: ProposalThemeRootProps;
+		statTiles?: boolean;
 	}) {
 		fixtures.editor.lastProps = props;
 		const { data } = useQuery(
@@ -272,7 +287,9 @@ vi.mock("@saas/projects/components/DocumentEditor", async () => {
 					Regenerate
 				</button>
 				<div data-testid="editor-scroll" style={{ overflow: "auto" }}>
-					<p>{content}</p>
+					<div {...props.contentThemeProps}>
+						<p>{content}</p>
+					</div>
 				</div>
 				{reviewing && (
 					<fieldset aria-label="Regeneration review">
@@ -291,8 +308,13 @@ vi.mock("@saas/projects/components/DocumentEditor", async () => {
 
 import germanMessages from "@repo/i18n/translations/de.json";
 import messages from "@repo/i18n/translations/en.json";
+import {
+	buildProposalThemeTokens,
+	NEUTRAL_THEME,
+} from "@repo/utils/proposal-artifact/theme-tokens";
 import { DocumentEditorPage } from "@saas/projects/components/DocumentEditorPage";
 import { proposalAnalysisQueryKey } from "@saas/projects/components/proposal-artifact/use-proposal-analysis";
+import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
 import { orpc } from "@shared/lib/orpc-query-utils";
 
 const pageCopy = messages.projects.proposalArtifactPage;
@@ -320,13 +342,39 @@ function proposal(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function analysisRun(overrides: Record<string, unknown> = {}) {
+/** Theme tokens as the server sends them; no logos, so no signed reads. */
+function themeTokens(primaryColor: string | null = null) {
 	return {
-		id: "analysis-1",
-		status: "COMPLETE",
+		tokens: buildProposalThemeTokens({
+			organization: { name: "Example Org", logoKey: null },
+			style: primaryColor ? { primaryColor, accentColors: [] } : null,
+			brandKit: null,
+			recipient: null,
+		}),
+	};
+}
+
+/** The analysis read: a complete shown run unless overridden. */
+function analysis(overrides: Record<string, unknown> = {}) {
+	return {
+		run: { id: "analysis-1", kind: "GENERATION", status: "COMPLETE" },
 		isStale: false,
-		timedOut: false,
+		newerRun: null,
 		findings: [],
+		noLongerRaised: [],
+		...overrides,
+	};
+}
+
+/** A run newer than the shown one, not complete. */
+function newerRun(status: string, overrides: Record<string, unknown> = {}) {
+	return {
+		id: "analysis-2",
+		kind: "RERUN",
+		status,
+		errorCode: null,
+		timedOut: false,
+		createdAt: new Date().toISOString(),
 		...overrides,
 	};
 }
@@ -386,7 +434,7 @@ beforeEach(() => {
 		},
 	});
 	fixtures.document = proposal();
-	fixtures.analysis = null;
+	fixtures.analysis = analysis({ run: null });
 	fixtures.glossyEdition = null;
 	fixtures.flags = { PROPOSAL_ARTIFACT: true, GLOSSY_EDITION: false };
 	fixtures.isGuest = false;
@@ -404,6 +452,8 @@ beforeEach(() => {
 	fixtures.api.getGlossy.mockImplementation(async () => ({
 		edition: fixtures.glossyEdition,
 	}));
+	fixtures.api.getThemeTokens.mockReset();
+	fixtures.api.getThemeTokens.mockImplementation(async () => themeTokens());
 	fixtures.api.generate.mockReset();
 	fixtures.api.generate.mockResolvedValue({ outcome: "started" });
 });
@@ -438,6 +488,26 @@ describe("DocumentEditorPage — who gets the Proposal tabs", () => {
 		);
 	});
 
+	it("hands the analysis panel no edit rights: whether a member may respond is the server's answer", async () => {
+		const editor = renderPage();
+		await pageReady();
+		const passed = screen
+			.getByText("Analysis panel", { ignore: "script" })
+			.getAttribute("data-props");
+		expect(passed?.split(",")).not.toContain("canEdit");
+		editor.unmount();
+
+		// The page's legacy role is null for an organization member reaching
+		// the project through their organization role; it must not hide the
+		// actions the server would allow.
+		fixtures.userRole = null;
+		renderFreshPage();
+		await pageReady();
+		expect(
+			screen.getByText("Analysis panel", { ignore: "script" }),
+		).toHaveAttribute("data-props", passed ?? "");
+	});
+
 	it("keeps today's page for a Business Case", async () => {
 		fixtures.document = proposal({ type: "BUSINESS_CASE" });
 		renderPage();
@@ -447,6 +517,14 @@ describe("DocumentEditorPage — who gets the Proposal tabs", () => {
 		expect(fixtures.editor.lastProps.suppressGenerationOverlay).toBe(false);
 		expect(fixtures.editor.lastProps.attachToServerRun).toBe(false);
 		expect(fixtures.api.getAnalysis).not.toHaveBeenCalled();
+		// A Business Case keeps a stat-tiles fence as a code block.
+		expect(fixtures.editor.lastProps.statTiles).toBe(false);
+	});
+
+	it("lets the editor draw stat tiles for a client-document Proposal, members and guests alike", async () => {
+		renderPage();
+		await pageReady();
+		expect(fixtures.editor.lastProps.statTiles).toBe(true);
 	});
 
 	it("keeps today's page with the gate off", async () => {
@@ -865,37 +943,45 @@ describe("DocumentEditorPage — Internal Analysis tab indicator", () => {
 		return screen.getByRole("tab", { name: /Internal Analysis/ });
 	}
 
-	it("says a queued run is waiting", async () => {
-		fixtures.analysis = analysisRun({ status: "PENDING" });
+	it("says a queued newer run is waiting", async () => {
+		fixtures.analysis = analysis({ newerRun: newerRun("PENDING") });
 		const tab = await analysisTab();
 		await waitFor(() =>
 			expect(tab).toHaveTextContent(pageCopy.analysisIndicator.pending),
 		);
 	});
 
-	it("says a run is running", async () => {
-		fixtures.analysis = analysisRun({ status: "RUNNING" });
+	it("says a newer run is running, also before any run completed", async () => {
+		fixtures.analysis = analysis({
+			run: null,
+			newerRun: newerRun("RUNNING"),
+		});
 		const tab = await analysisTab();
 		await waitFor(() =>
 			expect(tab).toHaveTextContent(pageCopy.analysisIndicator.running),
 		);
 	});
 
-	it("counts the Blocking findings of a complete run", async () => {
-		fixtures.analysis = analysisRun({
+	it("counts the Blocking findings still waiting for a decision", async () => {
+		fixtures.analysis = analysis({
 			findings: [
-				{ id: "f1", severity: "BLOCKING" },
-				{ id: "f2", severity: "BLOCKING" },
-				{ id: "f3", severity: "IMPORTANT" },
+				{ id: "f1", severity: "BLOCKING", state: "UNADDRESSED" },
+				{ id: "f2", severity: "BLOCKING", state: "NEEDS_REVIEW" },
+				{ id: "f3", severity: "BLOCKING", state: "CONFIRMED" },
+				{ id: "f4", severity: "BLOCKING", state: "RESPONDED" },
+				{ id: "f5", severity: "IMPORTANT", state: "UNADDRESSED" },
 			],
 		});
 		const tab = await analysisTab();
 		await waitFor(() => expect(tab).toHaveTextContent("2 blocking"));
 	});
 
-	it("shows nothing beside the label for a complete run without Blocking findings", async () => {
-		fixtures.analysis = analysisRun({
-			findings: [{ id: "f1", severity: "INFORMATIONAL" }],
+	it("shows nothing beside the label once every Blocking finding is answered", async () => {
+		fixtures.analysis = analysis({
+			findings: [
+				{ id: "f1", severity: "BLOCKING", state: "CONFIRMED" },
+				{ id: "f2", severity: "INFORMATIONAL", state: "UNADDRESSED" },
+			],
 		});
 		const tab = await analysisTab();
 		await waitFor(() =>
@@ -904,8 +990,10 @@ describe("DocumentEditorPage — Internal Analysis tab indicator", () => {
 		expect(tab).toHaveTextContent(/^Internal Analysis$/);
 	});
 
-	it("marks a failed run in words", async () => {
-		fixtures.analysis = analysisRun({ status: "FAILED" });
+	it("marks a failed newer run in words", async () => {
+		fixtures.analysis = analysis({
+			newerRun: newerRun("FAILED", { errorCode: "MODEL_ERROR" }),
+		});
 		const tab = await analysisTab();
 		await waitFor(() =>
 			expect(tab).toHaveTextContent(pageCopy.analysisIndicator.failed),
@@ -991,20 +1079,181 @@ describe("DocumentEditorPage — translations", () => {
 	});
 });
 
-describe("DocumentEditorPage — artifact typography", () => {
-	it("wraps the editor in the typography class only in artifact mode", async () => {
-		const view = renderPage();
-		await pageReady();
-		expect(editorRegion()).toHaveClass("proposal-artifact");
-		view.unmount();
+describe("DocumentEditorPage — Proposal theme", () => {
+	/** A synthetic Style primary that reads as text on white paper. */
+	const STYLE_PRIMARY = "#1d4ed8";
+	const THEME_ROOT = '.proposal-theme[data-proposal-theme="live"]';
 
-		fixtures.document = proposal({ type: "BUSINESS_CASE" });
-		renderFreshPage();
+	function themeRoot(): HTMLElement | null {
+		return document.querySelector<HTMLElement>(THEME_ROOT);
+	}
+
+	async function findThemeRoot(): Promise<HTMLElement> {
+		let root: HTMLElement | null = null;
+		await waitFor(() => {
+			root = themeRoot();
+			expect(root).not.toBeNull();
+		});
+		return root as unknown as HTMLElement;
+	}
+
+	function themeStylesheets() {
+		return document.head.querySelectorAll(
+			'style[data-href="proposal-theme-live"]',
+		);
+	}
+
+	/** The theme root, and no ancestor of it, is a theme root. */
+	function expectSingleRoot(root: HTMLElement) {
+		expect(root.parentElement?.closest(".proposal-theme")).toBeNull();
+		expect(root.parentElement?.closest("[data-proposal-theme]")).toBeNull();
+	}
+
+	it("themes a member's Main inside the editor's content, never on the region that holds the chat", async () => {
+		renderPage();
 		await pageReady();
-		expect(editorRegion()).not.toHaveClass("proposal-artifact");
+
+		const root = await findThemeRoot();
+		expect(root.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+		expect(root.style.getPropertyValue("--pa-ink")).toBe(NEUTRAL_THEME.ink);
+		expect(root).toContainElement(screen.getByText(/The saved body\./));
+		// The region wraps CopilotKit, whose chat the theme's element rules
+		// would restyle; the root sits inside the editor instead.
+		const region = editorRegion();
+		expect(region).toContainElement(root);
+		expect(region).not.toHaveClass("proposal-theme");
+		expect(region).not.toHaveAttribute("data-proposal-theme");
+		expect(root).not.toContainElement(
+			screen.getByRole("button", { name: "Regenerate" }),
+		);
+		expectSingleRoot(root);
+		// The paper is painted from the `--pa-*` properties only: a colour
+		// utility on the root would read the app tokens it remaps, in either
+		// colour mode.
+		expect(root.className).not.toMatch(/(^|\s)(bg|text)-/);
+		expect(themeStylesheets()).toHaveLength(1);
+		expect(fixtures.api.getThemeTokens).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			documentId: "doc-1",
+		});
 	});
 
-	describe("computed sizes", () => {
+	it("themes a project guest's Main too, still without the tabs", async () => {
+		fixtures.isGuest = true;
+		renderPage();
+		await pageReady();
+
+		const root = await findThemeRoot();
+		expect(root.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+		expect(root.style.getPropertyValue("--pa-ink")).toBe(NEUTRAL_THEME.ink);
+		expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+		expect(fixtures.api.getAnalysis).not.toHaveBeenCalled();
+		expect(fixtures.api.getThemeTokens).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			documentId: "doc-1",
+		});
+	});
+
+	it("leaves a Business Case unthemed and never asks for its tokens", async () => {
+		fixtures.document = proposal({ type: "BUSINESS_CASE" });
+		renderPage();
+		await pageReady();
+
+		expect(themeRoot()).toBeNull();
+		expect(fixtures.editor.lastProps.contentThemeProps).toBeUndefined();
+		expect(fixtures.api.getThemeTokens).not.toHaveBeenCalled();
+	});
+
+	it("leaves the page unthemed with the gate off and never asks for the tokens", async () => {
+		fixtures.flags.PROPOSAL_ARTIFACT = false;
+		renderPage();
+		await pageReady();
+
+		expect(themeRoot()).toBeNull();
+		expect(fixtures.api.getThemeTokens).not.toHaveBeenCalled();
+	});
+
+	it("turns the theme off when the server refuses the document", async () => {
+		fixtures.api.getThemeTokens.mockRejectedValue(
+			Object.assign(new Error("Not found"), { code: "NOT_FOUND" }),
+		);
+		renderPage();
+		await pageReady();
+
+		await waitFor(() => expect(themeRoot()).toBeNull());
+		expect(fixtures.editor.lastProps.contentThemeProps).toBeUndefined();
+		// The rest of the member's page is unchanged.
+		expect(screen.getByRole("tablist")).toBeInTheDocument();
+	});
+
+	it("wears the neutral paint while the tokens are pending, then the document's own", async () => {
+		let answer: (value: unknown) => void = () => {};
+		fixtures.api.getThemeTokens.mockImplementation(
+			() =>
+				new Promise((resolveTokens) => {
+					answer = resolveTokens;
+				}),
+		);
+		renderPage();
+		await pageReady();
+
+		const pending = await findThemeRoot();
+		expect(pending.style.getPropertyValue("--pa-primary")).toBe(
+			NEUTRAL_THEME.primary,
+		);
+		expect(pending.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+
+		await act(async () => {
+			answer(themeTokens(STYLE_PRIMARY));
+		});
+
+		await waitFor(() =>
+			expect(themeRoot()?.style.getPropertyValue("--pa-primary")).toBe(
+				STYLE_PRIMARY,
+			),
+		);
+		expect(themeRoot()?.style.getPropertyValue("--pa-heading")).toBe(
+			STYLE_PRIMARY,
+		);
+	});
+
+	it("themes the live pane's document while a run writes, with the pane as the desk", async () => {
+		fixtures.document = proposal({
+			status: "GENERATING",
+			generationStartedAt: new Date().toISOString(),
+			generationProgress: 40,
+			liveContent: "## Scope\n\nFirst finished section.",
+		});
+		renderPage();
+		await pageReady();
+
+		const live = screen.getByTestId("proposal-live-sections");
+		const heading = await within(live).findByRole("heading", {
+			level: 2,
+			name: "Scope",
+		});
+		const root = heading.closest<HTMLElement>(THEME_ROOT);
+		expect(root).not.toBeNull();
+		expect(live).toContainElement(root);
+		expect(live).not.toHaveClass("proposal-theme");
+		expect(root?.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+		expect(root).not.toContainElement(
+			within(live).getByText(pageCopy.live.writingNext),
+		);
+		expectSingleRoot(root as HTMLElement);
+		// The pane and the hidden editor both render a root; one stylesheet.
+		expect(themeStylesheets()).toHaveLength(1);
+	});
+
+	describe("the editor stylesheet", () => {
 		const css = readFileSync(
 			resolve(
 				__dirname,
@@ -1023,66 +1272,30 @@ describe("DocumentEditorPage — artifact typography", () => {
 			style.remove();
 		});
 
-		function mount(wrapperClass: string) {
-			const { container } = render(
-				<div className={wrapperClass}>
-					<div className="p-10 tiptap">
-						<h1>Title</h1>
-						<h2>Section</h2>
-						<h3>Subsection</h3>
-						<p>Body</p>
-					</div>
-				</div>,
-			);
-			const tiptap = container.querySelector(".tiptap") as HTMLElement;
-			return {
-				tiptap: getComputedStyle(tiptap),
-				h1: getComputedStyle(tiptap.querySelector("h1") as HTMLElement),
-				h2: getComputedStyle(tiptap.querySelector("h2") as HTMLElement),
-				h3: getComputedStyle(tiptap.querySelector("h3") as HTMLElement),
-			};
-		}
-
-		it("sets the larger body, the heading scale and the 72ch column", () => {
-			const styles = mount("proposal-artifact");
-
-			expect(styles.tiptap.fontSize).toBe("1.0625rem");
-			expect(styles.tiptap.lineHeight).toBe("1.75");
-			expect(styles.tiptap.maxWidth).toBe("72ch");
-			expect(styles.tiptap.boxSizing).toBe("content-box");
-			expect(styles.h1.fontSize).toBe("1.875rem");
-			expect(styles.h2.fontSize).toBe("1.5rem");
-			expect(styles.h3.fontSize).toBe("1.25rem");
-			expect(styles.h2.lineHeight).toBe("1.3");
+		it("scopes nothing to a Proposal: the theme replaced its own typography rules", () => {
+			expect(css).not.toMatch(/\.proposal-(artifact|theme)\b/);
 		});
 
 		it("leaves every other editor on the shared rules", () => {
-			const styles = mount("");
-
-			expect(styles.tiptap.fontSize).toBe("");
-			expect(styles.tiptap.maxWidth).toBe("");
-			expect(styles.h1.fontSize).toBe("1.4rem");
-			expect(styles.h2.fontSize).toBe("1.2rem");
-		});
-
-		it("returns to the editor's body size and the full width below the md breakpoint", () => {
-			// jsdom does not evaluate media queries, so the rule is read from
-			// the stylesheet itself.
-			const sheet = style.sheet as CSSStyleSheet;
-			const narrow = Array.from(sheet.cssRules).find(
-				(rule): rule is CSSMediaRule =>
-					rule instanceof CSSMediaRule &&
-					rule.conditionText.includes("48rem") &&
-					rule.cssText.includes(".proposal-artifact"),
+			const { container } = render(
+				<div className="p-10 tiptap">
+					<h1>Title</h1>
+					<h2>Section</h2>
+					<p>Body</p>
+				</div>,
 			);
-			expect(narrow?.conditionText).toMatch(/width\s*<\s*48rem/);
-			const body = Array.from(narrow?.cssRules ?? []).find(
-				(rule): rule is CSSStyleRule =>
-					rule instanceof CSSStyleRule &&
-					rule.selectorText === ".proposal-artifact .tiptap",
-			);
-			expect(body?.style.getPropertyValue("font-size")).toBe("1rem");
-			expect(body?.style.getPropertyValue("max-width")).toBe("none");
+			const tiptap = container.querySelector(".tiptap") as HTMLElement;
+
+			expect(getComputedStyle(tiptap).fontSize).toBe("");
+			expect(getComputedStyle(tiptap).maxWidth).toBe("");
+			expect(
+				getComputedStyle(tiptap.querySelector("h1") as HTMLElement)
+					.fontSize,
+			).toBe("1.4rem");
+			expect(
+				getComputedStyle(tiptap.querySelector("h2") as HTMLElement)
+					.fontSize,
+			).toBe("1.2rem");
 		});
 	});
 });

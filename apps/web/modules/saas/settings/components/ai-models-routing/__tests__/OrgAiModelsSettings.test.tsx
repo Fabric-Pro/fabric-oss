@@ -491,7 +491,7 @@ describe("plan and API provider", () => {
 			await screen.findByTestId("ai-models-row-TOOL_CALLING"),
 		).toHaveTextContent("Advisor, ⌘J chat, agents, MCP tools");
 		expect(screen.getByTestId("ai-models-row-CHAT")).toHaveTextContent(
-			"Workspace document chat, Atlas assistant, Agent Builder Sidekick",
+			"Library document chat, Atlas assistant, Agent Builder Sidekick",
 		);
 	});
 

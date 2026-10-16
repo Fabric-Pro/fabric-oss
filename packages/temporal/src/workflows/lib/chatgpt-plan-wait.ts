@@ -27,7 +27,11 @@ import {
 	sleep,
 	workflowInfo,
 } from "@temporalio/workflow";
-import type { estimatePlanPoolResetActivity as EstimatePlanPoolResetFn } from "../../activities/chatgpt-plan-wait";
+import type {
+	estimatePlanPoolResetActivity as EstimatePlanPoolResetFn,
+	notifyPlanWaitWorkStoppedActivity as NotifyPlanWaitWorkStoppedFn,
+	NotifyPlanWaitWorkStoppedInput,
+} from "../../activities/chatgpt-plan-wait";
 
 export const CHATGPT_PLAN_WAIT_PATCH = "chatgpt-plan-wait";
 
@@ -42,6 +46,20 @@ const { estimatePlanPoolResetActivity } = proxyActivities<{
 	startToCloseTimeout: "1 minute",
 	retry: { maximumAttempts: 3, initialInterval: "2s" },
 });
+
+const { notifyPlanWaitWorkStoppedActivity } = proxyActivities<{
+	notifyPlanWaitWorkStoppedActivity: typeof NotifyPlanWaitWorkStoppedFn;
+}>({
+	startToCloseTimeout: "1 minute",
+	retry: { maximumAttempts: 2, initialInterval: "2s" },
+});
+
+/**
+ * The stopped notice (Fizzy #3050): a command added on the final-failure
+ * branches, so histories that failed before it replay unchanged.
+ */
+export const CHATGPT_PLAN_STOPPED_NOTICE_PATCH =
+	"chatgpt-plan-stopped-notice-v1";
 
 // Read by name and type, the fields Temporal sets on every activity failure,
 // rather than by class.
@@ -74,6 +92,17 @@ export interface ChatGptPlanWaitOptions {
 	 * `patched("bulk-pause-resume-v1")`.
 	 */
 	pauseBeyondMs?: number;
+	/**
+	 * Set where a final plan-spent failure ends the work, never where the run
+	 * carries on without the step: whoever started it and the organization's
+	 * admins are told it stopped (Fizzy #3050). The initiator defaults to
+	 * `userId`; name it where that is not who started the work.
+	 */
+	stoppedNotice?: Pick<
+		NotifyPlanWaitWorkStoppedInput,
+		"work" | "projectId" | "link"
+	> &
+		Partial<Pick<NotifyPlanWaitWorkStoppedInput, "initiatorUserId">>;
 }
 
 export const BULK_RUN_PAUSE_PATCH = "bulk-pause-resume-v1";
@@ -235,6 +264,31 @@ async function estimateReset(options: ChatGptPlanWaitOptions) {
 	return { waitMs: waitMs + jitterMs, resetKnown: resetKnown ?? true };
 }
 
+/**
+ * Announces a final plan-spent failure when the caller asked for it. A failed
+ * notice is swallowed: the step's own error is what ends the run.
+ */
+async function noticeStopped(options: ChatGptPlanWaitOptions): Promise<void> {
+	if (!options.stoppedNotice || !patched(CHATGPT_PLAN_STOPPED_NOTICE_PATCH)) {
+		return;
+	}
+	const info = workflowInfo();
+	try {
+		const { initiatorUserId, ...notice } = options.stoppedNotice;
+		await notifyPlanWaitWorkStoppedActivity({
+			...notice,
+			runId: `${info.workflowId}:${info.runId}`,
+			organizationId: options.organizationId ?? null,
+			initiatorUserId:
+				initiatorUserId === undefined
+					? (options.userId ?? null)
+					: initiatorUserId,
+		});
+	} catch {
+		// The notice never changes how the run ends.
+	}
+}
+
 export async function withChatGptPlanWait<T>(
 	step: () => Promise<T>,
 	options: ChatGptPlanWaitOptions,
@@ -269,6 +323,7 @@ export async function withChatGptPlanWait<T>(
 			throw new ChatGptPlanPause(estimate.waitMs, estimate.resetKnown);
 		}
 		if (maxWaitMs !== undefined && wait > maxWaitMs) {
+			await noticeStopped(options);
 			throw error;
 		}
 		// Zero when the organization lets the retry run on its own provider.
@@ -277,7 +332,14 @@ export async function withChatGptPlanWait<T>(
 			await sleep(wait);
 		}
 		if (!pausable) {
-			return step();
+			try {
+				return await step();
+			} catch (retryError) {
+				if (isPlanExhausted(retryError)) {
+					await noticeStopped(options);
+				}
+				throw retryError;
+			}
 		}
 		try {
 			return await step();

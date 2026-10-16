@@ -142,7 +142,7 @@ describe("GetStartedSpotlight — centered step CTA", () => {
 		await userEvent.click(await screen.findByText(CTA));
 
 		expect(push).toHaveBeenCalledWith(
-			`${BASE_PATH}/settings/account/ai-providers`,
+			`${BASE_PATH}/settings/ai-providers?tab=personal`,
 		);
 	});
 

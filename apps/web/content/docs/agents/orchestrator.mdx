@@ -36,7 +36,7 @@ flowchart TB
 
     subgraph O["Orchestrator"]
         O1[1. Detect user intent]
-        O2[2. Retrieve workspace context]
+        O2[2. Retrieve library context]
         O3[3. Create execution plan]
         O4[4. Generate PRD]
         O5[5. Create Jira tickets]
@@ -71,7 +71,7 @@ flowchart TB
 **Recognized intents:**
 - **Explicit tool requests** — "use the Jira tool", "search with GitHub"
 - **YouTube URLs** — Automatically routes to transcript extraction
-- **Workspace references** — "my docs", "attached files" → use RAG
+- **Library references** — "my docs", "attached files" → use RAG
 - **Integration triggers** — "post to Slack", "send an email"
 - **Fabric patterns** — "summarize", "extract wisdom", "analyze claims"
 
@@ -381,7 +381,7 @@ Choose the right mode for your task:
 
 Improve results by attaching:
 
-- **Workspaces** — Documents for RAG context
+- **Libraries** — Documents for RAG context
 - **Projects** — Previous project documents
 - **Specific files** — Upload directly
 

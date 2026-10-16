@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
 	validateCreateFrameArgs,
 	validateUpdateFrameArgs,
-} from "../src/activities/shared/frame-service";
+} from "../src/activities/shared/frame-args";
 
-describe("frame-service", () => {
+describe("frame-args", () => {
 	it("validates create args with defaults", () => {
 		const result = validateCreateFrameArgs({
 			title: "Frame",

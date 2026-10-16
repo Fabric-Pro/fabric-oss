@@ -504,7 +504,7 @@ function SourceItem({ source }: { source: SourceReference }) {
 			details.push(`Server: ${metadata.serverName}`);
 		}
 		if (metadata.workspaceName) {
-			details.push(`Workspace: ${metadata.workspaceName}`);
+			details.push(`Library: ${metadata.workspaceName}`);
 		}
 
 		return details;

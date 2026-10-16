@@ -12,6 +12,7 @@
  * Tenant isolation follows the standard XOR pattern.
  */
 
+import { createHash } from "node:crypto";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { Prisma } from "../client";
 import { db } from "../client";
@@ -734,6 +735,9 @@ export interface AuthorityCheckResult {
  * @param accessLevel - Required access level (READ or WRITE)
  * @param toolName - Optional specific tool name for scoped grants
  * @param requestFingerprint - Optional fingerprint for one-shot grants
+ * @param requireRequestGrant - Only a one-shot REQUEST grant with exactly this
+ *   fingerprint authorizes; a broad grant never does. For an action that asks
+ *   the person for every call.
  * @param boundSessionId - If set, only grants from this specific AuthoritySession are considered
  * @param boundRunType - If set, only grants from sessions with this runType are considered
  * @param boundRunId - If set, only grants from sessions with this runId are considered
@@ -745,6 +749,7 @@ export async function checkAuthority(params: {
 	accessLevel: AuthorityAccessLevel;
 	toolName?: string;
 	requestFingerprint?: string;
+	requireRequestGrant?: boolean;
 	boundSessionId?: string;
 	boundRunType?: AuthorityRunType;
 	boundRunId?: string;
@@ -756,6 +761,7 @@ export async function checkAuthority(params: {
 		accessLevel,
 		toolName,
 		requestFingerprint,
+		requireRequestGrant,
 		boundSessionId,
 		boundRunType,
 		boundRunId,
@@ -830,7 +836,7 @@ export async function checkAuthority(params: {
 		}
 
 		// For BROAD grants
-		if (grant.kind === "BROAD") {
+		if (grant.kind === "BROAD" && !requireRequestGrant) {
 			return {
 				authorized: true,
 				grant: {
@@ -1086,7 +1092,45 @@ export interface EnsureSensitiveAuthorityInput {
 	runType?: AuthorityRunType;
 	runId?: string;
 	toolName?: string;
+	/**
+	 * The tools the grant raised for this request covers. Without it the grant
+	 * covers every tool of the provider, which is what this has always raised.
+	 */
+	toolScope?: string[];
+	/**
+	 * Ask for every call: the grant raised is one-shot, fingerprinted on this
+	 * call (`authorityRequestFingerprint`), authorizes only a call with the same
+	 * fingerprint and is spent when it does. No broad grant authorizes such a
+	 * call, and no content-creation exemption skips the question.
+	 */
+	requestFingerprint?: string;
 	ttlMinutes?: number;
+}
+
+/**
+ * A fingerprint of one call: the tool and its arguments, key order and nesting
+ * included, so only the call the person was asked about matches.
+ */
+export function authorityRequestFingerprint(
+	toolName: string,
+	args: Record<string, unknown>,
+): string {
+	const canonical = (value: unknown): unknown => {
+		if (Array.isArray(value)) {
+			return value.map(canonical);
+		}
+		if (typeof value === "object" && value !== null) {
+			return Object.fromEntries(
+				Object.entries(value)
+					.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+					.map(([key, entry]) => [key, canonical(entry)]),
+			);
+		}
+		return value;
+	};
+	return createHash("sha256")
+		.update(`${toolName}:${JSON.stringify(canonical(args))}`)
+		.digest("hex");
 }
 
 export interface EnsureSensitiveAuthorityResult {
@@ -1142,13 +1186,18 @@ export async function ensureSensitiveOperationAuthority(
 		runType,
 		runId,
 		toolName,
+		toolScope,
+		requestFingerprint,
 		ttlMinutes = 30,
 	} = input;
 
-	// Auto-authorize READ operations and content creation tools
+	// Auto-authorize READ operations and content creation tools, unless the
+	// caller asks for the person's yes on this very call.
 	if (
 		accessLevel === "READ" ||
-		(toolName && CONTENT_CREATION_TOOLS.has(toolName))
+		(toolName &&
+			CONTENT_CREATION_TOOLS.has(toolName) &&
+			!requestFingerprint)
 	) {
 		return {
 			authorized: true,
@@ -1162,16 +1211,54 @@ export async function ensureSensitiveOperationAuthority(
 		providerKey,
 		accessLevel,
 		toolName,
+		requestFingerprint,
+		requireRequestGrant: requestFingerprint !== undefined,
 		boundRunType: runType,
 		boundRunId: runId,
 	});
 
 	if (authority.authorized) {
+		if (authority.grant?.kind === "REQUEST") {
+			await consumeRequestGrant(authority.grant.id);
+		}
 		return {
 			authorized: true,
 			grant: authority.grant,
 		};
 	}
+
+	// What a grant raised for this request looks like, and whether a pending
+	// one already is it. A request that names its tools or its exact call is
+	// only covered by a grant that does too; any other keeps the provider-wide
+	// grant it has always raised.
+	const raised = {
+		providerType,
+		providerKey,
+		providerRefId,
+		providerDisplayName,
+		accessLevel,
+		...(requestFingerprint
+			? {
+					kind: "REQUEST" as const,
+					requestFingerprint,
+					toolScope: toolScope ?? [],
+				}
+			: toolScope
+				? { toolScope }
+				: {}),
+	};
+	const specific =
+		requestFingerprint !== undefined || toolScope !== undefined;
+	const covers = (grant: {
+		kind: string;
+		toolScope: string[];
+		requestFingerprint: string | null;
+	}) =>
+		requestFingerprint !== undefined
+			? grant.kind === "REQUEST" &&
+				grant.requestFingerprint === requestFingerprint
+			: toolScope === undefined ||
+				toolScope.every((tool) => grant.toolScope.includes(tool));
 
 	if (!runType || !runId) {
 		return {
@@ -1190,18 +1277,52 @@ export async function ensureSensitiveOperationAuthority(
 		? { organizationId }
 		: { organizationId: null };
 
-	const pendingSession = await db.authoritySession.findFirst({
-		where: {
-			userId,
-			...orgFilter,
-			runType,
-			runId,
-			status: "PENDING",
-			expiresAt: { gt: now },
-		},
-		include: { grants: true },
-		orderBy: { requestedAt: "desc" },
-	});
+	const pendingWhere = {
+		userId,
+		...orgFilter,
+		runType,
+		runId,
+		status: "PENDING" as const,
+		expiresAt: { gt: now },
+	};
+
+	if (specific) {
+		// A question about one call or one tool is its own approval request.
+		// Approving a session approves every grant pending in it, so the
+		// person's yes to this card must never also approve a call they were
+		// not shown: it joins no other request, and a pending request that
+		// already is this one is the only thing it reuses.
+		const pendingSessions = await db.authoritySession.findMany({
+			where: pendingWhere,
+			include: { grants: true },
+			orderBy: { requestedAt: "desc" },
+		});
+		const asked = pendingSessions.find((session) =>
+			session.grants.some(
+				(grant) =>
+					grant.status === "PENDING" &&
+					grant.providerKey === providerKey &&
+					grant.accessLevel === "WRITE" &&
+					covers(grant),
+			),
+		);
+		if (asked) {
+			return {
+				authorized: false,
+				reason: authority.reason,
+				action: "approve_pending",
+				pendingSessionId: asked.id,
+			};
+		}
+	}
+
+	const pendingSession = specific
+		? null
+		: await db.authoritySession.findFirst({
+				where: pendingWhere,
+				include: { grants: true },
+				orderBy: { requestedAt: "desc" },
+			});
 
 	const pendingGrantMatches = pendingSession?.grants.some(
 		(grant) =>
@@ -1232,11 +1353,7 @@ export async function ensureSensitiveOperationAuthority(
 			throwIfDispatchStopped();
 			await createAuthorityGrant({
 				authoritySessionId: pendingSession.id,
-				providerType,
-				providerKey,
-				providerRefId,
-				providerDisplayName,
-				accessLevel,
+				...raised,
 				expiresAt: pendingSession.expiresAt,
 			});
 		}
@@ -1257,15 +1374,7 @@ export async function ensureSensitiveOperationAuthority(
 		runType,
 		runId,
 		ttlMinutes,
-		grants: [
-			{
-				providerType,
-				providerKey,
-				providerRefId,
-				providerDisplayName,
-				accessLevel,
-			},
-		],
+		grants: [raised],
 	});
 
 	return {

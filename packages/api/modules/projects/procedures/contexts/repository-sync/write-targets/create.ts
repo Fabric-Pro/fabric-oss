@@ -26,6 +26,7 @@
  * Audited as `project.context.write_target_created`.
  */
 import { createContextWriteTarget } from "@repo/database";
+import { validateWriteTargetFolder } from "@repo/temporal/memory-write/target-rules";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../../lib/audit";
 import { projectNotFoundUnlessVisible } from "../../../../../../orpc/middleware/project-visibility";
@@ -34,7 +35,6 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../../orpc/procedures";
-import { validateWriteTargetFolder } from "../../../../lib/memory-write/target-rules";
 import { resolveContextSyncAccess } from "../access";
 import { MAX_CONTEXT_SYNC_PATH_LENGTH } from "../paths";
 import {

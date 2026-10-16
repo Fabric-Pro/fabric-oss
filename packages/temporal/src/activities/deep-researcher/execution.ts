@@ -6,12 +6,13 @@
  */
 
 import { generateText, isStepCount } from "@repo/ai";
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { db } from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { heartbeat } from "@temporalio/activity";
 import type { SubTask } from "../../workflows/deep-researcher";
 import { retrieveWorkspaceDocumentsActivity } from "../direct-chat/rag-retrieval";
-import { getAiModel } from "../orchestrator/utils/model-selector";
+import { getAiModelWithSelection } from "../orchestrator/utils/model-selector";
 
 // =============================================================================
 // Heartbeat Helper
@@ -220,10 +221,10 @@ async function buildWebSearchTools(
 			tools.webFetch = mcpTools[scrapeToolName];
 		}
 
-		console.log(
-			`[DeepResearcher] Loaded ${Object.keys(tools).length} web search tools from '${config.displayName}':`,
-			Object.keys(tools),
-		);
+		console.log("[DeepResearcher] Loaded web search tools", {
+			serverName: config.displayName,
+			tools: Object.keys(tools),
+		});
 	} catch (e) {
 		console.warn(
 			"[DeepResearcher] Failed to discover web search tools, proceeding without:",
@@ -284,7 +285,15 @@ export async function executeSubAgent(
 		iteration: input.iteration,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const {
+		model,
+		provider: modelProvider,
+		modelString,
+	} = await getAiModelWithSelection(
+		input.userId,
+		input.organizationId,
+		false,
+	);
 
 	// Load RAG context and web search tools in parallel
 	const [ragResult, searchTools] = await Promise.all([
@@ -350,6 +359,11 @@ Provide your complete findings now.`;
 								typeof generateText
 							>[0]["tools"],
 							stopWhen: isStepCount(8),
+							prepareStep: makeStepCacheBreakpoint({
+								provider: modelProvider,
+								modelString,
+								hasTools: true,
+							}),
 						}
 					: {}),
 			}),
@@ -404,7 +418,15 @@ export async function executeDirectResearch(
 		queryPreview: input.query.slice(0, 100),
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId, false);
+	const {
+		model,
+		provider: modelProvider,
+		modelString,
+	} = await getAiModelWithSelection(
+		input.userId,
+		input.organizationId,
+		false,
+	);
 
 	// Load RAG context and web search tools in parallel
 	const [ragResult, searchTools] = await Promise.all([
@@ -461,6 +483,11 @@ Structure your response clearly with sections as appropriate.`;
 								typeof generateText
 							>[0]["tools"],
 							stopWhen: isStepCount(6),
+							prepareStep: makeStepCacheBreakpoint({
+								provider: modelProvider,
+								modelString,
+								hasTools: true,
+							}),
 						}
 					: {}),
 			}),
@@ -581,7 +608,7 @@ function extractSources(text: string): string[] {
  * Generate a brief summary of the research result.
  */
 async function generateSummary(
-	model: Awaited<ReturnType<typeof getAiModel>>,
+	model: Awaited<ReturnType<typeof getAiModelWithSelection>>["model"],
 	query: string,
 	result: string,
 ): Promise<string> {

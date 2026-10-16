@@ -100,7 +100,9 @@ Set up AI providers at the organization level so all members have access.
 
     Select a provider (e.g., OpenAI, Anthropic, Groq) and enter the API key.
 
-    This org-level key is shared across all members. Members can still set personal provider overrides.
+    This org-level key is shared across all members. Admins manage it on the **Organization** tab of AI Providers; everyone else sees it read-only.
+
+    Each member also has a **Personal** tab on the same page for keys of their own. A personal key is a fallback: it is used only when the organization has no usable key of its own, and the member is billed for it. A member's own ChatGPT plan is connected on that tab too.
   </Step>
 
   <Step>
@@ -251,7 +253,7 @@ Check the dashboard for activity metrics across your organization — projects c
 ### AI features not working for members
 - Verify the org-level AI provider is configured with a valid API key
 - Check that a default provider is set
-- Members need either an org provider or their own personal provider
+- Members need either an org provider or a key of their own on the **Personal** tab of **Settings → AI Providers**
 
 ---
 

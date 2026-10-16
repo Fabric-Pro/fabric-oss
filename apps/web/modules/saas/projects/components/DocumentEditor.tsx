@@ -61,6 +61,7 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
+import { cn } from "@ui/lib";
 import {
 	AlertTriangle,
 	CheckIcon,
@@ -162,6 +163,7 @@ import {
 	appliesAttachedRunBody,
 	publishGenerationRunRole,
 } from "./proposal-artifact/generation-run-awareness";
+import type { ProposalThemeRootProps } from "./proposal-artifact/use-proposal-theme";
 import {
 	SlashCommandsExtension,
 	setSlashCommandImageUploadHandler,
@@ -177,9 +179,10 @@ import { MeetingSelector } from "./stories/MeetingSelector";
 function buildNonCollaborativeExtensions(
 	projectId: string | null,
 	documentId: string | null,
+	statTiles: boolean,
 ) {
 	return [
-		...createAdvancedExtensions({ projectId, documentId }),
+		...createAdvancedExtensions({ projectId, documentId, statTiles }),
 		SlashCommandsExtension,
 	];
 }
@@ -372,6 +375,19 @@ type Props = {
 	 * written from the library's client proposal prompt (Fizzy #2801).
 	 */
 	promptSelectorReplacement?: ReactNode;
+	/**
+	 * Makes the box around the editor's content a theme root: a client-document
+	 * Proposal's Main wears the shared Proposal theme there (Fizzy #2946). The
+	 * box holds the content only, so the diff preview panes and the chat stay
+	 * unthemed. The caller renders the theme's stylesheet.
+	 */
+	contentThemeProps?: ProposalThemeRootProps;
+	/**
+	 * Draws `stat-tiles` fences as tiles (Fizzy #2946). Only a client-document
+	 * Proposal opts in; every other document keeps them as code blocks. Read
+	 * once when the editor is built, so pass a value known at mount.
+	 */
+	statTiles?: boolean;
 };
 
 interface AgentState {
@@ -435,6 +451,8 @@ export function DocumentEditor({
 	suppressGenerationOverlay = false,
 	attachToServerRun = false,
 	promptSelectorReplacement,
+	contentThemeProps,
+	statTiles = false,
 }: Props) {
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	const { organizationId } = useOrganizationContext();
@@ -649,6 +667,8 @@ export function DocumentEditor({
 				suppressGenerationOverlay={suppressGenerationOverlay}
 				attachToServerRun={attachToServerRun}
 				promptSelectorReplacement={promptSelectorReplacement}
+				contentThemeProps={contentThemeProps}
+				statTiles={statTiles}
 			/>
 		);
 	}
@@ -694,6 +714,8 @@ export function DocumentEditor({
 			suppressGenerationOverlay={suppressGenerationOverlay}
 			attachToServerRun={attachToServerRun}
 			promptSelectorReplacement={promptSelectorReplacement}
+			contentThemeProps={contentThemeProps}
+			statTiles={statTiles}
 		/>
 	);
 }
@@ -729,6 +751,8 @@ function CollaborativeDocumentEditor({
 	suppressGenerationOverlay,
 	attachToServerRun,
 	promptSelectorReplacement,
+	contentThemeProps,
+	statTiles,
 }: {
 	projectId: string;
 	documentId: string;
@@ -787,6 +811,8 @@ function CollaborativeDocumentEditor({
 	suppressGenerationOverlay: boolean;
 	attachToServerRun: boolean;
 	promptSelectorReplacement?: ReactNode;
+	contentThemeProps?: ProposalThemeRootProps;
+	statTiles: boolean;
 }) {
 	const [isClient, setIsClient] = useState(false);
 	const [connectionTimedOut, setConnectionTimedOut] = useState(false);
@@ -886,6 +912,8 @@ function CollaborativeDocumentEditor({
 				suppressGenerationOverlay={suppressGenerationOverlay}
 				attachToServerRun={attachToServerRun}
 				promptSelectorReplacement={promptSelectorReplacement}
+				contentThemeProps={contentThemeProps}
+				statTiles={statTiles}
 			/>
 		);
 	}
@@ -977,6 +1005,8 @@ function CollaborativeDocumentEditor({
 			suppressGenerationOverlay={suppressGenerationOverlay}
 			attachToServerRun={attachToServerRun}
 			promptSelectorReplacement={promptSelectorReplacement}
+			contentThemeProps={contentThemeProps}
+			statTiles={statTiles}
 		/>
 	);
 }
@@ -1093,6 +1123,10 @@ interface DocumentEditorInnerProps {
 	attachToServerRun: boolean;
 	/** See the public DocumentEditor `promptSelectorReplacement` prop. */
 	promptSelectorReplacement?: ReactNode;
+	/** See the public DocumentEditor `contentThemeProps` prop. */
+	contentThemeProps?: ProposalThemeRootProps;
+	/** See the public DocumentEditor `statTiles` prop. */
+	statTiles: boolean;
 }
 
 function formatTranscriptContexts(
@@ -1156,6 +1190,8 @@ function DocumentEditorInner({
 	suppressGenerationOverlay,
 	attachToServerRun,
 	promptSelectorReplacement,
+	contentThemeProps,
+	statTiles,
 }: DocumentEditorInnerProps) {
 	const tTooltips = useTranslations("tooltips.documentEditor");
 
@@ -2000,6 +2036,10 @@ function DocumentEditorInner({
 			},
 			projectId,
 			documentId,
+			// Not in a shared session yet (Fizzy #2946): a collaborator's tab on
+			// the previous release has no stat-tiles node and would delete the
+			// block from the shared document for everyone. The shared editor
+			// keeps the fence as a code block until every client knows the node.
 		});
 	}, [
 		enableCollaboration,
@@ -2014,8 +2054,8 @@ function DocumentEditorInner({
 	// Non-collaborative extensions, rebuilt when the active document changes
 	// so the @-mention suggestion popover queries the correct document scope.
 	const nonCollaborativeExtensions = useMemo(
-		() => buildNonCollaborativeExtensions(projectId, documentId),
-		[projectId, documentId],
+		() => buildNonCollaborativeExtensions(projectId, documentId, statTiles),
+		[projectId, documentId, statTiles],
 	);
 
 	// Determine which extensions to use
@@ -6413,10 +6453,13 @@ function DocumentEditorInner({
 													</div>
 												)}
 											<div
+												{...contentThemeProps}
 												className={
-													showDiffPreviewPanes
-														? "hidden"
-														: undefined
+													cn(
+														contentThemeProps?.className,
+														showDiffPreviewPanes &&
+															"hidden",
+													) || undefined
 												}
 											>
 												<EditorContent

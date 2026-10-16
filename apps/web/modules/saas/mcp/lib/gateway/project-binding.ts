@@ -21,6 +21,10 @@
  * person's and the organization's, with no tie to a project and no scope check.
  */
 
+import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
+import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-version-tool-definitions";
+import { FABRIC_PAGE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-tool-definitions";
+import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow-tool-definitions";
 import type { GatewaySession, GatewayToolDefinition } from "./types";
 
 /**
@@ -59,6 +63,9 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_instruction_checks",
 	"fabric_propose_project_instruction_change",
 	"fabric_add_instruction_lesson",
+	"fabric_memory_targets",
+	"fabric_memory_write",
+	"fabric_memory_write_status",
 ] as const;
 
 /**
@@ -66,7 +73,7 @@ export const PROJECT_BOUND_TOOL_NAMES = [
  * is about the organization, a workspace, a workflow, the person's connected
  * servers or the session's own authority, and reaches past one project.
  */
-export const PROJECT_BOUND_HIDDEN_TOOL_NAMES = [
+export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
 	"fabric_get_identity",
 	"fabric_list_organizations",
 	"fabric_switch_organization",
@@ -74,22 +81,17 @@ export const PROJECT_BOUND_HIDDEN_TOOL_NAMES = [
 	"fabric_list_workspaces",
 	"fabric_get_workspace",
 	"fabric_query_workspace",
-	"fabric_list_workflows",
-	"fabric_get_workflow",
-	"fabric_execute_workflow",
-	"fabric_get_workflow_execution",
+	// The workflow, frame, version and page families: every tool of a family is organization-wide.
+	...FABRIC_WORKFLOW_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_FRAME_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_PAGE_TOOL_DEFINITIONS.map((tool) => tool.name),
 	"fabric_list_chats",
-	"fabric_create_frame",
-	"fabric_update_frame",
-	"fabric_get_frame",
-	"fabric_list_frames",
-	"fabric_share_frame",
-	"fabric_create_slideshow",
 	"fabric_list_connected_servers",
 	"fabric_request_authority",
 	"fabric_revoke_authority",
 	"fabric_check_authority",
-] as const;
+];
 
 const PROJECT_BOUND_TOOLS: ReadonlySet<string> = new Set(
 	PROJECT_BOUND_TOOL_NAMES,

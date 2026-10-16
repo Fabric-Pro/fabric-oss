@@ -7,7 +7,7 @@ vi.mock("@repo/database", () => ({
 }));
 
 import {
-	PARLUME_MEETING_BAAS_USD_PER_HOUR,
+	PARLUME_ATTENDEE_USD_PER_HOUR,
 	PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
 	recordParlumeMeetingProviderUsage,
 	resolveParlumeMeetingEnd,
@@ -83,14 +83,14 @@ describe("recordParlumeMeetingProviderUsage", () => {
 			organizationId: "org-1",
 			projectId: "project-1",
 			provider: "CUSTOM",
-			providerModelId: "meeting-baas/teams-bot",
+			providerModelId: "attendee/teams-bot",
 			taskType: "AUDIO",
 			featureKey: "parlume",
 			conversationId: "session-1",
 			inputTokens: 0,
 			outputTokens: 0,
 			totalTokens: 0,
-			costUsd: PARLUME_MEETING_BAAS_USD_PER_HOUR / 2,
+			costUsd: PARLUME_ATTENDEE_USD_PER_HOUR / 2,
 			latencyMs: 30 * 60 * 1000,
 			success: true,
 		});

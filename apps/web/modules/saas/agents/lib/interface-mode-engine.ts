@@ -63,6 +63,33 @@ export function resolveChatEngine(input: ChatEngineInput): ChatEngine {
 }
 
 /**
+ * Whether to tell the user that the open chat runs on a different engine than
+ * a new chat would (Fizzy #3093).
+ *
+ * An open conversation keeps its engine (see `resolveChatEngine`), but simple
+ * mode hides the engine pills that used to explain it. So a Direct thread left
+ * open after switching to simple mode quietly answers on Direct while a new
+ * chat would run the Advisor. This is true only in simple mode, for an open
+ * conversation that is not an agent-instance chat, when the two engines differ.
+ */
+export function showsEngineMismatchNotice(input: {
+	uiMode: UiMode;
+	/** The engine the open chat runs on. */
+	chatEngine: ChatEngine;
+	/** The engine a new chat would run on now. */
+	newChatEngine: ChatEngine;
+	hasOpenConversation: boolean;
+	isAgentInstance: boolean;
+}): boolean {
+	return (
+		input.uiMode === "simple" &&
+		input.hasOpenConversation &&
+		!input.isAgentInstance &&
+		input.chatEngine !== input.newChatEngine
+	);
+}
+
+/**
  * The engine a stored conversation was created on, read from its metadata.
  * A conversation without a recognised `mode` predates the field and was a
  * Direct thread, so it records as `direct`.

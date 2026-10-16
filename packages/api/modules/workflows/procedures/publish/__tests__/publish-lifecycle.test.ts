@@ -57,6 +57,20 @@ vi.mock("@repo/database", () => ({
 		member: { findFirst: memberFindFirstMock },
 	},
 	hasWorkflowAccess: accessMock,
+	isWorkflowLive: (status: string) =>
+		status === "PUBLISHED" || status === "ACTIVE",
+	// The shared commands read the workflow with its owner and organization in
+	// the filter, so an org member who does not own it gets no row; the same
+	// row the rollback path loads with `findUnique`.
+	getWorkflowById: async (_id: string, userId: string) => {
+		const workflow = await workflowFindUniqueMock();
+		return workflow && workflow.userId === userId ? workflow : null;
+	},
+	canUpdateOrganizationWorkflows: async () => true,
+}));
+
+vi.mock("../../../../organizations/lib/membership", () => ({
+	verifyOrganizationMembership: async () => ({ id: "member-1" }),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -78,19 +92,26 @@ vi.mock("../../../lib/sync-workflow-schedule", () => ({
 	syncWorkflowSchedule: syncScheduleMock,
 }));
 
-vi.mock("../../../../../orpc/procedures", () => ({
-	Permissions: { WORKSPACE_UPDATE: "workspace:update" },
-	requirePermission: () => (next: unknown) => next,
-	tenantProtectedProcedure: {
-		use: () => ({
-			route: () => ({
-				input: () => ({
-					output: () => ({ handler: (fn: unknown) => fn }),
-				}),
+vi.mock("../../../../../orpc/procedures", () => {
+	// The builder is stubbed down to a bare handler; `.use()` keeps chaining.
+	const builder = {
+		use: () => builder,
+		route: () => ({
+			input: () => ({
+				output: () => ({ handler: (fn: unknown) => fn }),
 			}),
 		}),
-	},
-}));
+	};
+	return {
+		Permissions: { WORKSPACE_UPDATE: "workspace:update" },
+		requirePermission: () => (next: unknown) => next,
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => input ?? session.activeOrganizationId ?? undefined,
+		tenantProtectedProcedure: builder,
+	};
+});
 
 import { publishWorkflow } from "../publish-workflow";
 import { rollbackWorkflow } from "../rollback-workflow";
@@ -139,7 +160,7 @@ function orgWorkflow(overrides: Record<string, unknown> = {}) {
 }
 
 function ctx(userId: string) {
-	return { user: { id: userId }, session: {} };
+	return { user: { id: userId }, session: { activeOrganizationId: ORG } };
 }
 
 beforeEach(() => {
@@ -182,9 +203,8 @@ describe("ownership is required, not just org membership", () => {
 	it("publish refuses a non-owner org member and writes nothing", async () => {
 		await expect(
 			publish({ input: { workflowId: "wf-1" }, context: ctx(COLLEAGUE) }),
-		).rejects.toThrow();
+		).rejects.toThrow("Workflow not found");
 
-		expect(accessMock).toHaveBeenCalledWith("wf-1", COLLEAGUE);
 		expectNoMutation();
 	});
 
@@ -194,9 +214,8 @@ describe("ownership is required, not just org membership", () => {
 				input: { workflowId: "wf-1" },
 				context: ctx(COLLEAGUE),
 			}),
-		).rejects.toThrow();
+		).rejects.toThrow("Workflow not found");
 
-		expect(accessMock).toHaveBeenCalledWith("wf-1", COLLEAGUE);
 		expectNoMutation();
 		// Nor may it quietly stop the schedule on the way out.
 		expect(syncScheduleMock).not.toHaveBeenCalled();

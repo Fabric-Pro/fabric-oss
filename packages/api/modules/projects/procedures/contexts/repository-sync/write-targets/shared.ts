@@ -10,7 +10,7 @@
  */
 import { ORPCError } from "@orpc/client";
 import type { ContextWriteTargetView } from "@repo/database";
-import type { WriteTargetProblem } from "../../../../lib/memory-write/target-rules";
+import type { WriteTargetProblem } from "@repo/temporal/memory-write/target-rules";
 
 export type WriteTargetRefusal =
 	| { kind: "direct-push-requires-admin" }

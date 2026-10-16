@@ -84,6 +84,11 @@ export const ALLOWED_AUDIO_EXTENSIONS = [
 export interface UserContext {
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat conversation this work is done for, when there is one. Recorded
+	 * on the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
 }
 
 /**
@@ -204,6 +209,9 @@ function logTranscriptionUsage(
 		logAiUsageAsync({
 			userId: userContext?.userId,
 			organizationId: userContext?.organizationId,
+			...(userContext?.conversationId
+				? { conversationId: userContext.conversationId }
+				: {}),
 			provider:
 				result.metadata.executionMode === "hybrid"
 					? (TRANSCRIPTION_PROVIDER_ENUM[providerSlug] ?? "CUSTOM")

@@ -103,6 +103,11 @@ export async function slackChannelBackfillWorkflow(
 			// Channel monitoring never runs on a member's own plan, so that
 			// plan's reset must not decide the wait.
 			userId: null,
+			stoppedNotice: {
+				work: "SLACK_BACKFILL",
+				projectId: input.projectId,
+				initiatorUserId: input.userId,
+			},
 		},
 	);
 }

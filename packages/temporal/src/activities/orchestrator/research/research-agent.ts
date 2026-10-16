@@ -6,12 +6,13 @@
  */
 
 import { generateText, isStepCount } from "@repo/ai";
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import type {
 	ExecuteResearchAgentInput,
 	ResearchFinding,
 	ResearchResult,
 } from "../types";
-import { getAiModel } from "../utils";
+import { getAiModelWithSelection } from "../utils";
 import { buildResearchTools } from "./research-tools";
 
 /**
@@ -50,7 +51,11 @@ export async function executeResearchAgent(
 		}));
 	}
 
-	const model = await getAiModel(input.userId, input.organizationId, true);
+	const {
+		model,
+		provider: modelProvider,
+		modelString,
+	} = await getAiModelWithSelection(input.userId, input.organizationId, true);
 	const maxSteps = input.maxSteps || 10;
 
 	const results: ResearchResult[] = [];
@@ -72,6 +77,11 @@ Use the available tools to gather comprehensive information. Search the web, scr
 After gathering information, provide a summary of your findings.`,
 				tools: researchTools as any,
 				stopWhen: isStepCount(maxSteps),
+				prepareStep: makeStepCacheBreakpoint({
+					provider: modelProvider,
+					modelString,
+					hasTools: true,
+				}),
 				// Allow multi-tool research workflows (e.g., search → scrape → analyze)
 				// isStepCount(maxSteps) provides the safety limit
 			});

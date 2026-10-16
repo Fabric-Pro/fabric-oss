@@ -17,7 +17,7 @@
 		"@repo/storage": "workspace:*",
 		"@repo/utils": "workspace:*",
 		"@vercel/functions": "^3.6.2",
-		"ai": "^7.0.131",
+		"ai": "^7.0.140",
 		"undici": "^8.5.0",
 		"zod": "^4.3.6"
 	},

@@ -21,6 +21,7 @@ import {
 	chatGptPlanReconnectRefusal,
 } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import { makeAppendedStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { createSidekickTools } from "@repo/ai/sidekick";
 import { NEW_AGENT_ID } from "@repo/ai/sidekick/constants";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
@@ -308,12 +309,21 @@ export async function POST(request: NextRequest) {
 			modelString: metadata.modelString,
 			messages: modelMessages,
 		});
+		// Each tool round resends the history and every earlier round. The
+		// history marker placed above serves the next turn, so the rolling
+		// per-step marker keeps it and moves only over this turn's rounds.
+		const prepareStep = makeAppendedStepCacheBreakpoint({
+			provider: metadata.provider,
+			modelString: metadata.modelString,
+			hasTools: Object.keys(tools).length > 0,
+		});
 		const result = streamText({
 			model: aiModel,
 			instructions: promptCacheRequest.system,
 			messages: promptCacheRequest.messages,
 			tools,
 			stopWhen: isStepCount(5),
+			...(prepareStep ? { prepareStep } : {}),
 		});
 
 		// Return UI message stream response.

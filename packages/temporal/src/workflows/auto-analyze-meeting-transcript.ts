@@ -109,7 +109,15 @@ export async function autoAnalyzeMeetingTranscriptWorkflow(
 		}
 		return await withChatGptPlanWait(
 			() => autoAnalyzeMeetingTranscriptActivity(input),
-			{ organizationId: input.organizationId, userId: input.userId },
+			{
+				organizationId: input.organizationId,
+				userId: input.userId,
+				stoppedNotice: {
+					work: "MEETING_ANALYSIS",
+					projectId: input.projectId,
+					initiatorUserId: null,
+				},
+			},
 		);
 	} catch (err) {
 		// The analyze activity exhausted its retries. Record a terminal FAILED

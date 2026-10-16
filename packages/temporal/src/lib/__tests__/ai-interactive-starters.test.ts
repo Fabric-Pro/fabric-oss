@@ -44,6 +44,8 @@ const REVIEWED: Record<string, string> = {
 		"Document a person creates",
 	"packages/api/modules/projects/procedures/documents/generate-document.ts":
 		"Document a person regenerates",
+	"packages/api/modules/projects/procedures/proposal-artifact/rerun-analysis.ts":
+		"Internal Analysis re-run a person starts on one Proposal (Fizzy #2946)",
 	"packages/api/modules/projects/procedures/meeting-digest/generate-proposals.ts":
 		"Feature proposals a person asks for from one meeting (Fizzy #2770); the automatic scan sets none",
 	"packages/api/modules/projects/lib/dispatch-document-generation.ts":

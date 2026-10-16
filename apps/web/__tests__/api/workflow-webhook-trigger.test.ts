@@ -59,6 +59,9 @@ vi.mock("@repo/database", () => ({
 		},
 	},
 	markExecutionRunningIfPending: markRunningMock,
+	isWorkflowLive: (status: string) =>
+		status === "PUBLISHED" || status === "ACTIVE",
+	releasedIdempotencyTriggerInput: () => undefined,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -418,7 +421,7 @@ describe("when Temporal will not take the run", () => {
 				where: { id: "exec-1" },
 				data: expect.objectContaining({
 					status: "FAILED",
-					error: "temporal unreachable",
+					error: "The workflow engine rejected the start: temporal unreachable",
 				}),
 			}),
 		);

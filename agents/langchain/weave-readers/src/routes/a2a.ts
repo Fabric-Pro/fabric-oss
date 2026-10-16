@@ -5,6 +5,7 @@
  * tool-calling loops for iterative exploration.
  */
 
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
@@ -173,7 +174,8 @@ a2aRoute.post("/send", async (c) => {
 		const agent = resolveAgent(body);
 		const metadata = normalizeMetadata(body.metadata);
 		const tenant = getVerifiedTenant(c, metadata);
-		const model = await resolveReaderModel(tenant);
+		const { model, provider, modelString } =
+			await resolveReaderModel(tenant);
 
 		// Allow orchestrator to override step limit per-request
 		const delegationCtx = (metadata.delegationContext ?? {}) as Record<
@@ -236,6 +238,13 @@ a2aRoute.post("/send", async (c) => {
 			tools = createReadOnlySandboxTools(sandbox);
 		}
 
+		// Tools are passed only when the agent has some, so the breakpoint is
+		// gated on the same condition.
+		const prepareStep = makeStepCacheBreakpoint({
+			provider,
+			modelString,
+			hasTools: tools !== undefined,
+		});
 		const result = await withRetry(
 			() =>
 				generateText({
@@ -243,7 +252,11 @@ a2aRoute.post("/send", async (c) => {
 					instructions: systemPrompt,
 					messages: [{ role: "user", content: userContent }],
 					...(tools
-						? { tools, stopWhen: isStepCount(maxSteps) }
+						? {
+								tools,
+								stopWhen: isStepCount(maxSteps),
+								prepareStep,
+							}
 						: {}),
 				}),
 			{ label: `${agent}-a2a-generateText`, circuitKey: agent },

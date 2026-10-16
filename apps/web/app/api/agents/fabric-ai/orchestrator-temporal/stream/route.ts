@@ -30,9 +30,9 @@ import {
 	chatGptPlanChatPreflight,
 	withChatGptPlanApiBilling,
 } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import {
 	abandonConversationTurnStart,
-	CARRIED_OVER_MARKER_PREFIX,
 	type ConversationTurn,
 	db,
 	getConversationTurnForExecution,
@@ -53,6 +53,7 @@ import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
+import { seedCarriedOverHistory } from "../../carried-over-context";
 import { assertChatWorkflowPayload } from "../../chat-workflow-payload";
 import {
 	EXECUTION_MODE_NAMES,
@@ -215,7 +216,24 @@ export async function POST(request: NextRequest) {
 			surface,
 			organizationSlug,
 			advisorOrigin,
+			launchWorkspaceId: rawLaunchWorkspaceId,
+			launchSurface: rawLaunchSurface,
 		} = body;
+
+		// Where the chat was opened, for the tools that place what they create:
+		// a default, never a grant (the gateway checks access to whatever a
+		// tool touches). The body is parsed by hand, so only a string id and
+		// one of the two surface names count.
+		const launchWorkspaceId: string | undefined =
+			typeof rawLaunchWorkspaceId === "string" &&
+			rawLaunchWorkspaceId.length > 0 &&
+			rawLaunchWorkspaceId.length <= 200
+				? rawLaunchWorkspaceId
+				: undefined;
+		const launchSurface: "artifact" | "workspace" | undefined =
+			rawLaunchSurface === "artifact" || rawLaunchSurface === "workspace"
+				? rawLaunchSurface
+				: undefined;
 
 		// The body is parsed by hand, so these ids are whatever JSON the
 		// client sent. Both reach the membership check and the tenant filters
@@ -420,55 +438,14 @@ export async function POST(request: NextRequest) {
 			projectId,
 		}));
 
-		// Seed history with the parent conversation's exhaustion-synthesis
-		// summary on every launch of a continued chat. Idempotent — the marker
-		// prefix lets us skip seeding when the client already round-tripped it.
-		let effectiveHistory = history;
-		if (conversationId) {
-			try {
-				const tenantFilter = {
-					id: conversationId,
-					userId,
-					organizationId,
-				};
-				const convo = await db.agentConversation.findFirst({
-					where: tenantFilter,
-					select: {
-						parentConversationId: true,
-						carriedOverSummary: true,
-					},
-				});
-				if (convo?.carriedOverSummary) {
-					const alreadyPresent = effectiveHistory.some(
-						(h: { role?: string; content?: string }) =>
-							typeof h?.content === "string" &&
-							h.content.startsWith(CARRIED_OVER_MARKER_PREFIX),
-					);
-					if (!alreadyPresent) {
-						effectiveHistory = [
-							{
-								role: "assistant",
-								content: `${CARRIED_OVER_MARKER_PREFIX}\n\n${convo.carriedOverSummary}`,
-							},
-							...effectiveHistory,
-						];
-						console.log(
-							"[Orchestrator API] Seeded carried-over summary from parent conversation:",
-							{
-								parentConversationId:
-									convo.parentConversationId,
-								summaryChars: convo.carriedOverSummary.length,
-							},
-						);
-					}
-				}
-			} catch (err) {
-				console.warn(
-					"[Orchestrator API] Failed to load carried-over summary:",
-					err instanceof Error ? err.message : String(err),
-				);
-			}
-		}
+		// A continued chat starts from the text carried over from its parent,
+		// quoted as data in a user-role message (see `carried-over-context`).
+		const effectiveHistory = await seedCarriedOverHistory({
+			history,
+			conversationId,
+			userId,
+			organizationId,
+		});
 
 		// ✅ Security: Verify project access before forwarding to workflow
 		if (projectId) {
@@ -1001,6 +978,17 @@ export async function POST(request: NextRequest) {
 			modelOverride,
 			surface,
 			organizationSlug,
+			// The workflow and frame tools come from Fabric MCP, which only lets
+			// the agent runtime act for a person whose turn this route vouched
+			// for: the grant is minted here, from the request this route
+			// authenticated, and the workflow only carries it.
+			actingGrant: mintActingGrantForTurn({
+				userId,
+				organizationId,
+				conversationId,
+			}),
+			launchWorkspaceId,
+			launchSurface,
 			// Only the Advisor (the Fabric AI page and the Fabric Agent drawer,
 			// with or without a custom agent chosen there) sends
 			// `advisorOrigin`; the MCP chat dialog, a registered agent's try
@@ -1468,7 +1456,8 @@ export async function POST(request: NextRequest) {
 							await redisSubscriber.subscribe(channel);
 
 							console.log(
-								`[Orchestrator Stream] Redis subscriber connected for ${channel}`,
+								"[Orchestrator Stream] Redis subscriber connected",
+								{ channel },
 							);
 						} catch (err) {
 							console.warn(
@@ -1503,12 +1492,14 @@ export async function POST(request: NextRequest) {
 							memo: { userId, organizationId },
 						});
 						console.log(
-							`[Orchestrator Stream] Started workflow (no turn): ${executionId}`,
+							"[Orchestrator Stream] Started workflow (no turn)",
+							{ executionId },
 						);
 					} else if (resumeExecutionId || !turnToStart) {
 						// handle was already set and ownership verified above
 						console.log(
-							`[Orchestrator Stream] Attached to workflow: ${executionId}`,
+							"[Orchestrator Stream] Attached to workflow",
+							{ executionId },
 						);
 					} else {
 						let started: Awaited<
@@ -1561,9 +1552,10 @@ export async function POST(request: NextRequest) {
 						// attaches to the workflow that start created.
 						resumed = started.attached;
 
-						console.log(
-							`[Orchestrator Stream] ${started.attached ? "Attached to" : "Started"} workflow: ${executionId}`,
-						);
+						console.log("[Orchestrator Stream] Workflow ready", {
+							executionId,
+							attached: started.attached,
+						});
 					}
 
 					// Send started event

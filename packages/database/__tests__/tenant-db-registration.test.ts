@@ -284,11 +284,12 @@ describe("Company context tables are registered on the tenant path", () => {
 });
 
 /**
- * Proposal artifact (Fizzy #2801). Analysis runs, findings and the document
- * style carry organizationId and no userId, so they are organization-only —
- * a USER_OWNED_TABLES entry would inject a userId filter Prisma rejects — and
- * never project-scoped, so an invited guest's projects cannot reach internal
- * review material. RLS is plain org_only: no guest-read branch.
+ * Proposal artifact (Fizzy #2801, #2946). Analysis runs, findings, members'
+ * answers to findings and the document style carry organizationId and no
+ * userId, so they are organization-only — a USER_OWNED_TABLES entry would
+ * inject a userId filter Prisma rejects — and never project-scoped, so an
+ * invited guest's projects cannot reach internal review material. RLS is
+ * plain org_only: no guest-read branch.
  */
 describe("Proposal artifact tables are registered on the tenant path", () => {
 	const orgOnly = setMembers(tenantDb, "const ORG_ONLY_TABLES = new Set([");
@@ -304,6 +305,7 @@ describe("Proposal artifact tables are registered on the tenant path", () => {
 	it.each([
 		["ProjectDocumentAnalysis", "project_document_analysis"],
 		["ProjectDocumentFinding", "project_document_finding"],
+		["ProjectDocumentFindingResponse", "project_document_finding_response"],
 		["ProjectDocumentStyle", "project_document_style"],
 	])(
 		"%s is organization-only and never project-scoped, under org_only RLS",

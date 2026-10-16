@@ -143,6 +143,42 @@ const chatGptPlanAccountNeedsReconnectPayload = z.object({
 	accountName: z.string(),
 });
 
+// CHATGPT_PLAN_WORK_PAUSED / CHATGPT_PLAN_WORK_STOPPED payloads — written by
+// the `@repo/database` helpers in `chatgpt-plan-work-notifications.ts`, called
+// from Temporal activities when background work waits for, or stops on, spent
+// ChatGPT plans (Fizzy #3050). Registered so the validator stays total.
+const chatGptPlanWorkBase = z.object({
+	/** A `BulkRunKind` or a `PlanWaitWorkKind`. */
+	work: z.string(),
+	runId: z.string(),
+	projectId: z.string().optional(),
+	projectName: z.string().optional(),
+});
+
+const chatGptPlanWorkPausedPayload = chatGptPlanWorkBase.extend({
+	resumesAt: z.string(),
+});
+
+const chatGptPlanWorkStoppedPayload = chatGptPlanWorkBase.extend({
+	reason: z.enum(["PLAN_SPENT", "RESUME_LOST"]),
+});
+
+// WORKFLOW_RUN_COMPLETED / WORKFLOW_RUN_FAILED payload — written by the
+// `recordScheduledRunOutcome` activity in `@repo/temporal`, which cannot import
+// this validator without a workspace cycle, so it is registered here to keep the
+// validator total. Like the report payload, it carries no raw error: the
+// notification list is UI-reachable and the run history holds the detail.
+const workflowRunPayload = z.object({
+	workflowId: z.string(),
+	workflowName: z.string(),
+	executionId: z.string(),
+	status: z.enum(["COMPLETED", "FAILED"]),
+	/** FAILED only: this failure was the one that paused the workflow. */
+	paused: z.boolean().optional(),
+	/** COMPLETED only: the frame the run published, when it published one. */
+	frameId: z.string().optional(),
+});
+
 // PM_ATTACHMENT_SYNC_FAILED payload — written by the GitLab REST push path
 // (`packages/temporal/src/activities/pm-integration/gitlab-rest-story-sync.ts`)
 // when one or more attachments never reached the PM tool (Fizzy #1745, AC-4).
@@ -537,6 +573,10 @@ const NotificationPayloadByType = {
 		todoMeetingItemsAssignedPayload,
 	[NotificationType.CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT]:
 		chatGptPlanAccountNeedsReconnectPayload,
+	[NotificationType.CHATGPT_PLAN_WORK_PAUSED]: chatGptPlanWorkPausedPayload,
+	[NotificationType.CHATGPT_PLAN_WORK_STOPPED]: chatGptPlanWorkStoppedPayload,
+	[NotificationType.WORKFLOW_RUN_COMPLETED]: workflowRunPayload,
+	[NotificationType.WORKFLOW_RUN_FAILED]: workflowRunPayload,
 } as const;
 
 export function validatePayload(

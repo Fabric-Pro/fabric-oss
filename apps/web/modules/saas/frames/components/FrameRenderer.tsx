@@ -7,8 +7,15 @@ import { useEffect, useMemo, useRef } from "react";
 import { Response } from "../../../../components/ai-elements/response";
 import { Mermaid } from "../../../marketing/blog/components/Mermaid";
 import {
+	FRAME_RUNTIME_HOST_READY_TYPE,
 	type FrameEmbedToHostMessage,
+	type FrameRuntimeCallResult,
+	type FrameRuntimeHostReady,
+	type FrameRuntimeRequest,
 	isFrameHostToEmbedMessage,
+	isFrameRuntimeCallResult,
+	isFrameRuntimeHello,
+	isFrameRuntimeRequest,
 } from "../lib/frame-embed-protocol";
 import {
 	buildProjectFrameSrcdoc,
@@ -217,20 +224,29 @@ export function FrameRenderer({
 	embedded = false,
 	className,
 	slideIndex,
-	projectScoped = false,
+	strictSandbox = false,
+	allowScripts = true,
 }: {
 	frame: FrameDocumentView;
 	embedded?: boolean;
 	className?: string;
 	slideIndex?: number;
 	/**
-	 * True for frames that belong to a project (agent-authored from customer
-	 * material, e.g. spike demos). HTML blocks are then rendered through the
-	 * hardened path: `sandbox="allow-scripts"` only, a deny-all CSP in the
-	 * srcdoc, and nested browsing contexts stripped. See
-	 * `lib/project-frame-srcdoc.ts`.
+	 * False draws the page of an HTML block without any script of its own, as
+	 * for a page an unattended run wrote (see `isUnattendedFrame`). Only the
+	 * strict sandbox honours it: the historical renderer is for the author's
+	 * own pages.
 	 */
-	projectScoped?: boolean;
+	allowScripts?: boolean;
+	/**
+	 * True for frames that belong to a project or live on a surface (a
+	 * project's Artifacts tab, an organization Workspace): agent-authored pages
+	 * other people open. HTML blocks are then rendered through the hardened
+	 * path: sandboxed to scripts and forms (never same-origin), a deny-all CSP
+	 * in the srcdoc, nested browsing contexts stripped, and the page runtime (`window.fabric`)
+	 * defined. See `lib/project-frame-srcdoc.ts` and `lib/strict-sandbox.ts`.
+	 */
+	strictSandbox?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const visibleBlocks = useMemo(() => {
@@ -339,96 +355,200 @@ export function FrameRenderer({
 				className,
 			)}
 		>
-			{visibleBlocks.map((block, index) => (
-				<section
-					key={block.id}
-					className={cn(
-						"overflow-hidden",
-						!embedded && "rounded-2xl border bg-card shadow-sm",
-						frame.kind === "slideshow" &&
-							"min-h-[70vh] rounded-3xl p-0",
-						frame.kind !== "slideshow" &&
-							(embedded ? "" : "p-4 md:p-5"),
-					)}
-				>
-					<div
+			{visibleBlocks.map((block, index) => {
+				// Embedded, the page around the frame already names it; a block
+				// titled just like the frame would say the same thing again.
+				const blockTitle =
+					embedded &&
+					frame.kind !== "slideshow" &&
+					block.title?.trim() === frame.title.trim()
+						? undefined
+						: block.title;
+				return (
+					<section
+						key={block.id}
 						className={cn(
-							frame.kind === "slideshow"
-								? "border-b px-6 py-4"
-								: block.title
-									? "mb-3"
-									: "hidden",
-						)}
-					>
-						{block.title ? (
-							<h2
-								className={cn(
-									frame.kind === "slideshow"
-										? "font-serif text-2xl md:text-3xl"
-										: "font-semibold text-lg",
-								)}
-							>
-								{block.title}
-							</h2>
-						) : frame.kind === "slideshow" ? (
-							<p className="editorial-label">
-								Slide{" "}
-								{slideIndex !== undefined
-									? slideIndex + 1
-									: index + 1}
-							</p>
-						) : null}
-					</div>
-					<div
-						className={cn(
+							"overflow-hidden",
+							!embedded && "rounded-2xl border bg-card shadow-sm",
 							frame.kind === "slideshow" &&
-								"px-6 py-6 md:px-8 md:py-8",
+								"min-h-[70vh] rounded-3xl p-0",
+							frame.kind !== "slideshow" &&
+								(embedded ? "" : "p-4 md:p-5"),
 						)}
 					>
-						<FrameBlockRenderer
-							block={block}
-							projectScoped={projectScoped}
-						/>
-					</div>
-				</section>
-			))}
+						<div
+							className={cn(
+								frame.kind === "slideshow"
+									? "border-b px-6 py-4"
+									: blockTitle
+										? "mb-3"
+										: "hidden",
+							)}
+						>
+							{blockTitle ? (
+								<h2
+									className={cn(
+										frame.kind === "slideshow"
+											? "font-serif text-2xl md:text-3xl"
+											: "font-semibold text-lg",
+									)}
+								>
+									{blockTitle}
+								</h2>
+							) : frame.kind === "slideshow" ? (
+								<p className="editorial-label">
+									Slide{" "}
+									{slideIndex !== undefined
+										? slideIndex + 1
+										: index + 1}
+								</p>
+							) : null}
+						</div>
+						<div
+							className={cn(
+								frame.kind === "slideshow" &&
+									"px-6 py-6 md:px-8 md:py-8",
+							)}
+						>
+							<FrameBlockRenderer
+								block={block}
+								strictSandbox={strictSandbox}
+								allowScripts={allowScripts}
+								hasHost={embedded}
+							/>
+						</div>
+					</section>
+				);
+			})}
 		</div>
 	);
 }
 
+const RELAY_NO_HOST_ERROR =
+	"This page is not open in a Fabric view that can run tools.";
+const RELAY_BUSY_ERROR = "Too many Fabric calls are waiting for an answer.";
+const MAX_RELAYED_CALLS = 100;
+
+let relayedCallCounter = 0;
+
 /**
- * Project-scoped HTML block. The iframe has an opaque origin (no
+ * Strict-sandbox HTML block. The iframe has an opaque origin (no
  * `allow-same-origin`), so the host cannot read `contentDocument` to measure
  * it; the srcdoc carries a resize reporter that posts its height instead, and
  * we only trust messages whose `source` is this iframe's window.
+ *
+ * The same iframe carries the page runtime (`window.fabric`). This component
+ * only relays it: a request from the page goes up to the host page - which
+ * alone decides whether to act, as the viewer - under an id of this embed's
+ * own, and the host's answer, believed only from the app's own parent window,
+ * goes back down under the page's id. Without a host (the frame is not
+ * embedded) a call is answered at once so the page is not left waiting.
+ *
+ * The page's script can run before this listener is attached, and a request
+ * posted then would reach no one. So the page holds its requests until this
+ * component tells it, with `host-ready`, that it is listening: once the
+ * listener is attached, and again to a page that announces itself with
+ * `runtime-hello` (one that came up after this component attached).
  */
-function ProjectHtmlBlockFrame({ block }: { block: FrameBlockView }) {
+function ProjectHtmlBlockFrame({
+	block,
+	hasHost,
+	allowScripts,
+}: {
+	block: FrameBlockView;
+	hasHost: boolean;
+	allowScripts: boolean;
+}) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
+	const relayedCalls = useRef(new Map<string, string>());
 	const srcdoc = useMemo(
-		() => buildProjectFrameSrcdoc(block.content),
-		[block.content],
+		() => buildProjectFrameSrcdoc(block.content, { scripts: allowScripts }),
+		[block.content, allowScripts],
 	);
 
 	useEffect(() => {
+		const answerPage = (
+			message: FrameRuntimeCallResult | FrameRuntimeHostReady,
+		) => {
+			iframeRef.current?.contentWindow?.postMessage(message, "*");
+		};
+		const announceReady = () =>
+			answerPage({ type: FRAME_RUNTIME_HOST_READY_TYPE });
+		const refusePage = (requestId: string, error: string) =>
+			answerPage({
+				type: "fabric-frame:call-result",
+				requestId,
+				ok: false,
+				error,
+			});
+		const relayToHost = (request: FrameRuntimeRequest) => {
+			if (!hasHost) {
+				if (request.type === "fabric-frame:call") {
+					refusePage(request.requestId, RELAY_NO_HOST_ERROR);
+				}
+				return;
+			}
+			if (request.type !== "fabric-frame:call") {
+				window.parent.postMessage(request, window.location.origin);
+				return;
+			}
+			if (relayedCalls.current.size >= MAX_RELAYED_CALLS) {
+				refusePage(request.requestId, RELAY_BUSY_ERROR);
+				return;
+			}
+			relayedCallCounter += 1;
+			const relayId = `relay-${relayedCallCounter}`;
+			relayedCalls.current.set(relayId, request.requestId);
+			window.parent.postMessage(
+				{ ...request, requestId: relayId },
+				window.location.origin,
+			);
+		};
+
 		const onMessage = (event: MessageEvent) => {
 			const iframe = iframeRef.current;
-			if (!iframe || event.source !== iframe.contentWindow) {
+			if (!iframe) {
 				return;
 			}
-			if (!isProjectFrameHeightMessage(event.data)) {
+			if (event.source === iframe.contentWindow) {
+				if (isProjectFrameHeightMessage(event.data)) {
+					const next = Math.min(
+						Math.max(Math.round(event.data.height), 0),
+						PROJECT_FRAME_MAX_HEIGHT,
+					);
+					if (next > 0) {
+						iframe.style.height = `${next}px`;
+					}
+				} else if (isFrameRuntimeRequest(event.data)) {
+					relayToHost(event.data);
+				} else if (isFrameRuntimeHello(event.data)) {
+					announceReady();
+				}
 				return;
 			}
-			const next = Math.min(
-				Math.max(Math.round(event.data.height), 0),
-				PROJECT_FRAME_MAX_HEIGHT,
-			);
-			if (next > 0) {
-				iframe.style.height = `${next}px`;
+			if (
+				hasHost &&
+				event.source === window.parent &&
+				event.origin === window.location.origin &&
+				isFrameRuntimeCallResult(event.data)
+			) {
+				const pageRequestId = relayedCalls.current.get(
+					event.data.requestId,
+				);
+				if (pageRequestId === undefined) {
+					return;
+				}
+				relayedCalls.current.delete(event.data.requestId);
+				answerPage({ ...event.data, requestId: pageRequestId });
 			}
 		};
 		window.addEventListener("message", onMessage);
+		// The page's script may already be running and holding its requests; it
+		// is told now that they can go. If it is not up yet, its hello is answered
+		// above when it comes.
+		announceReady();
 		return () => window.removeEventListener("message", onMessage);
-	}, []);
+	}, [hasHost]);
 
 	return (
 		<iframe
@@ -528,15 +648,23 @@ function HtmlBlockFrame({ block }: { block: FrameBlockView }) {
 
 function FrameBlockRenderer({
 	block,
-	projectScoped,
+	strictSandbox,
+	allowScripts,
+	hasHost,
 }: {
 	block: FrameBlockView;
-	projectScoped: boolean;
+	strictSandbox: boolean;
+	allowScripts: boolean;
+	hasHost: boolean;
 }) {
 	switch (block.type) {
 		case "html":
-			return projectScoped ? (
-				<ProjectHtmlBlockFrame block={block} />
+			return strictSandbox ? (
+				<ProjectHtmlBlockFrame
+					block={block}
+					hasHost={hasHost}
+					allowScripts={allowScripts}
+				/>
 			) : (
 				<HtmlBlockFrame block={block} />
 			);

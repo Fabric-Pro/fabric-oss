@@ -14,6 +14,14 @@
  *   against it, and the gate-off history schedules exactly the activities the
  *   pre-branch code schedules, plus the plan that returned null.
  *
+ * The retrieval result's shape is the second thing pinned here (Fizzy #2946).
+ * A coordinated run asks retrieval for its source manifest, and the child
+ * branches on the RECORDED result, with no marker: `string[]` (a history
+ * recorded before the manifest existed, or by a worker that ignores the flag)
+ * or `{ contexts, manifest }`. Both replay against today's code, the new shape
+ * hands the manifest to the analysis run record, and a mutant that reads the
+ * object shape without checking fails replay of the old shape.
+ *
  * No production history of this workflow is available locally, so the "before"
  * history is recorded here by the workflow with its marker replaced by
  * `false`: the code that never enters the branch. Every activity is a stub.
@@ -37,6 +45,7 @@ import {
 	type PlanProposalArtifactResult,
 	type ProposalArtifactPlan,
 	proposalAnalysisWorkflowId,
+	proposalSourceFingerprint,
 } from "../../lib/proposal-artifact/types";
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../../task-queues";
 
@@ -46,6 +55,10 @@ const WORKFLOWS_DIR = resolve(__dirname, "..");
 const CHILD_PATH = join(WORKFLOWS_DIR, "document-generation-child.ts");
 const PATCH_ID = "proposal-artifact-v1";
 const PATCH_CALL = `patched("${PATCH_ID}")`;
+/** The child's test of the recorded retrieval result's shape. */
+const SHAPE_TEST = "Array.isArray(retrieval)";
+
+const RETRIEVED = ["Source material for the proposal."];
 
 const LIVE_RUN_ID = "live-run-1";
 const PLAN: ProposalArtifactPlan = {
@@ -71,20 +84,24 @@ let currentBundle: WorkflowBundleWithSourceMap;
 let legacyBundle: WorkflowBundleWithSourceMap;
 /** The mutant: the branch taken without consulting the marker. */
 let bypassBundle: WorkflowBundleWithSourceMap;
+/** The mutant: the retrieval result read as the object shape, unchecked. */
+let objectShapeBundle: WorkflowBundleWithSourceMap;
 let runSeq = 0;
 
 /**
- * Bundle the child workflow with its marker read replaced by `marker`. The
+ * Bundle the child workflow with `replace.from` replaced by `replace.to`. The
  * copy sits in a temporary directory under __tests__ (which repository scans
  * skip), its relative imports re-pointed at the real modules, and it also
  * exports the analysis workflow so the started child can run.
  */
 async function bundleChild(
-	marker: string | null,
+	replace: { from: string; to: string } | null,
 ): Promise<WorkflowBundleWithSourceMap> {
 	const original = readFileSync(CHILD_PATH, "utf8");
 	const source =
-		marker === null ? original : original.replace(PATCH_CALL, marker);
+		replace === null
+			? original
+			: original.replace(replace.from, replace.to);
 	const dir = mkdtempSync(join(__dirname, ".proposal-artifact-replay-"));
 	const fromDir = (specifier: string) => {
 		const target = relative(dir, resolve(WORKFLOWS_DIR, specifier))
@@ -109,12 +126,37 @@ async function bundleChild(
 	}
 }
 
-function stubActivities(plan: PlanProposalArtifactResult) {
+/**
+ * What the retrieval stub returns: `strings` is the shape every worker
+ * returned before the manifest existed (and a worker that ignores the flag
+ * still returns); `manifest` answers a request for it with the object shape.
+ */
+type RetrievalShape = "strings" | "manifest";
+
+/** The manifest the `manifest` stub returns, one entry per string. */
+const RETRIEVAL_MANIFEST = [
+	{
+		kind: "projectContext",
+		id: "ctx-1",
+		contextType: "TEXT",
+		title: "Discovery notes",
+		sourceName: null,
+		fingerprint: proposalSourceFingerprint(RETRIEVED[0]),
+	},
+];
+
+function stubActivities(
+	plan: PlanProposalArtifactResult,
+	retrievalShape: RetrievalShape = "strings",
+) {
 	return {
 		planProposalArtifact: async () => plan,
-		retrieveProjectContexts: async () => [
-			"Source material for the proposal.",
-		],
+		retrieveProjectContexts: async (input: {
+			includeSourceManifest?: boolean;
+		}) =>
+			retrievalShape === "manifest" && input.includeSourceManifest
+				? { contexts: [...RETRIEVED], manifest: RETRIEVAL_MANIFEST }
+				: [...RETRIEVED],
 		retrieveAndFormatEpisodicMemory: async () => ({
 			formattedContext: "",
 			episodeCount: 0,
@@ -160,6 +202,7 @@ function stubActivities(plan: PlanProposalArtifactResult) {
 async function record(
 	bundle: WorkflowBundleWithSourceMap,
 	plan: PlanProposalArtifactResult,
+	retrievalShape: RetrievalShape = "strings",
 ): Promise<{ workflowId: string; documentId: string; history: History }> {
 	const seq = ++runSeq;
 	const workflowId = `proposal-artifact-replay-${seq}`;
@@ -169,7 +212,7 @@ async function record(
 		// The child's activities name this queue, so one worker serves both.
 		taskQueue: PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 		workflowBundle: bundle,
-		activities: stubActivities(plan),
+		activities: stubActivities(plan, retrievalShape),
 	});
 	const handle = await env.client.workflow.start(
 		"documentGenerationChildWorkflow",
@@ -237,6 +280,46 @@ function scheduledInputs(history: History, documentId: string): string[] {
 	});
 }
 
+/** The serialized input of the first scheduled `activityType`. */
+function scheduledInputOf(history: History, activityType: string): string {
+	for (const event of history.events ?? []) {
+		const attributes = event.activityTaskScheduledEventAttributes;
+		if (attributes?.activityType?.name === activityType) {
+			return (attributes.input?.payloads ?? [])
+				.map((payload) =>
+					Buffer.from(payload.data ?? []).toString("utf8"),
+				)
+				.join("\n");
+		}
+	}
+	throw new Error(`${activityType} was not scheduled`);
+}
+
+/** The serialized result of the first completed `activityType`. */
+function completedResultOf(history: History, activityType: string): string {
+	const events = history.events ?? [];
+	const scheduled = events.find(
+		(event) =>
+			event.activityTaskScheduledEventAttributes?.activityType?.name ===
+			activityType,
+	);
+	const completed = events.find(
+		(event) =>
+			event.activityTaskCompletedEventAttributes &&
+			String(
+				event.activityTaskCompletedEventAttributes.scheduledEventId,
+			) === String(scheduled?.eventId),
+	);
+	if (!completed) {
+		throw new Error(`${activityType} did not complete`);
+	}
+	return (
+		completed.activityTaskCompletedEventAttributes?.result?.payloads ?? []
+	)
+		.map((payload) => Buffer.from(payload.data ?? []).toString("utf8"))
+		.join("\n");
+}
+
 /** The patch ids the history's markers record. */
 function patchMarkers(history: History): string[] {
 	return (history.events ?? []).flatMap((event) => {
@@ -255,14 +338,18 @@ function patchMarkers(history: History): string[] {
 beforeAll(async () => {
 	env = await TestWorkflowEnvironment.createTimeSkipping();
 	const source = readFileSync(CHILD_PATH, "utf8");
-	// The mutants below replace exactly this call; if it moves or doubles,
-	// they would silently test nothing.
+	// The mutants below replace exactly these expressions; if one moves or
+	// doubles, they would silently test nothing.
 	if (source.split(PATCH_CALL).length !== 2) {
 		throw new Error("the proposal artifact marker moved; update this test");
 	}
+	if (source.split(SHAPE_TEST).length !== 2) {
+		throw new Error("the retrieval shape test moved; update this test");
+	}
 	currentBundle = await bundleChild(null);
-	legacyBundle = await bundleChild("false");
-	bypassBundle = await bundleChild("true");
+	legacyBundle = await bundleChild({ from: PATCH_CALL, to: "false" });
+	bypassBundle = await bundleChild({ from: PATCH_CALL, to: "true" });
+	objectShapeBundle = await bundleChild({ from: SHAPE_TEST, to: "false" });
 }, 300_000);
 
 afterAll(async () => {
@@ -374,5 +461,91 @@ describe("coordinated Proposal branch — replay", () => {
 				gateOff.workflowId,
 			),
 		).resolves.toBeUndefined();
+	}, 120_000);
+});
+
+describe("retrieval result shape — replay without a marker", () => {
+	it("replays a coordinated history whose retrieval recorded strings alone, with no manifest for the analysis run", async () => {
+		// The child asks for the manifest; the worker that ran this history
+		// answered with the strings alone, as every worker did before the
+		// manifest existed.
+		const strings = await record(currentBundle, PLAN, "strings");
+		expect(
+			scheduledInputOf(strings.history, "retrieveProjectContexts"),
+		).toContain('"includeSourceManifest":true');
+		expect(
+			JSON.parse(
+				completedResultOf(strings.history, "retrieveProjectContexts"),
+			),
+		).toEqual(RETRIEVED);
+		const analysisInput = scheduledInputOf(
+			strings.history,
+			"createProposalAnalysisRun",
+		);
+		expect(analysisInput).not.toContain("retrievalManifest");
+		expect(JSON.parse(analysisInput).contexts).toEqual(RETRIEVED);
+		expect(startedChildren(strings.history)).toHaveLength(1);
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle: currentBundle },
+				strings.history,
+				strings.workflowId,
+			),
+		).resolves.toBeUndefined();
+	}, 120_000);
+
+	it("replays a history whose retrieval recorded the manifest, and hands it to the analysis run record", async () => {
+		const withManifest = await record(currentBundle, PLAN, "manifest");
+		const analysisInput = JSON.parse(
+			scheduledInputOf(withManifest.history, "createProposalAnalysisRun"),
+		);
+		expect(analysisInput.contexts).toEqual(RETRIEVED);
+		expect(analysisInput.retrievalManifest).toEqual(RETRIEVAL_MANIFEST);
+		// The same commands as the strings-only history: only arguments
+		// differ.
+		const strings = await record(currentBundle, PLAN, "strings");
+		expect(scheduledActivities(withManifest.history)).toEqual(
+			scheduledActivities(strings.history),
+		);
+
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle: currentBundle },
+				withManifest.history,
+				withManifest.workflowId,
+			),
+		).resolves.toBeUndefined();
+	}, 120_000);
+
+	it("a mutant that reads the object shape unconditionally fails replay of a strings-only history", async () => {
+		const strings = await record(currentBundle, PLAN, "strings");
+
+		// The mutant reads `retrieval.contexts` off the recorded array and
+		// gets `undefined`; the step's own logging then throws inside the
+		// retrieval `try`, whose catch carries on "without RAG" and skips the
+		// progress write the history recorded next. Replay schedules the
+		// episodic-memory activity where the history holds that write:
+		// "[TMPRL1100] Nondeterminism error: Activity type of scheduled event
+		// 'updateProjectDocumentStatus' does not match activity type of
+		// activity command 'retrieveAndFormatEpisodicMemory'".
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle: objectShapeBundle },
+				strings.history,
+				strings.workflowId,
+			),
+		).rejects.toThrow(DeterminismViolationError);
+	}, 120_000);
+
+	it("asks for no manifest when the gate is off", async () => {
+		const gateOff = await record(currentBundle, null, "manifest");
+
+		expect(
+			scheduledInputOf(gateOff.history, "retrieveProjectContexts"),
+		).not.toContain("includeSourceManifest");
+		expect(scheduledActivities(gateOff.history)).not.toContain(
+			"createProposalAnalysisRun",
+		);
 	}, 120_000);
 });

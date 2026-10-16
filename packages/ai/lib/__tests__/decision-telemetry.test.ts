@@ -126,7 +126,12 @@ function fakeDecisionModel(
 }
 
 const SENTINEL_CALL = {
-	state: { notes: SENTINEL, nested: [SENTINEL] },
+	state: [
+		{
+			type: "json" as const,
+			value: { notes: SENTINEL, nested: [SENTINEL] },
+		},
+	],
 	questions: {
 		topic: {
 			type: "choice" as const,
@@ -830,7 +835,9 @@ describe("with the real experimental_decide", () => {
 		});
 		const wrapped = wrapDecisionModelWithTelemetry(
 			fakeDecisionModel(async (options) => {
-				if (options.state === "first") {
+				// The SDK normalizes a string state to text parts before doDecide.
+				const [part] = options.state;
+				if (part?.type === "text" && part.text === "first") {
 					await gate;
 					return answer("openai/example-luna-decider");
 				}

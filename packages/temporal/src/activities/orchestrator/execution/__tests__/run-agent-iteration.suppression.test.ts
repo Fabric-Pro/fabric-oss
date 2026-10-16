@@ -258,10 +258,13 @@ describe("runAgentIteration — no system row reaches the SDK [SDK7]", () => {
 		expect(callArg.messages).toBeDefined();
 		expect(callArg.messages?.some((m) => m.role === "system")).toBe(false);
 		// Content is kept, not dropped — it self-labels as an operation result.
-		expect(callArg.messages).toContainEqual({
-			role: "assistant",
-			content: "Operation completed: exported the report.",
-		});
+		// (As the last message it also carries the prompt-cache breakpoint.)
+		expect(callArg.messages).toContainEqual(
+			expect.objectContaining({
+				role: "assistant",
+				content: "Operation completed: exported the report.",
+			}),
+		);
 		// And the call does not silently opt in to the v6 behaviour.
 		expect(callArg.allowSystemInMessages).toBeUndefined();
 	});

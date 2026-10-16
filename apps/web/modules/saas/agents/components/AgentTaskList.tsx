@@ -154,6 +154,56 @@ function toHistoryItemsFromConversation(conversation: {
 	return [];
 }
 
+const CONVERSATION_PAGE_SIZE = 100;
+/** Pages read for the history: a longer history stops here rather than on every refresh. */
+const CONVERSATION_PAGES = 5;
+
+const CONVERSATION_CAP = CONVERSATION_PAGE_SIZE * CONVERSATION_PAGES;
+
+/**
+ * The caller's active conversations, newest first, a page at a time by cursor:
+ * of one agent when one is chosen, otherwise of every agent in the
+ * organization. A page that cannot be read ends the read with the pages already
+ * read kept, and says so (`failed`); a history longer than the pages read says
+ * so too (`capped`), so neither passes for the whole history.
+ */
+async function listConversations({
+	organizationId,
+	agentId,
+}: {
+	organizationId?: string;
+	agentId?: string;
+}) {
+	const conversations = [];
+	let cursor: string | undefined;
+	for (let page = 0; page < CONVERSATION_PAGES; page++) {
+		let result: Awaited<
+			ReturnType<typeof orpcClient.agents.conversations.list>
+		>;
+		try {
+			result = await orpcClient.agents.conversations.list({
+				limit: CONVERSATION_PAGE_SIZE,
+				status: "ACTIVE",
+				...(organizationId ? { organizationId } : {}),
+				...(agentId ? { agentId } : {}),
+				...(cursor ? { cursor } : {}),
+			});
+		} catch (error) {
+			console.warn(
+				"[AgentTaskList] Failed to load conversation-backed history:",
+				error,
+			);
+			return { conversations, failed: true, capped: false };
+		}
+		conversations.push(...result.conversations);
+		cursor = result.nextCursor;
+		if (!cursor) {
+			return { conversations, failed: false, capped: false };
+		}
+	}
+	return { conversations, failed: false, capped: true };
+}
+
 /**
  * Agent Task List Component
  *
@@ -176,37 +226,11 @@ export function AgentTaskList({
 				...(status ? { status } : {}),
 			};
 
-			const conversationRequest = {
-				limit: 100,
-				offset: 0,
-				status: "ACTIVE" as const,
-				...(organizationId ? { organizationId } : {}),
-				...(agentId ? { agentId } : {}),
-			};
-
-			const [tasksResult, conversationsResult] = await Promise.allSettled(
-				[
+			const [tasks, { conversations, failed, capped }] =
+				await Promise.all([
 					orpcClient.agents.tasks.list(taskRequest),
-					orpcClient.agents.conversations.list(conversationRequest),
-				],
-			);
-
-			if (tasksResult.status === "rejected") {
-				throw tasksResult.reason;
-			}
-
-			const tasks = tasksResult.value;
-			const conversations =
-				conversationsResult.status === "fulfilled"
-					? conversationsResult.value
-					: { conversations: [], total: 0, hasMore: false };
-
-			if (conversationsResult.status === "rejected") {
-				console.warn(
-					"[AgentTaskList] Failed to load conversation-backed history:",
-					conversationsResult.reason,
-				);
-			}
+					listConversations({ organizationId, agentId }),
+				]);
 
 			const taskItems: HistoryItem[] = tasks.map((task) => ({
 				id: task.id,
@@ -222,8 +246,8 @@ export function AgentTaskList({
 				sourceLabel: "Task",
 			}));
 
-			const conversationItems = conversations.conversations.flatMap(
-				(conversation) => toHistoryItemsFromConversation(conversation),
+			const conversationItems = conversations.flatMap((conversation) =>
+				toHistoryItemsFromConversation(conversation),
 			);
 
 			const combined = [...taskItems, ...conversationItems].sort(
@@ -232,11 +256,15 @@ export function AgentTaskList({
 					new Date(a.createdAt).getTime(),
 			);
 
-			return status
-				? combined.filter(
-						(item) => item.status === normalizeStatus(status),
-					)
-				: combined;
+			return {
+				items: status
+					? combined.filter(
+							(item) => item.status === normalizeStatus(status),
+						)
+					: combined,
+				conversationsFailed: failed,
+				conversationsCapped: capped,
+			};
 		},
 		refetchInterval: 5000, // Refresh every 5 seconds for real-time updates
 	});
@@ -264,19 +292,32 @@ export function AgentTaskList({
 		);
 	}
 
-	if (!data || data.length === 0) {
+	const partialNotice = data?.conversationsFailed ? (
+		<Alert variant="warning">
+			<AlertCircle className="h-4 w-4" />
+			<AlertDescription>
+				Some conversations could not be loaded, so this history may be
+				incomplete.
+			</AlertDescription>
+		</Alert>
+	) : null;
+
+	if (!data || data.items.length === 0) {
+		// A history that failed to load is not an empty one.
 		return (
-			<Alert>
-				<AlertCircle className="h-4 w-4" />
-				<AlertTitle>No History Found</AlertTitle>
-				<AlertDescription>
-					No agent executions match your current filters.
-				</AlertDescription>
-			</Alert>
+			partialNotice ?? (
+				<Alert>
+					<AlertCircle className="h-4 w-4" />
+					<AlertTitle>No History Found</AlertTitle>
+					<AlertDescription>
+						No agent executions match your current filters.
+					</AlertDescription>
+				</Alert>
+			)
 		);
 	}
 
-	const groupedTasks = data.reduce<Record<string, HistoryItem[]>>(
+	const groupedTasks = data.items.reduce<Record<string, HistoryItem[]>>(
 		(acc, item) => {
 			if (!acc[item.status]) {
 				acc[item.status] = [];
@@ -299,109 +340,120 @@ export function AgentTaskList({
 	);
 
 	return (
-		<Queue>
-			{sortedStatuses.map((taskStatus) => {
-				const tasks = groupedTasks[taskStatus];
-				return (
-					<QueueSection
-						key={taskStatus}
-						defaultOpen={
-							taskStatus === "RUNNING" || taskStatus === "PENDING"
-						}
-					>
-						<QueueSectionTrigger>
-							<QueueSectionLabel
-								label={taskStatus}
-								count={tasks.length}
-								icon={
-									<ClipboardListIcon className="h-4 w-4 text-muted-foreground" />
-								}
-							/>
-						</QueueSectionTrigger>
-						<QueueSectionContent>
-							<QueueList maxHeight="none">
-								{tasks.map((task) => {
-									const isCompleted =
-										task.status === "COMPLETED";
+		<div className="space-y-3">
+			{partialNotice}
+			{data.conversationsCapped ? (
+				<output className="block text-xs text-muted-foreground">
+					Showing the first {CONVERSATION_CAP} conversations.
+				</output>
+			) : null}
+			<Queue>
+				{sortedStatuses.map((taskStatus) => {
+					const tasks = groupedTasks[taskStatus];
+					return (
+						<QueueSection
+							key={taskStatus}
+							defaultOpen={
+								taskStatus === "RUNNING" ||
+								taskStatus === "PENDING"
+							}
+						>
+							<QueueSectionTrigger>
+								<QueueSectionLabel
+									label={taskStatus}
+									count={tasks.length}
+									icon={
+										<ClipboardListIcon className="h-4 w-4 text-muted-foreground" />
+									}
+								/>
+							</QueueSectionTrigger>
+							<QueueSectionContent>
+								<QueueList maxHeight="none">
+									{tasks.map((task) => {
+										const isCompleted =
+											task.status === "COMPLETED";
 
-									return (
-										<QueueItem
-											key={task.id}
-											isCompleted={isCompleted}
-										>
-											<QueueItemIndicator
+										return (
+											<QueueItem
+												key={task.id}
 												isCompleted={isCompleted}
-											/>
-											<QueueItemContent>
-												<div className="flex items-center gap-2 mb-1">
-													<span className="font-medium text-sm">
-														{formatAgentLabel(
-															task.agentId,
-														)}
-													</span>
-													<StatusBadge
-														status={task.status}
-													/>
-													<Badge
-														variant="outline"
-														className="text-[10px]"
-													>
-														{task.sourceLabel}
-													</Badge>
-												</div>
-												{task.title && (
-													<div className="mb-1 text-xs text-muted-foreground line-clamp-2">
-														{task.title}
+											>
+												<QueueItemIndicator
+													isCompleted={isCompleted}
+												/>
+												<QueueItemContent>
+													<div className="flex items-center gap-2 mb-1">
+														<span className="font-medium text-sm">
+															{formatAgentLabel(
+																task.agentId,
+															)}
+														</span>
+														<StatusBadge
+															status={task.status}
+														/>
+														<Badge
+															variant="outline"
+															className="text-[10px]"
+														>
+															{task.sourceLabel}
+														</Badge>
 													</div>
-												)}
-												<QueueItemDescription>
-													Stage: {task.stage}
-												</QueueItemDescription>
-												<div className="flex items-center gap-2 mt-1">
-													<span className="text-xs text-muted-foreground">
-														Started{" "}
-														{formatDistanceToNow(
-															new Date(
-																task.createdAt,
-															),
-															{ addSuffix: true },
-														)}
-													</span>
-													{task.completedAt && (
+													{task.title && (
+														<div className="mb-1 text-xs text-muted-foreground line-clamp-2">
+															{task.title}
+														</div>
+													)}
+													<QueueItemDescription>
+														Stage: {task.stage}
+													</QueueItemDescription>
+													<div className="flex items-center gap-2 mt-1">
 														<span className="text-xs text-muted-foreground">
-															• Completed{" "}
+															Started{" "}
 															{formatDistanceToNow(
 																new Date(
-																	task.completedAt,
+																	task.createdAt,
 																),
 																{
 																	addSuffix: true,
 																},
 															)}
 														</span>
+														{task.completedAt && (
+															<span className="text-xs text-muted-foreground">
+																• Completed{" "}
+																{formatDistanceToNow(
+																	new Date(
+																		task.completedAt,
+																	),
+																	{
+																		addSuffix: true,
+																	},
+																)}
+															</span>
+														)}
+													</div>
+													{task.error && (
+														<Alert
+															variant="error"
+															className="mt-2 py-2"
+														>
+															<AlertCircle className="h-3 w-3" />
+															<AlertDescription className="text-xs">
+																{task.error}
+															</AlertDescription>
+														</Alert>
 													)}
-												</div>
-												{task.error && (
-													<Alert
-														variant="error"
-														className="mt-2 py-2"
-													>
-														<AlertCircle className="h-3 w-3" />
-														<AlertDescription className="text-xs">
-															{task.error}
-														</AlertDescription>
-													</Alert>
-												)}
-											</QueueItemContent>
-										</QueueItem>
-									);
-								})}
-							</QueueList>
-						</QueueSectionContent>
-					</QueueSection>
-				);
-			})}
-		</Queue>
+												</QueueItemContent>
+											</QueueItem>
+										);
+									})}
+								</QueueList>
+							</QueueSectionContent>
+						</QueueSection>
+					);
+				})}
+			</Queue>
+		</div>
 	);
 }
 

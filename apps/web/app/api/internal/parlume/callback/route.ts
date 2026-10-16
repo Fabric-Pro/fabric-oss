@@ -1,39 +1,56 @@
 import {
+	closeParlumeMeetingBridge,
+	getParlumeBridgeSettings,
+	sendParlumeSpeakerUpdates,
+} from "@repo/api/modules/projects/lib/parlume-attendee";
+import {
 	cleanupParlumeProviderData,
 	finalizeParlumeSession,
 } from "@repo/api/modules/projects/lib/parlume-finalization";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
-import {
-	closeParlumeMeetingBridge,
-	getParlumeBridgeSettings,
-} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { callbackSecret, constantTimeEqual } from "../lib";
 
-const callbackSchema = z.object({
-	event: z.enum(["bot.completed", "bot.failed"]),
-	data: z.object({ bot_id: z.string().min(1).max(256) }),
+const envelopeSchema = z.object({
+	trigger: z.string().max(128),
+	bot_id: z.string().min(1).max(256),
+	data: z.unknown(),
 });
 
-// The provider retries a rejected callback for hours. Naming the event and
-// the missing piece is what lets an operator tell a stale bot from a wrong
-// secret; the secret value itself is never logged.
-function describeRejected(raw: string): { event: string | null } {
+const stateChangeSchema = z.object({
+	new_state: z.string().max(64),
+	event_type: z.string().max(128).nullish(),
+	event_sub_type: z.string().max(128).nullish(),
+});
+
+const speechEventSchema = z.object({
+	participant_name: z.string().max(256),
+	participant_uuid: z.string().min(1).max(256),
+	event_type: z.enum(["speech_start", "speech_stop"]),
+	timestamp_ms: z.number(),
+});
+
+type TerminalOutcome = "completed" | "failed";
+
+// Attendee retries a rejected webhook. Naming the trigger and the missing
+// piece is what lets an operator tell a stale bot from a wrong token; the token
+// value itself is never logged.
+function describeRejected(raw: string): { trigger: string | null } {
 	try {
 		const body: unknown = JSON.parse(raw);
 		return {
-			event:
+			trigger:
 				typeof body === "object" &&
 				body !== null &&
-				"event" in body &&
-				typeof body.event === "string"
-					? body.event
+				"trigger" in body &&
+				typeof body.trigger === "string"
+					? body.trigger
 					: null,
 		};
 	} catch {
-		return { event: null };
+		return { trigger: null };
 	}
 }
 
@@ -54,57 +71,62 @@ async function closeBridge(sessionId: string): Promise<void> {
 	}
 }
 
-export async function POST(request: NextRequest) {
-	const sessionId = request.nextUrl.searchParams.get("sessionId");
-	const raw = await request.text();
-	const expected = sessionId ? callbackSecret(sessionId) : null;
-	if (
-		!sessionId ||
-		!expected ||
-		!constantTimeEqual(request.headers.get("x-mb-secret"), expected)
-	) {
-		const rejected = describeRejected(raw);
-		// The provider also posts status-change events to this URL without the
-		// callback secret; they carry nothing Fabric acts on, so they are noise
-		// rather than a sign of a wrong secret.
-		parlumeLog(
-			rejected.event === "bot.status_change" &&
-				!request.headers.has("x-mb-secret")
-				? "info"
-				: "warn",
-			"callback.rejected",
-			{
-				sessionId,
-				...rejected,
-				hasSecretHeader: request.headers.has("x-mb-secret"),
-			},
-		);
-		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-	}
-	let json: unknown;
-	try {
-		json = JSON.parse(raw);
-	} catch {
-		json = null;
-	}
-	const parsed = callbackSchema.safeParse(json);
-	if (!parsed.success) {
-		parlumeLog("warn", "callback.invalid", {
-			sessionId,
-			...describeRejected(raw),
-		});
-		return NextResponse.json(
-			{ error: "Invalid callback" },
-			{ status: 400 },
-		);
-	}
+// Best effort and unlogged on success: speech events arrive for every turn of
+// every participant. A lost one only costs a transcript turn its speaker label.
+async function forwardSpeechEvent(
+	sessionId: string,
+	botId: string,
+	event: z.infer<typeof speechEventSchema>,
+): Promise<void> {
 	const session = await db.parlumeMeetingSession.findFirst({
-		where: { id: sessionId, providerBotId: parsed.data.data.bot_id },
+		where: {
+			id: sessionId,
+			providerBotId: botId,
+			status: { in: ["JOINING", "ACTIVE", "LEAVING"] },
+		},
+		select: { id: true },
+	});
+	const settings = getParlumeBridgeSettings();
+	if (!session || !settings) {
+		return;
+	}
+	try {
+		await sendParlumeSpeakerUpdates({
+			settings,
+			sessionId: session.id,
+			updates: [
+				{
+					name: event.participant_name,
+					id: event.participant_uuid,
+					timestamp: event.timestamp_ms,
+					isSpeaking: event.event_type === "speech_start",
+				},
+			],
+		});
+	} catch (error) {
+		parlumeLog("warn", "callback.speaker_forward_failed", {
+			sessionId: session.id,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+async function handleTerminalState(input: {
+	sessionId: string;
+	botId: string;
+	outcome: TerminalOutcome;
+	state: { eventType: string | null; eventSubType: string | null };
+}): Promise<NextResponse> {
+	const { sessionId, botId, outcome } = input;
+	const session = await db.parlumeMeetingSession.findFirst({
+		where: { id: sessionId, providerBotId: botId },
 		select: {
 			id: true,
 			status: true,
 			endReason: true,
 			leaveRequestedAt: true,
+			terminalCallbackAt: true,
+			finalizedAt: true,
 			streamClosedAt: true,
 			streamGeneration: true,
 		},
@@ -112,24 +134,41 @@ export async function POST(request: NextRequest) {
 	if (!session) {
 		parlumeLog("warn", "callback.unknown_session", {
 			sessionId,
-			botId: parsed.data.data.bot_id,
-			event: parsed.data.event,
+			botId,
+			outcome,
 		});
 		return NextResponse.json({ error: "Unknown session" }, { status: 404 });
 	}
 	parlumeLog("info", "callback.received", {
 		sessionId: session.id,
-		botId: parsed.data.data.bot_id,
-		event: parsed.data.event,
+		botId,
+		outcome,
+		eventType: input.state.eventType,
+		eventSubType: input.state.eventSubType,
 		status: session.status,
 		streamClosed: session.streamClosedAt !== null,
 	});
-	// The provider reports a bot that leaves on our request before recording
-	// anything as failed. A leave Fabric asked for (stop, idle, revoked access,
-	// hard stop) is a normal end with the reason already recorded.
+	// Attendee redelivers a webhook it could not confirm, and a bot can report
+	// more than one terminal state. Once the session is finalized nothing more
+	// is owed except the provider's data deletion, which a failed attempt leaves
+	// for the next delivery to retry.
+	if (session.finalizedAt) {
+		try {
+			await cleanupParlumeProviderData(session.id);
+		} catch {
+			return NextResponse.json(
+				{ error: "Provider data deletion retry required" },
+				{ status: 503 },
+			);
+		}
+		return NextResponse.json({ accepted: true, duplicate: true });
+	}
+	// A leave Fabric asked for (stop, idle, revoked access, hard stop) is a
+	// normal end with the reason already recorded, even if the provider reports
+	// the bot as failed.
 	const requestedLeave =
 		session.leaveRequestedAt !== null && session.endReason !== null;
-	if (parsed.data.event === "bot.failed" && !requestedLeave) {
+	if (outcome === "failed" && !requestedLeave) {
 		await db.parlumeMeetingSession.updateMany({
 			where: { id: session.id, status: { not: "ENDED" } },
 			data: {
@@ -200,7 +239,9 @@ export async function POST(request: NextRequest) {
 			// A completed bot that Fabric never asked to leave was removed by
 			// the host or outlived the meeting.
 			endReason: session.endReason ?? "REMOVED",
-			terminalCallbackAt: new Date(),
+			// The first terminal delivery is the exact time the bot stopped costing
+			// provider time; a later one must not move it.
+			terminalCallbackAt: session.terminalCallbackAt ?? new Date(),
 		},
 	});
 	if (callbackRecorded.count === 0) {
@@ -221,4 +262,77 @@ export async function POST(request: NextRequest) {
 			{ status: 503 },
 		);
 	}
+}
+
+/**
+ * Attendee's webhook. It cannot sign per bot, so the URL Fabric registered for
+ * the bot carries the session's own secret in `token`.
+ */
+export async function POST(request: NextRequest) {
+	const sessionId = request.nextUrl.searchParams.get("sessionId");
+	const token = request.nextUrl.searchParams.get("token");
+	const raw = await request.text();
+	const expected = sessionId ? callbackSecret(sessionId) : null;
+	if (!sessionId || !expected || !constantTimeEqual(token, expected)) {
+		parlumeLog("warn", "callback.rejected", {
+			sessionId,
+			...describeRejected(raw),
+			hasToken: token !== null,
+		});
+		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+	let json: unknown;
+	try {
+		json = JSON.parse(raw);
+	} catch {
+		json = null;
+	}
+	const envelope = envelopeSchema.safeParse(json);
+	if (!envelope.success) {
+		parlumeLog("warn", "callback.invalid", {
+			sessionId,
+			...describeRejected(raw),
+		});
+		return NextResponse.json(
+			{ error: "Invalid callback" },
+			{ status: 400 },
+		);
+	}
+	const { trigger, bot_id: botId, data } = envelope.data;
+	if (trigger === "participant_events.speech_start_stop") {
+		const event = speechEventSchema.safeParse(data);
+		if (event.success) {
+			await forwardSpeechEvent(sessionId, botId, event.data);
+		}
+		return NextResponse.json({ accepted: true });
+	}
+	if (trigger !== "bot.state_change") {
+		return NextResponse.json({ accepted: true });
+	}
+	const change = stateChangeSchema.safeParse(data);
+	if (!change.success) {
+		parlumeLog("warn", "callback.invalid", { sessionId, trigger });
+		return NextResponse.json(
+			{ error: "Invalid callback" },
+			{ status: 400 },
+		);
+	}
+	const outcome: TerminalOutcome | null =
+		change.data.new_state === "ended"
+			? "completed"
+			: change.data.new_state === "fatal_error"
+				? "failed"
+				: null;
+	if (!outcome) {
+		return NextResponse.json({ accepted: true });
+	}
+	return handleTerminalState({
+		sessionId,
+		botId,
+		outcome,
+		state: {
+			eventType: change.data.event_type ?? null,
+			eventSubType: change.data.event_sub_type ?? null,
+		},
+	});
 }

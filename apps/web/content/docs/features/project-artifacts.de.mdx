@@ -1,0 +1,58 @@
+---
+title: Projekt-Artifacts
+description: Seiten, die Fabric Agent für ein Projekt schreibt, auf dem Artifacts-Tab des Projekts abgelegt und von dessen Mitgliedern geöffnet.
+---
+
+Projekt-Artifacts sind die Seiten, die Fabric Agent für ein einzelnes Projekt geschrieben hat: ein Statusboard der Arbeit des Projekts, ein Bericht zur Release-Bereitschaft, ein kleines Werkzeug, das das Team weiter nutzt. Sie liegen auf dem Tab **Artifacts** des Projekts, neben dessen Dokumenten und Roadmap, und die Mitglieder des Projekts öffnen sie dort.
+
+Ein Artifact ist dieselbe Art von Seite wie ein [Workspace](/docs/features/workspace-pages), nur an ein Projekt gebunden statt in der ganzen Organisation geteilt. Der Agent schreibt die ganze Seite, speichert sie im Projekt und erklärt sie. Es gibt keine Vorlagen.
+
+## Ein Artifact anfordern
+
+<Steps>
+  <Step>
+    ### Den Artifacts-Tab des Projekts öffnen
+
+    Öffnen Sie in einem Projekt den Tab **Artifacts**. Er listet die für dieses Projekt geschriebenen Seiten auf, die neuesten zuerst.
+  </Step>
+
+  <Step>
+    ### Auf Ask Fabric Agent klicken
+
+    Fabric Agent öffnet sich mit einem Entwurf wie „Build a page for this project: a status board of the current work, with a refresh button." Ändern Sie ihn auf das, was Sie möchten, und senden Sie ihn ab.
+  </Step>
+
+  <Step>
+    ### Es im Tab öffnen
+
+    Der Agent speichert die Seite als Artifact dieses Projekts und sagt Ihnen, was jeder Teil tut. Wählen Sie ihre Karte, um sie zu lesen. **Change with Fabric Agent** öffnet den Chat erneut, ausgerichtet auf diese Seite.
+  </Step>
+</Steps>
+
+Sie können auch in jedem Chat fragen, der im Projekt geöffnet ist: „Erstelle ein Artifact mit den offenen Risiken dieses Projekts." Der Chat weiß, in welchem Projekt er sich befindet, die Seite wird also dort gespeichert.
+
+## Wer ein Artifact sieht
+
+Die Mitglieder des Projekts, sofern sie auch Mitglieder der Organisation sind, und der Eigentümer des Projekts. Der Tab listet nur die Artifacts dieses Projekts auf, nie die einer anderen Organisation.
+
+<Callout type="info">
+  Ein **Gast** eines Projekts, der kein Mitglied der Organisation ist, sieht die Liste nicht. Der Artifacts-Tab sagt das, statt einen Fehler anzuzeigen. Wer ein Artifact öffnen kann und es mit einem Gast teilt, kann ihm dessen Link schicken; es öffnet sich dann für ihn.
+</Callout>
+
+Wird ein Projekt in den Papierkorb verschoben, sind seine Artifacts für alle, die sie nur über das Projekt hatten, ebenfalls weg. Mit dem Projekt kommen sie zurück.
+
+## Was ein Artifact kann
+
+Ein Artifact läuft im selben abgeschotteten Frame wie ein Workspace, mit denselben Schaltflächen, die über Fabric handeln (`window.fabric`): Lesen läuft sofort, alles, was Daten ändert, fragt zuerst die Person, die die Seite ansieht, und eine bearbeitete Seite fragt erneut. Wie diese Aufrufe geprüft werden und welche Tools keine Seite verwenden darf, steht unter [Workspaces](/docs/features/workspace-pages#schaltflächen-die-über-fabric-handeln).
+
+Eine Seite kann keine Netzwerkanfragen stellen, keine Skripte oder Schriften von einer anderen Website laden und nichts von Ihnen lesen, außer über diese Schaltflächen. Eine Seite, die ein geplanter Workflow ohne Aufsicht geschrieben hat, wird ganz ohne Skript angezeigt.
+
+## Artifacts nach Zeitplan
+
+Ein [geplanter Agent-Workflow](/docs/features/scheduled-agent-workflows) kann sein Ergebnis als Artifact des Projekts veröffentlichen, zu dem er gehört. Jeder Lauf fügt dem Artifact eine Version hinzu (oder erzeugt jedes Mal ein neues, je nach Einstellung des Publish-Frame-Schritts), sodass der Tab immer den neuesten Bericht zeigt.
+
+## Verwandte Themen
+
+- [Workspaces](/docs/features/workspace-pages), Seiten für die ganze Organisation
+- [Projekte](/docs/features/projects)
+- [Fabric MCP Gateway](/docs/integrations/mcp-gateway)

@@ -155,14 +155,27 @@ function programWithInstructions(): Command {
 export async function runCli(
 	argv: string[],
 	globals: string[] = [],
-	{ mcp = false }: { mcp?: boolean } = {},
+	{ mcp = false, bare = false }: { mcp?: boolean; bare?: boolean } = {},
 ): Promise<RunResult> {
 	// `init` registers an MCP server with each coding tool, which these tests
 	// are not about and which must never reach the machine's real tools. A test
 	// that is about it says `mcp: true` and mocks the runner.
+	//
+	// A bare `init` sets the plugin up; these tests are about the clone setup,
+	// so they ask for it with `--no-plugin`. A test about the default says
+	// `bare: true`.
 	const args =
-		argv[0] === "init" && !mcp && !argv.includes("--no-mcp")
-			? [...argv, "--no-mcp"]
+		argv[0] === "init"
+			? [
+					...argv,
+					...(!mcp && !argv.includes("--no-mcp") ? ["--no-mcp"] : []),
+					...(!bare &&
+					!argv.includes("--plugin") &&
+					!argv.includes("--no-plugin") &&
+					!argv.includes("--clone")
+						? ["--no-plugin"]
+						: []),
+				]
 			: argv;
 	let stdout = "";
 	let stderr = "";

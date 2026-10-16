@@ -395,3 +395,40 @@ describe("headingAnchor editor-escaped numbering", () => {
 		expect(headingAnchor("5\\. Scope")).toBe(headingAnchor("5. Scope"));
 	});
 });
+
+describe("outline adversarial lines", () => {
+	it.each([" ", "\t"])(
+		"bounds heading matching with repeated %j and an embedded line separator",
+		(space) => {
+			const start = performance.now();
+			expect(parseOutline(`##${space.repeat(80_000)}x\u2028x`)).toEqual(
+				[],
+			);
+			expect(performance.now() - start).toBeLessThan(500);
+		},
+	);
+
+	it("keeps tabs, trailing whitespace and whitespace-only heading behavior", () => {
+		expect(
+			parseOutline("##\tScope \t\n### \t\n# ").map(({ text }) => text),
+		).toEqual(["Scope", ""]);
+	});
+
+	it.each([" ", "\t"])(
+		"bounds tag matching on a forged heading with repeated %j",
+		(space) => {
+			const start = performance.now();
+			expect(headingAnchor(`**##${space.repeat(80_000)}x`)).toBe(
+				"**## x",
+			);
+			expect(performance.now() - start).toBeLessThan(500);
+		},
+	);
+
+	it("keeps nested parentheses and strips repeated terminal tags", () => {
+		expect(
+			headingAnchor("Scope (outer (inner)) (Required) (Draft)\t"),
+		).toBe("scope (outer (inner))");
+		expect(headingAnchor("Scope(x)(y)")).toBe("scope");
+	});
+});

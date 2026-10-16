@@ -1,7 +1,8 @@
 /**
  * The shell listens on `window` for messages from the embed it framed. Without
- * an origin check any window holding a handle on this one could resize the
- * frame or resolve a pending export/code RPC with its own payload.
+ * an origin check, and a check of the window it came from, any window holding a
+ * handle on this one could resize the frame or resolve a pending export/code RPC
+ * with its own payload.
  *
  * Guards js/missing-origin-check.
  */
@@ -18,51 +19,90 @@ vi.mock("../../../../components/ai-elements/response", () => ({
 	),
 }));
 
+vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationId: () => "org-a",
+}));
+
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({ push: vi.fn() }),
+}));
+
 import { FrameVizShell } from "@saas/frames/components/FrameVizShell";
 
-const EMBED_URL = "/app/frames/f1/embed";
+const EMBED_URL = "/app/example-org/frames/f1/embed";
 
-function postToHost(data: unknown, origin: string) {
-	window.dispatchEvent(new MessageEvent("message", { data, origin }));
+function postToHost(
+	data: unknown,
+	origin: string,
+	source: Window | null = null,
+) {
+	window.dispatchEvent(new MessageEvent("message", { data, origin, source }));
 }
 
-describe("FrameVizShell — postMessage origin check", () => {
-	it("ignores a set-height message from a foreign origin", async () => {
-		const { container } = render(
-			<FrameVizShell
-				title="Quarterly numbers"
-				kind="frame"
-				embedUrl={EMBED_URL}
-				hideHeader
-			/>,
-		);
-		const iframe = container.querySelector("iframe");
-		expect(iframe).not.toBeNull();
-		const before = (iframe as HTMLIFrameElement).style.height;
+function renderShell() {
+	const { container } = render(
+		<FrameVizShell
+			title="Quarterly numbers"
+			kind="frame"
+			embedUrl={EMBED_URL}
+			organizationId="org-a"
+			hideHeader
+		/>,
+	);
+	const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+	expect(iframe).not.toBeNull();
+	return iframe;
+}
+
+describe("FrameVizShell — postMessage origin and source check", () => {
+	it("ignores a set-height message from a foreign origin, even from the embed's window", async () => {
+		const iframe = renderShell();
+		const before = iframe.style.height;
 
 		postToHost(
 			{ type: "fabric-frame:set-height", height: 4321 },
 			"https://attacker.example",
+			iframe.contentWindow,
 		);
 
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect((iframe as HTMLIFrameElement).style.height).toBe(before);
+		expect(iframe.style.height).toBe(before);
 	});
 
-	it("still accepts a set-height message from the embed's own origin", async () => {
-		const { container } = render(
-			<FrameVizShell
-				title="Quarterly numbers"
-				kind="frame"
-				embedUrl={EMBED_URL}
-				hideHeader
-			/>,
-		);
-		const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+	it("ignores a set-height message from the app's own origin that did not come from the embed's window", async () => {
+		const iframe = renderShell();
+		const before = iframe.style.height;
+		const stranger = document.createElement("iframe");
+		document.body.appendChild(stranger);
 
 		postToHost(
 			{ type: "fabric-frame:set-height", height: 4321 },
 			window.location.origin,
+			stranger.contentWindow,
+		);
+		postToHost(
+			{ type: "fabric-frame:set-height", height: 4321 },
+			window.location.origin,
+			window,
+		);
+		postToHost(
+			{ type: "fabric-frame:set-height", height: 4321 },
+			window.location.origin,
+			null,
+		);
+
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(iframe.style.height).toBe(before);
+		stranger.remove();
+	});
+
+	it("still accepts a set-height message from the embed's own window and origin", async () => {
+		const iframe = renderShell();
+
+		postToHost(
+			{ type: "fabric-frame:set-height", height: 4321 },
+			window.location.origin,
+			iframe.contentWindow,
 		);
 
 		await waitFor(() => {

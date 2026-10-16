@@ -28,14 +28,26 @@ describe("resolveReaderModel", () => {
 
 	it("requests the CHAT task type with the weave-reader job label", async () => {
 		const fakeModel = { modelId: "fake" };
-		getAIModelWithMetadata.mockResolvedValue({ model: fakeModel });
+		getAIModelWithMetadata.mockResolvedValue({
+			model: fakeModel,
+			metadata: {
+				provider: "ANTHROPIC_DIRECT",
+				modelString: "claude-test",
+			},
+		});
 
-		const model = await resolveReaderModel({
+		const resolved = await resolveReaderModel({
 			userId: "user-1",
 			organizationId: "org-1",
 		});
 
-		assert.equal(model, fakeModel);
+		// The provider and model string gate the routes' cache breakpoint.
+		assert.deepEqual(resolved, {
+			model: fakeModel,
+			provider: "ANTHROPIC_DIRECT",
+			modelString: "claude-test",
+		});
+		assert.equal(resolved.model, fakeModel);
 		assert.equal(getAIModelWithMetadata.mock.calls.length, 1);
 		const [taskArg, contextArg] = getAIModelWithMetadata.mock.calls[0];
 		assert.deepEqual(taskArg, { taskType: "CHAT" });
@@ -47,7 +59,10 @@ describe("resolveReaderModel", () => {
 	});
 
 	it("forwards organizationId as undefined when the tenant has none", async () => {
-		getAIModelWithMetadata.mockResolvedValue({ model: {} });
+		getAIModelWithMetadata.mockResolvedValue({
+			model: {},
+			metadata: { provider: "OPENAI", modelString: "gpt-test" },
+		});
 
 		await resolveReaderModel({ userId: "user-1", organizationId: null });
 
@@ -56,7 +71,10 @@ describe("resolveReaderModel", () => {
 	});
 
 	it("forwards organizationId as undefined when the tenant omits it entirely", async () => {
-		getAIModelWithMetadata.mockResolvedValue({ model: {} });
+		getAIModelWithMetadata.mockResolvedValue({
+			model: {},
+			metadata: { provider: "OPENAI", modelString: "gpt-test" },
+		});
 
 		await resolveReaderModel({ userId: "user-1" });
 

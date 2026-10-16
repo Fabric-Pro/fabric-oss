@@ -425,6 +425,195 @@ describe("usage-logging middleware — stream terminal states", () => {
 		});
 	});
 
+	// `@ai-sdk/anthropic` 4's custom chunk for `message_start`, carrying the
+	// raw Anthropic usage (Fizzy #3092).
+	const MESSAGE_START = {
+		type: "custom",
+		kind: "anthropic.message_start",
+		providerMetadata: {
+			anthropic: {
+				id: "msg_1",
+				model: "claude-sonnet-4",
+				usage: {
+					input_tokens: 1_200,
+					cache_read_input_tokens: 15_000,
+					cache_creation_input_tokens: 300,
+					output_tokens: 2,
+				},
+			},
+		},
+	};
+
+	it("records the stream-start input when the consumer cancels after message_start", async () => {
+		const doStream = streamOf(
+			[MESSAGE_START, { type: "text-delta", delta: "hi" }],
+			false,
+		);
+		const { stream } = await mw().wrapStream({ doStream });
+		const reader = (stream as ReadableStream).getReader();
+		await reader.read();
+		await reader.read();
+		await reader.cancel(new Error("user pressed stop"));
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const row = logAiUsageAsync.mock.calls[0][0];
+		expect(row).toMatchObject({
+			success: false,
+			inputTokens: 16_500,
+			cachedInputTokens: 15_000,
+			cacheCreationInputTokens: 300,
+			outputTokens: 2,
+			totalTokens: 16_502,
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+		expect(row.errorMessage).toContain("cancelled");
+		expect(row.errorMessage).toContain("when the stream started");
+		expect(row.errorMessage).toContain("(user pressed stop)");
+	});
+
+	it("records the stream-start input when the stream closes without a finish", async () => {
+		const doStream = streamOf([MESSAGE_START]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 16_500,
+			errorMessage: expect.stringContaining("without a finish"),
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+	});
+
+	it("keeps the error chunk's message and adds the stream-start input when no finish follows", async () => {
+		const doStream = streamOf([
+			MESSAGE_START,
+			{ type: "error", error: new Error("overloaded") },
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			errorMessage: "overloaded",
+			inputTokens: 16_500,
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+	});
+
+	it("records the stream-start input when the source errors after message_start", async () => {
+		// Delivered by successive pulls so the start chunk is read before the
+		// source errors (erroring inside `start()` would discard the queue).
+		const chunks: Record<string, unknown>[] = [
+			MESSAGE_START,
+			{ type: "text-delta", delta: "hi" },
+		];
+		const doStream = vi.fn().mockResolvedValue({
+			stream: new ReadableStream({
+				pull(controller) {
+					const next = chunks.shift();
+					if (next) {
+						controller.enqueue(next);
+					} else {
+						controller.error(new Error("socket reset"));
+					}
+				},
+			}),
+		});
+		const { stream } = await mw().wrapStream({ doStream });
+		await expect(drain(stream)).rejects.toThrow("socket reset");
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 16_500,
+			errorMessage: expect.stringContaining("socket reset"),
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+	});
+
+	it("keeps a structured error's attribution alongside the stream-start marker", async () => {
+		const doStream = streamOf([
+			MESSAGE_START,
+			{
+				type: "error",
+				error: Object.assign(new Error("Overloaded"), {
+					statusCode: 529,
+					type: "overloaded_error",
+				}),
+			},
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		const row = logAiUsageAsync.mock.calls[0][0];
+		expect(row).toMatchObject({
+			success: false,
+			errorStatusCode: 529,
+			inputTokens: 16_500,
+			errorDetails: {
+				type: "overloaded_error",
+				usageReportedAt: "stream_start",
+			},
+		});
+	});
+
+	it("prefers an error chunk's own usage over the stream-start usage, unmarked", async () => {
+		const doStream = streamOf([
+			MESSAGE_START,
+			{
+				type: "error",
+				error: new Error("mid-stream failure"),
+				usage: {
+					inputTokens: { total: 16_500, noCache: 1_200 },
+					outputTokens: { total: 40 },
+				},
+			},
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		const row = logAiUsageAsync.mock.calls[0][0];
+		expect(row).toMatchObject({
+			success: false,
+			inputTokens: 16_500,
+			outputTokens: 40,
+		});
+		expect(row.errorDetails?.usageReportedAt).toBeUndefined();
+	});
+
+	it("uses the finish usage, unmarked, when the stream finishes after message_start", async () => {
+		const doStream = streamOf([
+			MESSAGE_START,
+			{
+				type: "finish",
+				usage: {
+					inputTokens: { total: 16_500, noCache: 1_200 },
+					outputTokens: { total: 90 },
+				},
+			},
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		const row = logAiUsageAsync.mock.calls[0][0];
+		expect(row).toMatchObject({
+			success: true,
+			inputTokens: 16_500,
+			outputTokens: 90,
+		});
+		expect(row.errorDetails).toBeUndefined();
+	});
+
+	it("ignores custom chunks that carry no stream-start usage", async () => {
+		const doStream = streamOf([
+			{ type: "custom", kind: "openai.compaction", providerMetadata: {} },
+		]);
+		const { stream } = await mw().wrapStream({ doStream });
+		await drain(stream);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			success: false,
+			inputTokens: 0,
+			errorMessage: expect.stringContaining("no usage was reported"),
+		});
+		expect(logAiUsageAsync.mock.calls[0][0].errorDetails).toBeUndefined();
+	});
+
 	it("records the error chunk once when no finish follows it", async () => {
 		const doStream = streamOf([
 			{ type: "error", error: new Error("first") },
@@ -505,7 +694,7 @@ describe("usage-logging middleware — evaluation models", () => {
 		);
 
 		await model.doDecide({
-			state: "evaluate this choice",
+			state: [{ type: "text" as const, text: "evaluate this choice" }],
 			questions: {
 				choice: {
 					type: "choice",
@@ -562,7 +751,7 @@ describe("usage-logging middleware — evaluation models", () => {
 			},
 		);
 		const call = {
-			state: "decide this choice",
+			state: [{ type: "text" as const, text: "decide this choice" }],
 			questions: {
 				choice: {
 					type: "choice" as const,
@@ -610,7 +799,9 @@ describe("usage-logging middleware — evaluation models", () => {
 
 		await expect(
 			model.doDecide({
-				state: "evaluate this choice",
+				state: [
+					{ type: "text" as const, text: "evaluate this choice" },
+				],
 				questions: {
 					choice: {
 						type: "choice",
@@ -659,7 +850,9 @@ describe("usage-logging middleware — evaluation models", () => {
 
 		await expect(
 			model.doDecide({
-				state: "evaluate this choice",
+				state: [
+					{ type: "text" as const, text: "evaluate this choice" },
+				],
 				questions: {
 					choice: {
 						type: "choice",
@@ -711,7 +904,9 @@ describe("usage-logging middleware — evaluation models", () => {
 
 		await expect(
 			model.doDecide({
-				state: "evaluate this choice",
+				state: [
+					{ type: "text" as const, text: "evaluate this choice" },
+				],
 				questions: {
 					choice: {
 						type: "choice",

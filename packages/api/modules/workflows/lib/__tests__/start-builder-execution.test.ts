@@ -16,19 +16,17 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { startMock, cancelMock, describeMock, getHandleMock } = vi.hoisted(
-	() => ({
+const { startMock, cancelMock, describeMock, getHandleMock, clientMock } =
+	vi.hoisted(() => ({
 		startMock: vi.fn(),
 		cancelMock: vi.fn(),
 		describeMock: vi.fn(),
 		getHandleMock: vi.fn(),
-	}),
-);
+		clientMock: vi.fn(),
+	}));
 
 vi.mock("@repo/temporal", () => ({
-	getTemporalClient: async () => ({
-		workflow: { start: startMock, getHandle: getHandleMock },
-	}),
+	getTemporalClient: () => clientMock(),
 }));
 
 vi.mock("../../../../lib/temporal-correlation", () => ({
@@ -54,6 +52,9 @@ function temporalError(name: string, message = name): Error {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	clientMock.mockResolvedValue({
+		workflow: { start: startMock, getHandle: getHandleMock },
+	});
 	startMock.mockResolvedValue({
 		workflowId: "workflow-execution-exec-1",
 		firstExecutionRunId: "run-1",
@@ -169,7 +170,23 @@ describe("attemptWorkflowBuilderStart", () => {
 			status: "not-started",
 			workflowId: "workflow-execution-exec-1",
 			error: failure,
+			cause: "start-rejected",
 		});
+	});
+
+	it("reports the engine as unavailable, having sent nothing, when no client can be made", async () => {
+		const failure = new Error("connection refused");
+		clientMock.mockRejectedValue(failure);
+
+		const outcome = await attemptWorkflowBuilderStart(input);
+
+		expect(outcome).toEqual({
+			status: "not-started",
+			workflowId: "workflow-execution-exec-1",
+			error: failure,
+			cause: "engine-unavailable",
+		});
+		expect(startMock).not.toHaveBeenCalled();
 	});
 
 	it("reports unknown — never not-started — when the describe cannot settle it either", async () => {

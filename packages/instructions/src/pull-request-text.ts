@@ -184,6 +184,23 @@ const TEXT_CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 /** A line that spells Fabric's own `Fabric-Commit` trailer, in any case and with any spacing before the colon. */
 const SPOOFED_COMMIT_TRAILER = /^[ \t]*Fabric-Commit[ \t]*:/im;
 
+/**
+ * A commit message as a commit carries it: line endings normalised, controls
+ * other than tab and newline removed, trailing space trimmed, runs of blank
+ * lines collapsed. Every check on a message (a credential, a trailer of
+ * Fabric's own) runs on this form, so nothing can hide in what is removed.
+ */
+export function normaliseCommitMessage(raw: string): string {
+	return raw
+		.replace(/\r\n?/g, "\n")
+		.replace(TEXT_CONTROLS, "")
+		.split("\n")
+		.map((line) => line.replace(/[ \t]+$/, ""))
+		.join("\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 export type RenderedDirectCommitText =
 	| {
 			ok: true;
@@ -223,14 +240,7 @@ export function renderDirectCommitText(input: {
 	proposerName: string;
 	mailFrom: string;
 }): RenderedDirectCommitText {
-	const message = input.message
-		.replace(/\r\n?/g, "\n")
-		.replace(TEXT_CONTROLS, "")
-		.split("\n")
-		.map((line) => line.replace(/[ \t]+$/, ""))
-		.join("\n")
-		.replace(/\n{3,}/g, "\n\n")
-		.trim();
+	const message = normaliseCommitMessage(input.message);
 	const subject = message.split("\n", 1)[0] ?? "";
 	if (subject === "") {
 		return { ok: false, code: "MESSAGE_EMPTY" };
@@ -262,6 +272,103 @@ export function renderDirectCommitText(input: {
 		author: { name: proposerName, email },
 		committer: { name: PULL_REQUEST_COMMITTER_NAME, email },
 		message,
+	};
+}
+
+/** The trailer that names the memory write a commit belongs to; a retry finds its commit by it. */
+export const MEMORY_WRITE_TRAILER = "Fabric-Memory-Write";
+/** The trailer that names the agent (the OAuth client) a memory write came through. */
+export const MEMORY_WRITE_AGENT_TRAILER = "Fabric-Agent";
+
+/**
+ * A line that spells one of Fabric's own commit trailers (`Fabric-Commit`,
+ * `Fabric-Memory-Write`, `Fabric-Agent`), in any case and with any spacing
+ * before the colon. A caller's message may not carry one: the trailers are
+ * appended after the message, and a retry finds its commit by them.
+ */
+const RESERVED_TRAILER_LINE =
+	/^[ \t]*Fabric-(?:Commit|Memory-Write|Agent)[ \t]*:/im;
+
+/** Whether `message` has a line that spells one of Fabric's own commit trailers. */
+export function hasReservedTrailerLine(message: string): boolean {
+	return RESERVED_TRAILER_LINE.test(message);
+}
+
+/** An id this codebase issues: what a trailer value may be. */
+const TRAILER_ID = /^[A-Za-z0-9_-]{8,64}$/;
+
+/** An OAuth client id as the `Fabric-Agent` trailer carries it: the safe characters of it, at most 64. */
+export function agentTrailerValue(clientId: string | null | undefined): string {
+	return (clientId ?? "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
+}
+
+export type RenderedMemoryWriteText =
+	| {
+			ok: true;
+			author: PullRequestIdentity;
+			committer: {
+				name: typeof PULL_REQUEST_COMMITTER_NAME;
+				email: string;
+			};
+			/** The caller's own words, normalised: no trailers, no trailing newline. */
+			message: string;
+			/** The first line of `message`. */
+			subject: string;
+			/** `message` after its first line, trimmed; empty when there is none. */
+			body: string;
+			/** `message`, a blank line, then the trailers, ending in a newline. */
+			commitMessage: string;
+	  }
+	| { ok: false; code: "MESSAGE_EMPTY" | "MESSAGE_TOO_LONG" }
+	| { ok: false; code: "MESSAGE_REJECTED" }
+	| { ok: false; code: "ATTRIBUTION_REJECTED" };
+
+/**
+ * The commit message and identities of a Living Memory write (ADR-022), with
+ * the attribution every Fabric commit has (`renderDirectCommitText`): the
+ * member's display name and the deployment's `noreply@` address as author,
+ * `Fabric` as committer, and the same refusals (an empty or over-long message,
+ * a credential in it). A message with a line that spells one of Fabric's own
+ * trailers is refused too, since the trailers are Fabric's: appended after the
+ * message, they are how a retry recognises its commit, and the caller's own
+ * line of that shape would let a lookup mistake another commit for it. The
+ * check runs on the normalised message, so a control character cannot hide one.
+ */
+export function renderMemoryWriteText(input: {
+	message: string;
+	proposerName: string;
+	mailFrom: string;
+	writeId: string;
+	agentId?: string | null;
+}): RenderedMemoryWriteText {
+	if (!TRAILER_ID.test(input.writeId)) {
+		throw new Error("A memory write's trailer id is not an issued id");
+	}
+	const rendered = renderDirectCommitText(input);
+	if (!rendered.ok) {
+		return rendered;
+	}
+	if (hasReservedTrailerLine(rendered.message)) {
+		return { ok: false, code: "MESSAGE_REJECTED" };
+	}
+	const [subject = "", ...rest] = rendered.message.split("\n");
+	const agent = agentTrailerValue(input.agentId);
+	return {
+		ok: true,
+		author: rendered.author,
+		committer: rendered.committer,
+		message: rendered.message,
+		subject,
+		body: rest.join("\n").trim(),
+		commitMessage: [
+			rendered.message,
+			"",
+			`${MEMORY_WRITE_TRAILER}: ${input.writeId}`,
+			...(agent === ""
+				? []
+				: [`${MEMORY_WRITE_AGENT_TRAILER}: ${agent}`]),
+			"",
+		].join("\n"),
 	};
 }
 

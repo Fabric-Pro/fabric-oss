@@ -37,7 +37,6 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { cn } from "@ui/lib";
 import {
 	AlertCircleIcon,
 	ArrowLeftIcon,
@@ -76,10 +75,7 @@ import {
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
 import { ProposalAnalysisPanel } from "./proposal-artifact/ProposalAnalysisPanel";
-import {
-	PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
-	ProposalLiveSections,
-} from "./proposal-artifact/ProposalLiveSections";
+import { ProposalLiveSections } from "./proposal-artifact/ProposalLiveSections";
 import { ProposalStylePanel } from "./proposal-artifact/ProposalStylePanel";
 import {
 	analysisTabIndicator,
@@ -87,6 +83,11 @@ import {
 	proposalAnalysisQueryKey,
 	useProposalAnalysis,
 } from "./proposal-artifact/use-proposal-analysis";
+import {
+	type ProposalThemeRootProps,
+	ProposalThemeStyle,
+	useProposalTheme,
+} from "./proposal-artifact/use-proposal-theme";
 
 // Error boundary to catch CopilotKit initialization failures. The fallback
 // must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
@@ -258,6 +259,7 @@ function ProposalLiveMain({
 	organizationId,
 	document,
 	canRetry,
+	themeRootProps,
 }: {
 	projectId: string;
 	documentId: string;
@@ -273,6 +275,7 @@ function ProposalLiveMain({
 		updatedAt?: Date | string | null;
 	};
 	canRetry: boolean;
+	themeRootProps?: ProposalThemeRootProps;
 }) {
 	const t = useTranslations("projects.proposalArtifactPage.live");
 	const queryClient = useQueryClient();
@@ -305,6 +308,7 @@ function ProposalLiveMain({
 				canRetry ? () => retry.mutate({ id: documentId }) : undefined
 			}
 			isRetrying={retry.isPending}
+			themeRootProps={themeRootProps}
 		/>
 	);
 }
@@ -535,7 +539,8 @@ export function DocumentEditorPage({
 	// A Proposal under the `PROPOSAL_ARTIFACT` gate is written in one run from
 	// the library's client proposal prompt, whoever starts it. Its page — a
 	// live Main tab, Internal Analysis and Style — is for members of the
-	// owning organization; a project guest keeps today's page (Fizzy #2801).
+	// owning organization; a project guest keeps today's page without the tabs
+	// (Fizzy #2801), on the Proposal theme (Fizzy #2946).
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
 	const isGuestInOrg = useIsGuestInOrg();
 	const isArtifactProposal =
@@ -557,6 +562,14 @@ export function DocumentEditorPage({
 		enabled: artifactMode,
 		generationStartedAt: documentData?.document?.generationStartedAt,
 		generationRunning: isGenerationRunning,
+	});
+	// A client-document Proposal wears the shared theme on its Main, for
+	// members and project guests alike, so the page matches the PDF exported
+	// later (Fizzy #2946). The server has the last word on whether it applies.
+	const proposalTheme = useProposalTheme({
+		projectId,
+		documentId,
+		enabled: isArtifactProposal,
 	});
 	// Between a generation's end and its run being recorded, what the tab
 	// holds is the previous Main's run; a failed generation records none.
@@ -1089,6 +1102,11 @@ export function DocumentEditorPage({
 					hidden={artifactMode && activeTab !== "main"}
 					className="h-full"
 				>
+					{/* The theme root sits on the box around the editor's content,
+					  inside the editor's scroll container (the desk), never on the
+					  editor region: the region also holds the chat, which the
+					  theme's element rules would restyle. */}
+					{proposalTheme.active && <ProposalThemeStyle />}
 					{showLiveMain && (
 						<ProposalLiveMain
 							projectId={projectId}
@@ -1096,15 +1114,13 @@ export function DocumentEditorPage({
 							organizationId={organizationId}
 							document={document}
 							canRetry={canEdit}
+							themeRootProps={proposalTheme.rootProps}
 						/>
 					)}
 					<div
 						ref={setEditorRegionEl}
 						hidden={showLiveMain}
-						className={cn(
-							"h-full [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full",
-							artifactMode && PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
-						)}
+						className="h-full [&>.copilotKitSidebarContentWrapper]:h-full [&>.copilotKitSidebarContentWrapper>.copilotKitModalChildrenWrapper]:h-full"
 					>
 						<CopilotErrorBoundary
 							fallback={(error) => (
@@ -1164,6 +1180,10 @@ export function DocumentEditorPage({
 										promptSelectorReplacement={
 											promptSelectorReplacement
 										}
+										contentThemeProps={
+											proposalTheme.rootProps
+										}
+										statTiles={isArtifactProposal}
 									/>
 								</CopilotChatSessionProvider>
 							</CopilotKit>

@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.6.0
+
+### Minor Changes
+
+- 1da1843: Coding Instructions can now reach Claude Code and Codex as a plugin Fabric builds on demand, with no clone, and the project's memory folders are mirrored as plain files that reach the repository through Fabric.
+
 ## 0.5.0
 
 ### Minor Changes

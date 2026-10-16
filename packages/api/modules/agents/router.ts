@@ -33,6 +33,7 @@ import {
 	removeMessage,
 	renameForDocument,
 	saveTurn,
+	setConversationVisibility,
 	setVisibilityForDocument,
 	togglePin,
 	updateConversation,
@@ -137,6 +138,8 @@ export const agentsRouter = {
 		delete: deleteConversation,
 		archive: archiveConversation,
 		togglePin: togglePin,
+		// Who can read a Fabric Agent session: its owner, or the organization.
+		setVisibility: setConversationVisibility,
 		// Document-assistant procedures (spec 2026-05-19 §5). Mounted flat
 		// under `agents.conversations` so public names stay
 		// `agents.conversations.listForDocument` etc., matching the existing

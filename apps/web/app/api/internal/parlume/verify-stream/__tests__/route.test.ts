@@ -17,7 +17,7 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
-vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({
+vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	deleteParlumeMeetingBotData: vi.fn(),
 	getParlumeBridgeSettings: vi.fn(),
 }));

@@ -13,7 +13,6 @@ export const HIDDEN_SYSTEM_MCP_SERVER_KEYS = [
 	"obsidian",
 	"puppeteer",
 	"todoist",
-	"twilio",
 	"turso",
 	"axiom",
 	"upstash",

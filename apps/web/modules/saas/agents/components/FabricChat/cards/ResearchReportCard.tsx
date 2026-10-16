@@ -78,7 +78,7 @@ const SOURCE_TYPE_CONFIG: Record<
 		color: "text-emerald-600",
 	},
 	workspace: {
-		label: "Workspace",
+		label: "Library",
 		icon: <FileText className="h-3 w-3" />,
 		color: "text-emerald-600",
 	},

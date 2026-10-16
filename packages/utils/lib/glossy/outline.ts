@@ -78,15 +78,15 @@ export function scanFences(lines: readonly string[]): FenceRole[] {
 }
 
 /** An ATX heading line: 1-6 `#` characters, a space, then the heading text. */
-const HEADING_LINE = /^(#{1,6})\s+(.+)$/;
+// The text starts with a non-whitespace character, or is one blank character.
+// Keeping it disjoint from the separator prevents quadratic backtracking when
+// a long whitespace run is followed by text containing a line separator.
+const HEADING_LINE = /^(#{1,6})\s+(\S.*|[^\S\r\u2028\u2029])$/;
 
 /** A leading numbering prefix, e.g. "5. ", "6) ", "1A. " (KTD11 numbering). */
 // The editor escapes an ordered-looking heading on save (`## 5\. Scope`), so
 // the separator may carry a backslash; both forms must share one anchor.
 const NUMBERING_PREFIX = /^\d+[A-Za-z]?\\?[.)]\s+/;
-
-/** A trailing parenthetical "tag" suffix, e.g. " (Required)", " (Status: Confirmed)". */
-const TAG_SUFFIX = /\s*\([^()]*\)\s*$/;
 
 export interface OutlineHeading {
 	/** ATX heading level, 1-6. */
@@ -209,15 +209,35 @@ export function headingAnchor(text: string | null | undefined): string {
 	const decorationStripped = stripInlineDecoration(text);
 	const withoutNumbering = decorationStripped.replace(NUMBERING_PREFIX, "");
 
-	// Repeat: a heading may carry more than one trailing tag, e.g. "(Required) (Draft)".
-	let withoutTags = withoutNumbering;
-	let previous: string;
-	do {
-		previous = withoutTags;
-		withoutTags = previous.replace(TAG_SUFFIX, "");
-	} while (withoutTags !== previous);
+	// Scan backward once, including repeated tags. Restarting an unanchored
+	// suffix regex for every candidate whitespace or tag rescans long headings.
+	let end = withoutNumbering.length;
+	while (end > 0 && /\s/.test(withoutNumbering[end - 1])) {
+		end--;
+	}
+	while (end > 0 && withoutNumbering[end - 1] === ")") {
+		let start = end - 2;
+		while (
+			start >= 0 &&
+			withoutNumbering[start] !== "(" &&
+			withoutNumbering[start] !== ")"
+		) {
+			start--;
+		}
+		if (start < 0 || withoutNumbering[start] !== "(") {
+			break;
+		}
+		end = start;
+		while (end > 0 && /\s/.test(withoutNumbering[end - 1])) {
+			end--;
+		}
+	}
 
-	return withoutTags.trim().toLowerCase().replace(/\s+/g, " ");
+	return withoutNumbering
+		.slice(0, end)
+		.trim()
+		.toLowerCase()
+		.replace(/\s+/g, " ");
 }
 
 /**

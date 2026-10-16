@@ -20,7 +20,7 @@ flowchart LR
 
 1. **You submit a request** through chat, a workflow trigger, or the API
 2. **The Orchestrator** determines which specialized agent is best suited for your task
-3. **The agent retrieves context** from your uploaded documents and workspace knowledge
+3. **The agent retrieves context** from your uploaded documents and library knowledge
 4. **AI generates the result** using your configured provider (OpenAI, Anthropic, Groq, etc.)
 5. **You receive the output** as a document, chat response, or workflow result
 
@@ -39,7 +39,7 @@ Agents can communicate with each other, use external tools (via MCP), and learn 
 
 ## Document Retrieval (RAG)
 
-When you upload documents to a workspace, Fabric processes them into searchable knowledge:
+When you upload documents to a library, Fabric processes them into searchable knowledge:
 
 1. **Documents are chunked** into meaningful segments
 2. **Embeddings are generated** for semantic understanding

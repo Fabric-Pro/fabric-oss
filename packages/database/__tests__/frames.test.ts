@@ -104,6 +104,30 @@ describe("first-class frames queries", () => {
 			}),
 		).toMatchObject({ isPublic: true });
 	});
+	it("writes exactly one history row for one changed update, and none for an update that changes nothing", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Versioned frame",
+			blocks: [{ id: "block-1", type: "markdown", content: "# v1" }],
+		});
+		const edit = {
+			id: frame.id,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			blocks: [
+				{ id: "block-1", type: "markdown" as const, content: "# v2" },
+			],
+		};
+
+		await updateFrame(edit);
+		await updateFrame(edit);
+
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(1);
+	});
+
 	it("creates and retrieves a frame in personal context", async () => {
 		const frame = await createFrame({
 			userId: USER_ID,

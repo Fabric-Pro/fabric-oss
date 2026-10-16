@@ -54,9 +54,12 @@ const {
 
 vi.mock("@repo/database", () => ({
 	db: { workflowExecution: { update: executionUpdateMock } },
+	canRunOrganizationWorkflows: async () => true,
 	createWorkflowExecutionIdempotent: createExecutionIdempotentMock,
 	getWorkflowById: getWorkflowMock,
 	hasWorkflowAccess: accessMock,
+	isWorkflowLive: (status: string) =>
+		status === "PUBLISHED" || status === "ACTIVE",
 	markExecutionRunningIfPending: markRunningMock,
 	// Mirrors the real helper (unit-tested in @repo/database): the key moves
 	// out of the matched path into `releasedIdempotencyKey`.
@@ -74,12 +77,18 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/temporal", () => ({
-	getTemporalClient: async () => ({
-		workflow: {
-			start: startMock,
-			getHandle: () => ({ describe: describeMock }),
-		},
-	}),
+	// No client is exactly what "the engine is unavailable" means to the start.
+	getTemporalClient: async () => {
+		if (!(await temporalAvailableMock())) {
+			throw new Error("Temporal is unavailable");
+		}
+		return {
+			workflow: {
+				start: startMock,
+				getHandle: () => ({ describe: describeMock }),
+			},
+		};
+	},
 	isTemporalAvailable: temporalAvailableMock,
 }));
 
@@ -133,14 +142,17 @@ vi.mock("../../../../../orpc/procedures", () => {
 	};
 	return {
 		Permissions: { WORKSPACE_UPDATE: "workspace:update" },
-		requirePermission: () => "permission-middleware",
-		resolveOrganizationId: (input: string | null | undefined) =>
-			input ?? undefined,
+		requireInputOrgPermission: () => "permission-middleware",
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => input ?? session.activeOrganizationId ?? undefined,
 		enforceWorkflowRateLimit: enforceWorkflowRateLimitMock,
 		tenantProtectedProcedure: builder,
 	};
 });
 
+import { workflowCommandErrors } from "../../workflow-actor";
 import { startWorkflowExecutionProcedure } from "../start-execution";
 
 // The builder is stubbed to a bare handler above.
@@ -161,7 +173,10 @@ const USER = "user-1";
 /** A saved graph with one real node — valid on its own. */
 const SAVED_NODES = [{ id: "saved", type: "http-request", data: {} }];
 
-const ctx = { user: { id: USER }, session: {} };
+const ctx = {
+	user: { id: USER },
+	session: { activeOrganizationId: "org-1" },
+};
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -196,7 +211,9 @@ beforeEach(() => {
 describe("the workflow rate limit is spent before any work", () => {
 	/** The middleware this procedure mounts after the permission gate. */
 	function rateLimitMiddleware() {
-		const mw = useMocks.find((m) => typeof m === "function") as
+		const mw = useMocks.find(
+			(m) => typeof m === "function" && m !== workflowCommandErrors,
+		) as
 			| ((opts: {
 					context: unknown;
 					next: () => Promise<unknown>;
@@ -212,8 +229,9 @@ describe("the workflow rate limit is spent before any work", () => {
 	}
 
 	it("mounts a middleware after the permission gate", () => {
-		expect(useMocks[0]).toBe("permission-middleware");
-		expect(typeof useMocks[1]).toBe("function");
+		expect(useMocks[0]).toBe(workflowCommandErrors);
+		expect(useMocks[1]).toBe("permission-middleware");
+		expect(typeof useMocks[2]).toBe("function");
 	});
 
 	it("charges RATE_LIMIT_PRESETS.workflow to the caller and the procedure path, then continues", async () => {

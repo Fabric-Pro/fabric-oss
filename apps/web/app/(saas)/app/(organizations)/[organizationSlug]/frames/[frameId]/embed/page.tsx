@@ -1,10 +1,14 @@
 import { auth } from "@repo/auth";
-import { getFrameById } from "@repo/database";
+import { getAccessibleFrameById, getFrameById } from "@repo/database";
 import { getActiveOrganization } from "@saas/auth/lib/server";
 import {
 	type FrameDocumentView,
 	FrameRenderer,
 } from "@saas/frames/components/FrameRenderer";
+import {
+	isUnattendedFrame,
+	usesStrictSandbox,
+} from "@saas/frames/lib/strict-sandbox";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
@@ -27,11 +31,17 @@ export default async function OrganizationFrameEmbedPage({
 	// its own org even when other tabs are open in different org contexts.
 	const organization = await getActiveOrganization(organizationSlug);
 
-	const frame = await getFrameById({
-		id: frameId,
-		userId: session.user.id,
-		organizationId: organization?.id ?? undefined,
-	});
+	// The frame's creator, the members of its project, and the organization's
+	// members for a frame shared with the organization may open it; the lookup
+	// never leaves the organization named by the URL.
+	const frame = organization
+		? await getAccessibleFrameById({
+				id: frameId,
+				userId: session.user.id,
+				userEmail: session.user.email,
+				organizationId: organization.id,
+			})
+		: await getFrameById({ id: frameId, userId: session.user.id });
 
 	if (!frame) {
 		notFound();
@@ -46,7 +56,8 @@ export default async function OrganizationFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
-			projectScoped={Boolean(frame.projectId)}
+			strictSandbox={usesStrictSandbox(frame, session.user.id)}
+			allowScripts={!isUnattendedFrame(frame)}
 		/>
 	);
 }

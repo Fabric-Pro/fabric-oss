@@ -6,6 +6,9 @@
 		"testing",
 		"ai-chat",
 		"workflow-builder",
+		"scheduled-agent-workflows",
+		"workspace-pages",
+		"project-artifacts",
 		"agent-templates",
 		"skills",
 		"reports",
@@ -13,7 +16,7 @@
 		"data-connections",
 		"prompts",
 		"organizations",
-		"workspaces",
+		"libraries",
 		"agent-deployments",
 		"agent-memory",
 		"automation-templates"

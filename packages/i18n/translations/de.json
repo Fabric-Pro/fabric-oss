@@ -1444,6 +1444,11 @@
 						"fetched": "Empfängermarke von Website abgerufen",
 						"updated": "Empfängermarke aktualisiert"
 					},
+					"document_analysis": {
+						"responded": "Analysebefund beantwortet",
+						"cleared": "Antwort auf Analysebefund entfernt",
+						"rerun_started": "Erneute interne Analyse gestartet"
+					},
 					"context_source": {
 						"scan_stopped": "Kanal- oder Chat-Scan gestoppt oder fortgesetzt",
 						"reconnected": "Kanal- oder Chat-Monitor neu verbunden",
@@ -2379,7 +2384,8 @@
 			"planTypeTooltip": "OpenAI teilt Fabric den Plantyp nicht mit. Lege ihn fest, damit die Nutzungsschätzung zu den Limits des Plans passt.",
 			"planTypeNotSet": "Nicht festgelegt",
 			"memberShare": "Jedes Mitglied darf nutzen",
-			"memberShareDescription": "Wie viel vom 5-Stunden-Fenster dieses Kontos die Arbeit eines Mitglieds höchstens nehmen kann. Danach wechselt seine Arbeit zu den anderen geteilten Konten der Organisation.",
+			"memberShareDescription": "100 % (Standard) bedeutet keine Grenze pro Mitglied. Der Anteil wird an Fabrics eigener Schätzung des 5-Stunden-Fensters gemessen, da OpenAI die verbleibende Nutzung nicht meldet, und ist daher ungefähr. Darüber hinaus wechselt die Arbeit dieses Mitglieds zu den anderen geteilten Konten der Organisation.",
+			"memberShareTooltip": "Begrenzt, wie viel vom 5-Stunden-Fenster dieses Kontos die eigene Arbeit eines Mitglieds nutzen kann, damit nicht eine Person es für alle verbraucht.",
 			"memberSharePercent": "{percent} %",
 			"importHeadsUp": "Der erste Import dieses Verlaufs läuft über die gemeinsamen ChatGPT-Pläne deiner Organisation und kann einen großen Teil des Fünf-Stunden-Fensters eines Plans verbrauchen.",
 			"accountUpdated": "Konto aktualisiert",
@@ -2412,6 +2418,23 @@
 			"advanced": "Erweitert"
 		},
 		"aiProviders": {
+			"tabs": {
+				"label": "Wessen KI-Anbieter-Schlüssel",
+				"organization": "Organisation",
+				"personal": "Persönlich"
+			},
+			"personal": {
+				"intro": "Das sind deine eigenen Schlüssel. Fabric nutzt sie nur, wenn diese Organisation keinen eigenen nutzbaren KI-Anbieter hat, und sie begleiten dich in jede Organisation, in der du arbeitest. Ein ChatGPT-Plan, den du hier verbindest, dient deiner eigenen Arbeit."
+			},
+			"personalKeyNotice": {
+				"title": "Deine KI-Arbeit läuft hier über deinen persönlichen Schlüssel",
+				"body": "Diese Organisation hat keinen KI-Anbieter für Chat und Generierung, daher wird dein eigener {provider}-Schlüssel verwendet und dir berechnet.",
+				"manage": "Deine Schlüssel verwalten",
+				"configure": "Anbieter konfigurieren",
+				"label": "Hinweis zum persönlichen Schlüssel",
+				"dismiss": "Hinweis zum persönlichen Schlüssel schließen",
+				"show": "Hinweis zum persönlichen Schlüssel anzeigen"
+			},
 			"embeddingsOnly": {
 				"badge": "Nur Embeddings",
 				"badgeTooltip": "Dieser Schlüssel dient nur der Dokumentensuche (Embeddings). Fabric nutzt ihn nie für Chat, Agenten oder Generierung.",
@@ -2551,7 +2574,7 @@
 					},
 					"CHAT": {
 						"name": "Chat",
-						"hint": "Workspace-Dokumentchat, Atlas-Assistent, Agent-Builder-Sidekick"
+						"hint": "Bibliotheks-Dokumentchat, Atlas-Assistent, Agent-Builder-Sidekick"
 					},
 					"EVAL": {
 						"name": "Bewertung",
@@ -2712,6 +2735,12 @@
 	"documentation": {
 		"title": "Dokumentation",
 		"fallbackNotice": "Diese Seite ist in Ihrer gewählten Sprache noch nicht verfügbar. Es wird die englische Version angezeigt."
+	},
+	"workflows": {
+		"list": {
+			"scheduled": "Geplant",
+			"scheduledTitle": "Läuft nach Zeitplan"
+		}
 	},
 	"choosePlan": {
 		"title": "Wähle einen Plan",
@@ -5238,10 +5267,10 @@
 					"unknown": "Bei der internen Analyse ist ein Fehler aufgetreten."
 				},
 				"failedHint": "Das Hauptdokument ist nicht betroffen. Die Analyse läuft mit der nächsten Generierung erneut.",
-				"stale": "Diese Analyse bezieht sich auf eine frühere Fassung des Dokuments. Die nächste Generierung erstellt eine neue.",
+				"stale": "Diese Analyse bezieht sich auf eine frühere Fassung des Dokuments. Eine erneute Analyse oder die nächste Generierung prüft den aktuellen Text.",
 				"noContext": "Diese Analyse lief ohne Quellkontext und hat daher nur das Dokument selbst geprüft.",
 				"empty": "Keine Befunde. Die Analyse hat in dieser Fassung nichts gefunden, das hervorzuheben wäre.",
-				"summary": "{count, plural, one {# Befund} other {# Befunde}}",
+				"summary": "{open, plural, one {# von {total} erfordert eine Entscheidung} other {# von {total} erfordern eine Entscheidung}}",
 				"severity": {
 					"BLOCKING": "Blockierend",
 					"IMPORTANT": "Wichtig",
@@ -5262,7 +5291,116 @@
 					"unknown": "Sonstiges"
 				},
 				"recommendation": "Empfehlung:",
-				"section": "Abschnitt: {heading}"
+				"section": "Abschnitt: {heading}",
+				"rerunRunning": "Die interne Analyse wird erneut ausgeführt…",
+				"newerRunning": "Eine neue interne Analyse wird erstellt. Die Befunde unten bleiben sichtbar, bis sie fertig ist.",
+				"newerRerunRunning": "Die interne Analyse wird erneut ausgeführt. Die Befunde unten bleiben sichtbar, bis sie fertig ist.",
+				"newerFailedTitle": "Die neueste interne Analyse wurde nicht abgeschlossen.",
+				"newerFailedKept": "Die Befunde unten stammen aus der letzten abgeschlossenen Analyse.",
+				"foldedTitles": "Auch erhoben als: {titles}",
+				"notKeyed": "Führen Sie die Analyse erneut aus, um diesen Befund zu beantworten.",
+				"authorRights": "Nicht angewendet: Die Person, die geantwortet hat, hat keine Bearbeitungsrechte mehr.",
+				"state": {
+					"UNADDRESSED": "Offen",
+					"CONFIRMED": "Bestätigt",
+					"RESPONDED": "Beantwortet",
+					"NEEDS_REVIEW": "Prüfung nötig"
+				},
+				"reason": {
+					"SECTION_CHANGED": "Abschnitt geändert",
+					"SECTION_NOT_FOUND": "Abschnitt nicht gefunden",
+					"RAISED_AGAIN": "Erneut erhoben"
+				},
+				"answer": {
+					"formerMember": "einem ehemaligen Mitglied",
+					"unnamedMember": "einem Mitglied",
+					"saving": "Wird gespeichert…",
+					"confirmedBy": "Bestätigt von {name}",
+					"answeredBy": "Beantwortet von {name}",
+					"earlierConfirmedBy": "Zuvor bestätigt von {name}",
+					"earlierAnswerBy": "Frühere Antwort von {name}"
+				},
+				"actions": {
+					"confirm": "Bestätigen",
+					"confirmAgain": "Erneut bestätigen",
+					"answer": "Antworten",
+					"editAnswer": "Antwort bearbeiten",
+					"answerAgain": "Erneut antworten",
+					"clear": "Entfernen",
+					"save": "Antwort speichern",
+					"apply": "Auf den aktuellen Befund anwenden",
+					"cancel": "Abbrechen",
+					"replaceWithMine": "Durch meine ersetzen",
+					"keepTheirs": "Ihre behalten"
+				},
+				"editor": {
+					"label": "Ihre Antwort",
+					"yourDraft": "Ihr Entwurf",
+					"previouslyConfirmed": "Zuvor ohne Anmerkung bestätigt.",
+					"counter": "{count} / {max} Zeichen"
+				},
+				"conflict": {
+					"runChanged": "Die Analyse hat sich geändert, bevor Ihre Antwort gespeichert wurde. Ihr Entwurf bleibt erhalten: Wenden Sie ihn auf den aktuellen Befund an.",
+					"versionChanged": "Von {name} inzwischen gespeicherte Antwort:",
+					"versionCleared": "Jemand hat diese Antwort inzwischen entfernt. Ihr Entwurf bleibt erhalten."
+				},
+				"errors": {
+					"forbidden": "Sie können Antworten in dieser Analyse nicht ändern.",
+					"notFound": "Dieser Befund oder diese Antwort ist nicht mehr verfügbar.",
+					"tooLong": "Antworten dürfen höchstens {max} Zeichen lang sein.",
+					"required": "Schreiben Sie eine Antwort, bevor Sie speichern.",
+					"saveFailed": "Die Antwort konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+					"clearFailed": "Die Antwort konnte nicht entfernt werden. Versuchen Sie es erneut.",
+					"clearStale": "Jemand hat diese Antwort inzwischen geändert, daher wurde sie nicht entfernt.",
+					"runChanged": "Die Analyse hat sich inzwischen geändert. Nichts wurde gespeichert; versuchen Sie es beim aktuellen Befund erneut.",
+					"versionChanged": "Jemand hat diese Antwort inzwischen geändert. Nichts wurde gespeichert; die andere Antwort wird angezeigt."
+				},
+				"announce": {
+					"answered": "Antwort gespeichert.",
+					"confirmed": "Befund bestätigt.",
+					"cleared": "Antwort entfernt.",
+					"versionChanged": "Jemand hat inzwischen eine Antwort gespeichert. Ihr Entwurf bleibt erhalten.",
+					"runStarted": "Eine neue interne Analyse wurde gestartet.",
+					"runFailed": "Die neueste interne Analyse wurde nicht abgeschlossen.",
+					"runComplete": "Eine neue interne Analyse ist bereit."
+				},
+				"rerun": {
+					"button": "Analyse erneut ausführen",
+					"starting": "Wird gestartet…",
+					"running": "Analyse läuft…",
+					"note": "Prüft den aktuellen Text anhand der Quellen der letzten Generierung. Generieren Sie neu, um neue Quellen einzubeziehen.",
+					"generating": "Die erneute Analyse ist verfügbar, sobald die Generierung abgeschlossen ist.",
+					"rateLimited": "Zu viele erneute Analysen in dieser Organisation. Versuchen Sie es in {minutes, plural, one {# Minute} other {# Minuten}} erneut.",
+					"rateLimitedLater": "Zu viele erneute Analysen in dieser Organisation. Versuchen Sie es später erneut.",
+					"conflictGenerating": "Das Dokument wird generiert. Führen Sie die Analyse erneut aus, sobald die Generierung abgeschlossen ist.",
+					"conflictRunning": "Es läuft bereits eine Analyse.",
+					"promptNotBound": "Der Aktion für die interne Analyse von Angeboten ist kein Prompt zugeordnet. Ein Administrator der Organisation kann einen in der Prompt-Bibliothek zuordnen.",
+					"forbidden": "Sie können diese Analyse nicht erneut ausführen.",
+					"unavailable": "Die erneute Analyse ist gerade nicht verfügbar. Versuchen Sie es in Kürze erneut.",
+					"failed": "Die Analyse konnte nicht gestartet werden. Versuchen Sie es erneut."
+				},
+				"orphan": {
+					"title": "Nicht gespeicherte Antworten",
+					"description": "Die aktuelle Analyse erhebt diese Befunde nicht. Ihre Entwürfe bleiben hier; erhebt eine spätere Analyse einen Befund erneut, kehrt sein Entwurf dorthin zurück.",
+					"writtenFor": "Geschrieben für: {title}",
+					"discard": "Entwurf verwerfen"
+				},
+				"noLongerRaised": {
+					"title": "Nicht mehr erhoben ({count})",
+					"description": "Antworten auf Befunde, die die aktuelle Analyse nicht erhebt. Sie fließen weiterhin in spätere Generierungen ein, sofern sie keine Prüfung erfordern und die Person, die geantwortet hat, noch Bearbeitungsrechte hat."
+				},
+				"evidence": {
+					"label": "Quellen:",
+					"opensInNewTab": "(öffnet in einem neuen Tab)",
+					"removed": "Quelle entfernt",
+					"viewSource": "Quelle anzeigen: {title}",
+					"kind": {
+						"projectContext": "Projektkontext",
+						"company": "Unternehmenskontext",
+						"summary": "Projektzusammenfassung",
+						"other": "Andere Quelle"
+					}
+				}
 			},
 			"style": {
 				"title": "Stil",
@@ -5678,6 +5816,9 @@
 					}
 				}
 			}
+		},
+		"editor": {
+			"editStatTilesSource": "Quelltext bearbeiten"
 		},
 		"stories": {
 			"groupBy": "Wähle die Spuren, in die die Roadmap gruppiert wird.",

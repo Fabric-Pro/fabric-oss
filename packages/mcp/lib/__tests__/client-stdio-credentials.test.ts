@@ -955,3 +955,73 @@ describe("STDIO wrapper tool calls and the caller's abort signal", () => {
 		});
 	});
 });
+
+describe("Twilio STDIO credentials", () => {
+	// Built at runtime so secret scanners don't flag these fake test IDs.
+	const FAKE_ACCOUNT_SID = `AC${"0".repeat(32)}`;
+	const FAKE_API_KEY_SID = `SK${"0".repeat(32)}`;
+	const VALID_KEY = `${FAKE_ACCOUNT_SID}/${FAKE_API_KEY_SID}:secret_val_123`;
+
+	function twilioConfig(key: string = VALID_KEY) {
+		return {
+			id: "config_twilio",
+			enabled: true,
+			needsReauth: false,
+			displayName: "Twilio",
+			transport: "STDIO",
+			authType: "API_KEY",
+			encryptedApiKey: `ENC:${key}`,
+			mcpServer: {
+				name: "Twilio",
+				transport: "STDIO",
+				command: "npx -y @twilio-alpha/mcp@0.7.0",
+			},
+		};
+	}
+
+	it("a valid Twilio key maps to the three variables", async () => {
+		mockGetMcpConfigById.mockResolvedValue(twilioConfig());
+		const { client } = await createMcpClientForConfig({
+			configId: "config_twilio",
+			userId: "user_a",
+			organizationId: "org_a",
+		});
+		await (client as unknown as ToolsClient).tools();
+
+		expect(wrapperBodies[0]?.credentials).toEqual({
+			TWILIO_ACCOUNT_SID: FAKE_ACCOUNT_SID,
+			TWILIO_API_KEY: FAKE_API_KEY_SID,
+			TWILIO_API_SECRET: "secret_val_123",
+		});
+	});
+
+	it.each([
+		[
+			"wrong account SID prefix",
+			`BC${"0".repeat(32)}/${FAKE_API_KEY_SID}:secret_val_123`,
+		],
+		[
+			"wrong API key prefix",
+			`${FAKE_ACCOUNT_SID}/PK${"0".repeat(32)}:secret_val_123`,
+		],
+		["missing secret", `${FAKE_ACCOUNT_SID}/${FAKE_API_KEY_SID}:`],
+		["inner spaces", `${FAKE_ACCOUNT_SID}/${FAKE_API_KEY_SID}:sec ret`],
+	])(
+		"malformed key (%s) throws INVALID_TWILIO_CREDENTIALS with isAuthError",
+		async (_label, key) => {
+			mockGetMcpConfigById.mockResolvedValue(twilioConfig(key));
+
+			await expect(
+				createMcpClientForConfig({
+					configId: "config_twilio",
+					userId: "user_a",
+					organizationId: "org_a",
+				}),
+			).rejects.toMatchObject({
+				code: "INVALID_TWILIO_CREDENTIALS",
+				isAuthError: true,
+			});
+			expect(fetch).not.toHaveBeenCalled();
+		},
+	);
+});

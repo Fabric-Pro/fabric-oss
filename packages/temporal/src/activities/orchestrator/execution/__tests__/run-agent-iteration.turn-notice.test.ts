@@ -66,6 +66,7 @@ vi.mock("../vision-image-attachments", async (importOriginal) => ({
 }));
 
 import type { IterativeMessage } from "../../../../workflows/orchestrator/types";
+import { getAiModelWithSelection } from "../../utils";
 import {
 	type RunAgentIterationInput,
 	runAgentIteration,
@@ -243,5 +244,100 @@ describe("runAgentIteration — turnNotice", () => {
 			},
 		]);
 		expect(notice).toEqual({ role: "user", content: NOTICE });
+	});
+});
+
+const CACHE_BREAKPOINT = {
+	anthropic: { cacheControl: { type: "ephemeral" } },
+};
+
+function breakpointIndexes(call: StreamCall): number[] {
+	return call.messages.flatMap((m, index) =>
+		(m as { providerOptions?: unknown }).providerOptions === undefined
+			? []
+			: [index],
+	);
+}
+
+describe("runAgentIteration — Anthropic prompt-cache breakpoint", () => {
+	it("marks the last conversation message, not the per-call notice", async () => {
+		const call = await streamCallFor(buildInput({ turnNotice: NOTICE }));
+
+		expect(breakpointIndexes(call)).toEqual([2]);
+		expect(call.messages[2]).toMatchObject({
+			role: "tool",
+			providerOptions: CACHE_BREAKPOINT,
+		});
+		expect(call.messages.at(-1)).toEqual({ role: "user", content: NOTICE });
+	});
+
+	it("marks the last message when there is no notice", async () => {
+		const call = await streamCallFor(buildInput());
+		expect(breakpointIndexes(call)).toEqual([2]);
+	});
+
+	it("does not mark the caller's conversation history", async () => {
+		const input = buildInput();
+		await streamCallFor(input);
+		expect(JSON.stringify(input.conversationHistory)).not.toContain(
+			"cacheControl",
+		);
+	});
+
+	it.each([
+		["OPENAI", "gpt-5.5"],
+		["AWS_BEDROCK", "anthropic.claude-sonnet-5"],
+		["VERCEL_GATEWAY", "openai/gpt-5.5"],
+	])("sends no breakpoint for %s %s", async (provider, modelString) => {
+		vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+			model: { __mockModel: true, modelId: modelString },
+			provider,
+			modelString,
+			canonicalName: modelString,
+		} as never);
+		const call = await streamCallFor(buildInput({ turnNotice: NOTICE }));
+		expect(breakpointIndexes(call)).toEqual([]);
+	});
+
+	it("marks the user's message after the image splice", async () => {
+		stubs.resolveImageAttachments.mockResolvedValue([
+			{
+				filename: "sketch.png",
+				mediaType: "image/png",
+				bytes: new Uint8Array([1, 2, 3]),
+			},
+		]);
+		const call = await streamCallFor(
+			buildInput({
+				conversationHistory: [
+					{
+						role: "user",
+						content: "What is in the sketch?",
+						timestamp: "2026-10-05T00:00:00Z",
+					},
+				],
+				iteration: 1,
+				attachedDocumentIds: ["doc-1"],
+				turnNotice: NOTICE,
+			}),
+		);
+		expect(breakpointIndexes(call)).toEqual([0]);
+		expect(call.messages[0]).toMatchObject({
+			providerOptions: CACHE_BREAKPOINT,
+			content: expect.arrayContaining([
+				expect.objectContaining({ type: "file" }),
+			]),
+		});
+	});
+
+	it("marks a Claude model routed through the Vercel gateway", async () => {
+		vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+			model: { __mockModel: true, modelId: "anthropic/claude-sonnet-5" },
+			provider: "VERCEL_GATEWAY",
+			modelString: "anthropic/claude-sonnet-5",
+			canonicalName: "claude-sonnet-5",
+		} as never);
+		const call = await streamCallFor(buildInput());
+		expect(breakpointIndexes(call)).toEqual([2]);
 	});
 });

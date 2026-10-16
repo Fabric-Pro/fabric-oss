@@ -53,6 +53,12 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
 	});
 }
 
+const notices = vi.hoisted(() => ({ stopped: vi.fn() }));
+
+vi.mock("../prisma/queries/chatgpt-plan-work-notifications", () => ({
+	notifyBulkRunPlanStopped: notices.stopped,
+}));
+
 vi.mock("../prisma/client", () => {
 	const delegateOf = (rows: Map<string, Row>) => ({
 		findUnique: async ({ where }: { where: { id: string } }) => {
@@ -137,6 +143,7 @@ function seedSetup(overrides: Partial<Row> = {}): Row {
 }
 
 beforeEach(() => {
+	notices.stopped.mockClear();
 	tables.agentTask.clear();
 	tables.project.clear();
 	tables.projectDocument.clear();
@@ -165,6 +172,11 @@ describe("failOverdueProjectSetupResumes", () => {
 			"FAILED",
 		);
 		expect(tables.projectDocument.get("doc-queued")?.status).toBe("FAILED");
+		expect(notices.stopped).toHaveBeenCalledWith({
+			kind: "PROJECT_SETUP",
+			runId: "setup-1",
+			reason: "RESUME_LOST",
+		});
 	});
 
 	it("leaves a project whose analysis a newer setup owns", async () => {
@@ -189,6 +201,7 @@ describe("failOverdueProjectSetupResumes", () => {
 			failOverdueProjectSetupResumes({ graceMinutes: 30, now: NOW }),
 		).resolves.toBe(0);
 		expect(setup.status).toBe("WAITING_FOR_PLAN");
+		expect(notices.stopped).not.toHaveBeenCalled();
 	});
 });
 

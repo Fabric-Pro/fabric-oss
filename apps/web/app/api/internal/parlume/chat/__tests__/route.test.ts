@@ -11,7 +11,7 @@ vi.mock("@repo/database", () => ({
 	db: { parlumeMeetingSession: { findFirst: mocks.findFirst } },
 }));
 
-vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({
+vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	getParlumeBridgeSettings: () => mocks.settings(),
 	sendParlumeMeetingChat: (...args: unknown[]) => mocks.send(...args),
 }));
@@ -89,7 +89,7 @@ describe("Parlume meeting chat fallback", () => {
 
 	it("reports a provider refusal, such as chat disabled in the meeting", async () => {
 		mocks.send.mockRejectedValue(
-			new Error("Meeting BaaS request failed with HTTP 422."),
+			new Error("Attendee request failed with HTTP 400."),
 		);
 
 		const response = await POST(request(message));

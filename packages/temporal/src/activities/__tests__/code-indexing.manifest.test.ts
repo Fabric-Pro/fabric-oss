@@ -89,3 +89,48 @@ describe("on-disk manifest activities", () => {
 		}
 	});
 });
+
+describe("legacy manifest links", () => {
+	it.each([
+		["full", "symlink"],
+		["changed", "symlink"],
+		["full", "hardlink"],
+		["changed", "hardlink"],
+	])(
+		"replaces a precreated %s manifest %s without writing through it",
+		async (kind, link) => {
+			const parent = fs.mkdtempSync(
+				path.join(os.tmpdir(), "legacy-manifest-test-"),
+			);
+			const clonePath = path.join(parent, "clone");
+			fs.mkdirSync(clonePath);
+			fs.writeFileSync(
+				path.join(clonePath, "a.ts"),
+				"export const a = 1;",
+			);
+			const target = path.join(parent, "sentinel.txt");
+			fs.writeFileSync(target, "keep me");
+			const manifest = `${clonePath}.code-index-${kind === "changed" ? "changed-" : ""}manifest.json`;
+			try {
+				if (link === "symlink") {
+					fs.symlinkSync(target, manifest);
+				} else {
+					fs.linkSync(target, manifest);
+				}
+				const tree = await walkFileTreeActivity({ clonePath });
+				if (kind === "changed") {
+					await selectChangedFilesFromManifestActivity({
+						clonePath,
+						manifestPath: tree.manifestPath as string,
+						changedFiles: ["a.ts"],
+					});
+				}
+				expect(fs.readFileSync(target, "utf8")).toBe("keep me");
+				expect(fs.lstatSync(manifest).isSymbolicLink()).toBe(false);
+				expect(fs.statSync(manifest).mode & 0o777).toBe(0o600);
+			} finally {
+				fs.rmSync(parent, { recursive: true, force: true });
+			}
+		},
+	);
+});

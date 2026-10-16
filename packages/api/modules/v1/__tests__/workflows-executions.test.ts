@@ -39,6 +39,9 @@ vi.mock("@repo/database", () => ({
 		organizationId: "org-test",
 	})),
 	getWorkflowById: (...args: unknown[]) => mockGetWorkflowById(...args),
+	isWorkflowLive: (status: string) =>
+		status === "PUBLISHED" || status === "ACTIVE",
+	releasedIdempotencyTriggerInput: () => undefined,
 	getWorkflowExecutionById: (...args: unknown[]) =>
 		mockGetWorkflowExecutionById(...args),
 	listWorkflowExecutions: (...args: unknown[]) =>
@@ -51,6 +54,17 @@ vi.mock("@repo/database", () => ({
 	db: {
 		organization: { findFirst: vi.fn() },
 		member: { findFirst: vi.fn() },
+		// The shared start fails a row that never started with a direct
+		// update; it is recorded with the other execution writes.
+		workflowExecution: {
+			update: ({
+				where,
+				data,
+			}: {
+				where: { id: string };
+				data: Record<string, unknown>;
+			}) => mockUpdateWorkflowExecution(where.id, data),
+		},
 	},
 }));
 
@@ -250,7 +264,7 @@ describe("POST /workflows/:id/trigger", () => {
 	});
 
 	it("fails the row and says so when the engine is unavailable, rather than leaving it PENDING", async () => {
-		mockIsTemporalAvailable.mockResolvedValue(false);
+		mockGetTemporalClient.mockRejectedValue(new Error("no client"));
 
 		const res = await makeApp().request("/workflows/wf-1/trigger", {
 			method: "POST",
@@ -308,7 +322,7 @@ describe("POST /workflows/:id/trigger", () => {
 			"exec-1",
 			expect.objectContaining({
 				status: "FAILED",
-				error: "connection refused",
+				error: "The workflow engine rejected the start: connection refused",
 			}),
 		);
 		const body = (await res.json()) as { error: { code: string } };

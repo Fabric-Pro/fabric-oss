@@ -74,6 +74,7 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "./types";
+import { conversationIdField } from "./usage-attribution";
 
 // =============================================================================
 // Signals
@@ -976,6 +977,7 @@ async function runOrchestratorExecution(
 					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
+				...conversationIdField(input),
 				...turnScopeField(turnOptions),
 			});
 			if (
@@ -1251,6 +1253,7 @@ async function runOrchestratorExecution(
 								: {}),
 							userId: input.userId,
 							organizationId: input.organizationId,
+							...conversationIdField(input),
 							...turnScopeField(turnOptions),
 						});
 					} catch (error) {

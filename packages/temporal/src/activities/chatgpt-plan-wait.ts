@@ -11,6 +11,8 @@ import {
 	getChatGptPlanSourceStates,
 	isFeatureEnabled,
 	listChatGptPlanOrgAccounts,
+	notifyPlanWaitWorkStopped,
+	type PlanWaitWorkKind,
 } from "@repo/database";
 import { sharedPlansSpentError } from "./lib/chatgpt-plan-shared-spent";
 
@@ -116,4 +118,27 @@ export async function assertSharedPlansNotSpentActivity(input: {
 	if (spent) {
 		throw spent;
 	}
+}
+
+export interface NotifyPlanWaitWorkStoppedInput {
+	work: PlanWaitWorkKind;
+	/** The Temporal run that stopped. */
+	runId: string;
+	organizationId: string | null;
+	/** The member who started the work; null for scheduled work. */
+	initiatorUserId: string | null;
+	projectId?: string | null;
+	/** Context-relative; defaults to the project's page. */
+	link?: string | null;
+}
+
+/**
+ * Tells whoever started the work and the organization's admins that it
+ * failed for good because every ChatGPT plan stayed spent (Fizzy #3050).
+ * Never throws: the notice must not change how the run ends.
+ */
+export async function notifyPlanWaitWorkStoppedActivity(
+	input: NotifyPlanWaitWorkStoppedInput,
+): Promise<void> {
+	await notifyPlanWaitWorkStopped(input);
 }

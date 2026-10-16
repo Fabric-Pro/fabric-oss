@@ -671,21 +671,35 @@ async function activityCheckpoint(
 export async function cloneRepositoryActivity(
 	input: CloneRepositoryInput,
 ): Promise<CloneRepositoryOutput> {
-	return cloneRepository(input, codeIndexClonePath(input.workflowRunId));
+	const clonePath = createCodeIndexClonePath();
+	try {
+		return await cloneRepository(input, clonePath);
+	} catch (error) {
+		await cleanupCloneDirActivity({ clonePath });
+		throw error;
+	}
 }
 
 /**
- * Host-local clone dir for a workflow run. `cloneRepositoryActivity` uses the
- * bare run-id path (unchanged for histories recorded before
- * `prepareRepositoryActivity`); a prepare attempt adds its attempt number so two
- * overlapping attempts on one host never share — or delete — a checkout.
+ * Keep the checkout and its sibling manifests in one private directory. Each
+ * invocation gets a new parent, including repeated or overlapping attempts.
+ * Git may remove/recreate the child checkout without exposing its parent.
  */
-function codeIndexClonePath(workflowRunId: string, attempt?: number): string {
-	const suffix = attempt === undefined ? "" : `-a${attempt}`;
-	return path.join(
-		os.tmpdir(),
-		`fabric-code-index-${workflowRunId}${suffix}`,
+function createCodeIndexClonePath(): string {
+	const parent = fs.mkdtempSync(
+		path.join(os.tmpdir(), "fabric-code-index-private-"),
 	);
+	return path.join(parent, "clone");
+}
+
+/** Only new private checkouts own their parent; recorded legacy paths do not. */
+function codeIndexPrivateParent(clonePath: string): string | null {
+	const parent = path.dirname(clonePath);
+	return path.basename(clonePath) === "clone" &&
+		path.dirname(parent) === os.tmpdir() &&
+		/^fabric-code-index-private-[a-zA-Z0-9]{6}$/.test(path.basename(parent))
+		? parent
+		: null;
 }
 
 /**
@@ -1022,12 +1036,33 @@ function writeFileManifest(
 	entries: FileManifestDiskEntry[],
 ): string {
 	const manifestPath = codeIndexManifestPath(clonePath);
-	fs.writeFileSync(manifestPath, JSON.stringify(entries));
+	writeCodeIndexManifest(manifestPath, entries);
 	// Keep the read-through cache coherent: a Temporal retry of the walk on the
 	// same host rewrites this same path, and a first-run re-clone may resolve a
 	// newer branch head than the attempt that populated the cache.
 	lastReadManifest = { path: manifestPath, entries };
 	return manifestPath;
+}
+
+/**
+ * Publish through a private staging directory, then replace the directory entry.
+ * Older histories can still supply clone paths directly under shared temp: an
+ * existing sibling symlink must never redirect either manifest write.
+ */
+function writeCodeIndexManifest(
+	manifestPath: string,
+	entries: FileManifestDiskEntry[],
+): void {
+	const staging = fs.mkdtempSync(
+		path.join(path.dirname(manifestPath), ".fabric-code-index-manifest-"),
+	);
+	try {
+		const stagedPath = path.join(staging, "manifest.json");
+		fs.writeFileSync(stagedPath, JSON.stringify(entries), { mode: 0o600 });
+		fs.renameSync(stagedPath, manifestPath);
+	} finally {
+		fs.rmSync(staging, { recursive: true, force: true });
+	}
 }
 
 /** Remove the sibling on-disk manifests for a clone dir (best-effort). */
@@ -1043,7 +1078,7 @@ function removeCodeIndexManifests(clonePath: string): void {
 }
 
 // Single-entry read-through cache. Within a run every slice read hits the same
-// immutable manifest (its path embeds the run-id-derived clone dir and it is
+// immutable manifest (its path embeds the invocation's private clone dir and it is
 // written exactly once), so caching the last-parsed one turns ~O(files/BATCH)
 // re-parses of a multi-MB JSON into O(1). Bounded to one manifest per worker
 // process; callers never mutate the returned array.
@@ -1206,7 +1241,7 @@ async function selectChangedFilesFromManifest(
 	const changed = new Set(input.changedFiles);
 	const subset = entries.filter((e) => changed.has(e.relativePath));
 	const manifestPath = codeIndexChangedManifestPath(input.clonePath);
-	fs.writeFileSync(manifestPath, JSON.stringify(subset));
+	writeCodeIndexManifest(manifestPath, subset);
 	return { manifestPath, count: subset.length };
 }
 
@@ -1221,8 +1256,8 @@ async function selectChangedFilesFromManifest(
  * ENOENT on every retry and the index never finishes. Returns counts and
  * on-disk paths only — never a file list (see `WalkFileTreeOutput`).
  *
- * Idempotent under Temporal retry: each attempt clones into its own dir
- * (`…-a<attempt>`), so an earlier attempt that outlived its heartbeat timeout
+ * Idempotent under Temporal retry: each invocation gets its own private dir,
+ * so an earlier attempt that outlived its heartbeat timeout
  * and fails late cleans up only its own checkout, never the retry's. Any
  * failure from clone through select removes this attempt's checkout and
  * manifests, so an unscanned checkout is never left on disk.
@@ -1232,11 +1267,9 @@ export async function prepareRepositoryActivity(
 ): Promise<PrepareRepositoryOutput> {
 	const { changedFiles, disposeAfterPrepare, sortManifest, ...cloneInput } =
 		input;
-	const attempt = currentActivityContext()?.info.attempt ?? 1;
-	const clonePath = codeIndexClonePath(input.workflowRunId, attempt);
+	const clonePath = createCodeIndexClonePath();
 
 	try {
-		removeCodeIndexManifests(clonePath);
 		const clone = await cloneRepository(cloneInput, clonePath);
 
 		await activityCheckpoint("prepare: scanning for secrets");
@@ -1264,12 +1297,7 @@ export async function prepareRepositoryActivity(
 	} catch (error) {
 		// Don't leave an unsanitized (possibly pre-scan) checkout behind on this
 		// host; a retry re-clones from scratch anyway.
-		try {
-			fs.rmSync(clonePath, { recursive: true, force: true });
-			removeCodeIndexManifests(clonePath);
-		} catch {
-			// Best-effort — the original error is what matters.
-		}
+		await cleanupCloneDirActivity({ clonePath });
 		throw error;
 	} finally {
 		if (disposeAfterPrepare) {
@@ -1311,9 +1339,7 @@ async function withMaterializedRepository<T>(
 			"INVALID_INPUT",
 		);
 	}
-	const clonePath = fs.mkdtempSync(
-		path.join(os.tmpdir(), "fabric-code-index-consumer-"),
-	);
+	const clonePath = createCodeIndexClonePath();
 	// Temporal heartbeats must not wait for progress telemetry. A connected DB
 	// can stall indefinitely: keep one best-effort touch pending without blocking
 	// reconstruction, cancellation checkpoints or private-checkout cleanup.
@@ -2442,6 +2468,10 @@ export async function cleanupCloneDirActivity(
 		// Remove the sibling on-disk manifests (best-effort — absent on the
 		// legacy path, if the walk never ran, or for a full (non-incremental) run).
 		removeCodeIndexManifests(input.clonePath);
+		const parent = codeIndexPrivateParent(input.clonePath);
+		if (parent) {
+			fs.rmSync(parent, { recursive: true, force: true });
+		}
 	} catch (error) {
 		logger.warn(
 			`[CodeIndexing] Failed to clean up: ${error instanceof Error ? error.message : error}`,

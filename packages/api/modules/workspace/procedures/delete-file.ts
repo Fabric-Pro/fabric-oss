@@ -1,7 +1,9 @@
 /**
  * Delete File Procedure
  *
- * Deletes a file from the user's workspace.
+ * Deletes a file from the user's workspace. A page (a frame or slideshow) is
+ * not deleted here: its stored files and records are cleaned up with it by
+ * `frames.delete`, and a row removed from this route would leave them behind.
  */
 
 import { deleteWorkspaceFile, getWorkspaceFileById } from "@repo/database";
@@ -15,6 +17,8 @@ import {
 const inputSchema = z.object({
 	id: z.string(),
 });
+
+const PAGE_FILE_TYPES: ReadonlySet<string> = new Set(["FRAME", "SLIDESHOW"]);
 
 export const deleteFileProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_DELETE))
@@ -34,6 +38,11 @@ export const deleteFileProcedure = tenantProtectedProcedure
 		}
 		if (existing.userId !== context.user.id) {
 			throw new Error("Access denied");
+		}
+		if (PAGE_FILE_TYPES.has(existing.fileType)) {
+			throw new Error(
+				"A page is deleted from its own page, not as a file",
+			);
 		}
 
 		await deleteWorkspaceFile(input.id);

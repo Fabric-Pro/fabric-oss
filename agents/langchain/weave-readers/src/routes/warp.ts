@@ -1,3 +1,4 @@
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
@@ -53,7 +54,7 @@ async function buildWarpResponse(
 	const tenant = honoCtx
 		? getVerifiedTenant(honoCtx, metadata)
 		: metadata.tenantContext;
-	const model = await resolveReaderModel(tenant);
+	const { model, provider, modelString } = await resolveReaderModel(tenant);
 
 	const userContent = `Security review request: ${prompt || "Review the implementation for security vulnerabilities."}`;
 
@@ -172,6 +173,11 @@ async function buildWarpResponse(
 				messages: [{ role: "user", content: contextHint }],
 				tools,
 				stopWhen: isStepCount(MAX_TOOL_STEPS),
+				prepareStep: makeStepCacheBreakpoint({
+					provider,
+					modelString,
+					hasTools: true,
+				}),
 			}),
 		{ label: "warp-generateText", circuitKey: "warp" },
 	);

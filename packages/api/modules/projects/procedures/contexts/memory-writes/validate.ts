@@ -19,10 +19,15 @@
  * conflicts are the write workflow's, because the tip can move after
  * admission anyway.
  *
- * VALIDATION ONLY: nothing is persisted and nothing is started. Admitting a
- * write arrives with the write workflow.
+ * VALIDATION ONLY: nothing is persisted and nothing is started. `submit`
+ * admits a write: the same checks on the real bytes, then the receipt and the
+ * workflow.
  */
 import { MAX_CONTEXT_FILE_BYTES } from "@repo/temporal/context-sync-rules";
+import {
+	MAX_MEMORY_WRITE_ENTRIES,
+	MAX_MEMORY_WRITE_MESSAGE_LENGTH,
+} from "@repo/temporal/memory-write/evaluate";
 import { z } from "zod";
 import { projectNotFoundUnlessVisible } from "../../../../../orpc/middleware/project-visibility";
 import {
@@ -30,10 +35,6 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
-import {
-	MAX_MEMORY_WRITE_ENTRIES,
-	MAX_MEMORY_WRITE_MESSAGE_LENGTH,
-} from "../../../lib/memory-write/evaluate";
 import { validateMemoryWrite } from "../../../lib/memory-write/validate-memory-write";
 import { resolveContextSyncAccess } from "../repository-sync/access";
 import { MAX_CONTEXT_SYNC_PATH_LENGTH } from "../repository-sync/paths";

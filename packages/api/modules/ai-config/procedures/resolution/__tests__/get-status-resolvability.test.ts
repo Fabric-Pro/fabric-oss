@@ -116,6 +116,8 @@ type StatusResult = {
 	isConfigured: boolean;
 	canResolveProvider: boolean;
 	resolvedEmbeddingProvider: string | null;
+	resolvedProvider: string | null;
+	resolvedProviderSource: "organization" | "user" | null;
 	defaultProvider: string | null;
 	embeddingProvider: string | null;
 	configuredProviders: { provider: string; isDefault: boolean }[];
@@ -397,6 +399,12 @@ describe("resolvedEmbeddingProvider — asked, never inferred", () => {
 		mockGetEmbeddingProviderConfig.mockResolvedValue(
 			resolvedConfig("OPENAI", "organization"),
 		);
+		// The tenant resolver is asked regardless — it answers the chat path
+		// (`resolvedProvider`) — so it answers something else here to prove
+		// the embedding field does not take it.
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("ANTHROPIC", "organization"),
+		);
 
 		const result = await callInOrg();
 
@@ -405,9 +413,9 @@ describe("resolvedEmbeddingProvider — asked, never inferred", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 		});
-		// Rung 1 answered, so rung 2 is never reached — the same short-circuit
-		// `resolveModelWithProvider` performs.
-		expect(mockGetAiProviderApiKey).not.toHaveBeenCalled();
+		// Rung 1 answered, so rung 2's answer is never used — the same
+		// short-circuit `resolveModelWithProvider` performs.
+		expect(result.resolvedProvider).toBe("ANTHROPIC");
 	});
 
 	it("with no embedding provider assigned, reports what the system resolver returns", async () => {
@@ -775,8 +783,9 @@ describe("resolvedEmbeddingSource — whose configuration resolved", () => {
 	});
 
 	it("carries the dedicated embedding row's own origin, not the fallback's", async () => {
-		// Rung 1 answers, so rung 2 is never consulted and its origin must not
-		// be the one reported.
+		// Rung 1 answers, so rung 2's origin must not be the one reported.
+		// Rung 2 is still asked — it answers the chat path — and keeps its own
+		// origin there.
 		mockGetEmbeddingProviderConfig.mockResolvedValue(
 			resolvedConfig("ANTHROPIC", "user"),
 		);
@@ -787,7 +796,7 @@ describe("resolvedEmbeddingSource — whose configuration resolved", () => {
 		const result = await callInOrg();
 
 		expect(result.resolvedEmbeddingSource).toBe("user");
-		expect(mockGetAiProviderApiKey).not.toHaveBeenCalled();
+		expect(result.resolvedProviderSource).toBe("organization");
 	});
 
 	it("reports null when the resolver names an origin this field does not model", async () => {
@@ -847,5 +856,97 @@ describe("resolvedEmbeddingProvider — one rung short of the runtime", () => {
 		expect(result.resolvedEmbeddingProvider).not.toBe("VERCEL_GATEWAY");
 		expect(result.canResolveProvider).toBe(false);
 		expect(mockGetAiProviderApiKey).toHaveBeenCalledTimes(1);
+	});
+});
+
+/**
+ * Fizzy #3082: the chat path's resolved provider and WHOSE key it is. Inside an
+ * organization with no usable default, the resolver falls back to the
+ * caller's own personal key — work they are then billed for — and the app
+ * tells them so. That notice reads `resolvedProviderSource`, so it must come
+ * from the resolver the runtime calls, not from the tenant-scoped fields.
+ */
+describe("resolvedProvider / resolvedProviderSource — the chat path", () => {
+	it("reports the organization when its default resolves", async () => {
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			row({ encryptedApiKey: "encrypted:sk-org" }),
+		]);
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("OPENAI", "organization"),
+		);
+
+		const result = await callInOrg();
+
+		expect(result.resolvedProvider).toBe("OPENAI");
+		expect(result.resolvedProviderSource).toBe("organization");
+		expect(mockGetAiProviderApiKey).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+	});
+
+	it("reports the caller when their own key is the fallback inside an organization", async () => {
+		mockDb.userCloudProviderConfig.findMany.mockResolvedValue([
+			row({ encryptedApiKey: "encrypted:sk-own" }),
+		]);
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("ANTHROPIC", "user"),
+		);
+
+		const result = await callInOrg();
+
+		expect(result.canResolveProvider).toBe(true);
+		expect(result.resolvedProvider).toBe("ANTHROPIC");
+		expect(result.resolvedProviderSource).toBe("user");
+	});
+
+	it("is null on both when nothing resolves", async () => {
+		const result = await callInOrg();
+
+		expect(result.resolvedProvider).toBeNull();
+		expect(result.resolvedProviderSource).toBeNull();
+	});
+
+	it("asks the tenant resolver once for both the chat and the embedding path", async () => {
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("OPENAI", "user"),
+		);
+
+		const result = await callInOrg();
+
+		expect(mockGetAiProviderApiKey).toHaveBeenCalledTimes(1);
+		expect(result.resolvedProvider).toBe("OPENAI");
+		expect(result.resolvedEmbeddingProvider).toBe("OPENAI");
+		expect(result.resolvedEmbeddingSource).toBe("user");
+	});
+
+	it("carries only the identifier, never credential material", async () => {
+		mockGetAiProviderApiKey.mockResolvedValue(
+			resolvedConfig("OPENAI", "user"),
+		);
+
+		const serialized = JSON.stringify(await callInOrg());
+
+		expect(serialized).not.toContain("sk-decrypted-placeholder");
+		expect(serialized).not.toContain("secret-xyz");
+		expect(serialized).not.toContain("ai.example.com");
+	});
+
+	it("leaves both null, without failing the call, when the resolver rejects", async () => {
+		const consoleErrorSpy = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			row({ encryptedApiKey: "encrypted:sk-org" }),
+		]);
+		mockGetAiProviderApiKey.mockRejectedValue(new Error("lookup failed"));
+
+		const result = await callInOrg();
+
+		expect(result.resolvedProvider).toBeNull();
+		expect(result.resolvedProviderSource).toBeNull();
+		expect(result.canResolveProvider).toBe(true);
+		expect(consoleErrorSpy).toHaveBeenCalled();
+		consoleErrorSpy.mockRestore();
 	});
 });

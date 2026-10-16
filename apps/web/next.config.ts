@@ -740,6 +740,14 @@ const nextConfig: NextConfig = {
 				destination: "/docs/features/testing/pull-requests",
 				permanent: true,
 			},
+			// The document workspaces page is the Libraries page now. Not
+			// permanent: `workspaces` is the name of a different feature, and a
+			// cached permanent redirect would hide a page written for it.
+			{
+				source: "/docs/features/workspaces",
+				destination: "/docs/features/libraries",
+				permanent: false,
+			},
 			{
 				source: "/app/:organizationSlug/settings",
 				destination: "/app/:organizationSlug/settings/general",

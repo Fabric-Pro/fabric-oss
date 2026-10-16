@@ -1,16 +1,20 @@
 /**
- * The two `DocumentEditor` props a Proposal's artifact-mode page passes
- * (Fizzy #2801), against the real editor:
+ * The `DocumentEditor` props a Proposal's artifact-mode page passes
+ * (Fizzy #2801, Fizzy #2946), against the real editor:
  *
  * - `suppressGenerationOverlay`: the page hosts generation progress itself,
  *   so the editor's full-screen overlay stays off for a run in progress — and
  *   stays on, as before, without the prop;
  * - `promptSelectorReplacement`: rendered where the prompt selector would be,
- *   which is not mounted at all.
+ *   which is not mounted at all;
+ * - `contentThemeProps`: the box around the editor's content becomes the
+ *   Proposal theme's root, and only that box — the diff preview panes beside
+ *   it and the chat stay outside, unthemed.
  *
  * Unlike the other `DocumentEditor.*` suites, `<CopilotSidebar>` renders its
- * children here: both props act inside it. Every child that is not under test
- * is a stand-in, the same as those suites stub the hooks above it.
+ * children here, beside a stand-in for its chat window: the props act inside
+ * them. Every child that is not under test is a stand-in, the same as those
+ * suites stub the hooks above it.
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -18,7 +22,31 @@ import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const extensionBuilds = vi.hoisted(() => ({
+	advanced: [] as { projectId?: string | null; statTiles?: boolean }[],
+}));
+
+vi.mock(
+	"@saas/projects/lib/tiptap-extensions-advanced",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/projects/lib/tiptap-extensions-advanced")
+			>();
+		return {
+			...actual,
+			createAdvancedExtensions: (
+				options: Parameters<typeof actual.createAdvancedExtensions>[0],
+			) => {
+				extensionBuilds.advanced.push(options ?? {});
+				return actual.createAdvancedExtensions(options);
+			},
+		};
+	},
+);
+
 const fixture = vi.hoisted(() => ({
+	showDiffPreviewPanes: false,
 	document: {
 		id: "doc-1",
 		title: "Example proposal",
@@ -114,12 +142,20 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotReadable: vi.fn(),
 	useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
 }));
-// The props under test act inside the sidebar's children, so it renders them.
+// The props under test act inside the sidebar's children, so it renders them,
+// next to where the real one puts its chat window.
 vi.mock("@copilotkit/react-ui", () => ({
-	CopilotSidebar: ({ children }: { children?: ReactNode }) => <>{children}</>,
+	CopilotSidebar: ({ children }: { children?: ReactNode }) => (
+		<div>
+			<div data-testid="copilot-chat-window" />
+			{children}
+		</div>
+	),
 }));
 vi.mock("@tiptap/react", () => ({
-	EditorContent: () => null,
+	EditorContent: ({ className }: { className?: string }) => (
+		<div data-testid="editor-content" className={className} />
+	),
 	useEditor: () => null,
 }));
 
@@ -149,7 +185,7 @@ vi.mock("@saas/projects/components/DiffViewModeToggle", () => ({
 	DiffViewModeToggle: () => null,
 }));
 vi.mock("@saas/projects/components/DiffPreviewPanes", () => ({
-	DiffPreviewPanes: () => null,
+	DiffPreviewPanes: () => <div data-testid="diff-preview-panes" />,
 }));
 vi.mock("@saas/projects/components/DocumentAssetFrame", () => ({
 	DocumentAssetsPanel: () => null,
@@ -228,7 +264,7 @@ vi.mock("@saas/projects/hooks/use-diff-view-mode", () => ({
 		setDiffViewMode: vi.fn(),
 		diffViews: [],
 		effectiveDiffViewMode: "inline",
-		showDiffPreviewPanes: false,
+		showDiffPreviewPanes: fixture.showDiffPreviewPanes,
 	}),
 }));
 vi.mock("@saas/shared/components/copilot/AttachmentRegistry", () => ({
@@ -266,7 +302,15 @@ vi.mock(
 	}),
 );
 
+import {
+	buildProposalThemeTokens,
+	NEUTRAL_THEME,
+	resolveThemePaint,
+	themeCustomProperties,
+} from "@repo/utils/proposal-artifact/theme-tokens";
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
+import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
+import type { CSSProperties } from "react";
 
 function renderEditor(props: Partial<Parameters<typeof DocumentEditor>[0]>) {
 	const client = new QueryClient({
@@ -280,6 +324,7 @@ function renderEditor(props: Partial<Parameters<typeof DocumentEditor>[0]>) {
 }
 
 beforeEach(() => {
+	fixture.showDiffPreviewPanes = false;
 	fixture.document = {
 		...fixture.document,
 		status: "GENERATING",
@@ -333,5 +378,126 @@ describe("DocumentEditor — prompt selector replacement", () => {
 		expect(
 			await screen.findByRole("combobox", { name: "Prompt selector" }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("DocumentEditor — stat tiles", () => {
+	function buildsForThisDocument() {
+		return extensionBuilds.advanced.filter(
+			(options) => options.projectId === "proj-1",
+		);
+	}
+
+	beforeEach(() => {
+		extensionBuilds.advanced.length = 0;
+	});
+
+	it("keeps a stat-tiles fence as a code block unless the page opts in", async () => {
+		renderEditor({});
+
+		await vi.waitFor(() =>
+			expect(buildsForThisDocument().length).toBeGreaterThan(0),
+		);
+		expect(
+			buildsForThisDocument().every((options) => !options.statTiles),
+		).toBe(true);
+	});
+
+	it("draws stat tiles when the page opts in", async () => {
+		renderEditor({ statTiles: true });
+
+		await vi.waitFor(() =>
+			expect(buildsForThisDocument().length).toBeGreaterThan(0),
+		);
+		expect(
+			buildsForThisDocument().every((options) => options.statTiles),
+		).toBe(true);
+	});
+});
+
+describe("DocumentEditor — Proposal theme root", () => {
+	const THEME_ROOT_PROPS: ProposalThemeRootProps = {
+		className: "proposal-theme",
+		"data-proposal-theme": "live",
+		style: themeCustomProperties(
+			resolveThemePaint(
+				buildProposalThemeTokens({
+					organization: null,
+					style: null,
+					brandKit: null,
+					recipient: null,
+				}),
+			),
+		) as CSSProperties,
+	};
+
+	/** The editor's scroll container: the desk the paper sits on. */
+	function scrollContainer(from: HTMLElement): HTMLElement {
+		const desk = from.closest<HTMLElement>(".overflow-auto");
+		if (!desk) {
+			throw new Error("no scroll container");
+		}
+		return desk;
+	}
+
+	function expectUnthemedUpTo(element: HTMLElement, desk: HTMLElement) {
+		for (
+			let node: HTMLElement | null = element;
+			node && node !== desk.parentElement;
+			node = node.parentElement
+		) {
+			expect(node).not.toHaveClass("proposal-theme");
+			expect(node).not.toHaveAttribute("data-proposal-theme");
+		}
+	}
+
+	beforeEach(() => {
+		fixture.document = { ...fixture.document, status: "COMPLETE" };
+	});
+
+	it("makes the box around the editor's content the theme root, with the chat outside it", async () => {
+		renderEditor({ contentThemeProps: THEME_ROOT_PROPS });
+
+		const content = await screen.findByTestId("editor-content");
+		const root = content.parentElement as HTMLElement;
+		expect(root).toHaveClass("proposal-theme");
+		expect(root).toHaveAttribute("data-proposal-theme", "live");
+		expect(root.style.getPropertyValue("--pa-surface")).toBe(
+			NEUTRAL_THEME.surface,
+		);
+		expect(root.style.getPropertyValue("--pa-ink")).toBe(NEUTRAL_THEME.ink);
+		// The paper is painted from the theme's properties alone.
+		expect(root.className).not.toMatch(/(^|\s)(bg|text)-/);
+		expect(root).not.toHaveClass("hidden");
+		// The scroll container is the desk; the chat is not on the paper.
+		const desk = scrollContainer(root);
+		expect(desk).toHaveClass("bg-background");
+		expect(desk).not.toHaveClass("proposal-theme");
+		const chat = screen.getByTestId("copilot-chat-window");
+		expect(root).not.toContainElement(chat);
+		expect(chat.closest(".proposal-theme")).toBeNull();
+	});
+
+	it("keeps the diff preview panes off the paper while they show", async () => {
+		fixture.showDiffPreviewPanes = true;
+		renderEditor({ contentThemeProps: THEME_ROOT_PROPS });
+
+		const panes = await screen.findByTestId("diff-preview-panes");
+		const root = screen.getByTestId("editor-content")
+			.parentElement as HTMLElement;
+		// The content box keeps its theme and is hidden behind the panes.
+		expect(root).toHaveClass("proposal-theme", "hidden");
+		expect(root).not.toContainElement(panes);
+		expectUnthemedUpTo(panes, scrollContainer(panes));
+	});
+
+	it("leaves the content box as it was without the prop", async () => {
+		renderEditor({});
+
+		const content = await screen.findByTestId("editor-content");
+		const box = content.parentElement as HTMLElement;
+		expect(box).not.toHaveAttribute("class");
+		expect(box).not.toHaveAttribute("data-proposal-theme");
+		expect(box).not.toHaveAttribute("style");
 	});
 });

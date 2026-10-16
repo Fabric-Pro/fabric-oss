@@ -332,6 +332,8 @@ async function requestAuthority(params: {
 	providerDisplayName?: string;
 	accessLevel: "READ" | "WRITE";
 	toolName: string;
+	toolScope?: string[];
+	requestFingerprint?: string;
 	runType?: RunType;
 	runId?: string;
 }): Promise<AuthorityGateResult> {
@@ -346,6 +348,8 @@ async function requestAuthority(params: {
 		runType: params.runType,
 		runId: params.runId,
 		toolName: params.toolName,
+		toolScope: params.toolScope,
+		requestFingerprint: params.requestFingerprint,
 	});
 	if (result.authorized) {
 		return { authorized: true, grantId: result.grant?.id };
@@ -374,10 +378,28 @@ export async function ensureMcpToolAuthority(params: {
 	serverDisplayName?: string;
 	configId?: string;
 	toolName: string;
+	/**
+	 * The access the caller already knows the tool needs, declared by the tool's
+	 * own definition (a Fabric catalog tool). It wins over the name, which is
+	 * only a guess for a tool Fabric did not define.
+	 */
+	accessLevel?: "READ" | "WRITE";
+	/**
+	 * The tools the approval covers (a Fabric catalog tool is approved for
+	 * itself, never for the whole provider). Absent: the whole provider, as
+	 * every other MCP server's tool is.
+	 */
+	toolScope?: string[];
+	/**
+	 * Ask the person for this exact call every time: the approval is one-shot
+	 * and covers only a call with this fingerprint.
+	 */
+	requestFingerprint?: string;
 	runType?: RunType;
 	runId?: string;
 }): Promise<AuthorityGateResult> {
-	const accessLevel = classifyToolAccessLevel(params.toolName);
+	const accessLevel =
+		params.accessLevel ?? classifyToolAccessLevel(params.toolName);
 	if (accessLevel === "READ") {
 		return { authorized: true };
 	}
@@ -390,6 +412,8 @@ export async function ensureMcpToolAuthority(params: {
 		providerDisplayName: params.serverDisplayName,
 		accessLevel,
 		toolName: params.toolName,
+		toolScope: params.toolScope,
+		requestFingerprint: params.requestFingerprint,
 		runType: params.runType,
 		runId: params.runId,
 	});

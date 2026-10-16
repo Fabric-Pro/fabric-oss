@@ -1,8 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { FRAME_SURFACES, type FrameSurface } from "@repo/utils/frame-surfaces";
 import { z } from "zod";
 import { db, type Prisma } from "../client";
-import type { AgentWorkspaceFile, FrameShareScope } from "../generated/client";
+import type {
+	AgentFileType,
+	AgentWorkspaceFile,
+	FrameShareScope,
+} from "../generated/client";
+import { saveFrameEdit } from "./frame-edit-history";
+import { checkFrameAccess } from "./frame-sharing";
+import {
+	type ProjectPlacementRefusal,
+	projectPlacementRefusal,
+} from "./projects/project-placement";
+import {
+	getProjectAccessContext,
+	isProjectSoftDeleted,
+} from "./projects/projects";
+import { isOrganizationMember } from "./verify-organization-membership";
 
 export const FABRIC_FRAME_CONTENT_TYPE = "application/vnd.fabric.frame";
 export const FABRIC_FRAME_SLIDESHOW_CONTENT_TYPE =
@@ -37,9 +53,35 @@ export const FrameDocumentSchema = z.object({
 			providerKeys: z.array(z.string()).optional(),
 			sourceRunType: z.string().optional(),
 			sourceRunId: z.string().optional(),
+			/**
+			 * Fabric MCP tools the frame's own script may call through the host
+			 * page runtime (`window.fabric.call`). Versioned with the content,
+			 * because the content is what calls them.
+			 */
+			runtime: z
+				.object({ tools: z.array(z.string().min(1)).max(50) })
+				.optional(),
 		})
 		.optional(),
 });
+
+/**
+ * Where a frame is shown: a project's Artifacts tab, or an organization
+ * Workspace. Stored on the row's `metadata` so lists can filter on it; absent
+ * for frames that predate surfaces.
+ */
+export { FRAME_SURFACES, type FrameSurface };
+
+function readMetadataObject(metadata: unknown): Record<string, unknown> {
+	return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+		? (metadata as Record<string, unknown>)
+		: {};
+}
+
+function readFrameSurface(metadata: unknown): FrameSurface | undefined {
+	const surface = readMetadataObject(metadata).surface;
+	return FRAME_SURFACES.find((value) => value === surface);
+}
 
 export type FrameBlock = z.infer<typeof FrameBlockSchema>;
 export type FrameDocument = z.infer<typeof FrameDocumentSchema>;
@@ -68,6 +110,14 @@ export interface CreateFrameInput {
 	/** Story the frame is evidence for; requires `projectId`. */
 	storyId?: string;
 	shareScope?: FrameShareScope;
+	surface?: FrameSurface;
+	/** Fabric MCP tools the frame's script may call; see `runtime` above. */
+	runtimeTools?: string[];
+	/**
+	 * The step inside the run that produced the frame, kept on the row so a
+	 * retried step finds its own frame again (see `findFrameForSourceRun`).
+	 */
+	sourceNodeId?: string;
 }
 
 export interface UpdateFrameInput {
@@ -80,6 +130,8 @@ export interface UpdateFrameInput {
 	blocks?: FrameBlock[];
 	theme?: FrameDocument["theme"];
 	isPublic?: boolean;
+	runtimeTools?: string[];
+	surface?: FrameSurface;
 }
 
 function getFrameFileType(kind: "frame" | "slideshow") {
@@ -115,6 +167,8 @@ function parseFrameContent(
 	return FrameDocumentSchema.parse(parsed);
 }
 
+export type FrameRecord = ReturnType<typeof mapFrameRecord>;
+
 function mapFrameRecord(file: AgentWorkspaceFile) {
 	const document = parseFrameContent(file);
 	return {
@@ -140,6 +194,8 @@ function mapFrameRecord(file: AgentWorkspaceFile) {
 		sourceRunId: file.sourceRunId,
 		authoritySessionId: file.authoritySessionId,
 		providerKeys: file.providerKeys,
+		surface: readFrameSurface(file.metadata),
+		runtimeTools: document.metadata?.runtime?.tools ?? [],
 		document,
 		createdAt: file.createdAt,
 		updatedAt: file.updatedAt,
@@ -165,6 +221,9 @@ export async function createFrame(input: CreateFrameInput) {
 			providerKeys: input.providerKeys ?? [],
 			sourceRunType: input.sourceRunType,
 			sourceRunId: input.sourceRunId,
+			runtime: input.runtimeTools
+				? { tools: input.runtimeTools }
+				: undefined,
 		},
 	});
 
@@ -199,11 +258,119 @@ export async function createFrame(input: CreateFrameInput) {
 			description: input.description,
 			metadata: {
 				frameVersion: 1,
+				...(input.surface ? { surface: input.surface } : {}),
+				...(input.sourceNodeId
+					? { sourceNodeId: input.sourceNodeId }
+					: {}),
 			} as Prisma.InputJsonValue,
 		},
 	});
 
 	return mapFrameRecord(file);
+}
+
+/** A copy was refused a project: `not_found` for one that is not the caller's to see, `not_editable` for one they can open and not change. */
+export class FramePlacementRefusedError extends Error {
+	readonly refusal: ProjectPlacementRefusal;
+	constructor(refusal: ProjectPlacementRefusal) {
+		super(`The project does not take the copy (${refusal})`);
+		this.name = "FramePlacementRefusedError";
+		this.refusal = refusal;
+	}
+}
+
+/**
+ * A copy of a page for `userId`, the one command behind "duplicate" in the app
+ * and "fork" for the Fabric Agent. The copy has the original's content (every
+ * block under a new id), kind and theme, and stays where the original is shown:
+ * same surface, same project. It is private to its owner, with no public link,
+ * and declares no tools unless `runtimeTools` is passed, so duplicating a page
+ * never carries its capabilities along unasked. Page data is not copied.
+ *
+ * A copy in a project is a thing put into that project, so it is held to the
+ * project's own rule for that (`projectPlacementRefusal`: the project is the
+ * organization's, not in the trash, and one the user may edit) and refused with
+ * `FramePlacementRefusedError` otherwise, for the app's duplicate and the
+ * agent's fork alike. Who may open and copy the original, and whether the role
+ * may create frames at all, is the caller's to decide before calling this; so
+ * is where the copy says it came from (`conversationId`, `sourceRun*`,
+ * `authoritySessionId`, `providerKeys`), which the original's values would
+ * misstate for a different owner.
+ */
+export async function duplicateFrame(input: {
+	original: FrameRecord;
+	userId: string;
+	organizationId?: string;
+	title?: string;
+	runtimeTools?: string[];
+	conversationId?: string;
+	sourceRunType?: string;
+	sourceRunId?: string;
+	authoritySessionId?: string;
+	providerKeys?: string[];
+}) {
+	const { original } = input;
+	if (original.projectId) {
+		const refusal = input.organizationId
+			? await projectPlacementRefusal({
+					userId: input.userId,
+					organizationId: input.organizationId,
+					projectId: original.projectId,
+				})
+			: "not_found";
+		if (refusal) {
+			throw new FramePlacementRefusedError(refusal);
+		}
+	}
+	return createFrame({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		conversationId: input.conversationId,
+		title: input.title ?? `${original.title} (Copy)`,
+		description: original.description,
+		kind: original.kind,
+		blocks: original.document.blocks.map((block) => ({
+			...block,
+			id: `block-${randomUUID()}`,
+		})),
+		theme: original.document.theme,
+		sourceRunType: input.sourceRunType,
+		sourceRunId: input.sourceRunId,
+		authoritySessionId: input.authoritySessionId,
+		providerKeys: input.providerKeys,
+		isPublic: false,
+		projectId: original.projectId,
+		surface: original.surface,
+		runtimeTools: input.runtimeTools,
+	});
+}
+
+/**
+ * The frame one step of one run already created, so a retried step reuses it
+ * instead of writing a second. Scoped to the creator and tenant like
+ * `getFrameById`; `projectId` null means a frame outside any project.
+ */
+export async function findFrameForSourceRun(input: {
+	userId: string;
+	organizationId: string;
+	projectId: string | null;
+	sourceRunType: string;
+	sourceRunId: string;
+	sourceNodeId: string;
+}) {
+	const file = await db.agentWorkspaceFile.findFirst({
+		where: {
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			sourceRunType: input.sourceRunType,
+			sourceRunId: input.sourceRunId,
+			fileType: "FRAME",
+			metadata: { path: ["sourceNodeId"], equals: input.sourceNodeId },
+		},
+		orderBy: { createdAt: "asc" },
+	});
+	return file ? mapFrameRecord(file) : null;
 }
 
 export async function getFrameById(input: {
@@ -288,6 +455,230 @@ export async function listFrames(input: {
 	return files.map(mapFrameRecord);
 }
 
+/*
+ * Surface reads (project Artifacts tab, organization Workspaces).
+ *
+ * These use the direct client, not the tenant-extended one, for the same reason
+ * `checkFrameAccess` does: the RLS policy `frame_project_or_user` knows only the
+ * creator and project members, and a Workspace shared with the organization
+ * (`WORKSPACE_AND_EMAILS`) is neither. Every query below therefore carries its
+ * own organization predicate and never returns a row of another organization;
+ * access inside the organization is decided here, in the same three arms as the
+ * policy and `checkFrameAccess`: the creator, the project's accepted members,
+ * and organization members for a frame shared with the organization.
+ */
+
+const FRAME_FILE_TYPES: { in: AgentFileType[] } = {
+	in: ["FRAME", "SLIDESHOW"],
+};
+const SURFACE_LIST_DEFAULT_LIMIT = 50;
+
+/**
+ * What a user may see in an organization, which both surface lists start from:
+ * whether they are a member of it, and the projects they can open.
+ */
+async function readAccessScope(input: {
+	userId: string;
+	organizationId: string;
+}): Promise<{ isMember: boolean; projectIds: string[] }> {
+	const isMember = await isOrganizationMember(
+		input.userId,
+		input.organizationId,
+	);
+	const projectIds = await listAccessibleProjectIds({
+		userId: input.userId,
+		organizationId: input.organizationId,
+		isOrganizationMember: isMember,
+	});
+	return { isMember, projectIds };
+}
+
+/**
+ * The organization's projects the user can open, by the rule
+ * `getProjectAccessContext` applies to one: an organization member needs to own
+ * the project or hold an accepted, unexpired membership; a guest, who is not an
+ * organization member, needs the membership. Trashed projects are left out.
+ */
+async function listAccessibleProjectIds(input: {
+	userId: string;
+	organizationId: string;
+	isOrganizationMember: boolean;
+}): Promise<string[]> {
+	const activeMembership = {
+		some: {
+			userId: input.userId,
+			acceptedAt: { not: null },
+			OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+		},
+	};
+	const projects = await db.project.findMany({
+		where: {
+			organizationId: input.organizationId,
+			deletedAt: null,
+			OR: [
+				...(input.isOrganizationMember
+					? [{ userId: input.userId }]
+					: []),
+				{ members: activeMembership },
+			],
+		},
+		select: { id: true },
+	});
+	return projects.map((project) => project.id);
+}
+
+/**
+ * The organization's Workspaces the user may see: their own, those shared with
+ * the organization (`WORKSPACE_AND_EMAILS`) when the user is an organization
+ * member, and those linked to a project the user can open. Email-only
+ * invitations are not listed; they open from the invitation link.
+ */
+export async function listWorkspaceFrames(input: {
+	userId: string;
+	organizationId: string;
+	projectId?: string;
+	limit?: number;
+	offset?: number;
+}) {
+	const { isMember, projectIds } = await readAccessScope(input);
+	const files = await db.agentWorkspaceFile.findMany({
+		where: {
+			organizationId: input.organizationId,
+			fileType: FRAME_FILE_TYPES,
+			metadata: { path: ["surface"], equals: "workspace" },
+			...(input.projectId ? { projectId: input.projectId } : {}),
+			OR: [
+				{ userId: input.userId },
+				...(isMember
+					? [{ shareScope: "WORKSPACE_AND_EMAILS" as const }]
+					: []),
+				...(projectIds.length > 0
+					? [{ projectId: { in: projectIds } }]
+					: []),
+			],
+		},
+		orderBy: { updatedAt: "desc" },
+		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
+		skip: input.offset ?? 0,
+	});
+	return files.map(mapFrameRecord);
+}
+
+/**
+ * The condition that keeps a project's frames to one surface, asked in the
+ * query so a long list of the other surface cannot push the newest frames of
+ * this one out of the read.
+ *
+ * A Workspace is marked on its row, and a JSON path predicate can ask for that
+ * mark. "Not marked" it cannot ask for: SQL compares a missing key to NULL, and
+ * `NOT` of NULL drops the row. An artifact is therefore "not a Workspace", read
+ * as the set of Workspaces among these frames and left out by id, which also
+ * keeps the frames from before surfaces existed: a project's own frames with no
+ * surface are its artifacts (spike demos are the first of them).
+ */
+async function surfaceCondition(
+	scope: Prisma.AgentWorkspaceFileWhereInput,
+	surface: FrameSurface | undefined,
+): Promise<Prisma.AgentWorkspaceFileWhereInput> {
+	if (surface === undefined) {
+		return {};
+	}
+	const isWorkspace: Prisma.AgentWorkspaceFileWhereInput = {
+		metadata: { path: ["surface"], equals: "workspace" },
+	};
+	if (surface === "workspace") {
+		return isWorkspace;
+	}
+	const workspaces = await db.agentWorkspaceFile.findMany({
+		where: { ...scope, ...isWorkspace },
+		select: { id: true },
+	});
+	return workspaces.length > 0
+		? { id: { notIn: workspaces.map((file) => file.id) } }
+		: {};
+}
+
+/**
+ * Frames of the projects the user can open, newest first: one project when
+ * `projectId` is given (and the user can open it), otherwise all of them.
+ * `surface: "artifact"` includes project frames that predate surfaces.
+ */
+export async function listProjectFrames(input: {
+	userId: string;
+	organizationId: string;
+	projectId?: string;
+	surface?: FrameSurface;
+	limit?: number;
+}) {
+	const { projectIds: accessible } = await readAccessScope(input);
+	const projectIds = input.projectId
+		? accessible.filter((id) => id === input.projectId)
+		: accessible;
+	if (projectIds.length === 0) {
+		return [];
+	}
+	const scope: Prisma.AgentWorkspaceFileWhereInput = {
+		organizationId: input.organizationId,
+		projectId: { in: projectIds },
+		fileType: FRAME_FILE_TYPES,
+	};
+	const files = await db.agentWorkspaceFile.findMany({
+		where: { ...scope, ...(await surfaceCondition(scope, input.surface)) },
+		orderBy: { updatedAt: "desc" },
+		take: input.limit ?? SURFACE_LIST_DEFAULT_LIMIT,
+	});
+	return files.map(mapFrameRecord);
+}
+
+/**
+ * One frame the user may open in `organizationId`, or null. The organization
+ * must be the frame's own: a frame of another organization is not found
+ * whatever its share scope. Beyond the creator, a project frame opens for the
+ * project's accepted members, and a shared frame by its scope and grants.
+ */
+export async function getAccessibleFrameById(input: {
+	id: string;
+	userId: string;
+	userEmail?: string;
+	organizationId: string;
+}) {
+	const file = await db.agentWorkspaceFile.findFirst({
+		where: {
+			id: input.id,
+			organizationId: input.organizationId,
+			fileType: FRAME_FILE_TYPES,
+		},
+	});
+	if (!file) {
+		return null;
+	}
+	if (file.userId === input.userId) {
+		return mapFrameRecord(file);
+	}
+	if (file.projectId) {
+		// A trashed project is gone for the people who only had it through the
+		// project; `getProjectAccessContext` does not say so, it is asked here.
+		const [access, trashed] = await Promise.all([
+			getProjectAccessContext(file.projectId, input.userId),
+			isProjectSoftDeleted(file.projectId),
+		]);
+		if (access?.organizationId === input.organizationId && !trashed) {
+			return mapFrameRecord(file);
+		}
+	}
+	const shared = await checkFrameAccess({
+		frameId: file.id,
+		userId: input.userId,
+		userEmail: input.userEmail,
+		organizationId: input.organizationId,
+		isOrgMember: await isOrganizationMember(
+			input.userId,
+			input.organizationId,
+		),
+	});
+	return shared.hasAccess ? mapFrameRecord(file) : null;
+}
+
 export async function updateFrame(input: UpdateFrameInput) {
 	const existing = await db.agentWorkspaceFile.findFirst({
 		where: {
@@ -312,6 +703,9 @@ export async function updateFrame(input: UpdateFrameInput) {
 		theme: input.theme ?? current.theme,
 		metadata: {
 			...current.metadata,
+			...(input.runtimeTools
+				? { runtime: { tools: input.runtimeTools } }
+				: {}),
 		},
 	});
 	const content = JSON.stringify(nextDocument, null, 2);
@@ -320,15 +714,39 @@ export async function updateFrame(input: UpdateFrameInput) {
 	// chat turn that has stopped, nothing is written (the ambient dispatch
 	// guard; a no-op outside a turn).
 	throwIfDispatchStopped();
-	const updated = await db.agentWorkspaceFile.update({
-		where: { id: existing.id, projectId: input.projectId },
-		data: {
-			name: `${nextDocument.title}.frame.json`,
-			content,
-			size: Buffer.byteLength(content, "utf8"),
-			description: nextDocument.description,
-			isPublic: input.isPublic ?? existing.isPublic,
-		},
+	// The history row and the update stand or fall together: a row for an edit
+	// that never landed would be a version of the page nobody ever saw, and it
+	// would shift the number of every version after it.
+	const updated = await db.$transaction(async (tx) => {
+		if (content !== existing.content) {
+			await saveFrameEdit(
+				{
+					frameId: existing.id,
+					editType: "full_update",
+					contentSnapshot: existing.content,
+					editedBy: input.userId,
+				},
+				tx,
+			);
+		}
+		return tx.agentWorkspaceFile.update({
+			where: { id: existing.id, projectId: input.projectId },
+			data: {
+				name: `${nextDocument.title}.frame.json`,
+				content,
+				size: Buffer.byteLength(content, "utf8"),
+				description: nextDocument.description,
+				isPublic: input.isPublic ?? existing.isPublic,
+				...(input.surface
+					? {
+							metadata: {
+								...readMetadataObject(existing.metadata),
+								surface: input.surface,
+							} as Prisma.InputJsonValue,
+						}
+					: {}),
+			},
+		});
 	});
 
 	return mapFrameRecord(updated);
@@ -424,4 +842,78 @@ export async function deleteFrame(input: {
 	});
 
 	return { success: true };
+}
+
+/**
+ * The pages still linked to a project that was deleted for good, split by what
+ * becomes of them. A Workspace belongs to the organization and outlives the
+ * project it was linked to; every other page (an artifact, or a page from
+ * before surfaces existed) was the project's own.
+ *
+ * The page row has no foreign key to the project, so the project's delete does
+ * not reach it. Reads only what the purge needs, never the content.
+ */
+export async function listFramesOfDeletedProject(projectId: string) {
+	const files = await db.agentWorkspaceFile.findMany({
+		where: { projectId, fileType: FRAME_FILE_TYPES },
+		select: {
+			id: true,
+			userId: true,
+			organizationId: true,
+			metadata: true,
+		},
+		orderBy: { id: "asc" },
+	});
+	const workspaceFrameIds: string[] = [];
+	const artifactFrames: {
+		id: string;
+		userId: string;
+		organizationId: string | null;
+	}[] = [];
+	for (const { metadata, ...file } of files) {
+		if (readFrameSurface(metadata) === "workspace") {
+			workspaceFrameIds.push(file.id);
+		} else {
+			artifactFrames.push(file);
+		}
+	}
+	return { workspaceFrameIds, artifactFrames };
+}
+
+/**
+ * Unlinks the given pages from a project that no longer exists. Returns how
+ * many rows changed, so a retry that finds them already unlinked reports zero.
+ */
+export async function detachFramesFromProject(input: {
+	projectId: string;
+	frameIds: string[];
+}) {
+	const result = await db.agentWorkspaceFile.updateMany({
+		where: {
+			id: { in: input.frameIds },
+			projectId: input.projectId,
+			fileType: FRAME_FILE_TYPES,
+		},
+		data: { projectId: null },
+	});
+	return result.count;
+}
+
+/**
+ * Deletes one page of a deleted project, with its records and comments, which
+ * cascade from the row. Bound to the project so a page that was moved out of
+ * it in the meantime is left alone; a page already gone deletes zero rows.
+ */
+export async function deleteFrameOfDeletedProject(input: {
+	projectId: string;
+	frameId: string;
+}) {
+	const result = await db.agentWorkspaceFile.deleteMany({
+		where: {
+			id: input.frameId,
+			projectId: input.projectId,
+			fileType: FRAME_FILE_TYPES,
+		},
+	});
+	return result.count;
 }

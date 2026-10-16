@@ -1,5 +1,16 @@
 # @fabricorg/cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 1da1843: Coding Instructions can now reach Claude Code and Codex as a plugin Fabric builds on demand, with no clone, and the project's memory folders are mirrored as plain files that reach the repository through Fabric.
+
+### Patch Changes
+
+- 1da1843: Harden Microsoft Graph pagination, local Git exclude updates, code-indexing temporary files, document parsing, OAuth error redaction, and integration logging against untrusted input.
+- @fabricorg/sdk-mcp@0.1.11
+
 ## 0.6.1
 
 ### Patch Changes

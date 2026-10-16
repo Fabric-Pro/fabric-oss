@@ -5,5 +5,5 @@
  * and improve maintainability.
  */
 
+export { ConversationHistoryPanel } from "./ConversationHistoryPanel";
 export { FramesPanel } from "./FramesPanel";
-export { HistoryTabContent } from "./HistoryTabContent";

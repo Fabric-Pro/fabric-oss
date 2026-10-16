@@ -54,7 +54,6 @@ const answer = {
 beforeEach(() => {
 	conversations.list.mockResolvedValue({
 		conversations: [],
-		total: 0,
 		hasMore: false,
 	});
 	// What a read would return: another tab's turn the save must not drop.

@@ -128,6 +128,11 @@ export interface UserContext {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	/**
+	 * The chat conversation this work is done for, when there is one. Recorded
+	 * on the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
 }
 
 /**
@@ -344,6 +349,9 @@ export async function executePatternHybrid(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.conversationId
+						? { conversationId: userContext.conversationId }
+						: {}),
 				},
 			);
 		} catch (error) {
@@ -478,6 +486,9 @@ export async function* executePatternHybridStream(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.conversationId
+						? { conversationId: userContext.conversationId }
+						: {}),
 				},
 			);
 		} catch (error) {

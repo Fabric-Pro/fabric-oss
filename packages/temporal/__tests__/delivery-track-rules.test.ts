@@ -400,3 +400,31 @@ describe("applyDeterministicTrackRules — scope boundaries inside the spec neve
 		expect("track" in result).toBe(false);
 	});
 });
+
+describe("delivery-track adversarial headings", () => {
+	it.each([" ", "\t"])(
+		"bounds heading matching with repeated %j and an embedded line separator",
+		(space) => {
+			const start = performance.now();
+			expect(
+				applyDeterministicTrackRules(
+					story({ description: `##${space.repeat(80_000)}x\u2028x` }),
+					{ quotedPhases: [] },
+				),
+			).toEqual({ candidate: null });
+			expect(performance.now() - start).toBeLessThan(500);
+		},
+	);
+
+	it("excludes tab-separated scope headings with trailing whitespace", () => {
+		expect(
+			applyDeterministicTrackRules(
+				story({
+					description:
+						"###\t Out of Scope \t\nThis story is deferred.\n##\t Summary\nImplement totals.",
+				}),
+				{ quotedPhases: [] },
+			),
+		).toEqual({ candidate: null });
+	});
+});

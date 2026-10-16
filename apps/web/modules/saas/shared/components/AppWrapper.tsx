@@ -11,6 +11,7 @@ import { ChatgptPlanSharedFallbackDockNotice } from "@saas/settings/components/c
 import { AiGatewayWarningBanner } from "@saas/shared/components/AiGatewayWarningBanner";
 import { AnthropicCapabilityBanner } from "@saas/shared/components/AnthropicCapabilityBanner";
 import { NavBar } from "@saas/shared/components/NavBar";
+import { PersonalKeyNotice } from "@saas/shared/components/PersonalKeyNotice";
 import { ShellNoticeRegion } from "@saas/shared/components/ShellNoticeRegion";
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import {
@@ -19,8 +20,8 @@ import {
 } from "@saas/shared/contexts/SidebarCollapseContext";
 import {
 	SHELL_DOCK_GUTTER_CLASS,
-	SHELL_LAUNCHER_CLEARANCE_CLASS,
 	SHELL_DOCK_LAYER_CLASS,
+	SHELL_LAUNCHER_CLEARANCE_CLASS,
 	shellContentOffsetClass,
 	shellDockOffsetClass,
 } from "@saas/shared/lib/shell-layout";
@@ -148,7 +149,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 						 * what the AI notice needs — it was mounted per
 						 * dashboard before, and said nothing anywhere else.
 						 * Each renders nothing when it has nothing to say. */}
-						{/* The three AI notices float above the page instead
+						{/* The AI notices float above the page instead
 						 * of sitting in flow: in flow they pushed every page
 						 * title down by their own height. The same note also
 						 * recorded that they "covered the header when they
@@ -173,6 +174,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 							<ChatgptPlanReconnectDockNotice />
 							<ChatgptPlanSharedFallbackDockNotice />
 							<AiGatewayWarningBanner />
+							<PersonalKeyNotice />
 							<AnthropicCapabilityBanner />
 							<AiUsageLimitBanner />
 						</div>

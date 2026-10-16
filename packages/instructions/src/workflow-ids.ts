@@ -78,6 +78,16 @@ export function instructionRevertCommitWorkflowId(projectId: string): string {
 	return `project-instruction-revert-commit-${projectId}`;
 }
 
+/**
+ * The Temporal workflow id of one Living Memory write (ADR-022): one workflow
+ * per receipt. The API starts it right after the receipt is stored, and a
+ * repeated start for the same receipt finds the open run by this id instead of
+ * beginning a second write.
+ */
+export function memoryWriteWorkflowId(writeId: string): string {
+	return `memory-write-${writeId}`;
+}
+
 /** The one proposal pull-request sweeper (spec §9), started by its schedule. */
 export const INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID =
 	"instruction-proposal-pull-request-sweep";

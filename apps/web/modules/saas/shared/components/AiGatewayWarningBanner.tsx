@@ -7,8 +7,10 @@ import {
 } from "@saas/organizations/hooks/use-organization-context";
 import {
 	useChatgptPlanServesOwnWork,
+	useChatgptPlanStatusKnown,
 	useSharedChatgptPlanServesOwnWork,
 } from "@saas/settings/components/chatgpt-plan/chatgpt-plan-status";
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import { useTenantScopeResolved } from "@saas/shared/lib/use-tenant-scope-resolved";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
@@ -67,12 +69,11 @@ export function AiGatewayWarningBanner() {
 	// before it asks or speaks.
 	const tenantScopeResolved = useTenantScopeResolved();
 	const settingsPath = useContextPath("settings/ai-providers");
-	// The account-global provider page (Fizzy #1875, R12). Same organization
-	// base path, because it is reached from inside the organization the member
-	// is working in — what makes it theirs is the page, not the URL prefix.
-	const personalSettingsPath = useContextPath(
-		"settings/account/ai-providers",
-	);
+	// The member's own keys: the Personal tab of the same page (Fizzy #1875,
+	// R12; #3082). Same organization base path, because it is reached from
+	// inside the organization the member is working in — what makes the keys
+	// theirs is the tab, not the URL prefix.
+	const personalSettingsPath = useContextPath(PERSONAL_AI_PROVIDERS_PATH);
 	// Server-seeded by the organization layout's guest provider, so this is
 	// correct on the first render. The account layout mounts the chrome
 	// WITHOUT that provider; this hook tolerates its absence and answers
@@ -89,6 +90,10 @@ export function AiGatewayWarningBanner() {
 	// no plan of their own (Fizzy #2770).
 	const ownWorkOnSharedPlan = useSharedChatgptPlanServesOwnWork();
 	const ownWorkOnPlan = ownWorkOnOwnPlan || ownWorkOnSharedPlan;
+	// Which message applies depends on the plan, so wait until its status is
+	// in for this organization: right after a switch the session — and so the
+	// status — still describes the previous one (Fizzy #3082).
+	const planStatusKnown = useChatgptPlanStatusKnown();
 	const { dismissed, dismiss, restore } = useNoticeDismissal(
 		`provider-required:${organizationId ?? "personal"}`,
 	);
@@ -143,6 +148,7 @@ export function AiGatewayWarningBanner() {
 
 	if (
 		isLoading ||
+		!planStatusKnown ||
 		canResolveProvider ||
 		embeddingsCovered ||
 		dismissed === undefined

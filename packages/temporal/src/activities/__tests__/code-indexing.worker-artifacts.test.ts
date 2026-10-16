@@ -174,6 +174,7 @@ function expectClean() {
 	for (const dir of state.paths) {
 		expect(fs.existsSync(dir)).toBe(false);
 		expect(fs.existsSync(`${dir}.code-index-manifest.json`)).toBe(false);
+		expect(fs.existsSync(path.dirname(dir))).toBe(false);
 	}
 	expect(fs.existsSync(absentClone)).toBe(false);
 }

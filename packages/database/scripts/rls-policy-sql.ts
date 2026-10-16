@@ -306,6 +306,63 @@ export function buildOrgOnlyWithProjectGuestReadPolicySQL(
 	];
 }
 
+// ---------------------------------------------------------------------------
+// per_user_within_org_shared_read
+// ---------------------------------------------------------------------------
+
+/** Name of the extra, SELECT-only policy the builder below creates. */
+export const ORGANIZATION_SHARED_READ_POLICY = "organization_shared_read";
+
+/**
+ * Per-user-within-org rows whose owner can open them to the organization
+ * (`agent_conversation`, whose `visibility` is PRIVATE or ORGANIZATION), and
+ * that only the owner may write.
+ *
+ * Two policies, for the reason `buildOrgOnlyWithProjectGuestReadPolicySQL`
+ * gives: a shared branch in the one policy's USING would let a teammate
+ * UPDATE or DELETE the row.
+ *
+ *  - `tenant_isolation`, FOR ALL: the `per_user_within_org` predicate, so
+ *    every write stays with the owner.
+ *  - `organization_shared_read`, FOR SELECT: a row of the current organization
+ *    whose `visibility` is ORGANIZATION.
+ */
+export function buildPerUserWithOrgSharedReadPolicySQL(
+	tableName: string,
+): string[] {
+	const owner = `CASE current_tenant_type()
+									WHEN 'organization' THEN
+										"${tableName}"."userId" = current_user_id() AND "${tableName}"."organizationId" = current_tenant_id()
+									WHEN 'personal' THEN
+										"${tableName}"."userId" = current_user_id() AND "${tableName}"."organizationId" IS NULL
+									ELSE false
+								END`;
+	const shared = `CASE current_tenant_type()
+									WHEN 'organization' THEN
+										"${tableName}"."organizationId" = current_tenant_id() AND "${tableName}"."visibility" = 'ORGANIZATION'
+									ELSE false
+								END`;
+	return [
+		`
+							CREATE POLICY tenant_isolation ON "${tableName}"
+							FOR ALL
+							USING (
+								${owner}
+							)
+							WITH CHECK (
+								${owner}
+							)
+						`,
+		`
+							CREATE POLICY ${ORGANIZATION_SHARED_READ_POLICY} ON "${tableName}"
+							FOR SELECT
+							USING (
+								${shared}
+							)
+						`,
+	];
+}
+
 /**
  * The same policy for the `project` table itself. It cannot sub-select
  * `project` (Postgres reports "infinite recursion detected in policy"), so

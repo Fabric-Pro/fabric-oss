@@ -1,6 +1,7 @@
 "use client";
 
 import { BUILT_IN_TO_FABRIC_TOOLS } from "../../lib/builtin-tool-map";
+import type { ContinuedChat } from "./components/SharedSessionView";
 
 /**
  * Fabric Loom Agent Page
@@ -20,12 +21,14 @@ import { BUILT_IN_TO_FABRIC_TOOLS } from "../../lib/builtin-tool-map";
  * - Fixed minimum widths to prevent layout shifts
  */
 
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { AgentErrorBoundary } from "@saas/agents/components/AgentErrorBoundary";
 import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import type { TemporalOrchestratorActivityState } from "@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat";
 import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useOrchestratorConfig } from "@saas/agents/components/OrchestratorConfigPanel";
 import type { MentionableTemplate } from "@saas/agents/hooks/useTemplateMention";
+import { restoreFromConversationMetadata } from "@saas/agents/lib/conversation-restore";
 import {
 	type ExpandHandoff,
 	isExpandHandoffFor,
@@ -33,8 +36,8 @@ import {
 import { getInterfaceModeChrome } from "@saas/agents/lib/interface-mode-chrome";
 import {
 	type ChatEngine,
-	conversationEngineFromMetadata,
 	resolveChatEngine,
+	showsEngineMismatchNotice,
 } from "@saas/agents/lib/interface-mode-engine";
 import {
 	orchestratorPreferencesQueryKey,
@@ -63,6 +66,17 @@ const FabricTemporalOrchestratorChat = dynamic(
 		import(
 			"@saas/agents/components/FabricChat/FabricTemporalOrchestratorChat"
 		).then((mod) => ({ default: mod.FabricTemporalOrchestratorChat })),
+	{
+		loading: () => <ChatLoadingSkeleton />,
+		ssr: false,
+	},
+);
+
+const SharedSessionView = dynamic(
+	() =>
+		import("./components/SharedSessionView").then((mod) => ({
+			default: mod.SharedSessionView,
+		})),
 	{
 		loading: () => <ChatLoadingSkeleton />,
 		ssr: false,
@@ -174,7 +188,8 @@ import {
 	ContextReasoningUsage,
 	ContextTrigger,
 } from "../../../../../components/ai-elements/context";
-import { FramesPanel, HistoryTabContent } from "./components";
+import { EngineMismatchNotice } from "../EngineMismatchNotice";
+import { ConversationHistoryPanel, FramesPanel } from "./components";
 
 // Loading skeleton for chat components - prevents CLS during dynamic import
 function ChatLoadingSkeleton() {
@@ -1177,6 +1192,18 @@ function FabricChatContent({
 		conversationEngine,
 		isAgentInstance: isAgentInstanceMode,
 	});
+	// The engine a chat of the reader's own starts on now, whatever conversation
+	// is open: a chat continued from a shared conversation opens on this one.
+	const readerEngine = resolveChatEngine({
+		uiMode,
+		useOrchestrator: orchestratorTabSelected,
+		deepResearch: deepResearchTabSelected,
+		conversationEngine: null,
+		isAgentInstance: isAgentInstanceMode,
+	});
+	// The chat last continued from a shared conversation. It records no engine
+	// until its first turn, so it opens on the one it was continued on.
+	const continuedChat = useRef<ContinuedChat | null>(null);
 	const useOrchestrator = chatEngine === "orchestrator";
 	const deepResearchEnabled = chatEngine === "research";
 	// Whether the mounted Direct / Orchestrator chat has a turn in flight.
@@ -1366,14 +1393,10 @@ function FabricChatContent({
 	// Conversation history
 	const {
 		conversations,
-		isLoadingList: isLoadingConversations,
 		isLoadingDetail,
 		activeConversationId,
 		activeConversation,
 		selectConversation: selectConversationInternal,
-		deleteConversation,
-		togglePin,
-		isDeleting,
 		refetchList,
 	} = useConversationHistory({
 		organizationId,
@@ -1381,7 +1404,7 @@ function FabricChatContent({
 		// "fabric-ai" alias — the Prisma migration in this PR also
 		// updates existing AgentConversation rows so the filter
 		// continues to surface the same history.
-		agentId: "fabric-workspace-assistant",
+		agentId: FABRIC_AGENT_ID,
 	});
 
 	// Restore mode + reasoning from a loaded conversation's metadata.
@@ -1407,32 +1430,25 @@ function FabricChatContent({
 	// mode — i.e. "I clicked an old chat" would change my default.
 	const restoredConversationIdRef = useRef<string | null>(null);
 	useEffect(() => {
-		if (!activeConversation || !activeConversationId) {
+		// Another member's shared conversation is only read here; it does not
+		// set the reader's own mode.
+		if (
+			!activeConversation ||
+			!activeConversationId ||
+			!activeConversation.isOwn
+		) {
 			return;
 		}
 		if (restoredConversationIdRef.current === activeConversationId) {
 			return;
 		}
-		const metadata = (activeConversation as { metadata?: unknown })
-			?.metadata;
-		if (!metadata || typeof metadata !== "object") {
-			restoredConversationIdRef.current = activeConversationId;
-			return;
-		}
-		const m = metadata as { mode?: unknown; executionMode?: unknown };
-		const restoredMode: "direct" | "orchestrator" | "research" | null =
-			m.mode === "direct" ||
-			m.mode === "orchestrator" ||
-			m.mode === "research"
-				? m.mode
-				: null;
-		const restoredReasoning: ReasoningMode | null =
-			m.executionMode === "lite" ||
-			m.executionMode === "balanced" ||
-			m.executionMode === "deep" ||
-			m.executionMode === "planner"
-				? m.executionMode
-				: null;
+		const { mode: restoredMode, reasoningMode: restoredReasoning } =
+			restoreFromConversationMetadata(
+				activeConversation.metadata,
+				continuedChat.current?.id === activeConversationId
+					? continuedChat.current.engine
+					: undefined,
+			);
 
 		if (restoredMode === "direct") {
 			setUseOrchestrator(false);
@@ -1511,23 +1527,28 @@ function FabricChatContent({
 	// Auto-switch mode based on conversation metadata when loading from history
 	// Also restore documentChatId for uploaded documents
 	useEffect(() => {
-		if (activeConversation) {
-			const metadata = activeConversation.metadata as any;
+		if (activeConversation?.isOwn) {
+			const restored = restoreFromConversationMetadata(
+				activeConversation.metadata,
+				continuedChat.current?.id === activeConversation.id
+					? continuedChat.current.engine
+					: undefined,
+			);
 			// Lock the engine to the one this conversation was created on, so
 			// simple mode keeps an old Direct thread on Direct (Fizzy #2040).
-			setConversationEngine(conversationEngineFromMetadata(metadata));
-			if (metadata?.mode === "research") {
+			setConversationEngine(restored.engine);
+			if (restored.mode === "research") {
 				setDeepResearchEnabled(true);
 				setUseOrchestrator(false);
 			} else if (
-				metadata?.mode === "orchestrator" &&
+				restored.mode === "orchestrator" &&
 				!orchestratorTabSelected
 			) {
 				setDeepResearchEnabled(false);
 				setUseOrchestrator(true);
 				setActiveTab("agents");
 			} else if (
-				(metadata?.mode === "direct" || !metadata?.mode) &&
+				(restored.mode === "direct" || restored.mode === null) &&
 				orchestratorTabSelected
 			) {
 				// Switch to direct mode for direct conversations or legacy conversations without mode metadata
@@ -1536,8 +1557,8 @@ function FabricChatContent({
 				setActiveTab("history");
 			}
 			// Restore documentChatId if it was saved with the conversation
-			if (metadata?.documentChatId) {
-				setDocumentChatId(metadata.documentChatId);
+			if (restored.documentChatId) {
+				setDocumentChatId(restored.documentChatId);
 			}
 			// Restore or clear instanceId based on conversation metadata.
 			// Always sync so switching between conversations (including two
@@ -1545,11 +1566,7 @@ function FabricChatContent({
 			// Safe to call unconditionally: onInstanceIdRestored sets
 			// restoredInstanceId, and effectiveInstanceId = instanceIdFromUrl ||
 			// restoredInstanceId, so a URL param always takes precedence.
-			if (metadata?.instanceId) {
-				onInstanceIdRestored?.(metadata.instanceId);
-			} else {
-				onInstanceIdRestored?.(null);
-			}
+			onInstanceIdRestored?.(restored.instanceId);
 		} else {
 			// No active conversation at all — clear restored instanceId
 			onInstanceIdRestored?.(null);
@@ -1563,6 +1580,24 @@ function FabricChatContent({
 			onConversationChange(convId);
 		},
 		[selectConversationInternal, onConversationChange],
+	);
+
+	const handleContinuedChat = useCallback(
+		(chat: ContinuedChat) => {
+			continuedChat.current = chat;
+			selectConversation(chat.id);
+		},
+		[selectConversation],
+	);
+
+	// A conversation deleted from the history lets go of the one that is open.
+	const handleConversationDeleted = useCallback(
+		(deletedId: string) => {
+			if (deletedId === activeConversationId) {
+				selectConversation(null);
+			}
+		},
+		[activeConversationId, selectConversation],
 	);
 
 	const chrome = getInterfaceModeChrome(uiMode);
@@ -2185,6 +2220,45 @@ function FabricChatContent({
 		},
 	};
 
+	// The "New" button, also offered by the engine-mismatch notice.
+	const handleNewChat = () => {
+		selectConversation(null);
+		setOrchestratorActivity({
+			isActive: false,
+			currentStage: "idle",
+			toolCalls: [],
+		});
+		setCompletedPlans([]);
+		setCollapsedPlans(new Set());
+		// Reset mode + reasoning back to the user's
+		// persistent default (matches fresh-page-load
+		// behavior). Replaces the previous hardcoded
+		// `setUseOrchestrator(true) +
+		// setDeepResearchEnabled(false)` which forced
+		// Orchestrator regardless of the user's
+		// preference and surprised users whose default
+		// was Direct or Research.
+		resetLoomModeToUserDefault();
+		setConversationEngine(null);
+		setExpandHandoff(null);
+		resetDeepResearch();
+		setActiveTab("history");
+		handleClearAllPrioritized();
+		setChatInstanceKey((prev) => prev + 1);
+	};
+
+	// Simple mode hides the engine pills, so say when the open chat runs on an
+	// engine other than the one a new chat would (#3093). Not for a chat another
+	// member shared, which is read-only.
+	const engineMismatch =
+		showsEngineMismatchNotice({
+			uiMode,
+			chatEngine,
+			newChatEngine: readerEngine,
+			hasOpenConversation: Boolean(activeConversationId),
+			isAgentInstance: isAgentInstanceMode,
+		}) && !(activeConversation && !activeConversation.isOwn);
+
 	return (
 		<div className="flex h-full bg-background">
 			{sidebarOpen && isCompactViewport && (
@@ -2269,30 +2343,15 @@ function FabricChatContent({
 							{/* Tab Content */}
 							<div className="flex-1 overflow-y-auto overflow-x-hidden">
 								{activeTab === "history" && (
-									<HistoryTabContent
-										conversations={conversations.map(
-											(conv) => ({
-												id: conv.id,
-												title: conv.title,
-												lastMessage: conv.lastMessage,
-												createdAt: conv.createdAt,
-												pinned: conv.pinned,
-												metadata: (conv as any)
-													.metadata,
-											}),
-										)}
+									<ConversationHistoryPanel
+										organizationId={organizationId ?? null}
 										activeConversationId={
 											activeConversationId
 										}
-										isLoading={isLoadingConversations}
-										isDeleting={isDeleting}
-										onSelectConversation={
-											selectConversation
+										onSelect={(conversation) =>
+											selectConversation(conversation.id)
 										}
-										onTogglePin={togglePin}
-										onDeleteConversation={
-											deleteConversation
-										}
+										onDeleted={handleConversationDeleted}
 									/>
 								)}
 
@@ -2622,31 +2681,7 @@ function FabricChatContent({
 							size="sm"
 							className="h-9 px-2.5"
 							title="New run"
-							onClick={() => {
-								selectConversation(null);
-								setOrchestratorActivity({
-									isActive: false,
-									currentStage: "idle",
-									toolCalls: [],
-								});
-								setCompletedPlans([]);
-								setCollapsedPlans(new Set());
-								// Reset mode + reasoning back to the user's
-								// persistent default (matches fresh-page-load
-								// behavior). Replaces the previous hardcoded
-								// `setUseOrchestrator(true) +
-								// setDeepResearchEnabled(false)` which forced
-								// Orchestrator regardless of the user's
-								// preference and surprised users whose default
-								// was Direct or Research.
-								resetLoomModeToUserDefault();
-								setConversationEngine(null);
-								setExpandHandoff(null);
-								resetDeepResearch();
-								setActiveTab("history");
-								handleClearAllPrioritized();
-								setChatInstanceKey((prev) => prev + 1);
-							}}
+							onClick={handleNewChat}
 						>
 							<Plus className="h-4 w-4" />
 							<span className="hidden lg:inline ml-1">New</span>
@@ -2963,24 +2998,14 @@ function FabricChatContent({
 							</SheetTitle>
 						</SheetHeader>
 						<div className="min-h-0 flex-1 overflow-y-auto">
-							<HistoryTabContent
-								conversations={conversations.map((conv) => ({
-									id: conv.id,
-									title: conv.title,
-									lastMessage: conv.lastMessage,
-									createdAt: conv.createdAt,
-									pinned: conv.pinned,
-									metadata: (conv as any).metadata,
-								}))}
+							<ConversationHistoryPanel
+								organizationId={organizationId ?? null}
 								activeConversationId={activeConversationId}
-								isLoading={isLoadingConversations}
-								isDeleting={isDeleting}
-								onSelectConversation={(id) => {
-									selectConversation(id);
+								onSelect={(conversation) => {
+									selectConversation(conversation.id);
 									setHistoryOpen(false);
 								}}
-								onTogglePin={togglePin}
-								onDeleteConversation={deleteConversation}
+								onDeleted={handleConversationDeleted}
 							/>
 						</div>
 					</SheetContent>
@@ -3028,9 +3053,21 @@ function FabricChatContent({
 						</div>
 					</div>
 				)}
+				{engineMismatch && (
+					<EngineMismatchNotice onNewChat={handleNewChat} />
+				)}
 				{/* Chat Area */}
 				<div className="flex-1 min-h-0">
-					{deepResearchEnabled ? (
+					{activeConversation && !activeConversation.isOwn ? (
+						/* A conversation another person shared: read-only, with
+						   one way on, a chat of the reader's own. */
+						<SharedSessionView
+							conversation={activeConversation}
+							organizationId={organizationId ?? null}
+							engine={readerEngine}
+							onContinue={handleContinuedChat}
+						/>
+					) : deepResearchEnabled ? (
 						/* Deep Research Mode: Temporal workflow with parallel sub-agents
 						   - Decomposes query into sub-tasks
 						   - Runs sub-agents in parallel
@@ -3493,7 +3530,7 @@ function DocumentWorkspacesSection({
 	// slug the URL already carries. Kept with the other hooks rather than
 	// beside its use: the loading branch below returns early, and a hook after
 	// an early return changes hook order between renders.
-	const workspacesUrl = useContextPath("workspaces");
+	const librariesUrl = useContextPath("libraries");
 
 	// Fetch available workspaces
 	const { data: workspaces, isLoading: isLoadingWorkspaces } = useQuery(
@@ -3512,7 +3549,7 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2 mb-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Workspaces
+						Document Libraries
 					</span>
 				</div>
 				<div className="space-y-2">
@@ -3567,11 +3604,11 @@ function DocumentWorkspacesSection({
 				<div className="flex items-center gap-2">
 					<FolderOpen className="h-4 w-4 text-muted-foreground" />
 					<span className="text-xs font-medium">
-						Document Workspaces
+						Document Libraries
 					</span>
 				</div>
 				<Link
-					href={workspacesUrl}
+					href={librariesUrl}
 					className="text-xs text-primary hover:underline"
 				>
 					Manage
@@ -3581,16 +3618,16 @@ function DocumentWorkspacesSection({
 			{workspaceItems.length === 0 ? (
 				<div className="text-center py-3">
 					<p className="text-xs text-muted-foreground">
-						No workspaces yet
+						No libraries yet
 					</p>
-					<Link href={workspacesUrl}>
+					<Link href={librariesUrl}>
 						<Button
 							variant="outline"
 							size="sm"
 							className="mt-2 h-7 text-xs"
 						>
 							<Plus className="h-3 w-3 mr-1" />
-							Create Workspace
+							Create Library
 						</Button>
 					</Link>
 				</div>

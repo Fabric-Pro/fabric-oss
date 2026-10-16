@@ -778,12 +778,27 @@ export async function executeMicrosoftTeamsTool(
 		// Advisor chat turn that has stopped or used its token allowance it
 		// is refused with the stop. A no-op outside a turn.
 		const makeRequest = (token: string) => {
+			// Cursors and provider nextLink values share this credential boundary.
+			// Validate the destination again for refreshes and transient retries.
+			const destination = new URL(url);
+			if (
+				!new Set([
+					"https://graph.microsoft.com",
+					"https://graph.microsoft.us",
+					"https://graph.microsoft.de",
+				]).has(destination.origin) ||
+				destination.username ||
+				destination.password
+			) {
+				throw new Error("Invalid Microsoft Graph request destination");
+			}
 			const method = (options.method ?? "GET").toUpperCase();
 			if (method !== "GET" && method !== "HEAD") {
 				throwIfDispatchStopped();
 			}
 			return fetch(url, {
 				...options,
+				redirect: "error",
 				headers: {
 					Authorization: `Bearer ${token}`,
 					"Content-Type": "application/json",

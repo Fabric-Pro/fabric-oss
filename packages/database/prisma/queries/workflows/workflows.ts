@@ -10,6 +10,8 @@ import {
 	type WorkflowTriggerType,
 } from "../../client";
 
+export { isWorkflowLive } from "@repo/utils/workflow-status";
+
 // Default empty nodes/edges for new workflows
 const DEFAULT_NODES: Prisma.InputJsonValue = [];
 const DEFAULT_EDGES: Prisma.InputJsonValue = [];

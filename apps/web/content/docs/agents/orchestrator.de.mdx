@@ -36,7 +36,7 @@ flowchart TB
 
     subgraph O["Orchestrator"]
         O1[1. Benutzerabsicht erkennen]
-        O2[2. Workspace-Kontext abrufen]
+        O2[2. Bibliothekskontext abrufen]
         O3[3. Ausführungsplan erstellen]
         O4[4. PRD generieren]
         O5[5. Jira-Tickets erstellen]
@@ -71,7 +71,7 @@ flowchart TB
 **Erkannte Absichten:**
 - **Explizite Tool-Anfragen** — „Jira-Tool verwenden", „mit GitHub suchen"
 - **YouTube-URLs** — Leitet automatisch zur Transkriptextraktion weiter
-- **Workspace-Verweise** — „meine Dokumente", „angehängte Dateien" → RAG verwenden
+- **Bibliotheksverweise** — „meine Dokumente", „angehängte Dateien" → RAG verwenden
 - **Integrations-Trigger** — „in Slack posten", „E-Mail senden"
 - **Fabric-Muster** — „zusammenfassen", „Weisheit extrahieren", „Behauptungen analysieren"
 
@@ -381,7 +381,7 @@ Wählen Sie den richtigen Modus für Ihre Aufgabe:
 
 Verbessern Sie Ergebnisse durch Anhängen von:
 
-- **Workspaces** — Dokumente für RAG-Kontext
+- **Bibliotheken** — Dokumente für RAG-Kontext
 - **Projekte** — Frühere Projektdokumente
 - **Spezifische Dateien** — Direkt hochladen
 

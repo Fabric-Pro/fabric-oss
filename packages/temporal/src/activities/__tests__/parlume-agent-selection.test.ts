@@ -1,8 +1,16 @@
+import { logger } from "@repo/logs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { executeParlumeMeetingTurn } from "../parlume";
+import { observeAgentText } from "../shared/agent-tool-runtime";
+import {
+	recordTurnSpeechSentence,
+	recordTurnValue,
+} from "../shared/turn-timing";
 
 const mocks = vi.hoisted(() => ({
 	turn: vi.fn(),
+	segments: vi.fn(),
+	history: vi.fn(),
 	update: vi.fn(),
 	updateMany: vi.fn(),
 	session: vi.fn(),
@@ -21,16 +29,12 @@ vi.mock("@repo/database", () => ({
 	db: {
 		parlumeMeetingTurn: {
 			findUnique: mocks.turn,
-			findMany: vi.fn(async () => []),
+			findMany: mocks.history,
 			update: mocks.update,
 			updateMany: mocks.updateMany,
 		},
 		parlumeMeetingSession: { updateMany: mocks.session },
-		parlumeMeetingSegment: {
-			findMany: vi.fn(async () => [
-				{ text: "Meeting context", speakerName: "Alex" },
-			]),
-		},
+		parlumeMeetingSegment: { findMany: mocks.segments },
 		parlumeAction: { findFirst: mocks.proposal, updateMany: mocks.actions },
 		$transaction: (operations: Promise<unknown>[]) =>
 			Promise.all(operations),
@@ -54,6 +58,7 @@ vi.mock("../parlume-actions", () => ({
 	createParlumeToolRuntime: () => ({ invoke: vi.fn() }),
 }));
 vi.mock("../parlume-voice", () => ({
+	PARLUME_MAX_SPOKEN_CHARS: 800,
 	speakParlumeResponse: mocks.speak,
 	postParlumeMeetingChat: mocks.chat,
 	requestParlumeMeetingStop: mocks.stop,
@@ -62,7 +67,18 @@ vi.mock("../project-metadata", () => ({
 	retrieveProjectContextsActivity: mocks.retrieve,
 }));
 
-function turn(agentKind = "FABRIC_AGENT") {
+async function spokenSentences(callIndex = 0): Promise<string[]> {
+	const { sentences } = mocks.speak.mock.calls[callIndex]?.[0] as {
+		sentences: AsyncIterable<string>;
+	};
+	const spoken: string[] = [];
+	for await (const sentence of sentences) {
+		spoken.push(sentence);
+	}
+	return spoken;
+}
+
+function turn(agentKind = "FABRIC_AGENT", toolsReadOnly = true) {
 	return {
 		id: "turn",
 		status: "PENDING",
@@ -77,7 +93,7 @@ function turn(agentKind = "FABRIC_AGENT") {
 			userId: "user",
 			agentKind,
 			status: "ACTIVE",
-			toolsReadOnly: true,
+			toolsReadOnly,
 			voiceGeneration: 3,
 		},
 	};
@@ -94,12 +110,23 @@ beforeEach(() => {
 	mocks.execute.mockResolvedValue({ success: true, response: "The plan." });
 	mocks.retrieve.mockResolvedValue({ context: "Project knowledge" });
 	mocks.decision.mockResolvedValue({});
+	mocks.segments.mockResolvedValue([
+		{ text: "Meeting context", speakerName: "Alex" },
+	]);
+	mocks.history.mockResolvedValue([]);
 	mocks.speak.mockResolvedValue({
 		played: true,
 		interrupted: false,
 		firstAudioAt: new Date().toISOString(),
 	});
 });
+
+function timingLog() {
+	const call = vi
+		.mocked(logger.info)
+		.mock.calls.find(([message]) => message === "[Parlume] turn.timing");
+	return call?.[1] as Record<string, unknown> | undefined;
+}
 
 describe("Parlume meeting turns", () => {
 	it("uses the selected current agent, project knowledge and transcript", async () => {
@@ -114,11 +141,9 @@ describe("Parlume meeting turns", () => {
 			}),
 		);
 		expect(mocks.speak).toHaveBeenCalledWith(
-			expect.objectContaining({
-				response: "The plan.",
-				voiceGeneration: 3,
-			}),
+			expect.objectContaining({ voiceGeneration: 3 }),
 		);
+		await expect(spokenSentences()).resolves.toEqual(["The plan."]);
 		expect(mocks.updateMany).toHaveBeenLastCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({
@@ -163,7 +188,36 @@ describe("Parlume meeting turns", () => {
 			}),
 		);
 	});
+	it("speaks a read-only answer while the agent is still writing it", async () => {
+		let speechStartedBeforeAnswer = false;
+		mocks.execute.mockImplementation(async () => {
+			speechStartedBeforeAnswer = mocks.speak.mock.calls.length === 1;
+			observeAgentText("The roadmap has two hundred items. ");
+			observeAgentText("Forty are done.");
+			return { success: true, response: "Ignored when streamed." };
+		});
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(speechStartedBeforeAnswer).toBe(true);
+		expect(mocks.speak).toHaveBeenCalledTimes(1);
+		await expect(spokenSentences()).resolves.toEqual([
+			"The roadmap has two hundred items.",
+			"Forty are done.",
+		]);
+	});
+	it("holds an answer that may become a proposal until it is complete", async () => {
+		mocks.turn.mockResolvedValue(turn("FABRIC_AGENT", false));
+		mocks.execute.mockImplementation(async () => {
+			expect(mocks.speak).not.toHaveBeenCalled();
+			observeAgentText("Shall I rename it?");
+			return { success: true, response: "Shall I rename it?" };
+		});
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		await expect(spokenSentences()).resolves.toEqual([
+			"Shall I rename it?",
+		]);
+	});
 	it("only enables confirmation after the complete proposal is played", async () => {
+		mocks.turn.mockResolvedValue(turn("FABRIC_AGENT", false));
 		mocks.proposal.mockResolvedValue({
 			summary: "Please confirm the exact action.",
 			speakerId: "speaker",
@@ -171,11 +225,11 @@ describe("Parlume meeting turns", () => {
 		mocks.speak.mockResolvedValue({ played: false, interrupted: true });
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		expect(mocks.speak).toHaveBeenCalledWith(
-			expect.objectContaining({
-				response: "Please confirm the exact action.",
-				confirmationSpeakerId: "speaker",
-			}),
+			expect.objectContaining({ confirmationSpeakerId: "speaker" }),
 		);
+		await expect(spokenSentences()).resolves.toEqual([
+			"Please confirm the exact action.",
+		]);
 		expect(mocks.actions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({ status: "CANCELLED" }),
@@ -220,5 +274,136 @@ describe("Parlume meeting turns", () => {
 				data: expect.objectContaining({ status: "COMPLETED" }),
 			}),
 		);
+	});
+
+	it("reads a voice-sized slice of the meeting: three project passages, three minutes, four earlier answers", async () => {
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(mocks.retrieve).toHaveBeenCalledWith(
+			"What is the plan?",
+			"project",
+			"user",
+			"org",
+			3,
+		);
+		const segmentQuery = mocks.segments.mock.calls[0]?.[0];
+		const windowMs =
+			Date.now() - segmentQuery.where.createdAt.gte.getTime();
+		expect(windowMs).toBeGreaterThanOrEqual(3 * 60 * 1000);
+		expect(windowMs).toBeLessThan(3 * 60 * 1000 + 5_000);
+		expect(segmentQuery.orderBy).toEqual({ createdAt: "desc" });
+		expect(mocks.history).toHaveBeenCalledWith(
+			expect.objectContaining({ take: 4 }),
+		);
+	});
+	it("keeps the most recent 4,000 characters of the transcript", async () => {
+		mocks.segments.mockResolvedValue([
+			{ text: `newest ${"n".repeat(3_000)}`, speakerName: "Alex" },
+			{ text: `older ${"o".repeat(3_000)}`, speakerName: "Sam" },
+		]);
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		const { knowledgeContext } = mocks.execute.mock.calls[0]?.[0] as {
+			knowledgeContext: string;
+		};
+		const transcript = knowledgeContext.split(
+			"Recent meeting transcript:\n",
+		)[1];
+		expect(transcript).toHaveLength(4_000);
+		expect(transcript.endsWith("n".repeat(3_000))).toBe(true);
+		expect(transcript).toContain("Alex: newest");
+		expect(transcript).not.toContain("Sam: older");
+	});
+	it("logs one turn.timing record with every step of the turn", async () => {
+		mocks.execute.mockImplementation(async () => {
+			recordTurnValue("llm.firstTextMs", 321);
+			recordTurnValue("llm.reasoningTokens", 0);
+			return { success: true, response: "The plan." };
+		});
+		mocks.speak.mockImplementation(async () => {
+			recordTurnSpeechSentence({
+				chars: 9,
+				route: "gateway",
+				startedAtMs: 40,
+				firstByteMs: 900,
+				totalMs: 900,
+			});
+			return {
+				played: true,
+				interrupted: false,
+				firstAudioAt: Date.now(),
+			};
+		});
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const timingLogs = vi
+			.mocked(logger.info)
+			.mock.calls.filter(
+				([message]) => message === "[Parlume] turn.timing",
+			);
+		expect(timingLogs).toHaveLength(1);
+		const log = timingLog();
+		expect(log).toMatchObject({
+			component: "parlume",
+			event: "parlume.turn.timing",
+			sessionId: "session",
+			turnId: "turn",
+			outcome: "completed",
+			speech: [
+				{
+					chars: 9,
+					route: "gateway",
+					startedAtMs: 40,
+					firstByteMs: 900,
+					totalMs: 900,
+				},
+			],
+		});
+		expect(Object.keys(log?.timings as object).sort()).toEqual(
+			[
+				"agentLoadMs",
+				"agentRevisionWriteMs",
+				"agentRunMs",
+				"contextGatherMs",
+				"decisionMs",
+				"historyQueryMs",
+				"llm.firstTextMs",
+				"llm.reasoningTokens",
+				"projectRagMs",
+				"segmentsQueryMs",
+			].sort(),
+		);
+		expect(log?.firstAudioMs).toEqual(expect.any(Number));
+		expect(log?.totalMs).toEqual(expect.any(Number));
+	});
+	it("logs the timing of a turn that failed, with its outcome", async () => {
+		mocks.execute.mockResolvedValue({ success: false, error: "No model." });
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(timingLog()).toMatchObject({ outcome: "agent_failed" });
+
+		vi.mocked(logger.info).mockClear();
+		mocks.turn.mockResolvedValue(turn());
+		mocks.load.mockRejectedValue(new Error("Database unavailable"));
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		expect(timingLog()).toMatchObject({ outcome: "failed" });
+	});
+	it.each([true, false])(
+		"tells the agent to post to the meeting chat and never read an address aloud (read-only: %s)",
+		async (toolsReadOnly) => {
+			mocks.turn.mockResolvedValue(turn("FABRIC_AGENT", toolsReadOnly));
+			await executeParlumeMeetingTurn({ turnId: "turn" });
+			const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {
+				voiceInstructions: string;
+			};
+			expect(voiceInstructions).toContain("post_to_meeting_chat");
+			expect(voiceInstructions).toContain("F-123");
+			expect(voiceInstructions).toContain("Never read URLs aloud.");
+		},
+	);
+	it("does not mention the chat tool on a confirmation, which has no such tool", async () => {
+		mocks.decision.mockResolvedValue({ runtime: { invoke: vi.fn() } });
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+		const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {
+			voiceInstructions: string;
+		};
+		expect(voiceInstructions).not.toContain("post_to_meeting_chat");
 	});
 });

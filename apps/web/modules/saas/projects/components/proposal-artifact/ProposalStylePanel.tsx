@@ -28,6 +28,7 @@ import {
 	type RecipientLogoErrorCode,
 	recipientBrandDraftFrom,
 } from "../RecipientBrandFields";
+import { invalidateProposalTheme } from "./use-proposal-theme";
 
 // The server's limits, restated for the browser: they live in
 // `@repo/database` (`PROPOSAL_STYLE_MAX_*`), which would pull the Prisma
@@ -327,6 +328,11 @@ export function ProposalStylePanel({
 				}
 			}
 			return { outcome: "saved" };
+		},
+		// Whatever part of the save landed, the Main tab's paint follows it.
+		// Not awaited: the Save button need not wait for the page to repaint.
+		onSettled: () => {
+			void invalidateProposalTheme(queryClient, projectId);
 		},
 		onSuccess: (result) => {
 			if (result.outcome === "logoRejected") {

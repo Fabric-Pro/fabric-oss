@@ -15,6 +15,14 @@ An optional Claude Code or Codex `SessionStart` hook checks whether the source
 moved. It reports a repository's new commit; for uploaded instructions it may
 apply the new published version.
 
+A developer who does not edit the instructions themselves does not need a clone
+at all: a bare `init` delivers them to Claude Code or Codex as a plugin Fabric
+builds on demand, and `fabric memory` mirrors the project's memory folders as
+plain files that reach the repository through Fabric. That is the default;
+`init --clone`, or `init` run inside an existing clone of the instructions'
+repository, keeps the clone mode, which the rest of this guide describes unless
+it says otherwise.
+
 There are two shapes of project, and the commands treat them differently.
 
 - **Repository-sourced** (the instructions are committed to a git repository
@@ -635,7 +643,15 @@ names the pull request (`already proposed in version <N>, pull request
 <url>`). That keeps a second session's pull request free of the first
 session's change.
 
-### `fabric instructions init [--project <id>] [--tool <claude-code|codex>] [--clone [<folder>]] [--dest <dir>] [--remote <name>] [--apply] [--report-only] [--lessons] [--no-mcp]`
+### `fabric instructions init [--project <id>] [--tool <claude-code|codex>] [--plugin|--no-plugin] [--clone [<folder>]] [--dest <dir>] [--remote <name>] [--apply] [--report-only] [--lessons] [--no-mcp]`
+
+A bare `init` is the plugin setup, described under
+[Plugin delivery](#plugin-delivery-fabric-instructions-init-render-and-fabric-memory);
+`--plugin` says so explicitly. The rest of this section is the clone mode, which
+`init` keeps when `--clone`, `--apply`, `--report-only`, `--lessons` or
+`--no-plugin` is given, and when the folder it runs in already is a clone of the instructions'
+repository (or holds an uploaded project's instructions lock), so a developer
+who works on the instructions there is not moved.
 
 Sets a checkout up for a project's coding instructions: finds the project (see
 above), signs in when it has to, takes over the folder it runs in, and writes
@@ -1287,6 +1303,184 @@ Running `init` again without `--lessons` removes the Stop entry and leaves the
 `SessionStart` one alone; `init` describes the hooks you want, not the ones you
 have. `--lessons` is refused with `--tool codex` for now: a Codex hook for
 lesson capture is not wired.
+
+### Plugin delivery: `fabric instructions init`, `render` and `fabric memory`
+
+The default setup for a developer who does not work on the instructions' own
+repository. Nothing is cloned or copied into the project: the coding tool
+gets the instructions as a **plugin** that Fabric builds on demand, and
+whatever the agent writes as memory (specs, task lists, working notes) reaches
+the repository through Fabric as plain files. Agents work exactly as before:
+they read skills, agents and commands, and write ordinary files with their
+ordinary file tools.
+
+```
+npx -y <deployment CLI> instructions init --project <id> --tool claude-code
+```
+
+`--plugin` may be added to say so explicitly. It is refused together with
+`--clone`, `--apply`, `--report-only`, `--lessons` and `--no-plugin`, which
+describe the clone mode; the clone mode itself is unchanged and remains the way to edit the
+instructions in a checkout of their repository.
+
+`init` records the folder it ran in, and the git work tree around it if there
+is one, in `.fabric/project.json`. `fabric memory` works only inside that
+folder: it finds it by going up from the working directory, refuses a folder
+that no `init` marked, and refuses a git work tree other than the recorded one,
+so it never writes into, or edits the git directory of, an unrelated checkout.
+
+**Claude Code.** `init` renders the plugin once (so a broken setup shows now),
+then sets up three things:
+
+- a **marketplace folder** in the CLI's cache,
+  `<cache>/marketplaces/<plugin>/.claude-plugin/marketplace.json`, of one plugin
+  whose source is a **command source**:
+  `{"source":"command","command":"<node> <kept copy of this CLI> instructions render --project <id> --base-url <origin>","mode":"copy","timeout":120}`.
+  It is declared in the project's `.claude/settings.local.json` (never
+  `settings.json`) as an `extraKnownMarketplaces` entry with a `directory`
+  source, which is what `claude plugin marketplace add <folder> --scope local`
+  writes, and `init` runs that command when `claude` is on `PATH`;
+- `enabledPlugins` set to `true` for the plugin;
+- the memory hooks: `fabric memory pull --hook` at `SessionStart` and
+  `fabric memory push --hook` at `Stop`.
+
+The plugin carries the project's MCP gateway in its own `.mcp.json`, so `init`
+does not also register one with `claude mcp add`; a registration an earlier
+`init` made in this folder's local scope, under the exact name Fabric gives the
+server (`fabric-` and the last six letters and digits of the project id) and
+pointing at this project's gateway, is removed so an agent does not see two sets
+of tools. `--no-mcp` leaves it alone. Codex keeps one global list of servers
+shared by every checkout, so an earlier Codex registration is left in place.
+
+The command line is printable ASCII, at most 500 characters, with no run of
+four spaces, as Claude Code requires; a path that would break one of those
+(a config folder with non-ASCII characters in it, say) fails `init` with the way
+out (set `XDG_CONFIG_HOME`, or `APPDATA` on Windows). On Windows Claude Code
+runs the command through `cmd.exe` from the home folder, so paths are written
+with forward slashes and quoted when they contain a space. Node is named by its
+absolute path; where the CLI is installed with npm, the command starts
+`fabric`, which must be on `PATH`.
+
+**The one manual step: approving the command, once.** On first use Claude Code
+asks the person to approve the Fabric plugin's command. It runs a command source
+only after the person has reviewed the exact command and accepted it, and it
+refuses the acceptance from anywhere but the person's own terminal (inside a
+coding session included). So after the setup `init` hands the terminal to
+`claude plugin install`, where the command is shown and the person answers.
+Without a terminal, or without `claude` on `PATH`, `init` prints the line to run
+from the project folder instead:
+
+```
+claude plugin install fabric-<id suffix>@fabric-<id suffix> --scope local
+```
+
+(`<id suffix>` is the last eight letters and digits of the project id; `init`
+and the Connect dialog print the line with it filled in. When `claude` was not
+on `PATH`, `init` also prints the preceding
+`claude plugin marketplace add <marketplace folder> --scope local`, because the
+settings alone do not make the `claude plugin` commands see the marketplace.)
+Until it is approved, the plugin is declared and not loaded. A changed command (a
+new CLI path after a self-update of the kept copy, say) has to be approved again.
+
+**What is in the plugin.** From the project's instructions at the current pin
+(the pinned commit for a repository project, the published digest for an
+uploaded one):
+
+| Instructions | Plugin |
+|---|---|
+| `.claude/skills/<name>/**` (or `Skills/<name>/**`) | `skills/<name>/**` |
+| `.claude/agents/<file>.md` | `agents/<file>.md` |
+| `.claude/commands/**` | `commands/**` |
+| `CLAUDE.md`, else `AGENTS.md` | a `SessionStart` hook that hands it to the session as context, and `instructions/<file>` |
+| (generated) | `.claude-plugin/plugin.json`, `.mcp.json` (the project's MCP gateway), and the skill `fabric-living-memory` |
+
+Everything else in the instructions (settings, rules, scripts, knowledge
+files) has no place in a plugin and is left out. A memory file longer than
+10,000 characters, which is what a session start can carry, is cut at a line
+break with a notice that says where the whole file is
+(`instructions/CLAUDE.md` inside the plugin); the hook never hands Claude Code
+more than it keeps. The `fabric-living-memory` skill lists the project's write
+folders and how each lands, and tells the agent to write memory only there.
+
+`render` is deterministic: the same pin and the same write folders are the same
+bytes, so Claude Code's hash-based plugin version does not move without a
+reason. Each pin has its own folder, `<cache>/plugins/<project>/<pin>`, written
+whole in a temporary folder and renamed into place; file contents are cached
+by blob id (or sha256) so an unchanged file is not fetched again, and a cache
+file that does not match its id is ignored. Claude Code runs it at install and
+once per session, so a change to the instructions reaches the next session.
+
+**`fabric instructions render --project <id> [--base-url <origin>] [--org <slug>] [--target claude-code|codex] [--out <dir>] [--dest <dir>] [--hook]`**
+prints the plugin's absolute path as the only line on stdout and exits 0. On any
+failure (a repository that is unavailable, a file list the server calls
+incomplete, not signed in) it prints the reason on stderr and exits non-zero,
+which is what makes Claude Code keep the version it has. A partial file list is
+a failure, never a plugin without a skill.
+
+**Codex.** `init --tool codex` renders the plugin into
+`~/.codex/plugins/<name>` (`plugin.json`, `skills/`, `mcp.json`, no hooks),
+lists it as a `local` plugin in the personal marketplace
+`~/.agents/plugins/marketplace.json` (merged: other entries and the file's own
+name are kept, and a file that is not a marketplace is refused untouched), and
+writes `.codex/hooks.json` with a `SessionStart` hook that re-renders the plugin
+and runs `fabric memory pull --flush`. Install the plugin from Codex's plugin
+browser if it is not on yet, and trust the project hook once with `/hooks`.
+Codex has no plugin slot for always-on text, so `init` and the render hook write
+`AGENTS.override.md` at the project root, kept out of commits: the tracked
+`AGENTS.md` first and then the instructions, so the override never hides the
+tracked file. A file at that path that Fabric did not write is left alone, and
+nothing is written when the instructions have no `CLAUDE.md` or `AGENTS.md`.
+Codex has no end-of-turn hook, so files written during a session are delivered
+by the next session start, or sooner by the agent calling the
+`fabric_memory_write` MCP tool.
+
+#### `fabric memory pull|push|status [--project <id>] [--dest <dir>] [--hook]`
+
+The memory mirror. Living Memory's **write folders** (a project admin names
+them in the Context tab; each lands as a pull request or, per folder, as a
+direct commit) appear in the working tree as plain files at their
+repository-relative paths, so a skill that says `docs/ai/spec.md` works as
+written. Fabric commits the files with the repository integration's own
+credential: the working tree needs no clone and no git credential. It needs a
+sign-in with the `memory:write` permission, which a new `init` asks for
+(sign in again if an older sign-in lacks it).
+
+The commands run in a folder `init` set up, or below one: `--dest` names where
+to start looking, the project is the one recorded in `.fabric/project.json`
+there, and a folder that no `init` marked is refused.
+
+- **`pull`** settles anything sent earlier, then lists each folder
+  (`GET .../memory/files`, paged) and fetches the files that changed
+  (`GET .../memory/file`), verifying each against the hash the server lists. It
+  records `{path, blobOid, contentHash}` for each in `.fabric/memory.lock`.
+  `--accept-remote <path>` takes the server's version of one file; `--flush`
+  pushes first (what Codex's session hook does).
+- **`push`** sends the difference between the tree and the lock: a new file
+  without `ifMatchOid` (create-only), a changed one with the lock's blob, a
+  deleted one with it too. One write per folder (and per fifty files). Content
+  over about 2.5 MiB in total is staged through signed upload URLs instead of
+  sent inline. `--message` sets the commit message (default: the date and the
+  count). The write is submitted, not awaited.
+- **`status`** asks how each pending write ended and reports it. A commit is
+  folded into the lock (the file counts as the server's); a pull request is
+  reported with its link until it is merged and the sync has read it; a
+  conflict (with the blob now at each path), a refusal or a failure is reported
+  until the files are back in step or `--clear` dismisses it. The next `pull`
+  does the same before it pulls.
+
+What the mirror never does: overwrite or delete a file whose bytes differ from
+the lock's (it says `kept` and which file); write a path that your repository
+tracks with git (it says to use git); write a path with a dot-prefixed segment
+or one that is not text; or read anything outside the write folders. It adds the
+write folders and `.fabric/` to `.git/info/exclude`, so they stay out of your
+commits. A write that is a pull request is invisible to Living Memory until it
+is merged, and the mirror keeps your local file in the meantime.
+
+**`--hook`.** Both `pull` and `push` can run as hooks: they never exit
+non-zero, stop at one absolute deadline (14 s), print at most one line (counts
+and a folder, never a file's content) and exit once it is written. A turn that
+changed nothing costs no request at all (`push` reuses the folders the lock
+remembers and settles nothing when nothing is pending).
 
 ### `fabric instructions doctor [--project <id>] [--base-url <origin>] [--dest <dir>] [--org <slug>] [--probe-network] [--format text|json]`
 

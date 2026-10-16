@@ -1,5 +1,5 @@
 import { db } from "@repo/database";
-import { type NextRequest, NextResponse } from "next/server";
+import { after, type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isParlumeServiceRequestAuthorized, streamTokenDigest } from "../lib";
 
@@ -69,6 +69,18 @@ export async function POST(request: NextRequest) {
 	});
 	if (!verified) {
 		return NextResponse.json({ error: "Invalid stream" }, { status: 401 });
+	}
+	// The bot has just been admitted: warm what its first question will need
+	// once this response is on its way. A reconnect of the same meeting does
+	// not repeat it.
+	if (session.status === "JOINING") {
+		const origin = request.nextUrl.origin;
+		// Loaded here so the Temporal client stays out of this route's
+		// start-up, which every reconnect pays.
+		after(async () => {
+			const { warmParlumeRuntime } = await import("../warm");
+			await warmParlumeRuntime({ origin, sessionId: session.id });
+		});
 	}
 	return NextResponse.json({
 		valid: true,

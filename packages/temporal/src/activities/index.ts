@@ -256,6 +256,7 @@ export * from "./chat-activities";
 export {
 	assertSharedPlansNotSpentActivity,
 	estimatePlanPoolResetActivity,
+	notifyPlanWaitWorkStoppedActivity,
 } from "./chatgpt-plan-wait";
 // Code-Based Project Setup activities (GitHub MCP + orchestrator → docs)
 export * from "./code-based-setup";
@@ -452,6 +453,7 @@ export * from "./publishing-planning";
 export * from "./publishing-refine";
 export * from "./parlume";
 export * from "./parlume-notes";
+export * from "./parlume-warmup";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
 export * from "./publishing-webinar-script";
@@ -1181,6 +1183,10 @@ export * from "./instruction-proposal-branches";
 // ./lib/instruction-direct-commit), so `export *` registers exactly its
 // readiness and commit activities.
 export * from "./instruction-direct-commit";
+// Living Memory writes (ADR-022). The module exports only activities (its
+// helpers live in ./lib/memory-write-*), so `export *` registers exactly its
+// run, record, report and sync-kick activities.
+export * from "./memory-write";
 // Automatic repository sync poll (spec §6.1, §8.2). Named, so a future
 // export of that module cannot become a schedulable activity by accident.
 export {

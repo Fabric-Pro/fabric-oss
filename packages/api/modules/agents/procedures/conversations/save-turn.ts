@@ -11,9 +11,9 @@ import { INPUT_BOUNDS, idArray } from "../../../../lib/zod-bounds";
 import {
 	Permissions,
 	requireInputOrgPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolvedOrganizationId } from "./resolved-organization";
 import { MessageSchema, maybeStripReasoning } from "./update-conversation";
 
 /**
@@ -38,22 +38,6 @@ const ExecutionRecordSchema = z
 
 /** A turn is the question, any answered clarifications, and the reply. */
 const MAX_TURN_MESSAGES = 200;
-
-/**
- * Refuses a request that resolved no organization. The middleware has already
- * refused it; checked again so the queries below can never run without an
- * organization filter.
- */
-function requireOrganizationResolved(
-	organizationId: string | undefined,
-): string {
-	if (typeof organizationId !== "string" || organizationId.length === 0) {
-		throw new ORPCError("FORBIDDEN", {
-			message: "Saving to a conversation requires an organization",
-		});
-	}
-	return organizationId;
-}
 
 /**
  * Maps the save's refusals: a conversation or turn outside the caller's
@@ -123,9 +107,7 @@ export const saveTurn = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId = requireOrganizationResolved(
-			resolveOrganizationId(input.organizationId, context.session),
-		);
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const result = await saveConversationTurn({
@@ -170,9 +152,7 @@ export const updateSettings = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const organizationId = requireOrganizationResolved(
-			resolveOrganizationId(input.organizationId, context.session),
-		);
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			await updateConversationSettings({

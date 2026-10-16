@@ -115,17 +115,46 @@ function readProject(projectId: string) {
 	]);
 }
 
+interface CompanyContextRetrievalInput {
+	projectId: string;
+	userId: string;
+	documentType: string;
+}
+
+/**
+ * One company context entry with the source it came from, for a caller that
+ * records where each entry came from (a Proposal's analysis evidence, Fizzy
+ * #2946). The id and name stay beside the text, never inside it.
+ */
+interface CompanyContextSourcedEntry {
+	/** The vendor-marked entry, exactly as {@link retrieveCompanyContextEntries} returns it. */
+	text: string;
+	/** The company context source the text came from. */
+	sourceId: string;
+	/** The source's one-line label. */
+	sourceName: string;
+}
+
 /**
  * The company context entries for one generation run, or none. Never throws,
  * and gives up `COMPANY_RETRIEVAL_TIMEOUT_MS` after it starts: a hung read,
  * embedding call or search must not hold, or fail, the activity the project
  * entries ride in.
  */
-export async function retrieveCompanyContextEntries(input: {
-	projectId: string;
-	userId: string;
-	documentType: string;
-}): Promise<string[]> {
+export async function retrieveCompanyContextEntries(
+	input: CompanyContextRetrievalInput,
+): Promise<string[]> {
+	const entries = await retrieveCompanyContextSourcedEntries(input);
+	return entries.map((entry) => entry.text);
+}
+
+/**
+ * {@link retrieveCompanyContextEntries} with each entry's source id and name
+ * kept beside it: the same entries, in the same order, under the same rules.
+ */
+export async function retrieveCompanyContextSourcedEntries(
+	input: CompanyContextRetrievalInput,
+): Promise<CompanyContextSourcedEntry[]> {
 	const { projectId, userId } = input;
 	const documentType = input.documentType.toUpperCase();
 	const intent = COMPANY_CONTEXT_INTENTS[documentType];
@@ -199,5 +228,9 @@ export async function retrieveCompanyContextEntries(input: {
 		projectId,
 		logContext: { projectId, documentType },
 	});
-	return entries.map((entry) => entry.text);
+	return entries.map(({ text, sourceId, sourceName }) => ({
+		text,
+		sourceId,
+		sourceName,
+	}));
 }

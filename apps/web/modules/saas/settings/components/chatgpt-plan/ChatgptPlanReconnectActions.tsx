@@ -1,6 +1,7 @@
 "use client";
 
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import { isFullBleedRoute } from "@saas/shared/lib/shell-layout";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import { Button } from "@ui/components/button";
@@ -49,7 +50,7 @@ export function ChatgptPlanReconnectActions({
 				{showSettingsLink && activeOrganization?.slug ? (
 					<Button asChild size="sm" variant="link">
 						<Link
-							href={`/app/${activeOrganization.slug}/settings/account/ai-providers`}
+							href={`/app/${activeOrganization.slug}/${PERSONAL_AI_PROVIDERS_PATH}`}
 						>
 							{t("openSettings")}
 						</Link>

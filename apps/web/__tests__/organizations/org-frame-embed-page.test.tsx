@@ -10,58 +10,151 @@ vi.mock("next/headers", () => ({ headers: vi.fn(async () => new Map()) }));
 // Session's active org is a DIFFERENT org (as if another tab switched) — the
 // page must ignore it and resolve against the URL slug instead.
 const getSessionMock = vi.fn(async () => ({
-	user: { id: "u1" },
+	user: { id: "u1", email: "u1@example.com" },
 	session: { activeOrganizationId: "org-other" },
 }));
 vi.mock("@repo/auth", () => ({
 	auth: { api: { getSession: getSessionMock } },
 }));
 
-const getFrameByIdMock = vi.fn(async () => ({ document: { slides: [] } }));
-vi.mock("@repo/database", () => ({ getFrameById: getFrameByIdMock }));
+const getAccessibleFrameByIdMock = vi.fn(
+	async (_input: unknown): Promise<Record<string, unknown> | null> => ({
+		userId: "u1",
+		document: { slides: [] },
+	}),
+);
+const getFrameByIdMock = vi.fn(async (_input: unknown) => null);
+vi.mock("@repo/database", () => ({
+	getAccessibleFrameById: getAccessibleFrameByIdMock,
+	getFrameById: getFrameByIdMock,
+}));
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getActiveOrganization: vi.fn(async () => null),
 }));
 
+const rendererProps: Array<Record<string, unknown>> = [];
 vi.mock("@saas/frames/components/FrameRenderer", () => ({
-	FrameRenderer: () => null,
+	FrameRenderer: (props: Record<string, unknown>) => {
+		rendererProps.push(props);
+		return null;
+	},
 }));
 
 const PAGE =
 	"../../app/(saas)/app/(organizations)/[organizationSlug]/frames/[frameId]/embed/page";
 
+async function renderPage() {
+	const module = await import(PAGE);
+	const element = await module.default({
+		params: Promise.resolve({
+			organizationSlug: "acme",
+			frameId: "f1",
+		}),
+		searchParams: Promise.resolve({}),
+	});
+	element.type(element.props);
+}
+
 describe("org frame embed page", () => {
 	beforeEach(() => {
 		notFoundMock.mockClear();
+		getAccessibleFrameByIdMock.mockClear();
 		getFrameByIdMock.mockClear();
-	});
-
-	it("resolves the frame against the URL slug's org, not the shared session", async () => {
-		vi.mocked(getActiveOrganization).mockResolvedValueOnce({
+		rendererProps.length = 0;
+		vi.mocked(getActiveOrganization).mockResolvedValue({
 			id: "org-acme",
 			slug: "acme",
 		} as any);
+	});
 
-		const module = await import(PAGE);
-		await module.default({
-			params: Promise.resolve({
-				organizationSlug: "acme",
-				frameId: "f1",
-			}),
-			searchParams: Promise.resolve({}),
-		});
+	it("resolves the frame against the URL slug's org, not the shared session", async () => {
+		await renderPage();
 
 		expect(getActiveOrganization).toHaveBeenCalledWith("acme");
 		// The XOR tenant filter must use the slug's org (org-acme), never the
 		// session's stale active org (org-other).
-		expect(getFrameByIdMock).toHaveBeenCalledWith(
+		expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				id: "f1",
 				userId: "u1",
+				userEmail: "u1@example.com",
 				organizationId: "org-acme",
 			}),
 		);
 		expect(notFoundMock).not.toHaveBeenCalled();
 	});
+
+	it("answers not found for a frame the viewer may not open", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValueOnce(null);
+
+		await expect(renderPage()).rejects.toThrow("NOT_FOUND");
+	});
+
+	it("keeps the viewer's own loose frame on the historical renderer", async () => {
+		await renderPage();
+
+		expect(rendererProps[0]).toMatchObject({
+			strictSandbox: false,
+			allowScripts: true,
+		});
+	});
+
+	it("renders somebody else's loose frame in the strict sandbox", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValueOnce({
+			userId: "someone-else",
+			document: { slides: [] },
+		});
+
+		await renderPage();
+
+		expect(rendererProps[0]).toMatchObject({ strictSandbox: true });
+	});
+
+	it("draws a page an unattended run wrote without its scripts, even the viewer's own", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValueOnce({
+			userId: "u1",
+			sourceRunType: "workflow",
+			document: { slides: [] },
+		});
+
+		await renderPage();
+
+		expect(rendererProps[0]).toMatchObject({
+			strictSandbox: true,
+			allowScripts: false,
+		});
+	});
+
+	it("leaves the scripts of a page written in a chat alone", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValueOnce({
+			userId: "u1",
+			sourceRunType: "direct-chat",
+			surface: "workspace",
+			document: { slides: [] },
+		});
+
+		await renderPage();
+
+		expect(rendererProps[0]).toMatchObject({ allowScripts: true });
+	});
+
+	it.each([
+		["belongs to a project", { projectId: "p1" }],
+		["lives on the workspace surface", { surface: "workspace" }],
+		["lives on the artifact surface", { surface: "artifact" }],
+	])(
+		"renders a frame that %s in the strict sandbox",
+		async (_label, extra) => {
+			getAccessibleFrameByIdMock.mockResolvedValueOnce({
+				userId: "u1",
+				document: { slides: [] },
+				...extra,
+			});
+
+			await renderPage();
+
+			expect(rendererProps[0]).toMatchObject({ strictSandbox: true });
+		},
+	);
 });

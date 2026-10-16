@@ -225,6 +225,8 @@ import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
 import { printOutput } from "../../lib/output.js";
 import { isPlainOrigin } from "../../lib/shell-words.js";
 import { takeUpgradeNotice } from "../../lib/user-agent.js";
+import { runPluginInit } from "./init-plugin.js";
+import { registerRenderCommand } from "./render.js";
 
 /**
  * The whole of hook mode, end to end, including the bundle download.
@@ -323,6 +325,8 @@ export function buildInstructionsCommand(): Command {
 	const instructions = new Command("instructions").description(
 		"Keep a checkout current with a project's published coding instructions",
 	);
+
+	registerRenderCommand(instructions);
 
 	// Started by the session hook, detached, when it had no time left for
 	// the kept copy's daily update (`startBackgroundSelfUpdate`). Not for
@@ -503,7 +507,7 @@ export function buildInstructionsCommand(): Command {
 	instructions
 		.command("init")
 		.description(
-			"Set this checkout up for a project's coding instructions: clone its repository into an empty folder, and write the session hook for each coding tool found",
+			"Set this folder up for a project: its coding instructions as a plugin for each coding tool found (no clone), and its memory folders mirrored as files. Use --clone to work on the instructions' own repository",
 		)
 		.option("--project <id>", PROJECT_HELP)
 		.option("--base-url <origin>", BASE_URL_HELP)
@@ -531,6 +535,14 @@ export function buildInstructionsCommand(): Command {
 			"Also install a Stop hook that asks, once per session after the assistant has edited files, whether a mistake from the session should become a team lesson",
 		)
 		.option(
+			"--plugin",
+			"Deliver the instructions as a coding-tool plugin built on demand, with no clone (the default, unless --clone is given or this folder already is a clone of the instructions' repository)",
+		)
+		.option(
+			"--no-plugin",
+			"Set the folder up the clone way (a copy or checkout of the instructions and a session hook) instead of as a plugin",
+		)
+		.option(
 			"--no-mcp",
 			"Do not register the project's MCP server with the coding tools found",
 		)
@@ -543,12 +555,48 @@ export function buildInstructionsCommand(): Command {
 				reportOnly?: boolean;
 				lessons?: boolean;
 				clone?: boolean | string;
+				plugin?: boolean;
 				mcp?: boolean;
 			},
 		) {
 			// Never hook mode: `init` is run by a person, so its failures
 			// are real failures with real exit codes.
 			await run({ ...opts, hook: false }, "init", async () => {
+				const cloneMode =
+					opts.clone !== undefined ||
+					opts.apply ||
+					opts.reportOnly ||
+					opts.lessons ||
+					opts.plugin === false;
+				if (opts.plugin && cloneMode) {
+					throw new CliFailure(
+						"--plugin sets the project up without a copy of its instructions, so it cannot be combined with --clone, --apply, --report-only, --lessons or --no-plugin.",
+						2,
+					);
+				}
+				// A bare `init` is the plugin: no clone. Only a request for a
+				// clone, or a folder that already is one, keeps the clone setup.
+				if (!cloneMode) {
+					const bound = await withProject(
+						{ ...opts, hook: false },
+						"init",
+					);
+					if (
+						opts.plugin ||
+						!(await insideInstructionsCheckout(bound))
+					) {
+						return runPluginInit({
+							project: bound.project,
+							origin: deploymentOrigin(bound),
+							org: bound.org,
+							tool: opts.tool,
+							dest: opts.dest,
+							mcp: opts.mcp,
+							format: outputFormatFor(this),
+						});
+					}
+					return runInit(bound, outputFormatFor(this));
+				}
 				// A new folder has no checkout to find the project from.
 				if (
 					typeof opts.clone === "string" &&
@@ -3390,6 +3438,33 @@ async function cloneProjectRepository(
 		deadline: gitDeadline(),
 		remote: opts.remote,
 	});
+}
+
+/**
+ * Is the folder `init` runs in already set up the clone way: a copy of an
+ * uploaded project's instructions (it has the sync lock), or a clone of the
+ * instructions' repository, at its folder or elsewhere in it? Those keep the
+ * clone setup, so a developer who works on the instructions there is not
+ * moved to the plugin. Anywhere else, a bare `init` is the plugin.
+ */
+async function insideInstructionsCheckout(
+	opts: CommonOptions & { project: string },
+): Promise<boolean> {
+	const destination = await resolveExistingRoot(destinationOf(opts));
+	if ((await readLock(destination)) !== null) {
+		return true;
+	}
+	const guard = new SourceGuard(destination, opts.remote);
+	await fetchPublished(
+		instructionsClient(opts, SYNC_TIMEOUT_MS),
+		opts,
+		undefined,
+		guard,
+	);
+	return (
+		guard.checkout?.class === "matching" ||
+		guard.checkout?.class === "unmapped"
+	);
 }
 
 function toHookTool(tool: string): InstructionsHookTool {

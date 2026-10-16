@@ -4,22 +4,18 @@ import { parseOutline } from "@repo/utils/glossy/outline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
-import { cn } from "@ui/lib";
 import { Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useId, useMemo, useRef } from "react";
 import { fromMarkdown } from "../../lib/diff-utils";
 import { isDocumentGenerationStale } from "../../lib/document-generation-timestamp";
-import { advancedExtensions } from "../../lib/tiptap-extensions-advanced";
+import { createAdvancedExtensions } from "../../lib/tiptap-extensions-advanced";
 import { DocumentGenerationProgress } from "../DocumentGenerationProgress";
 import "../DocumentEditor.css";
-
-/**
- * The wrapper class of a Proposal's rendered Main in artifact mode, worn by
- * this pane and by the editor's container. `DocumentEditor.css` scopes the
- * larger type and the readable column to it.
- */
-export const PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS = "proposal-artifact";
+import {
+	type ProposalThemeRootProps,
+	ProposalThemeStyle,
+} from "./use-proposal-theme";
 
 /**
  * How many whole sections a live preview holds, by the rule the worker cuts
@@ -42,6 +38,17 @@ export function countLiveSections(markdown: string): number {
 	return candidates.filter((heading) => heading.level === level).length;
 }
 
+/**
+ * The document editor's read-only extensions, stat tiles included so a
+ * Proposal's tiles draw here as they do in the editor. Built once: the editor
+ * reads its extensions when it is created.
+ */
+const LIVE_SECTION_EXTENSIONS = createAdvancedExtensions({
+	projectId: null,
+	documentId: null,
+	statTiles: true,
+});
+
 function toEditorHtml(markdown: string): string {
 	try {
 		return fromMarkdown(markdown);
@@ -57,11 +64,20 @@ function toEditorHtml(markdown: string): string {
  * draw as diagrams. Each live write carries the whole preview so far, and
  * replacing the content in place keeps the sections already on screen (and
  * their diagrams) instead of rebuilding the editor on every write.
+ *
+ * With `themeRootProps` the document sits on the Proposal theme's paper, the
+ * way the editor's content does once the run has finished (Fizzy #2946).
  */
-function ReadOnlyDocument({ markdown }: { markdown: string }) {
+function ReadOnlyDocument({
+	markdown,
+	themeRootProps,
+}: {
+	markdown: string;
+	themeRootProps?: ProposalThemeRootProps;
+}) {
 	const html = useMemo(() => toEditorHtml(markdown), [markdown]);
 	const editor = useEditor({
-		extensions: advancedExtensions,
+		extensions: LIVE_SECTION_EXTENSIONS,
 		content: html,
 		editable: false,
 		immediatelyRender: false,
@@ -79,11 +95,12 @@ function ReadOnlyDocument({ markdown }: { markdown: string }) {
 		editor.commands.setContent(html, { emitUpdate: false });
 	}, [editor, html]);
 
-	return (
+	const content = (
 		<div className="prose prose-sm max-w-none dark:prose-invert">
 			<EditorContent editor={editor} />
 		</div>
 	);
+	return themeRootProps ? <div {...themeRootProps}>{content}</div> : content;
 }
 
 export type ProposalLiveSectionsProps = {
@@ -101,6 +118,11 @@ export type ProposalLiveSectionsProps = {
 	/** Starts the generation again; absent for readers who cannot. */
 	onRetry?: () => void;
 	isRetrying?: boolean;
+	/**
+	 * The Proposal theme's root, for the document itself (Fizzy #2946);
+	 * absent while the theme is off.
+	 */
+	themeRootProps?: ProposalThemeRootProps;
 };
 
 /**
@@ -127,6 +149,7 @@ export function ProposalLiveSections({
 	updatedAt,
 	onRetry,
 	isRetrying = false,
+	themeRootProps,
 }: ProposalLiveSectionsProps) {
 	const t = useTranslations("projects.proposalArtifactPage.live");
 	const previousLabelId = useId();
@@ -142,14 +165,18 @@ export function ProposalLiveSections({
 		updatedAt,
 	);
 
+	// The pane is the desk and only the document goes on the theme's paper:
+	// the progress card, the "writing next" line, the previous-version label
+	// and the new-document skeleton are the app's own chrome about the run,
+	// not part of what the client will read, so they keep the app's colours
+	// around the paper. The dimming of a previous version wraps the paper,
+	// so it dims as a whole.
 	return (
 		<div
-			className={cn(
-				"h-full overflow-y-auto bg-background",
-				PROPOSAL_ARTIFACT_TYPOGRAPHY_CLASS,
-			)}
+			className="h-full overflow-y-auto bg-background"
 			data-testid="proposal-live-sections"
 		>
+			{themeRootProps && <ProposalThemeStyle />}
 			<output aria-live="polite" className="sr-only">
 				{sectionCount > 0
 					? t("sectionsReady", { count: sectionCount })
@@ -158,7 +185,10 @@ export function ProposalLiveSections({
 
 			{live ? (
 				<>
-					<ReadOnlyDocument markdown={live} />
+					<ReadOnlyDocument
+						markdown={live}
+						themeRootProps={themeRootProps}
+					/>
 					<div className="flex flex-col items-center gap-3 px-6 pb-10 text-muted-foreground text-sm">
 						<p className="flex items-center gap-2">
 							<Loader2Icon
@@ -217,7 +247,10 @@ export function ProposalLiveSections({
 								{t("previousVersion")}
 							</p>
 							<div className="opacity-60">
-								<ReadOnlyDocument markdown={saved} />
+								<ReadOnlyDocument
+									markdown={saved}
+									themeRootProps={themeRootProps}
+								/>
 							</div>
 						</section>
 					) : (

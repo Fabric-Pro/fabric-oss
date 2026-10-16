@@ -7,11 +7,13 @@
  * the generation activity, the plan, visuals and analysis activities and the
  * analysis workflow meet at the shapes below.
  *
- * Workflow-safe: imported by workflow code, so this module holds plain types
- * and string constants only. No I/O, no Prisma imports, and its one import is
- * type-only.
+ * Workflow-safe: imported by workflow code, so this module holds plain types,
+ * constants and pure string functions only. No I/O, no Prisma imports, no
+ * Node built-ins; its only runtime import is the dependency-free FNV-1a hash
+ * from `@repo/utils/fnv1a`.
  */
 
+import { fnv1aHex64 } from "@repo/utils/fnv1a";
 import type {
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 	PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
@@ -52,6 +54,15 @@ export const DOCUMENT_GENERATION_STALE = "DOCUMENT_GENERATION_STALE";
  * parents can branch on it without a patch marker.
  */
 export const DOCUMENT_GENERATION_SUPERSEDED = "DOCUMENT_GENERATION_SUPERSEDED";
+
+/**
+ * `ApplicationFailure.type` for a Main that repeats the wording of an
+ * internal answer its prompt carried as a settled decision (Fizzy #2946).
+ * Non-retryable: a retry renders the same prompt. The generation activity
+ * raises it with a message that names no answer, finding or text, so the
+ * child's generic failure handling can record it on the document as it is.
+ */
+export const RESPONSE_ECHOED = "RESPONSE_ECHOED";
 
 // =============================================================================
 // Prompts
@@ -332,6 +343,67 @@ export function proposalAnalysisWorkflowId(
 	return `proposal-analysis-${documentId}-${liveRunId}`;
 }
 
+// =============================================================================
+// Source manifest (Fizzy #2946)
+// =============================================================================
+
+/**
+ * What one retrieval string is: a project context row (with its type), a
+ * company context source, the injected project summary, or anything else
+ * (conversation bundles, and every string no row stands for). The same names
+ * the stored manifest uses.
+ */
+export const PROPOSAL_SOURCE_KINDS = [
+	"projectContext",
+	"company",
+	"summary",
+	"other",
+] as const;
+
+export type ProposalSourceKind = (typeof PROPOSAL_SOURCE_KINDS)[number];
+
+/**
+ * Where one retrieval string came from, in the order retrieval returned the
+ * strings. Ids and labels only travel here, never inside the strings, so
+ * nothing about them reaches the Main prompt. No text of the source travels
+ * here either: evidence is read from the source's current row when it is
+ * shown, so text later removed from a source never resurfaces from a
+ * manifest.
+ */
+export interface ProposalRetrievalSource {
+	kind: ProposalSourceKind;
+	/** The project context id, or the company context `sourceId`. */
+	id: string | null;
+	/** The project context type, for `projectContext`. */
+	contextType: string | null;
+	title: string | null;
+	/** The company context source's name, for `company`. */
+	sourceName: string | null;
+	/** {@link proposalSourceFingerprint} of the exact retrieval string. */
+	fingerprint: string;
+}
+
+/**
+ * `retrieveProjectContexts` asked for its source manifest: the same strings
+ * it returns otherwise, plus one manifest entry per string, in order.
+ */
+export interface ProjectContextsWithManifest {
+	contexts: string[];
+	manifest: ProposalRetrievalSource[];
+}
+
+/**
+ * A fingerprint of one retrieval string, exactly as it sits in the contexts
+ * array: two independently seeded FNV-1a passes plus the length. Retrieval
+ * computes it as it returns the string and the analysis run recomputes it on
+ * the string it finds at the aligned position, so a manifest entry is
+ * trusted only for the string it was written for. Not a section hash (those
+ * are `p1:`), and never a security boundary: the strings are the run's own.
+ */
+export function proposalSourceFingerprint(text: string): string {
+	return `fnv1a:${fnv1aHex64(text)}:${text.length}`;
+}
+
 /**
  * Input of `createProposalAnalysisRun`, called once the Main document is
  * saved. The activity reads the saved content and version back from the
@@ -359,6 +431,16 @@ export interface CreateProposalAnalysisRunInput {
 	 * receives them.
 	 */
 	contexts: string[];
+	/**
+	 * Where the retrieval strings at the END of `contexts` came from, one
+	 * entry per string, as `retrieveProjectContexts` reported them (Fizzy
+	 * #2946). The child prepends supplied, Slack, Teams and episodic context
+	 * after retrieval, so the activity aligns these to the tail and checks
+	 * each entry's fingerprint against the string at its position. Absent
+	 * for a direct-context run, a failed retrieval, and every run recorded
+	 * before manifests existed: every source is then `other`.
+	 */
+	retrievalManifest?: ProposalRetrievalSource[];
 }
 
 /**

@@ -462,6 +462,10 @@ export {
 	type MemberCascadeDeleteWorkflowOutput,
 	memberCascadeDeleteWorkflow,
 } from "./member-cascade-delete";
+// Living Memory write (ADR-022): one workflow per receipt, doing the git write
+// and recording how it ended. Named, like the sync: only the workflow function
+// belongs in the bundle's registry.
+export { memoryWriteWorkflow } from "./memory-write";
 // Monitoring workflows
 export {
 	acknowledgedSignal as monitoringAcknowledgedSignal,
@@ -536,6 +540,7 @@ export {
 } from "./organization-deletion";
 export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
 export { parlumeNotesWorkflow } from "./parlume-notes";
+export { parlumeWarmupWorkflow } from "./parlume-warmup";
 // QA pipeline-results sync (cards 1834/1688) — live pull of CI Test Runs into the
 // ingestion engine + RCA→BUG.
 export {

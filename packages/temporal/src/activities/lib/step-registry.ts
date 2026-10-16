@@ -15,6 +15,10 @@
  */
 
 import {
+	AGENT_TASK_NODE_TYPE,
+	PUBLISH_FRAME_NODE_TYPE,
+} from "../../lib/workflow-node-types";
+import {
 	EXTERNAL_WRITE_NODE_TYPES,
 	isExternalWriteNodeType,
 	isNonRetryableNodeType,
@@ -183,6 +187,22 @@ export const stepRegistry: Record<string, StepRegistryEntry> = {
 		load: async () => {
 			const mod = await import("./steps/mcp-tool");
 			return mod.executeMcpToolStep;
+		},
+	},
+
+	// Unattended agent steps
+	[AGENT_TASK_NODE_TYPE]: {
+		name: "Agent Task",
+		load: async () => {
+			const mod = await import("./steps/agent-task");
+			return mod.executeAgentTaskStep;
+		},
+	},
+	[PUBLISH_FRAME_NODE_TYPE]: {
+		name: "Publish Frame",
+		load: async () => {
+			const mod = await import("./steps/publish-frame");
+			return mod.executePublishFrameStep;
 		},
 	},
 

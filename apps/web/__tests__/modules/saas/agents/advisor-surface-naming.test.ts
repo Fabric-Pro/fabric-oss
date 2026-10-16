@@ -78,7 +78,7 @@ describe("Advisor surfaces no longer use retired names", () => {
 				.filter((line) => line.trim() === FEATURED_CARD_NAME),
 		).toHaveLength(1);
 		expect(view).toContain(
-			'const LOOM_AGENT_IDS = new Set(["fabric-workspace-assistant", "fabric-ai"]);',
+			'const LOOM_AGENT_IDS = new Set([FABRIC_AGENT_ID, "fabric-ai"]);',
 		);
 	});
 

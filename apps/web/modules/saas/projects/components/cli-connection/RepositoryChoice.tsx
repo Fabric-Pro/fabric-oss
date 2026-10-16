@@ -9,6 +9,7 @@ import { type CloneChoice, folderHint } from "./lib/agent-sign-in";
 export const REPOSITORY_STEP_TITLE = "Where's the repository?";
 
 const CHOICES: ReadonlyArray<{ value: CloneChoice; label: string }> = [
+	{ value: "plugin", label: "No clone (recommended)" },
 	{ value: "have", label: "Already cloned" },
 	{ value: "clone", label: "Clone it for me" },
 ];

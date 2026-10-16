@@ -54,7 +54,7 @@ export function AgentSignInSection({
 	checkout,
 }: AgentSignInSectionProps) {
 	const [tool, setTool] = useState<AgentId>("claude-code");
-	const [cloneChoice, setCloneChoice] = useState<CloneChoice>("have");
+	const [cloneChoice, setCloneChoice] = useState<CloneChoice>("plugin");
 
 	const oneLineSetupExists =
 		checkout?.discovery.status === "ready" && checkout.localSetup !== null;

@@ -57,7 +57,7 @@ vi.mock("@shared/lib/orpc-client", async () => {
 
 beforeEach(installBrowserStubs);
 
-const CLAUDE_CODE_LINE = `${INIT} --project ${PROJECT_ID} --tool claude-code`;
+const CLAUDE_CODE_LINE = `${INIT} --project ${PROJECT_ID} --tool claude-code --plugin`;
 
 describe("ConnectCliDialog — the tool picker", () => {
 	it("offers Claude Code, Codex, VS Code, Cursor and Other, in that order, as one tablist", async () => {
@@ -317,7 +317,7 @@ describe("ConnectCliDialog — the terminal steps for a repository project", () 
 		await user.click(screen.getByRole("tab", { name: "Codex" }));
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool codex`,
+			`${INIT} --project ${PROJECT_ID} --tool codex --plugin`,
 		);
 		expect(
 			screen.getByText(/trust this folder when asked/i),
@@ -337,8 +337,10 @@ describe("ConnectCliDialog — the terminal steps for a repository project", () 
 	});
 
 	it("says the hook fast-forwards the route's branch when the checkout is clean, and says so when it cannot", async () => {
+		const user = setupUser();
 		renderInstructions({ ...REPOSITORY_ROUTE, ref: "release/2" });
-
+		await setupLine();
+		await user.click(screen.getByRole("radio", { name: "Already cloned" }));
 		await setupLine();
 
 		const step = screen.getAllByRole("listitem")[2];
@@ -350,12 +352,15 @@ describe("ConnectCliDialog — the terminal steps for a repository project", () 
 });
 
 describe("ConnectCliDialog — where to run the line", () => {
-	it("offers to use the checkout the person already has, or to clone it, as a radio group", async () => {
+	it("offers the plugin, the checkout the person already has, or a clone, as a radio group, with the plugin chosen", async () => {
 		renderInstructions();
 		await setupLine();
 
 		const group = screen.getByRole("radiogroup", {
 			name: "Where's the repository?",
+		});
+		const plugin = within(group).getByRole("radio", {
+			name: "No clone (recommended)",
 		});
 		const have = within(group).getByRole("radio", {
 			name: "Already cloned",
@@ -364,8 +369,21 @@ describe("ConnectCliDialog — where to run the line", () => {
 			name: "Clone it for me",
 		});
 
-		expect(have).toBeChecked();
+		expect(plugin).toBeChecked();
+		expect(have).not.toBeChecked();
 		expect(clone).not.toBeChecked();
+	});
+
+	it("gives the checkout's own line, with no plugin flag, for a person who already cloned", async () => {
+		const user = setupUser();
+		renderInstructions();
+		await setupLine();
+
+		await user.click(screen.getByRole("radio", { name: "Already cloned" }));
+
+		expect((await setupLine()).textContent).toBe(
+			`${INIT} --project ${PROJECT_ID} --tool claude-code`,
+		);
 	});
 
 	it("moves the choice with the arrow keys", async () => {
@@ -390,8 +408,10 @@ describe("ConnectCliDialog — where to run the line", () => {
 	});
 
 	it("names the repository, and says to run it in the sync's root folder inside the clone", async () => {
+		const user = setupUser();
 		renderInstructions();
 		await setupLine();
+		await user.click(screen.getByRole("radio", { name: "Already cloned" }));
 
 		const step = screen.getAllByRole("listitem")[0];
 
@@ -401,8 +421,10 @@ describe("ConnectCliDialog — where to run the line", () => {
 	});
 
 	it("says to run it in the top folder of the clone when the instructions are not in a subfolder", async () => {
+		const user = setupUser();
 		renderInstructions({ ...REPOSITORY_ROUTE, rootPath: null });
 		await setupLine();
+		await user.click(screen.getByRole("radio", { name: "Already cloned" }));
 
 		const step = screen.getAllByRole("listitem")[0];
 
@@ -523,7 +545,7 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		expect(screen.queryByRole("radio")).not.toBeInTheDocument();
 		expect(screen.queryByText("Where's the repository?")).toBeNull();
 		expect(line.textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --plugin`,
 		);
 	});
 
@@ -539,16 +561,46 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		).not.toBeInTheDocument();
 	});
 
-	it("says the hook tells you when the instructions change, and does not claim to move a branch", async () => {
+	it("says the instructions arrive as a plugin and memory files reach the repository, and does not claim to move a branch", async () => {
 		renderInstructions({ kind: "upload" });
 		await setupLine();
 
 		const step = screen.getAllByRole("listitem")[1];
 
 		expect(step).toHaveTextContent(
-			"A sign-in page opens. After that, at each session start a hook tells you when the published instructions have changed.",
+			"A sign-in page opens. Then the setup asks you to approve the plugin's command once. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.",
 		);
 		expect(step.textContent).not.toMatch(/fast-forward/i);
+	});
+
+	it("gives the exact command that approves the plugin in Claude Code, once, in the person's own terminal", async () => {
+		renderInstructions({ kind: "upload" });
+		await setupLine();
+
+		expect(
+			screen.getByTestId("agent-sign-in-plugin-approval"),
+		).toHaveTextContent(
+			"claude plugin install fabric-trewrite@fabric-trewrite --scope local",
+		);
+		expect(screen.getAllByRole("listitem")[1]).toHaveTextContent(
+			/in your own terminal/i,
+		);
+	});
+
+	it("has no Claude Code approval command under Codex", async () => {
+		fetchMock.mockImplementation(async () =>
+			discoveryResponse(200, UNBAKED_DOCUMENT),
+		);
+		const user = setupUser();
+		renderInstructions({ kind: "upload" });
+		await setupLine();
+
+		await user.click(screen.getByRole("tab", { name: "Codex" }));
+		await setupLine();
+
+		expect(
+			screen.queryByTestId("agent-sign-in-plugin-approval"),
+		).not.toBeInTheDocument();
 	});
 
 	it("keeps the base URL, the project and the tool in one line for Codex", async () => {
@@ -562,7 +614,7 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		await user.click(screen.getByRole("tab", { name: "Codex" }));
 
 		expect((await setupLine()).textContent).toBe(
-			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool codex`,
+			`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool codex --plugin`,
 		);
 	});
 });
@@ -622,7 +674,7 @@ describe("ConnectCliDialog — what the deployment serves", () => {
 			const line = await setupLine();
 
 			expect(line.textContent).toBe(
-				`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code`,
+				`${INIT_WITH_BASE_URL} --project ${PROJECT_ID} --tool claude-code --plugin`,
 			);
 			expect(
 				screen.queryByTestId("agent-sign-in-line-unavailable"),

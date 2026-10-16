@@ -116,6 +116,11 @@ interface UserContext {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	/**
+	 * The chat conversation this work is done for, when there is one. Recorded
+	 * on the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
 }
 
 /**
@@ -203,6 +208,9 @@ export async function executePatternDelegated(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.conversationId
+						? { conversationId: userContext.conversationId }
+						: {}),
 					// The raw key goes to the Fabric AI server below.
 					excludeChatGptPlan: true,
 				},
@@ -448,6 +456,9 @@ export async function* executePatternDelegatedStream(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.conversationId
+						? { conversationId: userContext.conversationId }
+						: {}),
 					// The raw key goes to the Fabric AI server below.
 					excludeChatGptPlan: true,
 				},

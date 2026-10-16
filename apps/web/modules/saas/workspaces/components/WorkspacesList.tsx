@@ -1,234 +1,91 @@
 "use client";
 
+import { FrameCollection } from "@saas/frames/components/FrameCollection";
+import { useFrameAgentContext } from "@saas/frames/hooks/use-frame-agent-context";
 import {
-	useBasePath,
-	useEffectiveOrganizationId,
-} from "@saas/organizations/hooks";
-import { Spinner } from "@shared/components/Spinner";
-import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+	FrameListSchema,
+	shareScopeLabel,
+} from "@saas/frames/lib/frame-tool-types";
+import { useFabricToolQuery } from "@saas/mcp/lib/fabric-tool-client";
+import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { SearchInput } from "@ui/components/search-input";
-import { TooltipProvider } from "@ui/components/tooltip";
-import { cn } from "@ui/lib";
-import { PlusIcon, SearchIcon } from "lucide-react";
-import { useState } from "react";
-import { useDebounceValue } from "usehooks-ts";
-import { CreateWorkspaceDialog } from "./CreateWorkspaceDialog";
-import { WorkspaceCard } from "./WorkspaceCard";
+import { LayoutPanelTopIcon, SparklesIcon } from "lucide-react";
 import { WorkspacesHero } from "./WorkspacesHero";
 
-interface WorkspacesListProps {
-	/**
-	 * Organization ID for filtering workspaces.
-	 * - `string`: Show workspaces for this organization
-	 * - `null`: Show personal workspaces only (explicit personal context)
-	 * - `undefined`: Use the current organization context
-	 */
-	organizationId?: string | null;
-}
+const NEW_WORKSPACE_PROMPT = "Create a new Workspace that shows ";
 
+const WORKSPACE_CONTEXT = { surface: "workspace" } as const;
+
+/**
+ * The organization's Workspaces: pages Fabric Agent wrote, which the people of
+ * the organization open from here. A new Workspace is shared with the whole
+ * organization unless it is asked to stay private. Nothing on a page is built
+ * by us, so there is no form for a new one; "New workspace" opens Fabric Agent,
+ * and the agent makes the page. The list is read through Fabric's own tools, as
+ * an agent reads it.
+ */
 export function WorkspacesList({
-	organizationId: propOrgId,
-}: WorkspacesListProps) {
-	const organizationId = useEffectiveOrganizationId(propOrgId);
-	const queryClient = useQueryClient();
-	const [searchQuery, setSearchQuery] = useState("");
-	const [debouncedSearch] = useDebounceValue(searchQuery, 300);
-	const [statusFilter, setStatusFilter] = useState<
-		"all" | "ACTIVE" | "ARCHIVED"
-	>("ACTIVE");
-	const [showCreateDialog, setShowCreateDialog] = useState(false);
-
-	// Use proper context-aware basePath
-	const basePath = useBasePath() || "/app";
-
-	// Fetch workspaces
-	const { data, isLoading, refetch } = useQuery(
-		orpc.documentWorkspaces.list.queryOptions({
-			input: {
-				organizationId,
-				limit: 50,
-				offset: 0,
-				search: debouncedSearch || undefined,
-				status: statusFilter === "all" ? undefined : statusFilter,
-				includeShared: true,
-			},
-		}),
+	organizationSlug,
+}: {
+	organizationSlug: string;
+}) {
+	const openAgent = useFrameAgentContext(WORKSPACE_CONTEXT);
+	const list = useFabricToolQuery(
+		"fabric_list_frames",
+		{ surface: "workspace" },
+		{ schema: FrameListSchema },
 	);
 
-	// Archive mutation
-	const archiveMutation = useMutation({
-		mutationFn: async (workspaceId: string) => {
-			return orpc.documentWorkspaces.archive.call({ workspaceId });
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["documentWorkspaces"] });
-			refetch();
-		},
-	});
-
-	// Reactivate mutation
-	const reactivateMutation = useMutation({
-		mutationFn: async (workspaceId: string) => {
-			return orpc.documentWorkspaces.reactivate.call({ workspaceId });
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["documentWorkspaces"] });
-			refetch();
-		},
-	});
-
-	// Delete mutation
-	const deleteMutation = useMutation({
-		mutationFn: async (workspaceId: string) => {
-			return orpc.documentWorkspaces.delete.call({ workspaceId });
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["documentWorkspaces"] });
-			refetch();
-		},
-	});
-
-	const workspaces = data?.workspaces ?? [];
-
-	// Calculate counts
-	const allCount = workspaces.length;
-	const activeCount = workspaces.filter((w) => w.status === "ACTIVE").length;
-	const archivedCount = workspaces.filter(
-		(w) => w.status === "ARCHIVED",
-	).length;
-
-	const handleArchive = async (workspace: (typeof workspaces)[0]) => {
-		if (workspace.status === "ARCHIVED") {
-			await reactivateMutation.mutateAsync(workspace.id);
-		} else {
-			await archiveMutation.mutateAsync(workspace.id);
-		}
-	};
+	const startWorkspace = openAgent
+		? () => openAgent(NEW_WORKSPACE_PROMPT)
+		: undefined;
 
 	return (
 		<div className="space-y-8">
-			{/* Hero Section */}
-			<WorkspacesHero />
-
-			{/* Status Filter Pills */}
-			<div
-				data-onboarding-target="workspaces-status-filter"
-				className="flex flex-wrap justify-center gap-2"
-			>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("all")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "all"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					All ({allCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("ACTIVE")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "ACTIVE"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Active ({activeCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("ARCHIVED")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "ARCHIVED"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Archived ({archivedCount})
-				</button>
-			</div>
-
-			{/* Actions Bar */}
-			<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-				{/* Search */}
-				<div
-					data-onboarding-target="workspaces-search"
-					className="relative flex-1 max-w-md w-full"
-				>
-					<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-					<SearchInput
-						placeholder="Search workspaces..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						className="pl-9"
-					/>
-				</div>
-
-				<div className="flex gap-2 items-center">
-					{/* Create Button */}
-					<Button
-						data-onboarding-target="workspaces-new"
-						onClick={() => setShowCreateDialog(true)}
-					>
-						<PlusIcon className="h-4 w-4 mr-2" />
-						New Workspace
-					</Button>
-				</div>
-			</div>
-
-			{/* Workspaces Display */}
-			{isLoading ? (
-				<div className="flex items-center justify-center py-12">
-					<Spinner />
-				</div>
-			) : workspaces.length === 0 ? (
-				<div className="text-center py-12">
-					<p className="text-muted-foreground mb-4">
-						{searchQuery || statusFilter !== "ACTIVE"
-							? "No workspaces found matching your filters"
-							: "No workspaces yet. Create your first workspace to get started!"}
-					</p>
-					{!searchQuery && statusFilter === "ACTIVE" && (
-						<Button onClick={() => setShowCreateDialog(true)}>
-							<PlusIcon className="h-4 w-4 mr-2" />
-							Create Your First Workspace
+			<WorkspacesHero
+				actions={
+					startWorkspace ? (
+						<Button
+							data-onboarding-target="workspaces-new"
+							onClick={startWorkspace}
+						>
+							<SparklesIcon className="mr-2 size-4" aria-hidden />
+							New workspace
 						</Button>
-					)}
-				</div>
-			) : (
-				<TooltipProvider>
-					<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-						{workspaces.map((workspace) => (
-							<WorkspaceCard
-								key={workspace.id}
-								workspace={workspace}
-								basePath={basePath}
-								onArchive={() => handleArchive(workspace)}
-								onDelete={() =>
-									deleteMutation.mutate(workspace.id)
-								}
-							/>
-						))}
-					</div>
-				</TooltipProvider>
-			)}
+					) : undefined
+				}
+			/>
 
-			{/* Create Dialog */}
-			<CreateWorkspaceDialog
-				open={showCreateDialog}
-				onOpenChange={setShowCreateDialog}
-				organizationId={organizationId}
-				onSuccess={() => {
-					refetch();
-					setShowCreateDialog(false);
+			<FrameCollection
+				query={list}
+				cardLabel="Workspace"
+				loadingLabel="Loading workspaces"
+				errorMessage="The workspaces could not be loaded."
+				data-onboarding-target="workspaces-list"
+				empty={{
+					icon: (
+						<LayoutPanelTopIcon className="size-10" aria-hidden />
+					),
+					title: "No workspaces yet",
+					description:
+						"Describe the page you want, such as this week's delivery status or a board of open decisions, and Fabric Agent builds it, shares it with your organization and explains what it shows.",
+					action: startWorkspace ? (
+						<Button onClick={startWorkspace}>
+							<SparklesIcon className="mr-2 size-4" aria-hidden />
+							New workspace
+						</Button>
+					) : undefined,
 				}}
+				cardTarget={(frame) => ({
+					href: `/app/${organizationSlug}/workspaces/${frame.frameId}`,
+				})}
+				cardBadges={(frame) =>
+					frame.shareScope ? (
+						<Badge variant="outline">
+							{shareScopeLabel(frame.shareScope)}
+						</Badge>
+					) : null
+				}
 			/>
 		</div>
 	);

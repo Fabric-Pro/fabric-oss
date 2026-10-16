@@ -165,7 +165,7 @@ read one vocabulary rather than restating it.
 | --- | --- | --- |
 | Project context | `apps/web/modules/saas/context-sources/components/FileSourceTabContent.tsx` | `packages/utils/lib/context-upload.ts` |
 | Project wizard | `apps/web/modules/saas/projects/components/wizard/WizardFileUploader.tsx` | `packages/utils/lib/context-upload.ts` |
-| Workspace documents | `apps/web/modules/saas/workspaces/components/DocumentUploader.tsx` | `packages/utils/lib/workspace-document-upload.ts` |
+| Library documents | `apps/web/modules/saas/libraries/components/DocumentUploader.tsx` | `packages/utils/lib/workspace-document-upload.ts` |
 
 Both vocabularies compose from one shared core, `packages/utils/lib/document-format-core.ts`,
 which names the document formats extractable as AI context and projects them into

@@ -136,6 +136,9 @@ const {
 	isVendorContextEntry,
 } = await import("@repo/agent-types");
 const { companyContextReadyWhere } = await import("@repo/database");
+const { proposalSourceFingerprint } = await import(
+	"../../lib/proposal-artifact/types"
+);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -493,6 +496,94 @@ describe("retrieveProjectContexts — company context", () => {
 			"We rolled out scanning at a regional distributor.",
 		);
 		expect(vendor[1]).toContain("[Source: Title of src_services]");
+	});
+
+	describe("the source manifest (Fizzy #2946)", () => {
+		it("returns the strings alone when no manifest is asked for", async () => {
+			const result = await retrieveProjectContexts(PROPOSAL);
+
+			expect(Array.isArray(result)).toBe(true);
+			expect(result).toHaveLength(4);
+		});
+
+		it("returns the same strings with one entry per string: project rows with their id and type, company entries with their source id and name", async () => {
+			const strings = await retrieveProjectContexts(PROPOSAL);
+			const result = await retrieveProjectContexts({
+				...PROPOSAL,
+				includeSourceManifest: true,
+			});
+
+			// Ids and labels travel beside the strings: the strings are
+			// exactly what a caller without the manifest gets.
+			expect(result.contexts).toEqual(strings);
+			expect(
+				result.manifest.map((entry) => [
+					entry.kind,
+					entry.id,
+					entry.contextType,
+					entry.sourceName,
+				]),
+			).toEqual([
+				["projectContext", "ctx_1", "TEXT", null],
+				["projectContext", "ctx_2", "TEXT", null],
+				["company", "src_case_study", null, "Title of src_case_study"],
+				["company", "src_services", null, "Title of src_services"],
+			]);
+			// Each entry is fingerprinted on the final string at its position,
+			// vendor marker and all, and carries none of the string's text.
+			result.manifest.forEach((entry, i) => {
+				expect(entry.fingerprint).toBe(
+					proposalSourceFingerprint(result.contexts[i] ?? ""),
+				);
+				expect(entry).not.toHaveProperty("excerpt");
+			});
+		});
+
+		it("describes the injected project summary as the summary, with no id", async () => {
+			mocks.applyContextSummary.mockImplementation(
+				async (contexts: unknown[]) => [
+					{
+						id: "summary_1",
+						type: "PROJECT_SUMMARY",
+						content: "What the project is about [S1].",
+						score: 1,
+						sourceTitle: "Compressed project history (summary)",
+						metadata: { isSummary: true, summaryId: "summary_1" },
+					},
+					...contexts,
+				],
+			);
+
+			const result = await retrieveProjectContexts({
+				...PROPOSAL,
+				includeSourceManifest: true,
+			});
+
+			expect(result.contexts[0]).toBe("What the project is about [S1].");
+			expect(result.manifest[0]).toEqual(
+				expect.objectContaining({
+					kind: "summary",
+					id: null,
+					title: "Compressed project history (summary)",
+				}),
+			);
+			expect(result.manifest[1]?.kind).toBe("projectContext");
+		});
+
+		it("gives a guest author a manifest of the project entries only", async () => {
+			memberships = new Set();
+
+			const result = await retrieveProjectContexts({
+				...PROPOSAL,
+				includeSourceManifest: true,
+			});
+
+			expect(result.contexts).toEqual(PROJECT_ENTRIES);
+			expect(result.manifest.map((entry) => entry.kind)).toEqual([
+				"projectContext",
+				"projectContext",
+			]);
+		});
 	});
 
 	it("runs the company retrieval beside the project one, and still puts the project entries first", async () => {

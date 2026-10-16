@@ -26,6 +26,11 @@ export interface AnalyzeAndRouteInput {
 	history: Array<{ role: "user" | "assistant"; content: string }>;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
 	// SECURITY: Credentials are fetched internally by activities
 	// API keys are NOT passed in workflow inputs to avoid storing them in Temporal history
 	enabledMcpConfigIds?: string[] | null;
@@ -61,6 +66,11 @@ export interface CreateTaskPlanInput {
 	routingDecision: RoutingDecision;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
 	enabledMcpConfigIds?: string[] | null;
 	enabledAgentIds?: string[] | null;
 	executionMode: ExecutionMode;
@@ -245,6 +255,16 @@ export interface ExecuteMcpToolInput {
 	 * check, and with this set they raise the session too.
 	 */
 	requestRuntimeAuthority?: boolean;
+	/**
+	 * Proof from the turn's web route that the run acts for `userId` in
+	 * `organizationId`, which the Fabric MCP gateway requires of the agent
+	 * runtime for the workflow and frame tools. Minted by the route; carried
+	 * unread (`OrchestratorWorkflowInput.actingGrant`).
+	 */
+	actingGrant?: string;
+	/** The page the chat was opened from (`OrchestratorWorkflowInput`), for where a new page lands. */
+	launchWorkspaceId?: string;
+	launchSurface?: "artifact" | "workspace";
 	/** Letta agent ID for tool result caching */
 	lettaAgentId?: string | null;
 	/** Attached image URLs (fallback for image tools when not in args) */
@@ -373,6 +393,15 @@ export interface RuntimeAuthorityRequest {
 	providerDisplayName: string;
 	accessLevel: "READ" | "WRITE";
 	toolName: string;
+	/**
+	 * How far the approval reaches, so the prompt says what the person is
+	 * allowing: this one call (`call`), this one tool for the conversation
+	 * (`tool`), or, when absent, access to the whole provider for the
+	 * conversation.
+	 */
+	grantScope?: "call" | "tool";
+	/** For a `call`, its plain arguments in a line, so the person sees what runs. */
+	callSummary?: string;
 }
 
 export interface ExecuteAgentAsToolInput {

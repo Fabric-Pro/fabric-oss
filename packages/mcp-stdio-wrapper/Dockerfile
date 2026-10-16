@@ -111,10 +111,12 @@ COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 # also holds the pin for catalog rows seeded before it existed. 2.10.0 wraps
 # every tool result in untrusted-content delimiters, and imports keytar at
 # startup, which exits on this base image without libsecret-1-0.
+# The Twilio pin must match its catalog command in seed.ts; the Twilio launcher only runs for this preinstalled copy.
 RUN npm install -g \
     @azure-devops/mcp@2.8.0 \
     @modelcontextprotocol/server-github@latest \
     @playwright/mcp@0.0.76 \
+    @twilio-alpha/mcp@0.7.0 \
     && npm cache clean --force
 
 # Install Playwright OS dependencies (apt packages — must run before the USER

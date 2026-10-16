@@ -3,6 +3,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,22 +42,52 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 		await importOriginal<typeof import("@tanstack/react-query")>();
 	return {
 		...actual,
-		useQuery: vi.fn((options: { queryKey?: unknown[] }) => ({
-			data:
-				options?.queryKey?.[0] === "orchestrator-preferences"
-					? storedPreferences.current
-					: options?.queryKey?.[0] === "project-get"
-						? projectLookup.current
-						: options?.queryKey?.[0] === "chat-agent-selection"
-							? storedAgentSelection.current
-							: undefined,
-			isLoading: false,
-		})),
+		useQuery: vi.fn((options: { queryKey?: unknown[] }) => {
+			const isConversationDetail =
+				options?.queryKey?.[0] === "agents" &&
+				options.queryKey[2] === "detail";
+			return {
+				data: isConversationDetail
+					? conversationDetail.current
+					: options?.queryKey?.[0] === "orchestrator-preferences"
+						? storedPreferences.current
+						: options?.queryKey?.[0] === "project-get"
+							? projectLookup.current
+							: options?.queryKey?.[0] === "chat-agent-selection"
+								? storedAgentSelection.current
+								: undefined,
+				isLoading: isConversationDetail
+					? conversationDetail.loading
+					: false,
+				isError: isConversationDetail
+					? conversationDetail.failed
+					: false,
+				refetch: conversationDetail.refetch,
+			};
+		}),
 		// The drawer invalidates the conversation cache when a turn it started
 		// finishes, so the full page picks it up after an expand (#2040).
 		useQueryClient: vi.fn(() => queryClientMock),
 	};
 });
+
+/** The stored session the drawer was asked to reopen, as the server returns it. */
+const conversationDetail = vi.hoisted(() => ({
+	current: undefined as
+		| {
+				id: string;
+				title: string | null;
+				isOwn?: boolean;
+				messages: unknown[];
+				metadata: unknown;
+		  }
+		| null
+		| undefined,
+	loading: false,
+	/** The read failed for a reason other than the conversation being gone. */
+	failed: false,
+	refetch: vi.fn(),
+}));
 
 /** `projects.get` for a launch that carried only the project id (F46). */
 const projectLookup = vi.hoisted(() => ({
@@ -135,6 +166,8 @@ vi.mock("next/dynamic", async () => {
 		onStreamingChange?: (streaming: boolean) => void;
 		onProjectRemove?: () => void;
 		agentPickerCatalog?: string;
+		activeConversationId?: string | null;
+		activeConversation?: { id: string } | null;
 	}
 
 	function mockChat(engine: "direct" | "orchestrator") {
@@ -154,6 +187,8 @@ vi.mock("next/dynamic", async () => {
 			onStreamingChange,
 			onProjectRemove,
 			agentPickerCatalog,
+			activeConversationId,
+			activeConversation,
 		}: MockChatProps) {
 			const [mockInput, setMockInput] = React.useState(
 				initialInput ?? "",
@@ -189,6 +224,7 @@ vi.mock("next/dynamic", async () => {
 					<div>
 						attached code: {attachedCodeContext?.filePath ?? ""}
 					</div>
+					<textarea aria-label="Message Fabric Agent" />
 					<button
 						type="button"
 						onClick={() => onConversationCreated?.("conv_1")}
@@ -207,6 +243,12 @@ vi.mock("next/dynamic", async () => {
 					<div data-testid="picker-catalog">
 						{agentPickerCatalog ?? ""}
 					</div>
+					<div data-testid="chat-conversation-id">
+						{activeConversationId ?? ""}
+					</div>
+					<div data-testid="chat-conversation">
+						{activeConversation?.id ?? ""}
+					</div>
 				</div>
 			);
 		};
@@ -215,11 +257,109 @@ vi.mock("next/dynamic", async () => {
 	const MockDirectChat = mockChat("direct");
 	const MockOrchestratorChat = mockChat("orchestrator");
 
+	/** The history list: one button per kind of session the tests open. */
+	function MockHistory({
+		onSelect,
+		onDeleted,
+		onBack,
+	}: {
+		onSelect: (session: Record<string, unknown>) => void;
+		onDeleted: (id: string) => void;
+		onBack: () => void;
+	}) {
+		const session = (id: string, title: string, mode: string | null) => ({
+			id,
+			title,
+			metadata: mode ? { mode } : null,
+			isOwn: true,
+		});
+		return (
+			<div data-testid="mock-history">
+				<button
+					type="button"
+					onClick={() =>
+						onSelect(
+							session(
+								"conv_orch",
+								"Quarterly plan",
+								"orchestrator",
+							),
+						)
+					}
+				>
+					open orchestrator session
+				</button>
+				<button
+					type="button"
+					onClick={() =>
+						onSelect(
+							session("conv_direct", "Debug notes", "direct"),
+						)
+					}
+				>
+					open direct session
+				</button>
+				<button
+					type="button"
+					onClick={() =>
+						onSelect(
+							session("conv_research", "Market scan", "research"),
+						)
+					}
+				>
+					open research session
+				</button>
+				<button type="button" onClick={() => onDeleted("conv_orch")}>
+					delete orchestrator session
+				</button>
+				<button type="button" onClick={onBack}>
+					back to chat
+				</button>
+			</div>
+		);
+	}
+
+	function MockSharedSession({
+		conversation,
+		engine,
+		onContinue,
+	}: {
+		conversation: { title: string | null };
+		engine: string;
+		onContinue: (chat: {
+			id: string;
+			title: string | null;
+			engine: string;
+		}) => void;
+	}) {
+		return (
+			<div data-testid="shared-session" data-engine={engine}>
+				<span>{conversation.title}</span>
+				<button
+					type="button"
+					onClick={() =>
+						onContinue({ id: "conv_mine", title: "Mine", engine })
+					}
+				>
+					continue in my own chat
+				</button>
+			</div>
+		);
+	}
+
 	return {
-		default: (loader: () => unknown) =>
-			String(loader).includes("FabricTemporalOrchestratorChat")
+		default: (loader: () => unknown) => {
+			const source = String(loader);
+			if (source.includes("LauncherSessionHistory")) {
+				return MockHistory;
+			}
+			if (source.includes("SharedSessionView")) {
+				return MockSharedSession;
+			}
+			return source.includes("FabricTemporalOrchestratorChat")
 				? MockOrchestratorChat
-				: MockDirectChat,
+				: MockDirectChat;
+		},
 	};
 });
 
@@ -232,6 +372,9 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 
 afterEach(() => {
 	cleanup();
+	conversationDetail.current = undefined;
+	conversationDetail.loading = false;
+	conversationDetail.failed = false;
 	storedPreferences.current = undefined;
 	storedAgentSelection.current = undefined;
 	vi.clearAllMocks();
@@ -342,6 +485,24 @@ function AmbientContextHarness() {
 	});
 
 	return <div>ambient context ready</div>;
+}
+
+/** A page that is a surface of agent-written pages registers where it is. */
+function SurfaceContextHarness({
+	surface,
+	workspaceId,
+}: {
+	surface: "artifact" | "workspace";
+	workspaceId?: string;
+}) {
+	useRegisterFabricAgentContext({
+		projectId: "surface_project",
+		projectName: "Surface Phoenix",
+		surface,
+		workspaceId,
+	});
+
+	return <div>surface context ready</div>;
 }
 
 /** Empties the drawer's context the way the provider's API allows. */
@@ -561,6 +722,91 @@ describe("FabricAgentLauncher", () => {
 		).toBeInTheDocument();
 		expect(document.body).toHaveTextContent(
 			"initial input: Use the current workspace context.",
+		);
+	});
+
+	it("tells the agent it was opened from a project's Artifacts tab, so 'here' needs no question", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<SurfaceContextHarness surface="artifact" />
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+		expect(prompt).toContain("Project: Surface Phoenix");
+		expect(prompt).toContain("the project's Artifacts tab");
+		expect(prompt).not.toContain("Workspace");
+	});
+
+	it("tells the agent which Workspace page it was opened from", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<SurfaceContextHarness
+					surface="workspace"
+					workspaceId="workspace_1"
+				/>
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+		expect(prompt).toContain(
+			"the organization Workspace the user has open",
+		);
+		expect(prompt).toContain("workspace id: workspace_1");
+		expect(prompt).toContain("fabric_update_frame");
+	});
+
+	it("tells the agent a Workspaces list is where a new Workspace starts, not a Workspace to change", async () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<SurfaceContextHarness surface="workspace" />
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.keyDown(document, { key: "j", ctrlKey: true });
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+		expect(prompt).toContain("the organization's Workspaces list");
+		expect(prompt).not.toContain("workspace id");
+		expect(prompt).not.toContain("fabric_update_frame");
+	});
+
+	it("keeps the surface and Workspace of an explicit launch", async () => {
+		function Opener() {
+			const { openLauncher } = useFabricAgentLauncher();
+			return (
+				<button
+					type="button"
+					onClick={() =>
+						openLauncher({
+							surface: "workspace",
+							workspaceId: "workspace_2",
+							prompt: "Add a refresh button.",
+						})
+					}
+				>
+					open from workspace
+				</button>
+			);
+		}
+		render(
+			<FabricAgentLauncherProvider>
+				<Opener />
+			</FabricAgentLauncherProvider>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "open from workspace" }),
+		);
+
+		const prompt = (await screen.findByTestId("system-prompt")).textContent;
+		expect(prompt).toContain("workspace id: workspace_2");
+		expect(document.body).toHaveTextContent(
+			"initial input: Add a refresh button.",
 		);
 	});
 
@@ -1058,5 +1304,499 @@ describe("FabricAgentLauncher — engine selection (#2040)", () => {
 
 			expect(toastMock.message).not.toHaveBeenCalled();
 		});
+	});
+});
+
+describe("FabricAgentLauncher — conversation history", () => {
+	const ownSession = (id: string, title: string, mode: string) => ({
+		id,
+		title,
+		isOwn: true,
+		messages: [],
+		metadata: { mode },
+	});
+
+	function openHistory() {
+		fireEvent.click(
+			screen.getByRole("button", { name: "Conversation history" }),
+		);
+	}
+
+	async function reopen(label: string) {
+		openHistory();
+		fireEvent.click(await screen.findByText(label));
+	}
+
+	it("opens the history from the header and returns to the chat, which stays mounted", async () => {
+		openBareDrawer();
+		const chat = screen.getByTestId("drawer-chat");
+
+		openHistory();
+
+		expect(await screen.findByTestId("mock-history")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Conversation history" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(chat).toBeInTheDocument();
+		expect(chat.parentElement).toHaveAttribute("hidden");
+		fireEvent.click(screen.getByText("back to chat"));
+
+		expect(screen.queryByTestId("mock-history")).toBeNull();
+		expect(screen.getByTestId("drawer-chat")).toBe(chat);
+		expect(chat.parentElement).not.toHaveAttribute("hidden");
+	});
+
+	it("puts focus back on the history button when the history is left by Back to chat", async () => {
+		openBareDrawer();
+		openHistory();
+		await screen.findByTestId("mock-history");
+
+		fireEvent.click(screen.getByText("back to chat"));
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Conversation history" }),
+			).toHaveFocus(),
+		);
+	});
+
+	it("puts focus in the chat's input once a conversation chosen from the history is showing", async () => {
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("textbox", { name: "Message Fabric Agent" }),
+			).toHaveFocus(),
+		);
+	});
+
+	it("waits for the chat to be there before focusing its input, when the conversation is still loading", async () => {
+		conversationDetail.loading = true;
+		const view = openBareDrawer();
+		await reopen("open orchestrator session");
+		expect(screen.queryByRole("textbox")).toBeNull();
+
+		conversationDetail.loading = false;
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		view.rerender(
+			<FabricAgentLauncherProvider>
+				<div>page content</div>
+			</FabricAgentLauncherProvider>,
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("textbox", { name: "Message Fabric Agent" }),
+			).toHaveFocus(),
+		);
+	});
+
+	it("moves nothing when the history is closed with its own button", async () => {
+		openBareDrawer();
+		openHistory();
+		await screen.findByTestId("mock-history");
+		const toggle = screen.getByRole("button", {
+			name: "Conversation history",
+		});
+		toggle.focus();
+
+		fireEvent.click(toggle);
+
+		expect(toggle).toHaveFocus();
+	});
+
+	it("reopens an Orchestrator session on the Orchestrator, with its id and conversation", async () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "direct",
+		});
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+		expect(drawerEngine()).toBe("direct");
+
+		await reopen("open orchestrator session");
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"conv_orch",
+		);
+		expect(screen.getByTestId("chat-conversation")).toHaveTextContent(
+			"conv_orch",
+		);
+		expect(screen.queryByTestId("mock-history")).toBeNull();
+	});
+
+	it("reopens a Direct session on Direct even where a new chat would run the Orchestrator", async () => {
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		conversationDetail.current = ownSession(
+			"conv_direct",
+			"Debug notes",
+			"direct",
+		);
+		openBareDrawer();
+		expect(drawerEngine()).toBe("orchestrator");
+
+		await reopen("open direct session");
+
+		expect(drawerEngine()).toBe("direct");
+	});
+
+	it("says a reopened Direct chat stays on Direct in simple mode, and New chat starts a fresh one", async () => {
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		conversationDetail.current = ownSession(
+			"conv_direct",
+			"Debug notes",
+			"direct",
+		);
+		openBareDrawer();
+		expect(screen.queryByTestId("engine-mismatch-notice")).toBeNull();
+
+		await reopen("open direct session");
+
+		const notice = screen.getByRole("status");
+		expect(notice).toBe(screen.getByTestId("engine-mismatch-notice"));
+		expect(notice).toHaveTextContent(
+			"This chat uses Direct chat, which it was started on. Start a new chat to use the Advisor.",
+		);
+		expect(drawerEngine()).toBe("direct");
+
+		fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+
+		expect(screen.queryByTestId("engine-mismatch-notice")).toBeNull();
+		expect(drawerEngine()).toBe("orchestrator");
+	});
+
+	it("adds no engine notice for an orchestrator conversation in simple mode", async () => {
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(screen.queryByTestId("engine-mismatch-notice")).toBeNull();
+	});
+
+	it("adds no engine notice for a Direct conversation in advanced mode", async () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "orchestrator",
+		});
+		conversationDetail.current = ownSession(
+			"conv_direct",
+			"Debug notes",
+			"direct",
+		);
+		openBareDrawer();
+
+		await reopen("open direct session");
+
+		expect(drawerEngine()).toBe("direct");
+		expect(screen.queryByTestId("engine-mismatch-notice")).toBeNull();
+	});
+
+	it("reopens a Research session on Direct, since the drawer has no Research surface", async () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "research",
+		});
+		conversationDetail.current = ownSession(
+			"conv_research",
+			"Market scan",
+			"research",
+		);
+		openBareDrawer();
+
+		await reopen("open research session");
+
+		expect(drawerEngine()).toBe("direct");
+	});
+
+	it("starts the chat over for the session it reopens, rather than carrying the last one in", async () => {
+		storedPreferences.current = preferences({ uiMode: "simple" });
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+		const before = screen.getByTestId("drawer-chat");
+
+		await reopen("open orchestrator session");
+
+		expect(screen.getByTestId("drawer-chat")).not.toBe(before);
+	});
+
+	it("says that the conversation continues with the context of the page the drawer is on now", async () => {
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+		expect(screen.queryByTestId("resumed-session-note")).toBeNull();
+
+		await reopen("open orchestrator session");
+
+		const note = screen.getByTestId("resumed-session-note");
+		expect(note).toHaveTextContent("Quarterly plan");
+		expect(note).toHaveTextContent(
+			"This conversation continues with the context of the page you are on now.",
+		);
+	});
+
+	it("carries the reopened session to the full page on Expand", async () => {
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		expect(screen.getByRole("link", { name: "Expand" })).toHaveAttribute(
+			"href",
+			"/app/agents/fabric-ai?c=conv_orch",
+		);
+	});
+
+	it("does not reopen a session while a reply is being written, and says why", async () => {
+		openBareDrawer();
+		fireEvent.click(
+			screen.getByRole("button", { name: "start streaming" }),
+		);
+		const chat = screen.getByTestId("drawer-chat");
+
+		await reopen("open orchestrator session");
+
+		expect(toastMock.message).toHaveBeenCalledWith(
+			"Wait for the reply to finish",
+			expect.objectContaining({ description: expect.any(String) }),
+		);
+		expect(screen.getByTestId("mock-history")).toBeInTheDocument();
+		expect(chat).toBeInTheDocument();
+		expect(screen.queryByTestId("resumed-session-note")).toBeNull();
+	});
+
+	it("waits for the session to load before showing a chat", async () => {
+		conversationDetail.loading = true;
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		expect(screen.queryByTestId("drawer-chat")).toBeNull();
+		expect(screen.getByText(/Loading Fabric Agent/)).toBeInTheDocument();
+	});
+
+	it("says so, and offers a new chat, when the conversation is gone", async () => {
+		conversationDetail.current = null;
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"That conversation is no longer available.",
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Start a new chat" }),
+		);
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"",
+		);
+	});
+
+	it("says it could not be loaded, which is not that it is gone, and offers to try again", async () => {
+		conversationDetail.failed = true;
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent("Could not load this conversation.");
+		expect(alert).not.toHaveTextContent(/no longer available/);
+		expect(screen.queryByTestId("drawer-chat")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+		expect(conversationDetail.refetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the chat when a refresh of the open conversation fails after it was loaded", async () => {
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+		await reopen("open orchestrator session");
+		const chat = screen.getByTestId("drawer-chat");
+
+		conversationDetail.failed = true;
+		fireEvent.click(
+			screen.getByRole("button", { name: "start conversation" }),
+		);
+
+		expect(screen.getByTestId("drawer-chat")).toBe(chat);
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("shows a session someone else shared read-only, with no chat in its place", async () => {
+		conversationDetail.current = {
+			...ownSession("conv_orch", "Their notes", "orchestrator"),
+			isOwn: false,
+		};
+		openBareDrawer();
+
+		await reopen("open orchestrator session");
+
+		expect(screen.getByTestId("shared-session")).toHaveTextContent(
+			"Their notes",
+		);
+		expect(screen.queryByTestId("drawer-chat")).toBeNull();
+		expect(screen.queryByTestId("resumed-session-note")).toBeNull();
+	});
+
+	it("opens the reader's own chat when they continue from a shared conversation", async () => {
+		conversationDetail.current = {
+			...ownSession("conv_orch", "Their notes", "orchestrator"),
+			isOwn: false,
+		};
+		openBareDrawer();
+		await reopen("open orchestrator session");
+		conversationDetail.current = ownSession("conv_mine", "Mine", "direct");
+
+		fireEvent.click(screen.getByText("continue in my own chat"));
+
+		expect(screen.queryByTestId("shared-session")).toBeNull();
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"conv_mine",
+		);
+	});
+
+	it.each([
+		["simple", "orchestrator", "orchestrator"],
+		["advanced", "orchestrator", "orchestrator"],
+		["advanced", "direct", "direct"],
+		["advanced", "research", "orchestrator"],
+	] as const)(
+		"offers the %s-mode reader (saved engine %s) a chat on %s, not on the engine the owner used",
+		async (uiMode, chatMode, expected) => {
+			storedPreferences.current = preferences({ uiMode, chatMode });
+			conversationDetail.current = {
+				...ownSession(
+					"conv_theirs",
+					"Their notes",
+					expected === "direct" ? "orchestrator" : "direct",
+				),
+				isOwn: false,
+			};
+			openBareDrawer();
+			await reopen("open orchestrator session");
+
+			expect(screen.getByTestId("shared-session")).toHaveAttribute(
+				"data-engine",
+				expected,
+			);
+		},
+	);
+
+	it("runs the chat continued from a shared conversation on the reader's engine, not on Direct", async () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "orchestrator",
+		});
+		conversationDetail.current = {
+			...ownSession("conv_theirs", "Their notes", "direct"),
+			isOwn: false,
+		};
+		openBareDrawer();
+		await reopen("open direct session");
+		conversationDetail.current = {
+			id: "conv_mine",
+			title: "Mine",
+			isOwn: true,
+			messages: [],
+			metadata: null,
+		};
+
+		fireEvent.click(screen.getByText("continue in my own chat"));
+
+		expect(drawerEngine()).toBe("orchestrator");
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"conv_mine",
+		);
+	});
+
+	it("runs it on Direct when that is the reader's engine, whatever the owner used", async () => {
+		storedPreferences.current = preferences({
+			uiMode: "advanced",
+			chatMode: "direct",
+		});
+		conversationDetail.current = {
+			...ownSession("conv_theirs", "Their notes", "orchestrator"),
+			isOwn: false,
+		};
+		openBareDrawer();
+		await reopen("open orchestrator session");
+		conversationDetail.current = {
+			id: "conv_mine",
+			title: "Mine",
+			isOwn: true,
+			messages: [],
+			metadata: null,
+		};
+
+		fireEvent.click(screen.getByText("continue in my own chat"));
+
+		expect(drawerEngine()).toBe("direct");
+	});
+
+	it("starts a fresh chat when the open session is deleted from the history", async () => {
+		conversationDetail.current = ownSession(
+			"conv_orch",
+			"Quarterly plan",
+			"orchestrator",
+		);
+		openBareDrawer();
+		await reopen("open orchestrator session");
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"conv_orch",
+		);
+
+		openHistory();
+		fireEvent.click(await screen.findByText("delete orchestrator session"));
+
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"",
+		);
+		expect(screen.queryByTestId("resumed-session-note")).toBeNull();
+	});
+
+	it("keeps a new chat's behaviour: no conversation is handed to a chat that was not reopened", () => {
+		openBareDrawer();
+
+		expect(screen.getByTestId("chat-conversation-id")).toHaveTextContent(
+			"",
+		);
+		expect(screen.getByTestId("chat-conversation")).toHaveTextContent("");
 	});
 });

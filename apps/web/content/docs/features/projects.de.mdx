@@ -1,16 +1,17 @@
 ---
 title: Projekte
-description: Ihre Arbeit in Projekten mit Dokumenten, Workspaces und Teamzusammenarbeit organisieren.
+description: Ihre Arbeit in Projekten mit Dokumenten, Bibliotheken und Teamzusammenarbeit organisieren.
 ---
 
-Projekte sind die primäre Methode, Ihre Arbeit in Fabric AI zu organisieren. Sie bringen Dokumente, Workspaces, Agenten und Teamzusammenarbeit an einem Ort zusammen.
+Projekte sind die primäre Methode, Ihre Arbeit in Fabric AI zu organisieren. Sie bringen Dokumente, Bibliotheken, Agenten und Teamzusammenarbeit an einem Ort zusammen.
 
 ## Was ist ein Projekt?
 
 Ein Projekt ist ein Container für verwandte Arbeit:
 
 - **Dokumente** — PRDs, Spezifikationen, Architekturdokumente, die von Agenten generiert wurden
-- **Workspaces** — Hochgeladene Dateien, die KI-Agenten Kontext bieten
+- **Bibliotheken** — Hochgeladene Dateien, die KI-Agenten Kontext bieten
+- **[Artifacts](/docs/features/project-artifacts)** — Seiten, die Fabric Agent für dieses Projekt schreibt
 - **Gespräche** — Chat-Verlauf mit Agenten über dieses Projekt
 - **Einstellungen** — Projektspezifische Konfiguration und Vorlagen
 
@@ -47,7 +48,7 @@ Ein Projekt ist ein Container für verwandte Arbeit:
     ### Mit der Arbeit beginnen
 
     Ihr Projekt ist bereit! Sie können:
-    - Dokumente in den Workspace hochladen
+    - Dokumente in die Bibliothek hochladen
     - Ein Gespräch mit einem Agenten starten
     - Ihr erstes Dokument generieren
   </Step>
@@ -67,7 +68,7 @@ flowchart TB
             D4["Sicherheitsüberprüfung.md"]
         end
 
-        subgraph WS["Workspace/"]
+        subgraph WS["Bibliothek/"]
             W1["anforderungen.pdf"]
             W2["vorhandene-auth-docs/"]
             W3["wettbewerbsanalyse.docx"]
@@ -154,9 +155,9 @@ Der integrierte Editor bietet:
 - **Versionsverlauf** — Alle Änderungen verfolgen
 - **Export** — PDF, DOCX, Markdown
 
-## Projekt-Workspaces
+## Projektbibliotheken
 
-Jedes Projekt hat einen dedizierten Workspace für RAG-Kontext.
+Jedes Projekt hat eine eigene Bibliothek für RAG-Kontext.
 
 ### Dokumente hochladen
 
@@ -170,16 +171,16 @@ Dateien per Drag & Drop oder Klicken zum Hochladen:
 
 Wenn Sie in einem Projekt mit einem Agenten chatten, hat er automatisch Zugriff auf:
 
-1. Alle Dokumente im Projekt-Workspace
+1. Alle Dokumente in der Projektbibliothek
 2. Zuvor generierte Dokumente im Projekt
-3. Alle explizit angehängten Workspaces
+3. Alle explizit angehängten Bibliotheken
 
 Das bedeutet, der Agent versteht Ihren Projektkontext und kann:
 - Auf Ihre vorhandene Dokumentation verweisen
 - Konsistenz über Dokumente hinweg aufrechterhalten
 - Auf früherer Arbeit aufbauen
 
-### Workspace verwalten
+### Bibliothek verwalten
 
 - **Dateien hinzufügen** — Neue Dokumente jederzeit hochladen
 - **Dateien entfernen** — Veraltete Dokumente löschen
@@ -215,7 +216,7 @@ Projektaktivität verfolgen:
 
 - Dokument erstellt von [Benutzer]
 - Dokument bearbeitet von [Benutzer]
-- Workspace-Dokument hinzugefügt
+- Bibliotheksdokument hinzugefügt
 - Gespräch gestartet
 
 ## Projektvorlagen
@@ -245,7 +246,7 @@ Vorlagen aus bestehenden Projekten erstellen:
 3. Auswählen, was einzubeziehen ist:
    - Dokumentstruktur
    - Standard-Prompts
-   - Workspace-Organisation
+   - Organisation der Bibliothek
 4. Vorlage speichern
 
 ## Projekteinstellungen
@@ -299,8 +300,8 @@ Externe Tools verbinden:
 ### Dokumentenverwaltung
 
 - Verwandte Dokumente im selben Projekt generieren
-- Referenzmaterialien in Workspace hochladen
-- Workspace sauber halten – veraltete Dateien entfernen
+- Referenzmaterialien in die Bibliothek hochladen
+- Die Bibliothek sauber halten – veraltete Dateien entfernen
 - Konsistente Benennung für Dokumente verwenden
 
 ### Zusammenarbeit

@@ -202,6 +202,10 @@ export async function templateInstanceExecutionWorkflow(
 			? withChatGptPlanWait(step, {
 					organizationId: input.organizationId,
 					userId: input.userId,
+					stoppedNotice: {
+						work: "SCHEDULED_REPORT",
+						initiatorUserId: null,
+					},
 				})
 			: step();
 

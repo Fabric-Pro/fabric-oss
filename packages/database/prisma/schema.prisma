@@ -400,8 +400,10 @@ model User {
   // so a departing admin never takes the organization's sources with them.
   companyContextSourcesCreated CompanyContextSource[] @relation("CompanyContextSourceCreatedBy")
 
-  // Proposal artifact (Fizzy #2801). Actor column only; SetNull on delete.
-  proposalStylesUpdated ProjectDocumentStyle[] @relation("ProjectDocumentStyleUpdatedBy")
+  // Proposal artifact (Fizzy #2801). Actor columns only; SetNull on delete,
+  // so a departing member's answers stay with a null author.
+  proposalStylesUpdated    ProjectDocumentStyle[]           @relation("ProjectDocumentStyleUpdatedBy")
+  proposalFindingResponses ProjectDocumentFindingResponse[] @relation("ProjectDocumentFindingResponseAuthor")
 
   // Brute force protection
   failedLoginAttempts    Int                     @default(0)
@@ -769,10 +771,14 @@ model Organization {
   // IANA TZ name (e.g., "America/Los_Angeles"). NULL falls back to "UTC" at read
   // time (see packages/payments/src/lib/ai-usage-limits.ts:getTenantTimezone).
   timezone                         String?
-  firecrawlApiKey                  String?
-  firecrawlEnabled                 Boolean                       @default(false)
-  firecrawlConfiguredAt            DateTime?
-  firecrawlLastUsedAt              DateTime?
+  // Legacy organization Firecrawl columns, unused since search provider rows
+  // replaced them. @ignore keeps them out of Prisma Client so no query selects
+  // them; the columns are dropped in a later release once this one is fully
+  // rolled out (Fizzy #3084).
+  firecrawlApiKey                  String?                       @ignore
+  firecrawlEnabled                 Boolean                       @default(false) @ignore
+  firecrawlConfiguredAt            DateTime?                     @ignore
+  firecrawlLastUsedAt              DateTime?                     @ignore
   azureAiApiKey                    String?
   azureAiConfiguredAt              DateTime?
   azureAiEnabled                   Boolean                       @default(false)
@@ -1110,11 +1116,12 @@ model Organization {
   companyContextUrlPages CompanyContextUrlPage[]
 
   // Proposal artifact (Fizzy #2801); cascade on org delete (tenant erasure).
-  projectDocumentAnalyses ProjectDocumentAnalysis[]
-  projectDocumentFindings ProjectDocumentFinding[]
-  projectDocumentStyles   ProjectDocumentStyle[]
-  deletedMeetingArchives  DeletedMeetingArchive[]
-  nonMemberContacts       NonMemberContact[]
+  projectDocumentAnalyses         ProjectDocumentAnalysis[]
+  projectDocumentFindings         ProjectDocumentFinding[]
+  projectDocumentStyles           ProjectDocumentStyle[]
+  projectDocumentFindingResponses ProjectDocumentFindingResponse[]
+  deletedMeetingArchives          DeletedMeetingArchive[]
+  nonMemberContacts               NonMemberContact[]
 
   // Serves the daily purge scan for organizations past their retention window
   // (#2462). Created CONCURRENTLY in its own migration — see
@@ -1918,20 +1925,23 @@ model RegisteredAgentSuggestion {
 
 // Agent Conversation - Stores chat history for Fabric AI and other agents
 model AgentConversation {
-  id             String                  @id @default(cuid())
+  id             String                      @id @default(cuid())
   userId         String
   organizationId String?
   agentId        String // The agent this conversation is with (e.g., "orchestrator")
   title          String? // Auto-generated or user-set title
   /// [AgentConversationMessages]
-  messages       Json                    @default("[]") // Array of conversation messages
+  messages       Json                        @default("[]") // Array of conversation messages
   /// [AgentTrajectory]
   trajectory     Json? // Optional execution trajectory for visualization
   metadata       Json? // Additional context (reasoning mode, etc.)
-  pinned         Boolean                 @default(false)
-  status         AgentConversationStatus @default(ACTIVE)
-  createdAt      DateTime                @default(now())
-  updatedAt      DateTime                @updatedAt
+  pinned         Boolean                     @default(false)
+  status         AgentConversationStatus     @default(ACTIVE)
+  // ORGANIZATION lets every member of the organization read the transcript;
+  // only the owner can write to it, whatever this says.
+  visibility     AgentConversationVisibility @default(PRIVATE)
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
 
   // Conversation continuation — set on conversations created via the
   // "Continue in new chat" handoff when the parent hit its token-budget cap.
@@ -1969,12 +1979,18 @@ model AgentConversation {
   @@index([pinned])
   @@index([createdAt])
   @@index([parentConversationId])
+  @@index([organizationId, agentId, visibility, updatedAt])
   @@map("agent_conversation")
 }
 
 enum AgentConversationStatus {
   ACTIVE
   ARCHIVED
+}
+
+enum AgentConversationVisibility {
+  PRIVATE
+  ORGANIZATION
 }
 
 /// One user message's run in an Advisor chat (the orchestrator workflow a chat
@@ -2573,8 +2589,9 @@ model Project {
   recipientBrand        ProjectRecipientBrand?
 
   // Proposal artifact (Fizzy #2801)
-  documentAnalyses ProjectDocumentAnalysis[]
-  documentStyles   ProjectDocumentStyle[]
+  documentAnalyses         ProjectDocumentAnalysis[]
+  documentStyles           ProjectDocumentStyle[]
+  documentFindingResponses ProjectDocumentFindingResponse[]
 
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
@@ -2682,7 +2699,7 @@ model ProjectDocument {
   // `liveAttempt` is the activity attempt that claimed the run, so a
   // superseded attempt's late write cannot land. All three are null on every
   // row that never ran in artifact mode. Writers live in
-  // prisma/queries/projects/proposal-artifact.ts.
+  // the prisma/queries/projects/proposal-artifact*.ts modules.
   liveContent String? @db.Text
   liveRunId   String?
   liveAttempt Int?
@@ -2705,20 +2722,21 @@ model ProjectDocument {
   userId         String?
   organizationId String?
 
-  versions      DocumentVersion[]
-  assets        ProjectDocumentAsset[] // Binary/HTML artifacts generated alongside the document (e.g. architecture diagrams)
-  project       Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceContext ProjectContext?              @relation("ImportedDocument", fields: [sourceContextId], references: [id], onDelete: SetNull)
-  lock          DocumentLock?
-  evals         DocumentEval[]
-  autoRefresh   DocumentAutoRefreshSettings?
-  glossyEdition GlossyEdition?
-  glossyBuilds  GlossyBuild[]
-  glossyCache   GlossySegmentCache[]
-  analyses      ProjectDocumentAnalysis[] // Proposal artifact internal analysis runs (Fizzy #2801)
-  style         ProjectDocumentStyle? // Proposal artifact style settings (Fizzy #2801)
-  user          User?                        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization  Organization?                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  versions         DocumentVersion[]
+  assets           ProjectDocumentAsset[] // Binary/HTML artifacts generated alongside the document (e.g. architecture diagrams)
+  project          Project                          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceContext    ProjectContext?                  @relation("ImportedDocument", fields: [sourceContextId], references: [id], onDelete: SetNull)
+  lock             DocumentLock?
+  evals            DocumentEval[]
+  autoRefresh      DocumentAutoRefreshSettings?
+  glossyEdition    GlossyEdition?
+  glossyBuilds     GlossyBuild[]
+  glossyCache      GlossySegmentCache[]
+  analyses         ProjectDocumentAnalysis[] // Proposal artifact internal analysis runs (Fizzy #2801)
+  style            ProjectDocumentStyle? // Proposal artifact style settings (Fizzy #2801)
+  findingResponses ProjectDocumentFindingResponse[] // Proposal artifact answers to findings (Fizzy #2946)
+  user             User?                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization     Organization?                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
   @@index([type])
@@ -2769,11 +2787,20 @@ model ProjectDocumentAsset {
 // Organization-owned. `organizationId` is the only tenant column and these
 // tables are `org_only` under RLS and in ORG_ONLY_TABLES, never project-scoped:
 // a project guest must not read internal review material, and the
-// project-scoped guest carve-out would hand it to them. No userId: the
-// organization is the only tenant (ADR-018), so an author column would only be
-// something to forge. Tenant columns are copied from the document's project by
-// the writers in prisma/queries/projects/proposal-artifact.ts, never taken from
-// the caller.
+// project-scoped guest carve-out would hand it to them. No userId anywhere:
+// the organization is the only tenant (ADR-018). Runs and findings carry no
+// author column at all, because nobody authors them (a workflow writes them)
+// and an author column there would only be something to forge. Tenant columns
+// are copied from the document's project by the writers in
+// prisma/queries/projects/proposal-artifact*.ts modules, never taken from the
+// caller.
+//
+// Finding responses (Fizzy #2946) are the exception: a member writes each
+// one, so it carries `authorId`, set by the writer from the session and never
+// from request input. It is attribution, and the live rights check the
+// settled-decisions feed runs on the author before using an answer; it is
+// never a tenant filter, and a deleted user leaves the answer with a null
+// author.
 //
 // Analysis stays out of retrieval: nothing here is embedded, versioned or
 // copied into `ProjectDocument.content`.
@@ -2791,15 +2818,31 @@ model ProjectDocumentAnalysis {
   runKey         String @unique
 
   status ProjectDocumentAnalysisStatus @default(PENDING)
+  /// GENERATION: recorded after a generation, over the Main it saved.
+  /// RERUN: requested by a member over the document's current content.
+  kind   ProjectDocumentAnalysisKind   @default(GENERATION)
 
   /// The saved Main body the run analyzes, read back from the document row.
   analyzedContent String  @db.Text
   /// `computeDocumentContentHash(analyzedContent)`; staleness compares it
   /// with the hash of the document's current content at read time.
   contentHash     String
+  /// The document prose hash of `analyzedContent` (version-prefixed, from the
+  /// shared section-hash module). Null on rows written before it existed:
+  /// readers compute it from `analyzedContent` instead, with no backfill.
+  proseHash       String?
   /// A character-bounded copy of the generation's source context; the bound
   /// is `PROPOSAL_ANALYSIS_SOURCE_CONTEXT_MAX_LENGTH` in the query module.
+  /// Empty on a RERUN row, which reads its source run's by reference.
   sourceContext   String  @db.Text
+  /// One entry per `### Source N` the stored source context emitted. Capped
+  /// by the query module and parsed with zod on read. Null on rows written
+  /// before it existed and on RERUN rows (they read their source run's).
+  sourceManifest  Json?
+  /// RERUN only: the generation run (COMPLETE, or FAILED with stored source
+  /// context) whose source context and manifest this run reads by reference.
+  /// SetNull keeps the re-run if that run is deleted.
+  sourceRunId     String?
   /// The document version the analyzed content was saved as.
   documentVersion Int?
   contextCount    Int     @default(0)
@@ -2817,14 +2860,17 @@ model ProjectDocumentAnalysis {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  document     ProjectDocument          @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  project      Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  document     ProjectDocument           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourceRun    ProjectDocumentAnalysis?  @relation("ProjectDocumentAnalysisSourceRun", fields: [sourceRunId], references: [id], onDelete: SetNull)
+  reruns       ProjectDocumentAnalysis[] @relation("ProjectDocumentAnalysisSourceRun")
   findings     ProjectDocumentFinding[]
 
   @@index([documentId, createdAt])
   @@index([projectId])
   @@index([organizationId])
+  @@index([sourceRunId])
   @@map("project_document_analysis")
 }
 
@@ -2843,6 +2889,21 @@ model ProjectDocumentFinding {
   sectionHeading String?
   position       Int
 
+  /// The finding's identity across runs: its type, section key and a
+  /// normalized subject, never its wording. Null on findings written before
+  /// keys existed; such a finding matches no response and cannot be
+  /// answered. Not unique: same-key findings of one run fold into the
+  /// earliest before insert, so one model quirk cannot fail a run.
+  stableKey    String?
+  /// The section the finding is about (the document-level key when none),
+  /// and that section's prose hash in the analyzed content.
+  sectionKey   String?
+  sectionHash  String?
+  /// The `### Source N` numbers of the run's manifest the finding cites.
+  sourceRefs   Int[]    @default([])
+  /// The titles of the same-key findings folded into this one.
+  foldedTitles String[] @default([])
+
   createdAt DateTime @default(now())
 
   analysis     ProjectDocumentAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
@@ -2851,6 +2912,54 @@ model ProjectDocumentFinding {
   @@index([analysisId, position])
   @@index([organizationId])
   @@map("project_document_finding")
+}
+
+/// A member's answer to a finding (Fizzy #2946). It belongs to the document
+/// and the finding's stable key, never to a run, so it survives every later
+/// run; whether it still holds (Needs Review) is derived at read time from
+/// the section key and prose hash stored here, never stored. Written only
+/// through the version compare-and-swap in the query module.
+model ProjectDocumentFindingResponse {
+  id             String                             @id @default(cuid())
+  organizationId String
+  projectId      String
+  documentId     String
+  stableKey      String
+  kind           ProjectDocumentFindingResponseKind
+  /// The member's answer; null for a bare confirmation. The length bound is
+  /// `PROPOSAL_FINDING_RESPONSE_TEXT_MAX_LENGTH` in the query module.
+  text           String?                            @db.Text
+  /// A copy of the answered finding's title, for answers whose key no later
+  /// run raises.
+  findingTitle   String                             @db.Text
+  /// The run whose finding was answered. A plain id, not a foreign key: a run
+  /// is only ever deleted with its document, which deletes this row too, and
+  /// the writer checks that the run is this document's before storing it.
+  answeredRunId  String
+  /// The section key and its prose hash at the time of the answer.
+  sectionKey     String
+  sectionHash    String
+  /// The member who wrote the answer, set from the session by the writer.
+  /// Attribution and the settled-decisions feed's rights check only; never a
+  /// tenant filter.
+  authorId       String?
+  /// Bumped by every write; the compare-and-swap token.
+  version        Int                                @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  author       User?           @relation("ProjectDocumentFindingResponseAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+
+  // The unique index leads with documentId, so it also serves document reads.
+  @@unique([documentId, stableKey])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([authorId])
+  @@map("project_document_finding_response")
 }
 
 /// Style settings of one Proposal document, applied to its next generation's
@@ -2887,6 +2996,16 @@ enum ProjectDocumentAnalysisStatus {
   RUNNING
   COMPLETE
   FAILED
+}
+
+enum ProjectDocumentAnalysisKind {
+  GENERATION
+  RERUN
+}
+
+enum ProjectDocumentFindingResponseKind {
+  CONFIRMED
+  RESPONDED
 }
 
 enum ProjectDocumentFindingSeverity {
@@ -3688,10 +3807,12 @@ enum ProjectMemoryWriteStatus {
   FAILED
 }
 
-/// The surface a write came in through.
+/// The surface a write came in through. APP is a call to the API itself (an
+/// oRPC client), as opposed to the MCP tool or the CLI.
 enum ProjectMemoryWriteVia {
   MCP
   CLI
+  APP
 }
 
 enum ProjectMemoryWriteOp {
@@ -14584,6 +14705,7 @@ model AgentWorkspaceFile {
   isPublic           Boolean             @default(false)
   sharingGrants      FrameSharingGrant[]
   editHistory        FrameEditHistory[]
+  pageRecords        FramePageRecord[]
   sourceRunType      String?
   sourceRunId        String?
   authoritySessionId String?
@@ -14695,6 +14817,35 @@ model FrameEditHistory {
 
   @@index([frameId, editedAt])
   @@map("frame_edit_history")
+}
+
+// What a published page keeps between visits: one row per (collection, owner,
+// key). `ownerUserId` is "" for a record every viewer of the page shares and
+// the writer's user id for one only that person sees; it is part of the unique
+// key because Postgres does not treat NULLs as equal there. `createdBy` and
+// `updatedBy` are stamped by the server, never taken from the page.
+// Collections starting with "$" belong to the host ($files, $comments).
+// Row-level security is org_only; every query also filters on organizationId.
+model FramePageRecord {
+  id             String             @id @default(cuid())
+  frameId        String
+  frame          AgentWorkspaceFile @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  organizationId String
+  collection     String
+  key            String
+  ownerUserId    String             @default("")
+  value          Json
+  size           Int
+  version        Int                @default(1)
+  createdBy      String
+  updatedBy      String
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([frameId, collection, ownerUserId, key])
+  @@index([frameId, collection, createdAt])
+  @@index([organizationId])
+  @@map("frame_page_record")
 }
 
 // Frame templates for creating frames from templates
@@ -20328,6 +20479,35 @@ enum NotificationType {
   /// organization routed to that account falls to its other accounts or its
   /// API provider, or stops.
   CHATGPT_PLAN_ACCOUNT_NEEDS_RECONNECT
+
+  /// A scheduled workflow run reached a terminal state with nobody watching.
+  /// Split into two types, mirroring REPORT_COMPLETED / REPORT_FAILED: the
+  /// notification is the whole outcome and has to say which outcome it is
+  /// without being opened. COMPLETED is sent only for a workflow's first
+  /// successful run, with a link to what it published; FAILED is sent for every
+  /// failed run and for the auto-pause after repeated failures.
+  ///
+  /// Category SYSTEM, always on: an unattended run that stops producing output
+  /// is something its owner cannot otherwise notice.
+  WORKFLOW_RUN_COMPLETED
+  WORKFLOW_RUN_FAILED
+
+  /// Background work found every ChatGPT plan it may use spent and is waiting
+  /// for a reset (Fizzy #3050). Sent on a bulk run's FIRST pause only, to the
+  /// member who started it plus the organization's owners and admins: the
+  /// run continues by itself, and the later pauses add nothing to act on.
+  ///
+  /// Category SYSTEM, always on: nobody but someone who opens the run's page
+  /// otherwise learns that the work is waiting.
+  CHATGPT_PLAN_WORK_PAUSED
+
+  /// Background work stopped because every ChatGPT plan it may use stayed
+  /// spent — a bulk run past its pause cap or whose resume never started, or
+  /// in-place waiting work refused again after its wait (Fizzy #3050). Same
+  /// recipients as CHATGPT_PLAN_WORK_PAUSED.
+  ///
+  /// Category SYSTEM, always on: the work will not run again by itself.
+  CHATGPT_PLAN_WORK_STOPPED
 }
 
 model Notification {

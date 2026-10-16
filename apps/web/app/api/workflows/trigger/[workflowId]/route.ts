@@ -18,12 +18,8 @@ import {
 	concurrencyRefusalMessage,
 	createExecutionWithinConcurrencyCap,
 } from "@repo/api/modules/workflows/lib/execution-concurrency";
-import {
-	attemptWorkflowBuilderStart,
-	startFailureMessage,
-	unconfirmedStartMessage,
-} from "@repo/api/modules/workflows/lib/start-builder-execution";
-import { db, markExecutionRunningIfPending } from "@repo/database";
+import { startReservedExecution } from "@repo/api/modules/workflows/lib/start-reserved-execution";
+import { db, isWorkflowLive } from "@repo/database";
 import { decryptApiKeyMaybe } from "@repo/utils";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -197,7 +193,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 		}
 
 		// Check if workflow is published
-		if (workflow.status !== "PUBLISHED" && workflow.status !== "ACTIVE") {
+		if (!isWorkflowLive(workflow.status)) {
 			return NextResponse.json(
 				{ error: "Workflow is not published" },
 				{ status: 403 },
@@ -281,43 +277,24 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 		}
 		const execution = reservation.execution;
 
-		// The webhook path used its own workflow id scheme (`workflow-<id>`),
-		// so a cancel from the API or the UI — both of which derive the id
-		// from the execution row — addressed a run that did not exist. The
-		// shared helper is the one id scheme, and the one protocol for what a
-		// failed start call means.
-		const outcome = await attemptWorkflowBuilderStart({
-			workflowId,
-			executionId: execution.id,
-			nodes: workflow.nodes as never,
-			edges: workflow.edges as never,
-			triggerData: payload,
-			userId: workflow.userId,
-			organizationId: workflow.organizationId ?? undefined,
-			projectId: workflow.projectId ?? undefined,
+		// The shared start settles what each outcome means for the row (see
+		// `start-reserved-execution.ts`): this route only decides how it is
+		// answered to the sender.
+		const started = await startReservedExecution({
+			execution,
+			logTag: "Webhook Trigger",
+			start: {
+				workflowId,
+				nodes: workflow.nodes as never,
+				edges: workflow.edges as never,
+				triggerData: payload,
+				userId: workflow.userId,
+				organizationId: workflow.organizationId ?? undefined,
+				projectId: workflow.projectId ?? undefined,
+			},
 		});
 
-		if (outcome.status === "not-started") {
-			// The row exists but nothing is going to run it — Temporal
-			// confirmed that — and no sweeper reclaims a PENDING execution.
-			// Record the terminal state so the run history says "failed to
-			// start" rather than "queued" forever.
-			console.error(
-				"[Webhook Trigger] Failed to start execution:",
-				outcome.error,
-			);
-			const failedAt = new Date();
-			await db.workflowExecution.update({
-				where: { id: execution.id },
-				data: {
-					status: "FAILED",
-					error: startFailureMessage(outcome.error),
-					completedAt: failedAt,
-					duration:
-						failedAt.getTime() - execution.startedAt.getTime(),
-				},
-			});
-
+		if (started.status === "failed") {
 			return NextResponse.json(
 				{
 					error: "Failed to start workflow",
@@ -327,17 +304,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 			);
 		}
 
-		if (outcome.status === "unknown") {
-			// The start call failed and the follow-up describe could not
-			// settle whether Temporal accepted it. The run may be in progress
-			// under the deterministic id, so the row stays active: failing it
-			// would invite the sender to retry, which creates a new row and a
-			// second run with the same side effects.
-			console.warn(
-				"[Webhook Trigger] Start unconfirmed; leaving the execution row active:",
-				{ executionId: execution.id, workflowId: outcome.workflowId },
-				outcome.error,
-			);
+		if (started.status === "unconfirmed") {
 			// 202 Accepted, not a 5xx: webhook senders retry server errors,
 			// and a retry creates a second row and a second run. The body
 			// says the start is unconfirmed and names the execution to poll.
@@ -346,37 +313,17 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 					success: true,
 					status: "unconfirmed",
 					executionId: execution.id,
-					temporalWorkflowId: outcome.workflowId,
-					message: unconfirmedStartMessage(execution.id),
+					temporalWorkflowId: started.temporalWorkflowId,
+					message: started.message,
 				},
 				{ status: 202 },
-			);
-		}
-
-		// The run exists in the engine from here on. A failure to record that
-		// must not be reported as "not started" (the sender would retry and
-		// start a second run with the same side effects); it is logged and the
-		// start is still reported. The workflow writes its own status as it
-		// progresses and its id is deterministic from the execution id.
-		// PENDING → RUNNING only: a fast run may already have written its
-		// terminal status, which must not move back to RUNNING.
-		try {
-			await markExecutionRunningIfPending({
-				executionId: execution.id,
-				temporalRunId: outcome.workflowId,
-			});
-		} catch (error) {
-			console.error(
-				"[Webhook Trigger] Run started but the execution row could not be marked RUNNING:",
-				{ executionId: execution.id, workflowId: outcome.workflowId },
-				error,
 			);
 		}
 
 		return NextResponse.json({
 			success: true,
 			executionId: execution.id,
-			temporalWorkflowId: outcome.workflowId,
+			temporalWorkflowId: started.temporalWorkflowId,
 			message: "Workflow triggered successfully",
 		});
 	} catch (error) {

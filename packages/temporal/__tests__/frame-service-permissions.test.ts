@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 	canUpdateOrganizationFrames: vi.fn(),
 	createFrame: vi.fn(),
 	updateFrame: vi.fn(),
-	publishFrame: vi.fn(),
+	shareFrame: vi.fn(),
 	getFrameById: vi.fn(),
 	listFrames: vi.fn(),
 }));
@@ -41,7 +41,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 		canUpdateOrganizationFrames: mocks.canUpdateOrganizationFrames,
 		createFrame: mocks.createFrame,
 		updateFrame: mocks.updateFrame,
-		publishFrame: mocks.publishFrame,
+		shareFrame: mocks.shareFrame,
+		getFrameById: mocks.getFrameById,
 	};
 });
 
@@ -65,7 +66,19 @@ const updateArgs = { frameId: "frame-1", title: "Renamed" };
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.updateFrame.mockResolvedValue({ id: "frame-1", title: "Renamed" });
-	mocks.publishFrame.mockResolvedValue({ id: "frame-1", isPublic: true });
+	mocks.shareFrame.mockResolvedValue({
+		ok: true,
+		scope: "PUBLIC",
+		shareToken: "token-1",
+		invited: [],
+		grants: [],
+	});
+	mocks.getFrameById.mockResolvedValue({
+		id: "frame-1",
+		title: "Quarterly Review",
+		kind: "frame",
+		contentType: "application/vnd.fabric.frame",
+	});
 });
 
 describe("createFirstClassFrame", () => {
@@ -171,7 +184,7 @@ describe("shareFirstClassFrame", () => {
 		expect(result).toEqual({
 			error: "No permission to update frames in this organization.",
 		});
-		expect(mocks.publishFrame).not.toHaveBeenCalled();
+		expect(mocks.shareFrame).not.toHaveBeenCalled();
 	});
 
 	it("allows a caller who holds WORKSPACE_UPDATE", async () => {
@@ -183,6 +196,11 @@ describe("shareFirstClassFrame", () => {
 			organizationId: ORG,
 		});
 
-		expect(mocks.publishFrame).toHaveBeenCalled();
+		expect(mocks.shareFrame).toHaveBeenCalledWith(
+			expect.objectContaining({
+				frameId: "frame-1",
+				scope: "PUBLIC",
+			}),
+		);
 	});
 });

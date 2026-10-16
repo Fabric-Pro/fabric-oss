@@ -121,6 +121,14 @@ const ISSUED_KEY_SCOPES = ["mcp:read"] as const;
  * viewer's mint is not clamped. The "Can" card says so before the key is
  * created.
  *
+ * `memory:write` is the second non-read scope, and the one exception to the
+ * review gate (ADR-022): it writes files into the Living Memory folders an
+ * administrator named, and on a folder set to direct push they are committed
+ * to the synced branch with no review. It reaches no coding instructions (those
+ * folders can never be write folders) and every call re-checks that the person
+ * can add project context, so it is inert for a role that cannot. The "Can"
+ * card says it before the key is created.
+ *
  * Publishing directly is a SEPARATE authority, `instructions:publish`, which
  * this dialog never mints and must not start minting. It is the scope behind
  * `fabric instructions push --publish` and `POST
@@ -134,6 +142,7 @@ const ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS = [
 	"mcp:read",
 	"instructions:read",
 	"instructions:write",
+	"memory:write",
 ] as const;
 
 type IssuedKeyScope = (typeof ISSUED_KEY_SCOPES_FOR_INSTRUCTIONS)[number];
@@ -185,7 +194,7 @@ function keyFactsFor(purpose: ConnectCliPurpose): KeyFact[] {
 			label: "Can",
 			value:
 				purpose === "coding-instructions"
-					? "Read, and suggest instruction changes for an editor to approve"
+					? "Read, suggest instruction changes for an editor to approve, and write files to project memory folders (committed without review where a project admin allowed direct push)"
 					: "Read only. It cannot change anything",
 		},
 		{

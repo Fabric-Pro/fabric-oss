@@ -21,7 +21,24 @@ const { accessMock, updateWorkflowMock, syncScheduleMock } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	hasWorkflowAccess: accessMock,
+	getWorkflowById: async () => ({
+		id: "wf-1",
+		status: "DRAFT",
+		userId: "user-1",
+		organizationId: "org-1",
+		nodes: [],
+	}),
+	canUpdateOrganizationWorkflows: async () => true,
+	isWorkflowLive: (status: string) =>
+		status === "PUBLISHED" || status === "ACTIVE",
 	updateWorkflow: updateWorkflowMock,
+}));
+
+vi.mock("@repo/temporal", () => ({ findScheduleCron: () => null }));
+
+vi.mock("@repo/utils", () => ({
+	encryptApiKey: (value: string) => value,
+	decryptApiKeyMaybe: (value: string | null) => value,
 }));
 
 vi.mock("@repo/database/prisma/zod", () => ({
@@ -37,29 +54,37 @@ vi.mock("../../../organizations/lib/membership", () => ({
 	verifyOrganizationMembership: async () => ({ id: "member-1" }),
 }));
 
-vi.mock("../../../../orpc/procedures", () => ({
-	Permissions: { WORKSPACE_UPDATE: "workspace:update" },
-	requirePermission: () => (next: unknown) => next,
-	resolveOrganizationId: (input: string | null | undefined) =>
-		input ?? undefined,
-	tenantProtectedProcedure: {
-		use: () => ({
-			route: () => ({
-				input: () => ({
-					handler: (fn: unknown) => fn,
-					output: () => ({ handler: (fn: unknown) => fn }),
-				}),
+vi.mock("../../../../orpc/procedures", () => {
+	// The builder is stubbed down to a bare handler; `.use()` keeps chaining.
+	const builder = {
+		use: () => builder,
+		route: () => ({
+			input: () => ({
+				handler: (fn: unknown) => fn,
+				output: () => ({ handler: (fn: unknown) => fn }),
 			}),
 		}),
-	},
-}));
+	};
+	return {
+		Permissions: { WORKSPACE_UPDATE: "workspace:update" },
+		requireInputOrgPermission: () => (next: unknown) => next,
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string | null },
+		) => input ?? session.activeOrganizationId ?? undefined,
+		tenantProtectedProcedure: builder,
+	};
+});
 
 import { updateWorkflowProcedure } from "../update-workflow";
 
 // biome-ignore lint/suspicious/noExplicitAny: the builder is stubbed to a bare handler above
 const update = updateWorkflowProcedure as any;
 
-const ctx = { user: { id: "user-1" }, session: {} };
+const ctx = {
+	user: { id: "user-1" },
+	session: { activeOrganizationId: "org-1" },
+};
 
 /** What the update returns — the workflow's state *after* the write. */
 function saved(status: string) {

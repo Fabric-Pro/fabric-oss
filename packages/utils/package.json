@@ -1,6 +1,7 @@
 {
 	"devDependencies": {
 		"@repo/tsconfig": "workspace:*",
+		"@types/mdast": "^4.0.4",
 		"@types/mustache": "^4.2.6",
 		"@types/node": "^24.10.0",
 		"@types/nunjucks": "^3.2.6",
@@ -13,6 +14,16 @@
 			"types": "./lib/base-url.ts",
 			"import": "./lib/base-url.ts",
 			"default": "./lib/base-url.ts"
+		},
+		"./cut-at-code-units": {
+			"types": "./lib/cut-at-code-units.ts",
+			"import": "./lib/cut-at-code-units.ts",
+			"default": "./lib/cut-at-code-units.ts"
+		},
+		"./fnv1a": {
+			"types": "./lib/fnv1a.ts",
+			"import": "./lib/fnv1a.ts",
+			"default": "./lib/fnv1a.ts"
 		},
 		"./sensitive-keys": {
 			"types": "./lib/sensitive-keys.ts",
@@ -108,6 +119,41 @@
 			"types": "./lib/publishing-suggestion-prompt.ts",
 			"import": "./lib/publishing-suggestion-prompt.ts",
 			"default": "./lib/publishing-suggestion-prompt.ts"
+		},
+		"./workflow-status": {
+			"types": "./lib/workflow-status.ts",
+			"import": "./lib/workflow-status.ts",
+			"default": "./lib/workflow-status.ts"
+		},
+		"./frame-surfaces": {
+			"types": "./lib/frame-surfaces.ts",
+			"import": "./lib/frame-surfaces.ts",
+			"default": "./lib/frame-surfaces.ts"
+		},
+		"./agent-task-prompt": {
+			"types": "./lib/agent-task-prompt.ts",
+			"import": "./lib/agent-task-prompt.ts",
+			"default": "./lib/agent-task-prompt.ts"
+		},
+		"./untrusted-fence": {
+			"types": "./lib/untrusted-fence.ts",
+			"import": "./lib/untrusted-fence.ts",
+			"default": "./lib/untrusted-fence.ts"
+		},
+		"./shared-session-summary": {
+			"types": "./lib/shared-session-summary.ts",
+			"import": "./lib/shared-session-summary.ts",
+			"default": "./lib/shared-session-summary.ts"
+		},
+		"./page-limits": {
+			"types": "./lib/page-limits.ts",
+			"import": "./lib/page-limits.ts",
+			"default": "./lib/page-limits.ts"
+		},
+		"./page-ask-prompt": {
+			"types": "./lib/page-ask-prompt.ts",
+			"import": "./lib/page-ask-prompt.ts",
+			"default": "./lib/page-ask-prompt.ts"
 		},
 		"./publishing-refine-prompt": {
 			"types": "./lib/publishing-refine-prompt.ts",
@@ -424,6 +470,41 @@
 			"import": "./lib/proposal-artifact/visual-insert.ts",
 			"default": "./lib/proposal-artifact/visual-insert.ts"
 		},
+		"./proposal-artifact/markdown-ast": {
+			"types": "./lib/proposal-artifact/markdown-ast.ts",
+			"import": "./lib/proposal-artifact/markdown-ast.ts",
+			"default": "./lib/proposal-artifact/markdown-ast.ts"
+		},
+		"./proposal-artifact/section-hash": {
+			"types": "./lib/proposal-artifact/section-hash.ts",
+			"import": "./lib/proposal-artifact/section-hash.ts",
+			"default": "./lib/proposal-artifact/section-hash.ts"
+		},
+		"./proposal-artifact/finding-constants": {
+			"types": "./lib/proposal-artifact/finding-constants.ts",
+			"import": "./lib/proposal-artifact/finding-constants.ts",
+			"default": "./lib/proposal-artifact/finding-constants.ts"
+		},
+		"./proposal-artifact/finding-state": {
+			"types": "./lib/proposal-artifact/finding-state.ts",
+			"import": "./lib/proposal-artifact/finding-state.ts",
+			"default": "./lib/proposal-artifact/finding-state.ts"
+		},
+		"./proposal-artifact/theme-tokens": {
+			"types": "./lib/proposal-artifact/theme-tokens.ts",
+			"import": "./lib/proposal-artifact/theme-tokens.ts",
+			"default": "./lib/proposal-artifact/theme-tokens.ts"
+		},
+		"./proposal-artifact/proposal-theme": {
+			"types": "./lib/proposal-artifact/proposal-theme.ts",
+			"import": "./lib/proposal-artifact/proposal-theme.ts",
+			"default": "./lib/proposal-artifact/proposal-theme.ts"
+		},
+		"./proposal-artifact/stat-tiles": {
+			"types": "./lib/proposal-artifact/stat-tiles.ts",
+			"import": "./lib/proposal-artifact/stat-tiles.ts",
+			"default": "./lib/proposal-artifact/stat-tiles.ts"
+		},
 		"./brand-colors": {
 			"types": "./lib/brand-colors.ts",
 			"import": "./lib/brand-colors.ts",
@@ -447,7 +528,10 @@
 		"liquidjs": "^10.27.1",
 		"mustache": "^4.2.0",
 		"nunjucks": "^3.2.4",
+		"remark-gfm": "^4.0.1",
+		"remark-parse": "^11.0.0",
 		"undici": "^8.5.0",
+		"unified": "^11.0.5",
 		"yaml": "^2.7.1",
 		"zod": "^4.2.1"
 	}

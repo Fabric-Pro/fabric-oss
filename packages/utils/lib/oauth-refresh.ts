@@ -156,7 +156,7 @@ export function classifyOAuthErrorCode(value: unknown): string {
 
 /** Parameter names whose values are credentials wherever they appear. */
 const SECRET_PARAMETER_PATTERN =
-	/\b(access_token|refresh_token|id_token|client_secret|code_verifier|code|assertion|password|registration_access_token)(\s*["']?\s*[=:]\s*["']?)[^\s&"',;}]+/gi;
+	/\b(access_token|refresh_token|id_token|client_secret|code_verifier|code|assertion|password|registration_access_token)(\s*(?:["']\s*)?[=:]\s*["']?)[^\s&"',;}]+/gi;
 
 /**
  * Make provider-supplied error text safe to log and persist.

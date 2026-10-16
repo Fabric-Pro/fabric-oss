@@ -138,7 +138,8 @@ export const executeToolProcedure = tenantProtectedProcedure
 				mcpClient = clientResult.client;
 			} catch (clientError) {
 				console.error(
-					`[MCP Tools] Failed to create client for ${serverName}:`,
+					"[MCP Tools] Failed to create client:",
+					{ serverName },
 					clientError,
 				);
 

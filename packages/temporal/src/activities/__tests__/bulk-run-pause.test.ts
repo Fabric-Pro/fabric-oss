@@ -12,11 +12,15 @@ const mocks = vi.hoisted(() => ({
 	claimBulkRunResume: vi.fn(),
 	updateManyDocuments: vi.fn(),
 	start: vi.fn(),
+	notifyBulkRunPlanPaused: vi.fn(),
+	notifyBulkRunPlanStopped: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	recordBulkRunPause: mocks.recordBulkRunPause,
 	claimBulkRunResume: mocks.claimBulkRunResume,
+	notifyBulkRunPlanPaused: mocks.notifyBulkRunPlanPaused,
+	notifyBulkRunPlanStopped: mocks.notifyBulkRunPlanStopped,
 	bulkRunResumeWorkflowId: (base: string, count: number) =>
 		`${base}-resume-${count}`,
 	db: { projectDocument: { updateMany: mocks.updateManyDocuments } },
@@ -58,6 +62,8 @@ beforeEach(() => {
 	mocks.claimBulkRunResume.mockReset();
 	mocks.updateManyDocuments.mockReset();
 	mocks.start.mockReset();
+	mocks.notifyBulkRunPlanPaused.mockReset();
+	mocks.notifyBulkRunPlanStopped.mockReset();
 	mocks.recordBulkRunPause.mockImplementation(async (args) => ({
 		status: "paused",
 		pauseCount: args.expectedPauseCount + 1,
@@ -204,5 +210,62 @@ describe("claimBulkRunResumeActivity", () => {
 				viaApiOverride: false,
 			}),
 		).resolves.toEqual({ claimed: false });
+	});
+});
+
+describe("pauseBulkRunActivity notices (Fizzy #3050)", () => {
+	it("announces a run's first pause, after its resume is scheduled", async () => {
+		await pauseBulkRunActivity(base);
+
+		expect(mocks.notifyBulkRunPlanPaused).toHaveBeenCalledTimes(1);
+		expect(mocks.notifyBulkRunPlanPaused).toHaveBeenCalledWith({
+			kind: "PROJECT_SCAN",
+			runId: "scan-1",
+			resumesAt: new Date("2026-10-12T15:00:00.000Z"),
+			now: new Date("2026-10-12T12:00:00.000Z"),
+		});
+		expect(mocks.start.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.notifyBulkRunPlanPaused.mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("stays quiet on every later pause of the same run", async () => {
+		for (const pauseCount of [1, 2, 5]) {
+			await pauseBulkRunActivity({ ...base, pauseCount });
+		}
+		expect(mocks.notifyBulkRunPlanPaused).not.toHaveBeenCalled();
+	});
+
+	it("announces nothing when the resume could not be scheduled, so the retry is the one that tells", async () => {
+		mocks.start.mockRejectedValueOnce(new Error("temporal down"));
+		await expect(pauseBulkRunActivity(base)).rejects.toThrow(
+			"temporal down",
+		);
+		expect(mocks.notifyBulkRunPlanPaused).not.toHaveBeenCalled();
+
+		await pauseBulkRunActivity(base);
+		expect(mocks.notifyBulkRunPlanPaused).toHaveBeenCalledTimes(1);
+	});
+
+	it("announces the stop when the run reached its pause cap", async () => {
+		mocks.recordBulkRunPause.mockResolvedValue({
+			status: "cap",
+			pauseCount: 6,
+		});
+		await pauseBulkRunActivity({ ...base, pauseCount: 6 });
+
+		expect(mocks.notifyBulkRunPlanStopped).toHaveBeenCalledWith({
+			kind: "PROJECT_SCAN",
+			runId: "scan-1",
+			reason: "PLAN_SPENT",
+		});
+		expect(mocks.notifyBulkRunPlanPaused).not.toHaveBeenCalled();
+	});
+
+	it("announces nothing for a run that was cancelled meanwhile", async () => {
+		mocks.recordBulkRunPause.mockResolvedValue({ status: "gone" });
+		await pauseBulkRunActivity(base);
+		expect(mocks.notifyBulkRunPlanPaused).not.toHaveBeenCalled();
+		expect(mocks.notifyBulkRunPlanStopped).not.toHaveBeenCalled();
 	});
 });

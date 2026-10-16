@@ -37,6 +37,18 @@ describe("the allow-list is derived from the prompt", () => {
 		}
 	});
 
+	it("teaches the generator the agentic nodes, so it can wire a scheduled agent to a frame", () => {
+		expect(SUPPORTED_GENERATED_NODE_TYPES.has("agent-task")).toBe(true);
+		expect(SUPPORTED_GENERATED_NODE_TYPES.has("publish-frame")).toBe(true);
+		expect(
+			collectUnknownNodeTypes([
+				{ id: "t", type: "trigger" },
+				{ id: "a", type: "agent-task" },
+				{ id: "p", type: "publish-frame" },
+			]),
+		).toEqual([]);
+	});
+
 	it("parsed a plausible number of types, so a format change cannot silently empty it", () => {
 		// An empty or near-empty set would accept nothing; a huge one would mean
 		// the regex is matching prose rather than the numbered entries.

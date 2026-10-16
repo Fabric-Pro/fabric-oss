@@ -4,6 +4,14 @@ import { logger } from "@repo/logs";
 // kept in step by a test is the arrangement `meeting_agenda_generator` uses,
 // and the test it names does not exist.
 import {
+	AGENT_TASK_FALLBACK_BODY,
+	AGENT_TASK_PROMPT_AGENT_KEY,
+} from "@repo/utils/agent-task-prompt";
+import {
+	PAGE_ASK_FALLBACK_BODY,
+	PAGE_ASK_PROMPT_AGENT_KEY,
+} from "@repo/utils/page-ask-prompt";
+import {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-blog-post-prompt";
@@ -362,6 +370,31 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: "meeting_agenda_generator",
+	},
+	// workflow_agent_task: the standing orders for a workflow's Agent Task step,
+	// which runs unattended. Dedicated agent key so the step resolves a prompt
+	// distinct from every document prompt at the same documentType/storyKind.
+	// GENERAL + null: one prompt per tenant covers every workflow. The step
+	// passes the output format, whether a data block follows and that block's
+	// per-run boundary as HANDLEBARS variables; a node's own instructions are
+	// appended after the rendered body code-side, so an override cannot drop
+	// them, and the tools an agent may use are fixed by the node, not here.
+	[AGENT_TASK_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: AGENT_TASK_PROMPT_AGENT_KEY,
+	},
+	// page_ask: the answers a published page asks Fabric for through
+	// `fabric.ask`. Dedicated agent key so the service resolves a prompt
+	// distinct from every document prompt at the same documentType/storyKind.
+	// GENERAL + null: one prompt per tenant covers every page. The service
+	// passes the answer format as HANDLEBARS booleans; the question and the
+	// page's context are fenced as untrusted data code-side, so an override
+	// cannot drop that.
+	[PAGE_ASK_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PAGE_ASK_PROMPT_AGENT_KEY,
 	},
 	// publishing_topic_suggestion: the daily scan that decides which of a
 	// project's recent activity is worth publishing, and writes the summary at
@@ -6368,6 +6401,58 @@ Rules:
 		structuredFormat: "JSON" as const,
 		isPublic: true,
 		content: PUBLISHING_NEWSLETTER_BLURB_FALLBACK_BODY,
+	},
+	{
+		// workflow_agent_task: the standing orders for a workflow's Agent Task
+		// step, which runs an agent turn with nobody watching.
+		//
+		// The body lives in @repo/utils (AGENT_TASK_FALLBACK_BODY) so this seed
+		// and the step that resolves the binding share ONE definition. It takes
+		// the output format, whether a data block follows the task and that
+		// block's per-run boundary as HANDLEBARS variables. Plain text output
+		// (HTML or Markdown), so no promptType/structuredFormat: the schema
+		// default applies.
+		//
+		// A node's own instructions are appended after the rendered body
+		// code-side, so an organization editing the house rules cannot drop them.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: AGENT_TASK_PROMPT_AGENT_KEY,
+		name: "Workflow Agent Task",
+		description:
+			"The standing instructions for a workflow's Agent Task step, which runs an AI agent on a schedule with nobody watching: how it behaves when no one can answer, how it treats data from earlier steps, and the shape of the HTML or Markdown it returns.",
+		category: "automation",
+		tags: ["automation", "workflows", "agent-task", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: AGENT_TASK_FALLBACK_BODY,
+	},
+	{
+		// page_ask: the answers a published page asks Fabric for, one question
+		// at a time, with no tools and no memory of earlier questions.
+		//
+		// The body lives in @repo/utils (PAGE_ASK_FALLBACK_BODY) so this seed
+		// and the service that resolves the binding share ONE definition. It
+		// takes the answer format as HANDLEBARS booleans. Plain text output, so
+		// no promptType/structuredFormat: the schema default applies.
+		//
+		// The question and the page's context are fenced as untrusted data
+		// code-side, so an organization editing the voice cannot drop that.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PAGE_ASK_PROMPT_AGENT_KEY,
+		name: "Workspace Page Ask",
+		description:
+			"The instructions behind a published page's Ask: how Fabric answers a question the page puts to it, in plain text, Markdown or JSON, using only the question and the context the page supplied.",
+		category: "workspaces",
+		tags: ["workspaces", "pages", "page-ask", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: PAGE_ASK_FALLBACK_BODY,
 	},
 ];
 

@@ -959,6 +959,22 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Removed a Living Memory write folder, so agents can no longer write into it. `metadata.folder` and `metadata.mode` are what it was. Files already written stay in the repository, and the record of each write already admitted through it is kept.",
 	},
 	{
+		key: "project.context.memory_write_submitted",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.memory_write_submitted",
+		description:
+			"A request to write files into a Living Memory write folder was admitted and handed to the write workflow. `metadata.folder` and `metadata.mode` are the folder and how its files land (PULL_REQUEST or DIRECT_PUSH), `metadata.via` is the surface it came through, `metadata.fileCount` how many paths it names and `metadata.oauthClientId` the agent's OAuth client when it came through one. It is admitted on static checks only; what reached the repository is the `memory_write_settled` row. Neither file content nor the message is recorded.",
+	},
+	{
+		key: "project.context.memory_write_settled",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.context.memory_write_settled",
+		description:
+			'An admitted Living Memory write ended. `metadata.status` is COMMITTED (a commit is on the synced branch, `metadata.sha`), PULL_REQUEST (a pull request is open from `metadata.branch`; `metadata.reason` is "configured" when the folder opens pull requests, or "protected" when a direct push was refused by the branch), CONFLICT (a path changed under the caller; nothing was written), REFUSED (the write is ruled out; `metadata.code`) or FAILED (`metadata.code`, `metadata.retryable`). A COMMITTED row is the one that shows a write reaching the synced branch without a pull request. Neither file content nor the message is recorded.',
+	},
+	{
 		key: "project.document_generation.failed",
 		categoryId: "project",
 		labelKey:
@@ -1778,6 +1794,29 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.org.brand_kit.updated",
 		description:
 			"An organization's brand kit — its accent colors and guidance text for Glossy exports — was changed.",
+	},
+	{
+		key: "project.document_analysis.responded",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_analysis.responded",
+		description:
+			"A member confirmed or answered a finding of a Proposal's Internal Analysis; the answer informs later generations as a settled decision. Records the finding key, answer kind and run ids, never the answer text.",
+	},
+	{
+		key: "project.document_analysis.cleared",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.document_analysis.cleared",
+		description:
+			"A member cleared an answer to a finding of a Proposal's Internal Analysis, so it no longer informs later generations. Records the finding key and answer kind only.",
+	},
+	{
+		key: "project.document_analysis.rerun_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_analysis.rerun_started",
+		description:
+			"A member started a re-run of a Proposal's Internal Analysis over its current content — a model call billed to the organization. Records the new run and the run whose sources it reads.",
 	},
 	{
 		key: "org.company_context.metadata_updated",

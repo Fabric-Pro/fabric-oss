@@ -214,6 +214,24 @@ export interface OrchestratorWorkflowInput {
 	 */
 	organizationSlug?: string;
 	/**
+	 * Proof from the stream route that this turn acts for `userId` in
+	 * `organizationId`, which the Fabric MCP gateway requires of the agent
+	 * runtime for the workflow and frame tools. Minted by the route (valid for
+	 * the hour a turn's workflow may run); the worker only carries it. Without
+	 * it the turn's calls to those tools are refused with a message telling the
+	 * person to send their message again.
+	 */
+	actingGrant?: string;
+	/**
+	 * The page the chat was opened from — a Workspace's id and whether the page
+	 * is an artifact or a workspace surface — so a page the agent writes lands
+	 * where the person is and "update this page" means the one they have open.
+	 * Never widens access. Distinct from `surface`, which names the UI that
+	 * started the run.
+	 */
+	launchWorkspaceId?: string;
+	launchSurface?: "artifact" | "workspace";
+	/**
 	 * Set only by the Orchestrator stream route, for a chat started from the
 	 * Advisor (the Fabric AI page or the Fabric Agent drawer, with or without
 	 * a custom agent chosen there). It lets the turn tell the model which

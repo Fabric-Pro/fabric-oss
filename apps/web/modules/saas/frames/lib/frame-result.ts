@@ -63,5 +63,7 @@ export function isFrameToolName(toolName: string): boolean {
 		"fabric_list_frames",
 		"fabric_share_frame",
 		"fabric_create_slideshow",
+		"fabric_duplicate_frame",
+		"fabric_restore_frame_version",
 	].includes(toolName);
 }

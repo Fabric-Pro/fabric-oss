@@ -11,7 +11,9 @@ import {
 	buildCloneAndInitLine,
 	buildCodexCommand,
 	buildInitLine,
+	buildPluginInitLine,
 	type CloneChoice,
+	claudePluginInstallCommand,
 	type LocalSetupTool,
 } from "./lib/agent-sign-in";
 import type { CheckoutSetup } from "./lib/checkout-setup";
@@ -46,8 +48,11 @@ const CLAUDE_CODE_MCP_NEXT_STEP =
 const CODEX_MCP_NEXT_STEP =
 	"The command opens your browser so you can approve the connection, and finishes once you have. Keep the terminal open until it does.";
 
-const UPLOAD_HOOK_NOTE =
-	"After that, at each session start a hook tells you when the published instructions have changed.";
+const PLUGIN_NOTE =
+	"Then the setup asks you to approve the plugin's command once. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.";
+
+const CLAUDE_PLUGIN_APPROVAL_NOTE =
+	"Claude Code shows the exact command the plugin runs and asks you to accept it once, in your own terminal; it will not take that answer from inside a coding session. If the setup could not ask you, run this in the project folder:";
 
 /* -------------------------------------------------------------------------- */
 /* The setup line                                                              */
@@ -74,9 +79,13 @@ function setupLineFor(args: {
 		tool,
 		projectId,
 	};
-	return route.kind === "repository" && choice === "clone"
-		? buildCloneAndInitLine(route, line)
-		: buildInitLine(line);
+	if (route.kind === "repository" && choice === "clone") {
+		return buildCloneAndInitLine(route, line);
+	}
+	if (route.kind === "repository" && choice === "have") {
+		return buildInitLine(line);
+	}
+	return buildPluginInitLine(line);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -91,25 +100,45 @@ function setupLineFor(args: {
 function ApproveStep({
 	tool,
 	route,
+	choice,
+	projectId,
+	announce,
 }: {
 	tool: LocalSetupTool;
 	route: LocalSetupRoute;
+	choice: CloneChoice;
+	projectId: string;
+	announce: (message: string) => void;
 }) {
+	const viaPlugin = choice === "plugin" || route.kind === "upload";
 	return (
 		<>
 			<p className="text-muted-foreground text-sm">
 				A sign-in page opens.{" "}
-				{route.kind === "repository" ? (
+				{viaPlugin ? (
+					PLUGIN_NOTE
+				) : (
 					<>
 						After that, at each session start a hook fast-forwards{" "}
 						<InlineCode>{route.ref}</InlineCode> to the newest
 						instructions when your checkout is clean, and says so
 						when it cannot.
 					</>
-				) : (
-					UPLOAD_HOOK_NOTE
 				)}
 			</p>
+			{viaPlugin && tool === "claude-code" ? (
+				<>
+					<p className="text-muted-foreground text-sm">
+						{CLAUDE_PLUGIN_APPROVAL_NOTE}
+					</p>
+					<CommandBlock
+						announce={announce}
+						command={claudePluginInstallCommand(projectId)}
+						label="Copy the plugin approval command"
+						testId="agent-sign-in-plugin-approval"
+					/>
+				</>
+			) : null}
 			{tool === "codex" ? (
 				<p className="text-muted-foreground text-sm">
 					Then, in Codex, trust this folder when asked and run{" "}
@@ -124,12 +153,14 @@ function ApproveStep({
 function checkoutSteps(args: {
 	tool: LocalSetupTool;
 	route: LocalSetupRoute;
+	projectId: string;
 	line: string;
 	choice: CloneChoice;
 	onChoiceChange: (choice: CloneChoice) => void;
 	announce: (message: string) => void;
 }): SetupStep[] {
-	const { tool, route, line, choice, onChoiceChange, announce } = args;
+	const { tool, route, projectId, line, choice, onChoiceChange, announce } =
+		args;
 	return [
 		...(route.kind === "repository"
 			? [
@@ -172,7 +203,15 @@ function checkoutSteps(args: {
 			id: "approve",
 			title: APPROVE_STEP_TITLE,
 			approve: true,
-			children: <ApproveStep route={route} tool={tool} />,
+			children: (
+				<ApproveStep
+					announce={announce}
+					choice={choice}
+					projectId={projectId}
+					route={route}
+					tool={tool}
+				/>
+			),
 		},
 	];
 }
@@ -300,6 +339,7 @@ export function TerminalToolSteps({
 			steps={checkoutSteps({
 				tool,
 				route: localSetup,
+				projectId,
 				line: setupLineFor({
 					document: discovery.document,
 					origin,

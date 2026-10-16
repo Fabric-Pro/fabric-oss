@@ -17,11 +17,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db } from "../prisma/client";
+import { seedContentHash } from "./seed-content-hash";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -35,23 +34,12 @@ const forceRun = args.includes("--force") || args.includes("-f");
 interface SeedConfig {
 	name: string;
 	file: string;
-	/** Additional files whose content affects this seed (e.g. imported data catalogs) */
+	/**
+	 * Files or directories whose content affects this seed (e.g. imported
+	 * data catalogs, a folder of seed data); see `seedContentHash`.
+	 */
 	dependencies?: string[];
 	description: string;
-}
-
-/**
- * Calculate SHA256 hash of file content, including any dependency files
- */
-function getFileHash(filePath: string, depPaths?: string[]): string {
-	const hash = createHash("sha256");
-	hash.update(readFileSync(filePath, "utf-8"));
-	if (depPaths) {
-		for (const dep of depPaths) {
-			hash.update(readFileSync(dep, "utf-8"));
-		}
-	}
-	return hash.digest("hex").slice(0, 16);
 }
 
 /**
@@ -140,6 +128,10 @@ async function main() {
 		{
 			name: "skills",
 			file: "seed-skills.ts",
+			// seed-skills.ts reads every skill folder under skills-seed/ at run
+			// time. Without this a new or edited skill folder left the hash
+			// unchanged, so the seed was skipped and the skill never shipped.
+			dependencies: ["skills-seed"],
 			description: "Skill catalog",
 		},
 		{
@@ -199,7 +191,7 @@ async function main() {
 	for (const seed of seeds) {
 		const filePath = join(PRISMA_DIR, seed.file);
 		const depPaths = seed.dependencies?.map((d) => join(PRISMA_DIR, d));
-		const currentHash = getFileHash(filePath, depPaths);
+		const currentHash = seedContentHash(filePath, depPaths);
 		const storedHash = await getStoredHash(seed.name);
 
 		if (!forceRun && currentHash === storedHash) {

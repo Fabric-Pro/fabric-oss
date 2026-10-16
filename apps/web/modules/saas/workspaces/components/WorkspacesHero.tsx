@@ -1,14 +1,16 @@
 "use client";
 
 import { PageHeader } from "@saas/shared/components/PageHeader";
+import type { ReactNode } from "react";
 
-export function WorkspacesHero() {
+export function WorkspacesHero({ actions }: { actions?: ReactNode }) {
 	return (
 		<PageHeader
-			label="Document intelligence"
+			label="Pages for your organization"
 			title="Workspaces"
 			getStartedPageId="workspaces"
-			description="Organize documents for retrieval, search, and agent context."
+			description="Pages Fabric Agent writes for your organization, shared with everyone in it unless you ask for one to stay private. Describe what you want to see and it builds the page."
+			actions={actions}
 		/>
 	);
 }

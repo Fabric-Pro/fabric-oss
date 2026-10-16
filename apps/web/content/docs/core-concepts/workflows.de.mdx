@@ -86,7 +86,7 @@ Wenn Sie einen Agenten bitten, ein Dokument zu generieren, wird dieser Workflow 
   <Step>
     ### RAG-Kontext abrufen
 
-    Ihre Workspace-Dokumente nach relevantem Inhalt basierend auf der Anfrage durchsuchen.
+    Die Dokumente Ihrer Bibliotheken nach relevantem Inhalt basierend auf der Anfrage durchsuchen.
   </Step>
 
   <Step>
@@ -121,7 +121,7 @@ Der Fabric-Orchestrator führt einen komplexeren Workflow aus:
 flowchart TB
     subgraph INIT["1. INITIALISIEREN"]
         I1[Gedächtnis und Kontext laden]
-        I2[Workspace-Dokumente abrufen]
+        I2[Bibliotheksdokumente abrufen]
     end
 
     subgraph ROUTE["2. WEITERLEITEN"]

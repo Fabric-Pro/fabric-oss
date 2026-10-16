@@ -8,10 +8,9 @@
  * The personal routes are asserted here too, because R10 requires them to keep
  * working unchanged: no redirect, no behaviour change.
  *
- * The account AI-providers route (R12/AE7) joins them at the bottom of this
- * file for the same reason: a provider key saved without an organization is
- * the person's, resolves inside whichever organization they are working in,
- * and has nothing about it to scope per tenant.
+ * The account AI-providers route (R12/AE7) is at the bottom of this file. It
+ * is a redirect now: the member's own keys moved to the Personal tab of the
+ * organization's AI Providers page (Fizzy #3082).
  */
 
 import { render, screen } from "@testing-library/react";
@@ -87,20 +86,6 @@ vi.mock("@saas/settings/components/NotificationPreferencesForm", () => ({
 vi.mock("@saas/settings/components/NotificationDeliveryForm", () => ({
 	NotificationDeliveryForm: () => <div>Notification delivery</div>,
 }));
-// The provider form is a ~2200-line client tree with its own oRPC graph. This
-// suite is about WHICH surface the route mounts and with what tenant, so it is
-// stubbed at its module boundary like the security blocks above.
-vi.mock("@saas/settings/components/AiProvidersSettingsForm", () => ({
-	AiProvidersSettingsForm: () => <div>Personal AI provider keys</div>,
-}));
-// The page mounts the form through this wrapper since Fizzy #2770, which
-// also reads the ChatGPT plan status; same module-boundary stub.
-vi.mock(
-	"@saas/settings/components/chatgpt-plan/AccountAiProvidersSettings",
-	() => ({
-		AccountAiProvidersSettings: () => <div>Personal AI provider keys</div>,
-	}),
-);
 
 import PersonalSettingsRedirect from "../../app/(saas)/app/(account)/settings/[[...path]]/page";
 import OrgAccountAiProvidersPage from "../../app/(saas)/app/(organizations)/[organizationSlug]/settings/account/ai-providers/page";
@@ -237,47 +222,23 @@ describe("account settings routes — account-global, inside an organization", (
 });
 
 /**
- * Fizzy #1875 (R12, AE7): the "AI provider required" notice tells a member who
- * cannot edit the organization's providers that they may add a key of their
- * own. That was true of the resolver and false of the interface — the form
- * existed, complete, and was mounted nowhere. This is the page that closes it.
+ * Fizzy #3082: the member's own keys moved from their own page to the Personal
+ * tab of the organization's AI Providers page. The old route stays for links
+ * and bookmarks and lands on that tab, in the same organization.
  */
-describe("account AI providers route — the personal key has a home", () => {
+describe("account AI providers route — now the Personal tab", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		getSession.mockResolvedValue({ user: { id: "user-1" } });
 	});
 
-	it("lets a member who cannot edit the organization's providers add their own key", async () => {
-		// Nothing about this route consults membership or role: it is the page
-		// a NON-admin is sent to, so gating it on being one would defeat it.
-		render(
-			<FeatureFlagProvider value={{ PUBLISHING_SUITE: false }}>
-				{await OrgAccountAiProvidersPage()}
-			</FeatureFlagProvider>,
+	it("redirects to the Personal tab of the same organization's AI Providers", async () => {
+		await expect(
+			OrgAccountAiProvidersPage({
+				params: Promise.resolve({ organizationSlug: "example-org" }),
+			}),
+		).rejects.toThrow(
+			"redirect:/app/example-org/settings/ai-providers?tab=personal",
 		);
-
-		expect(screen.getByText("Your AI Providers")).toBeDefined();
-		expect(screen.getByText("Personal AI provider keys")).toBeDefined();
-	});
-
-	it("refuses an unauthenticated caller the way its siblings do", async () => {
-		getSession.mockResolvedValue(null);
-
-		await expect(OrgAccountAiProvidersPage()).rejects.toThrow(
-			"redirect:/auth/login",
-		);
-	});
-
-	it("threads no organization into the surface — the key is the person's", async () => {
-		// The route takes no `params`, so there is no slug it could pass down
-		// even by accident, and it reads the session with no tenant argument.
-		// A key scoped to the tenant would be the organization's page, not this.
-		expect(OrgAccountAiProvidersPage.length).toBe(0);
-
-		await OrgAccountAiProvidersPage();
-
-		expect(getSession).toHaveBeenCalledWith();
 	});
 });
 
@@ -298,19 +259,30 @@ describe("the retired personal provider path, through the catch-all", () => {
 		]);
 	});
 
-	it("takes an old /app/settings/ai-providers link to the ACCOUNT page", async () => {
-		// Not the organization's page of the same slug. A key saved without an
+	it("takes an old /app/settings/ai-providers link to the PERSONAL tab", async () => {
+		// Not the organization's tab of the same page. A key saved without an
 		// organization is not personal-context data being dropped — it is the
 		// person's, and it still resolves for them. Sending the bookmark to the
-		// organization's page would show them a different set of keys, owned by
-		// someone else and read-only to most members.
+		// organization's keys would show them a different set, owned by
+		// someone else and read-only to most members (Fizzy #3082).
 		await expect(
 			PersonalSettingsRedirect({
 				params: Promise.resolve({ path: ["ai-providers"] }),
 				searchParams: Promise.resolve({}),
 			}),
 		).rejects.toThrow(
-			"redirect:/app/example-org/settings/account/ai-providers",
+			"redirect:/app/example-org/settings/ai-providers?tab=personal",
+		);
+	});
+
+	it("keeps the rest of an old link's query on its way to the Personal tab", async () => {
+		await expect(
+			PersonalSettingsRedirect({
+				params: Promise.resolve({ path: ["ai-providers"] }),
+				searchParams: Promise.resolve({ returnTo: "/app/projects" }),
+			}),
+		).rejects.toThrow(
+			"redirect:/app/example-org/settings/ai-providers?returnTo=%2Fapp%2Fprojects&tab=personal",
 		);
 	});
 

@@ -15,11 +15,13 @@ import {
 	parlumeToolFingerprint,
 	parseParlumeDecision,
 } from "./parlume-action-policy";
+import { createParlumeMeetingChatTool } from "./parlume-chat-tool";
 import { verifyParlumeVoiceGeneration } from "./parlume-voice";
 import {
 	type AgentToolInvocation,
 	type AgentToolRuntime,
 	isExecutableAgentTool,
+	RUNTIME_TOOL_CONFIG_ID,
 	withAgentToolRuntime,
 	withApprovedAgentTool,
 } from "./shared/agent-tool-runtime";
@@ -80,11 +82,17 @@ export function createParlumeToolRuntime(
 			organizationId: context.organizationId,
 		},
 		abortSignal: context.signal,
+		tools: createParlumeMeetingChatTool(context),
 		invoke: async (invocation: AgentToolInvocation) => {
 			if (!(await sessionIsCurrent(context))) {
 				return {
 					error: "The meeting request was interrupted or access changed. Ask again.",
 				};
+			}
+			// Writing in the meeting chat changes nothing in Fabric, so it is
+			// open to a read-only meeting and needs no confirmation.
+			if (invocation.source.configId === RUNTIME_TOOL_CONFIG_ID) {
+				return invocation.execute();
 			}
 			if (
 				invocation.delegates ||

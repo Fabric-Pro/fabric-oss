@@ -1,4 +1,4 @@
-import { db } from "../client";
+import { db, type Prisma } from "../client";
 
 export interface SaveFrameEditInput {
 	frameId: string;
@@ -22,10 +22,15 @@ export interface FrameEditHistoryEntry {
 	revertedToVersion: number | null;
 }
 
+/**
+ * Records one edit. Inside a transaction, pass its client as `client` so the
+ * row is part of it; on its own the row is written at once.
+ */
 export async function saveFrameEdit(
 	input: SaveFrameEditInput,
+	client: Pick<Prisma.TransactionClient, "frameEditHistory"> = db,
 ): Promise<FrameEditHistoryEntry> {
-	const entry = await db.frameEditHistory.create({
+	const entry = await client.frameEditHistory.create({
 		data: {
 			frameId: input.frameId,
 			editType: input.editType,
@@ -76,9 +81,10 @@ export async function getFrameEditHistory(
 export async function getFrameEditByVersion(
 	frameId: string,
 	version: number,
+	client: Pick<Prisma.TransactionClient, "frameEditHistory"> = db,
 ): Promise<FrameEditHistoryEntry | null> {
 	// Version 0 is the current state, so we look for the Nth entry from the end
-	const entries = await db.frameEditHistory.findMany({
+	const entries = await client.frameEditHistory.findMany({
 		where: { frameId },
 		orderBy: { editedAt: "asc" },
 		skip: version - 1,
@@ -207,61 +213,125 @@ export interface RevertFrameResult {
 	error?: string;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+/**
+ * The page as it was at `snapshot`, declaring the Fabric tools the page
+ * declares NOW. The tools a page may call are part of the document, and the
+ * set in force is the one a person last confirmed: an older version restored
+ * as it was could bring back tools nobody has approved since, so a restore
+ * never widens what a page can do. Null when either document is not a JSON
+ * object, which nothing here can restore safely.
+ */
+function restoredDocument(snapshot: string, current: string): string | null {
+	let before: Record<string, unknown> | null;
+	let now: Record<string, unknown> | null;
+	try {
+		before = asRecord(JSON.parse(snapshot));
+		now = asRecord(JSON.parse(current));
+	} catch {
+		return null;
+	}
+	if (!before || !now) {
+		return null;
+	}
+	const { runtime: _historic, ...metadata } = asRecord(before.metadata) ?? {};
+	const runtime = asRecord(asRecord(now.metadata)?.runtime);
+	const next = { ...metadata, ...(runtime ? { runtime } : {}) };
+	return JSON.stringify(
+		{
+			...before,
+			...(before.metadata !== undefined || runtime
+				? { metadata: next }
+				: {}),
+		},
+		null,
+		2,
+	);
+}
+
+/**
+ * Puts a frame back as it was before its `toVersion`th change. The history row
+ * that keeps what the revert replaces and the content update stand or fall
+ * together, and a second revert of the same page waits for the first.
+ */
 export async function revertFrameToVersion(
 	input: RevertFrameInput,
 ): Promise<RevertFrameResult> {
-	// Get the historical version
-	const historyEntry = await getFrameEditByVersion(
-		input.frameId,
-		input.toVersion,
-	);
+	return db.$transaction(async (tx) => {
+		await tx.$queryRaw`SELECT "id" FROM "agent_workspace_file" WHERE "id" = ${input.frameId} FOR UPDATE`;
 
-	if (!historyEntry || !historyEntry.contentSnapshot) {
+		// Verify ownership
+		const frame = await tx.agentWorkspaceFile.findFirst({
+			where: {
+				id: input.frameId,
+				userId: input.userId,
+				organizationId: input.organizationId ?? null,
+				fileType: { in: ["FRAME", "SLIDESHOW"] },
+			},
+		});
+
+		if (!frame) {
+			return {
+				success: false,
+				error: "Frame not found",
+			};
+		}
+
+		const historyEntry = await getFrameEditByVersion(
+			input.frameId,
+			input.toVersion,
+			tx,
+		);
+
+		if (!historyEntry || !historyEntry.contentSnapshot) {
+			return {
+				success: false,
+				error: `Version ${input.toVersion} not found or has no snapshot`,
+			};
+		}
+
+		const restored = restoredDocument(
+			historyEntry.contentSnapshot,
+			frame.content,
+		);
+		if (restored === null) {
+			return {
+				success: false,
+				error: `Version ${input.toVersion} cannot be restored`,
+			};
+		}
+
+		// Save revert action to history. Like every other entry it holds the content
+		// the edit replaced, so a revert can itself be undone.
+		await saveFrameEdit(
+			{
+				frameId: input.frameId,
+				editType: "revert",
+				contentSnapshot: frame.content,
+				editedBy: input.userId,
+				revertedToVersion: input.toVersion,
+			},
+			tx,
+		);
+
+		await tx.agentWorkspaceFile.update({
+			where: { id: input.frameId },
+			data: {
+				content: restored,
+				size: Buffer.byteLength(restored, "utf8"),
+			},
+		});
+
 		return {
-			success: false,
-			error: `Version ${input.toVersion} not found or has no snapshot`,
+			success: true,
+			newContent: restored,
 		};
-	}
-
-	// Verify ownership
-	const frame = await db.agentWorkspaceFile.findFirst({
-		where: {
-			id: input.frameId,
-			userId: input.userId,
-			organizationId: input.organizationId ?? null,
-			fileType: { in: ["FRAME", "SLIDESHOW"] },
-		},
 	});
-
-	if (!frame) {
-		return {
-			success: false,
-			error: "Frame not found",
-		};
-	}
-
-	// Save revert action to history
-	await saveFrameEdit({
-		frameId: input.frameId,
-		editType: "revert",
-		contentSnapshot: historyEntry.contentSnapshot,
-		editedBy: input.userId,
-		revertedToVersion: input.toVersion,
-	});
-
-	// Restore content
-	await db.agentWorkspaceFile.update({
-		where: { id: input.frameId },
-		data: {
-			content: historyEntry.contentSnapshot,
-			size: Buffer.byteLength(historyEntry.contentSnapshot, "utf8"),
-		},
-	});
-
-	return {
-		success: true,
-		newContent: historyEntry.contentSnapshot,
-	};
 }
 
 export async function saveFullUpdateToHistory(

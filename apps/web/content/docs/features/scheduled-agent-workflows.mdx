@@ -1,0 +1,95 @@
+---
+title: Scheduled agent workflows
+description: Have an agent do a job on a schedule and publish what it wrote as a page, with the rules that keep an unattended run safe.
+---
+
+A scheduled agent workflow does a job on a timetable with nobody watching: every Monday morning an agent reads your project's work items, writes a status page, and publishes it where the team will find it. You describe the job to Fabric Agent, check the draft, and Fabric runs it from then on.
+
+It is built from three nodes on the [Workflow Builder](/docs/features/workflow-builder) canvas:
+
+```mermaid
+flowchart LR
+    T["Schedule<br/>(trigger)"] --> A["Agent Task"]
+    A --> P["Publish Frame"]
+```
+
+## Set one up
+
+Ask Fabric Agent in any chat: "Every Monday at 9 write a status page of this project's open work and publish it on its Artifacts tab." The agent drafts the workflow and shows you a card before anything is saved: the schedule in words and in your time zone, the prompt the agent will run, the connected servers and built-in tools it may use, the title and format of the page, and any problems that would stop the workflow going live. Nothing is created until you approve.
+
+Fabric Agent asks the same way before it changes, publishes, unpublishes, pauses, resumes or runs a workflow. The card shows the exact values the action would use.
+
+You can open the saved workflow in the Workflow Builder at any time and edit its nodes by hand.
+
+## The nodes
+
+### Schedule
+
+The trigger node's **Trigger Type** is **Schedule**, with a cron expression and a time zone.
+
+- **Time zone.** The cron is read in the time zone you set, as an IANA name such as `Europe/Berlin` or `America/New_York`. Without one it is read in `UTC`, which is rarely where you are, so give one. A name that is not a time zone is refused when the workflow is published.
+- **At most every 15 minutes.** A schedule that runs an Agent Task may not fire more often than every 15 minutes. A faster schedule, or one whose interval cannot be worked out, is refused when the workflow is published.
+
+### Agent Task
+
+Runs an AI agent with a prompt you write. Its settings:
+
+| Setting | What it does |
+|---------|--------------|
+| **Prompt** | The job, up to 20,000 characters |
+| **System prompt** | Optional standing instructions |
+| **Model** | Optional; the default model when empty |
+| **MCP servers** | Connected servers of the workflow's owner the agent may call, up to 10 |
+| **Built-in tools** | Fabric's own capabilities, such as project context, up to 30 |
+| **Max iterations** | How many tool-calling rounds it may take, 1 to 10 |
+| **Output format** | `html` or `markdown` |
+
+Its result is available to later nodes as `{{Agent Task.html}}` or `{{Agent Task.markdown}}`.
+
+### Publish Frame
+
+Saves the agent's result as a page, so the people who need it can open it. Its settings:
+
+| Setting | What it does |
+|---------|--------------|
+| **Title** and **Description** | What the page is called and what it shows |
+| **Content** | What goes on the page, usually `{{Agent Task.html}}` |
+| **Surface** | `artifact` (a project's Artifacts tab, the default) or `workspace` (an organization [Workspace](/docs/features/workspace-pages)) |
+| **Project** | Defaults to the workflow's project; required for an artifact |
+| **Mode** | `new-version` keeps one page and adds a version on each run (default); `new-frame` makes a new page every run |
+
+Every run in `new-version` mode leaves the earlier text in the page's version history, so you can see what the report said last week.
+
+## Rules for a run nobody is watching
+
+An agent that runs on its own reads private data and acts for the person who owns the workflow. These rules apply to every Agent Task, when the workflow is published and again every time it runs:
+
+- **It acts as its owner, with the owner's own connections only.** The MCP servers it may call are ones the owner connected, checked each run. Someone else's connection cannot be named.
+- **It has no web or code tools.** Web search, web browsing and the code interpreter are refused, because an agent that reads private data and can fetch any address can send that data out. It also cannot create or share frames itself (that is what the Publish Frame node is for) or hand work to other agents.
+- **It cannot change connected systems on its own.** A tool that would change something in a connected server needs an approval, and with nobody there to give one the call is refused. A scheduled agent reads and reports.
+- **Its page has no scripts.** A page written by a scheduled run is shown as a static report; buttons and scripts only exist on pages written in a chat.
+- **It stops when its owner loses access.** If the owner leaves the organization or may no longer run workflows, the next scheduled run pauses the workflow instead of running it.
+
+## When a run fails
+
+A scheduled run that fails is counted. **After three failed runs in a row the workflow pauses itself** and its schedule is removed, so a job that nobody is watching cannot keep failing or spending. A run that succeeds starts the count again from zero.
+
+This applies to **every** scheduled workflow, not only agent workflows.
+
+Once you have fixed the problem, resume the workflow (ask Fabric Agent to resume it, or resume it from the Workflow Builder); the schedule comes back and the count starts fresh.
+
+## Notifications
+
+The workflow's owner is notified, in Fabric's notifications:
+
+- the **first time** a scheduled workflow runs successfully, with a link to the page it published when there is one;
+- **every run that fails**;
+- when the workflow is **paused** after three failures in a row.
+
+Notifications say what happened, never the raw error, because the notification list is visible in the interface. Open the workflow's run history to see what went wrong.
+
+## Related
+
+- [Workflow Builder](/docs/features/workflow-builder), triggers, nodes, publishing and run history
+- [Project Artifacts](/docs/features/project-artifacts) and [Workspaces](/docs/features/workspace-pages), where the pages appear
+- [Fabric MCP Gateway](/docs/integrations/mcp-gateway), the tools Fabric Agent uses to set a workflow up

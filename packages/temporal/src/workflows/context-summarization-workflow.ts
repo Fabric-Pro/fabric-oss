@@ -171,6 +171,11 @@ export async function contextSummarizationWorkflow(
 				? await withChatGptPlanWait(generate, {
 						organizationId: input.organizationId,
 						userId: input.userId,
+						stoppedNotice: {
+							work: "CONTEXT_SUMMARY",
+							projectId: input.projectId,
+							initiatorUserId: null,
+						},
 					})
 				: await generate();
 

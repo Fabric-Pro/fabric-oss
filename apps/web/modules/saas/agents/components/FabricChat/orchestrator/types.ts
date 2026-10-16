@@ -240,6 +240,14 @@ export interface CompletedExecution {
 	imageUrls?: string[];
 	stepResults: StepResult[];
 	response?: string;
+	/** Distinct saved answers carried beside the primary response on read. */
+	additionalResponses?: string[];
+	/** The read restored, corrected or supplemented the saved execution. */
+	recoveredFromTurn?: boolean;
+	/** The server-owned terminal outcome, including corrected browser records. */
+	terminalStatus?: "COMPLETED" | "FAILED" | "LIMITED" | "CANCELLED";
+	terminalReason?: string;
+	limitSignals?: Array<{ kind: string; provider?: string; message: string }>;
 	completedAt: Date;
 	/**
 	 * Clarifying questions answered during this execution, oldest first. Kept

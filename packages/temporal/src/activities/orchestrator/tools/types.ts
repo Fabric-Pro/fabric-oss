@@ -16,7 +16,11 @@ export interface SearchAvailableToolsInput {
 	query: string;
 	/** Original user query before the LLM rewrote/search-normalized it */
 	originalQuery?: string;
-	/** Optional category to narrow search */
+	/**
+	 * The model's guess at a category. Recorded with the call, never applied
+	 * as a filter: a wrong guess ("documentation" for a page write) left only
+	 * the tools in that category and hid the one the turn needed.
+	 */
 	category?: ToolCategory;
 	/** Maximum number of tools to return */
 	limit?: number;
@@ -74,6 +78,7 @@ export interface SearchAvailableToolsOutput {
 	/** Structured telemetry for observability and replay analysis */
 	telemetry?: {
 		strategy:
+			| "exact_name"
 			| "explicit_server"
 			| "always_available"
 			| "fabric_keyword_shortcut"

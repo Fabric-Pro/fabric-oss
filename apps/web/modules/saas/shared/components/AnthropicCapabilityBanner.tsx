@@ -5,6 +5,7 @@ import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import {
 	ANTHROPIC_CAPABILITY_BANNER_DETAIL,
 	ANTHROPIC_CAPABILITY_BODY,
@@ -109,9 +110,7 @@ export function AnthropicCapabilityBanner() {
 	// landed on their own default — a personal embedding assignment is never
 	// consulted for an organization, so pointing anyone else here would send
 	// them to a row that cannot change the answer.
-	const personalSettingsPath = useContextPath(
-		"settings/account/ai-providers",
-	);
+	const personalSettingsPath = useContextPath(PERSONAL_AI_PROVIDERS_PATH);
 	// Server-seeded by the organization layout's guest provider, so this is
 	// correct on the first render under that layout. The account layout mounts
 	// the chrome WITHOUT that provider; the hook then falls back to its own

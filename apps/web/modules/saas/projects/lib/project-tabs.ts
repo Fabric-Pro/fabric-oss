@@ -25,6 +25,7 @@ import {
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
 	ClipboardListIcon,
+	CodeIcon,
 	CombineIcon,
 	FileTextIcon,
 	FolderIcon,
@@ -134,11 +135,11 @@ export const tabs = [
 		label: "Usage",
 		icon: ReceiptIcon,
 	},
-	// {
-	// 	id: "artifacts",
-	// 	label: "Artifacts",
-	// 	icon: CodeIcon,
-	// },
+	{
+		id: "artifacts",
+		label: "Artifacts",
+		icon: CodeIcon,
+	},
 	{
 		id: "atlas",
 		label: "Atlas",

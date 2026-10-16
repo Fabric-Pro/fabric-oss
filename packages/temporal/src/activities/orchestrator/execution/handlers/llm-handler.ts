@@ -102,6 +102,11 @@ Please present the results in a clear, well-formatted manner.`;
 			input.userId,
 			input.organizationId,
 			false,
+			undefined,
+			undefined,
+			input.conversationId
+				? { conversationId: input.conversationId }
+				: undefined,
 		);
 
 		const response = await generateText({

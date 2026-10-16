@@ -800,8 +800,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The same generate + barrel comparison the primary shard runs on PRs.
-      # Here it doubles as the cache warm: it is the last thing this run does
-      # before the Turbo cache is saved.
+      # Here it warms Turbo and verifies the output before publishing the
+      # compiled client for the independent DB jobs.
       - name: Committed Prisma zod barrel matches the generate pipeline
         run: |
           pnpm turbo run generate --filter=@repo/database
@@ -809,6 +809,12 @@ jobs:
             echo "::error::packages/database/prisma/zod is not the output of 'pnpm --filter @repo/database generate'. Run it and commit the result; never commit raw 'prisma generate' output."
             exit 1
           fi
+
+      - name: Publish generated Prisma client
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: packages/database/prisma/generated
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
   # Stable status check name reported on every PR to the canonical branch
   # (`master`). Configure this as the required check in branch protection —

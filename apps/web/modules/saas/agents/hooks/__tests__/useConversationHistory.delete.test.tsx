@@ -36,14 +36,17 @@ describe("useConversationHistory — delete (#2040 F40)", () => {
 	function setup() {
 		conversations.list.mockResolvedValue({
 			conversations: [],
-			total: 0,
 			hasMore: false,
 		});
 		conversations.get.mockResolvedValue(null);
 		conversations.delete.mockImplementation(async ({ id }) => ({ id }));
-		const { result } = renderHook(() => useConversationHistory(), {
-			wrapper,
-		});
+		const { result } = renderHook(
+			() =>
+				useConversationHistory({
+					agentId: "fabric-workspace-assistant",
+				}),
+			{ wrapper },
+		);
 		act(() => result.current.selectConversation("conv_open"));
 		return result;
 	}

@@ -30,7 +30,7 @@ flowchart TB
         direction TB
         S1["**1. ANALYZE REQUEST**<br/>• Identify document type (PRD)<br/>• Extract key requirements<br/>• Determine scope"]
 
-        S2["**2. RETRIEVE CONTEXT (RAG)**<br/>• Search attached workspaces<br/>• Find similar past documents<br/>• Gather relevant templates"]
+        S2["**2. RETRIEVE CONTEXT (RAG)**<br/>• Search attached libraries<br/>• Find similar past documents<br/>• Gather relevant templates"]
 
         S3["**3. GENERATE DOCUMENT**<br/>• Apply document structure<br/>• Include retrieved context<br/>• Generate comprehensive content"]
 
@@ -54,7 +54,7 @@ flowchart TB
   <Step>
     ### Attach Context (Optional)
 
-    Click the **Attach** button to add workspaces containing:
+    Click the **Attach** button to add libraries containing:
     - Previous documents for style reference
     - Technical constraints and requirements
     - Company templates and guidelines
@@ -107,7 +107,7 @@ flowchart TB
 ```
 "Create a technical spec for the notification service.
 Reference the architecture patterns from our existing user-service
-documentation in the 'Backend Docs' workspace."
+documentation in the 'Backend Docs' library."
 ```
 
 ### Request Specific Sections
@@ -180,11 +180,11 @@ The Document Generator leverages RAG for context-aware generation:
 | Placeholder examples | Real examples from past projects |
 | Missing constraints | Incorporates known limitations |
 
-### Attaching Workspaces
+### Attaching Libraries
 
-1. Create a workspace with reference documents
+1. Create a library with reference documents
 2. Upload relevant files (PRDs, specs, templates)
-3. Attach workspace when starting conversation
+3. Attach library when starting conversation
 4. The generator retrieves relevant chunks automatically
 
 ## Export Options
@@ -228,7 +228,7 @@ Include sections for:
 
 ### 2. Provide Examples
 
-Upload example documents to your workspace. The generator learns your style:
+Upload example documents to your library. The generator learns your style:
 - Preferred section ordering
 - Level of detail expected
 - Terminology and tone
@@ -250,7 +250,7 @@ The generator may add sections you didn't request. Review them—they often incl
 ### Document is too short
 
 - Provide more context in your prompt
-- Attach workspaces with reference documents
+- Attach libraries with reference documents
 - Ask to "expand" specific sections
 
 ### Missing sections
@@ -265,8 +265,8 @@ The generator may add sections you didn't request. Review them—they often incl
 
 ### Not using my context
 
-- Ensure the workspace is properly attached
-- Check that documents in the workspace are processed
+- Ensure the library is properly attached
+- Check that documents in the library are processed
 - Be more specific about which context to reference
 
 ---

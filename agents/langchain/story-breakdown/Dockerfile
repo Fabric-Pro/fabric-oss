@@ -69,7 +69,29 @@ RUN (pnpm --filter @repo/database generate || true) \
 	&& mkdir -p packages/database/prisma/generated
 
 FROM base AS builder
-COPY packages ./packages
+# Only this agent's workspace dependency closure: the filtered install links
+# nothing else, and a change elsewhere under packages/ leaves the image as it
+# was. packages/database/__tests__/dockerfile-workspace-closure.test.ts keeps
+# this list equal to the closure.
+COPY packages/agent-core ./packages/agent-core
+COPY packages/agent-prompts ./packages/agent-prompts
+COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/agent-tools ./packages/agent-tools
+COPY packages/agent-types ./packages/agent-types
+COPY packages/ai ./packages/ai
+COPY packages/ai-token ./packages/ai-token
+COPY packages/database ./packages/database
+COPY packages/databricks ./packages/databricks
+COPY packages/integrations ./packages/integrations
+COPY packages/logs ./packages/logs
+COPY packages/mcp ./packages/mcp
+COPY packages/observability ./packages/observability
+COPY packages/openapi-tools ./packages/openapi-tools
+COPY packages/payments ./packages/payments
+COPY packages/permissions ./packages/permissions
+COPY packages/rag ./packages/rag
+COPY packages/storage ./packages/storage
+COPY packages/utils ./packages/utils
 COPY agents/langchain/story-breakdown ./agents/langchain/story-breakdown
 COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated
 COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod

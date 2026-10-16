@@ -8,14 +8,23 @@
  * manual one.
  */
 
-import { executeChild, proxyActivities } from "@temporalio/workflow";
+import {
+	CancellationScope,
+	executeChild,
+	isCancellation,
+	log,
+	patched,
+	proxyActivities,
+} from "@temporalio/workflow";
 import type * as kickoffActivities from "../activities/workflow-schedule-kickoff";
 import type {
 	WorkflowBuilderExecutionInput,
 	WorkflowBuilderExecutionOutput,
 } from "./workflow-builder-execution";
 
-const { createScheduledExecution } = proxyActivities<typeof kickoffActivities>({
+const { createScheduledExecution, recordScheduledRunOutcome } = proxyActivities<
+	typeof kickoffActivities
+>({
 	startToCloseTimeout: "1 minute",
 	retry: {
 		initialInterval: "1s",
@@ -49,9 +58,10 @@ export async function scheduledWorkflowKickoff(
 	});
 
 	if (!prepared.shouldRun) {
-		// Deleted or unpublished since the schedule was created. Skipping is
-		// correct: a tick that cannot run is not a failure, and failing here
-		// would retry a run nobody wants.
+		// Deleted, unpublished, or its owner lost the right to run it since the
+		// schedule was created (the activity has paused it in that case).
+		// Skipping is correct: a tick that cannot run is not a failure, and
+		// failing here would retry a run nobody wants.
 		return { started: false, reason: prepared.reason };
 	}
 
@@ -64,14 +74,50 @@ export async function scheduledWorkflowKickoff(
 		triggerData: input.triggerData ?? { source: "schedule" },
 	};
 
-	const result: WorkflowBuilderExecutionOutput = await executeChild(
-		"workflowBuilderExecutionWorkflow",
-		{
+	// Counting the outcome adds an activity after the child, so a kickoff
+	// recorded before it shipped must replay without it.
+	const countsOutcome = patched("scheduled-run-outcome-v1");
+
+	// A failure to count must never turn a finished run into a failed kickoff:
+	// the weekly reconciler removes the schedule of any paused workflow anyway.
+	const countOutcome = async (
+		status: WorkflowBuilderExecutionOutput["status"],
+	): Promise<void> => {
+		try {
+			await CancellationScope.nonCancellable(() =>
+				recordScheduledRunOutcome({
+					workflowId: input.workflowId,
+					executionId: prepared.executionId,
+					organizationId: input.organizationId,
+					status,
+				}),
+			);
+		} catch (error) {
+			log.error("Could not record the scheduled run's outcome", {
+				workflowId: input.workflowId,
+				executionId: prepared.executionId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	};
+
+	let result: WorkflowBuilderExecutionOutput;
+	try {
+		result = await executeChild("workflowBuilderExecutionWorkflow", {
 			args: [executionInput],
 			// One child per execution row keeps ids unique across fires.
 			workflowId: `workflow-execution-${prepared.executionId}`,
-		},
-	);
+		});
+	} catch (error) {
+		if (countsOutcome && !isCancellation(error)) {
+			await countOutcome("FAILED");
+		}
+		throw error;
+	}
+
+	if (countsOutcome) {
+		await countOutcome(result.status);
+	}
 
 	return {
 		started: true,

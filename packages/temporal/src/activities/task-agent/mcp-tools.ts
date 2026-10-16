@@ -505,7 +505,8 @@ export async function loadMcpConfiguration(
 			}
 		} catch (error) {
 			console.warn(
-				`Failed to load tools from ${config.mcpServer.name}:`,
+				"Failed to load tools from MCP server:",
+				{ serverName: config.mcpServer.name },
 				error,
 			);
 			// Continue with other configs

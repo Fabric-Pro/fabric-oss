@@ -1,4 +1,5 @@
 import type { AiJobKey } from "@repo/ai";
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { executeChild, proxyActivities } from "@temporalio/workflow";
 import type * as fabricMentionActivities from "../activities/fabric-mention-comments";
 import type { DirectChatWorkflowInput } from "../types";
@@ -79,7 +80,7 @@ export async function fabricMentionReplyWorkflow(
 				workflowId: input.workflowId,
 				content: `I couldn't generate a reply: ${errorMessage}`,
 				metadata: {
-					agentId: "fabric-workspace-assistant",
+					agentId: FABRIC_AGENT_ID,
 					agentDisplayName: "Fabric",
 					directChatWorkflowId: `${input.workflowId}-direct-chat`,
 					targetType: input.targetType,
@@ -103,7 +104,7 @@ export async function fabricMentionReplyWorkflow(
 			workflowId: input.workflowId,
 			content: result.responseText,
 			metadata: {
-				agentId: "fabric-workspace-assistant",
+				agentId: FABRIC_AGENT_ID,
 				agentDisplayName: "Fabric",
 				directChatWorkflowId: `${input.workflowId}-direct-chat`,
 				targetType: input.targetType,
@@ -128,7 +129,7 @@ export async function fabricMentionReplyWorkflow(
 				workflowId: input.workflowId,
 				content: `I couldn't generate a reply: ${errorMessage}`,
 				metadata: {
-					agentId: "fabric-workspace-assistant",
+					agentId: FABRIC_AGENT_ID,
 					agentDisplayName: "Fabric",
 					targetType: input.targetType,
 					status: "failed",

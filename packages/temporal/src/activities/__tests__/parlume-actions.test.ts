@@ -379,3 +379,63 @@ describe("Parlume outcome evidence", () => {
 		expect(parlumeActionOutcome(result)).toBe(expected);
 	});
 });
+
+describe("Parlume meeting chat tool in the runtime", () => {
+	const chat = {
+		name: "post_to_meeting_chat",
+		...definition,
+		source: { configId: "parlume", originalName: "post_to_meeting_chat" },
+		args: { text: "Hello" },
+		delegates: false,
+		execute: () => execute(),
+	};
+
+	it("is offered to the agent as a tool of the runtime", () => {
+		expect(
+			Object.keys(createParlumeToolRuntime(context).tools ?? {}),
+		).toEqual(["post_to_meeting_chat"]);
+	});
+
+	it.each([true, false])(
+		"runs without a proposal when the meeting is read-only: %s",
+		async (toolsReadOnly) => {
+			state.session.toolsReadOnly = toolsReadOnly;
+			const result = await createParlumeToolRuntime({
+				...context,
+				toolsReadOnly,
+			}).invoke(chat);
+
+			expect(result).toEqual({ success: true, id: "ticket" });
+			expect(state.action).toBeUndefined();
+		},
+	);
+
+	it("does not run once the request was interrupted or access changed", async () => {
+		state.access = false;
+
+		const result = await createParlumeToolRuntime(context).invoke(chat);
+
+		expect(result).toMatchObject({
+			error: expect.stringContaining("Ask again"),
+		});
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("does not open the same exemption to a tool from a connection", async () => {
+		state.session.toolsReadOnly = true;
+
+		const result = await createParlumeToolRuntime({
+			...context,
+			toolsReadOnly: true,
+		}).invoke({
+			...chat,
+			name: "post_message",
+			source: { configId: "connection-b", originalName: "post_message" },
+		});
+
+		expect(result).toMatchObject({
+			error: expect.stringContaining("read-only"),
+		});
+		expect(execute).not.toHaveBeenCalled();
+	});
+});

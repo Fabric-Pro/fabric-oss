@@ -23,6 +23,7 @@ import {
 	DEFAULT_AI_CHAT_MIME_ALLOWLIST,
 	isClientRenderableAiChatImage,
 } from "@repo/utils/ai-chat-attachment";
+import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import {
 	getSelectedAgentInstanceId,
@@ -493,6 +494,8 @@ export function FabricTemporalOrchestratorChat({
 	// while this instance is idle was written by another surface — the drawer
 	// finishing a turn after Expand — and is hydrated again.
 	const hydratedExecutionCountRef = useRef(0);
+	// A later browser save can replace a projected result without adding a turn.
+	const hydratedExecutionsRef = useRef<any[]>([]);
 
 	// Orchestrator conversation hook for full execution history persistence
 	const {
@@ -688,6 +691,9 @@ export function FabricTemporalOrchestratorChat({
 	// picker existed.
 	const activeModelOverride = selectedAgent?.modelOverride;
 
+	// The page the agent was opened from; none outside the drawer.
+	const launchContext = useOptionalFabricAgentLauncher()?.launchContext;
+
 	// Use the streaming orchestrator hook
 	const {
 		messages,
@@ -738,6 +744,10 @@ export function FabricTemporalOrchestratorChat({
 		instanceId,
 		modelOverride: activeModelOverride,
 		advisorOrigin,
+		// Where the agent was opened, for the tools that place what they
+		// create: the Workspace the user has open, or the kind of page.
+		launchWorkspaceId: launchContext?.workspaceId,
+		launchSurface: launchContext?.surface,
 		// Surface tag for the cancel telemetry event (spec § 10.1 /
 		// task 3.3). Only consumer of `useOrchestratorStream` is the
 		// standalone Loom Orchestrator chat, so the default applies.
@@ -1146,22 +1156,37 @@ export function FabricTemporalOrchestratorChat({
 	}, [activeConversation?.metadata, activeConversationId]);
 
 	useEffect(() => {
-		const storedExecutionCount = Array.isArray(
+		const storedExecutions: any[] = Array.isArray(
 			(activeConversation?.metadata as any)?.executions,
 		)
-			? (activeConversation?.metadata as any).executions.length
-			: 0;
+			? (activeConversation?.metadata as any).executions
+			: [];
+		const storedExecutionCount = storedExecutions.length;
 		const grewWhileIdle =
 			hydratedConversationRef.current === activeConversationId &&
 			storedExecutionCount > hydratedExecutionCountRef.current &&
 			!isLoading;
-		// Only hydrate if we have a conversation and haven't hydrated this one yet
+		const changedRecoveredWhileIdle =
+			hydratedConversationRef.current === activeConversationId &&
+			storedExecutionCount === hydratedExecutionCountRef.current &&
+			storedExecutions !== hydratedExecutionsRef.current &&
+			(storedExecutions.some(
+				(execution) => execution?.recoveredFromTurn === true,
+			) ||
+				hydratedExecutionsRef.current.some(
+					(execution) => execution?.recoveredFromTurn === true,
+				)) &&
+			!isLoading &&
+			!isRunning &&
+			!isAwaitingApproval;
+		// Hydrate the first load, then new or replaced recovered results while idle.
 		if (
 			activeConversation &&
 			activeConversationId &&
 			activeConversationId !== selfCreatedConversationIdRef.current &&
 			(hydratedConversationRef.current !== activeConversationId ||
-				grewWhileIdle)
+				grewWhileIdle ||
+				changedRecoveredWhileIdle)
 		) {
 			// Check if this conversation has orchestrator metadata
 			const metadata = (activeConversation as any).metadata as any;
@@ -1179,7 +1204,8 @@ export function FabricTemporalOrchestratorChat({
 					.filter(
 						(exec: any) =>
 							exec?.id &&
-							exec.userMessage &&
+							(exec.userMessage ||
+								exec.recoveredFromTurn === true) &&
 							exec.id !== currentExecutionId,
 					)
 					.map((exec: any) => ({
@@ -1188,6 +1214,41 @@ export function FabricTemporalOrchestratorChat({
 						imageUrls: exec.imageUrls,
 						stepResults: exec.stepResults || [],
 						response: exec.finalResponse,
+						additionalResponses: Array.isArray(
+							exec.additionalResponses,
+						)
+							? [
+									...new Set<string>(
+										exec.additionalResponses.filter(
+											(response: unknown) =>
+												typeof response === "string" &&
+												response.length > 0 &&
+												response !== exec.finalResponse,
+										),
+									),
+								]
+							: [],
+						recoveredFromTurn: exec.recoveredFromTurn === true,
+						terminalReason:
+							typeof exec.terminalReason === "string"
+								? exec.terminalReason
+								: undefined,
+						terminalStatus: [
+							"COMPLETED",
+							"FAILED",
+							"LIMITED",
+							"CANCELLED",
+						].includes(exec.terminalStatus)
+							? exec.terminalStatus
+							: undefined,
+						limitSignals: Array.isArray(exec.limitSignals)
+							? exec.limitSignals.filter(
+									(signal: any) =>
+										signal &&
+										typeof signal.kind === "string" &&
+										typeof signal.message === "string",
+								)
+							: [],
 						// Rehydrate answered clarifications: after a reload the
 						// execution records — not the message array — are what
 						// rebuild `history`, so dropping these here would
@@ -1297,6 +1358,7 @@ export function FabricTemporalOrchestratorChat({
 				// Mark this conversation as hydrated
 				hydratedConversationRef.current = activeConversationId;
 				hydratedExecutionCountRef.current = storedExecutionCount;
+				hydratedExecutionsRef.current = storedExecutions;
 			}
 		}
 
@@ -1313,6 +1375,8 @@ export function FabricTemporalOrchestratorChat({
 		activeConversationId,
 		state.executionId,
 		isLoading,
+		isRunning,
+		isAwaitingApproval,
 		// Note: stepResults.length removed - we always exclude current execution now,
 		// so we don't need to re-run based on stepResults changes
 	]);
@@ -2535,12 +2599,19 @@ export function FabricTemporalOrchestratorChat({
 							});
 						}
 
-						if (execution.response?.trim()) {
+						for (const response of new Set([
+							execution.response,
+							...(execution.additionalResponses ?? []),
+						])) {
+							if (!response?.trim()) {
+								continue;
+							}
 							threadMessages.push({
 								role: "assistant",
-								content: stripPersistedAssistantLabelPrefix(
-									execution.response,
-								),
+								content:
+									stripPersistedAssistantLabelPrefix(
+										response,
+									),
 							});
 						}
 
@@ -3004,61 +3075,66 @@ export function FabricTemporalOrchestratorChat({
 										className="space-y-4"
 									>
 										{/* User's question */}
-										<Message from="user" className="py-2">
-											<MessageContent
-												variant="flat"
-												className="max-w-[70%]"
+										{execution.userMessage && (
+											<Message
+												from="user"
+												className="py-2"
 											>
-												{execution.imageUrls &&
-													execution.imageUrls.length >
-														0 && (
-														<div className="flex gap-2 mb-2 flex-wrap">
-															{execution.imageUrls.map(
-																(url) => (
-																	<button
-																		key={
-																			url
-																		}
-																		type="button"
-																		onClick={() =>
-																			setLightboxImageUrl(
-																				storagePathToProxyUrl(
+												<MessageContent
+													variant="flat"
+													className="max-w-[70%]"
+												>
+													{execution.imageUrls &&
+														execution.imageUrls
+															.length > 0 && (
+															<div className="flex gap-2 mb-2 flex-wrap">
+																{execution.imageUrls.map(
+																	(url) => (
+																		<button
+																			key={
+																				url
+																			}
+																			type="button"
+																			onClick={() =>
+																				setLightboxImageUrl(
+																					storagePathToProxyUrl(
+																						url,
+																						organizationId,
+																					),
+																				)
+																			}
+																			className="cursor-pointer"
+																		>
+																			<Image
+																				src={storagePathToProxyUrl(
 																					url,
 																					organizationId,
-																				),
-																			)
-																		}
-																		className="cursor-pointer"
-																	>
-																		<Image
-																			src={storagePathToProxyUrl(
-																				url,
-																				organizationId,
-																			)}
-																			alt="Attached"
-																			width={
-																				80
-																			}
-																			height={
-																				80
-																			}
-																			unoptimized
-																			className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
-																		/>
-																	</button>
-																),
-															)}
-														</div>
-													)}
-												<Response>
-													{execution.userMessage}
-												</Response>
-											</MessageContent>
-											<MessageAvatar
-												src={userAvatarSrc}
-												name={userDisplayName}
-											/>
-										</Message>
+																				)}
+																				alt="Attached"
+																				width={
+																					80
+																				}
+																				height={
+																					80
+																				}
+																				unoptimized
+																				className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
+																			/>
+																		</button>
+																	),
+																)}
+															</div>
+														)}
+													<Response>
+														{execution.userMessage}
+													</Response>
+												</MessageContent>
+												<MessageAvatar
+													src={userAvatarSrc}
+													name={userDisplayName}
+												/>
+											</Message>
+										)}
 
 										{/* Execution Plan (if available) */}
 										{execution.plan &&
@@ -3386,14 +3462,26 @@ export function FabricTemporalOrchestratorChat({
 														return null;
 													})}
 
-												{/* Fallback: show response if no step results have it AND no document artifacts */}
+												{/* A recovered final answer stays visible beside partial browser steps.
+												    A step already showing that exact answer is not repeated. */}
 												{execution.response &&
 													!execution.stepResults.some(
-														(s) => s.response,
+														(step) =>
+															step.response ===
+															execution.response,
 													) &&
-													!hasDocumentArtifacts(
-														execution.stepResults,
-													) && (
+													(execution.terminalStatus ||
+														execution.recoveredFromTurn ||
+														(execution
+															.additionalResponses
+															?.length ?? 0) >
+															0 ||
+														(!execution.stepResults.some(
+															(s) => s.response,
+														) &&
+															!hasDocumentArtifacts(
+																execution.stepResults,
+															))) && (
 														<Response
 															className={
 																ASSISTANT_RESPONSE_SHELL_CLASSNAME
@@ -3404,6 +3492,70 @@ export function FabricTemporalOrchestratorChat({
 															)}
 														</Response>
 													)}
+
+												{execution.additionalResponses
+													?.filter(
+														(response) =>
+															!execution.stepResults.some(
+																(step) =>
+																	step.response ===
+																	response,
+															),
+													)
+													.map((response) => (
+														<div key={response}>
+															<p className="text-sm text-muted-foreground">
+																Saved response
+															</p>
+															<Response
+																className={
+																	ASSISTANT_RESPONSE_SHELL_CLASSNAME
+																}
+															>
+																{stripPersistedAssistantLabelPrefix(
+																	response,
+																)}
+															</Response>
+														</div>
+													))}
+
+												{execution.terminalStatus ===
+													"CANCELLED" && (
+													<StoppedIndicator />
+												)}
+												{(execution.terminalStatus ===
+													"FAILED" ||
+													execution.terminalStatus ===
+														"LIMITED") && (
+													<output
+														className="block text-sm text-muted-foreground"
+														aria-live="polite"
+													>
+														{execution.terminalStatus ===
+														"FAILED"
+															? "Execution failed"
+															: "Answer may be incomplete"}
+													</output>
+												)}
+												{execution.terminalReason &&
+													execution.terminalStatus !==
+														"COMPLETED" && (
+														<p className="text-sm text-muted-foreground">
+															{
+																execution.terminalReason
+															}
+														</p>
+													)}
+												{execution.limitSignals?.map(
+													(signal, signalIndex) => (
+														<p
+															key={`${signal.kind}-${signalIndex}`}
+															className="text-sm text-muted-foreground"
+														>
+															{signal.message}
+														</p>
+													),
+												)}
 
 												{execution.apiBilling && (
 													<ApiBillingNotice

@@ -81,6 +81,32 @@ export async function planWaitProbeResuming(): Promise<{ result: string; waitedM
 	return { result, waitedMs: Date.now() - started };
 }
 
+// Work whose final plan-spent failure ends it says so (Fizzy #3050).
+export async function planWaitProbeNotice(): Promise<{ result: string; waitedMs: number }> {
+	const started = Date.now();
+	const result = await withChatGptPlanWait(() => probeStep(), {
+		organizationId: "org-1",
+		userId: "user-1",
+		stoppedNotice: { work: "DAILY_BRIEF", projectId: "proj-1" },
+	});
+	return { result, waitedMs: Date.now() - started };
+}
+
+export async function planWaitProbeNoticeCapped(): Promise<{ result: string; waitedMs: number }> {
+	const started = Date.now();
+	const result = await withChatGptPlanWait(() => probeStep(), {
+		organizationId: "org-1",
+		userId: null,
+		maxWaitMs: 60 * 60_000,
+		stoppedNotice: {
+			work: "SLACK_BACKFILL",
+			projectId: "proj-1",
+			initiatorUserId: "user-2",
+		},
+	});
+	return { result, waitedMs: Date.now() - started };
+}
+
 // A run with a deadline of its own never waits past it.
 export async function planWaitProbeCapped(): Promise<{ result: string; waitedMs: number }> {
 	const started = Date.now();
@@ -96,6 +122,7 @@ export async function planWaitProbeCapped(): Promise<{ result: string; waitedMs:
 let env: TestWorkflowEnvironment;
 let bundle: WorkflowBundleWithSourceMap;
 let unpatchedBundle: WorkflowBundleWithSourceMap;
+let noNoticeBundle: WorkflowBundleWithSourceMap;
 let taskQueueSeq = 0;
 
 async function bundleProbe(helperSource: string) {
@@ -136,6 +163,15 @@ beforeAll(async () => {
 		throw new Error("the patch guard moved; update this test");
 	}
 	unpatchedBundle = await bundleProbe(unpatched);
+	// The helper as it was before the stopped notice (Fizzy #3050).
+	const noNotice = helper.replace(
+		"patched(CHATGPT_PLAN_STOPPED_NOTICE_PATCH)",
+		"false",
+	);
+	if (noNotice === helper) {
+		throw new Error("the stopped-notice guard moved; update this test");
+	}
+	noNoticeBundle = await bundleProbe(noNotice);
 }, 180_000);
 
 afterAll(async () => {
@@ -157,7 +193,11 @@ interface Scenario {
 		| "planWaitProbe"
 		| "planWaitProbeCapped"
 		| "planWaitProbeDeadline"
-		| "planWaitProbeResuming";
+		| "planWaitProbeResuming"
+		| "planWaitProbeNotice"
+		| "planWaitProbeNoticeCapped";
+	/** The stopped notice activity; records and succeeds by default. */
+	notify?: () => Promise<void>;
 	/** The run's own execution timeout, when it has one. */
 	executionTimeoutMs?: number;
 }
@@ -167,6 +207,7 @@ async function run(scenario: Scenario) {
 	let calls = 0;
 	const estimates: unknown[] = [];
 	const stepArgs: unknown[] = [];
+	const notices: unknown[] = [];
 	const worker = await Worker.create({
 		connection: env.nativeConnection,
 		taskQueue,
@@ -183,6 +224,10 @@ async function run(scenario: Scenario) {
 			estimatePlanPoolResetActivity: async (input: unknown) => {
 				estimates.push(input);
 				return { waitMs: scenario.waitMs, jitterMs: 0 };
+			},
+			notifyPlanWaitWorkStoppedActivity: async (input: unknown) => {
+				notices.push(input);
+				await scenario.notify?.();
 			},
 		},
 	});
@@ -203,7 +248,14 @@ async function run(scenario: Scenario) {
 		),
 	);
 	const history = await handle.fetchHistory();
-	return { outcome, calls: () => calls, estimates, history, stepArgs };
+	return {
+		outcome,
+		calls: () => calls,
+		estimates,
+		history,
+		stepArgs,
+		notices,
+	};
 }
 
 const failureType = (error: unknown): string | undefined => {
@@ -426,6 +478,111 @@ describe("withChatGptPlanWait", () => {
 				{ workflowBundle: bundle },
 				recorded.history,
 				"replay-probe",
+			),
+		).resolves.toBeUndefined();
+	}, 60_000);
+});
+
+describe("the stopped notice (Fizzy #3050)", () => {
+	const spentTwice = [
+		() => {
+			throw spent();
+		},
+		() => {
+			throw spent();
+		},
+	];
+
+	it("announces the final refusal, then fails with the plan's own error", async () => {
+		const { outcome, notices } = await run({
+			steps: spentTwice,
+			waitMs: HOUR,
+			workflowType: "planWaitProbeNotice",
+		});
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(failureType(outcome.error)).toBe(
+				"SubscriptionPlanExhaustedError",
+			);
+		}
+		expect(notices).toEqual([
+			{
+				work: "DAILY_BRIEF",
+				projectId: "proj-1",
+				runId: expect.stringMatching(/-wf:/),
+				organizationId: "org-1",
+				initiatorUserId: "user-1",
+			},
+		]);
+	}, 60_000);
+
+	it("announces a reset past the run's own cap, naming the initiator it was given", async () => {
+		const { outcome, notices, calls } = await run({
+			steps: spentTwice,
+			waitMs: 3 * HOUR,
+			workflowType: "planWaitProbeNoticeCapped",
+		});
+		expect(outcome.ok).toBe(false);
+		expect(calls()).toBe(1);
+		expect(notices).toEqual([
+			expect.objectContaining({
+				work: "SLACK_BACKFILL",
+				initiatorUserId: "user-2",
+			}),
+		]);
+	}, 60_000);
+
+	it("still fails with the plan's error when the notice itself fails", async () => {
+		const { outcome, notices } = await run({
+			steps: spentTwice,
+			waitMs: HOUR,
+			workflowType: "planWaitProbeNotice",
+			notify: async () => {
+				throw new Error("notifications down");
+			},
+		});
+		expect(outcome.ok).toBe(false);
+		if (!outcome.ok) {
+			expect(failureType(outcome.error)).toBe(
+				"SubscriptionPlanExhaustedError",
+			);
+		}
+		expect(notices.length).toBeGreaterThanOrEqual(1);
+	}, 60_000);
+
+	it("announces nothing when the retry succeeds, or for a caller that did not ask", async () => {
+		const recovered = await run({
+			steps: [
+				() => {
+					throw spent();
+				},
+				() => "done",
+			],
+			waitMs: HOUR,
+			workflowType: "planWaitProbeNotice",
+		});
+		expect(recovered.outcome.ok).toBe(true);
+		expect(recovered.notices).toEqual([]);
+
+		const unasked = await run({ steps: spentTwice, waitMs: HOUR });
+		expect(unasked.outcome.ok).toBe(false);
+		expect(unasked.notices).toEqual([]);
+	}, 60_000);
+
+	it("replays a final failure recorded before the notice existed", async () => {
+		const recorded = await run({
+			steps: spentTwice,
+			waitMs: HOUR,
+			workflowType: "planWaitProbeNotice",
+			workflowBundle: noNoticeBundle,
+		});
+		expect(recorded.outcome.ok).toBe(false);
+		expect(recorded.notices).toEqual([]);
+		await expect(
+			Worker.runReplayHistory(
+				{ workflowBundle: bundle },
+				recorded.history,
+				"replay-probe-notice",
 			),
 		).resolves.toBeUndefined();
 	}, 60_000);

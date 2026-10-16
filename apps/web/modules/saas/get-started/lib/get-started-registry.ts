@@ -1,4 +1,5 @@
 import { config } from "@repo/config";
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import {
 	ActivityIcon,
 	BarChart3Icon,
@@ -9,6 +10,7 @@ import {
 	CalendarDaysIcon,
 	ClipboardCheckIcon,
 	ClipboardListIcon,
+	CodeIcon,
 	CombineIcon,
 	CreditCardIcon,
 	FileTextIcon,
@@ -20,6 +22,7 @@ import {
 	KeyRoundIcon,
 	LayersIcon,
 	LayoutDashboardIcon,
+	LayoutPanelTopIcon,
 	LinkIcon,
 	ListTodoIcon,
 	LockIcon,
@@ -264,10 +267,19 @@ const WORKSPACE_GROUP: GsGroup = {
 			id: "workspaces",
 			label: "Workspaces",
 			description:
-				"Group documents and context into shared spaces your team and agents can draw on.",
-			icon: LayersIcon,
+				"Pages your team opens every day, written by Fabric Agent from a description and shared with your organization by default: a delivery board, a weekly digest, a small tool with a refresh button.",
+			icon: LayoutPanelTopIcon,
 			anchor: "nav-workspaces",
 			href: ({ basePath }) => `${basePath}/workspaces`,
+		},
+		{
+			id: "libraries",
+			label: "Libraries",
+			description:
+				"Group documents into libraries your team and agents can search and draw on, and chat with the documents directly.",
+			icon: LayersIcon,
+			anchor: "nav-libraries",
+			href: ({ basePath }) => `${basePath}/libraries`,
 		},
 		{
 			id: "mcp-servers",
@@ -496,6 +508,16 @@ const PROJECT_GROUP: GsGroup = {
 			href: projectHref("usage"),
 		},
 		{
+			id: "artifacts",
+			label: "Artifacts",
+			description:
+				"Pages Fabric Agent writes for this project, such as status boards, reports and small tools, saved here and opened in a locked-down viewer.",
+			icon: CodeIcon,
+			projectTab: "artifacts",
+			anchor: anchorForProjectTab("artifacts"),
+			href: projectHref("artifacts"),
+		},
+		{
 			id: "outcomes",
 			label: "Outcomes",
 			description:
@@ -592,30 +614,31 @@ const SETTINGS_GROUP: GsGroup = {
 			href: settingsHref("members"),
 		},
 		// Two entries, not one amended entry: these are different destinations
-		// for different audiences (Fizzy #1875, R12). The organization's page
-		// is where an admin configures the keys the whole tenant runs on and
-		// renders read-only for everyone else; the account page is where any
-		// member — admin or not — adds a key of their own, which resolves for
-		// them inside an organization that has none. Folding them together
-		// would put the same "Configure" button in front of a member who
-		// cannot use it, which is the gap this unit exists to close.
+		// for different audiences (Fizzy #1875, R12), now two tabs of one page
+		// (Fizzy #3082). The Organization tab is where an admin configures the
+		// keys the whole tenant runs on and renders read-only for everyone
+		// else; the Personal tab is where any member — admin or not — adds a
+		// key of their own, which resolves for them inside an organization
+		// that has none. Folding them together would put the same "Configure"
+		// button in front of a member who cannot use it, which is the gap this
+		// unit exists to close.
 		{
 			id: "settings-ai-providers",
 			label: "AI Providers",
 			description:
-				"Connect the LLM providers and API keys your organization runs on (OpenAI, Anthropic, Azure, and more). Organization admins configure these; everyone else sees them read-only.",
+				"Connect the LLM providers and API keys your organization runs on (OpenAI, Anthropic, Azure, and more). Organization admins configure these on the Organization tab; everyone else sees them read-only.",
 			icon: BrainCircuitIcon,
 			cluster: "AI configuration",
 			href: settingsHref("ai-providers"),
 		},
 		{
 			id: "settings-account-ai-providers",
-			label: "Personal AI Providers",
+			label: "Your own AI keys",
 			description:
-				"Add an AI provider key of your own. It travels with you into every organization you work in, and is used when the one you are in has no provider configured.",
+				"On the Personal tab of AI Providers, add an AI provider key of your own or connect your ChatGPT plan. Your key is used only when the organization you are in has no provider of its own, and is billed to you.",
 			icon: KeyRoundIcon,
 			cluster: "AI configuration",
-			href: settingsHref("account/ai-providers"),
+			href: (ctx) => `${ctx.basePath}/${PERSONAL_AI_PROVIDERS_PATH}`,
 		},
 		{
 			id: "settings-ai-models",
@@ -1378,6 +1401,33 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 		],
 	},
 	{
+		tab: "artifacts",
+		label: "Artifacts",
+		icon: CodeIcon,
+		since: "2026-10-14T00:00:00.000Z",
+		components: [
+			{
+				id: "artifacts-header",
+				anchor: "artifacts-header",
+				title: "Pages Fabric Agent writes for you",
+				body: "Nothing here is a template. Ask Fabric Agent for a status board, a report or a small tool and it writes the whole page, saves it to this list and explains what it shows. Everyone on the project can open it.",
+			},
+			{
+				id: "artifacts-ask",
+				anchor: "artifacts-ask",
+				title: "Ask for a page, or for a change",
+				body: "Opens Fabric Agent already pointed at this project's Artifacts. Describe the page you want, or ask for a refresh button or a new section on an existing one, and the agent rewrites it for you.",
+			},
+			{
+				id: "artifacts-list",
+				anchor: "artifacts-list",
+				title: "Open a page",
+				body: "Each card is one artifact. Opening it shows the page in a sandbox with no network of its own; a button the agent wrote can read Fabric as you, and asks before it changes anything.",
+				conditional: true,
+			},
+		],
+	},
+	{
 		tab: "usage",
 		label: "Usage",
 		icon: ReceiptIcon,
@@ -1470,7 +1520,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "agents-new",
 				anchor: "agents-new",
 				title: "An agent is what you attach to it",
-				body: "The power isn't the prompt — it's the Knowledge (workspaces, integrations), Capabilities (Skills + built-in tools + MCP), and Triggers you compose in. It can loop autonomously toward a goal, or be exposed as a callable API.",
+				body: "The power isn't the prompt — it's the Knowledge (libraries, integrations), Capabilities (Skills + built-in tools + MCP), and Triggers you compose in. It can loop autonomously toward a goal, or be exposed as a callable API.",
 			},
 			{
 				id: "agents-featured",
@@ -1529,7 +1579,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "projects-new",
 				anchor: "projects-new",
 				title: "A project is a whole initiative",
-				body: "Not just a name — it scaffolds the full workspace: documents, roadmap, agents, code map, reports. (A 'workspace', by contrast, is just a document knowledge base.) This is the real starting move in Fabric.",
+				body: "Not just a name — it scaffolds the full project: documents, roadmap, agents, code map, reports. (A 'library', by contrast, is just a document knowledge base.) This is the real starting move in Fabric.",
 			},
 		],
 	},
@@ -1586,29 +1636,51 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 		],
 	},
 	{
-		tab: "workspaces",
+		tab: "libraries",
 		app: true,
-		label: "Workspaces",
+		label: "Libraries",
 		icon: LayersIcon,
 		components: [
 			{
-				id: "workspaces-new",
-				anchor: "workspaces-new",
+				id: "libraries-new",
+				anchor: "libraries-new",
 				title: "A knowledge base you can chat with",
-				body: "A workspace is a document bucket agents retrieve from — and you can chat with its docs directly. It's the reusable knowledge layer Reports and agents point at (different from a Project, which runs an initiative).",
+				body: "A library is a document bucket agents retrieve from — and you can chat with its docs directly. It's the reusable knowledge layer Reports and agents point at (different from a Project, which runs an initiative).",
 			},
 			{
-				id: "workspaces-card",
-				anchor: "workspaces-card",
-				title: "What a workspace holds",
+				id: "libraries-card",
+				anchor: "libraries-card",
+				title: "What a library holds",
 				body: "Each card shows its document count against the limit, how many chats you've had with it, and its type — plus archive/reactivate. This is where the value lives, not the name.",
 				conditional: true,
 			},
 			{
-				id: "workspaces-status-filter",
-				anchor: "workspaces-status-filter",
+				id: "libraries-status-filter",
+				anchor: "libraries-status-filter",
 				title: "Archived are hidden by default",
-				body: "You're seeing Active workspaces only. Archiving is non-destructive — flip this to find and reactivate an old one anytime.",
+				body: "You're seeing Active libraries only. Archiving is non-destructive — flip this to find and reactivate an old one anytime.",
+			},
+		],
+	},
+	{
+		tab: "workspaces",
+		app: true,
+		label: "Workspaces",
+		icon: LayoutPanelTopIcon,
+		since: "2026-10-14T00:00:00.000Z",
+		components: [
+			{
+				id: "workspaces-new",
+				anchor: "workspaces-new",
+				title: "Describe the page you want",
+				body: "A Workspace is a page Fabric Agent writes for your organization, shared with everyone in it unless you ask for it to stay private. Describe what you want to see and it writes the whole page, opens it here and explains it. Nothing is a template, so ask for a refresh button or a new section and it rewrites the page.",
+			},
+			{
+				id: "workspaces-list",
+				anchor: "workspaces-list",
+				title: "Your organization's pages",
+				body: "Each card is one Workspace you can open, with who it is shared with: your own, and the ones shared with the organization. Open one to read it, ask Fabric Agent to change it, or change who can open it.",
+				conditional: true,
 			},
 		],
 	},

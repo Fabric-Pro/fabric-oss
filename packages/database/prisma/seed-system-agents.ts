@@ -32,6 +32,7 @@
  *   VALIDATE_A2A=true pnpm --filter @repo/database seed:system-agents
  */
 
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { db } from "./client";
 
 /**
@@ -111,7 +112,7 @@ function getUnifiedUrl(
  */
 const SYSTEM_AGENTS: SystemAgentDefinition[] = [
 	{
-		agentId: "fabric-workspace-assistant",
+		agentId: FABRIC_AGENT_ID,
 		name: "fabric_workspace_assistant",
 		displayName: "Fabric",
 		description:

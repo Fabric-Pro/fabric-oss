@@ -2,6 +2,9 @@
 // 16 kHz 16-bit mono. Older audio is dropped rather than replayed late.
 const MAX_PENDING_BYTES = 16_000 * 2 * 5;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 5_000, 10_000];
+// Deepgram asks for Flux audio in 80 ms chunks. The meeting bot delivers 10 ms
+// at a time, and Flux sent a hundred of those a second transcribed nothing.
+const FLUX_CHUNK_MS = 80;
 
 /** Times are epoch milliseconds on the provider's audio clock. */
 export interface ParlumeTranscript {
@@ -27,6 +30,8 @@ export interface ParlumeTranscriptionSocket {
 }
 
 interface TranscriberOptions {
+	/** Rate of the 16-bit mono PCM passed to `send`. */
+	sampleRate: number;
 	connect: () => Promise<ParlumeTranscriptionSocket>;
 	onTranscript: (transcript: ParlumeTranscript) => void;
 	onStatus: (
@@ -98,16 +103,43 @@ export class ParlumeTranscriber {
 	private failures = 0;
 	private retryAt = 0;
 	private closed = false;
+	private batchesSent = 0;
+	private eventsReceived = 0;
+	private batch: Uint8Array[] = [];
+	private batchBytes = 0;
+	private batchEpochMs = 0;
+	private readonly batchTargetBytes: number;
 	private readonly options: TranscriberOptions;
 
 	constructor(options: TranscriberOptions) {
 		this.options = options;
+		this.batchTargetBytes = (options.sampleRate * 2 * FLUX_CHUNK_MS) / 1000;
 	}
 
 	send(chunk: ArrayBuffer, epochMs: number): void {
 		if (this.closed) {
 			return;
 		}
+		if (this.batchBytes === 0) {
+			this.batchEpochMs = epochMs;
+		}
+		this.batch.push(new Uint8Array(chunk));
+		this.batchBytes += chunk.byteLength;
+		if (this.batchBytes < this.batchTargetBytes) {
+			return;
+		}
+		const joined = new Uint8Array(this.batchBytes);
+		let offset = 0;
+		for (const part of this.batch) {
+			joined.set(part, offset);
+			offset += part.length;
+		}
+		this.batch = [];
+		this.batchBytes = 0;
+		this.deliver(joined.buffer, this.batchEpochMs);
+	}
+
+	private deliver(chunk: ArrayBuffer, epochMs: number): void {
 		if (this.socket) {
 			this.forward(this.socket, chunk, epochMs);
 			return;
@@ -121,8 +153,21 @@ export class ParlumeTranscriber {
 		void this.connect();
 	}
 
+	/** Batches sent to Flux and events it returned since the last call. */
+	takeStats(): { batchesSent: number; eventsReceived: number } {
+		const stats = {
+			batchesSent: this.batchesSent,
+			eventsReceived: this.eventsReceived,
+		};
+		this.batchesSent = 0;
+		this.eventsReceived = 0;
+		return stats;
+	}
+
 	close(): void {
 		this.closed = true;
+		this.batch = [];
+		this.batchBytes = 0;
 		this.pending = [];
 		this.pendingBytes = 0;
 		const socket = this.socket;
@@ -137,6 +182,7 @@ export class ParlumeTranscriber {
 	): void {
 		this.socketEpochMs ??= epochMs;
 		socket.send(chunk);
+		this.batchesSent++;
 	}
 
 	private async connect(): Promise<void> {
@@ -203,6 +249,9 @@ export class ParlumeTranscriber {
 	}
 
 	private receive(socket: ParlumeTranscriptionSocket, data: unknown): void {
+		if (this.socket === socket) {
+			this.eventsReceived++;
+		}
 		const epoch = this.socketEpochMs;
 		const event = readFluxEvent(data);
 		if (this.socket !== socket || epoch === null || !event) {

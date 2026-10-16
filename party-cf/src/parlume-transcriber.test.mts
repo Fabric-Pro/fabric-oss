@@ -41,6 +41,7 @@ function setup(connect: () => Promise<FakeSocket>) {
 	const statuses: string[] = [];
 	let now = 0;
 	const transcriber = new ParlumeTranscriber({
+		sampleRate: 16_000,
 		connect,
 		onTranscript: (transcript) => transcripts.push(transcript),
 		onStatus: (status) => statuses.push(status),
@@ -68,6 +69,32 @@ test("audio sent while connecting is forwarded once the stream opens", async () 
 	assert.equal(socket.accepted, true);
 	assert.deepEqual(socket.sent, [4_800, 4_800, 4_800]);
 	assert.deepEqual(statuses, ["connected"]);
+});
+
+test("10 ms meeting chunks reach Flux as 80 ms batches stamped with their first chunk", async () => {
+	const socket = new FakeSocket();
+	const { transcriber, transcripts } = setup(async () => socket);
+	// 10 ms at 16 kHz, 16-bit mono.
+	for (let index = 0; index < 8; index++) {
+		transcriber.send(new ArrayBuffer(320), 70_000 + index * 10);
+	}
+	await flush();
+	for (let index = 8; index < 15; index++) {
+		transcriber.send(new ArrayBuffer(320), 70_000 + index * 10);
+	}
+
+	assert.deepEqual(socket.sent, [2_560]);
+	socket.flux({
+		event: "StartOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.5,
+		audio_window_end: 0.6,
+		transcript: "",
+	});
+	assert.equal(transcripts[0]?.startMs, 70_500);
+
+	transcriber.send(new ArrayBuffer(320), 70_150);
+	assert.deepEqual(socket.sent, [2_560, 2_560]);
 });
 
 test("Flux turns become partial and final transcripts on the audio clock", async () => {

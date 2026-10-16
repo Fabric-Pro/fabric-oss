@@ -19,7 +19,7 @@ import { sendSlackMessage } from "@repo/integrations/slack";
 import { decryptApiKey } from "@repo/utils";
 import { heartbeat } from "@temporalio/activity";
 import type { TriggerEvent } from "../../workflows/trigger-system/types";
-import { makeInFlightToolCompactor } from "../agentic-loop/in-flight-tool-compaction";
+import { makeToolLoopPrepareStep } from "../agentic-loop/step-cache-breakpoint";
 
 // =============================================================================
 // Types
@@ -464,7 +464,11 @@ async function invokeAgentInJob({
 			onStepEnd: () => {
 				heartbeat({ phase: "step_finished", executionId });
 			},
-			prepareStep: makeInFlightToolCompactor(),
+			prepareStep: makeToolLoopPrepareStep({
+				provider: metadata.provider,
+				modelString: metadata.modelString,
+				hasTools: toolNames.length > 0,
+			}),
 			...(toolNames.length > 0
 				? { tools, stopWhen: isStepCount(8) }
 				: {}),

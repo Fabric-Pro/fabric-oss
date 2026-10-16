@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
 			providerBotId: parsed.data.botId,
 			// A revoked inviter has already moved the session to LEAVING before
 			// asking the bridge to stop. STOP_FAILED is retried by that same
-			// durable bridge marker until Meeting BaaS accepts the leave request.
+			// durable bridge marker until the provider accepts the leave request.
 			status: { in: ["JOINING", "ACTIVE", "LEAVING", "STOP_FAILED"] },
 		},
 		select: {

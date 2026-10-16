@@ -5,6 +5,8 @@
  * platform tools and user-connected MCP servers.
  */
 
+import type { ConfirmationMeta } from "@repo/temporal/fabric-tool-definition";
+
 /**
  * What proved the caller's identity for this session.
  *
@@ -26,7 +28,29 @@ export type GatewayCredential =
 	 */
 	| "oauth"
 	/** Browser cookie. Carries the user's full interactive authority. */
-	| "session";
+	| "session"
+	/**
+	 * Fabric's own agent runtime (the Temporal worker), acting for the user and
+	 * organization it names. Proven by the shared agent service secret; the
+	 * named user must belong to the named organization, whose tenant is then
+	 * fixed for the session. Holds `SERVICE_CREDENTIAL_SCOPES`, not a wildcard.
+	 */
+	| "service";
+
+/**
+ * Where the acting user is when Fabric's own agent calls a tool: the page the
+ * chat was opened from and the run that is calling. Tools read it as the
+ * default placement for what they create; it never widens access.
+ */
+export interface GatewayActingContext {
+	projectId?: string;
+	workspaceId?: string;
+	/** The kind of page the chat was opened from; a new page defaults to it. */
+	surface?: "artifact" | "workspace";
+	conversationId?: string;
+	sourceRunType?: string;
+	sourceRunId?: string;
+}
 
 export interface GatewaySession {
 	sessionId: string;
@@ -44,6 +68,13 @@ export interface GatewaySession {
 	role: "user" | "admin";
 	/** How this session authenticated. See `GatewayCredential`. */
 	credential: GatewayCredential;
+	/**
+	 * The `OauthClient` row of the agent that signed in, for the `oauth`
+	 * credential; absent for every other. Writes name it as their author's agent.
+	 */
+	oauthClientId?: string;
+	/** Set only for the `service` credential. See `GatewayActingContext`. */
+	actingContext?: GatewayActingContext;
 	/**
 	 * Scopes granted by the API key that opened this session.
 	 *
@@ -107,6 +138,13 @@ export interface GatewayToolDefinition {
 	_gateway_config_id?: string;
 	/** MCP tool annotations */
 	annotations?: ToolAnnotations;
+	/**
+	 * MCP `_meta` for a Fabric platform tool: when a chat must have the person
+	 * confirm a call before it runs (`ConfirmationPolicy`, as it travels on the
+	 * wire). A gateway client that does not know the key ignores it, and the
+	 * gateway itself stays prompt-free (keys are governed by scopes).
+	 */
+	_meta?: ConfirmationMeta;
 }
 
 export interface ToolCallResult {
@@ -146,16 +184,25 @@ export interface ConnectedServerInfo {
 export function isOrganizationBoundCredential(
 	credential: GatewayCredential,
 ): boolean {
-	return credential === "organization-key" || credential === "oauth";
+	return (
+		credential === "organization-key" ||
+		credential === "oauth" ||
+		credential === "service"
+	);
 }
 
 /**
  * Credentials that act for a person without being that person at a keyboard —
- * a coding agent signed in over OAuth, or an organization key. What they may do
- * is whatever the person consented to or the key's creator chose, so they are
- * held to declared facts (a server's own `readOnlyHint`, the granted scopes)
- * and never to a guess made from a tool's name.
+ * a coding agent signed in over OAuth, an organization key, or Fabric's own
+ * agent runtime. What they may do is whatever the person consented to, the
+ * key's creator chose or the runtime's scope ceiling allows, so they are held
+ * to declared facts (a server's own `readOnlyHint`, the granted scopes) and
+ * never to a guess made from a tool's name.
  */
 export function isDelegatedCredential(credential: GatewayCredential): boolean {
-	return credential === "organization-key" || credential === "oauth";
+	return (
+		credential === "organization-key" ||
+		credential === "oauth" ||
+		credential === "service"
+	);
 }

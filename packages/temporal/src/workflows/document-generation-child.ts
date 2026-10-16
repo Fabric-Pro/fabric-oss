@@ -42,6 +42,7 @@ import {
 	DOCUMENT_GENERATION_STALE,
 	DOCUMENT_GENERATION_SUPERSEDED,
 	type ProposalArtifactPlan,
+	type ProposalRetrievalSource,
 } from "../lib/proposal-artifact/types";
 import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
@@ -369,6 +370,8 @@ async function startProposalAnalysis(
 		organizationId: string;
 		userId: string;
 		contexts: string[];
+		/** Retrieval's source manifest, when it returned one. */
+		retrievalManifest?: ProposalRetrievalSource[];
 		planEligible?: boolean;
 	},
 ): Promise<void> {
@@ -384,6 +387,11 @@ async function startProposalAnalysis(
 			analysisSkipReason: plan.analysisSkipReason,
 			triggeredByGuest: plan.triggeredByGuest,
 			contexts: run.contexts,
+			// Only an argument of the same activity: unset, the payload
+			// drops it and the input is exactly what it was before.
+			...(run.retrievalManifest && {
+				retrievalManifest: run.retrievalManifest,
+			}),
 		});
 		if (created.kind === "superseded") {
 			// A newer generation owns the document: its Main is not this
@@ -492,6 +500,9 @@ export async function documentGenerationChildWorkflow(
 
 	const startTime = Date.now();
 	let contexts: string[] = [];
+	// Where the retrieval strings came from, for a coordinated Proposal's
+	// analysis evidence (Fizzy #2946). Set only when retrieval returned one.
+	let retrievalManifest: ProposalRetrievalSource[] | undefined;
 	let episodeCount = 0;
 	const teamsSearchCount = 0;
 	let hasTeamsIntegration = false;
@@ -594,7 +605,7 @@ export async function documentGenerationChildWorkflow(
 			try {
 				// Don't pass limit — let RAG settings' topK (default: 50) control retrieval count
 				// The reranker then narrows to rerankTopK (default: 10) for best quality
-				contexts = await retrieveProjectContexts({
+				const retrieval = await retrieveProjectContexts({
 					projectId,
 					userId,
 					organizationId,
@@ -603,10 +614,26 @@ export async function documentGenerationChildWorkflow(
 					// The context row created moments ago for THIS run is
 					// delivered directly below, so it must not also come back
 					// through similarity search. The filter has to reach the
-					// query: this activity returns `string[]` with no
+					// query: the strings this activity returns carry no
 					// identifiers, so there is nothing here to post-filter on.
 					excludeContextId,
+					// A coordinated Proposal also asks where each string came
+					// from, for its analysis evidence (Fizzy #2946). Unset
+					// otherwise, which the payload drops: today's input.
+					...(proposal && { includeSourceManifest: true as const }),
 				});
+				// No `patched()`: the branch is chosen by the recorded result
+				// itself, as for `resolvedPromptVersionId` below. A history
+				// recorded before the manifest existed, or by a worker that
+				// ignores the flag, holds a `string[]` and takes the first
+				// arm with no manifest; either way the same commands run and
+				// only arguments of later activities differ.
+				if (Array.isArray(retrieval)) {
+					contexts = retrieval;
+				} else {
+					contexts = retrieval.contexts;
+					retrievalManifest = retrieval.manifest;
+				}
 
 				const contextDuration = Date.now() - contextStartTime;
 				const totalContextLength = contexts.reduce(
@@ -1217,6 +1244,7 @@ export async function documentGenerationChildWorkflow(
 				organizationId: proposal.organizationId,
 				userId,
 				contexts,
+				retrievalManifest,
 				planEligible,
 			});
 		}

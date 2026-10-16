@@ -30,7 +30,7 @@ import {
 	agentToolAbortSignal,
 	prepareAgentTools,
 } from "../shared/agent-tool-runtime";
-import { makeInFlightToolCompactor } from "./in-flight-tool-compaction";
+import { makeToolLoopPrepareStep } from "./step-cache-breakpoint";
 
 // =============================================================================
 // Types
@@ -325,7 +325,7 @@ async function executeDelegateMode(
 	);
 
 	// Get AI model
-	const { model } = await getAIModelWithMetadata(
+	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
 		{ userId, organizationId },
 	);
@@ -355,7 +355,11 @@ async function executeDelegateMode(
 			],
 			tools,
 			stopWhen: isStepCount(10),
-			prepareStep: makeInFlightToolCompactor(),
+			prepareStep: makeToolLoopPrepareStep({
+				provider: metadata.provider,
+				modelString: metadata.modelString,
+				hasTools: Object.keys(tools).length > 0,
+			}),
 			abortSignal: agentToolAbortSignal(controller.signal),
 		});
 
@@ -411,7 +415,7 @@ async function executeInlineMode(
 	startTime: number,
 ): Promise<RunAgentOutput> {
 	// Get AI model
-	const { model } = await getAIModelWithMetadata(
+	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
 		{ userId, organizationId },
 	);
@@ -445,7 +449,11 @@ async function executeInlineMode(
 			messages,
 			tools,
 			stopWhen: isStepCount(5), // Fewer steps for inline mode
-			prepareStep: makeInFlightToolCompactor(),
+			prepareStep: makeToolLoopPrepareStep({
+				provider: metadata.provider,
+				modelString: metadata.modelString,
+				hasTools: Object.keys(tools).length > 0,
+			}),
 			abortSignal: agentToolAbortSignal(controller.signal),
 		});
 

@@ -12,7 +12,7 @@
  * each has an activity here:
  *
  *   - vectors, in Qdrant, in per-organization collections;
- *   - objects, in S3/R2, under org-prefixed keys in four buckets;
+ *   - objects, in S3/R2, under org-prefixed keys in five buckets;
  *   - the payment-provider subscription, which bills whether or not the tenant
  *     that bought it still exists.
  *
@@ -713,9 +713,12 @@ function safeStorageHeartbeat(): void {
  * drawn from the same cuid space and never collide, so a key under this prefix
  * belongs to this organization and to nothing else.
  *
- * Three prefixes and one exact key, which is every org-scoped path that exists:
+ * Four prefixes and one exact key, which is every org-scoped path that exists:
  *   - chat-documents: `{orgId}/workspace-files/...`
  *   - qa-run-evidence: `{orgId}/qa-runs/...`
+ *   - workspace-documents: `{orgId}/frames/{frameId}/files/...`, the files
+ *     the organization's pages stored. Only page files use that bucket. The
+ *     pages' rows and records are deleted with the organization row.
  *   - project-contexts: `{orgId}/company-context/...`, the organization's
  *     company context files (Fizzy #2719). Only that sub-prefix: project
  *     context files share the bucket under `projects/{projectId}/`, which is
@@ -758,6 +761,10 @@ export async function deleteOrganizationObjectsFromStorageActivity(
 		},
 		{
 			bucket: config.storage.bucketNames.qaRunEvidence,
+			prefix: `${organizationId}/`,
+		},
+		{
+			bucket: config.storage.bucketNames.workspaceDocuments,
 			prefix: `${organizationId}/`,
 		},
 		{

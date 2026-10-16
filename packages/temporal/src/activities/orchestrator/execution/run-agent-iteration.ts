@@ -13,6 +13,10 @@ import { isStepCount, jsonSchema, streamText, tool } from "@repo/ai";
 import { getModelCapabilities } from "@repo/ai/capabilities";
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import {
+	isPromptCacheTarget,
+	withRollingCacheBreakpoint,
+} from "@repo/ai/prompt-cache";
+import {
 	buildSkillsSystemBlock,
 	createSkillTools,
 	listAvailableSkills,
@@ -214,6 +218,12 @@ export interface RunAgentIterationInput {
 	organizationId?: string;
 	/** Execution ID for tracking */
 	executionId: string;
+	/**
+	 * The chat conversation this round answers, when the run has one. Only
+	 * attributes the round's usage-log row to that conversation; absent for
+	 * starters with no conversation. Never the execution ID.
+	 */
+	conversationId?: string;
 	/** Current iteration number */
 	iteration: number;
 	/** Max steps within this iteration (for multi-tool scenarios) */
@@ -836,20 +846,28 @@ async function runAgentIterationRound(
 	// tool-capable model is chosen whenever any tool (caller-supplied or
 	// skill) is bound on this call.
 	const hasTools = aiSdkToolCount > 0;
-	const { model, canonicalName: modelCanonicalName } =
-		await getAiModelWithSelection(
-			userId,
-			organizationId,
-			hasTools,
-			modelOverride,
-		);
+	const {
+		model,
+		provider: modelProvider,
+		modelString,
+		canonicalName: modelCanonicalName,
+	} = await getAiModelWithSelection(
+		userId,
+		organizationId,
+		hasTools,
+		modelOverride,
+		undefined,
+		input.conversationId
+			? { conversationId: input.conversationId }
+			: undefined,
+	);
 	// The model every provider request of this round goes through: checked
 	// against the turn record before each physical request when the round
 	// belongs to a chat turn (see guardTurnModel).
 	const guardedModel = guardTurnModel(model, input.turnScope);
 
 	// Convert conversation history to AI SDK format
-	const messages = convertToAiSdkMessages(conversationHistory);
+	let messages = convertToAiSdkMessages(conversationHistory);
 
 	// Vision: when the user attached image documents this turn, show the pixels
 	// to vision-capable models by splicing them onto the last user message — so
@@ -897,6 +915,18 @@ async function runAgentIterationRound(
 				`[AgentIteration] Model ${modelId} is not vision-capable — using RAG image description`,
 			);
 		}
+	}
+
+	// Anthropic caches a prompt only up to an explicit breakpoint; OpenAI and
+	// Gemini cache a stable prefix with no marker. One rolling breakpoint on
+	// the last conversation message caches tools, system prompt and history,
+	// so the next round of the turn can read that prefix back. It goes on
+	// before the host note below, which changes from call to call: a prefix
+	// ending in the note would not match the next round's request. Same gate
+	// as direct chat: Bedrock, Foundry and other gateways use request adapters
+	// that do not take the marker.
+	if (isPromptCacheTarget(modelProvider, modelString)) {
+		messages = withRollingCacheBreakpoint(messages) as AiSdkMessage[];
 	}
 
 	// The per-call host note goes last, after the vision splice so no image

@@ -1,39 +1,20 @@
 "use client";
 
 import type { FrameDocumentView } from "@saas/frames/components/FrameRenderer";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@ui/components/dropdown-menu";
 import { cn } from "@ui/lib";
-import {
-	ChevronLeft,
-	ChevronRight,
-	Code2,
-	Copy,
-	Download,
-	ExternalLink,
-	Eye,
-	FileJson,
-	Fullscreen,
-	Loader2,
-	PanelTop,
-	Share2,
-	Sparkles,
-	X,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Response } from "../../../../components/ai-elements/response";
-import {
-	type FrameEmbedToHostMessage,
-	type FrameHostToEmbedMessage,
-	isFrameEmbedToHostMessage,
-} from "../lib/frame-embed-protocol";
+import { useFrameContentFingerprint } from "../hooks/use-frame-content-fingerprint";
+import { useFrameEmbedRpc } from "../hooks/use-frame-embed-rpc";
+import { useFrameExport } from "../hooks/use-frame-export";
+import { useFrameRuntimeBridge } from "../hooks/use-frame-runtime-bridge";
+import type { FrameSurfaceName } from "../lib/frame-tool-types";
+import { frameShellLabels } from "../lib/frame-shell-labels";
+import { FrameRuntimeConfirmDialog } from "./FrameRuntimeConfirmDialog";
+import { FrameShellHeader, type FrameShareControl } from "./FrameShellHeader";
 import { ShareFrameSheet } from "./ShareFrameSheet";
 
 interface FrameVizShellProps {
@@ -57,21 +38,46 @@ interface FrameVizShellProps {
 	className?: string;
 	presentation?: "page" | "panel";
 	onClose?: () => void;
+	/**
+	 * The organization the page belongs to. A page runs its tools only while
+	 * the viewer is looking at this organization.
+	 */
 	organizationId?: string | null;
 	/** Frame belongs to a project (rendered through the hardened sandbox). */
 	isProjectFrame?: boolean;
+	/**
+	 * False when the page is drawn without its scripts (one an unattended run
+	 * wrote, see `isUnattendedFrame`), which the header then calls "Static"
+	 * instead of "Interactive".
+	 */
+	interactive?: boolean;
+	/**
+	 * The Fabric tools the page's own script declared it calls
+	 * (`window.fabric.call`). Only these run, as the viewer; absent means none.
+	 */
+	runtimeTools?: readonly string[];
+	/** Opens Fabric Agent from where this page is, for `fabric.openAgent`. */
+	onOpenAgent?: (prompt: string) => void;
+	/** The surface the page is on, which names it above its title. */
+	surface?: FrameSurfaceName;
+	/**
+	 * The viewer may manage who the page is shared with (they own it). The
+	 * shell then offers the sharing sheet as its one Share control; with a
+	 * `frameId` and without this, a public link or Publish is offered instead.
+	 */
+	canManageSharing?: boolean;
+	/** The sharing sheet was closed; what it changed is worth reading again. */
+	onSharingChanged?: () => void;
 }
 
-const RPC_TIMEOUT_MS = 5000;
+const NO_TOOLS: readonly string[] = [];
 
 export function FrameVizShell({
 	frameId,
 	title,
 	description,
 	kind,
-	contentType: _contentType,
 	embedUrl,
-	frameUrl: _frameUrl,
 	shareUrl,
 	frameDocument,
 	headerMode = "authenticated",
@@ -85,21 +91,20 @@ export function FrameVizShell({
 	className,
 	presentation = "page",
 	onClose,
-	organizationId,
+	organizationId = null,
 	isProjectFrame = false,
+	interactive = true,
+	runtimeTools = NO_TOOLS,
+	onOpenAgent,
+	surface,
+	canManageSharing = false,
+	onSharingChanged,
 }: FrameVizShellProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
-	const pendingRequestsRef = useRef<
-		Map<string, (message: FrameEmbedToHostMessage) => void>
-	>(new Map());
+	const fullscreenIframeRef = useRef<HTMLIFrameElement>(null);
 	const [showCode, setShowCode] = useState(false);
-	const [frameHeight, setFrameHeight] = useState(720);
 	const [isFullscreen, setIsFullscreen] = useState(false);
-	const [iframeLoading, setIframeLoading] = useState(true);
-	const [isExporting, setIsExporting] = useState<null | "png" | "pdf">(null);
 	const [currentSlide, setCurrentSlide] = useState(0);
-	const [embedError, setEmbedError] = useState<string | null>(null);
-	const [exportNotice, setExportNotice] = useState<string | null>(null);
 	const [shareSheetOpen, setShareSheetOpen] = useState(false);
 
 	const isPanelPresentation = presentation === "panel";
@@ -111,75 +116,53 @@ export function FrameVizShell({
 	const effectiveEmbedUrl = isSlideshow
 		? `${embedUrl}${embedUrl.includes("?") ? "&" : "?"}slide=${effectiveSlide}`
 		: embedUrl;
+	const labels = frameShellLabels({ surface, headerMode });
 
-	useEffect(() => {
-		// Only the embed this shell framed may drive it. Without the check any
-		// window with a handle on this one — an opener, another frame — could
-		// post a `set-height` or resolve a pending export/code RPC with its own
-		// payload. `embedUrl` is app-relative today, so this resolves to this
-		// app's own origin; resolving it rather than hardcoding keeps the check
-		// correct if the embed is ever served from elsewhere.
-		let expectedOrigin = window.location.origin;
-		try {
-			expectedOrigin = new URL(embedUrl, window.location.href).origin;
-		} catch {
-			// Unparseable embed URL — fall back to this app's own origin.
-		}
+	const codeView = useMemo(
+		() => (frameDocument ? JSON.stringify(frameDocument, null, 2) : null),
+		[frameDocument],
+	);
 
-		const onMessage = (event: MessageEvent) => {
-			if (event.origin !== expectedOrigin) {
-				return;
-			}
-			if (!isFrameEmbedToHostMessage(event.data)) {
-				return;
-			}
+	const {
+		frameHeight,
+		iframeLoading,
+		embedError,
+		embedWindows,
+		requestFromEmbed,
+		onEmbedLoad,
+	} = useFrameEmbedRpc({
+		embedUrl,
+		effectiveEmbedUrl,
+		iframeRef,
+		fullscreenIframeRef,
+	});
 
-			if (event.data.type === "fabric-frame:ready") {
-				setIframeLoading(false);
-				setEmbedError(null);
-				return;
-			}
+	const contentFingerprint = useFrameContentFingerprint(
+		frameDocument?.blocks,
+		runtimeTools,
+	);
+	const { pendingCall, answerConfirmation } = useFrameRuntimeBridge({
+		frameKey: frameId ?? embedUrl,
+		frameId: frameId ?? null,
+		contentFingerprint,
+		organizationId,
+		runtimeTools,
+		embedWindows,
+		embedUrl,
+		openAgent: onOpenAgent,
+		// The question is a dialog; the fullscreen layer sits above every dialog.
+		onQuestion: () => setIsFullscreen(false),
+		enabled: headerMode !== "public",
+	});
 
-			if (event.data.type === "fabric-frame:set-height") {
-				const nextHeight = Number(event.data.height ?? 0);
-				if (Number.isFinite(nextHeight) && nextHeight > 0) {
-					setFrameHeight(
-						Math.max(480, Math.min(nextHeight + 24, 12000)),
-					);
-					setIframeLoading(false);
-				}
-				return;
-			}
-
-			if (event.data.type === "fabric-frame:error") {
-				setEmbedError(event.data.error);
-				setIframeLoading(false);
-				return;
-			}
-
-			if (
-				event.data.type === "fabric-frame:export-png-result" ||
-				event.data.type === "fabric-frame:display-code"
-			) {
-				const resolve = pendingRequestsRef.current.get(
-					event.data.requestId,
-				);
-				if (resolve) {
-					pendingRequestsRef.current.delete(event.data.requestId);
-					resolve(event.data);
-				}
-			}
-		};
-
-		window.addEventListener("message", onMessage);
-		return () => window.removeEventListener("message", onMessage);
-	}, [embedUrl]);
-
-	useEffect(() => {
-		setIframeLoading(true);
-		setEmbedError(null);
-		setExportNotice(null);
-	}, [effectiveEmbedUrl]);
+	const exporter = useFrameExport({
+		title,
+		kind,
+		codeView,
+		iframeRef,
+		requestFromEmbed,
+		resetKey: effectiveEmbedUrl,
+	});
 
 	useEffect(() => {
 		if (!isSlideshow) {
@@ -217,153 +200,36 @@ export function FrameVizShell({
 		return () => document.removeEventListener("keydown", onKeyDown);
 	}, [isFullscreen]);
 
-	const codeView = useMemo(() => {
-		if (!frameDocument) {
-			return null;
-		}
-		return JSON.stringify(frameDocument, null, 2);
-	}, [frameDocument]);
-
-	const handleCopy = async (value?: string) => {
-		if (!value) {
+	const toggleCode = () => {
+		if (showCode) {
+			setShowCode(false);
 			return;
 		}
-		await navigator.clipboard.writeText(value);
-	};
-
-	const sendMessageToEmbed = (message: FrameHostToEmbedMessage) => {
-		iframeRef.current?.contentWindow?.postMessage(message, "*");
-	};
-
-	const requestFromEmbed = <T extends FrameEmbedToHostMessage>(
-		message: FrameHostToEmbedMessage,
-	) => {
-		return new Promise<T>((resolve, reject) => {
-			const timeout = window.setTimeout(() => {
-				pendingRequestsRef.current.delete(message.requestId);
-				reject(new Error("Frame embed did not respond in time."));
-			}, RPC_TIMEOUT_MS);
-
-			pendingRequestsRef.current.set(message.requestId, (response) => {
-				window.clearTimeout(timeout);
-				resolve(response as T);
-			});
-			sendMessageToEmbed(message);
-		});
-	};
-
-	const captureIframeFallback = async () => {
-		const doc = iframeRef.current?.contentDocument;
-		if (!doc?.body) {
-			throw new Error("Frame content is not ready yet.");
-		}
-		const { default: html2canvasLib } = await import("html2canvas");
-		const canvas = await html2canvasLib(doc.body, {
-			backgroundColor: "#ffffff",
-			useCORS: true,
-			scale: window.devicePixelRatio > 1 ? 2 : 1,
-		});
-		return canvas.toDataURL("image/png");
-	};
-
-	const requestPngExport = async () => {
-		const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-		try {
-			const result = await requestFromEmbed<
-				Extract<
-					FrameEmbedToHostMessage,
-					{ type: "fabric-frame:export-png-result" }
-				>
-			>({
-				type: "fabric-frame:request-export-png",
-				requestId,
-			});
-			if (result.error || !result.dataUrl) {
-				throw new Error(result.error || "Frame export failed");
-			}
-			setExportNotice(null);
-			return result.dataUrl;
-		} catch {
-			setExportNotice(
-				"Used local fallback export because the embed RPC did not respond.",
-			);
-			return await captureIframeFallback();
-		}
-	};
-
-	const handleExportJson = () => {
-		if (!codeView) {
-			return;
-		}
-		const blob = new Blob([codeView], { type: "application/json" });
-		const url = URL.createObjectURL(blob);
-		const link = document.createElement("a");
-		link.href = url;
-		link.download = `${title || "frame"}.frame.json`;
-		link.click();
-		URL.revokeObjectURL(url);
-	};
-
-	const handleExportPng = async () => {
-		setIsExporting("png");
-		try {
-			const dataUrl = await requestPngExport();
-			const link = document.createElement("a");
-			link.href = dataUrl;
-			link.download = `${title || "frame"}.png`;
-			link.click();
-		} finally {
-			setIsExporting(null);
-		}
-	};
-
-	const handleExportPdf = async () => {
-		setIsExporting("pdf");
-		try {
-			const dataUrl = await requestPngExport();
-			const image = new Image();
-			await new Promise((resolve, reject) => {
-				image.onload = resolve;
-				image.onerror = reject;
-				image.src = dataUrl;
-			});
-			const { default: JsPDF } = await import("jspdf");
-			const pdf = new JsPDF({
-				orientation: kind === "slideshow" ? "landscape" : "portrait",
-				unit: "px",
-				format: [image.width, image.height],
-			});
-			pdf.addImage(dataUrl, "PNG", 0, 0, image.width, image.height);
-			pdf.save(`${title || "frame"}.pdf`);
-		} finally {
-			setIsExporting(null);
-		}
-	};
-
-	const handleFullscreen = () => {
-		setIsFullscreen(true);
-	};
-
-	const handleDisplayCode = async () => {
 		setShowCode(true);
 		if (!iframeRef.current?.contentWindow) {
 			return;
 		}
-		const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-		try {
-			await requestFromEmbed<
-				Extract<
-					FrameEmbedToHostMessage,
-					{ type: "fabric-frame:display-code" }
-				>
-			>({
-				type: "fabric-frame:request-display-code",
-				requestId,
-			});
-		} catch {
-			// Local code view is already available, so failure here is non-fatal.
-		}
+		// The code view is built here; the embed is only told, and a failure
+		// to tell it is not worth the viewer waiting for.
+		requestFromEmbed({
+			type: "fabric-frame:request-display-code",
+			requestId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		}).catch(() => undefined);
 	};
+
+	const canManageSharingHere = Boolean(frameId) && canManageSharing;
+	const share: FrameShareControl | null = canManageSharingHere
+		? { type: "sheet", onOpen: () => setShareSheetOpen(true) }
+		: shareUrl
+			? {
+					type: "link",
+					url: shareUrl,
+					onRevoke: onRevokeShare,
+					revokePending,
+				}
+			: onPublish
+				? { type: "publish", onPublish, pending: publishPending }
+				: null;
 
 	return (
 		<>
@@ -374,381 +240,36 @@ export function FrameVizShell({
 				)}
 			>
 				{!hideHeader && (
-					<div
-						className={cn(
-							"border bg-card",
-							isPanelPresentation
-								? "rounded-2xl px-4 py-3 shadow-none"
-								: "rounded-3xl p-6 shadow-sm",
-						)}
-					>
-						{isPanelPresentation ? (
-							/* ── Panel mode: compact single-row header ── */
-							<div className="flex items-start justify-between gap-3">
-								<div className="min-w-0 flex-1">
-									<h2 className="truncate font-serif text-xl leading-tight">
-										{title}
-									</h2>
-									{description ? (
-										<p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
-											{description}
-										</p>
-									) : null}
-								</div>
-								<div className="flex shrink-0 items-center gap-1">
-									{/* Code / Render toggle */}
-									<Button
-										variant="ghost"
-										size="icon"
-										className="h-8 w-8"
-										onClick={
-											showCode
-												? () => setShowCode(false)
-												: handleDisplayCode
-										}
-										title={
-											showCode
-												? "Show rendered frame"
-												: "Show source code"
-										}
-									>
-										{showCode ? (
-											<Eye className="h-4 w-4" />
-										) : (
-											<Code2 className="h-4 w-4" />
-										)}
-									</Button>
-									{/* Fullscreen */}
-									<Button
-										variant="ghost"
-										size="icon"
-										className="h-8 w-8"
-										onClick={handleFullscreen}
-										title="Fullscreen"
-									>
-										<Fullscreen className="h-4 w-4" />
-									</Button>
-									{/* Export dropdown */}
-									{codeView ? (
-										<DropdownMenu>
-											<DropdownMenuTrigger asChild>
-												<Button
-													variant="ghost"
-													size="icon"
-													className="h-8 w-8"
-													title="Export"
-													disabled={
-														isExporting !== null
-													}
-												>
-													{isExporting ? (
-														<Loader2 className="h-4 w-4 animate-spin" />
-													) : (
-														<Download className="h-4 w-4" />
-													)}
-												</Button>
-											</DropdownMenuTrigger>
-											<DropdownMenuContent align="end">
-												<DropdownMenuItem
-													onClick={handleExportPng}
-												>
-													<PanelTop className="mr-2 h-4 w-4" />{" "}
-													Export PNG
-												</DropdownMenuItem>
-												<DropdownMenuItem
-													onClick={handleExportPdf}
-												>
-													<Download className="mr-2 h-4 w-4" />{" "}
-													Export PDF
-												</DropdownMenuItem>
-												<DropdownMenuItem
-													onClick={handleExportJson}
-												>
-													<FileJson className="mr-2 h-4 w-4" />{" "}
-													Download JSON
-												</DropdownMenuItem>
-											</DropdownMenuContent>
-										</DropdownMenu>
-									) : null}
-									{/* Share dropdown */}
-									{shareUrl ? (
-										<DropdownMenu>
-											<DropdownMenuTrigger asChild>
-												<Button
-													variant="ghost"
-													size="icon"
-													className="h-8 w-8"
-													title="Share"
-												>
-													<Share2 className="h-4 w-4" />
-												</Button>
-											</DropdownMenuTrigger>
-											<DropdownMenuContent align="end">
-												<DropdownMenuItem
-													onClick={() =>
-														handleCopy(shareUrl)
-													}
-												>
-													<Copy className="mr-2 h-4 w-4" />{" "}
-													Copy link
-												</DropdownMenuItem>
-												<DropdownMenuItem asChild>
-													<a
-														href={shareUrl}
-														target="_blank"
-														rel="noreferrer"
-													>
-														<ExternalLink className="mr-2 h-4 w-4" />{" "}
-														Open shared view
-													</a>
-												</DropdownMenuItem>
-											</DropdownMenuContent>
-										</DropdownMenu>
-									) : frameId ? (
-										<Button
-											variant="ghost"
-											size="icon"
-											className="h-8 w-8"
-											onClick={() =>
-												setShareSheetOpen(true)
-											}
-											title="Share frame"
-										>
-											<Share2 className="h-4 w-4" />
-										</Button>
-									) : onPublish ? (
-										<Button
-											variant="ghost"
-											size="icon"
-											className="h-8 w-8"
-											onClick={onPublish}
-											disabled={publishPending}
-											title={
-												publishPending
-													? "Publishing…"
-													: "Publish frame"
-											}
-										>
-											<Share2 className="h-4 w-4" />
-										</Button>
-									) : null}
-									{/* Close */}
-									{onClose ? (
-										<Button
-											variant="ghost"
-											size="icon"
-											className="h-8 w-8"
-											onClick={onClose}
-											aria-label="Close interactive content panel"
-										>
-											<X className="h-4 w-4" />
-										</Button>
-									) : null}
-								</div>
-							</div>
-						) : (
-							/* ── Page mode: full header with all controls ── */
-							<>
-								<div className="flex flex-wrap items-start justify-between gap-4">
-									<div className="space-y-3">
-										<div className="space-y-1">
-											<p className="editorial-label">
-												{headerMode === "public"
-													? "Shared Frame"
-													: "Interactive content"}
-											</p>
-											<h1 className="font-serif text-4xl">
-												{title}
-											</h1>
-											{headerMode === "public" &&
-											workspaceName ? (
-												<p className="text-sm text-muted-foreground">
-													Built in Fabric by{" "}
-													<span className="font-medium text-foreground">
-														{workspaceName}
-													</span>
-												</p>
-											) : null}
-										</div>
-										{description ? (
-											<div className="max-w-3xl text-sm leading-7 text-muted-foreground prose-sm prose dark:prose-invert">
-												<Response>
-													{description}
-												</Response>
-											</div>
-										) : headerMode === "public" ? (
-											<p className="max-w-3xl text-sm leading-7 text-muted-foreground">
-												Explore a publicly shared
-												interactive frame powered by
-												Fabric.
-											</p>
-										) : null}
-										<div className="flex flex-wrap gap-2">
-											<Badge variant="secondary">
-												{kind === "slideshow"
-													? "Slideshow"
-													: "Frame"}
-											</Badge>
-											{isPublic ? (
-												<Badge>Shared</Badge>
-											) : null}
-											{isProjectFrame ? (
-												<Badge variant="outline">
-													Project
-												</Badge>
-											) : null}
-											<Badge variant="outline">
-												<Sparkles className="mr-1 h-3 w-3" />{" "}
-												Interactive
-											</Badge>
-											{isSlideshow ? (
-												<Badge variant="outline">
-													Slide {effectiveSlide + 1}{" "}
-													of {totalSlides}
-												</Badge>
-											) : null}
-										</div>
-									</div>
-									<div className="flex flex-wrap items-start gap-2">
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={
-												showCode
-													? () => setShowCode(false)
-													: handleDisplayCode
-											}
-										>
-											{showCode ? (
-												<>
-													<Eye className="mr-2 h-4 w-4" />{" "}
-													Render
-												</>
-											) : (
-												<>
-													<Code2 className="mr-2 h-4 w-4" />{" "}
-													Code
-												</>
-											)}
-										</Button>
-										<Button
-											variant="outline"
-											size="sm"
-											onClick={handleFullscreen}
-										>
-											<Fullscreen className="mr-2 h-4 w-4" />{" "}
-											Fullscreen
-										</Button>
-										{/* Export dropdown */}
-										<DropdownMenu>
-											<DropdownMenuTrigger asChild>
-												<Button
-													variant="outline"
-													size="sm"
-													disabled={
-														isExporting !== null
-													}
-												>
-													{isExporting ? (
-														<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-													) : (
-														<Download className="mr-2 h-4 w-4" />
-													)}
-													Export
-												</Button>
-											</DropdownMenuTrigger>
-											<DropdownMenuContent align="end">
-												<DropdownMenuItem
-													onClick={handleExportPng}
-												>
-													<PanelTop className="mr-2 h-4 w-4" />{" "}
-													Export PNG
-												</DropdownMenuItem>
-												<DropdownMenuItem
-													onClick={handleExportPdf}
-												>
-													<Download className="mr-2 h-4 w-4" />{" "}
-													Export PDF
-												</DropdownMenuItem>
-												<DropdownMenuItem
-													onClick={handleExportJson}
-												>
-													<FileJson className="mr-2 h-4 w-4" />{" "}
-													Download JSON
-												</DropdownMenuItem>
-											</DropdownMenuContent>
-										</DropdownMenu>
-										{/* Share dropdown or publish */}
-										{shareUrl ? (
-											<DropdownMenu>
-												<DropdownMenuTrigger asChild>
-													<Button
-														variant="outline"
-														size="sm"
-													>
-														<Share2 className="mr-2 h-4 w-4" />{" "}
-														Share
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem
-														onClick={() =>
-															handleCopy(shareUrl)
-														}
-													>
-														<Copy className="mr-2 h-4 w-4" />{" "}
-														Copy link
-													</DropdownMenuItem>
-													<DropdownMenuItem asChild>
-														<a
-															href={shareUrl}
-															target="_blank"
-															rel="noreferrer"
-														>
-															<ExternalLink className="mr-2 h-4 w-4" />{" "}
-															Open shared view
-														</a>
-													</DropdownMenuItem>
-													{isPublic &&
-													onRevokeShare ? (
-														<DropdownMenuItem
-															onClick={
-																onRevokeShare
-															}
-															disabled={
-																revokePending
-															}
-														>
-															{revokePending
-																? "Revoking…"
-																: "Revoke share"}
-														</DropdownMenuItem>
-													) : null}
-												</DropdownMenuContent>
-											</DropdownMenu>
-										) : onPublish ? (
-											<Button
-												variant="outline"
-												size="sm"
-												onClick={onPublish}
-												disabled={publishPending}
-											>
-												<Share2 className="mr-2 h-4 w-4" />
-												{publishPending
-													? "Publishing…"
-													: "Publish"}
-											</Button>
-										) : null}
-									</div>
-								</div>
-								{exportNotice ? (
-									<p className="mt-3 rounded-xl border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-										{exportNotice}
-									</p>
-								) : null}
-							</>
-						)}
-					</div>
+					<FrameShellHeader
+						presentation={presentation}
+						title={title}
+						description={description}
+						kind={kind}
+						labels={labels}
+						headerMode={headerMode}
+						workspaceName={workspaceName}
+						isPublic={isPublic}
+						isProjectFrame={isProjectFrame}
+						interactive={interactive}
+						slide={
+							isSlideshow
+								? { index: effectiveSlide, total: totalSlides }
+								: null
+						}
+						showCode={showCode}
+						onToggleCode={toggleCode}
+						onFullscreen={() => setIsFullscreen(true)}
+						exporter={{
+							available: codeView !== null,
+							isExporting: exporter.isExporting,
+							onPng: exporter.exportPng,
+							onPdf: exporter.exportPdf,
+							onJson: exporter.exportJson,
+						}}
+						exportNotice={exporter.exportNotice}
+						share={share}
+						onClose={onClose}
+					/>
 				)}
 
 				{isSlideshow && !showCode ? (
@@ -828,7 +349,7 @@ export function FrameVizShell({
 							{iframeLoading && !isPanelPresentation ? (
 								<div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b bg-background/90 px-4 py-2 text-sm text-muted-foreground backdrop-blur">
 									<Loader2 className="h-4 w-4 animate-spin" />{" "}
-									Loading interactive frame…
+									{labels.loading}
 								</div>
 							) : null}
 							{embedError ? (
@@ -851,49 +372,7 @@ export function FrameVizShell({
 									height: frameHeight,
 									overflow: "hidden",
 								}}
-								onLoad={() => {
-									window.setTimeout(
-										() => setIframeLoading(false),
-										350,
-									);
-									const iframe = iframeRef.current;
-									if (!iframe) {
-										return;
-									}
-									const measure = () => {
-										try {
-											const doc = iframe.contentDocument;
-											if (!doc?.body) {
-												return;
-											}
-											const html = doc.documentElement;
-											const body = doc.body;
-											const prevHtmlH = html.style.height;
-											const prevBodyH = body.style.height;
-											html.style.height = "auto";
-											body.style.height = "auto";
-											const h = Math.max(
-												html.scrollHeight,
-												body.scrollHeight,
-											);
-											html.style.height = prevHtmlH;
-											body.style.height = prevBodyH;
-											if (h > 200) {
-												setFrameHeight((prev) =>
-													Math.max(
-														prev,
-														Math.min(h + 24, 6000),
-													),
-												);
-											}
-										} catch {
-											/* cross-origin */
-										}
-									};
-									for (const delay of [300, 900, 2000]) {
-										window.setTimeout(measure, delay);
-									}
-								}}
+								onLoad={onEmbedLoad}
 							/>
 						</div>
 					)}
@@ -926,6 +405,7 @@ export function FrameVizShell({
 							}}
 						>
 							<iframe
+								ref={fullscreenIframeRef}
 								title={title}
 								src={effectiveEmbedUrl}
 								className="border-0"
@@ -942,16 +422,26 @@ export function FrameVizShell({
 					document.body,
 				)}
 
-			{/* Share Sheet */}
-			{frameId && (
+			<FrameRuntimeConfirmDialog
+				call={pendingCall}
+				pageTitle={title}
+				onAnswer={answerConfirmation}
+			/>
+
+			{frameId && canManageSharing ? (
 				<ShareFrameSheet
 					frameId={frameId}
 					organizationId={organizationId}
 					isProjectFrame={isProjectFrame}
 					open={shareSheetOpen}
-					onOpenChange={setShareSheetOpen}
+					onOpenChange={(open) => {
+						setShareSheetOpen(open);
+						if (!open) {
+							onSharingChanged?.();
+						}
+					}}
 				/>
-			)}
+			) : null}
 		</>
 	);
 }

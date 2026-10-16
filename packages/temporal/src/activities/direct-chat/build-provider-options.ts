@@ -6,6 +6,7 @@ import {
 } from "@repo/ai/lib/output-token-budget";
 import { isPromptCacheTarget } from "@repo/ai/prompt-cache";
 import type { AIProvider } from "@repo/database";
+import { isVoiceTurn } from "../shared/voice-turn-policy";
 
 /**
  * Backend reasoning mode after normalizeReasoningMode collapses the
@@ -31,6 +32,22 @@ export type AnthropicThinkingProviderOptions = {
 			| { type: "adaptive" };
 	};
 };
+
+/**
+ * The `providerOptions` block a spoken turn carries on an OpenAI reasoning
+ * model, asking it to think as little as it supports.
+ */
+export type OpenAiReasoningProviderOptions = {
+	openai: { reasoningEffort: "minimal" | "low" };
+};
+
+/**
+ * Everything `buildProviderOptions` can return. The two blocks are independent:
+ * thinking is Anthropic's, the reasoning effort is OpenAI's.
+ */
+export type DirectChatProviderOptions =
+	Partial<AnthropicThinkingProviderOptions> &
+		Partial<OpenAiReasoningProviderOptions>;
 
 /**
  * Default token budget for Anthropic extended thinking. Set to 5000 — the
@@ -80,7 +97,7 @@ export const ANTHROPIC_THINKING_MIN_MAX_TOKENS = 16000;
  * @param providerOptions - The value returned by `buildProviderOptions()`.
  */
 export function getMaxOutputTokensForProviderOptions(
-	providerOptions: AnthropicThinkingProviderOptions | undefined,
+	providerOptions: DirectChatProviderOptions | undefined,
 ): number | undefined {
 	if (!providerOptions?.anthropic?.thinking) {
 		return undefined;
@@ -130,7 +147,7 @@ export const DIRECT_CHAT_OUTPUT_TOKEN_CEILING = 16_384;
  * does.
  */
 export function resolveOutputTokenBudget(opts: {
-	providerOptions: AnthropicThinkingProviderOptions | undefined;
+	providerOptions: DirectChatProviderOptions | undefined;
 	metadata: BudgetMetadata;
 	promptChars: number;
 }): number | undefined {
@@ -204,12 +221,19 @@ export function isAnthropicProvider(
  * @param reasoningMode - Backend-normalized reasoning mode. Only "pro" enables
  *                        Anthropic thinking. Undefined is treated as non-pro
  *                        (defense in depth). See normalize-reasoning-mode.ts.
+ * @param featureKey - The caller's usage feature key. A voice turn (see
+ *                     `isVoiceTurn`) asks OpenAI reasoning models for minimal
+ *                     reasoning and never enables Anthropic thinking.
  */
 export function buildProviderOptions(
 	provider: AIProvider,
 	modelString: string,
 	reasoningMode: BackendReasoningMode | undefined,
-): AnthropicThinkingProviderOptions | undefined {
+	featureKey?: string,
+): DirectChatProviderOptions | undefined {
+	if (isVoiceTurn(featureKey)) {
+		return buildVoiceTurnProviderOptions(provider, modelString);
+	}
 	if (reasoningMode !== "pro") {
 		return undefined;
 	}
@@ -225,6 +249,46 @@ export function buildProviderOptions(
 				type: "enabled",
 				budgetTokens: ANTHROPIC_THINKING_BUDGET_TOKENS,
 			},
+		},
+	};
+}
+
+/** OpenAI's reasoning families: gpt-5 and gpt-6 (not their `-chat` variants) and the o-series. */
+const OPENAI_REASONING_MODEL = /^(?:openai\/)?(?:gpt-[56](?!.*-chat)|o\d)/i;
+/**
+ * The first gpt-5 models (`gpt-5`, `-mini`, `-nano`) are the only ones that
+ * accept "minimal"; gpt-5.1 and later, gpt-6 and the o-series start at "low".
+ */
+const OPENAI_MINIMAL_EFFORT_MODEL = /^(?:openai\/)?gpt-5(?:-(?:mini|nano))?$/i;
+
+function isOpenAiReasoningTarget(
+	provider: AIProvider,
+	modelString: string,
+): boolean {
+	return (
+		(provider === "OPENAI_DIRECT" || provider === "VERCEL_GATEWAY") &&
+		OPENAI_REASONING_MODEL.test(modelString)
+	);
+}
+
+/**
+ * A spoken reply is one or two sentences that a person is waiting for, so the
+ * model gets the least reasoning it accepts. A voice turn never opts into
+ * Anthropic thinking either, whatever reasoning mode the agent has saved: the
+ * budget would be spent before the first word.
+ */
+function buildVoiceTurnProviderOptions(
+	provider: AIProvider,
+	modelString: string,
+): OpenAiReasoningProviderOptions | undefined {
+	if (!isOpenAiReasoningTarget(provider, modelString)) {
+		return undefined;
+	}
+	return {
+		openai: {
+			reasoningEffort: OPENAI_MINIMAL_EFFORT_MODEL.test(modelString)
+				? "minimal"
+				: "low",
 		},
 	};
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -210,6 +210,127 @@ describe.each(AGENTS)(
 
 		it("still has the gaps recorded, so a fixed one gets removed from the list", () => {
 			expect(missingFrom(dockerfile, entry)).toEqual([...knownGaps]);
+		});
+	},
+);
+
+/**
+ * The agents built as private staging snapshots copy exactly their workspace
+ * closure into the stage that bundles them, rather than all of packages/. The
+ * filtered install links nothing else, so nothing else can reach the bundle,
+ * and a change elsewhere under packages/ leaves the image's build inputs
+ * unchanged. That is what lets the staging image workflow reuse the image.
+ */
+const CLOSURE_SCOPED_AGENTS = AGENTS.filter(
+	({ dockerfile }) => !dockerfile.includes("/custom-agent-runtime/"),
+);
+
+function stage(dockerfile: string, name: string): string {
+	const stages = readFileSync(join(REPO, dockerfile), "utf-8").split(
+		/^FROM /m,
+	);
+	return (
+		stages.find((body) =>
+			new RegExp(`\\sAS ${name}\\s*$`, "i").test(body.split("\n")[0]),
+		) ?? ""
+	);
+}
+
+function builderPackages(dockerfile: string): string[] {
+	return [
+		...stage(dockerfile, "builder").matchAll(
+			/^COPY packages\/([a-z0-9-]+) \.\/packages\/\1$/gm,
+		),
+	]
+		.map((match) => match[1])
+		.sort();
+}
+
+function nonRepoWorkspaceDeps(manifestPath: string): string[] {
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as {
+		dependencies?: Record<string, string>;
+		devDependencies?: Record<string, string>;
+	};
+	return Object.entries({
+		...manifest.dependencies,
+		...manifest.devDependencies,
+	})
+		.filter(
+			([name, range]) =>
+				range.startsWith("workspace:") && !name.startsWith("@repo/"),
+		)
+		.map(([name]) => name);
+}
+
+function sourceFiles(directory: string): string[] {
+	return readdirSync(directory).flatMap((name) => {
+		if (["node_modules", "dist", "__tests__"].includes(name)) {
+			return [];
+		}
+		const path = join(directory, name);
+		if (statSync(path).isDirectory()) {
+			return sourceFiles(path);
+		}
+		return /\.m?tsx?$/.test(name) && !/\.(test|spec)\./.test(name)
+			? [path]
+			: [];
+	});
+}
+
+describe.each(CLOSURE_SCOPED_AGENTS)(
+	"$dockerfile bundles from its workspace closure alone",
+	({ dockerfile, entry }) => {
+		it("copies exactly its closure into the build stage", () => {
+			expect(stage(dockerfile, "builder")).not.toMatch(
+				/^COPY packages \.\/packages$/m,
+			);
+			expect(builderPackages(dockerfile)).toEqual(
+				[...closureOf(entry)].sort(),
+			);
+		});
+
+		it("has no workspace dependency outside @repo/, which the closure would miss", () => {
+			const manifests = [
+				join(REPO, entry),
+				...[...closureOf(entry)].map((name) =>
+					join(REPO, "packages", name, "package.json"),
+				),
+			];
+			expect(manifests.flatMap(nonRepoWorkspaceDeps)).toEqual([]);
+		});
+
+		it("imports only the workspace packages it declares", () => {
+			const declared = workspaceDeps(join(REPO, entry));
+			const undeclared = sourceFiles(join(REPO, dirname(entry))).flatMap(
+				(file) =>
+					[
+						...readFileSync(file, "utf-8").matchAll(
+							/(?:^|\s)(?:import|export)\s+(?!type\s)[^'"]*?['"]@repo\/([a-z0-9-]+)|(?:import|require)\(\s*['"]@repo\/([a-z0-9-]+)/gm,
+						),
+					]
+						.map((match) => match[1] ?? match[2])
+						.filter((name) => !declared.has(name))
+						.map(
+							(name) =>
+								`${file.slice(REPO.length + 1)}: @repo/${name}`,
+						),
+			);
+			expect(
+				undeclared,
+				"The filtered install links only declared workspace packages, so the bundle cannot resolve these.",
+			).toEqual([]);
+		});
+
+		it("reads nothing from the build stage that it did not copy there", () => {
+			const read = [
+				...stage(dockerfile, "production").matchAll(
+					/^COPY --from=builder \/app\/packages\/([a-z0-9-]+)(?:\/(\S*))?\s/gm,
+				),
+			]
+				.filter((match) => match[2] !== "package.json")
+				.map((match) => match[1]);
+			const copied = builderPackages(dockerfile);
+			expect(read.filter((name) => !copied.includes(name))).toEqual([]);
 		});
 	},
 );

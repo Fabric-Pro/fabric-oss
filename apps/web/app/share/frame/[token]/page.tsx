@@ -1,6 +1,7 @@
 import { db, getFrameByShareToken } from "@repo/database";
 import type { FrameDocumentView } from "@saas/frames/components/FrameRenderer";
 import { FrameVizShell } from "@saas/frames/components/FrameVizShell";
+import { isUnattendedFrame } from "@saas/frames/lib/strict-sandbox";
 import { notFound } from "next/navigation";
 
 export default async function SharedFramePage({
@@ -49,6 +50,7 @@ export default async function SharedFramePage({
 				shareUrl={shareUrl}
 				headerMode="public"
 				workspaceName={workspaceName}
+				interactive={!isUnattendedFrame(frame)}
 				isPublic
 			/>
 		</div>

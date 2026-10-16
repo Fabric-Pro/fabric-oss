@@ -1,0 +1,58 @@
+---
+title: Project Artifacts
+description: Pages Fabric Agent writes for one project, kept on the project's Artifacts tab and opened by its members.
+---
+
+Project Artifacts are the pages Fabric Agent has written for a single project: a status board of the project's work, a release-readiness report, a small tool the team keeps using. They live on the **Artifacts** tab of the project, next to its documents and roadmap, and the project's members open them from there.
+
+An artifact is the same kind of page as a [Workspace](/docs/features/workspace-pages), kept with one project instead of shared across the organization. The agent writes the whole page, saves it to the project and explains it. There are no templates.
+
+## Ask for an artifact
+
+<Steps>
+  <Step>
+    ### Open the project's Artifacts tab
+
+    In a project, open the **Artifacts** tab. It lists the pages written for this project, newest first.
+  </Step>
+
+  <Step>
+    ### Click Ask Fabric Agent
+
+    Fabric Agent opens with a draft such as "Build a page for this project: a status board of the current work, with a refresh button." Change it to what you want and send it.
+  </Step>
+
+  <Step>
+    ### Open it from the tab
+
+    The agent saves the page as an artifact of this project and tells you what each part does. Select its card to read it. **Change with Fabric Agent** opens the chat again, aimed at that page.
+  </Step>
+</Steps>
+
+You can also ask from any chat that is open on the project: "make an artifact with the open risks of this project". The chat knows which project it is in, so the page is saved there.
+
+## Who sees an artifact
+
+The members of the project, as long as they are also members of the organization, and the project's owner. The tab lists the artifacts of that project only, and never those of another organization.
+
+<Callout type="info">
+  A **guest** of a project, who is not a member of the organization, does not see the list. The Artifacts tab says so instead of showing an error. A member who opens an artifact and shares it with a guest can send them its link; it then opens for them.
+</Callout>
+
+If a project is moved to the trash, its artifacts are gone with it for the people who only had them through the project. They come back with the project.
+
+## What an artifact can do
+
+An artifact runs in the same locked frame as a Workspace, with the same buttons that act through Fabric (`window.fabric`): reading runs at once, anything that changes data asks the person looking at the page first, and an edited page asks again. See [Workspaces](/docs/features/workspace-pages#buttons-that-act-through-fabric) for how those calls are checked and which tools no page may use.
+
+A page cannot make network requests, load scripts or fonts from another site, or read anything of yours except through those buttons. A page that a scheduled workflow wrote with nobody watching is shown without any script.
+
+## Artifacts from a schedule
+
+A [scheduled agent workflow](/docs/features/scheduled-agent-workflows) can publish its result as an artifact of the project it belongs to. Each run adds a version of the same artifact (or a new artifact each time, as the workflow's Publish Frame step is set), so the tab always shows the latest report.
+
+## Related
+
+- [Workspaces](/docs/features/workspace-pages), pages for the whole organization
+- [Projects](/docs/features/projects)
+- [Fabric MCP Gateway](/docs/integrations/mcp-gateway)

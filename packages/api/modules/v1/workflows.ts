@@ -10,9 +10,9 @@
 import {
 	getWorkflowById,
 	getWorkflowExecutionById,
+	isWorkflowLive,
 	listWorkflowExecutions,
 	listWorkflows,
-	markExecutionRunningIfPending,
 	type Prisma,
 	updateWorkflowExecution,
 } from "@repo/database";
@@ -23,12 +23,11 @@ import {
 	concurrencyRefusalMessage,
 	createExecutionWithinConcurrencyCap,
 } from "../workflows/lib/execution-concurrency";
+import { cancelWorkflowBuilderExecution } from "../workflows/lib/start-builder-execution";
 import {
-	attemptWorkflowBuilderStart,
-	cancelWorkflowBuilderExecution,
-	startFailureMessage,
-	unconfirmedStartMessage,
-} from "../workflows/lib/start-builder-execution";
+	ENGINE_UNAVAILABLE_MESSAGE,
+	startReservedExecution,
+} from "../workflows/lib/start-reserved-execution";
 import { badRequest, notFound, ok, resolveV1Context } from "./helpers";
 
 const TERMINAL_EXECUTION_STATUSES = new Set([
@@ -153,7 +152,7 @@ export function registerWorkflowRoutes(
 				return c.json(notFound("Workflow"), 404);
 			}
 
-			if (workflow.status !== "ACTIVE") {
+			if (!isWorkflowLive(workflow.status)) {
 				return c.json(
 					badRequest(
 						`Workflow is not active (status: ${workflow.status})`,
@@ -188,62 +187,32 @@ export function registerWorkflowRoutes(
 			}
 			const execution = reservation.execution;
 
-			const failRow = async (message: string) => {
-				// No sweeper reclaims a PENDING execution. Record the terminal
-				// state so the run history says "never started", not "queued".
-				const failedAt = new Date();
-				await updateWorkflowExecution(execution.id, {
-					status: "FAILED",
-					error: message,
-					completedAt: failedAt,
-					duration:
-						failedAt.getTime() - execution.startedAt.getTime(),
-				});
-			};
-
 			// This used to start a workflow type that does not exist, under an
 			// id no other path knew, with the input under a key the workflow
 			// never reads — and then swallow the error on the theory that "the
 			// worker will pick it up later". Nothing ever did: every API-started
-			// run sat at PENDING for good. The shared helper fixes the first
+			// run sat at PENDING for good. The shared start fixes the first
 			// three; the row now records the fourth instead of hiding it.
-			const { isTemporalAvailable } = await import("@repo/temporal");
-			if (!(await isTemporalAvailable())) {
-				await failRow("Workflow engine unavailable");
-				return c.json(
-					{
-						error: {
-							message:
-								"Workflow engine unavailable — the run was not started. Try again.",
-							code: "EXECUTION_NOT_STARTED",
-							executionId: execution.id,
-						},
-					},
-					502,
-				);
-			}
-
-			const outcome = await attemptWorkflowBuilderStart({
-				executionId: execution.id,
-				workflowId: workflow.id,
-				userId: ctx.userId,
-				organizationId: ctx.organizationId ?? undefined,
-				projectId: workflow.projectId ?? undefined,
-				triggerData: (body.triggerInput ?? {}) as Record<
-					string,
-					unknown
-				>,
+			const started = await startReservedExecution({
+				execution,
+				logTag: "v1 workflows",
+				start: {
+					workflowId: workflow.id,
+					userId: ctx.userId,
+					organizationId: ctx.organizationId ?? undefined,
+					projectId: workflow.projectId ?? undefined,
+					triggerData: (body.triggerInput ?? {}) as Record<
+						string,
+						unknown
+					>,
+				},
 			});
 
-			if (outcome.status === "not-started") {
-				// Temporal confirmed nothing runs under the row's id, so the
-				// row can be failed and the caller may retry.
-				await failRow(startFailureMessage(outcome.error));
+			if (started.status === "failed") {
 				return c.json(
 					{
 						error: {
-							message:
-								"Workflow engine unavailable — the run was not started. Try again.",
+							message: ENGINE_UNAVAILABLE_MESSAGE,
 							code: "EXECUTION_NOT_STARTED",
 							executionId: execution.id,
 						},
@@ -252,21 +221,7 @@ export function registerWorkflowRoutes(
 				);
 			}
 
-			if (outcome.status === "unknown") {
-				// The start call failed and the follow-up describe could not
-				// settle whether Temporal accepted it. The run may be in
-				// progress under the deterministic id, so the row stays
-				// active — failing it invites a retry, which creates a new row
-				// and a second run with the same side effects. The workflow
-				// writes its own status as it progresses.
-				console.warn(
-					"[v1 workflows] Start unconfirmed; leaving the execution row active:",
-					{
-						executionId: execution.id,
-						workflowId: outcome.workflowId,
-					},
-					outcome.error,
-				);
+			if (started.status === "unconfirmed") {
 				// 202 with an explicit "unconfirmed" status, not a 5xx:
 				// clients and webhook senders retry server errors, and a
 				// retry creates a second row and a second run. The caller
@@ -276,43 +231,22 @@ export function registerWorkflowRoutes(
 						executionId: execution.id,
 						workflowId: workflow.id,
 						status: "unconfirmed",
-						message: unconfirmedStartMessage(execution.id),
+						message: started.message,
 					}),
 					202,
 				);
 			}
 
-			// The run exists in the engine from here on. A failure to record
-			// that must not be reported as "not started" (a retry would start a
-			// second run with the same side effects); it is logged and the
-			// start is still reported. The workflow writes its own status as it
-			// progresses and its id is deterministic from the execution id.
-			// PENDING → RUNNING only: a fast run may already have written its
-			// terminal status, which must not move back to RUNNING.
+			// The run already moved on (a short run finished before the row
+			// was marked); report where it is.
 			let status = "RUNNING";
-			try {
-				const moved = await markExecutionRunningIfPending({
-					executionId: execution.id,
-					temporalRunId: outcome.workflowId,
-				});
-				if (!moved) {
-					// The run already moved on; report where it is.
-					const current = await getWorkflowExecutionById(
-						execution.id,
-						ctx.userId,
-						ctx.organizationId ?? undefined,
-					);
-					status = current?.status ?? status;
-				}
-			} catch (error) {
-				console.error(
-					"[v1 workflows] Run started but the execution row could not be marked RUNNING:",
-					{
-						executionId: execution.id,
-						workflowId: outcome.workflowId,
-					},
-					error,
+			if (started.rowAlreadyAdvanced) {
+				const current = await getWorkflowExecutionById(
+					execution.id,
+					ctx.userId,
+					ctx.organizationId ?? undefined,
 				);
+				status = current?.status ?? status;
 			}
 
 			return c.json(

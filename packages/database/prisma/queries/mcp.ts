@@ -865,6 +865,35 @@ export async function listMcpConfigRoutingForTenant(opts: {
 }
 
 /**
+ * The actor's own connections among `ids`, in the actor's organization: id,
+ * whether it is enabled, and what names it. A connection someone else holds, or
+ * one in another organization, is simply absent from the result, so a caller
+ * that compares the ids it asked for with the ids it got back refuses both the
+ * same way. Goes through `mcpConfigTenantScope`, like every other listing.
+ */
+export async function ownMcpConfigIds(
+	ids: readonly string[],
+	actor: { userId: string; organizationId: string },
+) {
+	const requested = [...new Set(ids)];
+	const scope = mcpConfigTenantScope(actor);
+	if (requested.length === 0 || !scope) {
+		return [];
+	}
+
+	return db.mCPConfig.findMany({
+		where: { ...scope.where, id: { in: requested } },
+		select: {
+			id: true,
+			enabled: true,
+			displayName: true,
+			mcpServer: { select: { name: true } },
+		},
+		orderBy: MCP_CONFIG_LIST_ORDER,
+	});
+}
+
+/**
  * Newest first, ties broken by id so the order is the same on every query.
  * A tie on `createdAt` would otherwise come back in either order, and the order
  * decides which connection gets a duplicated name's plain tool prefix.

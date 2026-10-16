@@ -72,6 +72,34 @@ export function buildProjectStoragePath(opts: {
 }
 
 /**
+ * The prefix every file stored for one published page shares, so deleting the
+ * page can remove them all by listing it. `userId` is the page's owner.
+ *
+ * Ends with `/`, so one page's prefix is never the start of another's.
+ */
+export function buildFramePageFilesPrefix(opts: {
+	organizationId: string | null | undefined;
+	userId: string;
+	frameId: string;
+}): string {
+	return buildTenantStoragePath({
+		organizationId: opts.organizationId,
+		userId: opts.userId,
+		sub: `frames/${opts.frameId}/files/`,
+	});
+}
+
+/** The key of one file stored for a published page. */
+export function buildFramePageFilePath(opts: {
+	organizationId: string | null | undefined;
+	userId: string;
+	frameId: string;
+	fileId: string;
+}): string {
+	return `${buildFramePageFilesPrefix(opts)}${opts.fileId}`;
+}
+
+/**
  * Validate that a storage key is owned by the given tenant.
  *
  * Used as a server-side guard when a client-supplied key is presented for

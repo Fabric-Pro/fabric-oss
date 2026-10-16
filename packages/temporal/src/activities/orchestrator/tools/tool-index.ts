@@ -33,6 +33,7 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../../lib/fabric-gateway-tools";
 
 // =============================================================================
 // Turned-off MCP configs
@@ -82,8 +83,15 @@ async function findDisabledMcpConfigIds(
  * enabledFabricToolIds setting. These are project infrastructure, not
  * user-togglable features. Every read of the index applies this set through
  * isToolEnabledForRequest.
+ *
+ * The gateway's workflow, frame, page-data and version tools are in it too:
+ * Direct chat offers them on every turn, and a chat that cannot find them
+ * cannot set up a scheduled workflow, write a page or read its votes. What each
+ * one asks of the person is its own definition's policy, not whether it is
+ * offered. A tool only a page's script uses is not offered in either engine.
  */
 const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
+	...FABRIC_CHAT_TOOL_DEFINITIONS.map((definition) => definition.name),
 	"project_rag_query",
 	"workspace_rag_query",
 	"workspace_rag_summarize",

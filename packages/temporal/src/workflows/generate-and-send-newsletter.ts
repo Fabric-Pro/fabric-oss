@@ -298,6 +298,11 @@ export async function generateAndSendNewsletterWorkflow(
 					? await withChatGptPlanWait(curate, {
 							organizationId,
 							userId: triggeredByUserId,
+							stoppedNotice: {
+								work: "NEWSLETTER",
+								projectId,
+								initiatorUserId: null,
+							},
 							maxWaitMs: () =>
 								patched(NEWSLETTER_PLAN_DEADLINE_PATCH)
 									? untilNewsletterDeadline()

@@ -116,7 +116,16 @@ async function routeTask(
 	const routingStartTime = Date.now();
 	console.log("[Orchestrator] Analyzing and routing task");
 
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		input.conversationId
+			? { conversationId: input.conversationId }
+			: undefined,
+	);
 
 	// ==========================================================================
 	// USER INTENT DETECTION

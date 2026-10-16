@@ -161,11 +161,8 @@ const ProjectUsage = dynamic(
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
-const _ArtifactBrowser = dynamic(
-	() =>
-		import("@saas/artifacts/components/ArtifactBrowser").then(
-			(m) => m.ArtifactBrowser,
-		),
+const ProjectArtifactsList = dynamic(
+	() => import("./ProjectArtifactsList").then((m) => m.ProjectArtifactsList),
 	{ loading: () => <TabContentSkeleton />, ssr: false },
 );
 
@@ -271,6 +268,7 @@ const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
 			"meeting-digest",
 			"release-notes",
 			"publishing-suite",
+			"artifacts",
 			"reports",
 		],
 	},
@@ -819,8 +817,14 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 					projectId,
 					prompt: "Answer using the current project context, attached artifacts, and related feature context when relevant.",
 				};
-		return testCasesContext ? { ...base, testCasesContext } : base;
-	}, [project, projectId, testCasesContext]);
+		return {
+			...base,
+			...(testCasesContext ? { testCasesContext } : {}),
+			...(activeTab === "artifacts"
+				? { surface: "artifact" as const }
+				: {}),
+		};
+	}, [project, projectId, testCasesContext, activeTab]);
 
 	useRegisterFabricAgentContext(fabricAgentContext);
 
@@ -1545,10 +1549,13 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 						{activeTab === "usage" && (
 							<ProjectUsage projectId={projectId} />
 						)}
-						{/* artifacts tab hidden
 						{activeTab === "artifacts" && (
-							<ArtifactBrowser projectId={projectId} />
-						)} */}
+							<ProjectArtifactsList
+								projectId={projectId}
+								projectName={project.name}
+								organizationSlug={organizationSlug}
+							/>
+						)}
 						{activeTab === "weave" && (
 							<WeaveDashboard projectId={projectId} />
 						)}

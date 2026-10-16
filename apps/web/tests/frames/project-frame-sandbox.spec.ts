@@ -23,7 +23,10 @@ test.describe("project frame sandbox", () => {
 
 		const iframe = page.locator('iframe[data-frame-scope="project"]');
 		await expect(iframe).toHaveCount(1);
-		await expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+		await expect(iframe).toHaveAttribute(
+			"sandbox",
+			"allow-scripts allow-forms",
+		);
 		const sandbox = await iframe.getAttribute("sandbox");
 		expect(sandbox ?? "").not.toContain("allow-same-origin");
 

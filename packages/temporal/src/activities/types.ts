@@ -22,6 +22,12 @@ export interface StepParams {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	/** The workflow the node belongs to; absent for steps run outside a builder execution. */
+	workflowId?: string;
+	/** The `WorkflowExecution` row the node runs under. */
+	executionId?: string;
+	/** The node's id within the workflow graph. */
+	nodeId?: string;
 	/** Background-attribution label set by the executing pipeline (Fizzy #1894). */
 	jobType?: AiJobKey;
 }

@@ -33,6 +33,10 @@ import { throwIfDispatchDeadlinePassed } from "@repo/utils/dispatch-deadline";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { classifyOAuthErrorCode } from "@repo/utils/oauth-refresh";
 import {
+	abortWritesWithCallSignal,
+	withCallSignalScope,
+} from "./call-abort-signal";
+import {
 	GitLabMcpCredentialError,
 	type GitLabMcpFetch,
 	getGitLabMcpTransportAuth,
@@ -333,10 +337,11 @@ function isRedirectRefusal(error: unknown): boolean {
  *
  * It also refuses a tool call (`tools/call`) sent after the send deadline of
  * the code sending it (`runWithDispatchDeadline`, set by `executeMcpTool`
- * for a PM create): the SDK transport sends with its own abort signal, not
- * the call's, and awaits the OAuth token lookup before this `fetch`, so the
- * caller's check before `tool.execute` does not bound when the request
- * leaves. Only tool calls are refused: a response the client sends to the
+ * for a PM create): the SDK transport awaits the OAuth token lookup before
+ * this `fetch`, so the caller's check before `tool.execute` does not bound
+ * when the request leaves. (Aborting a call that is already in flight is a
+ * separate layer, `abortWritesWithCallSignal`, which tears the request down
+ * when the call's signal aborts.) Only tool calls are refused: a response the client sends to the
  * server, a notification or the initialize handshake carries no tool call,
  * and may come from a cached client's background work that started inside
  * a deadline scope. No-op outside a scope.
@@ -619,28 +624,36 @@ export async function createMcpClient(
 	// Fabric's 401 refresh-and-resend sits outside the stop check, so the
 	// resend goes back through `guardedFetch` and is checked like any other
 	// request (see `retryOnceAfterUnauthorized`).
-	const outerFetch =
+	// The call's abort signal is the outermost layer, so a request and its
+	// 401 resend both carry it (see `abortWritesWithCallSignal`).
+	const outerFetch = abortWritesWithCallSignal(
 		authProvider && isFabricRefreshingProvider(authProvider)
 			? retryOnceAfterUnauthorized(guardedFetch, (sent) =>
 					authProvider.refreshAfterUnauthorized(sent),
 				)
-			: guardedFetch;
+			: guardedFetch,
+	);
+	// Every transport handed to `createMCPClient` comes from here, wrapped so
+	// each `send` runs in a scope holding that call's abort signal, which the
+	// SDK transports otherwise ignore (see `withCallSignalScope`).
 	const createTransport = () => {
 		const requestInit =
 			Object.keys(finalHeaders).length > 0
 				? { headers: finalHeaders }
 				: undefined;
-		return transport === "SSE"
-			? new SSEClientTransport(url, {
-					fetch: outerFetch,
-					requestInit,
-					authProvider,
-				})
-			: new StreamableHTTPClientTransport(url, {
-					fetch: outerFetch,
-					requestInit,
-					authProvider,
-				});
+		return withCallSignalScope(
+			transport === "SSE"
+				? new SSEClientTransport(url, {
+						fetch: outerFetch,
+						requestInit,
+						authProvider,
+					})
+				: new StreamableHTTPClientTransport(url, {
+						fetch: outerFetch,
+						requestInit,
+						authProvider,
+					}),
+		);
 	};
 
 	// OAuth: the SDK transport carries the provider, which attaches the
@@ -1163,7 +1176,8 @@ async function buildMcpClientForConfig(
 				throw error;
 			}
 			console.error(
-				`[MCP Client] Failed to get API key for ${serverName}:`,
+				"[MCP Client] Failed to get API key:",
+				{ serverName },
 				error,
 			);
 			throw new McpClientError({
@@ -1366,7 +1380,8 @@ export async function getCachedMcpClientForConfig(
 				});
 			} catch (error) {
 				console.warn(
-					`[MCP Client Cache] Could not re-check the cached GitLab client for ${cached.serverName}; dropping it`,
+					"[MCP Client Cache] Could not re-check the cached GitLab client; dropping it",
+					{ serverName: cached.serverName },
 					error instanceof Error ? error.message : error,
 				);
 			}
@@ -1394,7 +1409,8 @@ export async function getCachedMcpClientForConfig(
 				current = await getMcpOAuthGrantGeneration(configId);
 			} catch (error) {
 				console.warn(
-					`[MCP Client Cache] Could not re-check the cached OAuth client for ${cached.serverName}; dropping it`,
+					"[MCP Client Cache] Could not re-check the cached OAuth client; dropping it",
+					{ serverName: cached.serverName },
 					error instanceof Error ? error.message : error,
 				);
 			}
@@ -1421,7 +1437,8 @@ export async function getCachedMcpClientForConfig(
 				read = true;
 			} catch (error) {
 				console.warn(
-					`[MCP Client Cache] Could not re-check the cached API key client for ${cached.serverName}; dropping it`,
+					"[MCP Client Cache] Could not re-check the cached API key client; dropping it",
+					{ serverName: cached.serverName },
 					error instanceof Error ? error.message : error,
 				);
 			}
@@ -1935,6 +1952,29 @@ const SLACK_AUTH_ERRORS = new Set([
 	"token_expired",
 ]);
 
+const TWILIO_KEY = /^(AC[0-9a-fA-F]{32})\/(SK[0-9a-fA-F]{32}):(\S+)$/;
+
+/** Twilio keys are entered as ACCOUNT_SID/API_KEY:API_SECRET. */
+function parseTwilioCredentials(
+	value: string,
+	serverName: string,
+): Record<string, string> {
+	const match = TWILIO_KEY.exec(value.trim());
+	if (!match) {
+		throw new McpClientError({
+			message: `Twilio credentials for "${serverName}" must be entered as ACCOUNT_SID/API_KEY:API_SECRET. Please update them in MCP Settings.`,
+			code: "INVALID_TWILIO_CREDENTIALS",
+			serverName,
+			isAuthError: true,
+		});
+	}
+	return {
+		TWILIO_ACCOUNT_SID: match[1],
+		TWILIO_API_KEY: match[2],
+		TWILIO_API_SECRET: match[3],
+	};
+}
+
 /**
  * Creates a client for STDIO-based MCP servers via the wrapper service.
  *
@@ -2054,6 +2094,8 @@ async function createStdioMcpClientForConfig(
 				SLACK_BOT_TOKEN: decryptedKey,
 				SLACK_TEAM_ID: teamId,
 			};
+		} else if (command.includes("@twilio-alpha/mcp")) {
+			credentials = parseTwilioCredentials(decryptedKey, serverName);
 		} else {
 			// Generic fallback - use API_KEY
 			credentials = { API_KEY: decryptedKey };

@@ -21,7 +21,7 @@
 		"@repo/database": "workspace:*",
 		"@repo/integrations": "workspace:*",
 		"@repo/utils": "workspace:*",
-		"ai": "^7.0.131",
+		"ai": "^7.0.140",
 		"zod": "^4.3.6"
 	},
 	"devDependencies": {

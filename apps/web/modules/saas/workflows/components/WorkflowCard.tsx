@@ -1,5 +1,6 @@
 "use client";
 
+import { isWorkflowLive } from "@repo/utils/workflow-status";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation } from "@tanstack/react-query";
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { ScheduledBadge } from "./ScheduledBadge";
 
 interface WorkflowCardProps {
 	workflow: {
@@ -127,8 +129,7 @@ export function WorkflowCard({
 	// published workflow is already live. Keying the toggle on ACTIVE alone
 	// offered "Activate" on a workflow that was already accepting webhooks and
 	// firing its schedule, and left Pause two clicks away behind that no-op.
-	const isLive =
-		workflow.status === "ACTIVE" || workflow.status === "PUBLISHED";
+	const isLive = isWorkflowLive(workflow.status);
 
 	const handleStatusToggle = () => {
 		const newStatus = isLive ? "PAUSED" : "ACTIVE";
@@ -138,6 +139,8 @@ export function WorkflowCard({
 			status: newStatus,
 		});
 	};
+
+	const isScheduled = workflow.triggerType === "SCHEDULE";
 
 	const triggerLabel = workflow.triggerType
 		.toLowerCase()
@@ -160,6 +163,7 @@ export function WorkflowCard({
 						</p>
 					</div>
 					<div className="flex items-center gap-4">
+						{isScheduled && <ScheduledBadge />}
 						<span
 							className={cn(
 								"text-[10px] px-1.5 py-0.5 rounded font-medium flex items-center gap-1",
@@ -351,9 +355,13 @@ export function WorkflowCard({
 
 			{/* Trigger + version badges */}
 			<div className="px-4 pb-3 flex flex-wrap gap-1.5">
-				<span className="text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-muted text-muted-foreground">
-					{triggerLabel}
-				</span>
+				{isScheduled ? (
+					<ScheduledBadge />
+				) : (
+					<span className="text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-muted text-muted-foreground">
+						{triggerLabel}
+					</span>
+				)}
 				<span className="text-[10px] px-1.5 py-0.5 rounded-sm font-medium bg-muted text-muted-foreground">
 					v{workflow.version}
 				</span>

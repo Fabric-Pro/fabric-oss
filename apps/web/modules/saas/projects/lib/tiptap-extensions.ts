@@ -4,7 +4,10 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { StarterKit } from "@tiptap/starter-kit";
 import type YPartyKitProvider from "y-partykit/provider";
 import type * as Y from "yjs";
-import { createSharedRichDocumentExtensions } from "./tiptap-extensions-advanced";
+import {
+	createSharedRichDocumentExtensions,
+	type RichDocumentExtensionOptions,
+} from "./tiptap-extensions-advanced";
 
 // ============================================
 // SINGLE SOURCE OF TRUTH: Core Extensions
@@ -40,7 +43,7 @@ const starterKitConfig = {
 /**
  * Options for creating collaborative extensions
  */
-interface CollaborativeExtensionsOptions {
+interface CollaborativeExtensionsOptions extends RichDocumentExtensionOptions {
 	ydoc: Y.Doc | null;
 	provider: YPartyKitProvider | null;
 	user: {
@@ -73,7 +76,7 @@ interface CollaborativeExtensionsOptions {
 export function createCollaborativeExtensions(
 	options: CollaborativeExtensionsOptions,
 ): AnyExtension[] | null {
-	const { ydoc, provider, user, projectId, documentId } = options;
+	const { ydoc, provider, user, projectId, documentId, statTiles } = options;
 
 	// Guard against SSR or uninitialized state
 	if (!ydoc) {
@@ -113,7 +116,11 @@ export function createCollaborativeExtensions(
 				codeBlock: false,
 				undoRedo: false,
 			}),
-			...createSharedRichDocumentExtensions({ projectId, documentId }),
+			...createSharedRichDocumentExtensions({
+				projectId,
+				documentId,
+				statTiles,
+			}),
 			// Yjs document synchronization
 			Collaboration.configure({
 				document: ydoc,

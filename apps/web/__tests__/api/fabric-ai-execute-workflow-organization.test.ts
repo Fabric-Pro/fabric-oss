@@ -15,15 +15,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	getSession: vi.fn(),
 	checkRateLimit: vi.fn(),
-	getWorkflowById: vi.fn(),
 	hasOrganizationTie: vi.fn(),
-	canRunOrganizationWorkflows: vi.fn(),
-	createWorkflowExecution: vi.fn(),
-	updateWorkflowExecution: vi.fn(),
-	isTemporalAvailable: vi.fn(),
-	getTemporalClient: vi.fn(),
-	startWorkflowBuilderExecution: vi.fn(),
-	checkExecutionConcurrency: vi.fn(),
+	startWorkflowExecutionCommand: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({ getSession: mocks.getSession }));
@@ -32,25 +25,17 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 	RATE_LIMIT_PRESETS: { workflow: { limit: 30, windowMs: 60_000 } },
 }));
 vi.mock("@repo/database", () => ({
-	getWorkflowById: mocks.getWorkflowById,
 	hasOrganizationTie: mocks.hasOrganizationTie,
-	// The live permission check runs after the organization is resolved;
-	// this suite is about which organization is consulted, so it always
-	// grants.
-	canRunOrganizationWorkflows: mocks.canRunOrganizationWorkflows,
-	createWorkflowExecution: mocks.createWorkflowExecution,
-	updateWorkflowExecution: mocks.updateWorkflowExecution,
 }));
-vi.mock("@repo/temporal", () => ({
-	isTemporalAvailable: mocks.isTemporalAvailable,
-	getTemporalClient: mocks.getTemporalClient,
+// What the start does is the command's, pinned by its own tests; this suite is
+// about which organization the route hands it.
+vi.mock("@repo/api/modules/workflows/lib/workflow-execution-commands", () => ({
+	startWorkflowExecutionCommand: mocks.startWorkflowExecutionCommand,
 }));
-vi.mock("@repo/api/modules/workflows/lib/start-builder-execution", () => ({
-	startWorkflowBuilderExecution: mocks.startWorkflowBuilderExecution,
-}));
-vi.mock("@repo/api/modules/workflows/lib/execution-concurrency", () => ({
-	checkExecutionConcurrency: mocks.checkExecutionConcurrency,
-}));
+vi.mock("@repo/api/modules/workflows/lib/workflow-command-context", () => {
+	class WorkflowCommandError extends Error {}
+	return { WorkflowCommandError };
+});
 
 import { POST } from "@/app/api/agents/fabric-ai/execute-workflow/route";
 
@@ -73,12 +58,13 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 			session: { activeOrganizationId: "org-active" },
 		});
 		mocks.checkRateLimit.mockResolvedValue({ allowed: true });
-		// Whatever organization the lookup receives, report "not found" so
-		// the test stops before any start logic; we only care which tenant
-		// was consulted.
-		mocks.getWorkflowById.mockResolvedValue(null);
 		mocks.hasOrganizationTie.mockResolvedValue(false);
-		mocks.canRunOrganizationWorkflows.mockResolvedValue(true);
+		mocks.startWorkflowExecutionCommand.mockResolvedValue({
+			status: "started",
+			execution: { id: "exec-1" },
+			temporalWorkflowId: "workflow-execution-exec-1",
+			workflowName: "Workflow",
+		});
 	});
 
 	it("refuses an organization the caller has no tie to, without consulting the session's", async () => {
@@ -90,16 +76,15 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 			"user-1",
 			"org-victim",
 		);
-		expect(mocks.getWorkflowById).not.toHaveBeenCalled();
+		expect(mocks.startWorkflowExecutionCommand).not.toHaveBeenCalled();
 	});
 
-	it("looks the workflow up in the tab's organization when the caller is tied to it", async () => {
+	it("starts the workflow in the tab's organization when the caller is tied to it", async () => {
 		mocks.hasOrganizationTie.mockResolvedValue(true);
 		await POST(request({ workflowId: "wf-1", organizationId: "org-tab" }));
-		expect(mocks.getWorkflowById).toHaveBeenCalledWith(
-			"wf-1",
-			"user-1",
-			"org-tab",
+		expect(mocks.startWorkflowExecutionCommand).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-tab" },
+			expect.objectContaining({ workflowId: "wf-1" }),
 		);
 	});
 
@@ -110,10 +95,9 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 			"user-1",
 			"org-active",
 		);
-		expect(mocks.getWorkflowById).toHaveBeenCalledWith(
-			"wf-1",
-			"user-1",
-			"org-active",
+		expect(mocks.startWorkflowExecutionCommand).toHaveBeenCalledWith(
+			{ userId: "user-1", organizationId: "org-active" },
+			expect.objectContaining({ workflowId: "wf-1" }),
 		);
 	});
 
@@ -125,8 +109,7 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 			"user-1",
 			"org-active",
 		);
-		expect(mocks.getWorkflowById).not.toHaveBeenCalled();
-		expect(mocks.createWorkflowExecution).not.toHaveBeenCalled();
+		expect(mocks.startWorkflowExecutionCommand).not.toHaveBeenCalled();
 	});
 
 	it("refuses a session with no active organization rather than falling through to a null tenant", async () => {
@@ -137,7 +120,6 @@ describe("POST /api/agents/fabric-ai/execute-workflow — organization binding",
 		const res = await POST(request({ workflowId: "wf-1" }));
 		expect(res.status).toBe(403);
 		expect(mocks.hasOrganizationTie).not.toHaveBeenCalled();
-		expect(mocks.getWorkflowById).not.toHaveBeenCalled();
-		expect(mocks.createWorkflowExecution).not.toHaveBeenCalled();
+		expect(mocks.startWorkflowExecutionCommand).not.toHaveBeenCalled();
 	});
 });

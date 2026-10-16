@@ -184,6 +184,12 @@ describe("ALWAYS_SKIP_PATHS (#1899)", () => {
 			"projects.contexts.upsertSyncedFile",
 		);
 	});
+
+	it("contains the analysis-finding answer, whose input carries a member's free-text answer", () => {
+		expect(ALWAYS_SKIP_PATHS).toContain(
+			"projects.proposalArtifact.respondToFinding",
+		);
+	});
 });
 
 describe("__isCaptureDisabledForTest", () => {

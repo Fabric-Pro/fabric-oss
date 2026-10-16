@@ -1,3 +1,4 @@
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import {
 	BookOpenCheckIcon,
 	CompassIcon,
@@ -108,6 +109,7 @@ export type ProjectTabId =
 	| "diagrams"
 	| "reports"
 	| "usage"
+	| "artifacts"
 	| "outcomes"
 	| "atlas"
 	| "security"
@@ -259,13 +261,13 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 	// close.
 	//
 	// The DESTINATION is not unconditional, though. Fizzy #1875 already
-	// established that these are two pages for two audiences: the
-	// organization page is where an admin configures the keys the whole
-	// tenant runs on and renders read-only for everyone else, while the
-	// account page is where any member adds a key of their own — which
-	// resolves for them when their organization has none. Sending both
-	// audiences to the org page would put a form a member cannot submit
-	// behind a button that promises they can.
+	// established that these are two surfaces for two audiences, now two tabs
+	// of one page (Fizzy #3082): the Organization tab is where an admin
+	// configures the keys the whole tenant runs on and renders read-only for
+	// everyone else, while the Personal tab is where any member adds a key of
+	// their own — which resolves for them when their organization has none.
+	// Sending both audiences to the Organization tab would put a form a
+	// member cannot submit behind a button that promises they can.
 	{
 		id: "aiKey",
 		area: "aiKey",
@@ -275,7 +277,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
 			navigate: (base, viewer) =>
 				viewer.isOrganizationAdmin
 					? `${base}/settings/ai-providers`
-					: `${base}/settings/account/ai-providers`,
+					: `${base}/${PERSONAL_AI_PROVIDERS_PATH}`,
 		},
 	},
 	{

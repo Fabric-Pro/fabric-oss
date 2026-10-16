@@ -33,6 +33,7 @@ const h = vi.hoisted(() => ({
 	organizationFindUnique: vi.fn(),
 	frameFindFirst: vi.fn(),
 	frameUpdate: vi.fn(),
+	frameHistoryCreate: vi.fn(),
 }));
 
 async function reading<T>(name: string, value: T): Promise<T> {
@@ -46,6 +47,8 @@ vi.mock("../prisma/client", async (importOriginal) => {
 	const tx = {
 		$queryRaw: h.allocate,
 		userStory: { findFirst: h.orderFindFirst, create: h.storyCreate },
+		agentWorkspaceFile: { update: h.frameUpdate },
+		frameEditHistory: { create: h.frameHistoryCreate },
 	};
 	h.transaction.mockImplementation(
 		async (work: (client: typeof tx) => Promise<unknown>) => work(tx),
@@ -65,6 +68,7 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				findFirst: h.frameFindFirst,
 				update: h.frameUpdate,
 			},
+			frameEditHistory: { create: h.frameHistoryCreate },
 		},
 	};
 });
@@ -120,13 +124,17 @@ const FRAME_ROW = {
 	projectId: null,
 	name: "Plan.frame.json",
 	path: "frames/plan.frame.json",
-	content: JSON.stringify({
-		version: 1,
-		kind: "frame",
-		title: "Plan",
-		blocks: [{ id: "block-1", type: "markdown", content: "# Plan" }],
-		metadata: {},
-	}),
+	content: JSON.stringify(
+		{
+			version: 1,
+			kind: "frame",
+			title: "Plan",
+			blocks: [{ id: "block-1", type: "markdown", content: "# Plan" }],
+			metadata: {},
+		},
+		null,
+		2,
+	),
 	isPublic: false,
 	shareToken: null,
 	fileType: "FRAME",
@@ -148,6 +156,7 @@ beforeEach(() => {
 		h.organizationFindUnique,
 		h.frameFindFirst,
 		h.frameUpdate,
+		h.frameHistoryCreate,
 	]) {
 		mock.mockReset();
 	}
@@ -168,6 +177,7 @@ beforeEach(() => {
 	h.storyUpdate.mockResolvedValue(STORY_ROW);
 	h.frameFindFirst.mockImplementation(() => reading("frame read", FRAME_ROW));
 	h.frameUpdate.mockResolvedValue(FRAME_ROW);
+	h.frameHistoryCreate.mockResolvedValue({});
 });
 
 const create = () =>
@@ -251,6 +261,44 @@ describe("frame writes inside a chat turn", () => {
 		);
 		expect(outcome).toBe(STOP);
 		expect(h.frameUpdate).not.toHaveBeenCalled();
+		expect(h.frameHistoryCreate).not.toHaveBeenCalled();
+	});
+
+	it("keeps the previous content as a revertible snapshot before it updates the frame", async () => {
+		await inTurn(undefined, () =>
+			updateFrame({
+				id: FRAME_ROW.id,
+				userId: FRAME_ROW.userId,
+				organizationId: FRAME_ROW.organizationId,
+				title: "Plan v2",
+			}),
+		);
+		expect(h.frameHistoryCreate).toHaveBeenCalledTimes(1);
+		expect(h.frameHistoryCreate).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				frameId: FRAME_ROW.id,
+				editType: "full_update",
+				contentSnapshot: FRAME_ROW.content,
+				editedBy: FRAME_ROW.userId,
+			}),
+		});
+		expect(h.frameHistoryCreate.mock.invocationCallOrder[0]).toBeLessThan(
+			h.frameUpdate.mock.invocationCallOrder[0],
+		);
+		expect(h.transaction).toHaveBeenCalledTimes(1);
+	});
+
+	it("records no snapshot when an update leaves the content as it was", async () => {
+		await inTurn(undefined, () =>
+			updateFrame({
+				id: FRAME_ROW.id,
+				userId: FRAME_ROW.userId,
+				organizationId: FRAME_ROW.organizationId,
+				title: "Plan",
+			}),
+		);
+		expect(h.frameHistoryCreate).not.toHaveBeenCalled();
+		expect(h.frameUpdate).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not publish the frame when the turn stops while it is read", async () => {

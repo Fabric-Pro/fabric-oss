@@ -533,6 +533,56 @@ describe("syncStoryProcedure story.pm_pushed audit", () => {
 			metadata: { externalId: "88" },
 		});
 	});
+
+	it("counts only the tasks this push created, not linked or failed ones", async () => {
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "story-1",
+			title: "A story",
+			externalId: null,
+			tasks: [
+				{ id: "task-1", identifier: "TASK-001" },
+				{ id: "task-2", identifier: "TASK-002" },
+				{ id: "task-3", identifier: "TASK-003" },
+			],
+		} as never);
+		mockSyncStoryToPM.mockResolvedValue({
+			success: true,
+			externalId: "88",
+			externalUrl: "https://pm.example.com/items/88",
+			direction: "push",
+			syncedAt: new Date(),
+		});
+		mockSyncTaskToPM
+			.mockResolvedValueOnce({ success: true, externalId: "90" })
+			.mockResolvedValueOnce({
+				success: true,
+				externalId: "91",
+				skipped: true,
+			})
+			.mockResolvedValueOnce({ success: false, error: "boom" });
+
+		const handler = await loadProcedureHandler();
+		const result = await handler({
+			input: {
+				projectId: "proj-1",
+				storyId: "story-1",
+				direction: "push",
+				syncTasks: true,
+				organizationId: "org-1",
+			},
+			context: baseCtx,
+		});
+
+		expect(mockSyncTaskToPM).toHaveBeenCalledTimes(3);
+		expect(result.taskResults?.[1]).toMatchObject({
+			taskId: "task-2",
+			skipped: true,
+		});
+		const audits = await pushedAudits();
+		expect(audits[0]?.[1]).toMatchObject({
+			metadata: { syncedTasks: 1 },
+		});
+	});
 });
 
 describe("syncStoryProcedure capability gate", () => {

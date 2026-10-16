@@ -29,7 +29,9 @@ describe("Parlume failed bot finalization", () => {
 		expect(finalizer).toContain(
 			'const failedStatus: ParlumeMeetingSessionStatus = "FAILED"',
 		);
-		expect(finalizer).toContain("? [{ status: failedStatus }]");
+		expect(finalizer).toContain(
+			"? [{ status: failedStatus, finalizedAt: null }]",
+		);
 		expect(finalizer).toContain(
 			'status: options.preserveFailure ? "FAILED" : "ENDED"',
 		);

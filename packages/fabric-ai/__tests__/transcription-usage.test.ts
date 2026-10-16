@@ -93,6 +93,36 @@ describe("transcribeAudio — usage marker (Fizzy #1894)", () => {
 		});
 	});
 
+	it("records the row against the chat it was made for, and none without one", async () => {
+		vi.mocked(transcribe).mockResolvedValue({
+			text: "hello world",
+			language: "en",
+			durationInSeconds: 3,
+			segments: [],
+			warnings: [],
+			responses: [],
+			providerMetadata: {},
+		} as never);
+
+		await transcribeAudio(AUDIO, "meeting.mp3", {
+			userContext: {
+				userId: "user-1",
+				organizationId: "org-1",
+				conversationId: "conv-1",
+			},
+		});
+		await transcribeAudio(AUDIO, "meeting.mp3", {
+			userContext: { userId: "user-1", organizationId: "org-1" },
+		});
+
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			conversationId: "conv-1",
+		});
+		expect(logAiUsageAsync.mock.calls[1][0]).not.toHaveProperty(
+			"conversationId",
+		);
+	});
+
 	it("writes a failure marker when the provider call throws", async () => {
 		vi.mocked(transcribe).mockRejectedValue(
 			new Error("provider auth failed"),

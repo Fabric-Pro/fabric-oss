@@ -11,11 +11,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectUserIntent } from "../../../activities/orchestrator/routing/intent/user-intent-detector";
+import { FABRIC_GATEWAY_CATALOG_TOOLS } from "../../../activities/orchestrator/tools/fabric-gateway-catalog-tools";
 import {
 	DIAGRAM_RENDERING_GUIDANCE,
 	isInlineDiagramRequest,
 } from "../diagram-rendering";
-import { FABRIC_CREATE_FRAME_TOOL } from "../frame-tool-schemas";
 
 function readSource(path: string): string {
 	return readFileSync(join(process.cwd(), path), "utf-8");
@@ -73,10 +73,14 @@ describe("prompt guidance", () => {
 		);
 	});
 
-	it("drops Mermaid from the frame tool's CDN list", () => {
-		expect(FABRIC_CREATE_FRAME_TOOL.description).not.toMatch(
-			/CDN OK for[^;]*Mermaid/,
-		);
+	it("offers the frame tool no CDN list a no-network page could not load, and points a plain diagram at the inline block", () => {
+		const description =
+			FABRIC_GATEWAY_CATALOG_TOOLS.find(
+				(tool) => tool.name === "fabric_create_frame",
+			)?.description ?? "";
+
+		expect(description).not.toMatch(/CDN/);
+		expect(description).toMatch(/```mermaid/);
 	});
 
 	it("gates the orchestrator guidance on its own marker", () => {

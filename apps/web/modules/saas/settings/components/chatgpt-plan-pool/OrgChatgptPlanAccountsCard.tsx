@@ -477,7 +477,13 @@ function MemberShare({
 	return (
 		<div className="flex items-center justify-between gap-4">
 			<div className="space-y-1">
-				<Label htmlFor={id}>{t("memberShare")}</Label>
+				<div className="flex items-center gap-1.5">
+					<Label htmlFor={id}>{t("memberShare")}</Label>
+					<InfoTip
+						setting={t("memberShare")}
+						text={t("memberShareTooltip")}
+					/>
+				</div>
 				<p className="text-muted-foreground text-xs">
 					{t("memberShareDescription")}
 				</p>

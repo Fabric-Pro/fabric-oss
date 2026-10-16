@@ -1,8 +1,10 @@
 "use client";
 
+import { ORPCError } from "@orpc/client";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
+import type { ConversationDetail } from "../lib/conversation-list";
 
 // Types for conversations
 export interface ConversationMessage {
@@ -85,17 +87,39 @@ export interface ConversationSummary {
 	lastMessage: string | null;
 }
 
-interface ConversationDetail {
-	id: string;
-	agentId: string;
-	title: string | null;
-	messages: ConversationMessage[];
-	trajectory: AgentTrajectory | null;
-	metadata: Record<string, unknown> | null;
-	pinned: boolean;
-	status: "ACTIVE" | "ARCHIVED";
-	createdAt: string;
-	updatedAt: string;
+const detailKey = (id: string) => ["agents", "conversations", "detail", id];
+
+/**
+ * One stored conversation, read when there is an id for it. A conversation that
+ * is gone (a stale link, a deleted one) reads as null; any other failure is an
+ * error, so the caller can offer to try again instead of saying it is gone.
+ */
+export function useConversationDetail(
+	id: string | null,
+	organizationId?: string | null,
+) {
+	return useQuery({
+		queryKey: [...detailKey(id || ""), organizationId ?? null],
+		queryFn: async (): Promise<ConversationDetail | null> => {
+			if (!id) {
+				return null;
+			}
+			try {
+				return await orpcClient.agents.conversations.get({
+					id,
+					organizationId,
+				});
+			} catch (error) {
+				if (error instanceof ORPCError && error.code === "NOT_FOUND") {
+					return null;
+				}
+				throw error;
+			}
+		},
+		enabled: !!id,
+		retry: false,
+		throwOnError: false,
+	});
 }
 
 interface UseConversationHistoryOptions {
@@ -106,7 +130,8 @@ interface UseConversationHistoryOptions {
 	 * legacy session-fallback behavior for existing callers.
 	 */
 	organizationId?: string | null;
-	agentId?: string;
+	/** The agent whose conversations are listed; the list is kept per agent. */
+	agentId: string;
 	limit?: number;
 }
 
@@ -120,9 +145,7 @@ interface UseConversationHistoryOptions {
  * - Manage trajectories for visualization
  * - Pin/archive conversations
  */
-export function useConversationHistory(
-	options: UseConversationHistoryOptions = {},
-) {
+export function useConversationHistory(options: UseConversationHistoryOptions) {
 	const queryClient = useQueryClient();
 	const [activeConversationId, setActiveConversationId] = useState<
 		string | null
@@ -137,7 +160,6 @@ export function useConversationHistory(
 		"list",
 		{ organizationId, agentId },
 	];
-	const detailKey = (id: string) => ["agents", "conversations", "detail", id];
 
 	// List conversations
 	const {
@@ -154,7 +176,6 @@ export function useConversationHistory(
 					agentId,
 					status: "ACTIVE",
 					limit,
-					offset: 0,
 				});
 				return result;
 			} catch (error) {
@@ -163,7 +184,7 @@ export function useConversationHistory(
 					error,
 				);
 				// Return empty result on error to not break the UI
-				return { conversations: [], total: 0, hasMore: false };
+				return { conversations: [], hasMore: false };
 			}
 		},
 		// Don't retry on failure - gracefully degrade
@@ -177,44 +198,7 @@ export function useConversationHistory(
 		data: activeConversation,
 		isLoading: isLoadingDetail,
 		error: detailError,
-	} = useQuery({
-		queryKey: detailKey(activeConversationId || ""),
-		queryFn: async () => {
-			if (!activeConversationId) {
-				return null;
-			}
-			try {
-				const result = await orpcClient.agents.conversations.get({
-					id: activeConversationId,
-				});
-				return result as unknown as ConversationDetail;
-			} catch (error: unknown) {
-				// Handle case where conversation doesn't exist (e.g., stale URL, deleted conversation)
-				// Check if it's a 404/NOT_FOUND error - these are expected for missing conversations
-				const errorMessage =
-					error instanceof Error ? error.message : String(error);
-				if (
-					errorMessage.includes("not found") ||
-					errorMessage.includes("NOT_FOUND") ||
-					errorMessage.includes("Conversation not found")
-				) {
-					// Silently return null for expected 404 errors
-					return null;
-				}
-				// Log unexpected errors
-				console.warn(
-					`[useConversationHistory] Failed to fetch conversation: ${activeConversationId}`,
-					error,
-				);
-				return null;
-			}
-		},
-		enabled: !!activeConversationId,
-		// Don't retry - conversation either exists or doesn't
-		retry: false,
-		// Don't throw errors to the error boundary
-		throwOnError: false,
-	});
+	} = useConversationDetail(activeConversationId, organizationId);
 
 	// Create conversation mutation
 	const createMutation = useMutation({
@@ -406,7 +390,6 @@ export function useConversationHistory(
 		// State
 		conversations: (conversationsData?.conversations ??
 			[]) as ConversationSummary[],
-		total: conversationsData?.total ?? 0,
 		hasMore: conversationsData?.hasMore ?? false,
 		activeConversationId,
 		activeConversation,

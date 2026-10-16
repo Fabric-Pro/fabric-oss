@@ -28,7 +28,7 @@ import {
 } from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
 import type { z } from "zod";
-import { makeInFlightToolCompactor } from "../../../agentic-loop/in-flight-tool-compaction";
+import { makeToolLoopPrepareStep } from "../../../agentic-loop/step-cache-breakpoint";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
 import { validateToolsForDestructivePatterns } from "../../planning/operation-risk-detector";
 import type {
@@ -39,6 +39,7 @@ import type {
 } from "../../types";
 import {
 	getAiModel,
+	getAiModelWithSelection,
 	getToolLearningContext,
 	recordFailedToolCall,
 	recordSuccessfulToolCall,
@@ -471,7 +472,12 @@ export class McpToolHandler implements StepHandler {
 			// If auth blocks this step, return auth_required status
 			if (authBlocksStep && blockingConfig) {
 				console.log(
-					`[McpToolHandler] Step blocked - OAuth authorization required for ${blockingConfig.displayName || blockingConfig.serverName}`,
+					"[McpToolHandler] Step blocked - OAuth authorization required",
+					{
+						serverName:
+							blockingConfig.displayName ||
+							blockingConfig.serverName,
+					},
 				);
 				return {
 					status: "auth_required",
@@ -806,10 +812,19 @@ export class McpToolHandler implements StepHandler {
 		};
 
 		const modelStartTime = Date.now();
-		const model = await getAiModel(
+		const {
+			model,
+			provider: modelProvider,
+			modelString,
+		} = await getAiModelWithSelection(
 			input.userId,
 			input.organizationId,
 			true,
+			undefined,
+			undefined,
+			input.conversationId
+				? { conversationId: input.conversationId }
+				: undefined,
 		);
 		console.log(
 			`[McpToolHandler] Model selection took ${Date.now() - modelStartTime}ms`,
@@ -859,7 +874,11 @@ export class McpToolHandler implements StepHandler {
 			instructions: `${executionContext.systemPrompt}${learningContext}`,
 			prompt: executionContext.stepPrompt,
 			tools: wrappedTools as any,
-			prepareStep: makeInFlightToolCompactor(),
+			prepareStep: makeToolLoopPrepareStep({
+				provider: modelProvider,
+				modelString,
+				hasTools: Object.keys(wrappedTools).length > 0,
+			}),
 			// Repair malformed tool calls (e.g., invalid JSON) using the model.
 			// AI SDK 7 stabilised this option: `experimental_repairToolCall` is
 			// now a deprecated alias for `repairToolCall` (same
@@ -1586,6 +1605,11 @@ export class McpToolHandler implements StepHandler {
 			input.userId,
 			input.organizationId,
 			false,
+			undefined,
+			undefined,
+			input.conversationId
+				? { conversationId: input.conversationId }
+				: undefined,
 		);
 
 		const response = await generateText({

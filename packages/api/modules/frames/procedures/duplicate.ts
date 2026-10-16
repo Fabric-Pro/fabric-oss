@@ -1,4 +1,8 @@
-import { createFrame, type FrameBlock, getFrameById } from "@repo/database";
+import {
+	duplicateFrame,
+	FramePlacementRefusedError,
+	getFrameById,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -7,6 +11,13 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
+/**
+ * No `runtimeTools`: a copy declares no tools, so duplicating a page never
+ * carries its capabilities along. Giving a copy tools is `fabric_duplicate_frame`
+ * with `runtimeTools`, which checks every name against the platform table, asks
+ * the person, and checks connected reads against their own servers; this
+ * procedure would accept any string.
+ */
 const inputSchema = z.object({
 	organizationId: z.string().nullable().optional(),
 	id: z.string(),
@@ -19,7 +30,8 @@ export const duplicateFrameProcedure = tenantProtectedProcedure
 		path: "/frames/{id}/duplicate",
 		tags: ["Frames"],
 		summary: "Duplicate a frame",
-		description: "Create a copy of an existing frame",
+		description:
+			"Create a copy of an existing frame. The copy stays where the original is shown (its Workspace or project) and declares no tools.",
 	})
 	.input(inputSchema)
 	.handler(async ({ input, context }) => {
@@ -39,29 +51,24 @@ export const duplicateFrameProcedure = tenantProtectedProcedure
 			throw new Error("Frame not found");
 		}
 
-		// Clone blocks with new IDs
-		const clonedBlocks: FrameBlock[] = original.document.blocks.map(
-			(block) => ({
-				...block,
-				id: `block-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-			}),
-		);
-
-		// Create new frame with copied content
-		const newFrame = await createFrame({
+		// The caller's own copy of their page: it says it came from the same run
+		// the original did. `duplicateFrame` holds the copy to the project it goes
+		// into (the caller must be able to edit it now, not only to have created
+		// the original once), the same check the agent's fork gets.
+		const newFrame = await duplicateFrame({
+			original,
 			userId: context.user.id,
 			organizationId,
 			conversationId: original.conversationId ?? undefined,
-			title: `${original.title} (Copy)`,
-			description: original.description ?? undefined,
-			kind: original.kind,
-			blocks: clonedBlocks,
-			theme: original.document.theme,
 			sourceRunType: original.sourceRunType ?? undefined,
 			sourceRunId: original.sourceRunId ?? undefined,
 			authoritySessionId: original.authoritySessionId ?? undefined,
 			providerKeys: original.providerKeys ?? [],
-			isPublic: false, // Duplicated frames are private by default
+		}).catch((error: unknown) => {
+			if (error instanceof FramePlacementRefusedError) {
+				throw new Error("Frame not found");
+			}
+			throw error;
 		});
 
 		return {

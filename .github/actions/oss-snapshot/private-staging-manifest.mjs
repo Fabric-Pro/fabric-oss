@@ -9,6 +9,54 @@ const POLICY = Object.freeze({
 	namespace: "ghcr.io/fabric-pro/fabric-dev-snapshots",
 	kind: "fabric-private-staging-snapshot-set",
 });
+const SHA_RE = /^[0-9a-f]{40}$/;
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
+function fail(message) {
+	throw new Error(`snapshot manifest validation failed: ${message}`);
+}
+
+// An automatic staging build may reuse an unchanged image from an earlier
+// snapshot. That image keeps the revision label of the commit it was built
+// from; once the reuse record accounts for it, the fragment is validated
+// exactly like a fresh build.
+function asFreshBuild(fragment, expected) {
+	if (fragment === null || typeof fragment !== "object") {
+		return fragment;
+	}
+	const { inputs, reuse, ...built } = fragment;
+	const component = fragment.component;
+	if (inputs !== undefined && !DIGEST_RE.test(inputs)) {
+		fail(`${component} has malformed build inputs`);
+	}
+	if (reuse === undefined) {
+		return built;
+	}
+	if (expected.sourceRef !== "refs/heads/staging") {
+		fail(`${component} reuses an image outside automatic staging builds`);
+	}
+	if (
+		!SHA_RE.test(reuse?.reusedFromSourceSha ?? "") ||
+		!SHA_RE.test(reuse?.builtFromSourceSha ?? "") ||
+		!/^[1-9][0-9]*$/.test(reuse?.reusedFromRun ?? "") ||
+		inputs === undefined
+	) {
+		fail(`${component} has an invalid reuse record`);
+	}
+	if (
+		built.labels?.["org.opencontainers.image.revision"] !==
+		reuse.builtFromSourceSha
+	) {
+		fail(`${component} has unexpected OCI source labels`);
+	}
+	return {
+		...built,
+		labels: {
+			...built.labels,
+			"org.opencontainers.image.revision": expected.sourceSha,
+		},
+	};
+}
 
 export function createPrivateManifest(fragments, expected) {
 	if (
@@ -22,7 +70,22 @@ export function createPrivateManifest(fragments, expected) {
 	) {
 		throw new Error("unexpected private source identity");
 	}
-	return createAggregateManifest(fragments, expected, POLICY);
+	if (!Array.isArray(fragments)) {
+		return createAggregateManifest(fragments, expected, POLICY);
+	}
+	const manifest = createAggregateManifest(
+		fragments.map((fragment) => asFreshBuild(fragment, expected)),
+		expected,
+		POLICY,
+	);
+	// The evidence records each fragment as emitted, reuse records included.
+	const emitted = new Map(
+		fragments.map((fragment) => [fragment.component, fragment]),
+	);
+	return {
+		...manifest,
+		images: manifest.images.map(({ component }) => emitted.get(component)),
+	};
 }
 
 async function main() {

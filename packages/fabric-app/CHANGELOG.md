@@ -1,5 +1,54 @@
 # fabric-app
 
+## 1.16.24
+
+### Patch Changes
+
+- 1da1843: The Advisor now marks its conversation for Anthropic prompt caching, so on Claude models later tool rounds can read the shared prompt prefix from the cache instead of paying full input price for it again.
+- 1da1843: Advisor conversations now show completed answers and interrupted turn outcomes when reopened after the browser disconnected before saving the result.
+- 1da1843: Advisor model usage is now recorded against the chat it was made for, so a conversation's AI cost can be reviewed on its own.
+- 1da1843: Projects get an Artifacts tab and organizations get Workspaces of pages Fabric Agent writes; document workspaces are now Libraries.
+- 1da1843: AI Providers now has Organization and Personal tabs, and Fabric tells you when your work in an organization runs on your own key.
+- 1da1843: Decision-model calls no longer fail as a whole when two choice options are nearly tied, so fewer classifications fall back to the slower language model.
+- 1da1843: Chat, Sidekick and the weave reader agents now cache the Claude prompt prefix across tool rounds within a turn, while chat and Sidekick keep reusing cached conversation history on the next turn, reducing input cost.
+- 1da1843: Twilio is available again as an MCP connection using Twilio's official MCP server. Enter your Twilio Account SID, API Key SID and API Key Secret.
+- 1da1843: Organization queries no longer load the unused legacy organization-level Firecrawl columns, so those columns can be removed in a later release.
+- 1da1843: Fabric Agent can create, publish, pause, resume and run scheduled workflows from chat, through the same Fabric MCP tools that coding agents and the app's own pages call.
+- 1da1843: Coding Instructions can now reach Claude Code and Codex as a plugin Fabric builds on demand, with no clone, and the project's memory folders are mirrored as plain files that reach the repository through Fabric.
+- 1da1843: Web search with Jina as the search provider now returns each result's own title, snippet and content instead of repeating the opening of the whole response for every result.
+- 1da1843: Agents and the CLI can now write files into a project's Living Memory folders through a new opt-in `memory:write` scope, REST routes and three MCP tools.
+- 1da1843: Living Memory's sync menu now has a Write folders dialog for choosing the folders agents write their files into, and how each lands.
+- 1da1843: Living Memory write folders now accept agent writes: Fabric commits them or opens a pull request, then syncs them into Living Memory.
+- 1da1843: The v1 MCP configuration export no longer includes OAuth refresh tokens: it returns each server's access token, with its expiry and scope when available, and clients fetch the export again once that token expires, so only Fabric refreshes a connected grant.
+- 1da1843: When an MCP tool call over HTTP or SSE times out or is cancelled, Fabric now aborts the request it sent instead of leaving it running in the background.
+- 1da1843: When two servers refresh the same MCP OAuth connection at once, the one that loses the race now uses the access token the winner just saved instead of spending the newly rotated refresh token again, which could otherwise get the connection revoked by providers that detect refresh-token reuse.
+- 1da1843: Deleting a project or an organization for good now also removes the agent-written pages it owned, with their records and stored files.
+- 1da1843: Forms on agent-written pages now work: a page that saves through a form's submit handler no longer does nothing when you click its button.
+- 1da1843: Agent-written pages keep the element ids and form limits their own scripts use, so a page's save button works.
+- 1da1843: Fabric Agent finds the page tools on a follow-up request and no longer hands a page write to itself.
+- 1da1843: Parlume joins Teams meetings through hosted Attendee instead of Meeting BaaS, whose Teams bot garbled the audio it played.
+- 1da1843: Give Parlume a streaming Aura voice synthesized in the bridge, and let it post anything, including full direct links, to the meeting chat on request.
+- 1da1843: Parlume starts speaking sooner: replies play a sentence at a time, and read-only answers begin while the agent is still writing them.
+- 1da1843: Parlume hears Teams meetings again: the bridge feeds Flux 16 kHz meeting audio in 80 ms batches instead of 24 kHz in 10 ms chunks.
+- 1da1843: Parlume's meeting notes render as formatted text (headings, lists, emphasis) instead of raw markdown in the sessions table.
+- 1da1843: Redesign the Parlume page with join progress, a live card, tabbed sessions and requests, and a consent step before inviting.
+- 1da1843: The Parlume page pages its sessions five at a time, shows spend in cents, and a finalized failed session no longer records its bot time twice.
+- 1da1843: Speed up Parlume replies: no extra wait after a complete request, minimal reasoning, a slimmer prompt, a warm start and per-turn timing logs.
+- 1da1843: Owners, admins and whoever started the work are notified when background work pauses for, or stops on, spent ChatGPT plans.
+- 1da1843: After switching organizations, AI notices no longer use the previous organization's ChatGPT plan status.
+- 1da1843: Plan steps that call connected tools, triggered agents, and sub-agents started with run_agent now reuse Anthropic's prompt cache between tool rounds, so Claude models no longer bill the repeated instructions and earlier tool results at full input price on every round.
+- 1da1843: Pushing a story to the project management tool with "sync with tasks" no longer creates a second copy of tasks that are already linked; only tasks without a link are created.
+- 1da1843: Members with edit rights can now confirm or answer each finding of a Proposal's Internal Analysis, see which findings need review after the text of their section changes, re-run the analysis on the current text, and open the sources a finding cites; their answers guide later generations of the Proposal without being quoted in it.
+- 1da1843: Proposals in artifact mode now show their Main Document on one shared Proposal theme, for organization members and project guests alike: the document sits on its own light paper in both colour modes, brand colours that would be hard to read fall back to a neutral style, and in those Proposals `stat-tiles` blocks are drawn as big-number tiles in the live sections and in the editor outside a shared editing session, while every other document keeps them as code blocks.
+- 1da1843: Agent runs, deep research and research agents now cache the Claude prompt prefix across tool rounds within a call, reducing input cost.
+- 1da1843: Workflows can run an unattended AI agent on a schedule and publish its result as a frame, with a schedule time zone, and a workflow that fails three scheduled runs in a row now pauses itself and tells its owner.
+- 1da1843: Fabric Agent in Simple mode now loads the page and workflow tools it names, so "create a Workspace" no longer ends with "I don't have that tool".
+- 1da1843: Harden Microsoft Graph pagination, local Git exclude updates, code-indexing temporary files, document parsing, OAuth error redaction, and integration logging against untrusted input.
+- 1da1843: Simple mode now says when an open chat stays on the engine it was started on, such as a Direct chat left open after switching from Advanced, and offers a New chat button to use the Advisor.
+- 1da1843: New and edited seeded skills now reach every environment, and a Fabric Agent request for a Workspace page no longer asks for write access to unrelated connected servers.
+- 1da1843: A model response stopped part-way now records the input tokens the provider reported when it started, instead of zero, so usage and cost reports count stopped turns.
+- 1da1843: Workspace pages can keep data, files and comments and read your accounts; Fabric Agent conversations get a history you can share.
+
 ## 1.16.23
 
 ### Patch Changes

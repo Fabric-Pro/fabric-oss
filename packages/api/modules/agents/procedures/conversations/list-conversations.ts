@@ -1,103 +1,102 @@
-import { ORPCError } from "@orpc/client";
+import { ORPCError } from "@orpc/server";
 import {
-	countAgentConversations,
-	listAgentConversations,
+	AgentConversationCursorError,
+	countAgentConversationsForViewer,
+	listAgentConversationsForViewer,
 } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { ConversationListOutputSchema, listItemOf } from "./conversation-view";
+import { resolvedOrganizationId } from "./resolved-organization";
 
 /**
- * List agent conversations for the current user
+ * List the agent conversations the caller can see: their own ("mine", the
+ * default), or every session an owner set to ORGANIZATION ("shared", the
+ * caller's own included), optionally narrowed by a title search. Paged by
+ * cursor, newest first (the caller's own list keeps pinned sessions on top).
+ * Each session says whether it is the caller's and who owns it, so a client can
+ * show another member's as read-only, and a session that is not the caller's is
+ * shown as a transcript only (see `./conversation-view`).
+ *
+ * `agentId` narrows the list to one agent; without it the list spans every
+ * agent in the organization, as the Execution History does.
+ *
+ * This is a public route, so what it answered before keeps working: `offset`
+ * (deprecated, and refused together with a `cursor`) pages the way it did, and
+ * `total` is the count under the same filter.
+ *
+ * Authorized in the organization the request names, for `AGENT_READ`: ADR-018
+ * leaves no personal list.
  */
 export const listConversations = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/agents/conversations",
 		tags: ["Agent Conversations"],
 		summary: "List agent conversations",
 		description:
-			"List all agent conversations for the current user or organization",
+			"List the caller's agent conversations, or the ones shared in the organization",
 	})
 	.input(
 		z.object({
 			organizationId: z.string().nullable().optional(),
-			agentId: z.string().optional(),
+			agentId: z.string().min(1).optional(),
+			scope: z.enum(["mine", "shared"]).default("mine"),
 			status: z.enum(["ACTIVE", "ARCHIVED"]).optional(),
+			search: z.string().max(100).optional(),
+			cursor: z.string().max(512).optional(),
+			/** Deprecated: page by `cursor`. */
+			offset: z.number().int().min(0).optional(),
 			limit: z.number().min(1).max(100).default(50),
-			offset: z.number().min(0).default(0),
 		}),
 	)
+	.output(ConversationListOutputSchema)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
+		if (input.offset !== undefined && input.cursor !== undefined) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Send a cursor or an offset, not both",
+			});
+		}
+		const filter = {
+			userId: context.user.id,
+			organizationId: resolvedOrganizationId(input, context.session),
+			agentId: input.agentId,
+			scope: input.scope,
+			search: input.search,
+			status: input.status,
+		};
 
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
+		try {
+			const [{ items, nextCursor }, total] = await Promise.all([
+				listAgentConversationsForViewer({
+					...filter,
+					cursor: input.cursor,
+					offset: input.offset,
+					limit: input.limit,
+				}),
+				countAgentConversationsForViewer(filter),
+			]);
+			return {
+				conversations: items.map(listItemOf),
+				hasMore: nextCursor !== undefined,
+				total,
+				...(nextCursor ? { nextCursor } : {}),
+			};
+		} catch (error) {
+			if (error instanceof AgentConversationCursorError) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "The cursor is not valid",
 				});
 			}
+			throw error;
 		}
-
-		const [conversations, total] = await Promise.all([
-			listAgentConversations({
-				userId: user.id,
-				organizationId,
-				agentId: input.agentId,
-				status: input.status,
-				limit: input.limit,
-				offset: input.offset,
-			}),
-			countAgentConversations({
-				userId: user.id,
-				organizationId,
-				agentId: input.agentId,
-				status: input.status,
-			}),
-		]);
-
-		return {
-			conversations: conversations.map((c) => ({
-				id: c.id,
-				agentId: c.agentId,
-				title: c.title,
-				messageCount: Array.isArray(c.messages) ? c.messages.length : 0,
-				pinned: c.pinned,
-				status: c.status,
-				createdAt: c.createdAt.toISOString(),
-				updatedAt: c.updatedAt.toISOString(),
-				// Include preview of last message
-				lastMessage: getLastMessagePreview(c.messages),
-				// Include metadata to identify orchestrator conversations
-				metadata: c.metadata,
-			})),
-			total,
-			hasMore: input.offset + conversations.length < total,
-		};
 	});
-
-function getLastMessagePreview(messages: unknown): string | null {
-	if (!Array.isArray(messages) || messages.length === 0) {
-		return null;
-	}
-	const lastMessage = messages[messages.length - 1];
-	if (typeof lastMessage?.content === "string") {
-		return lastMessage.content.slice(0, 100);
-	}
-	return null;
-}

@@ -3,7 +3,7 @@
 /**
  * ActiveContextIndicator
  *
- * Displays context pills (workspaces, MCP servers, agents) with hover cards
+ * Displays context pills (libraries, MCP servers, agents) with hover cards
  * that show the detailed list of what's in each context.
  * Users can star items to prioritize them in routing.
  */
@@ -114,12 +114,12 @@ const FABRIC_AI_TOOLS: Record<string, { name: string; description: string }> = {
 		description: "Scrape and analyze web pages",
 	},
 	workspace_rag_query: {
-		name: "Workspace Query",
-		description: "Search workspace documents",
+		name: "Library Query",
+		description: "Search library documents",
 	},
 	workspace_rag_summarize: {
-		name: "Workspace Summarize",
-		description: "Summarize workspace docs",
+		name: "Library Summarize",
+		description: "Summarize library docs",
 	},
 	// MCP CLI tools for dynamic MCP server discovery
 	fabric_mcp_list: {
@@ -703,8 +703,8 @@ export function ActiveContextIndicator({
 			{workspaceIds.length > 0 && (
 				<ContextPill
 					count={workspaceIds.length}
-					label="workspaces"
-					singularLabel="workspace"
+					label="libraries"
+					singularLabel="library"
 					color="green"
 					icon={<FolderOpen className="h-3.5 w-3.5" />}
 					items={workspaceItems}

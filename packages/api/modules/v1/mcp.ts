@@ -5,7 +5,6 @@
  * GET /mcp/configs/:id  get a specific MCP config
  */
 import {
-	credentialFingerprintMatches,
 	deleteMcpConfig,
 	getMcpConfigById,
 	getOrganizationMembership,
@@ -14,8 +13,6 @@ import {
 	listCustomMcpServersForTenant,
 	listMcpConfigsForTenant,
 	listSystemMcpServers,
-	markMcpOAuthReconnectRequired,
-	parseMcpOAuthBinding,
 } from "@repo/database";
 import { logDataEvent, logger } from "@repo/logs";
 import {
@@ -28,7 +25,6 @@ import {
 	Permissions,
 	resolveOrgPermissions,
 } from "@repo/permissions";
-import { decryptApiKey } from "@repo/utils";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import { projectBoundRefusal } from "../external-api/project-bound";
@@ -46,7 +42,6 @@ interface ExportableServer {
 	headers?: Record<string, string>;
 	oauth?: {
 		accessToken: string;
-		refreshToken?: string;
 		expiresAt?: number;
 		scope?: string;
 	};
@@ -198,39 +193,14 @@ async function buildExportableServer(
 			return null;
 		}
 
-		// A GitLab personal config's token columns are a legacy copy of the
-		// person's GitLab grant: never export its refresh token (a client
-		// spending it would rotate the grant out from under the connection)
-		// nor its stale expiry.
+		// The export carries the access token alone, never the refresh token:
+		// Fabric owns each grant's rotation, and a client spending a copied
+		// refresh token would rotate the grant out from under Fabric and keep
+		// working after a revoke. A client re-fetches this export once
+		// `expiresAt` passes. A GitLab personal config's token columns are a
+		// legacy copy of the person's GitLab grant, so its stored expiry is
+		// stale and is not exported either.
 		const isGitLabPersonal = isGitLabPersonalMcpConfig(refreshedConfig);
-		// The exported client spends the refresh token on its own, so it is
-		// exported only for a grant bound to its authorization server and
-		// still the credential set that binding was written with
-		// (`credentialFingerprint`). An unbound or bearer-only grant exports
-		// the access token alone; a mismatch — a writer outside the
-		// credential module replaced a credential — also flags the config
-		// for reconnect.
-		const binding = parseMcpOAuthBinding(refreshedConfig.oauthBinding);
-		let exportRefreshToken =
-			!isGitLabPersonal &&
-			!!binding &&
-			!!refreshedConfig.encryptedRefreshToken;
-		if (
-			exportRefreshToken &&
-			binding &&
-			!credentialFingerprintMatches(binding, refreshedConfig)
-		) {
-			exportRefreshToken = false;
-			await markMcpOAuthReconnectRequired({
-				configId: refreshedConfig.id,
-				expectedGeneration: refreshedConfig.oauthGrantGeneration,
-				reason: "Reconnect required: the stored OAuth credentials do not match the connection they were bound with.",
-			});
-		}
-		const refreshToken =
-			exportRefreshToken && refreshedConfig.encryptedRefreshToken
-				? decryptApiKey(refreshedConfig.encryptedRefreshToken)
-				: undefined;
 
 		return {
 			name,
@@ -238,7 +208,6 @@ async function buildExportableServer(
 			url,
 			oauth: {
 				accessToken,
-				...(refreshToken ? { refreshToken } : {}),
 				...(!isGitLabPersonal && refreshedConfig.tokenExpiresAt
 					? { expiresAt: refreshedConfig.tokenExpiresAt.getTime() }
 					: {}),

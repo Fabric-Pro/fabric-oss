@@ -111,3 +111,134 @@ describe("agent execution boundary", () => {
 		});
 	});
 });
+
+describe("tools a runtime adds to the agent's own", () => {
+	it("merges them under the runtime's source and sends their calls through invoke", async () => {
+		const execute = vi.fn(async () => ({ posted: true }));
+		const invoke = vi.fn(async (invocation: { execute: () => unknown }) =>
+			invocation.execute(),
+		);
+		const tools: Record<string, unknown> = {
+			existing: { inputSchema: {}, execute: vi.fn() },
+		};
+
+		await withAgentToolRuntime(
+			{
+				invoke,
+				tools: {
+					post_to_meeting_chat: {
+						description: "Post",
+						inputSchema: {},
+						execute,
+					},
+				},
+			},
+			async () => {
+				await prepareAgentTools(tools, {
+					existing: {
+						configId: "connection",
+						originalName: "existing",
+					},
+				});
+				const added = tools.post_to_meeting_chat;
+				if (!isExecutableAgentTool(added)) {
+					throw new Error("The runtime's tool was not merged");
+				}
+				await expect(added.execute({ text: "Hello" })).resolves.toEqual(
+					{
+						posted: true,
+					},
+				);
+			},
+		);
+
+		expect(Object.keys(tools).sort()).toEqual([
+			"existing",
+			"post_to_meeting_chat",
+		]);
+		expect(invoke).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name: "post_to_meeting_chat",
+				args: { text: "Hello" },
+				source: {
+					configId: "parlume",
+					originalName: "post_to_meeting_chat",
+				},
+			}),
+		);
+		expect(execute).toHaveBeenCalledTimes(1);
+	});
+
+	it("leaves the agent's own tools on their own source", async () => {
+		const invoke = vi.fn(async () => "held");
+		const tools: Record<string, unknown> = {
+			existing: { inputSchema: {}, execute: vi.fn() },
+		};
+
+		await withAgentToolRuntime(
+			{
+				invoke,
+				tools: { added: { inputSchema: {}, execute: vi.fn() } },
+			},
+			async () => {
+				await prepareAgentTools(tools, {
+					existing: {
+						configId: "connection",
+						originalName: "existing",
+					},
+				});
+				await (
+					tools.existing as { execute: (args: unknown) => unknown }
+				).execute({});
+			},
+		);
+
+		expect(invoke).toHaveBeenCalledWith(
+			expect.objectContaining({
+				source: { configId: "connection", originalName: "existing" },
+			}),
+		);
+	});
+
+	it("does not change the caller's source map", async () => {
+		const sources = {
+			existing: { configId: "connection", originalName: "existing" },
+		};
+
+		await withAgentToolRuntime(
+			{
+				invoke: vi.fn(),
+				tools: { added: { inputSchema: {}, execute: vi.fn() } },
+			},
+			() =>
+				prepareAgentTools(
+					{ existing: { inputSchema: {}, execute: vi.fn() } },
+					sources,
+				),
+		);
+
+		expect(Object.keys(sources)).toEqual(["existing"]);
+	});
+
+	it("adds nothing when the runtime has none, and nothing outside a runtime", async () => {
+		const tools: Record<string, unknown> = {};
+		await withAgentToolRuntime({ invoke: vi.fn() }, () =>
+			prepareAgentTools(tools),
+		);
+		await prepareAgentTools(tools);
+		expect(tools).toEqual({});
+	});
+
+	it("is skipped by a runtime that prepares the tools itself", async () => {
+		const tools: Record<string, unknown> = {};
+		await withAgentToolRuntime(
+			{
+				invoke: vi.fn(),
+				prepared: async () => "Done",
+				tools: { added: { inputSchema: {}, execute: vi.fn() } },
+			},
+			() => prepareAgentTools(tools),
+		);
+		expect(tools).toEqual({});
+	});
+});

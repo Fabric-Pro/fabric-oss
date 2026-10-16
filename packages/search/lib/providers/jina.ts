@@ -22,6 +22,15 @@ const JINA_SEARCH_URL = "https://s.jina.ai";
 const JINA_READER_URL = "https://r.jina.ai";
 const DEFAULT_TIMEOUT = 30000;
 
+/** One entry of the `data` array in a JSON s.jina.ai response. */
+interface JinaSearchEntry {
+	title?: unknown;
+	url?: unknown;
+	description?: unknown;
+	content?: unknown;
+	date?: unknown;
+}
+
 /**
  * Jina AI search provider implementation
  */
@@ -88,13 +97,13 @@ export class JinaSearchProvider extends BaseSearchProvider {
 				);
 			}
 
-			// Jina returns markdown text, we need to parse it into results
-			const content = await response.text();
+			// With Accept: application/json, s.jina.ai answers with one
+			// entry per result in `data`; X-Return-Format shapes each entry's
+			// `content` as markdown.
+			const body: unknown = await response.json();
 			const searchTime = Date.now() - startTime;
 
-			// Parse the markdown content into search results
-			// Jina returns results in a specific markdown format
-			const results = this.parseSearchResults(content, maxResults);
+			const results = this.parseSearchResults(body, maxResults);
 
 			logger.info("[JinaSearchProvider] Search completed", {
 				resultCount: results.length,
@@ -117,49 +126,46 @@ export class JinaSearchProvider extends BaseSearchProvider {
 	}
 
 	/**
-	 * Parse Jina search results from markdown format
+	 * Map the `data` entries of a Jina JSON search response to results.
+	 * Throws on a body without a `data` array rather than returning an
+	 * empty or invented result set.
 	 */
 	private parseSearchResults(
-		content: string,
+		body: unknown,
 		maxResults: number,
 	): SearchResult[] {
-		const results: SearchResult[] = [];
-
-		// Jina search returns results in markdown with URLs and titles
-		// Try to extract structured data from the content
-		const urlRegex = /https?:\/\/[^\s\])"'<>]+/g;
-		const urls = content.match(urlRegex) || [];
-
-		// Get unique URLs
-		const seenUrls = new Set<string>();
-		const uniqueUrls = urls.filter((url) => {
-			if (seenUrls.has(url)) {
-				return false;
-			}
-			seenUrls.add(url);
-			return true;
-		});
-
-		// Create results from URLs found in the content
-		for (let i = 0; i < Math.min(uniqueUrls.length, maxResults); i++) {
-			const url = uniqueUrls[i];
-			results.push({
-				title: this.extractTitleFromUrl(url),
-				url,
-				snippet: content.slice(0, 500), // Use beginning of content as snippet
-				score: 1 - i * 0.1, // Decreasing score for ordering
-				source: "jina",
-			});
+		const data = (body as { data?: unknown } | null)?.data;
+		if (!Array.isArray(data)) {
+			throw new Error(
+				"Jina search returned an unexpected response: no data array",
+			);
 		}
 
-		// If no URLs found, return the content as a single result
-		if (results.length === 0 && content.trim()) {
+		const results: SearchResult[] = [];
+		for (const entry of data as JinaSearchEntry[]) {
+			if (results.length >= maxResults) {
+				break;
+			}
+			const url = typeof entry?.url === "string" ? entry.url : "";
+			if (!url) {
+				continue;
+			}
+			const content =
+				typeof entry.content === "string" ? entry.content : undefined;
+			const description =
+				typeof entry.description === "string" ? entry.description : "";
+			const title =
+				typeof entry.title === "string" && entry.title.trim()
+					? entry.title
+					: this.extractTitleFromUrl(url);
 			results.push({
-				title: "Search Results",
-				url: "",
-				snippet: content.slice(0, 1000),
-				content: content,
-				score: 1,
+				title,
+				url,
+				snippet: description || content?.slice(0, 500) || "",
+				content,
+				publishedDate:
+					typeof entry.date === "string" ? entry.date : undefined,
+				score: 1 - results.length * 0.1, // Decreasing score for ordering
 				source: "jina",
 			});
 		}

@@ -229,7 +229,6 @@ describe("MCP export", () => {
 			url: "https://api.githubcopilot.com/mcp/",
 			oauth: {
 				accessToken: "oauth-access-456",
-				refreshToken: "decrypted:refresh-token",
 				expiresAt: new Date("2026-03-29T12:00:00.000Z").getTime(),
 				scope: "read write",
 			},
@@ -237,9 +236,10 @@ describe("MCP export", () => {
 			disabled: false,
 			provider: "github",
 		});
+		expect(result.servers[1].oauth).not.toHaveProperty("refreshToken");
 	});
 
-	describe("the exported refresh token", () => {
+	describe("the refresh token", () => {
 		const githubOAuth = (overrides: Record<string, unknown> = {}) =>
 			createConfig({
 				id: "cfg-gh",
@@ -277,53 +277,30 @@ describe("MCP export", () => {
 			return result.servers[0] as { oauth?: Record<string, unknown> };
 		}
 
-		it("is exported for a grant whose credentials match its binding", async () => {
-			const server = await exportOf(githubOAuth());
-
-			expect(server.oauth).toMatchObject({
-				accessToken: "gh-access",
-				refreshToken: "decrypted:gh-refresh",
-			});
-			expect(mockMarkReconnectRequired).not.toHaveBeenCalled();
-		});
-
 		it.each([
-			["the client id", { oauthClientId: "client-from-elsewhere" }],
-			[
-				"the client secret",
-				{ encryptedOauthClientSecret: "secret-elsewhere" },
-			],
-			[
-				"the refresh token",
-				{ encryptedRefreshToken: "refresh-elsewhere" },
-			],
-		])(
-			"is withheld, and the config flagged, after a legacy write of %s",
-			async (_label, legacyWrite) => {
-				const server = await exportOf(githubOAuth(legacyWrite));
-
-				expect(server.oauth?.accessToken).toBe("gh-access");
-				expect(server.oauth).not.toHaveProperty("refreshToken");
-				expect(mockMarkReconnectRequired).toHaveBeenCalledWith(
-					expect.objectContaining({
-						configId: "cfg-gh",
-						expectedGeneration: 3,
-					}),
-				);
-			},
-		);
-
-		it.each([
-			["an unbound grant", null],
+			["a grant whose credentials match its binding", {}],
+			["an unbound grant", { oauthBinding: null }],
 			[
 				"a bearer-only import",
-				{ mode: "bearer-only", importedAt: "2026-10-06T00:00:00.000Z" },
+				{
+					oauthBinding: {
+						mode: "bearer-only",
+						importedAt: "2026-10-06T00:00:00.000Z",
+					},
+				},
 			],
-		])("is withheld for %s", async (_label, oauthBinding) => {
-			const server = await exportOf(githubOAuth({ oauthBinding }));
+			[
+				"a grant whose refresh token no longer matches its binding",
+				{ encryptedRefreshToken: "refresh-elsewhere" },
+			],
+		])("is never exported for %s", async (_label, overrides) => {
+			const server = await exportOf(githubOAuth(overrides));
 
 			expect(server.oauth?.accessToken).toBe("gh-access");
 			expect(server.oauth).not.toHaveProperty("refreshToken");
+			expect(JSON.stringify(server)).not.toContain("refresh");
+			expect(JSON.stringify(server)).not.toContain("gh-secret");
+			expect(mockMarkReconnectRequired).not.toHaveBeenCalled();
 		});
 	});
 

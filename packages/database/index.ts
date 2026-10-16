@@ -2,7 +2,10 @@ export { hasPermission, Permissions } from "@repo/permissions";
 export * from "./prisma";
 // Frame edit history
 export * from "./prisma/queries/frame-edit-history";
+// Frame page records (what a published page keeps between visits)
+export * from "./prisma/queries/frame-page-records";
 // Frame sharing
+export * from "./prisma/queries/frame-share";
 export * from "./prisma/queries/frame-sharing";
 // Frame templates
 export * from "./prisma/queries/frame-templates";

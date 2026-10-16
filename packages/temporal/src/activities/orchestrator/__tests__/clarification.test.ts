@@ -69,6 +69,30 @@ describe("analyzeIntentClarityActivity", () => {
 		);
 	});
 
+	it("records its model call against the chat it was made for", async () => {
+		generateText.mockResolvedValue({
+			text: JSON.stringify({ needsClarification: false }),
+		});
+		getAIModel.mockClear();
+
+		await analyzeIntentClarityActivity({
+			message: "deploy it",
+			userId: "u",
+			conversationId: "conv-1",
+		});
+		await analyzeIntentClarityActivity({
+			message: "deploy it",
+			userId: "u",
+		});
+
+		expect(getAIModel.mock.calls[0][1]).toMatchObject({
+			conversationId: "conv-1",
+		});
+		expect(getAIModel.mock.calls[1][1]).not.toHaveProperty(
+			"conversationId",
+		);
+	});
+
 	it("returns needsClarification:false when the model judges the request clear", async () => {
 		generateText.mockResolvedValue({
 			text: JSON.stringify({

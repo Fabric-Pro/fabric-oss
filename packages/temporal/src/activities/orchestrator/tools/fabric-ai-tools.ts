@@ -15,14 +15,6 @@ import {
 	COMPANY_CONTEXT_SEARCH_TOOL_NAME,
 } from "../../../workflows/orchestrator/company-context-tool-schemas";
 import {
-	FABRIC_CREATE_FRAME_TOOL,
-	FABRIC_CREATE_SLIDESHOW_TOOL,
-	FABRIC_GET_FRAME_TOOL,
-	FABRIC_LIST_FRAMES_TOOL,
-	FABRIC_SHARE_FRAME_TOOL,
-	FABRIC_UPDATE_FRAME_TOOL,
-} from "../../../workflows/orchestrator/frame-tool-schemas";
-import {
 	PROJECT_DOCUMENT_GET_DESCRIPTION,
 	PROJECT_DOCUMENT_GET_INPUT_SCHEMA,
 	PROJECT_DOCUMENT_LIST_DESCRIPTION,
@@ -45,6 +37,7 @@ import {
 	CODE_TREE_DESCRIPTION,
 	CODE_TREE_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-repository-tool-schemas";
+import { FABRIC_GATEWAY_CATALOG_TOOLS } from "./fabric-gateway-catalog-tools";
 
 export interface FabricAiTool {
 	name: string;
@@ -83,6 +76,16 @@ export function getAllFabricAiTools(): FabricAiTool[] {
  */
 export function getFabricAiTools(): FabricAiTool[] {
 	return getFabricAiToolsInternal().filter((tool) => !tool.hidden);
+}
+
+let fabricAiToolNames: ReadonlySet<string> | undefined;
+
+/** Whether `name` is one of Fabric's own tools (this catalogue), not a connected server's. */
+export function isFabricAiToolName(name: string): boolean {
+	fabricAiToolNames ??= new Set(
+		getFabricAiToolsInternal().map((tool) => tool.name),
+	);
+	return fabricAiToolNames.has(name);
 }
 
 function getFabricAiToolsInternal(): FabricAiTool[] {
@@ -1584,14 +1587,10 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 
 		// =======================================================================
-		// First-Class Frames Tools (schemas in workflows/orchestrator/frame-tool-schemas.ts)
+		// Workflow and Frame Tools (served by the Fabric MCP gateway, from its one
+		// list of definitions; see fabric-gateway-catalog-tools.ts)
 		// =======================================================================
-		FABRIC_CREATE_FRAME_TOOL as FabricAiTool,
-		FABRIC_UPDATE_FRAME_TOOL as FabricAiTool,
-		FABRIC_GET_FRAME_TOOL as FabricAiTool,
-		FABRIC_LIST_FRAMES_TOOL as FabricAiTool,
-		FABRIC_SHARE_FRAME_TOOL as FabricAiTool,
-		FABRIC_CREATE_SLIDESHOW_TOOL as FabricAiTool,
+		...FABRIC_GATEWAY_CATALOG_TOOLS,
 
 		// =======================================================================
 		// Image Generation Tools

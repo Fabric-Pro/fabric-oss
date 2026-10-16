@@ -8,13 +8,16 @@ type HistoryInput = {
 const mocks = vi.hoisted(() => ({
 	project: vi.fn(),
 	turns: vi.fn(),
+	turnCount: vi.fn(),
 	permission: vi.fn(),
 	handler: undefined as
 		| ((args: { input: HistoryInput }) => Promise<unknown>)
 		| undefined,
 }));
 vi.mock("@repo/database", () => ({
-	db: { parlumeMeetingTurn: { findMany: mocks.turns } },
+	db: {
+		parlumeMeetingTurn: { findMany: mocks.turns, count: mocks.turnCount },
+	},
 }));
 vi.mock("../sessions", () => ({ requireParlumeProject: mocks.project }));
 vi.mock("../../../../../orpc/procedures", () => {
@@ -40,6 +43,7 @@ beforeEach(() => {
 		.mockReset()
 		.mockResolvedValue({ id: "project", organizationId: "org" });
 	mocks.turns.mockReset().mockResolvedValue([]);
+	mocks.turnCount.mockReset().mockResolvedValue(0);
 });
 
 describe("Parlume project history", () => {
@@ -79,8 +83,10 @@ describe("Parlume project history", () => {
 		});
 		expect(response).toEqual({
 			items: rows.slice(0, 30),
+			total: null,
 			nextCursor: { id: "turn-29", createdAt },
 		});
+		expect(mocks.turnCount).not.toHaveBeenCalled();
 		expect(mocks.turns).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({
@@ -92,5 +98,15 @@ describe("Parlume project history", () => {
 				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
 			}),
 		);
+	});
+	it("counts the project's requests on the first page whatever session is viewed", async () => {
+		mocks.turnCount.mockResolvedValue(42);
+		const response = await mocks.handler?.({
+			input: { projectId: "project", sessionId: "other-session" },
+		});
+		expect(response).toMatchObject({ total: 42 });
+		expect(mocks.turnCount).toHaveBeenCalledWith({
+			where: { projectId: "project", organizationId: "org" },
+		});
 	});
 });

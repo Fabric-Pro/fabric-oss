@@ -1,0 +1,708 @@
+/**
+ * The embed's part of the page runtime: it sits between the sandboxed page and
+ * the host page and only relays. A page's request goes up under an id of the
+ * embed's own; the host's answer, believed only from the app's own parent
+ * window, goes back down under the page's id. Nothing a page posts to the embed
+ * from anywhere but its own iframe is believed, and nothing is forwarded to a
+ * parent that may be a foreign framing site except by exact origin.
+ */
+import { render } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("html2canvas", () => ({
+	default: vi.fn(async () => ({
+		toDataURL: () => "data:image/png;base64,AAAA",
+	})),
+}));
+
+vi.mock("../../../../modules/marketing/blog/components/Mermaid", () => ({
+	Mermaid: () => null,
+}));
+
+vi.mock("../../../../components/ai-elements/response", () => ({
+	Response: ({ children }: { children?: React.ReactNode }) => (
+		<div>{children}</div>
+	),
+}));
+
+import {
+	type FrameDocumentView,
+	FrameRenderer,
+} from "@saas/frames/components/FrameRenderer";
+import { FABRIC_RUNTIME_SCRIPT } from "@saas/frames/lib/fabric-runtime-script";
+import {
+	FRAME_RUNTIME_HELLO_TYPE,
+	FRAME_RUNTIME_HOST_READY_TYPE,
+} from "@saas/frames/lib/frame-embed-protocol";
+
+const frame: FrameDocumentView = {
+	version: 1,
+	kind: "frame",
+	title: "Delivery",
+	blocks: [
+		{
+			id: "page",
+			type: "html",
+			content: "<button id='go'>Refresh</button>",
+		},
+	],
+};
+
+let toHost: Array<{ message: unknown; targetOrigin: unknown }> = [];
+
+beforeEach(() => {
+	toHost = [];
+	vi.spyOn(window.parent, "postMessage").mockImplementation(
+		(message: unknown, targetOrigin?: unknown) => {
+			toHost.push({ message, targetOrigin });
+		},
+	);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+function pageIframe(container: HTMLElement) {
+	const iframe = container.querySelector<HTMLIFrameElement>(
+		'iframe[data-frame-scope="project"]',
+	);
+	if (!iframe?.contentWindow) {
+		throw new Error("the strict-sandbox iframe is not rendered");
+	}
+	return iframe as HTMLIFrameElement & { contentWindow: Window };
+}
+
+function messageFrom(source: Window, data: unknown, origin = "null") {
+	window.dispatchEvent(new MessageEvent("message", { data, origin, source }));
+}
+
+function hostAnswers(data: unknown, origin = window.location.origin) {
+	messageFrom(window.parent, data, origin);
+}
+
+const pageCall = (requestId = "call-1", name = "fabric_list_workflows") => ({
+	type: "fabric-frame:call",
+	requestId,
+	name,
+	args: { limit: 2 },
+});
+
+describe("a strict-sandbox page in an embed", () => {
+	it("is sandboxed to scripts and forms, never same-origin, and carries the page runtime", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const iframe = pageIframe(container);
+
+		expect(iframe.getAttribute("sandbox")).toBe(
+			"allow-scripts allow-forms",
+		);
+		expect(iframe.getAttribute("srcdoc")).toContain("fabric-frame:call");
+	});
+
+	it("keeps a frame outside the strict sandbox on the historical renderer", () => {
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
+
+		expect(
+			container.querySelector('iframe[data-frame-scope="project"]'),
+		).toBeNull();
+		expect(container.querySelector("iframe")?.getAttribute("sandbox")).toBe(
+			"allow-scripts allow-same-origin",
+		);
+	});
+});
+
+describe("relaying a page's request up to the host", () => {
+	it("forwards a call under the embed's own id, to this app's origin only", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+
+		messageFrom(pageIframe(container).contentWindow, pageCall("call-1"));
+
+		const relayed = toHost.filter(
+			(entry) =>
+				(entry.message as { type?: string }).type ===
+				"fabric-frame:call",
+		);
+		expect(relayed).toHaveLength(1);
+		expect(relayed[0].message).toMatchObject({
+			name: "fabric_list_workflows",
+			args: { limit: 2 },
+			requestId: expect.stringMatching(/^relay-/),
+		});
+		expect(relayed[0].targetOrigin).toBe(window.location.origin);
+	});
+
+	it("forwards the requests to open Fabric Agent and to navigate", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const page = pageIframe(container).contentWindow;
+
+		messageFrom(page, {
+			type: "fabric-frame:open-agent",
+			prompt: "Explain",
+		});
+		messageFrom(page, {
+			type: "fabric-frame:navigate",
+			path: "/app/example-org/projects",
+		});
+
+		const types = toHost.map(
+			(entry) => (entry.message as { type?: string }).type,
+		);
+		expect(types).toEqual(
+			expect.arrayContaining([
+				"fabric-frame:open-agent",
+				"fabric-frame:navigate",
+			]),
+		);
+		for (const entry of toHost.filter((e) =>
+			String((e.message as { type?: string }).type).match(
+				/open-agent|navigate/,
+			),
+		)) {
+			expect(entry.targetOrigin).toBe(window.location.origin);
+		}
+	});
+
+	it("forwards a file the page offers, unchanged, to this app's origin only", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const offer = {
+			type: "fabric-frame:download",
+			filename: "report.csv",
+			mimeType: "text/csv",
+			dataBase64: btoa("a,b\n1,2\n"),
+		};
+
+		messageFrom(pageIframe(container).contentWindow, offer);
+
+		const relayed = toHost.filter(
+			(entry) =>
+				(entry.message as { type?: string }).type ===
+				"fabric-frame:download",
+		);
+		expect(relayed).toEqual([
+			{ message: offer, targetOrigin: window.location.origin },
+		]);
+	});
+
+	it("does not forward an offer that is not a file, or is larger than the host would hold", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const page = pageIframe(container).contentWindow;
+		const offer = {
+			type: "fabric-frame:download",
+			filename: "report.csv",
+			mimeType: "text/csv",
+			dataBase64: "AAAA",
+		};
+
+		messageFrom(page, { ...offer, filename: 7 });
+		messageFrom(page, { ...offer, dataBase64: undefined });
+		messageFrom(page, { ...offer, dataBase64: "A".repeat(14_000_001) });
+		messageFrom(page, { ...offer, filename: "n".repeat(501) });
+
+		expect(
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:download",
+			),
+		).toEqual([]);
+	});
+
+	it("ignores a request that does not come from the page's own iframe", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const stranger = document.createElement("iframe");
+		document.body.appendChild(stranger);
+
+		messageFrom(stranger.contentWindow as Window, pageCall());
+		messageFrom(window, pageCall("call-2"));
+
+		expect(
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:call",
+			),
+		).toEqual([]);
+		expect(pageIframe(container)).toBeTruthy();
+		stranger.remove();
+	});
+
+	it("ignores a request that is not one of the runtime's", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const page = pageIframe(container).contentWindow;
+
+		messageFrom(page, {
+			type: "fabric-frame:call",
+			requestId: "x",
+			name: 1,
+		});
+		messageFrom(page, {
+			type: "fabric-frame:call",
+			requestId: "x",
+			name: "n",
+			args: ["not", "an", "object"],
+		});
+		messageFrom(page, {
+			type: "fabric-frame:export-png-result",
+			requestId: "x",
+		});
+
+		expect(
+			toHost.filter((entry) =>
+				String((entry.message as { type?: string }).type).startsWith(
+					"fabric-frame:call",
+				),
+			),
+		).toEqual([]);
+	});
+
+	it("still resizes to the height the page reports", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const iframe = pageIframe(container);
+
+		messageFrom(iframe.contentWindow, {
+			type: "fabric-project-frame:set-height",
+			height: 733,
+		});
+
+		expect(iframe.style.height).toBe("733px");
+	});
+});
+
+describe("relaying the host's answer down to the page", () => {
+	function setup() {
+		const view = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const iframe = pageIframe(view.container);
+		const toPage = vi
+			.spyOn(iframe.contentWindow, "postMessage")
+			.mockImplementation(() => {});
+		messageFrom(iframe.contentWindow, pageCall("call-7"));
+		const relayId = (
+			toHost.find(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:call",
+			)?.message as { requestId: string }
+		).requestId;
+		return { iframe, toPage, relayId };
+	}
+
+	it("hands the result to the page under the id the page used", () => {
+		const { toPage, relayId } = setup();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: true,
+			result: { workflows: [] },
+		});
+
+		expect(toPage).toHaveBeenCalledWith(
+			{
+				type: "fabric-frame:call-result",
+				requestId: "call-7",
+				ok: true,
+				result: { workflows: [] },
+			},
+			"*",
+		);
+	});
+
+	it("hands a refusal to the page the same way", () => {
+		const { toPage, relayId } = setup();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: false,
+			error: "The viewer did not allow fabric_execute_workflow.",
+		});
+
+		expect(toPage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestId: "call-7",
+				ok: false,
+				error: "The viewer did not allow fabric_execute_workflow.",
+			}),
+			"*",
+		);
+	});
+
+	it("hands the page the reason a tool gave for refusing, and whether to try again", () => {
+		const { toPage, relayId } = setup();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: false,
+			error: "The page is busy. Try again in a moment.",
+			reason: "busy",
+			retryable: true,
+		});
+
+		expect(toPage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestId: "call-7",
+				ok: false,
+				reason: "busy",
+				retryable: true,
+			}),
+			"*",
+		);
+	});
+
+	it("does not believe an answer whose reason is not text", () => {
+		const { toPage, relayId } = setup();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: false,
+			error: "x",
+			reason: { not: "text" },
+		});
+
+		expect(toPage).not.toHaveBeenCalled();
+	});
+
+	it("answers a relayed call once", () => {
+		const { toPage, relayId } = setup();
+		const answer = {
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: true,
+			result: 1,
+		};
+
+		hostAnswers(answer);
+		hostAnswers(answer);
+
+		expect(toPage).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not believe an answer from a foreign origin", () => {
+		const { toPage, relayId } = setup();
+
+		hostAnswers(
+			{
+				type: "fabric-frame:call-result",
+				requestId: relayId,
+				ok: true,
+				result: "forged",
+			},
+			"https://attacker.example",
+		);
+
+		expect(toPage).not.toHaveBeenCalled();
+	});
+
+	it("does not believe an answer from a window that is not the parent", () => {
+		const { iframe, toPage, relayId } = setup();
+		const stranger = document.createElement("iframe");
+		document.body.appendChild(stranger);
+
+		messageFrom(
+			stranger.contentWindow as Window,
+			{
+				type: "fabric-frame:call-result",
+				requestId: relayId,
+				ok: true,
+				result: "forged",
+			},
+			window.location.origin,
+		);
+		messageFrom(
+			iframe.contentWindow,
+			{
+				type: "fabric-frame:call-result",
+				requestId: relayId,
+				ok: true,
+				result: "forged by the page itself",
+			},
+			window.location.origin,
+		);
+
+		expect(toPage).not.toHaveBeenCalled();
+		stranger.remove();
+	});
+
+	it("ignores an answer for a call it never relayed", () => {
+		const { toPage } = setup();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: "relay-never-sent",
+			ok: true,
+			result: "stray",
+		});
+
+		expect(toPage).not.toHaveBeenCalled();
+	});
+});
+
+describe("a page whose frame is not embedded in a Fabric view", () => {
+	it("is told at once that nothing can run, and nothing is sent anywhere", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} strictSandbox />,
+		);
+		const iframe = pageIframe(container);
+		const toPage = vi
+			.spyOn(iframe.contentWindow, "postMessage")
+			.mockImplementation(() => {});
+
+		messageFrom(iframe.contentWindow, pageCall("call-9"));
+
+		expect(toPage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "fabric-frame:call-result",
+				requestId: "call-9",
+				ok: false,
+			}),
+			"*",
+		);
+		expect(toHost).toEqual([]);
+	});
+
+	it("sends nothing of a file the page offers either", () => {
+		const { container } = render(
+			<FrameRenderer frame={frame} strictSandbox />,
+		);
+
+		messageFrom(pageIframe(container).contentWindow, {
+			type: "fabric-frame:download",
+			filename: "report.csv",
+			mimeType: "text/csv",
+			dataBase64: "AAAA",
+		});
+
+		expect(toHost).toEqual([]);
+	});
+});
+
+/**
+ * A page's script runs as soon as its document is parsed, which can be before
+ * the embed has hydrated and attached the listener above: a request posted in
+ * that gap reaches no one, and the page waits for an answer that never comes.
+ * The page and the embed therefore agree on when requests may go (`host-ready`
+ * from the embed, `runtime-hello` from the page), and these cases drive the real
+ * page runtime against the real embed in both orders of start.
+ *
+ * jsdom does not run a sandboxed srcdoc, so the page's window is a stand-in
+ * that the real runtime script is evaluated against. Delivery is synchronous
+ * and, like a browser's, goes only to a window that is listening: what the page
+ * posts before the embed is mounted finds no listener and is lost.
+ */
+describe("the handshake between the page and the embed", () => {
+	type Listener = (event: { source: unknown; data: unknown }) => void;
+
+	function standInPage() {
+		const listeners: Listener[] = [];
+		const toPage: unknown[] = [];
+		const pageWindow: {
+			parent: { postMessage: (message: unknown) => void };
+			addEventListener: (type: string, listener: Listener) => void;
+			postMessage: (message: unknown, targetOrigin: string) => void;
+			fabric?: {
+				call: (name: string, args?: object) => Promise<unknown>;
+			};
+		} = {
+			parent: {
+				postMessage: (message) => {
+					const event = new MessageEvent("message", {
+						data: message,
+						origin: "null",
+					});
+					Object.defineProperty(event, "source", {
+						value: pageWindow,
+					});
+					window.dispatchEvent(event);
+				},
+			},
+			addEventListener: (type, listener) => {
+				if (type === "message") {
+					listeners.push(listener);
+				}
+			},
+			postMessage: (message) => {
+				toPage.push(message);
+				for (const listener of listeners) {
+					listener({ source: pageWindow.parent, data: message });
+				}
+			},
+		};
+		vi.spyOn(
+			HTMLIFrameElement.prototype,
+			"contentWindow",
+			"get",
+		).mockReturnValue(pageWindow as unknown as Window);
+		return {
+			pageWindow,
+			toPage,
+			start() {
+				new Function("window", FABRIC_RUNTIME_SCRIPT)(pageWindow);
+				const fabric = pageWindow.fabric;
+				if (!fabric) {
+					throw new Error("the runtime did not define window.fabric");
+				}
+				return fabric;
+			},
+		};
+	}
+
+	const relayedCalls = () =>
+		toHost.filter(
+			(entry) =>
+				(entry.message as { type?: string }).type ===
+				"fabric-frame:call",
+		);
+
+	const isHostReady = (message: unknown) =>
+		(message as { type?: string }).type === FRAME_RUNTIME_HOST_READY_TYPE;
+
+	function pageMessageFrom(source: unknown, data: unknown) {
+		const event = new MessageEvent("message", { data, origin: "null" });
+		Object.defineProperty(event, "source", { value: source });
+		window.dispatchEvent(event);
+	}
+
+	it("answers a call the page made before the embed was listening, once the embed is mounted", async () => {
+		const page = standInPage();
+		const fabric = page.start();
+		const result = fabric.call("fabric_list_workflows", { limit: 2 });
+		expect(relayedCalls()).toEqual([]);
+
+		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+
+		expect(relayedCalls()).toHaveLength(1);
+		const [relayed] = relayedCalls();
+		expect(relayed.message).toMatchObject({
+			name: "fabric_list_workflows",
+			args: { limit: 2 },
+			requestId: expect.stringMatching(/^relay-/),
+		});
+		expect(relayed.targetOrigin).toBe(window.location.origin);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: (relayed.message as { requestId: string }).requestId,
+			ok: true,
+			result: { workflows: ["w1"] },
+		});
+		await expect(result).resolves.toEqual({ workflows: ["w1"] });
+	});
+
+	it("tells the page the embed is listening as soon as the listener is attached", () => {
+		const page = standInPage();
+
+		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+
+		expect(page.toPage).toEqual([{ type: FRAME_RUNTIME_HOST_READY_TYPE }]);
+	});
+
+	it("tells a page that comes up after the embed is listening, when it says hello", async () => {
+		const page = standInPage();
+		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		expect(page.toPage.filter(isHostReady)).toHaveLength(1);
+
+		const fabric = page.start();
+
+		expect(page.toPage.filter(isHostReady)).toHaveLength(2);
+		const result = fabric.call("fabric_get_frame", { frameId: "f1" });
+		expect(relayedCalls()).toHaveLength(1);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: (relayedCalls()[0].message as { requestId: string })
+				.requestId,
+			ok: true,
+			result: "frame",
+		});
+		await expect(result).resolves.toBe("frame");
+	});
+
+	it("sends a held call up once, however many times the embed says it is listening", async () => {
+		const page = standInPage();
+		const fabric = page.start();
+		const result = fabric.call("fabric_list_workflows");
+		const { rerender } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		expect(relayedCalls()).toHaveLength(1);
+
+		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
+		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
+		rerender(<FrameRenderer frame={frame} strictSandbox />);
+		rerender(<FrameRenderer frame={frame} embedded strictSandbox />);
+
+		expect(page.toPage.filter(isHostReady).length).toBeGreaterThan(2);
+		expect(relayedCalls()).toHaveLength(1);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: (relayedCalls()[0].message as { requestId: string })
+				.requestId,
+			ok: true,
+			result: "once",
+		});
+		await expect(result).resolves.toBe("once");
+	});
+
+	it("does not answer a hello that is not from the page's own iframe", () => {
+		const page = standInPage();
+		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		const before = page.toPage.length;
+
+		pageMessageFrom(
+			{ another: "window" },
+			{ type: FRAME_RUNTIME_HELLO_TYPE },
+		);
+		pageMessageFrom(window, { type: FRAME_RUNTIME_HELLO_TYPE });
+		pageMessageFrom(null, { type: FRAME_RUNTIME_HELLO_TYPE });
+		hostAnswers({ type: FRAME_RUNTIME_HELLO_TYPE });
+
+		expect(page.toPage).toHaveLength(before);
+	});
+
+	it("does not pass a hello on to the host", () => {
+		const page = standInPage();
+		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+
+		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
+
+		expect(
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					FRAME_RUNTIME_HELLO_TYPE,
+			),
+		).toEqual([]);
+	});
+
+	it("lets a page whose frame is not embedded find out at once that nothing can run", async () => {
+		const page = standInPage();
+		const fabric = page.start();
+		const result = fabric.call("fabric_list_workflows");
+		const settled = expect(result).rejects.toThrow(
+			"not open in a Fabric view",
+		);
+
+		render(<FrameRenderer frame={frame} strictSandbox />);
+
+		await settled;
+		expect(relayedCalls()).toEqual([]);
+	});
+});
