@@ -53,6 +53,11 @@ export interface EmbedAndStoreTrajectoryInput {
 	errorMessage?: string;
 	/** Use LLM to generate richer summary (default: true for failures, false otherwise) */
 	useLLMSummary?: boolean;
+	/**
+	 * The chat conversation this run answered, when there is one. Recorded
+	 * on the usage-log row for cost attribution only; never the execution ID.
+	 */
+	conversationId?: string;
 }
 
 export interface SearchSemanticMemoryInput {
@@ -84,6 +89,11 @@ export interface GenerateLLMSummaryInput {
 	errorMessage?: string;
 	userId: string;
 	organizationId?: string;
+	/**
+	 * The chat conversation this run answered, when there is one. Recorded
+	 * on the usage-log row for cost attribution only; never the execution ID.
+	 */
+	conversationId?: string;
 }
 
 // ============================================================================
@@ -192,6 +202,7 @@ export async function generateLLMSummary(
 		errorMessage,
 		userId,
 		organizationId,
+		conversationId,
 	} = input;
 
 	// Generate basic summary as fallback
@@ -228,7 +239,14 @@ export async function generateLLMSummary(
 
 		// Use dynamically configured model from user/org AI provider settings
 		// This is a simple summarization task, so we don't need tool calling
-		const model = await getAiModel(userId, organizationId, false);
+		const model = await getAiModel(
+			userId,
+			organizationId,
+			false,
+			undefined,
+			undefined,
+			conversationId ? { conversationId } : undefined,
+		);
 		const result = await generateText({
 			model,
 			prompt: `${prompt}\n\n[Keep response under 200 words]`,
@@ -275,6 +293,7 @@ export async function embedAndStoreTrajectory(
 		organizationId,
 		errorMessage,
 		useLLMSummary,
+		conversationId,
 	} = input;
 
 	console.log(`[OrchestratorMemory] Embedding execution ${executionId}...`);
@@ -303,6 +322,7 @@ export async function embedAndStoreTrajectory(
 				errorMessage,
 				userId,
 				organizationId,
+				...(conversationId ? { conversationId } : {}),
 			});
 		} else {
 			summary = generateExecutionSummary(taskDescription, steps, outcome);

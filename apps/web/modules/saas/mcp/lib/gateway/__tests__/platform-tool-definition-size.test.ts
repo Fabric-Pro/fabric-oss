@@ -17,7 +17,10 @@ import { describe, expect, it } from "vitest";
 import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 
 // Measured after the Fizzy #2991 cut: 33,610 characters in total, plus ~10% headroom.
-const TOTAL_BUDGET = 36_900;
+// Raised for the page tools (viewer, data, files, comments, ask, connected reads) and the
+// version tools (list, restore, duplicate): 13 + 3 tools that a page or the agent reads
+// before it calls, about 5,200 characters. Measured 42,149, plus ~10% headroom.
+const TOTAL_BUDGET = 46_400;
 // Measured after the Fizzy #2991 cut: the largest tool (fabric_instruction_checks) was 1,994 characters, plus ~10% headroom.
 const PER_TOOL_BUDGET = 2_190;
 

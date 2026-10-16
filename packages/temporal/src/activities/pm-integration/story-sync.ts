@@ -9204,6 +9204,8 @@ export async function syncTaskToPM(params: {
 	success: boolean;
 	externalId?: string;
 	error?: string;
+	/** True when the task was already linked, so nothing was sent. */
+	skipped?: boolean;
 }> {
 	const {
 		taskId,
@@ -9238,6 +9240,27 @@ export async function syncTaskToPM(params: {
 	let detectedPmTool = "unknown";
 
 	try {
+		// Fetch the task
+		const task = await db.storyTask.findUnique({
+			where: { id: taskId },
+			include: { story: true },
+		});
+
+		if (!task) {
+			throw ApplicationFailure.nonRetryable(`Task ${taskId} not found`);
+		}
+
+		// This function only creates. A task that is already linked keeps its
+		// PM item: creating again would duplicate it in the PM tool on every
+		// "sync with tasks" push and repoint the link at the newest copy.
+		if (task.externalId) {
+			return {
+				success: true,
+				externalId: task.externalId,
+				skipped: true,
+			};
+		}
+
 		// Discover PM tool capabilities
 		// CRITICAL: Pass organizationId for proper tenant isolation
 		const capabilities = await discoverPMToolCapabilities({
@@ -9251,16 +9274,6 @@ export async function syncTaskToPM(params: {
 			);
 		}
 		detectedPmTool = capabilities.detectedType ?? "unknown";
-
-		// Fetch the task
-		const task = await db.storyTask.findUnique({
-			where: { id: taskId },
-			include: { story: true },
-		});
-
-		if (!task) {
-			throw ApplicationFailure.nonRetryable(`Task ${taskId} not found`);
-		}
 
 		// Build create args using discovered tool
 		const createTool = capabilities.taskCreation;

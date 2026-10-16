@@ -231,6 +231,9 @@ function getDefaultSemanticMetadata(server: {
 	};
 }
 
+const EMPTY_TWILIO_PARTS = { sid: "", key: "", secret: "" };
+const TWILIO_KEY_PATTERN = /^(AC[0-9a-fA-F]{32})\/(SK[0-9a-fA-F]{32}):(\S+)$/;
+
 export function McpServersView({
 	organizationId,
 	initialRegistrySearch = "",
@@ -268,6 +271,27 @@ export function McpServersView({
 	const [exampleQueriesInput, setExampleQueriesInput] = useState("");
 	const [isConnectingOAuth, setIsConnectingOAuth] = useState(false);
 	const [authOverride, setAuthOverride] = useState(false); // User manually overrode auth type
+	const isTwilio = (
+		selectedServer?.command ||
+		editingConfig?.mcpServer?.command ||
+		""
+	).includes("@twilio-alpha/mcp");
+	const [twilioParts, setTwilioParts] = useState(EMPTY_TWILIO_PARTS);
+
+	// The three Twilio fields are stored as one key: ACCOUNT_SID/API_KEY:API_SECRET.
+	function updateTwilioPart(
+		part: keyof typeof EMPTY_TWILIO_PARTS,
+		value: string,
+	) {
+		const next = { ...twilioParts, [part]: value };
+		setTwilioParts(next);
+		const filled = next.sid || next.key || next.secret;
+		setApiKey(
+			filled
+				? `${next.sid.trim()}/${next.key.trim()}:${next.secret.trim()}`
+				: "",
+		);
+	}
 
 	// Custom server dialog state
 	const [openCustom, setOpenCustom] = useState(false);
@@ -599,6 +623,7 @@ export function McpServersView({
 		setAuthType(getDefaultAuthTypeFromServer(s));
 		setAuthOverride(false);
 		setApiKey("");
+		setTwilioParts(EMPTY_TWILIO_PARTS);
 		setApiKeyMethod(s.apiKeyMethod || "BEARER");
 		setShowApiKey(false);
 		setEnabled(true);
@@ -975,6 +1000,7 @@ export function McpServersView({
 		// Don't show the actual API key for security - only extracted from URL template
 		// For Bearer token auth, user can leave empty to keep existing key
 		setApiKey(extractedApiKey);
+		setTwilioParts(EMPTY_TWILIO_PARTS);
 		setShowApiKey(false);
 		setEnabled(config.enabled ?? true);
 		setDescription(
@@ -1139,6 +1165,12 @@ export function McpServersView({
 				);
 			}
 
+			if (isTwilio && apiKey && !TWILIO_KEY_PATTERN.test(apiKey)) {
+				throw new Error(
+					"Check your Twilio credentials: Account SID should start with AC, API Key SID with SK, and the secret can't be empty.",
+				);
+			}
+
 			// Validate command args for STDIO servers that require them
 			const cmdStr =
 				selectedServer?.command ||
@@ -1210,6 +1242,7 @@ export function McpServersView({
 			}
 			setOpenAddDialog(false);
 			setApiKey("");
+			setTwilioParts(EMPTY_TWILIO_PARTS);
 			setApiKeyMethod("BEARER");
 			setCommandArgs([]);
 			setShowApiKey(false);
@@ -1373,6 +1406,7 @@ export function McpServersView({
 						setBaseUrl("");
 						setAuthType("NONE");
 						setApiKey("");
+						setTwilioParts(EMPTY_TWILIO_PARTS);
 						setApiKeyMethod("BEARER");
 						setShowApiKey(false);
 						setEnabled(true);
@@ -1730,7 +1764,9 @@ export function McpServersView({
 						{authType === "API_KEY" && (
 							<div>
 								<Label>
-									API Key
+									{isTwilio
+										? "Twilio credentials"
+										: "API Key"}
 									{editingConfig?.encryptedApiKey &&
 										!apiKey && (
 											<span className="ml-2 text-xs text-success dark:text-green-400 font-normal">
@@ -1738,34 +1774,112 @@ export function McpServersView({
 											</span>
 										)}
 								</Label>
-								<div className="relative">
-									<Input
-										type={showApiKey ? "text" : "password"}
-										value={apiKey}
-										onChange={(e) =>
-											setApiKey(e.target.value)
-										}
-										placeholder={
-											editingConfig?.encryptedApiKey
-												? "Leave empty to keep existing key"
-												: "Enter your API key..."
-										}
-										className="pr-10"
-									/>
-									<button
-										type="button"
-										onClick={() =>
-											setShowApiKey(!showApiKey)
-										}
-										className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-									>
-										{showApiKey ? (
-											<EyeOffIcon className="size-4" />
-										) : (
-											<EyeIcon className="size-4" />
-										)}
-									</button>
-								</div>
+								{isTwilio ? (
+									<div className="space-y-3">
+										<div>
+											<Label htmlFor="twilio-account-sid">
+												Account SID
+											</Label>
+											<Input
+												id="twilio-account-sid"
+												autoComplete="off"
+												value={twilioParts.sid}
+												onChange={(e) =>
+													updateTwilioPart(
+														"sid",
+														e.target.value,
+													)
+												}
+												placeholder={
+													editingConfig?.encryptedApiKey
+														? "Leave empty to keep existing key"
+														: "AC…"
+												}
+											/>
+										</div>
+										<div>
+											<Label htmlFor="twilio-api-key-sid">
+												API Key SID
+											</Label>
+											<Input
+												id="twilio-api-key-sid"
+												autoComplete="off"
+												value={twilioParts.key}
+												onChange={(e) =>
+													updateTwilioPart(
+														"key",
+														e.target.value,
+													)
+												}
+												placeholder={
+													editingConfig?.encryptedApiKey
+														? "Leave empty to keep existing key"
+														: "SK…"
+												}
+											/>
+										</div>
+										<div>
+											<Label htmlFor="twilio-api-key-secret">
+												API Key Secret
+											</Label>
+											<Input
+												id="twilio-api-key-secret"
+												type="password"
+												autoComplete="new-password"
+												value={twilioParts.secret}
+												onChange={(e) =>
+													updateTwilioPart(
+														"secret",
+														e.target.value,
+													)
+												}
+												placeholder={
+													editingConfig?.encryptedApiKey
+														? "Leave empty to keep existing key"
+														: "Your API key secret"
+												}
+											/>
+										</div>
+									</div>
+								) : (
+									<div className="relative">
+										<Input
+											type={
+												showApiKey ? "text" : "password"
+											}
+											value={apiKey}
+											onChange={(e) =>
+												setApiKey(e.target.value)
+											}
+											placeholder={
+												editingConfig?.encryptedApiKey
+													? "Leave empty to keep existing key"
+													: "Enter your API key..."
+											}
+											className="pr-10"
+										/>
+										<button
+											type="button"
+											onClick={() =>
+												setShowApiKey(!showApiKey)
+											}
+											className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+										>
+											{showApiKey ? (
+												<EyeOffIcon className="size-4" />
+											) : (
+												<EyeIcon className="size-4" />
+											)}
+										</button>
+									</div>
+								)}
+								{isTwilio && (
+									<p className="mt-1 text-xs text-muted-foreground">
+										Find your Account SID in the Twilio
+										Console, and create an API key (its SID
+										starts with SK) under API keys.
+									</p>
+								)}
 								<p className="mt-1 text-xs text-muted-foreground">
 									{editingConfig?.encryptedApiKey
 										? "Enter a new key to update, or leave empty to keep the existing key. Stored encrypted on server."

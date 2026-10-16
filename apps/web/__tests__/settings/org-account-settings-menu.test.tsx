@@ -163,44 +163,28 @@ describe("organization settings menu — account group", () => {
 		);
 	});
 
-	it("offers the member's own AI providers, which they can edit without being an admin", async () => {
-		// `isOrganizationAdmin` is mocked false for this whole file — the entry
-		// must be there anyway. It is the destination the "AI provider
-		// required" notice sends a member who cannot touch the organization's
-		// own providers (Fizzy #1875, R12/AE7), so hiding it from non-admins
-		// would leave that notice pointing at nothing again.
+	it("reaches the member's own AI keys through AI Providers, which every member sees", async () => {
+		// `isOrganizationAdmin` is mocked false for this whole file. The
+		// member's own keys are the Personal tab of AI Providers now (Fizzy
+		// #3082), so the "AI provider required" notice's destination for a
+		// member who cannot touch the organization's providers (Fizzy #1875,
+		// R12/AE7) is reachable only if that entry is there for non-admins too.
+		// The separate "Personal AI Providers" entry is gone.
 		const menuItems = await buildMenu();
-		const hrefs = menuItems.flatMap((group) =>
-			group.items.map((item) => item.href),
-		);
+		const items = menuItems.flatMap((group) => group.items);
 
-		expect(hrefs).toContain(
-			"/app/example-org/settings/account/ai-providers",
-		);
-	});
-
-	it("does not reuse the organization page's label for the account one", async () => {
-		// Two links with the same accessible name pointing at different pages
-		// — one editable by this member, one read-only for them — is exactly
-		// the ambiguity this notice's remedy cannot afford.
-		const menuItems = await buildMenu();
-		// The organization's pages are spread over several groups now (its own,
-		// AI, Extensions, Activity); the account group is always the last one.
-		const organizationGroups = menuItems.slice(0, -1);
-		const accountGroup = menuItems[menuItems.length - 1];
-		const orgProviders = organizationGroups
-			.flatMap((group) => group.items)
-			.find(
+		expect(
+			items.find(
 				(item) =>
 					item.href === "/app/example-org/settings/ai-providers",
-			);
-		const accountProviders = accountGroup.items.find(
-			(item) =>
-				item.href === "/app/example-org/settings/account/ai-providers",
-		);
-
-		expect(orgProviders?.title).toBe("AI Providers");
-		expect(accountProviders?.title).toBe("Personal AI Providers");
+			)?.title,
+		).toBe("AI Providers");
+		expect(
+			items.some((item) => item.href.includes("account/ai-providers")),
+		).toBe(false);
+		expect(
+			items.some((item) => item.title === "Personal AI Providers"),
+		).toBe(false);
 	});
 
 	it("appends the account group AFTER the organization's own group", async () => {
@@ -216,18 +200,18 @@ describe("organization settings menu — account group", () => {
 		expect(
 			menuItems.slice(0, -1).some((group) => group.title === "Account"),
 		).toBe(false);
-		// Six now, not two. The personal settings tree is gone, so the
-		// account-global pages that lived only there — the profile, account
-		// deletion, and the member's own AI provider keys — moved here with the
-		// other two. Each would have collided with an organization page of the
-		// same slug at the top level, which is why the whole group is nested
-		// under `account/`. Connected agents (the coding agents a member signed
-		// in) is per person too, so it joins them, ahead of the danger zone.
+		// Five now, not two. The personal settings tree is gone, so the
+		// account-global pages that lived only there — the profile and account
+		// deletion — moved here with the other two. Each would have collided
+		// with an organization page of the same slug at the top level, which is
+		// why the whole group is nested under `account/`. Connected agents (the
+		// coding agents a member signed in) is per person too, so it joins
+		// them, ahead of the danger zone. The member's own AI provider keys
+		// left this group for the Personal tab of AI Providers (Fizzy #3082).
 		expect(accountGroup.items.map((item) => item.title)).toEqual([
 			"settings.menu.account.general",
 			"Security",
 			"Notifications",
-			"Personal AI Providers",
 			"settings.menu.account.connectedAgents",
 			"settings.menu.account.dangerZone",
 		]);

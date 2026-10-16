@@ -9,6 +9,8 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { AGENT_TASK_PROMPT_AGENT_KEY } from "../lib/agent-task-prompt";
+import { PAGE_ASK_PROMPT_AGENT_KEY } from "../lib/page-ask-prompt";
 import {
 	bindableDocumentTypes,
 	findPromptAgentTarget,
@@ -421,5 +423,50 @@ describe("coordinated Proposal prompt actions (Fizzy #2801)", () => {
 		expect(
 			draftAgent ? bindableDocumentTypes(draftAgent, null) : [],
 		).toContain("PROPOSAL");
+	});
+});
+
+describe("Workflow Agent Task prompt", () => {
+	// An agent the seed binds and the catalog omits is a prompt nobody can find
+	// or re-bind from the UI, so the unattended agent's instructions would be
+	// editable in the database and nowhere else.
+	it("is bindable from the prompt library under Workflows & Automation", () => {
+		const target = findPromptAgentTarget(AGENT_TASK_PROMPT_AGENT_KEY);
+
+		expect(target?.label).toBe("Workflow Agent Task");
+		expect(target?.featureType).toBe("AUTOMATION");
+		expect(PROMPT_FEATURE_TYPES.AUTOMATION).toBeDefined();
+	});
+
+	it("is bound for GENERAL with no story kind, where the step resolves it", () => {
+		// The step resolves (documentType GENERAL, storyKind null) exactly; any
+		// other slot would be one it never reads.
+		expect(
+			findPromptAgentTarget(AGENT_TASK_PROMPT_AGENT_KEY)?.actions,
+		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+		expect(
+			byId(promptActionId(AGENT_TASK_PROMPT_AGENT_KEY, "GENERAL", null)),
+		).toBeDefined();
+	});
+});
+
+describe("Workspace Page Ask prompt", () => {
+	// A prompt the seed binds and the catalog omits is one nobody can find or
+	// re-bind from the UI.
+	it("is bindable from the prompt library under Workspaces", () => {
+		const target = findPromptAgentTarget(PAGE_ASK_PROMPT_AGENT_KEY);
+
+		expect(target?.label).toBe("Workspace Page Ask");
+		expect(target?.featureType).toBe("WORKSPACES");
+		expect(PROMPT_FEATURE_TYPES.WORKSPACES).toBeDefined();
+	});
+
+	it("is bound for GENERAL with no story kind, where the service resolves it", () => {
+		expect(
+			findPromptAgentTarget(PAGE_ASK_PROMPT_AGENT_KEY)?.actions,
+		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+		expect(
+			byId(promptActionId(PAGE_ASK_PROMPT_AGENT_KEY, "GENERAL", null)),
+		).toMatchObject({ featureType: "WORKSPACES" });
 	});
 });

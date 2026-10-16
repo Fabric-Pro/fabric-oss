@@ -1,21 +1,25 @@
-import { ORPCError } from "@orpc/client";
-import { createWorkflow, type Prisma } from "@repo/database";
 import { WorkflowTriggerTypeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { createWorkflowCommand } from "../lib/workflow-commands";
+import { workflowActor, workflowCommandErrors } from "./workflow-actor";
 
 // JSON-compatible schema for workflow data
 const JsonValueSchema = z.any();
 
 export const createWorkflowProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_CREATE))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/workflows",
@@ -40,50 +44,14 @@ export const createWorkflowProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const user = context.user;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		// Create workflow
-		const workflow = await createWorkflow({
-			name: input.name,
-			description: input.description,
-			triggerType: input.triggerType,
-			triggerConfig: input.triggerConfig as
-				| Prisma.InputJsonValue
-				| undefined,
-			nodes: input.nodes as Prisma.InputJsonValue | undefined,
-			edges: input.edges as Prisma.InputJsonValue | undefined,
-			variables: input.variables as Prisma.InputJsonValue | undefined,
-			settings: input.settings as Prisma.InputJsonValue | undefined,
-			isTemplate: input.isTemplate,
-			templateId: input.templateId,
-			userId: user.id,
-			organizationId,
-			projectId: input.projectId,
-		});
-
-		if (!workflow) {
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Failed to create workflow",
-			});
-		}
-
+		const { organizationId: _inputOrgId, ...fields } = input;
+		const workflow = await createWorkflowCommand(
+			workflowActor(context.user.id, organizationId),
+			fields,
+		);
 		return { workflow };
 	});

@@ -35,6 +35,12 @@ function matches(row: Row, where: Record<string, unknown>): boolean {
 	});
 }
 
+const notices = vi.hoisted(() => ({ stopped: vi.fn() }));
+
+vi.mock("../prisma/queries/chatgpt-plan-work-notifications", () => ({
+	notifyBulkRunPlanStopped: notices.stopped,
+}));
+
 vi.mock("../prisma/client", () => {
 	const delegate = {
 		findUnique: async ({ where }: { where: { id: string } }) => {
@@ -58,6 +64,10 @@ vi.mock("../prisma/client", () => {
 			}
 			return { count };
 		},
+		findMany: async ({ where }: { where: Record<string, unknown> }) =>
+			[...table.rows.values()]
+				.filter((row) => matches(row, where))
+				.map((row) => ({ ...row })),
 	};
 	return {
 		db: {
@@ -133,6 +143,7 @@ function pause(expectedPauseCount: number, resumesAt: Date, now = NOW) {
 }
 
 beforeEach(() => {
+	notices.stopped.mockClear();
 	table.rows.clear();
 });
 
@@ -375,6 +386,13 @@ describe("failOverdueBulkRunResumes", () => {
 		});
 		expect(waiting.status).toBe("WAITING_FOR_PLAN");
 		expect(justDue.status).toBe("WAITING_FOR_PLAN");
+		// Only the run this sweep failed is announced (Fizzy #3050).
+		expect(notices.stopped).toHaveBeenCalledTimes(1);
+		expect(notices.stopped).toHaveBeenCalledWith({
+			kind: "PROJECT_SCAN",
+			runId: "scan-overdue",
+			reason: "RESUME_LOST",
+		});
 	});
 });
 

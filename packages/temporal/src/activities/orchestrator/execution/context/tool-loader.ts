@@ -309,7 +309,8 @@ export async function loadMcpTools(
 				// Handle OAuth authorization required errors specially
 				if (e instanceof OAuthAuthorizationRequiredError) {
 					console.warn(
-						`[ToolLoader] OAuth authorization required for ${config.displayName}`,
+						"[ToolLoader] OAuth authorization required:",
+						{ serverName: config.displayName },
 						e.message,
 					);
 					// Return auth required info so handler can propagate it
@@ -321,7 +322,11 @@ export async function loadMcpTools(
 						displayName: config.displayName,
 					};
 				}
-				console.warn(`Failed to connect to ${config.displayName}`, e);
+				console.warn(
+					"Failed to connect to MCP server",
+					{ serverName: config.displayName },
+					e,
+				);
 				return null;
 			}
 		}),

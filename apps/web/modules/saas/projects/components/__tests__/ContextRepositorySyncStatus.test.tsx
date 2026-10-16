@@ -54,8 +54,38 @@ const { syncNowMock, disableMock, configureMock } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		projects: {
+			members: {
+				list: {
+					queryOptions: (options: Record<string, unknown>) => ({
+						...options,
+						queryKey: ["members"],
+						queryFn: () => ({ members: [] }),
+					}),
+				},
+			},
 			contexts: {
 				repositorySync: {
+					// The write-folder dialog (ADR-022); its behavior is covered by
+					// its own test.
+					writeTargets: {
+						list: {
+							queryOptions: (
+								options: Record<string, unknown>,
+							) => ({
+								...options,
+								queryKey: ["writeTargets"],
+								queryFn: () => ({
+									canConfigure: true,
+									canEnableDirectPush: false,
+									maxTargets: 10,
+									targets: [],
+								}),
+							}),
+						},
+						create: { mutationOptions: () => ({}) },
+						update: { mutationOptions: () => ({}) },
+						delete: { mutationOptions: () => ({}) },
+					},
 					configure: {
 						mutationOptions: (
 							opts: Record<string, unknown> = {},
@@ -558,6 +588,50 @@ describe("ContextRepositorySyncStatus — Sync now and the menu", () => {
 
 		expect(
 			await screen.findByText(`${NS}.configureDialog.title`),
+		).toBeInTheDocument();
+	});
+
+	it("Write folders opens the write-folder dialog from the menu", async () => {
+		const user = userEvent.setup();
+		renderStatus({ state: baseState({ configured: CONFIGURED_BASE }) });
+
+		await user.click(screen.getByTestId("context-sync-menu-trigger"));
+		await user.click(
+			await screen.findByTestId("context-sync-write-folders"),
+		);
+
+		expect(
+			await screen.findByText(
+				"projects.contexts.livingMemory.writeFolders.title",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("Write folders is not offered while nothing is configured", () => {
+		renderStatus({ state: baseState({ configured: null }) });
+
+		expect(
+			screen.queryByTestId("context-sync-write-folders"),
+		).not.toBeInTheDocument();
+	});
+
+	it("lets a reader open the write folders to read them", async () => {
+		const user = userEvent.setup();
+		renderStatus({
+			state: baseState({
+				configured: CONFIGURED_BASE,
+				canConfigure: false,
+			}),
+		});
+
+		await user.click(
+			screen.getByTestId("context-sync-write-folders-reader"),
+		);
+
+		expect(
+			await screen.findByText(
+				"projects.contexts.livingMemory.writeFolders.title",
+			),
 		).toBeInTheDocument();
 	});
 

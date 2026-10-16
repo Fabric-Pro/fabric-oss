@@ -168,20 +168,20 @@ const FABRIC_AI_TOOLS = [
 			"Scrape content from a web page and analyze it using a Fabric pattern",
 		category: "Web",
 	},
-	// Workspace RAG tools
+	// Library RAG tools
 	{
 		id: "workspace_rag_query",
-		name: "Workspace Query",
+		name: "Library Query",
 		description:
-			"Search and retrieve information from your workspace documents",
-		category: "Workspace",
+			"Search and retrieve information from your library documents",
+		category: "Library",
 	},
 	{
 		id: "workspace_rag_summarize",
-		name: "Workspace Summarize",
+		name: "Library Summarize",
 		description:
-			"Summarize or get an overview of documents in your workspace",
-		category: "Workspace",
+			"Summarize or get an overview of documents in your library",
+		category: "Library",
 	},
 	// Image generation tools
 	{

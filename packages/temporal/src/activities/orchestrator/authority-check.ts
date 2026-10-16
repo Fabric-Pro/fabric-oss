@@ -26,6 +26,7 @@ import {
 } from "./approval/authority-policy";
 import { loadTrustConfiguration } from "./approval/trust-manager";
 import { maxToolAccessLevel } from "./execution/authority-gate";
+import { isFabricAiToolName } from "./tools/fabric-ai-tools";
 
 export { AUTHORITY_CHECK_FAILED };
 
@@ -134,10 +135,22 @@ export async function checkStepAuthorityActivity(
 	// - capability is "mcp_tool" or unset (defaults to mcp_tool in handler registry)
 	// - step has explicit toolsToUse
 	// Skip for: llm, web, agent, workflow capabilities (they don't use MCP)
+	// Skip too for a step whose every named tool is Fabric's own: it reaches no
+	// connected server, so no server's authority applies. Fabric's own writes
+	// are asked about when they run (`gateFabricWriteTool`); without this, a
+	// request for a Workspace page asked for WRITE on every connected server.
+	const namedTools = step.toolsToUse?.length
+		? step.toolsToUse
+		: step.app
+			? [step.app]
+			: [];
+	const onlyFabricTools =
+		namedTools.length > 0 && namedTools.every(isFabricAiToolName);
 	const mayUseMcpTools =
-		!step.capability ||
-		step.capability === "mcp_tool" ||
-		(step.toolsToUse && step.toolsToUse.length > 0);
+		!onlyFabricTools &&
+		(!step.capability ||
+			step.capability === "mcp_tool" ||
+			(step.toolsToUse && step.toolsToUse.length > 0));
 
 	if (requiredProviders.length === 0 && mayUseMcpTools) {
 		try {

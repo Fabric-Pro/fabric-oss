@@ -36,10 +36,22 @@ import {
 
 // Resolved from the vitest root (`apps/web`) rather than from `import.meta.url`,
 // which this runner does not give as a file URL.
-const SOURCE = resolve(
-	process.cwd(),
-	"modules/saas/mcp/lib/gateway/platform-tools.ts",
-);
+const GATEWAY_DIRECTORY = "modules/saas/mcp/lib/gateway";
+
+// The handlers of the platform table: its own file, and the modules whose tools
+// it registers (`./tools`), which each carry their handlers beside their
+// definitions.
+const SOURCES = [
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "platform-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "memory-write-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/frame-version-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-data-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-file-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-comment-tools.ts"),
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/page-ask-tool.ts"),
+];
 
 /** Resolves what the caller may *do*. */
 const PERMISSION_GATES = [
@@ -60,6 +72,13 @@ const VISIBILITY_GATES = [
 	"resolveGatewayWorkspaceReadAccess",
 	"tenantFilter(",
 	"session.organizationId",
+	// Opens a page as the caller, in the caller's organization: a caller who
+	// cannot open the page gets nothing.
+	"accessibleFrame(",
+	"openPage(",
+	// Builds a handler that opens the page as the caller (`openPage`) before
+	// it runs anything, so a handler written with it cannot leave that out.
+	"pageTool(",
 ] as const;
 
 /** Handler name prefixes that mean the handler changes something. */
@@ -76,6 +95,17 @@ const WRITE_PREFIXES = [
 	"handleSwitch",
 	"handleRequest",
 	"handleRevoke",
+	"handleRestore",
+	"handleDuplicate",
+	"handleSetPage",
+	"handleDeletePage",
+	"handleUploadPage",
+	"handleAddPage",
+	"handleAskPage",
+	// `handleMemoryWrite` writes files into a repository folder; its siblings
+	// `handleMemoryTargets` and `handleMemoryWriteStatus` match the prefix too
+	// and are held to the stricter list, which their live CONTEXT_READ check meets.
+	"handleMemoryWrite",
 ] as const;
 
 /**
@@ -100,11 +130,26 @@ const WRITE_EXEMPT = new Map<string, string>([
 	],
 	[
 		"handleShareFrame",
-		"delegates to the frame service, which gates on WORKSPACE_UPDATE",
+		"delegates to the frame service, which gates on WORKSPACE_UPDATE, shares only a page the caller owns and follows the organization's public-link policy",
+	],
+	...[
+		"handleSetPageData",
+		"handleDeletePageData",
+		"handleUploadPageFile",
+		"handleDeletePageFile",
+		"handleAddPageComment",
+		"handleAskPage",
+	].map((name): [string, string] => [
+		name,
+		"writing to a page needs no more than being able to open it, which openPage checks as the caller in the caller's organization; the store stamps what is written with the caller, and a public viewer cannot reach the gateway at all",
+	]),
+	[
+		"handleRestoreFrameVersion",
+		"delegates to the frame service, which gates on WORKSPACE_UPDATE and refuses anyone but the page's owner",
 	],
 	[
-		"handleExecuteWorkflow",
-		"workflows are organization resources, scoped by tenant filter — the same reach the app gives any member",
+		"handleDuplicateFrame",
+		"returns a handler that delegates to the frame service, which gates on WORKSPACE_CREATE and opens the source page as the caller",
 	],
 	[
 		"handleRequestAuthority",
@@ -153,14 +198,18 @@ const READ_EXEMPT = new Map<string, string>([
  * handler happens to precede it — green with that handler's own gate deleted.
  */
 function handlerBodies(): Array<{ name: string; body: string }> {
-	const source = readFileSync(SOURCE, "utf8");
-	const parts = source.split(
-		/\n(?:export\s+)?(?:async\s+)?function\s+(\w+)(?=\s*[<(])/,
-	);
 	const out: Array<{ name: string; body: string }> = [];
-	for (let i = 1; i < parts.length; i += 2) {
-		if (parts[i].startsWith("handle")) {
-			out.push({ name: parts[i], body: parts[i + 1] });
+	for (const file of SOURCES) {
+		// A handler is a function declaration, or a `const` built with
+		// `pageTool(`, which stays in the body so the gate it stands for is seen.
+		const parts = readFileSync(file, "utf8").split(
+			/\n(?:export\s+)?(?:(?:async\s+)?function\s+(\w+)(?=\s*[<(])|const\s+(\w+)\s*=\s*(?=pageTool\())/,
+		);
+		for (let i = 1; i < parts.length; i += 3) {
+			const name = parts[i] ?? parts[i + 1];
+			if (name?.startsWith("handle")) {
+				out.push({ name, body: parts[i + 2] });
+			}
 		}
 	}
 	return out;

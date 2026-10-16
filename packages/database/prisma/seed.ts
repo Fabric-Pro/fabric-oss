@@ -813,10 +813,10 @@ async function seedMcpServers() {
 			key: "twilio",
 			name: "Twilio",
 			description:
-				"Communication APIs for SMS, voice, and messaging. Send texts, make calls, and manage conversations.",
+				"Your Twilio account: messages, calls, phone numbers and usage. Read data and, with approval, send messages or place calls.",
 			defaultUrl: null,
-			command: "npx -y @twilio/mcp-server",
-			docsUrl: "https://www.twilio.com/docs/mcp",
+			command: "npx -y @twilio-alpha/mcp@0.7.0",
+			docsUrl: "https://www.npmjs.com/package/@twilio-alpha/mcp",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
 			iconUrl: "https://www.twilio.com/favicon.ico",

@@ -234,6 +234,52 @@ function gatewayGenerationIdOf(providerMetadata: unknown): string | undefined {
 	return typeof id === "string" ? id : undefined;
 }
 
+function numberOr0(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * The usage a provider reported at the START of a stream, as provider-interface
+ * usage, or `undefined` when `chunk` carries none.
+ *
+ * `@ai-sdk/anthropic` 4 emits a `custom` chunk of kind
+ * `anthropic.message_start` carrying the raw `message_start` usage on
+ * `providerMetadata.anthropic.usage` (`dist/index.js`, the `message_start`
+ * case). Its input counts cover the prompt as sent; output keeps counting
+ * until `finish`. It is mapped the way that provider maps its finish usage
+ * (`convertAnthropicUsage`): the input total includes both cache buckets.
+ * The OpenAI and Google providers in use emit no usage before `finish`.
+ */
+function streamStartUsageOf(chunk: Record<string, unknown>): unknown {
+	if (chunk.type !== "custom" || chunk.kind !== "anthropic.message_start") {
+		return undefined;
+	}
+	const usage = (
+		chunk.providerMetadata as
+			| { anthropic?: { usage?: Record<string, unknown> } }
+			| undefined
+	)?.anthropic?.usage;
+	if (!isRecord(usage)) {
+		return undefined;
+	}
+	const input = numberOr0(usage.input_tokens);
+	const cacheRead = numberOr0(usage.cache_read_input_tokens);
+	const cacheWrite = numberOr0(usage.cache_creation_input_tokens);
+	const output = numberOr0(usage.output_tokens);
+	if (input + cacheRead + cacheWrite + output === 0) {
+		return undefined;
+	}
+	return {
+		inputTokens: {
+			total: input + cacheRead + cacheWrite,
+			noCache: input,
+			cacheRead,
+			cacheWrite,
+		},
+		outputTokens: { total: output },
+	};
+}
+
 function singleStepGatewayGenerationId(
 	steps: AggregateUsageRecord["steps"],
 ): string | undefined {
@@ -576,7 +622,9 @@ export function createUsageLoggingMiddleware(
 			} catch (error) {
 				// A failed call may still have consumed tokens upstream, but the SDK
 				// gives us no usage on throw — record a zero-token failure marker so
-				// the error is at least visible in the activity view.
+				// the error is at least visible in the activity view. Nothing is
+				// estimated in its place: the ledger records only usage a provider
+				// reported (Fizzy #3092).
 				try {
 					const described = describeModelCallError(error);
 					emit(
@@ -637,10 +685,15 @@ export function createUsageLoggingMiddleware(
 			//    `finish` with the accumulated usage from `flush`, so writing the
 			//    failure at the `error` chunk would drop those tokens.
 			//  - the source closes (`flush`) or the consumer cancels / the
-			//    source errors (`cancel`) without a `finish`: a zero-token FAILED
-			//    marker (Fizzy #1894 FR7) carrying the pending in-stream error if
-			//    there was one, otherwise a message naming how the stream ended.
+			//    source errors (`cancel`) without a `finish`: a FAILED row
+			//    (Fizzy #1894 FR7) carrying the pending in-stream error if there
+			//    was one, otherwise a message naming how the stream ended.
 			//    Without this a stream cut off mid-response left no row at all.
+			//    Its usage is the last the provider reported: the error chunk's,
+			//    else the stream-start usage (Anthropic reports its input there,
+			//    so a stopped turn still counts the input the provider already
+			//    counted; Fizzy #3092), else zero. It is never estimated, and a row that
+			//    used the stream-start usage says so in `errorDetails`.
 			// Accepted trade-off of holding the error: a consumer that stops
 			// reading after an `error` chunk and never cancels leaves no row,
 			// because none of these callbacks runs. Breaking out of a
@@ -681,19 +734,45 @@ export function createUsageLoggingMiddleware(
 					/* never let logging break the stream */
 				}
 			};
-			const settleWithoutFinish = (fallbackMessage: string) => {
+			let streamStartUsage: unknown;
+			const STREAM_START_DETAILS = { usageReportedAt: "stream_start" };
+			const settleWithoutFinish = (
+				ending: string,
+				reasonDetail?: string,
+			) => {
 				if (pendingError) {
+					const usesStreamStart =
+						pendingError.usage === undefined &&
+						streamStartUsage !== undefined;
 					settle(
-						pendingError.usage,
+						usesStreamStart ? streamStartUsage : pendingError.usage,
 						false,
 						pendingError.message,
 						undefined,
 						pendingError.statusCode,
-						pendingError.details,
+						usesStreamStart
+							? {
+									...pendingError.details,
+									...STREAM_START_DETAILS,
+								}
+							: pendingError.details,
 					);
 					return;
 				}
-				settle(undefined, false, fallbackMessage);
+				const usageNote =
+					streamStartUsage === undefined
+						? "no usage was reported"
+						: "recorded the usage reported when the stream started; output after it is not counted";
+				settle(
+					streamStartUsage,
+					false,
+					`${ending}; ${usageNote}${reasonDetail ? ` (${reasonDetail})` : ""}`,
+					undefined,
+					undefined,
+					streamStartUsage === undefined
+						? undefined
+						: STREAM_START_DETAILS,
+				);
 			};
 			// `cancel` is part of the WHATWG Transformer (Node 21.5+, and verified
 			// on Node 22 and 24) but missing from TypeScript 5.9's lib.dom
@@ -757,12 +836,17 @@ export function createUsageLoggingMiddleware(
 								usage: undefined,
 							};
 						}
+					} else if (!settled && chunk?.type === "custom") {
+						const usage = streamStartUsageOf(chunk);
+						if (usage !== undefined) {
+							streamStartUsage = usage;
+						}
 					}
 					controller.enqueue(chunk);
 				},
 				flush() {
 					settleWithoutFinish(
-						"Model stream closed without a finish chunk; no usage was reported",
+						"Model stream closed without a finish chunk",
 					);
 				},
 				cancel(reason: unknown) {
@@ -775,7 +859,8 @@ export function createUsageLoggingMiddleware(
 								? reason
 								: undefined;
 					settleWithoutFinish(
-						`Model stream cancelled or aborted before a finish chunk; no usage was reported${detail ? ` (${detail})` : ""}`,
+						"Model stream cancelled or aborted before a finish chunk",
+						detail,
 					);
 				},
 			};

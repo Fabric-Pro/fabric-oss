@@ -113,13 +113,19 @@ export const AVAILABLE_SCOPES = [
 	},
 	{
 		id: "workspaces:read",
-		label: "Workspaces Read",
-		description: "Read workspaces and run knowledge queries",
+		label: "Libraries Read",
+		description: "Read document libraries and run knowledge queries",
 	},
 	{
 		id: "workflows:read",
 		label: "Workflows Read",
 		description: "Read workflows and their execution history",
+	},
+	{
+		id: "workflows:write",
+		label: "Workflows Write",
+		description:
+			"Create, edit, publish, pause and resume workflows, including ones that run an agent on a schedule",
 	},
 	{
 		id: "workflows:run",
@@ -152,6 +158,12 @@ export const AVAILABLE_SCOPES = [
 		label: "Repositories Read",
 		description:
 			"Read a project's complete attached repository through Fabric Git transport",
+	},
+	{
+		id: "memory:write",
+		label: "Memory Write",
+		description:
+			"Write files to a project's Living Memory folders in its repository. Where a project admin allowed direct push, the files are committed to the synced branch without review; otherwise a pull request is opened. Every call re-checks that you can add project context.",
 	},
 	{
 		id: "instructions:publish",
@@ -218,6 +230,7 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 	// `instructions:publish` is absent for the opposite reason — it publishes
 	// without review, on `INSTRUCTION_CREATE`, which a viewer does not hold.
 	"instructions:write",
+	"memory:write",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

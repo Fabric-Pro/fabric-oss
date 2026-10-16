@@ -12,6 +12,8 @@ import {
 	buildCodexCommand,
 	buildCursorInstallLink,
 	buildInitLine,
+	buildPluginInitLine,
+	claudePluginInstallCommand,
 	buildPortableMcpConfiguration,
 	buildVsCodeInstallLink,
 	codexServerName,
@@ -264,6 +266,31 @@ describe("the one-line setup", () => {
 		expect(line).not.toMatch(/--key|--base-url|--clone|--org|auth login/);
 	});
 
+	it("asks for the plugin setup, with no clone, when that is the recommended line", () => {
+		const line = buildPluginInitLine({ ...LINE, projectId: "project-1" });
+
+		expect(line).toBe(
+			`npx -y ${TARBALL} instructions init --project project-1 --tool claude-code --plugin`,
+		);
+		expect(line).not.toMatch(/--clone|--key|auth login/);
+		expect(
+			buildPluginInitLine({
+				...LINE,
+				baseUrl: ORIGIN,
+				tool: "codex",
+				projectId: "project-1",
+			}),
+		).toBe(
+			`npx -y ${TARBALL} instructions init --base-url ${ORIGIN} --project project-1 --tool codex --plugin`,
+		);
+	});
+
+	it("says where to run the plugin line", () => {
+		expect(folderHint(REPOSITORY_ROUTE, "plugin")).toBe(
+			"run it in the folder your agent works in",
+		);
+	});
+
 	it("always carries the project, whether or not the project has a remote to find it from", () => {
 		for (const projectId of ["project-1", "project-example-one"]) {
 			expect(buildInitLine({ ...LINE, projectId })).toContain(
@@ -447,5 +474,19 @@ describe("git sign-in help", () => {
 		expect(help.command).toBe(`git ls-remote ${cloneUrl}`);
 		expect(help.sentence).toContain("Git Credential Manager");
 		expect(help.command).not.toContain("az devops");
+	});
+});
+
+describe("claudePluginInstallCommand", () => {
+	it("names the plugin and its marketplace after the last eight letters and digits of the id", () => {
+		expect(claudePluginInstallCommand("cm0example0project")).toBe(
+			"claude plugin install fabric-0project@fabric-0project --scope local",
+		);
+	});
+
+	it("falls back to a fixed name for an id with no letters or digits", () => {
+		expect(claudePluginInstallCommand("---")).toBe(
+			"claude plugin install fabric-project@fabric-project --scope local",
+		);
 	});
 });

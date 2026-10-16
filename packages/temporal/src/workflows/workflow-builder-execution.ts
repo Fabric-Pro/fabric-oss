@@ -21,7 +21,10 @@ import {
 import type * as preflightActivities from "../activities/preflight-validation";
 import type * as activities from "../activities/workflow-builder-execution";
 import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
-import { isNonRetryableNodeType } from "./lib/workflow-builder-nodes";
+import {
+	isAgentTaskNodeType,
+	isNonRetryableNodeType,
+} from "./lib/workflow-builder-nodes";
 
 const {
 	executeWorkflowNode,
@@ -62,6 +65,24 @@ const { executeWorkflowNode: executeExternalWriteNode } = proxyActivities<
 	typeof activities
 >({
 	startToCloseTimeout: "10 minutes",
+	heartbeatTimeout: "60 seconds",
+	retry: {
+		maximumAttempts: 1,
+	},
+});
+
+/**
+ * Same activity for an agent turn: a model loop over several tool calls runs
+ * for minutes, so it gets a longer budget than the 10 minutes an ordinary step
+ * has, and no retry — a second attempt would spend a second full run and could
+ * repeat a tool's side effect. Only `agent-task` nodes route here (see
+ * `isAgentTaskNodeType`), a type no recorded history contains, and activity
+ * options are not part of the command sequence, so no `patched()` guard.
+ */
+const { executeWorkflowNode: executeAgentTaskNode } = proxyActivities<
+	typeof activities
+>({
+	startToCloseTimeout: "20 minutes",
 	heartbeatTimeout: "60 seconds",
 	retry: {
 		maximumAttempts: 1,
@@ -417,9 +438,11 @@ export async function workflowBuilderExecutionWorkflow(
 			// Non-idempotent nodes run through the no-retry proxy so an
 			// infrastructure failure after the side effect landed does not
 			// duplicate the ticket / message / issue.
-			const dispatch = isNonRetryableNodeType(node.type)
-				? executeExternalWriteNode
-				: executeWorkflowNode;
+			const dispatch = isAgentTaskNodeType(node.type)
+				? executeAgentTaskNode
+				: isNonRetryableNodeType(node.type)
+					? executeExternalWriteNode
+					: executeWorkflowNode;
 
 			// A node may run on a shared ChatGPT plan (Fizzy #2770): when every
 			// plan is spent it waits for a reset and tries once more.
@@ -427,6 +450,7 @@ export async function workflowBuilderExecutionWorkflow(
 				() =>
 					dispatch({
 						executionId: input.executionId,
+						workflowId: input.workflowId,
 						nodeId,
 						nodeType: node.type,
 						nodeConfig,
@@ -435,7 +459,15 @@ export async function workflowBuilderExecutionWorkflow(
 						organizationId: input.organizationId,
 						projectId,
 					}),
-				{ organizationId: input.organizationId, userId: input.userId },
+				{
+					organizationId: input.organizationId,
+					userId: input.userId,
+					stoppedNotice: {
+						work: "WORKFLOW_RUN",
+						projectId,
+						link: `workflows/${input.workflowId}`,
+					},
+				},
 			);
 
 			nodeOutputs[nodeId] = result.output;

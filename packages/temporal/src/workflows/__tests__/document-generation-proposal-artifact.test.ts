@@ -529,6 +529,127 @@ describe("gate on — the coordinated run", () => {
 	});
 });
 
+describe("gate on — the analysis evidence manifest (Fizzy #2946)", () => {
+	const MANIFEST = CONTEXTS.map((_text, i) => ({
+		kind: "projectContext",
+		id: `ctx-${i + 1}`,
+		contextType: "TEXT",
+		title: null,
+		sourceName: null,
+		fingerprint: `fnv1a:${i + 1}`,
+	}));
+
+	function retrievalReturnsManifest() {
+		h.activities.retrieveProjectContexts.mockImplementation(async () => {
+			h.calls.push("retrieveProjectContexts");
+			return { contexts: [...CONTEXTS], manifest: MANIFEST };
+		});
+	}
+
+	function analysisInput(): Record<string, unknown> {
+		return argsOf("createProposalAnalysisRun")[0] as Record<
+			string,
+			unknown
+		>;
+	}
+
+	it("asks retrieval for its manifest, generates from the strings, and hands the manifest to the analysis run record", async () => {
+		retrievalReturnsManifest();
+
+		const result = await documentGenerationChildWorkflow(INPUT);
+
+		expect(result.success).toBe(true);
+		expect(argsOf("retrieveProjectContexts")[0]).toEqual(
+			expect.objectContaining({ includeSourceManifest: true }),
+		);
+		const [generation] = argsOf("generateDocumentWithAgent") as [
+			Record<string, unknown>,
+		];
+		expect(generation.contexts).toEqual(CONTEXTS);
+		expect(analysisInput().contexts).toEqual(CONTEXTS);
+		expect(analysisInput().retrievalManifest).toEqual(MANIFEST);
+		expect(result.metrics.contextCount).toBe(CONTEXTS.length);
+	});
+
+	it("records no manifest when retrieval answers with the strings alone, as a worker before the manifest does", async () => {
+		await documentGenerationChildWorkflow(INPUT);
+
+		expect(argsOf("retrieveProjectContexts")[0]).toEqual(
+			expect.objectContaining({ includeSourceManifest: true }),
+		);
+		expect(analysisInput().contexts).toEqual(CONTEXTS);
+		expect(analysisInput()).not.toHaveProperty("retrievalManifest");
+	});
+
+	it("hands the analysis the whole context array, Slack and supplied context first, with retrieval's manifest unchanged for the tail", async () => {
+		retrievalReturnsManifest();
+		h.activities.checkProjectHasSlackIntegration.mockImplementation(
+			async () => {
+				h.calls.push("checkProjectHasSlackIntegration");
+				return true;
+			},
+		);
+		h.activities.fetchRecentSlackMessages.mockImplementation(async () => {
+			h.calls.push("fetchRecentSlackMessages");
+			return {
+				messageCount: 1,
+				formattedContexts: ["Slack: the deadline is March."],
+				fetchedChannels: 1,
+			};
+		});
+
+		await documentGenerationChildWorkflow({
+			...INPUT,
+			suppliedContext: "Supplied brief.",
+		});
+
+		expect(analysisInput().contexts).toEqual([
+			"Supplied brief.",
+			"Slack: the deadline is March.",
+			...CONTEXTS,
+		]);
+		expect(analysisInput().retrievalManifest).toEqual(MANIFEST);
+	});
+
+	it("records no manifest for a direct-context run, which never retrieves", async () => {
+		await documentGenerationChildWorkflow({
+			...INPUT,
+			directContext: ["Setup analysis of the repository."],
+		});
+
+		expect(h.activities.retrieveProjectContexts).not.toHaveBeenCalled();
+		expect(analysisInput().contexts).toEqual([
+			"Setup analysis of the repository.",
+		]);
+		expect(analysisInput()).not.toHaveProperty("retrievalManifest");
+	});
+
+	it("records no manifest when retrieval fails and the run carries on without it", async () => {
+		h.activities.retrieveProjectContexts.mockRejectedValue(
+			new Error("Qdrant unavailable"),
+		);
+
+		const result = await documentGenerationChildWorkflow(INPUT);
+
+		expect(result.success).toBe(true);
+		expect(analysisInput().contexts).toEqual([]);
+		expect(analysisInput()).not.toHaveProperty("retrievalManifest");
+	});
+
+	it("does not ask for a manifest with the gate off", async () => {
+		h.activities.planProposalArtifact.mockImplementation(async () => {
+			h.calls.push("planProposalArtifact");
+			return null;
+		});
+
+		await documentGenerationChildWorkflow(INPUT);
+
+		expect(argsOf("retrieveProjectContexts")[0]).not.toHaveProperty(
+			"includeSourceManifest",
+		);
+	});
+});
+
 describe("gate on — the run token and the attempt's identity", () => {
 	it("hands the plan the child execution's run id as the token, and the attempt's identity when the run has one", async () => {
 		await documentGenerationChildWorkflow({

@@ -3,7 +3,10 @@
 import { FABRIC_AGENT_IDENTITY } from "@repo/ai/lib/fabric-agent-identity";
 import type { UiMode } from "@repo/database";
 import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
+import { useLauncherHistoryFocus } from "@saas/agents/hooks/useLauncherHistoryFocus";
+import { useResumedSession } from "@saas/agents/hooks/useResumedSession";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
+import { drawerEngineFor } from "@saas/agents/lib/conversation-restore";
 import {
 	buildExpandHandoff,
 	type ExpandHandoff,
@@ -12,6 +15,7 @@ import { getInterfaceModeChrome } from "@saas/agents/lib/interface-mode-chrome";
 import {
 	type ChatEngine,
 	resolveChatEngine,
+	showsEngineMismatchNotice,
 } from "@saas/agents/lib/interface-mode-engine";
 import {
 	orchestratorPreferencesQueryKey,
@@ -33,6 +37,7 @@ import {
 	CommandIcon,
 	FileCodeIcon,
 	GithubIcon,
+	HistoryIcon,
 	LayersIcon,
 	ListChecksIcon,
 	MessageSquarePlusIcon,
@@ -58,6 +63,12 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
+import { EngineMismatchNotice } from "./EngineMismatchNotice";
+import type { ContinuedChat } from "./fabric-ai/components/SharedSessionView";
+import {
+	LauncherChatLoading,
+	LauncherSessionPane,
+} from "./LauncherSessionPane";
 
 /**
  * The attached project's name when the launch context carried only its id
@@ -78,14 +89,6 @@ function LauncherProjectName({
 		staleTime: 5 * 60_000,
 	});
 	return <>{data?.project?.name || "Project"}</>;
-}
-
-function LauncherChatLoading() {
-	return (
-		<div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-			Loading Fabric Agent…
-		</div>
-	);
 }
 
 const FabricDirectChat = dynamic(
@@ -219,6 +222,13 @@ export interface FabricAgentLaunchContext {
 	 * to embed the full list.
 	 */
 	testCasesContext?: string | null;
+	/**
+	 * The surface the user opened the agent from, so "here" resolves without a
+	 * question: a project's Artifacts tab, or an organization Workspace (whose
+	 * frame id is `workspaceId`).
+	 */
+	surface?: "artifact" | "workspace" | null;
+	workspaceId?: string | null;
 	codeContext?: CodeContext | null;
 	// Repository connection
 	repositoryUrl?: string | null;
@@ -275,6 +285,8 @@ function normalizeContext(
 		taskTitle: context.taskTitle?.trim() || null,
 		prompt: context.prompt?.trim() || null,
 		testCasesContext: context.testCasesContext?.trim() || null,
+		surface: context.surface ?? null,
+		workspaceId: context.workspaceId ?? null,
 		codeContext: context.codeContext
 			? {
 					filePath: context.codeContext.filePath?.trim() || null,
@@ -323,6 +335,14 @@ function buildContextDetails(context: FabricAgentLaunchContext): string {
 			: null,
 		context.testCasesContext
 			? `Test cases the user is currently viewing: ${context.testCasesContext}`
+			: null,
+		context.surface === "artifact"
+			? "Page: the project's Artifacts tab. A page created here belongs to that project."
+			: null,
+		context.surface === "workspace"
+			? context.workspaceId
+				? `Page: the organization Workspace the user has open (workspace id: ${context.workspaceId}). Change it with fabric_update_frame.`
+				: "Page: the organization's Workspaces list. A new Workspace is a frame created with surface workspace."
 			: null,
 		context.codeContext?.filePath
 			? `Code file: ${context.codeContext.filePath}${
@@ -557,6 +577,12 @@ function FabricAgentLauncherSheet({
 	>(null);
 	const [isDrawerStreaming, setIsDrawerStreaming] = useState(false);
 	const queryClient = useQueryClient();
+	// A conversation reopened from the history, and whether the history is
+	// showing. The chat stays mounted behind the history, so a reply keeps
+	// streaming.
+	const session = useResumedSession(organizationId ?? null);
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const historyFocus = useLauncherHistoryFocus(historyOpen);
 
 	/**
 	 * Whether expanding mid-reply keeps the reply alive.
@@ -647,19 +673,85 @@ function FabricAgentLauncherSheet({
 		useState<ChatEngine | null>(null);
 	// The drawer has no Research surface, so a saved Research choice runs
 	// the orchestrator here.
-	const drawerEngine = resolveChatEngine({
-		uiMode: isAdvancedMode ? "advanced" : "simple",
+	const engineChoice = {
+		uiMode: isAdvancedMode ? ("advanced" as const) : ("simple" as const),
 		useOrchestrator: interfaceModeQuery.data?.chatMode !== "direct",
 		deepResearch: false,
-		conversationEngine: drawerConversationEngine,
 		isAgentInstance: false,
+	};
+	// A reopened conversation runs on the engine it was conducted with.
+	const drawerEngine = resolveChatEngine({
+		...engineChoice,
+		conversationEngine: session.resumed?.engine ?? drawerConversationEngine,
 	});
+	// The engine a chat of the reader's own starts on now, whatever conversation
+	// is open: a chat continued from a shared conversation opens on this one.
+	const newChatEngine = drawerEngineFor(
+		resolveChatEngine({ ...engineChoice, conversationEngine: null }),
+	);
+	// A chat still on the engine it started on, in a mode whose new chats run
+	// elsewhere: simple mode hides the pills that would say so (#3093).
+	const engineMismatch = showsEngineMismatchNotice({
+		uiMode: engineChoice.uiMode,
+		chatEngine: drawerEngineFor(drawerEngine),
+		newChatEngine,
+		hasOpenConversation: Boolean(drawerConversationId),
+		isAgentInstance: engineChoice.isAgentInstance,
+	});
+	const chatConversation =
+		session.pane.kind === "chat"
+			? (session.pane.conversation ?? undefined)
+			: undefined;
 	const handleDrawerConversationCreated = useCallback(
 		(conversationId: string) => {
 			setDrawerConversationId(conversationId);
 			setDrawerConversationEngine(drawerEngine);
 		},
 		[drawerEngine],
+	);
+	// Reopens a stored conversation in the drawer's one chat, on the engine it
+	// was conducted with. A reply still streaming would be lost to the restart.
+	const reopenSession = useCallback(
+		(target: { id: string; title: string | null; metadata: unknown }) => {
+			if (isDrawerStreaming) {
+				toast.message("Wait for the reply to finish", {
+					description:
+						"Opening another conversation would end the reply being written.",
+				});
+				return;
+			}
+			session.resume(target);
+			setDrawerConversationId(target.id);
+			historyFocus.closingTo("chat");
+			setHistoryOpen(false);
+		},
+		[isDrawerStreaming, session.resume, historyFocus.closingTo],
+	);
+	// The reader's own chat, started from a shared conversation, opens in the
+	// drawer's one chat on the engine the reader's chats run on.
+	const handleContinuedChat = useCallback(
+		(chat: ContinuedChat) => {
+			session.resume({
+				id: chat.id,
+				title: chat.title,
+				metadata: { mode: chat.engine },
+			});
+			setDrawerConversationId(chat.id);
+		},
+		[session.resume],
+	);
+	const closeHistoryToToggle = useCallback(() => {
+		historyFocus.closingTo("toggle");
+		setHistoryOpen(false);
+	}, [historyFocus.closingTo]);
+	// A conversation deleted from the history lets go of the one that is open.
+	const handleSessionDeleted = useCallback(
+		(deletedId: string) => {
+			if (deletedId === drawerConversationId) {
+				onResetConversation();
+			}
+		},
+		[drawerConversationId, onResetConversation],
 	);
 	// Same preference and same cache entry as the page's toggle, so a switch
 	// here shows on the page without a reload and vice versa (#2040). Held
@@ -717,7 +809,9 @@ function FabricAgentLauncherSheet({
 		setDrawerConversationEngine(null);
 		setIsDrawerStreaming(false);
 		setCloseAfterStream(false);
-	}, [launcherKey]);
+		session.clear();
+		setHistoryOpen(false);
+	}, [launcherKey, session.clear]);
 	const codeIndexStatusQuery = useQuery({
 		...orpc.agents.codeIndex.status.queryOptions({
 			input: {
@@ -1021,6 +1115,24 @@ function FabricAgentLauncherSheet({
 										/>
 									</div>
 								) : null}
+								<button
+									type="button"
+									onClick={() =>
+										setHistoryOpen((open) => !open)
+									}
+									ref={historyFocus.toggleRef}
+									aria-pressed={historyOpen}
+									aria-label="Conversation history"
+									title="Conversation history"
+									className={cn(
+										"rounded p-1.5 transition-colors hover:bg-muted hover:text-foreground",
+										historyOpen
+											? "bg-muted text-foreground"
+											: "text-muted-foreground",
+									)}
+								>
+									<HistoryIcon className="size-3.5" />
+								</button>
 								<DestructiveTooltip
 									copy={
 										t.raw("resetConversation") as {
@@ -1103,12 +1215,35 @@ function FabricAgentLauncherSheet({
 						</div>
 					</div>
 
-					<div className="min-h-0 flex-1">
+					<LauncherSessionPane
+						pane={session.pane}
+						resumedTitle={session.resumed?.title ?? null}
+						historyOpen={historyOpen}
+						organizationId={organizationId ?? null}
+						activeConversationId={drawerConversationId}
+						engine={newChatEngine}
+						chatRef={historyFocus.chatRef}
+						onSelect={reopenSession}
+						onDeleted={handleSessionDeleted}
+						onBack={closeHistoryToToggle}
+						onContinue={handleContinuedChat}
+						onRetry={() => void session.retry()}
+						onStartOver={onResetConversation}
+						notice={
+							engineMismatch ? (
+								<EngineMismatchNotice
+									onNewChat={onResetConversation}
+								/>
+							) : null
+						}
+					>
 						{interfaceModeQuery.isLoading ? (
 							<LauncherChatLoading />
 						) : drawerEngine === "direct" ? (
 							<FabricDirectChat
-								key={`fabric-agent-launcher-${launcherKey}`}
+								key={`fabric-agent-launcher-${launcherKey}-${session.resumed?.key ?? 0}`}
+								activeConversationId={session.resumed?.id}
+								activeConversation={chatConversation}
 								organizationId={organizationId ?? undefined}
 								enabledMcpConfigIds={storedMcpConfigIds}
 								onConversationCreated={
@@ -1164,7 +1299,9 @@ function FabricAgentLauncherSheet({
 							/>
 						) : (
 							<FabricTemporalOrchestratorChat
-								key={`fabric-agent-launcher-${launcherKey}`}
+								key={`fabric-agent-launcher-${launcherKey}-${session.resumed?.key ?? 0}`}
+								activeConversationId={session.resumed?.id}
+								activeConversation={chatConversation}
 								advisorOrigin
 								organizationId={organizationId ?? undefined}
 								reasoningMode={reasoningMode}
@@ -1204,7 +1341,7 @@ function FabricAgentLauncherSheet({
 								onEscClose={() => onOpenChange(false)}
 							/>
 						)}
-					</div>
+					</LauncherSessionPane>
 				</div>
 			</div>
 		</>

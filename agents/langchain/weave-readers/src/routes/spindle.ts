@@ -1,3 +1,4 @@
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -29,7 +30,7 @@ async function buildSpindleResponse(
 	const tenant = honoCtx
 		? getVerifiedTenant(honoCtx, metadata)
 		: metadata.tenantContext;
-	const model = await resolveReaderModel(tenant);
+	const { model, provider, modelString } = await resolveReaderModel(tenant);
 
 	const projectContext = metadata.projectContext || {};
 	const techStack =
@@ -62,6 +63,11 @@ async function buildSpindleResponse(
 				messages: [{ role: "user", content: contextParts.join("\n") }],
 				tools,
 				stopWhen: isStepCount(MAX_TOOL_STEPS),
+				prepareStep: makeStepCacheBreakpoint({
+					provider,
+					modelString,
+					hasTools: true,
+				}),
 			}),
 		{ label: "spindle-generateText", circuitKey: "spindle" },
 	);

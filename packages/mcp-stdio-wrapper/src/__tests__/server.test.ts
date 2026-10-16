@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, it, mock } from "node:test";
 import { getProcessPool, shutdownProcessPool } from "../process-pool";
 import { createServer } from "../server";
+
+// Built at runtime so secret scanners don't flag these fake test IDs.
+const FAKE_ACCOUNT_SID = `AC${"0".repeat(32)}`;
+const FAKE_API_KEY_SID = `SK${"0".repeat(32)}`;
 
 // A minimal JSON-RPC server: answers every request with its pid, the
 // credentials file it was started with and that file's content when it
@@ -19,6 +24,23 @@ const childScript = [
 	'  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { pid: process.pid, credentialsPath: path, startedWith } }) + "\\n");',
 	"});",
 ].join("\n");
+
+async function writeEchoBin(dir: string, name: string): Promise<string> {
+	const bin = join(dir, name);
+	await writeFile(
+		bin,
+		[
+			'"use strict";',
+			'const rl = require("node:readline").createInterface({ input: process.stdin });',
+			'rl.on("line", (line) => {',
+			"  const msg = JSON.parse(line);",
+			"  if (msg.id === undefined) return;",
+			'  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { argv: process.argv } }) + "\\n");',
+			"});",
+		].join("\n"),
+	);
+	return bin;
+}
 
 describe("MCP STDIO wrapper initialization", () => {
 	afterEach(async () => {
@@ -224,6 +246,106 @@ describe("MCP STDIO wrapper initialization", () => {
 			});
 		} finally {
 			mock.restoreAll();
+		}
+	});
+
+	it("starts a preinstalled @twilio-alpha/mcp with the launcher first and no credentials in commandArgs", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "twilio-server-test-"));
+		const fakeBin = await writeEchoBin(tempDir, "fake-twilio.cjs");
+
+		try {
+			const app = createServer({
+				resolveCommand: async () => ({
+					executable: process.execPath,
+					args: [fakeBin, "package-arg"],
+					packageName: "@twilio-alpha/mcp",
+					version: "0.7.0",
+				}),
+			});
+
+			const configId = `example-twilio-server-${process.pid}`;
+			const response = await app.request("http://localhost/mcp/call", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					command: "npx -y @twilio-alpha/mcp@0.7.0",
+					args: ["request-arg"],
+					method: "tools/list",
+					params: {},
+					userId: "example-user",
+					organizationId: "example-org",
+					configId,
+					credentials: {
+						TWILIO_ACCOUNT_SID: FAKE_ACCOUNT_SID,
+						TWILIO_API_KEY: FAKE_API_KEY_SID,
+						TWILIO_API_SECRET: "secret123",
+					},
+				}),
+			});
+
+			assert.equal(response.status, 200);
+			const body = (await response.json()) as {
+				result: { argv: string[] };
+			};
+
+			assert.equal(body.result.argv[0], process.execPath);
+			assert.equal(body.result.argv[1], fakeBin);
+			assert.equal(body.result.argv[2], "package-arg");
+			assert.equal(body.result.argv[3], "request-arg");
+			assert.deepEqual(body.result.argv.slice(4), [
+				`--accountSid=${FAKE_ACCOUNT_SID}`,
+				`--apiKey=${FAKE_API_KEY_SID}`,
+				"--apiSecret=secret123",
+			]);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves args unchanged for other preinstalled packages", async () => {
+		const tempDir = await mkdtemp(join(tmpdir(), "other-server-test-"));
+		const fakeBin = await writeEchoBin(tempDir, "fake-other.cjs");
+
+		try {
+			const app = createServer({
+				resolveCommand: async () => ({
+					executable: process.execPath,
+					args: [fakeBin, "ado-pkg-arg"],
+					packageName: "@azure-devops/mcp",
+					version: "2.8.0",
+				}),
+			});
+
+			const configId = `example-ado-server-${process.pid}`;
+			const response = await app.request("http://localhost/mcp/call", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					command: "npx -y @azure-devops/mcp@2.8.0",
+					args: ["request-arg"],
+					method: "tools/list",
+					params: {},
+					userId: "example-user",
+					organizationId: "example-org",
+					configId,
+					credentials: {
+						ADO_MCP_AUTH_TOKEN: "pat-token",
+					},
+				}),
+			});
+
+			assert.equal(response.status, 200);
+			const body = (await response.json()) as {
+				result: { argv: string[] };
+			};
+
+			assert.equal(body.result.argv[0], process.execPath);
+			assert.equal(body.result.argv[1], fakeBin);
+			assert.equal(body.result.argv[2], "ado-pkg-arg");
+			assert.equal(body.result.argv[3], "request-arg");
+			assert.equal(body.result.argv.length, 4);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
 		}
 	});
 });

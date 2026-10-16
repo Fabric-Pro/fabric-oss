@@ -1,29 +1,34 @@
 /**
- * Shared world for the Proposal artifact procedure tests (Fizzy #2801).
+ * Shared world for the Proposal artifact procedure tests (Fizzy #2801,
+ * Fizzy #2946).
  *
  * Two organizations, three projects, and one user per access path:
  *
- *  - `owner`        — org A owner, creator of project A;
- *  - `editor`       — org A member with an EDITOR row on project A;
- *  - `memberViewer` — org A member with a VIEWER row on project A;
- *  - `guestEditor`  — an EDITOR row on project A, no org A membership (a
- *                     project guest whose session names org G, their own);
- *  - `guestViewer`  — a VIEWER row on project A, no org A membership;
- *  - `outsider`     — org B owner, creator of project B.
+ *  - `owner`           — org A owner, creator of project A;
+ *  - `editor`          — org A member with an EDITOR row on project A;
+ *  - `memberViewer`    — org A member with a VIEWER row on project A;
+ *  - `memberCommenter` — org A member with a COMMENTER row on project A;
+ *  - `guestEditor`     — an EDITOR row on project A, no org A membership (a
+ *                        project guest whose session names org G, their own);
+ *  - `guestViewer`     — a VIEWER row on project A, no org A membership;
+ *  - `outsider`        — org B owner, creator of project B.
  *
  * Project A2 is a second org A project, so a document id from one project
  * can be paired with the other's id.
  *
  * The decisions are the real ones: the rollout gate middleware, the project
  * permission check and the shared access loader run against this world
- * through a fake `db`. The analysis and style queries are mocks the tests
- * drive and inspect.
+ * through a fake `db`. The analysis, response, style and evidence-source
+ * queries are mocks the tests drive and inspect; the response writes default
+ * to an in-memory store, so a test can answer and then read, and the
+ * evidence read answers from the world's context rows as they are now.
  *
  * Each test file wires this in with its own `vi.mock` calls (they must live
  * in the test file to be hoisted); the factories import this module lazily,
  * so it never statically imports a module the tests mock.
  */
 
+import { ORPCError } from "@orpc/client";
 import {
 	hasPermission,
 	Permissions,
@@ -36,6 +41,7 @@ export const ORG_A = "org-a";
 export const ORG_B = "org-b";
 /** The guest's own workspace: what their session names. */
 export const ORG_GUEST = "org-guest";
+export const ORG_A_SLUG = "example-org";
 export const PROJECT_A = "proj-a";
 export const PROJECT_A2 = "proj-a2";
 export const PROJECT_B = "proj-b";
@@ -48,10 +54,21 @@ export const USERS = {
 	owner: "user-owner",
 	editor: "user-editor",
 	memberViewer: "user-member-viewer",
+	memberCommenter: "user-member-commenter",
 	guestEditor: "user-guest-editor",
 	guestViewer: "user-guest-viewer",
 	outsider: "user-outsider",
 } as const;
+
+export const USER_NAMES: Record<string, string> = {
+	[USERS.owner]: "Olive Owner",
+	[USERS.editor]: "Eddie Editor",
+	[USERS.memberViewer]: "Vera Viewer",
+	[USERS.memberCommenter]: "Cody Commenter",
+	[USERS.guestEditor]: "Gale Guest",
+	[USERS.guestViewer]: "Gus Guest",
+	[USERS.outsider]: "Otto Outsider",
+};
 
 export const PROPOSAL_BODY = [
 	"# Example Proposal",
@@ -59,6 +76,10 @@ export const PROPOSAL_BODY = [
 	"## Executive Summary",
 	"",
 	"We propose a pilot for Example Org.",
+	"",
+	"## Scope",
+	"",
+	"The pilot covers the data migration and the reporting dashboard.",
 ].join("\n");
 
 interface WorldDocument {
@@ -66,6 +87,66 @@ interface WorldDocument {
 	projectId: string;
 	type: string;
 	content: string;
+}
+
+export interface WorldFinding {
+	id: string;
+	title: string;
+	stableKey: string | null;
+	sectionKey: string | null;
+	sectionHash: string | null;
+}
+
+/** A stored analysis run, as the access helper's reads see it. */
+export interface WorldRun {
+	id: string;
+	documentId: string;
+	organizationId: string;
+	proseHash: string | null;
+	sourceRunId: string | null;
+	findings: WorldFinding[];
+}
+
+/** A stored answer, with the columns the response queries select. */
+export interface WorldResponse {
+	id: string;
+	organizationId: string;
+	projectId: string;
+	documentId: string;
+	stableKey: string;
+	kind: "CONFIRMED" | "RESPONDED";
+	text: string | null;
+	findingTitle: string;
+	answeredRunId: string;
+	sectionKey: string;
+	sectionHash: string;
+	authorId: string | null;
+	version: number;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+/** A project context row, with the columns the evidence read selects. */
+export interface WorldContext {
+	projectId: string;
+	organizationId: string | null;
+	type: string;
+	sourceTitle?: string | null;
+	originalFilename?: string | null;
+	sourcePath?: string | null;
+	/** Never read by the evidence: the read selects no address. */
+	sourceUrl?: string | null;
+	content?: string;
+}
+
+/** A company context source row, likewise. */
+export interface WorldCompanySource {
+	organizationId: string;
+	deletingAt: Date | null;
+	sourceTitle?: string | null;
+	originalFilename?: string | null;
+	sourceUrl?: string | null;
+	content?: string;
 }
 
 interface World {
@@ -77,6 +158,7 @@ interface World {
 			deletedAt: Date | null;
 		}
 	>;
+	organizations: Map<string, { slug: string | null }>;
 	documents: Map<string, WorldDocument>;
 	/** `${organizationId}:${userId}` → org role. */
 	orgMembers: Map<string, string>;
@@ -84,6 +166,12 @@ interface World {
 	projectMembers: Map<string, string>;
 	/** The PROPOSAL_ARTIFACT rollout gate, per organization. */
 	flags: Map<string, boolean>;
+	runs: Map<string, WorldRun>;
+	/** Project context rows by id, as they are now. */
+	contexts: Map<string, WorldContext>;
+	/** Company context sources by id, as they are now. */
+	companySources: Map<string, WorldCompanySource>;
+	responses: WorldResponse[];
 }
 
 function createWorld(): World {
@@ -120,6 +208,10 @@ function createWorld(): World {
 				},
 			],
 		]),
+		organizations: new Map([
+			[ORG_A, { slug: ORG_A_SLUG }],
+			[ORG_B, { slug: "example-other-org" }],
+		]),
 		documents: new Map([
 			document(DOC_A, PROJECT_A),
 			document(DOC_A2, PROJECT_A2),
@@ -130,6 +222,7 @@ function createWorld(): World {
 			[`${ORG_A}:${USERS.owner}`, "owner"],
 			[`${ORG_A}:${USERS.editor}`, "member"],
 			[`${ORG_A}:${USERS.memberViewer}`, "member"],
+			[`${ORG_A}:${USERS.memberCommenter}`, "member"],
 			[`${ORG_B}:${USERS.outsider}`, "owner"],
 			[`${ORG_GUEST}:${USERS.guestEditor}`, "owner"],
 			[`${ORG_GUEST}:${USERS.guestViewer}`, "owner"],
@@ -137,6 +230,7 @@ function createWorld(): World {
 		projectMembers: new Map([
 			[`${PROJECT_A}:${USERS.editor}`, "EDITOR"],
 			[`${PROJECT_A}:${USERS.memberViewer}`, "VIEWER"],
+			[`${PROJECT_A}:${USERS.memberCommenter}`, "COMMENTER"],
 			[`${PROJECT_A}:${USERS.guestEditor}`, "EDITOR"],
 			[`${PROJECT_A}:${USERS.guestViewer}`, "VIEWER"],
 		]),
@@ -144,6 +238,10 @@ function createWorld(): World {
 			[ORG_A, true],
 			[ORG_B, true],
 		]),
+		runs: new Map(),
+		contexts: new Map(),
+		companySources: new Map(),
+		responses: [],
 	};
 }
 
@@ -158,22 +256,260 @@ export function resetWorld(): void {
 // ---------------------------------------------------------------------------
 
 export const mocks = {
-	getLatestAnalysisForDocument: vi.fn(),
+	getAnalysisForCurrentContent: vi.fn(),
+	listResponsesForDocument: vi.fn(),
+	upsertFindingResponse: vi.fn(),
+	clearFindingResponse: vi.fn(),
+	claimRerun: vi.fn(),
+	failAnalysisRun: vi.fn(),
 	getDocumentStyle: vi.fn(),
 	upsertDocumentStyle: vi.fn(),
+	/** The audit writer `recordAuditFromRequest` hands each row to. */
+	recordAudit: vi.fn(),
 	/** A spy over the world's membership rule, unless a test replaces it. */
 	isOrganizationMember: vi.fn(),
+	/** The shared internal predicate over the world, unless a test replaces it. */
+	isProposalInternalReader: vi.fn(),
+	/** The evidence-source read, answering from the world's rows. */
+	readProposalEvidenceSources: vi.fn(),
 };
+
+/** How much of a row's text the real evidence read takes. */
+const EVIDENCE_TEXT_HEAD_LENGTH = 2000;
+
+/**
+ * The evidence-source read with the real query's filter: contexts in this
+ * project and organization, company sources of this organization and not
+ * being deleted, the opening of each row's current text, and no address.
+ */
+async function fakeReadProposalEvidenceSources(input: {
+	organizationId: string;
+	projectId: string;
+	contextIds: readonly string[];
+	companySourceIds: readonly string[];
+}) {
+	const contexts = [...new Set(input.contextIds)].flatMap((id) => {
+		const row = world.contexts.get(id);
+		return row &&
+			row.projectId === input.projectId &&
+			row.organizationId === input.organizationId
+			? [
+					{
+						id,
+						type: row.type,
+						sourceTitle: row.sourceTitle ?? null,
+						originalFilename: row.originalFilename ?? null,
+						sourcePath: row.sourcePath ?? null,
+						contentHead: (row.content ?? "").slice(
+							0,
+							EVIDENCE_TEXT_HEAD_LENGTH,
+						),
+					},
+				]
+			: [];
+	});
+	const companySources = [...new Set(input.companySourceIds)].flatMap(
+		(id) => {
+			const row = world.companySources.get(id);
+			return row &&
+				row.organizationId === input.organizationId &&
+				row.deletingAt === null
+				? [
+						{
+							id,
+							sourceTitle: row.sourceTitle ?? null,
+							originalFilename: row.originalFilename ?? null,
+							contentHead: (row.content ?? "").slice(
+								0,
+								EVIDENCE_TEXT_HEAD_LENGTH,
+							),
+						},
+					]
+				: [];
+		},
+	);
+	return { contexts, companySources };
+}
+
+let responseSequence = 0;
+
+/** The columns `FindingResponseCurrent` selects. */
+function currentOf(response: WorldResponse) {
+	return {
+		id: response.id,
+		kind: response.kind,
+		text: response.text,
+		authorId: response.authorId,
+		version: response.version,
+		updatedAt: response.updatedAt,
+	};
+}
+
+function findResponse(organizationId: string, documentId: string, key: string) {
+	return world.responses.find(
+		(response) =>
+			response.organizationId === organizationId &&
+			response.documentId === documentId &&
+			response.stableKey === key,
+	);
+}
+
+/**
+ * The response queries as an in-memory compare-and-swap with the real
+ * contract: no `expectedResponseId` and `expectedVersion` only creates; given
+ * together they only replace that exact row at that exact version, so an
+ * answer cleared and given again (a new row, back at version 1) is never
+ * taken for the one the member saw. A refused write answers `stale` with the
+ * saved answer (or null when there is none).
+ */
+async function fakeUpsertFindingResponse(input: {
+	organizationId: string;
+	projectId: string;
+	documentId: string;
+	stableKey: string;
+	kind: "CONFIRMED" | "RESPONDED";
+	text?: string | null;
+	findingTitle: string;
+	answeredRunId: string;
+	sectionKey: string;
+	sectionHash: string;
+	authorId: string | null;
+	expectedResponseId?: string;
+	expectedVersion?: number;
+}) {
+	if (
+		(input.expectedResponseId === undefined) !==
+		(input.expectedVersion === undefined)
+	) {
+		throw new TypeError(
+			"expectedResponseId and expectedVersion are given together or not at all",
+		);
+	}
+	const existing = findResponse(
+		input.organizationId,
+		input.documentId,
+		input.stableKey,
+	);
+	const now = new Date(Date.now() + responseSequence++);
+	const fields = {
+		kind: input.kind,
+		text: input.text?.trim() ? input.text.trim() : null,
+		findingTitle: input.findingTitle,
+		answeredRunId: input.answeredRunId,
+		sectionKey: input.sectionKey,
+		sectionHash: input.sectionHash,
+		authorId: input.authorId,
+		updatedAt: now,
+	};
+	if (input.expectedVersion === undefined) {
+		if (existing) {
+			return { outcome: "stale" as const, current: currentOf(existing) };
+		}
+		const created: WorldResponse = {
+			id: `response-${responseSequence}`,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			documentId: input.documentId,
+			stableKey: input.stableKey,
+			version: 1,
+			createdAt: now,
+			...fields,
+		};
+		world.responses.push(created);
+		return { outcome: "written" as const, response: { ...created } };
+	}
+	if (
+		!existing ||
+		existing.id !== input.expectedResponseId ||
+		existing.version !== input.expectedVersion
+	) {
+		return {
+			outcome: "stale" as const,
+			current: existing ? currentOf(existing) : null,
+		};
+	}
+	Object.assign(existing, fields, { version: existing.version + 1 });
+	return { outcome: "written" as const, response: { ...existing } };
+}
+
+/** Clears only that exact row at that exact version, likewise. */
+async function fakeClearFindingResponse(input: {
+	organizationId: string;
+	documentId: string;
+	stableKey: string;
+	responseId: string;
+	version: number;
+}) {
+	const existing = findResponse(
+		input.organizationId,
+		input.documentId,
+		input.stableKey,
+	);
+	if (!existing) {
+		return { outcome: "not_found" as const };
+	}
+	if (
+		existing.id !== input.responseId ||
+		existing.version !== input.version
+	) {
+		return { outcome: "stale" as const, current: currentOf(existing) };
+	}
+	world.responses = world.responses.filter(
+		(response) => response !== existing,
+	);
+	return { outcome: "cleared" as const, kind: existing.kind };
+}
 
 export function resetMocks(): void {
 	for (const mock of Object.values(mocks)) {
 		mock.mockReset();
 	}
-	mocks.getLatestAnalysisForDocument.mockResolvedValue(null);
+	mocks.getAnalysisForCurrentContent.mockResolvedValue({
+		run: null,
+		isStale: false,
+		newerRun: null,
+	});
+	mocks.listResponsesForDocument.mockImplementation(
+		async (input: { organizationId: string; documentId: string }) =>
+			world.responses
+				.filter(
+					(response) =>
+						response.organizationId === input.organizationId &&
+						response.documentId === input.documentId,
+				)
+				.map((response) => ({ ...response })),
+	);
+	mocks.upsertFindingResponse.mockImplementation(fakeUpsertFindingResponse);
+	mocks.clearFindingResponse.mockImplementation(fakeClearFindingResponse);
+	mocks.failAnalysisRun.mockResolvedValue("written");
 	mocks.getDocumentStyle.mockResolvedValue(null);
 	mocks.isOrganizationMember.mockImplementation(
 		async (userId: string, organizationId: string) =>
 			orgMemberRole(organizationId, userId) !== undefined,
+	);
+	mocks.isProposalInternalReader.mockImplementation(
+		async (args: {
+			organizationId: string | null | undefined;
+			documentType: string;
+			userId: string;
+		}) =>
+			args.documentType === "PROPOSAL" &&
+			Boolean(args.organizationId) &&
+			(world.flags.get(args.organizationId as string) ?? false) &&
+			(await mocks.isOrganizationMember(
+				args.userId,
+				args.organizationId as string,
+			)),
+	);
+	mocks.readProposalEvidenceSources.mockImplementation(
+		fakeReadProposalEvidenceSources,
+	);
+}
+
+/** Every audit row the procedures handed to the writer, in order. */
+export function auditRows(): Array<Record<string, unknown>> {
+	return mocks.recordAudit.mock.calls.map(
+		([row]) => row as Record<string, unknown>,
 	);
 }
 
@@ -191,6 +527,32 @@ function orgMemberRole(organizationId: string | null, userId: string) {
 		: undefined;
 }
 
+/**
+ * A project permission by the middleware's precedence: an active project
+ * member row decides alone, else the organization role.
+ */
+function projectPermissionHolds(
+	projectId: string,
+	userId: string,
+	permission: string,
+): boolean {
+	const project = world.projects.get(projectId);
+	if (!project) {
+		return false;
+	}
+	const member = projectMemberRole(projectId, userId);
+	const granted = member
+		? resolveProjectPermissions(member as never)
+		: resolveOrgPermissions(
+				orgMemberRole(project.organizationId, userId) as never,
+			);
+	return hasPermission(granted, permission as never);
+}
+
+function idsIn(where: { id?: { in?: string[] } }): string[] {
+	return where.id?.in ?? [];
+}
+
 const fakeDb = {
 	project: {
 		findUnique: async ({ where }: { where: { id: string } }) => {
@@ -203,6 +565,18 @@ const fakeDb = {
 					}
 				: null;
 		},
+	},
+	organization: {
+		findUnique: async ({ where }: { where: { id: string } }) => {
+			const organization = world.organizations.get(where.id);
+			return organization ? { id: where.id, ...organization } : null;
+		},
+	},
+	user: {
+		findMany: async ({ where }: { where: { id?: { in?: string[] } } }) =>
+			idsIn(where)
+				.filter((id) => id in USER_NAMES)
+				.map((id) => ({ id, name: USER_NAMES[id] })),
 	},
 	projectMember: {
 		findUnique: async ({
@@ -245,6 +619,40 @@ const fakeDb = {
 				: null;
 		},
 	},
+	projectDocumentAnalysis: {
+		findFirst: async ({
+			where,
+		}: {
+			where: { id: string; documentId: string; organizationId: string };
+		}) => {
+			const run = world.runs.get(where.id);
+			return run &&
+				run.documentId === where.documentId &&
+				run.organizationId === where.organizationId
+				? {
+						id: run.id,
+						proseHash: run.proseHash,
+						sourceRunId: run.sourceRunId,
+					}
+				: null;
+		},
+	},
+	projectDocumentFinding: {
+		findFirst: async ({
+			where,
+		}: {
+			where: { id: string; analysisId: string; organizationId: string };
+		}) => {
+			const run = world.runs.get(where.analysisId);
+			if (!run || run.organizationId !== where.organizationId) {
+				return null;
+			}
+			const finding = run.findings.find(
+				(candidate) => candidate.id === where.id,
+			);
+			return finding ? { ...finding } : null;
+		},
+	},
 };
 
 export async function databaseModule() {
@@ -279,36 +687,70 @@ export async function databaseModule() {
 			}
 			return Boolean(member);
 		},
-		// PROJECT_UPDATE by the same precedence the middleware uses.
-		canEditProject: async (projectId: string, userId: string) => {
-			const project = world.projects.get(projectId);
-			if (!project) {
-				return false;
-			}
-			const member = projectMemberRole(projectId, userId);
-			const granted = member
-				? resolveProjectPermissions(member as never)
-				: resolveOrgPermissions(
-						orgMemberRole(project.organizationId, userId) as never,
-					);
-			return hasPermission(granted, Permissions.PROJECT_UPDATE);
-		},
+		// PROJECT_UPDATE and DOCUMENT_UPDATE by the same precedence the
+		// middleware uses.
+		canEditProject: async (projectId: string, userId: string) =>
+			projectPermissionHolds(
+				projectId,
+				userId,
+				Permissions.PROJECT_UPDATE,
+			),
+		canUpdateProjectDocuments: async (projectId: string, userId: string) =>
+			projectPermissionHolds(
+				projectId,
+				userId,
+				Permissions.DOCUMENT_UPDATE,
+			),
 		isOrganizationMember: mocks.isOrganizationMember,
-		getLatestAnalysisForDocument: mocks.getLatestAnalysisForDocument,
+		// The real rule over the fakes above: membership (through the spy, so a
+		// test that replaces it governs authors too), then DOCUMENT_UPDATE.
+		authorMaySettleDecisions: async (
+			userId: string,
+			projectId: string,
+			organizationId: string,
+		) =>
+			(await mocks.isOrganizationMember(userId, organizationId)) &&
+			projectPermissionHolds(
+				projectId,
+				userId,
+				Permissions.DOCUMENT_UPDATE,
+			),
+		// The shared predicates over the fakes above (the actual ones would
+		// reach the real flag store and member table).
+		isProposalClientDocument: async (args: {
+			organizationId: string | null | undefined;
+			documentType: string;
+		}) =>
+			args.documentType === "PROPOSAL" &&
+			Boolean(args.organizationId) &&
+			(world.flags.get(args.organizationId as string) ?? false),
+		isProposalInternalReader: mocks.isProposalInternalReader,
+		getAnalysisForCurrentContent: mocks.getAnalysisForCurrentContent,
+		listResponsesForDocument: mocks.listResponsesForDocument,
+		upsertFindingResponse: mocks.upsertFindingResponse,
+		clearFindingResponse: mocks.clearFindingResponse,
+		claimRerun: mocks.claimRerun,
+		failAnalysisRun: mocks.failAnalysisRun,
 		getDocumentStyle: mocks.getDocumentStyle,
 		upsertDocumentStyle: mocks.upsertDocumentStyle,
+		recordAudit: mocks.recordAudit,
+		readProposalEvidenceSources: mocks.readProposalEvidenceSources,
 	};
 }
 
 /**
  * A stand-in for the oRPC builder that records each procedure's middleware
  * chain in order — the real rollout gate middleware, and a marker for the
- * permission middleware — plus its schemas and handler.
+ * permission middleware — plus its route, schemas and handler, and where in
+ * the chain the input is validated: as oRPC does, after the middleware
+ * declared before `.input()`.
  */
 export async function proceduresModule() {
 	const state: {
 		chain: unknown[];
+		route?: unknown;
 		input?: unknown;
+		inputIndex?: number;
 		output?: unknown;
 	} = { chain: [] };
 	const builder: Record<string, unknown> = {};
@@ -317,9 +759,13 @@ export async function proceduresModule() {
 			state.chain.push(middleware);
 			return builder;
 		},
-		route: () => builder,
+		route: (route: unknown) => {
+			state.route = route;
+			return builder;
+		},
 		input: (schema: unknown) => {
 			state.input = schema;
+			state.inputIndex = state.chain.length;
 			return builder;
 		},
 		output: (schema: unknown) => {
@@ -330,11 +776,15 @@ export async function proceduresModule() {
 			const wired = {
 				__handler: fn,
 				__chain: state.chain,
+				__route: state.route,
 				__input: state.input,
+				__inputIndex: state.inputIndex ?? state.chain.length,
 				__output: state.output,
 			};
 			state.chain = [];
+			state.route = undefined;
 			state.input = undefined;
+			state.inputIndex = undefined;
 			state.output = undefined;
 			return wired;
 		},
@@ -354,7 +804,11 @@ export async function proceduresModule() {
 
 type Schema = {
 	parse: (value: unknown) => unknown;
-	safeParse: (value: unknown) => { success: boolean };
+	safeParse: (
+		value: unknown,
+	) =>
+		| { success: true; data: unknown }
+		| { success: false; error: { issues: unknown[] } };
 };
 
 type Middleware = (
@@ -368,7 +822,10 @@ type Wired = {
 		context: unknown;
 	}) => Promise<unknown>;
 	__chain: unknown[];
+	__route: { method?: string; path?: string } | undefined;
 	__input: Schema;
+	/** The chain position at which the input is validated. */
+	__inputIndex: number;
 	__output: Schema;
 };
 
@@ -403,10 +860,12 @@ function sessionOrganizationFor(userId: string): string {
 }
 
 /**
- * Run a procedure as `userId`: its input schema, then its middleware chain
- * in declared order (the real gate middleware, then the real permission
- * decision), the handler, and finally its output schema — so a result the
- * wire would reject fails the test.
+ * Run a procedure as `userId`: its middleware chain in declared order (the
+ * real gate middleware, then the real permission decision) with its input
+ * schema checked where oRPC checks it — a refused input fails as oRPC's
+ * BAD_REQUEST, carrying the schema's issues as its cause — the handler, and
+ * finally its output schema, so a result the wire would reject fails the
+ * test, and a field the schema does not declare never reaches it.
  */
 export async function call(
 	procedure: unknown,
@@ -420,9 +879,14 @@ export async function call(
 	}
 	const check = assertProjectPermission;
 	const wired = procedure as Wired;
-	const input = wired.__input.parse(rawInput) as Record<string, unknown>;
+	// Middleware before the input check sees the input as sent.
+	let input: Record<string, unknown> = rawInput;
 	const context = {
-		user: { id: userId, name: "Someone", email: `${userId}@example.com` },
+		user: {
+			id: userId,
+			name: USER_NAMES[userId] ?? "Someone",
+			email: `${userId}@example.com`,
+		},
 		session: {
 			id: "session-1",
 			activeOrganizationId: sessionOrganizationFor(userId),
@@ -430,6 +894,16 @@ export async function call(
 	};
 
 	const run = async (index: number): Promise<{ output: unknown }> => {
+		if (index === wired.__inputIndex) {
+			const parsed = wired.__input.safeParse(rawInput);
+			if (!parsed.success) {
+				throw new ORPCError("BAD_REQUEST", {
+					message: "Input validation failed",
+					cause: parsed.error,
+				});
+			}
+			input = parsed.data as Record<string, unknown>;
+		}
 		if (index === wired.__chain.length) {
 			return { output: await wired.__handler({ input, context }) };
 		}
@@ -467,6 +941,13 @@ export function declaredPermission(procedure: unknown): string | undefined {
 	return marker?.__permission;
 }
 
+/** The procedure's declared REST route. */
+export function declaredRoute(
+	procedure: unknown,
+): { method?: string; path?: string } | undefined {
+	return (procedure as Wired).__route;
+}
+
 /** The procedure's input schema, for validation cases. */
 export function inputSchema(procedure: unknown): Schema {
 	return (procedure as Wired).__input;
@@ -485,6 +966,32 @@ export async function refusal(
 			data?: unknown;
 		};
 		return { code, message, data };
+	}
+	throw new Error("Expected the call to throw");
+}
+
+/** A schema issue, as an input refusal carries it. */
+export interface InputIssue {
+	path: PropertyKey[];
+	message: string;
+	params?: Record<string, unknown>;
+}
+
+/**
+ * The thrown input refusal's code and the schema issues behind it, or fails
+ * when nothing was thrown.
+ */
+export async function inputRefusal(
+	promise: Promise<unknown>,
+): Promise<{ code?: string; issues: InputIssue[] }> {
+	try {
+		await promise;
+	} catch (error) {
+		const { code, cause } = error as {
+			code?: string;
+			cause?: { issues?: InputIssue[] };
+		};
+		return { code, issues: cause?.issues ?? [] };
 	}
 	throw new Error("Expected the call to throw");
 }

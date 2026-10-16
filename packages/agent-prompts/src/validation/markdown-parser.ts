@@ -61,7 +61,9 @@ export function parseHeadings(markdown: string): ParsedHeading[] {
 			continue;
 		}
 
-		const match = line.match(/^(#{1,6})\s+(.+)$/);
+		// Keep nonblank text disjoint from separator whitespace. The single
+		// blank character arm preserves whitespace-only headings without rescans.
+		const match = line.match(/^(#{1,6})\s+(\S.*|[^\S\r\u2028\u2029])$/);
 		if (match) {
 			headings.push({
 				level: match[1].length,

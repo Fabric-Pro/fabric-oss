@@ -120,8 +120,9 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/ProjectsList.tsx",
 	"apps/web/modules/saas/workflows/components/WorkflowsList.tsx",
 	"apps/web/modules/saas/data-connections/components/ConnectionsPageContent.tsx",
+	"apps/web/modules/saas/libraries/components/LibrariesList.tsx",
+	"apps/web/modules/saas/libraries/components/LibraryCard.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspacesList.tsx",
-	"apps/web/modules/saas/workspaces/components/WorkspaceCard.tsx",
 	"apps/web/modules/saas/mcp/components/McpServersView.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesPageTabs.tsx",
 	"apps/web/modules/saas/reports/components/ReportTemplatesList.tsx",
@@ -158,6 +159,7 @@ const inPageSource = [
 	"apps/web/modules/saas/projects/components/AgentActivityTab.tsx",
 	"apps/web/modules/saas/projects/components/DiagramsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectUsage.tsx",
+	"apps/web/modules/saas/projects/components/ProjectArtifactsList.tsx",
 	"apps/web/modules/saas/projects/components/atlas/ProjectAtlas.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettingsNav.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettings.tsx",
@@ -179,6 +181,7 @@ const launcherSource = [
 	"apps/web/modules/saas/prompts/components/PromptsHero.tsx",
 	"apps/web/modules/saas/projects/components/ProjectsHero.tsx",
 	"apps/web/modules/saas/workflows/components/WorkflowsHero.tsx",
+	"apps/web/modules/saas/libraries/components/LibrariesHero.tsx",
 	"apps/web/modules/saas/workspaces/components/WorkspacesHero.tsx",
 	"apps/web/modules/saas/reports/components/ReportsHero.tsx",
 	"apps/web/modules/saas/skills/components/SkillsHero.tsx",
@@ -211,6 +214,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/AgentActivityTab.tsx",
 	"apps/web/modules/saas/projects/components/DiagramsList.tsx",
 	"apps/web/modules/saas/projects/components/ProjectUsage.tsx",
+	"apps/web/modules/saas/projects/components/ProjectArtifactsList.tsx",
 	"apps/web/modules/saas/projects/components/atlas/ProjectAtlas.tsx",
 	"apps/web/modules/saas/projects/components/ProjectSettings.tsx",
 ];
@@ -493,6 +497,18 @@ describe("get-started — new-page auto-open eligibility", () => {
 			isNewlyIntroducedPage({ ...base, since: ONBOARDING_PAGE_BASELINE }),
 		).toBe(false);
 	});
+
+	it.each([["artifacts"], ["workspaces"]])(
+		"the %s page, new with agent-written pages, announces itself once to existing users",
+		(tab) => {
+			const page = GET_STARTED_PAGES.find(
+				(candidate) => candidate.tab === tab,
+			);
+
+			expect(page?.since).toBe("2026-10-14T00:00:00.000Z");
+			expect(page && isNewlyIntroducedPage(page)).toBe(true);
+		},
+	);
 });
 
 describe("get-started — coverage (new features can't ship untoured)", () => {

@@ -27,7 +27,9 @@ vi.mock("@repo/temporal", async () => {
 		);
 	return {
 		findScheduleCron: actual.findScheduleCron,
+		findScheduleTimezone: actual.findScheduleTimezone,
 		isPlausibleCron: actual.isPlausibleCron,
+		isValidScheduleTimeZone: actual.isValidScheduleTimeZone,
 		isTemporalAvailable: availableMock,
 		getScheduleClient: getScheduleClientMock,
 		upsertWorkflowSchedule: upsertMock,
@@ -108,6 +110,62 @@ describe("syncWorkflowSchedule", () => {
 		});
 
 		expect(result.outcome).toBe("failed");
+		expect(upsertMock).not.toHaveBeenCalled();
+	});
+
+	it("leaves the time zone unset for a workflow saved without one, so its cron stays in UTC", async () => {
+		await sync();
+
+		expect(upsertMock.mock.calls[0][0]).toMatchObject({
+			cron: "0 9 * * *",
+			timezone: null,
+		});
+	});
+
+	it("reads the cron in the time zone the trigger names", async () => {
+		await sync({
+			nodes: [
+				{
+					id: "n1",
+					type: "trigger",
+					data: {
+						config: {
+							triggerType: "schedule",
+							scheduleCron: "0 9 * * 1",
+							scheduleTimezone: "Europe/Berlin",
+						},
+					},
+				},
+			],
+		});
+
+		expect(upsertMock.mock.calls[0][0]).toMatchObject({
+			cron: "0 9 * * 1",
+			timezone: "Europe/Berlin",
+		});
+	});
+
+	it("reports an unknown time zone instead of writing the schedule", async () => {
+		const result = await sync({
+			nodes: [
+				{
+					id: "n1",
+					type: "trigger",
+					data: {
+						config: {
+							triggerType: "schedule",
+							scheduleCron: "0 9 * * *",
+							scheduleTimezone: "Mars/Phobos",
+						},
+					},
+				},
+			],
+		});
+
+		expect(result).toEqual({
+			outcome: "failed",
+			reason: 'Invalid time zone: "Mars/Phobos"',
+		});
 		expect(upsertMock).not.toHaveBeenCalled();
 	});
 

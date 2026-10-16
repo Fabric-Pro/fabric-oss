@@ -8,6 +8,8 @@
  * builtins, no `@repo/*` imports, no dynamic `import()`.
  */
 
+import { AGENT_TASK_NODE_TYPE } from "../../lib/workflow-node-types";
+
 /**
  * Node types that WRITE to a connected external source (create/send through
  * stored integration credentials). Read-only mode blocks exactly
@@ -92,9 +94,28 @@ export function isExternalWriteNodeType(nodeType: string): boolean {
  * `mcp-tool` is included conservatively: it dispatches an arbitrary tool on a
  * connected external server, and the workflow cannot tell a read from a write
  * without the activity-side name classifier. A lost retry on a read is a far
- * smaller harm than a duplicated write.
+ * smaller harm than a duplicated write. `agent-task` is included for the same
+ * reason, and because a retry would spend a second full agent run.
  */
 export function isNonRetryableNodeType(nodeType: string): boolean {
 	const resolved = resolveNodeType(nodeType);
-	return resolved === "mcp-tool" || EXTERNAL_WRITE_NODE_TYPES.has(resolved);
+	return (
+		resolved === "mcp-tool" ||
+		resolved === AGENT_TASK_NODE_TYPE ||
+		EXTERNAL_WRITE_NODE_TYPES.has(resolved)
+	);
+}
+
+/**
+ * Whether the node is an agent turn. These run for minutes rather than
+ * seconds (a model loop over several tool calls), so the workflow gives them a
+ * longer activity timeout than an ordinary step.
+ *
+ * The step is deliberately NOT in {@link EXTERNAL_WRITE_NODE_TYPES}: it writes
+ * nothing itself, and the tools it calls are gated one by one (Read-only mode,
+ * runtime authority) where they run. It is not an approval-gated step either,
+ * so an unattended run never blocks on a human.
+ */
+export function isAgentTaskNodeType(nodeType: string): boolean {
+	return resolveNodeType(nodeType) === AGENT_TASK_NODE_TYPE;
 }

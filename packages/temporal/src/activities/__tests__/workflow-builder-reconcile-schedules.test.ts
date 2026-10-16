@@ -8,6 +8,8 @@
  * it does not positively recognise as an orphan must be left alone.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	classifyScheduleOrphan,
@@ -73,6 +75,15 @@ describe("classifyScheduleOrphan", () => {
 			}),
 		).toBe("trigger-no-longer-scheduled");
 	});
+
+	it("flags a paused workflow, whose schedule must not outlive the pause", () => {
+		expect(
+			classifyScheduleOrphan({
+				status: "PAUSED",
+				nodes: scheduleTrigger,
+			}),
+		).toBe("workflow-not-published");
+	});
 });
 
 describe("reconcileWorkflowSchedules", () => {
@@ -97,6 +108,33 @@ describe("reconcileWorkflowSchedules", () => {
 			reasons: { "workflow-deleted": 1 },
 		});
 		expect(deleteSchedule).toHaveBeenCalledExactlyOnceWith("gone");
+	});
+
+	it("removes the schedule of an auto-paused workflow", async () => {
+		const deleteSchedule = vi.fn().mockResolvedValue(undefined);
+
+		const result = await reconcileWorkflowSchedules({
+			listSchedules: summaries("workflow-builder-paused"),
+			deleteSchedule,
+			fetchWorkflow: async () => ({
+				status: "PAUSED",
+				nodes: scheduleTrigger,
+			}),
+			dryRun: false,
+		});
+
+		expect(result.reasons).toEqual({ "workflow-not-published": 1 });
+		expect(deleteSchedule).toHaveBeenCalledExactlyOnceWith("paused");
+	});
+
+	it("only ever removes schedules: the sweep never creates or updates one", () => {
+		const source = readFileSync(
+			join(__dirname, "..", "workflow-builder-reconcile-schedules.ts"),
+			"utf8",
+		);
+
+		expect(source).not.toContain("upsertWorkflowSchedule");
+		expect(source).not.toMatch(/scheduleClient\.create|\.update\(/);
 	});
 
 	it("ignores schedules it does not own", async () => {

@@ -1,10 +1,6 @@
-import { logger } from "@repo/logs";
-import {
-	isEffectivelyBlank,
-	renderTemplate,
-	type TemplateFormat,
-} from "@repo/utils";
+import type { TemplateFormat } from "@repo/utils";
 import { z } from "zod";
+import { renderBoundPromptBody } from "../lib/render-bound-prompt-body";
 import type { AgendaContext } from "./collect-agenda-context";
 
 /**
@@ -100,7 +96,7 @@ const truncateSummary = (summary: string) =>
  * the invariant that an empty section is omitted rather than rendered as a bare
  * heading — which would invite the model to fill it with plausible inventions.
  */
-export interface AgendaPromptVariables {
+export type AgendaPromptVariables = {
 	meeting_subject: string;
 	meeting_date: string;
 	has_prior_meetings: boolean;
@@ -113,7 +109,7 @@ export interface AgendaPromptVariables {
 	open_decisions: string;
 	has_blocked_stories: boolean;
 	blocked_stories: string;
-}
+};
 
 export function buildAgendaVariables({
 	meetingSubject,
@@ -281,57 +277,24 @@ export function buildAgendaLockedClauses(context: AgendaContext): string {
  * Render the editable body against the meeting's context and append the locked
  * clauses (#2178).
  *
- * Two guards, both deterministic rather than heuristic — a user may legitimately
- * delete the meeting-subject line, so "does the output mention the subject" would
- * false-positive on a valid edit:
- *
- *   1. MARKDOWN / PLAIN_TEXT do no templating at all: renderTemplate returns the
- *      body verbatim with NO error set. For this prompt, whose entire context
- *      arrives as variables, that silently ships zero meeting data to the model
- *      and it invents a whole agenda. Decided from the format alone, before
- *      rendering.
- *   2. Output still containing an unrendered template construct means the body
- *      did not render — a Handlebars body under LIQUID, or a parse error that
- *      renderHandlebars swallowed into a raw-body return. Recover with the
- *      default body.
- *   3. Output that is blank once rendered. A template can be perfectly valid,
- *      pass every save-time check, and still resolve to nothing — `{{#unknown}}
- *      x{{/unknown}}` is a falsy block, not a syntax error, so it parses and
- *      renders to "". Guard 2 cannot see it precisely because nothing survived
- *      the render, and the model would receive only the locked clauses: no
- *      instructions, no meeting data, and enough of a nudge to emit a plausible
- *      one-line agenda that is persisted as READY.
- *
- * Guard 2 matches "{{{" or "{{#" rather than a bare "{{". Meeting data is user
- * prose — an action item can plausibly mention "{{" — and discarding a working
- * org prompt because someone wrote mustaches in a ticket would be a worse bug
- * than the one this guards. A triple-stache or a block helper surviving the
- * render is template syntax, not prose.
- *
- * Guard 3 tests the RENDERED output, not the source. "Renders to nothing
- * against this meeting's real context" is a fact, whereas the same judgement at
- * save time would have to guess at a context and would reject bodies that are
- * legitimately conditional. That is also why the blank check at the save path
- * (assertValidTemplate) only rejects a blank SOURCE — the two checks catch
- * different halves of the same failure and neither subsumes the other.
- *
- * Both guards also report themselves in the return value, not just to the log.
- * A degraded run still produces a perfectly plausible agenda, so "this came from
- * the default body because your prompt would not render" is exactly the thing a
- * reader cannot infer from the output — it is recorded as provenance on the
- * agenda row and surfaced in "How this agenda was built".
+ * The guards that decide a bound body "did not render" (a non-templating
+ * format, leftover template syntax, a blank result) are `renderBoundPromptBody`'s,
+ * shared with the other prompt-library-backed features. They report themselves
+ * in the return value, not just to the log: a degraded run still produces a
+ * perfectly plausible agenda, so "this came from the default body because your
+ * prompt would not render" is exactly the thing a reader cannot infer from the
+ * output — it is recorded as provenance on the agenda row and surfaced in "How
+ * this agenda was built".
  */
-const UNRENDERED_TEMPLATE = /\{\{[{#]/;
-
 export interface ComposedAgendaPrompt {
 	prompt: string;
-	/** Guard 1 fired: a non-templating format was rendered as Handlebars. */
+	/** A non-templating format was rendered as Handlebars. */
 	formatOverridden: boolean;
 	/**
-	 * Guard 2 or 3 fired: the supplied body yielded nothing usable — it failed
-	 * to render, or rendered to blank — and the default was used instead. One
-	 * flag for both because the consequence a reader needs is identical: this
-	 * agenda did not come from the prompt it is bound to.
+	 * The supplied body yielded nothing usable — it failed to render, or
+	 * rendered to blank — and the default was used instead. One flag for both
+	 * because the consequence a reader needs is identical: this agenda did not
+	 * come from the prompt it is bound to.
 	 */
 	bodyRecovered: boolean;
 }
@@ -349,56 +312,22 @@ export async function composeAgendaPrompt({
 	occurrenceStart: Date;
 	context: AgendaContext;
 }): Promise<ComposedAgendaPrompt> {
-	const variables = buildAgendaVariables({
-		meetingSubject,
-		occurrenceStart,
-		context,
+	const rendered = await renderBoundPromptBody({
+		body: templateBody,
+		format,
+		fallbackBody: MEETING_AGENDA_PROMPT_FALLBACK_BODY,
+		variables: buildAgendaVariables({
+			meetingSubject,
+			occurrenceStart,
+			context,
+		}),
+		logTag: "meeting-agenda",
 	});
-
-	let effectiveFormat = format;
-	let formatOverridden = false;
-	if (format === "MARKDOWN" || format === "PLAIN_TEXT") {
-		logger.error(
-			"[meeting-agenda] bound prompt has a non-templating format; rendering as Handlebars",
-			{ format },
-		);
-		effectiveFormat = "HANDLEBARS";
-		formatOverridden = true;
-	}
-
-	const rendered = await renderTemplate({
-		format: effectiveFormat,
-		template: templateBody,
-		variables,
-	});
-
-	let body = rendered.rendered;
-	let bodyRecovered = false;
-	// Not `trim()`: a template can render down to zero-width characters, which
-	// trim leaves standing and the model reads as nothing (Fizzy #2178 QA).
-	const renderedBlank = isEffectivelyBlank(body);
-	if (rendered.error || UNRENDERED_TEMPLATE.test(body) || renderedBlank) {
-		logger.error(
-			"[meeting-agenda] bound prompt did not render; using the default body",
-			{
-				format: effectiveFormat,
-				error: rendered.error,
-				renderedBlank,
-			},
-		);
-		const recovery = await renderTemplate({
-			format: "HANDLEBARS",
-			template: MEETING_AGENDA_PROMPT_FALLBACK_BODY,
-			variables,
-		});
-		body = recovery.rendered;
-		bodyRecovered = true;
-	}
 
 	return {
-		prompt: `${body.trimEnd()}\n${buildAgendaLockedClauses(context)}`,
-		formatOverridden,
-		bodyRecovered,
+		prompt: `${rendered.text.trimEnd()}\n${buildAgendaLockedClauses(context)}`,
+		formatOverridden: rendered.formatOverridden,
+		bodyRecovered: rendered.recovered,
 	};
 }
 

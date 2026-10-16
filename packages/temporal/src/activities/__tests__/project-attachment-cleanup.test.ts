@@ -4,6 +4,10 @@ const mocks = vi.hoisted(() => ({
 	listObjects: vi.fn(),
 	deleteObjects: vi.fn(),
 	findProject: vi.fn(),
+	listFramesOfDeletedProject: vi.fn(),
+	detachFramesFromProject: vi.fn(),
+	deleteFrameOfDeletedProject: vi.fn(),
+	deleteFramePageFiles: vi.fn(),
 	loggerInfo: vi.fn(),
 	loggerWarn: vi.fn(),
 	loggerError: vi.fn(),
@@ -12,15 +16,27 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/storage", () => ({
 	listObjects: (...a: unknown[]) => mocks.listObjects(...a),
 	deleteObjects: (...a: unknown[]) => mocks.deleteObjects(...a),
+	deleteFramePageFiles: (...a: unknown[]) => mocks.deleteFramePageFiles(...a),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findUnique: (...a: unknown[]) => mocks.findProject(...a) },
 	},
+	listFramesOfDeletedProject: (...a: unknown[]) =>
+		mocks.listFramesOfDeletedProject(...a),
+	detachFramesFromProject: (...a: unknown[]) =>
+		mocks.detachFramesFromProject(...a),
+	deleteFrameOfDeletedProject: (...a: unknown[]) =>
+		mocks.deleteFrameOfDeletedProject(...a),
 }));
 vi.mock("@repo/config", () => ({
 	config: {
-		storage: { bucketNames: { projectContexts: "project-contexts" } },
+		storage: {
+			bucketNames: {
+				projectContexts: "project-contexts",
+				workspaceDocuments: "workspace-documents",
+			},
+		},
 	},
 }));
 vi.mock("@repo/logs", () => ({
@@ -45,6 +61,13 @@ beforeEach(() => {
 	}
 	mocks.deleteObjects.mockResolvedValue({ deleted: 0, errors: [] });
 	mocks.findProject.mockResolvedValue(null); // default: project was hard-deleted
+	mocks.listFramesOfDeletedProject.mockResolvedValue({
+		workspaceFrameIds: [],
+		artifactFrames: [],
+	});
+	mocks.detachFramesFromProject.mockResolvedValue(0);
+	mocks.deleteFrameOfDeletedProject.mockResolvedValue(1);
+	mocks.deleteFramePageFiles.mockResolvedValue({ deleted: 0 });
 	// Default: an empty prefix. The activity sweeps two prefixes (attachments,
 	// then Glossy recipient logos), so a test that stubs only the first page
 	// still sees the second listing come back empty.
@@ -63,6 +86,17 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 		expect(mocks.listObjects).not.toHaveBeenCalled();
 		expect(mocks.deleteObjects).not.toHaveBeenCalled();
 		expect(res).toEqual({ deleted: 0, pages: 0 });
+	});
+
+	it("leaves a restored project's pages alone", async () => {
+		mocks.findProject.mockResolvedValue({ id: "p" });
+
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.listFramesOfDeletedProject).not.toHaveBeenCalled();
+		expect(mocks.detachFramesFromProject).not.toHaveBeenCalled();
+		expect(mocks.deleteFramePageFiles).not.toHaveBeenCalled();
+		expect(mocks.deleteFrameOfDeletedProject).not.toHaveBeenCalled();
 	});
 
 	it("lists the project prefix and batch-deletes the keys", async () => {
@@ -247,5 +281,139 @@ describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix
 		await expect(
 			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
 		).rejects.toThrow(/1 object/);
+	});
+});
+
+// Pages have no foreign key to the project, so deleting the project leaves
+// them, their records and their stored files. A Workspace page belongs to the
+// organization and is unlinked; every other page of the project is deleted,
+// its files first so a failure leaves the row for the retry.
+describe("deleteProjectAttachmentsFromStorageActivity — pages", () => {
+	const artifact = (id: string, organizationId: string | null = "org-1") => ({
+		id,
+		userId: "owner-1",
+		organizationId,
+	});
+
+	it("deletes an artifact page's stored files, then its row", async () => {
+		const order: string[] = [];
+		mocks.listFramesOfDeletedProject.mockResolvedValue({
+			workspaceFrameIds: [],
+			artifactFrames: [artifact("f1")],
+		});
+		mocks.deleteFramePageFiles.mockImplementation(async () => {
+			order.push("files");
+			return { deleted: 3 };
+		});
+		mocks.deleteFrameOfDeletedProject.mockImplementation(async () => {
+			order.push("row");
+			return 1;
+		});
+
+		const res = await deleteProjectAttachmentsFromStorageActivity({
+			projectId: "p",
+		});
+
+		expect(mocks.listFramesOfDeletedProject).toHaveBeenCalledWith("p");
+		expect(mocks.deleteFramePageFiles).toHaveBeenCalledWith(
+			{ organizationId: "org-1", userId: "owner-1", frameId: "f1" },
+			{ bucket: "workspace-documents" },
+		);
+		expect(mocks.deleteFrameOfDeletedProject).toHaveBeenCalledWith({
+			projectId: "p",
+			frameId: "f1",
+		});
+		expect(order).toEqual(["files", "row"]);
+		expect(res).toEqual({ deleted: 3, pages: 2 });
+	});
+
+	it("unlinks Workspace pages and keeps them and their files", async () => {
+		mocks.listFramesOfDeletedProject.mockResolvedValue({
+			workspaceFrameIds: ["w1", "w2"],
+			artifactFrames: [],
+		});
+
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.detachFramesFromProject).toHaveBeenCalledWith({
+			projectId: "p",
+			frameIds: ["w1", "w2"],
+		});
+		expect(mocks.deleteFramePageFiles).not.toHaveBeenCalled();
+		expect(mocks.deleteFrameOfDeletedProject).not.toHaveBeenCalled();
+	});
+
+	it("does not unlink anything when there is no Workspace page", async () => {
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.detachFramesFromProject).not.toHaveBeenCalled();
+		expect(mocks.deleteFramePageFiles).not.toHaveBeenCalled();
+	});
+
+	it("keeps the row and throws when a page's files cannot be deleted", async () => {
+		mocks.listFramesOfDeletedProject.mockResolvedValue({
+			workspaceFrameIds: [],
+			artifactFrames: [artifact("f1")],
+		});
+		mocks.deleteFramePageFiles.mockRejectedValue(
+			new Error("Could not delete 1 stored file(s) of the page"),
+		);
+
+		await expect(
+			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
+		).rejects.toThrow("Could not delete 1 stored file(s)");
+
+		expect(mocks.deleteFrameOfDeletedProject).not.toHaveBeenCalled();
+	});
+
+	it("still sweeps the attachments when the pages fail, and fails once", async () => {
+		mocks.listFramesOfDeletedProject.mockResolvedValue({
+			workspaceFrameIds: [],
+			artifactFrames: [artifact("f1")],
+		});
+		mocks.deleteFramePageFiles.mockRejectedValue(new Error("store down"));
+		mocks.listObjects.mockResolvedValueOnce({
+			objects: [obj("story-attachments/p/s/a.png")],
+			nextContinuationToken: undefined,
+		});
+		mocks.deleteObjects.mockResolvedValueOnce({ deleted: 1, errors: [] });
+
+		await expect(
+			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
+		).rejects.toThrow("store down");
+
+		expect(mocks.deleteObjects).toHaveBeenCalledTimes(1);
+	});
+
+	it("passes a page with no organization to the helper under its owner", async () => {
+		mocks.listFramesOfDeletedProject.mockResolvedValue({
+			workspaceFrameIds: [],
+			artifactFrames: [artifact("f1", null)],
+		});
+
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.deleteFramePageFiles).toHaveBeenCalledWith(
+			{ organizationId: null, userId: "owner-1", frameId: "f1" },
+			{ bucket: "workspace-documents" },
+		);
+	});
+
+	it("is idempotent: a second run over what is left deletes nothing more", async () => {
+		mocks.listFramesOfDeletedProject
+			.mockResolvedValueOnce({
+				workspaceFrameIds: [],
+				artifactFrames: [artifact("f1")],
+			})
+			.mockResolvedValueOnce({
+				workspaceFrameIds: [],
+				artifactFrames: [],
+			});
+
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+		await deleteProjectAttachmentsFromStorageActivity({ projectId: "p" });
+
+		expect(mocks.deleteFramePageFiles).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteFrameOfDeletedProject).toHaveBeenCalledTimes(1);
 	});
 });

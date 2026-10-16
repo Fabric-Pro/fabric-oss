@@ -18,6 +18,7 @@ import { db, Prisma } from "../prisma/client";
 import {
 	AuthoritySessionConflictError,
 	approveAuthoritySession,
+	authorityRequestFingerprint,
 	checkAuthority,
 	completeAuthoritySession,
 	consumeRequestGrant,
@@ -1477,5 +1478,237 @@ describe("findAuthoritySessionForRun", () => {
 				USER_A,
 			),
 		).toBeNull();
+	});
+});
+
+// ─── Asking for every call, and for one tool ────────────────────────────────
+
+describe("ensureSensitiveOperationAuthority: a tool that asks for every call", () => {
+	const callOf = (
+		toolName: string,
+		args: Record<string, unknown>,
+		runId = "conversation-1",
+	) => ({
+		userId: USER_A,
+		providerKey: "fabric",
+		providerType: "MCP" as const,
+		accessLevel: "WRITE" as const,
+		runType: "ORCHESTRATOR" as const,
+		runId,
+		toolName,
+		toolScope: [toolName],
+		requestFingerprint: authorityRequestFingerprint(toolName, args),
+	});
+
+	it("authorizes the exact call the person approved, once", async () => {
+		const call = callOf("fabric_publish_workflow", { workflowId: "wf-1" });
+
+		const asked = await ensureSensitiveOperationAuthority(call);
+		expect(asked.authorized).toBe(false);
+		expect(asked.pendingSessionId).toBeDefined();
+
+		await approveAuthoritySession(asked.pendingSessionId as string, USER_A);
+
+		const approved = await ensureSensitiveOperationAuthority(call);
+		expect(approved.authorized).toBe(true);
+
+		const again = await ensureSensitiveOperationAuthority(call);
+		expect(again.authorized).toBe(false);
+		expect(again.pendingSessionId).toBeDefined();
+	});
+
+	it("asks the same question once while it is pending, not once per attempt", async () => {
+		const call = callOf("fabric_publish_workflow", { workflowId: "wf-1" });
+
+		const first = await ensureSensitiveOperationAuthority(call);
+		const retry = await ensureSensitiveOperationAuthority(call);
+
+		expect(retry.pendingSessionId).toBe(first.pendingSessionId);
+	});
+
+	it("approves only the call the person was asked about when several are waiting", async () => {
+		const publish = callOf("fabric_publish_workflow", {
+			workflowId: "wf-1",
+		});
+		const execute = callOf("fabric_execute_workflow", {
+			workflowId: "wf-1",
+		});
+		const asked = await ensureSensitiveOperationAuthority(publish);
+		const alsoAsked = await ensureSensitiveOperationAuthority(execute);
+		expect(alsoAsked.pendingSessionId).not.toBe(asked.pendingSessionId);
+
+		await approveAuthoritySession(asked.pendingSessionId as string, USER_A);
+
+		expect(
+			(await ensureSensitiveOperationAuthority(publish)).authorized,
+		).toBe(true);
+		expect(
+			(await ensureSensitiveOperationAuthority(execute)).authorized,
+		).toBe(false);
+	});
+
+	it("does not let an approved call cover a different call to the same tool", async () => {
+		const approved = await ensureSensitiveOperationAuthority(
+			callOf("fabric_publish_workflow", { workflowId: "wf-1" }),
+		);
+		await approveAuthoritySession(
+			approved.pendingSessionId as string,
+			USER_A,
+		);
+
+		const other = await ensureSensitiveOperationAuthority(
+			callOf("fabric_publish_workflow", { workflowId: "wf-2" }),
+		);
+
+		expect(other.authorized).toBe(false);
+		expect(other.pendingSessionId).toBeDefined();
+	});
+
+	it("does not let an approved call cover the same arguments on another tool", async () => {
+		const approved = await ensureSensitiveOperationAuthority(
+			callOf("fabric_publish_workflow", { workflowId: "wf-1" }),
+		);
+		await approveAuthoritySession(
+			approved.pendingSessionId as string,
+			USER_A,
+		);
+
+		const other = await ensureSensitiveOperationAuthority(
+			callOf("fabric_execute_workflow", { workflowId: "wf-1" }),
+		);
+
+		expect(other.authorized).toBe(false);
+	});
+
+	it("is not covered by a broad grant on the provider", async () => {
+		const { session } = await createAuthorityRequest({
+			userId: USER_A,
+			runType: "ORCHESTRATOR",
+			runId: "conversation-1",
+			grants: [
+				{
+					providerType: "MCP",
+					providerKey: "fabric",
+					accessLevel: "WRITE",
+				},
+			],
+		});
+		await approveAuthoritySession(session.id, USER_A);
+
+		const result = await ensureSensitiveOperationAuthority(
+			callOf("fabric_execute_workflow", { workflowId: "wf-1" }),
+		);
+
+		expect(result.authorized).toBe(false);
+	});
+
+	it("asks for a content-creation tool too: the exemption is for calls that do not ask", async () => {
+		const skipped = await ensureSensitiveOperationAuthority({
+			userId: USER_A,
+			providerKey: "fabric",
+			providerType: "MCP",
+			accessLevel: "WRITE",
+			runType: "ORCHESTRATOR",
+			runId: "conversation-1",
+			toolName: "fabric_create_frame",
+		});
+		expect(skipped.authorized).toBe(true);
+
+		const asked = await ensureSensitiveOperationAuthority(
+			callOf("fabric_create_frame", {
+				title: "Status",
+				runtimeTools: ["fabric_list_workflows"],
+			}),
+		);
+		expect(asked.authorized).toBe(false);
+		expect(asked.pendingSessionId).toBeDefined();
+	});
+
+	it("does not carry an approval into another conversation", async () => {
+		const call = callOf("fabric_pause_workflow", { workflowId: "wf-1" });
+		const asked = await ensureSensitiveOperationAuthority(call);
+		await approveAuthoritySession(asked.pendingSessionId as string, USER_A);
+
+		const other = await ensureSensitiveOperationAuthority(
+			callOf(
+				"fabric_pause_workflow",
+				{ workflowId: "wf-1" },
+				"conversation-2",
+			),
+		);
+
+		expect(other.authorized).toBe(false);
+	});
+});
+
+describe("ensureSensitiveOperationAuthority: a request for one tool", () => {
+	const writeOf = (toolName: string) => ({
+		userId: USER_A,
+		providerKey: "fabric",
+		providerType: "MCP" as const,
+		accessLevel: "WRITE" as const,
+		runType: "ORCHESTRATOR" as const,
+		runId: "conversation-1",
+		toolName,
+		toolScope: [toolName],
+	});
+
+	it("covers that tool for the conversation and no other tool of the provider", async () => {
+		const asked = await ensureSensitiveOperationAuthority(
+			writeOf("fabric_create_story"),
+		);
+		await approveAuthoritySession(asked.pendingSessionId as string, USER_A);
+
+		expect(
+			(
+				await ensureSensitiveOperationAuthority(
+					writeOf("fabric_create_story"),
+				)
+			).authorized,
+		).toBe(true);
+		expect(
+			(
+				await ensureSensitiveOperationAuthority(
+					writeOf("fabric_update_story"),
+				)
+			).authorized,
+		).toBe(false);
+	});
+
+	it("is not answered with another tool's pending request", async () => {
+		const first = await ensureSensitiveOperationAuthority(
+			writeOf("fabric_create_story"),
+		);
+		const second = await ensureSensitiveOperationAuthority(
+			writeOf("fabric_update_story"),
+		);
+
+		expect(second.pendingSessionId).toBeDefined();
+		expect(second.pendingSessionId).not.toBe(first.pendingSessionId);
+	});
+
+	it("keeps raising the provider-wide grant it always has when no scope is named", async () => {
+		const asked = await ensureSensitiveOperationAuthority({
+			userId: USER_A,
+			providerKey: "notion",
+			providerType: "MCP",
+			accessLevel: "WRITE",
+			runType: "ORCHESTRATOR",
+			runId: "conversation-1",
+			toolName: "notion-create-pages",
+		});
+		await approveAuthoritySession(asked.pendingSessionId as string, USER_A);
+
+		const other = await ensureSensitiveOperationAuthority({
+			userId: USER_A,
+			providerKey: "notion",
+			providerType: "MCP",
+			accessLevel: "WRITE",
+			runType: "ORCHESTRATOR",
+			runId: "conversation-1",
+			toolName: "notion-update-page",
+		});
+
+		expect(other.authorized).toBe(true);
 	});
 });

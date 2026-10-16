@@ -285,6 +285,34 @@ describe("saveTurn — not found", () => {
 		expect(error.message).toBe("Conversation not found");
 	});
 
+	// A session its owner shared with the organization can be read by every
+	// member and written by none but the owner. The save is made as the
+	// caller, so for a member's shared session the database finds no row of the
+	// caller's and answers ConversationNotFoundError: the procedure never names
+	// the owner, so a reader cannot save a turn into someone else's thread.
+	it("saves as the caller and so refuses a session another member shared", async () => {
+		mocks.saveConversationTurn.mockRejectedValueOnce(
+			new ConversationNotFoundError(),
+		);
+
+		const error = await refusal(
+			invoke(SAVE_TURN, {
+				...turnInput,
+				conversationId: "conv-shared-by-someone-else",
+				organizationId: ACTIVE_ORG,
+			}),
+		);
+
+		expect(error.code).toBe("NOT_FOUND");
+		expect(mocks.saveConversationTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				id: "conv-shared-by-someone-else",
+				userId: USER_ID,
+				organizationId: ACTIVE_ORG,
+			}),
+		);
+	});
+
 	it("maps turn messages that repeat an id to BAD_REQUEST", async () => {
 		mocks.saveConversationTurn.mockRejectedValueOnce(
 			new DuplicateTurnMessageIdError("same"),

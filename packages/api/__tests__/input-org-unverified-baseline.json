@@ -14,7 +14,6 @@
 	"packages/api/modules/agents/procedures/activity.ts",
 	"packages/api/modules/agents/procedures/code-index-pending-changes.ts",
 	"packages/api/modules/agents/procedures/context.ts",
-	"packages/api/modules/agents/procedures/conversations/continue-in-new-chat.ts",
 	"packages/api/modules/agents/procedures/conversations/document-assistant/append-turn-for-document.ts",
 	"packages/api/modules/agents/procedures/conversations/document-assistant/fork-for-document.ts",
 	"packages/api/modules/agents/procedures/conversations/document-assistant/record-diff-outcome.ts",

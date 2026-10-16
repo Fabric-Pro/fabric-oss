@@ -4,23 +4,23 @@ import {
 } from "@saas/organizations/lib/account-route-redirect";
 
 /**
- * Everything that used to live under `/app/workspaces/**` — workspaces.
+ * Everything that used to live under `/app/workspaces/**` - the document
+ * libraries, which were called workspaces then.
  *
- * The personal route tree is gone (Fizzy #1875, FR5/R1). The organization has a
- * page of the same name, and personal-context data is being dropped, so that
- * page is the only one left to show. This redirect stands in for the tree so a
- * saved link still arrives.
+ * The personal route tree is gone (Fizzy #1875, FR5/R1). A saved link into it
+ * meant a document library, so it arrives at the same path under `libraries`;
+ * `workspaces` inside an organization now names the pages Fabric Agent writes.
  *
  * A catch-all under the static `workspaces` segment, not a plain page: it has to
  * answer for `/app/workspaces` AND everything below it, and it can only do that
- * from here — see `redirectIntoOrganization` for why the top level cannot.
+ * from here - see `redirectIntoOrganization` for why the top level cannot.
  */
-export default async function PersonalWorkspacesRedirect({
+export default async function LegacyWorkspacesRedirect({
 	params,
 	searchParams,
 }: AccountRedirectProps) {
 	const { path } = await params;
 	const query = await searchParams;
 
-	return redirectIntoOrganization("workspaces", path, query);
+	return redirectIntoOrganization("libraries", path, query);
 }

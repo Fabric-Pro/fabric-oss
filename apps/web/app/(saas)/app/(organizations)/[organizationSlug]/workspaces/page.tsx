@@ -31,7 +31,7 @@ export default async function OrganizationWorkspacesPage({
 			<TopRightControls />
 			<PageBreadcrumbs items={[{ label: "Workspaces" }]} />
 
-			<WorkspacesList organizationId={organization.id} />
+			<WorkspacesList organizationSlug={organizationSlug} />
 		</div>
 	);
 }

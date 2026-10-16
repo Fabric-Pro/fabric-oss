@@ -102,6 +102,14 @@ const ALWAYS_SKIP_PATHS = [
 	// (`project.context_source.content_upserted`), with the path, hash and
 	// size but never the content.
 	"projects.contexts.upsertSyncedFile",
+	// Fizzy #2946 — an answer to an Internal Analysis finding. `text` is a
+	// member's free-text answer and is not on the redaction denylist, so a
+	// thrown call (a too-long answer, a guest's FORBIDDEN attempt) would copy
+	// it into an org-admin-readable AuditLog row. Lost races are already
+	// returned as a stale outcome rather than thrown for the same reason.
+	// Successful writes are audited by the procedure itself
+	// (`project.document_analysis.responded`), with keys and kinds only.
+	"projects.proposalArtifact.respondToFinding",
 ] as const;
 
 /**

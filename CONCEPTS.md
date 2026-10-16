@@ -490,12 +490,17 @@ The branding of the party a project's documents are prepared for, held on the pr
 ### Proposal artifact
 A Proposal produced by one coordinated generation: a client-only Main Document whose sections appear as they are written, visuals added in the same run, and an Internal Analysis kept apart from it. It replaces the Draft followed by a Glossy edition for organizations that have it switched on, and only for Proposals.
 
-The Main Document is the client artifact itself, not a draft to be cleaned later, so nothing that would have to be removed before a client sees it may enter it: the prompt that writes it is pinned to the client-only action and never falls back to another. Its live sections are previews owned by one run; the document's content changes only when that run's final save succeeds.
+The Main Document is the client artifact itself, not a draft to be cleaned later, so nothing that would have to be removed before a client sees it may enter it: the prompt that writes it is pinned to the client-only action and never falls back to another. The one internal input it may receive is a set of Finding responses, given as settled decisions to act on and never to quote; a save that repeats their wording is refused. Its live sections are previews owned by one run; the document's content changes only when that run's final save succeeds.
 
 ### Internal Analysis
 A review of a saved Main Document against the same source context that produced it, recorded as findings with a severity and a type. It is supplementary: it runs after the Main Document is saved, it can fail without affecting it, and nothing waits on it.
 
-It is internal to the organization that owns the project. A Project guest neither reads nor retrieves it, it is never part of the document's content, versions, exports or retrieval, and a generation a guest started does not produce one. A run analyses one version of the Main Document; once the document changes, the run describes an earlier version rather than the current one.
+It is internal to the organization that owns the project. A Project guest neither reads nor retrieves it, its findings and their evidence are never part of the document's content, versions, exports or retrieval, and a generation a guest started does not produce one. Only the answers members give to findings travel further, as Finding responses. A run analyses one version of the Main Document; once the text of the document changes, the run describes an earlier version rather than the current one. Formatting that leaves the text unchanged, such as an editor save or a recolour, does not. A run can also be started on demand, against the current text and the sources of the generation that produced it.
+
+### Finding response
+An organization member's confirmation of, or answer to, an Internal Analysis finding. It belongs to the document and the finding's stable key (its type, section and subject, never its wording), not to a run, so it outlives the run it was given on: a later run that does not raise the key lists it as no longer raised.
+
+It needs review when the text of its section has changed since it was given, when its section is gone, or when a later run raises the same finding again; undoing the edit restores it. Until then, and only for work started by an organization member with access to the project, it reaches later Main Document generations and analysis runs as a settled decision: used, never quoted. Answering takes edit rights in the organization; commenters and viewers read, and a Project guest neither reads one nor carries one into a generation.
 
 ## Flagged ambiguities
 

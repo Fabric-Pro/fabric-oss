@@ -212,6 +212,8 @@ const NON_ACTION_STEPS = new Set([
 	"trigger",
 	"condition",
 	"http-request",
+	"agent-task",
+	"publish-frame",
 	// driven by hybrid/browser execution, not offered in the builder palette
 	"browser-action",
 	"browser-extract",

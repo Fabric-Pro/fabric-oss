@@ -61,7 +61,22 @@ RUN (pnpm --filter @repo/database generate || true) \
 	&& mkdir -p packages/database/prisma/generated
 
 FROM base AS builder
-COPY packages ./packages
+# Only this agent's workspace dependency closure: the filtered install links
+# nothing else, and a change elsewhere under packages/ leaves the image as it
+# was. packages/database/__tests__/dockerfile-workspace-closure.test.ts keeps
+# this list equal to the closure.
+COPY packages/agent-prompts ./packages/agent-prompts
+COPY packages/agent-runtime ./packages/agent-runtime
+COPY packages/agent-types ./packages/agent-types
+COPY packages/ai ./packages/ai
+COPY packages/database ./packages/database
+COPY packages/databricks ./packages/databricks
+COPY packages/logs ./packages/logs
+COPY packages/observability ./packages/observability
+COPY packages/payments ./packages/payments
+COPY packages/permissions ./packages/permissions
+COPY packages/storage ./packages/storage
+COPY packages/utils ./packages/utils
 COPY config ./config
 COPY agents/langchain/weave-readers ./agents/langchain/weave-readers
 COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated

@@ -24,6 +24,7 @@ import {
 	OPERATION_PARAMS,
 	PROVIDER_CONTEXT_FIELDS,
 } from "@saas/shared/components/DataSourceDefinitionBuilder";
+import { TIME_ZONES } from "@saas/shared/lib/time-zones";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -165,15 +166,6 @@ import type {
 	ScheduleMode,
 } from "./schedule-update-builder";
 import { buildScheduleUpdate } from "./schedule-update-builder";
-
-// Computed once at module load — ~600 entries, no need to reallocate every render.
-// Feature-detected: Intl.supportedValuesOf is ES2022+; on an older runtime fall back to
-// an empty list rather than throwing at module load (the stored timezone is still shown
-// via the prepend-if-absent path below).
-const TIMEZONE_OPTIONS: string[] =
-	typeof Intl.supportedValuesOf === "function"
-		? Intl.supportedValuesOf("timeZone")
-		: [];
 
 type RequiredDataSource = {
 	key: string;
@@ -2047,13 +2039,13 @@ export function TemplateInstanceDetail({
 																	found.
 																</CommandEmpty>
 																<CommandGroup>
-																	{(TIMEZONE_OPTIONS.includes(
+																	{(TIME_ZONES.includes(
 																		scheduleTimezone,
 																	)
-																		? TIMEZONE_OPTIONS
+																		? TIME_ZONES
 																		: [
 																				scheduleTimezone,
-																				...TIMEZONE_OPTIONS,
+																				...TIME_ZONES,
 																			]
 																	).map(
 																		(

@@ -78,6 +78,8 @@ function isWorkflowNotFoundError(error: unknown): boolean {
  *   started".
  * - `not-started`: Temporal confirmed there is no execution under the id.
  *   Mark the row FAILED — nothing sweeps a PENDING execution — and say so.
+ *   `cause` says whether no request left this process (`engine-unavailable`)
+ *   or the engine refused it (`start-rejected`).
  * - `unknown`: the start threw and the follow-up describe could not settle
  *   it either. The run may well be in progress under the deterministic id.
  *   Leave the row as it is (active) and report the uncertainty with the
@@ -91,7 +93,12 @@ export type WorkflowBuilderStartOutcome =
 			runId?: string;
 			via: "start" | "already-started" | "describe";
 	  }
-	| { status: "not-started"; workflowId: string; error: unknown }
+	| {
+			status: "not-started";
+			workflowId: string;
+			error: unknown;
+			cause: "engine-unavailable" | "start-rejected";
+	  }
 	| { status: "unknown"; workflowId: string; error: unknown };
 
 /**
@@ -121,7 +128,12 @@ export async function attemptWorkflowBuilderStart(
 		client = await getTemporalClient();
 	} catch (error) {
 		// No client, so no request left this process: nothing was started.
-		return { status: "not-started", workflowId, error };
+		return {
+			status: "not-started",
+			workflowId,
+			error,
+			cause: "engine-unavailable",
+		};
 	}
 
 	try {
@@ -161,7 +173,12 @@ export async function attemptWorkflowBuilderStart(
 			};
 		} catch (describeError) {
 			if (isWorkflowNotFoundError(describeError)) {
-				return { status: "not-started", workflowId, error };
+				return {
+					status: "not-started",
+					workflowId,
+					error,
+					cause: "start-rejected",
+				};
 			}
 			return { status: "unknown", workflowId, error };
 		}

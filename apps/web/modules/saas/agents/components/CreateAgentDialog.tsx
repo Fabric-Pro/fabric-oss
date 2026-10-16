@@ -1467,7 +1467,7 @@ export function CreateAgentDialog({
 															className="flex items-center gap-1 bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300 text-xs"
 														>
 															{workspace?.name ||
-																"Workspace"}
+																"Library"}
 															<X
 																className="h-2.5 w-2.5 cursor-pointer"
 																onClick={() =>

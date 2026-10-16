@@ -398,7 +398,7 @@ describe("AnthropicCapabilityBanner — role (R16/AE8)", () => {
 		expect(screen.queryByRole("link")).toBeNull();
 		expect(
 			document.querySelector(
-				'a[href="/app/acme/settings/account/ai-providers"]',
+				'a[href="/app/acme/settings/ai-providers?tab=personal"]',
 			),
 		).toBeNull();
 	});
@@ -465,7 +465,7 @@ describe("AnthropicCapabilityBanner — whose configuration resolved", () => {
 		});
 		expect(link).toHaveAttribute(
 			"href",
-			"/app/acme/settings/account/ai-providers",
+			"/app/acme/settings/ai-providers?tab=personal",
 		);
 		expect(screen.queryByText(ADMIN_REMEDY)).toBeNull();
 	});

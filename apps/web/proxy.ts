@@ -51,6 +51,45 @@ export const pathsWithoutLocale = [
 	"/organizations/confirm-deletion",
 ];
 
+const EMBED_FLAG_HEADER = "x-embed-route";
+
+/**
+ * The Content-Security-Policy of a page that frames an agent-written page, sent
+ * on every response of a frame's embed view (`/app/.../embed`,
+ * `/share/frame/.../embed`). The sandboxed page carries a policy of its own that
+ * stops it fetching anything, but a policy cannot stop the page navigating its
+ * own frame to another site with the data it holds in the address; only the
+ * document that frames it can, by naming what a frame may load: itself and
+ * documents without an address. Enforced, not report-only.
+ */
+export const FRAME_EMBED_PARENT_CSP =
+	"frame-src 'self' about: blob: data:; child-src 'self' about: blob: data:";
+
+const SHARED_FRAME_EMBED_PATH = /^\/share\/frame\/[^/]+\/embed\/?$/;
+
+/**
+ * The headers a request carries onward. `x-embed-route` is ours to set, never
+ * the client's: it makes the organization layout draw without the app shell, so
+ * a copy a client sent is dropped, and only an embed path puts it back.
+ */
+function forwardedRequestHeaders(
+	req: NextRequest,
+	extra: Record<string, string> = {},
+): Headers {
+	const headers = new Headers(req.headers);
+	headers.delete(EMBED_FLAG_HEADER);
+	for (const [name, value] of Object.entries(extra)) {
+		headers.set(name, value);
+	}
+	return headers;
+}
+
+function forward(req: NextRequest, extra?: Record<string, string>) {
+	return NextResponse.next({
+		request: { headers: forwardedRequestHeaders(req, extra) },
+	});
+}
+
 function mustChangePassword(req: NextRequest): boolean {
 	const raw =
 		req.cookies.get(SESSION_DATA_COOKIE_SECURE)?.value ??
@@ -121,7 +160,7 @@ export default async function proxy(req: NextRequest) {
 		if (!appConfig.ui.marketing.enabled) {
 			return NextResponse.redirect(new URL("/app", origin));
 		}
-		return NextResponse.next();
+		return forward(req);
 	}
 
 	// Handle /en/blog, /de/blog etc. — bypass intl middleware to prevent locale stripping
@@ -130,7 +169,7 @@ export default async function proxy(req: NextRequest) {
 		if (!appConfig.ui.marketing.enabled) {
 			return NextResponse.redirect(new URL("/app", origin));
 		}
-		return NextResponse.next();
+		return forward(req);
 	}
 
 	const sessionCookie = getSessionCookie(req, {
@@ -162,9 +201,17 @@ export default async function proxy(req: NextRequest) {
 		// (.../frames/:id/embed) which must stay embeddable cross-origin —
 		// exclude those; every other /app page denies framing to other origins.
 		if (pathname.endsWith("/embed")) {
-			return NextResponse.next();
+			// Rendered inside an iframe: the same embed flag as the public
+			// widgets below, so the page draws without the app shell, banners
+			// or analytics around it.
+			const embedRes = forward(req, { [EMBED_FLAG_HEADER]: "1" });
+			embedRes.headers.set(
+				"Content-Security-Policy",
+				FRAME_EMBED_PARENT_CSP,
+			);
+			return embedRes;
 		}
-		const appRes = NextResponse.next();
+		const appRes = forward(req);
 		appRes.headers.set("X-Frame-Options", "SAMEORIGIN");
 		appRes.headers.set("Content-Security-Policy", "frame-ancestors 'self'");
 		return appRes;
@@ -187,7 +234,7 @@ export default async function proxy(req: NextRequest) {
 					new URL("/change-password", origin),
 				);
 			}
-			const consentRes = NextResponse.next();
+			const consentRes = forward(req);
 			consentRes.headers.set("X-Frame-Options", "DENY");
 			consentRes.headers.set(
 				"Content-Security-Policy",
@@ -196,7 +243,7 @@ export default async function proxy(req: NextRequest) {
 			return consentRes;
 		}
 
-		return NextResponse.next();
+		return forward(req);
 	}
 
 	// Public embeddable widgets (iframe), e.g. app/embed/newsletter. Frameable by
@@ -205,9 +252,7 @@ export default async function proxy(req: NextRequest) {
 	// iframes (see ClientProviders / ConsentProvider). Outside (marketing)/[locale],
 	// so it also bypasses the intl middleware.
 	if (pathname.startsWith("/embed")) {
-		const requestHeaders = new Headers(req.headers);
-		requestHeaders.set("x-embed-route", "1");
-		const res = NextResponse.next({ request: { headers: requestHeaders } });
+		const res = forward(req, { [EMBED_FLAG_HEADER]: "1" });
 		res.headers.set("Content-Security-Policy", "frame-ancestors *");
 		return res;
 	}
@@ -218,12 +263,13 @@ export default async function proxy(req: NextRequest) {
 		const search = new URLSearchParams(req.nextUrl.search);
 		search.delete("_rsc");
 		const query = search.toString();
-		const requestHeaders = new Headers(req.headers);
-		requestHeaders.set(
-			RETURN_TO_HEADER,
-			query ? `${pathname}?${query}` : pathname,
-		);
-		return NextResponse.next({ request: { headers: requestHeaders } });
+		const res = forward(req, {
+			[RETURN_TO_HEADER]: query ? `${pathname}?${query}` : pathname,
+		});
+		if (SHARED_FRAME_EMBED_PATH.test(pathname)) {
+			res.headers.set("Content-Security-Policy", FRAME_EMBED_PARENT_CSP);
+		}
+		return res;
 	}
 
 	if (!appConfig.ui.marketing.enabled) {

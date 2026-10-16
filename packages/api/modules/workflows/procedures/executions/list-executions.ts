@@ -1,17 +1,21 @@
-import { ORPCError } from "@orpc/client";
-import { hasWorkflowAccess, listWorkflowExecutions } from "@repo/database";
 import { WorkflowExecutionStatusSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { listWorkflowExecutionsCommand } from "../../lib/workflow-execution-commands";
+import { workflowActor, workflowCommandErrors } from "../workflow-actor";
 
 export const listWorkflowExecutionsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/workflows/{id}/executions",
@@ -29,48 +33,17 @@ export const listWorkflowExecutionsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const user = context.user;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		// Check workflow access
-		const hasAccess = await hasWorkflowAccess(
-			input.id,
-			user.id,
-			organizationId,
+		return listWorkflowExecutionsCommand(
+			workflowActor(context.user.id, organizationId),
+			{
+				workflowId: input.id,
+				status: input.status,
+				limit: input.limit,
+				offset: input.offset,
+			},
 		);
-
-		if (!hasAccess) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Workflow not found",
-			});
-		}
-
-		// List executions
-		const result = await listWorkflowExecutions({
-			workflowId: input.id,
-			userId: user.id,
-			organizationId,
-			status: input.status,
-			limit: input.limit,
-			offset: input.offset,
-		});
-
-		return result;
 	});

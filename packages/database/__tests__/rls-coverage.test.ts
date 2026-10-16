@@ -548,14 +548,15 @@ describe("Company context registration (Fizzy #2719)", () => {
 });
 
 /**
- * Proposal artifact registration (Fizzy #2801).
+ * Proposal artifact registration (Fizzy #2801, #2946).
  *
- * Internal analysis runs, their findings and the document style. A project
- * guest must never read internal review material, so the policy is plain
- * `org_only` and none of the three is project-scoped in tenant-db.ts — the
- * Glossy project tables' carve-out would OR a guest's invited projects into
- * the filter. Analysis and Style carry a projectId for cascade and lookup;
- * that column must not become a guest route.
+ * Internal analysis runs, their findings, members' answers to findings and
+ * the document style. A project guest must never read internal review
+ * material, so the policy is plain `org_only` and none of the four is
+ * project-scoped in tenant-db.ts — the Glossy project tables' carve-out would
+ * OR a guest's invited projects into the filter. Analysis, answers and Style
+ * carry a projectId for cascade and lookup; that column must not become a
+ * guest route. An answer's `authorId` is attribution, not a tenant column.
  */
 describe("Proposal artifact registration (Fizzy #2801)", () => {
 	const orgOnlyBlock =
@@ -570,6 +571,7 @@ describe("Proposal artifact registration (Fizzy #2801)", () => {
 	const tables = [
 		["ProjectDocumentAnalysis", "project_document_analysis"],
 		["ProjectDocumentFinding", "project_document_finding"],
+		["ProjectDocumentFindingResponse", "project_document_finding_response"],
 		["ProjectDocumentStyle", "project_document_style"],
 	] as const;
 
@@ -593,7 +595,8 @@ describe("Proposal artifact registration (Fizzy #2801)", () => {
 			expect(projectScopedBlock).not.toMatch(new RegExp(`\\b${model}:`));
 			const parsed = models.find((m) => m.name === model);
 			expect(parsed?.hasOrg).toBe(true);
-			// Organization is the only tenant: no author column to forge.
+			// Organization is the only tenant: no userId to route a personal
+			// arm to these rows.
 			expect(parsed?.hasUser).toBe(false);
 		},
 	);

@@ -207,7 +207,8 @@ async function discoverMcpToolCapabilities(
 				await closeMcpClientSafe(client);
 			} catch (e) {
 				console.warn(
-					`Failed to discover tools from ${config.displayName}:`,
+					"Failed to discover tools from MCP server:",
+					{ serverName: config.displayName },
 					e,
 				);
 			}

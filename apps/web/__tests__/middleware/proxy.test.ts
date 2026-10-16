@@ -68,7 +68,11 @@ vi.mock("next/server", () => ({
 import { config as appConfig } from "@repo/config";
 import { getSessionCookie } from "better-auth/cookies";
 // Import after mocks are set up (hoisted by vitest)
-import proxy, { pathsWithoutLocale, config as proxyConfig } from "../../proxy";
+import proxy, {
+	FRAME_EMBED_PARENT_CSP,
+	pathsWithoutLocale,
+	config as proxyConfig,
+} from "../../proxy";
 
 const mockGetSessionCookie = vi.mocked(getSessionCookie);
 const mockAppConfig = appConfig as {
@@ -80,6 +84,7 @@ function createMockRequest(
 	options: {
 		cookie?: string;
 		accept?: string;
+		headers?: Record<string, string>;
 		sessionData?: Record<string, unknown>;
 	} = {},
 ) {
@@ -87,7 +92,7 @@ function createMockRequest(
 	const fullPath = pathname.split("?")[0];
 	const url = new URL(fullPath, origin);
 
-	const headers = new Headers();
+	const headers = new Headers(options.headers);
 	if (options.cookie) {
 		headers.set("cookie", options.cookie);
 	}
@@ -199,6 +204,31 @@ describe("Middleware (proxy.ts)", () => {
 			expect(response.url).toContain(
 				"redirectTo=%2Fapp%2Fmy-org%2Fprojects%2F123",
 			);
+		});
+
+		it("flags a frame's embed view so it renders without the app shell", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+			const req = createMockRequest(
+				"/app/example-org/frames/frame-1/embed",
+			);
+
+			const response = await proxy(req);
+
+			expect(response.type).toBe("next");
+			expect(response.requestHeaders?.get("x-embed-route")).toBe("1");
+			expect(response.headers.get("X-Frame-Options")).toBeNull();
+		});
+
+		it("does not flag an ordinary app page as an embed", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+			const req = createMockRequest("/app/example-org/frames/frame-1");
+
+			const response = await proxy(req);
+
+			expect(
+				response.requestHeaders?.get("x-embed-route") ?? null,
+			).toBeNull();
+			expect(response.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
 		});
 
 		it("should allow /app/settings with valid session", async () => {
@@ -370,6 +400,120 @@ describe("Middleware (proxy.ts)", () => {
 				"frame-ancestors *",
 			);
 			expect(response.requestHeaders?.get("x-embed-route")).toBe("1");
+		});
+	});
+
+	// ─────────────────────────────────────────────────────────────────
+	// Frame embed views: the parent policy and the embed flag
+	// ─────────────────────────────────────────────────────────────────
+	describe("Frame embed views", () => {
+		const CLIENT_FLAG = { "x-embed-route": "1" };
+
+		it("pins the policy a frame's embed view sends", () => {
+			expect(FRAME_EMBED_PARENT_CSP).toBe(
+				"frame-src 'self' about: blob: data:; child-src 'self' about: blob: data:",
+			);
+		});
+
+		it("sends the policy, enforced, on a signed-in frame embed view", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+
+			const response = await proxy(
+				createMockRequest("/app/example-org/frames/frame-1/embed"),
+			);
+
+			expect(response.headers.get("content-security-policy")).toBe(
+				FRAME_EMBED_PARENT_CSP,
+			);
+			expect(
+				response.headers.get("content-security-policy-report-only"),
+			).toBeNull();
+		});
+
+		it("sends the policy on the embed view of a shared frame", async () => {
+			const response = await proxy(
+				createMockRequest("/share/frame/tok_abc123/embed"),
+			);
+
+			expect(response.type).toBe("next");
+			expect(response.headers.get("content-security-policy")).toBe(
+				FRAME_EMBED_PARENT_CSP,
+			);
+			expect(response.requestHeaders?.get("x-fabric-return-to")).toBe(
+				"/share/frame/tok_abc123/embed",
+			);
+		});
+
+		it("does not send it on the page around a shared frame or an ordinary app page", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+
+			const shared = await proxy(
+				createMockRequest("/share/frame/tok_abc123"),
+			);
+			const app = await proxy(
+				createMockRequest("/app/example-org/workspaces"),
+			);
+
+			expect(shared.headers.get("content-security-policy")).toBeNull();
+			expect(app.headers.get("content-security-policy")).toBe(
+				"frame-ancestors 'self'",
+			);
+		});
+
+		it("sets the embed flag itself on an embed view and ignores a client's own", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+
+			const response = await proxy(
+				createMockRequest("/app/example-org/frames/frame-1/embed", {
+					headers: { "x-embed-route": "0" },
+				}),
+			);
+
+			expect(response.requestHeaders?.get("x-embed-route")).toBe("1");
+		});
+
+		it.each([
+			["an ordinary app page", "/app/example-org/workspaces", true],
+			["an auth page", "/auth/login", false],
+			["a consent screen", "/auth/oauth/consent", true],
+			[
+				"a public page outside the locale",
+				"/organization-invitation/inv_1",
+				false,
+			],
+			[
+				"the page around a shared frame",
+				"/share/frame/tok_abc123",
+				false,
+			],
+			["a localized docs page", "/en/docs/getting-started", false],
+			["a localized blog page", "/en/blog/post", false],
+		])(
+			"drops a client-sent embed flag on %s",
+			async (_label, path, signedIn) => {
+				mockGetSessionCookie.mockReturnValue(signedIn ? "token" : null);
+
+				const response = await proxy(
+					createMockRequest(path, { headers: CLIENT_FLAG }),
+				);
+
+				expect(response.type).toBe("next");
+				expect(
+					response.requestHeaders?.get("x-embed-route") ?? null,
+				).toBeNull();
+			},
+		);
+
+		it("keeps passing the other request headers through", async () => {
+			mockGetSessionCookie.mockReturnValue("token");
+
+			const response = await proxy(
+				createMockRequest("/app/example-org/workspaces", {
+					headers: { ...CLIENT_FLAG, "x-request-id": "r-1" },
+				}),
+			);
+
+			expect(response.requestHeaders?.get("x-request-id")).toBe("r-1");
 		});
 	});
 

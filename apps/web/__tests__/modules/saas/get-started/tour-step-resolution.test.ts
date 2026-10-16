@@ -74,9 +74,9 @@ describe("the two key steps (Fizzy #2361)", () => {
 		// The org page renders read-only for everyone but an admin, so a
 		// member sent there is told to add a key and then handed a form they
 		// cannot use — the exact trap Fizzy #1875 split these two pages to
-		// avoid. The account page works for any member.
+		// avoid. The Personal tab (Fizzy #3082) works for any member.
 		expect(hrefOf("aiKey", false)).toBe(
-			`${BASE}/settings/account/ai-providers`,
+			`${BASE}/settings/ai-providers?tab=personal`,
 		);
 	});
 

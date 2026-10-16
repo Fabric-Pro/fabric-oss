@@ -305,7 +305,13 @@
 				"scripts/generate-client.mts",
 				"scripts/fix-zod-imports.ts",
 				"prisma/zod-generator.config.json",
-				"prisma/tsconfig.generated.json"
+				"prisma/tsconfig.generated.json",
+				"tsconfig.json",
+				"$TURBO_ROOT$/tooling/typescript/base.json",
+				"$TURBO_ROOT$/tooling/typescript/package.json",
+				"$TURBO_ROOT$/package.json",
+				"$TURBO_ROOT$/pnpm-workspace.yaml",
+				"$TURBO_ROOT$/pnpm-lock.yaml"
 			]
 		},
 		"dev": {

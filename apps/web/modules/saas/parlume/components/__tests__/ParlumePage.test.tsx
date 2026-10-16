@@ -7,8 +7,18 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { ParlumePage } from "../ParlumePage";
+import { PROJECT_BASE_PATH } from "./fixtures";
 
 const mocks = vi.hoisted(() => ({
 	listAgents: vi.fn(),
@@ -23,44 +33,40 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 
 const meetingUrl = "https://teams.microsoft.com/l/meetup-join/example";
+const builtIn = {
+	kind: "FABRIC_AGENT",
+	label: "Fabric Agent — this project",
+	description: "Uses this project's current knowledge and behavior.",
+	agentInstanceSId: null,
+	version: null,
+};
+const custom = {
+	kind: "TEMPLATE_INSTANCE",
+	label: "Example release assistant",
+	description: null,
+	agentInstanceSId: "agent-stable-1",
+	version: 3,
+};
 
-function session(overrides: Record<string, unknown> = {}) {
-	return {
-		id: "s1",
-		agentKind: "FABRIC_AGENT",
-		agentLabel: "Fabric Agent — this project",
-		status: "ENDED",
-		toolsReadOnly: true,
-		endReason: null,
-		lastError: null,
-		joinedAt: new Date("2026-09-30T10:00:00Z"),
-		hardStopAt: null,
-		leaveRequestedAt: null,
-		endedAt: new Date("2026-09-30T10:30:00Z"),
-		transcriptContextId: null,
-		createdAt: new Date("2026-09-30T09:59:00Z"),
-		updatedAt: new Date("2026-09-30T10:30:00Z"),
-		notes: null,
-		notesStatus: null,
-		...overrides,
-	};
-}
+beforeAll(() => {
+	// Radix Select and Tooltip lean on pointer capture, which jsdom lacks.
+	Element.prototype.hasPointerCapture ??= () => false;
+	Element.prototype.setPointerCapture ??= () => undefined;
+	Element.prototype.releasePointerCapture ??= () => undefined;
+});
 
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.listAgents.mockResolvedValue({
-		agents: [
-			{
-				kind: "FABRIC_AGENT",
-				label: "Fabric Agent — this project",
-				agentInstanceSId: null,
-				version: null,
-			},
-		],
+		agents: [builtIn, custom],
 		operatorReady: true,
 	});
-	mocks.listSessions.mockResolvedValue({ sessions: [] });
-	mocks.history.mockResolvedValue({ items: [], nextCursor: null });
+	mocks.listSessions.mockResolvedValue({
+		sessions: [],
+		total: 0,
+		nextCursor: null,
+	});
+	mocks.history.mockResolvedValue({ items: [], total: 0, nextCursor: null });
 	mocks.usage.mockResolvedValue({
 		totalCostMicroUsd: 0,
 		calls: 0,
@@ -77,21 +83,49 @@ function showPage(canEdit = true) {
 	});
 	render(
 		<QueryClientProvider client={client}>
-			<ParlumePage projectId="example-project" canEdit={canEdit} />
+			<ParlumePage
+				projectId="example-project"
+				projectBasePath={PROJECT_BASE_PATH}
+				canEdit={canEdit}
+			/>
 		</QueryClientProvider>,
 	);
 }
 
+const linkField = () => screen.getByLabelText("Teams meeting link");
+const consentBox = () =>
+	screen.getByRole("checkbox", { name: /told participants/ });
+const inviteButton = () =>
+	screen.getByRole("button", { name: "Invite Parlume" });
+
+async function readyToInvite() {
+	await screen.findByRole("combobox", { name: "Agent" });
+	fireEvent.change(linkField(), { target: { value: `  ${meetingUrl}  ` } });
+	fireEvent.click(consentBox());
+}
+
+describe("ParlumePage header", () => {
+	it("opens with the editorial label, the page title and what Parlume is", async () => {
+		showPage();
+		expect(
+			await screen.findByText("Voice agent · Microsoft Teams"),
+		).toHaveClass("app-editorial-label");
+		expect(
+			screen.getByRole("heading", { level: 1, name: "Fabric Parlume" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				"Your project's voice agent for Microsoft Teams meetings.",
+			),
+		).toBeInTheDocument();
+	});
+});
+
 describe("ParlumePage invitation", () => {
 	it("invites with read-only tools by default and trims the link", async () => {
 		showPage();
-		await screen.findByRole("option", {
-			name: "Fabric Agent — this project",
-		});
-		fireEvent.change(screen.getByLabelText("Teams meeting link"), {
-			target: { value: `  ${meetingUrl}  ` },
-		});
-		fireEvent.click(screen.getByRole("button", { name: "Invite Parlume" }));
+		await readyToInvite();
+		fireEvent.click(inviteButton());
 		await waitFor(() =>
 			expect(mocks.start).toHaveBeenCalledWith({
 				projectId: "example-project",
@@ -102,219 +136,187 @@ describe("ParlumePage invitation", () => {
 		);
 	});
 
-	it("explains action mode when read-only is switched off", async () => {
+	it("keeps Invite disabled until the participants have been told", async () => {
 		showPage();
-		await screen.findByRole("option", {
-			name: "Fabric Agent — this project",
+		await screen.findByRole("combobox", { name: "Agent" });
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+
+		expect(inviteButton()).toBeDisabled();
+		expect(inviteButton()).toHaveAccessibleDescription(
+			"Confirm you have told participants",
+		);
+
+		fireEvent.click(consentBox());
+		expect(consentBox()).toBeChecked();
+		expect(inviteButton()).toBeEnabled();
+
+		fireEvent.click(consentBox());
+		expect(inviteButton()).toBeDisabled();
+		expect(mocks.start).not.toHaveBeenCalled();
+	});
+
+	it("links the consent line to the in-the-meeting card", async () => {
+		showPage();
+		const link = await screen.findByRole("link", {
+			name: "What Parlume does in a meeting",
 		});
-		fireEvent.click(screen.getByRole("switch", { name: "Read-only" }));
+		expect(link).toHaveAttribute("href", "#pr-how");
+		expect(document.getElementById("pr-how")).toHaveTextContent(
+			"In the meeting",
+		);
+	});
+
+	it("guides the link field from empty to valid or invalid", async () => {
+		showPage();
+		await screen.findByRole("combobox", { name: "Agent" });
 		expect(
-			screen.getByText(/waits for that requester to confirm/),
+			screen.getByText(/Copy the join link from the meeting invite/),
 		).toBeInTheDocument();
+		expect(inviteButton()).toBeDisabled();
+		expect(inviteButton()).toHaveAccessibleDescription(
+			"Paste a Teams meeting link first",
+		);
+
+		fireEvent.change(linkField(), {
+			target: { value: "https://example.com/meeting" },
+		});
+		expect(
+			screen.getByText("This doesn't look like a Teams meeting link."),
+		).toHaveAttribute("role", "alert");
+		expect(linkField()).toBeInvalid();
+		expect(inviteButton()).toBeDisabled();
+
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+		expect(
+			screen.getByText("Teams meeting link", { selector: "p" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("This doesn't look like a Teams meeting link."),
+		).not.toBeInTheDocument();
+		expect(linkField()).toBeValid();
+	});
+
+	it("accepts a Teams link from another Microsoft cloud", async () => {
+		showPage();
+		await screen.findByRole("combobox", { name: "Agent" });
+		fireEvent.change(linkField(), {
+			target: {
+				value: "https://teams.microsoft.us/l/meetup-join/example",
+			},
+		});
+		expect(
+			screen.getByText("Teams meeting link", { selector: "p" }),
+		).toBeInTheDocument();
+	});
+
+	it("offers the two modes as radios and sends the chosen one", async () => {
+		showPage();
+		await readyToInvite();
+		const readOnly = screen.getByRole("radio", { name: "Read-only" });
+		const actions = screen.getByRole("radio", {
+			name: "Actions with confirmation",
+		});
+		expect(readOnly).toBeChecked();
+		expect(actions).not.toBeChecked();
+		expect(
+			screen.getByText(/Makes changes with your permissions after the/),
+		).toBeInTheDocument();
+
+		fireEvent.click(actions);
+		expect(actions).toBeChecked();
+		expect(readOnly).not.toBeChecked();
+		fireEvent.click(inviteButton());
+
+		await waitFor(() =>
+			expect(mocks.start).toHaveBeenCalledWith(
+				expect.objectContaining({ toolsReadOnly: false }),
+			),
+		);
+	});
+
+	it("picks a custom agent from the list and sends its stable reference", async () => {
+		const user = userEvent.setup();
+		showPage();
+		const picker = await screen.findByRole("combobox", { name: "Agent" });
+		expect(picker).toHaveTextContent("Fabric Agent — this project");
+		expect(picker).toHaveTextContent("Built-in");
+
+		await user.click(picker);
+		const option = await screen.findByRole("option", {
+			name: /Example release assistant/,
+		});
+		expect(option).toHaveTextContent("v3");
+		expect(option).toHaveTextContent("Custom agent bound to this project.");
+		await user.click(option);
+
+		expect(picker).toHaveTextContent("Example release assistant");
+		expect(picker).toHaveTextContent("v3");
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+		fireEvent.click(consentBox());
+		fireEvent.click(inviteButton());
+		await waitFor(() =>
+			expect(mocks.start).toHaveBeenCalledWith({
+				projectId: "example-project",
+				agentKind: "TEMPLATE_INSTANCE",
+				agentInstanceSId: "agent-stable-1",
+				meetingUrl,
+				toolsReadOnly: true,
+			}),
+		);
 	});
 
 	it("shows an alert and disables invitations when the operator is not ready", async () => {
 		mocks.listAgents.mockResolvedValue({
-			agents: [
-				{
-					kind: "FABRIC_AGENT",
-					label: "Fabric Agent — this project",
-					agentInstanceSId: null,
-					version: null,
-				},
-			],
+			agents: [builtIn],
 			operatorReady: false,
 		});
 		showPage();
 		expect(
-			await screen.findByText(/not configured for invitations/),
+			await screen.findByText(
+				/An operator must complete its media setup/,
+			),
 		).toHaveAttribute("role", "alert");
-		fireEvent.change(screen.getByLabelText("Teams meeting link"), {
-			target: { value: meetingUrl },
-		});
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+		fireEvent.click(consentBox());
+		expect(inviteButton()).toBeDisabled();
+	});
+
+	it("lets the reader retry when the project agents cannot be loaded", async () => {
+		mocks.listAgents.mockRejectedValueOnce(new Error("offline"));
+		showPage();
 		expect(
-			screen.getByRole("button", { name: "Invite Parlume" }),
-		).toBeDisabled();
+			await screen.findByText("Could not load project agents."),
+		).toHaveAttribute("role", "alert");
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
+		fireEvent.click(consentBox());
+		expect(inviteButton()).toBeDisabled();
+
+		fireEvent.click(screen.getByRole("button", { name: "Retry agents" }));
+		await screen.findByRole("combobox", { name: "Agent" });
+		expect(inviteButton()).toBeEnabled();
 	});
 
 	it("reports a failed invitation", async () => {
 		mocks.start.mockRejectedValue(new Error("bad link"));
 		showPage();
-		await screen.findByRole("option", {
-			name: "Fabric Agent — this project",
-		});
-		fireEvent.change(screen.getByLabelText("Teams meeting link"), {
-			target: { value: meetingUrl },
-		});
-		fireEvent.click(screen.getByRole("button", { name: "Invite Parlume" }));
+		await readyToInvite();
+		fireEvent.click(inviteButton());
 		expect(
 			await screen.findByText(/could not join this meeting/),
 		).toHaveAttribute("role", "alert");
 	});
 
-	it("hides the invite form from non-editors", async () => {
+	it("hides the invite form from non-editors and says why", async () => {
 		showPage(false);
+		const locked = await screen.findByText("Parlume is not in a meeting");
 		expect(
-			await screen.findByText(/Only project administrators/),
+			within(locked.closest("section") as HTMLElement).getByText(
+				"Only project administrators can invite or remove Parlume.",
+			),
 		).toBeInTheDocument();
 		expect(
 			screen.queryByRole("button", { name: "Invite Parlume" }),
 		).not.toBeInTheDocument();
 		expect(mocks.listAgents).not.toHaveBeenCalled();
-	});
-});
-
-describe("ParlumePage live session", () => {
-	beforeEach(() => {
-		mocks.listSessions.mockResolvedValue({
-			sessions: [
-				session({
-					id: "live1",
-					status: "ACTIVE",
-					endedAt: null,
-					joinedAt: new Date(Date.now() - 5 * 60_000),
-				}),
-			],
-		});
-	});
-
-	it("shows the live card, blocks a second invitation and stops the session", async () => {
-		showPage();
-		const card = (await screen.findByText("Live session")).closest("div");
-		expect(card).not.toBeNull();
-		fireEvent.change(screen.getByLabelText("Teams meeting link"), {
-			target: { value: meetingUrl },
-		});
-		expect(
-			screen.getByRole("button", { name: "Invite Parlume" }),
-		).toBeDisabled();
-		fireEvent.click(screen.getByRole("button", { name: "Stop" }));
-		await waitFor(() =>
-			expect(mocks.stop).toHaveBeenCalledWith({
-				projectId: "example-project",
-				sessionId: "live1",
-			}),
-		);
-	});
-
-	it("omits Stop for non-editors", async () => {
-		showPage(false);
-		await screen.findByText("Live session");
-		expect(
-			screen.queryByRole("button", { name: "Stop" }),
-		).not.toBeInTheDocument();
-	});
-
-	it("alerts when stopping fails", async () => {
-		mocks.stop.mockRejectedValue(new Error("nope"));
-		showPage();
-		fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
-		expect(
-			await screen.findByText(/could not leave the meeting/),
-		).toHaveAttribute("role", "alert");
-	});
-});
-
-describe("ParlumePage sessions and usage", () => {
-	it.each([
-		["STOPPED", "Stopped by admin"],
-		["REMOVED", "Removed from meeting"],
-		["IDLE", "Ended after 3 min of silence"],
-		["ACCESS_REVOKED", "Inviter lost access"],
-		["STREAM_ERROR", "Transcription failed"],
-		["MAX_DURATION", "Reached 4-hour limit"],
-		["PROVIDER_FAILED", "Provider failed"],
-		["START_FAILED", "Never joined"],
-	])("labels end reason %s", async (endReason, label) => {
-		mocks.listSessions.mockResolvedValue({
-			sessions: [session({ endReason })],
-		});
-		showPage();
-		expect(await screen.findByText(label)).toBeInTheDocument();
-	});
-
-	it("shows per-session cost, the project total, and a dash when cost is absent", async () => {
-		mocks.listSessions.mockResolvedValue({
-			sessions: [
-				session({
-					id: "a",
-					lastError: "Bot crashed",
-					transcriptContextId: "ctx1",
-					notes: "Decided to ship.",
-				}),
-				session({ id: "b", agentLabel: "Example assistant" }),
-			],
-		});
-		mocks.usage.mockResolvedValue({
-			totalCostMicroUsd: 12_300,
-			calls: 4,
-			sessions: [{ sessionId: "a", costMicroUsd: 12_300, calls: 4 }],
-		});
-		showPage();
-		const sessionsCard = (await screen.findByText("Sessions")).closest(
-			"div[class*=rounded]",
-		) as HTMLElement;
-		const items = await within(sessionsCard).findAllByRole("listitem");
-		expect(
-			within(items[0]).getByText(/Cost \$0\.0123/),
-		).toBeInTheDocument();
-		expect(within(items[0]).getByText("Bot crashed")).toBeInTheDocument();
-		expect(within(items[0]).getByText("Meeting notes")).toBeInTheDocument();
-		expect(
-			within(items[0]).getByText(/Transcript saved in project Context/),
-		).toBeInTheDocument();
-		expect(within(items[1]).getByText(/Cost —/)).toBeInTheDocument();
-		expect(await screen.findByText("$0.0123")).toBeInTheDocument();
-		expect(screen.getByText(/4 calls in this project/)).toBeInTheDocument();
-	});
-});
-
-describe("ParlumePage requests", () => {
-	it("filters history by session", async () => {
-		mocks.listSessions.mockResolvedValue({
-			sessions: [session({ id: "s1" }), session({ id: "s2" })],
-		});
-		mocks.history.mockResolvedValue({
-			items: [
-				{
-					id: "t1",
-					speakerName: "Ada",
-					createdAt: new Date("2026-09-30T10:05:00Z"),
-					requestText: "What is the status?",
-					responseText: "On track.",
-					error: null,
-					status: "COMPLETED",
-					session: {
-						agentLabel: "Fabric Agent — this project",
-						toolsReadOnly: true,
-					},
-					actions: [],
-				},
-			],
-			nextCursor: null,
-		});
-		showPage();
-		expect(
-			await screen.findByText("What is the status?"),
-		).toBeInTheDocument();
-		expect(mocks.history).toHaveBeenLastCalledWith({
-			projectId: "example-project",
-			sessionId: undefined,
-			before: undefined,
-		});
-		const select = screen.getByLabelText("Session");
-		await waitFor(() =>
-			expect(
-				within(select).getAllByRole("option").length,
-			).toBeGreaterThan(2),
-		);
-		fireEvent.change(select, { target: { value: "s2" } });
-		await waitFor(() =>
-			expect(mocks.history).toHaveBeenLastCalledWith({
-				projectId: "example-project",
-				sessionId: "s2",
-				before: undefined,
-			}),
-		);
 	});
 });

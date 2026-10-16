@@ -27,7 +27,9 @@
  * client, and `@repo/database` depends on this package.
  */
 
+import { AGENT_TASK_PROMPT_AGENT_KEY } from "./agent-task-prompt";
 import { documentTypeShortLabel } from "./document-type-catalog";
+import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "./publishing-linkedin-post-prompt";
@@ -148,6 +150,16 @@ export const PROMPT_FEATURE_TYPES = {
 		label: "Publishing Suite",
 		description:
 			"Turning delivered work into publishable topics, and planning what to write before anything is drafted.",
+	},
+	AUTOMATION: {
+		label: "Workflows & Automation",
+		description:
+			"The agents that run inside a published workflow, usually on a schedule and with nobody watching.",
+	},
+	WORKSPACES: {
+		label: "Workspaces",
+		description:
+			"What Fabric says when a published page asks it a question.",
 	},
 } as const satisfies Record<string, { label: string; description: string }>;
 
@@ -464,6 +476,28 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		key: "action_item_routing_judge",
 		label: "Action Item Routing Judge",
 		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The standing orders for a workflow's Agent Task step, which runs
+		// unattended. Editing it changes the house rules for every scheduled
+		// agent in the organization: how it behaves when nobody can answer, how
+		// it treats the data earlier steps hand it, and the shape of the HTML or
+		// Markdown it must return. A node's own instructions are appended after
+		// it, and the tools an agent may use are fixed by the node, not here.
+		key: AGENT_TASK_PROMPT_AGENT_KEY,
+		label: "Workflow Agent Task",
+		featureType: "AUTOMATION",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The instructions behind a published page's Ask. Editing it changes the
+		// voice and the shape of the answers (plain text, Markdown or JSON). The
+		// call has no tools, and the question and the page's context are fenced
+		// as untrusted data code-side, so it cannot be edited to follow them.
+		key: PAGE_ASK_PROMPT_AGENT_KEY,
+		label: "Workspace Page Ask",
+		featureType: "WORKSPACES",
 		actions: nonStage("GENERAL"),
 	},
 	{

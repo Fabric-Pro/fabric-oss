@@ -89,3 +89,25 @@ test("a new request or cancellation discards the previous draft", (t) => {
 	t.mock.timers.tick(5_000);
 	assert.equal(completed.length, 1);
 });
+
+test("a request begun with no quiet window is submitted on the next tick, not after the default wait", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const { turns, completed } = endpoint();
+	turns.begin("speaker-1", { text: "status", utteranceEndMs: 1_000 }, 0);
+	assert.equal(completed.length, 0, "never synchronously");
+	t.mock.timers.tick(1);
+	assert.deepEqual(completed, [{ text: "status", utteranceEndMs: 1_000 }]);
+	assert.equal(turns.hold("speaker-1"), false);
+});
+
+test("a held request keeps the quiet window it began with", (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+	const { turns, completed } = endpoint();
+	turns.begin("speaker-1", { text: "status", utteranceEndMs: 1_000 }, 200);
+	t.mock.timers.tick(150);
+	assert.equal(turns.hold("speaker-1"), true);
+	t.mock.timers.tick(199);
+	assert.equal(completed.length, 0);
+	t.mock.timers.tick(1);
+	assert.equal(completed.length, 1);
+});

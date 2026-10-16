@@ -1,16 +1,20 @@
-import { ORPCError } from "@orpc/client";
-import { getWorkflowById } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { getWorkflowCommand } from "../lib/workflow-read-commands";
+import { workflowActor, workflowCommandErrors } from "./workflow-actor";
 
 export const getWorkflowProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/workflows/{id}",
@@ -25,38 +29,13 @@ export const getWorkflowProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const user = context.user;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		// Get workflow
-		const workflow = await getWorkflowById(
+		const workflow = await getWorkflowCommand(
+			workflowActor(context.user.id, organizationId),
 			input.id,
-			user.id,
-			organizationId,
 		);
-
-		if (!workflow) {
-			throw new ORPCError("NOT_FOUND", {
-				message: "Workflow not found",
-			});
-		}
-
 		return { workflow };
 	});

@@ -11,6 +11,7 @@ import {
 	streamText,
 	tool,
 } from "@repo/ai";
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import {
 	db,
 	ensureSensitiveOperationAuthority,
@@ -29,6 +30,7 @@ import { publishExecutionEvent } from "../../lib/redis-publisher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { getAgentMemoryTools } from "../agent-memory";
 import { createRunAgentTool } from "../agentic-loop";
+import { buildProviderOptions } from "../direct-chat/build-provider-options";
 import { createBuiltInTools } from "../direct-chat/built-in-tools";
 import {
 	classifyIntegrationAccessLevel,
@@ -38,7 +40,7 @@ import {
 } from "../orchestrator/execution/authority-gate";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
-import { getAiModel } from "../orchestrator/utils/model-selector";
+import { getAiModelWithSelection } from "../orchestrator/utils/model-selector";
 import {
 	hasExactAgentToolApproval,
 	observeAgentText,
@@ -64,6 +66,11 @@ import {
 } from "../shared/frame-service";
 import { executeMicrosoftTeamsTool } from "../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
+import {
+	recordTurnUsage,
+	recordTurnValue,
+	recordTurnValueOnce,
+} from "../shared/turn-timing";
 import type {
 	ExecuteAgentTurnInput,
 	ExecuteAgentTurnResult,
@@ -406,9 +413,15 @@ export async function executeAgentTurn(
 			featureKey,
 			conversationId,
 		};
-		const aiModel = model
+		const modelResolveStartedAt = Date.now();
+		recordTurnValue("agent.preModelMs", modelResolveStartedAt - startTime);
+		const {
+			model: aiModel,
+			provider: aiProvider,
+			modelString: aiModelString,
+		} = model
 			? await getModelWithOverride(model, usageContext)
-			: await getAiModel(
+			: await getAiModelWithSelection(
 					userId,
 					organizationId,
 					hasTools,
@@ -420,6 +433,18 @@ export async function executeAgentTurn(
 						conversationId,
 					},
 				);
+		recordTurnValue(
+			"agent.modelResolveMs",
+			Date.now() - modelResolveStartedAt,
+		);
+		// Only a voice turn carries options here; the reasoning mode a saved
+		// agent configures does not reach this engine.
+		const providerOptions = buildProviderOptions(
+			aiProvider,
+			aiModelString,
+			undefined,
+			featureKey,
+		);
 
 		// Send initial heartbeat
 		heartbeat({ phase: "executing", toolCalls: [] });
@@ -431,13 +456,24 @@ export async function executeAgentTurn(
 		// Track token usage
 		let tokenUsage: ExecuteAgentTurnResult["tokenUsage"];
 
+		const llmStartedAt = Date.now();
+		recordTurnValue("agent.preLlmMs", llmStartedAt - startTime);
+		const markFirstText = () =>
+			recordTurnValueOnce("llm.firstTextMs", Date.now() - llmStartedAt);
+
 		if (hasTools) {
 			const stream = streamText({
 				model: aiModel,
 				stopWhen: isStepCount(maxIterations),
+				prepareStep: makeStepCacheBreakpoint({
+					provider: aiProvider,
+					modelString: aiModelString,
+					hasTools,
+				}),
 				instructions: fullSystemPrompt,
 				messages: messages as any,
 				tools: tools as any,
+				...(providerOptions ? { providerOptions } : {}),
 				abortSignal: Context.current().cancellationSignal,
 				// AI SDK 7 calls onChunk for EVERY TextStreamPart; v6 passed only
 				// a subset (text/reasoning deltas, sources, tool parts, raw). Guard
@@ -452,6 +488,7 @@ export async function executeAgentTurn(
 					if (chunk.type !== "text-delta" || !chunk.text) {
 						return;
 					}
+					markFirstText();
 					observeAgentText(chunk.text);
 					logger.info("[AgentExecutor] onChunk", {
 						chunkType: chunk.type,
@@ -537,6 +574,8 @@ export async function executeAgentTurn(
 			const result = await stream;
 			responseText = (await result.text) || "Task completed.";
 			const usage = await result.usage;
+			recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
+			recordTurnUsage("llm", usage);
 			tokenUsage = extractTokenUsage({ usage });
 		} else {
 			// No tools - simple text generation with streaming
@@ -544,6 +583,7 @@ export async function executeAgentTurn(
 				model: aiModel,
 				instructions: fullSystemPrompt,
 				messages: messages as any,
+				...(providerOptions ? { providerOptions } : {}),
 				abortSignal: Context.current().cancellationSignal,
 				onChunk: ({
 					chunk,
@@ -553,6 +593,7 @@ export async function executeAgentTurn(
 					if (chunk.type !== "text-delta" || !chunk.text) {
 						return;
 					}
+					markFirstText();
 					observeAgentText(chunk.text);
 					if (executionId) {
 						publishExecutionEvent(executionId, {
@@ -566,10 +607,13 @@ export async function executeAgentTurn(
 			const result = await stream;
 			responseText = (await result.text) || "Task completed.";
 			const usage = await result.usage;
+			recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
+			recordTurnUsage("llm", usage);
 			tokenUsage = extractTokenUsage({ usage });
 		}
 
 		const durationMs = Date.now() - startTime;
+		recordTurnValue("llm.toolCalls", toolCalls.length);
 
 		logger.info("[AgentExecutor] Agent turn completed", {
 			responseLength: responseText.length,
@@ -1242,13 +1286,20 @@ async function getModelWithOverride(
 	modelName: string,
 	context: AgentUsageContext,
 ) {
-	const { getAIModel } = await import("@repo/ai");
+	const { getAIModelWithMetadata } = await import("@repo/ai");
 
-	// Use centralized single entry point with model override
-	return getAIModel(
+	// Use centralized single entry point with model override. The provider and
+	// model string ride along for the prompt-cache gate (no trackUsage call, as
+	// before: getAIModel never made one).
+	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "COMPLEX", modelOverride: modelName },
 		context,
 	);
+	return {
+		model,
+		provider: metadata.provider,
+		modelString: metadata.modelString,
+	};
 }
 
 /**
@@ -1571,9 +1622,13 @@ export async function previewAgentTurn(
 		const fullSystemPrompt = buildFullSystemPrompt(systemPrompt);
 		const messages = await buildConversationMessages([], userMessage);
 
-		const aiModel = model
+		const {
+			model: aiModel,
+			provider: aiProvider,
+			modelString: aiModelString,
+		} = model
 			? await getModelWithOverride(model, { userId, organizationId })
-			: await getAiModel(userId, organizationId, hasTools);
+			: await getAiModelWithSelection(userId, organizationId, hasTools);
 
 		let responseText: string;
 
@@ -1581,6 +1636,11 @@ export async function previewAgentTurn(
 			const stream = streamText({
 				model: aiModel,
 				stopWhen: isStepCount(maxIterations),
+				prepareStep: makeStepCacheBreakpoint({
+					provider: aiProvider,
+					modelString: aiModelString,
+					hasTools,
+				}),
 				instructions: fullSystemPrompt,
 				messages: messages as any,
 				tools: tools as any,

@@ -906,7 +906,14 @@ export async function generateDailyBriefWorkflow(
 					partialFailures,
 					ahead,
 				}),
-			planWait,
+			{
+				...planWait,
+				stoppedNotice: {
+					work: "DAILY_BRIEF",
+					projectId,
+					link: `projects/${projectId}?tab=daily-brief`,
+				},
+			},
 		);
 
 		const anchorV5 = patched("daily-brief-v5-prod-release-anchor");

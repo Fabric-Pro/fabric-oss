@@ -367,7 +367,7 @@ export function visualSpecFacts(spec: VisualSpec): VisualSpecFacts {
  * but different key insertion order (e.g. one round-tripped through a model
  * response, one built directly) hash identically.
  */
-function canonicalize(value: unknown): string {
+export function canonicalize(value: unknown): string {
 	if (value === null || typeof value !== "object") {
 		return JSON.stringify(value);
 	}
@@ -382,7 +382,7 @@ function canonicalize(value: unknown): string {
 }
 
 /** 32-bit FNV-1a over a string, seeded so two calls with different seeds diverge. */
-function fnv1a(value: string, seed: number): number {
+export function fnv1a(value: string, seed: number): number {
 	let hash = seed;
 	for (let i = 0; i < value.length; i++) {
 		hash ^= value.charCodeAt(i);
@@ -391,9 +391,9 @@ function fnv1a(value: string, seed: number): number {
 	return hash >>> 0;
 }
 
-const FNV_OFFSET_BASIS = 0x811c9dc5;
+export const FNV_OFFSET_BASIS = 0x811c9dc5;
 /** Golden-ratio constant, used only to decorrelate the second FNV-1a pass from the first. */
-const SECOND_SEED = 0x9e3779b9;
+export const SECOND_SEED = 0x9e3779b9;
 
 /**
  * Stable, non-cryptographic hash of a visual spec's content, for cache and

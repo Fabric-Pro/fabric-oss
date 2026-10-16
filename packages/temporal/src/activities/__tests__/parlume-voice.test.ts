@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ParlumeSentenceQueue } from "../parlume-spoken-text";
 import {
 	postParlumeMeetingChat,
 	requestParlumeMeetingStop,
@@ -76,6 +77,21 @@ vi.mock("../parlume-log", () => ({
 	parlumeActivityLog: () => undefined,
 }));
 
+// These tests exercise the PCM routes, which carry a reply when Aura cannot
+// speak it: the bridge's `say` endpoint is made to refuse.
+function stubPcmFetch(
+	handler: (url: string, init?: RequestInit) => Promise<Response> | Response,
+) {
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string, init?: RequestInit) =>
+			String(url).includes("action=say")
+				? new Response("unavailable", { status: 503 })
+				: handler(String(url), init),
+		),
+	);
+}
+
 const originalHost = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
 const originalSecret = process.env.AGENT_SERVICE_SECRET;
 
@@ -85,6 +101,8 @@ const speaker = {
 	organizationId: "org-1",
 	projectId: "project-1",
 };
+
+const spoken = (text: string) => ParlumeSentenceQueue.fromText(text, 800);
 
 beforeEach(() => {
 	process.env.NEXT_PUBLIC_PARTYKIT_HOST = "bridge.example.com";
@@ -113,12 +131,12 @@ describe("Parlume speech through the organization's AI Gateway", () => {
 			played = await drain(init?.body);
 			return Response.json({ played: true });
 		});
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await expect(
 			speakParlumeResponse({
 				...speaker,
-				response: "The project is Example.",
+				sentences: spoken("The project is Example."),
 			}),
 		).resolves.toEqual({ played: true, interrupted: false });
 
@@ -153,10 +171,10 @@ describe("Parlume speech through the organization's AI Gateway", () => {
 			await drain(init?.body);
 			return Response.json({ played: true });
 		});
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await expect(
-			speakParlumeResponse({ ...speaker, response: "Hello" }),
+			speakParlumeResponse({ ...speaker, sentences: spoken("Hello") }),
 		).resolves.toEqual({ played: true, interrupted: false });
 
 		expect(logAiUsageAsync).toHaveBeenCalledWith(
@@ -173,13 +191,10 @@ describe("Parlume speech through the organization's AI Gateway", () => {
 
 	it("reports the last route's error when every route fails", async () => {
 		generateSpeech.mockRejectedValue(new Error("model not available"));
-		vi.stubGlobal(
-			"fetch",
-			vi.fn().mockResolvedValueOnce(new Response(null, { status: 401 })),
-		);
+		stubPcmFetch(async () => new Response(null, { status: 401 }));
 
 		await expect(
-			speakParlumeResponse({ ...speaker, response: "Hello" }),
+			speakParlumeResponse({ ...speaker, sentences: spoken("Hello") }),
 		).rejects.toThrow("HTTP 401");
 	});
 });
@@ -189,7 +204,7 @@ describe("Parlume meeting chat fallback", () => {
 		const fetchMock = vi
 			.fn()
 			.mockResolvedValue(Response.json({ sent: true }));
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await expect(
 			postParlumeMeetingChat({
@@ -240,7 +255,7 @@ describe("Parlume dispatch generation", () => {
 			const fetchMock = vi
 				.fn()
 				.mockResolvedValue(Response.json({ current }));
-			vi.stubGlobal("fetch", fetchMock);
+			stubPcmFetch(fetchMock);
 			await expect(
 				verifyParlumeVoiceGeneration({
 					sessionId: "session",
@@ -272,7 +287,7 @@ describe("Parlume dispatch generation", () => {
 
 	it("does not contact the bridge after cancellation", async () => {
 		const fetchMock = vi.fn();
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 		await expect(
 			verifyParlumeVoiceGeneration({
 				sessionId: "session",
@@ -285,6 +300,54 @@ describe("Parlume dispatch generation", () => {
 });
 
 describe("Parlume spoken responses", () => {
+	it("plays the first sentence while the rest of the answer is still being written", async () => {
+		const sentences = new ParlumeSentenceQueue(800);
+		const synthesized: string[] = [];
+		let second: Uint8Array | undefined;
+		const fetchMock = vi.fn(async (url: string, request?: RequestInit) => {
+			if (url.includes("api.openai.com")) {
+				const { input } = JSON.parse(String(request?.body));
+				synthesized.push(input);
+				return new Response(
+					new Uint8Array(synthesized.length === 1 ? [1, 0] : [2, 0]),
+				);
+			}
+			if (!(request?.body instanceof ReadableStream)) {
+				throw new Error("Expected streaming body");
+			}
+			const reader = request.body.getReader();
+			expect(await reader.read()).toEqual({
+				done: false,
+				value: new Uint8Array([1, 0]),
+			});
+			// The second sentence did not exist when the first one was sent.
+			expect(synthesized).toEqual(["The roadmap has two hundred items."]);
+			sentences.push(" of them are done.");
+			sentences.end();
+			second = (await reader.read()).value;
+			expect((await reader.read()).done).toBe(true);
+			return Response.json({ played: true, interrupted: false });
+		});
+		stubPcmFetch(fetchMock);
+
+		sentences.push("The roadmap has two hundred items. Forty");
+		const playback = speakParlumeResponse({
+			...speaker,
+			sentences,
+			voiceGeneration: 4,
+		});
+
+		await expect(playback).resolves.toEqual({
+			played: true,
+			interrupted: false,
+		});
+		expect(synthesized).toEqual([
+			"The roadmap has two hundred items.",
+			"Forty of them are done.",
+		]);
+		expect(second).toEqual(new Uint8Array([2, 0]));
+	});
+
 	it("forwards the first PCM bytes before speech synthesis finishes", async () => {
 		let finish: (() => void) | undefined;
 		let synthesisFinished = false;
@@ -323,11 +386,11 @@ describe("Parlume spoken responses", () => {
 				firstAudioAt: 123,
 			});
 		});
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 		await expect(
 			speakParlumeResponse({
 				...speaker,
-				response: "Hello",
+				sentences: spoken("Hello"),
 				voiceGeneration: 3,
 			}),
 		).resolves.toEqual({
@@ -345,11 +408,11 @@ describe("Parlume spoken responses", () => {
 			.mockResolvedValueOnce(
 				Response.json({ played: false, interrupted: true }),
 			);
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 		await expect(
 			speakParlumeResponse({
 				...speaker,
-				response: "Hello",
+				sentences: spoken("Hello"),
 				voiceGeneration: 3,
 				signal: controller.signal,
 			}),
@@ -372,11 +435,11 @@ describe("Parlume spoken responses", () => {
 			.mockResolvedValueOnce(
 				new Response('{"played":true}', { status: 200 }),
 			);
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await speakParlumeResponse({
 			...speaker,
-			response: "The project decision is recorded.",
+			sentences: spoken("The project decision is recorded."),
 			voiceGeneration: 3,
 		});
 
@@ -423,12 +486,12 @@ describe("Parlume spoken responses", () => {
 			}
 			return new Response('{"played":true}', { status: 200 });
 		});
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 		const response = "x".repeat(40);
 
 		await speakParlumeResponse({
 			...speaker,
-			response,
+			sentences: spoken(response),
 			voiceGeneration: 3,
 		});
 
@@ -458,13 +521,10 @@ describe("Parlume spoken responses", () => {
 	});
 
 	it("records a failed synthesis so the attempt is still visible in usage", async () => {
-		vi.stubGlobal(
-			"fetch",
-			vi.fn().mockResolvedValueOnce(new Response(null, { status: 429 })),
-		);
+		stubPcmFetch(async () => new Response(null, { status: 429 }));
 
 		await expect(
-			speakParlumeResponse({ ...speaker, response: "Hello" }),
+			speakParlumeResponse({ ...speaker, sentences: spoken("Hello") }),
 		).rejects.toThrow("HTTP 429");
 		expect(logAiUsageAsync).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -480,12 +540,12 @@ describe("Parlume spoken responses", () => {
 		// never a fallback, so nothing is synthesized.
 		resolveOpenAiApiKey.mockResolvedValue("");
 		const fetchMock = vi.fn();
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await expect(
 			speakParlumeResponse({
 				...speaker,
-				response: "Hello",
+				sentences: spoken("Hello"),
 				voiceGeneration: 3,
 			}),
 		).rejects.toThrow(
@@ -501,7 +561,7 @@ describe("Parlume spoken responses", () => {
 			.mockResolvedValue(
 				new Response('{"accepted":true}', { status: 200 }),
 			);
-		vi.stubGlobal("fetch", fetchMock);
+		stubPcmFetch(fetchMock);
 
 		await requestParlumeMeetingStop({ sessionId: "session-1" });
 

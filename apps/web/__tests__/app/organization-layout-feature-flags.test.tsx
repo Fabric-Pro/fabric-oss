@@ -75,6 +75,9 @@ vi.mock("@saas/shared/components/AppWrapper", () => ({
 		</>
 	),
 }));
+// An ordinary page request unless a test marks it as a frame's embed view.
+let requestHeaders = new Headers();
+vi.mock("next/headers", () => ({ headers: async () => requestHeaders }));
 // A real client, not a hand-rolled stub: the layout now dehydrates it into a
 // `<HydrationBoundary>`, and dehydration reads defaults a stub does not carry.
 let serverQueryClient: ReturnType<typeof createQueryClient>;
@@ -126,6 +129,7 @@ async function renderLayout() {
 beforeEach(() => {
 	vi.clearAllMocks();
 	serverQueryClient = createQueryClient();
+	requestHeaders = new Headers();
 });
 
 describe("organization layout feature flags", () => {
@@ -164,5 +168,17 @@ describe("organization layout feature flags", () => {
 		await renderLayout();
 
 		expect(getAllFlagsForOrganization).toHaveBeenCalledWith("org-1");
+	});
+
+	it("draws a frame's embed view without the app shell, flags still resolved", async () => {
+		requestHeaders = new Headers({ "x-embed-route": "1" });
+		getAllFlagsForOrganization.mockResolvedValue({
+			PUBLISHING_SUITE: true,
+		});
+
+		await renderLayout();
+
+		expect(screen.getByTestId("probe")).toHaveTextContent("on");
+		expect(screen.queryByTestId("banner-probe")).toBeNull();
 	});
 });

@@ -34,6 +34,7 @@ import {
 } from "./resources/integrations.js";
 import { KnowledgeResource } from "./resources/knowledge.js";
 import { McpResource } from "./resources/mcp.js";
+import { MemoryResource } from "./resources/memory.js";
 import { OrgsResource } from "./resources/orgs.js";
 import { ProjectsResource } from "./resources/projects.js";
 import { PromptsResource } from "./resources/prompts.js";
@@ -65,6 +66,7 @@ export class FabricClient {
 	readonly frames: FramesResource;
 	readonly instructions: InstructionsResource;
 	readonly contexts: ContextsResource;
+	readonly memory: MemoryResource;
 	readonly workspaces: WorkspacesResource;
 	readonly chats: ChatsResource;
 	readonly reports: ReportsResource;
@@ -99,6 +101,7 @@ export class FabricClient {
 		this.frames = new FramesResource(this.http);
 		this.instructions = new InstructionsResource(this.http);
 		this.contexts = new ContextsResource(this.http);
+		this.memory = new MemoryResource(this.http);
 		this.workspaces = new WorkspacesResource(this.http);
 		this.chats = new ChatsResource(this.http);
 		this.reports = new ReportsResource(this.http);
@@ -235,6 +238,25 @@ export type {
 	KnowledgeSearchOptions,
 } from "./resources/knowledge.js";
 export type { ListMcpOptions } from "./resources/mcp.js";
+export type {
+	GetMemoryFolderFileOptions,
+	ListMemoryFolderFilesOptions,
+	MemoryFolderFile,
+	MemoryFolderFileContent,
+	MemoryFolderFiles,
+	MemoryUploadUrls,
+	MemoryWriteEntry,
+	MemoryWriteMode,
+	MemoryWriteOutcome,
+	MemoryWritePathVerdict,
+	MemoryWriteReceipt,
+	MemoryWriteRefusalData,
+	MemoryWriteStatus,
+	MemoryWriteTarget,
+	MemoryWriteTargets,
+	SubmitMemoryWriteInput,
+	SubmittedMemoryWrite,
+} from "./resources/memory.js";
 export type {
 	CreateDocumentOptions,
 	CreateFeatureOptions,

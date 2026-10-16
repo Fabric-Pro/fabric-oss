@@ -3,7 +3,7 @@ title: Organisationen & Mandantenfähigkeit
 description: Mit Ihrem Team über Organisationen, rollenbasierte Zugriffskontrolle und gemeinsame Ressourcen zusammenarbeiten.
 ---
 
-Organisationen in Fabric AI ermöglichen Team-Zusammenarbeit mit unternehmensweiter Sicherheit und Isolierung. Teilen Sie Agenten, Workspaces und Prompts und behalten Sie dabei die Kontrolle darüber, wer auf was zugreifen kann.
+Organisationen in Fabric AI ermöglichen Team-Zusammenarbeit mit unternehmensweiter Sicherheit und Isolierung. Teilen Sie Agenten, Bibliotheken und Prompts und behalten Sie dabei die Kontrolle darüber, wer auf was zugreifen kann.
 
 ## Was ist eine Organisation?
 
@@ -16,7 +16,7 @@ flowchart TB
 
         subgraph RESOURCES["Gemeinsame Ressourcen"]
             A["Agenten<br/>(Geteilt)"]
-            W["Workspaces<br/>(Geteilt)"]
+            W["Bibliotheken<br/>(Geteilt)"]
             P["Prompts<br/>(Geteilt)"]
         end
 
@@ -75,8 +75,8 @@ Fabric AI verwendet rollenbasierte Zugriffskontrolle (RBAC):
 
 | Berechtigung | Eigentümer | Admin | Mitglied |
 |------------|-------|-------|--------|
-| Agenten und Workspaces nutzen | ✅ | ✅ | ✅ |
-| Agenten und Workspaces erstellen | ✅ | ✅ | ✅ |
+| Agenten und Bibliotheken nutzen | ✅ | ✅ | ✅ |
+| Agenten und Bibliotheken erstellen | ✅ | ✅ | ✅ |
 | Mitglieder einladen | ✅ | ✅ | ❌ |
 | Mitgliederrollen verwalten | ✅ | ✅ | ❌ |
 | Mitglieder entfernen | ✅ | ✅ | ❌ |
@@ -120,7 +120,7 @@ flowchart LR
 
 Beim Erstellen eines Agenten wählen Sie **Organisation** als Sichtbarkeit, um mit Ihrem Team zu teilen.
 
-### Organisations-Workspaces
+### Organisationsbibliotheken
 
 Wissensbasen im Team teilen:
 
@@ -156,7 +156,7 @@ flowchart TB
     subgraph PLATFORM["Fabric AI Plattform"]
         subgraph ORGA["Org A Daten"]
             A1["Agenten"]
-            A2["Workspaces"]
+            A2["Bibliotheken"]
             A3["Dokumente"]
             A4["MCP-Schlüssel"]
         end
@@ -165,7 +165,7 @@ flowchart TB
 
         subgraph ORGB["Org B Daten"]
             B1["Agenten"]
-            B2["Workspaces"]
+            B2["Bibliotheken"]
             B3["Dokumente"]
             B4["MCP-Schlüssel"]
         end
@@ -218,7 +218,7 @@ Verstehen Sie, in welchem Kontext Sie arbeiten:
 | Aspekt | Persönlich | Organisation |
 |--------|----------|--------------|
 | Agenten | Nur Sie | Alle Mitglieder |
-| Workspaces | Nur Sie | Alle Mitglieder |
+| Bibliotheken | Nur Sie | Alle Mitglieder |
 | Prompts | Nur Sie | Alle Mitglieder |
 | MCP-Verbindungen | Ihre Konten | Gemeinsame Konten |
 | Abrechnung | Ihr Plan | Org-Plan |
@@ -304,9 +304,9 @@ support@fabric.pro.
 
 ### 1. Beschreibende Namen verwenden
 
-Agenten und Workspaces klar benennen:
+Agenten und Bibliotheken klar benennen:
 - ✅ „Q4 Produkt-PRDs"
-- ❌ „Workspace 1"
+- ❌ „Bibliothek 1"
 
 ### 2. Angemessene Sichtbarkeit festlegen
 
@@ -314,9 +314,9 @@ Agenten und Workspaces klar benennen:
 - **Organisation** für Team-Ressourcen verwenden
 - Selten **Öffentlich** verwenden
 
-### 3. Workspaces nach Domäne organisieren
+### 3. Bibliotheken nach Domäne organisieren
 
-Separate Workspaces für verschiedene Wissensdomänen erstellen:
+Separate Bibliotheken für verschiedene Wissensdomänen erstellen:
 - „Backend-Architektur"
 - „Frontend-Richtlinien"
 - „Produktanforderungen"

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	assertTenantOwnedKey,
+	buildFramePageFilePath,
+	buildFramePageFilesPrefix,
 	buildProjectStoragePath,
 	buildTenantStoragePath,
 	isTenantOwnedKey,
@@ -51,5 +53,44 @@ describe("tenant-paths (F-099 XOR isolation)", () => {
 		expect(() =>
 			assertTenantOwnedKey("org_1/x.md", "org_1", "usr_1"),
 		).not.toThrow();
+	});
+});
+
+describe("published page files", () => {
+	const page = {
+		organizationId: "org_1",
+		userId: "usr_1",
+		frameId: "frame_1",
+	};
+
+	it("keys a page's files under the organization, the page and a files folder", () => {
+		expect(buildFramePageFilesPrefix(page)).toBe(
+			"org_1/frames/frame_1/files/",
+		);
+		expect(buildFramePageFilePath({ ...page, fileId: "f_9" })).toBe(
+			"org_1/frames/frame_1/files/f_9",
+		);
+	});
+
+	it("puts every file of a page under that page's prefix, and no other page's", () => {
+		const prefix = buildFramePageFilesPrefix(page);
+
+		expect(
+			buildFramePageFilePath({ ...page, fileId: "a" }).startsWith(prefix),
+		).toBe(true);
+		// "frame_1" must not claim "frame_12": the prefix ends in a slash.
+		expect(
+			buildFramePageFilePath({
+				...page,
+				frameId: "frame_12",
+				fileId: "a",
+			}).startsWith(prefix),
+		).toBe(false);
+	});
+
+	it("falls back to the owner's folder for a page with no organization", () => {
+		expect(
+			buildFramePageFilesPrefix({ ...page, organizationId: undefined }),
+		).toBe("usr_1/frames/frame_1/files/");
 	});
 });

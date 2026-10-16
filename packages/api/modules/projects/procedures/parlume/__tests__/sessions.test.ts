@@ -7,6 +7,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		agentFindMany: vi.fn(),
 		agentFindFirst: vi.fn(),
 		sessionFindMany: vi.fn(),
+		sessionCount: vi.fn(),
 		sessionFindFirst: vi.fn(),
 		sessionFindUniqueOrThrow: vi.fn(),
 		sessionCreate: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@repo/database", () => ({
 		},
 		parlumeMeetingSession: {
 			findMany: (...args: unknown[]) => mocks.sessionFindMany(...args),
+			count: (...args: unknown[]) => mocks.sessionCount(...args),
 			findFirst: (...args: unknown[]) => mocks.sessionFindFirst(...args),
 			findUniqueOrThrow: (...args: unknown[]) =>
 				mocks.sessionFindUniqueOrThrow(...args),
@@ -65,7 +67,7 @@ vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...args: unknown[]) => mocks.recordAudit(...args),
 }));
 
-vi.mock("../../../lib/parlume-meeting-baas", () => ({
+vi.mock("../../../lib/parlume-attendee", () => ({
 	armParlumeMeetingBridge: (...args: unknown[]) => mocks.armBridge(...args),
 	getParlumeBridgeSettings: () => mocks.getSettings(),
 	isTeamsMeetingUrl: (...args: unknown[]) => mocks.isTeamsMeetingUrl(...args),
@@ -133,6 +135,7 @@ const session = {
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.contextFindMany.mockResolvedValue([]);
+	mocks.sessionCount.mockResolvedValue(0);
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.resolveVoiceKey.mockResolvedValue("test-voice-key");
@@ -434,11 +437,118 @@ describe("Parlume session procedures", () => {
 				input: { projectId: "project-1" },
 				context,
 			}),
-		).resolves.toEqual({ sessions: [] });
+		).resolves.toEqual({ sessions: [], total: 0, nextCursor: null });
 		expect(mocks.finalize).toHaveBeenCalledWith("stale-1", {
 			expectedStreamGeneration: 1,
 			preserveFailure: true,
 		});
+	});
+
+	it("lists five sessions a page, newest first, and hands back a cursor when more remain", async () => {
+		const createdAt = new Date("2026-09-30T12:00:00Z");
+		const rows = Array.from({ length: 6 }, (_, index) => ({
+			id: `session-${index}`,
+			createdAt,
+			transcriptContextId: null,
+			_count: { turns: index },
+		}));
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(rows);
+		mocks.sessionCount.mockResolvedValue(12);
+
+		const page = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as {
+			sessions: Array<{ id: string; requestCount: number }>;
+			nextCursor: unknown;
+			total: number | null;
+		};
+
+		expect(page.sessions.map((entry) => entry.id)).toEqual(
+			rows.slice(0, 5).map((row) => row.id),
+		);
+		expect(page.nextCursor).toEqual({ id: "session-4", createdAt });
+		expect(page.total).toBe(12);
+		expect(page.sessions.map((entry) => entry.requestCount)).toEqual([
+			0, 1, 2, 3, 4,
+		]);
+		expect(page.sessions[0]).not.toHaveProperty("_count");
+		expect(mocks.sessionFindMany).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				where: { projectId: "project-1" },
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+				take: 6,
+				select: expect.objectContaining({
+					_count: { select: { turns: true } },
+				}),
+			}),
+		);
+		expect(mocks.sessionCount).toHaveBeenCalledWith({
+			where: { projectId: "project-1" },
+		});
+	});
+
+	it("has no cursor on the last page", async () => {
+		const rows = Array.from({ length: 5 }, (_, index) => ({
+			id: `session-${index}`,
+			createdAt: new Date("2026-09-30T12:00:00Z"),
+			transcriptContextId: null,
+			_count: { turns: 0 },
+		}));
+		mocks.sessionFindMany
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(rows);
+
+		const page = (await handlers.listSessions({
+			input: { projectId: "project-1" },
+			context,
+		})) as { sessions: unknown[]; nextCursor: unknown };
+
+		expect(page.sessions).toHaveLength(5);
+		expect(page.nextCursor).toBeNull();
+	});
+
+	it("continues after a stable timestamp and id cursor without dropping equal-time sessions, and skips the sweep", async () => {
+		const createdAt = new Date("2026-09-30T12:00:00Z");
+		const rows = Array.from({ length: 6 }, (_, index) => ({
+			id: `session-${index}`,
+			createdAt,
+			transcriptContextId: null,
+			_count: { turns: 0 },
+		}));
+		mocks.sessionFindMany.mockResolvedValueOnce(rows);
+
+		const page = await handlers.listSessions({
+			input: {
+				projectId: "project-1",
+				before: { id: "prior", createdAt },
+			},
+			context,
+		});
+
+		expect(page).toMatchObject({
+			nextCursor: { id: "session-4", createdAt },
+			total: null,
+		});
+		expect(mocks.sessionCount).not.toHaveBeenCalled();
+		expect(mocks.sessionFindMany).toHaveBeenCalledTimes(1);
+		expect(mocks.sessionFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "project-1",
+					OR: [
+						{ createdAt: { lt: createdAt } },
+						{ createdAt, id: { lt: "prior" } },
+					],
+				},
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+				take: 6,
+			}),
+		);
+		expect(mocks.finalize).not.toHaveBeenCalled();
 	});
 
 	it("does not expose a foreign project to a guest session", async () => {
@@ -615,6 +725,7 @@ describe("Parlume session procedures", () => {
 			expect.objectContaining({
 				streamToken: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
 				callbackSecret: expect.any(String),
+				hardStopAt: expect.any(Date),
 			}),
 		);
 		expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(

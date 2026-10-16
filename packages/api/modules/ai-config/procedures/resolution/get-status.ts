@@ -32,12 +32,13 @@ import {
  * - If organizationId is NOT provided: ONLY query user_cloud_provider_config (user level)
  * - Personal and organization configurations are NEVER mixed
  *
- * `canResolveProvider` and `resolvedEmbeddingProvider` are the TWO fields that
+ * `canResolveProvider`, `resolvedProvider` / `resolvedProviderSource` and
+ * `resolvedEmbeddingProvider` / `resolvedEmbeddingSource` are the fields that
  * describe the CALLER rather than the tenant, and the isolation rule above is
- * unchanged by them. They answer "can *you* reach a provider from here?" and
- * "which one will embedding actually use for *you*?", so — exactly like the
- * resolvers they mirror — they may consult the caller's own personal rows while
- * standing inside an organization. Those rows are filtered by `userId`, are
+ * unchanged by them. They answer "can *you* reach a provider from here?",
+ * "which one, and whose, will chat actually use for *you*?" and the same for
+ * embedding, so — exactly like the resolvers they mirror — they may consult the
+ * caller's own personal rows while standing inside an organization. Those rows are filtered by `userId`, are
  * never anyone else's, and never enter `configuredProviders` / `hasOrgConfig` /
  * `hasUserConfig` / `defaultProvider` / `embeddingProvider`, which keep
  * describing the tenant alone.
@@ -129,26 +130,30 @@ function isResolvableDefault(row: {
  * of them, and only that string is returned. The rest never leaves this
  * function.
  *
- * COST, stated honestly: two extra database reads in personal context, and
- * up to three inside an organization — the tenant resolver may try the
- * organization's default row and then the caller's own before answering. They
- * land on a query the web client caches with a 60-second stale time and shares
- * between two banners. Correctness by construction was chosen over inference:
+ * COST, stated honestly: the dedicated-row lookup here, plus the tenant
+ * resolver the handler now runs on every call for the chat path (Fizzy #3082)
+ * and hands in as rung 2 — one read in personal context, up to two inside an
+ * organization, since it may try the organization's default row and then the
+ * caller's own. They land on a query the web client caches with a 60-second
+ * stale time and shares between the chrome's AI notices. Correctness by construction was chosen over inference:
  * the inference it replaces was wrong in three reachable states (see the
  * field's doc comment on the output schema below).
  */
-async function resolveEmbeddingProviderForCaller({
-	userId,
-	organizationId,
-}: {
-	userId: string;
-	// Matches the resolvers' own signature rather than narrowing it, so the
-	// absent-organization case arrives here exactly as it arrives at runtime.
-	organizationId?: string | null;
-}): Promise<{
-	provider: string | null;
-	source: "organization" | "user" | null;
-}> {
+async function resolveEmbeddingProviderForCaller(
+	{
+		userId,
+		organizationId,
+	}: {
+		userId: string;
+		// Matches the resolvers' own signature rather than narrowing it, so the
+		// absent-organization case arrives here exactly as it arrives at runtime.
+		organizationId?: string | null;
+	},
+	// Rung 2, already asked: the tenant resolver's answer is the same
+	// question the chat path asks, so the handler asks it once and hands it
+	// to both. Null when that call failed — rung 2 then cannot answer.
+	tenant: ResolvedProvider | null,
+): Promise<ResolvedProvider> {
 	const dedicated = await getEmbeddingProviderConfig({
 		userId,
 		organizationId,
@@ -160,15 +165,36 @@ async function resolveEmbeddingProviderForCaller({
 		};
 	}
 
-	// The tenant entry point, not the system one: see "ONE RUNG SHORT" above.
-	// Already `string | null` — the "nothing configured" shape carries a null
-	// provider, which is rung 3.
+	return tenant ?? { provider: null, source: null };
+}
+
+/**
+ * The provider a user-facing AI call (chat, agents, generation) lands on for
+ * this caller, from the same tenant entry point the runtime uses: the
+ * organization's default row, then the caller's own personal default.
+ *
+ * The tenant entry point, not the system one: see "ONE RUNG SHORT" above.
+ * Already `string | null` — the "nothing configured" shape carries a null
+ * provider. Only the identifier and its origin leave this function.
+ */
+async function resolveTenantProviderForCaller({
+	userId,
+	organizationId,
+}: {
+	userId: string;
+	organizationId?: string | null;
+}): Promise<ResolvedProvider> {
 	const tenant = await getAiProviderApiKey({ userId, organizationId });
 	return {
 		provider: tenant.provider,
 		source: normalizeSource(tenant.source),
 	};
 }
+
+type ResolvedProvider = {
+	provider: string | null;
+	source: "organization" | "user" | null;
+};
 
 /**
  * Whose row the resolver landed on, narrowed to the two answers a caller can
@@ -274,6 +300,27 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			resolvedEmbeddingSource: z
 				.enum(["organization", "user"])
 				.nullable(),
+			/**
+			 * What a user-facing AI call (chat, agents, generation) resolves
+			 * to for this caller when it runs on a provider key — the
+			 * provider `getAiProviderApiKey` returns, the function the runtime
+			 * calls. A ChatGPT plan that serves the caller's own work is
+			 * consulted before any key at runtime and is NOT reflected here;
+			 * readers check the plan separately.
+			 *
+			 * Describes the CALLER, like `canResolveProvider`: inside an
+			 * organization with no usable default of its own it is the caller's
+			 * personal default, filtered by `userId`. Null when nothing
+			 * resolves or the lookup failed.
+			 */
+			resolvedProvider: z.string().nullable(),
+			/**
+			 * WHOSE key the provider above came from. `"user"` inside an
+			 * organization means the caller's work there is billed to their
+			 * own personal key, which the app tells them about. Null when
+			 * nothing resolved or the origin is one this field does not model.
+			 */
+			resolvedProviderSource: z.enum(["organization", "user"]).nullable(),
 			hasUserConfig: z.boolean(),
 			hasOrgConfig: z.boolean(),
 			configuredProviders: z.array(
@@ -419,13 +466,32 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 		// take unrelated surfaces down with them. A resolver that cannot answer
 		// leaves the field null, which every reader already handles as "we do
 		// not know" and nobody reads as Anthropic.
-		let resolvedEmbeddingProvider: string | null = null;
-		let resolvedEmbeddingSource: "organization" | "user" | null = null;
+		//
+		// The chat path's answer is asked first, because the embedding path's
+		// second rung is the same question: one call answers both.
+		let tenantResolution: ResolvedProvider | null = null;
 		try {
-			const resolved = await resolveEmbeddingProviderForCaller({
+			tenantResolution = await resolveTenantProviderForCaller({
 				userId: user.id,
 				organizationId,
 			});
+		} catch (error) {
+			console.error(
+				"[AI Config] Failed to resolve the tenant provider:",
+				error,
+			);
+		}
+
+		let resolvedEmbeddingProvider: string | null = null;
+		let resolvedEmbeddingSource: "organization" | "user" | null = null;
+		try {
+			const resolved = await resolveEmbeddingProviderForCaller(
+				{
+					userId: user.id,
+					organizationId,
+				},
+				tenantResolution,
+			);
 			resolvedEmbeddingProvider = resolved.provider;
 			resolvedEmbeddingSource = resolved.source;
 		} catch (error) {
@@ -512,6 +578,8 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			canResolveProvider,
 			resolvedEmbeddingProvider,
 			resolvedEmbeddingSource,
+			resolvedProvider: tenantResolution?.provider ?? null,
+			resolvedProviderSource: tenantResolution?.source ?? null,
 			hasUserConfig,
 			hasOrgConfig,
 			configuredProviders,

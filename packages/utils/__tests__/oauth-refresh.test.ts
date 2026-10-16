@@ -689,3 +689,31 @@ describe("sanitizeOAuthErrorText", () => {
 		);
 	});
 });
+
+describe("OAuth error text adversarial separators", () => {
+	it.each([" ", "\t"])(
+		"bounds credential matching with repeated %j and no delimiter",
+		(space) => {
+			const start = performance.now();
+			expect(sanitizeOAuthErrorText(`code${space.repeat(80_000)}!`)).toBe(
+				"code !",
+			);
+			expect(performance.now() - start).toBeLessThan(500);
+		},
+	);
+
+	it("redacts full credentials before bounding output, across whitespace and quotes", () => {
+		expect(
+			sanitizeOAuthErrorText(`code ${" ".repeat(80_000)} = short-secret`),
+		).toBe("code = [redacted]");
+		expect(
+			sanitizeOAuthErrorText(
+				`"client_secret ${"\t".repeat(80_000)}" : "short-secret"`,
+			),
+		).toBe('"client_secret " : "[redacted]"');
+		const secret = "fragment-".repeat(100);
+		expect(sanitizeOAuthErrorText(`failure ${secret}`, [secret])).toBe(
+			"failure [redacted]",
+		);
+	});
+});

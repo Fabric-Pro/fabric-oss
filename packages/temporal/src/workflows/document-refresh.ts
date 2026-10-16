@@ -51,5 +51,10 @@ export async function documentRefreshWorkflow(
 		organizationId: due.organizationId,
 		userId: due.triggeredByUserId,
 		maxWaitMs: DOCUMENT_REFRESH_MAX_PLAN_WAIT_MS,
+		stoppedNotice: {
+			work: "DOCUMENT_REFRESH",
+			projectId: due.projectId,
+			initiatorUserId: null,
+		},
 	});
 }

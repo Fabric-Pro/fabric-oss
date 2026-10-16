@@ -9,6 +9,7 @@ import {
 	chatGptPlanChatPreflight,
 	withChatGptPlanApiBilling,
 } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
 import {
 	forbiddenOrganizationResponse,
@@ -28,6 +29,7 @@ import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
+import { seedCarriedOverHistory } from "../carried-over-context";
 import { assertChatWorkflowPayload } from "../chat-workflow-payload";
 import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
 import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
@@ -117,6 +119,23 @@ const streamRequestSchema = z.object({
 	storyId: z.string().max(200).nullish(),
 	documentId: z.string().max(200).nullish(),
 	taskId: z.string().max(200).nullish(),
+	// Where the chat was opened, for the tools that place what they create:
+	// a default, never a grant. The tools check access to whatever they touch.
+	workspaceId: z.string().max(200).nullish(),
+	surface: z.enum(["artifact", "workspace"]).nullish(),
+	// A call the person approved in the chat card: the tool and the exact
+	// arguments the card showed. Only tools that ask for approval can be run
+	// this way, and the gateway checks the person's access to what it touches.
+	approvedToolCall: z
+		.object({
+			toolName: z.string().min(1).max(100),
+			args: z
+				.record(z.string(), z.unknown())
+				.refine((args) => JSON.stringify(args).length <= 50_000, {
+					message: "Approved call arguments are too large",
+				}),
+		})
+		.nullish(),
 	conversationId: z.string().max(200).nullish(),
 	enabledMcpConfigIds: z.array(z.string().max(200)).max(50).nullish(),
 	enabledFabricToolIds: z.array(z.string().max(200)).max(100).nullish(),
@@ -577,6 +596,9 @@ export async function POST(request: NextRequest) {
 			storyId,
 			documentId,
 			taskId,
+			workspaceId,
+			surface,
+			approvedToolCall,
 			conversationId: requestedConversationId,
 			enabledMcpConfigIds,
 			enabledFabricToolIds,
@@ -868,12 +890,22 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// A continued chat starts from the text carried over from its parent,
+		// quoted as data in a user-role message (see `carried-over-context`),
+		// the same as on the Orchestrator engine.
+		const effectiveHistory = await seedCarriedOverHistory({
+			history,
+			conversationId,
+			userId,
+			organizationId,
+		});
+
 		// Use Temporal workflow for durability and RAG support
 		// SECURITY: Credentials are fetched internally by activities, NOT passed in workflow inputs
 		// Workflow inputs are stored in Temporal's database and visible in Web UI
 		const response = await handleTemporalWorkflow({
 			message,
-			history,
+			history: effectiveHistory,
 			userId,
 			organizationId,
 			reasoningMode,
@@ -893,6 +925,9 @@ export async function POST(request: NextRequest) {
 			projectContext,
 			modelOverride: modelOverride ?? undefined,
 			conversationId: conversationId ?? undefined,
+			workspaceId: workspaceId ?? undefined,
+			surface: surface ?? undefined,
+			approvedToolCall: approvedToolCall ?? undefined,
 		});
 		return withChatGptPlanApiBilling(response, planPreflight);
 	} catch (error) {
@@ -963,6 +998,9 @@ async function handleTemporalWorkflow(params: {
 	 * function doesn't share the outer's lexical scope).
 	 */
 	conversationId?: string;
+	workspaceId?: string;
+	surface?: "artifact" | "workspace";
+	approvedToolCall?: { toolName: string; args: Record<string, unknown> };
 }): Promise<Response> {
 	const {
 		message,
@@ -984,6 +1022,9 @@ async function handleTemporalWorkflow(params: {
 		projectContext,
 		modelOverride,
 		conversationId,
+		workspaceId,
+		surface,
+		approvedToolCall,
 	} = params;
 	const executionId = `direct-chat-${uuidv4()}`;
 
@@ -1217,6 +1258,21 @@ async function handleTemporalWorkflow(params: {
 					// A person is typing this turn, so it may run on their own
 					// ChatGPT plan where they turned it on (Fizzy #2939).
 					planEligible: true,
+					// The workflow and frame tools come from Fabric MCP for the
+					// person's chat, as they do for an external coding agent.
+					// Fabric MCP only lets the agent runtime act for a person
+					// whose turn this route vouched for: the grant is minted
+					// here, from the request this route authenticated, and the
+					// worker only carries it.
+					fabricPlatformTools: true,
+					actingGrant: mintActingGrantForTurn({
+						userId,
+						organizationId,
+						conversationId,
+					}),
+					workspaceId,
+					surface,
+					approvedToolCall,
 					systemPrompt,
 					projectContext,
 					modelOverride,

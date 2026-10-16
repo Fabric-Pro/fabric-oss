@@ -216,6 +216,9 @@ export class FabricAiHandler implements StepHandler {
 					userId: input.userId,
 					organizationId: input.organizationId,
 					projectId: input.projectId,
+					...(input.conversationId
+						? { conversationId: input.conversationId }
+						: {}),
 				});
 
 				result = analyzeResult.analysis || "";
@@ -298,6 +301,9 @@ export class FabricAiHandler implements StepHandler {
 					userId: input.userId,
 					organizationId: input.organizationId,
 					projectId: input.projectId,
+					...(input.conversationId
+						? { conversationId: input.conversationId }
+						: {}),
 				});
 
 				result = analyzeResult.analysis || "";
@@ -353,6 +359,9 @@ export class FabricAiHandler implements StepHandler {
 					userId: input.userId,
 					organizationId: input.organizationId,
 					projectId: input.projectId,
+					...(input.conversationId
+						? { conversationId: input.conversationId }
+						: {}),
 				});
 
 				result = analyzeResult.analysis || "";
@@ -424,6 +433,9 @@ export class FabricAiHandler implements StepHandler {
 					userId: input.userId,
 					organizationId: input.organizationId,
 					projectId: input.projectId,
+					...(input.conversationId
+						? { conversationId: input.conversationId }
+						: {}),
 				});
 
 				result = patternResult.output;
@@ -616,6 +628,9 @@ export class FabricAiHandler implements StepHandler {
 						model: model as any,
 						userId: input.userId,
 						organizationId: input.organizationId,
+						...(input.conversationId
+							? { conversationId: input.conversationId }
+							: {}),
 					},
 				);
 
@@ -1187,6 +1202,9 @@ export class FabricAiHandler implements StepHandler {
 					userId: input.userId,
 					organizationId: input.organizationId || undefined,
 					conversationId: input.conversationId ?? input.executionId,
+					// Usage attribution takes the real conversation only, never
+					// the execution-ID fallback above.
+					usageConversationId: input.conversationId,
 					sourceRunType: "ORCHESTRATOR",
 					sourceRunId: input.executionId,
 				});

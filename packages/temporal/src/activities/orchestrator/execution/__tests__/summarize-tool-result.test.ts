@@ -416,3 +416,20 @@ describe("summarizeLargeToolResult — chunk cap", () => {
 		);
 	});
 });
+
+describe("summarizeLargeToolResult — usage attribution", () => {
+	it("records its model calls against the chat it was made for", async () => {
+		const { deps } = makeDeps();
+		await summarizeLargeToolResult(
+			buildInput({ conversationId: "conv-1" }),
+			deps,
+		);
+		await summarizeLargeToolResult(buildInput(), deps);
+
+		const contexts = stubs.getAIModelWithMetadataMock.mock.calls.map(
+			(call) => (call as unknown[])[1] as Record<string, unknown>,
+		);
+		expect(contexts[0]).toMatchObject({ conversationId: "conv-1" });
+		expect(contexts[1]).not.toHaveProperty("conversationId");
+	});
+});

@@ -101,6 +101,12 @@ export const AI_FEATURE_KEYS = [
 	"document-quality",
 	/** Story kind classification (feature, bug, ...) of a new work item. */
 	"story-classification",
+	/**
+	 * The `agent-task` workflow step: an unattended agent turn run by a
+	 * published workflow, usually on a schedule. Its own key so scheduled agent
+	 * spend is not counted as chat.
+	 */
+	"scheduled-agent-task",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

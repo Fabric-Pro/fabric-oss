@@ -4,6 +4,7 @@ import {
 	type ChatEngineInput,
 	conversationEngineFromMetadata,
 	resolveChatEngine,
+	showsEngineMismatchNotice,
 } from "../interface-mode-engine";
 
 /**
@@ -207,5 +208,50 @@ describe("conversationEngineFromMetadata", () => {
 		expect(conversationEngineFromMetadata({ mode: "unknown" })).toBe(
 			"direct",
 		);
+	});
+});
+
+describe("showsEngineMismatchNotice (Fizzy #3093)", () => {
+	const base = {
+		uiMode: "simple" as const,
+		chatEngine: "direct" as ChatEngine,
+		newChatEngine: "orchestrator" as ChatEngine,
+		hasOpenConversation: true,
+		isAgentInstance: false,
+	};
+
+	it("shows for an open Direct chat in simple mode, where a new chat runs the Advisor", () => {
+		expect(showsEngineMismatchNotice(base)).toBe(true);
+	});
+
+	it("shows for a Research thread opened in simple mode, which runs Direct", () => {
+		const chatEngine = resolveChatEngine(
+			input({ conversationEngine: "research" }),
+		);
+		expect(showsEngineMismatchNotice({ ...base, chatEngine })).toBe(true);
+	});
+
+	it("is quiet for an orchestrator chat in simple mode", () => {
+		expect(
+			showsEngineMismatchNotice({ ...base, chatEngine: "orchestrator" }),
+		).toBe(false);
+	});
+
+	it("is quiet in advanced mode, where the engine pills explain it", () => {
+		expect(showsEngineMismatchNotice({ ...base, uiMode: "advanced" })).toBe(
+			false,
+		);
+	});
+
+	it("is quiet when no conversation is open", () => {
+		expect(
+			showsEngineMismatchNotice({ ...base, hasOpenConversation: false }),
+		).toBe(false);
+	});
+
+	it("is quiet for an agent-instance chat, which always runs Direct", () => {
+		expect(
+			showsEngineMismatchNotice({ ...base, isAgentInstance: true }),
+		).toBe(false);
 	});
 });

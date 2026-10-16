@@ -20,6 +20,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { registerHttpServerShutdown } from "@repo/observability/http-server";
 import { Hono } from "hono";
@@ -31,7 +32,10 @@ import {
 	internalApiKeyMiddleware,
 	internalOnlyMiddleware,
 } from "./middleware/internal-only";
-import { resolvePreinstalledCommand } from "./preinstalled-command";
+import {
+	type ResolvedCommand,
+	resolvePreinstalledCommand,
+} from "./preinstalled-command";
 import {
 	getProcessPool,
 	hashCredentials,
@@ -39,6 +43,11 @@ import {
 	shutdownProcessPool,
 } from "./process-pool";
 import { createStdioTransport } from "./stdio-transport";
+
+const TWILIO_PACKAGE = "@twilio-alpha/mcp";
+const TWILIO_LAUNCHER = fileURLToPath(
+	new URL("./launchers/twilio.cjs", import.meta.url),
+);
 
 // =============================================================================
 // Request Schemas
@@ -149,6 +158,10 @@ export interface ServerConfig {
 	poolConfig?: ProcessPoolConfig;
 	/** Internal API key for additional security (optional) */
 	internalApiKey?: string;
+	/** Command resolver override (used in tests) */
+	resolveCommand?: (
+		commandParts: readonly string[],
+	) => Promise<ResolvedCommand | null>;
 }
 
 /**
@@ -157,6 +170,7 @@ export interface ServerConfig {
 export function createServer(config: ServerConfig = {}): Hono {
 	const app = new Hono();
 	const pool = getProcessPool(config.poolConfig);
+	const resolveCommand = config.resolveCommand ?? resolvePreinstalledCommand;
 
 	// ==========================================================================
 	// Middleware
@@ -292,8 +306,7 @@ export function createServer(config: ServerConfig = {}): Hono {
 					const commandParts = parsedCommand.filter(
 						(part): part is string => typeof part === "string",
 					);
-					const preinstalled =
-						await resolvePreinstalledCommand(commandParts);
+					const preinstalled = await resolveCommand(commandParts);
 					if (preinstalled) {
 						console.log(
 							`[MCP Call] Running preinstalled ${preinstalled.packageName}@${preinstalled.version} instead of npx`,
@@ -301,10 +314,15 @@ export function createServer(config: ServerConfig = {}): Hono {
 					}
 					const executable =
 						preinstalled?.executable ?? commandParts[0];
-					const commandArgs = [
-						...(preinstalled?.args ?? commandParts.slice(1)),
-						...args,
-					];
+					// Twilio reads credentials only from argv; its launcher adds them in-process.
+					const commandArgs =
+						preinstalled?.packageName === TWILIO_PACKAGE
+							? [TWILIO_LAUNCHER, ...preinstalled.args, ...args]
+							: [
+									...(preinstalled?.args ??
+										commandParts.slice(1)),
+									...args,
+								];
 
 					let cleanupPaths: string[] = [];
 					let newTransport: Awaited<

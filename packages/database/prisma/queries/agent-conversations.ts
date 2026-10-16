@@ -1,5 +1,7 @@
+import { buildSharedSessionSummary } from "@repo/utils/shared-session-summary";
 import { db } from "../client";
 import type { AgentConversationStatus, Prisma } from "../generated/client";
+import { hydrateConversationTurnResults } from "./conversation-turn-results";
 
 /**
  * Prefix prepended to the synthetic assistant turn that seeds a continued
@@ -9,6 +11,15 @@ import type { AgentConversationStatus, Prisma } from "../generated/client";
  */
 export const CARRIED_OVER_MARKER_PREFIX =
 	"[CARRIED OVER FROM PREVIOUS CHAT — established context for this conversation. Treat the items below as facts the previous session already established; do not re-fetch information already noted here.]";
+
+export class CarriedOverSummaryRequiredError extends Error {
+	constructor() {
+		super(
+			"Continuing your own conversation needs the summary to carry over",
+		);
+		this.name = "CarriedOverSummaryRequiredError";
+	}
+}
 
 export class ParentConversationNotFoundError extends Error {
 	readonly parentConversationId: string;
@@ -78,8 +89,7 @@ export interface AgentTrajectory {
  * in one context read, append to, archive or delete the same user's
  * conversations from another tenant. `resolveOrganizationId()` returns
  * `undefined` whenever it cannot name an organization, so the omission was
- * silently widening the filter. It now collapses to the personal scope, the
- * same XOR shape `continueConversationInNewChat` already enforces.
+ * silently widening the filter. It now collapses to the personal scope.
  */
 function buildOrgFilter(
 	organizationId: string | null | undefined,
@@ -88,47 +98,6 @@ function buildOrgFilter(
 		return { organizationId: null };
 	}
 	return { organizationId };
-}
-
-/**
- * List conversations for a user (with optional agent filter)
- * Enforces strict isolation between personal and organizational conversations:
- * - When organizationId is provided: only show conversations for that organization
- * - When organizationId is NOT provided: only show personal conversations (organizationId = null)
- */
-export async function listAgentConversations({
-	userId,
-	organizationId,
-	agentId,
-	status,
-	limit = 50,
-	offset = 0,
-}: {
-	userId: string;
-	organizationId?: string | null;
-	agentId?: string;
-	status?: AgentConversationStatus;
-	limit?: number;
-	offset?: number;
-}) {
-	// Strict isolation: if no organizationId, only show personal conversations (null org)
-	const orgFilter = organizationId
-		? { organizationId }
-		: { organizationId: null };
-
-	const where: Prisma.AgentConversationWhereInput = {
-		userId,
-		...orgFilter,
-		...(agentId && { agentId }),
-		...(status && { status }),
-	};
-
-	return await db.agentConversation.findMany({
-		where,
-		orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
-		take: limit,
-		skip: offset,
-	});
 }
 
 /**
@@ -146,13 +115,41 @@ export async function getAgentConversationById({
 }) {
 	const orgFilter = buildOrgFilter(organizationId);
 
-	return await db.agentConversation.findFirst({
+	const conversation = await db.agentConversation.findFirst({
 		where: {
 			id,
 			userId, // Ensure user owns this conversation
 			...orgFilter,
 		},
 	});
+	if (
+		!conversation ||
+		!organizationId ||
+		asMetadataObject(conversation.metadata).mode !== "orchestrator"
+	) {
+		return conversation;
+	}
+	// Read projection only: the turn is already durable. Browser saves still
+	// merge onto the actual row under their existing lock, never this snapshot.
+	const turns = await db.conversationTurn.findMany({
+		where: { conversationId: id, userId, organizationId },
+		orderBy: [{ generation: "asc" }, { createdAt: "asc" }],
+		select: {
+			id: true,
+			executionId: true,
+			generation: true,
+			status: true,
+			responseText: true,
+			terminalAt: true,
+			terminalReason: true,
+			createdAt: true,
+			limitSignalSummary: true,
+		},
+	});
+	return {
+		...conversation,
+		...hydrateConversationTurnResults(conversation, turns),
+	};
 }
 
 // Create a new conversation
@@ -186,43 +183,73 @@ export async function createAgentConversation({
 /**
  * Continue a token-budget-exhausted conversation in a fresh chat thread.
  *
- * Verifies the caller owns the parent (and that it lives in the same tenant
- * scope), then creates a sibling conversation with `parentConversationId` set
- * and the orchestrator's exhaustion summary stored in `carriedOverSummary`.
- * The launch procedure prepends that summary to the new conversation's
- * orchestrator history on its first user turn.
+ * The parent is one the caller owns, or one its owner shared with the
+ * organization (ORGANIZATION visibility), in the caller's organization. The new
+ * conversation is always the caller's own: same organization, PRIVATE, with
+ * `parentConversationId` set and the context to carry over stored in
+ * `carriedOverSummary`, so it runs under the caller's grant and tools whoever
+ * wrote the parent. The launch routes seed that text into the new
+ * conversation's history, fenced as quoted data, on its first user turn.
  *
- * Returns the newly created conversation. Throws when the parent isn't found
- * for this user/tenant — callers should treat the throw as a 404, not 500.
+ * What is carried over depends on whose session it is. For the caller's own, it
+ * is `ownSummary` (the exhaustion synthesis the caller's client wrote, which
+ * only ever reaches the caller's own model calls). For anyone else's it is built
+ * here from the parent's own row, the text of its messages and nothing else, and
+ * `ownSummary` is ignored: a reader cannot put words in the owner's mouth.
+ *
+ * Returns the newly created conversation. Throws when no such parent is
+ * readable by the caller — a private session of someone else, another
+ * organization's, and an unknown id all look the same — callers should treat the
+ * throw as a 404, not 500. An organization is required (ADR-018).
  */
 export async function continueConversationInNewChat({
 	userId,
 	organizationId,
 	parentConversationId,
-	carriedOverSummary,
+	ownSummary,
 	title,
 }: {
 	userId: string;
-	organizationId?: string | null;
+	organizationId: string;
 	parentConversationId: string;
-	carriedOverSummary: string;
+	ownSummary?: string;
 	title?: string;
 }) {
-	// Strict XOR filter: undefined collapses to personal (null), never "any tenant".
-	// resolveOrganizationId() returns undefined for personal context, so the
-	// generic buildOrgFilter would otherwise drop tenant scoping here.
-	const tenantOrgId = organizationId ?? null;
+	if (typeof organizationId !== "string" || organizationId.length === 0) {
+		throw new ParentConversationNotFoundError(parentConversationId, userId);
+	}
 	const parent = await db.agentConversation.findFirst({
 		where: {
 			id: parentConversationId,
-			userId,
-			organizationId: tenantOrgId,
+			organizationId,
+			OR: [{ userId }, { visibility: "ORGANIZATION" }],
 		},
-		select: { id: true, agentId: true, title: true },
+		select: {
+			id: true,
+			userId: true,
+			agentId: true,
+			title: true,
+			messages: true,
+			user: { select: { name: true } },
+		},
 	});
 
 	if (!parent) {
 		throw new ParentConversationNotFoundError(parentConversationId, userId);
+	}
+
+	let carriedOverSummary: string;
+	if (parent.userId === userId) {
+		if (!ownSummary) {
+			throw new CarriedOverSummaryRequiredError();
+		}
+		carriedOverSummary = ownSummary;
+	} else {
+		carriedOverSummary = buildSharedSessionSummary({
+			ownerName: parent.user.name,
+			title: parent.title,
+			messages: parent.messages,
+		});
 	}
 
 	const continuationTitle =
@@ -231,10 +258,11 @@ export async function continueConversationInNewChat({
 	return await db.agentConversation.create({
 		data: {
 			userId,
-			organizationId: tenantOrgId,
+			organizationId,
 			agentId: parent.agentId,
 			title: continuationTitle,
 			messages: [],
+			visibility: "PRIVATE",
 			parentConversationId: parent.id,
 			carriedOverSummary,
 			carriedOverAt: new Date(),
@@ -1301,36 +1329,6 @@ export async function toggleConversationPin({
 			pinned: !conversation.pinned,
 		},
 	});
-}
-
-/**
- * Count conversations for a user
- * Enforces strict isolation between personal and organizational conversations
- */
-export async function countAgentConversations({
-	userId,
-	organizationId,
-	agentId,
-	status,
-}: {
-	userId: string;
-	organizationId?: string | null;
-	agentId?: string;
-	status?: AgentConversationStatus;
-}) {
-	// Strict isolation: if no organizationId, only count personal conversations
-	const orgFilter = organizationId
-		? { organizationId }
-		: { organizationId: null };
-
-	const where: Prisma.AgentConversationWhereInput = {
-		userId,
-		...orgFilter,
-		...(agentId && { agentId }),
-		...(status && { status }),
-	};
-
-	return await db.agentConversation.count({ where });
 }
 
 // Generate title from first message (utility function)

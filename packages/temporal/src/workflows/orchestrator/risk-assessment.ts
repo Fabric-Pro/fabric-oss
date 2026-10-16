@@ -12,7 +12,10 @@
  * both execution paths.
  */
 
-import { isFabricOwnedRead } from "./fabric-catalog-access";
+import {
+	FABRIC_CATALOG_GATEWAY_ACCESS,
+	isFabricOwnedRead,
+} from "./fabric-catalog-access";
 
 // =============================================================================
 // Types
@@ -38,10 +41,14 @@ export type AutonomyLevel = "CONSERVATIVE" | "BALANCED" | "AUTONOMOUS";
  * delete approval. `read-only-exempt-v1` never scans a Fabric-owned read,
  * keeps substring matching on the tool name (short, server-chosen, and where
  * `bulkdelete` must still read as a delete), and matches the arguments by
- * word, inflections included. The loop picks the version behind a patch
- * marker, so a recorded history keeps the decision it was made with.
+ * word, inflections included. `fabric-gated-v2` is v1 plus one thing: a
+ * workflow tool the loop sends to the Fabric catalog is not scanned at all,
+ * because the activity that runs it asks the person before it writes (the
+ * runtime authority round) — scanning its arguments for "every" or "remove"
+ * could only add a second, misleading prompt. The loop picks the version behind
+ * a patch marker, so a recorded history keeps the decision it was made with.
  */
-export type RiskRules = "legacy" | "read-only-exempt-v1";
+export type RiskRules = "legacy" | "read-only-exempt-v1" | "fabric-gated-v2";
 
 export interface RiskAssessmentOptions {
 	rules: RiskRules;
@@ -209,6 +216,18 @@ export function assessToolCallRisk(
 			riskLevel: "low",
 			requiresApproval: autonomyConfig.approveRiskLevels.includes("low"),
 			reason: undefined,
+		};
+	}
+
+	if (
+		options.rules === "fabric-gated-v2" &&
+		options.fabricRouted === true &&
+		Object.hasOwn(FABRIC_CATALOG_GATEWAY_ACCESS, toolCall.name)
+	) {
+		return {
+			riskLevel: "low",
+			requiresApproval: false,
+			reason: `Approval is asked where ${toolCall.name} runs`,
 		};
 	}
 

@@ -31,10 +31,17 @@ import { ExcalidrawEmbed } from "./tiptap-excalidraw-embed-extension";
 import { DocumentImage } from "./tiptap-image-extension";
 import { ImageUploadPlaceholder } from "./tiptap-image-upload-extension";
 import { MERMAID_LANGUAGES, MermaidBlock } from "./tiptap-mermaid-extension";
+import { isStatTilesPre, StatTilesBlock } from "./tiptap-stat-tiles-extension";
 import { VisualSlot } from "./tiptap-visual-slot-extension";
 
 // Create lowlight instance for syntax highlighting
 const lowlight = createLowlight(common);
+
+/**
+ * The code block's stat tiles guard: above the default 50 that `MermaidBlock`
+ * leaves its content sniff at, below `StatTilesBlock`'s own rule (70).
+ */
+const STAT_TILES_CODE_BLOCK_PRIORITY = 60;
 
 /**
  * Extended CodeBlockLowlight that excludes mermaid languages
@@ -55,6 +62,19 @@ const CodeBlockLowlightNoMermaid = CodeBlockLowlight.extend({
 	marks: "diffInsert diffDelete",
 	parseHTML() {
 		return [
+			// A ```stat-tiles fence (Fizzy #2946) in an editor that does not
+			// register `StatTilesBlock` stays a code block of that language.
+			// Without this rule `MermaidBlock`'s first-line sniff claims a block
+			// whose first label is "Timeline savings" or "Pie share", and the
+			// save then rewrites its fence as ```mermaid. Where `StatTilesBlock`
+			// is registered, its higher-priority rule wins over this one.
+			{
+				tag: "pre",
+				priority: STAT_TILES_CODE_BLOCK_PRIORITY,
+				preserveWhitespace: "full",
+				getAttrs: (node) =>
+					isStatTilesPre(node as HTMLElement) ? {} : false,
+			},
 			{
 				tag: "pre",
 				preserveWhitespace: "full",
@@ -389,6 +409,19 @@ const InlineCode = Mark.create({
 });
 
 /**
+ * Nodes an editor adds to the shared schema only when it asks for them.
+ */
+export interface RichDocumentExtensionOptions {
+	/**
+	 * Draw ```` ```stat-tiles ```` fences as Proposal stat tiles (Fizzy
+	 * #2946). Only the project document editor and the Proposal live pane
+	 * turn this on; elsewhere the fence stays an ordinary code block, which
+	 * keeps the same markdown on save.
+	 */
+	statTiles?: boolean;
+}
+
+/**
  * Build the shared rich document extension list with concrete
  * projectId + documentId values bound into the @-mention suggestion
  * query.
@@ -401,16 +434,20 @@ const InlineCode = Mark.create({
 export function createSharedRichDocumentExtensions({
 	projectId,
 	documentId,
+	statTiles,
 }: {
 	projectId: string | null;
 	documentId: string | null;
-}) {
-	return buildSharedRichDocumentExtensions(projectId, documentId);
+} & RichDocumentExtensionOptions) {
+	return buildSharedRichDocumentExtensions(projectId, documentId, {
+		statTiles,
+	});
 }
 
 function buildSharedRichDocumentExtensions(
 	projectId: string | null,
 	documentId: string | null,
+	{ statTiles = false }: RichDocumentExtensionOptions = {},
 ) {
 	return [
 		// Styles the pull ingester's "could not be imported" placeholders via a
@@ -428,6 +465,11 @@ function buildSharedRichDocumentExtensions(
 		// NOTE: This is a Node extension and does NOT conflict with diff highlighting
 		// which uses Mark extensions (<em>, <s>) - they are processed independently
 		MermaidBlock,
+
+		// Proposal stat tiles — opt-in, see `RichDocumentExtensionOptions`.
+		// Its `<pre>` rule outranks the mermaid sniff and the code block, so
+		// a tile labelled "Timeline savings" stays a tile.
+		...(statTiles ? [StatTilesBlock] : []),
 
 		// Excalidraw diagram embed — interactive canvas inline in the document.
 		// Recognizes `<excalidraw-embed data-resource-uri=… data-config-id=…>`
@@ -649,10 +691,11 @@ function buildSharedRichDocumentExtensions(
 export function createAdvancedExtensions({
 	projectId,
 	documentId,
+	statTiles,
 }: {
 	projectId: string | null;
 	documentId: string | null;
-}) {
+} & RichDocumentExtensionOptions) {
 	return [
 		StarterKit.configure({
 			heading: {
@@ -679,7 +722,9 @@ export function createAdvancedExtensions({
 			underline: false,
 		}),
 		InlineCode,
-		...buildSharedRichDocumentExtensions(projectId, documentId),
+		...buildSharedRichDocumentExtensions(projectId, documentId, {
+			statTiles,
+		}),
 	];
 }
 

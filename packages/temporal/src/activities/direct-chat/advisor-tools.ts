@@ -17,10 +17,11 @@
  */
 
 import { db } from "@repo/database";
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { tool } from "ai";
 import { z } from "zod";
 
-const ADVISOR_AGENT_IDS = ["fabric-workspace-assistant", "fabric-ai"];
+const ADVISOR_AGENT_IDS = [FABRIC_AGENT_ID, "fabric-ai"];
 
 interface StoredToolCall {
 	name?: unknown;

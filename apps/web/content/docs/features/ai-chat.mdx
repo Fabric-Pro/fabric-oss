@@ -113,12 +113,26 @@ During a conversation, the AI may call MCP tools to complete tasks:
 
 ### History
 
-Access past conversations from the **sidebar**:
+Past conversations are listed under **History**: in the sidebar of the full page and, in the Fabric Agent drawer, behind the **Conversation history** button in its header. Both show the same list.
 
-- **Search** conversations by title or content
-- **Pin** important conversations for quick access
-- **Archive** old conversations to keep things tidy
-- Conversations are grouped by date
+- **Mine**, **Shared with your organization** and **Archived** switch which conversations are listed.
+- **Search** looks at titles. It does not search what was said inside a conversation.
+- **Load more** brings the next page when the list is long. If a page cannot be loaded, the conversations already shown stay and **Try again** loads it.
+- **Pin** a conversation to keep it at the top of your list. The button keeps its name and shows whether the conversation is pinned.
+- **Rename** changes the title Fabric generated.
+- **Archive** moves a conversation out of the way. Open **Archived** and choose **Restore** to bring it back. **Delete** removes it for good, and asks first.
+
+Opening a conversation reopens it on the engine it ran on, Direct or Orchestrator. In the drawer, a conversation you reopen continues with the context of the page you are on now, not the page it began on, and a note above it says so. While a reply is still being written, the drawer keeps the current chat and does not open another. If a conversation is gone, the drawer says so; if it could not be loaded, it says that instead and offers **Try again**.
+
+### Sharing a conversation
+
+A conversation is private to the person who started it. Choose **Share with your organization** from its menu to let everyone in your organization read it. The same menu item reads **Sharing settings** once a conversation is shared, and you can make it private again at any time.
+
+<Callout type="warning">
+  A shared transcript can include results Fabric Agent read from your own connected servers. Everyone you share it with sees what is in the transcript. Reading it does not give them access to those servers.
+</Callout>
+
+Conversations others shared appear under **Shared with your organization**, marked **Shared by** and the name of the person who shared them. One you shared yourself reads **Shared with your organization** in your own list. A conversation someone else shared opens read-only: there is nothing to send and nothing to approve. **Continue in my own chat** starts a new conversation of your own that begins from it and runs with your tools and permissions, not theirs, on the engine your own chats use now rather than the one the owner used. Only the person who started a conversation can rename, archive, share or delete it.
 
 ### Checkpoints
 

@@ -22,7 +22,10 @@ import {
 	createTurndownService,
 	getEditorMarkdownForSave,
 } from "../editor-markdown-save";
-import { advancedExtensions } from "../tiptap-extensions-advanced";
+import {
+	advancedExtensions,
+	createAdvancedExtensions,
+} from "../tiptap-extensions-advanced";
 
 function pipeRowCount(markdown: string): number {
 	return (markdown.match(/^\s*\|/gm) || []).length;
@@ -329,6 +332,73 @@ describe("editor-markdown-save: emphasis is not re-escaped", () => {
 
 		expect(saved).toContain("**bold label:**");
 		expect(saved).not.toMatch(/\\\*/);
+	});
+});
+
+describe("editor-markdown-save: stat tiles fences (Fizzy #2946)", () => {
+	// A Proposal's stat tiles are a ```stat-tiles fence. The document editor
+	// draws it as its own node, whose HTML is the same <pre><code
+	// class="language-stat-tiles"> a code block's is, so the fencedCodeBlocks
+	// rule must keep the hyphenated language and the body as they were.
+	const STAT_TILES = [
+		"```stat-tiles",
+		"%% fabric-visual: a1b2c3d4e5f6",
+		"Faster onboarding: 40%",
+		"Pilot sites: 3",
+		"Annual savings: $1.2M",
+		"```",
+	].join("\n");
+	const DOCUMENT = `## Results\n\nThe pilot went well.\n\n${STAT_TILES}\n\nNext steps follow.`;
+
+	function documentEditor(markdown: string): Editor {
+		return new Editor({
+			extensions: createAdvancedExtensions({
+				projectId: null,
+				documentId: null,
+				statTiles: true,
+			}),
+			content: fromMarkdown(markdown),
+		});
+	}
+
+	it("serializes the node's HTML back to the fence with its hyphenated language", () => {
+		const saved = createTurndownService().turndown(
+			'<pre data-language="stat-tiles"><code class="language-stat-tiles">%% fabric-visual: a1b2c3d4e5f6\nFaster onboarding: 40%\nPilot sites: 3\nAnnual savings: $1.2M\n</code></pre>',
+		);
+
+		expect(saved).toBe(STAT_TILES);
+	});
+
+	it("round-trips the fence byte for byte through the document editor", () => {
+		const editor = documentEditor(DOCUMENT);
+		const types: string[] = [];
+		editor.state.doc.forEach((node) => {
+			types.push(node.type.name);
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+
+		expect(types).toContain("statTilesBlock");
+		expect(saved).toBe(DOCUMENT);
+	});
+
+	it("round-trips the fence byte for byte through an editor that keeps it as code", () => {
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(DOCUMENT),
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+
+		expect(saved).toBe(DOCUMENT);
+	});
+
+	it("trims trailing blank lines inside the fence, as it does for every fence", () => {
+		const editor = documentEditor("```stat-tiles\nPilot sites: 3\n\n\n```");
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+
+		expect(saved).toBe("```stat-tiles\nPilot sites: 3\n```");
 	});
 });
 

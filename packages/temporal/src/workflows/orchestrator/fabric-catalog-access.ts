@@ -9,6 +9,9 @@
  * workflow — it lazily loads activity modules.
  */
 
+import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../lib/fabric-gateway-tools";
+import { toolAccess } from "../../lib/fabric-tool-definition";
+
 type AccessLevel = "READ" | "WRITE";
 
 /** Catalog tools the adapter runs through Direct chat's tool builders. */
@@ -57,6 +60,22 @@ export const FABRIC_CATALOG_STEP_HANDLER_ACCESS: Record<string, AccessLevel> = {
 	fabric_front_list_conversations: "READ",
 	fabric_canva_list_designs: "READ",
 };
+
+/**
+ * Catalog tools the adapter runs on the Fabric MCP gateway, as the acting user:
+ * the workflow, frame, page-data and version tools a chat is offered. Read or
+ * write is each tool's own definition (`toolAccess`), never inferred from the
+ * name. Whether a call also needs the person's yes is a second question with
+ * its own answer (the tool's confirmation policy): a frame write is a WRITE for
+ * Read-only mode and asks nothing.
+ */
+export const FABRIC_CATALOG_GATEWAY_ACCESS: Record<string, AccessLevel> =
+	Object.fromEntries(
+		FABRIC_CHAT_TOOL_DEFINITIONS.map((definition) => [
+			definition.name,
+			toolAccess(definition),
+		]),
+	);
 
 /** The virtual config id the loop records for a Fabric catalog tool. */
 export const FABRIC_AI_SERVER_CONFIG_ID = "fabric-ai-server";

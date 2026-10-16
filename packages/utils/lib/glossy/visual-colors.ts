@@ -51,9 +51,9 @@ export const NEUTRAL_GLOSSY_COLORS = {
 } as const;
 
 /** WCAG 2.1 AA for text (1.4.3). */
-const TEXT_CONTRAST = 4.5;
+export const TEXT_CONTRAST = 4.5;
 /** WCAG 2.1 AA for graphical objects such as outlines and edges (1.4.11). */
-const GRAPHIC_CONTRAST = 3;
+export const GRAPHIC_CONTRAST = 3;
 /** Mermaid colors timeline and mindmap sections from `cScale0..11`. */
 const SERIES_LENGTH = 12;
 /** Share of the brand color in the node and card fill; the rest is white. */

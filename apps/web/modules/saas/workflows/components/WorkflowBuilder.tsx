@@ -18,6 +18,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "../styles/reactflow-overrides.css";
+import { isWorkflowLive } from "@repo/utils/workflow-status";
 import { useContextPath } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { FullscreenToggle } from "@saas/shared/components/FullscreenToggle";
@@ -183,6 +184,7 @@ function WorkflowBuilderInner({
 	onPublished,
 }: WorkflowBuilderProps) {
 	const tTooltips = useTranslations("tooltips.common");
+	const isLive = isWorkflowLive(workflowStatus);
 	// Get React Flow instance for proper coordinate conversion
 	const reactFlowInstance = useReactFlow();
 	const workflowsPath = useContextPath("workflows");
@@ -1085,21 +1087,13 @@ function WorkflowBuilderInner({
 						{workflowVersion}
 					</Button>
 					<Button
-						variant={
-							workflowStatus === "PUBLISHED" ||
-							workflowStatus === "ACTIVE"
-								? "secondary"
-								: "default"
-						}
+						variant={isLive ? "secondary" : "default"}
 						size="sm"
 						onClick={() => setShowPublishDialog(true)}
 						disabled={isLoading || !hasRealNodes || !workflowId}
 					>
 						<RocketIcon className="h-4 w-4 mr-2" />
-						{workflowStatus === "PUBLISHED" ||
-						workflowStatus === "ACTIVE"
-							? "Published"
-							: "Publish"}
+						{isLive ? "Published" : "Publish"}
 					</Button>
 					<Button
 						variant="default"

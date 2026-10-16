@@ -19,6 +19,7 @@ import {
 	failQueuedDocumentsOfRun,
 	PROJECT_SETUP_AGENT_ID,
 } from "./bulk-run-pause";
+import { notifyBulkRunPlanStopped } from "./chatgpt-plan-work-notifications";
 
 /**
  * What a paused setup saved, as the setup workflow writes it. Read here only
@@ -195,6 +196,11 @@ export async function failOverdueProjectSetupResumes(args: {
 				message: BULK_RUN_RESUME_NEVER_STARTED_MESSAGE,
 			});
 		}
+		await notifyBulkRunPlanStopped({
+			kind: "PROJECT_SETUP",
+			runId: run.id,
+			reason: "RESUME_LOST",
+		});
 	}
 	return failed;
 }

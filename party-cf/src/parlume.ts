@@ -1,22 +1,32 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
 import {
+	type ParlumeAuraBinding,
+	playParlumeAuraSentences,
+	readParlumeSentenceLines,
+} from "./parlume-aura";
+import {
+	PARLUME_SPEECH_SAMPLE_RATE,
 	ParlumeAudioOutlet,
-	parlumePcmConverter,
+	parlumeBotOutputMessage,
 	readParlumeSpeech,
 } from "./parlume-pcm";
 import { ParlumeSpeakerTimeline } from "./parlume-speakers";
 import {
 	authenticateParlumeStreamMessage,
 	isRecord,
+	type ParlumeAudioMessage,
 	type ParlumeStreamConnection,
-	type ParlumeStreamMessage,
+	parseParlumeSpeakerUpdates,
 } from "./parlume-stream-auth";
 import {
 	ParlumeTranscriber,
 	type ParlumeTranscript,
 } from "./parlume-transcriber";
-import { ParlumeTurnEndpoint } from "./parlume-turn-endpoint";
+import {
+	PARLUME_COMPLETE_REQUEST_QUIET_MS,
+	ParlumeTurnEndpoint,
+} from "./parlume-turn-endpoint";
 import { parseParlumeWake } from "./parlume-wake";
 
 const WATCHDOG_RETRY_MS = 5 * 60 * 1000;
@@ -131,14 +141,23 @@ async function secretMatches(
 	return mismatch === 0;
 }
 
-// The provider's audio clock for one bot socket: its handshake's capture start
-// plus the samples received since, so transcripts line up with speaker updates.
+// The provider's audio clock for one bot socket: the wall-clock start of its
+// first chunk. Chunks carry their own wall-clock times, the same clock the
+// speaker updates use, so transcripts line up with them.
 interface MeetingAudio {
 	transcriber: ParlumeTranscriber;
 	sampleRate: number;
 	startTime: number;
-	samples: number;
+	health: {
+		since: number;
+		chunks: number;
+		maxGapMs: number;
+		lastChunkAt: number;
+	};
 }
+
+// How often a live bot stream reports what reached the bridge and Flux.
+const AUDIO_HEALTH_LOG_MS = 10_000;
 
 export class Parlume extends Server<Env> {
 	private connections = new Map<Connection, StreamConnection>();
@@ -151,6 +170,8 @@ export class Parlume extends Server<Env> {
 	private playbackEpoch = 0;
 	private playbackActive = false;
 	private responsePending = false;
+	// When the latest wake phrase was heard, for the dispatch timing log.
+	private wokeAt = 0;
 	private turnEndpoint = new ParlumeTurnEndpoint<PendingTurn>((turn) => {
 		void this.dispatchTurn(turn);
 	});
@@ -238,17 +259,18 @@ export class Parlume extends Server<Env> {
 			token,
 			botId: null,
 			verified: false,
+			verification: null,
 			generation: ++this.connectionGeneration,
 			streamGeneration: null,
 		});
 	}
 
+	// Attendee's socket carries JSON text both ways; anything binary is not its.
 	async onMessage(
 		conn: Connection,
 		message: string | ArrayBuffer | ArrayBufferView,
 	) {
 		if (typeof message !== "string") {
-			this.receiveAudio(conn, message);
 			return;
 		}
 		const authenticated = await authenticateParlumeStreamMessage(
@@ -260,42 +282,81 @@ export class Parlume extends Server<Env> {
 			conn,
 			message,
 		);
-		if (!authenticated) {
+		// Chunks that waited out the stream's verification can outlive the socket.
+		if (!authenticated || !this.connections.has(conn)) {
 			return;
 		}
-		if (authenticated.message.kind === "speakers") {
-			this.speakers.update(authenticated.message.updates);
-			return;
-		}
-		this.startMeetingAudio(
-			conn,
-			authenticated.state,
-			authenticated.message,
-		);
+		this.receiveAudio(conn, authenticated.state, authenticated.message);
 	}
 
-	// The provider sends its handshake again once audio capture starts, before
-	// the first chunk; that second one only fixes the clock's starting point.
+	private receiveAudio(
+		conn: Connection,
+		state: StreamConnection,
+		message: ParlumeAudioMessage,
+	): void {
+		const chunkMs = (message.pcm.length / 2 / message.sampleRate) * 1000;
+		// Attendee stamps a chunk when it packages it, after the audio happened.
+		const epochMs = message.timestampMs - chunkMs;
+		let audio = this.audio.get(conn);
+		if (audio?.sampleRate !== message.sampleRate) {
+			audio = this.startMeetingAudio(
+				conn,
+				state,
+				message.sampleRate,
+				epochMs,
+			);
+		}
+		audio.transcriber.send(message.pcm.buffer, epochMs);
+		this.trackAudioHealth(state, audio);
+	}
+
+	private trackAudioHealth(state: StreamConnection, audio: MeetingAudio) {
+		const now = Date.now();
+		const health = audio.health;
+		health.chunks++;
+		if (health.lastChunkAt) {
+			health.maxGapMs = Math.max(
+				health.maxGapMs,
+				now - health.lastChunkAt,
+			);
+		}
+		health.lastChunkAt = now;
+		if (now - health.since < AUDIO_HEALTH_LOG_MS) {
+			return;
+		}
+		log("info", "audio.health", {
+			sessionId: state.sessionId,
+			botId: state.botId,
+			windowMs: now - health.since,
+			chunks: health.chunks,
+			maxGapMs: health.maxGapMs,
+			...audio.transcriber.takeStats(),
+		});
+		health.since = now;
+		health.chunks = 0;
+		health.maxGapMs = 0;
+	}
+
 	private startMeetingAudio(
 		conn: Connection,
 		state: StreamConnection,
-		handshake: Extract<ParlumeStreamMessage, { kind: "handshake" }>,
-	): void {
-		const existing = this.audio.get(conn);
-		if (existing?.sampleRate === handshake.sampleRate) {
-			if (existing.samples === 0 && handshake.startTime !== null) {
-				existing.startTime = handshake.startTime;
-			}
-			return;
-		}
-		existing?.transcriber.close();
+		sampleRate: number,
+		startTime: number,
+	): MeetingAudio {
+		this.audio.get(conn)?.transcriber.close();
 		const meta = { sessionId: state.sessionId, botId: state.botId };
-		this.audio.set(conn, {
-			sampleRate: handshake.sampleRate,
-			startTime: handshake.startTime ?? Date.now(),
-			samples: 0,
+		const audio: MeetingAudio = {
+			sampleRate,
+			startTime,
+			health: {
+				since: Date.now(),
+				chunks: 0,
+				maxGapMs: 0,
+				lastChunkAt: 0,
+			},
 			transcriber: new ParlumeTranscriber({
-				connect: () => this.openTranscription(handshake.sampleRate),
+				sampleRate,
+				connect: () => this.openTranscription(sampleRate),
 				onTranscript: (transcript) => {
 					void this.handleTranscript(conn, state, transcript);
 				},
@@ -309,47 +370,26 @@ export class Parlume extends Server<Env> {
 						},
 					),
 			}),
-		});
-		log("info", "audio.started", {
-			...meta,
-			sampleRate: handshake.sampleRate,
-		});
+		};
+		this.audio.set(conn, audio);
+		log("info", "audio.started", { ...meta, sampleRate });
 		this.outlets.get(conn)?.stop();
-		this.outlets.delete(conn);
-		if (!parlumePcmConverter(handshake.sampleRate)) {
-			log("warn", "speech.unsupported_rate", {
-				...meta,
-				sampleRate: handshake.sampleRate,
-			});
-			return;
-		}
-		const outlet = new ParlumeAudioOutlet({
-			sampleRate: handshake.sampleRate,
-			send: (frame) => conn.send(frame),
-		});
-		this.outlets.set(conn, outlet);
-	}
-
-	private receiveAudio(
-		conn: Connection,
-		message: ArrayBuffer | ArrayBufferView,
-	): void {
-		const audio = this.audio.get(conn);
-		if (!audio || !this.connections.get(conn)?.verified) {
-			return;
-		}
-		const chunk =
-			message instanceof ArrayBuffer
-				? message
-				: new Uint8Array(
-						message.buffer,
-						message.byteOffset,
-						message.byteLength,
-					).slice().buffer;
-		const epochMs =
-			audio.startTime + (audio.samples / audio.sampleRate) * 1000;
-		audio.samples += Math.floor(chunk.byteLength / 2);
-		audio.transcriber.send(chunk, epochMs);
+		// Each reply message names its own rate, so speech stays at the rate it
+		// was synthesized whatever rate the meeting audio arrives at.
+		this.outlets.set(
+			conn,
+			new ParlumeAudioOutlet({
+				sampleRate: PARLUME_SPEECH_SAMPLE_RATE,
+				send: (frame) =>
+					conn.send(
+						parlumeBotOutputMessage(
+							frame,
+							PARLUME_SPEECH_SAMPLE_RATE,
+						),
+					),
+			}),
+		);
+		return audio;
 	}
 
 	private async openTranscription(sampleRate: number) {
@@ -397,11 +437,12 @@ export class Parlume extends Server<Env> {
 			}
 		}
 		// Speech only barges in while Parlume is audible. While a request is
-		// being endpointed or answered, its speaker's continued speech extends it.
+		// being endpointed or answered, its speaker's continued words extend it;
+		// Flux's empty start-of-turn events carry none, so they do not.
 		if (!transcript.isFinal) {
 			if (
 				!fromBot &&
-				!this.turnEndpoint.hold(speakerKey) &&
+				!(transcript.text && this.turnEndpoint.hold(speakerKey)) &&
 				this.playbackActive
 			) {
 				await this.interruptResponse(state);
@@ -514,6 +555,9 @@ export class Parlume extends Server<Env> {
 		if (action === "speak") {
 			return this.speak(request);
 		}
+		if (action === "say") {
+			return this.say(request);
+		}
 		if (action === "stop") {
 			return this.stop(request);
 		}
@@ -531,6 +575,9 @@ export class Parlume extends Server<Env> {
 		}
 		if (action === "chat") {
 			return this.chat(request);
+		}
+		if (action === "speakers") {
+			return this.updateSpeakers(request);
 		}
 		if (action === "verify-generation") {
 			const body: unknown = await request.json();
@@ -569,6 +616,22 @@ export class Parlume extends Server<Env> {
 		return Response.json({ armed: true });
 	}
 
+	// Attendee reports who is speaking by webhook, not on the audio socket, so
+	// Fabric relays each update here.
+	private async updateSpeakers(request: Request): Promise<Response> {
+		const updates = parseParlumeSpeakerUpdates(
+			await request.json().catch(() => null),
+		);
+		if (!updates) {
+			return Response.json(
+				{ error: "Invalid speaker updates" },
+				{ status: 400 },
+			);
+		}
+		this.speakers.update(updates);
+		return Response.json({ accepted: updates.length });
+	}
+
 	// A reply that could not be spoken is posted to the meeting chat instead.
 	// The bridge knows the session's provider bot; Fabric holds the provider key.
 	private async chat(request: Request): Promise<Response> {
@@ -603,22 +666,17 @@ export class Parlume extends Server<Env> {
 		return Boolean(name && /^Fabric Parlume\b/i.test(name));
 	}
 
-	private async speak(request: Request): Promise<Response> {
-		const headerLength = request.headers.get("content-length");
-		const length = headerLength === null ? null : Number(headerLength);
-		if (
-			request.headers.get("content-type") !== "audio/pcm" ||
-			(length !== null &&
-				(!Number.isFinite(length) ||
-					length <= 0 ||
-					length > MAX_SPEECH_BYTES ||
-					length % 2 !== 0))
-		) {
-			return Response.json(
-				{ error: "Invalid PCM audio" },
-				{ status: 400 },
-			);
-		}
+	/**
+	 * The socket, outlet and voice generation a reply is played on, or the
+	 * response that refuses it. Shared by `speak` (PCM from the worker) and
+	 * `say` (text the bridge synthesizes itself).
+	 */
+	private async playbackTarget(
+		request: Request,
+	): Promise<
+		| Response
+		| { connection: Connection; outlet: ParlumeAudioOutlet; epoch: number }
+	> {
 		const bridge = await this.ctx.storage.get<BridgeState>("bridge");
 		if (
 			!bridge ||
@@ -639,14 +697,10 @@ export class Parlume extends Server<Env> {
 			);
 		}
 		const outlet = this.outlets.get(connection);
-		const converter = outlet && parlumePcmConverter(outlet.sampleRate);
-		if (!outlet || !converter) {
-			log("warn", "speech.unsupported_rate", {
-				sessionId: this.name,
-				sampleRate: this.audio.get(connection)?.sampleRate ?? null,
-			});
+		if (!outlet) {
+			log("warn", "speech.no_meeting_audio", { sessionId: this.name });
 			return Response.json(
-				{ error: "Bot audio format unavailable" },
+				{ error: "Bot audio unavailable" },
 				{ status: 409 },
 			);
 		}
@@ -657,6 +711,114 @@ export class Parlume extends Server<Env> {
 		if (epoch !== this.playbackEpoch) {
 			return Response.json({ played: false, interrupted: true });
 		}
+		return { connection, outlet, epoch };
+	}
+
+	/**
+	 * Speaks sentences sent as text: each is synthesized here with Aura and
+	 * played in order, the next while the current one plays. A sentence that
+	 * cannot be synthesized stops the reply and reports where, so the worker
+	 * can speak the rest through its own routes.
+	 */
+	private async say(request: Request): Promise<Response> {
+		if (request.headers.get("content-type") !== "application/x-ndjson") {
+			return Response.json(
+				{ error: "Invalid sentences" },
+				{ status: 400 },
+			);
+		}
+		const target = await this.playbackTarget(request);
+		if (target instanceof Response) {
+			return target;
+		}
+		const { connection, outlet, epoch } = target;
+		if (!request.body) {
+			return Response.json(
+				{ error: "Missing sentences" },
+				{ status: 400 },
+			);
+		}
+		this.playbackActive = true;
+		const startedAt = Date.now();
+		const isCurrent = () =>
+			epoch === this.playbackEpoch && this.connections.has(connection);
+		let handedOver = false;
+		try {
+			const playback = await playParlumeAuraSentences({
+				ai: this.env.AI as unknown as ParlumeAuraBinding,
+				sentences: readParlumeSentenceLines(request.body),
+				outlet,
+				isCurrent,
+			}).catch((error: unknown) => {
+				outlet.clear();
+				throw error;
+			});
+			const played = playback.complete && isCurrent();
+			handedOver = playback.failedAt !== undefined && isCurrent();
+			const confirmationSpeakerId = request.headers.get(
+				"x-parlume-confirmation-speaker",
+			);
+			if (played && confirmationSpeakerId) {
+				await this.ctx.storage.put<WakeArm>(WAKE_ARM_KEY, {
+					speakerKey: confirmationSpeakerId,
+					expiresAt: Date.now() + 120_000,
+				});
+			}
+			log(handedOver ? "warn" : "info", "speech.synthesized", {
+				sessionId: this.name,
+				voiceGeneration: epoch,
+				route: "aura",
+				played,
+				interrupted: !played && !handedOver,
+				failedAt: playback.failedAt ?? null,
+				error: playback.error ?? null,
+				sentences: playback.sentences.length,
+				chars: playback.sentences.reduce(
+					(sum, sentence) => sum + sentence.chars,
+					0,
+				),
+				totalMs: Date.now() - startedAt,
+			});
+			return Response.json({
+				played,
+				interrupted: !played && !handedOver,
+				firstAudioAt: playback.firstAudioAt,
+				failedAt: playback.failedAt,
+				error: playback.error,
+				sentences: playback.sentences,
+			});
+		} finally {
+			this.playbackActive = false;
+			// A reply handed back to the worker is not over: its replacement
+			// audio follows on this same generation.
+			if (!handedOver && epoch === this.playbackEpoch) {
+				this.responsePending = false;
+				await this.ctx.storage.put("responsePending", false);
+			}
+		}
+	}
+
+	private async speak(request: Request): Promise<Response> {
+		const headerLength = request.headers.get("content-length");
+		const length = headerLength === null ? null : Number(headerLength);
+		if (
+			request.headers.get("content-type") !== "audio/pcm" ||
+			(length !== null &&
+				(!Number.isFinite(length) ||
+					length <= 0 ||
+					length > MAX_SPEECH_BYTES ||
+					length % 2 !== 0))
+		) {
+			return Response.json(
+				{ error: "Invalid PCM audio" },
+				{ status: 400 },
+			);
+		}
+		const target = await this.playbackTarget(request);
+		if (target instanceof Response) {
+			return target;
+		}
+		const { connection, outlet, epoch } = target;
 		if (!request.body) {
 			return Response.json(
 				{ error: "Missing PCM body" },
@@ -672,7 +834,6 @@ export class Parlume extends Server<Env> {
 			const complete = await readParlumeSpeech({
 				body: request.body,
 				declaredLength: length,
-				converter,
 				isCurrent,
 				enqueue: (bytes) => {
 					if (bytes.length > 0) {
@@ -1036,10 +1197,11 @@ export class Parlume extends Server<Env> {
 		if (this.playbackActive) {
 			await this.interruptResponse(state);
 		}
-		const turnText = await this.resolveWakeTurn(segment);
-		if (!turnText) {
+		const wake = await this.resolveWakeTurn(segment);
+		if (!wake) {
 			return;
 		}
+		const turnText = wake.text;
 		if (this.responsePending) {
 			await this.interruptResponse(state);
 		}
@@ -1049,6 +1211,7 @@ export class Parlume extends Server<Env> {
 			voiceGeneration: this.playbackEpoch,
 			responsePending: true,
 		});
+		this.wokeAt = Date.now();
 		log("info", "wake.detected", {
 			sessionId: segment.sessionId,
 			botId: segment.botId,
@@ -1056,23 +1219,30 @@ export class Parlume extends Server<Env> {
 			voiceGeneration: this.playbackEpoch,
 			requestChars: turnText.length,
 		});
-		this.turnEndpoint.begin(speakerKey, {
-			voiceGeneration: this.playbackEpoch,
-			sessionId: segment.sessionId,
-			botId: segment.botId,
-			text: turnText,
-			speakerName: segment.speakerName,
-			speakerId: segment.speakerId,
-			utteranceStartMs: segment.utteranceStartMs,
-			utteranceEndMs: segment.utteranceEndMs,
-		});
+		this.turnEndpoint.begin(
+			speakerKey,
+			{
+				voiceGeneration: this.playbackEpoch,
+				sessionId: segment.sessionId,
+				botId: segment.botId,
+				text: turnText,
+				speakerName: segment.speakerName,
+				speakerId: segment.speakerId,
+				utteranceStartMs: segment.utteranceStartMs,
+				utteranceEndMs: segment.utteranceEndMs,
+			},
+			// A request that came with its wake phrase ended on Flux's own
+			// end-of-turn. One that followed a bare "Hey Fabric" keeps the
+			// endpoint's default window.
+			wake.armed ? undefined : PARLUME_COMPLETE_REQUEST_QUIET_MS,
+		);
 	}
 
 	private async resolveWakeTurn(input: {
 		text: string;
 		speakerName: string | null;
 		speakerId: string | null;
-	}): Promise<string | null> {
+	}): Promise<{ text: string; armed: boolean } | null> {
 		if (input.speakerName?.toLowerCase().includes("parlume")) {
 			return null;
 		}
@@ -1083,7 +1253,7 @@ export class Parlume extends Server<Env> {
 		const afterWake = parseParlumeWake(input.text);
 		if (afterWake !== null) {
 			if (afterWake) {
-				return afterWake;
+				return { text: afterWake, armed: false };
 			}
 			await this.ctx.storage.put<WakeArm>(WAKE_ARM_KEY, {
 				speakerKey,
@@ -1103,10 +1273,11 @@ export class Parlume extends Server<Env> {
 			return null;
 		}
 		await this.ctx.storage.delete(WAKE_ARM_KEY);
-		return input.text;
+		return { text: input.text, armed: true };
 	}
 
 	private async dispatchTurn(turn: PendingTurn): Promise<void> {
+		const endpointedAt = Date.now();
 		// The request's segments reach Fabric first, so the turn sees them as
 		// meeting context.
 		await this.finalSegmentChain;
@@ -1128,6 +1299,9 @@ export class Parlume extends Server<Env> {
 				botId: turn.botId,
 				voiceGeneration: turn.voiceGeneration,
 				requestChars: turn.text.length,
+				// Wake phrase to the end of the request, then to Fabric's accept.
+				endpointMs: endpointedAt - this.wokeAt,
+				handoffMs: Date.now() - endpointedAt,
 			});
 			return;
 		}

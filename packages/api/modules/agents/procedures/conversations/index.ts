@@ -27,6 +27,7 @@ export { listConversations } from "./list-conversations";
 export { recordOperationResult } from "./record-operation-result";
 export { removeMessage } from "./remove-message";
 export { saveTurn, updateSettings } from "./save-turn";
+export { setConversationVisibility } from "./set-visibility";
 export {
 	addMessage,
 	updateConversation,

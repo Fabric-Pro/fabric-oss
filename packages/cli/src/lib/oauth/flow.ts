@@ -26,6 +26,7 @@ export const REQUESTED_SCOPES = [
 	"mcp:read",
 	"instructions:read",
 	"instructions:write",
+	"memory:write",
 	"offline_access",
 ] as const;
 

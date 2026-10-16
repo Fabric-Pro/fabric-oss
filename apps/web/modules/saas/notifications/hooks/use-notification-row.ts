@@ -10,6 +10,7 @@ import {
 	BotIcon,
 	CheckCircleIcon,
 	CircleAlertIcon,
+	ClockIcon,
 	CornerDownRightIcon,
 	CreditCardIcon,
 	FilePenLineIcon,
@@ -103,6 +104,22 @@ function resolveIcon(notification: {
 		return CheckCircleIcon;
 	}
 	if (notification.type === "DOCUMENT_GENERATION_FAILED") {
+		return AlertCircleIcon;
+	}
+	// Scheduled workflow outcomes: the same SYSTEM-category reasoning as the
+	// report and document pairs above.
+	if (notification.type === "WORKFLOW_RUN_COMPLETED") {
+		return CheckCircleIcon;
+	}
+	if (notification.type === "WORKFLOW_RUN_FAILED") {
+		return AlertCircleIcon;
+	}
+	// Background work and spent ChatGPT plans (Fizzy #3050): a pause is a
+	// wait that ends by itself, so it wears a clock, not SYSTEM's alert.
+	if (notification.type === "CHATGPT_PLAN_WORK_PAUSED") {
+		return ClockIcon;
+	}
+	if (notification.type === "CHATGPT_PLAN_WORK_STOPPED") {
 		return AlertCircleIcon;
 	}
 	// Two types reuse the MENTION category, for its opt-out toggle rather than

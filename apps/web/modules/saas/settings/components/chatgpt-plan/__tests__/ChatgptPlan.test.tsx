@@ -536,7 +536,7 @@ describe("ChatGPT plan reconnect notice", () => {
 			screen.getByRole("link", { name: copy.openSettings }),
 		).toHaveAttribute(
 			"href",
-			"/app/example-org/settings/account/ai-providers",
+			"/app/example-org/settings/ai-providers?tab=personal",
 		);
 
 		await userEvent.click(

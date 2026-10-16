@@ -345,10 +345,11 @@
 				"failed": "The request could not be completed. Start again from your agent.",
 				"signInRequired": "Sign in to continue.",
 				"scopes": {
-					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, workspaces, workflows and frames. Your personal AI chats are not included.",
+					"mcp:read": "Read this organization's projects, features, decisions, documents, project context, document libraries, workflows and frames. Your personal AI chats are not included.",
 					"instructions:read": "Read coding instructions.",
 					"instructions:write": "Suggest changes to coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read the attached repository's files and history to clone or update it through Fabric.",
+					"memory:write": "Write files to this organization's project Living Memory folders in their repositories; may commit directly to the synced branch where a project admin allowed it.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"scopesProject": {
@@ -356,6 +357,7 @@
 					"instructions:read": "Read this project's coding instructions.",
 					"instructions:write": "Suggest changes to this project's coding instructions. Suggestions are held for review and are never published by the agent.",
 					"repositories:read": "Read this attached repository's files and history to clone or update it through Fabric.",
+					"memory:write": "Write files to this project's Living Memory folders in its repository; may commit directly to the synced branch where a project admin allowed it.",
 					"offline_access": "Stay signed in until you revoke it."
 				},
 				"revokeHint": "You can revoke this at any time under Connected agents in your account settings."
@@ -1743,6 +1745,11 @@
 						"fetched": "Recipient brand fetched from website",
 						"updated": "Recipient brand updated"
 					},
+					"document_analysis": {
+						"responded": "Analysis finding answered",
+						"cleared": "Answer to analysis finding cleared",
+						"rerun_started": "Internal analysis re-run started"
+					},
 					"context_source": {
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
 						"reconnected": "Channel or chat monitor reconnected",
@@ -1757,7 +1764,9 @@
 						"repository_sync_disabled": "Living Memory repository sync turned off",
 						"write_target_created": "Living Memory write folder added",
 						"write_target_updated": "Living Memory write folder changed",
-						"write_target_deleted": "Living Memory write folder removed"
+						"write_target_deleted": "Living Memory write folder removed",
+						"memory_write_submitted": "Living Memory write admitted",
+						"memory_write_settled": "Living Memory write finished"
 					},
 					"instructions": {
 						"upload_started": "Coding-instructions upload started",
@@ -2657,7 +2666,8 @@
 			"planTypeTooltip": "OpenAI doesn't tell Fabric the plan type. Set it so the usage estimate matches the plan's limits.",
 			"planTypeNotSet": "Not set",
 			"memberShare": "Each member may use",
-			"memberShareDescription": "The most of this account's 5-hour window one member's work can take. Past it, their work moves to the organization's other shared accounts.",
+			"memberShareDescription": "100% (the default) means no per-member limit. The share is measured against Fabric's own estimate of the 5-hour window, because OpenAI doesn't report remaining usage, so it is approximate. Past it, that member's work moves to the organization's other shared accounts.",
+			"memberShareTooltip": "Caps how much of this account's 5-hour window one member's own work can use, so one person can't spend it for everyone else.",
 			"memberSharePercent": "{percent}%",
 			"importHeadsUp": "The first import of this history runs on your organization's shared ChatGPT plans and can use a large share of a plan's five-hour window.",
 			"accountUpdated": "Account updated",
@@ -2690,6 +2700,23 @@
 			"advanced": "Advanced"
 		},
 		"aiProviders": {
+			"tabs": {
+				"label": "Whose AI provider keys",
+				"organization": "Organization",
+				"personal": "Personal"
+			},
+			"personal": {
+				"intro": "These are your own keys. Fabric uses them only when this organization has no usable AI provider of its own, and they go with you into every organization you work in. A ChatGPT plan you connect here serves your own work."
+			},
+			"personalKeyNotice": {
+				"title": "Your AI work here runs on your personal key",
+				"body": "This organization has no AI provider for chat and generation, so your own {provider} key is used and billed to you.",
+				"manage": "Manage your keys",
+				"configure": "Configure provider",
+				"label": "Personal key notice",
+				"dismiss": "Dismiss personal key notice",
+				"show": "Show personal key notice"
+			},
 			"embeddingsOnly": {
 				"badge": "Embeddings only",
 				"badgeTooltip": "This key serves document search (embeddings) and nothing else. Fabric never uses it for chat, agents or generation.",
@@ -2829,7 +2856,7 @@
 					},
 					"CHAT": {
 						"name": "Chat",
-						"hint": "Workspace document chat, Atlas assistant, Agent Builder Sidekick"
+						"hint": "Library document chat, Atlas assistant, Agent Builder Sidekick"
 					},
 					"EVAL": {
 						"name": "Evaluation",
@@ -3337,6 +3364,7 @@
 					"menu": {
 						"label": "Repository sync options",
 						"changeButton": "Change branch or paths…",
+						"writeFolders": "Write folders",
 						"disconnect": "Disconnect"
 					},
 					"disconnectConfirm": {
@@ -3426,6 +3454,16 @@
 						"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type any other path below.",
 						"error": "Couldn't list this branch's folders and files. Type the paths to sync below, or try again later.",
 						"refineSearch": "Showing the first {max} matches. Refine the search to see others.",
+						"writeFolder": {
+							"unsupported": "This repository type doesn't support browsing. Type the folder path below.",
+							"truncated": "This branch is too large to list in full: only the first {max, number} entries are shown. Type the folder path below.",
+							"error": "Couldn't list this branch's folders. Type the folder path below, or try again later.",
+							"INVALID_PATH": "Not a usable folder path",
+							"TARGET_RESERVED": "Agents never write here: the root and folders starting with a dot hold tool configuration",
+							"TARGET_OUTSIDE_SELECTION": "Not inside what this project syncs, so nothing written here would be read back",
+							"TARGET_EXCLUDED": "Left out of the sync",
+							"TARGET_OVERLAP": "Overlaps another write folder"
+						},
 						"selection": {
 							"cantTellYet": "Can't tell yet",
 							"leftOutBecause": "Left out because {path} is unticked",
@@ -3457,6 +3495,76 @@
 						"matchTruncated": "{count, plural, one {# file matches} other {# files match}} in the part of the branch shown; more may exist.",
 						"unreadable": "Files the sync can't read are skipped when it runs.",
 						"policyCaveat": "A ticked folder's .contextignore may leave out more."
+					}
+				},
+				"writeFolders": {
+					"title": "Write folders",
+					"description": "Folders of the synced repository that agents write their files into.",
+					"loading": "Loading the write folders…",
+					"loadError": "Couldn't load the write folders.",
+					"retry": "Try again",
+					"listLabel": "Write folders",
+					"count": "{count} of {max} write folders",
+					"limitReached": "The limit of {max} write folders is reached. Remove one to add another.",
+					"add": "Add a write folder",
+					"readOnly": "Only members who can add context can change write folders.",
+					"empty": {
+						"title": "No write folders yet",
+						"body": "Write folders are where agents connected through the Fabric plugin save what they write, such as specs and task notes. Each file lands on {branch} as a pull request, or straight on the branch if you choose. Add a folder to let them write."
+					},
+					"mode": {
+						"PULL_REQUEST": "Pull request",
+						"DIRECT_PUSH": "Push directly"
+					},
+					"row": {
+						"directPushBy": "Push directly turned on by {name}, {time} ago",
+						"directPushByUnknown": "Push directly turned on by a project admin, {time} ago",
+						"edit": "Edit write folder {folder}",
+						"remove": "Remove write folder {folder}"
+					},
+					"form": {
+						"folderLegend": "Folder",
+						"modeLegend": "How files land",
+						"pullRequestHint": "Fabric opens a pull request against {branch}. Someone reviews the files before they join the branch.",
+						"directPushHint": "Fabric commits straight to {branch}, with no review.",
+						"directPushNeedsAdmin": "Only project admins and owners can turn this on.",
+						"add": "Add write folder",
+						"save": "Save",
+						"cancel": "Cancel"
+					},
+					"picker": {
+						"typedLabel": "Or type a folder",
+						"typedPlaceholder": "e.g. docs/ai",
+						"typedUse": "Use",
+						"typedHint": "A folder path inside what this project syncs, such as docs/ai. Press Enter or Use.",
+						"chosen": "Chosen folder:",
+						"none": "None yet"
+					},
+					"directPushConfirm": {
+						"title": "Push directly to {folder}?",
+						"description": "Files agents write here will land on {branch} with no review, and the next agent that reads this project's memory will read them as they are. A pull request lets someone check them first.",
+						"cancel": "Keep pull requests",
+						"confirm": "Push directly"
+					},
+					"remove": {
+						"title": "Remove {folder}?",
+						"description": "Agents stop writing there. Files already written stay in the repository.",
+						"cancel": "Cancel",
+						"confirm": "Remove",
+						"removed": "Removed {folder}"
+					},
+					"errors": {
+						"INVALID_PATH": "That isn't a usable folder path. Use '/' between folders, with no leading or trailing '/', no '.' or '..' segments and no spaces around it.",
+						"TARGET_RESERVED": "Agents never write to the repository root or to folders whose name starts with a dot, such as .github, because those hold tool and CI configuration. Choose another folder.",
+						"TARGET_OUTSIDE_SELECTION": "{path} is not inside a folder this project syncs, so nothing written there would be read back. Choose a folder inside what the sync selects.",
+						"TARGET_EXCLUDED": "{path} is left out of the sync, or is a folder Living Memory never syncs, so nothing written there would be read back.",
+						"TARGET_OVERLAP": "{path} overlaps {withPath}, which is already a write folder. Write folders can't contain one another.",
+						"TARGET_OVERLAPS_INSTRUCTIONS": "{path} overlaps the folder this project's coding instructions are read from, which agents never write into.",
+						"TOO_MANY_TARGETS": "A project can have at most {max} write folders. Remove one first.",
+						"DIRECT_PUSH_REQUIRES_ADMIN": "Only project admins and owners can turn on direct push, because it lets agents commit to the synced branch without a pull request.",
+						"NOT_CONFIGURED": "Connect a repository to this project's Living Memory before choosing write folders.",
+						"NOTHING_TO_UPDATE": "Change the folder or how files land before saving.",
+						"generic": "Couldn't save the write folder. Try again."
 					}
 				}
 			}
@@ -7758,10 +7866,10 @@
 					"unknown": "Something went wrong while running the Internal Analysis."
 				},
 				"failedHint": "The Main Document isn't affected. The analysis runs again with the next generation.",
-				"stale": "This analysis is of an earlier version of the document. The next generation runs a new one.",
+				"stale": "This analysis is of an earlier version of the document. A re-run or the next generation checks the current text.",
 				"noContext": "This analysis ran without source context, so it reviewed the document on its own.",
 				"empty": "No findings. The analysis found nothing to flag in this version.",
-				"summary": "{count, plural, one {# finding} other {# findings}}",
+				"summary": "{open, plural, one {# of {total} needs a decision} other {# of {total} need a decision}}",
 				"severity": {
 					"BLOCKING": "Blocking",
 					"IMPORTANT": "Important",
@@ -7782,7 +7890,116 @@
 					"unknown": "Other"
 				},
 				"recommendation": "Recommendation:",
-				"section": "Section: {heading}"
+				"section": "Section: {heading}",
+				"rerunRunning": "Re-running the Internal Analysis…",
+				"newerRunning": "A new Internal Analysis is on its way. The findings below stay until it completes.",
+				"newerRerunRunning": "Re-running the Internal Analysis. The findings below stay until it completes.",
+				"newerFailedTitle": "The latest Internal Analysis didn't complete.",
+				"newerFailedKept": "The findings below are from the last complete analysis.",
+				"foldedTitles": "Also raised as: {titles}",
+				"notKeyed": "Re-run the analysis to answer this finding.",
+				"authorRights": "Not applied: the author no longer has edit rights.",
+				"state": {
+					"UNADDRESSED": "Unaddressed",
+					"CONFIRMED": "Confirmed",
+					"RESPONDED": "Responded",
+					"NEEDS_REVIEW": "Needs review"
+				},
+				"reason": {
+					"SECTION_CHANGED": "Section changed",
+					"SECTION_NOT_FOUND": "Section not found",
+					"RAISED_AGAIN": "Raised again"
+				},
+				"answer": {
+					"formerMember": "a former member",
+					"unnamedMember": "a member",
+					"saving": "Saving…",
+					"confirmedBy": "Confirmed by {name}",
+					"answeredBy": "Answered by {name}",
+					"earlierConfirmedBy": "Previously confirmed by {name}",
+					"earlierAnswerBy": "Earlier answer by {name}"
+				},
+				"actions": {
+					"confirm": "Confirm",
+					"confirmAgain": "Confirm again",
+					"answer": "Answer",
+					"editAnswer": "Edit answer",
+					"answerAgain": "Answer again",
+					"clear": "Clear",
+					"save": "Save answer",
+					"apply": "Apply to the current finding",
+					"cancel": "Cancel",
+					"replaceWithMine": "Replace with mine",
+					"keepTheirs": "Keep theirs"
+				},
+				"editor": {
+					"label": "Your answer",
+					"yourDraft": "Your draft",
+					"previouslyConfirmed": "Previously confirmed, without a note.",
+					"counter": "{count} / {max} characters"
+				},
+				"conflict": {
+					"runChanged": "The analysis changed before your answer was saved. Your draft is kept: apply it to the current finding.",
+					"versionChanged": "{name} saved an answer meanwhile:",
+					"versionCleared": "Someone cleared this answer meanwhile. Your draft is kept."
+				},
+				"errors": {
+					"forbidden": "You can't change answers on this analysis.",
+					"notFound": "This finding or answer is no longer available.",
+					"tooLong": "Answers can be up to {max} characters.",
+					"required": "Write an answer before saving.",
+					"saveFailed": "The answer couldn't be saved. Try again.",
+					"clearFailed": "The answer couldn't be cleared. Try again.",
+					"clearStale": "Someone changed this answer meanwhile, so it wasn't cleared.",
+					"runChanged": "The analysis changed meanwhile. Nothing was saved; try again on the current finding.",
+					"versionChanged": "Someone changed this answer meanwhile. Nothing was saved; their answer is shown."
+				},
+				"announce": {
+					"answered": "Answer saved.",
+					"confirmed": "Finding confirmed.",
+					"cleared": "Answer cleared.",
+					"versionChanged": "Someone saved an answer meanwhile. Your draft is kept.",
+					"runStarted": "A new Internal Analysis started.",
+					"runFailed": "The latest Internal Analysis didn't complete.",
+					"runComplete": "A new Internal Analysis is ready."
+				},
+				"rerun": {
+					"button": "Re-run analysis",
+					"starting": "Starting…",
+					"running": "Analysis running…",
+					"note": "Checks the current text against the sources of the last generation. Regenerate to pick up new sources.",
+					"generating": "Re-run is available once the generation finishes.",
+					"rateLimited": "Too many re-runs in this organization. Try again in {minutes, plural, one {# minute} other {# minutes}}.",
+					"rateLimitedLater": "Too many re-runs in this organization. Try again later.",
+					"conflictGenerating": "The document is generating. Re-run the analysis once it finishes.",
+					"conflictRunning": "An analysis is already running.",
+					"promptNotBound": "No prompt is bound to the Proposal internal analysis action. An organization admin can bind one in the Prompt Library.",
+					"forbidden": "You can't re-run this analysis.",
+					"unavailable": "Re-running isn't available right now. Try again shortly.",
+					"failed": "The analysis couldn't be started. Try again."
+				},
+				"orphan": {
+					"title": "Unsaved answers",
+					"description": "The current analysis doesn't raise these findings. Your drafts stay here; if a later analysis raises a finding again, its draft returns to it.",
+					"writtenFor": "Written for: {title}",
+					"discard": "Discard draft"
+				},
+				"noLongerRaised": {
+					"title": "No longer raised ({count})",
+					"description": "Answers to findings the current analysis doesn't raise. They still inform later generations unless they need review or their author no longer has edit rights."
+				},
+				"evidence": {
+					"label": "Sources:",
+					"opensInNewTab": "(opens in a new tab)",
+					"removed": "Source removed",
+					"viewSource": "View source: {title}",
+					"kind": {
+						"projectContext": "Project context",
+						"company": "Company context",
+						"summary": "Project summary",
+						"other": "Other source"
+					}
+				}
 			},
 			"style": {
 				"title": "Style",
@@ -8262,6 +8479,12 @@
 			"ulid": "ulid",
 			"url": "url",
 			"uuid": "uuid"
+		}
+	},
+	"workflows": {
+		"list": {
+			"scheduled": "Scheduled",
+			"scheduledTitle": "Runs on a schedule"
 		}
 	},
 	"choosePlan": {
@@ -9008,6 +9231,7 @@
 			"buildDiagramWithAi": "Open a prompt panel where you describe the diagram in plain language. The assistant rewrites the Mermaid source from your description.",
 			"showDiagram": "Return to the rendered diagram. Any unsaved edits to the source are discarded.",
 			"editDiagramSource": "Open the Mermaid source in an editable panel. Ctrl+Enter saves.",
+			"editStatTilesSource": "Edit source",
 			"addCaption": "Add a short caption underneath the diagram. It travels with the diagram when the document is saved.",
 			"editDiagramInChat": "Scroll to the Fabric Agent chat, where this diagram can be edited. The embed here is view-only and always shows the latest saved scene.",
 			"removeDiagramPlaceholder": {

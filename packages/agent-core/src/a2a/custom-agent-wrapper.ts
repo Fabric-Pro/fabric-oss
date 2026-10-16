@@ -199,7 +199,8 @@ export function createCustomAgentA2AExecutor(
 						mcpConnections.push(mcp.configId);
 					} catch (error) {
 						console.warn(
-							`[CustomAgent:${config.agentId}] Failed to load tools from ${mcp.name}:`,
+							"[CustomAgent] Failed to load tools from MCP server:",
+							{ agentId: config.agentId, serverName: mcp.name },
 							error,
 						);
 					}
@@ -327,7 +328,8 @@ export function createCustomAgentA2AExecutor(
 						mcpConnections.push(mcp.configId);
 					} catch (error) {
 						console.warn(
-							`[CustomAgent:${config.agentId}] Failed to load tools from ${mcp.name}:`,
+							"[CustomAgent] Failed to load tools from MCP server:",
+							{ agentId: config.agentId, serverName: mcp.name },
 							error,
 						);
 					}

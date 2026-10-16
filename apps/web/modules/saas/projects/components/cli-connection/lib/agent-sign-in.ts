@@ -172,7 +172,12 @@ export type LocalSetupTool = "claude-code" | "codex";
 
 type RepositoryRoute = Extract<LocalSetupRoute, { kind: "repository" }>;
 
-export type CloneChoice = "have" | "clone";
+/**
+ * How the instructions reach the machine. `plugin` is the recommended way: a
+ * plugin built from Fabric on demand and no clone at all. `have` and `clone`
+ * are for working on the instructions' own repository.
+ */
+export type CloneChoice = "plugin" | "have" | "clone";
 
 interface InitLineArgs {
 	tarballUrl: string;
@@ -200,7 +205,7 @@ function cloneArgument(directory: string): string {
  */
 function joinInitLine(
 	args: InitLineArgs,
-	cloneDirectory: string | null,
+	mode: { clone: string | null; plugin?: true },
 ): string {
 	const { tarballUrl, baseUrl, tool, projectId } = args;
 	return [
@@ -212,10 +217,36 @@ function joinInitLine(
 			: [`--base-url ${quoteShellArgIfNeeded(baseUrl)}`]),
 		`--project ${quoteShellArgIfNeeded(projectId)}`,
 		`--tool ${tool}`,
-		...(cloneDirectory === null
+		...(mode.plugin ? ["--plugin"] : []),
+		...(mode.clone === null
 			? []
-			: [`--clone ${cloneArgument(cloneDirectory)}`]),
+			: [`--clone ${cloneArgument(mode.clone)}`]),
 	].join(" ");
+}
+
+/**
+ * The recommended setup line: the instructions arrive as a plugin built from
+ * Fabric at each session start, with no clone and no copy, and the project's
+ * memory folders are mirrored as plain files.
+ */
+/**
+ * The line that approves the plugin's command in Claude Code. The plugin and its
+ * marketplace are both named `fabric-` and the last eight letters and digits of
+ * the project's id, as the CLI names them. Claude Code shows the exact command
+ * it will run and asks once; it accepts the answer only from the person's own
+ * terminal.
+ */
+export function claudePluginInstallCommand(projectId: string): string {
+	const tail = projectId
+		.toLowerCase()
+		.replace(/[^a-z0-9]/g, "")
+		.slice(-8);
+	const name = `fabric-${tail === "" ? "project" : tail}`;
+	return `claude plugin install ${name}@${name} --scope local`;
+}
+
+export function buildPluginInitLine(args: InitLineArgs): string {
+	return joinInitLine(args, { clone: null, plugin: true });
 }
 
 /**
@@ -236,7 +267,7 @@ function joinInitLine(
  * on the machine.
  */
 export function buildInitLine(args: InitLineArgs): string {
-	return joinInitLine(args, null);
+	return joinInitLine(args, { clone: null });
 }
 
 /**
@@ -248,7 +279,7 @@ export function buildCloneAndInitLine(
 	route: RepositoryRoute,
 	args: InitLineArgs,
 ): string {
-	return joinInitLine(args, route.directory);
+	return joinInitLine(args, { clone: route.directory });
 }
 
 /**
@@ -260,6 +291,9 @@ export function folderHint(
 	route: RepositoryRoute,
 	choice: CloneChoice,
 ): string {
+	if (choice === "plugin") {
+		return "run it in the folder your agent works in";
+	}
 	if (choice === "clone") {
 		return `cloned into a new folder, ${route.directory}`;
 	}

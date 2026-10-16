@@ -10,6 +10,7 @@
  */
 
 import type { StepResult } from "@repo/temporal";
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
@@ -209,7 +210,7 @@ export function useOrchestratorConversation(
 	// subsystem identifies its agents with its own separate key, and that
 	// is intentionally NOT migrated here — a different concern with its
 	// own blast radius.
-	const agentId = "fabric-workspace-assistant";
+	const agentId = FABRIC_AGENT_ID;
 
 	// Query keys
 	const listKey = [
@@ -239,7 +240,6 @@ export function useOrchestratorConversation(
 					agentId,
 					status: "ACTIVE",
 					limit: 50,
-					offset: 0,
 				});
 				return result;
 			} catch (error) {
@@ -247,7 +247,7 @@ export function useOrchestratorConversation(
 					"[useOrchestratorConversation] Failed to fetch:",
 					error,
 				);
-				return { conversations: [], total: 0, hasMore: false };
+				return { conversations: [], hasMore: false };
 			}
 		},
 		retry: false,

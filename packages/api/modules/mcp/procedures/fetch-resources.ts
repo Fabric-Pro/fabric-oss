@@ -551,7 +551,8 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 				mcpClient = clientResult.client;
 			} catch (clientError) {
 				console.error(
-					`[MCP Resources] Failed to create client for ${serverName}:`,
+					"[MCP Resources] Failed to create client:",
+					{ serverName },
 					clientError,
 				);
 				return {

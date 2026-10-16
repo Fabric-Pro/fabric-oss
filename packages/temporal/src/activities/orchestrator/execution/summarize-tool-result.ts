@@ -42,6 +42,11 @@ export interface SummarizeToolResultInput {
 	userId: string;
 	organizationId?: string;
 	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
+	/**
 	 * The chat turn this summary belongs to (path 2 only). When set, the turn
 	 * record is consulted before EVERY model call — each chunk, the combining
 	 * pass and each rate-limit retry — so a recorded Stop ends the summary at
@@ -150,7 +155,13 @@ export async function summarizeLargeToolResult(
 	try {
 		const { model: resolvedModel } = await getAIModelWithMetadata(
 			{ taskType: "SIMPLE" },
-			{ userId, organizationId },
+			{
+				userId,
+				organizationId,
+				...(input.conversationId
+					? { conversationId: input.conversationId }
+					: {}),
+			},
 		);
 		// Every physical request — each chunk, the combining pass, each
 		// rate-limit retry here and each retry the SDK makes itself — is

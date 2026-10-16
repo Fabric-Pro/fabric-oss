@@ -184,6 +184,49 @@ describe("proposalAnalysisWorkflow", () => {
 	});
 });
 
+describe("proposalAnalysisWorkflow — a re-run (Fizzy #2946)", () => {
+	// The API starts the same workflow for a re-run, under the re-run row's
+	// own id, with the requesting member; the activity reads the rest from
+	// the row.
+	const RERUN_INPUT = {
+		runId: "rerun-2",
+		organizationId: "org-1",
+		projectId: "project-1",
+		documentId: "doc-1",
+		userId: "user-2",
+	};
+
+	it("hands the re-run's ids to the same review, unchanged", async () => {
+		h.activities.runProposalAnalysis.mockResolvedValue({
+			outcome: "completed",
+			findingCount: 2,
+		});
+
+		const result = await proposalAnalysisWorkflow(RERUN_INPUT);
+
+		expect(h.activities.runProposalAnalysis).toHaveBeenCalledTimes(1);
+		expect(h.activities.runProposalAnalysis).toHaveBeenCalledWith(
+			RERUN_INPUT,
+		);
+		expect(result).toEqual({ status: "COMPLETE", findingCount: 2 });
+	});
+
+	it("marks only its own run FAILED when it gives up", async () => {
+		h.activities.runProposalAnalysis.mockRejectedValue(
+			activityFailure(new Error("Upstream 503")),
+		);
+
+		const result = await proposalAnalysisWorkflow(RERUN_INPUT);
+
+		expect(result.status).toBe("FAILED");
+		expect(h.activities.failProposalAnalysisRun).toHaveBeenCalledTimes(1);
+		expect(h.activities.failProposalAnalysisRun).toHaveBeenCalledWith({
+			...RERUN_INPUT,
+			errorCode: "MODEL_ERROR",
+		});
+	});
+});
+
 describe("proposalAnalysisWorkflow — activity options", () => {
 	type Proxy = {
 		taskQueue?: string;

@@ -1,0 +1,339 @@
+{
+	"description": "Synthetic Proposal bodies and their section maps (Fizzy #2946). Asserted identically in @repo/utils (Node), web (jsdom) and @repo/temporal. Regenerate only with a projection version bump.",
+	"version": "p1",
+	"cases": [
+		{
+			"name": "titled proposal with lists, table, visuals and duplicate headings",
+			"markdown": "# Proposal for Example Org\n\nPrepared by the delivery team for *Example Org*.\n\n## 1. Executive Summary\n\nExample Org wants **one reporting\nplatform** instead of manual exports.\n\n## 2. Scope\n\n### In Scope\n\n- Nightly ingestion from the `crm` system\n- Dashboards for finance and operations\n  1. Executive overview\n  2. Team drill-downs\n- [x] Access agreed\n\n### Out of Scope\n\n> Hardware procurement stays with Example Org.\n\n## 3. Timeline\n\n| Phase | Weeks |\n|-------|------:|\n| Discovery | 2 |\n| Build \\| QA | 8 |\n\n```mermaid\n%% fabric-visual: a1b2c3d4e5f6a7b8\ngantt\n  title Delivery plan\n```\n\n```stat-tiles\n%% fabric-visual: b1c2d3e4f5a6b7c8\nWeeks: 12\nTeams: 3\n```\n\n<visual-slot data-slot-id=\"slot-a\" data-kind=\"timeline\" data-hint=\"Phases by week\"></visual-slot>\n\n## Risks\n\nVendor delays.\n\n## Risks\n\nScope growth.\n\n![Architecture overview](https://example.com/diagram.png) See the [terms](https://example.com/terms).\n",
+			"expected": {
+				"sections": [
+					{
+						"key": "p1:@preamble",
+						"headingText": null,
+						"depth": 0,
+						"headingPath": [],
+						"occurrenceIndex": 0,
+						"startLine": 1,
+						"endLine": 4,
+						"proseHash": "p1:f4c3361e96b22422"
+					},
+					{
+						"key": "p1:executive summary#0",
+						"headingText": "1. Executive Summary",
+						"depth": 2,
+						"headingPath": ["executive summary"],
+						"occurrenceIndex": 0,
+						"startLine": 5,
+						"endLine": 9,
+						"proseHash": "p1:cfd253b9a383f515"
+					},
+					{
+						"key": "p1:scope#0",
+						"headingText": "2. Scope",
+						"depth": 2,
+						"headingPath": ["scope"],
+						"occurrenceIndex": 0,
+						"startLine": 10,
+						"endLine": 11,
+						"proseHash": "p1:811c9dc59e3779b9"
+					},
+					{
+						"key": "p1:scope/in scope#0",
+						"headingText": "In Scope",
+						"depth": 3,
+						"headingPath": ["scope", "in scope"],
+						"occurrenceIndex": 0,
+						"startLine": 12,
+						"endLine": 19,
+						"proseHash": "p1:7b488c3e62b8e9ba"
+					},
+					{
+						"key": "p1:scope/out of scope#0",
+						"headingText": "Out of Scope",
+						"depth": 3,
+						"headingPath": ["scope", "out of scope"],
+						"occurrenceIndex": 0,
+						"startLine": 20,
+						"endLine": 23,
+						"proseHash": "p1:53d4125b17f3474f"
+					},
+					{
+						"key": "p1:timeline#0",
+						"headingText": "3. Timeline",
+						"depth": 2,
+						"headingPath": ["timeline"],
+						"occurrenceIndex": 0,
+						"startLine": 24,
+						"endLine": 44,
+						"proseHash": "p1:ab1dc9e630f69f02"
+					},
+					{
+						"key": "p1:risks#0",
+						"headingText": "Risks",
+						"depth": 2,
+						"headingPath": ["risks"],
+						"occurrenceIndex": 0,
+						"startLine": 45,
+						"endLine": 48,
+						"proseHash": "p1:c2799ff9f83a69b5"
+					},
+					{
+						"key": "p1:risks#1",
+						"headingText": "Risks",
+						"depth": 2,
+						"headingPath": ["risks"],
+						"occurrenceIndex": 1,
+						"startLine": 49,
+						"endLine": 54,
+						"proseHash": "p1:ef77153dbc64c9e1"
+					}
+				],
+				"documentProseHash": "p1:ecf2e728541363bc"
+			}
+		},
+		{
+			"name": "the same proposal with CRLF line endings",
+			"markdown": "# Proposal for Example Org\r\n\r\nPrepared by the delivery team for *Example Org*.\r\n\r\n## 1. Executive Summary\r\n\r\nExample Org wants **one reporting\r\nplatform** instead of manual exports.\r\n\r\n## 2. Scope\r\n\r\n### In Scope\r\n\r\n- Nightly ingestion from the `crm` system\r\n- Dashboards for finance and operations\r\n  1. Executive overview\r\n  2. Team drill-downs\r\n- [x] Access agreed\r\n\r\n### Out of Scope\r\n\r\n> Hardware procurement stays with Example Org.\r\n\r\n## 3. Timeline\r\n\r\n| Phase | Weeks |\r\n|-------|------:|\r\n| Discovery | 2 |\r\n| Build \\| QA | 8 |\r\n\r\n```mermaid\r\n%% fabric-visual: a1b2c3d4e5f6a7b8\r\ngantt\r\n  title Delivery plan\r\n```\r\n\r\n```stat-tiles\r\n%% fabric-visual: b1c2d3e4f5a6b7c8\r\nWeeks: 12\r\nTeams: 3\r\n```\r\n\r\n<visual-slot data-slot-id=\"slot-a\" data-kind=\"timeline\" data-hint=\"Phases by week\"></visual-slot>\r\n\r\n## Risks\r\n\r\nVendor delays.\r\n\r\n## Risks\r\n\r\nScope growth.\r\n\r\n![Architecture overview](https://example.com/diagram.png) See the [terms](https://example.com/terms).\r\n",
+			"expected": {
+				"sections": [
+					{
+						"key": "p1:@preamble",
+						"headingText": null,
+						"depth": 0,
+						"headingPath": [],
+						"occurrenceIndex": 0,
+						"startLine": 1,
+						"endLine": 4,
+						"proseHash": "p1:f4c3361e96b22422"
+					},
+					{
+						"key": "p1:executive summary#0",
+						"headingText": "1. Executive Summary",
+						"depth": 2,
+						"headingPath": ["executive summary"],
+						"occurrenceIndex": 0,
+						"startLine": 5,
+						"endLine": 9,
+						"proseHash": "p1:cfd253b9a383f515"
+					},
+					{
+						"key": "p1:scope#0",
+						"headingText": "2. Scope",
+						"depth": 2,
+						"headingPath": ["scope"],
+						"occurrenceIndex": 0,
+						"startLine": 10,
+						"endLine": 11,
+						"proseHash": "p1:811c9dc59e3779b9"
+					},
+					{
+						"key": "p1:scope/in scope#0",
+						"headingText": "In Scope",
+						"depth": 3,
+						"headingPath": ["scope", "in scope"],
+						"occurrenceIndex": 0,
+						"startLine": 12,
+						"endLine": 19,
+						"proseHash": "p1:7b488c3e62b8e9ba"
+					},
+					{
+						"key": "p1:scope/out of scope#0",
+						"headingText": "Out of Scope",
+						"depth": 3,
+						"headingPath": ["scope", "out of scope"],
+						"occurrenceIndex": 0,
+						"startLine": 20,
+						"endLine": 23,
+						"proseHash": "p1:53d4125b17f3474f"
+					},
+					{
+						"key": "p1:timeline#0",
+						"headingText": "3. Timeline",
+						"depth": 2,
+						"headingPath": ["timeline"],
+						"occurrenceIndex": 0,
+						"startLine": 24,
+						"endLine": 44,
+						"proseHash": "p1:ab1dc9e630f69f02"
+					},
+					{
+						"key": "p1:risks#0",
+						"headingText": "Risks",
+						"depth": 2,
+						"headingPath": ["risks"],
+						"occurrenceIndex": 0,
+						"startLine": 45,
+						"endLine": 48,
+						"proseHash": "p1:c2799ff9f83a69b5"
+					},
+					{
+						"key": "p1:risks#1",
+						"headingText": "Risks",
+						"depth": 2,
+						"headingPath": ["risks"],
+						"occurrenceIndex": 1,
+						"startLine": 49,
+						"endLine": 54,
+						"proseHash": "p1:ef77153dbc64c9e1"
+					}
+				],
+				"documentProseHash": "p1:ecf2e728541363bc"
+			}
+		},
+		{
+			"name": "untitled body with a preamble, setext and indented headings, and heading-looking content",
+			"markdown": "Lead-in text before any heading.\n\n## Background\n\n```\n## not a heading inside a fence\n```\n\n<div>\n## not a heading inside an HTML block\n</div>\n\n> ## A quoted heading is content\n\nApproach\n--------\n\nSetext headings are sections.\n\n   ### Indented heading\n\nIndented ATX headings are sections too.\n\n```json\n{ \"budget\": 120000 }\n```\n",
+			"expected": {
+				"sections": [
+					{
+						"key": "p1:@preamble",
+						"headingText": null,
+						"depth": 0,
+						"headingPath": [],
+						"occurrenceIndex": 0,
+						"startLine": 1,
+						"endLine": 2,
+						"proseHash": "p1:3d8794fffe7aa793"
+					},
+					{
+						"key": "p1:background#0",
+						"headingText": "Background",
+						"depth": 2,
+						"headingPath": ["background"],
+						"occurrenceIndex": 0,
+						"startLine": 3,
+						"endLine": 14,
+						"proseHash": "p1:9ae54840592c3ff4"
+					},
+					{
+						"key": "p1:approach#0",
+						"headingText": "Approach",
+						"depth": 2,
+						"headingPath": ["approach"],
+						"occurrenceIndex": 0,
+						"startLine": 15,
+						"endLine": 19,
+						"proseHash": "p1:054391a9d5f038b5"
+					},
+					{
+						"key": "p1:approach/indented heading#0",
+						"headingText": "Indented heading",
+						"depth": 3,
+						"headingPath": ["approach", "indented heading"],
+						"occurrenceIndex": 0,
+						"startLine": 20,
+						"endLine": 27,
+						"proseHash": "p1:ec49ff26c0d5ddaa"
+					}
+				],
+				"documentProseHash": "p1:1e8ead189398e66c"
+			}
+		},
+		{
+			"name": "entities, escapes, autolinks, hard break, emoji, decomposed text and reserved characters",
+			"markdown": "# Proposal\n\n## Pricing &amp; Terms\n\nFees exclude VAT&nbsp;and travel &mdash; see <https://example.com/terms> or www.example.com.  \nQuestions go to dev@example.com. \ud83d\ude80 Ready \u2705\n\nEscapes: \\*not emphasis\\*, snake\\_case, 50\\% and \\#tag.\n\n## Cafe\u0301 Re\u0301sume\u0301\n\nNai\u0308ve text in decomposed form: re\u0301sume\u0301.\n\n## a/b #c @preamble\n\nReserved characters in a heading are escaped in its key.\n\n## @preamble\n\nA heading spelled like a reserved key.\n",
+			"expected": {
+				"sections": [
+					{
+						"key": "p1:pricing & terms#0",
+						"headingText": "Pricing & Terms",
+						"depth": 2,
+						"headingPath": ["pricing & terms"],
+						"occurrenceIndex": 0,
+						"startLine": 3,
+						"endLine": 9,
+						"proseHash": "p1:d1ef902462ba12d0"
+					},
+					{
+						"key": "p1:caf\u00e9 r\u00e9sum\u00e9#0",
+						"headingText": "Caf\u00e9 R\u00e9sum\u00e9",
+						"depth": 2,
+						"headingPath": ["caf\u00e9 r\u00e9sum\u00e9"],
+						"occurrenceIndex": 0,
+						"startLine": 10,
+						"endLine": 13,
+						"proseHash": "p1:ea8f4f0acd087d96"
+					},
+					{
+						"key": "p1:a%2Fb %23c %40preamble#0",
+						"headingText": "a/b #c @preamble",
+						"depth": 2,
+						"headingPath": ["a/b #c @preamble"],
+						"occurrenceIndex": 0,
+						"startLine": 14,
+						"endLine": 17,
+						"proseHash": "p1:75e4e5e0efd39c84"
+					},
+					{
+						"key": "p1:%40preamble#0",
+						"headingText": "@preamble",
+						"depth": 2,
+						"headingPath": ["@preamble"],
+						"occurrenceIndex": 0,
+						"startLine": 18,
+						"endLine": 21,
+						"proseHash": "p1:cb6ae69c154e9880"
+					}
+				],
+				"documentProseHash": "p1:3a999a2412993c98"
+			}
+		},
+		{
+			"name": "a later top-level heading after the title",
+			"markdown": "# Proposal\n\n## Scope\n\nMain scope.\n\n# Appendix\n\n## Scope\n\nAppendix scope.\n\n# Scope\n\nA later top-level heading keeps its full path.\n",
+			"expected": {
+				"sections": [
+					{
+						"key": "p1:scope#0",
+						"headingText": "Scope",
+						"depth": 2,
+						"headingPath": ["scope"],
+						"occurrenceIndex": 0,
+						"startLine": 3,
+						"endLine": 6,
+						"proseHash": "p1:4e96d836c10785aa"
+					},
+					{
+						"key": "p1:appendix#0",
+						"headingText": "Appendix",
+						"depth": 1,
+						"headingPath": ["appendix"],
+						"occurrenceIndex": 0,
+						"startLine": 7,
+						"endLine": 8,
+						"proseHash": "p1:811c9dc59e3779b9"
+					},
+					{
+						"key": "p1:appendix/scope#0",
+						"headingText": "Scope",
+						"depth": 2,
+						"headingPath": ["appendix", "scope"],
+						"occurrenceIndex": 0,
+						"startLine": 9,
+						"endLine": 12,
+						"proseHash": "p1:8151c2de27c9f99a"
+					},
+					{
+						"key": "p1:scope#1",
+						"headingText": "Scope",
+						"depth": 1,
+						"headingPath": ["scope"],
+						"occurrenceIndex": 1,
+						"startLine": 13,
+						"endLine": 16,
+						"proseHash": "p1:156fe48a8c9a4f5e"
+					}
+				],
+				"documentProseHash": "p1:938bdc37e301e0bb"
+			}
+		},
+		{
+			"name": "an empty body",
+			"markdown": "",
+			"expected": {
+				"sections": [],
+				"documentProseHash": "p1:811c9dc59e3779b9"
+			}
+		}
+	]
+}

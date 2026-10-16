@@ -54,23 +54,22 @@ import {
 	cacheToolResult,
 	getCachedToolResult,
 } from "../../letta-memory-activities";
-import {
-	createFirstClassFrame,
-	getFirstClassFrame,
-	listFirstClassFrames,
-	shareFirstClassFrame,
-	updateFirstClassFrame,
-} from "../../shared/frame-service";
 import { executeMicrosoftTeamsTool } from "../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../shared/read-only-gate";
 import { HEARTBEAT_INTERVALS } from "../config";
 import { assertTurnDispatchable, rethrowIfTurnStopped } from "../turn-dispatch";
-import type { ExecuteMcpToolInput, ExecuteMcpToolOutput } from "../types";
+import type {
+	ExecuteMcpToolInput,
+	ExecuteMcpToolOutput,
+	RuntimeAuthorityRequest,
+} from "../types";
 import type { AuthorityGateResult } from "./authority-gate";
 import { describeError } from "./describe-error";
 import {
+	type CatalogApproval,
 	FABRIC_AI_SERVER_CONFIG_ID,
 	fabricCatalogAuthority,
+	resolveCatalogApproval,
 	resolveFabricCatalogRoute,
 	runFabricCatalogTool,
 } from "./fabric-catalog-adapter";
@@ -694,19 +693,20 @@ export async function executeMcpTool(
 	// When a timeout is set, the call's abort signal fires on expiry (finding
 	// 8). One controller per call → siblings sharing the cached client are
 	// unaffected. The signal reaches the STDIO wrapper request, which it
-	// cancels. On the HTTP and SSE transports it does not reach the
-	// underlying fetch (the SDK transport sends with its own controller), so
-	// a request already handed to fetch stays live on the wire: Fabric stops
-	// waiting for it and abandons it, it is not torn down.
+	// cancels. On the HTTP and SSE transports `createMcpClient` adds it to
+	// the call's POST (`abortWritesWithCallSignal` in @repo/mcp), so an
+	// unsent request is not sent and one in flight is torn down. Abort
+	// cannot recall a request the server already received, so a call that
+	// times out may still complete upstream.
 	const requestedTimeoutMs = effectiveMcpToolTimeoutMs(
 		input.timeoutMs,
 		isFirstPartyFabricTool(input.toolName),
 	);
 	// With a send deadline, the timer also ends at it, so Fabric stops waiting
-	// for a request still in flight there (abandoned on HTTP and SSE, not
-	// torn down; see above). The deadline itself is enforced by the explicit
-	// clock checks before each send, not by this timer, which can fire late
-	// when the event loop stalls.
+	// for a request still in flight there and aborts it (see above). The
+	// deadline itself is enforced by the explicit clock checks before each
+	// send, not by this timer, which can fire late when the event loop
+	// stalls.
 	const timeoutMs =
 		deadline === undefined
 			? requestedTimeoutMs
@@ -743,8 +743,9 @@ export async function executeMcpTool(
 		// Opt-in per-call timeout. The race resolves on timeout, so this function
 		// returns and the `finally` below clears the heartbeat interval — the
 		// hung `tool.execute` inside `work` can no longer leak a live timer. The
-		// abort below cancels a STDIO request; an HTTP or SSE request already
-		// handed to fetch is left running and its answer is ignored.
+		// abort below cancels a STDIO request and aborts an HTTP or SSE POST
+		// still in flight; the server may already have acted on it, so the
+		// outcome stays indeterminate.
 		const result = await (timeoutMs
 			? runWithTimeout(work, timeoutMs, () => {
 					abortController?.abort();
@@ -866,13 +867,63 @@ function authorityRunId(input: ExecuteMcpToolInput): string | undefined {
  * A tool that did not run for lack of runtime authority. The `error` text is
  * what the model sees if the caller does not handle `authorityRequired`.
  */
+const CALL_SUMMARY_ROWS = 4;
+const CALL_SUMMARY_VALUE_CHARS = 80;
+
+/**
+ * The plain arguments of a call the person is asked to allow once, so the
+ * question names the workflow or the page tools and not only the tool: a few
+ * scalars and lists of names, each clipped, reaching one object deep (a
+ * workflow's `preset`).
+ */
+function summarizeCall(args: Record<string, unknown> | undefined): string {
+	const rows: string[] = [];
+	const add = (name: string, value: unknown, depth: number) => {
+		if (rows.length >= CALL_SUMMARY_ROWS) {
+			return;
+		}
+		if (
+			typeof value === "string" ||
+			typeof value === "number" ||
+			typeof value === "boolean"
+		) {
+			rows.push(
+				`${name}: ${String(value).slice(0, CALL_SUMMARY_VALUE_CHARS)}`,
+			);
+		} else if (
+			Array.isArray(value) &&
+			value.length > 0 &&
+			value.every((entry) => typeof entry === "string")
+		) {
+			rows.push(
+				`${name}: ${value.join(", ").slice(0, CALL_SUMMARY_VALUE_CHARS)}`,
+			);
+		} else if (
+			depth === 0 &&
+			typeof value === "object" &&
+			value !== null &&
+			!Array.isArray(value)
+		) {
+			for (const [key, entry] of Object.entries(value)) {
+				add(`${name}.${key}`, entry, 1);
+			}
+		}
+	};
+	for (const [name, value] of Object.entries(args ?? {})) {
+		add(name, value, 0);
+	}
+	return rows.join("; ");
+}
+
 function authorityRequiredResult(
 	input: ExecuteMcpToolInput,
 	gate: AuthorityGateResult,
 	providerDisplayName: string,
 	startTime: number,
+	grantScope?: RuntimeAuthorityRequest["grantScope"],
 ): ExecuteMcpToolOutput {
 	const accessLevel = gate.requiredAccessLevel ?? "WRITE";
+	const callSummary = grantScope === "call" ? summarizeCall(input.args) : "";
 	console.log(
 		`[Orchestrator] "${input.toolName}" needs ${accessLevel} authority for ${gate.providerKey} (pending session: ${gate.pendingSessionId ?? "none"})`,
 	);
@@ -889,6 +940,8 @@ function authorityRequiredResult(
 			providerDisplayName,
 			accessLevel,
 			toolName: input.toolName,
+			...(grantScope ? { grantScope } : {}),
+			...(callSummary ? { callSummary } : {}),
 		},
 	};
 }
@@ -1217,27 +1270,47 @@ export function isFirstPartyFabricTool(toolName: string): boolean {
 }
 
 /**
- * Runtime authority for a WRITE on Fabric itself (e.g. creating a story),
- * raised against the conversation like any other chat write. Fails closed.
+ * Runtime authority for a WRITE on Fabric itself, raised against the
+ * conversation like any other chat write. Never the whole provider: the
+ * approval is for the tool (`conversation`), or for exactly this call
+ * (`every-call`, a one-shot grant fingerprinted on the tool and its arguments,
+ * so the next call asks again). Fails closed.
  */
 async function gateFabricWriteTool(
 	input: ExecuteMcpToolInput,
 	startTime: number,
+	approval: Exclude<CatalogApproval, "none">,
 ): Promise<ExecuteMcpToolOutput | null> {
 	try {
 		const { ensureMcpToolAuthority } = await import("./authority-gate");
+		const requestFingerprint =
+			approval === "every-call"
+				? (await import("@repo/database")).authorityRequestFingerprint(
+						input.toolName,
+						input.args ?? {},
+					)
+				: undefined;
 		const gate = await ensureMcpToolAuthority({
 			userId: input.userId,
 			organizationId: input.organizationId,
 			serverKey: "fabric",
 			serverDisplayName: "Fabric",
 			toolName: input.toolName,
+			accessLevel: "WRITE",
+			toolScope: [input.toolName],
+			...(requestFingerprint ? { requestFingerprint } : {}),
 			runType: "ORCHESTRATOR",
 			runId: authorityRunId(input),
 		});
 		return gate.authorized
 			? null
-			: authorityRequiredResult(input, gate, "Fabric", startTime);
+			: authorityRequiredResult(
+					input,
+					gate,
+					"Fabric",
+					startTime,
+					approval === "every-call" ? "call" : "tool",
+				);
 	} catch (error) {
 		return {
 			success: false,
@@ -1261,7 +1334,26 @@ async function executeFabricCatalogTool(
 	startTime: number,
 ): Promise<ExecuteMcpToolOutput> {
 	const route = resolveFabricCatalogRoute(input.toolName);
-	if (route?.access === "WRITE" && input.requestRuntimeAuthority) {
+	const approval = resolveCatalogApproval(input.toolName, input.args ?? {});
+	if (
+		approval !== "none" &&
+		route?.executor === "gateway" &&
+		!input.requestRuntimeAuthority
+	) {
+		// A run that predates the authority round cannot ask the person, and a
+		// call the tool's definition says needs their yes is never made
+		// without it.
+		return {
+			output: {
+				error: `"${input.toolName}" needs the person's approval, which this run cannot ask for. Ask them to send the request again.`,
+			},
+			durationMs: Date.now() - startTime,
+			success: false,
+			cached: false,
+			failureKind: "rejected",
+		};
+	}
+	if (approval !== "none" && input.requestRuntimeAuthority) {
 		const authority = fabricCatalogAuthority(input.toolName);
 		const authorityBlock =
 			authority.kind === "integration"
@@ -1272,7 +1364,7 @@ async function executeFabricCatalogTool(
 						authority.operation,
 						startTime,
 					)
-				: await gateFabricWriteTool(input, startTime);
+				: await gateFabricWriteTool(input, startTime, approval);
 		if (authorityBlock) {
 			return authorityBlock;
 		}
@@ -1290,6 +1382,11 @@ async function executeFabricCatalogTool(
 		projectId: input.projectId,
 		attachedImageUrls: input.attachedImageUrls,
 		companyContextAdvisor: input.companyContextAdvisor,
+		conversationId: input.conversationId,
+		executionId: input.executionId,
+		actingGrant: input.actingGrant,
+		launchWorkspaceId: input.launchWorkspaceId,
+		launchSurface: input.launchSurface,
 	});
 	if (!result.success) {
 		console.warn(
@@ -1785,6 +1882,9 @@ async function executeMcpToolImpl(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
+						...(input.conversationId
+							? { conversationId: input.conversationId }
+							: {}),
 					});
 					output = result.success
 						? result.analysis
@@ -1809,6 +1909,9 @@ async function executeMcpToolImpl(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
+						...(input.conversationId
+							? { conversationId: input.conversationId }
+							: {}),
 					});
 					output = result.success
 						? result.analysis
@@ -1827,6 +1930,9 @@ async function executeMcpToolImpl(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
+						...(input.conversationId
+							? { conversationId: input.conversationId }
+							: {}),
 					});
 					output = result.success
 						? result.output
@@ -1897,59 +2003,6 @@ async function executeMcpToolImpl(
 							`Model: ${imageResult.model}`;
 						output = resultText;
 					}
-					break;
-				}
-				case "fabric_create_frame":
-				case "fabric_create_slideshow": {
-					const full = await createFirstClassFrame({
-						args: args as Record<string, unknown>,
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
-					// Drop the rendered HTML from the workflow-bound result. The
-					// content is already persisted in the DB; carrying it here
-					// inflates state, blows past `truncateResult`'s 5KB cap (which
-					// would replace the entire object with a sentinel string and
-					// strand the client without `frameId`/`frameUrl`), and re-bills
-					// the LLM for ~7KB of duplicate input every subsequent
-					// iteration. Identifiers are all the client + LLM need.
-					if ("error" in full) {
-						output = full;
-					} else {
-						const { content: _content, ...lean } = full;
-						output = lean;
-					}
-					break;
-				}
-				case "fabric_update_frame": {
-					output = await updateFirstClassFrame({
-						args: args as Record<string, unknown>,
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
-					break;
-				}
-				case "fabric_get_frame": {
-					output = await getFirstClassFrame({
-						args: args as Record<string, unknown>,
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
-					break;
-				}
-				case "fabric_list_frames": {
-					output = await listFirstClassFrames({
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
-					break;
-				}
-				case "fabric_share_frame": {
-					output = await shareFirstClassFrame({
-						args: args as Record<string, unknown>,
-						userId: input.userId,
-						organizationId: input.organizationId,
-					});
 					break;
 				}
 				default: {
@@ -2282,9 +2335,10 @@ async function executeMcpToolImpl(
 			// Handle OAuth authorization required errors specially
 			// Return authRequired result so workflow can pause and signal UI
 			if (execError instanceof OAuthAuthorizationRequiredError) {
-				console.warn(
-					`[Orchestrator] OAuth authorization required for "${serverName || "MCP server"}": ${execError.message}`,
-				);
+				console.warn("[Orchestrator] OAuth authorization required:", {
+					serverName,
+					message: execError.message,
+				});
 				return {
 					output: {
 						error: `OAuth authorization required for "${execError.serverName}". Please connect in Settings.`,
@@ -2370,10 +2424,10 @@ async function executeMcpToolImpl(
 			// reported twice at the highest severity by two layers, neither of
 			// which knew whether it mattered.
 			if (input.failureLogging !== "caller") {
-				console.warn(
-					`[Orchestrator] Tool "${input.toolName}" execution failed:`,
+				console.warn("[Orchestrator] Tool execution failed:", {
+					toolName: input.toolName,
 					errorMessage,
-				);
+				});
 			}
 
 			// Cache failed result to avoid retries (but not for OAuth errors)

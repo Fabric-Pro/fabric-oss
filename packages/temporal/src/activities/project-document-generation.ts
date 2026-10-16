@@ -89,6 +89,7 @@ import {
 	type RetrievedContext,
 	reembedProjectDocument,
 	rerankContexts,
+	SUMMARY_CONTEXT_TYPE,
 	searchSimilarEpisodes,
 	searchSimilarProjectContexts,
 } from "@repo/rag";
@@ -105,15 +106,33 @@ import { completedSections } from "@repo/utils/proposal-artifact/live-sections";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { emitDocumentChange } from "@repo/utils/realtime-emit";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
-import { retrieveCompanyContextEntries } from "../lib/company-context-retrieval";
+import {
+	retrieveCompanyContextEntries,
+	retrieveCompanyContextSourcedEntries,
+} from "../lib/company-context-retrieval";
 import { runDecisionPrecheck } from "../lib/decision-precheck";
 import { contentIdentity } from "../lib/proposal-artifact/content-identity";
+import {
+	buildEchoGuard,
+	buildSettledDecisionsBlock,
+	checkEcho,
+	echoedStableKeys,
+	joinSettledDecisions,
+	RESPONSE_ECHOED_MESSAGE,
+	type ResponseEchoGuard,
+	type ResponseEchoResult,
+	type SettledDecisionsBlock,
+} from "../lib/proposal-artifact/settled-decisions";
 import {
 	type CreatedDocumentVersion,
 	DOCUMENT_GENERATION_STALE,
 	PROPOSAL_PROMPT_NOT_BOUND,
+	type ProjectContextsWithManifest,
 	type ProposalArtifactGenerationOptions,
 	type ProposalLiveRunGuard,
+	type ProposalRetrievalSource,
+	proposalSourceFingerprint,
+	RESPONSE_ECHOED,
 } from "../lib/proposal-artifact/types";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
@@ -234,11 +253,68 @@ interface RetrieveProjectContextsParams {
 	 * directly — source content the user supplied moments before the run — so
 	 * the same words must not also arrive through similarity search (R29).
 	 *
-	 * The filter lives inside this activity because the return type is
-	 * `string[]`: identifiers do not survive the boundary, so a caller has
-	 * nothing to post-filter on.
+	 * The filter lives inside this activity because the strings it returns
+	 * carry no identifiers, so a caller has nothing to post-filter on.
 	 */
 	excludeContextId?: string;
+	/**
+	 * Also report where each string came from (Fizzy #2946): the result is
+	 * then `{ contexts, manifest }`, the same strings plus one manifest entry
+	 * per string, in order. Only a coordinated Proposal asks; every other
+	 * caller gets `string[]` exactly as before.
+	 */
+	includeSourceManifest?: boolean;
+}
+
+/** Where one retrieval string came from, before it is fingerprinted. */
+type RetrievalSourceDescription = Omit<ProposalRetrievalSource, "fingerprint">;
+
+/**
+ * One retrieval string beside where it came from. Described on demand: only
+ * a caller that asked for the manifest reads it, so every other caller does
+ * exactly the work it did before.
+ */
+interface SourcedContext {
+	text: string;
+	describe: () => RetrievalSourceDescription;
+}
+
+/** A string no row stands for. */
+const OTHER_SOURCE: RetrievalSourceDescription = {
+	kind: "other",
+	id: null,
+	contextType: null,
+	title: null,
+	sourceName: null,
+};
+
+/**
+ * Where a retrieved context came from: the injected project summary, a
+ * conversation bundle (whose id is not a context row's), or a project
+ * context row with its type.
+ */
+function describeRetrievedContext(
+	context: RetrievedContext,
+	bundleIds: ReadonlySet<string>,
+): RetrievalSourceDescription {
+	const title =
+		context.sourceTitle || context.filename || context.sourcePath || null;
+	if (
+		context.type === SUMMARY_CONTEXT_TYPE &&
+		context.metadata?.isSummary === true
+	) {
+		return { ...OTHER_SOURCE, kind: "summary", title };
+	}
+	if (bundleIds.has(context.id)) {
+		return { ...OTHER_SOURCE, title };
+	}
+	return {
+		kind: "projectContext",
+		id: context.id,
+		contextType: context.type,
+		title,
+		sourceName: null,
+	};
 }
 
 /**
@@ -255,35 +331,89 @@ interface RetrieveProjectContextsParams {
  * two retrievals run side by side: the company half reads nothing the
  * project half returns. See `retrieveCompanyContextEntries` for who gets it
  * and whose. A project retrieval that throws still fails the activity; a
- * company-side failure never does. The result stays `string[]`, so the
- * marker is the only label: a project entry carrying it is defused before it
+ * company-side failure never does. The strings carry no other label, so the
+ * marker is the only one: a project entry carrying it is defused before it
  * leaves.
+ *
+ * With `includeSourceManifest` the result is `{ contexts, manifest }`: the
+ * same strings, plus where each came from (Fizzy #2946), fingerprinted on the
+ * final string so a reader can check an entry still describes the string at
+ * its position. Without it, `string[]`, exactly as before.
  */
+export function retrieveProjectContexts(
+	params: RetrieveProjectContextsParams & { includeSourceManifest: true },
+): Promise<ProjectContextsWithManifest>;
+export function retrieveProjectContexts(
+	params: RetrieveProjectContextsParams & { includeSourceManifest?: false },
+): Promise<string[]>;
+export function retrieveProjectContexts(
+	params: RetrieveProjectContextsParams,
+): Promise<string[] | ProjectContextsWithManifest>;
 export async function retrieveProjectContexts(
 	params: RetrieveProjectContextsParams,
-): Promise<string[]> {
+): Promise<string[] | ProjectContextsWithManifest> {
+	const withManifest = params.includeSourceManifest === true;
+	const company = {
+		projectId: params.projectId,
+		userId: params.userId,
+		documentType: params.documentType,
+	};
 	const [projectEntries, vendorEntries] = await Promise.all([
 		// Only company entries may carry the vendor marker: an exact copy in
 		// the project's own text is rewritten, so it cannot pass for vendor
 		// material.
 		retrieveProjectContextEntries(params).then((entries) =>
-			entries.map(defuseVendorContextMarker),
+			entries.map((entry) => ({
+				...entry,
+				text: defuseVendorContextMarker(entry.text),
+			})),
 		),
-		// Never rejects: a company-side failure yields no entries.
-		retrieveCompanyContextEntries({
-			projectId: params.projectId,
-			userId: params.userId,
-			documentType: params.documentType,
-		}),
+		// Never rejects: a company-side failure yields no entries. The
+		// source ids are read only for a caller that asked for them.
+		withManifest
+			? retrieveCompanyContextSourcedEntries(company).then((entries) =>
+					entries.map(
+						(entry): SourcedContext => ({
+							text: entry.text,
+							describe: () => ({
+								kind: "company",
+								id: entry.sourceId,
+								contextType: null,
+								title: entry.sourceName,
+								sourceName: entry.sourceName,
+							}),
+						}),
+					),
+				)
+			: retrieveCompanyContextEntries(company).then((texts) =>
+					texts.map(
+						(text): SourcedContext => ({
+							text,
+							describe: () => OTHER_SOURCE,
+						}),
+					),
+				),
 	]);
-	return vendorEntries.length > 0
-		? [...projectEntries, ...vendorEntries]
-		: projectEntries;
+	const entries =
+		vendorEntries.length > 0
+			? [...projectEntries, ...vendorEntries]
+			: projectEntries;
+	const contexts = entries.map((entry) => entry.text);
+	if (!withManifest) {
+		return contexts;
+	}
+	return {
+		contexts,
+		manifest: entries.map((entry) => ({
+			...entry.describe(),
+			fingerprint: proposalSourceFingerprint(entry.text),
+		})),
+	};
 }
 
 async function retrieveProjectContextEntries(
 	params: RetrieveProjectContextsParams,
-): Promise<string[]> {
+): Promise<SourcedContext[]> {
 	const {
 		projectId,
 		userId,
@@ -432,7 +562,10 @@ async function retrieveProjectContextEntries(
 				userId,
 				organizationId,
 			});
-			return summaryOnly.map((c) => c.content);
+			return summaryOnly.map((c) => ({
+				text: c.content,
+				describe: () => describeRetrievedContext(c, new Set()),
+			}));
 		}
 
 		activityLogger.debug("Fetching contexts from database", {
@@ -610,7 +743,10 @@ async function retrieveProjectContextEntries(
 			organizationId,
 		});
 
-		const contextContents = withSummary.map((c) => {
+		// A bundle's envelope carries the bundle's own id, never a context
+		// row's: what tells a conversation from a row in the manifest.
+		const bundleIds = new Set(bundleIdByBaseId.values());
+		const sourcedContents = withSummary.map((c): SourcedContext => {
 			let content = c.content;
 			if (c.sourceType || c.aiInstructions) {
 				const header = [
@@ -633,8 +769,12 @@ async function retrieveProjectContextEntries(
 					"Codebase";
 				content = `--- ${roleTag}: ${source} ---\n${content}`;
 			}
-			return content;
+			return {
+				text: content,
+				describe: () => describeRetrievedContext(c, bundleIds),
+			};
 		});
+		const contextContents = sourcedContents.map((entry) => entry.text);
 		const duration = Date.now() - startTime;
 		const totalContextLength = contextContents.reduce(
 			(sum, c) => sum + c.length,
@@ -653,7 +793,7 @@ async function retrieveProjectContextEntries(
 			durationSeconds: (duration / 1000).toFixed(2),
 		});
 
-		return contextContents;
+		return sourcedContents;
 	} catch (error) {
 		const duration = Date.now() - startTime;
 		activityLogger.error("Failed to retrieve project contexts", error, {
@@ -765,6 +905,69 @@ function pinnedProposalPromptFailure(): ApplicationFailure {
 }
 
 /**
+ * The failure of an artifact-mode run whose Main, or a live preview of it,
+ * repeats a settled decision's wording (Fizzy #2946). Non-retryable, and its
+ * fixed message names no answer, title or document text.
+ */
+function responseEchoedFailure(): ApplicationFailure {
+	return ApplicationFailure.nonRetryable(
+		RESPONSE_ECHOED_MESSAGE,
+		RESPONSE_ECHOED,
+	);
+}
+
+/**
+ * The fields an echo refusal is logged with, after the caller's ids: counts,
+ * the echoed answers' stable keys and the code. Never any text.
+ */
+function echoLogFields(guard: ResponseEchoGuard, echo: ResponseEchoResult) {
+	return {
+		echoedResponses: echo.responseIndexes.length,
+		echoedTitles: echo.titleIndexes.length,
+		echoedKeys: echoedStableKeys(guard.carried, echo),
+		error: RESPONSE_ECHOED,
+	};
+}
+
+/** Whether `error` is {@link responseEchoedFailure}'s. */
+function isResponseEchoed(error: unknown): boolean {
+	return (
+		error instanceof ApplicationFailure && error.type === RESPONSE_ECHOED
+	);
+}
+
+/**
+ * The project information an artifact-mode prompt carries besides the
+ * supplied context (Fizzy #2946): the pinned prompt's project block, as
+ * `renderPromptWithContext` renders it, and the user message's project
+ * summary. Both hold the name, description, goals and tech stack; the block
+ * also holds the project types, and the features when no project context was
+ * supplied (the rule that block applies). Wording Main repeats from here is
+ * the project's, not an answer's, so the echo check allows it. One entry per
+ * field, each on a line of its own in the prompt. Never logged.
+ */
+function promptProjectInformation(
+	project: {
+		name: string;
+		description: string | null;
+		goals: string | null;
+		techStack: readonly string[];
+		features: readonly string[];
+		projectTypes: readonly string[];
+	},
+	contexts: readonly string[],
+): string[] {
+	return [
+		project.name,
+		project.description ?? "",
+		project.goals ?? "",
+		project.techStack.join(", "),
+		hasProjectContextEntries(contexts) ? "" : project.features.join(", "),
+		project.projectTypes.join(", "),
+	].filter((text) => text.length > 0);
+}
+
+/**
  * What `renderPromptWithContext` (`./prompt-activities`) throws when the
  * pinned prompt itself is the problem: the prompt is gone or no longer
  * visible to the run, or its pinned version is. Every attempt would read the
@@ -829,6 +1032,14 @@ interface LiveSectionsRun {
  * {@link LiveSections.finish} writes the whole document, whose last section
  * no next heading completes.
  *
+ * The one exception is a preview that repeats a settled decision's wording
+ * (Fizzy #2946). When the run's prompt carried settled decisions, every
+ * preview is checked as Main is before it is saved, because everyone who can
+ * open the page reads the preview, project guests included. One that repeats
+ * an answer or a finding title is never written: the preview is cleared and
+ * the generation fails with {@link RESPONSE_ECHOED}. With nothing carried no
+ * preview is checked.
+ *
  * It also owns the stream's abort signal: on a timeout or a cancellation the
  * stream is aborted and live writing stops at the same moment.
  *
@@ -843,6 +1054,8 @@ class LiveSections {
 	private lastWriteAt = Number.NEGATIVE_INFINITY;
 	private inFlight: Promise<void> | null = null;
 	private cleared = false;
+	/** What every preview is checked against; null when nothing was carried. */
+	private echoGuard: ResponseEchoGuard | null = null;
 
 	private constructor(
 		private readonly run: LiveSectionsRun,
@@ -918,7 +1131,19 @@ class LiveSections {
 		}
 	}
 
-	/** Offer the agent's latest cumulative partial document. */
+	/**
+	 * Check every later preview against the settled decisions the run's
+	 * prompt carried, before it is written (Fizzy #2946).
+	 */
+	guardEchoes(guard: ResponseEchoGuard): void {
+		this.echoGuard = guard;
+	}
+
+	/**
+	 * Offer the agent's latest cumulative partial document. Throws
+	 * {@link RESPONSE_ECHOED}, after clearing the preview, when the preview
+	 * it would write repeats a settled decision's wording.
+	 */
 	async offer(partial: string): Promise<void> {
 		if (this.state !== "open") {
 			return;
@@ -932,6 +1157,10 @@ class LiveSections {
 			return;
 		}
 		this.lastWriteAt = now;
+		if (this.echoes(sections, "offer")) {
+			await this.clear();
+			throw responseEchoedFailure();
+		}
 		await this.writeTracked(sections);
 	}
 
@@ -940,9 +1169,13 @@ class LiveSections {
 	 * has no next heading to complete it, so without this the page would not
 	 * show it until the final save, after the visuals step. The throttle does
 	 * not apply; the guards do (run, attempt, GENERATING). Waits for a write
-	 * in flight first, then stops writing. Bounded; never throws.
+	 * in flight first, then stops writing. Bounded. Throws only
+	 * {@link RESPONSE_ECHOED}, after clearing the preview, when the document
+	 * repeats a settled decision's wording; if the wait runs out first, the
+	 * late check still writes nothing and the final check refuses the Main.
 	 */
 	async finish(document: string): Promise<void> {
+		let echoed = false;
 		await this.settle("finish", async () => {
 			await this.inFlight;
 			if (this.state !== "open") {
@@ -952,12 +1185,45 @@ class LiveSections {
 				completedSections(document, { ended: true }),
 			);
 			if (sections && sections !== this.lastWritten) {
+				if (this.echoes(sections, "finish")) {
+					echoed = true;
+					this.state = "stopped";
+					return;
+				}
 				await this.writeTracked(sections);
 			}
 			if (this.state === "open") {
 				this.state = "stopped";
 			}
 		});
+		if (echoed) {
+			await this.clear();
+			throw responseEchoedFailure();
+		}
+	}
+
+	/**
+	 * Whether the preview about to be written repeats a settled decision's
+	 * wording. False at once when nothing was carried. An echo is logged with
+	 * ids, counts and the code only.
+	 */
+	private echoes(sections: string, step: "offer" | "finish"): boolean {
+		if (!this.echoGuard) {
+			return false;
+		}
+		const echo = checkEcho(this.echoGuard, sections);
+		if (!echo.echoed) {
+			return false;
+		}
+		activityLogger.warn(
+			"Live preview repeated a settled answer's wording; not writing it",
+			{
+				...this.logIds(),
+				step,
+				...echoLogFields(this.echoGuard, echo),
+			},
+		);
+		return true;
 	}
 
 	/** Write, tracked so clear, stop and finish can wait for it. */
@@ -1262,6 +1528,9 @@ export async function generateDocumentWithAgent(params: {
 				features: true,
 				projectTypes: true,
 				qaStrategyLevel: true,
+				// The owning organization, for artifact mode's settled
+				// decisions: read from the project row, never the caller.
+				organizationId: true,
 			},
 		});
 
@@ -1300,6 +1569,15 @@ export async function generateDocumentWithAgent(params: {
 
 		// NEW: Fetch and render custom prompt if promptId provided
 		let systemPrompt: string | undefined;
+		// Artifact mode only: the answers members gave to the document's
+		// Internal Analysis, carried into the prompt as settled decisions
+		// (Fizzy #2946). Null for every other run, so their prompts are
+		// today's.
+		let settled: SettledDecisionsBlock | null = null;
+		// The echo check of every live preview and of the final Main, built
+		// once the prompt carried settled decisions. Null for every other run,
+		// so nothing is checked. Artifact mode only.
+		let echoGuard: ResponseEchoGuard | null = null;
 		if (artifact) {
 			// Artifact mode: the client-only Main prompt at exactly the version
 			// the run was planned with, on every attempt. The request's
@@ -1390,6 +1668,42 @@ export async function generateDocumentWithAgent(params: {
 				message: "Bound Proposal prompt rendered",
 				progress: 22,
 			});
+
+			// Built once per attempt, for the person who started the run, in
+			// the project's owning organization. The builder clears that
+			// person as a member with access to the project itself: a project
+			// guest, a closed gate, a document with no standing answer and
+			// any error all yield null, which leaves the prompt as it was.
+			if (documentId) {
+				settled = await buildSettledDecisionsBlock({
+					projectId,
+					documentId,
+					starterUserId: userId,
+					organizationId: project.organizationId,
+				});
+			}
+			// Everyone who can open the page reads the live preview, project
+			// guests included, so each preview is checked as Main is before
+			// it is saved. With nothing carried, nothing is checked. Main may
+			// repeat, besides the document before this run, everything the
+			// prompt carried outside the settled block: the supplied context,
+			// the project information and the run's own instructions (its
+			// ADDITIONAL USER INSTRUCTIONS, carried when not blank), which the
+			// member who started it wrote (Fizzy #2946). One guard serves both
+			// the live previews and the final check. Its texts are never
+			// logged.
+			if (settled) {
+				echoGuard = buildEchoGuard({
+					carried: settled.carried,
+					sourceContext: [
+						...contexts,
+						...promptProjectInformation(project, contexts),
+						...(prompt && prompt.trim().length > 0 ? [prompt] : []),
+					],
+					previousMain: currentDocument ?? null,
+				});
+				live?.guardEchoes(echoGuard);
+			}
 		} else if (promptId) {
 			activityLogger.info(
 				"Fetching custom prompt for document generation",
@@ -1965,7 +2279,11 @@ Generate 15-30 feature items for ${project.name}${!hasRagContexts && project.fea
 				parts.push(`\n---\n\nADDITIONAL USER INSTRUCTIONS:\n${prompt}`);
 			}
 
-			fullPrompt = parts.join("\n");
+			// Settled decisions join after everything above, never in place
+			// of it, and never through `contexts`: those become the numbered
+			// references, the analysis's source material and its manifest.
+			// Without a block this is `parts.join("\n")`, byte for byte.
+			fullPrompt = joinSettledDecisions(parts.join("\n"), settled?.block);
 		} else {
 			// Build context string for fallback prompt with CRITICAL template enforcement instructions
 			const contextString = buildRetrievedContextBlock(
@@ -2244,6 +2562,12 @@ ${formattingRules}`;
 				clearInterval(heartbeatLoop);
 			}
 			streamComplete = true;
+
+			// A preview repeated a settled decision's wording: the preview is
+			// already cleared, and no fallback may stand in for this run.
+			if (isResponseEchoed(err)) {
+				throw err;
+			}
 
 			if (live) {
 				if (live.cancelled) {
@@ -2566,16 +2890,6 @@ ${formattingRules}`;
 			});
 		}
 
-		const totalDuration = Date.now() - startTime;
-		activityLogger.info("Document generation completed successfully", {
-			projectId,
-			documentType,
-			documentLength: documentContent.length,
-			wordCount: documentContent.split(/\s+/).length,
-			totalDurationMs: totalDuration,
-			totalDurationSeconds: (totalDuration / 1000).toFixed(2),
-		});
-
 		// Normalize HERE, at the single point the content leaves this activity,
 		// rather than only inside `saveProjectDocument`. The workflow hands this
 		// same string to BOTH the document write and `createDocumentVersion`, so
@@ -2593,6 +2907,30 @@ ${formattingRules}`;
 		const content = normalizeQuoteArtifacts(
 			preserveVisualSlots(currentDocument, documentContent),
 		);
+		// A Main whose prompt carried settled decisions must not repeat an
+		// answer's or a finding's wording: that text is internal, and Main
+		// goes to the client. Runs that also appear in the source context, the
+		// project information the prompt carried, the run's own instructions,
+		// or the document before this run are theirs, not the answer's. Only
+		// counts are logged, and the failure names no text.
+		if (echoGuard) {
+			const echo = checkEcho(echoGuard, content);
+			if (echo.echoed) {
+				activityLogger.warn(
+					"Generated Main repeated a settled answer's wording; not saving it",
+					{
+						projectId,
+						documentId,
+						liveRunId: artifact?.liveRunId,
+						...echoLogFields(echoGuard, echo),
+					},
+				);
+				// Drop the preview now rather than leave it to the workflow's
+				// failure handling.
+				await live?.clear();
+				throw responseEchoedFailure();
+			}
+		}
 		// Those slots are right only for the version they were lifted from, so
 		// when one is involved the save must not land on a newer version. With
 		// no slot on either side this reads nothing and returns undefined, and
@@ -2601,6 +2939,17 @@ ${formattingRules}`;
 			documentId,
 			currentDocument,
 			generatedContent: documentContent,
+		});
+		// Logged only once nothing can refuse the result any more: an echo
+		// refusal above never reads as a success first.
+		const totalDuration = Date.now() - startTime;
+		activityLogger.info("Document generation completed successfully", {
+			projectId,
+			documentType,
+			documentLength: documentContent.length,
+			wordCount: documentContent.split(/\s+/).length,
+			totalDurationMs: totalDuration,
+			totalDurationSeconds: (totalDuration / 1000).toFixed(2),
 		});
 		return {
 			content,

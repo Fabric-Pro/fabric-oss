@@ -131,7 +131,7 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDefinition[] = [
 		id: "discover-knowledge",
 		name: "Discover Knowledge",
 		description:
-			"Search connected workspaces and documents to surface the right context at runtime.",
+			"Search connected libraries and documents to surface the right context at runtime.",
 		type: "skill",
 		icon: (className) => <BookOpenIcon className={className} />,
 		iconBgClassName: "bg-primary/10",
@@ -140,7 +140,7 @@ export const BUILT_IN_CAPABILITIES: BuiltInCapabilityDefinition[] = [
 			{
 				name: "Search Documents",
 				description:
-					"Full-text search across all connected documents and workspaces.",
+					"Full-text search across all connected documents and libraries.",
 				stake: "never",
 			},
 			{

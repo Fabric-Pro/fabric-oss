@@ -15,7 +15,7 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
-vi.mock("../parlume-meeting-baas", () => ({
+vi.mock("../parlume-attendee", () => ({
 	getParlumeBridgeSettings: () => mocks.settings(),
 	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leave(...args),
 }));

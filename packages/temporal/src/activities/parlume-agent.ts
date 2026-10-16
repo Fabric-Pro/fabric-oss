@@ -21,6 +21,7 @@ import { collectMcpToolsActivity } from "./direct-chat/mcp-tools";
 import { generateMemoryContextActivity } from "./direct-chat/memory-context";
 import { retrieveWorkspaceDocumentsActivity } from "./direct-chat/rag-retrieval";
 import { parlumeFingerprint } from "./parlume-action-policy";
+import { timeTurnStep } from "./shared/turn-timing";
 
 interface ParlumeAgentSession {
 	id: string;
@@ -238,28 +239,38 @@ export async function executeParlumeAgent(input: {
 }): Promise<{ success: boolean; response: string; error?: string }> {
 	const { agent, session } = input;
 	if (agent.kind === "FABRIC_AGENT") {
-		const [{ mcpToolInfo }, memory, workspace] = await Promise.all([
-			collectMcpToolsActivity(
-				session.userId,
-				session.organizationId,
-				agent.enabledMcpConfigIds,
-			),
-			input.confirmation
-				? null
-				: generateMemoryContextActivity(
-						input.message,
-						session.userId,
-						session.organizationId,
+		const [{ mcpToolInfo }, memory, workspace] = await timeTurnStep(
+			"agent.gatherMs",
+			() =>
+				Promise.all([
+					timeTurnStep("agent.mcpCollectMs", () =>
+						collectMcpToolsActivity(
+							session.userId,
+							session.organizationId,
+							agent.enabledMcpConfigIds,
+						),
 					),
-			input.confirmation
-				? null
-				: retrieveWorkspaceDocumentsActivity(
-						input.message,
-						session.userId,
-						session.organizationId,
-						agent.workspaceIds,
-					),
-		]);
+					input.confirmation
+						? null
+						: timeTurnStep("agent.memoryMs", () =>
+								generateMemoryContextActivity(
+									input.message,
+									session.userId,
+									session.organizationId,
+								),
+							),
+					input.confirmation
+						? null
+						: timeTurnStep("agent.workspaceMs", () =>
+								retrieveWorkspaceDocumentsActivity(
+									input.message,
+									session.userId,
+									session.organizationId,
+									agent.workspaceIds,
+								),
+							),
+				]),
+		);
 		const result = await executeDirectChatActivity(
 			{
 				executionId: `parlume-${input.turnId}`,
@@ -288,24 +299,28 @@ export async function executeParlumeAgent(input: {
 			error: result.error,
 		};
 	}
-	const context = await buildExecutionContext({
-		config: agent.config,
-		input: { message: input.message },
-		userId: session.userId,
-		organizationId: session.organizationId,
-	});
+	const context = await timeTurnStep("agent.buildContextMs", () =>
+		buildExecutionContext({
+			config: agent.config,
+			input: { message: input.message },
+			userId: session.userId,
+			organizationId: session.organizationId,
+		}),
+	);
 	if (context.projectId !== session.projectId) {
 		throw new Error("The selected agent is not bound to this project.");
 	}
 	const knowledge = input.confirmation
 		? null
-		: await fetchKnowledge({
-				executionId: `parlume-${input.turnId}`,
-				context,
-				query: input.message,
-				userId: session.userId,
-				organizationId: session.organizationId,
-			});
+		: await timeTurnStep("agent.knowledgeMs", () =>
+				fetchKnowledge({
+					executionId: `parlume-${input.turnId}`,
+					context,
+					query: input.message,
+					userId: session.userId,
+					organizationId: session.organizationId,
+				}),
+			);
 	return executeAgentTurn({
 		systemPrompt: `${context.systemPrompt}\n\n${input.voiceInstructions}`,
 		userMessage: input.message,

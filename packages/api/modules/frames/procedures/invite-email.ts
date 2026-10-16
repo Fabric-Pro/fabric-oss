@@ -1,8 +1,4 @@
-import {
-	createMultipleSharingGrants,
-	getFrameById,
-	getFrameShareScope,
-} from "@repo/database";
+import { shareFrame } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -38,7 +34,9 @@ const outputSchema = z.object({
  * Invite users by email to access a frame
  *
  * Adds email-based sharing grants for the frame.
- * The frame's share scope must be EMAILS_ONLY or WORKSPACE_AND_EMAILS.
+ * The frame's share scope must be EMAILS_ONLY or WORKSPACE_AND_EMAILS, and each
+ * address must be on a domain the organization allows. `shareFrame` owns both
+ * rules, the same command the Fabric Agent's `fabric_share_frame` calls.
  */
 export const inviteFrameByEmailProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
@@ -57,40 +55,20 @@ export const inviteFrameByEmailProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Verify the frame exists and user owns it
-		const frame = await getFrameById({
-			id: input.id,
+		const result = await shareFrame({
+			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
+			emails: input.emails,
 		});
 
-		if (!frame) {
-			return {
-				success: false,
-				error: "Frame not found",
-			};
+		if (!result.ok) {
+			return { success: false, error: result.message };
 		}
-
-		// Check current share scope
-		const shareScope = await getFrameShareScope(input.id);
-
-		if (shareScope === "PRIVATE" || shareScope === "PUBLIC") {
-			return {
-				success: false,
-				error: `Cannot invite by email when frame is ${shareScope?.toLowerCase()}. Change share scope first.`,
-			};
-		}
-
-		// Create sharing grants
-		const grants = await createMultipleSharingGrants(
-			input.id,
-			input.emails,
-			context.user.id,
-		);
 
 		return {
 			success: true,
-			grants: grants.map((g) => ({
+			grants: result.grants.map((g) => ({
 				id: g.id,
 				email: g.email,
 				invitedAt: g.invitedAt.toISOString(),

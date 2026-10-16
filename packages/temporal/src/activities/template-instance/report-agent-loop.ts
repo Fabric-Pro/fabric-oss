@@ -1332,7 +1332,8 @@ async function probeMcpConfig(
 			displayName ||
 			configId;
 		console.warn(
-			`[AgentLoop] Failed to connect to MCP config ${configId} (${outcome}):`,
+			"[AgentLoop] Failed to connect to MCP config:",
+			{ configId, outcome },
 			raw,
 		);
 		return {
@@ -2142,10 +2143,10 @@ export async function executeAgentDataGatheringLoop(
 						},
 					});
 
-					console.warn(
-						`[AgentLoop] Tool ${toolName} failed:`,
+					console.warn("[AgentLoop] Tool failed:", {
+						toolName,
 						errorMessage,
-					);
+					});
 				}
 			}
 
@@ -2486,7 +2487,8 @@ async function fetchBoardSpecificCards(params: {
 				}
 			} catch (error) {
 				console.warn(
-					`[AgentLoop:BoardFix] Failed to fetch cards for column ${columnName}:`,
+					"[AgentLoop:BoardFix] Failed to fetch cards for column:",
+					{ columnName },
 					error,
 				);
 			}

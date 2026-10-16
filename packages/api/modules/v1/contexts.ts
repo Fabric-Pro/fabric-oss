@@ -100,8 +100,9 @@ const MAX_SYNCED_FILE_BODY_BYTES = 6 * MAX_SYNCED_CONTEXT_BYTES + 64 * 1024;
 const MAX_SYNCED_FILE_DELETE_BODY_BYTES = 16 * 1024;
 
 /** What the object-level gate asks of the key's creator, per method. */
-interface RequiredContextPermission {
+export interface RequiredContextPermission {
 	permission:
+		| typeof Permissions.CONTEXT_READ
 		| typeof Permissions.CONTEXT_CREATE
 		| typeof Permissions.CONTEXT_DELETE;
 	/** The nested 403's sentence. */
@@ -149,7 +150,7 @@ type ResolvedProject =
  *     check, so no caller without standing can use the slug as an oracle,
  *     and with one 404 for "no such slug" and "not this project's".
  */
-async function resolveContextProject(
+export async function resolveContextProject(
 	projectId: string,
 	apiCtx: ExternalApiContext,
 	requested: { org?: string; personal: boolean },

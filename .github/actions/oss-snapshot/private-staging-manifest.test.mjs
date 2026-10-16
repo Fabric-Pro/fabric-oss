@@ -100,3 +100,98 @@ test("promotion candidate manifest binds the full protected ref and workflow", (
 		/private source identity/,
 	);
 });
+test("a reused image records where it came from and keeps its own revision label", () => {
+	const reused = fragments();
+	const built = "c".repeat(40);
+	reused[0] = {
+		...reused[0],
+		inputs: `sha256:${"d".repeat(64)}`,
+		labels: {
+			...reused[0].labels,
+			"org.opencontainers.image.revision": built,
+		},
+		reuse: {
+			reusedFromSourceSha: "e".repeat(40),
+			reusedFromRun: "42",
+			builtFromSourceSha: built,
+		},
+	};
+	const manifest = implementation.createPrivateManifest(reused, expected);
+	const recorded = manifest.images.find((image) => image.reuse);
+	assert.equal(recorded.reuse.reusedFromRun, "42");
+	assert.equal(
+		recorded.labels["org.opencontainers.image.revision"],
+		built,
+		"evidence keeps the label the image actually carries",
+	);
+	// The public validator is unchanged and accepts no reused image.
+	const publicWorkflowRef =
+		"Fabric-Pro/fabric-dev/.github/workflows/oss-snapshot-images.yml@refs/heads/staging";
+	const publicFragments = reused.map((fragment) => ({
+		...fragment,
+		image: fragment.image.replace(
+			"fabric-dev-snapshots",
+			"fabric-oss-snapshots",
+		),
+		buildWorkflow: publicWorkflowRef,
+		signerWorkflow:
+			"Fabric-Pro/fabric-dev/.github/workflows/oss-snapshot-images.yml",
+	}));
+	assert.throws(
+		() =>
+			createAggregateManifest(publicFragments, {
+				...expected,
+				workflowRef: publicWorkflowRef,
+			}),
+		/OCI source labels/,
+	);
+	// Promotion candidates always rebuild every image.
+	const promotion = {
+		...expected,
+		sourceRef: "refs/heads/promotion/example-cycle",
+		workflowRef:
+			"Fabric-Pro/fabric-dev/.github/workflows/private-staging-images.yml@refs/heads/promotion/example-cycle",
+	};
+	const promotionFragments = fragments(promotion);
+	promotionFragments[0] = {
+		...promotionFragments[0],
+		inputs: reused[0].inputs,
+		labels: reused[0].labels,
+		reuse: reused[0].reuse,
+	};
+	assert.throws(
+		() =>
+			implementation.createPrivateManifest(promotionFragments, promotion),
+		/outside automatic staging builds/,
+	);
+	for (const [field, value, message] of [
+		[
+			"reuse",
+			{ ...reused[0].reuse, reusedFromRun: "0" },
+			/invalid reuse record/,
+		],
+		[
+			"reuse",
+			{ ...reused[0].reuse, builtFromSourceSha: "main" },
+			/invalid reuse record/,
+		],
+		["inputs", undefined, /invalid reuse record/],
+		["inputs", "sha256:short", /malformed build inputs/],
+		[
+			"labels",
+			{
+				...reused[0].labels,
+				"org.opencontainers.image.revision": expected.sourceSha,
+			},
+			/OCI source labels/,
+		],
+	]) {
+		const bad = structuredClone(reused);
+		bad[0][field] = value;
+		assert.throws(
+			() => implementation.createPrivateManifest(bad, expected),
+			message,
+			field,
+		);
+	}
+});

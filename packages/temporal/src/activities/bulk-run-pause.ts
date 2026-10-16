@@ -11,6 +11,8 @@ import {
 	bulkRunResumeWorkflowId,
 	claimBulkRunResume,
 	db,
+	notifyBulkRunPlanPaused,
+	notifyBulkRunPlanStopped,
 	recordBulkRunPause,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -58,6 +60,10 @@ export const BULK_RUN_PAUSE_CAP_MESSAGE =
  * the plans reset. Idempotent: a retry finds its own row write, and the
  * resume's id is derived from the run and the pause count, so a second start
  * is the same run.
+ *
+ * The run's first pause, and its stop at the cap, are announced to whoever
+ * started it and the organization's admins (Fizzy #3050). Neither notice can
+ * fail the activity: the writers never throw.
  */
 export async function pauseBulkRunActivity(
 	input: PauseBulkRunInput,
@@ -91,6 +97,11 @@ export async function pauseBulkRunActivity(
 		resumeWorkflowId,
 	});
 	if (recorded.status === "cap") {
+		await notifyBulkRunPlanStopped({
+			kind: input.kind,
+			runId: input.runId,
+			reason: "PLAN_SPENT",
+		});
 		return { paused: false, message: BULK_RUN_PAUSE_CAP_MESSAGE };
 	}
 	if (recorded.status === "gone") {
@@ -143,6 +154,16 @@ export async function pauseBulkRunActivity(
 		pauseCount: recorded.pauseCount,
 		resumesAt: recorded.resumesAt.toISOString(),
 	});
+	// Last, once the resume is scheduled: a throw above retries the activity,
+	// and the retry finds this same first pause recorded again.
+	if (input.pauseCount === 0 && recorded.pauseCount === 1) {
+		await notifyBulkRunPlanPaused({
+			kind: input.kind,
+			runId: input.runId,
+			resumesAt: recorded.resumesAt,
+			now: new Date(now),
+		});
+	}
 	return {
 		paused: true,
 		resumesAt: recorded.resumesAt.toISOString(),

@@ -96,6 +96,9 @@ import { listContextsProcedure } from "./procedures/contexts/list-contexts";
 import { listContextSummaryHistoryProcedure } from "./procedures/contexts/list-summary-history";
 import { listContextSummarySourcesProcedure } from "./procedures/contexts/list-summary-sources";
 import { listUrlPagesProcedure } from "./procedures/contexts/list-url-pages";
+import { createMemoryWriteUploadUrlsProcedure } from "./procedures/contexts/memory-writes/create-upload-urls";
+import { getMemoryWriteProcedure } from "./procedures/contexts/memory-writes/get";
+import { submitMemoryWriteProcedure } from "./procedures/contexts/memory-writes/submit";
 import { validateMemoryWriteProcedure } from "./procedures/contexts/memory-writes/validate";
 import { processContextFileProcedure } from "./procedures/contexts/process-context-file";
 import { processContextLinkProcedure } from "./procedures/contexts/process-context-link";
@@ -410,8 +413,12 @@ import {
 	setProjectTabVisibilityProcedure,
 } from "./procedures/project-tabs";
 // Proposal artifact: Internal Analysis and Style (Fizzy #2801)
+import { clearFindingResponseProcedure } from "./procedures/proposal-artifact/clear-finding-response";
 import { getProposalAnalysisProcedure } from "./procedures/proposal-artifact/get-analysis";
 import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
+import { getProposalThemeTokensProcedure } from "./procedures/proposal-artifact/get-theme-tokens";
+import { rerunProposalAnalysisProcedure } from "./procedures/proposal-artifact/rerun-analysis";
+import { respondToFindingProcedure } from "./procedures/proposal-artifact/respond-to-finding";
 import { updateProposalStyleProcedure } from "./procedures/proposal-artifact/update-style";
 import {
 	acceptRefinementProcedure,
@@ -1006,10 +1013,14 @@ export const projectsRouter = {
 				delete: deleteContextWriteTargetProcedure,
 			},
 		},
-		// Admission for a write into one of those folders (ADR-022); checks
-		// only, nothing is persisted
+		// Writes into one of those folders (ADR-022): `validate` checks one and
+		// persists nothing; `createUploadUrls` stages its files; `submit` admits
+		// it and starts its workflow; `get` reads the receipt
 		memoryWrites: {
 			validate: validateMemoryWriteProcedure,
+			createUploadUrls: createMemoryWriteUploadUrlsProcedure,
+			submit: submitMemoryWriteProcedure,
+			get: getMemoryWriteProcedure,
 		},
 		// URL Context Sources (spec 2026-05-13-url-context-sources)
 		updateUrlSource: updateUrlSourceProcedure,
@@ -2243,11 +2254,19 @@ export const projectsRouter = {
 	// Proposal artifact (Fizzy #2801): a Proposal's Internal Analysis and
 	// its Style. Gated on the rollout flag for the project's owning
 	// organization (NOT_FOUND when off), and organization members only: a
-	// project guest is refused whatever their project role.
+	// project guest is refused whatever their project role. Answering a
+	// finding, clearing an answer and re-running the analysis also need edit
+	// rights. The one exception is `getThemeTokens`, which a project guest
+	// may read: it carries the client document's look, never the Style's
+	// direction or the Brand kit's guidance (Fizzy #2946).
 	proposalArtifact: {
 		getAnalysis: getProposalAnalysisProcedure,
+		respondToFinding: respondToFindingProcedure,
+		clearFindingResponse: clearFindingResponseProcedure,
+		rerunAnalysis: rerunProposalAnalysisProcedure,
 		getStyle: getProposalStyleProcedure,
 		updateStyle: updateProposalStyleProcedure,
+		getThemeTokens: getProposalThemeTokensProcedure,
 	},
 
 	// @mentions autocomplete search

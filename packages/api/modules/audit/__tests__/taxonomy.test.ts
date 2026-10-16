@@ -277,7 +277,26 @@ describe("audit.taxonomy handler", () => {
 		// folders of a project's Living Memory sync that agents' files are
 		// written into, and whether each opens a pull request or pushes
 		// directly; folder and mode, never file content, ADR-022) = 208.
-		expect(result.actions).toHaveLength(208);
+		// + 3 project.document_analysis.{responded, cleared, rerun_started} (a
+		// member answered or cleared an answer to a Proposal analysis finding,
+		// or started a re-run of the analysis; keys, kinds and run ids only,
+		// never answer text, Fizzy #2946) = 211.
+		// + 2 project.context.memory_write_{submitted, settled} (a member's
+		// request to write into a write folder admitted, and how it ended;
+		// folder, mode, status and commit or branch, never file content or the
+		// message, ADR-022) = 213.
+		expect(result.actions).toHaveLength(213);
+		expect(result.actions).toContain("project.document_analysis.responded");
+		expect(result.actions).toContain("project.document_analysis.cleared");
+		expect(result.actions).toContain(
+			"project.document_analysis.rerun_started",
+		);
+		expect(result.actions).toContain(
+			"project.context.memory_write_submitted",
+		);
+		expect(result.actions).toContain(
+			"project.context.memory_write_settled",
+		);
 		expect(result.actions).toContain(
 			"project.context.write_target_created",
 		);

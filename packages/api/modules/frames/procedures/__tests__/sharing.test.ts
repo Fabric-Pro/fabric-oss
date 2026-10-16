@@ -1,263 +1,234 @@
+/**
+ * The app's share and invite procedures are `shareFrame`'s callers, not a
+ * second copy of its rules: the organization's policy for public links and
+ * invitation domains is `shareFrame`'s (its own test pins it, and the Fabric
+ * Agent's `fabric_share_frame` calls it too). What these cases pin is what the
+ * procedures hand it and what they hand back.
+ *
+ * Run with: pnpm --filter @repo/api test modules/frames/procedures/__tests__/sharing.test.ts
+ */
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { z } from "zod";
 
-// Mock dependencies
-vi.mock("@repo/database", async () => {
-	return {
-		updateFrameShareScope: vi.fn(),
-		createMultipleSharingGrants: vi.fn(),
-		revokeSharingGrant: vi.fn(),
-		listSharingGrants: vi.fn(),
-		getFrameById: vi.fn(),
-		getFrameShareScope: vi.fn(),
+type InputSchema = {
+	safeParse: (input: unknown) => {
+		success: boolean;
+		data?: Record<string, unknown>;
 	};
-});
+};
 
-vi.mock("../../../orpc/procedures", async () => {
-	return {
-		tenantProtectedProcedure: {
-			use: vi.fn().mockReturnThis(),
-			route: vi.fn().mockReturnThis(),
-			input: vi.fn().mockReturnThis(),
-			output: vi.fn().mockReturnThis(),
-			handler: vi.fn((fn) => fn),
+const { handlers, schemas, mockShareFrame } = vi.hoisted(() => ({
+	handlers: {} as Record<string, (...args: unknown[]) => unknown>,
+	schemas: {} as Record<string, InputSchema>,
+	mockShareFrame: vi.fn(),
+}));
+
+vi.mock("@repo/database", () => ({
+	shareFrame: mockShareFrame,
+}));
+
+vi.mock("../../../../orpc/procedures", () => {
+	let current = "";
+	const chainable: any = {
+		use: () => chainable,
+		route: (route: { path: string }) => {
+			current = route.path;
+			return chainable;
 		},
-		resolveOrganizationId: vi.fn((inputOrgId, _session) => inputOrgId),
+		input: (schema: InputSchema) => {
+			schemas[current] = schema;
+			return chainable;
+		},
+		output: () => chainable,
+		handler: (fn: (...args: unknown[]) => unknown) => {
+			handlers[current] = fn;
+			return { _handler: fn };
+		},
+	};
+	return {
+		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
-		requireProjectPermission: () => (c: unknown) => c,
+		resolveOrganizationId: vi.fn(
+			(organizationId: string | null | undefined) =>
+				organizationId ?? undefined,
+		),
 	};
 });
 
-import {
-	createMultipleSharingGrants,
-	getFrameShareScope,
-	listSharingGrants,
-	revokeSharingGrant,
-	updateFrameShareScope,
-} from "@repo/database";
+import "../invite-email";
+import "../share";
 
-describe("Frame Sharing API Procedures", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
+const SHARE = "/frames/{id}/share";
+const INVITE = "/frames/{id}/invite";
+
+const run = (path: string, input: Record<string, unknown>) =>
+	handlers[path]({
+		input: { id: "frame-1", organizationId: "org-1", ...input },
+		context: { user: { id: "owner-1" }, session: {} },
 	});
 
-	describe("share", () => {
-		it("should validate share scope input", () => {
-			const inputSchema = z.object({
-				id: z.string(),
-				organizationId: z.string().nullable().optional(),
-				shareScope: z.enum([
-					"PRIVATE",
-					"EMAILS_ONLY",
-					"WORKSPACE_AND_EMAILS",
-					"PUBLIC",
-				]),
-			});
+beforeEach(() => {
+	vi.clearAllMocks();
+});
 
-			const validInputs = [
-				{ id: "frame-123", shareScope: "PUBLIC" as const },
-				{ id: "frame-123", shareScope: "PRIVATE" as const },
-				{ id: "frame-123", shareScope: "EMAILS_ONLY" as const },
-				{
-					id: "frame-123",
-					shareScope: "WORKSPACE_AND_EMAILS" as const,
-				},
-			];
+describe("frames.share", () => {
+	it("takes only the four scopes", () => {
+		const accepted = [
+			"PRIVATE",
+			"EMAILS_ONLY",
+			"WORKSPACE_AND_EMAILS",
+			"PUBLIC",
+		];
 
-			for (const input of validInputs) {
-				const result = inputSchema.safeParse(input);
-				expect(result.success).toBe(true);
-			}
+		for (const shareScope of accepted) {
+			expect(
+				schemas[SHARE].safeParse({ id: "f", shareScope }).success,
+			).toBe(true);
+		}
+		expect(
+			schemas[SHARE].safeParse({ id: "f", shareScope: "PROJECT" })
+				.success,
+		).toBe(false);
+	});
+
+	it("changes the scope of the caller's own frame in their organization, and nothing else", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			invited: [],
+			grants: [],
 		});
 
-		it("should reject invalid share scope", () => {
-			const inputSchema = z.object({
-				id: z.string(),
-				shareScope: z.enum([
-					"PRIVATE",
-					"EMAILS_ONLY",
-					"WORKSPACE_AND_EMAILS",
-					"PUBLIC",
-				]),
-			});
+		const result = await run(SHARE, { shareScope: "EMAILS_ONLY" });
 
-			const invalidInput = {
-				id: "frame-123",
-				shareScope: "INVALID_SCOPE",
-			};
-
-			const result = inputSchema.safeParse(invalidInput);
-			expect(result.success).toBe(false);
+		expect(mockShareFrame).toHaveBeenCalledWith({
+			frameId: "frame-1",
+			userId: "owner-1",
+			organizationId: "org-1",
+			scope: "EMAILS_ONLY",
 		});
-
-		it("should update share scope successfully", async () => {
-			const mockResult = {
-				success: true,
-				shareToken: "token-123",
-			};
-
-			vi.mocked(updateFrameShareScope).mockResolvedValue(
-				mockResult as any,
-			);
-
-			const result = await updateFrameShareScope({
-				frameId: "frame-123",
-				userId: "user-456",
-				shareScope: "PUBLIC",
-			});
-
-			expect(result.success).toBe(true);
-			expect(result.shareToken).toBe("token-123");
-		});
-
-		it("should handle organization policy check for public sharing", async () => {
-			const mockDb = {
-				organization: {
-					findUnique: vi.fn().mockResolvedValue({
-						canShareFramesPublicly: false,
-					}),
-				},
-			};
-
-			// Simulating the policy check
-			const org = await mockDb.organization.findUnique({
-				where: { id: "org-123" },
-				select: { canShareFramesPublicly: true },
-			});
-
-			expect(org?.canShareFramesPublicly).toBe(false);
+		expect(result).toEqual({
+			success: true,
+			shareToken: undefined,
+			shareUrl: undefined,
 		});
 	});
 
-	describe("invite", () => {
-		it("should validate email invite input", () => {
-			const inputSchema = z.object({
-				id: z.string(),
-				organizationId: z.string().nullable().optional(),
-				emails: z.array(z.string().email()).min(1).max(50),
-			});
-
-			const validInput = {
-				id: "frame-123",
-				emails: ["user1@example.com", "user2@example.com"],
-			};
-
-			const result = inputSchema.safeParse(validInput);
-			expect(result.success).toBe(true);
+	it("hands back the public link when one is made", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: true,
+			scope: "PUBLIC",
+			shareToken: "link-token",
+			invited: [],
+			grants: [],
 		});
 
-		it("should reject invalid emails", () => {
-			const inputSchema = z.object({
-				id: z.string(),
-				emails: z.array(z.string().email()).min(1).max(50),
-			});
+		const result = await run(SHARE, { shareScope: "PUBLIC" });
 
-			const invalidInput = {
-				id: "frame-123",
-				emails: ["not-an-email", "also-not-valid"],
-			};
+		expect(result).toMatchObject({
+			success: true,
+			shareToken: "link-token",
+			shareUrl: expect.stringMatching(/\/share\/frame\/link-token$/),
+		});
+	});
 
-			const result = inputSchema.safeParse(invalidInput);
-			expect(result.success).toBe(false);
+	it("says what the command refused, as its own sentence", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: false,
+			reason: "public_sharing_disabled",
+			message: "Public sharing is disabled for this organization.",
 		});
 
-		it("should reject empty email list", () => {
-			const inputSchema = z.object({
-				id: z.string(),
-				emails: z.array(z.string().email()).min(1).max(50),
-			});
+		const result = await run(SHARE, { shareScope: "PUBLIC" });
 
-			const emptyInput = {
-				id: "frame-123",
-				emails: [],
-			};
+		expect(result).toEqual({
+			success: false,
+			error: "Public sharing is disabled for this organization.",
+		});
+	});
+});
 
-			const result = inputSchema.safeParse(emptyInput);
-			expect(result.success).toBe(false);
+describe("frames.invite", () => {
+	it("takes between one and fifty valid addresses", () => {
+		const parse = (emails: unknown) =>
+			schemas[INVITE].safeParse({ id: "f", emails }).success;
+
+		expect(parse(["a@example.com"])).toBe(true);
+		expect(parse([])).toBe(false);
+		expect(parse(["not-an-email"])).toBe(false);
+		expect(
+			parse(Array.from({ length: 51 }, (_, i) => `u${i}@example.com`)),
+		).toBe(false);
+	});
+
+	it("invites on the frame's own scope: it names no scope, so it cannot change one", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			invited: ["a@example.com"],
+			grants: [],
 		});
 
-		it("should create sharing grants for valid emails", async () => {
-			const mockGrants = [
+		await run(INVITE, { emails: ["a@example.com"] });
+
+		const call = mockShareFrame.mock.calls[0][0];
+		expect(call).toEqual({
+			frameId: "frame-1",
+			userId: "owner-1",
+			organizationId: "org-1",
+			emails: ["a@example.com"],
+		});
+		expect(call).not.toHaveProperty("scope");
+	});
+
+	it("hands back the grants it made, with their dates as text", async () => {
+		const invitedAt = new Date("2026-10-15T10:00:00Z");
+		mockShareFrame.mockResolvedValue({
+			ok: true,
+			scope: "EMAILS_ONLY",
+			invited: ["a@example.com"],
+			grants: [
 				{
 					id: "grant-1",
-					email: "user1@example.com",
-					invitedAt: new Date(),
-				},
-				{
-					id: "grant-2",
-					email: "user2@example.com",
-					invitedAt: new Date(),
-				},
-			];
-
-			vi.mocked(createMultipleSharingGrants).mockResolvedValue(
-				mockGrants as any,
-			);
-
-			const grants = await createMultipleSharingGrants(
-				"frame-123",
-				["user1@example.com", "user2@example.com"],
-				"user-456",
-			);
-
-			expect(grants).toHaveLength(2);
-			expect(grants[0].email).toBe("user1@example.com");
-		});
-
-		it("should check current share scope before inviting", async () => {
-			vi.mocked(getFrameShareScope).mockResolvedValue("PRIVATE");
-
-			const scope = await getFrameShareScope("frame-123");
-
-			expect(scope).toBe("PRIVATE");
-			// When scope is PRIVATE, invites should not be allowed
-		});
-	});
-
-	describe("listGrants", () => {
-		it("should return sharing grants with share scope", async () => {
-			const mockGrants = [
-				{
-					id: "grant-1",
-					email: "user@example.com",
-					invitedBy: "user-456",
-					invitedAt: new Date(),
+					frameId: "frame-1",
+					email: "a@example.com",
+					invitedBy: "owner-1",
+					invitedAt,
 					lastAccessedAt: null,
 					accessCount: 0,
 				},
-			];
+			],
+		});
 
-			vi.mocked(listSharingGrants).mockResolvedValue(mockGrants as any);
+		const result = await run(INVITE, { emails: ["a@example.com"] });
 
-			const grants = await listSharingGrants("frame-123");
-
-			expect(grants).toHaveLength(1);
-			expect(grants[0].email).toBe("user@example.com");
+		expect(result).toEqual({
+			success: true,
+			grants: [
+				{
+					id: "grant-1",
+					email: "a@example.com",
+					invitedAt: "2026-10-15T10:00:00.000Z",
+				},
+			],
 		});
 	});
 
-	describe("revokeInvite", () => {
-		it("should revoke a sharing grant", async () => {
-			vi.mocked(revokeSharingGrant).mockResolvedValue(true);
-
-			const result = await revokeSharingGrant(
-				"frame-123",
-				"user@example.com",
-			);
-
-			expect(result).toBe(true);
+	it("says what the command refused, as its own sentence, and invites no one", async () => {
+		mockShareFrame.mockResolvedValue({
+			ok: false,
+			reason: "email_domain_not_allowed",
+			message:
+				"This organization allows invitations only to the domains example.com.",
+			emails: ["stranger@outside.test"],
 		});
 
-		it("should handle non-existent grant revocation", async () => {
-			vi.mocked(revokeSharingGrant).mockResolvedValue(false);
+		const result = await run(INVITE, { emails: ["stranger@outside.test"] });
 
-			const result = await revokeSharingGrant(
-				"frame-123",
-				"nonexistent@example.com",
-			);
-
-			expect(result).toBe(false);
+		expect(result).toEqual({
+			success: false,
+			error: "This organization allows invitations only to the domains example.com.",
 		});
 	});
 });

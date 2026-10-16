@@ -65,6 +65,8 @@ vi.mock("@saas/shared/components/AppWrapper", () => ({
 		<>{children}</>
 	),
 }));
+// An ordinary page request: no `x-embed-route`, so the layout draws AppWrapper.
+vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 	FeatureFlagProvider: ({ children }: { children: React.ReactNode }) => (
 		<>{children}</>

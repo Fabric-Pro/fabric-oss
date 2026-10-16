@@ -86,7 +86,7 @@ When you ask an agent to generate a document, this workflow executes:
   <Step>
     ### Retrieve RAG Context
 
-    Search your workspace documents for relevant content based on the request.
+    Search your library documents for relevant content based on the request.
   </Step>
 
   <Step>
@@ -121,7 +121,7 @@ Fabric Loom runs a more complex workflow:
 flowchart TB
     subgraph INIT["1. INITIALIZE"]
         I1[Load memory and context]
-        I2[Retrieve workspace documents]
+        I2[Retrieve library documents]
     end
 
     subgraph ROUTE["2. ROUTE"]

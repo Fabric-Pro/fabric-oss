@@ -5,8 +5,10 @@
  * - Identity & organization management
  * - Projects (list, get, create, update, delete)
  * - Documents (list, get, create, update)
- * - Workspaces & RAG queries
- * - Workflows (list, get, execute, check status)
+ * - Document libraries & RAG queries (the `*_workspace` tools)
+ * - Frames (pages on a project's Artifacts tab and organization Workspaces;
+ *   see ./tools/frame-tools)
+ * - Workflows (see ./tools/workflow-tools)
  * - AI Chats
  * - Connected MCP servers (list)
  *
@@ -50,6 +52,8 @@ import {
 	type InstructionFileKind,
 	validateRelativePath,
 } from "@repo/instructions";
+import { pageMayDeclareTool } from "@repo/temporal/fabric-page-tool-definitions";
+import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow-tool-definitions";
 // A pure leaf (string work only, no Node built-ins): the one helper every
 // body-replacing write path runs so a Glossy visual slot survives it (KTD17).
 import {
@@ -99,6 +103,7 @@ import {
 	parseKnowledgeSearchCursor,
 	serializeKnowledgeSearchPage,
 } from "./knowledge-search";
+import { createMemoryWriteTools } from "./memory-write-tools";
 import {
 	bindToolCall,
 	boundProjectId,
@@ -108,7 +113,17 @@ import {
 	selectionAllowsTool,
 	selectionRefusalMessage,
 } from "./server-selection";
-import { scopeSatisfied, type ToolScope } from "./tool-scope";
+import { errorResult, jsonResult } from "./tool-results";
+import {
+	credentialSubject,
+	scopeSatisfied,
+	type ToolScope,
+} from "./tool-scope";
+import { createFrameTools } from "./tools/frame-tools";
+import { createFrameVersionTools } from "./tools/frame-version-tools";
+import { createPageTools } from "./tools/page-tools";
+import { type PlatformToolHandler, toolFamily } from "./tools/tool-family";
+import { WORKFLOW_TOOL_HANDLERS } from "./tools/workflow-tools";
 import {
 	type GatewaySession,
 	type GatewayToolDefinition,
@@ -117,6 +132,25 @@ import {
 } from "./types";
 
 // ─── Tool Definitions ───────────────────────────────────────────────────────
+
+// The workflow and frame tools are families: Fabric's one list of definitions
+// (shared with the Orchestrator's catalogue) paired with their handlers. A
+// page may declare a tool only if the table below has it, so the frame family
+// asks this module's names, which exist once the table is built.
+const WORKFLOW_TOOLS = toolFamily(
+	FABRIC_WORKFLOW_TOOL_DEFINITIONS,
+	WORKFLOW_TOOL_HANDLERS,
+);
+const FRAME_TOOLS = createFrameTools((name) =>
+	pageMayDeclareTool(name, PLATFORM_TOOL_NAMES),
+);
+const FRAME_VERSION_TOOLS = createFrameVersionTools((name) =>
+	pageMayDeclareTool(name, PLATFORM_TOOL_NAMES),
+);
+const PAGE_TOOLS = createPageTools();
+const MEMORY_WRITE_TOOLS = createMemoryWriteTools({
+	resolveGatewayProjectWriteAccessWithHost,
+});
 
 export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	// ── Identity ──
@@ -1270,17 +1304,17 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
-	// ── Workspaces (RAG Knowledge Bases) ──
+	// ── Document libraries (RAG knowledge bases; "Workspace" in the tool names) ──
 	{
 		name: "fabric_list_workspaces",
 		description:
-			"Lists the RAG knowledge bases (workspaces) you can access. They are separate from projects and hold indexed documents for semantic search across large corpora.",
+			"Lists the document libraries (RAG knowledge bases) you can access. They are separate from projects and hold indexed documents for semantic search across large corpora. Workspace pages are frames: use fabric_list_frames.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				search: {
 					type: "string",
-					description: "Match on workspace name",
+					description: "Match on library name",
 				},
 				limit: {
 					type: "number",
@@ -1298,7 +1332,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_workspace",
 		description:
-			"Gets a workspace's name, description and indexed documents. To search its content use fabric_query_workspace.",
+			"Gets a document library's name, description and indexed documents. To search its content use fabric_query_workspace.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1314,7 +1348,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_query_workspace",
 		description:
-			"Semantic (RAG) search across a workspace's documents; returns the most relevant chunks with similarity scores.",
+			"Semantic (RAG) search across a document library's documents; returns the most relevant chunks with similarity scores.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -1338,88 +1372,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
-	// ── Workflows ──
-	{
-		name: "fabric_list_workflows",
-		description:
-			"Lists automation workflows with id, name, status and trigger type.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				status: {
-					type: "string",
-					enum: ["DRAFT", "ACTIVE", "PAUSED", "ARCHIVED"],
-				},
-				search: {
-					type: "string",
-					description: "Match on workflow name",
-				},
-				limit: {
-					type: "number",
-					default: 20,
-				},
-				offset: {
-					type: "number",
-					default: 0,
-				},
-			},
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_workflow",
-		description:
-			"Gets a workflow's definition (nodes, edges, trigger configuration) and recent executions.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				workflowId: {
-					type: "string",
-				},
-			},
-			required: ["workflowId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_execute_workflow",
-		description:
-			"Runs an ACTIVE workflow and returns an executionId; poll fabric_get_workflow_execution for the result.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				workflowId: {
-					type: "string",
-				},
-				inputs: {
-					type: "object",
-					description:
-						"Key-value inputs the workflow expects (see fabric_get_workflow)",
-				},
-			},
-			required: ["workflowId"],
-		},
-		annotations: { destructiveHint: false },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_workflow_execution",
-		description:
-			"Gets a workflow execution's status and results; poll until it is COMPLETED or FAILED.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				executionId: {
-					type: "string",
-				},
-			},
-			required: ["executionId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
+	// ── Workflows ── (./tools/workflow-tools)
+	...WORKFLOW_TOOLS.definitions,
 
 	// ── AI Chats ──
 	{
@@ -1439,204 +1393,13 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 
-	// ── Frames ──
-	{
-		name: "fabric_create_frame",
-		description:
-			"Creates a shareable Frame: a visual artifact built from html, mermaid, markdown or json blocks (diagrams, status boards, reports). shareOnCreate=true returns a public share URL. " +
-			"Create one only when the user asks for a frame or something shareable; to show a diagram in a chat that renders Markdown, answer with a ```mermaid block instead.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				title: {
-					type: "string",
-				},
-				description: {
-					type: "string",
-					description: "Shown below the title",
-				},
-				components: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							id: {
-								type: "string",
-							},
-							type: {
-								type: "string",
-								enum: ["html", "json", "mermaid", "markdown"],
-							},
-							title: {
-								type: "string",
-							},
-							content: {
-								type: "string",
-							},
-							language: {
-								type: "string",
-							},
-						},
-						required: ["id", "type", "content"],
-					},
-					description: "Content blocks",
-				},
-				format: {
-					type: "string",
-					enum: ["html", "json", "mermaid", "markdown"],
-					default: "html",
-				},
-				kind: {
-					type: "string",
-					enum: ["frame", "slideshow"],
-					default: "frame",
-				},
-				shareOnCreate: {
-					type: "boolean",
-				},
-			},
-			required: ["title"],
-		},
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_update_frame",
-		description:
-			"Updates a Frame's title, description or content blocks; omitted fields are unchanged.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				frameId: {
-					type: "string",
-				},
-				title: {
-					type: "string",
-				},
-				description: {
-					type: "string",
-				},
-				blocks: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							id: {
-								type: "string",
-							},
-							type: {
-								type: "string",
-								enum: ["html", "json", "mermaid", "markdown"],
-							},
-							title: {
-								type: "string",
-							},
-							content: {
-								type: "string",
-							},
-							language: {
-								type: "string",
-							},
-						},
-						required: ["id", "type", "content"],
-					},
-					description: "Replacement content blocks",
-				},
-			},
-			required: ["frameId"],
-		},
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_frame",
-		description:
-			"Gets a Frame's content blocks, format and share URL if it is published.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				frameId: {
-					type: "string",
-				},
-			},
-			required: ["frameId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_list_frames",
-		description:
-			"Lists the Frames in the active organization with id, title, format and share status.",
-		inputSchema: { type: "object", properties: {} },
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_share_frame",
-		description:
-			"Publishes a Frame and returns its public share URL; anyone with the link can view it.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				frameId: {
-					type: "string",
-				},
-			},
-			required: ["frameId"],
-		},
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_create_slideshow",
-		description:
-			"Creates a Slideshow, a multi-slide presentation in which each component becomes one slide. shareOnCreate=true returns a public share URL.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				title: {
-					type: "string",
-				},
-				description: {
-					type: "string",
-				},
-				components: {
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							id: {
-								type: "string",
-							},
-							type: {
-								type: "string",
-								enum: ["html", "json", "mermaid", "markdown"],
-							},
-							title: {
-								type: "string",
-							},
-							content: {
-								type: "string",
-							},
-							language: {
-								type: "string",
-							},
-						},
-						required: ["id", "type", "content"],
-					},
-					description: "One entry per slide",
-				},
-				format: {
-					type: "string",
-					enum: ["html", "json", "mermaid", "markdown"],
-					default: "html",
-				},
-				shareOnCreate: {
-					type: "boolean",
-				},
-			},
-			required: ["title"],
-		},
-		_gateway_source: "platform",
-	},
+	// ── Frames ── (./tools/frame-tools, ./tools/frame-version-tools, ./tools/page-tools)
+	...FRAME_TOOLS.definitions,
+	...FRAME_VERSION_TOOLS.definitions,
+	...PAGE_TOOLS.definitions,
+
+	// ── Living Memory writes ── (./memory-write-tools)
+	...MEMORY_WRITE_TOOLS.definitions,
 
 	// ── Connected MCP Servers ──
 	{
@@ -1716,6 +1479,11 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		_gateway_source: "platform",
 	},
 ];
+
+/** Every platform tool's name. */
+const PLATFORM_TOOL_NAMES: ReadonlySet<string> = new Set(
+	PLATFORM_TOOL_DEFINITIONS.map((tool) => tool.name),
+);
 
 // ─── Tool Handlers ──────────────────────────────────────────────────────────
 
@@ -1815,19 +1583,12 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_get_workspace: { scope: "workspaces:read", kind: "read" },
 	fabric_query_workspace: { scope: "workspaces:read", kind: "read" },
 
-	// Workflows
-	fabric_list_workflows: { scope: "workflows:read", kind: "read" },
-	fabric_get_workflow: { scope: "workflows:read", kind: "read" },
-	fabric_get_workflow_execution: { scope: "workflows:read", kind: "read" },
-	fabric_execute_workflow: { scope: "workflows:run", kind: "write" },
-
-	// Frames
-	fabric_list_frames: { scope: "frames:read", kind: "read" },
-	fabric_get_frame: { scope: "frames:read", kind: "read" },
-	fabric_create_frame: { scope: "frames:write", kind: "write" },
-	fabric_create_slideshow: { scope: "frames:write", kind: "write" },
-	fabric_update_frame: { scope: "frames:write", kind: "write" },
-	fabric_share_frame: { scope: "frames:write", kind: "write" },
+	// Workflows and frames: each tool's scope is part of its definition
+	...WORKFLOW_TOOLS.scopes,
+	...FRAME_TOOLS.scopes,
+	...FRAME_VERSION_TOOLS.scopes,
+	...PAGE_TOOLS.scopes,
+	...MEMORY_WRITE_TOOLS.scopes,
 
 	// Chats
 	fabric_list_chats: { scope: "chats:read", kind: "read" },
@@ -1861,6 +1622,14 @@ export function platformToolScope(toolName: string): ToolScope {
 	return TOOL_SCOPES[toolName] ?? UNMAPPED_TOOL_SCOPE;
 }
 
+const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
+	...WORKFLOW_TOOLS.handlers,
+	...FRAME_TOOLS.handlers,
+	...FRAME_VERSION_TOOLS.handlers,
+	...PAGE_TOOLS.handlers,
+	...MEMORY_WRITE_TOOLS.handlers,
+]);
+
 /**
  * Execute a platform tool by name.
  * All DB imports are dynamic to avoid pulling Prisma into the module scope.
@@ -1887,7 +1656,7 @@ export async function executePlatformTool(
 	const required = platformToolScope(toolName);
 	if (!scopeSatisfied(session.scopes, required, session.credential)) {
 		return errorResult(
-			`This ${session.credential === "oauth" ? "signed-in agent" : "API key"} does not have the "${required.scope}" scope required by ${toolName}.`,
+			`This ${credentialSubject(session.credential)} does not have the "${required.scope}" scope required by ${toolName}.`,
 		);
 	}
 
@@ -1968,28 +1737,8 @@ export async function executePlatformTool(
 				return await handleGetWorkspace(args, session);
 			case "fabric_query_workspace":
 				return await handleQueryWorkspace(args, session);
-			case "fabric_list_workflows":
-				return await handleListWorkflows(args, session);
-			case "fabric_get_workflow":
-				return await handleGetWorkflow(args, session);
-			case "fabric_execute_workflow":
-				return await handleExecuteWorkflow(args, session);
-			case "fabric_get_workflow_execution":
-				return await handleGetWorkflowExecution(args, session);
 			case "fabric_list_chats":
 				return await handleListChats(args, session);
-			case "fabric_create_frame":
-				return await handleCreateFrame(args, session);
-			case "fabric_update_frame":
-				return await handleUpdateFrame(args, session);
-			case "fabric_get_frame":
-				return await handleGetFrame(args, session);
-			case "fabric_list_frames":
-				return await handleListFrames(session);
-			case "fabric_share_frame":
-				return await handleShareFrame(args, session);
-			case "fabric_create_slideshow":
-				return await handleCreateSlideshow(args, session);
 			case "fabric_list_connected_servers":
 				return await handleListConnectedServers(session);
 			case "fabric_request_authority":
@@ -1999,8 +1748,12 @@ export async function executePlatformTool(
 				return await handleRevokeAuthority(args, session);
 			case "fabric_check_authority":
 				return await handleCheckAuthority(session);
-			default:
-				return errorResult(`Unknown platform tool: ${toolName}`);
+			default: {
+				const familyTool = FAMILY_HANDLERS.get(toolName);
+				return familyTool
+					? await familyTool(args, session)
+					: errorResult(`Unknown platform tool: ${toolName}`);
+			}
 		}
 	} catch (error) {
 		console.error("[MCP Gateway] Platform tool %s error:", toolName, error);
@@ -2016,19 +1769,6 @@ export async function executePlatformTool(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function jsonResult(data: unknown): ToolCallResult {
-	return {
-		content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-	};
-}
-
-function errorResult(message: string): ToolCallResult {
-	return {
-		content: [{ type: "text", text: JSON.stringify({ error: message }) }],
-		isError: true,
-	};
-}
 
 /**
  * `errorResult`, plus the project's current repository-sync configuration
@@ -2164,7 +1904,9 @@ async function handleSwitchOrganization(
 			session.credential === "oauth"
 				? "This agent signed in for a single organization and cannot switch to another. " +
 						"Sign in again and choose the organization you want."
-				: "This API key is issued for a single organization and cannot switch to another. " +
+				: session.credential === "service"
+					? "This agent run acts in a single organization and cannot switch to another."
+					: "This API key is issued for a single organization and cannot switch to another. " +
 						"Use a key issued for the organization you want, or authenticate as yourself.",
 		);
 	}
@@ -2726,6 +2468,7 @@ async function resolveGatewayProjectWriteAccess(
 type GatewayWritePermission =
 	| "PROJECT_UPDATE"
 	| "STORY_UPDATE"
+	| "CONTEXT_READ"
 	| "CONTEXT_CREATE"
 	| "CONTEXT_UPDATE";
 
@@ -5951,7 +5694,9 @@ function instructionAuthCheck(session: GatewaySession): InstructionCheck {
 					? "signed-in agent"
 					: session.credential === "session"
 						? "browser session"
-						: "credential";
+						: session.credential === "service"
+							? "agent runtime"
+							: "credential";
 	const granted = session.scopes;
 	const satisfying = ["instructions:read", "mcp:read", "mcp:write", "*"].find(
 		(scope) => granted.includes(scope),
@@ -7361,286 +7106,6 @@ async function handleQueryWorkspace(
 	}
 }
 
-// ─── Workflow Handlers ──────────────────────────────────────────────────────
-
-async function handleListWorkflows(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { listWorkflows } = await import("@repo/database");
-
-	const result = await listWorkflows({
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-		status: args.status as
-			| "DRAFT"
-			| "ACTIVE"
-			| "PAUSED"
-			| "ARCHIVED"
-			| undefined,
-		search: args.search as string | undefined,
-		limit: Math.min((args.limit as number) ?? 20, 50),
-		offset: (args.offset as number) ?? 0,
-	});
-
-	return jsonResult({
-		workflows: result.workflows.map((w) => ({
-			id: w.id,
-			name: w.name,
-			description: w.description,
-			status: w.status,
-			triggerType: w.triggerType,
-			isPublished: !!w.publishedAt,
-			createdAt: w.createdAt,
-			updatedAt: w.updatedAt,
-		})),
-		total: result.total,
-		hasMore: result.hasMore,
-	});
-}
-
-async function handleGetWorkflow(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { getWorkflowById } = await import("@repo/database");
-
-	const workflowId = args.workflowId as string;
-	if (!workflowId) {
-		return errorResult("workflowId is required");
-	}
-
-	// getWorkflowById enforces tenant isolation via userId + organizationId
-	const workflow = await getWorkflowById(
-		workflowId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!workflow) {
-		return errorResult("Workflow not found or access denied");
-	}
-
-	return jsonResult({
-		id: workflow.id,
-		name: workflow.name,
-		description: workflow.description,
-		status: workflow.status,
-		triggerType: workflow.triggerType,
-		isPublished: !!workflow.publishedAt,
-		nodes: workflow.nodes,
-		edges: workflow.edges,
-		createdAt: workflow.createdAt,
-		updatedAt: workflow.updatedAt,
-	});
-}
-
-async function handleExecuteWorkflow(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const {
-		getWorkflowById,
-		canRunOrganizationWorkflows,
-		db,
-		markExecutionRunningIfPending,
-	} = await import("@repo/database");
-
-	const workflowId = args.workflowId as string;
-	if (!workflowId) {
-		return errorResult("workflowId is required");
-	}
-
-	// getWorkflowById enforces tenant isolation
-	const workflow = await getWorkflowById(
-		workflowId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!workflow) {
-		return errorResult("Workflow not found or access denied");
-	}
-	// The tool promises an ACTIVE workflow, and `publishedAt` alone does not
-	// say that: pausing or archiving a workflow leaves the timestamp in place,
-	// so a check on it alone ran PAUSED and ARCHIVED workflows.
-	if (workflow.status !== "ACTIVE") {
-		return errorResult(
-			`Workflow is ${workflow.status}; only ACTIVE workflows can be executed`,
-		);
-	}
-	if (!workflow.publishedAt) {
-		return errorResult("Workflow must be published before execution");
-	}
-
-	// The session's stored scopes say what the credential was granted, not
-	// what its owner may do now. The in-app start requires WORKSPACE_UPDATE,
-	// so the same live check applies here — the same gate the v1 REST
-	// trigger applies to a `workflows:run` key. There is no personal arm
-	// (ADR-018): a session that names no organization has no role to check
-	// and is refused rather than waved through.
-	if (!session.organizationId) {
-		return errorResult(
-			"Running a workflow requires an organization. Switch to an organization and try again.",
-		);
-	}
-	if (
-		!(await canRunOrganizationWorkflows(
-			session.userId,
-			session.organizationId,
-		))
-	) {
-		return errorResult(
-			"You no longer hold the permission required to run workflows in this organization",
-		);
-	}
-
-	// This tool used to start a workflow type that is not registered, under
-	// an id it invented (`mcp-wf-<workflow>-<timestamp>`), with no execution
-	// row at all — so the run never began and the "executionId" it returned
-	// was a string `fabric_get_workflow_execution` could not find. It now
-	// creates the same row every other trigger creates and starts the run
-	// through the shared helper, so the id it returns is the row's id and
-	// the status tool sees the run's real progress.
-	const { concurrencyRefusalMessage, createExecutionWithinConcurrencyCap } =
-		await import("@repo/api/modules/workflows/lib/execution-concurrency");
-	const triggerData = (args.inputs as Record<string, unknown>) ?? {};
-	// The row is created inside the capacity reservation, so the tenant cap
-	// holds under concurrent calls rather than only when nobody races for it.
-	const reservation = await createExecutionWithinConcurrencyCap({
-		userId: session.userId,
-		organizationId: session.organizationId,
-		data: {
-			workflowId,
-			version: workflow.version,
-			triggerType: "MANUAL",
-			triggerInput: {
-				triggerData,
-				source: "mcp-gateway",
-			} as never,
-		},
-	});
-	if (!reservation.allowed) {
-		return errorResult(concurrencyRefusalMessage(reservation));
-	}
-	const execution = reservation.execution;
-
-	const {
-		attemptWorkflowBuilderStart,
-		startFailureMessage,
-		unconfirmedStartMessage,
-	} = await import("@repo/api/modules/workflows/lib/start-builder-execution");
-	const outcome = await attemptWorkflowBuilderStart({
-		executionId: execution.id,
-		workflowId,
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-		projectId: workflow.projectId ?? undefined,
-		triggerData,
-	});
-
-	if (outcome.status === "not-started") {
-		// The row exists but nothing will run it — Temporal confirmed that —
-		// and no sweeper reclaims a PENDING execution. Record the terminal
-		// state so the status tool reports "failed to start" rather than
-		// "queued" forever.
-		const message = startFailureMessage(outcome.error);
-		const failedAt = new Date();
-		await db.workflowExecution.update({
-			where: { id: execution.id },
-			data: {
-				status: "FAILED",
-				error: message,
-				completedAt: failedAt,
-				duration: failedAt.getTime() - execution.startedAt.getTime(),
-			},
-		});
-		return errorResult(`Failed to start workflow: ${message}`);
-	}
-
-	if (outcome.status === "unknown") {
-		// The start call failed and the follow-up describe could not settle
-		// whether Temporal accepted it. The run may be in progress under the
-		// deterministic id, so the row stays active: failing it would invite
-		// the agent to call this tool again, which creates a new row and a
-		// second run with the same side effects. The status tool shows the
-		// run's real progress.
-		console.warn(
-			"[MCP Gateway] Workflow start unconfirmed; leaving the execution row active:",
-			{ executionId: execution.id, workflowId: outcome.workflowId },
-			outcome.error,
-		);
-		// A normal result, not an error: agents retry errors, and a retry
-		// is exactly the duplicate run this avoids.
-		return jsonResult({
-			executionId: execution.id,
-			workflowId,
-			workflowName: workflow.name,
-			status: "unconfirmed",
-			temporalWorkflowId: outcome.workflowId,
-			message: `${unconfirmedStartMessage(execution.id)} Do not call this tool again for this run; poll fabric_get_workflow_execution(executionId="${execution.id}").`,
-		});
-	}
-
-	// The run exists in the engine from here on. A failure to record that must
-	// not be reported as "not started" (the caller would retry and start a
-	// second run with the same side effects); it is logged and the start is
-	// still reported. The workflow writes its own status as it progresses and
-	// its id is deterministic from the execution id.
-	// PENDING → RUNNING only: a fast run may already have written its
-	// terminal status, which must not move back to RUNNING.
-	try {
-		await markExecutionRunningIfPending({
-			executionId: execution.id,
-			temporalRunId: outcome.workflowId,
-		});
-	} catch (error) {
-		console.error(
-			"[MCP Gateway] Run started but the execution row could not be marked RUNNING:",
-			{ executionId: execution.id, workflowId: outcome.workflowId },
-			error,
-		);
-	}
-
-	return jsonResult({
-		executionId: execution.id,
-		workflowId,
-		status: "RUNNING",
-		message: `Workflow "${workflow.name}" execution started. Use fabric_get_workflow_execution to check status.`,
-	});
-}
-
-async function handleGetWorkflowExecution(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { getWorkflowExecutionById } = await import("@repo/database");
-
-	const executionId = args.executionId as string;
-	if (!executionId) {
-		return errorResult("executionId is required");
-	}
-
-	// getWorkflowExecutionById enforces tenant isolation
-	const execution = await getWorkflowExecutionById(
-		executionId,
-		session.userId,
-		session.organizationId || undefined,
-	);
-	if (!execution) {
-		return errorResult("Execution not found or access denied");
-	}
-
-	return jsonResult({
-		id: execution.id,
-		workflowId: execution.workflowId,
-		status: execution.status,
-		startedAt: execution.startedAt,
-		completedAt: execution.completedAt,
-		output: execution.output,
-		error: execution.error,
-		duration: execution.duration,
-	});
-}
-
 // ─── AI Chat Handlers ───────────────────────────────────────────────────────
 
 async function handleListChats(
@@ -7665,108 +7130,6 @@ async function handleListChats(
 	});
 
 	return jsonResult({ chats, count: chats.length });
-}
-
-// ─── Frames Handlers ───────────────────────────────────────────────────────
-
-async function handleCreateFrame(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { createFirstClassFrame } = await import(
-		"@repo/temporal/frame-service"
-	);
-	const result = await createFirstClassFrame({
-		args,
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-		sourceRunType: "MCP_GATEWAY",
-		sourceRunId: session.sessionId,
-	});
-	return "error" in result
-		? errorResult(String(result.error || "Unknown frame error"))
-		: jsonResult(result);
-}
-
-async function handleCreateSlideshow(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { createFirstClassFrame } = await import(
-		"@repo/temporal/frame-service"
-	);
-	const result = await createFirstClassFrame({
-		args: { ...args, kind: "slideshow" },
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-		sourceRunType: "MCP_GATEWAY",
-		sourceRunId: session.sessionId,
-	});
-	return "error" in result
-		? errorResult(String(result.error || "Unknown frame error"))
-		: jsonResult(result);
-}
-
-async function handleUpdateFrame(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { updateFirstClassFrame } = await import(
-		"@repo/temporal/frame-service"
-	);
-	const result = await updateFirstClassFrame({
-		args,
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-	});
-	return "error" in result
-		? errorResult(String(result.error || "Unknown frame error"))
-		: jsonResult(result);
-}
-
-async function handleGetFrame(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { getFirstClassFrame } = await import("@repo/temporal/frame-service");
-	const result = await getFirstClassFrame({
-		args,
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-	});
-	return "error" in result
-		? errorResult(String(result.error || "Unknown frame error"))
-		: jsonResult(result);
-}
-
-async function handleListFrames(
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { listFirstClassFrames } = await import(
-		"@repo/temporal/frame-service"
-	);
-	const result = await listFirstClassFrames({
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-	});
-	return jsonResult(result);
-}
-
-async function handleShareFrame(
-	args: Record<string, unknown>,
-	session: GatewaySession,
-): Promise<ToolCallResult> {
-	const { shareFirstClassFrame } = await import(
-		"@repo/temporal/frame-service"
-	);
-	const result = await shareFirstClassFrame({
-		args,
-		userId: session.userId,
-		organizationId: session.organizationId || undefined,
-	});
-	return "error" in result
-		? errorResult(String(result.error || "Unknown frame error"))
-		: jsonResult(result);
 }
 
 // ─── Connected Servers Handler ──────────────────────────────────────────────

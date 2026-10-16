@@ -41,8 +41,8 @@ When creating a token, select appropriate scopes:
 | `agents:write` | Create and update agents |
 | `conversations:read` | View conversations |
 | `conversations:write` | Create messages, start conversations |
-| `workspaces:read` | List and view workspaces |
-| `workspaces:write` | Upload documents, manage workspaces |
+| `workspaces:read` | List and view libraries |
+| `workspaces:write` | Upload documents, manage libraries |
 | `workflows:read` | View workflow status |
 | `workflows:write` | Start and manage workflows |
 
@@ -104,15 +104,17 @@ curl -X POST https://api.fabric.pro/v1/conversations \
 | POST | `/conversations/:id/messages` | Add message |
 | DELETE | `/conversations/:id` | Delete conversation |
 
-### Workspaces
+### Libraries
+
+Document libraries keep the name they had before they were renamed in the app: the endpoints and scopes say `workspaces`, and `workspaceIds` is the field that attaches them to a conversation.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/workspaces` | List workspaces |
-| GET | `/workspaces/:id` | Get workspace details |
-| POST | `/workspaces` | Create workspace |
+| GET | `/workspaces` | List libraries |
+| GET | `/workspaces/:id` | Get library details |
+| POST | `/workspaces` | Create library |
 | POST | `/workspaces/:id/documents` | Upload document |
-| DELETE | `/workspaces/:id` | Delete workspace |
+| DELETE | `/workspaces/:id` | Delete library |
 
 ### Workflows
 
@@ -246,7 +248,7 @@ Configure webhooks to receive real-time notifications:
 | `workflow.started` | Workflow execution began |
 | `workflow.completed` | Workflow finished |
 | `workflow.approval_needed` | Human approval required |
-| `document.uploaded` | Document added to workspace |
+| `document.uploaded` | Document added to a library |
 
 ### Webhook Payload
 

@@ -1,8 +1,8 @@
-import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import {
 	getParlumeBridgeSettings,
 	sendParlumeMeetingChat,
-} from "@repo/api/modules/projects/lib/parlume-meeting-baas";
+} from "@repo/api/modules/projects/lib/parlume-attendee";
+import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";

@@ -316,6 +316,13 @@ export const AUDIT_ACTIONS = [
 	"project.context.write_target_created",
 	"project.context.write_target_updated",
 	"project.context.write_target_deleted",
+	// Living Memory writes (ADR-022): a member's request to write files into a
+	// write folder was admitted, and later settled (committed, a pull request
+	// opened, a conflict, a refusal or a failure). Counts, paths-free: the
+	// folder, mode, status and the commit or branch, never file content or a
+	// message. `settled` is the row to look at for what reached the repository.
+	"project.context.memory_write_submitted",
+	"project.context.memory_write_settled",
 	// Document generation fell back because the generation agent could not be
 	// reached. Written whether or not the fallback then succeeded: a generation
 	// that quietly ran on the degraded path is exactly what nobody could see.
@@ -597,6 +604,15 @@ export const AUDIT_ACTIONS = [
 	"project.recipient_brand.fetched",
 	"project.recipient_brand.updated",
 	"org.brand_kit.updated",
+	// Proposal Internal Analysis review (Fizzy #2946): a member confirmed or
+	// answered a finding, cleared an answer, or started a re-run of the
+	// analysis. An answer feeds later generations of the client document as a
+	// settled decision, so it is a write to that document's inputs. The rows
+	// carry the finding's stable key, the answer's kind and version and run
+	// ids only — never the answer's text or the finding's title.
+	"project.document_analysis.responded",
+	"project.document_analysis.cleared",
+	"project.document_analysis.rerun_started",
 	// Company context (Fizzy #2719): a company source's type label or
 	// AI instructions changed. Those two fields steer every Proposal and
 	// Business Case the organization generates, so the edit records both

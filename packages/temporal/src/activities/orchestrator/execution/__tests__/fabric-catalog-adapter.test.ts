@@ -188,6 +188,33 @@ describe("runFabricCatalogTool — plan-mode step handlers", () => {
 		});
 	});
 
+	it("gives the step the chat's conversation, for usage attribution, and none without one", async () => {
+		h.handlerExecute.mockResolvedValue({
+			handled: true,
+			output: { response: "analysis", toolCalls: [] },
+		});
+		await runFabricCatalogTool({
+			...call,
+			args: { url: "https://example.com/v" },
+			toolName: "fabric_analyze_youtube",
+			conversationId: "conv-1",
+			executionId: "exec-1",
+		});
+		await runFabricCatalogTool({
+			...call,
+			args: { url: "https://example.com/v" },
+			toolName: "fabric_analyze_youtube",
+			executionId: "exec-1",
+		});
+
+		const [withChat, withoutChat] = h.handlerExecute.mock.calls.map(
+			([context]) => context.input,
+		);
+		expect(withChat.conversationId).toBe("conv-1");
+		expect(withoutChat).not.toHaveProperty("conversationId");
+		expect(JSON.stringify(withoutChat)).not.toContain("exec-1");
+	});
+
 	it("reports an unhandled step as a failure", async () => {
 		h.handlerExecute.mockResolvedValue({
 			handled: false,

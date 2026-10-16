@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
 const LOCAL_MODULES = new Set([
+	"./parlume-aura",
 	"./parlume-pcm",
 	"./parlume-speakers",
 	"./parlume-stream-auth",
@@ -54,10 +55,13 @@ export function loadParlumeModule(
 		require,
 		ArrayBuffer,
 		Uint8Array,
+		atob,
+		btoa,
 		Date,
 		Response,
 		URL,
 		TextEncoder,
+		TextDecoder,
 		crypto,
 		fetch,
 		console: { info() {}, warn() {}, error() {}, log() {} },

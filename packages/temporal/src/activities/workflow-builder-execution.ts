@@ -173,6 +173,8 @@ export async function createWorkflowExecutionLog(params: {
  */
 export async function executeWorkflowNode(params: {
 	executionId: string;
+	/** The workflow the execution belongs to; absent in histories recorded before it was passed. */
+	workflowId?: string;
 	nodeId: string;
 	nodeType: string;
 	nodeConfig: Record<string, unknown>;
@@ -283,6 +285,9 @@ async function runNodeStep(
 		userId: params.userId,
 		organizationId: params.organizationId,
 		projectId: params.projectId,
+		workflowId: params.workflowId,
+		executionId: params.executionId,
+		nodeId: params.nodeId,
 		jobType: "workflow-builder",
 	});
 }

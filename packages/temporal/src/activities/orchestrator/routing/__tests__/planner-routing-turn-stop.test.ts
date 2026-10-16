@@ -191,6 +191,20 @@ describe("analyzeAndRoute in a Planner turn", () => {
 		);
 	});
 
+	it("records its routing model call against the chat, and none without one", async () => {
+		const { getAiModel } = await import("../../utils/model-selector");
+		await analyzeAndRoute({
+			...routingInput(false),
+			conversationId: "conv-1",
+		});
+		await analyzeAndRoute(routingInput(false));
+
+		const calls = vi.mocked(getAiModel).mock.calls;
+		expect(calls).toHaveLength(2);
+		expect(calls[0][5]).toEqual({ conversationId: "conv-1" });
+		expect(calls[1][5]).toBeUndefined();
+	});
+
 	it("rethrows a stop from the agent-capability lookup instead of routing around it", async () => {
 		const stop = turnStopped();
 		h.getAgentCapabilities.mockRejectedValue(stop);
@@ -289,6 +303,17 @@ describe("createTaskPlan in a Planner turn", () => {
 		});
 		await noTurn.run(() => createTaskPlan(planInput(false)));
 		expect(legacyBeats).toBe(0);
+	});
+
+	it("records its planning model call against the chat, and none without one", async () => {
+		const { getAiModel } = await import("../../utils");
+		await createTaskPlan({ ...planInput(false), conversationId: "conv-1" });
+		await createTaskPlan(planInput(false));
+
+		const calls = vi.mocked(getAiModel).mock.calls;
+		expect(calls).toHaveLength(2);
+		expect(calls[0][5]).toEqual({ conversationId: "conv-1" });
+		expect(calls[1][5]).toBeUndefined();
 	});
 
 	it("leaves on a refused planning request rather than planning a fallback step", async () => {

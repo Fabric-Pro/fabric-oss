@@ -75,6 +75,19 @@ const PER_USER_ORG_TABLES = new Set([
 ]);
 
 /**
+ * Per-user-within-org tables whose owner can open a row to the organization.
+ * A read also matches the organization's rows with the column at the value; a
+ * write stays with the owner. `apply-rls-direct.ts` registers the same rule as
+ * `per_user_within_org_shared_read`.
+ */
+const ORG_SHARED_READ_TABLES: Record<
+	string,
+	{ column: string; value: string }
+> = {
+	AgentConversation: { column: "visibility", value: "ORGANIZATION" },
+};
+
+/**
  * Tables with scope-based access (SYSTEM/USER/ORGANIZATION or ORG).
  * SYSTEM scope items are always visible.
  */
@@ -260,6 +273,10 @@ const ORG_ONLY_TABLES = new Set([
 	"OrganizationApiKey",
 	"OrganizationModelPreference",
 	"OrganizationEvalBudget",
+	// What a published page keeps between visits: every viewer of the page
+	// reads and writes its shared records, so the organization is the
+	// boundary. The query layer checks access to the page itself first.
+	"FramePageRecord",
 	"SDLCArtifact",
 	// CLI connection nudge (Fizzy #2457). The fact is about the organization,
 	// not about the member whose credential happened to reach it, so every
@@ -291,9 +308,12 @@ const ORG_ONLY_TABLES = new Set([
 	// Proposal artifact (Fizzy #2801): internal analysis runs, their findings
 	// and the document style. Organization-owned with no userId, and NOT
 	// project-scoped: a project guest never reaches internal review material,
-	// even on a project they were invited to.
+	// even on a project they were invited to. Members' answers to findings
+	// (Fizzy #2946) are the same material: `authorId` is attribution, never a
+	// tenant column.
 	"ProjectDocumentAnalysis",
 	"ProjectDocumentFinding",
+	"ProjectDocumentFindingResponse",
 	"ProjectDocumentStyle",
 	// ChatGPT plan pooling (Fizzy #2770): the organization's shared plan
 	// accounts and its pooling policy. `connectedByUserId` and
@@ -675,6 +695,7 @@ function getProjectCarveOut(modelName: string): Record<string, any> | null {
 export function mergeWithTenantFilter(
 	modelName: string,
 	existingWhere: any,
+	access: "read" | "write" = "write",
 ): any {
 	const tenantFilter = getTenantFilter(modelName);
 	const projectCarveOut = getProjectCarveOut(modelName);
@@ -731,13 +752,33 @@ export function mergeWithTenantFilter(
 		return { AND: [existingWhere, unionFilter] };
 	}
 
-	// Standard merge
+	// Standard merge. A read of a table whose owner can share a row also
+	// matches the organization's shared rows; a write never does.
+	const sharedRead =
+		access === "read" ? getOrgSharedReadFilter(modelName) : null;
+	const filter = sharedRead
+		? { OR: [tenantFilter, sharedRead] }
+		: tenantFilter;
 	if (!existingWhere) {
-		return tenantFilter;
+		return filter;
 	}
 
 	return {
-		AND: [existingWhere, tenantFilter],
+		AND: [existingWhere, filter],
+	};
+}
+
+function getOrgSharedReadFilter(
+	modelName: string,
+): Record<string, string> | null {
+	const shared = ORG_SHARED_READ_TABLES[modelName];
+	const ctx = getTenantContext();
+	if (!shared || ctx.type !== "organization" || !ctx.organizationId) {
+		return null;
+	}
+	return {
+		organizationId: ctx.organizationId,
+		[shared.column]: shared.value,
 	};
 }
 
@@ -894,6 +935,7 @@ function createTenantDb(baseClient: PrismaClient) {
 						modifiedArgs.where = mergeWithTenantFilter(
 							model,
 							modifiedArgs.where,
+							"read",
 						);
 						return executeWithRLSContext(() => query(modifiedArgs));
 					}

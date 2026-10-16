@@ -43,6 +43,7 @@ const REPO_FILES: Record<string, string> = {
 };
 
 function writeRepo(dir: string): void {
+	gitControl.clonePaths.push(dir);
 	for (const [rel, content] of Object.entries(REPO_FILES)) {
 		const full = path.join(dir, rel);
 		fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -52,6 +53,7 @@ function writeRepo(dir: string): void {
 
 // Per-test hooks into the simple-git stand-in.
 const gitControl = vi.hoisted(() => ({
+	clonePaths: [] as string[],
 	/** Runs after a clone has materialised its files, before git "returns". */
 	afterClone: null as null | ((clonePath: string) => Promise<void>),
 	/** When set, reading the cloned commit fails with this error. */
@@ -80,6 +82,7 @@ vi.mock("simple-git", () => ({
 }));
 
 const {
+	cleanupCloneDirActivity,
 	cloneRepositoryActivity,
 	prepareRepositoryActivity,
 	scanForSecretsActivity,
@@ -127,19 +130,6 @@ function artifactsExist(clonePath: string): boolean {
 	);
 }
 
-/** Every tmp entry (clone dir or sibling manifest) named for this run. */
-function runArtifactsInTmp(id: string): string[] {
-	const base = path.basename(legacyClonePathFor(id));
-	return fs
-		.readdirSync(os.tmpdir())
-		.filter(
-			(name) =>
-				name === base ||
-				name.startsWith(`${base}-a`) ||
-				name.startsWith(`${base}.`),
-		);
-}
-
 function removeRunArtifacts(id: string): void {
 	for (const clonePath of [
 		legacyClonePathFor(id),
@@ -171,17 +161,23 @@ function cloneInput(changedFiles?: string[]) {
 beforeEach(() => {
 	runId = `prepare-test-${process.pid}-${runSeq++}`;
 	jobCalls.length = 0;
+	gitControl.clonePaths.length = 0;
 	gitControl.afterClone = null;
 	gitControl.logError = null;
 });
 
-afterEach(() => removeRunArtifacts(runId));
+afterEach(async () => {
+	for (const clonePath of gitControl.clonePaths) {
+		await cleanupCloneDirActivity({ clonePath });
+	}
+	removeRunArtifacts(runId);
+});
 
 describe("prepareRepositoryActivity", () => {
 	it("clones, redacts secrets and writes the manifest in one execution", async () => {
 		const out = await runActivity(prepareRepositoryActivity, cloneInput());
 
-		const clonePath = clonePathFor(runId);
+		const clonePath = out.clone.clonePath;
 		expect(out.clone).toEqual({
 			clonePath,
 			commitSha: "0123456789abcdef",
@@ -237,7 +233,7 @@ describe("prepareRepositoryActivity", () => {
 			cloneInput(["src/app.ts", "src/deleted.ts"]),
 		);
 
-		const clonePath = clonePathFor(runId);
+		const clonePath = out.clone.clonePath;
 		expect(out.changed).toEqual({
 			manifestPath: `${clonePath}.code-index-changed-manifest.json`,
 			count: 1,
@@ -249,26 +245,30 @@ describe("prepareRepositoryActivity", () => {
 	});
 
 	it("a retry on a fresh host, where attempt 1's clone never existed, re-creates the clone and manifest", async () => {
-		await runAttempt(1, prepareRepositoryActivity, cloneInput());
+		const first = await runAttempt(
+			1,
+			prepareRepositoryActivity,
+			cloneInput(),
+		);
 
 		// The next attempt lands on a host that has none of it.
-		removeRunArtifacts(runId);
+		await cleanupCloneDirActivity({ clonePath: first.clone.clonePath });
 
 		const retry = await runAttempt(
 			2,
 			prepareRepositoryActivity,
 			cloneInput(),
 		);
-		expect(retry.clone.clonePath).toBe(clonePathFor(runId, 2));
+		expect(retry.clone.clonePath).not.toBe(first.clone.clonePath);
 		expect(
-			fs.existsSync(path.join(clonePathFor(runId, 2), "src/app.ts")),
+			fs.existsSync(path.join(retry.clone.clonePath, "src/app.ts")),
 		).toBe(true);
 		expect(retry.tree.totalFiles).toBe(3);
 		expect(fs.existsSync(retry.tree.manifestPath)).toBe(true);
 		expect(retry.scan.secretsFound).toBe(1);
 	});
 
-	it("re-running the same attempt replaces its earlier manifests", async () => {
+	it("re-running the same attempt keeps its earlier checkout isolated until cleanup", async () => {
 		const first = await runActivity(
 			prepareRepositoryActivity,
 			cloneInput(["src/app.ts"]),
@@ -285,7 +285,11 @@ describe("prepareRepositoryActivity", () => {
 			fs.readFileSync(again.tree.manifestPath, "utf8"),
 		) as unknown[];
 		expect(manifest).toHaveLength(3);
-		expect(fs.existsSync(changedPath)).toBe(false);
+		expect(again.clone.clonePath).not.toBe(first.clone.clonePath);
+		expect(fs.existsSync(changedPath)).toBe(true);
+		await cleanupCloneDirActivity({ clonePath: first.clone.clonePath });
+		expect(fs.existsSync(path.dirname(first.clone.clonePath))).toBe(false);
+		expect(fs.existsSync(again.tree.manifestPath)).toBe(true);
 	});
 
 	it("overlapping attempts on one host use separate checkouts, and a late failure removes only its own", async () => {
@@ -299,8 +303,10 @@ describe("prepareRepositoryActivity", () => {
 		const attempt1Stalled = new Promise<void>((resolve) => {
 			markAttempt1Stalled = resolve;
 		});
+		let firstClonePath: string | undefined;
 		gitControl.afterClone = async (clonePath) => {
-			if (clonePath === clonePathFor(runId, 1)) {
+			if (!firstClonePath) {
+				firstClonePath = clonePath;
 				markAttempt1Stalled();
 				await attempt1Released;
 				throw new Error("connection reset by peer");
@@ -318,14 +324,16 @@ describe("prepareRepositoryActivity", () => {
 			prepareRepositoryActivity,
 			cloneInput(["src/app.ts"]),
 		);
-		expect(attempt2.clone.clonePath).toBe(clonePathFor(runId, 2));
-		expect(attempt2.clone.clonePath).not.toBe(clonePathFor(runId, 1));
+		expect(attempt2.clone.clonePath).not.toBe(firstClonePath);
 
 		// Attempt 1 resumes and fails; its cleanup must not touch attempt 2.
 		releaseAttempt1();
 		await expect(attempt1).rejects.toThrow("connection reset by peer");
 
-		expect(artifactsExist(clonePathFor(runId, 1))).toBe(false);
+		expect(artifactsExist(firstClonePath as string)).toBe(false);
+		expect(fs.existsSync(path.dirname(firstClonePath as string))).toBe(
+			false,
+		);
 		expect(
 			fs.existsSync(path.join(attempt2.clone.clonePath, "src/app.ts")),
 		).toBe(true);
@@ -342,8 +350,10 @@ describe("prepareRepositoryActivity", () => {
 			runActivity(prepareRepositoryActivity, cloneInput()),
 		).rejects.toThrow("bad object HEAD");
 
-		// Nothing for this run anywhere in tmp — whatever path the attempt used.
-		expect(runArtifactsInTmp(runId)).toEqual([]);
+		for (const clonePath of gitControl.clonePaths) {
+			expect(artifactsExist(clonePath)).toBe(false);
+			expect(fs.existsSync(path.dirname(clonePath))).toBe(false);
+		}
 	});
 });
 
@@ -353,8 +363,7 @@ describe("split clone → scan → walk activities (histories recorded before pr
 			cloneRepositoryActivity,
 			cloneInput(),
 		);
-		// The pre-prepare activity keeps its original, attempt-less path.
-		expect(clonePath).toBe(legacyClonePathFor(runId));
+		expect(path.dirname(clonePath)).not.toBe(os.tmpdir());
 		expect(fs.existsSync(clonePath)).toBe(true);
 
 		// Worker B never had worker A's host-local temp dir.
@@ -366,5 +375,49 @@ describe("split clone → scan → walk activities (histories recorded before pr
 		await expect(
 			runActivity(walkFileTreeActivity, { clonePath }),
 		).rejects.toMatchObject({ code: "ENOENT" });
+	});
+});
+
+describe("private code-index artifacts", () => {
+	it("keeps the clone and both manifests inside one private directory", async () => {
+		const out = await runActivity(
+			prepareRepositoryActivity,
+			cloneInput(["src/app.ts"]),
+		);
+		const parent = path.dirname(out.clone.clonePath);
+		expect(parent).not.toBe(os.tmpdir());
+		expect(fs.statSync(parent).mode & 0o777).toBe(0o700);
+		expect(path.dirname(out.tree.manifestPath)).toBe(parent);
+		expect(path.dirname(out.changed?.manifestPath as string)).toBe(parent);
+	});
+
+	it("does not replace an existing checkout at the old predictable path", async () => {
+		const oldPath = clonePathFor(runId);
+		fs.mkdirSync(oldPath, { recursive: true });
+		fs.writeFileSync(path.join(oldPath, "sentinel.txt"), "keep me");
+		const out = await runActivity(prepareRepositoryActivity, cloneInput());
+		expect(out.clone.clonePath).not.toBe(oldPath);
+		expect(
+			fs.readFileSync(path.join(oldPath, "sentinel.txt"), "utf8"),
+		).toBe("keep me");
+	});
+});
+
+describe("legacy cleanup", () => {
+	it("removes a recorded clone and manifests without removing its parent", async () => {
+		const parent = fs.mkdtempSync(
+			path.join(os.tmpdir(), "legacy-cleanup-test-"),
+		);
+		const clonePath = path.join(parent, "old-clone");
+		fs.mkdirSync(clonePath);
+		fs.writeFileSync(`${clonePath}.code-index-manifest.json`, "[]");
+		fs.writeFileSync(`${clonePath}.code-index-changed-manifest.json`, "[]");
+		try {
+			await cleanupCloneDirActivity({ clonePath });
+			expect(artifactsExist(clonePath)).toBe(false);
+			expect(fs.existsSync(parent)).toBe(true);
+		} finally {
+			fs.rmSync(parent, { recursive: true, force: true });
+		}
 	});
 });

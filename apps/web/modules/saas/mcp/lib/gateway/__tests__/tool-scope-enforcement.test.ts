@@ -47,6 +47,10 @@ vi.mock("@repo/database", () => ({
 		STORY_UPDATE: "story:update",
 	},
 	canCreateProjectInOrganization: vi.fn().mockResolvedValue(true),
+	// The workflow reads ask membership and the read permission together.
+	// Refused here, so they fail after the scope check, as a result.
+	getOrganizationMembership: vi.fn().mockResolvedValue(null),
+	canReadOrganizationWorkflows: vi.fn().mockResolvedValue(false),
 	listProjects: vi.fn().mockResolvedValue([]),
 	updateTask: vi.fn(),
 	createProject: vi.fn(),

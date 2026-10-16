@@ -84,6 +84,8 @@ export async function getAiModel(
  * @param organizationId - Optional organization ID
  * @param hasTools - Whether this request will use tool calling
  * @param modelOverride - Optional model override
+ * @param attribution - Optional usage attribution (e.g. the conversation the
+ *   call is made for) copied onto the usage-log row
  */
 export async function getAiModelWithSelection(
 	userId: string,
@@ -91,6 +93,10 @@ export async function getAiModelWithSelection(
 	hasTools = false,
 	modelOverride?: string,
 	jobType?: AiJobKey,
+	attribution?: Pick<
+		AIOperationContext,
+		"projectId" | "featureKey" | "conversationId"
+	>,
 ) {
 	const taskType = hasTools ? "TOOL_CALLING" : "COMPLEX";
 
@@ -101,7 +107,13 @@ export async function getAiModelWithSelection(
 			requiresToolCalling: hasTools,
 			modelOverride,
 		},
-		{ userId, organizationId, featureKey: "chat-agent", jobType },
+		{
+			userId,
+			organizationId,
+			featureKey: "chat-agent",
+			jobType,
+			...attribution,
+		},
 	);
 
 	console.log(

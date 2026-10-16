@@ -30,6 +30,7 @@ import { buildFeaturesCommand } from "../commands/features/index.js";
 import { buildFramesCommand } from "../commands/frames/index.js";
 import { buildInstructionsCommand } from "../commands/instructions/index.js";
 import { buildMcpCommand } from "../commands/mcp/index.js";
+import { buildMemoryCommand } from "../commands/memory/index.js";
 import { buildOrgsCommand } from "../commands/orgs/index.js";
 import { buildProjectsCommand } from "../commands/projects/index.js";
 import { buildPromptsCommand } from "../commands/prompts/index.js";
@@ -123,6 +124,11 @@ program.addCommand(buildInstructionsCommand());
 // fabric context — project Context (knowledge sources), not `fabric ctx`
 // ---------------------------------------------------------------------------
 program.addCommand(buildContextCommand());
+
+// ---------------------------------------------------------------------------
+// fabric memory — Living Memory's write folders as plain files
+// ---------------------------------------------------------------------------
+program.addCommand(buildMemoryCommand());
 
 // ---------------------------------------------------------------------------
 // fabric mcp

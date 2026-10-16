@@ -1,8 +1,10 @@
 import { isOrganizationAdmin } from "@repo/auth/lib/helper";
 import { getActiveOrganization, getSession } from "@saas/auth/lib/server";
 import { AIGatewayHero } from "@saas/settings/components/AIGatewayHero";
+import { AiProvidersTabs } from "@saas/settings/components/AiProvidersTabs";
 import { OrgChatgptPlanPoolSettings } from "@saas/settings/components/chatgpt-plan-pool/OrgChatgptPlanPoolSettings";
 import { OrgAiProvidersSettingsForm } from "@saas/settings/components/OrgAiProvidersSettingsForm";
+import { PersonalAiProvidersTab } from "@saas/settings/components/PersonalAiProvidersTab";
 import { SettingsList } from "@saas/shared/components/SettingsList";
 import { redirect } from "next/navigation";
 
@@ -32,15 +34,27 @@ export default async function OrgAiProvidersSettingsPage({
 		(member) => member.userId === session?.user.id,
 	)?.role;
 
+	// Two tabs, one page (Fizzy #3082): the organization's keys, read-only for
+	// non-admins as before, and the member's own keys, which every member may
+	// manage. `?tab=personal` opens the second; the chrome notices link there.
 	return (
 		<>
 			<AIGatewayHero />
-			<SettingsList>
-				<OrgAiProvidersSettingsForm readOnly={!isAdmin} />
-			</SettingsList>
-			<OrgChatgptPlanPoolSettings
-				canManage={memberRole === "admin" || memberRole === "owner"}
-				organizationSlug={organizationSlug}
+			<AiProvidersTabs
+				organization={
+					<>
+						<SettingsList>
+							<OrgAiProvidersSettingsForm readOnly={!isAdmin} />
+						</SettingsList>
+						<OrgChatgptPlanPoolSettings
+							canManage={
+								memberRole === "admin" || memberRole === "owner"
+							}
+							organizationSlug={organizationSlug}
+						/>
+					</>
+				}
+				personal={<PersonalAiProvidersTab />}
 			/>
 		</>
 	);

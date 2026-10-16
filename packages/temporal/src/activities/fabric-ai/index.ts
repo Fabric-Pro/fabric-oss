@@ -43,6 +43,13 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 
+/** The `conversationId` spread for a pattern's user context; empty without one. */
+function conversationIdOf(input: {
+	conversationId?: string;
+}): { conversationId: string } | Record<string, never> {
+	return input.conversationId ? { conversationId: input.conversationId } : {};
+}
+
 export interface ExecuteFabricPatternInput {
 	pattern: FabricPattern;
 	input: string;
@@ -52,6 +59,11 @@ export interface ExecuteFabricPatternInput {
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only; never an execution ID.
+	 */
+	conversationId?: string;
 	/** Override the AI task type for model selection */
 	taskType?: string;
 	/** Override the execution mode */
@@ -103,6 +115,11 @@ export interface AnalyzeYouTubeVideoInput {
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only; never an execution ID.
+	 */
+	conversationId?: string;
 	/** Override the execution mode */
 	mode?: FabricAIMode;
 	/** Vendor for full mode */
@@ -165,6 +182,7 @@ export async function executeFabricPattern(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
+						...conversationIdOf(input),
 					}
 				: undefined,
 			// Vendor/model for full mode
@@ -299,6 +317,7 @@ export async function analyzeYouTubeVideo(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
+						...conversationIdOf(input),
 					}
 				: undefined,
 			vendor: input.vendor,
@@ -417,6 +436,11 @@ export interface TranscribeAudioInput {
 	userId?: string;
 	/** Organization ID for API key resolution */
 	organizationId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only; never an execution ID.
+	 */
+	conversationId?: string;
 	/** Override the execution mode */
 	mode?: FabricAIMode;
 }
@@ -484,7 +508,11 @@ export async function transcribeAudioActivity(
 			model: input.model,
 			mode,
 			userContext: input.userId
-				? { userId: input.userId, organizationId: input.organizationId }
+				? {
+						userId: input.userId,
+						organizationId: input.organizationId,
+						...conversationIdOf(input),
+					}
 				: undefined,
 		});
 
@@ -553,7 +581,11 @@ export async function transcribeAndAnalyzeActivity(
 			mode,
 			transcriptionModel: input.model,
 			userContext: input.userId
-				? { userId: input.userId, organizationId: input.organizationId }
+				? {
+						userId: input.userId,
+						organizationId: input.organizationId,
+						...conversationIdOf(input),
+					}
 				: undefined,
 		});
 
@@ -621,6 +653,11 @@ export interface ScrapeAndAnalyzeInput {
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only; never an execution ID.
+	 */
+	conversationId?: string;
 	/** Pattern variables */
 	variables?: Record<string, string>;
 	/** Context name to include */
@@ -670,6 +707,11 @@ export interface SearchAndAnalyzeInput {
 	organizationId?: string;
 	/** Project ID for per-project AI usage attribution */
 	projectId?: string;
+	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only; never an execution ID.
+	 */
+	conversationId?: string;
 	/** Pattern variables */
 	variables?: Record<string, string>;
 	/** Context name to include */
@@ -919,6 +961,7 @@ export async function scrapeAndAnalyzeActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
+				...conversationIdOf(input),
 			},
 			temperature: input.temperature,
 		});
@@ -1127,6 +1170,7 @@ export async function searchAndAnalyzeActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
+				...conversationIdOf(input),
 			},
 			temperature: input.temperature,
 		});

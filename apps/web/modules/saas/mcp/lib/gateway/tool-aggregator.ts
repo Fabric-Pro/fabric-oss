@@ -23,6 +23,7 @@ import {
 	unknownServerNamesMessage,
 	unknownToolNamesMessage,
 } from "./server-selection";
+import { scopeSatisfied } from "./tool-scope";
 import type {
 	ConnectedServerInfo,
 	GatewaySession,
@@ -109,7 +110,40 @@ export async function getAggregatedTools(
 		};
 	}
 
+	// Fabric's own agent runtime is offered the platform tools its scopes reach
+	// and no connected server's: the agent already has the person's servers
+	// through its own connections, and discovering them here would connect to
+	// every one on each turn.
+	if (session.credential === "service") {
+		const { PLATFORM_TOOL_DEFINITIONS, platformToolScope } = await import(
+			"./platform-tools"
+		);
+		return {
+			tools: PLATFORM_TOOL_DEFINITIONS.filter((tool) =>
+				scopeSatisfied(
+					session.scopes,
+					platformToolScope(tool.name),
+					session.credential,
+				),
+			),
+			servers: [],
+		};
+	}
+
 	return applyServerSelection(await getFullToolList(session), session);
+}
+
+/**
+ * The connected servers this person has in this organization, with the tools
+ * each offers, before any server selection. For a caller that is itself the
+ * check on what a tool may do (a page's declared connected read) and that runs
+ * the tool it found here through `executeConnectedServerTool`, which holds the
+ * call to the session's selection.
+ */
+export async function getConnectedServers(
+	owner: ToolListOwner,
+): Promise<ConnectedServerInfo[]> {
+	return (await getFullToolList(owner)).servers;
 }
 
 /**
@@ -437,7 +471,8 @@ async function discoverConnectedServerTools(
 				}
 				// Otherwise just skip this server — it's unreachable
 				console.warn(
-					`[MCP Gateway] Failed to discover tools for ${serverName}:`,
+					"[MCP Gateway] Failed to discover tools:",
+					{ serverName },
 					error instanceof Error ? error.message : error,
 				);
 			}

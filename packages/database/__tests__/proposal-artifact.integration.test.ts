@@ -1,19 +1,22 @@
 /**
  * Real-Postgres integration test for the Proposal artifact tables and queries
- * (Fizzy #2801).
+ * (Fizzy #2801, #2946).
  *
  * Two halves:
  *  1. The guarded writers, on the superuser connection the API and worker
  *     use: the live-section run and attempt guards, analysis run creation and
  *     completion (including two completions racing on one run under the real
- *     row lock), newest-run reads, and the style upsert.
+ *     row lock), newest-run reads, the style upsert, the run shown for the
+ *     current content, the re-run claim (two claims racing on the document
+ *     lock), and members' answers (two writers racing on one key).
  *  2. Row-level security, under the NOSUPERUSER/NOBYPASSRLS test role
  *     (`_helpers/rls-role.ts`): the organization reads its own analysis,
- *     finding and style rows; another organization and a project guest — an
- *     accepted project member with no organization membership — read none,
- *     even on the project the guest was invited to, and cannot write any.
+ *     finding, answer and style rows; another organization and a project
+ *     guest — an accepted project member with no organization membership —
+ *     read none (no manifest either), even on the project the guest was
+ *     invited to, and cannot write any.
  *
- * Requires the Proposal artifact migration and `apply:rls` on the target
+ * Requires the Proposal artifact migrations and `apply:rls` on the target
  * database. Self-skips without a reachable DATABASE_URL.
  *
  * Run with: pnpm --filter @repo/database test:integration
@@ -30,15 +33,27 @@ import {
 	type CreateAnalysisRunInput,
 	type CreateAnalysisRunResult,
 	claimLiveAttempt,
+	claimRerun,
+	clearFindingResponse,
 	clearLiveContent,
 	completeAnalysisRun,
 	createAnalysisRun,
 	failAnalysisRun,
+	getAnalysisForCurrentContent,
+	getAnalysisRunInput,
 	getDocumentStyle,
 	getLatestAnalysisForDocument,
+	listResponsesForDocument,
 	markAnalysisRunning,
+	PROPOSAL_ANALYSIS_MATCH_WINDOW,
+	PROPOSAL_ANALYSIS_TIMED_OUT_FAILURE,
+	PROPOSAL_EVIDENCE_TEXT_HEAD_LENGTH,
+	readProposalEvidenceSources,
 	resetLiveSections,
+	type UpsertFindingResponseInput,
+	type UpsertFindingResponseResult,
 	upsertDocumentStyle,
+	upsertFindingResponse,
 	writeLiveSections,
 } from "../prisma/queries/projects/proposal-artifact";
 import { hasReachableDatabaseUrl } from "./_helpers/db-availability";
@@ -56,12 +71,28 @@ const USERS = {
 	ownerB: id("owner-b"),
 	guest: id("guest"),
 };
+/** Deleted by the test that proves an answer outlives its author. */
+const DEPARTING_AUTHOR = id("departing-author");
 const ORG_A = id("org-a");
 const ORG_B = id("org-b");
 const PA = id("project-a");
 const PB = id("project-b");
+/** Moved from organization A to B by the test that proves it fails closed. */
+const PC = id("project-c");
+/** Another project of organization A, whose rows another project never reads. */
+const PD = id("project-d");
 
 const MAIN = "# Example proposal\n\n## Scope\n\nWhat the engagement covers.";
+const REWRITTEN = "# Example proposal\n\n## Scope\n\nA different engagement.";
+
+/**
+ * A stand-in for the document prose hash, blind to markdown markers and
+ * whitespace as the real one is blind to formatting.
+ */
+const proseHashOf = (content: string) =>
+	`p1:${content.replace(/[\s#*_-]/g, "")}`;
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
 
 /** The generation run every fresh document belongs to, unless reset. */
 const LIVE_RUN = "run-saved";
@@ -147,7 +178,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			}
 
 			const now = new Date();
-			for (const userId of Object.values(USERS)) {
+			for (const userId of [...Object.values(USERS), DEPARTING_AUTHOR]) {
 				await db.user.create({
 					data: {
 						id: userId,
@@ -172,6 +203,8 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			for (const [projectId, organizationId, userId] of [
 				[PA, ORG_A, USERS.owner],
 				[PB, ORG_B, USERS.ownerB],
+				[PC, ORG_A, USERS.owner],
+				[PD, ORG_A, USERS.owner],
 			] as const) {
 				await db.project.create({
 					data: {
@@ -200,14 +233,19 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 		});
 
 		afterAll(async () => {
-			// Projects cascade to documents, members, analysis runs, findings
-			// and styles.
-			await db.project.deleteMany({ where: { id: { in: [PA, PB] } } });
+			// Projects cascade to documents, members, contexts, analysis runs,
+			// findings, answers and styles; organizations to company context
+			// sources.
+			await db.project.deleteMany({
+				where: { id: { in: [PA, PB, PC, PD] } },
+			});
 			await db.organization.deleteMany({
 				where: { id: { in: [ORG_A, ORG_B] } },
 			});
 			await db.user.deleteMany({
-				where: { id: { in: Object.values(USERS) } },
+				where: {
+					id: { in: [...Object.values(USERS), DEPARTING_AUTHOR] },
+				},
 			});
 		});
 
@@ -623,6 +661,837 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			});
 		});
 
+		/** A COMPLETE generation run over the document's saved body. */
+		async function completedRun(
+			documentId: string,
+			overrides: Partial<CreateAnalysisRunInput> = {},
+			liveRunId = LIVE_RUN,
+		): Promise<string> {
+			const run = await createAnalysisRun({
+				documentId,
+				runKey: id(`analysis-${documentId}-${liveRunId}`),
+				liveRunId,
+				sourceContext: "### Source 1\nContext",
+				contextCount: 1,
+				computeProseHash: proseHashOf,
+				...overrides,
+			});
+			if (run === "superseded") {
+				throw new Error("expected the run to be recorded");
+			}
+			await completeAnalysisRun({ analysisId: run.analysisId, findings });
+			return run.analysisId;
+		}
+
+		/** A first answer; an edit spreads in the id and version it saw. */
+		function answer(
+			documentId: string,
+			answeredRunId: string,
+			overrides: Partial<
+				Omit<
+					UpsertFindingResponseInput,
+					"expectedResponseId" | "expectedVersion"
+				>
+			> = {},
+		): UpsertFindingResponseInput {
+			return {
+				organizationId: ORG_A,
+				projectId: PA,
+				documentId,
+				stableKey: "commercial|scope|pricing",
+				kind: "RESPONDED",
+				text: "The fixed fee is in the commercial annex.",
+				findingTitle: "Pricing is not stated",
+				answeredRunId,
+				sectionKey: "scope#0",
+				sectionHash: "p1:scope",
+				authorId: USERS.owner,
+				...overrides,
+			};
+		}
+
+		/** The saved row of a write that went through. */
+		function written(result: UpsertFindingResponseResult) {
+			if (result.outcome !== "written") {
+				throw new Error("expected the answer to be written");
+			}
+			return result.response;
+		}
+
+		describe("the run shown for the current content (Fizzy #2946)", () => {
+			it("prefers the run describing the current content, hashing a run recorded before prose hashes existed", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const legacy = await completedRun(documentId, {
+					computeProseHash: undefined,
+				});
+				expect(
+					(
+						await db.projectDocumentAnalysis.findUniqueOrThrow({
+							where: { id: legacy },
+						})
+					).proseHash,
+				).toBeNull();
+
+				// A newer generation over other content, then the restore.
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: REWRITTEN, liveRunId: "run-newer" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				await completedRun(documentId, {}, "run-newer");
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: MAIN },
+				});
+
+				const shown = await getAnalysisForCurrentContent({
+					organizationId: ORG_A,
+					documentId,
+					currentProseHash: proseHashOf(MAIN),
+					computeProseHash: proseHashOf,
+				});
+				expect(shown.run?.id).toBe(legacy);
+				expect(shown.run?.proseHash).toBe(proseHashOf(MAIN));
+				expect(shown.isStale).toBe(false);
+				expect(shown.run).not.toHaveProperty("analyzedContent");
+				expect(shown.run).not.toHaveProperty("sourceContext");
+				expect(
+					(
+						await getAnalysisForCurrentContent({
+							organizationId: ORG_B,
+							documentId,
+							currentProseHash: proseHashOf(MAIN),
+							computeProseHash: proseHashOf,
+						})
+					).run,
+				).toBeNull();
+			});
+
+			it("restored content finds the run describing it however many generations ago it was recorded, for the tab and for a re-run's sources", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const original = await completedRun(documentId, {
+					sourceContext: "### Source 1\nOriginal context",
+				});
+				for (let n = 0; n < PROPOSAL_ANALYSIS_MATCH_WINDOW; n += 1) {
+					const liveRunId = `run-later-${n}`;
+					await db.projectDocument.update({
+						where: { id: documentId },
+						data: {
+							content: `${REWRITTEN} Version ${n}.`,
+							liveRunId,
+						},
+					});
+					await new Promise((resolve) => setTimeout(resolve, 5));
+					await completedRun(
+						documentId,
+						{ sourceContext: `### Source 1\nLater context ${n}` },
+						liveRunId,
+					);
+				}
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: MAIN },
+				});
+
+				expect(
+					await getAnalysisForCurrentContent({
+						organizationId: ORG_A,
+						documentId,
+						currentProseHash: proseHashOf(MAIN),
+						computeProseHash: proseHashOf,
+					}),
+				).toMatchObject({
+					run: { id: original },
+					isStale: false,
+					newerRun: null,
+				});
+				const claimed = await claimRerun({
+					organizationId: ORG_A,
+					projectId: PA,
+					documentId,
+					promptVersionId: null,
+					computeProseHash: proseHashOf,
+				});
+				if (claimed.outcome !== "claimed") {
+					throw new Error(`expected a claim, got ${claimed.reason}`);
+				}
+				expect(claimed.run.sourceRunId).toBe(original);
+				expect(
+					await getAnalysisRunInput(claimed.run.analysisId),
+				).toMatchObject({
+					sourceContextRunId: original,
+					sourceContext: "### Source 1\nOriginal context",
+				});
+			});
+
+			it("after a Reject, a failed run older than the newest completed one is not reported", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const shown = await completedRun(documentId);
+				// A regeneration whose analysis failed, then one whose
+				// analysis completed, then the Reject.
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: REWRITTEN, liveRunId: "run-failed" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				const failed = await createAnalysisRun({
+					documentId,
+					runKey: id(`analysis-${documentId}-run-failed`),
+					liveRunId: "run-failed",
+					sourceContext: "### Source 1\nContext",
+					contextCount: 1,
+					computeProseHash: proseHashOf,
+				});
+				if (failed === "superseded") {
+					throw new Error("expected the failed run to be recorded");
+				}
+				expect(
+					await failAnalysisRun({
+						analysisId: failed.analysisId,
+						errorCode: "MODEL_ERROR",
+						errorMessage: "The analysis could not be completed.",
+					}),
+				).toBe("written");
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { liveRunId: "run-completed" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				await completedRun(documentId, {}, "run-completed");
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: MAIN },
+				});
+
+				expect(
+					await getAnalysisForCurrentContent({
+						organizationId: ORG_A,
+						documentId,
+						currentProseHash: proseHashOf(MAIN),
+						computeProseHash: proseHashOf,
+					}),
+				).toMatchObject({
+					run: { id: shown },
+					isStale: false,
+					newerRun: null,
+				});
+			});
+		});
+
+		describe("re-run claim (Fizzy #2946)", () => {
+			function claim(documentId: string, projectId = PA) {
+				return claimRerun({
+					organizationId: ORG_A,
+					projectId,
+					documentId,
+					promptVersionId: null,
+					computeProseHash: proseHashOf,
+				});
+			}
+
+			it("two claims at once create one run; the other is a conflict", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				await completedRun(documentId);
+
+				const outcomes = await Promise.all([
+					claim(documentId),
+					claim(documentId),
+				]);
+				expect(outcomes.map((o) => o.outcome).sort()).toEqual([
+					"claimed",
+					"conflict",
+				]);
+				expect(
+					await db.projectDocumentAnalysis.count({
+						where: { documentId, kind: "RERUN" },
+					}),
+				).toBe(1);
+			});
+
+			it("a RUNNING run silent for more than twenty minutes is marked FAILED and does not block", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const stuck = await recordRun({
+					documentId,
+					runKey: id("analysis-stuck"),
+					sourceContext: "",
+					contextCount: 0,
+				});
+				await markAnalysisRunning(stuck.analysisId);
+				await db.$executeRaw`
+					UPDATE "project_document_analysis"
+					SET "createdAt" = ${minutesAgo(40)}, "updatedAt" = ${minutesAgo(21)}
+					WHERE "id" = ${stuck.analysisId}`;
+
+				const result = await claim(documentId);
+				expect(result).toMatchObject({
+					outcome: "claimed",
+					run: { timedOutRunIds: [stuck.analysisId] },
+				});
+				expect(
+					await db.projectDocumentAnalysis.findUniqueOrThrow({
+						where: { id: stuck.analysisId },
+					}),
+				).toMatchObject({
+					status: "FAILED",
+					errorCode: PROPOSAL_ANALYSIS_TIMED_OUT_FAILURE.errorCode,
+				});
+				expect(
+					await completeAnalysisRun({
+						analysisId: stuck.analysisId,
+						findings,
+					}),
+				).toBe("superseded");
+			});
+
+			it("a RUNNING run created 25 minutes ago but updated 5 minutes ago blocks", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const retried = await recordRun({
+					documentId,
+					runKey: id("analysis-retried"),
+					sourceContext: "",
+					contextCount: 0,
+				});
+				await markAnalysisRunning(retried.analysisId);
+				await db.$executeRaw`
+					UPDATE "project_document_analysis"
+					SET "createdAt" = ${minutesAgo(25)}, "updatedAt" = ${minutesAgo(5)}
+					WHERE "id" = ${retried.analysisId}`;
+
+				expect(await claim(documentId)).toEqual({
+					outcome: "conflict",
+					reason: "ANALYSIS_IN_PROGRESS",
+				});
+				expect(
+					await db.projectDocumentAnalysis.count({
+						where: { documentId },
+					}),
+				).toBe(1);
+			});
+
+			it("a GENERATING document is a conflict and gets no run", async () => {
+				const documentId = await freshDocument(PA);
+				expect(await claim(documentId)).toEqual({
+					outcome: "conflict",
+					reason: "DOCUMENT_GENERATING",
+				});
+				expect(
+					await db.projectDocumentAnalysis.count({
+						where: { documentId },
+					}),
+				).toBe(0);
+			});
+
+			it("after a Reject, the re-run reads the generation run describing the restored content, and its run input follows it", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const original = await completedRun(documentId, {
+					sourceContext: "### Source 1\nOriginal context",
+					sourceManifest: [
+						{
+							source: 1,
+							kind: "projectContext",
+							id: "context-example",
+							contextType: "LINK",
+							title: "Example link",
+							fingerprint: "f1",
+						},
+					],
+				});
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: REWRITTEN, liveRunId: "run-rejected" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				await completedRun(
+					documentId,
+					{ sourceContext: "### Source 1\nRejected context" },
+					"run-rejected",
+				);
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { content: MAIN },
+				});
+
+				const result = await claim(documentId);
+				if (result.outcome !== "claimed") {
+					throw new Error(`expected a claim, got ${result.reason}`);
+				}
+				expect(result.run.sourceRunId).toBe(original);
+				expect(result.run.runKey).toBe(
+					`proposal-analysis-rerun-${documentId}-${result.run.analysisId}`,
+				);
+				expect(
+					await getAnalysisRunInput(result.run.analysisId),
+				).toMatchObject({
+					kind: "RERUN",
+					analyzedContent: MAIN,
+					proseHash: proseHashOf(MAIN),
+					sourceContextRunId: original,
+					sourceContext: "### Source 1\nOriginal context",
+					sourceManifest: [
+						expect.objectContaining({ id: "context-example" }),
+					],
+				});
+			});
+
+			it("after the newest generation's analysis failed, the re-run reads that generation's stored sources, not an older complete run's", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				await completedRun(documentId, {
+					sourceContext: "### Source 1\nOlder context",
+				});
+				// A newer generation over the same content: it stored its
+				// sources, then its analysis failed.
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { liveRunId: "run-failed" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				const failed = await createAnalysisRun({
+					documentId,
+					runKey: id(`analysis-${documentId}-run-failed`),
+					liveRunId: "run-failed",
+					sourceContext: "### Source 1\nFailed run's context",
+					contextCount: 3,
+					computeProseHash: proseHashOf,
+					sourceManifest: [
+						{
+							source: 1,
+							kind: "projectContext",
+							id: "context-failed-run",
+							contextType: "TEXT",
+							title: "Example notes",
+							fingerprint: "f2",
+						},
+					],
+				});
+				if (failed === "superseded") {
+					throw new Error("expected the run to be recorded");
+				}
+				await markAnalysisRunning(failed.analysisId);
+				expect(
+					await failAnalysisRun({
+						analysisId: failed.analysisId,
+						errorCode: "MODEL_ERROR",
+						errorMessage: "The analysis could not be completed.",
+					}),
+				).toBe("written");
+				// Newer still: a generation a project guest started, recorded
+				// FAILED with no source context. Never a source.
+				await db.projectDocument.update({
+					where: { id: documentId },
+					data: { liveRunId: "run-guest" },
+				});
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				const guest = await createAnalysisRun({
+					documentId,
+					runKey: id(`analysis-${documentId}-run-guest`),
+					liveRunId: "run-guest",
+					sourceContext: "",
+					contextCount: 0,
+					computeProseHash: proseHashOf,
+					failure: {
+						errorCode: "GUEST_TRIGGERED",
+						errorMessage: "Started by a project guest.",
+					},
+				});
+				if (guest === "superseded") {
+					throw new Error("expected the guest's run to be recorded");
+				}
+				expect(guest.status).toBe("FAILED");
+
+				const result = await claim(documentId);
+				if (result.outcome !== "claimed") {
+					throw new Error(`expected a claim, got ${result.reason}`);
+				}
+				expect(result.run.sourceRunId).toBe(failed.analysisId);
+				expect(
+					await db.projectDocumentAnalysis.findUniqueOrThrow({
+						where: { id: result.run.analysisId },
+						select: { contextCount: true, sourceContext: true },
+					}),
+				).toEqual({ contextCount: 3, sourceContext: "" });
+				expect(
+					await getAnalysisRunInput(result.run.analysisId),
+				).toMatchObject({
+					kind: "RERUN",
+					sourceContextRunId: failed.analysisId,
+					sourceContext: "### Source 1\nFailed run's context",
+					sourceManifest: [
+						expect.objectContaining({ id: "context-failed-run" }),
+					],
+				});
+			});
+		});
+
+		describe("evidence sources read now (Fizzy #2946)", () => {
+			const longText = (letter: string) =>
+				letter.repeat(PROPOSAL_EVIDENCE_TEXT_HEAD_LENGTH + 500);
+
+			async function context(
+				projectId: string,
+				organizationId: string,
+				data: Partial<Prisma.ProjectContextUncheckedCreateInput> = {},
+			): Promise<string> {
+				const row = await db.projectContext.create({
+					data: {
+						projectId,
+						organizationId,
+						type: "TEXT",
+						content: "Example notes.",
+						...data,
+					},
+					select: { id: true },
+				});
+				return row.id;
+			}
+
+			async function companySource(
+				organizationId: string,
+				data: Partial<Prisma.CompanyContextSourceUncheckedCreateInput> = {},
+			): Promise<string> {
+				const row = await db.companyContextSource.create({
+					data: {
+						organizationId,
+						type: "TEXT",
+						content: "Example company notes.",
+						...data,
+					},
+					select: { id: true },
+				});
+				return row.id;
+			}
+
+			it("returns only this project's contexts and the organization's live company sources, with the text head capped and no address", async () => {
+				const site = await context(PA, ORG_A, {
+					type: "LINK",
+					sourceTitle: "Client website",
+					sourceUrl: "https://example.com/private-page",
+					content: longText("a"),
+				});
+				const notes = await context(PA, ORG_A, {
+					originalFilename: "brief.md",
+					sourcePath: `notes/${RUN}.md`,
+					content: "Short notes.",
+				});
+				const otherProject = await context(PD, ORG_A, {
+					sourceTitle: "Another project's notes",
+				});
+				const otherOrganization = await context(PB, ORG_B, {
+					sourceTitle: "Another organization's notes",
+				});
+				const rateCard = await companySource(ORG_A, {
+					sourceTitle: "Rate card",
+					originalFilename: "rates.pdf",
+					sourceUrl: "https://example.com/pricing",
+					content: longText("b"),
+				});
+				const deleting = await companySource(ORG_A, {
+					sourceTitle: "Retired price list",
+					deletingAt: new Date(),
+				});
+				const foreign = await companySource(ORG_B, {
+					sourceTitle: "Another organization's rate card",
+				});
+
+				const read = await readProposalEvidenceSources({
+					organizationId: ORG_A,
+					projectId: PA,
+					contextIds: [
+						site,
+						notes,
+						site,
+						otherProject,
+						otherOrganization,
+						id("context-missing"),
+					],
+					companySourceIds: [rateCard, deleting, foreign, rateCard],
+				});
+
+				const byId = <T extends { id: string }>(rows: T[]) =>
+					[...rows].sort((a, b) => a.id.localeCompare(b.id));
+				expect(byId(read.contexts)).toEqual(
+					byId([
+						{
+							id: site,
+							type: "LINK",
+							sourceTitle: "Client website",
+							originalFilename: null,
+							sourcePath: null,
+							contentHead: "a".repeat(
+								PROPOSAL_EVIDENCE_TEXT_HEAD_LENGTH,
+							),
+						},
+						{
+							id: notes,
+							type: "TEXT",
+							sourceTitle: null,
+							originalFilename: "brief.md",
+							sourcePath: `notes/${RUN}.md`,
+							contentHead: "Short notes.",
+						},
+					]),
+				);
+				expect(read.companySources).toEqual([
+					{
+						id: rateCard,
+						sourceTitle: "Rate card",
+						originalFilename: "rates.pdf",
+						contentHead: "b".repeat(
+							PROPOSAL_EVIDENCE_TEXT_HEAD_LENGTH,
+						),
+					},
+				]);
+				expect(JSON.stringify(read)).not.toContain("https://");
+			});
+
+			it("another organization reads none of this project's contexts or this organization's company sources, and no ids read nothing", async () => {
+				const notes = await context(PA, ORG_A);
+				const theirs = await context(PB, ORG_B);
+				const ours = await companySource(ORG_A);
+
+				expect(
+					await readProposalEvidenceSources({
+						organizationId: ORG_B,
+						projectId: PA,
+						contextIds: [notes, theirs],
+						companySourceIds: [ours],
+					}),
+				).toEqual({ contexts: [], companySources: [] });
+				expect(
+					await readProposalEvidenceSources({
+						organizationId: ORG_A,
+						projectId: PA,
+						contextIds: [],
+						companySourceIds: [],
+					}),
+				).toEqual({ contexts: [], companySources: [] });
+			});
+		});
+
+		describe("finding responses (Fizzy #2946)", () => {
+			it("two first answers racing on one key leave one row and never a unique-key error", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+
+				const outcomes = await Promise.all([
+					upsertFindingResponse(answer(documentId, runId)),
+					upsertFindingResponse(
+						answer(documentId, runId, { text: "Another answer." }),
+					),
+				]);
+				expect(outcomes.map((o) => o.outcome).sort()).toEqual([
+					"stale",
+					"written",
+				]);
+				expect(
+					await db.projectDocumentFindingResponse.count({
+						where: { documentId },
+					}),
+				).toBe(1);
+			});
+
+			it("two edits of one version racing: one is written, the other is stale with it", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+				const seen = written(
+					await upsertFindingResponse(answer(documentId, runId)),
+				);
+
+				const outcomes = await Promise.all([
+					upsertFindingResponse({
+						...answer(documentId, runId, { text: "First edit." }),
+						expectedResponseId: seen.id,
+						expectedVersion: 1,
+					}),
+					upsertFindingResponse({
+						...answer(documentId, runId, { text: "Second edit." }),
+						expectedResponseId: seen.id,
+						expectedVersion: 1,
+					}),
+				]);
+				expect(outcomes.map((o) => o.outcome).sort()).toEqual([
+					"stale",
+					"written",
+				]);
+				const stale = outcomes.find((o) => o.outcome === "stale");
+				expect(stale).toMatchObject({
+					current: { id: seen.id, version: 2 },
+				});
+				const [row] = await listResponsesForDocument({
+					organizationId: ORG_A,
+					documentId,
+				});
+				expect(row?.version).toBe(2);
+			});
+
+			it("an edit or a clear naming an answer cleared and given again since is stale and changes nothing, though the new answer is back at version 1", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+				const stableKey = "commercial|scope|pricing";
+				const seen = written(
+					await upsertFindingResponse(answer(documentId, runId)),
+				);
+				expect(
+					await clearFindingResponse({
+						organizationId: ORG_A,
+						documentId,
+						stableKey,
+						responseId: seen.id,
+						version: 1,
+					}),
+				).toEqual({ outcome: "cleared", kind: "RESPONDED" });
+				// A colleague answers the same finding again: a new row.
+				const colleague = written(
+					await upsertFindingResponse(
+						answer(documentId, runId, {
+							text: "A colleague's answer.",
+						}),
+					),
+				);
+				expect(colleague.id).not.toBe(seen.id);
+				expect(colleague.version).toBe(1);
+				const current = {
+					id: colleague.id,
+					kind: "RESPONDED",
+					text: "A colleague's answer.",
+					authorId: USERS.owner,
+					version: 1,
+				};
+
+				// A tab still holding the first answer's id and version 1.
+				expect(
+					await upsertFindingResponse({
+						...answer(documentId, runId, {
+							text: "An edit of the first answer.",
+						}),
+						expectedResponseId: seen.id,
+						expectedVersion: 1,
+					}),
+				).toMatchObject({ outcome: "stale", current });
+				expect(
+					await clearFindingResponse({
+						organizationId: ORG_A,
+						documentId,
+						stableKey,
+						responseId: seen.id,
+						version: 1,
+					}),
+				).toMatchObject({ outcome: "stale", current });
+				expect(
+					await listResponsesForDocument({
+						organizationId: ORG_A,
+						documentId,
+					}),
+				).toEqual([
+					expect.objectContaining({
+						...current,
+						updatedAt: colleague.updatedAt,
+					}),
+				]);
+			});
+
+			it("deleting the author keeps the answer with no author; deleting the document removes it", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+				await upsertFindingResponse(
+					answer(documentId, runId, { authorId: DEPARTING_AUTHOR }),
+				);
+
+				await db.user.delete({ where: { id: DEPARTING_AUTHOR } });
+				expect(
+					await listResponsesForDocument({
+						organizationId: ORG_A,
+						documentId,
+					}),
+				).toEqual([expect.objectContaining({ authorId: null })]);
+
+				await db.projectDocument.delete({ where: { id: documentId } });
+				expect(
+					await db.projectDocumentFindingResponse.count({
+						where: { documentId },
+					}),
+				).toBe(0);
+			});
+
+			it("answers are invisible to another organization and on another document", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+				await upsertFindingResponse(answer(documentId, runId));
+				const otherDocument = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+
+				expect(
+					await listResponsesForDocument({
+						organizationId: ORG_B,
+						documentId,
+					}),
+				).toEqual([]);
+				expect(
+					await listResponsesForDocument({
+						organizationId: ORG_A,
+						documentId: otherDocument,
+					}),
+				).toEqual([]);
+			});
+
+			it("after the project moves to another organization, its answers and runs are unreachable through the owning organization", async () => {
+				const documentId = await freshDocument(PC, {
+					status: "COMPLETE",
+				});
+				const runId = await completedRun(documentId);
+				await upsertFindingResponse(
+					answer(documentId, runId, { projectId: PC }),
+				);
+
+				await db.project.update({
+					where: { id: PC },
+					data: { organizationId: ORG_B },
+				});
+				expect(
+					await listResponsesForDocument({
+						organizationId: ORG_B,
+						documentId,
+					}),
+				).toEqual([]);
+				expect(
+					(
+						await getAnalysisForCurrentContent({
+							organizationId: ORG_B,
+							documentId,
+							currentProseHash: proseHashOf(MAIN),
+							computeProseHash: proseHashOf,
+						})
+					).run,
+				).toBeNull();
+			});
+		});
+
 		describe("row-level security (restricted role)", () => {
 			const guest: TenantCtx = {
 				type: "personal",
@@ -674,9 +1543,9 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			beforeAll(async () => {
 				const policies = await db.$queryRaw<{ tablename: string }[]>`
 					SELECT tablename::text AS tablename FROM pg_policies
-					WHERE tablename IN ('project_document_analysis', 'project_document_finding', 'project_document_style')
+					WHERE tablename IN ('project_document_analysis', 'project_document_finding', 'project_document_finding_response', 'project_document_style')
 					AND policyname = 'tenant_isolation'`;
-				if (policies.length !== 3) {
+				if (policies.length !== 4) {
 					throw new Error(
 						"Proposal artifact RLS policies are missing: run apply:rls against this database first",
 					);
@@ -690,9 +1559,17 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						runKey: id("analysis-rls"),
 						sourceContext: "Internal context",
 						contextCount: 1,
+						sourceManifest: [
+							{
+								source: 1,
+								kind: "other",
+								fingerprint: "f1",
+							},
+						],
 					})
 				).analysisId;
 				await completeAnalysisRun({ analysisId, findings });
+				await upsertFindingResponse(answer(documentId, analysisId));
 				await upsertDocumentStyle({
 					documentId,
 					projectId: PA,
@@ -716,6 +1593,13 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					analysisId: other.analysisId,
 					findings: [findings[0]],
 				});
+				await upsertFindingResponse(
+					answer(otherDocument, other.analysisId, {
+						organizationId: ORG_B,
+						projectId: PB,
+						authorId: USERS.ownerB,
+					}),
+				);
 				await upsertDocumentStyle({
 					documentId: otherDocument,
 					projectId: PB,
@@ -748,6 +1632,16 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						}),
 				},
 				{
+					name: "project_document_finding_response",
+					count: (
+						tx: Prisma.TransactionClient,
+						organizationId: string,
+					) =>
+						tx.projectDocumentFindingResponse.count({
+							where: { organizationId },
+						}),
+				},
+				{
 					name: "project_document_style",
 					count: (
 						tx: Prisma.TransactionClient,
@@ -774,6 +1668,74 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					expect(await read(guest, ORG_B)).toBe(0);
 				},
 			);
+
+			it("a project guest reads no source manifest, even on the invited project", async () => {
+				const manifests = (ctx: TenantCtx) =>
+					asRlsRole(ctx, async (tx) => {
+						const [row] = await tx.$queryRaw<{ n: number }[]>`
+							SELECT count(*)::int AS n FROM "project_document_analysis"
+							WHERE "organizationId" = ${ORG_A}
+							AND "sourceManifest" IS NOT NULL`;
+						return row?.n ?? 0;
+					});
+				expect(await manifests(orgA)).toBeGreaterThan(0);
+				expect(await manifests(guest)).toBe(0);
+				expect(await manifests(orgB)).toBe(0);
+			});
+
+			it("a project guest cannot write an answer on the invited project, or change one", async () => {
+				expect(
+					await attempt(guest, (tx) =>
+						tx.projectDocumentFindingResponse.create({
+							data: {
+								organizationId: ORG_A,
+								projectId: PA,
+								documentId,
+								stableKey: id("guest-key"),
+								kind: "RESPONDED",
+								text: "Injected.",
+								findingTitle: "Injected",
+								answeredRunId: analysisId,
+								sectionKey: "scope#0",
+								sectionHash: "p1:scope",
+							},
+						}),
+					),
+				).toBe("denied");
+				const updated = await asRlsRole(guest, (tx) =>
+					tx.projectDocumentFindingResponse.updateMany({
+						where: { documentId },
+						data: { text: "Guest edit" },
+					}),
+				);
+				expect(updated.count).toBe(0);
+				const removed = await asRlsRole(guest, (tx) =>
+					tx.projectDocumentFindingResponse.deleteMany({
+						where: { documentId },
+					}),
+				);
+				expect(removed.count).toBe(0);
+			});
+
+			it("an organization cannot write an answer into another organization", async () => {
+				expect(
+					await attempt(orgA, (tx) =>
+						tx.projectDocumentFindingResponse.create({
+							data: {
+								organizationId: ORG_B,
+								projectId: PA,
+								documentId,
+								stableKey: id("cross-tenant-key"),
+								kind: "CONFIRMED",
+								findingTitle: "Cross-tenant",
+								answeredRunId: analysisId,
+								sectionKey: "scope#0",
+								sectionHash: "p1:scope",
+							},
+						}),
+					),
+				).toBe("denied");
+			});
 
 			it("a project guest cannot write analysis, finding or style rows on the invited project", async () => {
 				expect(

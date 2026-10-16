@@ -480,6 +480,12 @@ export async function publishingSuggestionWorkflow(
 				// reset must not decide the wait.
 				userId: input.jobType ? null : actorUserId,
 				maxWaitMs: PUBLISHING_SUGGESTION_MAX_PLAN_WAIT_MS,
+				stoppedNotice: {
+					work: "PUBLISHING_SUGGESTIONS",
+					projectId,
+					link: `projects/${projectId}/publishing`,
+					initiatorUserId: actorUserId ?? null,
+				},
 			},
 		);
 		const mapped = await computeSuggestionTopics({

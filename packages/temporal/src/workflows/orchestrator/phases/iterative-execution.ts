@@ -121,6 +121,7 @@ import type {
 	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
+import { conversationIdField } from "../usage-attribution";
 import {
 	attachedImagesSystemNote,
 	attachedImagesUserNote,
@@ -832,6 +833,7 @@ async function synthesizeFinalAnswer(params: {
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
+			...conversationIdField(input),
 			iteration: state.currentIteration + 1,
 			maxStepsPerIteration: 1,
 			modelOverride: input.modelOverride,
@@ -891,6 +893,7 @@ async function synthesizeFinalAnswer(params: {
 				userId: input.userId,
 				organizationId: input.organizationId,
 				executionId: state.executionId,
+				...conversationIdField(input),
 				iteration: state.currentIteration + 2,
 				maxStepsPerIteration: 1,
 				modelOverride: input.modelOverride,
@@ -2603,6 +2606,7 @@ Never guess or use example values — always use real data from API responses.`;
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
+			...conversationIdField(input),
 			iteration,
 			maxStepsPerIteration: stepsPerIteration,
 			modelOverride: input.modelOverride,
@@ -2827,13 +2831,18 @@ Never guess or use example values — always use real data from API responses.`;
 			// below will send the call: one of the loop's own built-ins
 			// (matched by name, ahead of any MCP lookup) or the Fabric
 			// catalog's virtual config. A same-named tool on another MCP
-			// server is scanned as usual.
+			// server is scanned as usual. A workflow tool sent to the Fabric
+			// catalog is not scanned either, from its own marker: the activity
+			// asks the person before it writes, so the scan could only add a
+			// second prompt.
 			const riskAssessment = assessToolCallRisk(
 				toolCall,
 				autonomyLevel,
 				patched("orch-risk-read-only-exempt-v1")
 					? {
-							rules: "read-only-exempt-v1",
+							rules: patched("orch-risk-fabric-gated-v1")
+								? "fabric-gated-v2"
+								: "read-only-exempt-v1",
 							fabricRouted:
 								isLoopBuiltInReadTool(toolCall.name) ||
 								discoveredToolConfigIds[toolCall.name] ===
@@ -3665,6 +3674,18 @@ Never guess or use example values — always use real data from API responses.`;
 									requestRuntimeAuthority: true,
 								}
 							: {}),
+						// What the workflow and frame tools Fabric MCP serves
+						// need to act for the person: the grant their turn's
+						// route minted, and the page the chat was opened from.
+						// Its own marker: it widens the recorded activity input,
+						// so a history from before it replays without them.
+						...(patched("orch-fabric-acting-grant-v1")
+							? {
+									actingGrant: input.actingGrant,
+									launchWorkspaceId: input.launchWorkspaceId,
+									launchSurface: input.launchSurface,
+								}
+							: {}),
 					};
 					let result = await executeMcpTool(mcpToolInput);
 					if (mcpToolInput.requestRuntimeAuthority) {
@@ -4050,6 +4071,7 @@ Never guess or use example values — always use real data from API responses.`;
 							maxOutputLength: contentLimit - 500,
 							userId: input.userId,
 							organizationId: input.organizationId,
+							...conversationIdField(input),
 							...turnScopeField(turn),
 						});
 						if (reserved > 0) {
@@ -4201,6 +4223,7 @@ Never guess or use example values — always use real data from API responses.`;
 			input.userId,
 			input.organizationId,
 			turn,
+			input.conversationId,
 		);
 
 		// Update progress for next iteration
@@ -4280,6 +4303,8 @@ export async function maybeCompactConversationHistory(
 	organizationId?: string,
 	/** The turn contract; a stop is rethrown instead of skipping compaction. */
 	turn?: IterativeTurnOptions,
+	/** The chat conversation the run answers, for usage attribution only. */
+	conversationId?: string,
 ): Promise<void> {
 	const budgetPct =
 		maxTotalTokens > 0 ? (cumulativeTokens / maxTotalTokens) * 100 : 0;
@@ -4343,6 +4368,7 @@ export async function maybeCompactConversationHistory(
 			executionId: state.executionId,
 			iteration,
 			historyLengthBefore: conversationHistory.length,
+			...(conversationId ? { conversationId } : {}),
 			...turnScopeField(turn),
 		});
 	} catch (error) {

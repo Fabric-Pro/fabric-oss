@@ -28,7 +28,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const verifyUserApiKey = vi.fn();
 vi.mock("@repo/api/modules/users/procedures/api-keys", () => ({
@@ -170,6 +170,13 @@ function toolCallBody(): unknown {
 	};
 }
 
+const loadRoute = () => import("../../app/api/mcp-gateway/route");
+
+// The route's module graph is large; load it once, outside any test's timeout.
+beforeAll(async () => {
+	await loadRoute();
+}, 120_000);
+
 async function post(
 	body: unknown,
 	extra: Record<string, string> = {},
@@ -178,7 +185,7 @@ async function post(
 	sessionId: string | null;
 	payload: Record<string, string>;
 }> {
-	const { POST } = await import("../../app/api/mcp-gateway/route");
+	const { POST } = await loadRoute();
 	const response = await POST(
 		new Request(GATEWAY_URL, {
 			method: "POST",
@@ -507,6 +514,98 @@ describe("MCP gateway — a personal key resolves an organization", () => {
 		const { response } = await post(initializeBody(), {});
 
 		expect(response.status).toBe(400);
+	});
+});
+
+/**
+ * A browser names the organization of the page it is on. The session's
+ * `activeOrganizationId` is one field per login, shared by every tab, so a
+ * person with a tab open in each of two organizations would otherwise have one
+ * tab's page reading the other's data. The header is honoured only for a
+ * member, read on every request; with none, the session's own value stands.
+ */
+describe("MCP gateway — a browser names the organization of its page", () => {
+	function browserIn(activeOrganizationId: string | null): void {
+		getSession.mockResolvedValue({
+			user: { id: USER_ID, name: "Test User", email: "dev@example.com" },
+			session: { activeOrganizationId },
+		});
+	}
+
+	it("runs in the named organization when the caller belongs to it, not the one the session holds", async () => {
+		signedInAs({ memberships: [ALPHA, BETA] });
+		browserIn(ALPHA);
+
+		const { response } = await post(toolCallBody(), {
+			"x-organization-id": BETA,
+		});
+
+		expect(response.status).toBe(200);
+		expect(isOrganizationMember).toHaveBeenCalledWith(USER_ID, BETA);
+		expect(lastToolSession().organizationId).toBe(BETA);
+	});
+
+	it("refuses an organization the caller does not belong to, whatever the session holds", async () => {
+		signedInAs({ memberships: [ALPHA] });
+		browserIn(ALPHA);
+
+		const { response, payload } = await post(toolCallBody(), {
+			"x-organization-id": OUTSIDE,
+		});
+
+		expect(response.status).toBe(403);
+		expect(payload.reason).toBe("not_a_member");
+		expect(isOrganizationMember).toHaveBeenCalledWith(USER_ID, OUTSIDE);
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("keeps the session's organization when the header is absent, and checks that one", async () => {
+		signedInAs({ memberships: [ALPHA, BETA] });
+		browserIn(ALPHA);
+
+		const { response } = await post(toolCallBody(), {});
+
+		expect(response.status).toBe(200);
+		expect(isOrganizationMember).toHaveBeenCalledWith(USER_ID, ALPHA);
+		expect(lastToolSession().organizationId).toBe(ALPHA);
+	});
+
+	it("keeps the session's organization when the header is blank", async () => {
+		signedInAs({ memberships: [ALPHA, BETA] });
+		browserIn(ALPHA);
+
+		const { response } = await post(toolCallBody(), {
+			"x-organization-id": "   ",
+		});
+
+		expect(response.status).toBe(200);
+		expect(lastToolSession().organizationId).toBe(ALPHA);
+	});
+
+	it("fails closed when the membership check cannot answer", async () => {
+		browserIn(ALPHA);
+		isOrganizationMember.mockRejectedValueOnce(new Error("database down"));
+
+		await expect(
+			post(toolCallBody(), { "x-organization-id": BETA }),
+		).rejects.toThrow("database down");
+
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("does not lend a session opened in one organization to a request that names another", async () => {
+		signedInAs({ memberships: [ALPHA, BETA] });
+		browserIn(ALPHA);
+		const { sessionId } = await post(initializeBody(), {});
+
+		const { response, sessionId: served } = await post(toolCallBody(), {
+			"x-organization-id": BETA,
+			"mcp-session-id": sessionId as string,
+		});
+
+		expect(response.status).toBe(200);
+		expect(served).not.toBe(sessionId);
+		expect(lastToolSession().organizationId).toBe(BETA);
 	});
 });
 

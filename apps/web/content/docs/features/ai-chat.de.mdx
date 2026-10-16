@@ -113,12 +113,26 @@ Während eines Gesprächs kann die KI MCP-Tools aufrufen, um Aufgaben zu erledig
 
 ### Verlauf
 
-Zugriff auf vergangene Gespräche über die **Seitenleiste**:
+Vergangene Gespräche stehen unter **History**: in der Seitenleiste der Vollseite und im Fabric-Agent-Drawer hinter der Schaltfläche **Conversation history** in dessen Kopfzeile. Beide zeigen dieselbe Liste.
 
-- Gespräche nach Titel oder Inhalt **suchen**
-- Wichtige Gespräche **anheften** für schnellen Zugriff
-- Alte Gespräche **archivieren**, um Ordnung zu halten
-- Gespräche werden nach Datum gruppiert
+- **Mine**, **Shared with your organization** und **Archived** wechseln, welche Gespräche aufgelistet werden.
+- Die **Suche** durchsucht Titel. Sie durchsucht nicht, was in einem Gespräch gesagt wurde.
+- **Load more** lädt die nächste Seite, wenn die Liste lang ist. Lässt sich eine Seite nicht laden, bleiben die bereits angezeigten Gespräche stehen, und **Try again** lädt sie erneut.
+- Ein Gespräch **anheften** (**Pin**), damit es oben in Ihrer Liste bleibt. Die Schaltfläche behält ihren Namen und zeigt, ob das Gespräch angeheftet ist.
+- **Rename** ändert den Titel, den Fabric erzeugt hat.
+- **Archive** räumt ein Gespräch aus dem Weg. Öffnen Sie **Archived** und wählen Sie **Restore**, um es zurückzuholen. **Delete** entfernt es endgültig und fragt vorher nach.
+
+Ein geöffnetes Gespräch läuft wieder auf der Engine, auf der es entstanden ist, Direct oder Orchestrator. Im Drawer setzt sich ein wieder geöffnetes Gespräch mit dem Kontext der Seite fort, auf der Sie jetzt sind, nicht der Seite, auf der es begann; ein Hinweis darüber sagt das. Solange noch eine Antwort geschrieben wird, behält der Drawer den aktuellen Chat und öffnet keinen anderen. Ist ein Gespräch nicht mehr vorhanden, sagt der Drawer das; lässt es sich nur nicht laden, sagt er das stattdessen und bietet **Try again** an.
+
+### Ein Gespräch teilen
+
+Ein Gespräch gehört privat der Person, die es begonnen hat. Wählen Sie im Menü **Share with your organization**, damit alle in Ihrer Organisation es lesen können. Derselbe Menüpunkt heißt **Sharing settings**, sobald ein Gespräch geteilt ist; Sie können es jederzeit wieder privat machen.
+
+<Callout type="warning">
+  Ein geteiltes Protokoll kann Ergebnisse enthalten, die Fabric Agent von Ihren eigenen verbundenen Servern gelesen hat. Alle, mit denen Sie es teilen, sehen, was im Protokoll steht. Das Lesen gibt ihnen keinen Zugriff auf diese Server.
+</Callout>
+
+Gespräche, die andere geteilt haben, erscheinen unter **Shared with your organization**, markiert mit **Shared by** und dem Namen der Person, die sie geteilt hat. Ein Gespräch, das Sie selbst geteilt haben, heißt in Ihrer eigenen Liste **Shared with your organization**. Ein Gespräch, das jemand anderes geteilt hat, öffnet sich schreibgeschützt: Es gibt nichts zu senden und nichts zu genehmigen. **Continue in my own chat** beginnt ein neues Gespräch von Ihnen, das daran anknüpft und mit Ihren Tools und Berechtigungen läuft, nicht mit deren, und zwar auf der Engine, die Ihre eigenen Chats jetzt nutzen, nicht auf der des Eigentümers. Nur die Person, die ein Gespräch begonnen hat, kann es umbenennen, archivieren, teilen oder löschen.
 
 ### Checkpoints
 

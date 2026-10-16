@@ -30,6 +30,8 @@ const nodeIcons: Record<
 	React.ComponentType<{ className?: string }>
 > = {
 	trigger: PlayIcon,
+	"agent-task": SparklesIcon,
+	"publish-frame": FileTextIcon,
 	"ai-generate-text": SparklesIcon,
 	"ai-generate-image": ImageIcon,
 	"http-request": SendIcon,
@@ -67,7 +69,7 @@ function getCategory(type: WorkflowNodeType): string {
 	if (type === "trigger") {
 		return "trigger";
 	}
-	if (type.startsWith("ai-")) {
+	if (type.startsWith("ai-") || type === "agent-task") {
 		return "ai";
 	}
 	if (type.startsWith("firecrawl-")) {

@@ -42,7 +42,7 @@ beforeEach(() => {
 	mocks.contextFindFirst.mockResolvedValue({
 		id: "context-1",
 		content: "Alice: We decided to ship the draft.",
-		metadata: { provider: "meetingbaas", parlumeNotesStatus: "PENDING" },
+		metadata: { provider: "attendee", parlumeNotesStatus: "PENDING" },
 	});
 	mocks.getModel.mockResolvedValue({
 		model: { modelId: "test-model" },
@@ -70,7 +70,7 @@ describe("Parlume meeting notes", () => {
 			expect.objectContaining({
 				data: {
 					metadata: {
-						provider: "meetingbaas",
+						provider: "attendee",
 						parlumeNotes: "Decision: ship the draft.",
 						parlumeNotesStatus: "COMPLETED",
 					},

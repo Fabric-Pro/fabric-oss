@@ -9,10 +9,10 @@
  * before the request is handed to `fetch`: past the deadline, the request is
  * not sent and `DispatchDeadlinePassedError` is thrown instead. A timer that
  * stops Fabric waiting for a request already in flight is a separate,
- * additional bound, and it does not tear that request down on the HTTP and
- * SSE MCP transports (the SDK transport uses its own controller); a timer
- * alone does not bound when a request is sent, because it can fire late
- * when the event loop stalls.
+ * additional bound (on the HTTP and SSE MCP transports it aborts the request
+ * through the call's abort signal, but cannot recall bytes the server
+ * already received); a timer alone does not bound when a request is sent,
+ * because it can fire late when the event loop stalls.
  *
  * The checks that run inside a client Fabric owns (the MCP transport fetch,
  * the STDIO wrapper call, the GitLab REST POST) read the deadline from the

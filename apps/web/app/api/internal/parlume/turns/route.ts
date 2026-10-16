@@ -155,3 +155,29 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ error: "Dispatch failed" }, { status: 503 });
 	}
 }
+
+/**
+ * Opens this function's database and Temporal connections ahead of the first
+ * spoken turn (see `warmParlumeRuntime`). It reads one row at most and
+ * changes nothing.
+ */
+export async function GET(request: NextRequest) {
+	if (
+		!isParlumeServiceRequestAuthorized(
+			request.headers.get("X-Agent-Service-Token"),
+		)
+	) {
+		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+	const sessionId = request.nextUrl.searchParams.get("sessionId");
+	await Promise.allSettled([
+		getTemporalClient(),
+		sessionId
+			? db.parlumeMeetingSession.findFirst({
+					where: { id: sessionId },
+					select: { id: true },
+				})
+			: Promise.resolve(),
+	]);
+	return NextResponse.json({ warm: true });
+}

@@ -241,6 +241,14 @@ export {
 	promptGenerateChatTitle,
 	promptListProductNames,
 } from "./lib/prompts";
+// --- Page ask (from lib/prompts/page-ask) ---
+export {
+	answerPageQuestion,
+	PAGE_ASK_LIMITS,
+	type PageAskFormat,
+	PageAskInputError,
+	type PageAskInputProblem,
+} from "./lib/prompts/page-ask";
 // --- PR review, QA lens (from lib/prompts/pr-review-qa) ---
 export {
 	diffAddedLines,

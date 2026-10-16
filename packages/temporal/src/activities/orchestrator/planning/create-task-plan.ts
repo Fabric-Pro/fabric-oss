@@ -229,7 +229,16 @@ async function planTask(input: CreateTaskPlanInput): Promise<TaskPlan> {
 		"[Orchestrator] Using LLM-based planning for task decomposition",
 	);
 
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		input.conversationId
+			? { conversationId: input.conversationId }
+			: undefined,
+	);
 
 	// ==========================================================================
 	// OPTIMIZATION: Use matched tools from routing semantic search

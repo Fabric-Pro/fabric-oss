@@ -1,5 +1,3 @@
-import { ORPCError } from "@orpc/client";
-import { listWorkflows } from "@repo/database";
 import {
 	WorkflowBuilderStatusSchema,
 	WorkflowTriggerTypeSchema,
@@ -8,14 +6,20 @@ import { z } from "zod";
 import { INPUT_BOUNDS } from "../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { listWorkflowsCommand } from "../lib/workflow-read-commands";
+import { workflowActor, workflowCommandErrors } from "./workflow-actor";
 
 export const listWorkflowsProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.WORKSPACE_READ))
+	.use(workflowCommandErrors)
+	.use(
+		requireInputOrgPermission(Permissions.WORKSPACE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/workflows",
@@ -36,38 +40,13 @@ export const listWorkflowsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const user = context.user;
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
 		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		// List workflows
-		const result = await listWorkflows({
-			userId: user.id,
-			organizationId,
-			limit: input.limit,
-			offset: input.offset,
-			status: input.status,
-			triggerType: input.triggerType,
-			search: input.search,
-			isTemplate: input.isTemplate,
-			projectId: input.projectId,
-		});
-
-		return result;
+		const { organizationId: _inputOrgId, ...filters } = input;
+		return listWorkflowsCommand(
+			workflowActor(context.user.id, organizationId),
+			filters,
+		);
 	});

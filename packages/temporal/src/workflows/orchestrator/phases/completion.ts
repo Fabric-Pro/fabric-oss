@@ -45,6 +45,7 @@ import type {
 	TrajectoryStep,
 	WorkflowState,
 } from "../types";
+import { conversationIdField } from "../usage-attribution";
 
 // =============================================================================
 // Completion Child Workflow Input
@@ -286,6 +287,7 @@ export async function orchestratorCompletionWorkflow(
 			durationMs: Date.now() - startTime,
 			userId,
 			organizationId,
+			...conversationIdField({ conversationId }),
 		});
 
 		if (!workflowInfo().unsafe.isReplaying) {

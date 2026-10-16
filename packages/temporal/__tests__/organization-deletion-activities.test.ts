@@ -78,6 +78,7 @@ vi.mock("@repo/config", () => ({
 				chatDocuments: "chat-documents",
 				projectContexts: "project-contexts",
 				qaRunEvidence: "qa-run-evidence",
+				workspaceDocuments: "workspace-documents",
 			},
 		},
 	},
@@ -577,8 +578,8 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 			organizationId: "org-1",
 		});
 
-		// Three prefix sweeps, one page each.
-		expect(result.pages).toBe(3);
+		// Four prefix sweeps, one page each.
+		expect(result.pages).toBe(4);
 		expect(storageMocks.listObjects).toHaveBeenCalledWith(
 			expect.objectContaining({
 				bucket: "chat-documents",
@@ -588,6 +589,14 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 		expect(storageMocks.listObjects).toHaveBeenCalledWith(
 			expect.objectContaining({
 				bucket: "qa-run-evidence",
+				prefix: "org-1/",
+			}),
+		);
+		// Files the organization's pages stored: `{orgId}/frames/...` in the
+		// bucket only page files use. The pages' rows go with the organization.
+		expect(storageMocks.listObjects).toHaveBeenCalledWith(
+			expect.objectContaining({
+				bucket: "workspace-documents",
 				prefix: "org-1/",
 			}),
 		);

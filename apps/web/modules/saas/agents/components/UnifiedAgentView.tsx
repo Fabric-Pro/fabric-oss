@@ -1,5 +1,6 @@
 "use client";
 
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { Spinner } from "@shared/components/Spinner";
@@ -31,7 +32,7 @@ import { InstanceAgentCard } from "./InstanceAgentCard";
 import { UnifiedAgentListView } from "./UnifiedAgentListView";
 
 /** Registry ids that the Fabric Loom row already represents. */
-const LOOM_AGENT_IDS = new Set(["fabric-workspace-assistant", "fabric-ai"]);
+const LOOM_AGENT_IDS = new Set([FABRIC_AGENT_ID, "fabric-ai"]);
 
 type ViewMode = "grid" | "list";
 type AgentScope = "ALL" | "SYSTEM" | "ORGANIZATION" | "PERSONAL";

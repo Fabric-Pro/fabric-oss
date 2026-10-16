@@ -51,6 +51,8 @@ const TOKEN = "fat_example-access-token";
  *   - the instruction routes go through `resolveInstructionProject`, the
  *     context routes through `credentialMayReachProject`, and the feature
  *     routes through `resolveV1Context` with the path's project;
+ *   - the memory routes go through `resolveContextProject`, which asks
+ *     `credentialMayReachProject` first;
  *   - the project's document routes call `resolveV1Context` without a project
  *     and so refuse a bound credential.
  */
@@ -68,6 +70,10 @@ const REACHABLE = [
 	"GET /projects/:projectId/instructions/repository/file",
 	"GET /projects/:projectId/instructions/repository/files",
 	"GET /projects/:projectId/instructions/repository/git/:generation/info/refs",
+	"GET /projects/:projectId/memory/file",
+	"GET /projects/:projectId/memory/files",
+	"GET /projects/:projectId/memory/targets",
+	"GET /projects/:projectId/memory/writes/:writeId",
 	"PATCH /projects/:projectId/features/:id",
 	"POST /instructions/checkouts/resolve",
 	"POST /projects/:projectId/documents",
@@ -77,6 +83,8 @@ const REACHABLE = [
 	"POST /projects/:projectId/instructions/published/files",
 	"POST /projects/:projectId/instructions/repository/git/:generation/git-upload-pack",
 	"POST /projects/:projectId/instructions/versions",
+	"POST /projects/:projectId/memory/upload-urls",
+	"POST /projects/:projectId/memory/writes",
 	"PUT /projects/:projectId/contexts/synced-files",
 ];
 

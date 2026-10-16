@@ -2,6 +2,7 @@
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,6 +16,93 @@ def workflow(name):
     return yaml.load((ROOT / '.github/workflows' / name).read_text(), Loader=yaml.BaseLoader)
 
 class StagingWorkflowContracts(unittest.TestCase):
+    def test_prisma_cache_producer_matches_both_consumers(self):
+        unit = workflow('unit-tests.yml')
+        warmer = unit['jobs']['warm-caches']
+        producers = [step for step in warmer['steps']
+                     if step.get('uses', '').startswith('actions/cache/save@')
+                     and step.get('with', {}).get('path') == 'packages/database/prisma/generated']
+        self.assertEqual(len(producers), 1, 'push warmer must publish the compiled client')
+        producer = producers[0]
+        consumers = [step for job in workflow('db-integration.yml')['jobs'].values()
+                     for step in job.get('steps', []) if step.get('id') == 'prisma-client-cache']
+        self.assertEqual(len(consumers), 2)
+        expected_inputs = {
+            'packages/database/prisma/schema.prisma',
+            'packages/database/prisma/zod-generator.config.json',
+            'packages/database/prisma/tsconfig.generated.json',
+            'packages/database/scripts/generate-client.mts',
+            'packages/database/scripts/fix-zod-imports.ts',
+            'packages/database/tsconfig.json', 'packages/database/package.json',
+            'tooling/typescript/base.json', 'tooling/typescript/package.json',
+            'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml',
+        }
+        for step in [producer, *consumers]:
+            with self.subTest(step=step['name']):
+                self.assertEqual(step['with']['path'], 'packages/database/prisma/generated')
+                self.assertNotIn('restore-keys', step['with'])
+                self.assertEqual(step['with']['key'], producer['with']['key'])
+                self.assertTrue(step['with']['key'].startswith('prisma-client-${{ runner.os }}-${{ hashFiles('))
+                self.assertTrue(step['uses'].endswith('@55cc8345863c7cc4c66a329aec7e433d2d1c52a9'))
+                hashed = step['with']['key'].split('hashFiles(', 1)[1].split(')', 1)[0]
+                self.assertEqual(set(re.findall(r"'([^']+)'", hashed)), expected_inputs)
+        # These jobs currently share the hosted Ubuntu x64 / Node 22 environment.
+        for job in [warmer, *[job for job in workflow('db-integration.yml')['jobs'].values()
+                             if any(step.get('id') == 'prisma-client-cache' for step in job.get('steps', []))]]:
+            self.assertEqual(job['runs-on'], 'ubuntu-latest')
+            node = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/setup-node@'))
+            self.assertEqual(node['with']['node-version'], '22')
+        self.assertEqual(unit['on']['push']['branches'], ['master', 'staging'])
+        condition = warmer['if'].replace('&&', ' and ').replace('||', ' or ')
+        condition = re.sub(r'!(?!=)', ' not ', condition)
+        for event in ['push', 'pull_request', 'workflow_dispatch']:
+            admitted = eval(condition, {'__builtins__': {}}, {
+                'always': lambda: True, 'cancelled': lambda: False,
+                'needs': SimpleNamespace(promotion_policy=SimpleNamespace(
+                    result='success', outputs=SimpleNamespace(reduced='false'))),
+                'github': SimpleNamespace(event_name=event),
+            })
+            self.assertEqual(admitted, event == 'push', event)
+        steps = warmer['steps']
+        generation = next(step for step in steps if 'pnpm turbo run generate --filter=@repo/database' in step.get('run', ''))
+        self.assertLess(steps.index(generation), steps.index(producer))
+        self.assertNotIn('if', generation)
+        self.assertNotIn('continue-on-error', generation)
+        self.assertNotIn('continue-on-error', warmer)
+        self.assertNotIn('if', producer)  # default success() gates publication
+        self.assertNotIn('continue-on-error', producer)
+        self.assertIn('git diff --exit-code --stat -- packages/database/prisma/zod', generation['run'])
+        self.assertIn('exit 1', generation['run'])
+        # Exercise the real shell gate: generation failures and Zod mismatches
+        # must both leave the step failed, so the following save cannot run.
+        with tempfile.TemporaryDirectory() as directory:
+            temp = pathlib.Path(directory)
+            for name, variable in [('pnpm', 'GENERATE_RESULT'), ('git', 'ZOD_DIFF_RESULT')]:
+                command = temp / name
+                command.write_text('#!/bin/sh\nexit "$' + variable + '"\n')
+                command.chmod(0o755)
+            for generate_result, diff_result in [(0, 0), (1, 0), (0, 1)]:
+                result = subprocess.run(['bash', '-e', '-c', generation['run']], env={
+                    'PATH': directory + os.pathsep + os.environ['PATH'],
+                    'GENERATE_RESULT': str(generate_result), 'ZOD_DIFF_RESULT': str(diff_result),
+                }, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode == 0, generate_result == diff_result == 0, result.stdout + result.stderr)
+
+    def test_turbo_generation_tracks_compiler_and_install_configuration(self):
+        # turbo.json uses full-line comments; keep URL strings intact.
+        text = (ROOT / 'turbo.json').read_text()
+        config = json.loads(re.sub(r'^\s*//[^\n]*', '', text, flags=re.MULTILINE))
+        inputs = config['tasks']['generate']['inputs']
+        for path in ['package.json', 'tsconfig.json', 'scripts/generate-client.mts',
+                     'scripts/fix-zod-imports.ts', 'prisma/schema.prisma',
+                     'prisma/zod-generator.config.json', 'prisma/tsconfig.generated.json',
+                     '$TURBO_ROOT$/tooling/typescript/base.json',
+                     '$TURBO_ROOT$/tooling/typescript/package.json',
+                     '$TURBO_ROOT$/package.json', '$TURBO_ROOT$/pnpm-workspace.yaml',
+                     '$TURBO_ROOT$/pnpm-lock.yaml']:
+            with self.subTest(input=path):
+                self.assertIn(path, inputs, 'Turbo must not restore an old client under a new direct-cache key')
+
     def test_private_checks_target_staging_and_do_not_skip_private_prs(self):
         for name in ['type-check.yml', 'unit-tests.yml', 'code-quality.yml', 'security.yml', 'changeset-check.yml', 'dco.yml', 'migration-safety.yml', 'temporal-replay-pr-check.yml', 'temporal-replay-validation.yml', 'db-integration.yml', 'knip.yml', 'docker-build-check.yml']:
             with self.subTest(name=name):
@@ -33,12 +121,7 @@ class StagingWorkflowContracts(unittest.TestCase):
         text = (ROOT / '.github/workflows/private-staging-images.yml').read_text()
         self.assertNotIn('fabric-oss-snapshots', text)
         self.assertNotIn('fabric-oss-buildcache', text)
-        build = data['jobs']['build']
-        steps = build['steps']
         helper = 'node .github/actions/oss-snapshot/package-registry-manifest.mjs'
-        privacy_steps = [step for step in steps if helper in step.get('run', '')]
-        self.assertEqual(len(privacy_steps), 1)
-        privacy = privacy_steps[0]
         expected_env = {
             'GH_TOKEN': '${{ github.token }}',
             'COMPONENT': '${{ matrix.component }}',
@@ -46,25 +129,34 @@ class StagingWorkflowContracts(unittest.TestCase):
             'SOURCE_REPOSITORY': '${{ github.repository }}',
             'SOURCE_REPOSITORY_ID': '${{ github.repository_id }}',
         }
-        for key, value in expected_env.items():
-            with self.subTest(env=key):
-                self.assertEqual(privacy['env'].get(key), value)
-        self.assertIn('set -euo pipefail', privacy['run'])
-        self.assertIn('for namespace in fabric-dev-snapshots fabric-dev-buildcache; do', privacy['run'])
-        self.assertIn('PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")', privacy['run'])
-        self.assertIn('"${namespace}/${COMPONENT}" <<<"$PACKAGE"', privacy['run'])
-        self.assertNotIn('|| true', privacy['run'])
-        self.assertNotIn('continue-on-error', privacy)
-        self.assertNotIn('if', privacy)
-        privacy_index = steps.index(privacy)
-        login_index = next(index for index, step in enumerate(steps) if step.get('uses', '').startswith('docker/login-action@'))
-        publish_index = next(index for index, step in enumerate(steps) if step.get('id') == 'build')
-        self.assertLess(privacy_index, login_index)
-        self.assertLess(privacy_index, publish_index)
-        # The validator unit cases prove live private visibility and exact identity;
-        # this contract proves that the publishing workflow runs those checks.
-        self.assertEqual(build['needs'], 'policy-tests')
-        self.assertTrue(any(step.get('run') == 'node --test .github/actions/oss-snapshot/*manifest.test.mjs' for step in data['jobs']['policy-tests']['steps']))
+        # Both jobs that push tags or attestations into the private packages.
+        for name, publishes in [('build', lambda step: step.get('id') == 'build'),
+                                ('reuse', lambda step: step.get('name') == 'Tag the reused digest with the full SHA')]:
+            job = data['jobs'][name]
+            steps = job['steps']
+            privacy_steps = [step for step in steps if helper in step.get('run', '')]
+            self.assertEqual(len(privacy_steps), 1, name)
+            privacy = privacy_steps[0]
+            for key, value in expected_env.items():
+                with self.subTest(job=name, env=key):
+                    self.assertEqual(privacy['env'].get(key), value)
+            self.assertIn('set -euo pipefail', privacy['run'])
+            self.assertIn('for namespace in fabric-dev-snapshots fabric-dev-buildcache; do', privacy['run'])
+            self.assertIn('PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")', privacy['run'])
+            self.assertIn('"${namespace}/${COMPONENT}" <<<"$PACKAGE"', privacy['run'])
+            self.assertNotIn('|| true', privacy['run'])
+            self.assertNotIn('continue-on-error', privacy)
+            self.assertNotIn('if', privacy)
+            privacy_index = steps.index(privacy)
+            login_index = next(index for index, step in enumerate(steps) if step.get('uses', '').startswith('docker/login-action@'))
+            publish_index = next(index for index, step in enumerate(steps) if publishes(step))
+            self.assertLess(privacy_index, login_index)
+            self.assertLess(privacy_index, publish_index)
+            # The validator unit cases prove live private visibility and exact identity;
+            # this contract proves that the publishing workflow runs those checks.
+            self.assertEqual(job['needs'], ['policy-tests', 'plan'])
+        self.assertTrue(any(step.get('run') == 'node --test .github/actions/oss-snapshot/*manifest.test.mjs .github/actions/oss-snapshot/snapshot-reuse.test.mjs'
+                            for step in data['jobs']['policy-tests']['steps']))
 
     def test_notifier_never_executes_product_content(self):
         data = workflow('private-staging-notify.yml')
@@ -152,8 +244,38 @@ class StagingWorkflowContracts(unittest.TestCase):
         self.assertNotIn(automatic[0], pinned)
         for job in data['jobs'].values():
             self.assertNotIn('concurrency', job, 'do not serialize matrix components within a run')
-        self.assertEqual(len(data['jobs']['build']['strategy']['matrix']['include']), 14)
-        self.assertEqual(data['jobs']['aggregate']['needs'], ['policy-tests', 'build'])
+        # The plan splits all 14 components between the two matrices; the
+        # aggregate validator still requires every one of them.
+        self.assertEqual(data['jobs']['build']['strategy']['matrix'], '${{ fromJSON(needs.plan.outputs.build) }}')
+        self.assertEqual(data['jobs']['reuse']['strategy']['matrix'], '${{ fromJSON(needs.plan.outputs.reuse) }}')
+        self.assertEqual(data['jobs']['aggregate']['needs'], ['policy-tests', 'plan', 'build', 'reuse'])
+
+    def test_only_automatic_staging_pushes_reuse_images(self):
+        data = workflow('private-staging-images.yml')
+        def evaluate(expression, event, ref):
+            self.assertTrue(expression.startswith('${{') and expression.endswith('}}'))
+            expression = expression[3:-2].strip().replace('&&', ' and ').replace('||', ' or ')
+            return eval(expression, {'__builtins__': {}}, {'github': SimpleNamespace(event_name=event, ref=ref)})
+        reuse = data['jobs']['plan']['env']['REUSE']
+        for event, ref, automatic in [('push', 'refs/heads/staging', True),
+                                      ('push', 'refs/heads/promotion/example-cycle', False),
+                                      ('workflow_dispatch', 'refs/heads/staging', False),
+                                      ('workflow_dispatch', 'refs/heads/promotion/example-cycle', False)]:
+            with self.subTest(event=event, ref=ref):
+                self.assertEqual(evaluate(reuse, event, ref), automatic)
+        # Larger runners cost more than they save on these builds (measured on
+        # 2026-10-15 against every October staging run), so every job stays on
+        # the standard runner.
+        for name, job in data['jobs'].items():
+            with self.subTest(job=name):
+                self.assertEqual(job['runs-on'], 'ubuntu-latest')
+        self.assertIn("github.ref == 'refs/heads/staging'", data['jobs']['reuse']['if'])
+        self.assertNotIn('promotion', data['jobs']['reuse']['if'])
+        plan = next(step for step in data['jobs']['plan']['steps'] if step.get('id') == 'plan')
+        self.assertIn('PLAN=$(node "$MODULE" plan --reuse false)', plan['run'])
+        # Without inputs the build adds no label, so those images are unchanged.
+        build = next(step for step in data['jobs']['build']['steps'] if step.get('id') == 'build')
+        self.assertIn("${{ matrix.inputs != '' && format('{0}={1}', env.INPUTS_LABEL, matrix.inputs) || '' }}", build['with']['labels'])
 
     def test_promotion_build_admission_uses_exact_tree_and_preserves_recovery(self):
         data = workflow('private-staging-images.yml')
@@ -252,20 +374,39 @@ class StagingWorkflowContracts(unittest.TestCase):
 
     def test_matrix_and_aggregate_require_positive_build_admission(self):
         data = workflow('private-staging-images.yml')
-        for name in ['build', 'aggregate']:
-            job = data['jobs'][name]
-            self.assertIn("needs.policy-tests.outputs.build == 'true'", job['if'])
-            expression = job['if'].replace('&&', ' and ').replace('||', ' or ').replace('policy-tests', 'policy_tests')
+        def admitted(name, build='true', ref='refs/heads/staging', counts=('14', '0'), results=('success', 'success', 'success')):
+            expression = (data['jobs'][name]['if'].replace('&&', ' and ').replace('||', ' or ')
+                          .replace('!cancelled()', 'not cancelled()').replace('policy-tests', 'policy_tests'))
+            plan_result, build_result, reuse_result = results
+            return eval(expression, {'__builtins__': {}}, {
+                'github': SimpleNamespace(repository='Fabric-Pro/fabric-dev', ref=ref),
+                'vars': SimpleNamespace(STAGING_RELEASE_ENABLED='true'),
+                'needs': SimpleNamespace(
+                    policy_tests=SimpleNamespace(outputs=SimpleNamespace(build=build)),
+                    plan=SimpleNamespace(result=plan_result, outputs=SimpleNamespace(build_count=counts[0], reuse_count=counts[1])),
+                    build=SimpleNamespace(result=build_result),
+                    reuse=SimpleNamespace(result=reuse_result)),
+                'startsWith': lambda value, prefix: value.startswith(prefix),
+                'cancelled': lambda: False,
+            })
+        for name in ['plan', 'build', 'reuse', 'aggregate']:
+            self.assertIn("needs.policy-tests.outputs.build == 'true'", data['jobs'][name]['if'])
             for output, expected in [('true', True), ('false', False), ('', False)]:
                 with self.subTest(job=name, output=output):
-                    admitted = eval(expression, {'__builtins__': {}}, {
-                        'github': SimpleNamespace(repository='Fabric-Pro/fabric-dev', ref='refs/heads/promotion/example-cycle'),
-                        'vars': SimpleNamespace(STAGING_RELEASE_ENABLED='true'),
-                        'needs': SimpleNamespace(policy_tests=SimpleNamespace(outputs=SimpleNamespace(build=output))),
-                        'startsWith': lambda value, prefix: value.startswith(prefix),
-                    })
-                    self.assertEqual(admitted, expected)
-        self.assertEqual(data['jobs']['aggregate']['needs'], ['policy-tests', 'build'])
+                    self.assertEqual(admitted(name, build=output, counts=('7', '7')), expected)
+        promotion = 'refs/heads/promotion/example-cycle'
+        self.assertTrue(admitted('build', ref=promotion))
+        self.assertFalse(admitted('reuse', ref=promotion, counts=('0', '14')))
+        # An empty matrix is skipped rather than run with nothing in it.
+        self.assertFalse(admitted('build', counts=('0', '14')))
+        self.assertFalse(admitted('reuse', counts=('14', '0')))
+        # The aggregate still runs when one matrix was empty, and never after a failure.
+        self.assertTrue(admitted('aggregate', counts=('0', '14'), results=('success', 'skipped', 'success')))
+        self.assertTrue(admitted('aggregate', counts=('14', '0'), results=('success', 'success', 'skipped')))
+        for results in [('failure', 'skipped', 'skipped'), ('success', 'failure', 'success'),
+                        ('success', 'success', 'failure'), ('success', 'cancelled', 'success')]:
+            with self.subTest(results=results):
+                self.assertFalse(admitted('aggregate', results=results))
         self.assertIn("github.event.workflow_run.head_branch == 'staging'", workflow('private-staging-notify.yml')['jobs']['notify']['if'])
 
     def test_promotion_classifier_is_trusted_and_contract_checks_exact_head(self):

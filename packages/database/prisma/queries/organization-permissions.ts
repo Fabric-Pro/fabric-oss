@@ -241,6 +241,53 @@ export async function canConnectOrganizationMcpConfigs(
 }
 
 /**
+ * Returns `true` if `userId` may create a workflow in `organizationId`,
+ * matching `requirePermission(WORKSPACE_CREATE)` on the in-app create.
+ */
+export async function canCreateOrganizationWorkflows(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.WORKSPACE_CREATE,
+	);
+}
+
+/**
+ * Returns `true` if `userId` may edit, publish, unpublish, pause or resume a
+ * workflow in `organizationId`, matching `requirePermission(WORKSPACE_UPDATE)`
+ * on the in-app procedures. Starting a run asks the same permission through
+ * {@link canRunOrganizationWorkflows}.
+ */
+export async function canUpdateOrganizationWorkflows(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.WORKSPACE_UPDATE,
+	);
+}
+
+/**
+ * Returns `true` if `userId` may read a workflow's runs in `organizationId`,
+ * matching `requirePermission(WORKSPACE_READ)` on the in-app run history.
+ */
+export async function canReadOrganizationWorkflows(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.WORKSPACE_READ,
+	);
+}
+
+/**
  * Returns `true` if `userId` may start a workflow run in `organizationId`,
  * matching `requirePermission(WORKSPACE_UPDATE)` on the in-app start.
  *

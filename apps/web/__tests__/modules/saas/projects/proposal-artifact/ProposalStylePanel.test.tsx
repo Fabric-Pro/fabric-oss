@@ -351,6 +351,27 @@ describe("ProposalStylePanel — saving", () => {
 		expect(api.updateRecipient).not.toHaveBeenCalled();
 	});
 
+	it("refetches the project's Proposal theme once a save settles (Fizzy #2946)", async () => {
+		const user = userEvent.setup();
+		api.getStyle.mockResolvedValue(null);
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+		renderPanel({ onRegenerate: vi.fn() });
+
+		await user.type(await loaded(), "Lead with the timeline");
+		await user.click(screen.getByRole("button", { name: copy.save }));
+
+		await waitFor(() =>
+			expect(invalidate).toHaveBeenCalledWith({
+				queryKey: [
+					"projects",
+					"proposalArtifact",
+					"themeTokens",
+					PROJECT_ID,
+				],
+			}),
+		);
+	});
+
 	it("walks through dirty, saving and saved, then offers Regenerate", async () => {
 		const user = userEvent.setup();
 		const onRegenerate = vi.fn();

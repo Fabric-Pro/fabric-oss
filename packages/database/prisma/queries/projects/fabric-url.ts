@@ -40,6 +40,63 @@ export async function buildFabricStoryUrl(args: {
 		: `${base}/app/projects/${args.projectId}/stories/${args.storyId}`;
 }
 
+/** The project tabs a link can open, by the id the project page reads from `?tab=`. */
+export type FabricProjectTab =
+	| "stories"
+	| "decisions"
+	| "documents"
+	| "context";
+
+/**
+ * `/app/{slug}/projects/{id}` for an organization's project, `/app/projects/{id}`
+ * for a personal one, on the same base-URL chain as `buildFabricStoryUrl`.
+ * Unlike the older builders it refuses an organization whose slug cannot be
+ * found, because a link that falls back to the personal route does not load
+ * for an organization's project.
+ */
+async function projectUrlBase(args: {
+	projectId: string;
+	organizationId?: string | null;
+}): Promise<string> {
+	const base =
+		process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || getBaseUrl();
+	if (!args.organizationId) {
+		return `${base}/app/projects/${args.projectId}`;
+	}
+	const org = await db.organization.findUnique({
+		where: { id: args.organizationId },
+		select: { slug: true },
+	});
+	if (!org?.slug) {
+		throw new Error("The project's organization has no address.");
+	}
+	return `${base}/app/${org.slug}/projects/${args.projectId}`;
+}
+
+export async function buildFabricDocumentUrl(args: {
+	projectId: string;
+	documentId: string;
+	organizationId?: string | null;
+}): Promise<string> {
+	return `${await projectUrlBase(args)}/documents/${args.documentId}`;
+}
+
+export async function buildFabricContextUrl(args: {
+	projectId: string;
+	contextId: string;
+	organizationId?: string | null;
+}): Promise<string> {
+	return `${await projectUrlBase(args)}/contexts/${args.contextId}`;
+}
+
+export async function buildFabricProjectTabUrl(args: {
+	projectId: string;
+	tab: FabricProjectTab;
+	organizationId?: string | null;
+}): Promise<string> {
+	return `${await projectUrlBase(args)}?tab=${args.tab}`;
+}
+
 /**
  * Absolute URL to a project's in-app Release Notes tab. Mirrors
  * `buildFabricStoryUrl`'s tenant handling: org projects live under

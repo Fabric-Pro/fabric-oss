@@ -439,6 +439,82 @@ describe("useDirectStream — focused entity context", () => {
 	});
 });
 
+describe("useDirectStream — where the agent was opened, and an approved call", () => {
+	const originalFetch = global.fetch;
+
+	afterEach(() => {
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	async function sentBody(
+		options: Parameters<typeof useDirectStream>[0],
+		approvedToolCall?: { toolName: string; args: Record<string, unknown> },
+	) {
+		const { response, enqueueDone } = makeSseResponse();
+		const fetchSpy = vi
+			.spyOn(global, "fetch")
+			.mockImplementation(((..._args: unknown[]) =>
+				Promise.resolve(response)) as unknown as typeof fetch);
+		const { result } = renderHook(() => useDirectStream(options));
+
+		act(() => {
+			void result.current.sendMessage("hi", [], { approvedToolCall });
+		});
+		await waitFor(() => {
+			expect(fetchSpy).toHaveBeenCalledWith(
+				"/api/agents/fabric-ai/stream",
+				expect.any(Object),
+			);
+		});
+		const streamCall = fetchSpy.mock.calls.find(
+			(call) => call[0] === "/api/agents/fabric-ai/stream",
+		);
+		await act(async () => {
+			enqueueDone();
+		});
+		return JSON.parse((streamCall?.[1] as { body: string }).body) as Record<
+			string,
+			unknown
+		>;
+	}
+
+	it("forwards the workspace and surface the agent was opened on", async () => {
+		const body = await sentBody({
+			launchWorkspaceId: "frame-workspace-1",
+			launchSurface: "workspace",
+		});
+
+		expect(body).toMatchObject({
+			workspaceId: "frame-workspace-1",
+			surface: "workspace",
+		});
+	});
+
+	it("sends the exact call the person approved", async () => {
+		const body = await sentBody(
+			{},
+			{
+				toolName: "fabric_create_workflow",
+				args: { preset: { name: "Weekly digest" } },
+			},
+		);
+
+		expect(body.approvedToolCall).toEqual({
+			toolName: "fabric_create_workflow",
+			args: { preset: { name: "Weekly digest" } },
+		});
+	});
+
+	it("sends neither when the agent was not opened on a surface and nothing was approved", async () => {
+		const body = await sentBody({});
+
+		expect(body).not.toHaveProperty("workspaceId");
+		expect(body).not.toHaveProperty("surface");
+		expect(body).not.toHaveProperty("approvedToolCall");
+	});
+});
+
 describe("useDirectStream — model override", () => {
 	const originalFetch = global.fetch;
 

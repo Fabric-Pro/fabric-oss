@@ -518,6 +518,7 @@ const FEATURE_LABELS: Record<string, string> = {
 	"delivery-track": "Delivery track classification",
 	"document-quality": "Document quality scoring",
 	"story-classification": "Story kind classification",
+	"scheduled-agent-task": "Scheduled agent tasks",
 	// Most embeddings still carry no feature key, and they are usually the
 	// bulk of the rows. Naming them keeps the genuine "not tagged yet" bucket
 	// meaningful.

@@ -32,6 +32,11 @@ export interface CompactConversationInput {
 	/** Pre-compaction history length (for the SSE event payload) */
 	historyLengthBefore?: number;
 	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
+	/**
 	 * The chat turn this compaction belongs to; when set, the turn record is
 	 * consulted before the model request (see turn-dispatch.ts).
 	 */
@@ -127,7 +132,14 @@ export async function compactConversationHistoryActivity(
 
 	const { model } = await getAIModelWithMetadata(
 		{ taskType: "SIMPLE" },
-		{ userId, organizationId, featureKey: "chat-agent" },
+		{
+			userId,
+			organizationId,
+			featureKey: "chat-agent",
+			...(input.conversationId
+				? { conversationId: input.conversationId }
+				: {}),
+		},
 	);
 
 	const transcript = renderMessagesAsTranscript(oldTurns);

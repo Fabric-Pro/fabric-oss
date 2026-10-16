@@ -185,6 +185,34 @@ describe("retrieveProjectContexts conversation bundles", () => {
 		);
 	});
 
+	it("describes a bundle hit as other in the source manifest, and a context row by its id", async () => {
+		mocks.searchSimilarProjectContexts.mockResolvedValue([
+			{ contextId: "ctx_a-chunk-0", score: 0.92 },
+			{
+				contextId: "bundle_1-chunk-0",
+				score: 0.88,
+				conversationBundleId: "bundle_1",
+			},
+		]);
+
+		const result = await retrieveProjectContexts({
+			...PARAMS,
+			includeSourceManifest: true,
+		});
+
+		expect(result.contexts).toEqual([
+			"content of ctx_a",
+			"messages of bundle_1",
+		]);
+		expect(
+			result.manifest.map((entry) => [entry.kind, entry.id, entry.title]),
+		).toEqual([
+			["projectContext", "ctx_a", null],
+			// A conversation has no context row to link to.
+			["other", null, "#launch"],
+		]);
+	});
+
 	it("skips the context table entirely when every hit is a bundle", async () => {
 		mocks.searchSimilarProjectContexts.mockResolvedValue([
 			{

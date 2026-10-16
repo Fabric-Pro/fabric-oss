@@ -114,6 +114,49 @@ describe("resolveRuntimeAuthority", () => {
 		expect(reason).toContain('"notion-create-pages"');
 	});
 
+	it("says a one-call approval is for exactly that call, with its arguments, and not for the provider", () => {
+		const reason = runtimeAuthorityApprovalReason({
+			...request,
+			providerKey: "fabric",
+			providerDisplayName: "Fabric",
+			toolName: "fabric_publish_workflow",
+			grantScope: "call",
+			callSummary: "workflowId: wf-1",
+		});
+
+		expect(reason).toMatch(/^HIGH RISK: /);
+		expect(reason).toContain('"fabric_publish_workflow" to run once');
+		expect(reason).toContain("(workflowId: wf-1)");
+		expect(reason).toContain("the next one asks again");
+		expect(reason).not.toContain("WRITE access");
+	});
+
+	it("leaves the arguments out of a one-call approval that has none to show", () => {
+		const reason = runtimeAuthorityApprovalReason({
+			...request,
+			toolName: "fabric_pause_workflow",
+			grantScope: "call",
+		});
+
+		expect(reason).toContain(
+			'"fabric_pause_workflow" to run once in Notion?',
+		);
+	});
+
+	it("says a one-tool approval is for that tool and that other changes still ask", () => {
+		const reason = runtimeAuthorityApprovalReason({
+			...request,
+			toolName: "fabric_create_story",
+			grantScope: "tool",
+		});
+
+		expect(reason).toContain(
+			'Allow "fabric_create_story" for this conversation',
+		);
+		expect(reason).toContain("Other changes still ask");
+		expect(reason).not.toContain("WRITE access");
+	});
+
 	it("on decline denies the session and returns an error the model can relay", async () => {
 		t.deps.waitForApproval.mockResolvedValue({
 			approved: false,

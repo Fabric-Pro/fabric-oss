@@ -16,6 +16,7 @@ import {
 	LLM_PROVIDER_PURPOSE_FILTER,
 	readProviderRowCredentials,
 } from "./ai-gateway";
+import { notifyBulkRunPlanStopped } from "./chatgpt-plan-work-notifications";
 
 export type BulkRunKind =
 	| "PROJECT_SCAN"
@@ -55,6 +56,10 @@ interface PausableDelegate {
 		where: { id: string };
 		select: Record<string, boolean>;
 	}): Promise<Record<string, unknown> | null>;
+	findMany(args: {
+		where: Record<string, unknown>;
+		select: Record<string, boolean>;
+	}): Promise<Record<string, unknown>[]>;
 }
 
 // The four tables share the pause columns but not a Prisma type.
@@ -475,7 +480,9 @@ export const BULK_RUN_RESUME_NEVER_STARTED_MESSAGE =
 /**
  * Fail paused runs whose resume should have started more than `graceMinutes`
  * ago: the waiting rows the stall sweeps skip, caught when the resume itself
- * was lost. Optionally one project's scans only.
+ * was lost. Optionally one project's scans only. Each row is failed by its
+ * own compare-and-set, so a resume that claims it meanwhile wins, and only
+ * the runs this sweep failed are announced as stopped (Fizzy #3050).
  */
 export async function failOverdueBulkRunResumes(args: {
 	kind: BulkRunKind;
@@ -485,21 +492,39 @@ export async function failOverdueBulkRunResumes(args: {
 }): Promise<number> {
 	const now = args.now ?? new Date();
 	const threshold = new Date(now.getTime() - args.graceMinutes * 60_000);
-	const { count } = await delegate(args.kind).updateMany({
-		where: {
-			...rowsOfKind(args.kind),
-			...(args.projectId ? { projectId: args.projectId } : {}),
-			status: BULK_RUN_WAITING_STATUS,
-			resumesAt: { lt: threshold },
-		},
-		data: {
-			status: "FAILED",
-			error: BULK_RUN_RESUME_NEVER_STARTED_MESSAGE,
-			resumesAt: null,
-			completedAt: now,
-		},
+	const rows = delegate(args.kind);
+	const overdueWhere = {
+		...rowsOfKind(args.kind),
+		...(args.projectId ? { projectId: args.projectId } : {}),
+		status: BULK_RUN_WAITING_STATUS,
+		resumesAt: { lt: threshold },
+	};
+	const overdue = await rows.findMany({
+		where: overdueWhere,
+		select: { id: true },
 	});
-	return count;
+	let failed = 0;
+	for (const { id } of overdue) {
+		const { count } = await rows.updateMany({
+			where: { ...overdueWhere, id },
+			data: {
+				status: "FAILED",
+				error: BULK_RUN_RESUME_NEVER_STARTED_MESSAGE,
+				resumesAt: null,
+				completedAt: now,
+			},
+		});
+		if (count !== 1) {
+			continue;
+		}
+		failed++;
+		await notifyBulkRunPlanStopped({
+			kind: args.kind,
+			runId: id as string,
+			reason: "RESUME_LOST",
+		});
+	}
+	return failed;
 }
 /** Which run a resume continues, carried on the resume run's input. */
 export interface BulkRunResumeOf {

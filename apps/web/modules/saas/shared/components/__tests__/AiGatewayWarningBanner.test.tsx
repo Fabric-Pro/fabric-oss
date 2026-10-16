@@ -67,9 +67,13 @@ vi.mock("@saas/organizations/hooks/use-is-guest-in-org", () => ({
 // Fizzy #2939: whether the member's own work here runs on their ChatGPT plan.
 const ownWorkOnPlanMock = vi.fn(() => false);
 const sharedPlanMock = vi.fn(() => false);
+// Fizzy #3082: whether that answer is in for the organization on screen. The
+// real hook is exercised in `plan-status-org-switch.test.tsx`.
+const planStatusKnownMock = vi.fn(() => true);
 vi.mock("@saas/settings/components/chatgpt-plan/chatgpt-plan-status", () => ({
 	useChatgptPlanServesOwnWork: () => ownWorkOnPlanMock(),
 	useSharedChatgptPlanServesOwnWork: () => sharedPlanMock(),
+	useChatgptPlanStatusKnown: () => planStatusKnownMock(),
 }));
 
 const getStatusMock = vi.fn();
@@ -174,6 +178,7 @@ beforeEach(() => {
 	guestMock.mockReturnValue(false);
 	ownWorkOnPlanMock.mockReturnValue(false);
 	sharedPlanMock.mockReturnValue(false);
+	planStatusKnownMock.mockReturnValue(true);
 	pathnameMock.mockReturnValue("/app/acme/projects");
 	// Every fixture in this file stands on a route whose organization has
 	// resolved, so the tenant gate is open by default — nothing that passes
@@ -432,7 +437,7 @@ describe("AiGatewayWarningBanner — role (AE7)", () => {
 		});
 		expect(link).toHaveAttribute(
 			"href",
-			"/app/acme/settings/account/ai-providers",
+			"/app/acme/settings/ai-providers?tab=personal",
 		);
 	});
 
@@ -750,6 +755,23 @@ describe("AiGatewayWarningBanner — a member whose own work runs on their ChatG
 		expect(
 			await screen.findByText("AI provider required"),
 		).toBeInTheDocument();
+		expect(
+			screen.queryByText("Document search needs an AI provider"),
+		).toBeNull();
+	});
+});
+
+describe("AiGatewayWarningBanner — the plan status for this organization (Fizzy #3082)", () => {
+	it("says nothing until the plan status is in for the organization on screen", async () => {
+		// Right after a switch the plan status still describes the previous
+		// organization, so which of the two messages applies is not known yet.
+		planStatusKnownMock.mockReturnValue(false);
+
+		renderBanner();
+		await waitFor(() => expect(getStatusMock).toHaveBeenCalled());
+		await settle();
+
+		expect(screen.queryByText("AI provider required")).toBeNull();
 		expect(
 			screen.queryByText("Document search needs an AI provider"),
 		).toBeNull();

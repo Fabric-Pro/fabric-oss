@@ -216,7 +216,8 @@ export function getPhaseLabel(labels: readonly string[]): string | null {
 	return null;
 }
 
-const MARKDOWN_HEADING_PATTERN = /^\s{0,3}(#{1,6})\s+(.*)$/;
+// A nonblank title cannot share whitespace with the heading separator.
+const MARKDOWN_HEADING_PATTERN = /^\s{0,3}(#{1,6})\s+(\S.*)?$/;
 
 /**
  * Drop markdown heading lines, and the whole body of any section headed as a
@@ -242,9 +243,9 @@ function withoutScopeExclusionSections(description: string): string {
 				continue;
 			}
 			skipUntilLevel =
-				OUT_OF_SCOPE_PATTERN.test(heading[2]) ||
-				UNDECIDED_SECTION_HEADING_PATTERN.test(heading[2]) ||
-				SPEC_SECTION_HEADING_PATTERN.test(heading[2])
+				OUT_OF_SCOPE_PATTERN.test(heading[2] ?? "") ||
+				UNDECIDED_SECTION_HEADING_PATTERN.test(heading[2] ?? "") ||
+				SPEC_SECTION_HEADING_PATTERN.test(heading[2] ?? "")
 					? level
 					: null;
 			continue;

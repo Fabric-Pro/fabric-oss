@@ -94,6 +94,14 @@ export interface UseOrchestratorStreamOptions {
 	 */
 	advisorOrigin?: boolean;
 	/**
+	 * Where the chat was opened, for the tools that place what they create: a
+	 * Workspace's id, and whether the page is an artifact or a workspace
+	 * surface. A default, never a grant. Sent on the initial POST only: a
+	 * reconnect starts nothing.
+	 */
+	launchWorkspaceId?: string | null;
+	launchSurface?: "artifact" | "workspace" | null;
+	/**
 	 * Surface that mounts this hook — used for the
 	 * `ai_generation_cancelled` telemetry event. The orchestrator hook
 	 * is mounted by the standalone Loom Orchestrator page; surfaces
@@ -533,6 +541,8 @@ export function useOrchestratorStream(
 		instanceId,
 		modelOverride,
 		advisorOrigin = false,
+		launchWorkspaceId,
+		launchSurface,
 		surface = "loom-orchestrator",
 		telemetrySurface,
 		onStopFailed,
@@ -1049,6 +1059,8 @@ export function useOrchestratorStream(
 					surface: surfaceRef.current,
 					// Omitted, not false, outside the Advisor.
 					advisorOrigin: advisorOrigin ? true : undefined,
+					launchWorkspaceId: launchWorkspaceId ?? undefined,
+					launchSurface: launchSurface ?? undefined,
 					// The message's idempotency key: a retry of this POST
 					// attaches to the turn it already created.
 					clientRequestKey,
@@ -1590,6 +1602,8 @@ export function useOrchestratorStream(
 			instanceId,
 			modelOverride,
 			advisorOrigin,
+			launchWorkspaceId,
+			launchSurface,
 			resetPartykit,
 		],
 	);

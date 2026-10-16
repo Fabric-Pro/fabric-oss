@@ -3,11 +3,10 @@
  * (`getMemoryWriteAdmissionState`, and whether the sync's delegate may still
  * create), then judges the request against them (`evaluateMemoryWrite`).
  *
- * VALIDATION ONLY. Nothing is persisted here: no receipt, no staged bytes, no
- * workflow. A receipt that nothing settles would be a half-state, so admitting
- * a write (the receipt, the staged bytes and the workflow start, together)
- * arrives with the write workflow. Until then a request that validates is
- * simply a request that would be admitted now.
+ * `validateMemoryWrite` is the check alone: nothing is persisted, no receipt,
+ * no staged bytes, no workflow. `judgeMemoryWrite` is the same judgment with
+ * the integration the sync reads, which `submit` freezes into the receipt it
+ * stores (`admit-memory-write.ts`).
  *
  * The caller has already passed the procedure's gate (the project is visible
  * to them and they hold CONTEXT_CREATE) and `organizationId` is the project's
@@ -16,13 +15,13 @@
 import { ORPCError } from "@orpc/client";
 import { getMemoryWriteAdmissionState } from "@repo/database";
 import { hasPermission, Permissions } from "@repo/permissions";
-import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
-import { PROJECT_NOT_FOUND_MESSAGE } from "../../../../orpc/middleware/project-visibility";
 import {
 	evaluateMemoryWrite,
 	type MemoryWriteEntryInput,
 	type MemoryWriteValidation,
-} from "./evaluate";
+} from "@repo/temporal/memory-write/evaluate";
+import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
+import { PROJECT_NOT_FOUND_MESSAGE } from "../../../../orpc/middleware/project-visibility";
 
 /**
  * Whether the member automatic runs act as can still create context in the
@@ -43,13 +42,19 @@ async function delegateHoldsContextCreate(
 	);
 }
 
-export async function validateMemoryWrite(input: {
+type JudgeInput = {
 	projectId: string;
 	organizationId: string;
 	targetId: string;
 	message: string;
 	entries: readonly MemoryWriteEntryInput[];
-}): Promise<MemoryWriteValidation> {
+};
+
+/** The judgment, and the repository integration the sync reads (null when there is no sync). */
+export async function judgeMemoryWrite(input: JudgeInput): Promise<{
+	validation: MemoryWriteValidation;
+	repositoryIntegrationId: string | null;
+}> {
 	const state = await getMemoryWriteAdmissionState({
 		projectId: input.projectId,
 		organizationId: input.organizationId,
@@ -64,7 +69,7 @@ export async function validateMemoryWrite(input: {
 		});
 	}
 
-	return evaluateMemoryWrite(
+	const validation = evaluateMemoryWrite(
 		{
 			readOnlyMode: state.readOnlyMode,
 			sync: state.sync,
@@ -87,4 +92,14 @@ export async function validateMemoryWrite(input: {
 			entries: input.entries,
 		},
 	);
+	return {
+		validation,
+		repositoryIntegrationId: state.sync?.repositoryIntegrationId ?? null,
+	};
+}
+
+export async function validateMemoryWrite(
+	input: JudgeInput,
+): Promise<MemoryWriteValidation> {
+	return (await judgeMemoryWrite(input)).validation;
 }

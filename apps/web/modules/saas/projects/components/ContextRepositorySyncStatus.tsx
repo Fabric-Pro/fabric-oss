@@ -44,6 +44,7 @@ import {
 	offersSyncNow,
 } from "../lib/context-repository-sync";
 import { ConfigureContextRepositorySyncDialog } from "./ConfigureContextRepositorySyncDialog";
+import { ContextWriteTargetsDialog } from "./ContextWriteTargetsDialog";
 import { contextSummaryLead } from "./repository-sync/lib/context-selection";
 import { translateSelectionMessage } from "./repository-sync/lib/selection-row";
 import { SyncProgressLine } from "./repository-sync/SyncProgressLine";
@@ -107,6 +108,7 @@ export function ContextRepositorySyncStatus({
 }) {
 	const t = useTranslations("projects.contexts.livingMemory.repositorySync");
 	const [dialogOpen, setDialogOpen] = useState(false);
+	const [writeFoldersOpen, setWriteFoldersOpen] = useState(false);
 	const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
 
 	const syncNow = useMutation(
@@ -400,6 +402,17 @@ export function ContextRepositorySyncStatus({
 				</ul>
 			) : null}
 			{canManage ? null : (
+				<Button
+					size="sm"
+					variant="link"
+					className="h-auto self-start px-0"
+					data-testid="context-sync-write-folders-reader"
+					onClick={() => setWriteFoldersOpen(true)}
+				>
+					{t("menu.writeFolders")}
+				</Button>
+			)}
+			{canManage ? null : (
 				<p
 					className="text-muted-foreground"
 					data-testid="context-sync-automatic-state"
@@ -473,6 +486,13 @@ export function ContextRepositorySyncStatus({
 								{t("menu.changeButton")}
 							</DropdownMenuItem>
 							<DropdownMenuItem
+								data-testid="context-sync-write-folders"
+								disabled={busy}
+								onSelect={() => setWriteFoldersOpen(true)}
+							>
+								{t("menu.writeFolders")}
+							</DropdownMenuItem>
+							<DropdownMenuItem
 								className="text-destructive focus:text-destructive"
 								data-testid="context-sync-disconnect"
 								disabled={busy}
@@ -493,6 +513,15 @@ export function ContextRepositorySyncStatus({
 					integrations={state.availableIntegrations}
 					current={configured}
 					onSaved={onChanged}
+				/>
+			) : null}
+			{writeFoldersOpen ? (
+				<ContextWriteTargetsDialog
+					projectId={projectId}
+					organizationId={organizationId}
+					sync={configured}
+					open
+					onOpenChange={setWriteFoldersOpen}
 				/>
 			) : null}
 			<AlertDialog

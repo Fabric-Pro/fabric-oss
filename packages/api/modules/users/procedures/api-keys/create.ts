@@ -33,6 +33,7 @@ const API_KEY_SCOPES = [
 	"features:read", // Read features/stories
 	"features:write", // Create and update features/stories
 	"workflows:read", // Read workflows and executions
+	"workflows:write", // Create, edit, publish, pause and resume workflows
 	"workflows:run", // Trigger workflow executions
 	"prompts:read", // Read prompt templates
 	"prompts:write", // Create and update prompts

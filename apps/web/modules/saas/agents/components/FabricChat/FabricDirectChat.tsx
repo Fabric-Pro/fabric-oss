@@ -23,6 +23,7 @@ import {
 	DEFAULT_AI_CHAT_MAX_FILE_BYTES,
 	DEFAULT_AI_CHAT_MIME_ALLOWLIST,
 } from "@repo/utils/ai-chat-attachment";
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
@@ -123,6 +124,7 @@ import {
 } from "../../../../../components/ai-elements/message";
 import { Response } from "../../../../../components/ai-elements/response";
 import { Sources } from "../../../../../components/ai-elements/sources";
+import { useChatConfirmation } from "../../hooks/useChatConfirmation";
 import {
 	type DirectStreamMessage,
 	type StreamModelInfo,
@@ -162,6 +164,7 @@ import {
 	persistedToToolCallStatus,
 	toolCallToPersistedStatus,
 } from "../../lib/tool-call-status";
+import { ChatConfirmationCard } from "./ChatConfirmationCard";
 import { ConversationToolPicker } from "./ConversationToolPicker";
 import {
 	ActiveContextIndicator,
@@ -188,13 +191,6 @@ import { SkillSuggestionChips } from "./shared/SkillSuggestionChips";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
 import { TrajectorySteps } from "./TrajectorySteps";
-
-interface PendingConfirmation {
-	workflowId: string;
-	workflowName: string;
-	workflowDescription?: string;
-	messageId: string;
-}
 
 interface ProposedTaskDraft {
 	id: string;
@@ -778,8 +774,6 @@ export const FabricDirectChat = forwardRef<
 	// Local state for UI
 	const [input, setInput] = useState(initialInput ?? "");
 	const [conversationId, setConversationId] = useState<string | null>(null);
-	const [pendingConfirmation, setPendingConfirmation] =
-		useState<PendingConfirmation | null>(null);
 	const [pendingTaskDraft, setPendingTaskDraft] =
 		useState<PendingTaskDraft | null>(null);
 	const [pendingProjectUpdateDraft, setPendingProjectUpdateDraft] =
@@ -1210,6 +1204,9 @@ export const FabricDirectChat = forwardRef<
 		storyId: launchContext?.storyId,
 		documentId: launchContext?.documentId,
 		taskId: launchContext?.taskId,
+		// Where the agent was opened, for the tools that place what they create.
+		launchWorkspaceId: launchContext?.workspaceId,
+		launchSurface: launchContext?.surface,
 		// Pass conversation ID so backend can fetch attached workspaces if frontend didn't load them yet
 		conversationId: externalConversationId,
 		systemPrompt: activeSystemPrompt,
@@ -1408,6 +1405,14 @@ export const FabricDirectChat = forwardRef<
 	// Combine loaded messages with streaming messages
 	const messages: DirectStreamMessage[] =
 		streamMessages.length > 0 ? streamMessages : loadedMessages;
+
+	// The person's yes or no to a tool that asked for it.
+	const {
+		pending: pendingConfirmation,
+		offer: offerConfirmation,
+		approve: approveConfirmation,
+		decline: declineConfirmation,
+	} = useChatConfirmation({ messages, sendMessage: streamSendMessage });
 
 	// Skill suggestions - based on last user message in conversation
 	let lastUserMessage = "";
@@ -1690,7 +1695,7 @@ export const FabricDirectChat = forwardRef<
 							// Canonical RegisteredAgent.agentId from
 							// seed-system-agents.ts — not the "fabric-ai" URL-slug
 							// form, which drifted from the catalog.
-							agentId: "fabric-workspace-assistant",
+							agentId: FABRIC_AGENT_ID,
 							title:
 								userMsg.content.slice(0, 50) +
 								(userMsg.content.length > 50 ? "..." : ""),
@@ -1954,32 +1959,13 @@ export const FabricDirectChat = forwardRef<
 					lastAssistant.truncated)
 			) {
 				persistConversation(lastUser, lastAssistant);
+			}
 
-				// Check for workflow confirmation in tool results
-				for (const tc of lastAssistant.toolCalls || []) {
-					if (
-						tc.name === "execute_workflow" ||
-						tc.name.endsWith("_execute_workflow")
-					) {
-						const result = tc.result as any;
-						if (
-							result?.requiresConfirmation &&
-							result?.workflowId
-						) {
-							setPendingConfirmation({
-								workflowId: result.workflowId,
-								workflowName:
-									result.workflowName || "Unknown Workflow",
-								workflowDescription: result.description,
-								messageId: lastAssistant.id,
-							});
-							break;
-						}
-					}
-				}
+			if (lastAssistant) {
+				offerConfirmation(lastAssistant);
 			}
 		}
-	}, [streamMessages, isLoading, persistConversation]);
+	}, [streamMessages, isLoading, persistConversation, offerConfirmation]);
 
 	// Checkpoint handlers
 	const handleCreateCheckpoint = useCallback(
@@ -2638,93 +2624,22 @@ export const FabricDirectChat = forwardRef<
 
 		// Use streaming hook to send message with document IDs and chatId for RAG
 		// The chatId is critical - it tells the RAG system where to find the document chunks
-		await streamSendMessage(
-			messageContent,
-			history,
-			isFirstMessage,
-			attachedDocumentIds.length > 0 ? attachedDocumentIds : undefined,
-			documentsChatId, // Pass the chatId where documents are stored
-			existingMessagesToInclude, // Pass existing messages to avoid React batching issues
-			attachmentNames.length > 0 ? attachmentNames : undefined,
-			inlineAttachmentContexts.length > 0
-				? inlineAttachmentContexts
-				: undefined,
-		);
+		await streamSendMessage(messageContent, history, {
+			forceNewChat: isFirstMessage,
+			attachedDocumentIds:
+				attachedDocumentIds.length > 0
+					? attachedDocumentIds
+					: undefined,
+			messageChatId: documentsChatId, // The chatId where documents are stored
+			existingMessages: existingMessagesToInclude, // Avoids React batching issues
+			attachmentNames:
+				attachmentNames.length > 0 ? attachmentNames : undefined,
+			inlineAttachmentContexts:
+				inlineAttachmentContexts.length > 0
+					? inlineAttachmentContexts
+					: undefined,
+		});
 	};
-
-	// State for workflow execution
-	const [isExecutingWorkflow, setIsExecutingWorkflow] = useState(false);
-
-	// Handle workflow execution confirmation - calls direct API, bypasses AI
-	const handleConfirmExecution = useCallback(async () => {
-		if (!pendingConfirmation) {
-			return;
-		}
-
-		const confirmation = pendingConfirmation;
-		setPendingConfirmation(null);
-		setIsExecutingWorkflow(true);
-
-		try {
-			// Send the tab's organization so the confirmation runs in the
-			// tenant this chat is bound to; the route verifies the caller's
-			// tie to it and falls back to the session organization when none
-			// is sent.
-			const response = await fetch(
-				"/api/agents/fabric-ai/execute-workflow",
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						workflowId: confirmation.workflowId,
-						organizationId: organizationId ?? activeOrgId ?? null,
-					}),
-				},
-			);
-
-			const data = await response.json();
-
-			if (!response.ok) {
-				throw new Error(data.error || "Failed to execute workflow");
-			}
-
-			// 202 "unconfirmed": the engine may be running it. Say so and do
-			// not invite a second confirmation, which would be a second run.
-			if (data.status === "unconfirmed") {
-				toast.warning("Workflow start not confirmed", {
-					description: data.message,
-				});
-				await streamSendMessage(
-					`The workflow "${confirmation.workflowName}" was submitted, but the engine did not confirm the start (execution ${data.executionId}). Check that execution's status before running it again.`,
-					messages.map((m) => ({ role: m.role, content: m.content })),
-				);
-				return;
-			}
-
-			toast.success("Workflow started", { description: data.message });
-
-			// Send a follow-up message through the stream to show success
-			await streamSendMessage(
-				`The workflow "${confirmation.workflowName}" has been executed successfully.`,
-				messages.map((m) => ({ role: m.role, content: m.content })),
-			);
-		} catch (error) {
-			const errorMessage =
-				error instanceof Error ? error.message : "An error occurred";
-			toast.error("Execution failed", { description: errorMessage });
-		} finally {
-			setIsExecutingWorkflow(false);
-		}
-	}, [pendingConfirmation, organizationId, streamSendMessage, messages]);
-
-	const handleDeclineExecution = useCallback(() => {
-		if (!pendingConfirmation) {
-			return;
-		}
-
-		setPendingConfirmation(null);
-		toast.info("Workflow execution cancelled");
-	}, [pendingConfirmation]);
 
 	// Starters for the welcome screen. The Advisor gets the five Cosmos-style
 	// rows (icon in its own colour, label, one-line description); an agent
@@ -3152,8 +3067,8 @@ export const FabricDirectChat = forwardRef<
 	// (Fizzy #2430). Every handler a row calls goes through `rowActions`,
 	// whose identities are stable, so a skipped row never holds a stale one.
 	const rowActions = useStableHandlers({
-		confirmExecution: handleConfirmExecution,
-		declineExecution: handleDeclineExecution,
+		confirmExecution: approveConfirmation,
+		declineExecution: declineConfirmation,
 		createApprovedTasks: handleCreateApprovedTasks,
 		saveProjectUpdateDraft: handleSaveProjectUpdateDraft,
 		startImplementationSession: handleStartImplementationSession,
@@ -3181,7 +3096,6 @@ export const FabricDirectChat = forwardRef<
 		isStartingImplementationSession,
 		isSavingSkillDraft,
 		isSavingAutomationTag,
-		isExecutingWorkflow,
 		activeFrame?.frameId,
 		showTrajectorySteps,
 		userAvatarSrc,
@@ -4901,61 +4815,24 @@ export const FabricDirectChat = forwardRef<
 															</Confirmation>
 														)}
 
-														{/* Workflow Execution Confirmation - using AI Elements Confirmation component */}
+														{/* A tool that needs the person's yes (create, edit, publish, pause or run a workflow, give a page tools, any other): the draft or the arguments are the card's body */}
 														{pendingConfirmation &&
 															pendingConfirmation.messageId ===
 																message.id && (
-																<Confirmation
-																	approvalState="requested"
-																	className="mt-3"
-																>
-																	<ConfirmationTitle>
-																		<ConfirmationIcon />
-																		Execute
-																		Workflow:{" "}
-																		{
-																			pendingConfirmation.workflowName
-																		}
-																	</ConfirmationTitle>
-																	{pendingConfirmation.workflowDescription && (
-																		<ConfirmationDescription>
-																			{
-																				pendingConfirmation.workflowDescription
-																			}
-																		</ConfirmationDescription>
-																	)}
-																	<ConfirmationRequest>
-																		<ConfirmationActions>
-																			<ConfirmationAction
-																				onClick={
-																					rowActions.confirmExecution
-																				}
-																				disabled={
-																					isLoading ||
-																					isExecutingWorkflow
-																				}
-																				className="bg-green-600 hover:bg-green-700 text-white"
-																			>
-																				<CheckCircle2 className="h-4 w-4 mr-2" />
-																				Execute
-																			</ConfirmationAction>
-																			<ConfirmationAction
-																				onClick={
-																					rowActions.declineExecution
-																				}
-																				disabled={
-																					isLoading ||
-																					isExecutingWorkflow
-																				}
-																				variant="outline"
-																				className="border-red-300 text-destructive hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950"
-																			>
-																				<XCircle className="h-4 w-4 mr-2" />
-																				Cancel
-																			</ConfirmationAction>
-																		</ConfirmationActions>
-																	</ConfirmationRequest>
-																</Confirmation>
+																<ChatConfirmationCard
+																	request={
+																		pendingConfirmation
+																	}
+																	busy={
+																		isLoading
+																	}
+																	onApprove={
+																		rowActions.confirmExecution
+																	}
+																	onDecline={
+																		rowActions.declineExecution
+																	}
+																/>
 															)}
 													</MessageContent>
 												</Message>

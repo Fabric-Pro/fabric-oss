@@ -196,6 +196,7 @@ describe("ConnectCliDialog — minting", () => {
 			"mcp:read",
 			"instructions:read",
 			"instructions:write",
+			"memory:write",
 		]);
 
 		// The scope this dialog must NEVER mint. `instructions:publish`
@@ -223,6 +224,7 @@ describe("ConnectCliDialog — minting", () => {
 			"frames:read",
 			"instructions:read",
 			"instructions:write",
+			"memory:write",
 			"chats:read",
 			"system_health:read",
 			"status_updates:read",
@@ -311,6 +313,11 @@ describe("ConnectCliDialog — what the key grants", () => {
 		expect(
 			await screen.findByText(
 				/suggest instruction changes for an editor to approve/i,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				/committed without review where a project admin allowed direct push/i,
 			),
 		).toBeInTheDocument();
 		expect(screen.queryByText(/it cannot change anything/i)).toBeNull();

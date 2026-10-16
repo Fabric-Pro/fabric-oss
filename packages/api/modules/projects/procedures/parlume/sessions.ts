@@ -13,19 +13,20 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { finalizeParlumeSession } from "../../lib/parlume-finalization";
-import { parlumeLog } from "../../lib/parlume-log";
 import {
 	armParlumeMeetingBridge,
 	getParlumeBridgeSettings,
 	isTeamsMeetingUrl,
 	leaveParlumeMeetingBot,
 	startParlumeMeetingBot,
-} from "../../lib/parlume-meeting-baas";
+} from "../../lib/parlume-attendee";
+import { finalizeParlumeSession } from "../../lib/parlume-finalization";
+import { parlumeLog } from "../../lib/parlume-log";
 import { sweepOverdueParlumeSessions } from "../../lib/parlume-sweep";
 
 const projectInput = z.object({ projectId: z.string() });
 const PARLUME_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+const SESSIONS_PAGE_SIZE = 5;
 const FABRIC_AGENT_KIND = "FABRIC_AGENT";
 const TEMPLATE_INSTANCE_KIND = "TEMPLATE_INSTANCE";
 const FABRIC_AGENT_LABEL = "Fabric Agent — this project";
@@ -303,16 +304,57 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Parlume"],
 		summary: "List Parlume meeting invitation status",
 	})
-	.input(projectInput)
+	.input(
+		projectInput.extend({
+			before: z
+				.object({ id: z.string(), createdAt: z.coerce.date() })
+				.optional(),
+		}),
+	)
 	.handler(async ({ input }) => {
 		await requireParlumeProject(input.projectId);
-		await sweepOverdueParlumeSessions(input.projectId);
-		const sessions = await db.parlumeMeetingSession.findMany({
-			where: { projectId: input.projectId },
-			select: sessionSelect,
-			orderBy: { createdAt: "desc" },
-			take: 20,
-		});
+		// The sweep is project-wide, not page-relative, so the first page's
+		// request covers it.
+		if (!input.before) {
+			await sweepOverdueParlumeSessions(input.projectId);
+		}
+		const [rows, total] = await Promise.all([
+			db.parlumeMeetingSession.findMany({
+				where: {
+					projectId: input.projectId,
+					...(input.before
+						? {
+								OR: [
+									{
+										createdAt: {
+											lt: input.before.createdAt,
+										},
+									},
+									{
+										createdAt: input.before.createdAt,
+										id: { lt: input.before.id },
+									},
+								],
+							}
+						: {}),
+				},
+				select: {
+					...sessionSelect,
+					_count: { select: { turns: true } },
+				},
+				orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+				take: SESSIONS_PAGE_SIZE + 1,
+			}),
+			// The project's whole session count, for the page's tab and spend
+			// summary; later pages do not repeat it.
+			input.before
+				? Promise.resolve(null)
+				: db.parlumeMeetingSession.count({
+						where: { projectId: input.projectId },
+					}),
+		]);
+		const sessions = rows.slice(0, SESSIONS_PAGE_SIZE);
+		const last = sessions.at(-1);
 		const contexts = await db.projectContext.findMany({
 			where: {
 				projectId: input.projectId,
@@ -345,16 +387,22 @@ export const listParlumeSessionsProcedure = tenantProtectedProcedure
 			}),
 		);
 		return {
-			sessions: sessions.map((session) => {
+			sessions: sessions.map(({ _count, ...session }) => {
 				const notes = session.transcriptContextId
 					? notesByContextId.get(session.transcriptContextId)
 					: null;
 				return {
 					...session,
+					requestCount: _count.turns,
 					notes: notes?.notes ?? null,
 					notesStatus: notes?.status ?? null,
 				};
 			}),
+			total,
+			nextCursor:
+				rows.length > SESSIONS_PAGE_SIZE && last
+					? { id: last.id, createdAt: last.createdAt }
+					: null,
 		};
 	});
 
@@ -430,6 +478,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 					settings.serviceSecret,
 					session.id,
 				),
+				hardStopAt,
 			});
 			// A stop can arrive while the provider is creating the bot. Claim the
 			// transition only from PENDING: a concurrent stop moves the row to
@@ -604,7 +653,7 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 			select: sessionSelect,
 		});
 		if (leaveClaimed.count === 0 || !session.providerBotId) {
-			// The start request can still be waiting for Meeting BaaS. It sees
+			// The start request can still be waiting for the provider. It sees
 			// LEAVING, leaves the newly-created bot, then marks this row ENDED.
 			return { session: leaving };
 		}

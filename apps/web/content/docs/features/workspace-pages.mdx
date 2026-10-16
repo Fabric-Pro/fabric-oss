@@ -1,0 +1,120 @@
+---
+title: Workspaces
+description: Pages Fabric Agent writes for your organization from a description, shared with everyone in it by default, that can keep what people enter, hold files, ask the model and act through Fabric.
+---
+
+A Workspace is a page that Fabric Agent writes for your organization: a delivery board, a weekly digest, a list of open decisions, a small tool with a refresh button. You describe what you want to see, the agent writes the whole page, saves it, opens it and explains what it shows. Nothing on the page is a template, so asking for a new section or a different layout simply rewrites the page.
+
+<Callout type="info">
+  Workspaces used to be the name of the document libraries. Those are called **Libraries** now, and their page is described in [Libraries](/docs/features/libraries). Workspaces are a different feature: pages, not documents.
+</Callout>
+
+## Ask for a Workspace
+
+<Steps>
+  <Step>
+    ### Open Workspaces
+
+    Click **Workspaces** in the left sidebar. The page lists every Workspace you can open.
+  </Step>
+
+  <Step>
+    ### Click New workspace
+
+    Fabric Agent opens with a draft such as "Create a new Workspace that shows". Finish the sentence — "this week's delivery status by project", "the decisions that are still open" — and send it.
+  </Step>
+
+  <Step>
+    ### Read what it wrote
+
+    The agent writes the page, saves it as a Workspace and opens it, with a short explanation of what each part shows. If something is wrong, say so in the same chat, or open the page and click **Ask Fabric Agent** to change it.
+  </Step>
+</Steps>
+
+You can also ask from any chat with Fabric Agent: "make me a Workspace with a board of this sprint's work". A chat opened from a Workspace knows which page you are on, so "add a column for blockers" changes that page.
+
+## Who can open a Workspace
+
+**A new Workspace is shared with everyone in your organization.** If a page should stay yours alone, say so when you ask ("keep it private") and the agent saves it as private. Each card in the list shows who the page is shared with.
+
+| Shown as | Who can open it |
+|----------|-----------------|
+| **Organization** | Every member of your organization |
+| **Private** | Only you (and, for a page linked to a project, the members of that project) |
+| **Invited** | The people you invited by email |
+| **Project** | The accepted members of its project |
+| **Public** | Anyone with the link, signed in or not |
+
+The list shows the Workspaces you wrote, the ones shared with your organization, and those linked to a project you can open. A guest of a single project, who is not a member of the organization, does not see the list; they can still open a page someone shares with them.
+
+The person who wrote a Workspace changes who can open it from the **Share** control in the page header, and sees the page's earlier versions under **Version history**, where any version can be restored. Only the author can do either, and only the author's Fabric Agent chat can change the page. Everyone else who can open it can read it, comment on it and make a copy of their own.
+
+## Comments
+
+Under every Workspace is a **Comments** section. Anyone who can open the page can read the comments, oldest first, and add one below them (up to 2,000 characters). Each comment carries the name Fabric recorded for the person who wrote it. Comments are kept with the page, so Fabric Agent can read them too. A page's own script can read its comments but cannot add one. Choose **Show more comments** to see beyond the first fifty.
+
+## Make a copy
+
+**Make a copy** in the page header gives you a copy of the Workspace that is yours alone, in the same project, for you to change with Fabric Agent. Nothing people saved in the page is copied. If the page uses Fabric tools, the copy keeps them, so Fabric lists them first and asks you to confirm.
+
+## What a page can keep, ask and read
+
+A page can do more than show a view: it can keep what people enter, ask the model a question, hold files and read from your connected servers. It cannot reach Fabric on its own. It asks the page around it, and that page decides, as you.
+
+The page's script has these functions, all on `window.fabric`:
+
+| Function | What it does |
+|----------|--------------|
+| `fabric.call(tool, args)` | Runs a Fabric tool, such as listing projects or starting a workflow, and returns its result |
+| `fabric.openAgent(prompt)` | Opens Fabric Agent with `prompt` as a draft; you still have to send it |
+| `fabric.navigate(path)` | Takes you to another page of the app (a path that starts with `/app/`) |
+| `fabric.viewer()` | Who is looking: `id`, `name`, `initials`, `isOwner` and `canEditPage`. Never an email address or a list of organizations |
+| `fabric.data.list(collection, options)`, `.get`, `.set`, `.delete` | Records the page keeps: shared with everyone who opens it, or `scope: "mine"` for the viewer alone. The key `@me` is the viewer's own record, and `expectedVersion` refuses an edit made on an out-of-date copy |
+| `fabric.ask(question, options)` | Asks the model one question and returns `{ answer }`. It has no tools, answers in at most 1,024 tokens and counts against the AI usage of the person looking at the page |
+| `fabric.files.upload(file)`, `.list`, `.read(id)`, `.delete(id)` | Files kept with the page. `read` also returns a `blobUrl` the page can show |
+| `fabric.download(filename, mimeType, data)` | Offers the viewer a file to save |
+| `fabric.connected(provider, tool, args)` | Calls a read-only tool of the viewer's own connected server |
+
+Limits on what a page keeps:
+
+- **Records:** a value is at most 16 KB. A page holds at most 2,000 records and 5 MB, and one person can write 120 times a minute to one page. Fabric records who wrote each record. Collection names starting with `$` are reserved for Fabric, and a page cannot write them.
+- **Files:** 4 MB each and 50 MB for the page. The person who uploaded a file, or the page's author, can delete it.
+- **Questions to the model:** 10 a minute for one person on one page.
+- **Downloads:** `csv`, `json`, `txt`, `md`, `pdf`, `png` and `svg` files of at most 10 MB. Fabric cleans the file name and checks the type against the extension, then shows you the name and size and saves nothing unless you say yes. You are asked for every file.
+- **Connected servers:** a page declares each read as `connected:<server>/<tool>`, and the server must mark that tool read-only. The result is capped at 256 KB. If you have no such server connected, the call returns `{ "error": "not_connected" }`.
+
+A call that fails rejects with an `Error`. When the tool says why, the error carries a `reason` and, where it helps, `retryable`:
+
+| `reason` | Meaning |
+|----------|---------|
+| `version_conflict` | The record changed since the page read it (`expectedVersion` no longer matches). Read it again and retry |
+| `busy` | Many writes were queued on the page at once. Try again in a moment; `retryable` is `true` |
+| `limit` | The page reached one of its limits on records, bytes or batch size |
+| `rate_limited` | The viewer is writing or asking too often on this page |
+| `usage_limit` | The viewer's AI usage limit is reached, so `fabric.ask` cannot answer |
+
+How a call is treated:
+
+- **The page declares its tools when it is saved.** It can call only those. A tool it did not declare is refused, by your browser and again by Fabric when the call arrives.
+- **A page works on its own data.** Every call that touches the page's records, files or comments is made for that page, whatever the script says.
+- **Reading its own data runs at once.** So do tools that only read, such as listing projects or documents.
+- **Changing asks you first.** A tool that can change something shows you what the page wants to do, including every value it would send, and runs only if you allow it. Your yes holds for that tool on that version of the page until you close the browser tab. When the page is edited, you are asked again.
+- **Asking the model and reading a connected server ask once** per version of the page, because they spend your AI usage or reach your own accounts.
+- **A page that has read outside its own data asks more.** Once a page has learned who you are, read from a connected server, had an answer from the model or read other Fabric data, every change to data shared on the page asks again, and shows the value, until the page is reloaded. A page that keeps shared data also asks every time before any other kind of change.
+- **A few tools are never available to a page:** switching organization, requesting or revoking authority, sharing a frame, creating, editing or publishing a workflow, creating or editing a frame, finding out who you are beyond a name, listing your organizations, restoring an earlier version, making a copy and adding a comment. Asking Fabric Agent is the way to do the first ones; comments are added from the panel under the page.
+- **A page runs for the organization you are looking at.** If the page does not belong to it, every call is refused. A page that has not been saved cannot call Fabric at all.
+- **There is a limit of 30 calls a minute** for one page.
+
+## What a page cannot do
+
+A Workspace runs in a locked frame. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
+
+A page that a scheduled workflow wrote with nobody watching is shown without any script, so it reads as a static report. Pages written in a chat keep their buttons.
+
+On a public link, buttons that call Fabric do not work: there is no signed-in person for them to act as.
+
+## Related
+
+- [Project Artifacts](/docs/features/project-artifacts), the same kind of page, kept with one project
+- [Scheduled agent workflows](/docs/features/scheduled-agent-workflows), which can publish a fresh page on a schedule
+- [Fabric MCP Gateway](/docs/integrations/mcp-gateway), the tools a page calls

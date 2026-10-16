@@ -3,6 +3,7 @@ import {
 	INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID,
 	instructionRepositorySyncWorkflowId,
 	instructionSnapshotWorkflowId,
+	memoryWriteWorkflowId,
 	repositorySyncFollowUpWorkflowId,
 } from "../src/workflow-ids";
 
@@ -29,6 +30,12 @@ describe("workflow ids", () => {
 				INSTRUCTION_PROPOSAL_PULL_REQUEST_SWEEP_WORKFLOW_ID,
 			);
 		}
+	});
+	it("derives one workflow id per Living Memory write, so a repeated start finds the open run", () => {
+		expect(memoryWriteWorkflowId("cmemwrite00000001")).toBe(
+			"memory-write-cmemwrite00000001",
+		);
+		expect(memoryWriteWorkflowId("a")).not.toBe(memoryWriteWorkflowId("b"));
 	});
 	it("gives each subject and project one follow-up id, distinct from the sync's own", () => {
 		expect(repositorySyncFollowUpWorkflowId("context", "proj_1")).toBe(

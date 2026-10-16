@@ -20,7 +20,7 @@ vi.mock("../../lib", () => ({ isParlumeServiceRequestAuthorized: () => true }));
 vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
 	finalizeParlumeSession: mocks.finalize,
 }));
-vi.mock("@repo/api/modules/projects/lib/parlume-meeting-baas", () => ({
+vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	getParlumeBridgeSettings: () => ({}),
 	leaveParlumeMeetingBot: mocks.leave,
 }));

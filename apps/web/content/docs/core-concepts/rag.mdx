@@ -54,13 +54,13 @@ flowchart TB
 
 ### 1. Document Ingestion
 
-When you upload documents to a workspace, Fabric processes them through a pipeline:
+When you upload documents to a library, Fabric processes them through a pipeline:
 
 <Steps>
   <Step>
     ### Upload
 
-    Drag and drop files into a workspace. Supported formats:
+    Drag and drop files into a library. Supported formats:
     - **PDF** -- Including scanned documents (with OCR)
     - **Word** -- .docx files
     - **Markdown** -- .md files
@@ -157,19 +157,19 @@ The AI generates a response that synthesizes information from all relevant chunk
 
 ## Using RAG in Fabric
 
-### Creating a Workspace
+### Creating a Library
 
 <Steps>
   <Step>
-    ### Navigate to Workspaces
+    ### Navigate to Libraries
 
-    Click **Workspaces** in the left sidebar.
+    Click **Libraries** in the left sidebar.
   </Step>
 
   <Step>
-    ### Create New Workspace
+    ### Create New Library
 
-    Click **Create Workspace** and give it a descriptive name like "Product Documentation" or "Engineering Specs".
+    Click **Create Library** and give it a descriptive name like "Product Documentation" or "Engineering Specs".
   </Step>
 
   <Step>
@@ -185,22 +185,22 @@ The AI generates a response that synthesizes information from all relevant chunk
   </Step>
 </Steps>
 
-### Attaching Workspaces to Agents
+### Attaching Libraries to Agents
 
 When starting a conversation with an agent:
 
 1. Click the **Attach** button in the chat interface
-2. Select one or more workspaces
-3. The agent now has access to all documents in those workspaces
+2. Select one or more libraries
+3. The agent now has access to all documents in those libraries
 
-**Tip:** You can attach different workspaces for different types of questions. For example:
+**Tip:** You can attach different libraries for different types of questions. For example:
 - Attach "Product Docs" when generating PRDs
 - Attach "Technical Specs" when generating architecture documents
 - Attach "Code Repos" when generating API documentation
 
-### Workspaces in Projects
+### Libraries in Projects
 
-Projects can have dedicated workspaces:
+Projects can have dedicated libraries:
 
 1. Go to **Projects > Your Project**
 2. Click **Documents** tab
@@ -221,7 +221,7 @@ Projects can have dedicated workspaces:
 - Upload massive files with mixed topics
 - Include sensitive data without consideration
 - Upload duplicate content
-- Leave outdated documents in workspaces
+- Leave outdated documents in libraries
 
 ### Chunk Size Optimization
 
@@ -247,13 +247,13 @@ RAG in Fabric is fully multi-tenant:
 ### Data Isolation
 
 - **Organization boundaries** -- Documents are isolated by organization
-- **User scoping** -- Personal workspaces are private
+- **User scoping** -- Personal libraries are private
 - **No cross-contamination** -- Queries never return other tenants' data
 
 ### Access Control
 
-- **Workspace permissions** -- Control who can view/edit
-- **Role-based access** -- Admins can manage all workspaces
+- **Library permissions** -- Control who can view/edit
+- **Role-based access** -- Admins can manage all libraries
 - **Audit logging** -- Track document access
 
 ### Data Security
@@ -270,9 +270,9 @@ Fabric Loom uses RAG as its first step before routing or planning:
 flowchart LR
     subgraph ORCH["Orchestrator RAG Phase"]
         direction TB
-        S1[1. Check for attached workspaces]
+        S1[1. Check for attached libraries]
         S2[2. Embed user query]
-        S3[3. Search workspace documents]
+        S3[3. Search library documents]
         S4[4. Inject relevant context]
         S5[5. Proceed to routing]
         S1 --> S2 --> S3 --> S4 --> S5
@@ -281,19 +281,19 @@ flowchart LR
 
 This means when you say "create a PRD based on our product strategy", the orchestrator already knows what your product strategy says before it starts planning.
 
-### Workspace References
+### Library References
 
-The orchestrator recognizes workspace-related intents:
+The orchestrator recognizes library-related intents:
 
 | Phrase | Action |
 |--------|--------|
-| "my docs" | Search attached workspaces |
+| "my docs" | Search attached libraries |
 | "attached files" | Use uploaded documents |
-| "personal documents" | Search user's workspaces |
+| "personal documents" | Search user's libraries |
 | "based on our..." | Retrieve relevant context |
 
-When workspace content is available, the orchestrator:
-- Prefers analyzing workspace content over external searches
+When library content is available, the orchestrator:
+- Prefers analyzing library content over external searches
 - Routes to direct AI analysis
 - Skips unnecessary external tool calls
 
@@ -369,7 +369,7 @@ flowchart TB
 ### "No relevant documents found"
 
 - Check that documents are fully processed
-- Verify the workspace is attached
+- Verify the library is attached
 - Try rephrasing your question
 - Ensure documents contain relevant information
 
@@ -377,7 +377,7 @@ flowchart TB
 
 - Documents may be too general
 - Try uploading more specific documents
-- Use workspace filters to narrow scope
+- Use library filters to narrow scope
 - Adjust query to be more specific
 
 ### "Processing taking too long"

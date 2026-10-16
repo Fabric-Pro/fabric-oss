@@ -1,4 +1,4 @@
-import { type FrameShareScope, updateFrameShareScope } from "@repo/database";
+import { shareFrame } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -32,7 +32,10 @@ const outputSchema = z.object({
  * - PRIVATE: Only owner can access
  * - EMAILS_ONLY: Only invited email addresses can access
  * - WORKSPACE_AND_EMAILS: Organization members + invited emails can access
- * - PUBLIC: Anyone with the link can access
+ * - PUBLIC: Anyone with the link can access, when the organization allows it
+ *
+ * `shareFrame` owns the organization's sharing policy, the same command the
+ * Fabric Agent's `fabric_share_frame` calls.
  */
 export const shareFrameProcedure = tenantProtectedProcedure
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
@@ -52,37 +55,17 @@ export const shareFrameProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		// Check organization policy for public sharing
-		if (input.shareScope === "PUBLIC" && organizationId) {
-			const { db } = await import("@repo/database");
-			const org = await db.organization.findUnique({
-				where: { id: organizationId },
-				select: { canShareFramesPublicly: true },
-			});
-
-			if (!org?.canShareFramesPublicly) {
-				return {
-					success: false,
-					error: "Public sharing is disabled for this organization",
-				};
-			}
-		}
-
-		const result = await updateFrameShareScope({
+		const result = await shareFrame({
 			frameId: input.id,
 			userId: context.user.id,
 			organizationId,
-			shareScope: input.shareScope as FrameShareScope,
+			scope: input.shareScope,
 		});
 
-		if (!result.success) {
-			return {
-				success: false,
-				error: result.error,
-			};
+		if (!result.ok) {
+			return { success: false, error: result.message };
 		}
 
-		// Generate share URL for public sharing
 		let shareUrl: string | undefined;
 		if (result.shareToken) {
 			const siteUrl =

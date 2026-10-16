@@ -12,7 +12,8 @@
  * worktree shares the main checkout's), must be a regular file or absent, and
  * only the lines git does not already honour are added, once.
  */
-import { appendFile, lstat, mkdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
 import path from "node:path";
 import * as git from "./git.js";
 
@@ -87,25 +88,52 @@ export async function excludeLocalFiles(input: {
 			return { kind: "failed", entries: missing };
 		}
 		await mkdir(path.dirname(file.value), { recursive: true });
-		const existing = await lstat(file.value).catch((error: unknown) => {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-				return null;
+		const noFollow = constants.O_NOFOLLOW;
+		const flags =
+			constants.O_RDWR |
+			constants.O_APPEND |
+			(constants.O_NONBLOCK ?? 0) |
+			(noFollow ?? 0);
+		// Never create through a dangling symlink, even on platforms without
+		// O_NOFOLLOW. An exclusive create also refuses a raced-in existing file.
+		const handle = await open(file.value, flags).catch((error: unknown) => {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw error;
 			}
-			throw error;
+			return open(
+				file.value,
+				flags | constants.O_CREAT | constants.O_EXCL,
+			);
 		});
-		if (existing !== null && !existing.isFile()) {
-			return { kind: "failed", entries: missing };
+		try {
+			const opened = await handle.stat({ bigint: true });
+			if (!opened.isFile()) {
+				return { kind: "failed", entries: missing };
+			}
+			if (noFollow === undefined) {
+				// Windows has no O_NOFOLLOW. Check the opened file's identity
+				// before reading or writing; later path swaps cannot redirect it.
+				const current = await lstat(file.value, { bigint: true });
+				if (
+					!current.isFile() ||
+					current.dev !== opened.dev ||
+					current.ino !== opened.ino
+				) {
+					return { kind: "failed", entries: missing };
+				}
+			}
+			const text = await handle.readFile("utf8");
+			const present = new Set(text.split(/\r?\n/));
+			const toAdd = missing.filter((entry) => !present.has(entry));
+			if (toAdd.length === 0) {
+				return { kind: "unchanged" };
+			}
+			const lead = text === "" || text.endsWith("\n") ? "" : "\n";
+			await handle.appendFile(`${lead}${toAdd.join("\n")}\n`, "utf8");
+			return { kind: "added", entries: toAdd };
+		} finally {
+			await handle.close();
 		}
-		const text =
-			existing === null ? "" : await readFile(file.value, "utf8");
-		const present = new Set(text.split(/\r?\n/));
-		const toAdd = missing.filter((entry) => !present.has(entry));
-		if (toAdd.length === 0) {
-			return { kind: "unchanged" };
-		}
-		const lead = text === "" || text.endsWith("\n") ? "" : "\n";
-		await appendFile(file.value, `${lead}${toAdd.join("\n")}\n`, "utf8");
-		return { kind: "added", entries: toAdd };
 	} catch {
 		return { kind: "failed", entries };
 	}

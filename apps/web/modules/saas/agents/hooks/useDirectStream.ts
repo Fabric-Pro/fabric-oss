@@ -20,6 +20,10 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
 import {
+	type ChatConfirmationRequest,
+	readConfirmationRequest,
+} from "../lib/chat-confirmation";
+import {
 	type ChatTurnTruncation,
 	parseTurnTruncation,
 } from "../lib/chat-turn-truncation";
@@ -83,6 +87,13 @@ export interface UseDirectStreamOptions {
 	storyId?: string | null;
 	documentId?: string | null;
 	taskId?: string | null;
+	/**
+	 * Where the agent was opened, for tools that place what they create: the
+	 * organization Workspace (a frame id), and whether the page is an artifact
+	 * or workspace surface. A default, never a grant.
+	 */
+	launchWorkspaceId?: string | null;
+	launchSurface?: "artifact" | "workspace" | null;
 	/** Conversation ID - backend will fetch attached workspaces if workspaceIds not provided */
 	conversationId?: string | null;
 	/** Custom system prompt to pass to the workflow */
@@ -162,13 +173,8 @@ export interface DirectStreamMessage {
 	 * plan was spent (Fizzy #3048); the chat says so under the answer.
 	 */
 	apiBilling?: ChatGptPlanApiBilling;
-	/** Pending confirmation for workflow execution */
-	pendingConfirmation?: {
-		workflowId: string;
-		workflowName: string;
-		description?: string;
-		message: string;
-	};
+	/** The approval a tool in this message asked for, if any */
+	pendingConfirmation?: ChatConfirmationRequest;
 	/** RAG sources used to generate the response */
 	sources?: DirectStreamSource[];
 	/**
@@ -243,6 +249,43 @@ export interface DirectStreamToolCall {
 	mcpAppResourceUri?: string;
 	/** MCP App: config ID for proxying tool calls back to the MCP server */
 	mcpAppConfigId?: string;
+}
+
+/** What one send adds to the message and the conversation it continues. */
+export interface DirectSendOptions {
+	/** Start a fresh chat rather than continuing the transcript on screen. */
+	forceNewChat?: boolean;
+	/** IDs of documents attached to this message. */
+	attachedDocumentIds?: string[];
+	/** Chat ID for RAG context (from a document upload). */
+	messageChatId?: string;
+	/**
+	 * Messages to prepend when the stream is empty but a saved conversation was
+	 * loaded.
+	 */
+	existingMessages?: DirectStreamMessage[];
+	/**
+	 * Filenames of documents/images attached, surfaced as a caption beneath the
+	 * user bubble (telemetry-only on the wire: the agent reads attachments via
+	 * `attachedDocumentIds` and RAG, not this list).
+	 */
+	attachmentNames?: string[];
+	/**
+	 * Finished envelope entries for files attached this turn, from
+	 * `buildAiChatAttachmentEntry`. Delivered alongside `attachedDocumentIds`
+	 * rather than instead of them: retrieval still runs and still covers what a
+	 * bound cut.
+	 */
+	inlineAttachmentContexts?: string[];
+	/**
+	 * A call the person approved in a chat card: the tool and the exact
+	 * arguments the card showed. The turn runs it first and goes on from its
+	 * result.
+	 */
+	approvedToolCall?: {
+		toolName: string;
+		args: Record<string, unknown>;
+	};
 }
 
 export interface DirectStreamState {
@@ -365,32 +408,11 @@ export function applyToolResult(
 				: tc,
 		);
 
-		let pendingConf = m.pendingConfirmation;
-		if (
-			event.result &&
-			typeof event.result === "object" &&
-			"requiresConfirmation" in event.result &&
-			(event.result as { requiresConfirmation?: boolean })
-				.requiresConfirmation
-		) {
-			const conf = event.result as unknown as {
-				workflowId: string;
-				workflowName: string;
-				description?: string;
-				message: string;
-			};
-			pendingConf = {
-				workflowId: conf.workflowId,
-				workflowName: conf.workflowName,
-				description: conf.description,
-				message: conf.message,
-			};
-		}
-
 		return {
 			...m,
 			toolCalls: updatedToolCalls,
-			pendingConfirmation: pendingConf,
+			pendingConfirmation:
+				readConfirmationRequest(event.result) ?? m.pendingConfirmation,
 		};
 	});
 }
@@ -429,6 +451,8 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		storyId,
 		documentId,
 		taskId,
+		launchWorkspaceId,
+		launchSurface,
 		conversationId,
 		systemPrompt,
 		surface = "loom-direct",
@@ -554,11 +578,8 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 	 * Send a message and stream the response
 	 * @param content - The message content
 	 * @param history - Conversation history
-	 * @param forceNewChat - Whether to start a fresh chat
-	 * @param attachedDocumentIds - IDs of documents attached to this message
-	 * @param messageChatId - Chat ID for RAG context (from document upload)
-	 * @param existingMessages - Existing messages to prepend (for when streamMessages is empty but we have loaded history)
-	 * @param attachmentNames - Filenames of documents/images attached, surfaced as a caption beneath the user bubble (telemetry-only on the wire — the agent reads attachments via `attachedDocumentIds` + RAG, not this list)
+	 * @param options - What this send adds: attachments, a chat to start fresh,
+	 * the saved thread to show, or a call the person approved
 	 */
 	const sendMessage = useCallback(
 		async (
@@ -567,18 +588,15 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 				role: "user" | "assistant";
 				content: string;
 			}> = [],
-			forceNewChat = false,
-			attachedDocumentIds?: string[],
-			messageChatId?: string,
-			existingMessages?: DirectStreamMessage[],
-			attachmentNames?: string[],
-			/**
-			 * Finished envelope entries for files attached this turn, from
-			 * `buildAiChatAttachmentEntry`. Delivered alongside
-			 * `attachedDocumentIds` rather than instead of them: retrieval still
-			 * runs and still covers what a bound cut.
-			 */
-			inlineAttachmentContexts?: string[],
+			{
+				forceNewChat = false,
+				attachedDocumentIds,
+				messageChatId,
+				existingMessages,
+				attachmentNames,
+				inlineAttachmentContexts,
+				approvedToolCall,
+			}: DirectSendOptions = {},
 		) => {
 			if (!content.trim() || isLoading) {
 				return null;
@@ -688,6 +706,9 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						storyId,
 						documentId,
 						taskId,
+						workspaceId: launchWorkspaceId ?? undefined,
+						surface: launchSurface ?? undefined,
+						approvedToolCall,
 						// Pass conversation ID so backend can fetch attached workspaces if needed
 						conversationId,
 						systemPrompt:
@@ -879,6 +900,8 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			workspaceIds,
 			projectId,
 			repositoryUrl,
+			launchWorkspaceId,
+			launchSurface,
 			conversationId,
 			systemPrompt,
 		],

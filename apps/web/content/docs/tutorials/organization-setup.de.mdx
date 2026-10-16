@@ -100,7 +100,9 @@ Richten Sie KI-Anbieter auf Organisationsebene ein, damit alle Mitglieder Zugrif
 
     Wählen Sie einen Anbieter (z. B. OpenAI, Anthropic, Groq) und geben Sie den API-Schlüssel ein.
 
-    Dieser Schlüssel auf Org-Ebene wird von allen Mitgliedern geteilt. Mitglieder können weiterhin persönliche Anbieterüberschreibungen festlegen.
+    Dieser Schlüssel auf Org-Ebene wird von allen Mitgliedern geteilt. Admins verwalten ihn auf dem Tab **Organisation** der KI-Anbieter; alle anderen sehen ihn schreibgeschützt.
+
+    Jedes Mitglied hat auf derselben Seite außerdem einen Tab **Persönlich** für eigene Schlüssel. Ein persönlicher Schlüssel ist ein Fallback: Er wird nur verwendet, wenn die Organisation keinen eigenen nutzbaren Schlüssel hat, und dem Mitglied berechnet. Auch der eigene ChatGPT-Plan eines Mitglieds wird auf diesem Tab verbunden.
   </Step>
 
   <Step>
@@ -251,7 +253,7 @@ Erstellen Sie Organisations-Fähigkeiten für häufige Aufgaben (z. B. „Untern
 ### KI-Funktionen funktionieren nicht für Mitglieder
 - Überprüfen Sie, ob der KI-Anbieter auf Org-Ebene mit einem gültigen API-Schlüssel konfiguriert ist
 - Prüfen Sie, ob ein Standard-Anbieter festgelegt ist
-- Mitglieder benötigen entweder einen Org-Anbieter oder ihren eigenen persönlichen Anbieter
+- Mitglieder benötigen entweder einen Org-Anbieter oder einen eigenen Schlüssel auf dem Tab **Persönlich** unter **Einstellungen → KI-Anbieter**
 
 ---
 

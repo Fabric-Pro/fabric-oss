@@ -31,7 +31,10 @@ import {
 } from "@repo/ai/capabilities";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { classifyLimitError } from "@repo/ai/limits";
-import { supportsAnthropicMidConversationSystem } from "@repo/ai/prompt-cache";
+import {
+	makeAppendedStepCacheBreakpoint,
+	supportsAnthropicMidConversationSystem,
+} from "@repo/ai/prompt-cache";
 import {
 	buildSkillsSystemBlock,
 	createSkillTools,
@@ -41,6 +44,7 @@ import {
 import {
 	ensureSensitiveOperationAuthority,
 	getWorkflowById,
+	isWorkflowLive,
 	listWorkflows,
 	loadProjectDatabricksKnowledgeBinding,
 } from "@repo/database";
@@ -91,6 +95,12 @@ import {
 	mergeDatabricksBindings,
 } from "../shared/databricks-knowledge";
 import { guardToolWriteForReadOnly } from "../shared/read-only-gate";
+import {
+	recordTurnUsage,
+	recordTurnValue,
+	recordTurnValueOnce,
+} from "../shared/turn-timing";
+import { isVoiceTurn } from "../shared/voice-turn-policy";
 import { createAdvisorTools } from "./advisor-tools";
 import { createDirectChatAggregateUsageTracker } from "./aggregate-usage";
 import {
@@ -108,6 +118,11 @@ import {
 	decideForcedToolChoice,
 	modelRejectsForcedToolChoice,
 } from "./decide-forced-tool-choice";
+import {
+	confirmationFromToolOutput,
+	loadFabricToolsForTurn,
+	runApprovedAction,
+} from "./fabric-turn-tools";
 import {
 	fitHistoryToContext,
 	omittedHistoryNote,
@@ -640,7 +655,7 @@ function createWorkflowTools(
 		}),
 		execute_workflow: tool({
 			description:
-				"Start one of the user's workflows by id. Only workflows with triggerType MANUAL can be started. Until the user has approved this start, the call returns requiresConfirmation: true and starts nothing; with the user's approval it starts the workflow and returns the start result. Returns an error when the workflow does not exist or cannot be started manually.",
+				"Start one of the user's published workflows by id, whatever its trigger. Until the user has approved this start, the call returns requiresConfirmation: true and starts nothing; with the user's approval it starts the workflow and returns the start result. Returns an error when the workflow does not exist or is not published.",
 			inputSchema: executeWorkflowSchema as any,
 			execute: async (params: { workflowId: string }) => {
 				try {
@@ -664,10 +679,10 @@ function createWorkflowTools(
 						};
 					}
 
-					if (workflow.triggerType !== "MANUAL") {
+					if (!isWorkflowLive(workflow.status)) {
 						return {
-							error: `Workflow "${workflow.name}" cannot be executed manually.`,
-							triggerType: workflow.triggerType,
+							error: `Workflow "${workflow.name}" is ${workflow.status}; only a published workflow can be run.`,
+							status: workflow.status,
 						};
 					}
 
@@ -813,7 +828,14 @@ async function runDirectChatTurn({
 			originalName: string;
 		}
 	> = {};
-	let mcpClients: McpClientType[] = [];
+	// Everything this turn opened that has to be closed on every way out: each
+	// MCP client, then the Fabric gateway connection.
+	const cleanups: Array<() => Promise<void>> = [];
+	const runCleanups = async () => {
+		for (const cleanup of cleanups) {
+			await cleanup();
+		}
+	};
 
 	// Analyze if the user's message needs MCP tools
 	const toolAnalysis = analyzeToolNeed(message, mcpToolInfo);
@@ -866,7 +888,9 @@ async function runDirectChatTurn({
 		);
 		mcpTools = mcpResult.tools;
 		toolToServerMap = mcpResult.toolToServerMap;
-		mcpClients = mcpResult.clients;
+		for (const client of mcpResult.clients) {
+			cleanups.push(() => closeMcpClientSafe(client));
+		}
 
 		logger.info("MCP tools loaded (smart selection)", {
 			toolCount: Object.keys(mcpTools).length,
@@ -999,14 +1023,24 @@ async function runDirectChatTurn({
 		});
 	}
 
-	// Create workflow tools
-	const workflowTools = createWorkflowTools(userId, organizationId);
+	// Workflows and frames come from Fabric MCP for the interactive chat, on
+	// every turn: the same tools an external coding agent calls, held to the same
+	// rules. A turn that loads them carries no in-process copy of the workflow
+	// tools, and when the load fails the turn goes on without them. Every other
+	// caller keeps the tools it always had.
+	const fabricPlatform = await loadFabricToolsForTurn(input);
+	if (fabricPlatform) {
+		cleanups.push(() => fabricPlatform.close());
+	}
+	const workflowTools = input.fabricPlatformTools
+		? {}
+		: createWorkflowTools(userId, organizationId);
 	// The Advisor's view of itself and the workspace: recent sessions,
 	// agents, connections. Backs the "Improve Fabric" starter.
 	const advisorTools = createAdvisorTools(userId, organizationId);
 
 	// Create built-in tools (web search, etc.)
-	const builtInTools = await createBuiltInTools({
+	const inProcessBuiltInTools = await createBuiltInTools({
 		userId,
 		organizationId,
 		enabledFabricToolIds,
@@ -1016,6 +1050,11 @@ async function runDirectChatTurn({
 		includeProjectFeatureReads: true,
 		preferredRepositoryUrl: input.preferredRepositoryUrl,
 	});
+	// A tool Fabric MCP offers replaces the in-process one of the same name.
+	const builtInTools = {
+		...inProcessBuiltInTools,
+		...fabricPlatform?.tools,
+	};
 	const hasBuiltInWebSearch =
 		"webSearch" in builtInTools || "fabric_web_search" in builtInTools;
 	// An explicit Fabric tool list registers web search as `fabric_web_search`;
@@ -1026,6 +1065,7 @@ async function runDirectChatTurn({
 	const hasFrameTool =
 		"fabric_create_frame" in builtInTools ||
 		"fabric_create_slideshow" in builtInTools;
+	const approvedAction = await runApprovedAction(input, fabricPlatform);
 
 	if (hasBuiltInWebSearch) {
 		logger.info("Built-in web search tool enabled", { userId });
@@ -1196,15 +1236,11 @@ async function runDirectChatTurn({
 		allTools,
 		toolToServerMap,
 	).catch(async (error) => {
-		for (const client of mcpClients) {
-			await closeMcpClientSafe(client);
-		}
+		await runCleanups();
 		throw error;
 	});
 	if (preparedResponse !== undefined) {
-		for (const client of mcpClients) {
-			await closeMcpClientSafe(client);
-		}
+		await runCleanups();
 		return {
 			success: true,
 			responseText: preparedResponse,
@@ -1216,7 +1252,13 @@ async function runDirectChatTurn({
 	const toolsEnabled = hasTools && !input.forceDisableTools;
 	const hasMcpTools = mcpToolNames.length > 0;
 	const mcpToolsEnabled = hasMcpTools && !input.forceDisableTools;
-	const hasWorkflowTools = Object.keys(workflowTools).length > 0;
+	const hasWorkflowTools =
+		Object.keys(workflowTools).length > 0 ||
+		"fabric_list_workflows" in allTools;
+	const workflowListToolName =
+		"fabric_list_workflows" in allTools
+			? "fabric_list_workflows"
+			: "list_workflows";
 
 	// Dynamic model selection with centralized AI model access
 	const taskType = mapReasoningModeToTaskType(
@@ -1231,6 +1273,7 @@ async function runDirectChatTurn({
 	// `executeDirectChatActivity` is what `directChatWorkflow` runs, so THIS is
 	// the model the user's chat answer is generated with — traced from
 	// /api/agents/fabric-ai/stream rather than assumed (Fizzy #2230).
+	const modelResolveStartedAt = Date.now();
 	const {
 		model,
 		metadata,
@@ -1256,6 +1299,10 @@ async function runDirectChatTurn({
 		},
 	);
 	recordAggregateUsage = recordResolvedAggregateUsage;
+	recordTurnValue(
+		"direct.modelResolveMs",
+		Date.now() - modelResolveStartedAt,
+	);
 
 	logger.info("Dynamic model selected for direct chat", {
 		modelName: metadata.modelString,
@@ -1305,8 +1352,8 @@ ${omittedServerSummary.map((entry) => `  • ${entry}`).join("\n")}
 If the user asks for something one of them does, say those tools were left out of this turn because too many servers are enabled at once, and suggest they turn some off in the chat's tool selector. Never tell them the server is not connected — it is.`
 		: ""
 }
-${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and executed." : ""}
-${toolsEnabled ? `- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus list_workflows${"list_skills" in skillTools ? " and list_skills" : ""}, and base the suggestions on what they return. Never use workspace document tools for that.` : ""}${companyContextHint}
+${toolsEnabled && hasWorkflowTools ? "- User workflows can be listed and run." : ""}
+${toolsEnabled ? `- Your own recent sessions, the workspace's agents and its connections can be reviewed with list_recent_sessions, get_session, list_agents and list_connections. When asked to review usage or to suggest configuration changes (agents, connections, skills, workflows), call these, plus ${workflowListToolName}${"list_skills" in skillTools ? " and list_skills" : ""}, and base the suggestions on what they return. Never use workspace document tools for that.` : ""}${companyContextHint}
 
 ${DIAGRAM_RENDERING_GUIDANCE}`;
 
@@ -1373,6 +1420,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 	// above carries authority.
 	let projectBlock: string | null = null;
 	if (projectId) {
+		const projectBlockStartedAt = Date.now();
 		const { buildProjectContextBlock } = await import(
 			"../shared/project-context-block"
 		);
@@ -1380,6 +1428,10 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			userId,
 			organizationId: organizationId ?? null,
 		});
+		recordTurnValue(
+			"direct.projectBlockMs",
+			Date.now() - projectBlockStartedAt,
+		);
 	}
 	const { sections: contextSections } = collectUntrustedContextSections({
 		projectBlock,
@@ -1395,6 +1447,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 	if (skillsBlock) {
 		contextSections.push(skillsBlock);
 	}
+	if (approvedAction) {
+		contextSections.push(approvedAction);
+	}
 
 	const baseSystemContext = [systemInstructions, ...contextSections]
 		.filter(Boolean)
@@ -1403,11 +1458,18 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 	// Apply Fabric AI prompt enhancement
 	// This auto-detects appropriate patterns, contexts, and strategies based on the user's message
 	let fullSystemContext = baseSystemContext;
+	// A spoken turn skips the enhancer: its pattern, context and strategy
+	// lookups are network calls made before the model is even asked, and a
+	// one-or-two-sentence answer gains nothing from them.
+	const enhanceWithFabric = !isVoiceTurn(input.featureKey);
+	const enhancerStartedAt = Date.now();
 	try {
-		const fabricEnhancement = await enhancePromptWithFabric({
-			userMessage: message,
-			basePrompt: baseSystemContext,
-		});
+		const fabricEnhancement = enhanceWithFabric
+			? await enhancePromptWithFabric({
+					userMessage: message,
+					basePrompt: baseSystemContext,
+				})
+			: { fabricUsed: false as const };
 
 		if (
 			fabricEnhancement.fabricUsed &&
@@ -1428,6 +1490,10 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			error,
 		});
 	}
+	recordTurnValue(
+		"direct.enhancerMs",
+		enhanceWithFabric ? Date.now() - enhancerStartedAt : 0,
+	);
 
 	// Build messages. UIMessage `parts` only carry text here; image
 	// attachments are spliced into the converted CoreMessages BELOW.
@@ -1677,6 +1743,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			metadata.provider,
 			metadata.modelString,
 			reasoningMode as "lite" | "balanced" | "pro" | undefined,
+			input.featureKey,
 		);
 		// Paired with `providerOptions` — see `resolveOutputTokenBudget` for
 		// why the thinking value has to win over the computed budget, and why
@@ -1698,7 +1765,8 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// operators can see in traces when the heuristic was suppressed.
 		// The force is also dropped for models that reject ANY forced
 		// tool_choice (see `modelRejectsForcedToolChoice`), on every route.
-		const thinkingEnabled = providerOptions !== undefined;
+		const thinkingEnabled =
+			providerOptions?.anthropic?.thinking !== undefined;
 		const forcedToolChoiceModelNames = [
 			metadata.canonicalName,
 			metadata.modelString,
@@ -1742,11 +1810,23 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			includeIdentity: !callerHasPersona,
 		});
 
+		// Each tool round resends the history and every earlier round. The
+		// history marker placed above serves the next turn, so the rolling
+		// per-step marker keeps it and moves only over this turn's rounds.
+		const prepareStep = makeAppendedStepCacheBreakpoint({
+			provider: metadata.provider,
+			modelString: metadata.modelString,
+			hasTools: shouldUseTools,
+		});
+
+		const llmStartedAt = Date.now();
+		recordTurnValue("direct.preLlmMs", llmStartedAt - startTime);
 		const result = streamText({
 			model: model as Parameters<typeof streamText>[0]["model"],
 			instructions: promptCacheRequest.system,
 			stopWhen: isStepCount(maxSteps),
 			messages: promptCacheRequest.messages,
+			...(prepareStep ? { prepareStep } : {}),
 			// Anthropic's mid-conversation-system rolling-history path (only
 			// active when both prompt caching and the mid-conversation-system
 			// beta are supported) appends the variable system context as the
@@ -1888,6 +1968,12 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			}
 
 			if (part.type === "text-delta") {
+				if (part.text) {
+					recordTurnValueOnce(
+						"llm.firstTextMs",
+						Date.now() - llmStartedAt,
+					);
+				}
 				observeAgentText(part.text || "");
 				textPartCount++;
 				responseText += part.text || "";
@@ -2069,26 +2155,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 						80,
 					);
 
-					if (
-						part.output &&
-						typeof part.output === "object" &&
-						"requiresConfirmation" in part.output &&
-						(part.output as { requiresConfirmation?: boolean })
-							.requiresConfirmation
-					) {
-						const conf = part.output as unknown as {
-							workflowId: string;
-							workflowName: string;
-							description?: string;
-							message: string;
-						};
-						pendingConfirmation = {
-							workflowId: conf.workflowId,
-							workflowName: conf.workflowName,
-							description: conf.description,
-							message: conf.message,
-						};
-					}
+					pendingConfirmation =
+						confirmationFromToolOutput(part.output) ??
+						pendingConfirmation;
 				}
 			} else if (part.type === "error") {
 				streamErrorMessage ??= extractStreamErrorMessage(part);
@@ -2116,6 +2185,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				// type cannot change this loop's behaviour.
 			}
 		}
+
+		recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
+		recordTurnValue("llm.toolCalls", toolCalls.length);
 
 		// Send final heartbeat
 		lastHeartbeatTime = 0;
@@ -2156,6 +2228,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		const usage = completedSteps?.usage?.totalTokens
 			? completedSteps.usage
 			: reportedUsage;
+		recordTurnUsage("llm", usage);
 		if (usage?.totalTokens) {
 			tokenUsage = {
 				inputTokens: usage.inputTokens,
@@ -2406,8 +2479,6 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			),
 		};
 	} finally {
-		for (const client of mcpClients) {
-			await closeMcpClientSafe(client);
-		}
+		await runCleanups();
 	}
 }

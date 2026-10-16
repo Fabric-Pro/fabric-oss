@@ -411,6 +411,52 @@ describe("refreshMcpOAuthAccessToken — generation fencing", () => {
 		);
 		expect(storedRow?.encryptedAccessToken).toContain("retry-access");
 	});
+
+	it("uses the access token a winning parallel refresh stored instead of spending its rotated refresh token", async () => {
+		const winnerExpiresAt = new Date(Date.now() + 3_600_000);
+		refreshOAuthTokenMock.mockImplementation(async () => {
+			Object.assign(storedRow ?? {}, {
+				encryptedAccessToken: "ENC:winner-access",
+				accessTokenHash: "HASH:winner-access",
+				encryptedRefreshToken: "ENC:rotated",
+				tokenExpiresAt: winnerExpiresAt,
+				oauthBinding: withCredentialFingerprint(PINNED, {
+					...STORED_CREDENTIALS,
+					encryptedRefreshToken: "ENC:rotated",
+				}),
+			});
+			return {
+				ok: false,
+				errorCode: "invalid_grant",
+				errorMessage: "Refresh token revoked",
+			};
+		});
+
+		const outcome = await refreshMcpOAuthAccessToken("cfg_r");
+
+		// No second token request: the winner's rotated refresh token is unspent.
+		expect(refreshOAuthTokenMock).toHaveBeenCalledTimes(1);
+		expect(outcome).toMatchObject({
+			status: "refreshed",
+			accessToken: "winner-access",
+			refreshToken: "rotated",
+			encryptedRefreshToken: "ENC:rotated",
+			tokenExpiresAt: winnerExpiresAt,
+			generation: 5,
+			binding: storedRow?.oauthBinding,
+		});
+		expect(
+			outcome.status === "refreshed" && outcome.expiresIn,
+		).toBeGreaterThan(3590);
+		// Nothing is written: the winner's tokens stay, and no strike is recorded.
+		expect(updateManyMock).not.toHaveBeenCalled();
+		expect(storedRow).toMatchObject({
+			encryptedAccessToken: "ENC:winner-access",
+			encryptedRefreshToken: "ENC:rotated",
+			refreshFailureCount: 0,
+			needsReauth: false,
+		});
+	});
 });
 
 describe("refreshMcpOAuthAccessToken — the stored credentials must be the set their binding was written with", () => {

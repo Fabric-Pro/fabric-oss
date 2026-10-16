@@ -592,6 +592,57 @@ describe("checkStepAuthorityActivity — whole-step access level", () => {
 	});
 });
 
+describe("checkStepAuthorityActivity — Fabric's own tools reach no connected server", () => {
+	it("asks no server's authority for a step that only names Fabric tools", async () => {
+		dbMocks.listMcpConfigsForTenant.mockResolvedValue([githubConfig]);
+
+		const result = await checkStepAuthorityActivity({
+			userId: "user-1",
+			organizationId: "org-1",
+			step: {
+				...baseStep,
+				app: "fabric_create_frame",
+				toolsToUse: ["fabric_create_frame"],
+			},
+		});
+
+		expect(result).toEqual({ allowed: true });
+		expect(dbMocks.listMcpConfigsForTenant).not.toHaveBeenCalled();
+		expect(policyMocks.evaluateAuthorityPolicy).not.toHaveBeenCalled();
+	});
+
+	it("reads the step's app when it names no tools", async () => {
+		dbMocks.listMcpConfigsForTenant.mockResolvedValue([githubConfig]);
+
+		const result = await checkStepAuthorityActivity({
+			userId: "user-1",
+			organizationId: "org-1",
+			step: { ...baseStep, app: "fabric_create_workflow" },
+		});
+
+		expect(result).toEqual({ allowed: true });
+		expect(dbMocks.listMcpConfigsForTenant).not.toHaveBeenCalled();
+	});
+
+	it("still asks every connected server when a step mixes in a server's tool", async () => {
+		dbMocks.listMcpConfigsForTenant.mockResolvedValue([githubConfig]);
+
+		await checkStepAuthorityActivity({
+			userId: "user-1",
+			organizationId: "org-1",
+			step: {
+				...baseStep,
+				toolsToUse: ["fabric_create_frame", "delete_repo"],
+			},
+		});
+
+		const call = policyMocks.evaluateAuthorityPolicy.mock.calls[0][0];
+		expect(call.requiredProviders).toEqual([
+			{ providerKey: "github", accessLevel: "WRITE" },
+		]);
+	});
+});
+
 describe("checkStepAuthorityActivity — unchanged positive paths", () => {
 	it("allows a step when the policy allows it", async () => {
 		dbMocks.listMcpConfigsForTenant.mockResolvedValue([githubConfig]);

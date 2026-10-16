@@ -57,6 +57,7 @@ import {
 	FolderIcon,
 	HeartPulseIcon,
 	HomeIcon,
+	LayoutPanelTopIcon,
 	LayoutTemplateIcon,
 	ListTodoIcon,
 	LockIcon,
@@ -484,9 +485,16 @@ export function NavBar({
 				{
 					label: "Workspaces",
 					href: `${effectiveBasePath}/workspaces`,
-					icon: Square3Stack3DIcon,
+					icon: LayoutPanelTopIcon,
 					onboardingId: "nav-workspaces",
 					isActive: pathname.includes("/workspaces"),
+				},
+				{
+					label: "Libraries",
+					href: `${effectiveBasePath}/libraries`,
+					icon: Square3Stack3DIcon,
+					onboardingId: "nav-libraries",
+					isActive: pathname.includes("/libraries"),
 				},
 				{
 					label: "Reports",

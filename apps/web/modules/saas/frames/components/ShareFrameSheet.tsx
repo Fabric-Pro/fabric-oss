@@ -86,8 +86,8 @@ const SCOPE_OPTIONS: {
 	},
 	{
 		value: "WORKSPACE_AND_EMAILS",
-		label: "Workspace members and email invites",
-		description: "Organization members plus invited emails",
+		label: "Organization members and email invites",
+		description: "Everyone in your organization plus invited emails",
 		icon: <Users className="h-4 w-4" />,
 	},
 	{

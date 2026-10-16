@@ -11,8 +11,11 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { config } from "@repo/config";
 import {
 	db,
+	deleteFrameOfDeletedProject,
+	detachFramesFromProject,
 	getProjectsNeedingDeletionReminder,
 	getProjectsReadyForPermanentDeletion,
+	listFramesOfDeletedProject,
 	markDeletionReminderSent,
 	permanentDeleteProject,
 } from "@repo/database";
@@ -23,7 +26,11 @@ import {
 	getCollectionName,
 	PROJECT_CONTEXTS_BASE_COLLECTION,
 } from "@repo/rag/lib/collection-manager";
-import { deleteObjects, listObjects } from "@repo/storage";
+import {
+	deleteFramePageFiles,
+	deleteObjects,
+	listObjects,
+} from "@repo/storage";
 import { heartbeat } from "@temporalio/activity";
 import { Resend } from "resend";
 
@@ -473,17 +480,28 @@ function safeAttachmentHeartbeat(): void {
 }
 
 /**
- * Best-effort-but-durable cleanup of a permanently-deleted project's attachment
- * objects. Lists everything under `story-attachments/{projectId}/` and
+ * Removes what a permanently-deleted project left outside its own cascade: its
+ * attachment objects and its pages.
+ *
+ * Attachments: lists everything under `story-attachments/{projectId}/` and
  * `project-brand/{projectId}/` and batch-deletes it, paging until each prefix
  * is exhausted (NO silent deletion cap — the project row is already gone, so a
- * cap would strand objects with no discoverable retry). Idempotent: re-running
- * deletes whatever remains. `pages` counts the pages of both prefixes.
+ * cap would strand objects with no discoverable retry). `pages` counts the
+ * pages of both prefixes.
  *
- * Throws on a systemic `listObjects` failure or if any `deleteObjects` errors
- * remain after the full pass, so Temporal retries the whole activity. The
- * workflow swallows the final (post-retry) failure and logs it — the project is
- * deleted regardless.
+ * Pages: a page row has no foreign key to the project, so the project's delete
+ * leaves its pages, their records and their stored files behind. A Workspace
+ * page belongs to the organization and is only unlinked from the project. Every
+ * other page was the project's own: its stored files are deleted first and its
+ * row after, so a file that could not be deleted leaves the row for the retry
+ * to find. Pages that are not frames are not touched. The files deleted are
+ * counted in `deleted`.
+ *
+ * Idempotent: re-running deletes whatever remains. Throws on a systemic
+ * `listObjects` failure or if any `deleteObjects` errors remain after the full
+ * pass, or if a page's files could not be deleted, so Temporal retries the
+ * whole activity. The workflow swallows the final (post-retry) failure and logs
+ * it — the project is deleted regardless.
  */
 export async function deleteProjectAttachmentsFromStorageActivity(
 	input: DeleteProjectAttachmentsFromStorageInput,
@@ -551,6 +569,18 @@ export async function deleteProjectAttachmentsFromStorageActivity(
 		}
 	}
 
+	// The pages are purged even when an attachment object could not be deleted,
+	// so one failure does not keep the other cleanup from running; either one
+	// failing still throws, below, and the retry runs both again.
+	let pageFiles = 0;
+	let pagesFailure: Error | undefined;
+	try {
+		pageFiles = await purgeProjectPages(projectId);
+	} catch (error) {
+		pagesFailure =
+			error instanceof Error ? error : new Error(String(error));
+	}
+
 	if (errors.length > 0) {
 		logger.error(
 			`[ProjectDeletion] attachment cleanup left ${errors.length} object(s) for project ${projectId}; sample: ${errors
@@ -562,11 +592,49 @@ export async function deleteProjectAttachmentsFromStorageActivity(
 			`[ProjectDeletion] attachment cleanup failed for ${errors.length} object(s) (project ${projectId})`,
 		);
 	}
+	if (pagesFailure) {
+		throw pagesFailure;
+	}
 
+	deleted += pageFiles;
 	logger.info(
-		`[ProjectDeletion] Deleted ${deleted} attachment object(s) for project ${projectId} across ${pages} page(s)`,
+		`[ProjectDeletion] Deleted ${deleted} attachment and page file object(s) for project ${projectId} across ${pages} page(s)`,
 	);
 	return { deleted, pages };
+}
+
+/**
+ * Removes the pages of a project whose row is gone. A Workspace page is only
+ * unlinked; every other page is deleted after its stored files, one at a time,
+ * so a failure leaves the rows not yet deleted for the next attempt to list.
+ * Returns the number of stored files deleted.
+ */
+async function purgeProjectPages(projectId: string): Promise<number> {
+	const { workspaceFrameIds, artifactFrames } =
+		await listFramesOfDeletedProject(projectId);
+
+	if (workspaceFrameIds.length > 0) {
+		await detachFramesFromProject({
+			projectId,
+			frameIds: workspaceFrameIds,
+		});
+	}
+
+	let files = 0;
+	for (const frame of artifactFrames) {
+		const result = await deleteFramePageFiles(
+			{
+				organizationId: frame.organizationId,
+				userId: frame.userId,
+				frameId: frame.id,
+			},
+			{ bucket: config.storage.bucketNames.workspaceDocuments },
+		);
+		files += result.deleted;
+		await deleteFrameOfDeletedProject({ projectId, frameId: frame.id });
+		safeAttachmentHeartbeat();
+	}
+	return files;
 }
 
 /** Storage prefix for project-document assets (keyed by document id). */

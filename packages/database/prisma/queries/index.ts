@@ -1,3 +1,4 @@
+export * from "./agent-conversation-sharing";
 export * from "./agent-conversations";
 export * from "./agent-deployments";
 export * from "./agent-memory";
@@ -44,6 +45,7 @@ export * from "./chatgpt-plan-source-sweep";
 export * from "./chatgpt-plan-upload-ticket";
 export * from "./chatgpt-plan-window";
 export * from "./chatgpt-plan-window-accuracy";
+export * from "./chatgpt-plan-work-notifications";
 export * from "./cli-reach";
 export * from "./code-symbols";
 export * from "./coding-runs";

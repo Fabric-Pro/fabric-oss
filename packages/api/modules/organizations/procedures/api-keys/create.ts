@@ -58,12 +58,14 @@ export const ORG_API_KEY_SCOPES = [
 	"features:write", // Create and update features, bugs and their tasks
 	"workspaces:read", // Read workspaces and run RAG queries
 	"workflows:read", // Read workflows and their executions
+	"workflows:write", // Create, edit, publish, pause and resume workflows
 	"workflows:run", // Trigger workflow executions
 	"frames:read", // Read frames and slideshows
 	"frames:write", // Create, update and share frames
 	"instructions:read", // Read the published coding instructions of a project
 	"instructions:write", // Propose a change to a project's coding instructions
 	"repositories:read", // Read a project's complete attached repository through Git transport
+	"memory:write", // Write files into a project's Living Memory write folders (ADR-022)
 	// Publish a new version of a project's coding instructions directly, with
 	// no review. A SEPARATE authority from `instructions:write` rather than a
 	// mode inside it: that scope is what the Connect dialog mints, on the
@@ -127,20 +129,33 @@ export type OrgApiKeyScope = (typeof ORG_API_KEY_SCOPES)[number];
  * | `features:write`       | `STORY_CREATE`/`STORY_UPDATE` | no    |
  * | `workspaces:read`      | `WORKSPACE_READ`            | yes     |
  * | `workflows:read`       | `WORKSPACE_READ`            | yes     |
+ * | `workflows:write`      | `WORKSPACE_CREATE`/`_UPDATE`| no      |
  * | `workflows:run`        | `WORKSPACE_UPDATE`          | no      |
  * | `frames:read`          | `DIAGRAM_READ`              | yes     |
  * | `frames:write`         | `DIAGRAM_CREATE`/`_UPDATE`  | no      |
  * | `instructions:read`    | `INSTRUCTION_READ`          | yes     |
  * | `instructions:write`   | `INSTRUCTION_READ`          | yes     |
  * | `instructions:publish` | `INSTRUCTION_CREATE`        | no      |
+ * | `memory:write`         | `CONTEXT_CREATE` (live)     | yes     |
  * | `chats:read`           | none — own threads only     | yes     |
  * | `audit_log:read`       | `ORG_AUDIT_LOG_READ`        | no      |
  * | `audit_log:export`     | `ORG_AUDIT_LOG_EXPORT`      | no      |
  * | `system_health:read`   | none — any authenticated    | yes     |
  * | `status_updates:read`  | none — any authenticated     | yes    |
  *
- * Six rows are worth their own sentence, because reading the scope name is
+ * Seven rows are worth their own sentence, because reading the scope name is
  * not enough to get them right:
+ *
+ *   - `memory:write` writes files into the Living Memory folders an
+ *     administrator named, and on a direct-push folder the commit lands on the
+ *     synced branch with no review (ADR-022). It is on the read-only list for
+ *     a different reason than `instructions:write`: the scope grants nothing
+ *     by itself. Every REST route and MCP tool behind it re-checks the
+ *     caller's `CONTEXT_CREATE` on the project on each call, which a viewer
+ *     does not hold, so a viewer's key can name the scope and never use it.
+ *     It has to be mintable by a viewer because the Connect dialog puts it on
+ *     every coding-instructions key, and refusing it would refuse the
+ *     dialog to that role.
  *
  *   - `instructions:write` is the one WRITE scope on the read-only list, and it
  *     is there because of what the surface behind it actually does: it opens a
@@ -212,6 +227,8 @@ const READ_ONLY_ORG_API_KEY_SCOPES: ReadonlySet<OrgApiKeyScope> = new Set([
 	// is deliberately NOT here: that one publishes without review, on
 	// `INSTRUCTION_CREATE`, which the viewer set does not hold.
 	"instructions:write",
+	// Inert for a viewer: every use re-checks `CONTEXT_CREATE` live. See the table.
+	"memory:write",
 	"chats:read",
 	"system_health:read",
 	"status_updates:read",

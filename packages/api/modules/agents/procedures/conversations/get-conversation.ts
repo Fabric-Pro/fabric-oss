@@ -1,25 +1,39 @@
 import { ORPCError } from "@orpc/server";
-import { getAgentConversationById } from "@repo/database";
+import { getAgentConversationForViewer } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { ConversationDetailSchema, detailOf } from "./conversation-view";
+import { resolvedOrganizationId } from "./resolved-organization";
 
 /**
- * Get a single agent conversation by ID
+ * Get a single agent conversation by ID: the caller's own, or one its owner
+ * shared with the organization. `isOwn` tells the caller which; a session that
+ * is not theirs is read-only (every writer filters on the owner) and comes as a
+ * transcript only (see `./conversation-view`), so a client shows it without
+ * sending or approval controls and offers to continue it in the caller's own
+ * chat.
+ *
+ * Authorized in the organization the request names, for `AGENT_READ`: ADR-018
+ * leaves no personal conversation. A session of another organization, and
+ * another member's private one, are "not found".
  */
 export const getConversation = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/agents/conversations/{id}",
 		tags: ["Agent Conversations"],
 		summary: "Get an agent conversation",
-		description: "Get a single agent conversation by ID",
+		description:
+			"Get a single agent conversation by ID: the caller's own, or one shared in the organization",
 	})
 	.input(
 		z.object({
@@ -27,30 +41,12 @@ export const getConversation = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
+	.output(ConversationDetailSchema)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
-
-		const conversation = await getAgentConversationById({
+		const conversation = await getAgentConversationForViewer({
 			id: input.id,
-			userId: user.id,
-			organizationId,
+			userId: context.user.id,
+			organizationId: resolvedOrganizationId(input, context.session),
 		});
 
 		if (!conversation) {
@@ -59,19 +55,5 @@ export const getConversation = tenantProtectedProcedure
 			});
 		}
 
-		return {
-			id: conversation.id,
-			agentId: conversation.agentId,
-			title: conversation.title,
-			messages: conversation.messages,
-			trajectory: conversation.trajectory,
-			metadata: conversation.metadata,
-			pinned: conversation.pinned,
-			status: conversation.status,
-			createdAt: conversation.createdAt.toISOString(),
-			updatedAt: conversation.updatedAt.toISOString(),
-			parentConversationId: conversation.parentConversationId,
-			carriedOverSummary: conversation.carriedOverSummary,
-			carriedOverAt: conversation.carriedOverAt?.toISOString() ?? null,
-		};
+		return detailOf(conversation);
 	});

@@ -202,6 +202,25 @@ A sign-in grants `mcp:read instructions:read instructions:write` (the `scope` in
 challenge above). `instructions:publish` is a separate authority that only an organization
 API key created for it carries, and it is not reachable from the gateway.
 
+### Living Memory writes
+
+Three tools put plain files into the Living Memory folders a project administrator named,
+without a local clone. Files never reach the repository from the agent: Fabric commits them
+with the repository integration's own credential.
+
+| Tool | Scope | Kind | Purpose |
+|---|---|---|---|
+| `fabric_memory_targets` | `memory:write` | read | List the write folders, their mode, the branch and repository, and the commit the last sync applied |
+| `fabric_memory_write` | `memory:write` | write | Write or delete files in one folder as a single commit; a file without `ifMatchOid` is create-only |
+| `fabric_memory_write_status` | `memory:write` | read | Read a write's receipt: committed, pull request opened, conflict, refused or failed |
+
+`memory:write` is the one scope that can land a commit without review: on a folder set to
+direct push the files are committed to the synced branch, and elsewhere a pull request is
+opened and the files are not in Living Memory until a person merges it. It is never part of
+a default sign-in; the agent asks for it by name and the person approves it. Coding
+instructions can never be written this way. Every call re-checks that the person can add
+project context.
+
 ## CLI Discovery
 
 Each deployment serves its own build of the Fabric CLI, so a person can run it straight

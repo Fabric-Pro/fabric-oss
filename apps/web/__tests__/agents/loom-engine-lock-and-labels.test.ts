@@ -78,13 +78,38 @@ describe("simple mode engine", () => {
 			/const chatEngine = resolveChatEngine\(\{[\s\S]{0,200}?conversationEngine,/,
 		);
 		expect(source).toMatch(
-			/setConversationEngine\(conversationEngineFromMetadata\(metadata\)\)/,
+			/const restored = restoreFromConversationMetadata\(\s*activeConversation\.metadata,[\s\S]{0,200}?\);[\s\S]{0,300}?setConversationEngine\(restored\.engine\)/,
 		);
 	});
 
 	it("runs the Orchestrator's iterative preset in simple mode", () => {
 		expect(source).toMatch(
 			/executionModeOverride=\{\s*uiMode === "simple" \? "iterative" : undefined\s*\}/,
+		);
+	});
+});
+
+describe("engine mismatch notice in simple mode (Fizzy #3093)", () => {
+	const source = readSource(
+		"modules/saas/agents/components/fabric-ai/FabricAIClient.tsx",
+	);
+
+	it("compares the open chat's engine with the new-chat engine", () => {
+		expect(source).toMatch(
+			/showsEngineMismatchNotice\(\{[^}]*chatEngine,[^}]*newChatEngine: readerEngine,/,
+		);
+	});
+
+	it("gates on an open conversation and skips another member's shared one", () => {
+		expect(source).toMatch(
+			/hasOpenConversation: Boolean\(activeConversationId\),[^}]*\}\) && !\(activeConversation && !activeConversation\.isOwn\)/,
+		);
+	});
+
+	it("renders the notice on the helper's answer, with the New button's handler", () => {
+		expect(source).toMatch(/onClick=\{handleNewChat\}/);
+		expect(source).toMatch(
+			/\{engineMismatch && \(\s*<EngineMismatchNotice onNewChat=\{handleNewChat\} \/>\s*\)\}/,
 		);
 	});
 });

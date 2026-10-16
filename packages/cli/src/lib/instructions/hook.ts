@@ -448,6 +448,79 @@ export async function mergeCommandHook(input: {
 	});
 }
 
+export interface UpdatedHookConfig {
+	settingsPath: string;
+	/** True when the file did not exist before. */
+	createdFile: boolean;
+	/** False when `update` changed nothing and the file was left as it was. */
+	changed: boolean;
+}
+
+/**
+ * Change one coding tool's hook file with the same guards every hook write
+ * has: under the lock, read safely, refused when it is not a JSON object, and
+ * written back only when `update` produced something different. `update` is
+ * handed a copy of the parsed file and returns the new top-level object, or
+ * `null` for "leave it". Used by the writers whose entries are not
+ * `instructions` hooks (the plugin registration, the memory hooks), so they
+ * share the file's guards instead of copying them.
+ */
+export async function updateHookConfig(input: {
+	/** An already-canonical destination from `resolveDestinationRoot`. */
+	root: string;
+	tool: InstructionsHookTool;
+	update: (
+		settings: Record<string, unknown>,
+		settingsPath: string,
+	) => Record<string, unknown> | null;
+}): Promise<UpdatedHookConfig> {
+	const hookTarget = hookTargetFor(input.tool);
+	return withHookConfigLock(input.root, hookTarget.posixPath, async () => {
+		const settingsPath = path.join(input.root, hookTarget.relativePath);
+		const { settings, existingRaw } = await readHookConfig(
+			input.root,
+			hookTarget,
+		);
+		const next = input.update(structuredClone(settings), settingsPath);
+		if (next === null) {
+			return { settingsPath, createdFile: false, changed: false };
+		}
+		const text = `${JSON.stringify(next, null, 2).replace(/\r\n/g, "\n")}\n`;
+		if (
+			existingRaw !== null &&
+			JSON.stringify(next) === JSON.stringify(settings)
+		) {
+			return { settingsPath, createdFile: false, changed: false };
+		}
+		await writeFileSafely({
+			root: input.root,
+			relativePath: hookTarget.posixPath,
+			bytes: new TextEncoder().encode(text),
+		});
+		return {
+			settingsPath,
+			createdFile: existingRaw === null,
+			changed: true,
+		};
+	});
+}
+
+/** An object-shaped value of a settings file, or a refusal that names the key. */
+export function objectAt(
+	settings: Record<string, unknown>,
+	key: string,
+	settingsPath: string,
+): Record<string, unknown> {
+	const value = settings[key];
+	if (value === undefined) {
+		return {};
+	}
+	if (!isRecord(value)) {
+		throw refuseShape(settingsPath, `"${key}" is not an object`);
+	}
+	return { ...value };
+}
+
 /**
  * `mergeCommandHook`, fixed to the `SessionStart` event — the shape every
  * existing caller of this module already depends on. Kept as its own export,

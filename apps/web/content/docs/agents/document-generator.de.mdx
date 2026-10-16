@@ -30,7 +30,7 @@ flowchart TB
         direction TB
         S1["**1. ANFRAGE ANALYSIEREN**<br/>• Dokumenttyp identifizieren (PRD)<br/>• Schlüsselanforderungen extrahieren<br/>• Umfang bestimmen"]
 
-        S2["**2. KONTEXT ABRUFEN (RAG)**<br/>• Angehängte Workspaces durchsuchen<br/>• Ähnliche frühere Dokumente finden<br/>• Relevante Vorlagen sammeln"]
+        S2["**2. KONTEXT ABRUFEN (RAG)**<br/>• Angehängte Bibliotheken durchsuchen<br/>• Ähnliche frühere Dokumente finden<br/>• Relevante Vorlagen sammeln"]
 
         S3["**3. DOKUMENT GENERIEREN**<br/>• Dokumentstruktur anwenden<br/>• Abgerufenen Kontext einbeziehen<br/>• Umfassenden Inhalt generieren"]
 
@@ -54,7 +54,7 @@ flowchart TB
   <Step>
     ### Kontext anhängen (Optional)
 
-    Klicken Sie auf die Schaltfläche **Anhängen**, um Workspaces hinzuzufügen, die Folgendes enthalten:
+    Klicken Sie auf die Schaltfläche **Anhängen**, um Bibliotheken hinzuzufügen, die Folgendes enthalten:
     - Frühere Dokumente als Stilreferenz
     - Technische Einschränkungen und Anforderungen
     - Unternehmensvorlagen und Richtlinien
@@ -107,7 +107,7 @@ flowchart TB
 ```
 "Erstelle eine technische Spezifikation für den Benachrichtigungsdienst.
 Referenziere die Architekturmuster aus unserer bestehenden User-Service-
-Dokumentation im 'Backend Docs' Workspace."
+Dokumentation in der Bibliothek 'Backend Docs'."
 ```
 
 ### Bestimmte Abschnitte anfordern
@@ -180,11 +180,11 @@ Der Dokumentengenerator nutzt RAG für kontextbewusste Generierung:
 | Platzhalterbeispiele | Echte Beispiele aus vergangenen Projekten |
 | Fehlende Einschränkungen | Bezieht bekannte Einschränkungen ein |
 
-### Workspaces anhängen
+### Bibliotheken anhängen
 
-1. Einen Workspace mit Referenzdokumenten erstellen
+1. Eine Bibliothek mit Referenzdokumenten erstellen
 2. Relevante Dateien hochladen (PRDs, Spezifikationen, Vorlagen)
-3. Workspace beim Starten des Gesprächs anhängen
+3. Bibliothek beim Starten des Gesprächs anhängen
 4. Der Generator ruft relevante Abschnitte automatisch ab
 
 ## Export-Optionen
@@ -228,7 +228,7 @@ Schließe Abschnitte ein für:
 
 ### 2. Beispiele bereitstellen
 
-Laden Sie Beispieldokumente in Ihren Workspace hoch. Der Generator lernt Ihren Stil:
+Laden Sie Beispieldokumente in Ihre Bibliothek hoch. Der Generator lernt Ihren Stil:
 - Bevorzugte Abschnittsreihenfolge
 - Erwarteter Detailgrad
 - Terminologie und Ton
@@ -250,7 +250,7 @@ Der Generator kann Abschnitte hinzufügen, die Sie nicht angefordert haben. Übe
 ### Dokument ist zu kurz
 
 - Mehr Kontext in Ihrem Prompt bereitstellen
-- Workspaces mit Referenzdokumenten anhängen
+- Bibliotheken mit Referenzdokumenten anhängen
 - Um „Erweiterung" bestimmter Abschnitte bitten
 
 ### Fehlende Abschnitte
@@ -265,8 +265,8 @@ Der Generator kann Abschnitte hinzufügen, die Sie nicht angefordert haben. Übe
 
 ### Kontext wird nicht verwendet
 
-- Sicherstellen, dass der Workspace ordnungsgemäß angehängt ist
-- Prüfen, ob die Dokumente im Workspace verarbeitet sind
+- Sicherstellen, dass die Bibliothek ordnungsgemäß angehängt ist
+- Prüfen, ob die Dokumente in der Bibliothek verarbeitet sind
 - Genauer angeben, welcher Kontext referenziert werden soll
 
 ---

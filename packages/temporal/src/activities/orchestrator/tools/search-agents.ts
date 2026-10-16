@@ -14,6 +14,7 @@ import { getAgentsWithEmbeddings, updateAgentEmbedding } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { CacheKeys, CacheTTL, RedisCache } from "../../../lib/redis-cache";
 import {
 	rethrowIfTurnStopped,
@@ -31,6 +32,12 @@ import type {
 	SearchAvailableAgentsOutput,
 } from "./types";
 import { extractQueryWords } from "./utils";
+
+/** Fabric Agent's own registrations: the searching chat itself. */
+const FABRIC_AGENT_SELF_IDS: ReadonlySet<string> = new Set([
+	FABRIC_AGENT_ID,
+	"fabric-ai",
+]);
 
 // =============================================================================
 // Always-Available Agents
@@ -159,10 +166,16 @@ async function runAgentSearch(
 		status: "ACTIVE",
 	});
 
-	// Apply enabledAgentIds filter in-memory (mirrors original db-level filter)
-	const agents = input.enabledAgentIds
-		? allAgents.filter((a) => input.enabledAgentIds?.includes(a.agentId))
-		: allAgents;
+	// Apply enabledAgentIds filter in-memory (mirrors original db-level filter).
+	// The chat searching here is Fabric Agent, so it is never its own
+	// delegation target: offered, it delegated a page write to itself and the
+	// nested run failed.
+	const agents = allAgents.filter(
+		(a) =>
+			!FABRIC_AGENT_SELF_IDS.has(a.agentId) &&
+			(!input.enabledAgentIds ||
+				input.enabledAgentIds.includes(a.agentId)),
+	);
 
 	if (agents.length === 0) {
 		return {

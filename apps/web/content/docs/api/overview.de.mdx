@@ -41,8 +41,8 @@ Wählen Sie beim Erstellen eines Tokens die entsprechenden Bereiche:
 | `agents:write` | Agenten erstellen und aktualisieren |
 | `conversations:read` | Gespräche anzeigen |
 | `conversations:write` | Nachrichten erstellen, Gespräche starten |
-| `workspaces:read` | Workspaces auflisten und anzeigen |
-| `workspaces:write` | Dokumente hochladen, Workspaces verwalten |
+| `workspaces:read` | Bibliotheken auflisten und anzeigen |
+| `workspaces:write` | Dokumente hochladen, Bibliotheken verwalten |
 | `workflows:read` | Workflow-Status anzeigen |
 | `workflows:write` | Workflows starten und verwalten |
 
@@ -104,15 +104,17 @@ curl -X POST https://api.fabric.pro/v1/conversations \
 | POST | `/conversations/:id/messages` | Nachricht hinzufügen |
 | DELETE | `/conversations/:id` | Gespräch löschen |
 
-### Workspaces
+### Bibliotheken
+
+Dokumentbibliotheken behalten den Namen, den sie vor der Umbenennung in der App hatten: Die Endpunkte und Scopes heißen `workspaces`, und `workspaceIds` ist das Feld, das sie an ein Gespräch anhängt.
 
 | Methode | Endpunkt | Beschreibung |
 |--------|----------|-------------|
-| GET | `/workspaces` | Workspaces auflisten |
-| GET | `/workspaces/:id` | Workspace-Details abrufen |
-| POST | `/workspaces` | Workspace erstellen |
+| GET | `/workspaces` | Bibliotheken auflisten |
+| GET | `/workspaces/:id` | Bibliotheksdetails abrufen |
+| POST | `/workspaces` | Bibliothek erstellen |
 | POST | `/workspaces/:id/documents` | Dokument hochladen |
-| DELETE | `/workspaces/:id` | Workspace löschen |
+| DELETE | `/workspaces/:id` | Bibliothek löschen |
 
 ### Workflows
 
@@ -246,7 +248,7 @@ Konfigurieren Sie Webhooks, um Echtzeit-Benachrichtigungen zu empfangen:
 | `workflow.started` | Workflow-Ausführung begonnen |
 | `workflow.completed` | Workflow beendet |
 | `workflow.approval_needed` | Menschliche Genehmigung erforderlich |
-| `document.uploaded` | Dokument zum Workspace hinzugefügt |
+| `document.uploaded` | Dokument zu einer Bibliothek hinzugefügt |
 
 ### Webhook-Payload
 

@@ -565,6 +565,18 @@ function getProviderIcon(provider: AIProvider): LucideIcon {
 // Helper Functions
 // ============================================================================
 
+/**
+ * The name a person knows a provider by, for an identifier the server sent
+ * (e.g. `"OPENAI_DIRECT"` → `"OpenAI"`). An identifier this list does not know
+ * reads as itself with spaces, never as an empty string.
+ */
+export function getProviderDisplayName(providerId: string): string {
+	return (
+		AI_PROVIDER_METADATA[providerId as AIProvider]?.displayName ??
+		providerId.replace(/_/g, " ")
+	);
+}
+
 // ============================================================================
 // Enhanced Provider Lists
 // ============================================================================

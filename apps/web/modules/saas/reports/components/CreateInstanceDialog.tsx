@@ -947,17 +947,17 @@ export function CreateInstanceDialog({
 						</div>
 					)}
 
-					{/* Optional: Workspaces for RAG context */}
+					{/* Optional: document libraries for RAG context */}
 					{workspacesEnabled && userWorkspaces.length > 0 && (
 						<div className="space-y-3">
 							<div>
 								<h3 className="font-medium flex items-center gap-2">
 									<FolderOpenIcon className="h-4 w-4" />
-									Document Workspaces
+									Document Libraries
 								</h3>
 								<p className="text-sm text-muted-foreground">
 									{requirements.workspaces?.description ||
-										"Optionally select workspaces to provide additional context via RAG."}
+										"Optionally select libraries to provide additional context via RAG."}
 								</p>
 							</div>
 
@@ -968,7 +968,7 @@ export function CreateInstanceDialog({
 								}
 							>
 								<SelectTrigger>
-									<SelectValue placeholder="Select a workspace (optional)..." />
+									<SelectValue placeholder="Select a library (optional)..." />
 								</SelectTrigger>
 								<SelectContent>
 									{userWorkspaces.map((ws) => (

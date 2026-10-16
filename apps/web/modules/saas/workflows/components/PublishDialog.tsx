@@ -5,6 +5,7 @@
  * Dialog for publishing workflows with options for webhooks and versioning
  */
 
+import { isWorkflowLive } from "@repo/utils/workflow-status";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -153,7 +154,7 @@ export function PublishDialog({
 		onOpenChange(false);
 	}, [onOpenChange]);
 
-	const isPublished = status === "PUBLISHED" || status === "ACTIVE";
+	const isPublished = isWorkflowLive(status);
 
 	return (
 		<Dialog open={open} onOpenChange={handleClose}>

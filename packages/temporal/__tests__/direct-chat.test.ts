@@ -133,7 +133,9 @@ describe("Direct Chat Workflow Types", () => {
 			};
 
 			expect(output.pendingConfirmation).toBeDefined();
-			expect(output.pendingConfirmation?.workflowId).toBe("workflow-123");
+			expect(output.pendingConfirmation).toMatchObject({
+				workflowId: "workflow-123",
+			});
 		});
 
 		it("should represent failed execution", () => {

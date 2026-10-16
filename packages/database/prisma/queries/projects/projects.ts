@@ -19,6 +19,7 @@ import {
 	ProjectMemberRole,
 	type ProjectStatus,
 } from "../../client";
+import { isOrganizationMember } from "../verify-organization-membership";
 
 /**
  * Create a new project
@@ -1569,6 +1570,47 @@ export async function canEditProject(
 		userId,
 		Permissions.PROJECT_UPDATE,
 	);
+}
+
+/**
+ * Returns `true` if `userId` may change `projectId`'s documents, matching the
+ * authorization paths of `requireProjectPermission(DOCUMENT_UPDATE)`.
+ *
+ * The background counterpart the Proposal settled-decisions feed asks about
+ * each answer's author at build time (Fizzy #2946): an answer stops feeding
+ * later documents once its author loses the right to change them. Project
+ * permission only: a project guest with an EDITOR row holds it too, so a
+ * caller that also needs membership of the owning organization asks
+ * `isOrganizationMember` separately.
+ */
+export async function canUpdateProjectDocuments(
+	projectId: string,
+	userId: string,
+): Promise<boolean> {
+	return projectPermissionHolds(
+		projectId,
+		userId,
+		Permissions.DOCUMENT_UPDATE,
+	);
+}
+
+/**
+ * Whether an Internal Analysis answer by `userId` still counts as a settled
+ * decision for `projectId` (Fizzy #2946): its author is, now, a member of the
+ * owning organization AND holds `DOCUMENT_UPDATE` on the project. The one
+ * rule both the settled-decisions feed and the Analysis tab's "not applied"
+ * note ask, so the two cannot drift. Membership is asked first and
+ * short-circuits.
+ */
+export async function authorMaySettleDecisions(
+	userId: string,
+	projectId: string,
+	organizationId: string,
+): Promise<boolean> {
+	if (!(await isOrganizationMember(userId, organizationId))) {
+		return false;
+	}
+	return canUpdateProjectDocuments(projectId, userId);
 }
 
 /**

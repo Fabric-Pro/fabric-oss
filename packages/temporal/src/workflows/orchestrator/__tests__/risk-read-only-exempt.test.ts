@@ -272,7 +272,7 @@ describe("replay safety", () => {
 
 	it("picks the new rules only behind their patch marker", () => {
 		expect(source).toMatch(
-			/assessToolCallRisk\(\s*toolCall,\s*autonomyLevel,\s*patched\("orch-risk-read-only-exempt-v1"\)\s*\?\s*\{\s*rules: "read-only-exempt-v1",/,
+			/assessToolCallRisk\(\s*toolCall,\s*autonomyLevel,\s*patched\("orch-risk-read-only-exempt-v1"\)\s*\?\s*\{\s*rules: patched\("orch-risk-fabric-gated-v1"\)\s*\?\s*"fabric-gated-v2"\s*:\s*"read-only-exempt-v1",/,
 		);
 		expect(source).toMatch(/:\s*\{ rules: "legacy" \},?\s*\)/);
 	});

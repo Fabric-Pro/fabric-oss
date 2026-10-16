@@ -428,10 +428,7 @@ describe("useDirectStream — the first send after a reset", () => {
 			void result.current.sendMessage(
 				"new q",
 				opened.map(({ role, content }) => ({ role, content })),
-				false,
-				undefined,
-				undefined,
-				opened,
+				{ existingMessages: opened },
 			);
 		});
 

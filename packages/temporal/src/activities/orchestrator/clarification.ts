@@ -41,6 +41,11 @@ export interface AnalyzeIntentClarityInput {
 	userId: string;
 	organizationId?: string;
 	/**
+	 * The chat conversation this call serves, when there is one. Recorded on
+	 * the usage-log row for cost attribution only.
+	 */
+	conversationId?: string;
+	/**
 	 * The chat turn this check belongs to. When set, the turn record is
 	 * consulted before the model request, and a refusal (the user stopped
 	 * the turn) is thrown rather than converted into "no clarification".
@@ -118,6 +123,9 @@ export async function analyzeIntentClarityActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				featureKey: "chat-agent",
+				...(input.conversationId
+					? { conversationId: input.conversationId }
+					: {}),
 			},
 		);
 

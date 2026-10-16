@@ -216,7 +216,9 @@ describe("Glossy Version Export gate — await guard", () => {
 	// Each directory has its own gate. The Glossy procedures keep
 	// GLOSSY_EDITION alone; only the recipient brand, which the Proposal
 	// artifact's Style tab edits too, accepts GLOSSY_EDITION or
-	// PROPOSAL_ARTIFACT (Fizzy #2801).
+	// PROPOSAL_ARTIFACT (Fizzy #2801). The Proposal artifact procedures keep
+	// PROPOSAL_ARTIFACT alone, the guest-readable theme tokens included
+	// (Fizzy #2946).
 	it.each([
 		{
 			dir: "packages/api/modules/projects/procedures/glossy",
@@ -236,6 +238,16 @@ describe("Glossy Version Export gate — await guard", () => {
 				"requireProposalArtifactEnabled",
 			],
 			// Four recipient-brand procedures today.
+			atLeast: 4,
+		},
+		{
+			dir: "packages/api/modules/projects/procedures/proposal-artifact",
+			gate: ".use(requireProposalArtifactEnabled())",
+			forbidden: [
+				"requireGlossyEnabled",
+				"requireGlossyOrProposalArtifactEnabled",
+			],
+			// Four Proposal artifact procedures today.
 			atLeast: 4,
 		},
 	])(

@@ -160,5 +160,12 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 			];
 			expect(withoutHiddenSystemMcpServers(servers)).toEqual(servers);
 		});
+
+		it("keeps a system server with key twilio", () => {
+			const servers = [
+				{ key: "twilio", isSystemProvided: true, name: "Twilio" },
+			];
+			expect(withoutHiddenSystemMcpServers(servers)).toEqual(servers);
+		});
 	});
 });

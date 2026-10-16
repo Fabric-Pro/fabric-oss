@@ -13,7 +13,8 @@
  * prefix and compare against the workflow table without a column to drift.
  */
 
-import type { ScheduleClient } from "@temporalio/client";
+import type { ScheduleClient, ScheduleSpec } from "@temporalio/client";
+import type { Duration } from "@temporalio/common";
 
 /** Every schedule this module owns starts with this. Reconciliation depends on it. */
 export const WORKFLOW_BUILDER_SCHEDULE_PREFIX = "workflow-builder-";
@@ -69,12 +70,13 @@ export function isPlausibleCron(expression: string): boolean {
 }
 
 /**
- * Read the cron expression off a workflow's Schedule trigger node.
- *
- * Returns null when the workflow has no schedule trigger, or has one with no
- * expression — both of which mean "no schedule", not "invalid".
+ * The Schedule trigger that supplies a workflow's cron: the first schedule
+ * trigger node with a non-empty expression. Everything the schedule reads off
+ * the graph (the cron, its time zone) comes from this one node.
  */
-export function findScheduleCron(nodes: unknown): string | null {
+function findScheduleTriggerConfig(
+	nodes: unknown,
+): { cron: string; config: Record<string, unknown> } | null {
 	if (!Array.isArray(nodes)) {
 		return null;
 	}
@@ -99,16 +101,90 @@ export function findScheduleCron(nodes: unknown): string | null {
 
 		const cron = config.scheduleCron ?? config.scheduleExpression;
 		if (typeof cron === "string" && cron.trim().length > 0) {
-			return cron.trim();
+			return { cron: cron.trim(), config };
 		}
 	}
 
 	return null;
 }
 
+/**
+ * Read the cron expression off a workflow's Schedule trigger node.
+ *
+ * Returns null when the workflow has no schedule trigger, or has one with no
+ * expression — both of which mean "no schedule", not "invalid".
+ */
+export function findScheduleCron(nodes: unknown): string | null {
+	return findScheduleTriggerConfig(nodes)?.cron ?? null;
+}
+
+/**
+ * Read the time zone the cron is meant in off the same trigger node.
+ *
+ * Null means none was set, which is how every workflow saved before the field
+ * existed reads: its cron stays in UTC. The value is returned as written, so
+ * {@link isValidScheduleTimeZone} decides whether it is usable.
+ */
+export function findScheduleTimezone(nodes: unknown): string | null {
+	const zone = findScheduleTriggerConfig(nodes)?.config.scheduleTimezone;
+	return typeof zone === "string" && zone.trim().length > 0
+		? zone.trim()
+		: null;
+}
+
+const TIME_ZONE_NAME = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/;
+
+/**
+ * Whether a time zone name is one Temporal will accept.
+ *
+ * The server resolves names case-sensitively against the IANA database, while
+ * `Intl` forgives case and also takes UTC offsets, so `Intl` alone would pass
+ * values the schedule would then refuse. An offset is rejected by shape, and a
+ * name that matches a known zone in everything but case is rejected. `Intl`
+ * still lists some zones under their older spellings (Asia/Calcutta for
+ * Asia/Kolkata), so a name it does not list is accepted when it parses.
+ */
+export function isValidScheduleTimeZone(zone: string): boolean {
+	if (zone.toLowerCase() === "utc") {
+		return zone === "UTC";
+	}
+	if (!TIME_ZONE_NAME.test(zone)) {
+		return false;
+	}
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: zone });
+	} catch {
+		return false;
+	}
+	const sameNameOtherCase = Intl.supportedValuesOf("timeZone").find(
+		(known) => known.toLowerCase() === zone.toLowerCase(),
+	);
+	return sameNameOtherCase === undefined || sameNameOtherCase === zone;
+}
+
+/**
+ * Every fire is delayed by a random amount up to this, so schedules created for
+ * the same minute (most people choose 09:00) do not all start their agents at
+ * once. Small enough that the shortest allowed interval is unaffected.
+ */
+export const SCHEDULE_JITTER: Duration = "30 seconds";
+
+function buildScheduleSpec(
+	cron: string,
+	timezone: string | null | undefined,
+): ScheduleSpec {
+	return {
+		cronExpressions: [cron],
+		jitter: SCHEDULE_JITTER,
+		...(timezone ? { timezone } : {}),
+	};
+}
+
 export interface UpsertWorkflowScheduleArgs {
 	workflowId: string;
 	cron: string;
+	/** IANA zone the cron is read in; omitted means UTC, as before the field existed. */
+	timezone?: string | null;
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -129,8 +205,12 @@ export async function upsertWorkflowSchedule(
 	if (!isPlausibleCron(args.cron)) {
 		throw new Error(`Invalid cron expression: "${args.cron}"`);
 	}
+	if (args.timezone && !isValidScheduleTimeZone(args.timezone)) {
+		throw new Error(`Invalid time zone: "${args.timezone}"`);
+	}
 
 	const scheduleId = buildWorkflowScheduleId(args.workflowId);
+	const spec = buildScheduleSpec(args.cron, args.timezone);
 
 	const action = {
 		type: "startWorkflow" as const,
@@ -156,7 +236,7 @@ export async function upsertWorkflowSchedule(
 	try {
 		await scheduleClient.create({
 			scheduleId,
-			spec: { cronExpressions: [args.cron] },
+			spec,
 			action,
 			policies: {
 				// A run that overruns its next slot should not stack up; the
@@ -180,7 +260,7 @@ export async function upsertWorkflowSchedule(
 			const handle = scheduleClient.getHandle(scheduleId);
 			await handle.update((previous) => ({
 				...previous,
-				spec: { cronExpressions: [args.cron] },
+				spec,
 				action,
 			}));
 			return { scheduleId, created: false };

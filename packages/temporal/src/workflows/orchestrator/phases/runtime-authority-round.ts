@@ -54,7 +54,21 @@ interface RuntimeAuthorityRoundDeps {
 export function runtimeAuthorityApprovalReason(
 	request: RuntimeAuthorityRequest,
 ): string {
-	return `HIGH RISK: Allow ${request.accessLevel} access to ${request.providerDisplayName} for this conversation? The assistant wants to run "${request.toolName}". Approving lets this conversation make changes in ${request.providerDisplayName} until the grant expires.`;
+	// What the approval reaches is said as it is: a grant for one call is not
+	// described as access to the provider. An older record has no scope and
+	// keeps its wording.
+	switch (request.grantScope) {
+		case "call":
+			return `HIGH RISK: Allow "${request.toolName}" to run once in ${request.providerDisplayName}${request.callSummary ? ` (${request.callSummary})` : ""}? Approving runs exactly this call and nothing else; the next one asks again.`;
+		case "tool":
+			return `HIGH RISK: Allow "${request.toolName}" for this conversation? Approving lets this conversation run "${request.toolName}" in ${request.providerDisplayName} until the grant expires. Other changes still ask.`;
+		case undefined:
+			return `HIGH RISK: Allow ${request.accessLevel} access to ${request.providerDisplayName} for this conversation? The assistant wants to run "${request.toolName}". Approving lets this conversation make changes in ${request.providerDisplayName} until the grant expires.`;
+		default: {
+			const unreachable: never = request.grantScope;
+			return unreachable;
+		}
+	}
 }
 
 function toolError(

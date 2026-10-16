@@ -213,6 +213,7 @@ describe("a read-only role creating a key", () => {
 			"workflows:read",
 			"frames:read",
 			"instructions:read",
+			"memory:write",
 			"chats:read",
 			"system_health:read",
 			"status_updates:read",
@@ -253,6 +254,7 @@ describe("a read-only role creating a key", () => {
 		"projects:write",
 		"agents:execute",
 		"features:write",
+		"workflows:write",
 		"workflows:run",
 		"frames:write",
 		// The publish half of the coding-instructions split. Its sibling

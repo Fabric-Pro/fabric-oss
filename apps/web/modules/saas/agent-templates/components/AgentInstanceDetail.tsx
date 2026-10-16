@@ -435,7 +435,7 @@ export function AgentInstanceDetail({
 									Knowledge & Tools
 								</h3>
 								<p className="text-sm text-muted-foreground">
-									Connected workspaces, integrations, and
+									Connected libraries, integrations, and
 									capabilities.
 								</p>
 							</div>
@@ -451,7 +451,7 @@ export function AgentInstanceDetail({
 												Knowledge
 											</h4>
 											<p className="text-xs text-muted-foreground">
-												Workspaces & integrations
+												Libraries & integrations
 											</p>
 										</div>
 									</div>
@@ -481,7 +481,7 @@ export function AgentInstanceDetail({
 																	workspaceId}
 															</span>
 															<Badge variant="secondary">
-																Workspace
+																Library
 															</Badge>
 														</div>
 													),

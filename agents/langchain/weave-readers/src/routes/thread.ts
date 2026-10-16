@@ -1,3 +1,4 @@
+import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
 import { resolveReaderModel } from "../lib/llm.js";
@@ -31,7 +32,7 @@ async function buildThreadResponse(
 	const tenant = honoCtx
 		? getVerifiedTenant(honoCtx, metadata)
 		: metadata.tenantContext;
-	const model = await resolveReaderModel(tenant);
+	const { model, provider, modelString } = await resolveReaderModel(tenant);
 
 	const projectContext = metadata.projectContext || {};
 	const contextParts: string[] = [
@@ -63,6 +64,11 @@ async function buildThreadResponse(
 					],
 					tools,
 					stopWhen: isStepCount(MAX_TOOL_STEPS),
+					prepareStep: makeStepCacheBreakpoint({
+						provider,
+						modelString,
+						hasTools: true,
+					}),
 				}),
 			{ label: "thread-generateText", circuitKey: "thread" },
 		);

@@ -259,6 +259,16 @@ export async function markOrganizationPurgeReminderSent(
 }
 
 /**
+ * The cascade off a large organization can outlast Prisma's 5 s default for an
+ * interactive transaction. The purge activity's own limit is five minutes, so
+ * the transaction gives up a minute before it.
+ */
+const ORGANIZATION_PURGE_TRANSACTION = {
+	maxWait: 10_000,
+	timeout: 4 * 60_000,
+} as const;
+
+/**
  * Destroy an organization for real.
  *
  * The `deletedAt: { not: null }` guard is the whole safety story of the purge
@@ -272,12 +282,24 @@ export async function markOrganizationPurgeReminderSent(
  * takes the whole tenant with it. Everything that does NOT live in Postgres —
  * vectors, blobs, the payment-provider subscription, per-tenant schedules — has
  * to be torn down by the caller, because a cascade cannot reach any of it.
+ *
+ * `agent_workspace_file` is the exception inside Postgres: it carries an
+ * `organizationId` column but no foreign key to the organization, so the
+ * cascade misses it. Its rows (pages, documents, every file type) and the
+ * page records that cascade from them are deleted here, in the same
+ * transaction and only after the guarded organization delete succeeded, so a
+ * restored organization's purge deletes none of them. The files those pages
+ * stored in object storage are the caller's to sweep.
  */
 export async function permanentDeleteOrganization(organizationId: string) {
-	return await db.organization.delete({
-		where: {
-			id: organizationId,
-			deletedAt: { not: null },
-		},
-	});
+	return await db.$transaction(async (tx) => {
+		const organization = await tx.organization.delete({
+			where: {
+				id: organizationId,
+				deletedAt: { not: null },
+			},
+		});
+		await tx.agentWorkspaceFile.deleteMany({ where: { organizationId } });
+		return organization;
+	}, ORGANIZATION_PURGE_TRANSACTION);
 }

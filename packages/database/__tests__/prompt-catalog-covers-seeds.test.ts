@@ -19,6 +19,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { AGENT_TASK_PROMPT_AGENT_KEY } from "@repo/utils/agent-task-prompt";
+import { PAGE_ASK_PROMPT_AGENT_KEY } from "@repo/utils/page-ask-prompt";
 import {
 	listPromptActions,
 	PROMPT_AGENT_TARGETS,
@@ -70,6 +72,8 @@ const RETIRED_AGENTS = new Set([
  * coverage.
  */
 const KEY_CONSTANTS: Record<string, string> = {
+	AGENT_TASK_PROMPT_AGENT_KEY,
+	PAGE_ASK_PROMPT_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_REFINE_AGENT_KEY,
@@ -358,4 +362,41 @@ describe("every PUBLISHING catalog target is fully seeded", () => {
 			expect(seededSystemPromptKeys()).toContain(target.key);
 		});
 	}
+});
+
+describe("the Workflow Agent Task prompt is fully seeded", () => {
+	// The unattended agent's instructions live in the database, not in the
+	// step: a catalog target with no binding or no SYSTEM_PROMPTS row would
+	// leave the step on its in-code fallback with nothing to edit in the UI.
+	it("has a binding and a SYSTEM_PROMPTS row under the shared key", () => {
+		expect(seededTargetKeys()).toContain(AGENT_TASK_PROMPT_AGENT_KEY);
+		expect(seededSystemPromptKeys()).toContain(AGENT_TASK_PROMPT_AGENT_KEY);
+		expect(PROMPT_AGENT_TARGETS.map((target) => target.key)).toContain(
+			AGENT_TASK_PROMPT_AGENT_KEY,
+		);
+	});
+
+	it("seeds the shared body as HANDLEBARS, so the step and the seed cannot drift", () => {
+		const row = SEED.slice(
+			SEED.indexOf("key: AGENT_TASK_PROMPT_AGENT_KEY,\n\t\tname:"),
+		);
+
+		expect(row.slice(0, 1200)).toContain('format: "HANDLEBARS"');
+		expect(row.slice(0, 1200)).toContain(
+			"content: AGENT_TASK_FALLBACK_BODY",
+		);
+	});
+
+	it("binds it for GENERAL with no story kind", () => {
+		expect(
+			seededSlots()
+				.filter(
+					(slot) => slot.targetKey === AGENT_TASK_PROMPT_AGENT_KEY,
+				)
+				.map(({ documentType, storyKind }) => ({
+					documentType,
+					storyKind,
+				})),
+		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+	});
 });

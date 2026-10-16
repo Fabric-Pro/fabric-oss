@@ -11,6 +11,7 @@
  * A project with no sync has no folders, and gets an empty list.
  */
 import { listContextWriteTargets } from "@repo/database";
+import { MAX_CONTEXT_WRITE_TARGETS } from "@repo/temporal/memory-write/target-rules";
 import { z } from "zod";
 import { projectNotFoundUnlessVisible } from "../../../../../../orpc/middleware/project-visibility";
 import {
@@ -18,7 +19,6 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../../../orpc/procedures";
-import { MAX_CONTEXT_WRITE_TARGETS } from "../../../../lib/memory-write/target-rules";
 import { resolveContextSyncAccess } from "../access";
 import { toWriteTargetView } from "./shared";
 

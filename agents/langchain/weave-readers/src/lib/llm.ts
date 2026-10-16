@@ -11,13 +11,19 @@ import type { LanguageModel } from "ai";
  *
  * The Metadata variant is required so the attribution label reaches the
  * usage interceptor — the plain getAIModel would still meter tokens but
- * without the weave-reader job label (Fizzy #1894).
+ * without the weave-reader job label (Fizzy #1894). Its provider and model
+ * string are returned too, so a tool loop can tell whether the model takes an
+ * Anthropic cache breakpoint.
  */
 export async function resolveReaderModel(tenant: {
 	userId: string;
 	organizationId?: string | null;
-}): Promise<LanguageModel> {
-	const { model } = await getAIModelWithMetadata(
+}): Promise<{
+	model: LanguageModel;
+	provider: string;
+	modelString: string;
+}> {
+	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "CHAT" },
 		{
 			userId: tenant.userId,
@@ -25,5 +31,9 @@ export async function resolveReaderModel(tenant: {
 			jobType: "weave-reader",
 		},
 	);
-	return model;
+	return {
+		model,
+		provider: metadata.provider,
+		modelString: metadata.modelString,
+	};
 }

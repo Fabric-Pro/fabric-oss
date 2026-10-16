@@ -282,7 +282,7 @@ export async function POST(req: NextRequest) {
 const BASE_SYSTEM_PROMPT = `You are a workflow automation expert.
 
 Available node types:
-1. trigger - Start point (triggerType: manual, schedule, webhook, event)
+1. trigger - Start point (triggerType: manual, schedule, webhook, event; for schedule also scheduleCron and scheduleTimezone, an IANA time zone such as Europe/Berlin, default UTC)
 2. ai-generate-text - Generate text using AI (aiModel, aiPrompt, aiFormat)
 3. ai-generate-image - Generate images (imageModel, imagePrompt)
 4. firecrawl-scrape - Scrape URL content (url)
@@ -294,6 +294,8 @@ Available node types:
 10. email-send - Send email via Resend (to, subject, body)
 11. slack-send - Send Slack message (slackChannel, slackMessage)
 12. mcp-tool - Execute MCP server tool (mcpServers, toolName, toolArgs)
+13. agent-task - Unattended AI agent that calls the user's MCP servers and writes up a result (prompt, mcpConfigIds, builtInToolNames, outputFormat: html or markdown; outputs html, markdown, text). Label it "Agent Task". Never invent mcpConfigIds; use [] when unknown. A schedule that runs one must fire no more often than every 15 minutes.
+14. publish-frame - Save a result as a versioned frame on the project's Artifacts tab (title, content, format, surface: artifact or workspace, mode: new-version or new-frame). Place it after agent-task with content "{{Agent Task.html}}"; label it "Publish Frame".
 
 Position nodes from left to right (x: 0, 250, 500, etc.) with staggered y positions.
 Use variable syntax {{NodeLabel.field}} to reference previous node outputs.`;

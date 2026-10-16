@@ -10,6 +10,7 @@
  */
 
 import type {
+	GatewayActingContext,
 	GatewayCredential,
 	GatewaySession,
 	ServerSelection,
@@ -48,6 +49,15 @@ export async function createGatewaySession(params: {
 	email: string;
 	role: "user" | "admin";
 	credential: GatewayCredential;
+	/** See `GatewaySession.oauthClientId`; only the oauth credential sets it. */
+	oauthClientId?: string;
+	/** See `GatewaySession.actingContext`; only the service credential sets it. */
+	actingContext?: GatewayActingContext;
+	/**
+	 * Keep the session for later requests to reuse (the default). A session
+	 * that is not kept lives for the one request that created it.
+	 */
+	persist?: boolean;
 	scopes: string[];
 	/** See `GatewaySession.serverSelection`; omitted or null for every server. */
 	serverSelection?: ServerSelection | null;
@@ -67,6 +77,12 @@ export async function createGatewaySession(params: {
 		email: params.email,
 		role: params.role,
 		credential: params.credential,
+		...(params.oauthClientId
+			? { oauthClientId: params.oauthClientId }
+			: {}),
+		...(params.actingContext
+			? { actingContext: params.actingContext }
+			: {}),
 		scopes: params.scopes,
 		serverSelection: params.serverSelection ?? null,
 		toolListMode: params.toolListMode ?? "full",
@@ -74,7 +90,9 @@ export async function createGatewaySession(params: {
 		expiresAt,
 	};
 
-	sessions.set(sessionId, session);
+	if (params.persist !== false) {
+		sessions.set(sessionId, session);
+	}
 	return session;
 }
 

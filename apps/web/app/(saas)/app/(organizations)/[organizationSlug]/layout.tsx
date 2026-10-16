@@ -19,6 +19,7 @@ import { measureCatalogRequestPhase } from "@saas/shared/lib/catalog-request-tim
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { getServerQueryClient } from "@shared/lib/server";
 import { dehydrate, HydrationBoundary } from "@tanstack/react-query";
+import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import type { PropsWithChildren } from "react";
 
@@ -192,6 +193,9 @@ export default async function OrganizationLayout({
 	]);
 
 	const brandColor = getOrganizationBrandColor(organization.metadata);
+	// A frame's embed view is drawn inside the Artifacts tab, a Workspace or
+	// the frame viewer, which already show the app around it.
+	const isEmbed = (await headers()).get("x-embed-route") === "1";
 
 	// Hand the prefetches above to the browser.
 	//
@@ -216,7 +220,11 @@ export default async function OrganizationLayout({
 						organizationSlug={organizationSlug}
 						isGuest={guest}
 					>
-						<AppWrapper>{children}</AppWrapper>
+						{isEmbed ? (
+							children
+						) : (
+							<AppWrapper>{children}</AppWrapper>
+						)}
 					</OrganizationGuestProvider>
 				</OrganizationThemeProvider>
 			</FeatureFlagProvider>

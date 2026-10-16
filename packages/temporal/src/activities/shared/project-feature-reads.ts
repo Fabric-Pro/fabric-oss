@@ -362,6 +362,33 @@ export async function listProjectFeatures(
 	};
 }
 
+/**
+ * The feature or bug in `projectId` that a typed reference names ("F-040",
+ * "40", "us-1"), or undefined. Identifiers only: an id is the caller's to try
+ * first. Never reaches outside the project.
+ */
+export async function resolveProjectFeatureRef(
+	ref: string,
+	projectId: string,
+): Promise<
+	{ id: string; identifier: string; kind: string; title: string } | undefined
+> {
+	const { db } = await import("@repo/database");
+	const candidates = featureIdentifierCandidates(ref);
+	const rows = await db.userStory.findMany({
+		where: {
+			projectId,
+			OR: [...new Set(candidates.map((c) => c.identifier))].map(
+				(identifier) => ({
+					identifier: { equals: identifier, mode: "insensitive" },
+				}),
+			),
+		},
+		select: { id: true, identifier: true, kind: true, title: true },
+	});
+	return pickByCandidateOrder(rows, candidates);
+}
+
 export async function getProjectFeature(
 	args: Record<string, unknown>,
 	context: FeatureReadContext,
@@ -386,22 +413,10 @@ export async function getProjectFeature(
 		};
 	}
 
-	const { db, getStoryById } = await import("@repo/database");
+	const { getStoryById } = await import("@repo/database");
 	let story = await getStoryById(ref, projectId);
 	if (!story) {
-		const candidates = featureIdentifierCandidates(ref);
-		const rows = await db.userStory.findMany({
-			where: {
-				projectId,
-				OR: [...new Set(candidates.map((c) => c.identifier))].map(
-					(identifier) => ({
-						identifier: { equals: identifier, mode: "insensitive" },
-					}),
-				),
-			},
-			select: { id: true, identifier: true, kind: true },
-		});
-		const picked = pickByCandidateOrder(rows, candidates);
+		const picked = await resolveProjectFeatureRef(ref, projectId);
 		story = picked ? await getStoryById(picked.id, projectId) : null;
 	}
 	if (!story) {

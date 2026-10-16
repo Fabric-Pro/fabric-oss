@@ -41,8 +41,15 @@ const mocks = vi.hoisted(() => {
 		clearLiveContent: vi.fn(),
 		emitDocumentChange: vi.fn(),
 		activityContext: vi.fn(),
+		buildSettledDecisionsBlock: vi.fn(),
+		isFeatureEnabled: vi.fn(),
+		isOrganizationMember: vi.fn(),
+		authorMaySettleDecisions: vi.fn(),
+		listResponsesForDocument: vi.fn(),
+		getAnalysisForCurrentContent: vi.fn(),
 		projectDocument: {
 			findUnique: vi.fn(),
+			findFirst: vi.fn(),
 			update: vi.fn(),
 			updateMany: vi.fn(),
 		},
@@ -83,7 +90,39 @@ vi.mock("@repo/database", () => ({
 	claimLiveAttempt: (...args: unknown[]) => mocks.claimLiveAttempt(...args),
 	writeLiveSections: (...args: unknown[]) => mocks.writeLiveSections(...args),
 	clearLiveContent: (...args: unknown[]) => mocks.clearLiveContent(...args),
+	// Behind the real settled-decisions builder, for the tests that run it.
+	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
+	isOrganizationMember: (...args: unknown[]) =>
+		mocks.isOrganizationMember(...args),
+	authorMaySettleDecisions: (...args: unknown[]) =>
+		mocks.authorMaySettleDecisions(...args),
+	listResponsesForDocument: (...args: unknown[]) =>
+		mocks.listResponsesForDocument(...args),
+	getAnalysisForCurrentContent: (...args: unknown[]) =>
+		mocks.getAnalysisForCurrentContent(...args),
 }));
+
+// The builder is stubbed at the module boundary; the join, the echo check and
+// the constants stay real. Tests that need the real builder point the stub
+// at it. The echo guard and check are the real ones, counted, so a test can
+// tell what each check was built from, which texts were checked, and that a
+// run with nothing carried checks none.
+vi.mock(
+	"../../lib/proposal-artifact/settled-decisions",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("../../lib/proposal-artifact/settled-decisions")
+			>();
+		return {
+			...actual,
+			buildSettledDecisionsBlock: (...args: unknown[]) =>
+				mocks.buildSettledDecisionsBlock(...args),
+			buildEchoGuard: vi.fn(actual.buildEchoGuard),
+			checkEcho: vi.fn(actual.checkEcho),
+		};
+	},
+);
 
 vi.mock("@repo/rag", () => ({}));
 
@@ -140,9 +179,22 @@ vi.mock("../lib/activity-logger", () => ({
 }));
 
 // Import AFTER mocks
+import { logger } from "@repo/logs";
+import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { heartbeat } from "@temporalio/activity";
 import { contentIdentity } from "../../lib/proposal-artifact/content-identity";
+import {
+	buildEchoGuard,
+	checkEcho,
+	RESPONSE_ECHOED_MESSAGE,
+	type ResponseEchoInput,
+	SETTLED_DECISIONS_CLOSE,
+	SETTLED_DECISIONS_MARKER,
+	SETTLED_DECISIONS_OPEN,
+	type SettledDecisionsBlock,
+} from "../../lib/proposal-artifact/settled-decisions";
+import { RESPONSE_ECHOED } from "../../lib/proposal-artifact/types";
 import { activityLogger } from "../lib/activity-logger";
 import {
 	createDocumentVersion,
@@ -188,6 +240,25 @@ const SECTION_ONE = "## Executive Summary\n\nThe client modernizes picking.";
 const SECTION_TWO = "## Scope\n\nThree warehouses in the first phase.";
 const SECTION_THREE = "## Timeline\n\nTwelve weeks end to end.";
 const FINAL_DOCUMENT = `${SECTION_ONE}\n\n${SECTION_TWO}\n\n${SECTION_THREE}\n`;
+
+/**
+ * The user message a run with a bound or pinned prompt sends for this file's
+ * project and the instruction "Emphasize the pilot.", written out as it read
+ * before answers to the Internal Analysis could join it.
+ */
+const BOUND_PROMPT_MESSAGE = [
+	"Generate the document following the instructions provided in the system prompt. The system prompt contains the complete custom template and formatting requirements. Adhere to its structure and guidelines precisely.",
+	"\nProject: Warehouse modernization\nDescription: Replace paper-based picking.\nTech Stack: React",
+	"\n---\n\nADDITIONAL USER INSTRUCTIONS:\nEmphasize the pilot.",
+].join("\n");
+
+/** The user message the agent was sent on stream call `index`. */
+function userMessage(index = 0): string {
+	const payload = mocks.runsStream.mock.calls[index]?.[2] as
+		| { input: { messages: Array<{ content: string }> } }
+		| undefined;
+	return payload?.input.messages[0]?.content ?? "";
+}
 
 function generateLegacy(overrides: { prompt?: string } = {}) {
 	return generateDocumentWithAgent({
@@ -236,6 +307,8 @@ beforeEach(() => {
 	mocks.transaction.mockImplementation(
 		async (fn: (client: typeof mocks.tx) => unknown) => fn(mocks.tx),
 	);
+	// No answers to carry unless a test says otherwise.
+	mocks.buildSettledDecisionsBlock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -297,6 +370,41 @@ describe("without artifact options — the stream is today's", () => {
 		expect(input.messages[0]?.content).toContain(
 			"ADDITIONAL USER INSTRUCTIONS:\nEmphasize the pilot.",
 		);
+	});
+
+	it("never asks for settled decisions, so a gate-off Proposal's prompt is today's", async () => {
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+		mocks.fetchAndRenderPrompt.mockResolvedValue({
+			rendered: "Write the client-facing proposal.",
+			promptId: "prompt-bound",
+			promptName: "Proposal",
+			promptVersionId: "pv-bound",
+			scope: "ORGANIZATION",
+		});
+
+		await generateLegacy({ prompt: "Emphasize the pilot." });
+
+		expect(mocks.buildSettledDecisionsBlock).not.toHaveBeenCalled();
+		expect(userMessage()).toBe(BOUND_PROMPT_MESSAGE);
+	});
+
+	it("never asks for settled decisions for another document type", async () => {
+		agentStreams([finalValues("## Overview\n\nA PRD.\n")]);
+
+		await generateDocumentWithAgent({
+			projectId: "project-1",
+			documentId: "doc-1",
+			documentType: "PRD",
+			prompt: "",
+			contexts: ["The client picks 4,000 orders a day on paper."],
+			userId: "user-1",
+			organizationId: "org-1",
+			aiToken: "token-1",
+			hasRagContexts: true,
+		});
+
+		expect(mocks.buildSettledDecisionsBlock).not.toHaveBeenCalled();
+		expect(userMessage()).not.toContain(SETTLED_DECISIONS_MARKER);
 	});
 });
 
@@ -601,6 +709,613 @@ describe("artifact mode — the pinned Main prompt", () => {
 		expectPromptNotBound(await failureOf(generateArtifact()));
 
 		expectNothingGenerated();
+	});
+});
+
+// -----------------------------------------------------------------------------
+// Artifact mode: settled decisions from the Internal Analysis (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+/** A member's answer, long enough for the echo check to recognise a copy. */
+const SETTLED_ANSWER =
+	"Handheld scanners stay with the client and are never part of the fixed fee for either phase of the rollout";
+const SETTLED_TITLE = "Scope does not say who supplies the handheld scanners";
+const SETTLED_KEY = "k1:0123456789abcdef0123456789abcdef";
+
+/** What the builder returns for one standing answer. */
+function settledBlock(
+	carried: SettledDecisionsBlock["carried"] = {
+		responseTexts: [SETTLED_ANSWER],
+		findingTitles: [SETTLED_TITLE],
+		responseKeys: [SETTLED_KEY],
+		titleKeys: [SETTLED_KEY],
+	},
+): SettledDecisionsBlock {
+	return {
+		block: [
+			SETTLED_DECISIONS_OPEN,
+			"## Settled decisions",
+			"",
+			`- "${SETTLED_TITLE}" — answered: "${SETTLED_ANSWER}"`,
+			SETTLED_DECISIONS_CLOSE,
+		].join("\n"),
+		analysisBlock: "Not used by a generation.",
+		carried,
+		itemCount: 1,
+	};
+}
+
+const SUPPLIED_CONTEXT = "The client picks 4,000 orders a day on paper.";
+
+function generateArtifactWith(
+	overrides: {
+		contexts?: string[];
+		organizationId?: string;
+		currentDocument?: string;
+		prompt?: string;
+	} = {},
+) {
+	return generateDocumentWithAgent({
+		projectId: "project-1",
+		documentId: "doc-1",
+		documentType: "PROPOSAL",
+		prompt: overrides.prompt ?? "Emphasize the pilot.",
+		contexts: overrides.contexts ?? [SUPPLIED_CONTEXT],
+		userId: "user-1",
+		organizationId: overrides.organizationId ?? "org-1",
+		aiToken: "token-1",
+		currentDocument: overrides.currentDocument,
+		hasRagContexts: true,
+		artifact: ARTIFACT,
+	});
+}
+
+/** The project row the activity reads, with its owning organization. */
+function projectOwnedBy(
+	organizationId: string,
+	overrides: Record<string, unknown> = {},
+) {
+	mocks.projectFindUnique.mockResolvedValue({
+		name: "Warehouse modernization",
+		description: "Replace paper-based picking.",
+		goals: null,
+		techStack: ["React"],
+		features: [],
+		projectTypes: [],
+		qaStrategyLevel: null,
+		organizationId,
+		...overrides,
+	});
+}
+
+/**
+ * Every echo check, in order: the text checked and the inputs its guard was
+ * built from. A check against a guard no `buildEchoGuard` call returned fails.
+ */
+function echoChecks(): ResponseEchoInput[] {
+	const built = vi.mocked(buildEchoGuard).mock;
+	return vi.mocked(checkEcho).mock.calls.map(([guard, mainText]) => {
+		const at = built.results.findIndex((result) => result.value === guard);
+		expect(at).toBeGreaterThanOrEqual(0);
+		return { ...built.calls[at][0], mainText };
+	});
+}
+
+/** Everything the activity logged at info level and above, as one string. */
+function activityLogText(): string {
+	const logged = activityLogger as unknown as Record<
+		"info" | "warn" | "error",
+		{ mock: { calls: unknown[][] } }
+	>;
+	return JSON.stringify([
+		logged.info.mock.calls,
+		logged.warn.mock.calls,
+		logged.error.mock.calls,
+	]);
+}
+
+describe("artifact mode — settled decisions", () => {
+	beforeEach(() => {
+		promptLibraryRenders();
+		projectOwnedBy("org-1");
+	});
+
+	it("asks once per attempt, for the starter, in the project's owning organization", async () => {
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+		projectOwnedBy("org-owning");
+
+		await generateArtifactWith({ organizationId: "org-session" });
+
+		expect(mocks.buildSettledDecisionsBlock).toHaveBeenCalledTimes(1);
+		expect(mocks.buildSettledDecisionsBlock).toHaveBeenCalledWith({
+			projectId: "project-1",
+			documentId: "doc-1",
+			starterUserId: "user-1",
+			organizationId: "org-owning",
+		});
+	});
+
+	it("joins the block after the request's instructions, keeping both, and never as a reference", async () => {
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+		const settled = settledBlock();
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settled);
+
+		await generateArtifactWith();
+
+		expect(userMessage()).toBe(
+			`${BOUND_PROMPT_MESSAGE}\n\n${settled.block}`,
+		);
+		// The supplied context reaches the pinned prompt as it was: the block
+		// is not one of the numbered references.
+		expect(mocks.renderPromptWithContext).toHaveBeenCalledWith(
+			expect.objectContaining({ ragContexts: [SUPPLIED_CONTEXT] }),
+		);
+		const input = streamPayload().input as {
+			systemPrompt: string;
+			ragContexts: string[];
+		};
+		expect(input.systemPrompt).toBe(PINNED_PROMPT);
+		expect(input.systemPrompt).not.toContain(SETTLED_DECISIONS_MARKER);
+		expect(input.ragContexts).toEqual([]);
+	});
+
+	it("leaves today's prompt byte for byte when there are no settled decisions", async () => {
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+
+		const result = await generateArtifactWith();
+
+		expect(userMessage()).toBe(BOUND_PROMPT_MESSAGE);
+		expect(result.content).toBe(FINAL_DOCUMENT);
+	});
+
+	it("carries the block into the gateway fallback too", async () => {
+		mocks.runsStream.mockImplementation(() => {
+			throw new Error("agent unavailable");
+		});
+		mocks.streamText.mockReturnValue({
+			textStream: (async function* () {
+				yield FINAL_DOCUMENT;
+			})(),
+			finishReason: Promise.resolve("stop"),
+			usage: Promise.resolve({}),
+		});
+		const settled = settledBlock();
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settled);
+
+		await generateArtifactWith();
+
+		const fallback = mocks.streamText.mock.calls[0]?.[0] as {
+			prompt: string;
+		};
+		expect(fallback.prompt).toBe(
+			`${BOUND_PROMPT_MESSAGE}\n\n${settled.block}`,
+		);
+	});
+
+	describe("the echo check before Main leaves the activity", () => {
+		const ECHOING_DOCUMENT = `${SECTION_ONE}\n\n## Scope\n\nThree warehouses in the first phase. ${SETTLED_ANSWER}.\n\n${SECTION_THREE}\n`;
+
+		it("refuses a Main that repeats an answer, non-retryably and without naming it, and never shows it live", async () => {
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const error = await failureOf(generateArtifactWith());
+
+			expect(error).toBeInstanceOf(ApplicationFailure);
+			const failure = error as ApplicationFailure;
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+			expect(failure.nonRetryable).toBe(true);
+			expect(failure.message).toBe(RESPONSE_ECHOED_MESSAGE);
+			expect(failure.message).not.toContain("scanners");
+			expect(JSON.stringify(failure.details ?? [])).not.toContain(
+				"scanners",
+			);
+			// The whole document, written live once the stream ends, is
+			// checked first: it never reaches the live columns, and the
+			// preview is dropped at once.
+			expect(mocks.writeLiveSections).not.toHaveBeenCalled();
+			expect(mocks.clearLiveContent).toHaveBeenCalledWith({
+				documentId: "doc-1",
+				runId: "run-2",
+				attempt: 1,
+			});
+			// No fallback stands in for the refused run.
+			expect(mocks.streamText).not.toHaveBeenCalled();
+			// Counts only: no answer, title or document text in any log line.
+			expect(activityLogger.warn).toHaveBeenCalledWith(
+				expect.stringContaining("settled answer"),
+				expect.objectContaining({
+					step: "finish",
+					echoedResponses: 1,
+					echoedTitles: 0,
+					error: RESPONSE_ECHOED,
+				}),
+			);
+			expect(activityLogText()).not.toContain("scanners");
+			expect(activityLogText()).not.toContain("Three warehouses");
+			expect(activityLogger.info).not.toHaveBeenCalledWith(
+				"Document generation completed successfully",
+				expect.anything(),
+			);
+		});
+
+		it("refuses an echoing Main the gateway fallback wrote, before logging success", async () => {
+			mocks.runsStream.mockImplementation(() => {
+				throw new Error("agent unavailable");
+			});
+			fallbackProduces(ECHOING_DOCUMENT);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const failure = (await failureOf(
+				generateArtifactWith(),
+			)) as ApplicationFailure;
+
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+			expect(failure.message).toBe(RESPONSE_ECHOED_MESSAGE);
+			// The fallback writes nothing live; the final check refuses it.
+			expect(mocks.writeLiveSections).not.toHaveBeenCalled();
+			expect(activityLogger.warn).toHaveBeenCalledWith(
+				"Generated Main repeated a settled answer's wording; not saving it",
+				{
+					projectId: "project-1",
+					documentId: "doc-1",
+					liveRunId: "run-2",
+					echoedResponses: 1,
+					echoedTitles: 0,
+					echoedKeys: [SETTLED_KEY],
+					error: RESPONSE_ECHOED,
+				},
+			);
+			expect(activityLogger.info).not.toHaveBeenCalledWith(
+				"Document generation completed successfully",
+				expect.anything(),
+			);
+			expect(activityLogText()).not.toContain("scanners");
+		});
+
+		it("refuses a Main that copies a finding's title", async () => {
+			const title =
+				"The proposal never states who supplies and maintains the handheld scanners during the rollout";
+			agentStreams([
+				finalValues(`${SECTION_ONE}\n\n## Risks\n\n${title}.\n`),
+			]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(
+				settledBlock({ responseTexts: [], findingTitles: [title] }),
+			);
+
+			const failure = (await failureOf(
+				generateArtifactWith(),
+			)) as ApplicationFailure;
+
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+		});
+
+		it.each([
+			[
+				"the supplied context",
+				{ contexts: [`Site survey notes. ${SETTLED_ANSWER}.`] },
+			],
+			[
+				"the document before this run",
+				{ currentDocument: `## Scope\n\n${SETTLED_ANSWER}.\n` },
+			],
+		])("lets through wording %s also holds", async (_case, overrides) => {
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const result = await generateArtifactWith(overrides);
+
+			expect(result.content).toBe(ECHOING_DOCUMENT);
+		});
+
+		// The prompt renders the project's information outside the supplied
+		// context, so Main may repeat it whatever an answer says.
+		it.each([
+			["description", { description: `Pilot terms. ${SETTLED_ANSWER}.` }],
+			["goals", { goals: `${SETTLED_ANSWER}.` }],
+			["tech stack", { techStack: ["React", SETTLED_ANSWER] }],
+		])(
+			"lets through wording the project's %s also holds",
+			async (_field, project) => {
+				projectOwnedBy("org-1", project);
+				agentStreams([finalValues(ECHOING_DOCUMENT)]);
+				mocks.buildSettledDecisionsBlock.mockResolvedValue(
+					settledBlock(),
+				);
+
+				const result = await generateArtifactWith();
+
+				expect(result.content).toBe(ECHOING_DOCUMENT);
+				expect(activityLogText()).not.toContain("scanners");
+			},
+		);
+
+		it("lets through wording the project's features hold only when the prompt rendered them, which it does without project context", async () => {
+			projectOwnedBy("org-1", { features: [SETTLED_ANSWER] });
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			expect((await generateArtifactWith({ contexts: [] })).content).toBe(
+				ECHOING_DOCUMENT,
+			);
+
+			// With project context supplied, the prompt leaves the features
+			// out, so a copy of an answer cannot have come from them.
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			const failure = (await failureOf(
+				generateArtifactWith(),
+			)) as ApplicationFailure;
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+		});
+
+		it("still refuses wording only the answer holds when the project has information of its own", async () => {
+			projectOwnedBy("org-1", {
+				goals: "Cut picking errors in half within a year.",
+				projectTypes: ["WEB_APP"],
+			});
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const failure = (await failureOf(
+				generateArtifactWith(),
+			)) as ApplicationFailure;
+
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+			expect(echoChecks()).toContainEqual(
+				expect.objectContaining({
+					sourceContext: [
+						SUPPLIED_CONTEXT,
+						"Warehouse modernization",
+						"Replace paper-based picking.",
+						"Cut picking errors in half within a year.",
+						"React",
+						"WEB_APP",
+						"Emphasize the pilot.",
+					],
+				}),
+			);
+		});
+
+		// Fizzy #2946: the member who started the run wrote its instructions,
+		// and the prompt carries them, so Main may repeat their wording even
+		// when an answer shares it.
+		it("lets through wording the run's own instructions also hold, and never logs them", async () => {
+			const instructions = `Make sure the proposal says plainly that ${SETTLED_ANSWER}.`;
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const result = await generateArtifactWith({ prompt: instructions });
+
+			expect(result.content).toBe(ECHOING_DOCUMENT);
+			expect(userMessage()).toContain(
+				`ADDITIONAL USER INSTRUCTIONS:\n${instructions}`,
+			);
+			// The live write once the stream ended and the final Main were
+			// both checked against them.
+			const checks = echoChecks();
+			expect(checks.map((input) => input.mainText)).toEqual([
+				ECHOING_DOCUMENT.trimEnd(),
+				ECHOING_DOCUMENT,
+			]);
+			for (const input of checks) {
+				expect(input.sourceContext).toEqual(
+					expect.arrayContaining([instructions]),
+				);
+			}
+			expect(activityLogText()).not.toContain("scanners");
+			expect(activityLogText()).not.toContain("Make sure the proposal");
+		});
+
+		it("still refuses wording only the answer holds when the run has instructions of its own", async () => {
+			const instructions =
+				"Keep the tone formal and open with the business outcome the client cares about most.";
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			const failure = (await failureOf(
+				generateArtifactWith({ prompt: instructions }),
+			)) as ApplicationFailure;
+
+			expect(failure.type).toBe(RESPONSE_ECHOED);
+			expect(echoChecks()).toContainEqual(
+				expect.objectContaining({
+					sourceContext: expect.arrayContaining([instructions]),
+				}),
+			);
+			expect(activityLogText()).not.toContain("Keep the tone formal");
+		});
+
+		it("adds no instructions to what Main may repeat when the run has none", async () => {
+			agentStreams([finalValues(FINAL_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+
+			await generateArtifactWith({ prompt: "   " });
+
+			expect(echoChecks()).toContainEqual(
+				expect.objectContaining({
+					sourceContext: [
+						SUPPLIED_CONTEXT,
+						"Warehouse modernization",
+						"Replace paper-based picking.",
+						"React",
+					],
+				}),
+			);
+		});
+
+		it("lets a short factual answer through, even when Main states it", async () => {
+			agentStreams([finalValues(FINAL_DOCUMENT)]);
+			mocks.buildSettledDecisionsBlock.mockResolvedValue(
+				settledBlock({
+					responseTexts: ["Twelve weeks end to end."],
+					findingTitles: ["Timeline"],
+				}),
+			);
+
+			const result = await generateArtifactWith();
+
+			expect(result.content).toBe(FINAL_DOCUMENT);
+		});
+
+		it("does not run without a block, whatever Main says", async () => {
+			agentStreams([finalValues(ECHOING_DOCUMENT)]);
+
+			const result = await generateArtifactWith();
+
+			expect(result.content).toBe(ECHOING_DOCUMENT);
+		});
+	});
+
+	describe("with the real builder", () => {
+		const CURRENT_MAP = buildSectionMap(FINAL_DOCUMENT);
+		const CURRENT_SCOPE = CURRENT_MAP.sections.find(
+			(section) => section.headingText === "Scope",
+		);
+		/** The Scope section as it read before someone edited it. */
+		const EARLIER_SCOPE = buildSectionMap(
+			FINAL_DOCUMENT.replace("Three warehouses", "Two warehouses"),
+		).sections.find((section) => section.headingText === "Scope");
+
+		function answerRow(
+			overrides: Partial<{
+				kind: "CONFIRMED" | "RESPONDED";
+				sectionHash: string;
+				updatedAt: Date;
+			}> = {},
+		) {
+			return {
+				id: "response-1",
+				documentId: "doc-1",
+				stableKey: "k1:scanners",
+				kind: "RESPONDED" as const,
+				text: SETTLED_ANSWER,
+				findingTitle: SETTLED_TITLE,
+				answeredRunId: "analysis-1",
+				sectionKey: CURRENT_SCOPE?.key ?? "",
+				sectionHash: CURRENT_SCOPE?.proseHash ?? "",
+				authorId: "user-editor",
+				version: 1,
+				createdAt: new Date("2026-10-01T10:00:00Z"),
+				updatedAt: new Date("2026-10-01T10:00:00Z"),
+				...overrides,
+			};
+		}
+
+		const MEMBERS = new Set(["user-1", "user-editor"]);
+		let loggerSpies: Array<ReturnType<typeof vi.spyOn>> = [];
+
+		beforeEach(async () => {
+			const actual = await vi.importActual<
+				typeof import("../../lib/proposal-artifact/settled-decisions")
+			>("../../lib/proposal-artifact/settled-decisions");
+			mocks.buildSettledDecisionsBlock.mockImplementation(
+				actual.buildSettledDecisionsBlock,
+			);
+			agentStreams([finalValues(FINAL_DOCUMENT)]);
+			mocks.projectDocument.findFirst.mockResolvedValue({
+				type: "PROPOSAL",
+				content: FINAL_DOCUMENT,
+				project: { organizationId: "org-1", deletedAt: null },
+			});
+			mocks.isFeatureEnabled.mockResolvedValue(true);
+			mocks.isOrganizationMember.mockImplementation(
+				async (userId: string, organizationId: string) =>
+					organizationId === "org-1" && MEMBERS.has(userId),
+			);
+			mocks.authorMaySettleDecisions.mockImplementation(
+				async (
+					userId: string,
+					_projectId: string,
+					organizationId: string,
+				) => organizationId === "org-1" && MEMBERS.has(userId),
+			);
+			mocks.listResponsesForDocument.mockResolvedValue([answerRow()]);
+			mocks.getAnalysisForCurrentContent.mockResolvedValue({
+				run: {
+					id: "analysis-1",
+					createdAt: new Date("2026-09-30T09:00:00Z"),
+					findings: [],
+				},
+				isStale: false,
+				newerRun: null,
+			});
+			loggerSpies = (["info", "warn", "error", "debug"] as const).map(
+				(level) => vi.spyOn(logger, level).mockImplementation(() => {}),
+			);
+		});
+
+		afterEach(() => {
+			// Neither the builder nor the activity logged an answer or a title.
+			const logged = JSON.stringify(
+				loggerSpies.map((spy) => spy.mock.calls),
+			);
+			expect(logged).not.toContain("scanners");
+			expect(activityLogText()).not.toContain("scanners");
+			for (const spy of loggerSpies) {
+				spy.mockRestore();
+			}
+		});
+
+		it("carries a member's standing answer into the prompt", async () => {
+			await generateArtifactWith();
+
+			const message = userMessage();
+			expect(message.startsWith(`${BOUND_PROMPT_MESSAGE}\n\n`)).toBe(
+				true,
+			);
+			expect(message).toContain(SETTLED_DECISIONS_OPEN);
+			expect(message).toContain(SETTLED_ANSWER);
+		});
+
+		it("puts no answer and no marker in the prompt a project guest starts", async () => {
+			mocks.isOrganizationMember.mockImplementation(
+				async (userId: string) => userId !== "user-1",
+			);
+
+			const result = await generateArtifactWith();
+
+			expect(userMessage()).toBe(BOUND_PROMPT_MESSAGE);
+			expect(userMessage()).not.toContain(SETTLED_DECISIONS_MARKER);
+			expect(userMessage()).not.toContain("scanners");
+			expect(mocks.listResponsesForDocument).not.toHaveBeenCalled();
+			expect(result.content).toBe(FINAL_DOCUMENT);
+		});
+
+		it("leaves out an answer whose section changed until a member confirms it again", async () => {
+			mocks.listResponsesForDocument.mockResolvedValue([
+				answerRow({ sectionHash: EARLIER_SCOPE?.proseHash ?? "" }),
+			]);
+
+			await generateArtifactWith();
+
+			expect(userMessage()).toBe(BOUND_PROMPT_MESSAGE);
+
+			// Confirmed again against the section as it reads now.
+			mocks.listResponsesForDocument.mockResolvedValue([
+				answerRow({
+					kind: "CONFIRMED",
+					sectionHash: CURRENT_SCOPE?.proseHash ?? "",
+					updatedAt: new Date("2026-10-02T09:00:00Z"),
+				}),
+			]);
+
+			await generateArtifactWith();
+
+			expect(userMessage(1)).toContain(SETTLED_ANSWER);
+		});
+
+		it("generates as today when the builder cannot read the document", async () => {
+			mocks.projectDocument.findFirst.mockRejectedValue(
+				Object.assign(new Error("Connection pool timeout"), {
+					code: "P2024",
+				}),
+			);
+
+			const result = await generateArtifactWith();
+
+			expect(userMessage()).toBe(BOUND_PROMPT_MESSAGE);
+			expect(result.content).toBe(FINAL_DOCUMENT);
+		});
 	});
 });
 
@@ -963,6 +1678,210 @@ describe("artifact mode — live sections", () => {
 		expect(
 			JSON.stringify(vi.mocked(activityLogger.warn).mock.calls),
 		).not.toContain("modernizes");
+	});
+});
+
+// -----------------------------------------------------------------------------
+// Artifact mode: a live preview checked against settled decisions (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+/** A finished Scope section that repeats the settled answer. */
+const ECHOING_SCOPE = `## Scope\n\nThree warehouses in the first phase. ${SETTLED_ANSWER}.`;
+/** A preview cut in the third section, after the echoing Scope finished. */
+const ECHOING_PREVIEW = `${SECTION_ONE}\n\n${ECHOING_SCOPE}\n\n## Timeline\n\nTwel`;
+const ECHOING_SECTIONS = `${SECTION_ONE}\n\n${ECHOING_SCOPE}`;
+const ECHOING_MAIN = `${ECHOING_SECTIONS}\n\n${SECTION_THREE}\n`;
+
+/** The texts the echo check was asked about, in order. */
+function echoChecked(): string[] {
+	return echoChecks().map((input) => input.mainText);
+}
+
+describe("artifact mode — a live preview that repeats a settled decision", () => {
+	beforeEach(() => {
+		promptLibraryRenders();
+		projectOwnedBy("org-1");
+	});
+
+	it("never writes it: the preview is cleared, the stream aborted, and the run fails non-retryably with a text-free message", async () => {
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+		agentStreamsAt([
+			[0, preview(PREVIEW_ONE)],
+			[2_000, preview(ECHOING_PREVIEW)],
+			[4_000, finalValues(ECHOING_MAIN)],
+		]);
+
+		const error = await failureOf(generateArtifactWith());
+
+		expect(error).toBeInstanceOf(ApplicationFailure);
+		const failure = error as ApplicationFailure;
+		expect(failure.type).toBe(RESPONSE_ECHOED);
+		expect(failure.nonRetryable).toBe(true);
+		expect(failure.message).toBe(RESPONSE_ECHOED_MESSAGE);
+		expect(failure.message).not.toContain("scanners");
+		// Only the clean first section was ever written live.
+		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		expect(echoChecked()).toContain(ECHOING_SECTIONS);
+		// Then the preview is dropped, and nothing is written after it.
+		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
+		expect(mocks.clearLiveContent).toHaveBeenCalledWith({
+			documentId: "doc-1",
+			runId: "run-2",
+			attempt: 1,
+		});
+		expect(
+			mocks.clearLiveContent.mock.invocationCallOrder[0],
+		).toBeGreaterThan(
+			mocks.writeLiveSections.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect((streamPayload().signal as AbortSignal).aborted).toBe(true);
+		// No fallback stands in for the refused run.
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		// Ids, counts and the code only.
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			"Live preview repeated a settled answer's wording; not writing it",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "run-2",
+				attempt: 1,
+				step: "offer",
+				echoedResponses: 1,
+				echoedTitles: 0,
+				echoedKeys: [SETTLED_KEY],
+				error: RESPONSE_ECHOED,
+			},
+		);
+		expect(activityLogText()).not.toContain("scanners");
+		expect(activityLogText()).not.toContain("Three warehouses");
+		expect(activityLogger.info).not.toHaveBeenCalledWith(
+			"Document generation completed successfully",
+			expect.anything(),
+		);
+	});
+
+	it("writes clean previews exactly as a run that carried nothing, checking each before it is written", async () => {
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+		agentStreamsAt([
+			[0, preview(PREVIEW_ONE)],
+			[2_000, preview(PREVIEW_TWO)],
+			[4_000, finalValues(FINAL_DOCUMENT)],
+		]);
+
+		const result = await generateArtifactWith();
+
+		expect(result.content).toBe(FINAL_DOCUMENT);
+		expect(liveWrites()).toEqual([
+			SECTIONS_ONE,
+			SECTIONS_TWO,
+			SECTIONS_ALL,
+		]);
+		// Each live write, then the final Main.
+		expect(echoChecked()).toEqual([
+			SECTIONS_ONE,
+			SECTIONS_TWO,
+			SECTIONS_ALL,
+			FINAL_DOCUMENT,
+		]);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(activityLogger.info).toHaveBeenCalledWith(
+			"Document generation completed successfully",
+			expect.objectContaining({ projectId: "project-1" }),
+		);
+	});
+
+	it("writes a preview whose wording the supplied context also holds", async () => {
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+		agentStreamsAt([
+			[0, preview(ECHOING_PREVIEW)],
+			[2_000, finalValues(ECHOING_MAIN)],
+		]);
+
+		const result = await generateArtifactWith({
+			contexts: [`Site survey notes. ${SETTLED_ANSWER}.`],
+		});
+
+		expect(result.content).toBe(ECHOING_MAIN);
+		expect(liveWrites()).toEqual([
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+		]);
+	});
+
+	it("writes a preview whose wording the project's description also holds", async () => {
+		projectOwnedBy("org-1", {
+			description: `Pilot terms. ${SETTLED_ANSWER}.`,
+		});
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+		agentStreamsAt([
+			[0, preview(ECHOING_PREVIEW)],
+			[2_000, finalValues(ECHOING_MAIN)],
+		]);
+
+		const result = await generateArtifactWith();
+
+		expect(result.content).toBe(ECHOING_MAIN);
+		expect(liveWrites()).toEqual([
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+		]);
+		// Every preview and the final Main were checked against it.
+		for (const input of echoChecks()) {
+			expect(input.sourceContext).toEqual(
+				expect.arrayContaining([
+					SUPPLIED_CONTEXT,
+					`Pilot terms. ${SETTLED_ANSWER}.`,
+				]),
+			);
+		}
+		expect(echoChecked()).toEqual([
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+			ECHOING_MAIN,
+		]);
+	});
+
+	it("writes a preview whose wording the run's own instructions also hold", async () => {
+		const instructions = `Make sure the proposal says plainly that ${SETTLED_ANSWER}.`;
+		mocks.buildSettledDecisionsBlock.mockResolvedValue(settledBlock());
+		agentStreamsAt([
+			[0, preview(ECHOING_PREVIEW)],
+			[2_000, finalValues(ECHOING_MAIN)],
+		]);
+
+		const result = await generateArtifactWith({ prompt: instructions });
+
+		expect(result.content).toBe(ECHOING_MAIN);
+		expect(liveWrites()).toEqual([
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+		]);
+		expect(echoChecked()).toEqual([
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+			ECHOING_MAIN,
+		]);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(activityLogText()).not.toContain("scanners");
+	});
+
+	it("writes every preview as today and checks none when nothing was carried", async () => {
+		agentStreamsAt([
+			[0, preview(PREVIEW_ONE)],
+			[2_000, preview(ECHOING_PREVIEW)],
+			[4_000, finalValues(ECHOING_MAIN)],
+		]);
+
+		const result = await generateArtifactWith();
+
+		expect(result.content).toBe(ECHOING_MAIN);
+		expect(liveWrites()).toEqual([
+			SECTIONS_ONE,
+			ECHOING_SECTIONS,
+			`${ECHOING_SECTIONS}\n\n${SECTION_THREE}`,
+		]);
+		expect(buildEchoGuard).not.toHaveBeenCalled();
+		expect(checkEcho).not.toHaveBeenCalled();
 	});
 });
 

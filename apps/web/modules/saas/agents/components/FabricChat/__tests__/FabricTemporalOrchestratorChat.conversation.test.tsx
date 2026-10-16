@@ -24,6 +24,13 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { axe } from "vitest-axe";
+import { hydrateConversationTurnResults } from "../../../../../../../../packages/database/prisma/queries/conversation-turn-results";
+
+// The read projection is real; this integration test needs no database client.
+vi.mock("../../../../../../../../packages/database/prisma/client", () => ({
+	db: {},
+}));
 
 const calls = vi.hoisted(() => ({ order: [] as string[] }));
 
@@ -1214,6 +1221,678 @@ describe("FabricTemporalOrchestratorChat — turn in flight until it is saved", 
 });
 
 describe("FabricTemporalOrchestratorChat — a conversation another surface is writing", () => {
+	it.each([
+		["CANCELLED", "cancelled", "Stopped"],
+		["FAILED", "error", "Execution failed"],
+	] as const)(
+		"keeps a reconciled %s partial answer in the transcript and followup history",
+		async (terminalStatus, status, caption) => {
+			const timestamp = new Date("2026-10-01T10:01:00.000Z");
+			const projected = hydrateConversationTurnResults(
+				{
+					messages: [
+						{
+							id: "saved-partial-answer",
+							role: "assistant",
+							content: "The saved partial finding",
+							timestamp: timestamp.toISOString(),
+							metadata: { executionId: "exec_partial" },
+						},
+					],
+					metadata: {
+						mode: "orchestrator",
+						executions: [
+							{
+								id: "exec_partial",
+								userMessage: "Question from the drawer",
+								status,
+								finalResponse: "The saved partial finding",
+								completedAt: timestamp.toISOString(),
+							},
+						],
+					},
+				},
+				[
+					{
+						id: "turn_partial",
+						executionId: "exec_partial",
+						generation: 1,
+						status: terminalStatus,
+						responseText: null,
+						terminalAt: timestamp,
+						createdAt: timestamp,
+						terminalReason: "reconciled: workflow stopped",
+						limitSignalSummary: null,
+					},
+				],
+			);
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_partial"
+					activeConversation={{ id: "conv_partial", ...projected }}
+				/>,
+			);
+			expect(
+				await screen.findByText("The saved partial finding"),
+			).toBeInTheDocument();
+			expect(screen.getByText(caption)).toBeInTheDocument();
+			await send("Continue from the partial finding");
+			const sendMessage = streamState.current.sendMessage as ReturnType<
+				typeof vi.fn
+			>;
+			expect(sendMessage.mock.calls[0][1]).toEqual([
+				{ role: "user", content: "Question from the drawer" },
+				{ role: "assistant", content: "The saved partial finding" },
+			]);
+			expect(conversationHook.saveExecution).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		[
+			"FAILED",
+			null,
+			"Partial generated answer",
+			"The workflow may still be running.",
+		],
+		[
+			"CANCELLED",
+			"",
+			"Partial generated answer",
+			"The workflow may still be running.",
+		],
+		[
+			"LIMITED",
+			null,
+			"Partial generated answer",
+			"The workflow may still be running.",
+		],
+		[
+			"COMPLETED",
+			"Durable completed answer",
+			"Partial generated answer",
+			"The workflow may still be running.",
+		],
+		["FAILED", null, "Identical answer", "Identical answer"],
+		["FAILED", null, undefined, "Execution-only answer"],
+		["FAILED", null, "Message-only answer", undefined],
+	] as const)(
+		"preserves distinct saved responses through projection, reopening and followup (%s, %s, %s, %s)",
+		async (status, responseText, messageText, executionText) => {
+			const timestamp = new Date("2026-10-01T10:01:00.000Z");
+			const source = {
+				messages: [
+					{
+						id: "question",
+						role: "user",
+						content: "Question from the drawer",
+						timestamp: timestamp.toISOString(),
+						metadata: { executionId: "exec_saved" },
+					},
+					...(messageText
+						? [
+								{
+									id: "answer",
+									role: "assistant",
+									content: messageText,
+									timestamp: timestamp.toISOString(),
+									metadata: { executionId: "exec_saved" },
+								},
+							]
+						: []),
+				],
+				metadata: {
+					mode: "orchestrator",
+					executions: executionText
+						? [
+								{
+									id: "exec_saved",
+									userMessage: "Question from the drawer",
+									status: "error",
+									finalResponse: executionText,
+								},
+							]
+						: [],
+				},
+			};
+			const turns = [
+				{
+					id: "turn_saved",
+					executionId: "exec_saved",
+					generation: 1,
+					status,
+					responseText,
+					terminalAt: timestamp,
+					createdAt: timestamp,
+					terminalReason: "reconciled: workflow timed_out",
+					limitSignalSummary: null,
+				},
+			];
+			const projected = hydrateConversationTurnResults(source, turns);
+			expect(hydrateConversationTurnResults(projected, turns)).toEqual(
+				projected,
+			);
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_saved"
+					activeConversation={{ id: "conv_saved", ...projected }}
+				/>,
+			);
+			const primary = responseText || executionText || messageText;
+			const responses = [
+				...new Set(
+					[primary, executionText, messageText].filter(
+						(value): value is NonNullable<typeof value> =>
+							typeof value === "string" && value.length > 0,
+					),
+				),
+			];
+			for (const response of responses) {
+				expect(await screen.findAllByText(response)).toHaveLength(1);
+			}
+			if (status === "FAILED") {
+				expect(
+					screen.getByText("Execution failed"),
+				).toBeInTheDocument();
+			}
+			if (status !== "COMPLETED") {
+				expect(
+					screen.getByText("reconciled: workflow timed_out"),
+				).toBeInTheDocument();
+			}
+			await send("Continue from the saved answer");
+			const sendMessage = streamState.current.sendMessage as ReturnType<
+				typeof vi.fn
+			>;
+			expect(sendMessage.mock.calls[0][1]).toEqual([
+				{ role: "user", content: "Question from the drawer" },
+				...responses.map((content) => ({ role: "assistant", content })),
+			]);
+			expect(conversationHook.saveExecution).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refreshes newly available distinct saved content at the same execution count while idle", async () => {
+		const timestamp = new Date("2026-10-01T10:01:00.000Z");
+		const source = {
+			messages: [
+				{
+					id: "question",
+					role: "user",
+					content: "Saved question",
+					timestamp: timestamp.toISOString(),
+					metadata: { executionId: "exec_saved" },
+				},
+			],
+			metadata: {
+				mode: "orchestrator",
+				executions: [
+					{
+						id: "exec_saved",
+						userMessage: "Saved question",
+						status: "complete",
+						finalResponse: "Durable answer",
+					},
+				],
+			},
+		};
+		const turns = [
+			{
+				id: "turn_saved",
+				executionId: "exec_saved",
+				generation: 1,
+				status: "COMPLETED" as const,
+				responseText: "Durable answer",
+				terminalAt: timestamp,
+				createdAt: timestamp,
+				terminalReason: "completed",
+				limitSignalSummary: null,
+			},
+		];
+		const before = hydrateConversationTurnResults(source, turns);
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_saved"
+				activeConversation={{ id: "conv_saved", ...before }}
+			/>,
+		);
+		expect(await screen.findByText("Durable answer")).toBeInTheDocument();
+		const after = hydrateConversationTurnResults(
+			{
+				...source,
+				messages: [
+					...source.messages,
+					{
+						id: "partial",
+						role: "assistant",
+						content: "Independent saved detail",
+						timestamp: timestamp.toISOString(),
+						metadata: { executionId: "exec_saved" },
+					},
+				],
+			},
+			turns,
+		);
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_saved"
+				activeConversation={{ id: "conv_saved", ...after }}
+			/>,
+		);
+		expect(
+			await screen.findByText("Independent saved detail"),
+		).toBeInTheDocument();
+		await send("Continue with the saved detail");
+		const sendMessage = streamState.current.sendMessage as ReturnType<
+			typeof vi.fn
+		>;
+		expect(sendMessage.mock.calls[0][1]).toEqual([
+			{ role: "user", content: "Saved question" },
+			{ role: "assistant", content: "Durable answer" },
+			{ role: "assistant", content: "Independent saved detail" },
+		]);
+	});
+
+	it("shows the specific durable reason for an empty failed result", async () => {
+		const timestamp = new Date("2026-10-01T10:01:00.000Z");
+		const projected = hydrateConversationTurnResults(
+			{ messages: [], metadata: { mode: "orchestrator" } },
+			[
+				{
+					id: "turn_failed",
+					executionId: "exec_failed",
+					generation: 1,
+					status: "FAILED",
+					responseText: null,
+					terminalAt: timestamp,
+					createdAt: timestamp,
+					terminalReason: "reconciled: workflow timed_out",
+					limitSignalSummary: null,
+				},
+			],
+		);
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_failed"
+				activeConversation={{ id: "conv_failed", ...projected }}
+			/>,
+		);
+		expect(await screen.findByText("Execution failed")).toBeInTheDocument();
+		expect(
+			screen.getByText("reconciled: workflow timed_out"),
+		).toBeInTheDocument();
+	});
+
+	it("refreshes a browser transport notice into the durable result and uses the answer in followup history", async () => {
+		const notice = "The workflow may still be running.";
+		const record = {
+			id: "exec_drawer",
+			userMessage: "Question from the drawer",
+			status: "error",
+			finalResponse: notice,
+			completedAt: "2026-10-01T10:01:00.000Z",
+		};
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([record])}
+			/>,
+		);
+		expect(await screen.findByText(notice)).toBeInTheDocument();
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([
+					{
+						...record,
+						status: "complete",
+						terminalStatus: "COMPLETED",
+						recoveredFromTurn: true,
+						finalResponse: "The durable completed answer",
+					},
+				])}
+			/>,
+		);
+		expect(
+			await screen.findByText("The durable completed answer"),
+		).toBeInTheDocument();
+		expect(screen.queryByText(notice)).not.toBeInTheDocument();
+		await send("Continue from the completed answer");
+		const sendMessage = streamState.current.sendMessage as ReturnType<
+			typeof vi.fn
+		>;
+		expect(sendMessage.mock.calls[0][1]).toEqual([
+			{ role: "user", content: "Question from the drawer" },
+			{ role: "assistant", content: "The durable completed answer" },
+		]);
+	});
+
+	it.each([
+		["streaming", { isLoading: true, isRunning: true }],
+		["awaiting approval", { isAwaitingApproval: true }],
+	])(
+		"defers a recovered refresh while %s and still excludes the current execution when idle",
+		async (_label, flags) => {
+			streamState.current = idleStream({
+				...flags,
+				state: { ...idleStream().state, executionId: "exec_live" },
+			});
+			const old = {
+				id: "exec_old",
+				userMessage: "Earlier question",
+				recoveredFromTurn: true,
+				finalResponse: "Earlier projection",
+				completedAt: "2026-10-01T10:01:00.000Z",
+			};
+			const current = {
+				...old,
+				id: "exec_live",
+				userMessage: "Live current question",
+				finalResponse: "Live current response",
+			};
+			const { rerender } = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_drawer"
+					activeConversation={conversation([old, current])}
+				/>,
+			);
+			expect(
+				await screen.findByText("Earlier projection"),
+			).toBeInTheDocument();
+			const updated = conversation([
+				{ ...old, finalResponse: "Updated durable response" },
+				current,
+			]);
+			rerender(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_drawer"
+					activeConversation={updated}
+				/>,
+			);
+			expect(
+				screen.queryByText("Updated durable response"),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByText("Live current response"),
+			).not.toBeInTheDocument();
+			streamState.current = idleStream({
+				state: { ...idleStream().state, executionId: "exec_live" },
+			});
+			rerender(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_drawer"
+					activeConversation={updated}
+				/>,
+			);
+			expect(
+				await screen.findByText("Updated durable response"),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText("Live current response"),
+			).not.toBeInTheDocument();
+			await send("Follow up while idle");
+			const sendMessage = streamState.current.sendMessage as ReturnType<
+				typeof vi.fn
+			>;
+			expect(sendMessage.mock.calls[0][1]).toEqual([
+				{ role: "user", content: "Earlier question" },
+				{ role: "assistant", content: "Updated durable response" },
+			]);
+		},
+	);
+
+	it("replaces an idle recovered entry with richer saved details at the same execution count", async () => {
+		const onActivityChange = vi.fn();
+		const recovered = {
+			id: "exec_drawer",
+			userMessage: "Question from the drawer",
+			finalResponse: "Earlier projection",
+			recoveredFromTurn: true,
+			terminalStatus: "COMPLETED",
+			completedAt: "2026-10-01T10:01:00.000Z",
+		};
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([recovered])}
+				onActivityChange={onActivityChange}
+			/>,
+		);
+		expect(
+			await screen.findByText("Earlier projection"),
+		).toBeInTheDocument();
+		const plan = {
+			id: "plan-1",
+			description: "Saved execution plan",
+			riskLevel: "low",
+			steps: [
+				{
+					id: "step-1",
+					description: "Read saved details",
+					status: "completed",
+					order: 1,
+				},
+			],
+		};
+		const saved = {
+			...recovered,
+			recoveredFromTurn: false,
+			finalResponse: "Browser saved answer",
+			plan,
+			stepResults: [
+				{
+					stepId: "step-1",
+					stepDescription: "Read saved details",
+					status: "complete",
+					response: "Browser saved answer",
+					toolCalls: [],
+				},
+			],
+			artifacts: [
+				{
+					id: "artifact-1",
+					type: "document",
+					name: "Saved report",
+					content: "Saved report content. ".repeat(10),
+				},
+			],
+			clarifications: [
+				{ question: "Which project?", answer: "The example project" },
+			],
+		};
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([saved])}
+				onActivityChange={onActivityChange}
+			/>,
+		);
+		expect(
+			await screen.findByText("Browser saved answer"),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText("Earlier projection"),
+		).not.toBeInTheDocument();
+		expect(onActivityChange).toHaveBeenCalledWith(
+			expect.objectContaining({ plan }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: /Artifacts/ }));
+		fireEvent.mouseDown(screen.getByRole("tab", { name: /Documents/ }), {
+			button: 0,
+			ctrlKey: false,
+		});
+		expect(await screen.findByText("Saved report")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Close" }));
+		await send("Follow up on the report");
+		const sendMessage = streamState.current.sendMessage as ReturnType<
+			typeof vi.fn
+		>;
+		expect(sendMessage.mock.calls[0][1]).toEqual([
+			{ role: "user", content: "Question from the drawer" },
+			{
+				role: "user",
+				content: expect.stringContaining("The example project"),
+			},
+			{ role: "assistant", content: "Browser saved answer" },
+		]);
+	});
+
+	it("shows an updated durable answer alongside retained partial steps and uses it in followup history", async () => {
+		const recovered = {
+			id: "exec_drawer",
+			userMessage: "Question from the drawer",
+			recoveredFromTurn: true,
+			terminalStatus: "COMPLETED",
+			finalResponse: "Authoritative durable answer",
+			completedAt: "2026-10-01T10:01:00.000Z",
+			stepResults: [
+				{
+					stepId: "partial-step",
+					status: "complete",
+					response: "Partial browser step",
+					toolCalls: [],
+				},
+			],
+		};
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([recovered])}
+			/>,
+		);
+		expect(
+			await screen.findByText("Authoritative durable answer"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Partial browser step")).toBeInTheDocument();
+		await send("Use the completed answer");
+		const sendMessage = streamState.current.sendMessage as ReturnType<
+			typeof vi.fn
+		>;
+		expect(sendMessage.mock.calls[0][1]).toEqual([
+			{ role: "user", content: "Question from the drawer" },
+			{ role: "assistant", content: "Authoritative durable answer" },
+		]);
+	});
+
+	it.each([
+		["CANCELLED", "Stopped"],
+		["FAILED", "Execution failed"],
+		["LIMITED", "Answer may be incomplete"],
+	])(
+		"shows a detached %s outcome when no response was produced",
+		async (terminalStatus, caption) => {
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_empty_result"
+					activeConversation={{
+						id: "conv_empty_result",
+						messages: [],
+						metadata: {
+							mode: "orchestrator",
+							executions: [
+								{
+									id: "exec_empty",
+									userMessage: "",
+									recoveredFromTurn: true,
+									terminalStatus,
+									finalResponse: "",
+									completedAt: "2026-10-01T10:01:00.000Z",
+									limitSignals: [
+										null,
+										{ kind: "provider_quota", message: [] },
+									],
+								},
+							],
+						},
+					}}
+				/>,
+			);
+			expect(await screen.findByText(caption)).toBeInTheDocument();
+			expect(conversationHook.saveExecution).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		["COMPLETED", null],
+		["CANCELLED", "Stopped"],
+		["FAILED", "Execution failed"],
+		["LIMITED", "Answer may be incomplete"],
+	])(
+		"shows a detached %s result without a saved question",
+		async (terminalStatus, caption) => {
+			const { container } = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_detached"
+					activeConversation={{
+						id: "conv_detached",
+						messages: [],
+						metadata: {
+							mode: "orchestrator",
+							executions: [
+								{
+									id: "exec_detached",
+									userMessage: "",
+									recoveredFromTurn: true,
+									finalResponse:
+										"Answer produced after the tab closed",
+									terminalStatus,
+									completedAt: "2026-10-01T10:01:00.000Z",
+									limitSignals:
+										terminalStatus === "LIMITED"
+											? [
+													{
+														kind: "provider_quota",
+														message:
+															"Provider quota reached",
+													},
+												]
+											: [],
+								},
+							],
+						},
+					}}
+				/>,
+			);
+			expect(
+				await screen.findByText("Answer produced after the tab closed"),
+			).toBeInTheDocument();
+			if (caption) {
+				const notice = screen.getByText(caption).closest("output");
+				expect(notice).toBeInTheDocument();
+				// jsdom cannot measure color contrast without a canvas implementation.
+				expect(
+					(
+						await axe(notice as HTMLElement, {
+							rules: { "color-contrast": { enabled: false } },
+						})
+					).violations,
+				).toEqual([]);
+			}
+			if (terminalStatus === "LIMITED") {
+				expect(
+					screen.getByText("Provider quota reached"),
+				).toBeInTheDocument();
+			}
+			expect(container.querySelector(".is-user")).toBeNull();
+			expect(conversationHook.saveExecution).not.toHaveBeenCalled();
+		},
+	);
+
 	function conversation(executions: unknown[]) {
 		return {
 			id: "conv_drawer",

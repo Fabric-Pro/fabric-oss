@@ -1856,7 +1856,7 @@ export function CreateAgentPage({
 															Knowledge
 														</h4>
 														<p className="text-xs text-muted-foreground">
-															Workspaces &
+															Libraries &
 															integrations
 														</p>
 													</div>
@@ -1952,7 +1952,7 @@ export function CreateAgentPage({
 																)
 															}
 														>
-															Browse workspaces →
+															Browse libraries →
 														</button>
 													</div>
 												)}
@@ -2824,7 +2824,7 @@ export function CreateAgentPage({
 																selectedDataSources.length >
 																0,
 															required: false,
-															hint: "Connect a workspace or integration",
+															hint: "Connect a library or integration",
 														},
 														{
 															label: "Tools (MCP)",

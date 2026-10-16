@@ -4,7 +4,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { db, hasWorkflowAccess } from "@repo/database";
+import { db, hasWorkflowAccess, isWorkflowLive } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -132,8 +132,7 @@ export const rollbackWorkflow = tenantProtectedProcedure
 		// sync; without this, rolling back to a different (or absent) cron
 		// leaves the previous schedule firing against the new definition.
 		// A draft is left alone: its schedule is created when it is published.
-		const scheduleActive =
-			workflow.status === "PUBLISHED" || workflow.status === "ACTIVE";
+		const scheduleActive = isWorkflowLive(workflow.status);
 		await syncWorkflowSchedule({
 			workflowId,
 			nodes: targetVersionData.nodes,

@@ -13,9 +13,11 @@ import {
 	buildFrameProjectOrUserPolicySQL,
 	buildOrgOnlyWithProjectGuestReadPolicySQL,
 	buildParentScopedPolicySQL,
+	buildPerUserWithOrgSharedReadPolicySQL,
 	buildProjectMemberOrTenantConsistentPolicySQL,
 	buildProjectMemberOrTenantPolicySQL,
 	buildProjectSelfMemberOrTenantPolicySQL,
+	ORGANIZATION_SHARED_READ_POLICY,
 	PROJECT_GUEST_READ_POLICY,
 } from "./rls-policy-sql";
 
@@ -211,9 +213,14 @@ async function applyRLS() {
 			// User-owned: org sees all org data, personal sees only personal
 			{ name: "agent", policy: "user_owned" },
 			{ name: "agent_task", policy: "user_owned" },
-			// Per-user-in-org: an org member must not read other members' rows.
-			// Matches PER_USER_ORG_TABLES in tenant-db.ts.
-			{ name: "agent_conversation", policy: "per_user_within_org" },
+			// Per-user-in-org: an org member must not read other members' rows,
+			// except a session its owner shared with the organization, which
+			// every member may read and only the owner may write. Matches
+			// PER_USER_ORG_TABLES and ORG_SHARED_READ_TABLES in tenant-db.ts.
+			{
+				name: "agent_conversation",
+				policy: "per_user_within_org_shared_read",
+			},
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
@@ -624,12 +631,15 @@ async function applyRLS() {
 			{ name: "company_context_source", policy: "org_only" },
 			{ name: "company_context_url_page", policy: "org_only" },
 			// Proposal artifact (Fizzy #2801). Internal analysis runs, their
-			// findings and the document style: organization-owned, and a project
-			// guest must never read them, so plain `org_only` with no guest-read
-			// branch — unlike the Glossy project tables above. None has a userId;
-			// organizationId is NOT NULL on all three.
+			// findings, members' answers to findings (Fizzy #2946) and the
+			// document style: organization-owned, and a project guest must never
+			// read them, so plain `org_only` with no guest-read branch — unlike
+			// the Glossy project tables above. None has a userId (an answer's
+			// `authorId` is attribution, not a tenant column); organizationId is
+			// NOT NULL on all four.
 			{ name: "project_document_analysis", policy: "org_only" },
 			{ name: "project_document_finding", policy: "org_only" },
+			{ name: "project_document_finding_response", policy: "org_only" },
 			{ name: "project_document_style", policy: "org_only" },
 			{ name: "discovery_run", policy: "user_owned" }, // Discovery runs (integration contracts)
 			{ name: "project_success_metric", policy: "user_owned" }, // Customer success metrics
@@ -701,6 +711,12 @@ async function applyRLS() {
 
 			// Org-only tables
 			{ name: "organization_eval_budget", policy: "org_only" },
+
+			// What a published page keeps between visits. Every viewer of a
+			// page reads and writes its shared records, so the boundary is the
+			// organization; which page and which records a viewer may touch is
+			// decided in the query layer after the page's own access check.
+			{ name: "frame_page_record", policy: "org_only" },
 
 			// CLI connection nudge (Fizzy #2457). Both reach tables are owned by
 			// the organization and by nobody inside it: any member may be told
@@ -1339,6 +1355,22 @@ async function applyRLS() {
 							)
 						`;
 						break;
+
+					case "per_user_within_org_shared_read": {
+						// per_user_within_org for every command, plus a
+						// SELECT-only policy for rows the owner shared with
+						// the organization.
+						const [tenantIsolation, sharedRead] =
+							buildPerUserWithOrgSharedReadPolicySQL(table.name);
+						policySQL = tenantIsolation;
+						extraPolicies = [
+							{
+								name: ORGANIZATION_SHARED_READ_POLICY,
+								sql: sharedRead,
+							},
+						];
+						break;
+					}
 
 					case "admin_only":
 						// Admin-only global tables (no per-tenant column).

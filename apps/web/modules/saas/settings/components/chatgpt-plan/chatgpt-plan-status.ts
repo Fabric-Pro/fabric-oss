@@ -18,21 +18,39 @@ export const chatgptPlanStatusQueryKey = [
  * shell prompt so the two can never disagree. Nothing is fetched while the
  * `CHATGPT_PLAN` flag is off for the organization on screen.
  *
- * `setOrganizationUse` acts on the SESSION's active organization, which can lag
- * the one in the URL for a moment after a switch. `currentOrganization` is
- * therefore only handed out when it is the organization on screen, so a toggle
- * or prompt can never write a choice into a different organization.
+ * The server answers for the SESSION's active organization, which lags the one
+ * in the URL for a moment after a switch. So nothing is fetched until the
+ * session names the organization on screen (as `useChatgptPlanModels` and
+ * `useChatgptPlanPool` already do): fetched earlier, the previous
+ * organization's answer was cached under this one's key and read as "no plan
+ * serves your work here" until the next refetch (Fizzy #3082).
+ *
+ * `currentOrganization` is likewise only handed out when it is the
+ * organization on screen, so a toggle or prompt — whose mutations also act on
+ * the session's organization — can never write a choice into a different one.
+ *
+ * `known` says whether the answer is in for the organization on screen. Until
+ * it is, the `...ServesOwnWork` hooks answer false, which a notice must read
+ * as "not yet known", not as "no plan here".
  */
 export function useChatgptPlanStatus() {
 	const enabled = useFeatureFlag("CHATGPT_PLAN");
-	const { activeOrganization, isSwitching, isResolvingOrganization } =
-		useActiveOrganization();
+	const {
+		activeOrganization,
+		isSwitching,
+		isResolvingOrganization,
+		isSessionOnActiveOrganization,
+	} = useActiveOrganization();
 	const activeSlug = activeOrganization?.slug ?? null;
+	const sessionOnScreen =
+		isSessionOnActiveOrganization &&
+		!isSwitching &&
+		!isResolvingOrganization;
 
 	const query = useQuery({
 		queryKey: [...chatgptPlanStatusQueryKey, activeSlug],
 		queryFn: () => orpcClient.users.chatgptPlan.status({}),
-		enabled: enabled && !isSwitching && !isResolvingOrganization,
+		enabled: enabled && sessionOnScreen,
 		// The member's own window can run out at any call and the shell then
 		// says a shared plan took over (Fizzy #2770).
 		refetchInterval: (current) =>
@@ -47,8 +65,28 @@ export function useChatgptPlanStatus() {
 		query.data.currentOrganization.slug === activeSlug
 			? query.data.currentOrganization
 			: null;
+	// An answer naming another organization is the session's, not the
+	// page's: it arrived from a refetch after the session moved elsewhere.
+	const answersForAnotherOrganization =
+		query.data?.currentOrganization != null && currentOrganization === null;
+	// With the flag off no plan can serve anything, so that is an answer. A
+	// failed call is one too: the notices fall back to "no plan", as before.
+	const known =
+		!enabled ||
+		query.isError ||
+		(sessionOnScreen &&
+			query.data !== undefined &&
+			!answersForAnotherOrganization);
 
-	return { query, currentOrganization };
+	return { query, currentOrganization, known };
+}
+
+/**
+ * Whether the plan status is in for the organization on screen. A notice whose
+ * message depends on whether a plan serves the member's work waits for this.
+ */
+export function useChatgptPlanStatusKnown(): boolean {
+	return useChatgptPlanStatus().known;
 }
 
 /**

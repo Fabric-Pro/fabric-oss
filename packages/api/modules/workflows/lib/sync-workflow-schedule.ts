@@ -14,9 +14,11 @@
 import {
 	deleteWorkflowSchedule,
 	findScheduleCron,
+	findScheduleTimezone,
 	getScheduleClient,
 	isPlausibleCron,
 	isTemporalAvailable,
+	isValidScheduleTimeZone,
 	upsertWorkflowSchedule,
 } from "@repo/temporal";
 
@@ -76,10 +78,19 @@ export async function syncWorkflowSchedule(
 			};
 		}
 
+		const timezone = findScheduleTimezone(args.nodes);
+		if (timezone && !isValidScheduleTimeZone(timezone)) {
+			return {
+				outcome: "failed",
+				reason: `Invalid time zone: "${timezone}"`,
+			};
+		}
+
 		const { created } = await upsertWorkflowSchedule(
 			{
 				workflowId: args.workflowId,
 				cron,
+				timezone,
 				userId: args.userId,
 				organizationId: args.organizationId,
 				projectId: args.projectId,

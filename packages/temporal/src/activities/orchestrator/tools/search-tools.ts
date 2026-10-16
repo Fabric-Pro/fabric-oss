@@ -31,6 +31,7 @@ import {
 	toolToCapabilityWithKeywords,
 } from "./capability-keywords";
 import { type FabricAiTool, getFabricAiTools } from "./fabric-ai-tools";
+import { selectFabricToolsByName } from "./select-tools-by-name";
 import {
 	type ToolCategory,
 	type ToolSearchResult,
@@ -1394,6 +1395,46 @@ async function runToolSearch(
 	console.log(`[SearchTools] Searching for: "${input.query}"`);
 	const serverDetectionQuery = input.originalQuery || input.query;
 
+	const allFabricAiTools = getFabricAiTools();
+	// Filter Fabric AI tools by enabled list if provided
+	const fabricAiTools = Array.isArray(input.enabledFabricToolIds)
+		? allFabricAiTools.filter((tool) =>
+				(input.enabledFabricToolIds as string[]).includes(tool.name),
+			)
+		: allFabricAiTools;
+
+	// ==========================================================================
+	// STEP 0: Tools named exactly in the query load as named, unranked
+	// ==========================================================================
+	const namedTools = selectFabricToolsByName(input.query, fabricAiTools);
+	if (namedTools.length > 0) {
+		console.log(
+			`[SearchTools] Loaded by exact name: ${namedTools.map((tool) => tool.name).join(", ")}`,
+		);
+		return {
+			results: namedTools.map((tool) => ({
+				toolId: tool.name,
+				serverName: "Fabric AI",
+				toolName: tool.name,
+				description: tool.description ?? "",
+				confidence: 1,
+				matchReason: "Named exactly in the query",
+				riskLevel: determineRiskLevel(tool.name),
+				isReadOnly: isReadOnlyTool(tool.name),
+				configId: "fabric-ai-server",
+				inputSchema: tool.inputSchema,
+			})),
+			totalToolsSearched: fabricAiTools.length,
+			semanticSearchUsed: false,
+			durationMs: Date.now() - startTime,
+			telemetry: {
+				strategy: "exact_name",
+				explicitServerUsed: false,
+				keywordShortcutUsed: false,
+			},
+		};
+	}
+
 	// ==========================================================================
 	// STEP 1: Check always-available capabilities FIRST
 	// These are high-frequency tools that should always be considered
@@ -1513,13 +1554,6 @@ async function runToolSearch(
 	// STEP 3: BM25 Keyword Search (BEFORE semantic search)
 	// Check KEYWORDS sections in tool descriptions for deterministic matching
 	// ==========================================================================
-	const allFabricAiTools = getFabricAiTools();
-	// Filter Fabric AI tools by enabled list if provided
-	const fabricAiTools = Array.isArray(input.enabledFabricToolIds)
-		? allFabricAiTools.filter((tool) =>
-				(input.enabledFabricToolIds as string[]).includes(tool.name),
-			)
-		: allFabricAiTools;
 	const toolCapabilities: CapabilityWithKeywords[] = fabricAiTools.map(
 		(tool) =>
 			toolToCapabilityWithKeywords({
@@ -1638,7 +1672,6 @@ async function runToolSearch(
 	const stats = toolIndex.getStats();
 	const corpusKeywordResults = await toolIndex.search({
 		query: input.query,
-		category: input.category,
 		limit: input.limit || 10,
 		minConfidence: 0.7,
 		readOnlyOnly: input.readOnlyOnly,
@@ -1684,7 +1717,6 @@ async function runToolSearch(
 		results = await toolIndex.search(
 			{
 				query: input.query,
-				category: input.category,
 				limit: input.limit || 10,
 				minConfidence: input.minConfidence || 0.2,
 				readOnlyOnly: input.readOnlyOnly,
@@ -1709,7 +1741,6 @@ async function runToolSearch(
 		);
 		results = await toolIndex.search({
 			query: input.query,
-			category: input.category,
 			limit: input.limit || 10,
 			minConfidence: input.minConfidence || 0.2,
 			readOnlyOnly: input.readOnlyOnly,

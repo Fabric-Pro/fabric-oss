@@ -43,6 +43,11 @@ export type RepositorySyncNamespace =
 
 const CANT_TELL_YET: SelectionMessage = { key: "tree.selection.cantTellYet" };
 
+const DEFAULT_NOTE_KEYS = {
+	unsupported: "tree.unsupported",
+	truncated: "tree.truncated",
+};
+
 /**
  * The one checkbox tree both repository-sync configure dialogs choose with
  * (Fizzy #2750 §3): a tick means the item syncs, a ticked folder ticks
@@ -74,6 +79,7 @@ export function RepositorySyncSelectionTree({
 	summary,
 	notices,
 	initiallyOpen,
+	noteKeys = DEFAULT_NOTE_KEYS,
 }: {
 	namespace: RepositorySyncNamespace;
 	listing: SelectionTreeListing;
@@ -81,8 +87,12 @@ export function RepositorySyncSelectionTree({
 	row: (node: RepositoryTreeNode) => SelectionRow;
 	/** A click on a row's box: `next` is the state Radix asks for. */
 	onToggle: (node: RepositoryTreeNode, next: boolean) => void;
-	onSelectAll: () => void;
-	onSelectNone: () => void;
+	/**
+	 * Select all and Select none. Omitted by a picker that chooses one folder,
+	 * where neither means anything.
+	 */
+	onSelectAll?: () => void;
+	onSelectNone?: () => void;
 	/** A save is in flight: nothing can be changed. */
 	disabled: boolean;
 	/** The summary line under the tree (`SelectionSummary`). */
@@ -97,6 +107,13 @@ export function RepositorySyncSelectionTree({
 	 * followed every change would flip folders the member already toggled.
 	 */
 	initiallyOpen?: ReadonlySet<string>;
+	/**
+	 * The copy for a provider with no listing and for a truncated one. Both
+	 * end by pointing at the typed input, in words about what that input takes
+	 * (paths to sync, a folder); a picker whose input takes something else
+	 * names its own keys.
+	 */
+	noteKeys?: { unsupported: string; truncated: string };
 }) {
 	const t = useTranslations(namespace);
 	const [search, setSearch] = useState("");
@@ -246,29 +263,31 @@ export function RepositorySyncSelectionTree({
 						{t("tree.collapseAll")}
 					</Button>
 				) : null}
-				<fieldset
-					aria-label={t("tree.selectionActions")}
-					className="ml-auto flex gap-1.5"
-				>
-					<Button
-						type="button"
-						size="sm"
-						variant="outline"
-						disabled={disabled}
-						onClick={onSelectAll}
+				{onSelectAll && onSelectNone ? (
+					<fieldset
+						aria-label={t("tree.selectionActions")}
+						className="ml-auto flex gap-1.5"
 					>
-						{t("tree.selectAll")}
-					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant="outline"
-						disabled={disabled}
-						onClick={onSelectNone}
-					>
-						{t("tree.selectNone")}
-					</Button>
-				</fieldset>
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							disabled={disabled}
+							onClick={onSelectAll}
+						>
+							{t("tree.selectAll")}
+						</Button>
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							disabled={disabled}
+							onClick={onSelectNone}
+						>
+							{t("tree.selectNone")}
+						</Button>
+					</fieldset>
+				) : null}
 			</div>
 			{notices}
 			{listing.status === "loading" ? (
@@ -287,7 +306,7 @@ export function RepositorySyncSelectionTree({
 			) : null}
 			{listing.status === "unsupported" ? (
 				<p className="text-muted-foreground text-xs">
-					{t("tree.unsupported")}
+					{t(noteKeys.unsupported)}
 				</p>
 			) : null}
 			{listing.status === "ready" && !browsable ? (
@@ -297,7 +316,9 @@ export function RepositorySyncSelectionTree({
 			) : null}
 			{listing.status === "ready" && listing.truncated ? (
 				<p className="text-muted-foreground text-xs">
-					{t("tree.truncated", { max: REPOSITORY_TREE_ENTRY_LIMIT })}
+					{t(noteKeys.truncated, {
+						max: REPOSITORY_TREE_ENTRY_LIMIT,
+					})}
 				</p>
 			) : null}
 			{browsable ? (

@@ -275,6 +275,7 @@ export const syncStoryProcedure = tenantProtectedProcedure
 			success: boolean;
 			externalId?: string;
 			error?: string;
+			skipped?: boolean;
 		}> = [];
 
 		if (
@@ -305,6 +306,7 @@ export const syncStoryProcedure = tenantProtectedProcedure
 					success: taskResult.success,
 					externalId: taskResult.externalId,
 					error: taskResult.error,
+					skipped: taskResult.skipped,
 				});
 			}
 		}
@@ -331,7 +333,10 @@ export const syncStoryProcedure = tenantProtectedProcedure
 				metadata: {
 					externalId: result.externalId ?? null,
 					externalUrl: result.externalUrl ?? null,
-					syncedTasks: taskResults.length,
+					// Tasks this push created; already-linked tasks are skipped.
+					syncedTasks: taskResults.filter(
+						(t) => t.success && !t.skipped,
+					).length,
 				},
 			});
 		}

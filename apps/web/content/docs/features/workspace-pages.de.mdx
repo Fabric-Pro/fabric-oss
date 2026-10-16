@@ -1,0 +1,120 @@
+---
+title: Workspaces
+description: Seiten, die Fabric Agent aus einer Beschreibung für Ihre Organisation schreibt, standardmäßig mit allen darin geteilt, die festhalten, was Personen eingeben, Dateien aufbewahren, das Modell fragen und über Fabric handeln können.
+---
+
+Ein Workspace ist eine Seite, die Fabric Agent für Ihre Organisation schreibt: ein Lieferstatus-Board, eine wöchentliche Zusammenfassung, eine Liste offener Entscheidungen, ein kleines Werkzeug mit einer Aktualisieren-Schaltfläche. Sie beschreiben, was Sie sehen möchten; der Agent schreibt die ganze Seite, speichert sie, öffnet sie und erklärt, was sie zeigt. Nichts auf der Seite ist eine Vorlage – wer einen neuen Abschnitt oder ein anderes Layout wünscht, lässt die Seite einfach neu schreiben.
+
+<Callout type="info">
+  Workspaces war früher der Name der Dokumentbibliotheken. Diese heißen jetzt **Libraries** (Bibliotheken); ihre Seite ist unter [Bibliotheken](/docs/features/libraries) beschrieben. Workspaces sind eine andere Funktion: Seiten, keine Dokumente.
+</Callout>
+
+## Einen Workspace anfordern
+
+<Steps>
+  <Step>
+    ### Workspaces öffnen
+
+    Klicken Sie in der linken Seitenleiste auf **Workspaces**. Die Seite listet jeden Workspace auf, den Sie öffnen können.
+  </Step>
+
+  <Step>
+    ### Auf New workspace klicken
+
+    Fabric Agent öffnet sich mit einem Entwurf wie „Create a new Workspace that shows". Vervollständigen Sie den Satz – „this week's delivery status by project", „the decisions that are still open" – und senden Sie ihn ab.
+  </Step>
+
+  <Step>
+    ### Das Ergebnis lesen
+
+    Der Agent schreibt die Seite, speichert sie als Workspace und öffnet sie mit einer kurzen Erklärung, was jeder Teil zeigt. Stimmt etwas nicht, sagen Sie es im selben Chat, oder öffnen Sie die Seite und klicken Sie auf **Ask Fabric Agent**, um sie zu ändern.
+  </Step>
+</Steps>
+
+Sie können auch in jedem Chat mit Fabric Agent danach fragen: „Erstelle mir einen Workspace mit einem Board der Arbeit dieses Sprints." Ein Chat, der von einem Workspace aus geöffnet wird, weiß, auf welcher Seite Sie sind – „füge eine Spalte für Blocker hinzu" ändert also genau diese Seite.
+
+## Wer einen Workspace öffnen kann
+
+**Ein neuer Workspace wird mit allen in Ihrer Organisation geteilt.** Soll eine Seite nur Ihnen gehören, sagen Sie das bei der Anfrage („halte ihn privat"), und der Agent speichert sie als privat. Jede Karte in der Liste zeigt, mit wem die Seite geteilt ist.
+
+| Angezeigt als | Wer sie öffnen kann |
+|---------------|---------------------|
+| **Organization** | Jedes Mitglied Ihrer Organisation |
+| **Private** | Nur Sie (und bei einer mit einem Projekt verknüpften Seite die Mitglieder dieses Projekts) |
+| **Invited** | Die Personen, die Sie per E-Mail eingeladen haben |
+| **Project** | Die akzeptierten Mitglieder des zugehörigen Projekts |
+| **Public** | Jeder mit dem Link, angemeldet oder nicht |
+
+Die Liste zeigt die Workspaces, die Sie geschrieben haben, die mit Ihrer Organisation geteilten und die eines Projekts, das Sie öffnen können. Ein Gast eines einzelnen Projekts, der kein Mitglied der Organisation ist, sieht die Liste nicht; eine Seite, die jemand mit ihm teilt, kann er trotzdem öffnen.
+
+Wer einen Workspace geschrieben hat, ändert über die **Share**-Schaltfläche in der Kopfzeile der Seite, wer sie öffnen kann, und sieht unter **Version history** die früheren Versionen, von denen sich jede wiederherstellen lässt. Beides kann nur die Autorin oder der Autor, und nur deren Fabric-Agent-Chat kann die Seite ändern. Alle anderen, die sie öffnen können, dürfen sie lesen, kommentieren und eine eigene Kopie davon anlegen.
+
+## Kommentare
+
+Unter jedem Workspace steht der Abschnitt **Comments**. Wer die Seite öffnen kann, liest die Kommentare, älteste zuerst, und kann darunter einen hinzufügen (bis zu 2.000 Zeichen). Jeder Kommentar trägt den Namen, den Fabric für die Person erfasst hat, die ihn geschrieben hat. Kommentare werden mit der Seite gespeichert, sodass auch Fabric Agent sie lesen kann. Das Skript einer Seite kann ihre Kommentare lesen, aber keinen hinzufügen. Mit **Show more comments** sehen Sie mehr als die ersten fünfzig.
+
+## Eine Kopie anlegen
+
+**Make a copy** in der Kopfzeile der Seite legt eine Kopie des Workspace an, die nur Ihnen gehört, im selben Projekt, damit Sie sie mit Fabric Agent ändern können. Was Personen in der Seite gespeichert haben, wird nicht kopiert. Nutzt die Seite Fabric-Tools, behält die Kopie sie; Fabric listet sie deshalb zuerst auf und bittet Sie um Bestätigung.
+
+## Was eine Seite speichern, fragen und lesen kann
+
+Eine Seite kann mehr als eine Ansicht zeigen: Sie kann festhalten, was Personen eingeben, dem Modell eine Frage stellen, Dateien aufbewahren und von Ihren verbundenen Servern lesen. Sie erreicht Fabric nicht selbst. Sie fragt die Seite um sich herum, und diese entscheidet – als Sie.
+
+Das Skript der Seite hat diese Funktionen, alle auf `window.fabric`:
+
+| Funktion | Was sie tut |
+|----------|-------------|
+| `fabric.call(tool, args)` | Führt ein Fabric-Tool aus, etwa Projekte auflisten oder einen Workflow starten, und gibt dessen Ergebnis zurück |
+| `fabric.openAgent(prompt)` | Öffnet Fabric Agent mit `prompt` als Entwurf; Sie müssen ihn noch absenden |
+| `fabric.navigate(path)` | Bringt Sie zu einer anderen Seite der App (ein Pfad, der mit `/app/` beginnt) |
+| `fabric.viewer()` | Wer schaut: `id`, `name`, `initials`, `isOwner` und `canEditPage`. Nie eine E-Mail-Adresse oder eine Liste von Organisationen |
+| `fabric.data.list(collection, options)`, `.get`, `.set`, `.delete` | Datensätze, die die Seite festhält: geteilt mit allen, die sie öffnen, oder mit `scope: "mine"` nur für die betrachtende Person. Der Schlüssel `@me` ist der eigene Datensatz der Person, und `expectedVersion` lehnt eine Änderung auf veraltetem Stand ab |
+| `fabric.ask(question, options)` | Stellt dem Modell eine Frage und gibt `{ answer }` zurück. Es hat keine Tools, antwortet mit höchstens 1.024 Tokens und zählt auf die KI-Nutzung der Person, die die Seite ansieht |
+| `fabric.files.upload(file)`, `.list`, `.read(id)`, `.delete(id)` | Dateien, die mit der Seite aufbewahrt werden. `read` liefert außerdem eine `blobUrl`, die die Seite anzeigen kann |
+| `fabric.download(filename, mimeType, data)` | Bietet der betrachtenden Person eine Datei zum Speichern an |
+| `fabric.connected(provider, tool, args)` | Ruft ein schreibgeschütztes Tool des eigenen verbundenen Servers der betrachtenden Person auf |
+
+Grenzen dessen, was eine Seite festhält:
+
+- **Datensätze:** Ein Wert ist höchstens 16 KB groß. Eine Seite hält höchstens 2.000 Datensätze und 5 MB, und eine Person kann pro Minute 120-mal auf eine Seite schreiben. Fabric erfasst, wer jeden Datensatz geschrieben hat. Namen von Collections, die mit `$` beginnen, sind für Fabric reserviert und können von einer Seite nicht beschrieben werden.
+- **Dateien:** je 4 MB und 50 MB pro Seite. Wer eine Datei hochgeladen hat, oder die Autorin oder der Autor der Seite, kann sie löschen.
+- **Fragen an das Modell:** 10 pro Minute für eine Person auf einer Seite.
+- **Downloads:** Dateien vom Typ `csv`, `json`, `txt`, `md`, `pdf`, `png` und `svg` mit höchstens 10 MB. Fabric bereinigt den Dateinamen und prüft den Typ gegen die Endung, zeigt Ihnen dann Name und Größe und speichert nichts, solange Sie nicht zustimmen. Sie werden bei jeder Datei gefragt.
+- **Verbundene Server:** Eine Seite deklariert jedes Lesen als `connected:<server>/<tool>`, und der Server muss dieses Tool als schreibgeschützt kennzeichnen. Das Ergebnis ist auf 256 KB begrenzt. Ist kein solcher Server verbunden, liefert der Aufruf `{ "error": "not_connected" }`.
+
+Ein fehlgeschlagener Aufruf wird mit einem `Error` abgelehnt. Nennt das Tool den Grund, trägt der Fehler ein `reason` und, wo es hilft, `retryable`:
+
+| `reason` | Bedeutung |
+|----------|-----------|
+| `version_conflict` | Der Datensatz hat sich geändert, seit die Seite ihn gelesen hat (`expectedVersion` passt nicht mehr). Erneut lesen und wiederholen |
+| `busy` | Viele Schreibvorgänge liefen gleichzeitig auf der Seite auf. Gleich noch einmal versuchen; `retryable` ist `true` |
+| `limit` | Die Seite hat eine ihrer Grenzen für Datensätze, Bytes oder Stapelgröße erreicht |
+| `rate_limited` | Die betrachtende Person schreibt oder fragt auf dieser Seite zu oft |
+| `usage_limit` | Das KI-Nutzungslimit der betrachtenden Person ist erreicht, sodass `fabric.ask` nicht antworten kann |
+
+Wie ein Aufruf behandelt wird:
+
+- **Die Seite deklariert ihre Tools beim Speichern.** Nur diese darf sie aufrufen. Ein nicht deklariertes Tool wird abgelehnt, von Ihrem Browser und noch einmal von Fabric, wenn der Aufruf ankommt.
+- **Eine Seite arbeitet auf ihren eigenen Daten.** Jeder Aufruf, der Datensätze, Dateien oder Kommentare der Seite berührt, wird für diese Seite ausgeführt, was auch immer das Skript sagt.
+- **Lesen der eigenen Daten läuft sofort.** Ebenso Tools, die nur lesen, etwa Projekte oder Dokumente auflisten.
+- **Ändern fragt zuerst Sie.** Ein Tool, das etwas ändern kann, zeigt Ihnen, was die Seite tun will, einschließlich jedes Werts, den sie senden würde, und läuft nur, wenn Sie es erlauben. Ihr Ja gilt für dieses Tool in dieser Version der Seite, bis Sie den Browser-Tab schließen. Wird die Seite bearbeitet, werden Sie erneut gefragt.
+- **Eine Frage an das Modell und das Lesen von einem verbundenen Server fragen einmal** pro Version der Seite, weil sie Ihre KI-Nutzung verbrauchen oder Ihre eigenen Konten erreichen.
+- **Eine Seite, die außerhalb ihrer eigenen Daten gelesen hat, fragt öfter.** Hat eine Seite erfahren, wer Sie sind, von einem verbundenen Server gelesen, eine Antwort vom Modell erhalten oder andere Fabric-Daten gelesen, fragt jede Änderung an den auf der Seite geteilten Daten erneut und zeigt den Wert, bis die Seite neu geladen wird. Eine Seite, die geteilte Daten festhält, fragt außerdem vor jeder anderen Art von Änderung jedes Mal.
+- **Einige Tools stehen einer Seite nie zur Verfügung:** die Organisation wechseln, Berechtigungen anfordern oder entziehen, ein Frame teilen, einen Workflow erstellen, bearbeiten oder veröffentlichen, ein Frame erstellen oder bearbeiten, herausfinden, wer Sie über einen Namen hinaus sind, Ihre Organisationen auflisten, eine frühere Version wiederherstellen, eine Kopie anlegen und einen Kommentar hinzufügen. Für die ersten bitten Sie Fabric Agent; Kommentare fügen Sie über den Bereich unter der Seite hinzu.
+- **Eine Seite läuft für die Organisation, die Sie gerade ansehen.** Gehört die Seite nicht dazu, wird jeder Aufruf abgelehnt. Eine Seite, die nicht gespeichert wurde, kann Fabric überhaupt nicht aufrufen.
+- **Es gilt ein Limit von 30 Aufrufen pro Minute** für eine Seite.
+
+## Was eine Seite nicht kann
+
+Ein Workspace läuft in einem abgeschotteten Frame. Er kann keine Netzwerkanfragen stellen, Ihre Cookies oder Ihren Speicher nicht lesen, keine Skripte, Stile oder Schriften von einer anderen Website laden und keine anderen Seiten in sich öffnen. Bilder und Schriften müssen in die Seite eingebettet sein. So kann eine Seite, die jemand anderes geschrieben hat, das, was sie zeigt, nirgendwohin senden.
+
+Eine Seite, die ein geplanter Workflow ohne Aufsicht geschrieben hat, wird ganz ohne Skript angezeigt und liest sich wie ein statischer Bericht. Seiten, die in einem Chat geschrieben wurden, behalten ihre Schaltflächen.
+
+Bei einem öffentlichen Link funktionieren Schaltflächen, die Fabric aufrufen, nicht: Es gibt keine angemeldete Person, als die sie handeln könnten.
+
+## Verwandte Themen
+
+- [Projekt-Artifacts](/docs/features/project-artifacts), dieselbe Art von Seite, an ein Projekt gebunden
+- [Geplante Agent-Workflows](/docs/features/scheduled-agent-workflows), die nach Zeitplan eine frische Seite veröffentlichen können
+- [Fabric MCP Gateway](/docs/integrations/mcp-gateway), die Tools, die eine Seite aufruft

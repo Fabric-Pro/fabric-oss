@@ -177,7 +177,7 @@ describe("ConnectCliDialog — any other client", () => {
 			screen.getByRole("tab", { name: "Claude Code" }),
 		).toHaveAttribute("aria-selected", "true");
 		expect((await setupLine()).textContent).toBe(
-			`${INIT} --project ${PROJECT_ID} --tool claude-code`,
+			`${INIT} --project ${PROJECT_ID} --tool claude-code --plugin`,
 		);
 	});
 

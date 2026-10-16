@@ -8,8 +8,15 @@ import { generateSpeech } from "ai";
 import { z } from "zod";
 import { PARLUME_PCM_SAMPLE_RATE, pcmFromWav } from "./parlume-audio";
 import { parlumeActivityLog } from "./parlume-log";
+import { ReplayableSentences } from "./parlume-spoken-text";
+import {
+	recordTurnSpeechSentence,
+	type SpeechSentenceTiming,
+} from "./shared/turn-timing";
 
-const MAX_SPOKEN_CHARS = 800;
+export const PARLUME_MAX_SPOKEN_CHARS = 800;
+const PARLUME_AURA_MODEL_ID = "@cf/deepgram/aura-2-en";
+const NOTHING_TO_SAY = "Parlume had nothing to say.";
 const MAX_PCM_BYTES = 6 * 1024 * 1024;
 const MAX_CHAT_CHARS = 4_000;
 const PCM_BYTES_PER_SECOND = PARLUME_PCM_SAMPLE_RATE * 2;
@@ -97,7 +104,7 @@ function errorMessage(error: unknown): string {
 
 function bridgeControlUrl(
 	sessionId: string,
-	action: "speak" | "stop" | "verify-generation" | "chat",
+	action: "speak" | "say" | "stop" | "verify-generation" | "chat",
 ): string {
 	const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
 	if (!host) {
@@ -155,10 +162,14 @@ export async function verifyParlumeVoiceGeneration(input: {
 	}
 }
 
+/** Epoch milliseconds at which a clip's first and last bytes arrived; null until they do. */
+type ClipArrival = { firstByteAt: number | null; doneAt: number | null };
+
 type SynthesizedSpeech = {
 	route: SpeechRoute;
 	pcm: ReadableStream<Uint8Array>;
 	pcmBytes: () => number;
+	arrival: ClipArrival;
 };
 
 function withSignal(signal: AbortSignal | undefined, ms: number): AbortSignal {
@@ -205,6 +216,7 @@ async function synthesizeThroughGateway(
 			latencyMs: Date.now() - startedAt,
 			success: true,
 		});
+		const arrivedAt = Date.now();
 		return {
 			route,
 			pcm: new ReadableStream<Uint8Array>({
@@ -214,6 +226,8 @@ async function synthesizeThroughGateway(
 				},
 			}),
 			pcmBytes: () => pcm.length,
+			// The gateway returns the whole clip, so its first byte is its last.
+			arrival: { firstByteAt: arrivedAt, doneAt: arrivedAt },
 		};
 	} catch (error) {
 		recordSpeechUsage(context, route, {
@@ -276,9 +290,11 @@ async function synthesizeThroughOpenAi(
 		throw new Error("Parlume speech returned no audio.");
 	}
 	let bytes = 0;
+	const arrival: ClipArrival = { firstByteAt: null, doneAt: null };
 	const pcm = tts.body.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
 			transform(chunk, controller) {
+				arrival.firstByteAt ??= Date.now();
 				bytes += chunk.byteLength;
 				if (bytes > MAX_PCM_BYTES) {
 					throw new Error("Parlume speech exceeded the audio limit.");
@@ -286,6 +302,7 @@ async function synthesizeThroughOpenAi(
 				controller.enqueue(chunk);
 			},
 			flush() {
+				arrival.doneAt = Date.now();
 				if (bytes === 0 || bytes % 2 !== 0) {
 					throw new Error(
 						"Parlume speech returned invalid PCM audio.",
@@ -301,7 +318,7 @@ async function synthesizeThroughOpenAi(
 			},
 		}),
 	);
-	return { route, pcm, pcmBytes: () => bytes };
+	return { route, pcm, pcmBytes: () => bytes, arrival };
 }
 
 /**
@@ -343,21 +360,328 @@ async function synthesizeSpeech(
 		: new Error(AUDIO_PROVIDER_REQUIRED.parlumeVoice);
 }
 
+type SpokenReply = {
+	route: SpeechRoute;
+	pcm: ReadableStream<Uint8Array>;
+	textChars: () => number;
+	pcmBytes: () => number;
+	/** One entry per sentence synthesized so far, relative to `origin`. */
+	sentenceTimings: (origin: number) => SpeechSentenceTiming[];
+};
+
+/**
+ * Speaks the sentences in order as one PCM stream. The first sentence is
+ * synthesized before anything is sent; each later one is synthesized while
+ * the one before it plays, so a long answer starts as soon as its first
+ * sentence exists.
+ */
+async function synthesizeSentences(
+	context: SpeechContext,
+	sentences: AsyncIterable<string>,
+	signal: AbortSignal | undefined,
+): Promise<SpokenReply> {
+	const iterator = sentences[Symbol.asyncIterator]();
+	let textChars = 0;
+	let pcmBytes = 0;
+	const synthesized: Array<{
+		chars: number;
+		requestedAt: number;
+		speech: SynthesizedSpeech;
+	}> = [];
+	const synthesizeNext = async (): Promise<SynthesizedSpeech | null> => {
+		const next = await iterator.next();
+		if (next.done) {
+			return null;
+		}
+		textChars += next.value.length;
+		// Measured from the moment the sentence exists, so a route that failed
+		// before the one that answered is part of the cost.
+		const requestedAt = Date.now();
+		const speech = await synthesizeSpeech(context, next.value, signal);
+		synthesized.push({ chars: next.value.length, requestedAt, speech });
+		return speech;
+	};
+	let current = await synthesizeNext();
+	if (!current) {
+		throw new Error(NOTHING_TO_SAY);
+	}
+	const route = current.route;
+	let upcoming = synthesizeNext();
+	// Awaited when its turn comes; until then a failure must not go unhandled.
+	upcoming.catch(() => {});
+	let reader = current.pcm.getReader();
+	const pcm = new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (!done) {
+					controller.enqueue(value);
+					return;
+				}
+				pcmBytes += current?.pcmBytes() ?? 0;
+				const next = await upcoming;
+				if (!next) {
+					controller.close();
+					return;
+				}
+				current = next;
+				upcoming = synthesizeNext();
+				upcoming.catch(() => {});
+				reader = next.pcm.getReader();
+			}
+		},
+		async cancel(reason) {
+			await reader.cancel(reason);
+		},
+	});
+	return {
+		route,
+		pcm,
+		textChars: () => textChars,
+		pcmBytes: () => pcmBytes,
+		sentenceTimings: (origin) =>
+			synthesized.map(({ chars, requestedAt, speech }) => ({
+				chars,
+				route: speech.route.kind,
+				startedAtMs: requestedAt - origin,
+				firstByteMs: speech.arrival.firstByteAt
+					? speech.arrival.firstByteAt - requestedAt
+					: null,
+				totalMs: speech.arrival.doneAt
+					? speech.arrival.doneAt - requestedAt
+					: null,
+			})),
+	};
+}
+
+type SpeakInput = SpeechContext & {
+	/** The reply as speakable sentences; see ParlumeSentenceQueue. */
+	sentences: AsyncIterable<string>;
+	voiceGeneration?: number;
+	confirmationSpeakerId?: string;
+	signal?: AbortSignal;
+};
+
+type Playback = {
+	played: boolean;
+	interrupted: boolean;
+	firstAudioAt?: number;
+};
+
+const auraResultSchema = z.object({
+	played: z.boolean(),
+	interrupted: z.boolean().default(false),
+	firstAudioAt: z.number().optional(),
+	failedAt: z.number().int().min(0).optional(),
+	error: z.string().optional(),
+	sentences: z
+		.array(
+			z.object({
+				chars: z.number(),
+				startedAtMs: z.number(),
+				firstByteMs: z.number().nullable(),
+				totalMs: z.number().nullable(),
+				ok: z.boolean(),
+			}),
+		)
+		.default([]),
+});
+
+// Workers AI prices @cf/deepgram/aura-2-en per input character: $0.03 per
+// 1,000 characters.
+const AURA_USD_PER_CHAR = 0.03 / 1_000;
+
+function recordAuraUsage(
+	context: SpeechContext,
+	sentence: { chars: number; totalMs: number | null },
+): void {
+	logAiUsageAsync({
+		userId: context.userId,
+		organizationId: context.organizationId,
+		projectId: context.projectId,
+		taskType: "AUDIO",
+		featureKey: "parlume",
+		conversationId: context.sessionId,
+		provider: "CLOUDFLARE_AI",
+		providerModelId: PARLUME_AURA_MODEL_ID,
+		inputTokens: 0,
+		outputTokens: 0,
+		totalTokens: 0,
+		costUsd: sentence.chars * AURA_USD_PER_CHAR,
+		latencyMs: sentence.totalMs ?? 0,
+		success: true,
+	});
+}
+
+function ndjsonSentences(
+	sentences: AsyncGenerator<string>,
+): ReadableStream<Uint8Array> {
+	const encoder = new TextEncoder();
+	return new ReadableStream<Uint8Array>({
+		async pull(controller) {
+			const next = await sentences.next();
+			if (next.done) {
+				controller.close();
+				return;
+			}
+			controller.enqueue(
+				encoder.encode(`${JSON.stringify({ text: next.value })}\n`),
+			);
+		},
+		async cancel() {
+			await sentences.return(undefined);
+		},
+	});
+}
+
+/**
+ * Sends the sentences as text to the bridge, which synthesizes them with
+ * Deepgram Aura on Workers AI and plays them: the audio never travels through
+ * this worker. Returns the playback, or where the bridge stopped when Aura
+ * could not speak a sentence, so another route can continue from there.
+ */
+async function speakThroughAura(
+	input: SpeakInput,
+	sentences: ReplayableSentences,
+	secret: string,
+	startedAt: number,
+): Promise<{ done: Playback } | { resumeAt: number; firstAudioAt?: number }> {
+	const requested = sentences.from(0);
+	try {
+		const response = await fetch(bridgeControlUrl(input.sessionId, "say"), {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${secret}`,
+				"content-type": "application/x-ndjson",
+				"x-parlume-voice-generation": String(
+					input.voiceGeneration ?? 0,
+				),
+				...(input.confirmationSpeakerId
+					? {
+							"x-parlume-confirmation-speaker":
+								input.confirmationSpeakerId,
+						}
+					: {}),
+			},
+			body: ndjsonSentences(requested),
+			duplex: "half",
+			signal: withSignal(input.signal, 90_000),
+		} as RequestInit & { duplex: "half" });
+		if (!response.ok) {
+			throw new Error(
+				`Aura speech request failed (HTTP ${response.status}).`,
+			);
+		}
+		const result = auraResultSchema.parse(await response.json());
+		for (const sentence of result.sentences) {
+			if (sentence.ok) {
+				recordAuraUsage(input, sentence);
+				recordTurnSpeechSentence({
+					chars: sentence.chars,
+					route: "aura",
+					startedAtMs: sentence.startedAtMs,
+					firstByteMs: sentence.firstByteMs,
+					totalMs: sentence.totalMs,
+				});
+			}
+		}
+		parlumeActivityLog("info", "speech.delivered", {
+			sessionId: input.sessionId,
+			voiceGeneration: input.voiceGeneration ?? 0,
+			route: "aura",
+			textChars: result.sentences.reduce(
+				(sum, sentence) => sum + sentence.chars,
+				0,
+			),
+			played: result.played,
+			interrupted: result.interrupted,
+			failedAt: result.failedAt ?? null,
+			totalMs: Date.now() - startedAt,
+			firstAudioMs: result.firstAudioAt
+				? result.firstAudioAt - startedAt
+				: null,
+		});
+		if (result.failedAt === undefined) {
+			return {
+				done: {
+					played: result.played,
+					interrupted: result.interrupted,
+					firstAudioAt: result.firstAudioAt,
+				},
+			};
+		}
+		parlumeActivityLog("warn", "speech.route_failed", {
+			sessionId: input.sessionId,
+			route: "aura",
+			failedAt: result.failedAt,
+			error: result.error ?? null,
+		});
+		return { resumeAt: result.failedAt, firstAudioAt: result.firstAudioAt };
+	} catch (error) {
+		if (input.signal?.aborted) {
+			throw error;
+		}
+		parlumeActivityLog("warn", "speech.route_failed", {
+			sessionId: input.sessionId,
+			route: "aura",
+			failedAt: 0,
+			error: errorMessage(error),
+		});
+		return { resumeAt: 0 };
+	} finally {
+		await requested.return(undefined);
+	}
+}
+
+/**
+ * Speaks the reply. Deepgram Aura in the bridge first; if it cannot speak a
+ * sentence, the rest goes through the organization's AI Gateway or its direct
+ * OpenAI key and is played from PCM sent to the bridge.
+ */
 export async function speakParlumeResponse(
-	input: SpeechContext & {
-		response: string;
-		voiceGeneration?: number;
-		confirmationSpeakerId?: string;
-		signal?: AbortSignal;
-	},
-): Promise<{ played: boolean; interrupted: boolean; firstAudioAt?: number }> {
+	input: SpeakInput,
+): Promise<Playback> {
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret) {
 		throw new Error("Parlume media service secret is not configured.");
 	}
-	const spoken = input.response.slice(0, MAX_SPOKEN_CHARS);
 	const startedAt = Date.now();
-	const speech = await synthesizeSpeech(input, spoken, input.signal);
+	const sentences = new ReplayableSentences(input.sentences);
+	const aura = await speakThroughAura(input, sentences, secret, startedAt);
+	if ("done" in aura) {
+		return aura.done;
+	}
+	const rest = await speakThroughPcm(
+		{ ...input, sentences: sentences.from(aura.resumeAt) },
+		secret,
+		aura.resumeAt > 0,
+	);
+	return {
+		...rest,
+		firstAudioAt: aura.firstAudioAt ?? rest.firstAudioAt,
+	};
+}
+
+async function speakThroughPcm(
+	input: SpeakInput,
+	secret: string,
+	continuing: boolean,
+): Promise<Playback> {
+	const startedAt = Date.now();
+	let speech: SpokenReply;
+	try {
+		speech = await synthesizeSentences(
+			input,
+			input.sentences,
+			input.signal,
+		);
+	} catch (error) {
+		// Aura already spoke everything there was to say.
+		if (continuing && errorMessage(error) === NOTHING_TO_SAY) {
+			return { played: false, interrupted: false };
+		}
+		throw error;
+	}
 	const playbackRequest: RequestInit & { duplex: "half" } = {
 		method: "POST",
 		headers: {
@@ -391,11 +715,14 @@ export async function speakParlumeResponse(
 			firstAudioAt: z.number().optional(),
 		})
 		.parse(await playback.json());
+	for (const sentence of speech.sentenceTimings(startedAt)) {
+		recordTurnSpeechSentence(sentence);
+	}
 	parlumeActivityLog("info", "speech.delivered", {
 		sessionId: input.sessionId,
 		voiceGeneration: input.voiceGeneration ?? 0,
 		route: speech.route.kind,
-		textChars: spoken.length,
+		textChars: speech.textChars(),
 		pcmBytes: speech.pcmBytes(),
 		played: result.played,
 		interrupted: result.interrupted,
