@@ -188,6 +188,52 @@ describe("embedSingleContextActivity — reembed", () => {
 		expect(mocks.updateMany).not.toHaveBeenCalled();
 	});
 
+	it("embeds nothing and removes any points when the row is in a store-only folder", async () => {
+		mocks.findUnique.mockReset();
+		mocks.findUnique.mockResolvedValue({ ...V2, indexingExcluded: true });
+
+		const result = await embedSingleContextActivity({
+			...input,
+			reembed: true,
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(mocks.deleteProjectContext).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteProjectContext).toHaveBeenCalledWith(
+			"ctx-1",
+			"org-1",
+			undefined,
+			{ strict: true },
+		);
+		expect(mocks.embedProjectContext).not.toHaveBeenCalled();
+		expect(mocks.updateMany).not.toHaveBeenCalled();
+	});
+
+	it("removes the points it just wrote, and stamps nothing, when the folder became store-only while it embedded", async () => {
+		mocks.findUnique.mockReset();
+		mocks.findUnique
+			.mockResolvedValueOnce({ ...V2, indexingExcluded: false })
+			.mockResolvedValueOnce({
+				contentHash: V2.contentHash,
+				indexingExcluded: true,
+			});
+
+		const result = await embedSingleContextActivity({
+			...input,
+			reembed: true,
+		});
+
+		expect(result).toEqual({ success: true });
+		expect(mocks.embedProjectContext).toHaveBeenCalledTimes(1);
+		expect(mocks.deleteProjectContext).toHaveBeenCalledTimes(2);
+		expect(
+			mocks.deleteProjectContext.mock.invocationCallOrder[1],
+		).toBeGreaterThan(
+			mocks.embedProjectContext.mock.invocationCallOrder[0],
+		);
+		expect(mocks.updateMany).not.toHaveBeenCalled();
+	});
+
 	it("fails the activity, and embeds nothing, when the delete fails", async () => {
 		// Swallowing this would leave a shrunk file's stale tail in the index
 		// while the activity reports success, and Temporal would never retry.

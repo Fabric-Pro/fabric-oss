@@ -192,6 +192,55 @@ describe("deliberate exclusions stay silent", () => {
 	});
 });
 
+describe("an expired approval is handled by its caller", () => {
+	const approveUrl = "/api/agents/fabric-ai/orchestrator-temporal/approve";
+	const staleApproval = {
+		error: "This approval is no longer pending.",
+		code: "APPROVAL_NOT_PENDING",
+	};
+
+	it.each([approveUrl, `https://example.com${approveUrl}?source=chat`])(
+		"leaves the stale refusal at %s intact without a duplicate failure notice",
+		async (url) => {
+			const response = Response.json(staleApproval, { status: 409 });
+			window.fetch = vi.fn(async () => response);
+			render(<CopilotFetchErrorInterceptor />);
+
+			const delivered = await window.fetch(url, { method: "POST" });
+
+			expect(delivered).toBe(response);
+			expect(delivered.status).toBe(409);
+			await expect(delivered.json()).resolves.toEqual(staleApproval);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(toast.success).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		[approveUrl, 403, "FORBIDDEN"],
+		[approveUrl, 403, "APPROVAL_NOT_PENDING"],
+		[approveUrl, 409, "UNKNOWN_APPROVAL_ERROR"],
+		[approveUrl, 500, "APPROVAL_NOT_PENDING"],
+		[
+			"/api/agents/fabric-ai/orchestrator-temporal/stream",
+			409,
+			"APPROVAL_NOT_PENDING",
+		],
+		[`${approveUrl}/other`, 409, "APPROVAL_NOT_PENDING"],
+		[`/other${approveUrl}`, 409, "APPROVAL_NOT_PENDING"],
+	])(
+		"still reports %s responding with HTTP %s and %s",
+		async (url, status, code) => {
+			await fireAt(url, () =>
+				Response.json({ error: "Request refused", code }, { status }),
+			);
+
+			await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		},
+	);
+});
+
 /**
  * The failure that survived the status-based sweep above: the run fails *after*
  * the response has already succeeded, so there is no status left to key off.
@@ -491,13 +540,17 @@ describe("the out-of-credit toast offers somewhere to go", () => {
 // rate limiting — retrying sooner cannot help — so it must never read as
 // "AI service is busy" nor arm the client-side backoff.
 describe("every ChatGPT plan for the member's work is spent", () => {
-	function planSpent(apiBillingOption: boolean): Response {
+	function planSpent(
+		apiBillingOption: boolean,
+		personalKeyOption = false,
+	): Response {
 		return new Response(
 			JSON.stringify({
 				error: "Every ChatGPT plan this work may use has no usage left in this window.",
 				code: "subscription_sharing_usage_limit_exceeded",
 				resetAt: "2026-10-08T16:37:00.000Z",
 				apiBillingOption,
+				personalKeyOption,
 			}),
 			{ status: 429, headers: { "Content-Type": "application/json" } },
 		);
@@ -586,6 +639,38 @@ describe("every ChatGPT plan for the member's work is spent", () => {
 				queryKey: ["users", "chatgpt-plan", "status"],
 			}),
 		);
+	});
+
+	// Fizzy #3086: an opted-in personal key would have carried the work.
+	it("links to opting a personal key in when that would help", async () => {
+		window.fetch = vi.fn(() =>
+			planSpent(false, true),
+		) as unknown as typeof window.fetch;
+		renderInOrganization(new QueryClient());
+		await window.fetch("/api/copilotkit?organizationId=org-1", {
+			method: "POST",
+		});
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		const [, opts] = toastCalls()[0];
+		expect(opts.description).toMatch(/Use your own key meanwhile/);
+		expect(opts.action?.label).toBe("configurePersonalFallback");
+		expect(() => opts.action?.onClick()).not.toThrow();
+	});
+
+	it("keeps the organization billing switch as the button when both would help", async () => {
+		window.fetch = vi.fn(() =>
+			planSpent(true, true),
+		) as unknown as typeof window.fetch;
+		renderInOrganization(new QueryClient());
+		await window.fetch("/api/copilotkit?organizationId=org-1", {
+			method: "POST",
+		});
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		const [, opts] = toastCalls()[0];
+		expect(opts.action?.label).toBe("useOrganizationBilling");
+		expect(opts.description).toMatch(/Use your own key meanwhile/);
 	});
 
 	it("offers no switch for a refusal in another organization than the one on screen", async () => {

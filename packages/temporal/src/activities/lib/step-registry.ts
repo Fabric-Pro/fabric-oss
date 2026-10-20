@@ -15,6 +15,7 @@
  */
 
 import {
+	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
 	PUBLISH_FRAME_NODE_TYPE,
 } from "../../lib/workflow-node-types";
@@ -182,6 +183,13 @@ export const stepRegistry: Record<string, StepRegistryEntry> = {
 	},
 
 	// MCP steps
+	[ADO_STORY_REVIEW_NODE_TYPE]: {
+		name: "Review ADO Stories",
+		load: async () => {
+			const mod = await import("./steps/mcp-review-ado-stories");
+			return mod.executeAdoStoryReviewStep;
+		},
+	},
 	"mcp-tool": {
 		name: "MCP Tool",
 		load: async () => {

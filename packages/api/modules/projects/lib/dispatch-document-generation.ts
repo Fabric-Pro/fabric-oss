@@ -25,7 +25,10 @@
  * hides. `markDocumentGenerationQueued` declines to write over a row that has
  * been touched since this attempt began, which is what makes marking after the
  * start safe — and is why the old mark-before-start ordering of issue #720 is
- * no longer needed to protect a fast-failing run's own FAILED write.
+ * no longer needed to protect a fast-failing run's own FAILED write. A write
+ * that owns no run (a title edit, say) landing in that window also declines
+ * it, so the mark then takes the row back by identity unless a newer attempt
+ * stamped it (see `markDocumentGenerationQueued`'s `reclaim`).
  *
  * That guard is a freshness window, not a status check, and the difference is
  * the whole point: refusing terminal rows looked equivalent and was not, because
@@ -33,6 +36,26 @@
  * regenerate — the only path the list offers, on exactly COMPLETE and FAILED
  * documents — had its queue mark silently declined, so the wait this feature
  * exists to show was never visible on the path users actually take.
+ *
+ * **A client-document Proposal joins its live run** (Fizzy #2946). Its run
+ * streams the new Main into the page section by section, so a second run
+ * started over it — by another member, or by the same one with different
+ * instructions, which hash to a different id — would replace the sections on
+ * screen with a different run's. While its row is QUEUED or GENERATING with a
+ * stored workflow other than the one this request would start, that workflow
+ * is asked whether it still runs (the shared probe in
+ * `workflow-run-liveness.ts`): `alreadyInProgress` with nothing written when
+ * it does, `liveRunUnknown` with nothing started or written when Temporal
+ * cannot say (the next request asks again), and a new run only once it is
+ * gone — a closed workflow can leave GENERATING behind. `liveRunUnknown` is
+ * its own answer, not `statusUnknown`: that one means this request's own
+ * start may have registered and the row is queued for it, so a caller treats
+ * it as started. The read, the question, the start and the queue mark hold
+ * one per-document lock, so two requests a second apart cannot both start.
+ * The Temporal calls made under that lock are bounded so the lock's
+ * transaction never times out under them: a start that does not answer in
+ * time takes the ambiguous-start path below, queued for this attempt.
+ * Every other document type supersedes as before.
  *
  * Failures propagate raw. The caller — a procedure boundary — logs the real
  * cause and throws a fixed generic message, because everything in here is
@@ -45,7 +68,12 @@ import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/server";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
-import { isFeatureEnabled } from "@repo/database";
+import {
+	isFeatureEnabled,
+	isProposalClientDocument,
+	type LiveRunDispatchState,
+	withLiveRunDispatchLock,
+} from "@repo/database";
 // The canonical-form helper, imported from the module that defines it rather
 // than from the `@repo/database` barrel: this one is pure (node:crypto only),
 // so the dispatcher does not drag the Prisma client in behind a hash.
@@ -68,6 +96,23 @@ import {
 } from "@temporalio/client";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { assertCapabilityAvailable } from "../../capabilities/assert";
+import {
+	WORKFLOW_RUN_LIVENESS_TIMEOUT_MS,
+	workflowRunLiveness,
+} from "./workflow-run-liveness";
+
+/**
+ * How long a client-document Proposal's workflow start may take under its
+ * dispatch lock. Temporal sets no deadline of its own, and its client retries
+ * an unavailable server for well over the lock transaction's 30 s, after
+ * which the lock is released while the dispatch keeps running. The retries
+ * honour the same absolute deadline, overshooting it by at most one backoff
+ * (5 s), so the locked work stays near 23 s: the liveness question (5 s),
+ * this start (8 s, up to 13 s), the post-failure describe (5 s) and the
+ * queue mark. A start that runs out of time is the ambiguous start: the row
+ * is queued for the attempt and describe() decides.
+ */
+export const LIVE_RUN_START_DEADLINE_MS = 8_000;
 
 /**
  * The document types whose generator can actually be refused, and the
@@ -108,6 +153,12 @@ export const MAX_RUN_INSTRUCTIONS_CHARS = 10_000;
  * UI for no gain.
  */
 const WORKFLOW_ID_HASH_CHARS = 16;
+
+/** Statuses of a run that may still write the document. */
+const LIVE_DOCUMENT_STATUSES: ReadonlySet<string> = new Set([
+	"QUEUED",
+	"GENERATING",
+]);
 
 export interface DispatchDocumentGenerationInput {
 	documentId: string;
@@ -175,9 +226,11 @@ export interface DispatchDocumentGenerationInput {
 }
 
 /**
- * What a dispatch did. Discriminated on `outcome` because the three answers
- * need different surfaces: a new run, someone else's run that is already
- * underway, and "we could not tell".
+ * What a dispatch did. Discriminated on `outcome` because the answers need
+ * different surfaces: a new run, someone else's run that is already underway,
+ * a start whose outcome is unknown (treated as started: the row is queued for
+ * it), and a live run this request could not confirm (nothing was started or
+ * written; try again).
  */
 export type DispatchDocumentGenerationResult =
 	| {
@@ -201,8 +254,27 @@ export type DispatchDocumentGenerationResult =
 			message: string;
 	  }
 	| {
-			/** The start's real outcome is unknown; see the branch below. */
+			/**
+			 * This request's own start threw and Temporal could not say
+			 * whether it registered. The row is already marked QUEUED for this
+			 * attempt, so a caller treats it as started and keeps watching the
+			 * document; see the branch in `startGeneration`.
+			 */
 			outcome: "statusUnknown";
+			workflowId: string;
+			runId: null;
+			message: string;
+	  }
+	| {
+			/**
+			 * A client-document Proposal's row names a live run other than the
+			 * one this request would start, and Temporal could not say whether
+			 * that run still goes (Fizzy #2946). Nothing was started and
+			 * nothing was written: a caller says the state could not be
+			 * confirmed and lets the person try again. `workflowId` is the
+			 * stored run's, not this request's.
+			 */
+			outcome: "liveRunUnknown";
 			workflowId: string;
 			runId: null;
 			message: string;
@@ -358,11 +430,13 @@ export async function dispatchDocumentGeneration(
 	}
 
 	// Get Temporal client
-	const client = await getTemporalClient();
+	const pendingClient = getTemporalClient();
 
 	// Issue AI token in the API layer where AI_TOKEN_SECRET is available
-	// This token will be passed to Temporal activities for agent authentication
-	const aiToken = await issueAIToken({
+	// This token will be passed to Temporal activities for agent authentication.
+	// Both start together; the client is awaited first, so its failure still
+	// surfaces ahead of the token's.
+	const pendingToken = issueAIToken({
 		userId: input.userId,
 		organizationId: input.organizationId,
 		impersonated: isAiImpersonatedRequest(),
@@ -371,9 +445,122 @@ export async function dispatchDocumentGeneration(
 		expirySeconds: 900,
 		planEligible: input.planEligible,
 	});
+	// The token's rejection is read below, unless the client's comes first.
+	pendingToken.catch(() => {});
+	const client = await pendingClient;
+	const aiToken = await pendingToken;
 
 	const workflowId = buildGenerationWorkflowId(input);
 
+	// A client-document Proposal joins a run that is still live instead of
+	// replacing it, under a per-document lock (see the module comment).
+	if (
+		await isProposalClientDocument({
+			organizationId: input.organizationId,
+			documentType: input.documentType,
+		})
+	) {
+		return await withLiveRunDispatchLock(
+			input.documentId,
+			async (current) =>
+				(await joinLiveRun(client, current, workflowId)) ??
+				(await startGeneration(client, input, workflowId, aiToken, {
+					boundTemporalCalls: true,
+					// `joinLiveRun` asked Temporal about a live row only when it
+					// names a workflow; one that names none was never judged.
+					liveRowJudged: Boolean(current?.workflowId),
+				})),
+		);
+	}
+
+	return await startGeneration(client, input, workflowId, aiToken);
+}
+
+type TemporalClient = Awaited<ReturnType<typeof getTemporalClient>>;
+
+/**
+ * The answer for a request that must join the document's live run instead of
+ * starting one, or null when a run may start: the row is not QUEUED or
+ * GENERATING, holds no workflow, holds the very workflow this request would
+ * start (Temporal refuses that duplicate itself), or Temporal reports the
+ * stored workflow gone ({@link workflowRunLiveness}: a paused run still holds
+ * the document). Writes nothing.
+ *
+ * The stored id is the one the dispatch wrote at queue time until the run's
+ * generation attempt claims the live preview; the claim then records the
+ * generation workflow it runs in, so wizard, batch and setup runs, which never
+ * pass through this dispatch, are joined too.
+ */
+async function joinLiveRun(
+	client: TemporalClient,
+	current: LiveRunDispatchState | null,
+	workflowId: string,
+): Promise<DispatchDocumentGenerationResult | null> {
+	if (
+		!current ||
+		!LIVE_DOCUMENT_STATUSES.has(current.status) ||
+		!current.workflowId ||
+		current.workflowId === workflowId
+	) {
+		return null;
+	}
+	const liveness = await workflowRunLiveness(client, current.workflowId);
+	if (liveness === "running") {
+		return {
+			outcome: "alreadyInProgress",
+			workflowId: current.workflowId,
+			runId: null,
+			message: "Document generation already in progress",
+		};
+	}
+	if (liveness === "unknown") {
+		logger.warn(
+			`[GenerateDocument] Could not tell whether workflow ${current.workflowId} still runs; not starting ${workflowId} over it`,
+		);
+		return {
+			outcome: "liveRunUnknown",
+			workflowId: current.workflowId,
+			runId: null,
+			message:
+				"Could not confirm whether a generation of this document is still running; nothing was started",
+		};
+	}
+	return null;
+}
+
+/** describe() gave no answer within its bound: an ambiguous outcome. */
+class DescribeTimedOutError extends Error {
+	constructor(workflowId: string) {
+		super(
+			`describe() for workflow ${workflowId} did not answer within ${WORKFLOW_RUN_LIVENESS_TIMEOUT_MS} ms`,
+		);
+		this.name = "DescribeTimedOutError";
+	}
+}
+
+/**
+ * Start the run under `workflowId` and mark the row QUEUED for it, with the
+ * ordering and recovery the module comment describes.
+ *
+ * `boundTemporalCalls`: the call runs under a dispatch lock, so the start
+ * gets {@link LIVE_RUN_START_DEADLINE_MS} and the post-failure describe()
+ * {@link WORKFLOW_RUN_LIVENESS_TIMEOUT_MS}; an unanswered describe() is
+ * ambiguous, like any other doubtful answer.
+ *
+ * `liveRowJudged`: under that lock `joinLiveRun` found the workflow a live
+ * row names gone (or it is this request's own, which Temporal refuses while
+ * it runs), so the queue mark may take such a row back.
+ */
+async function startGeneration(
+	client: TemporalClient,
+	input: DispatchDocumentGenerationInput,
+	workflowId: string,
+	aiToken: string,
+	{
+		boundTemporalCalls = false,
+		liveRowJudged = false,
+	}: { boundTemporalCalls?: boolean; liveRowJudged?: boolean } = {},
+): Promise<DispatchDocumentGenerationResult> {
 	// This attempt's identity, minted here rather than by the queue write
 	// because the workflow has to be told it at start time: the run's own
 	// QUEUED → GENERATING flip is scoped to this exact value, and the queue
@@ -381,10 +568,8 @@ export async function dispatchDocumentGeneration(
 	// duplicate. Both ends therefore carry the same timestamp by construction.
 	const attemptStartedAt = new Date();
 
-	let handle: Awaited<ReturnType<typeof client.workflow.start>> | undefined;
-	let workflowStartError: unknown;
-	try {
-		handle = await client.workflow.start(
+	const startRun = () =>
+		client.workflow.start(
 			"projectDocumentGenerationWorkflow",
 			withCorrelationMemo({
 				taskQueue: "project-documents",
@@ -422,6 +607,16 @@ export async function dispatchDocumentGeneration(
 				],
 			}),
 		);
+
+	let handle: Awaited<ReturnType<typeof client.workflow.start>> | undefined;
+	let workflowStartError: unknown;
+	try {
+		handle = boundTemporalCalls
+			? await client.withDeadline(
+					Date.now() + LIVE_RUN_START_DEADLINE_MS,
+					startRun,
+				)
+			: await startRun();
 	} catch (startError) {
 		// Checked BEFORE the describe() probe below, and it has to be: the
 		// probe would resolve — the other run is genuinely live — and this call
@@ -454,13 +649,32 @@ export async function dispatchDocumentGeneration(
 	// — including one this function leaves behind in the unknown-outcome branch
 	// below.
 	//
-	// `applied: false` is not an error: it means the run already terminalized
-	// the row (a dependency probe that failed inside the first second), and the
-	// guard exists precisely so that answer stands.
-	await markDocumentGenerationQueued(input.documentId, {
+	// The mark must land: the run takes its row by this attempt's identity
+	// before its model call and stops as superseded when the row never names
+	// it. A write that owns no run (a title edit, an embed stamp, a save)
+	// landing during the start declines the freshness mark, so the mark takes
+	// the row back by identity (`reclaim`). A newer attempt's stamp stands. A
+	// row still QUEUED or GENERATING under an older attempt is taken only
+	// under the lock, where `joinLiveRun` has already found the workflow it names
+	// gone; elsewhere it may be a run that is still writing, and the decline
+	// stands as before. A mark that matches nothing else (the row was
+	// deleted, or moved under the retry) fails this request rather than
+	// reporting a run that will stop on its own.
+	const queued = await markDocumentGenerationQueued(input.documentId, {
 		generationStartedAt: attemptStartedAt,
 		workflowId,
+		reclaim: { liveRowJudged },
 	});
+	if (!queued.applied) {
+		logger.warn(
+			`[GenerateDocument] Queue mark for workflow ${workflowId} declined (${queued.declinedFor ?? "unknown"})`,
+		);
+		if (queued.declinedFor === "unowned") {
+			throw new Error(
+				`Document ${input.documentId} could not be queued for workflow ${workflowId}`,
+			);
+		}
+	}
 
 	if (handle) {
 		return {
@@ -497,15 +711,27 @@ export async function dispatchDocumentGeneration(
 	// only WorkflowNotFoundError proves absence.
 	let describeWasAmbiguous = false;
 	let ambiguousDescribeError: unknown = null;
+	const describeRun = () => client.workflow.getHandle(workflowId).describe();
+	let describeTimer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		liveDescription = await client.workflow
-			.getHandle(workflowId)
-			.describe();
+		liveDescription = boundTemporalCalls
+			? await Promise.race([
+					describeRun(),
+					new Promise<never>((_resolve, reject) => {
+						describeTimer = setTimeout(
+							() => reject(new DescribeTimedOutError(workflowId)),
+							WORKFLOW_RUN_LIVENESS_TIMEOUT_MS,
+						);
+					}),
+				])
+			: await describeRun();
 	} catch (describeError) {
 		if (!(describeError instanceof WorkflowNotFoundError)) {
 			describeWasAmbiguous = true;
 			ambiguousDescribeError = describeError;
 		}
+	} finally {
+		clearTimeout(describeTimer);
 	}
 
 	if (liveDescription) {

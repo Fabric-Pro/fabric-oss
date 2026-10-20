@@ -3,9 +3,8 @@
 /**
  * CugaAuthenticatedChat
  *
- * An authenticated chat interface for CUGA agent that uses the A2A proxy
- * with proper credential exchange. This component passes user/org credentials
- * through Fabric's authentication system.
+ * An authenticated chat interface that sends a registered SYSTEM agent ID
+ * to the A2A relay. The server resolves its endpoint and issues the AI token.
  *
  * This component should be used in production where multi-tenant credential
  * isolation is required.
@@ -42,17 +41,11 @@ interface Message {
 interface CugaAuthenticatedChatProps {
 	agentId?: string;
 	className?: string;
-	/** CUGA AG-UI wrapper URL (default: from env or localhost:9999) */
-	agentUrl?: string;
 }
 
-const DEFAULT_CUGA_AGENT_URL =
-	process.env.NEXT_PUBLIC_CUGA_AGENT_URL || "http://localhost:9999";
-
 export function CugaAuthenticatedChat({
-	agentId: _agentId,
+	agentId = "cuga_generalist",
 	className,
-	agentUrl,
 }: CugaAuthenticatedChatProps) {
 	const { organizationId } = useOrganizationContext();
 	const [messages, setMessages] = useState<Message[]>([]);
@@ -63,9 +56,6 @@ export function CugaAuthenticatedChat({
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	// Keep in step with the textarea's `max-h-[200px]` class.
 	useAutoResizeTextarea(inputRef, input, 200);
-
-	// Use agent URL from prop or environment
-	const cugaAgentUrl = agentUrl || DEFAULT_CUGA_AGENT_URL;
 
 	// Auto-scroll to bottom
 	useEffect(() => {
@@ -94,14 +84,13 @@ export function CugaAuthenticatedChat({
 		setIsLoading(true);
 
 		try {
-			// Call CUGA via authenticated A2A proxy
-			// IMPORTANT: Pass null explicitly for personal context to prevent
-			// session fallback which could leak org data to personal pages
+			// The relay verifies membership in this organization before selecting
+			// its AI model or issuing a token for the registered agent.
 			const response = await fetch("/api/agents/a2a/send", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
-					agentUrl: cugaAgentUrl,
+					agentId,
 					message: {
 						role: "user",
 						content: userMessage.content,
@@ -157,7 +146,7 @@ export function CugaAuthenticatedChat({
 		} finally {
 			setIsLoading(false);
 		}
-	}, [input, isLoading, cugaAgentUrl, contextId, messages, organizationId]);
+	}, [input, isLoading, agentId, contextId, messages, organizationId]);
 
 	const handleKeyDown = (e: React.KeyboardEvent) => {
 		if (e.key === "Enter" && !e.shiftKey) {

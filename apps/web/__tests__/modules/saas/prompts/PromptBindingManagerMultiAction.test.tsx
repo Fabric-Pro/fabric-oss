@@ -11,7 +11,16 @@ import { PromptBindingManager } from "@saas/prompts/components/PromptBindingMana
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { getById, bindSet, bindSetMany } = vi.hoisted(() => ({
 	getById: vi.fn(),
@@ -146,5 +155,108 @@ describe("PromptBindingManager — binding to several actions", () => {
 			}),
 		);
 		expect(bindSetMany.mock.calls[0][0].targets).toHaveLength(2);
+	});
+});
+
+describe("PromptBindingManager — the Proposal artifact gate (Fizzy #2946)", () => {
+	const renderForLegacyAgent = () =>
+		wrap(
+			<PromptBindingManager
+				promptId="prompt-1"
+				promptName="Test prompt"
+				promptScope="ORG"
+				promptKey="project_document_generator"
+				organizationId="org-1"
+			/>,
+		);
+
+	async function openDocumentTypes() {
+		const user = userEvent.setup();
+		await user.click(
+			screen.getByRole("button", { name: /set as default/i }),
+		);
+		await user.click(
+			await screen.findByRole("combobox", { name: /document type/i }),
+		);
+		const names = screen
+			.getAllByRole("option")
+			.map((option) => option.textContent ?? "");
+		return { user, names };
+	}
+
+	beforeEach(() => {
+		getById.mockReset();
+		bindSet.mockReset();
+		bindSetMany.mockReset();
+		vi.mocked(toast.error).mockClear();
+		getById.mockResolvedValue({
+			id: "prompt-1",
+			format: "HANDLEBARS",
+			versions: [{ id: "pv-1", version: 1, content: "body" }],
+		});
+		bindSet.mockResolvedValue({ id: "binding-1" });
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("does not offer Proposal for the legacy agent, or the legacy actions under Also apply to, and says why", async () => {
+		renderForLegacyAgent();
+		const { user, names } = await openDocumentTypes();
+
+		expect(names).not.toContain("Proposal");
+		expect(names).toContain("PRD");
+		await user.click(screen.getByRole("option", { name: /^prd$/i }));
+
+		expect(
+			screen.getByTestId("prompt-binding-superseded-note"),
+		).toHaveTextContent("dialogNote");
+		expect(await screen.findByText(/also apply to/i)).toBeInTheDocument();
+		expect(
+			screen.queryByText("Project Document Generator — Proposal"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("Document Generator — Proposal"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByText("Client proposal (Main) — Proposal"),
+		).toBeInTheDocument();
+	});
+
+	it("shows the server's superseded-action refusal in the reader's locale", async () => {
+		bindSet.mockRejectedValue(
+			Object.assign(new Error("server english"), {
+				code: "BAD_REQUEST",
+				data: { code: "PROPOSAL_ACTION_SUPERSEDED" },
+			}),
+		);
+		renderForLegacyAgent();
+		const { user } = await openDocumentTypes();
+		await user.click(screen.getByRole("option", { name: /^prd$/i }));
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await vi.waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				"Failed to bind prompt",
+				expect.objectContaining({
+					description: "actionSuperseded",
+					action: expect.objectContaining({ label: "openCatalog" }),
+				}),
+			),
+		);
+	});
+
+	it("offers Proposal as today with the gate off", async () => {
+		flags.proposalArtifact = false;
+		renderForLegacyAgent();
+		const { names } = await openDocumentTypes();
+
+		expect(names).toContain("Proposal");
+		expect(
+			screen.queryByTestId("prompt-binding-superseded-note"),
+		).not.toBeInTheDocument();
 	});
 });

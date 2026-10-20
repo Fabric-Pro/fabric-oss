@@ -93,6 +93,10 @@ export const MODELS: ModelSeedData[] = [
 		vendor: "TypeSafe AI",
 		capabilities: ["EVALUATION"],
 		contextWindow: 0,
+		// Vercel AI Gateway list price. A usage row keeps this estimate unless the
+		// gateway cost reconciliation sweep later replaces it with the billed cost.
+		inputCostPer1M: 0.042,
+		outputCostPer1M: 0,
 		speedTier: "BALANCED",
 		qualityTier: "STANDARD",
 		suitableForTasks: ["DECISION"],
@@ -112,6 +116,10 @@ export const MODELS: ModelSeedData[] = [
 		vendor: "OpenAI",
 		capabilities: ["EVALUATION"],
 		contextWindow: 0,
+		// Vercel AI Gateway list price; the gateway lists no output price for this
+		// model.
+		inputCostPer1M: 0.1,
+		outputCostPer1M: 0,
 		// No benchmarks are published for the decision variant. Speed follows
 		// GPT-6 Luna, the catalog's FAST tier; quality matches Jev because there
 		// is no evidence to rank either decision model above the other.

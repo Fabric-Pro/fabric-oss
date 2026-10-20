@@ -11,7 +11,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	upsertChatAgentSelection: vi.fn(),
-	getOrganizationIdFromContext: vi.fn(),
 	captured: {
 		handler: null as
 			| ((args: { context: any; input: any }) => Promise<any>)
@@ -31,10 +30,6 @@ vi.mock("@repo/database", async () => {
 	};
 });
 
-vi.mock("../../../../../orpc/middleware/tenant-context-middleware", () => ({
-	getOrganizationIdFromContext: mocks.getOrganizationIdFromContext,
-}));
-
 vi.mock("../../../../../orpc/procedures", () => {
 	const chainable: any = {
 		use: () => chainable,
@@ -52,7 +47,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
-		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
+		resolveOrganizationId: (
+			organizationId: string | undefined,
+			session: { activeOrganizationId: string },
+		) => organizationId ?? session.activeOrganizationId,
 	};
 });
 
@@ -67,14 +66,13 @@ const ORG_ID = "org_x";
 
 beforeEach(() => {
 	mocks.upsertChatAgentSelection.mockReset();
-	mocks.getOrganizationIdFromContext.mockReset();
 	mocks.upsertChatAgentSelection.mockResolvedValue(undefined);
 });
 
 function makeContext(organizationId: string | null) {
-	mocks.getOrganizationIdFromContext.mockReturnValue(organizationId);
 	return {
 		user: { id: USER_ID },
+		session: { activeOrganizationId: organizationId ?? ORG_ID },
 		tenantContext: { type: organizationId ? "organization" : "personal" },
 	};
 }
@@ -82,7 +80,7 @@ function makeContext(organizationId: string | null) {
 describe("setChatAgentSelectionProcedure", () => {
 	it("returns success and writes through to upsertChatAgentSelection", async () => {
 		const result = await callHandler({
-			context: makeContext(null),
+			context: makeContext(ORG_ID),
 			input: {
 				selectedAgents: [{ agentId: "agent_a", name: "A" }],
 			},
@@ -92,12 +90,12 @@ describe("setChatAgentSelectionProcedure", () => {
 		expect(mocks.upsertChatAgentSelection).toHaveBeenCalledExactlyOnceWith(
 			USER_ID,
 			{ selectedAgents: [{ agentId: "agent_a", name: "A" }] },
-			null,
+			ORG_ID,
 		);
 	});
 
 	it("idempotency: two consecutive calls with identical arrays both succeed", async () => {
-		const ctx = makeContext(null);
+		const ctx = makeContext(ORG_ID);
 		const input = { selectedAgents: [{ agentId: "agent_a", name: "A" }] };
 
 		await callHandler({ context: ctx, input });
@@ -121,16 +119,16 @@ describe("setChatAgentSelectionProcedure", () => {
 		);
 	});
 
-	it("forwards null organizationId in personal context (XOR isolation)", async () => {
+	it("falls back to the session organization when input is omitted", async () => {
 		await callHandler({
-			context: makeContext(null),
+			context: makeContext(ORG_ID),
 			input: { selectedAgents: [{ agentId: "agent_a", name: "A" }] },
 		});
 
 		expect(mocks.upsertChatAgentSelection).toHaveBeenCalledExactlyOnceWith(
 			USER_ID,
 			{ selectedAgents: [{ agentId: "agent_a", name: "A" }] },
-			null,
+			ORG_ID,
 		);
 	});
 
@@ -152,7 +150,7 @@ describe("setChatAgentSelectionProcedure", () => {
 		expect(parsed.success).toBe(true);
 
 		const result = await callHandler({
-			context: makeContext(null),
+			context: makeContext(ORG_ID),
 			input: { selectedAgents: [] },
 		});
 		expect(result).toEqual({ success: true });

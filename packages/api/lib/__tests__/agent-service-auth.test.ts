@@ -16,6 +16,9 @@ import {
 	checkActingGrant,
 	mintActingGrant,
 	mintActingGrantForTurn,
+	mintParlumeActingGrantForTurn,
+	PARLUME_GRANT_SCOPES,
+	PARLUME_READ_ONLY_GRANT_SCOPES,
 } from "../agent-service-auth";
 
 const SECRET = "grant-test-secret-that-is-at-least-32-chars";
@@ -270,5 +273,166 @@ describe("mintActingGrantForTurn", () => {
 
 		expect(mintActingGrantForTurn(subject)).toBeUndefined();
 		expect(log).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("a grant limited to a project", () => {
+	const project = "project-meeting";
+
+	it("carries its scopes and project to the gateway's check", () => {
+		const grant = mintActingGrant({
+			...subject,
+			scopes: ["features:read", "features:write"],
+			projectId: project,
+		});
+
+		expect(checkActingGrant(grant, subject)).toEqual({
+			ok: true,
+			scopes: ["features:read", "features:write"],
+			projectId: project,
+		});
+	});
+
+	it("leaves a chat grant exactly as it was: no scopes, no project", () => {
+		expect(checkActingGrant(mintActingGrant(subject), subject)).toEqual({
+			ok: true,
+		});
+	});
+
+	it("drops scopes minted without a project, so a grant never carries one alone", () => {
+		const grant = mintActingGrant({
+			...subject,
+			scopes: ["features:read"],
+		});
+
+		expect(checkActingGrant(grant, subject)).toEqual({ ok: true });
+	});
+
+	it.each([
+		["scopes without a project", { scopes: ["features:read"] }],
+		["a project without scopes", { projectId: project }],
+		["scopes that are not strings", { scopes: [1], projectId: project }],
+		["an empty project", { scopes: ["features:read"], projectId: "" }],
+	])("refuses a signed grant with %s", (_name, extra) => {
+		const grant = resign({
+			p: {
+				purpose: "fabric-agent-acting-grant",
+				userId: USER,
+				organizationId: ORGANIZATION,
+				conversationId: null,
+				...extra,
+			},
+			exp: Math.floor(Date.now() / 1000) + 3_600,
+		});
+
+		expect(checkActingGrant(grant, subject)).toEqual({
+			ok: false,
+			reason: "invalid",
+		});
+	});
+
+	it("refuses a grant whose scopes were changed after signing", () => {
+		const grant = mintActingGrant({
+			...subject,
+			scopes: ["features:read"],
+			projectId: project,
+		});
+		const [head, signature] = grant.split(".");
+		const body = JSON.parse(Buffer.from(head, "base64url").toString());
+		body.p.scopes = ["projects:write"];
+		const tampered = `${Buffer.from(JSON.stringify(body)).toString("base64url")}.${signature}`;
+
+		expect(checkActingGrant(tampered, subject)).toEqual({
+			ok: false,
+			reason: "invalid",
+		});
+	});
+
+	it("is for the same user and organization as any other grant", () => {
+		const grant = mintActingGrant({
+			...subject,
+			scopes: ["features:read"],
+			projectId: project,
+		});
+
+		expect(
+			checkActingGrant(grant, {
+				...subject,
+				organizationId: "other-org",
+			}),
+		).toEqual({ ok: false, reason: "mismatch" });
+	});
+});
+
+describe("mintParlumeActingGrantForTurn", () => {
+	it("mints the meeting's portal scopes for the meeting's project", () => {
+		const grant = mintParlumeActingGrantForTurn({
+			...subject,
+			projectId: "project-meeting",
+			readOnly: false,
+		});
+
+		expect(checkActingGrant(grant, subject)).toEqual({
+			ok: true,
+			scopes: [...PARLUME_GRANT_SCOPES],
+			projectId: "project-meeting",
+		});
+		expect(PARLUME_GRANT_SCOPES).toEqual(
+			expect.arrayContaining([
+				"features:write",
+				"instructions:write",
+				"workspaces:read",
+				"frames:write",
+			]),
+		);
+		expect(PARLUME_GRANT_SCOPES).toEqual(
+			expect.arrayContaining(["orgs:read", "chats:read", "mcp:read"]),
+		);
+	});
+
+	it("mints a read-only meeting's grant without the portal writes", () => {
+		const grant = mintParlumeActingGrantForTurn({
+			...subject,
+			projectId: "project-meeting",
+			readOnly: true,
+		});
+
+		const checked = checkActingGrant(grant, subject);
+		expect(checked).toEqual({
+			ok: true,
+			scopes: [...PARLUME_READ_ONLY_GRANT_SCOPES],
+			projectId: "project-meeting",
+		});
+		expect(PARLUME_READ_ONLY_GRANT_SCOPES).toEqual(
+			expect.arrayContaining(["projects:read", "features:read"]),
+		);
+		for (const scope of PARLUME_READ_ONLY_GRANT_SCOPES) {
+			expect(scope).not.toMatch(/:write$/);
+		}
+	});
+
+	it("never mints a write to organizations, chats or connected servers, an authority scope or a wildcard", () => {
+		for (const scope of PARLUME_GRANT_SCOPES) {
+			expect(scope).not.toMatch(
+				/^(?:orgs|chats|mcp):write$|^authority:|^\*$/,
+			);
+		}
+	});
+
+	it("mints nothing, rather than failing the turn, when it cannot sign", () => {
+		vi.stubEnv("BETTER_AUTH_SECRET", "");
+		const log = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => undefined);
+
+		expect(
+			mintParlumeActingGrantForTurn({
+				...subject,
+				projectId: "p",
+				readOnly: false,
+			}),
+		).toBeUndefined();
+		expect(log).toHaveBeenCalled();
+		log.mockRestore();
 	});
 });

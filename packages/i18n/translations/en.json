@@ -974,7 +974,7 @@
 					"title": "Hand stakeholders a Glossy edition"
 				},
 				"glossyProposalArtifact": {
-					"body": "A Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, and its page has Main Document, Internal Analysis and Style tabs.",
+					"body": "A Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, its page has Main Document, Internal Analysis and Style tabs, and its Download menu saves a branded PDF or Word file in the same look.",
 					"title": "Hand stakeholders a Glossy edition"
 				},
 				"overview": {
@@ -1060,6 +1060,7 @@
 		},
 		"organizationSelect": {
 			"createNewOrganization": "Create new organization",
+			"opening": "Opening workspace…",
 			"organizations": "Organizations",
 			"ownAccount": "Your account",
 			"switchError": "Couldn't switch workspace. Please try again.",
@@ -1715,7 +1716,7 @@
 						"sync_stopped": "Meeting syncing stopped or resumed"
 					},
 					"parlume": {
-						"action_confirmed": "Parlume action confirmed",
+						"action_confirmed": "Parlume action executed",
 						"session_started": "Parlume meeting session started",
 						"session_stopped": "Parlume meeting session stop requested"
 					},
@@ -1749,6 +1750,9 @@
 						"responded": "Analysis finding answered",
 						"cleared": "Answer to analysis finding cleared",
 						"rerun_started": "Internal analysis re-run started"
+					},
+					"proposal_artifact": {
+						"export_started": "Proposal export started"
 					},
 					"context_source": {
 						"scan_stopped": "Channel or chat scanning stopped or resumed",
@@ -2578,6 +2582,7 @@
 			"openSettings": "Open ChatGPT plan settings",
 			"useOrganizationBilling": "Use organization billing",
 			"usingOrganizationBilling": "This organization now uses its own API billing for your AI work.",
+			"configurePersonalFallback": "Configure a fallback",
 			"cli": {
 				"helpLabel": "How to install the Fabric CLI",
 				"helpTitle": "How to install the Fabric CLI",
@@ -2639,6 +2644,10 @@
 			}
 		},
 		"chatgptPlanPool": {
+			"termsPendingTitle": "These accounts aren't serving any work yet",
+			"termsPendingBody": "An organization owner has to accept the terms for sharing ChatGPT plans under AI Models → Routing. Until then, Fabric uses members' own ChatGPT plans or your API provider instead, and work with neither doesn't run.",
+			"termsPendingReview": "Review terms",
+			"termsPendingOwnerOnly": "Only an organization owner can accept them. Ask an owner to open AI Models.",
 			"title": "Shared ChatGPT plans",
 			"description": "ChatGPT accounts your organization shares. Fabric runs background work on them, and the work of members who haven't connected their own plan, instead of billing your API provider.",
 			"loadFailed": "The shared ChatGPT plans could not be loaded. Reload the page to try again.",
@@ -2726,6 +2735,13 @@
 				"disabledToast": "Key may now serve all AI work",
 				"failedToast": "Failed to update the key's purpose",
 				"takenHint": "{provider} is already the embeddings-only key. Change its purpose or remove it first."
+			},
+			"planSpentFallback": {
+				"toggleLabel": "Use when the ChatGPT plan is spent",
+				"toggleHint": "When every ChatGPT plan for your own work is spent and the organization would stop it, your chats and the generation you start run on this key, billed to you. Never background work.",
+				"enabledToast": "This key now stands in when the ChatGPT plan is spent",
+				"disabledToast": "This key no longer stands in for a spent ChatGPT plan",
+				"failedToast": "Could not update the key"
 			}
 		},
 		"chatgptPlanWindow": {
@@ -2766,8 +2782,14 @@
 				"sharedActive": "{count} active · {percent}% of window used",
 				"sharedNone": "No accounts connected",
 				"manageShared": "Manage shared accounts",
-				"apiTitle": "API billing",
+				"apiTitle": "Organization API billing",
 				"apiBody": "Used when no plan can serve the request.",
+				"personalTitle": "Your personal key",
+				"personalBody": "Your own work runs on a key of yours you opted in when every plan is spent and the organization would stop it. Billed to you. Only you see this.",
+				"personalUsed": "Used: {provider}",
+				"personalNotSet": "Not set up",
+				"personalSetUp": "Set up a personal key",
+				"personalManage": "Manage your keys",
 				"apiBodyNone": "Not available. Requests no plan can serve will fail.",
 				"apiNone": "No API provider for LLM work",
 				"manageProviders": "Manage providers",
@@ -2788,7 +2810,8 @@
 				"peopleApi": "Use API billing",
 				"apiNeedsLlmProvider": "Needs an API provider for chat and generation. Your organization's only key is set to \"Embeddings only\" — change that or add a provider in AI Providers.",
 				"apiNeedsProvider": "Needs an API provider. Add one in AI Providers.",
-				"headroomLabel": "Leave for people",
+				"backgroundShareLabel": "Allow Fabric to use",
+				"backgroundShareTooltip": "Background work, such as scans and batch generation, prefers shared accounts that are below this share of their window, and goes past it only when every shared account is. People's own work is never held back by it.",
 				"fallbackQuestion": "If the plan stops serving a chosen model",
 				"fallbackHelpRecommended": "Fabric retries once on this model. GPT-6 Astra is the strongest and uses the most of the plan window.",
 				"fallbackHelpOther": "Fabric retries once on this model. If it isn't served either, the work stops with an error.",
@@ -2801,7 +2824,7 @@
 				"saveFailed": "Could not save the change",
 				"loadFailed": "Could not load how AI work runs here",
 				"sharedNeedsTerms": "Waiting for an owner to accept the terms",
-				"headroomHelp": "How much of each shared account's window background work leaves for people's own work."
+				"backgroundShareDescription": "How much of each shared account's 5-hour window background work may use. 100% means no limit; anything less is kept free for people's own work."
 			},
 			"models": {
 				"label": "Models",
@@ -3516,6 +3539,10 @@
 						"PULL_REQUEST": "Pull request",
 						"DIRECT_PUSH": "Push directly"
 					},
+					"indexMode": {
+						"INDEXED": "Index for AI search",
+						"STORE_ONLY": "Store only"
+					},
 					"row": {
 						"directPushBy": "Push directly turned on by {name}, {time} ago",
 						"directPushByUnknown": "Push directly turned on by a project admin, {time} ago",
@@ -3528,6 +3555,9 @@
 						"pullRequestHint": "Fabric opens a pull request against {branch}. Someone reviews the files before they join the branch.",
 						"directPushHint": "Fabric commits straight to {branch}, with no review.",
 						"directPushNeedsAdmin": "Only project admins and owners can turn this on.",
+						"indexLegend": "AI search and summaries",
+						"indexedHint": "Files are embedded, so project search and summaries can use them.",
+						"storeOnlyHint": "Files are kept and readable, but left out of AI search and summaries. Use it for large folders of task files.",
 						"add": "Add write folder",
 						"save": "Save",
 						"cancel": "Cancel"
@@ -3741,7 +3771,8 @@
 			"regenerateToast": {
 				"started": "Document regeneration started",
 				"alreadyQueued": "A generation for this document is already queued — a second one was not started",
-				"alreadyRunning": "A generation for this document is already running — a second one was not started",
+				"alreadyRunning": "A generation for this document is already running — a second one was not started and new instructions were not applied",
+				"liveRunUnknown": "Could not confirm whether a generation for this document is already running — try again in a moment",
 				"failed": "Failed to regenerate: {message}"
 			},
 			"markComplete": {
@@ -6594,7 +6625,67 @@
 				"leftOutTag": "left out · {rule}",
 				"leftOutTitle": "Left out by {rule}"
 			},
+			"fileHistory": {
+				"button": "History",
+				"title": "Git history: {path}",
+				"description": "History is read from Git when you open it. It follows this exact path; earlier names are not included.",
+				"refresh": "Refresh from Git",
+				"loadError": "Could not read Git history.",
+				"previewError": "Could not compare this version. Refresh from Git before restoring.",
+				"empty": "Git returned no commits for this path.",
+				"versions": "File versions",
+				"select": "Select a commit to compare its file with the current branch.",
+				"currentRevision": "Current branch revision: {sha}",
+				"selectedRevision": "Selected revision: {sha}",
+				"messageWithheld": "Commit message withheld by the secret check",
+				"source": "Open commit in Git",
+				"loadMore": "Load more",
+				"partial": "More history is available. Only loaded commits are shown.",
+				"limit": "The provider history limit was reached. Older commits may exist.",
+				"current": "Current file",
+				"selected": "Selected file",
+				"restore": "Restore this file",
+				"restoreDescription": "Restoration creates a new commit for this file only. Other files and Git history are preserved. Historical executable permissions are not restored.",
+				"permission": "You can read history, but do not have permission to commit a restoration.",
+				"stale": "This comparison can no longer be used. Refresh from Git and select the version again.",
+				"pending": "A file restoration is awaiting its Git result.",
+				"committed": "File restored in commit {sha}",
+				"rereadFailed": "The restoration committed, but the file view could not refresh. Refresh from Git to see the current file.",
+				"unchanged": "The file already matches this version. No commit was created.",
+				"branch-moved": "The branch changed before restoration. Nothing was committed. Refresh from Git to compare again.",
+				"failed": "Restoration did not complete ({code}). Check the operation before trying again.",
+				"rejected": "The secret check rejected the restoration. Nothing was committed.",
+				"deleteTitle": "Delete {path} to match this version?",
+				"deleteMessage": "The selected commit has no file at this path. A new commit will delete only this file from the current branch.",
+				"deleteAction": "Commit file deletion",
+				"availability": {
+					"UPLOAD": "This project uses uploaded instructions. Git history is unavailable.",
+					"MIGRATING": "Instructions are moving to Git. History is unavailable until the move completes.",
+					"DISCONNECTED": "The Git repository is disconnected. Reconnect it to read history.",
+					"CREDENTIALS_EXPIRED": "The Git credentials expired. Reconnect the repository to read history.",
+					"NOT_FOUND": "The configured Git branch or commit could not be found.",
+					"UNAVAILABLE": "The Git provider is unavailable. Try refreshing later."
+				},
+				"versionState": {
+					"found": "{side}: complete text loaded",
+					"absent": "{side}: no file exists at this path",
+					"binary": "{side}: binary content; no text comparison is available",
+					"tooLarge": "{side}: exceeds the inline text limit",
+					"nonRegular": "{side}: a directory, link or unsupported Git entry",
+					"unavailable": "{side}: complete content could not be verified"
+				},
+				"unsupported": {
+					"ignoreFile": "Restore .fabricignore through Git so its visibility rules can be reviewed.",
+					"incomplete": "The provider did not return a complete file version. Restoration is unavailable.",
+					"nonRegular": "Only regular Git files can be restored here.",
+					"binary": "Restore binary files through Git.",
+					"tooLarge": "Restore files over 256 KiB through Git.",
+					"unchanged": "The file already matches this version."
+				}
+			},
 			"fileView": {
+				"historyDraftBlocked": "Save or discard your editor draft before restoring a Git version.",
+				"historyChangePending": "Wait for the current file change before restoring a Git version.",
 				"copyPath": "Copy path",
 				"copiedTooltip": "Copied",
 				"copied": "Path copied",
@@ -6797,6 +6888,19 @@
 				"cancel": "Cancel",
 				"close": "Close",
 				"saved": "Settings saved"
+			},
+			"pluginReport": {
+				"title": "{count, plural, one {# file is} other {# files are}} not delivered to coding tools",
+				"truncated": "Showing the first {shown} of {total, plural, one {# file} other {# files}}. The other files follow the same rules.",
+				"layoutHint": "Coding tools load skills/<name>/SKILL.md, agents/<name>.md, commands/ and rules/<name>.md, and one memory file: CLAUDE.md or AGENTS.md. The same folders under .claude/ work too.",
+				"reasons": {
+					"outside-plugin-folders": "Not in skills/, agents/, commands/ or rules/, and not CLAUDE.md or AGENTS.md.",
+					"skill-needs-folder": "A skill is a folder: skills/<name>/SKILL.md.",
+					"agent-must-be-markdown-file": "An agent is one markdown file directly in agents/: agents/<name>.md.",
+					"rule-must-be-markdown": "A rule is a markdown file under rules/.",
+					"not-text": "This is not a text file.",
+					"always-on-shadowed": "The other memory file is used: CLAUDE.md for Claude Code, AGENTS.md for Codex."
+				}
 			},
 			"publishedView": {
 				"heading": "Coding instructions",
@@ -7592,7 +7696,26 @@
 			"originalFileNoExtension": "Original file",
 			"originalFileTitle": "Download {filename} exactly as it was uploaded",
 			"originalUnavailable": "The original file is no longer available",
-			"originalFailed": "Couldn't download the original file"
+			"originalFailed": "Couldn't download the original file",
+			"formatPdf": "PDF",
+			"formatDocx": "Word file",
+			"exportReady": "Your {format} is ready",
+			"exportDownload": "Download",
+			"exportRetry": "Retry",
+			"exportFailed": "The {format} could not be created",
+			"exportStillRunning": "The {format} is taking longer than expected",
+			"exportRateLimited": "Too many exports. Try again in {seconds} seconds.",
+			"exportRateLimitedSoon": "Too many exports. Try again in a few minutes.",
+			"exportLeftOut": "Some content was left out of the {format}",
+			"exportWarningDiagramPlaceholder": "{count, plural, one {# diagram is} other {# diagrams are}} shown as a placeholder.",
+			"exportWarningDiagramLimit": "{count, plural, one {# diagram} other {# diagrams}} over the limit {count, plural, one {is} other {are}} shown as a placeholder.",
+			"exportWarningImageDropped": "{count, plural, one {# image} other {# images}} could not be included.",
+			"exportWarningImageLimit": "{count, plural, one {# image} other {# images}} over the limit {count, plural, one {was} other {were}} left out.",
+			"exportWarningExternalImageDropped": "{count, plural, one {# linked image was} other {# linked images were}} left out.",
+			"exportWarningLogoUnavailable": "{count, plural, one {A brand logo} other {# brand logos}} could not be included.",
+			"exportWarningContentsWithoutPageNumbers": "The contents page lists sections without page numbers.",
+			"exportFailureTooLarge": "The document is too large to export as a {format}.",
+			"exportFailureTooManyPages": "The document is too long to export as a {format}."
 		},
 		"proposalArtifactEntry": {
 			"libraryPrompt": "Client proposal prompt from the library",
@@ -7892,10 +8015,10 @@
 				"recommendation": "Recommendation:",
 				"section": "Section: {heading}",
 				"rerunRunning": "Re-running the Internal Analysis…",
-				"newerRunning": "A new Internal Analysis is on its way. The findings below stay until it completes.",
-				"newerRerunRunning": "Re-running the Internal Analysis. The findings below stay until it completes.",
+				"newerRunning": "A new Internal Analysis is on its way. The analysis below stays until it completes.",
+				"newerRerunRunning": "Re-running the Internal Analysis. The analysis below stays until it completes.",
 				"newerFailedTitle": "The latest Internal Analysis didn't complete.",
-				"newerFailedKept": "The findings below are from the last complete analysis.",
+				"newerFailedKept": "The analysis below is the last one that completed.",
 				"foldedTitles": "Also raised as: {titles}",
 				"notKeyed": "Re-run the analysis to answer this finding.",
 				"authorRights": "Not applied: the author no longer has edit rights.",
@@ -7999,6 +8122,16 @@
 						"summary": "Project summary",
 						"other": "Other source"
 					}
+				},
+				"report": {
+					"title": "Report",
+					"beforeSending": "Before sending",
+					"fullReport": "Full report",
+					"shortened": "(shortened)",
+					"plainTextNote": "Shown as plain text because this report could not be formatted.",
+					"citationLabel": "S{source}",
+					"citationName": "{label}: {title}",
+					"sourceRemoved": "{label} · Source removed"
 				}
 			},
 			"style": {
@@ -8046,6 +8179,19 @@
 				},
 				"styleFailed": "The style couldn't be saved. Try again.",
 				"recipientFailed": "The recipient brand couldn't be saved. Try again."
+			},
+			"generationFeedback": {
+				"promptNotBound": "A Proposal can't be generated until a prompt is bound to Client proposal (Main). An organization admin binds one in the Prompt Library, or a project admin in the project's prompt defaults.",
+				"actionSuperseded": "This action is not used while the Proposal artifact is on: Client proposal (Main) writes Proposals. Bind the prompt there instead.",
+				"openCatalog": "Open Client proposal (Main) in the Prompt Library"
+			},
+			"supersededAction": {
+				"actionNote": "Not used while the Proposal artifact is on: Client proposal (Main) writes Proposals.",
+				"promptNote": "This prompt is not used for Proposals while the Proposal artifact is on. Client proposal (Main) writes them.",
+				"dialogNote": "Proposals use Client proposal (Main) while the Proposal artifact is on, so the legacy Proposal actions are not offered here.",
+				"nominationDeclineOnly": "A nomination for this action alone can be declined, not approved.",
+				"projectGroupTitle": "No longer used",
+				"projectGroupDescription": "Project defaults saved for actions the Proposal artifact replaces. Client proposal (Main) writes Proposals while it is on, so these are not used; clear them to tidy up."
 			}
 		},
 		"proposalArtifactPage": {
@@ -8064,6 +8210,7 @@
 			"live": {
 				"sectionsReady": "{count, plural, one {# section ready} other {# sections ready}}",
 				"writingNext": "Writing the next section…",
+				"previewStopped": "Live preview stopped — the proposal is still being written and may differ",
 				"finishing": "Adding visuals and finishing the proposal…",
 				"previousVersion": "Previous version, shown until the first new section is ready",
 				"newDocument": "The first section appears here as soon as it is written.",
@@ -8346,6 +8493,43 @@
 				"editionChanged": "The Glossy edition changed since you opened it. Review the updated edition, then download again.",
 				"omittedVisuals": "{count, plural, one {# visual couldn't be rendered and was left out of the download.} other {# visuals couldn't be rendered and were left out of the download.}}",
 				"omittedImages": "{count, plural, one {# image from the document couldn't be loaded and was left out.} other {# images from the document couldn't be loaded and were left out.}}"
+			}
+		},
+		"documentEditorRun": {
+			"saveBlocked": {
+				"regenerating": "Saving is paused while this document is being regenerated.",
+				"review": "Accept or reject the regenerated version before saving.",
+				"runLive": "Saving is paused while a generation run writes this document. It resumes when the run finishes.",
+				"reconnecting": "Saving is paused until the editor is reconnected to the collaboration server.",
+				"updatingToLatest": "Saving is paused while the editor updates to the latest saved version.",
+				"staleBase": "This document changed elsewhere since you opened it. Copy your text and reload the page to keep editing."
+			},
+			"reconnecting": {
+				"title": "Reconnecting to the collaboration server…",
+				"hint": "Editing resumes once the connection is back."
+			},
+			"away": {
+				"title": "The collaboration server cannot be reached",
+				"hint": "This is the last saved version, read-only, and saving is paused. Editing resumes once the connection is back."
+			},
+			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
+			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
+			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed."
+		},
+		"documentEditorRoom": {
+			"updating": "Updating to the latest version…",
+			"updateFailed": "The editor could not be updated to the latest version.",
+			"reloadLatest": "Reload latest version",
+			"reload": "Reload",
+			"baseRequired": "This editor is out of date, so your changes were not saved. Reload the page to keep editing.",
+			"saveConflictRoom": "Your changes were not saved: the document changed in the meantime. The editor is updating to the latest version.",
+			"saveConflictSolo": "Your changes were not saved: the document changed in the meantime. Copy your text, then reload to see the latest version.",
+			"leaveSaveFailed": "Your last changes to this document were not saved after you left it. Copy them to keep them.",
+			"offerBack": {
+				"message": "The editor was updated to the latest saved version, which replaced text typed since the last save. Copy it to keep it.",
+				"copy": "Copy my unsaved text",
+				"copied": "Your unsaved text was copied to the clipboard.",
+				"copyFailed": "Your text could not be copied to the clipboard."
 			}
 		},
 		"planPause": {

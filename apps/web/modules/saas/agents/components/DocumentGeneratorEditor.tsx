@@ -392,7 +392,7 @@ export function DocumentGeneratorEditor({
 		}
 		lastPersistedRef.current = signature;
 
-		const orgId = organizationId ?? null;
+		const orgId = organizationId ?? undefined;
 		void (async () => {
 			try {
 				if (conversationIdRef.current === null) {

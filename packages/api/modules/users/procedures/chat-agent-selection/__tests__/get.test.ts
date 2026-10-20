@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
 	getChatAgentSelection: vi.fn(),
 	deleteChatAgentSelection: vi.fn(),
 	validatePersistedAgents: vi.fn(),
-	getOrganizationIdFromContext: vi.fn(),
 	captured: {
 		handler: null as
 			| ((args: { context: any; input: any }) => Promise<any>)
@@ -45,10 +44,6 @@ vi.mock("../validator", () => ({
 	validatePersistedAgents: mocks.validatePersistedAgents,
 }));
 
-vi.mock("../../../../../orpc/middleware/tenant-context-middleware", () => ({
-	getOrganizationIdFromContext: mocks.getOrganizationIdFromContext,
-}));
-
 // Stub the procedure builder so we can extract the raw handler.
 vi.mock("../../../../../orpc/procedures", () => {
 	const chainable: any = {
@@ -64,7 +59,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
-		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
+		resolveOrganizationId: (
+			organizationId: string | undefined,
+			session: { activeOrganizationId: string },
+		) => organizationId ?? session.activeOrganizationId,
 	};
 });
 
@@ -80,13 +79,12 @@ beforeEach(() => {
 	mocks.getChatAgentSelection.mockReset();
 	mocks.deleteChatAgentSelection.mockReset();
 	mocks.validatePersistedAgents.mockReset();
-	mocks.getOrganizationIdFromContext.mockReset();
 });
 
 function makeContext(organizationId: string | null) {
-	mocks.getOrganizationIdFromContext.mockReturnValue(organizationId);
 	return {
 		user: { id: USER_ID },
+		session: { activeOrganizationId: organizationId ?? ORG_ID },
 		tenantContext: { type: organizationId ? "organization" : "personal" },
 	};
 }
@@ -95,8 +93,8 @@ describe("getChatAgentSelectionProcedure", () => {
 	it("returns the empty first-run shape when no row exists", async () => {
 		mocks.getChatAgentSelection.mockResolvedValue(null);
 		const result = await callHandler({
-			context: makeContext(null),
-			input: undefined,
+			context: makeContext(ORG_ID),
+			input: {},
 		});
 
 		expect(result).toEqual({
@@ -125,8 +123,8 @@ describe("getChatAgentSelectionProcedure", () => {
 		});
 
 		const result = await callHandler({
-			context: makeContext(null),
-			input: undefined,
+			context: makeContext(ORG_ID),
+			input: {},
 		});
 
 		expect(result).toEqual({
@@ -151,8 +149,8 @@ describe("getChatAgentSelectionProcedure", () => {
 		});
 
 		const result = await callHandler({
-			context: makeContext(null),
-			input: undefined,
+			context: makeContext(ORG_ID),
+			input: {},
 		});
 
 		expect(result).toEqual({
@@ -164,7 +162,7 @@ describe("getChatAgentSelectionProcedure", () => {
 		});
 		expect(mocks.deleteChatAgentSelection).toHaveBeenCalledExactlyOnceWith(
 			USER_ID,
-			null,
+			ORG_ID,
 		);
 	});
 
@@ -181,7 +179,7 @@ describe("getChatAgentSelectionProcedure", () => {
 
 		await callHandler({
 			context: makeContext(ORG_ID),
-			input: undefined,
+			input: {},
 		});
 
 		expect(mocks.getChatAgentSelection).toHaveBeenCalledExactlyOnceWith(

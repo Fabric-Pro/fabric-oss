@@ -8,7 +8,9 @@
  * uses its own user and organization.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Console } from "node:console";
+import { Writable } from "node:stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	listMcpConfigsForTenant: vi.fn(),
@@ -102,6 +104,88 @@ beforeEach(() => {
 			}),
 		},
 	});
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("upstream failure logs", () => {
+	for (const path of ["discovery", "execution"] as const) {
+		it.each(["thrown string", "Error", "ordinary Error"])(
+			`${path} escapes controls from an upstream %s and keeps diagnostics`,
+			async (kind) => {
+				const message =
+					kind === "ordinary Error"
+						? "upstream unavailable"
+						: "upstream\r\nFORGED\u001b[31m";
+				const failure =
+					kind === "thrown string" ? message : new Error(message);
+				if (failure instanceof Error) {
+					failure.stack = `Error: ${message}\n    at upstream (example.ts:1:1)`;
+				}
+				let output = "";
+				const stream = new Writable({
+					write(chunk, _encoding, callback) {
+						output += chunk.toString();
+						callback();
+					},
+				});
+				const captured = new Console({
+					stdout: stream,
+					stderr: stream,
+					inspectOptions: {
+						breakLength: Number.POSITIVE_INFINITY,
+						compact: true,
+					},
+				});
+				vi.spyOn(console, "warn").mockImplementation(
+					captured.warn.bind(captured),
+				);
+				vi.spyOn(console, "error").mockImplementation(
+					captured.error.bind(captured),
+				);
+				const s = session(`log-${path}-${kind}`);
+				mocks.getCachedMcpClientForConfig.mockRejectedValue(failure);
+
+				if (path === "discovery") {
+					mocks.listMcpConfigsForTenant.mockResolvedValue([
+						{
+							...connection("config-a", "Example", "list"),
+							cachedTools: null,
+							toolsCachedAt: null,
+						},
+					]);
+					expect((await getAggregatedTools(s)).servers).toEqual([]);
+				} else {
+					const result = await executeConnectedServerTool(
+						"example__list",
+						{},
+						s,
+						[
+							{
+								configId: "config-a",
+								displayName: "Example",
+								toolPrefix: "example",
+								tools: [{ name: "list" }],
+							},
+						],
+					);
+					expect(result.isError).toBe(true);
+				}
+
+				expect(output.trimEnd().split("\n")).toHaveLength(1);
+				expect(output).not.toContain("\r");
+				expect(output).not.toContain("\u001b");
+				expect(output).toContain(
+					kind === "ordinary Error"
+						? message
+						: "upstream\\r\\nFORGED\\x1B[31m",
+				);
+				if (failure instanceof Error) {
+					expect(output).toContain("at upstream (example.ts:1:1)");
+				}
+			},
+		);
+	}
 });
 
 describe("a renamed connection inside the cache lifetime", () => {

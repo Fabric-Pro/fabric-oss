@@ -257,6 +257,49 @@ describe("syncWorkItemToPM → push SUCCESS log row + entityType mapping", () =>
 	});
 });
 
+describe("syncWorkItemToPM → linked item, PM tool without an update tool", () => {
+	function capabilitiesWithoutUpdate() {
+		const { taskUpdate: _taskUpdate, ...rest } = makeCapabilities();
+		return rest;
+	}
+
+	it.each([
+		["a stored link", { externalId: "PM-42" }, {}],
+		[
+			"a link from the change proposal only",
+			{ externalId: null },
+			{ existingExternalId: "PM-42" },
+		],
+	])(
+		"fails instead of reporting a SUCCESS that sent nothing (%s)",
+		async (_label, entity, input) => {
+			vi.mocked(discoverPMToolCapabilities).mockResolvedValue(
+				capabilitiesWithoutUpdate() as never,
+			);
+			vi.mocked(getStoryById).mockResolvedValue(
+				makeEntity(entity) as never,
+			);
+
+			await expect(
+				syncWorkItemToPM({ ...baseInput, ...input, itemType: "story" }),
+			).rejects.toMatchObject({
+				type: "PmCapabilitiesError",
+				nonRetryable: true,
+				message: expect.stringContaining(
+					"the PM tool does not support updates",
+				),
+			});
+
+			expect(executeMcpTool).not.toHaveBeenCalledWith(
+				expect.objectContaining({ toolName: "create_card" }),
+			);
+			expect(dbMocks.recordPmSyncLog).not.toHaveBeenCalledWith(
+				expect.objectContaining({ status: "SUCCESS" }),
+			);
+		},
+	);
+});
+
 describe("syncWorkItemToPM → push CONFLICT log row", () => {
 	it("hash drift → one row, direction push, status CONFLICT", async () => {
 		const baseline = computePmHash(TITLE, DESCRIPTION);
@@ -485,4 +528,65 @@ describe("syncWorkItemToPM → the stored credential and the owner's organizatio
 			);
 		});
 	});
+});
+
+it("redacts the story outer catch return and failure log while preserving PM-tool text", async () => {
+	for (const [extra, expected] of [
+		[
+			{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			"database error P2024",
+		],
+		[{ name: "DriverAdapterError" }, "database error"],
+		[{ name: "Error" }, "404: item not found\nPM board permissions"],
+	] as const) {
+		const error = Object.assign(
+			new Error("404: item not found\nPM board permissions"),
+			extra,
+		);
+		vi.mocked(getStoryById)
+			.mockRejectedValueOnce(error)
+			.mockResolvedValue(makeEntity() as never);
+		const result = await syncStoryToPM({
+			storyId: "example-story",
+			capabilities: makeCapabilities() as never,
+			projectId: PROJECT_ID,
+			mcpConfigId: "mcp-1",
+			containerId: "board-1",
+			direction: "push",
+			userId: "user-9",
+			organizationId: "org-1",
+		});
+		expect(result.error).toBe(expected);
+		expect(dbMocks.recordPmSyncLog).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				errorPayload: expect.objectContaining({
+					errorMessage: expected,
+				}),
+			}),
+		);
+	}
+});
+
+it("keeps the Unknown error fallback for a non-Error story-sync throw", async () => {
+	vi.mocked(getStoryById)
+		.mockRejectedValueOnce({ detail: "example failure" })
+		.mockResolvedValue(makeEntity() as never);
+	const result = await syncStoryToPM({
+		storyId: "example-story",
+		capabilities: makeCapabilities() as never,
+		projectId: PROJECT_ID,
+		mcpConfigId: "mcp-1",
+		containerId: "board-1",
+		direction: "push",
+		userId: "user-9",
+		organizationId: "org-1",
+	});
+	expect(result.error).toBe("Unknown error");
+	expect(dbMocks.recordPmSyncLog).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			errorPayload: expect.objectContaining({
+				errorMessage: "Unknown error",
+			}),
+		}),
+	);
 });

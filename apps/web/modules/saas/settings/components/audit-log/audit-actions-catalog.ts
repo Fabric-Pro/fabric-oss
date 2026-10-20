@@ -1772,7 +1772,7 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.parlume.action_confirmed",
 		description:
-			"A meeting requester confirmed a Parlume action using the inviter's current permissions. The result is recorded in Parlume history.",
+			"Parlume made a change a meeting attendee asked for, using the inviter's current permissions. The result is recorded in Parlume history.",
 	},
 	{
 		key: "project.recipient_brand.fetched",
@@ -1817,6 +1817,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"settings.auditLog.actions.project.document_analysis.rerun_started",
 		description:
 			"A member started a re-run of a Proposal's Internal Analysis over its current content — a model call billed to the organization. Records the new run and the run whose sources it reads.",
+	},
+	{
+		key: "project.proposal_artifact.export_started",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.proposal_artifact.export_started",
+		description:
+			"A member or a project guest started a PDF or Word export of a client-ready Proposal. Records the format, the export id and whether the starter is a project guest, never the document's content.",
 	},
 	{
 		key: "org.company_context.metadata_updated",

@@ -216,6 +216,33 @@ describe("recordAuditTx (transactional)", () => {
 });
 
 describe("onAuditWriteFailure", () => {
+	it("emits flat diagnostics without Prisma query, metadata or connection values", () => {
+		const failure = Object.assign(
+			new Error(
+				"SELECT secret FROM postgresql://example:password@example.com/db",
+			),
+			{
+				name: "PrismaClientKnownRequestError",
+				code: "P2003",
+				meta: { query: "private query" },
+				cause: new Error("private cause"),
+			},
+		);
+		onAuditWriteFailure(baseInput, failure);
+		expect(mocks.loggerErrorMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				errorName: "PrismaClientKnownRequestError",
+				errorCode: "P2003",
+				errorMessage: "Audit foreign key constraint failed",
+			}),
+			"Audit write failed",
+		);
+		const logged = JSON.stringify(mocks.loggerErrorMock.mock.calls);
+		expect(logged).not.toMatch(
+			/password|SELECT|private query|private cause/,
+		);
+	});
+
 	it("emits a structured error log, increments counter, and falls back to stdout", () => {
 		onAuditWriteFailure(
 			{

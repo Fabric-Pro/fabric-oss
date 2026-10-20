@@ -75,9 +75,11 @@ function denyPermission(
 	userId?: string | null,
 ): void {
 	if (RBAC_DRY_RUN) {
-		console.warn(
-			`[RBAC dry-run] userId=${userId ?? "unknown"} ${message} (permission: ${permission})`,
-		);
+		console.warn("[RBAC dry-run] Permission denied", {
+			userId: userId ?? "unknown",
+			message,
+			permission,
+		});
 		return;
 	}
 	throw new ORPCError("FORBIDDEN", { message });

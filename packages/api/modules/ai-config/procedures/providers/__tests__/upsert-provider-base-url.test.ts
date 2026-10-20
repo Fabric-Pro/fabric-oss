@@ -1,6 +1,5 @@
 /**
- * Tests for upsertUserProviderProcedure — server-side `requiresBaseUrl`
- * enforcement.
+ * Tests for upsertUserProviderProcedure — server-side base URL validation.
  *
  * Providers whose metadata declares `requiresBaseUrl` (Databricks, Azure AI
  * Foundry, AWS Bedrock, Cloudflare AI, ...) cannot function without a
@@ -10,7 +9,7 @@
  * OpenRouter's host (see apps/web/app/api/agents/ai-config/route.ts). These
  * tests verify the handler rejects that input at the persistence boundary
  * (fail-fast, before any DB work or org-membership check) and still allows the
- * happy path.
+ * happy path. Azure endpoint validation also runs before credential encryption.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +17,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	mockDb,
 	mockCreate,
+	mockOrgCreate,
+	mockEncryptApiKey,
 	mockGetProviderMetadata,
 	mockRequireOrgMembership,
 	mockResolveOrganizationId,
@@ -29,14 +30,23 @@ const {
 		updateMany: vi.fn().mockResolvedValue({ count: 0 }),
 		create: mockCreate,
 	};
+	const mockOrgCreate = vi.fn();
+	const txOrg = {
+		findUnique: vi.fn(),
+		findFirst: vi.fn(),
+		updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+		create: mockOrgCreate,
+	};
 	const mockDb = {
 		$transaction: vi.fn(async (cb: (tx: unknown) => unknown) =>
-			cb({ userCloudProviderConfig: txUser }),
+			cb({ userCloudProviderConfig: txUser, cloudProviderConfig: txOrg }),
 		),
 	};
 	return {
 		mockDb,
 		mockCreate,
+		mockOrgCreate,
+		mockEncryptApiKey: vi.fn((key: string) => `encrypted:${key}`),
 		mockGetProviderMetadata: vi.fn(),
 		mockRequireOrgMembership: vi.fn(),
 		mockResolveOrganizationId: vi.fn(
@@ -64,7 +74,7 @@ vi.mock("../../../../../lib/audit", () => ({
 }));
 
 vi.mock("@repo/utils", () => ({
-	encryptApiKey: vi.fn((key: string) => `encrypted:${key}`),
+	encryptApiKey: mockEncryptApiKey,
 }));
 
 vi.mock("../../../../organizations/lib/membership", () => ({
@@ -122,6 +132,11 @@ const personalContext = {
 	session: { id: "s1", activeOrganizationId: null },
 };
 
+const orgContext = {
+	user: { id: "user-1" },
+	session: { id: "s1", activeOrganizationId: "org-1" },
+};
+
 const REQUIRES_BASE_URL: Record<
 	string,
 	{ requiresBaseUrl: boolean; displayName: string }
@@ -136,7 +151,7 @@ const REQUIRES_BASE_URL: Record<
 	OPENROUTER: { requiresBaseUrl: false, displayName: "OpenRouter" },
 };
 
-describe("upsertUserProviderProcedure — requiresBaseUrl enforcement", () => {
+describe("upsertUserProviderProcedure — base URL validation", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockGetProviderMetadata.mockImplementation(
@@ -231,7 +246,97 @@ describe("upsertUserProviderProcedure — requiresBaseUrl enforcement", () => {
 		});
 	});
 
+	describe("rejects unsafe Azure AI Foundry endpoints", () => {
+		it.each([
+			["malformed URL", "not-a-url"],
+			["metadata endpoint", "https://169.254.169.254/metadata"],
+			["private endpoint", "https://10.0.0.1"],
+			["localhost", "https://localhost"],
+			["unrecognized host", "https://example.com"],
+			[
+				"lookalike suffix",
+				"https://example.openai.azure.com.example.com",
+			],
+			["lookalike prefix", "https://exampleopenai.azure.com"],
+			["non-HTTPS endpoint", "http://example.openai.azure.com"],
+		])(
+			"rejects %s before encryption or persistence",
+			async (_, baseUrl) => {
+				await expect(
+					upsert._handler({
+						input: {
+							provider: "AZURE_AI_FOUNDRY",
+							apiKey: "azure-secret",
+							baseUrl,
+							organizationId: "org-1",
+						},
+						context: orgContext,
+					}),
+				).rejects.toMatchObject({
+					code: "BAD_REQUEST",
+					message: expect.stringContaining(
+						"Invalid Azure AI Foundry URL:",
+					),
+				});
+
+				expect(mockEncryptApiKey).not.toHaveBeenCalled();
+				expect(mockRequireOrgMembership).not.toHaveBeenCalled();
+				expect(mockDb.$transaction).not.toHaveBeenCalled();
+				expect(mockOrgCreate).not.toHaveBeenCalled();
+				expect(mockCreate).not.toHaveBeenCalled();
+			},
+		);
+	});
+
 	describe("allows valid input", () => {
+		it.each([
+			"https://example.openai.azure.com",
+			"https://example.cognitiveservices.azure.com",
+			"https://example.services.ai.azure.com/api/projects/example-project",
+		])("persists the recognized Azure endpoint %s", async (baseUrl) => {
+			mockOrgCreate.mockResolvedValueOnce({
+				id: "cpc_azure",
+				provider: "AZURE_AI_FOUNDRY",
+				displayName: "Azure AI Foundry",
+				isDefault: true,
+				purpose: "ALL",
+				config: { baseUrl, deploymentName: "example-deployment" },
+			});
+
+			const res = await upsert._handler({
+				input: {
+					provider: "AZURE_AI_FOUNDRY",
+					apiKey: "azure-secret",
+					baseUrl,
+					deploymentName: "example-deployment",
+					organizationId: "org-1",
+				},
+				context: orgContext,
+			});
+
+			expect(res).toMatchObject({
+				success: true,
+				provider: "AZURE_AI_FOUNDRY",
+			});
+			expect(mockRequireOrgMembership).toHaveBeenCalledWith(
+				"user-1",
+				"org-1",
+				["owner", "admin"],
+			);
+			expect(mockDb.$transaction).toHaveBeenCalledTimes(1);
+			expect(mockEncryptApiKey).toHaveBeenCalledWith("azure-secret");
+			expect(mockOrgCreate).toHaveBeenCalledTimes(1);
+			expect(mockOrgCreate).toHaveBeenCalledWith({
+				data: expect.objectContaining({
+					organizationId: "org-1",
+					provider: "AZURE_AI_FOUNDRY",
+					encryptedApiKey: "encrypted:azure-secret",
+					config: { baseUrl, deploymentName: "example-deployment" },
+				}),
+			});
+			expect(mockCreate).not.toHaveBeenCalled();
+		});
+
 		it("persists a Databricks config when a base URL is provided", async () => {
 			const res = await upsert._handler({
 				input: {

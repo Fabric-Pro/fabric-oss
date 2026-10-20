@@ -120,14 +120,32 @@ describe("shareScopeLabel and shareScopeSentence", () => {
 		);
 	});
 
-	it("tells a private page's author it is theirs alone, and anyone else how it reached them", () => {
+	it("keeps owner-only privacy wording for a standalone page", () => {
 		expect(shareScopeSentence("PRIVATE", true)).toMatch(
 			/only you can open it/,
 		);
 		expect(shareScopeSentence("PRIVATE", false)).toBe(
-			"Opened with you through its project.",
+			"Private to its owner.",
 		);
 	});
+
+	it("explains inherited project access to the author and a reader of a PRIVATE page", () => {
+		for (const ownedByCaller of [true, false]) {
+			const sentence = shareScopeSentence("PRIVATE", ownedByCaller, true);
+			expect(sentence).toContain("owner and accepted project members");
+			expect(sentence).toContain("No additional sharing");
+			expect(sentence).not.toContain("only you");
+		}
+	});
+
+	it.each(["EMAILS_ONLY", "WORKSPACE_AND_EMAILS"] as const)(
+		"keeps project access visible when %s adds sharing",
+		(scope) => {
+			expect(shareScopeSentence(scope, true, true)).toContain(
+				"Accepted project members also retain access.",
+			);
+		},
+	);
 
 	it.each([
 		["PRIVATE", "Private"],
@@ -150,6 +168,7 @@ describe("agentContextOfFrame", () => {
 			}),
 		).toEqual({
 			surface: "workspace",
+			launchFrameId: "frame-1",
 			workspaceId: "frame-1",
 			projectId: "project-1",
 		});
@@ -164,14 +183,34 @@ describe("agentContextOfFrame", () => {
 			}),
 		).toEqual({
 			surface: "artifact",
+			launchFrameId: "frame-1",
 			workspaceId: null,
 			projectId: "project-1",
 		});
 	});
 
-	it("gives a frame that is neither nothing to go on", () => {
+	it.each([undefined, null])(
+		"keeps the origin of a legacy project artifact (%s surface)",
+		(surface) => {
+			expect(
+				agentContextOfFrame({
+					frameId: "frame-1",
+					surface,
+					projectId: "project-1",
+				}),
+			).toEqual({
+				surface: null,
+				launchFrameId: "frame-1",
+				workspaceId: null,
+				projectId: "project-1",
+			});
+		},
+	);
+
+	it("keeps the frame origin without a surface or project", () => {
 		expect(agentContextOfFrame({ frameId: "frame-1" })).toEqual({
 			surface: null,
+			launchFrameId: "frame-1",
 			workspaceId: null,
 			projectId: null,
 		});

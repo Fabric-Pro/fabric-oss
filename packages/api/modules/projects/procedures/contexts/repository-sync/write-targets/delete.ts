@@ -9,7 +9,8 @@
  * interleave with a `configure` or a `disable`.
  *
  * The receipts of writes already admitted through the folder stay; they carry
- * no foreign key to it. Files already written stay in the repository. A
+ * no foreign key to it. Files already written stay in the repository, and the
+ * files of a Store only folder become indexable again (`settleIndexingChange`). A
  * target that is not this project's is `NOT_FOUND`, in the words a missing one
  * gets. Audited as `project.context.write_target_deleted`.
  */
@@ -23,6 +24,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../../orpc/procedures";
 import { resolveContextSyncAccess } from "../access";
+import { settleIndexingChange } from "./indexing-effects";
 import { writeTargetNotFound, writeTargetsNotConfigured } from "./shared";
 
 export const deleteContextWriteTargetProcedure = tenantProtectedProcedure
@@ -60,7 +62,7 @@ export const deleteContextWriteTargetProcedure = tenantProtectedProcedure
 			throw writeTargetNotFound();
 		}
 
-		const { target } = result;
+		const { target, reindex } = result;
 		recordAuditFromRequest(context, {
 			action: "project.context.write_target_deleted",
 			category: "project",
@@ -71,7 +73,18 @@ export const deleteContextWriteTargetProcedure = tenantProtectedProcedure
 				id: target.id,
 				name: target.folder,
 			},
-			metadata: { folder: target.folder, mode: target.mode },
+			metadata: {
+				folder: target.folder,
+				mode: target.mode,
+				indexMode: target.indexMode,
+			},
+		});
+		await settleIndexingChange({
+			reindex,
+			projectId: input.projectId,
+			organizationId,
+			syncId: target.syncId,
+			userId: context.user.id,
 		});
 		return { deleted: true as const };
 	});

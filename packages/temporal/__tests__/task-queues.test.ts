@@ -13,6 +13,7 @@ import {
 	CONTEXT_SYNC_ACTIVITY_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
+	PROPOSAL_EXPORT_TASK_QUEUE,
 } from "../src/task-queues";
 
 describe("ORCHESTRATOR_TASK_QUEUE", () => {
@@ -49,6 +50,23 @@ describe("COMPANY_CONTEXT_TASK_QUEUE", () => {
 			"fabric-worker",
 		]) {
 			expect(COMPANY_CONTEXT_TASK_QUEUE).not.toBe(projectQueue);
+		}
+	});
+});
+
+describe("PROPOSAL_EXPORT_TASK_QUEUE", () => {
+	it("names the queue the Proposal export worker polls, apart from the generation queues", () => {
+		// worker.ts creates that worker with this constant, and the export
+		// procedure starts proposalExportWorkflow there; API tests mock
+		// @repo/temporal, so the literal is pinned here.
+		expect(PROPOSAL_EXPORT_TASK_QUEUE).toBe("proposal-export");
+		for (const otherQueue of [
+			"project-documents",
+			"project-document-generation",
+			"glossy-edition",
+			"fabric-worker",
+		]) {
+			expect(PROPOSAL_EXPORT_TASK_QUEUE).not.toBe(otherQueue);
 		}
 	});
 });

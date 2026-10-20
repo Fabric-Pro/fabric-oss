@@ -16,7 +16,11 @@ import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
 	FABRIC_GATEWAY_TOOL_DEFINITIONS,
 } from "../../../../lib/fabric-gateway-tools";
-import type { FabricToolDefinition } from "../../../../lib/fabric-tool-definition";
+import {
+	type FabricToolDefinition,
+	withoutDryRun,
+	withoutDryRunNote,
+} from "../../../../lib/fabric-tool-definition";
 import { selectFabricToolsByName } from "../select-tools-by-name";
 
 vi.mock("@repo/database", () => ({
@@ -70,6 +74,35 @@ async function rank(
 }
 
 describe("the catalogue's gateway tools", () => {
+	it.each([
+		["ADO work item types", "fabric_list_project_pm_work_item_types"],
+		["ADO assigned items", "fabric_list_project_pm_assigned_items"],
+		["ADO item snapshots", "fabric_get_project_pm_item_snapshots"],
+		["list Fabric projects workspaces", "fabric_list_projects"],
+		[
+			"coding instructions configs count configurations",
+			"fabric_list_project_instructions",
+		],
+		[
+			"runtime tools frame fabric call list sources project",
+			"fabric_list_page_tools",
+		],
+		["connected servers integrations", "fabric_list_connected_servers"],
+		[
+			"ADO connected project management binding",
+			"fabric_get_project_pm_connection",
+		],
+		[
+			"ADO project members assignee dropdown",
+			"fabric_list_project_pm_members",
+		],
+		[
+			"Azure DevOps work item counts",
+			"fabric_get_project_work_item_counts",
+		],
+	])("discovers %s as %s", async (query, name) => {
+		expect(await rank(query)).toContain(name);
+	});
 	it("lists every workflow, frame and page tool the chat offers, visibly", () => {
 		const visible = getFabricAiTools().map((tool) => tool.name);
 		for (const { name } of FABRIC_CHAT_TOOL_DEFINITIONS) {
@@ -88,14 +121,57 @@ describe("the catalogue's gateway tools", () => {
 		}
 	});
 
-	it("takes each tool's input schema from the gateway's definition, not a copy", () => {
+	it("takes each tool's input schema from the gateway's definition, not a copy, less dryRun", () => {
 		for (const definition of FABRIC_CHAT_TOOL_DEFINITIONS) {
 			const entry = getAllFabricAiTools().find(
 				(tool) => tool.name === definition.name,
 			);
-			expect(entry?.inputSchema).toBe(definition.inputSchema);
-			expect(entry?.description).toContain(definition.description);
+			expect(entry?.inputSchema).toEqual(
+				withoutDryRun(definition.inputSchema),
+			);
+			expect(entry?.description).toContain(
+				withoutDryRunNote(definition.description),
+			);
 		}
+	});
+
+	it("never offers the model dryRun, so it makes the real call and the approval card is the question", () => {
+		for (const name of [
+			"fabric_create_workflow",
+			"fabric_update_workflow",
+		]) {
+			const entry = getAllFabricAiTools().find(
+				(tool) => tool.name === name,
+			);
+			const properties = (
+				entry?.inputSchema as
+					| { properties?: Record<string, unknown> }
+					| undefined
+			)?.properties;
+
+			expect(properties, name).toBeDefined();
+			expect(properties, name).not.toHaveProperty("dryRun");
+			expect(entry?.description, name).not.toContain("dryRun");
+		}
+	});
+
+	it("still serves dryRun to a client that sees it: the gateway's definitions are untouched", () => {
+		const create = FABRIC_CHAT_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_create_workflow",
+		);
+
+		expect(create?.inputSchema.properties).toHaveProperty("dryRun");
+		expect(create?.description).toContain("`dryRun` writes nothing.");
+	});
+
+	it("tells the model to make the real call and not to ask in prose first", () => {
+		const description =
+			getAllFabricAiTools().find(
+				(tool) => tool.name === "fabric_create_workflow",
+			)?.description ?? "";
+
+		expect(description).toContain("Make the real call");
+		expect(description).not.toMatch(/dryRun first/i);
 	});
 
 	it("offers the frame create and update tools with the page, its place and its tools, as the gateway does", () => {

@@ -24,7 +24,7 @@ const CAPABILITIES = [
 	},
 	{
 		icon: ShieldCheckIcon,
-		text: "Logs every request, approval and outcome under Requests. Speaker labels come from Teams.",
+		text: "Logs every request, change and outcome under Requests. Speaker labels come from Teams.",
 	},
 ];
 

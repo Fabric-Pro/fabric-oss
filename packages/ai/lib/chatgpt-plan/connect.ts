@@ -20,11 +20,11 @@ import { invalidateChatGptPlanSourceCaches } from "./source-caches";
 
 /** The uploader already shares this account; moving it back needs no sign-in (Fizzy #2770 I1). */
 const CHATGPT_PLAN_ALREADY_SHARED_BY_YOU =
-	"You already share this ChatGPT account with an organization. To use it as your own plan, open that organization and choose Stop sharing on your ChatGPT plan in Account settings → AI Providers.";
+	"You already share this ChatGPT account with an organization. To use it as your own plan, open that organization and choose Stop sharing on your ChatGPT plan in Settings → AI Providers → Personal.";
 
 /** The uploader's own plan; sharing it needs no new sign-in (Fizzy #2770 I1). */
 const CHATGPT_PLAN_ALREADY_YOUR_OWN =
-	"This ChatGPT account is already your own plan. To share it, choose Share organization-wide on your ChatGPT plan in Account settings → AI Providers — no new sign-in needed.";
+	"This ChatGPT account is already your own plan. To share it, choose Share organization-wide on your ChatGPT plan in Settings → AI Providers → Personal — no new sign-in needed.";
 
 export const CHATGPT_PLAN_NOT_ENABLED =
 	"ChatGPT plan isn't enabled for any of your organizations. Ask your Fabric admin to enable it.";

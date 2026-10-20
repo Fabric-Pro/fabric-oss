@@ -1,17 +1,14 @@
 /**
  * The plain-text body a test case is embedded as for AI retrieval.
  *
- * Pure — no I/O, no Prisma, no Temporal. It lives here rather than in @repo/api
- * because BOTH sides need it and only one may own it: the request-path mirror
- * (create / update / clone, via `@repo/api`'s `syncTestCaseContext`) and the
- * background drafting activity in this package, which cannot import @repo/api.
- * @repo/api already depends on @repo/temporal, so this is the direction the
- * dependency graph already runs. Re-exported from
- * `packages/api/modules/projects/lib/test-case-context.ts` so existing callers
- * and its test are unaffected.
+ * Pure — no I/O, no Prisma, no Temporal. The shared mirror in
+ * test-case-context-sync.ts uses this for API writes and PM pulls; the drafting
+ * activity uses it for its create-only mirror. Keeping the builder here lets
+ * those activities share the content format without importing @repo/api.
+ * The builder's tests live alongside it in src/lib/__tests__.
  *
- * This is what the project AI reads about a test case — change it here and both
- * paths move together.
+ * This is what the project AI reads about a test case — change it here and the
+ * shared mirror and drafting path move together.
  */
 import { criterionIndexFromRef } from "@repo/utils/acceptance-criteria";
 

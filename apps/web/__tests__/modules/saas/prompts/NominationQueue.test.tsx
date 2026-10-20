@@ -15,8 +15,17 @@
 
 import { NominationQueue } from "@saas/prompts/components/NominationQueue";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 function wrap(ui: React.ReactElement) {
 	const client = new QueryClient({
@@ -30,8 +39,10 @@ function wrap(ui: React.ReactElement) {
 	);
 }
 
-const { listPending, sessionRole } = vi.hoisted(() => ({
+const { listPending, approve, decline, sessionRole } = vi.hoisted(() => ({
 	listPending: vi.fn(),
+	approve: vi.fn(),
+	decline: vi.fn(),
 	sessionRole: { current: null as string | null },
 }));
 
@@ -40,8 +51,8 @@ vi.mock("@shared/lib/orpc-client", () => ({
 		prompts: {
 			nominations: {
 				listPending: (input: unknown) => listPending(input),
-				approve: vi.fn(),
-				decline: vi.fn(),
+				approve: (input: unknown) => approve(input),
+				decline: (input: unknown) => decline(input),
 				withdraw: vi.fn(),
 			},
 		},
@@ -217,5 +228,125 @@ describe("NominationQueue", () => {
 		expect(
 			await screen.findByRole("tab", { name: /system/i }),
 		).toBeInTheDocument();
+	});
+});
+
+describe("NominationQueue — the Proposal artifact gate (Fizzy #2946)", () => {
+	// With the gate on, an organization default at a legacy Proposal action is
+	// refused, so the organization queue never asks the server for one.
+	const LEGACY = {
+		targetKey: "project_document_generator",
+		documentType: "PROPOSAL",
+		storyKind: null,
+	};
+
+	beforeEach(() => {
+		listPending.mockReset();
+		approve.mockReset();
+		approve.mockResolvedValue({ supersededCount: 0 });
+		decline.mockReset();
+		decline.mockResolvedValue({});
+		sessionRole.current = null;
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("lets a nomination for the legacy action alone be declined, not approved", async () => {
+		listPending.mockResolvedValue([nomination("a", [LEGACY])]);
+		const user = userEvent.setup();
+		wrap(<NominationQueue />);
+
+		expect(
+			await screen.findByTestId("nomination-superseded-note"),
+		).toHaveTextContent("actionNote");
+		expect(screen.getByTestId("nomination-decline-only")).toHaveTextContent(
+			"nominationDeclineOnly",
+		);
+		expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+
+		await user.click(screen.getByRole("button", { name: "Decline" }));
+		await waitFor(() =>
+			expect(decline).toHaveBeenCalledWith(
+				expect.objectContaining({ nominationId: "a" }),
+			),
+		);
+		expect(approve).not.toHaveBeenCalled();
+	});
+
+	it("approves the rest of a nomination without the legacy action", async () => {
+		listPending.mockResolvedValue([nomination("a", [LEGACY, DRAFTER])]);
+		const user = userEvent.setup();
+		wrap(<NominationQueue />);
+
+		await screen.findByTestId("nomination-superseded-note");
+		// Two groups, the legacy one and the drafter's; approve from the
+		// drafter's, which is the second alphabetically.
+		const approveButtons = screen.getAllByRole("button", {
+			name: "Approve",
+		});
+		expect(approveButtons).toHaveLength(2);
+		for (const button of approveButtons) {
+			expect(button).toBeEnabled();
+		}
+		expect(
+			screen.queryByTestId("nomination-decline-only"),
+		).not.toBeInTheDocument();
+
+		const drafterGroup = screen
+			.getByRole("heading", { name: /^Test Case Drafter/ })
+			.closest("section") as HTMLElement;
+		await user.click(
+			within(drafterGroup).getByRole("button", { name: "Approve" }),
+		);
+
+		await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+		expect(approve.mock.calls[0][0]).toEqual(
+			expect.objectContaining({
+				nominationId: "a",
+				targets: [
+					{
+						targetKey: "test_case_drafter",
+						documentType: "GENERAL",
+						storyKind: null,
+					},
+				],
+			}),
+		);
+	});
+
+	it("approves a legacy-action nomination as proposed with the gate off", async () => {
+		flags.proposalArtifact = false;
+		listPending.mockResolvedValue([nomination("a", [LEGACY])]);
+		const user = userEvent.setup();
+		wrap(<NominationQueue />);
+
+		const button = await screen.findByRole("button", { name: "Approve" });
+		expect(button).toBeEnabled();
+		expect(
+			screen.queryByTestId("nomination-superseded-note"),
+		).not.toBeInTheDocument();
+		await user.click(button);
+
+		await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+		expect(approve.mock.calls[0][0]).not.toHaveProperty("targets");
+	});
+
+	it("leaves the System queue unshaped by the gate", async () => {
+		sessionRole.current = "admin";
+		listPending.mockImplementation((input: { targetScope: string }) =>
+			input.targetScope === "SYSTEM" ? [nomination("s", [LEGACY])] : [],
+		);
+		const user = userEvent.setup();
+		wrap(<NominationQueue />);
+
+		await user.click(await screen.findByRole("tab", { name: /system/i }));
+
+		const button = await screen.findByRole("button", { name: "Approve" });
+		expect(button).toBeEnabled();
+		expect(
+			screen.queryByTestId("nomination-superseded-note"),
+		).not.toBeInTheDocument();
 	});
 });

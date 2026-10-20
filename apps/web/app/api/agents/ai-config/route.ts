@@ -10,7 +10,7 @@ import { verifySignedTenantRequest } from "@repo/agent-runtime";
 import {
 	buildEffectiveBaseUrl,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 	isReasoningModelName,
 	requiresBaseUrl,
 } from "@repo/ai";
@@ -119,10 +119,10 @@ export async function GET(req: NextRequest) {
 					);
 		}
 
-		const providerConfig = await getRAGProviderConfig({
-			userId,
-			organizationId,
-		});
+		const providerConfig = await getRAGProviderConfigForModel(
+			{ userId, organizationId },
+			metadata,
+		);
 
 		// Resolve the effective gateway/base URL. Providers that require a
 		// tenant-supplied base URL (Databricks, Azure AI Foundry, AWS Bedrock,

@@ -22,9 +22,7 @@ export {
 } from "./agent-health-monitor";
 // Agent loader activities
 export {
-	executeExternalAgent,
 	getAgentRoutingContext,
-	healthCheckAgent,
 	loadAvailableAgents,
 	updateAgentHealth,
 } from "./agent-loader-activities";
@@ -691,7 +689,6 @@ export {
 	sanitizeToolResult,
 	validateLettaOperation,
 	validateMemoryBlockContent,
-	verifyAgentIdentity,
 	verifyLettaAgentOwnership,
 } from "./letta-security";
 export * from "./mcp-activities";
@@ -861,6 +858,7 @@ export {
 	checkStepAutoApprovalActivity,
 	// Recovery Management (Phase 2.3)
 	classifyFailureActivity,
+	checkCompletionClaimActivity,
 	compactConversationHistoryActivity,
 	createOrchestratorApprovalRequest,
 	createTaskPlan,
@@ -1028,9 +1026,12 @@ export {
 	syncTaskToPM,
 	updateStoryExternalRefs,
 } from "./pm-integration/story-sync";
-// storySyncWorkflow's push create under the PM create claim, behind
-// `patched("bulk-sync-create-claim-v1")`.
-export { createStoryInPmWithClaim } from "./pm-integration/create-story-in-pm-with-claim";
+// Story link validation (`bulk-sync-link-guard-v1`) and push create under
+// the PM create claim (`bulk-sync-create-claim-v1`).
+export {
+	checkStoryPmLink,
+	createStoryInPmWithClaim,
+} from "./pm-integration/create-story-in-pm-with-claim";
 // Closes the PM_STORY_SYNC job row from storySyncWorkflow's `finally`.
 export { closeStorySyncJob } from "./pm-integration/story-sync-job";
 // PM Integration - Test case sync activities (QA feature)
@@ -1039,9 +1040,12 @@ export {
 	getTestCasesToSync,
 	updateTestCaseExternalRefs,
 } from "./pm-integration/test-case-sync";
-// testCaseSyncWorkflow's push create under the PM create claim, behind
-// `patched("test-case-sync-create-claim-v1")`.
-export { createTestCaseInPmWithClaim } from "./pm-integration/create-test-case-in-pm-with-claim";
+// Test-case link validation (`test-case-sync-link-guard-v1`) and push create
+// under the PM create claim (`test-case-sync-create-claim-v1`).
+export {
+	checkTestCasePmLink,
+	createTestCaseInPmWithClaim,
+} from "./pm-integration/create-test-case-in-pm-with-claim";
 // PM Integration - Test case EXECUTION result push (deferred). Proxied by
 // `testCaseSyncWorkflow` behind `patched("test-case-execution-sync-v1")`.
 export { pushTestCaseExecutionToPM } from "./pm-integration/test-execution-sync";
@@ -1219,6 +1223,11 @@ export {
 	planProposalArtifact,
 	runProposalAnalysis,
 } from "./proposal-artifact";
+// Proposal export to PDF and Word, and its daily cleanup (Fizzy #2946).
+export {
+	cleanupExpiredProposalExportsActivity,
+	exportProposalDocumentActivity,
+} from "./proposal-export";
 export * from "./rag-activities";
 // Repository Integration Health Check activities (token validation, refresh, PAT check)
 export {

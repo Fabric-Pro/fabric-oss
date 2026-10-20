@@ -27,11 +27,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
 import { orpc } from "../../../../shared/lib/orpc-query-utils";
+import {
+	analysisFailureMessage,
+	validateBacklogAnalysisOptions,
+	validateBacklogAnalysisSources,
+} from "../../lib/backlog-analysis-sources";
 import { resolveBacklogChatIntake } from "../../lib/backlog-chat-intake";
+import { resolveSlackFetchDecision } from "../../lib/slack-fetch-decision";
 import { resolveTeamsFetchDecision } from "../../lib/teams-fetch-decision";
 import { BacklogChangeProposal } from "./BacklogChangeProposal";
 import {
-	type DaysBack,
 	type ReviewSourcesResult,
 	ReviewSourcesSelector,
 } from "./ReviewSourcesSelector";
@@ -201,6 +206,26 @@ function createBacklogSidebarHeader(onOpenSessionHistory?: () => void) {
 		);
 	}
 	return BacklogSidebarHeaderSlot;
+}
+
+function countUserMessages(messages: unknown[]): number {
+	return messages.filter((message) => {
+		if (!message || typeof message !== "object") {
+			return false;
+		}
+		const entry = message as {
+			role?: unknown;
+			type?: unknown;
+			_getType?: () => string;
+		};
+		return (
+			entry.role === "user" ||
+			entry.role === "human" ||
+			entry.type === "human" ||
+			(typeof entry._getType === "function" &&
+				entry._getType() === "human")
+		);
+	}).length;
 }
 
 export function BacklogChat({
@@ -421,6 +446,12 @@ export function BacklogChat({
 
 	// Guard: prevent duplicate/retried analyze_backlog calls
 	const isAnalyzingRef = useRef(false);
+	// Retain confirmed sources for calls that pass a non-empty selection array.
+	// Calls that omit selections use their own context and date range.
+	const confirmedReviewSourcesRef = useRef<ReviewSourcesResult | null>(null);
+	const consecutiveStartFailuresRef = useRef(0);
+	const lastStartFailureUserCountRef = useRef<number | null>(null);
+	const lastStartErrorRef = useRef("");
 
 	// Live CopilotKit chat messages, mirrored into a ref so the apply callback
 	// can snapshot the conversation into the Session history without a
@@ -591,14 +622,21 @@ export function BacklogChat({
 					projectId={projectId}
 					organizationId={organizationId ?? null}
 					onConfirm={(result: ReviewSourcesResult) => {
+						confirmedReviewSourcesRef.current = result;
+						consecutiveStartFailuresRef.current = 0;
+						lastStartErrorRef.current = "";
 						respond?.(result);
 					}}
 					onCancel={() => {
-						respond?.({
+						const result: ReviewSourcesResult = {
 							selectedMeetings: [],
 							selectedChannels: [],
 							daysBack: 30,
-						} satisfies ReviewSourcesResult);
+						};
+						confirmedReviewSourcesRef.current = result;
+						consecutiveStartFailuresRef.current = 0;
+						lastStartErrorRef.current = "";
+						respond?.(result);
 					}}
 				/>
 			);
@@ -630,12 +668,17 @@ export function BacklogChat({
 			{
 				name: "fetchSlackMessages",
 				type: "boolean",
-				description: "Whether to fetch recent Slack messages",
+				description:
+					"Slack is auto-fetched when linked unless only meetings were selected; pass true when the user asks for Slack alongside meetings.",
 				required: false,
 			},
 			{
 				name: "selectedMeetings",
 				type: "object[]",
+				attributes: [
+					{ name: "joinUrl", type: "string", required: true },
+					{ name: "startTime", type: "string", required: false },
+				],
 				description:
 					"Selected meetings with join URLs and optional start times",
 				required: false,
@@ -643,6 +686,13 @@ export function BacklogChat({
 			{
 				name: "selectedChannels",
 				type: "object[]",
+				attributes: [
+					{
+						name: "projectContextId",
+						type: "string",
+						required: true,
+					},
+				],
 				description:
 					"Project-linked Teams channels and group chats (array of { projectContextId: string }) the user chose to include as context.",
 				required: false,
@@ -677,17 +727,52 @@ export function BacklogChat({
 			if (isAnalyzingRef.current) {
 				return "Analysis is already in progress. Please wait for it to complete.";
 			}
+			const userMessageCount = countUserMessages(liveMessagesRef.current);
+			if (
+				lastStartFailureUserCountRef.current !== null &&
+				userMessageCount > lastStartFailureUserCountRef.current
+			) {
+				consecutiveStartFailuresRef.current = 0;
+				lastStartErrorRef.current = "";
+				lastStartFailureUserCountRef.current = null;
+			}
+			if (consecutiveStartFailuresRef.current >= 2) {
+				return analysisFailureMessage(lastStartErrorRef.current);
+			}
 			isAnalyzingRef.current = true;
 			try {
 				setAnalysisResult(null);
 				setApplyResult(null);
 				setAnalysisProgressMsg("Starting analysis...");
 
-				const teamsFetch = resolveTeamsFetchDecision({
-					selectedChannels: args.selectedChannels as
-						| Array<{ projectContextId: string }>
-						| undefined,
-				});
+				// Substitute confirmed values only for source fields passed as
+				// non-empty arrays, including malformed entries. Use the confirmed
+				// date range when either field is substituted.
+				const carriesMeetings =
+					Array.isArray(args.selectedMeetings) &&
+					args.selectedMeetings.length > 0;
+				const carriesChannels =
+					Array.isArray(args.selectedChannels) &&
+					args.selectedChannels.length > 0;
+				const confirmed = confirmedReviewSourcesRef.current;
+				const sources = confirmed
+					? {
+							selectedMeetings: carriesMeetings
+								? confirmed.selectedMeetings
+								: [],
+							selectedChannels: carriesChannels
+								? confirmed.selectedChannels
+								: [],
+							daysBack:
+								carriesMeetings || carriesChannels
+									? confirmed.daysBack
+									: args.daysBack,
+						}
+					: args;
+				const validatedSources =
+					validateBacklogAnalysisSources(sources);
+				const teamsFetch = resolveTeamsFetchDecision(validatedSources);
+				const validatedOptions = validateBacklogAnalysisOptions(args);
 
 				// Ensure (lazy-create on first call) the
 				// AgentConversation for this backlog session, then forward
@@ -724,38 +809,69 @@ export function BacklogChat({
 				setDecisionPrecheckPending(false);
 				decisionPrecheckPollWorkflowRef.current = null;
 
-				const result = await orpcClient.projects.backlog.startAnalysis({
-					projectId,
-					organizationId: organizationId ?? null,
-					contextSources: {
-						fetchTeamsMessages: teamsFetch.fetchTeamsMessages,
-						fetchSlackMessages:
-							args.fetchSlackMessages ?? hasSlackIntegration,
-						selectedMeetings:
-							(args.selectedMeetings as Array<{
-								joinUrl: string;
-								startTime?: string;
-							}>) ?? [],
-						selectedChannelContextIds:
-							teamsFetch.selectedChannelContextIds,
-						daysBack: args.daysBack as DaysBack | undefined,
-						notionPageIds: args.notionPageIds ?? [],
-						notionMcpConfigId: args.notionMcpConfigId,
-					},
-					pmConfig,
-					userPrompt:
-						args.userPrompt ??
-						(intake.intakeMode === "explore"
-							? "Propose the first spikes for this hunch"
-							: "Analyze context and suggest backlog updates"),
-					conversationId,
-					intakeMode:
-						intake.intakeMode === "explore" ? "explore" : undefined,
-				});
+				const result = await (async () => {
+					try {
+						const started =
+							await orpcClient.projects.backlog.startAnalysis({
+								projectId,
+								organizationId: organizationId ?? null,
+								contextSources: {
+									fetchTeamsMessages:
+										teamsFetch.fetchTeamsMessages,
+									fetchSlackMessages:
+										resolveSlackFetchDecision({
+											fetchSlackMessages:
+												validatedOptions.fetchSlackMessages,
+											hasSlackIntegration,
+											selectedMeetings:
+												validatedSources.selectedMeetings,
+											selectedChannels:
+												validatedSources.selectedChannels,
+											notionPageIds:
+												validatedOptions.notionPageIds,
+										}),
+									selectedMeetings:
+										validatedSources.selectedMeetings,
+									selectedChannelContextIds:
+										teamsFetch.selectedChannelContextIds,
+									daysBack: validatedSources.daysBack,
+									notionPageIds:
+										validatedOptions.notionPageIds ?? [],
+									notionMcpConfigId:
+										validatedOptions.notionMcpConfigId,
+								},
+								pmConfig,
+								userPrompt:
+									validatedOptions.userPrompt ??
+									(intake.intakeMode === "explore"
+										? "Propose the first spikes for this hunch"
+										: "Analyze context and suggest backlog updates"),
+								conversationId,
+								intakeMode:
+									intake.intakeMode === "explore"
+										? "explore"
+										: undefined,
+							});
 
-				if (!result.workflowId) {
-					return "Failed to start analysis workflow.";
-				}
+						if (!started.workflowId) {
+							throw new Error(
+								"Failed to start analysis workflow.",
+							);
+						}
+						consecutiveStartFailuresRef.current = 0;
+						lastStartErrorRef.current = "";
+						return started;
+					} catch (error) {
+						consecutiveStartFailuresRef.current += 1;
+						lastStartFailureUserCountRef.current =
+							countUserMessages(liveMessagesRef.current);
+						lastStartErrorRef.current =
+							error instanceof Error
+								? error.message
+								: "Failed to start analysis";
+						throw error;
+					}
+				})();
 
 				// Poll for progress until complete or timeout
 				const maxPollTime = 300000; // 5 minutes
@@ -848,7 +964,9 @@ export function BacklogChat({
 								logContextNote:
 									progress.progress?.logContextNote,
 							});
-							return `Analysis failed: ${progress.progress.message}`;
+							return analysisFailureMessage(
+								progress.progress.message ?? "Analysis failed",
+							);
 						}
 					} catch (err) {
 						setState(
@@ -862,7 +980,20 @@ export function BacklogChat({
 											: "Failed to check progress",
 								}) as BacklogUpdaterState,
 						);
-						return `Analysis error: ${err instanceof Error ? err.message : "Failed to check progress"}`;
+						setAnalysisResult({
+							changeCount: 0,
+							summary:
+								err instanceof Error
+									? err.message
+									: "Failed to check progress",
+							contextSummary: "",
+							status: "failed",
+						});
+						return analysisFailureMessage(
+							err instanceof Error
+								? err.message
+								: "Failed to check progress",
+						);
 					}
 				}
 
@@ -873,7 +1004,9 @@ export function BacklogChat({
 					contextSummary: "",
 					status: "timeout",
 				});
-				return "Analysis timed out after 5 minutes. Please try again.";
+				return analysisFailureMessage(
+					"Analysis timed out after 5 minutes.",
+				);
 			} catch (err) {
 				const errorMsg =
 					err instanceof Error
@@ -893,14 +1026,19 @@ export function BacklogChat({
 					contextSummary: "",
 					status: "failed",
 				});
-				return `Analysis error: ${errorMsg}`;
+				return analysisFailureMessage(errorMsg);
 			} finally {
 				isAnalyzingRef.current = false;
 			}
 		},
 		render: ({ status }) => {
-			// Show result card when analysis is complete
-			if (status === "complete" && analysisResult) {
+			// Surface failures while CopilotKit is still completing the tool call.
+			if (
+				analysisResult &&
+				(status === "complete" ||
+					analysisResult.status === "failed" ||
+					analysisResult.status === "timeout")
+			) {
 				// FR3 (Fizzy #1234): say why application logs were or were
 				// not used. Only present once the log-context feature is on,
 				// so this renders nothing for everyone else.

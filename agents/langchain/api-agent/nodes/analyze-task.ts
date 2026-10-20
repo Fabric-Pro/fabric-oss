@@ -155,6 +155,7 @@ export async function analyzeTaskNode(
 		]);
 
 		await logAgentUsageFromRunnableConfig(config, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "api_agent",
 			latencyMs: Date.now() - generationStart,

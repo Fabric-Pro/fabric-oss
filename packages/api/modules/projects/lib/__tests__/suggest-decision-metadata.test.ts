@@ -17,6 +17,7 @@ const { suggestDecisionMetadata } = await import(
 const tenantFilter = { organizationId: "org-1", userId: "user-1" } as const;
 
 const baseInput = {
+	projectId: "project-1",
 	title: "Adopt Temporal for durable workflows",
 	decision: "Use Temporal instead of cron jobs for long-running work.",
 	contextProblem: null,
@@ -46,6 +47,10 @@ describe("suggestDecisionMetadata", () => {
 			},
 		});
 		const out = await suggestDecisionMetadata(baseInput);
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		expect(out).toEqual({
 			decisionType: "Architecture",
 			duration: "LONG_STANDING",

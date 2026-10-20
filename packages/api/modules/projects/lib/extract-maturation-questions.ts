@@ -261,6 +261,7 @@ export async function extractMaturationQuestions({
 	// member's own ChatGPT plan refused the call — before anything is minted, so
 	// the run stops cleanly and the person learns to wait or reconnect.
 	const topics = await classifyQuestionTopics({
+		projectId: feature.projectId,
 		questions: toMint.map((q) => q.text),
 		tenantFilter,
 	});

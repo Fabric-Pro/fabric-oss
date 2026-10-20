@@ -16,9 +16,12 @@
 import { randomUUID } from "node:crypto";
 import {
 	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
 	openSync,
-	readFileSync,
-	statSync,
+	readSync,
+	type Stats,
 	unlinkSync,
 	writeSync,
 } from "node:fs";
@@ -47,10 +50,18 @@ export interface ExclusiveLockOptions {
 }
 
 const DEFAULT_POLL_MS = 100;
+const MAX_LOCK_BYTES = 256;
 
 interface HeldLock {
 	descriptor: number;
 	owner: string;
+}
+
+class LockIdentityChangedError extends Error {
+	constructor() {
+		super("The lock changed while it was being read.");
+		this.name = "LockIdentityChangedError";
+	}
 }
 
 function sleep(ms: number): Promise<void> {
@@ -95,15 +106,17 @@ function takeOnce(
 		}
 	}
 	try {
-		if (Date.now() - statSync(lockPath).mtimeMs > staleMs) {
-			if (ownerIsAlive(readFileSync(lockPath, "utf8"))) {
-				return "busy";
-			}
-			return "abandoned";
+		const read = readLock(lockPath);
+		if (Date.now() - read.stats.mtimeMs > staleMs) {
+			return ownerIsAlive(read.owner) ? "busy" : "abandoned";
 		}
 	} catch (error) {
-		// Released between the failed create and the stat/read: retry now.
-		if (isNotFoundError(error)) {
+		// A holder released or replaced the file during inspection. Only a
+		// waiting contender may retry; ownership checks must still fail closed.
+		if (
+			isNotFoundError(error) ||
+			error instanceof LockIdentityChangedError
+		) {
 			return "retry";
 		}
 		throw error;
@@ -129,14 +142,73 @@ function ownerIsAlive(owner: string): boolean {
 	}
 }
 
-function release(held: HeldLock, lockPath: string): void {
-	closeSync(held.descriptor);
+/** Bound lock reads and verify file type and descriptor identity. */
+function readLock(lockPath: string): { owner: string; stats: Stats } {
+	const descriptor = openSync(
+		lockPath,
+		constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+	);
 	try {
-		if (readFileSync(lockPath, "utf8") === held.owner) {
+		const stats = fstatSync(descriptor);
+		if (!stats.isFile()) {
+			throw new Error("The lock is not a regular file.");
+		}
+		if (stats.size > MAX_LOCK_BYTES) {
+			throw new Error("The lock is too large.");
+		}
+		const buffer = Buffer.allocUnsafe(MAX_LOCK_BYTES + 1);
+		let total = 0;
+		while (total <= MAX_LOCK_BYTES) {
+			const count = readSync(
+				descriptor,
+				buffer,
+				total,
+				MAX_LOCK_BYTES + 1 - total,
+				total,
+			);
+			if (count === 0) {
+				break;
+			}
+			total += count;
+		}
+		if (total > MAX_LOCK_BYTES) {
+			throw new Error("The lock is too large.");
+		}
+		const current = lstatSync(lockPath);
+		if (!current.isFile()) {
+			throw new Error("The lock is not a regular file.");
+		}
+		if (current.size > MAX_LOCK_BYTES) {
+			throw new Error("The lock is too large.");
+		}
+		if (current.dev !== stats.dev || current.ino !== stats.ino) {
+			throw new LockIdentityChangedError();
+		}
+		return { owner: buffer.toString("utf8", 0, total), stats };
+	} finally {
+		closeSync(descriptor);
+	}
+}
+
+function stillHeld(held: HeldLock, lockPath: string): boolean {
+	const expected = fstatSync(held.descriptor);
+	const read = readLock(lockPath);
+	return (
+		read.owner === held.owner &&
+		read.stats.dev === expected.dev &&
+		read.stats.ino === expected.ino
+	);
+}
+
+function release(held: HeldLock, lockPath: string): void {
+	try {
+		if (stillHeld(held, lockPath)) {
 			unlinkSync(lockPath);
 		}
 	} catch {
 		// The lock was removed or replaced before its former holder finished.
+	} finally {
+		closeSync(held.descriptor);
 	}
 }
 
@@ -172,6 +244,10 @@ export async function withExclusiveLock<T>(
 	}
 
 	try {
+		options.signal?.throwIfAborted();
+		if (!stillHeld(held, lockPath)) {
+			throw new Error("The lock changed before work could start.");
+		}
 		return await work();
 	} finally {
 		release(held, lockPath);
@@ -216,6 +292,9 @@ export function withExclusiveLockSync<T>(
 	}
 
 	try {
+		if (!stillHeld(held, lockPath)) {
+			throw new Error("The lock changed before work could start.");
+		}
 		return work();
 	} finally {
 		release(held, lockPath);

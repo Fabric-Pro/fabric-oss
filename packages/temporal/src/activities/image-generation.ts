@@ -30,6 +30,8 @@ import {
 } from "./orchestrator/turn-dispatch";
 
 export interface ImageGenerationParams {
+	/** Conversation served by this image request, supplied by its caller. */
+	usageConversationId?: string;
 	prompt: string;
 	provider: "gateway" | "fal" | "gemini";
 	aspectRatio?: string;
@@ -200,7 +202,12 @@ export async function generateImageActivity(
 		};
 	}
 
-	logImageGenerationUsage(result, userId, organizationId);
+	logImageGenerationUsage(
+		result,
+		userId,
+		organizationId,
+		params.usageConversationId,
+	);
 	return result;
 }
 
@@ -228,11 +235,13 @@ function logImageGenerationUsage(
 	result: ImageGenerationResult,
 	userId: string,
 	organizationId?: string,
+	conversationId?: string,
 ): void {
 	try {
 		logAiUsageAsync({
 			userId,
 			organizationId,
+			conversationId,
 			// The provider enum has no values for the FAL or Google-AI-Studio
 			// image APIs; their model string carries the real identity, so they
 			// land under CUSTOM rather than a misattributed provider.

@@ -45,7 +45,11 @@ export interface PullInput {
 	lock: MemoryLock;
 	/** Paths the developer's repository tracks: the mirror leaves those to git. */
 	tracked: ReadonlySet<string>;
-	/** Paths whose local version the person has chosen to give up for the server's. */
+	/**
+	 * Paths whose local version the person has chosen to give up for the
+	 * server's, which for a path the server no longer lists means removing it.
+	 * Only paths under the folders: the caller filters them.
+	 */
 	acceptRemote: ReadonlySet<string>;
 }
 
@@ -142,18 +146,30 @@ export function planPull(input: PullInput): PullAction[] {
 		const local = input.local.get(path);
 		if (local === undefined) {
 			actions.push({ kind: "forget", path });
-		} else if (local === entry.contentHash) {
-			actions.push({
-				kind: "delete",
-				path,
-				expectedHash: entry.contentHash,
-			});
+		} else if (
+			local === entry.contentHash ||
+			input.acceptRemote.has(path)
+		) {
+			actions.push({ kind: "delete", path, expectedHash: local });
 		} else {
 			actions.push({
 				kind: "keep",
 				path,
 				reason: "modified-and-removed",
 			});
+		}
+	}
+	// A file an earlier pull kept as new after the server removed it: taking the
+	// server's version of it means removing it here too.
+	for (const path of input.acceptRemote) {
+		const local = input.local.get(path);
+		if (
+			local !== undefined &&
+			!remotePaths.has(path) &&
+			input.lock.files[path] === undefined &&
+			!input.tracked.has(path)
+		) {
+			actions.push({ kind: "delete", path, expectedHash: local });
 		}
 	}
 	return actions.sort((a, b) => {

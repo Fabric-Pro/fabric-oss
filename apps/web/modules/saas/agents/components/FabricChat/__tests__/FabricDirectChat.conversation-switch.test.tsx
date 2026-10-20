@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { FrameLaunchContext } from "../../../lib/expand-handoff";
 
 // Capture every render of the button so the test can assert on its
 // props. We re-export a vi.fn from the mock and read it back below.
@@ -55,6 +56,9 @@ vi.mock("@/components/ai-elements/McpAppFrame", () => ({
 // ---------------------------------------------------------------------------
 
 const launchContextMock = {
+	launchFrameId: "frame-drawer",
+	workspaceId: "frame-drawer",
+	surface: "workspace" as const,
 	projectId: "proj_feature_1",
 	storyId: "story_F-007",
 	storyIdentifier: "F-007",
@@ -199,17 +203,21 @@ const resetMock = vi.fn(() => {
 const stopMock = vi.fn(() => {
 	hookState.isLoading = false;
 });
+const streamOptionsMock = vi.fn();
 
 vi.mock("@saas/agents/hooks/useDirectStream", () => ({
-	useDirectStream: () => ({
-		messages: hookState.messages,
-		isLoading: hookState.isLoading,
-		sendMessage: vi.fn(),
-		reset: resetMock,
-		stop: stopMock,
-		restoreContextUsage: vi.fn(),
-		contextInfo: { usage: null, maxTokens: 200_000 },
-	}),
+	useDirectStream: (options: unknown) => {
+		streamOptionsMock(options);
+		return {
+			messages: hookState.messages,
+			isLoading: hookState.isLoading,
+			sendMessage: vi.fn(),
+			reset: resetMock,
+			stop: stopMock,
+			restoreContextUsage: vi.fn(),
+			contextInfo: { usage: null, maxTokens: 200_000 },
+		};
+	},
 }));
 
 vi.mock("@saas/agents/hooks/useEscToStopOrClose", () => ({
@@ -400,9 +408,11 @@ function harness() {
 	const ui = (
 		activeConversationId: string | null,
 		activeConversation: ReturnType<typeof conversation> | null,
+		frameLaunchContext?: FrameLaunchContext | null,
 	) => (
 		<QueryClientProvider client={queryClient}>
 			<FabricDirectChat
+				frameLaunchContext={frameLaunchContext}
 				organizationId="org_example"
 				reasoningMode="balanced"
 				activeConversationId={activeConversationId}
@@ -442,12 +452,46 @@ beforeEach(() => {
 	hookState.isLoading = false;
 	resetMock.mockClear();
 	stopMock.mockClear();
+	streamOptionsMock.mockClear();
 	createConversationMock.mockReset();
 	addMessageMock.mockReset();
 	addMessageMock.mockResolvedValue({});
 });
 
 describe("FabricDirectChat — switching conversation from History", () => {
+	it("uses the drawer origin by default, but honors full-page null and restored origins", () => {
+		const { ui } = harness();
+		const view = render(ui(null, null));
+		expect(streamOptionsMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: "frame-drawer",
+				launchWorkspaceId: "frame-drawer",
+				launchSurface: "workspace",
+			}),
+		);
+		view.rerender(ui(null, null, null));
+		expect(streamOptionsMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: undefined,
+				launchWorkspaceId: undefined,
+				launchSurface: undefined,
+			}),
+		);
+		view.rerender(
+			ui(null, null, {
+				launchFrameId: "frame-restored",
+				surface: "artifact",
+			}),
+		);
+		expect(streamOptionsMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: "frame-restored",
+				launchWorkspaceId: undefined,
+				launchSurface: "artifact",
+			}),
+		);
+	});
+
 	it("replaces the thread on screen with the selected conversation", async () => {
 		const { ui } = harness();
 		const view = render(ui("conv_A", convA));

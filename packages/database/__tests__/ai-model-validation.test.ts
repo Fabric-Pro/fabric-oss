@@ -818,6 +818,18 @@ describe("AI Model Name Validation", () => {
 		).toEqual(["gpt-6-luna-decisions", "typesafe-ai-jev"]);
 	});
 
+	// A usage row's insert-time cost estimate, which spending-limit counters
+	// read, is zero for a model without a price.
+	it("prices every decision model so its usage rows record a cost", () => {
+		const unpriced = MODELS.filter(
+			(model) =>
+				model.suitableForTasks.includes("DECISION") &&
+				!(model.inputCostPer1M && model.inputCostPer1M > 0),
+		).map((model) => model.canonicalName);
+
+		expect(unpriced).toEqual([]);
+	});
+
 	describe("OpenAI Direct", () => {
 		it("should have valid model IDs for OpenAI Direct", () => {
 			const mappings = getSeedProviderMappings().filter(

@@ -815,3 +815,73 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 		});
 	});
 });
+
+describe("workflow start failure messages", () => {
+	it("redacts a claimed proposal's database failure in finalization and the API error", async () => {
+		const proposalId = "proposal-claimed-1";
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: proposalId,
+			projectId: baseInput.projectId,
+			source: "AI_UPDATE_SIDEBAR",
+			proposal: { changes: [baseChange] },
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set<number>());
+		mocks.claimPendingProposalForApply.mockResolvedValue(true);
+		mocks.finalizeClaimedProposal.mockResolvedValue(true);
+		mocks.workflowStart.mockRejectedValueOnce(
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: connection pool timeout",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+		);
+
+		const failure = await handlers
+			.applyChanges({ input: { ...baseInput, proposalId }, context: ctx })
+			.catch((error: unknown) => error);
+
+		expect.soft(mocks.finalizeClaimedProposal).toHaveBeenCalledWith({
+			proposalId,
+			applyWorkflowId: expect.any(String),
+			outcome: "failed",
+			errorMessage: "database error P2024",
+		});
+		expect.soft(failure).toBeInstanceOf(ORPCError);
+		expect.soft(failure).toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+			message: "database error P2024",
+		});
+		expect.soft((failure as Error).message).not.toContain("prisma.");
+	});
+	it.each([
+		[
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: connection pool timeout",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+			"database error P2024",
+		],
+		[new Error("boom"), "boom"],
+	])(
+		"redacts database errors and preserves other failures: %s",
+		async (error, expected) => {
+			mocks.workflowStart.mockRejectedValueOnce(error);
+			await expect
+				.soft(handlers.applyChanges({ input: baseInput, context: ctx }))
+				.rejects.toMatchObject({ message: expected });
+			expect
+				.soft(mocks.pendingBacklogProposalUpdate)
+				.toHaveBeenCalledWith(
+					expect.objectContaining({
+						data: expect.objectContaining({
+							status: "FAILED",
+							applyError: expected,
+						}),
+					}),
+				);
+		},
+	);
+});

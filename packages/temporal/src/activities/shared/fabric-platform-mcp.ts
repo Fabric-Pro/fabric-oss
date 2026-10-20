@@ -17,11 +17,21 @@ import { jsonSchema, tool } from "@repo/ai";
 import { isFabricChatTool } from "../../lib/fabric-gateway-tools";
 import type { FabricServiceActor } from "../../lib/fabric-mcp-service-headers";
 import {
+	FABRIC_PORTAL_EXCLUDED_TOOL_NAMES,
+	isFabricPortalTool,
+} from "../../lib/fabric-portal-tools";
+import {
+	toolAccess,
+	withoutDryRun,
+	withoutDryRunNote,
+} from "../../lib/fabric-tool-definition";
+import {
 	createConfirmationGate,
 	listingNeedsConfirmation,
 } from "./fabric-confirmation";
 import {
 	type GatewayToolListing,
+	isDefiniteRefusal,
 	openFabricGateway,
 } from "./fabric-gateway-client";
 
@@ -30,9 +40,24 @@ export {
 	unwrapGatewayResult,
 } from "./fabric-gateway-client";
 
+/**
+ * A turn that holds a project grant (a Parlume meeting) lists the portal tools
+ * as well as the base set. `offer` says whether this turn's model is given
+ * their schemas: they are about 6 KB of tokens a turn, so a turn that does not
+ * ask for them does not carry them.
+ */
+export interface FabricPlatformToolOptions {
+	portal?: { offer: boolean };
+}
+
 export interface FabricPlatformTools {
 	/** AI SDK tools keyed by the gateway's tool names. */
 	tools: Record<string, unknown>;
+	/**
+	 * Whether each tool reads or changes things, as the gateway's own listing
+	 * says (`readOnlyHint`); a tool that does not say reads as a change.
+	 */
+	access: Record<string, "READ" | "WRITE">;
 	/**
 	 * Runs a call the person approved in chat, with exactly the arguments they
 	 * were shown. Refused (an error result) for a tool that needs no approval
@@ -62,12 +87,11 @@ export interface FabricPlatformTools {
  * The cast is the one place a remote server's schema meets the SDK's type.
  */
 function toModelSchema(listing: GatewayToolListing) {
-	const { dryRun: _dryRun, ...properties } =
-		listing.inputSchema.properties ?? {};
+	const schema = withoutDryRun(listing.inputSchema);
 	return jsonSchema<Record<string, unknown>>({
-		...listing.inputSchema,
+		...schema,
 		type: "object",
-		properties,
+		properties: schema.properties ?? {},
 		additionalProperties: false,
 	} as Parameters<typeof jsonSchema>[0]);
 }
@@ -79,8 +103,12 @@ function toModelSchema(listing: GatewayToolListing) {
  */
 export async function loadFabricPlatformTools(
 	actor: FabricServiceActor,
+	options: FabricPlatformToolOptions = {},
 ): Promise<FabricPlatformTools | null> {
-	const gateway = openFabricGateway(actor);
+	const gateway = openFabricGateway(
+		actor,
+		options.portal ? "portal" : "base",
+	);
 	if (!gateway) {
 		return null;
 	}
@@ -90,7 +118,14 @@ export async function loadFabricPlatformTools(
 		return null;
 	}
 
-	const offered = listed.filter((listing) => isFabricChatTool(listing.name));
+	const offered = listed.filter(
+		(listing) =>
+			(!options.portal ||
+				!FABRIC_PORTAL_EXCLUDED_TOOL_NAMES.includes(listing.name)) &&
+			(isFabricChatTool(listing.name) ||
+				(options.portal?.offer === true &&
+					isFabricPortalTool(listing.name))),
+	);
 	const byName = new Map(offered.map((listing) => [listing.name, listing]));
 	const confirmation = createConfirmationGate(actor, gateway, (name) =>
 		byName.has(name),
@@ -111,6 +146,9 @@ export async function loadFabricPlatformTools(
 			return verdict.result;
 		}
 		const result = await gateway.call(listing.name, args, abortSignal);
+		if (isDefiniteRefusal(result)) {
+			verdict.refund?.();
+		}
 		confirmation.noteResult(listing.name, result);
 		return result;
 	};
@@ -127,7 +165,7 @@ export async function loadFabricPlatformTools(
 	const tools: Record<string, unknown> = {};
 	for (const listing of offered) {
 		tools[listing.name] = tool({
-			description: listing.description ?? listing.name,
+			description: withoutDryRunNote(listing.description ?? listing.name),
 			inputSchema: toModelSchema(listing),
 			execute: (args, executionOptions) =>
 				run(listing, args, executionOptions?.abortSignal),
@@ -136,6 +174,9 @@ export async function loadFabricPlatformTools(
 
 	return {
 		tools,
+		access: Object.fromEntries(
+			offered.map((listing) => [listing.name, toolAccess(listing)]),
+		),
 		runApproved: async (toolName, args) => {
 			const listing = byName.get(toolName);
 			if (!listing || !listingNeedsConfirmation(listing, args)) {

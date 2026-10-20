@@ -5,6 +5,7 @@ import { Streamdown } from "streamdown";
 import {
 	chatMarkdownComponents,
 	getChatMarkdownClassName,
+	getChatMarkdownRehypePlugins,
 } from "./chat-markdown";
 import { normalizeTextToMarkdown } from "./text-normalizer";
 
@@ -244,6 +245,7 @@ export const TypingResponse = memo(
 		normalizeMarkdown = true,
 		streaming = false,
 	}: TypingResponseProps) => {
+		const rehypePlugins = useMemo(getChatMarkdownRehypePlugins, []);
 		// Normalize text to convert Unicode formatting to markdown
 		// This fixes rendering issues with reasoning models that output Unicode bullets, etc.
 		const normalizedText = useMemo(() => {
@@ -267,6 +269,7 @@ export const TypingResponse = memo(
 			<Streamdown
 				className={getChatMarkdownClassName(className)}
 				components={{ ...chatMarkdownComponents, ...components }}
+				rehypePlugins={rehypePlugins}
 				parseIncompleteMarkdown={streaming || isAnimating}
 			>
 				{displayedText}

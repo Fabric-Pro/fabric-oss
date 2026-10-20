@@ -17,6 +17,9 @@ const findManyMock = vi.fn();
 const aggregateMock = vi.fn();
 const groupByMock = vi.fn();
 const countMock = vi.fn(async (_args: unknown) => 0);
+const organizationFind = vi.fn(async (_args: unknown) => ({
+	slug: "example-org",
+}));
 
 vi.mock("../prisma/client", () => ({
 	db: {
@@ -26,6 +29,7 @@ vi.mock("../prisma/client", () => ({
 			groupBy: (args: unknown) => groupByMock(args),
 			count: (args: unknown) => countMock(args),
 		},
+		organization: { findUnique: (args: unknown) => organizationFind(args) },
 	},
 	Prisma: {},
 }));
@@ -57,6 +61,39 @@ describe("listAiUsageActivity", () => {
 		findManyMock.mockResolvedValue([]);
 		aggregateMock.mockResolvedValue(EMPTY_AGGREGATE);
 		groupByMock.mockResolvedValue([]);
+		organizationFind.mockClear();
+	});
+
+	it("returns persisted origins and derives workflow navigation from its execution", async () => {
+		findManyMock.mockResolvedValue([
+			{
+				id: "usage-origin-1",
+				userId: null,
+				frameId: "frame-1",
+				workflowExecutionId: "execution-1",
+				workflowExecution: { workflowId: "workflow-1" },
+				featureKey: "workspace",
+				promptVersionId: "prompt-1",
+			},
+		]);
+		const result = await listAiUsageActivity({ organizationId: "org-1" });
+		expect(result.rows[0]).toMatchObject({
+			frameId: "frame-1",
+			workflowExecutionId: "execution-1",
+			workflowId: "workflow-1",
+			originOrganizationSlug: "example-org",
+			featureKey: "workspace",
+			promptVersionId: "prompt-1",
+		});
+		expect(organizationFind).toHaveBeenCalledExactlyOnceWith({
+			where: { id: "org-1" },
+			select: { slug: true },
+		});
+	});
+
+	it("does no origin lookup for an empty history", async () => {
+		await listAiUsageActivity({ organizationId: "org-1" });
+		expect(organizationFind).not.toHaveBeenCalled();
 	});
 
 	it("filters personal context with `userId` AND `organizationId: null`", async () => {

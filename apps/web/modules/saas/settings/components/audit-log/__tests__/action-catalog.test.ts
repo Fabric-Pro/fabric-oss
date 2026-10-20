@@ -99,11 +99,11 @@ const EXPECTED_KEYS = [
 ];
 
 describe("ACTION_CATALOG", () => {
-	it("describes a confirmed Parlume action", () => {
+	it("describes an executed Parlume action", () => {
 		expect(
 			describeAction("project.parlume.action_confirmed"),
 		).toMatchObject({
-			label: "Parlume action confirmed",
+			label: "Parlume action executed",
 			defaultSeverity: "info",
 			category: "project",
 		});

@@ -42,6 +42,12 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	}),
 }));
 
+// The personal key cards read CHATGPT_PLAN for the plan-spent switch
+// (Fizzy #3085); off here, so the cards render as before.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("next-intl", () => ({

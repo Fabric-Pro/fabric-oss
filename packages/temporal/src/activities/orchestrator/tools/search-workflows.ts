@@ -11,6 +11,7 @@ import {
 } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import { cosineSimilarity } from "./capability-embeddings";
 import type {
 	SearchAvailableWorkflowsInput,
@@ -118,6 +119,7 @@ export async function searchAvailableWorkflows(
 	let queryEmbedding: number[] | null = null;
 	try {
 		const tenantContext: TenantContext = {
+			...secondaryUsageFields(input),
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};
@@ -148,6 +150,7 @@ export async function searchAvailableWorkflows(
 	if (queryEmbedding) {
 		try {
 			const tenantContext: TenantContext = {
+				...secondaryUsageFields(input),
 				userId: input.userId,
 				organizationId: input.organizationId,
 			};

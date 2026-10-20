@@ -6,6 +6,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { publicSharingErrors } from "../lib/public-sharing-errors";
 
 const frameBlockSchema = z.object({
 	id: z.string(),
@@ -36,6 +37,7 @@ const inputSchema = z.object({
 });
 
 export const createFrameProcedure = tenantProtectedProcedure
+	.use(publicSharingErrors)
 	.use(requirePermission(Permissions.WORKSPACE_CREATE))
 	.route({
 		method: "POST",

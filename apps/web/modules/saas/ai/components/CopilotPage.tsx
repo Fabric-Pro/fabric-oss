@@ -3899,12 +3899,12 @@ export function CopilotPage({
 	//   each tab hydrates exactly once on mount and last-write-wins on send.
 	const persistenceQuery = useQuery({
 		queryKey: ["chat-agent-selection", user?.id, organizationId],
-		// `tenantProtectedProcedure` resolves (user × org) from the
-		// session — no input needed here. `organizationId` is in the
-		// queryKey only so React Query invalidates / refetches when the
-		// user switches orgs (which restarts the session). Per spec §6.3
-		// (Decision 6), there's no focus / visibility refetch.
-		queryFn: async () => orpcClient.users.chatAgentSelection.get(),
+		// Match the URL organization in the cache key and request; the server
+		// verifies membership independently of the session active organization.
+		queryFn: async () =>
+			orpcClient.users.chatAgentSelection.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		// SSR `initialData` short-circuits the client-side fetch on first
 		// mount. Combined with `staleTime: Infinity` and
 		// `refetchOnMount: false`, the query treats the SSR-provided value
@@ -3919,7 +3919,7 @@ export function CopilotPage({
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
 		retry: 1,
-		enabled: !!user?.id,
+		enabled: !!user?.id && !!organizationId,
 	});
 
 	const persistenceHydratedRef = useRef(false);
@@ -3994,14 +3994,17 @@ export function CopilotPage({
 	const persistMutation = useMutation({
 		mutationFn: async (input: {
 			selectedAgents: PersistedSelectedAgent[];
-		}) =>
-			orpcClient.users.chatAgentSelection.set({
+			organizationId: string;
+		}) => {
+			return orpcClient.users.chatAgentSelection.set({
+				organizationId: input.organizationId,
 				selectedAgents: input.selectedAgents,
-			}),
+			});
+		},
 		onSuccess: (_data, variables) => {
 			trackEvent("nexus_agent_persistence_written", {
 				count: variables.selectedAgents.length,
-				organizationId: organizationId ?? null,
+				organizationId: variables.organizationId,
 			});
 		},
 		// Persistence-write failures must NEVER surface to the user — see
@@ -4018,8 +4021,8 @@ export function CopilotPage({
 		},
 	});
 
-	// Serialize persist mutations: only ONE write in flight at a time, the
-	// LATEST requested state always wins. Without this, rapid clicks fire
+	// Serialize persist mutations: one write in flight, followed by the latest
+	// queued selection with its captured organization. Without this, rapid clicks fire
 	// 3 parallel POSTs to `chatAgentSelection.set`; whichever response the
 	// server processes LAST wins at the DB, but TCP / HTTP/2 ordering
 	// makes that non-deterministic — UI ends empty, DB ends with one of
@@ -4031,30 +4034,48 @@ export function CopilotPage({
 	// bursts into at most TWO requests (the one already in flight plus
 	// the final state).
 	const persistInFlightRef = useRef(false);
-	const pendingPersistRef = useRef<PersistedSelectedAgent[] | null>(null);
+	const pendingPersistRef = useRef<{
+		selection: PersistedSelectedAgent[];
+		organizationId: string;
+	} | null>(null);
 	const firePersistAgentSelection = useCallback(
-		(selection: PersistedSelectedAgent[]) => {
+		(
+			selection: PersistedSelectedAgent[],
+			targetOrganizationId = organizationId,
+		) => {
+			if (!targetOrganizationId) {
+				return;
+			}
 			if (persistInFlightRef.current) {
 				// Overwrite any prior pending — only the latest matters.
-				pendingPersistRef.current = selection;
+				pendingPersistRef.current = {
+					selection,
+					organizationId: targetOrganizationId,
+				};
 				return;
 			}
 			persistInFlightRef.current = true;
 			persistMutation.mutate(
-				{ selectedAgents: selection },
+				{
+					selectedAgents: selection,
+					organizationId: targetOrganizationId,
+				},
 				{
 					onSettled: () => {
 						persistInFlightRef.current = false;
 						const next = pendingPersistRef.current;
 						if (next !== null) {
 							pendingPersistRef.current = null;
-							firePersistAgentSelection(next);
+							firePersistAgentSelection(
+								next.selection,
+								next.organizationId,
+							);
 						}
 					},
 				},
 			);
 		},
-		[persistMutation],
+		[persistMutation, organizationId],
 	);
 
 	// ── Chat list (infinite scroll) ──────────────────────────────────────────

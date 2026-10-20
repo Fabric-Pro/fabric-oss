@@ -7,9 +7,28 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	fixtureTarget,
+	mutablePmSettings,
+	pmTargetFixtures,
+} from "../../../../../../../utils/test-fixtures/pm-target";
+
+vi.mock(
+	"../../../../../../../temporal/src/activities/pm-integration/record-pm-sync-state",
+	() => ({
+		recordPmSyncFailure: vi.fn(async () => true),
+		writePmSyncSuccessState: vi.fn(),
+	}),
+);
+
+vi.mock(
+	"../../../../../../../temporal/src/activities/orchestrator/execution/execute-mcp-tool",
+	() => ({ executeMcpTool: vi.fn() }),
+);
 
 // ---- Mocks -----------------------------------------------------------------
 
+const mockCheckStoryPmLink = vi.fn();
 const mockCreateStory = vi.fn();
 const mockUpdateStory = vi.fn();
 
@@ -42,11 +61,15 @@ vi.mock("@repo/database", () => ({
 			}
 		},
 	},
+	PmSyncStatus: { PENDING: "PENDING", FAILED: "FAILED" },
 	db: {
+		mCPServer: { findUnique: vi.fn() },
+		mCPConfig: { findFirst: vi.fn() },
 		project: {
 			findFirst: vi.fn(),
 		},
 		userStory: {
+			updateMany: vi.fn(async () => ({ count: 1 })),
 			findFirst: vi.fn(),
 			findUnique: vi.fn(),
 			update: vi.fn(),
@@ -92,6 +115,7 @@ const mockStripAttachmentBlock = vi.fn((description: string) => {
 });
 
 vi.mock("@repo/temporal", () => ({
+	checkStoryPmLink: (...args: unknown[]) => mockCheckStoryPmLink(...args),
 	analyzePMToolCapabilities: mockAnalyzePMToolCapabilities,
 	executeMcpTool: mockExecuteMcpTool,
 	parsePMItemFromGetOutput: (...args: unknown[]) =>
@@ -128,6 +152,7 @@ vi.mock("../gitlab-pm-adapter", () => ({
 const mockClientTools = vi.fn();
 
 vi.mock("@repo/mcp", () => ({
+	McpGitLabOriginMismatchError: class McpGitLabOriginMismatchError extends Error {},
 	getCachedMcpClientForConfig: vi.fn().mockResolvedValue({
 		client: { tools: () => mockClientTools() },
 		serverUrl: "https://pm.example.com",
@@ -198,6 +223,10 @@ const baseCtx = {
 };
 
 function defaultSetup() {
+	mockCheckStoryPmLink.mockResolvedValue({
+		success: true,
+		outcome: "link-ok",
+	});
 	mockGetOrganizationIdFromContext.mockReturnValue(null);
 	vi.mocked(db.project.findFirst).mockResolvedValue({
 		id: "proj-1",
@@ -295,9 +324,326 @@ describe("importFromPMProcedure", () => {
 		);
 	});
 
+	it.each([false, true])(
+		"accepts the self-hosted REST GitLab overwrite (race: %s)",
+		async (race) => {
+			defaultSetup();
+			mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+			const project = {
+				id: "example-project",
+				organizationId: "example-org",
+				projectManagementMcpServerId: "example-server",
+				projectManagementMcpConfigId: null,
+				projectManagementContainerId: "example/container",
+				projectManagementAdditionalContext: {
+					gitlabOrigin: "https://gitlab.example.com",
+				},
+			};
+			vi.mocked(db.project.findFirst).mockResolvedValue(project as never);
+			mockResolveGitLabPMSource.mockResolvedValue({
+				kind: "rest-adapter",
+				credential: {
+					token: "example-token",
+					apiBase: "https://gitlab.example.com/api/v4",
+				},
+			});
+			mockGetGitLabIssueForPM.mockResolvedValue({
+				title: "Incoming",
+				description: "Incoming",
+				labels: [],
+				externalUrl:
+					"https://gitlab.example.com/example/project/-/issues/42",
+			});
+			const linked = {
+				id: "example-story",
+				identifier: "EX-42",
+				title: "Original",
+				externalId: "42",
+				externalUrl:
+					"https://gitlab.example.com/example/project/-/issues/42",
+				externalMcpServerId: null,
+				lastPmSyncAttemptId: null,
+				lastPmSyncStatus: null,
+				projectId: project.id,
+				project: { organizationId: "example-org", userId: null },
+			};
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(
+				linked as never,
+			);
+			vi.mocked(db.userStory.findUnique).mockResolvedValue(
+				linked as never,
+			);
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+				key: "gitlab-official",
+				defaultUrl: "https://gitlab.com",
+			} as never);
+			const { checkStoryPmLink } = await import(
+				"../../../../../../../temporal/src/activities/pm-integration/create-story-in-pm-with-claim"
+			);
+			mockCheckStoryPmLink.mockImplementation(checkStoryPmLink);
+			mockUpdateStory.mockResolvedValue(linked);
+			if (race) {
+				vi.mocked(db.userStory.findFirst).mockResolvedValueOnce(null);
+				mockCreateStory.mockRejectedValue(
+					new Prisma.PrismaClientKnownRequestError(
+						"Unique constraint failed",
+						{
+							code: "P2002",
+							clientVersion: "example",
+							meta: { target: ["projectId", "externalId"] },
+						},
+					),
+				);
+			}
+			const handler = await loadProcedureHandler();
+			await expect(
+				handler({
+					input: {
+						projectId: project.id,
+						externalId: "42",
+						overwrite: true,
+					},
+					context: baseCtx,
+				}),
+			).resolves.toMatchObject({ success: true });
+			expect(mockCheckStoryPmLink).toHaveBeenCalledWith(
+				expect.objectContaining({
+					pmTarget: {
+						containerId: "example/container",
+						additionalContext:
+							project.projectManagementAdditionalContext,
+					},
+					toolLabel: "GitLab",
+				}),
+			);
+		},
+	);
+
+	it.each([false, true])(
+		"a relink before API overwrite preserves content (GitLab: %s)",
+		async (gitlab) => {
+			defaultSetup();
+			const current = {
+				id: "example-story",
+				identifier: "EX-42",
+				title: "Original",
+				description: "Original body",
+				labels: [],
+				externalId: "42",
+				externalMcpServerId: "example-server",
+				externalUrl: "https://example.com/42",
+			};
+			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				externalMcpServerId: null,
+				...current,
+			} as never);
+			const relink = () => {
+				current.externalId = "43";
+				current.externalMcpServerId = "example-new-server";
+			};
+			if (gitlab) {
+				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+				mockResolveGitLabPMSource.mockResolvedValue({
+					kind: "rest-adapter",
+					credential: {
+						token: "example-token",
+						apiBase: "https://example.com/api/v4",
+					},
+				});
+				mockGetGitLabIssueForPM.mockResolvedValue({
+					title: "Incoming",
+					description: "Incoming",
+					labels: [],
+					externalUrl: "https://example.com/42",
+				});
+				mockCheckStoryPmLink.mockImplementationOnce(async () => {
+					relink();
+					return { success: true };
+				});
+			} else {
+				mockAnalyzePMToolCapabilities.mockReturnValue({
+					detectedType: "azure-devops",
+					taskGet: {
+						toolName: "get-item",
+						idParam: "id",
+						additionalRequiredParams: [],
+					},
+				});
+				mockIngestPulledImages.mockImplementationOnce(async () => {
+					relink();
+					return { description: "Incoming" };
+				});
+			}
+			mockUpdateStory.mockImplementation(
+				async (_id, _project, data, options) => {
+					const fence = options?.onlyIfPmLink;
+					if (
+						fence &&
+						(fence.externalId !== current.externalId ||
+							fence.externalMcpServerId !==
+								current.externalMcpServerId)
+					) {
+						throw Object.assign(new Error("PM link changed"), {
+							name: "StoryLinkChangedError",
+						});
+					}
+					Object.assign(current, data);
+					return current;
+				},
+			);
+			const handler = await loadProcedureHandler();
+			await expect(
+				handler({
+					input: {
+						projectId: "example-project",
+						externalId: "42",
+						overwrite: true,
+					},
+					context: baseCtx,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				message: expect.stringContaining("did not pull it"),
+			});
+			expect(current).toMatchObject({
+				title: "Original",
+				description: "Original body",
+				externalUrl: "https://example.com/42",
+				externalId: "43",
+			});
+		},
+	);
+
+	it.each([false, true])(
+		"refuses an import overwrite when the link guard refuses (GitLab: %s)",
+		async (gitlab) => {
+			defaultSetup();
+			mockUpdateStory.mockResolvedValue({
+				id: "example-story",
+				title: "Incoming",
+				labels: [],
+				externalId: "42",
+			});
+			mockCheckStoryPmLink.mockResolvedValue({
+				success: false,
+				error: "This story is linked to a ticket in a different PM tool.",
+			});
+			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				id: "example-story",
+				externalId: "42",
+				externalUrl: "https://example.net/42",
+				externalMcpServerId: "example-old-server",
+			} as never);
+			if (gitlab) {
+				mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+				mockResolveGitLabPMSource.mockResolvedValue({
+					kind: "rest",
+					baseUrl: "https://example.com",
+					accessToken: "example-token",
+				});
+				mockGetGitLabIssueForPM.mockResolvedValue({
+					title: "Incoming",
+					description: "Incoming",
+					labels: [],
+					externalUrl: "https://example.com/42",
+				});
+			}
+			const handler = await loadProcedureHandler();
+			await expect(
+				handler({
+					input: {
+						projectId: "example-project",
+						externalId: "42",
+						overwrite: true,
+					},
+					context: baseCtx,
+				}),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				message: expect.stringContaining("different PM tool"),
+			});
+			expect(mockUpdateStory).not.toHaveBeenCalled();
+			expect(mockIngestPulledImages).not.toHaveBeenCalled();
+			expect(mockCheckStoryPmLink).toHaveBeenCalledWith(
+				expect.objectContaining({
+					storyId: "example-story",
+					externalMcpServerId: "example-old-server",
+					externalUrl: "https://example.net/42",
+					verb: "pull",
+				}),
+			);
+		},
+	);
+
+	it("refuses a GitLab create-race winner linked to another tool", async () => {
+		defaultSetup();
+		mockGetProjectPMServerKey.mockResolvedValue("gitlab-official");
+		mockResolveGitLabPMSource.mockResolvedValue({
+			kind: "rest-adapter",
+			credential: {
+				token: "example-token",
+				apiBase: "https://example.com/api/v4",
+			},
+		});
+		mockGetGitLabIssueForPM.mockResolvedValue({
+			title: "Incoming",
+			description: "Incoming",
+			labels: [],
+			externalUrl: "https://example.com/42",
+		});
+		vi.mocked(db.userStory.findFirst)
+			.mockResolvedValueOnce(null)
+			.mockResolvedValueOnce({
+				id: "example-winner",
+				externalId: "42",
+				externalUrl: "https://example.net/42",
+				externalMcpServerId: "example-old-server",
+			} as never);
+		mockCreateStory.mockRejectedValue(
+			new Prisma.PrismaClientKnownRequestError(
+				"Unique constraint failed",
+				{
+					code: "P2002",
+					clientVersion: "example",
+					meta: { target: ["projectId", "externalId"] },
+				},
+			),
+		);
+		mockUpdateStory.mockResolvedValue({
+			id: "example-winner",
+			title: "Incoming",
+			labels: [],
+			externalId: "42",
+		});
+		mockCheckStoryPmLink.mockResolvedValue({
+			success: false,
+			error: "This story is linked to a ticket in a different PM tool.",
+		});
+		const handler = await loadProcedureHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "example-project",
+					externalId: "42",
+					overwrite: true,
+				},
+				context: baseCtx,
+			}),
+		).rejects.toMatchObject({ code: "CONFLICT" });
+		expect(mockUpdateStory).not.toHaveBeenCalled();
+		expect(mockCheckStoryPmLink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				storyId: "example-winner",
+				externalMcpServerId: "example-old-server",
+				verb: "pull",
+			}),
+		);
+	});
+
 	it("overwrite: false (default) + existing story returns 409 CONFLICT", async () => {
 		defaultSetup();
 		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			externalMcpServerId: null,
 			id: "story-1",
 			identifier: "F-001",
 			externalId: "42",
@@ -320,6 +666,7 @@ describe("importFromPMProcedure", () => {
 	it("overwrite: true + existing story updates story with PM tool data", async () => {
 		defaultSetup();
 		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			externalMcpServerId: null,
 			id: "story-1",
 			identifier: "F-001",
 			externalId: "42",
@@ -369,6 +716,7 @@ describe("importFromPMProcedure", () => {
 			{
 				lastEditedByName: "Import User",
 				lastEditedSource: "PM_PULL",
+				onlyIfPmLink: { externalId: "42", externalMcpServerId: null },
 			},
 		);
 
@@ -418,6 +766,8 @@ describe("importFromPMProcedure", () => {
 		expect(db.userStory.update).toHaveBeenCalledWith({
 			where: { id: "story-new" },
 			data: {
+				externalMcpServerId: "mcp-server-1",
+				externalPmTarget: null,
 				externalId: "42",
 				externalUrl: "https://pm.example.com/item/42",
 				labels: [],
@@ -949,6 +1299,7 @@ describe("importFromPMProcedure", () => {
 				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				externalMcpServerId: null,
 				id: "story-1",
 				identifier: "F-001",
 				externalId: "1",
@@ -987,6 +1338,7 @@ describe("importFromPMProcedure", () => {
 				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				externalMcpServerId: null,
 				id: "story-1",
 				identifier: "F-001",
 				externalId: "1",
@@ -1166,6 +1518,7 @@ describe("importFromPMProcedure", () => {
 				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				externalMcpServerId: null,
 				id: "story-1",
 				identifier: "F-001",
 				externalId: "1",
@@ -1209,6 +1562,10 @@ describe("importFromPMProcedure", () => {
 				{
 					lastEditedByName: "Import User",
 					lastEditedSource: "PM_PULL",
+					onlyIfPmLink: {
+						externalId: "1",
+						externalMcpServerId: null,
+					},
 				},
 			);
 			expect(result.success).toBe(true);
@@ -1281,6 +1638,7 @@ describe("importFromPMProcedure", () => {
 				},
 			} as never);
 			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				externalMcpServerId: null,
 				id: "story-1",
 				identifier: "F-001",
 				externalId: "1",
@@ -1458,6 +1816,7 @@ describe("importFromPMProcedure — roadmap.pm-import capability gate", () => {
 	it("asserts roadmap.pm-import on the MCP branch after the duplicate CONFLICT", async () => {
 		defaultSetup();
 		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			externalMcpServerId: null,
 			id: "story-1",
 			identifier: "F-001",
 			externalId: "42",
@@ -1538,4 +1897,164 @@ describe("importFromPMProcedure — roadmap.pm-import capability gate", () => {
 		).rejects.toThrow(/Select a GitLab project/);
 		expect(mockAssertCapabilityAvailable).not.toHaveBeenCalled();
 	});
+});
+
+it("redacts database errors in the import response while preserving PM-tool messages", async () => {
+	defaultSetup();
+	vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
+	const handler = await loadProcedureHandler();
+	for (const [extra, expected] of [
+		[
+			{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			"database error P2024",
+		],
+		[{ name: "DriverAdapterError" }, "database error"],
+		[{ name: "Error" }, "PM tool says item not found"],
+	] as const) {
+		mockExecuteMcpTool.mockRejectedValueOnce(
+			Object.assign(new Error("PM tool says item not found"), extra),
+		);
+		await expect(
+			handler({
+				input: { projectId: "example-project", externalId: "42" },
+				context: baseCtx,
+			}),
+		).rejects.toThrow(expected);
+	}
+});
+
+describe("import writer target consistency", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		defaultSetup();
+	});
+	it.each(pmTargetFixtures)(
+		"$name: import uses the writer/checker identity",
+		async (fixture) => {
+			const rest = fixture.name.startsWith("GitLab REST");
+			vi.mocked(db.project.findFirst).mockResolvedValue({
+				id: "proj-1",
+				organizationId: null,
+				projectManagementMcpServerId: "example-server",
+				projectManagementMcpConfigId: rest ? null : "example-config",
+				projectManagementContainerId: fixture.containerId,
+				projectManagementAdditionalContext: {
+					...fixture.additionalContext,
+					...mutablePmSettings,
+				},
+			} as never);
+			vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+				id: "example-config",
+				enabled: true,
+				mcpServerId: "example-server",
+				...fixture.config,
+			} as never);
+			mockGetProjectPMServerKey.mockResolvedValue(
+				rest ? "gitlab-official" : fixture.pmTool,
+			);
+			mockAnalyzePMToolCapabilities.mockReturnValue({
+				detectedType: fixture.pmTool,
+				taskGet: {
+					toolName: "get-item",
+					idParam: "id",
+					additionalRequiredParams: [],
+				},
+			});
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
+			vi.mocked(db.userStory.findUnique).mockResolvedValue({
+				id: "example-story",
+				title: "Example",
+			} as never);
+			mockCreateStory.mockResolvedValue({
+				id: "example-story",
+				title: "Example",
+			});
+			vi.mocked(db.userStory.update).mockResolvedValue({
+				id: "example-story",
+				title: "Example",
+			} as never);
+			mockResolveGitLabPMSource.mockResolvedValue({
+				kind: "rest-adapter",
+				credential: {
+					token: "example-token",
+					apiBase: `${fixture.instance}/api/v4`,
+				},
+			});
+			mockGetGitLabIssueForPM.mockResolvedValue({
+				title: "Example",
+				description: "Example",
+				labels: [],
+				externalUrl: `${fixture.instance}/example/project/-/issues/42`,
+			});
+			const handler = await loadProcedureHandler();
+			await expect(
+				handler({
+					input: { projectId: "proj-1", externalId: "42" },
+					context: baseCtx,
+				}),
+			).resolves.toMatchObject({ success: true });
+			const written = rest
+				? mockCreateStory.mock.calls[0]?.[0]
+				: vi.mocked(db.userStory.update).mock.calls[0]?.[0].data;
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(
+				written as never,
+			);
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(
+				fixture.config as never,
+			);
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue(
+				fixture.config.mcpServer as never,
+			);
+			const { checkStoryPmLink } = await import(
+				"../../../../../../../temporal/src/activities/pm-integration/create-story-in-pm-with-claim"
+			);
+			await expect(
+				checkStoryPmLink({
+					storyId: "example-story",
+					projectId: "proj-1",
+					userId: "user-1",
+					mcpServerId: "example-server",
+					mcpConfigId: rest ? null : "example-config",
+					pmTool: fixture.pmTool,
+					toolLabel: fixture.pmTool,
+					externalId: "42",
+					externalUrl: written.externalUrl,
+					externalMcpServerId: "example-server",
+					pmTarget: {
+						containerId: fixture.containerId,
+						additionalContext: fixture.additionalContext,
+					},
+				}),
+			).resolves.toMatchObject({ success: true });
+
+			if (rest) {
+				expect(mockCreateStory).toHaveBeenCalledWith(
+					expect.objectContaining({
+						externalPmTarget:
+							fixture.name === "GitLab REST legacy"
+								? expect.toBeOneOf([
+										null,
+										fixtureTarget(
+											fixture,
+											"example-server",
+										),
+									])
+								: fixtureTarget(fixture, "example-server"),
+					}),
+				);
+			} else {
+				expect(db.userStory.update).toHaveBeenCalledWith(
+					expect.objectContaining({
+						data: expect.objectContaining({
+							externalPmTarget: fixtureTarget(
+								fixture,
+								"example-server",
+							),
+						}),
+					}),
+				);
+			}
+		},
+	);
 });

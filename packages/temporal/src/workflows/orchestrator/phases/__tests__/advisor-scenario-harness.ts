@@ -392,6 +392,13 @@ export function installDefaultStubs(mocks: ScenarioMocks): void {
 	mocks
 		.stub("summarizeLargeToolResult")
 		.mockResolvedValue("Condensed summary of the tool output.");
+	// A reply with no tool call behind it is checked for a completion claim;
+	// by default it makes none.
+	mocks.stub("checkCompletionClaimActivity").mockResolvedValue({
+		unbackedClaim: false,
+		judgedBy: "decision",
+		usage: { inputTokens: 0, outputTokens: 0 },
+	});
 	// `ExecuteSkillToolOutput` for load_skill: a `SkillBundle`.
 	mocks.stub("executeSkillToolActivity").mockResolvedValue({
 		kind: "bundle",

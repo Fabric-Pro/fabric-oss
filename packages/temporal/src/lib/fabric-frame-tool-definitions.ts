@@ -41,7 +41,7 @@ const RUNTIME_TOOLS_SCHEMA = {
 	type: "array",
 	items: { type: "string" },
 	description:
-		"Tools the page script calls via fabric.call; max 50. Reads run at once, writes ask the viewer first.",
+		"Declared fabric.call tools, max 50. Discover schemas with fabric_list_page_tools; use fabric_list_features(projectId), never fabric_list_project_features. Writes ask the viewer.",
 } as const;
 
 const READ = { readOnlyHint: true } as const;
@@ -74,12 +74,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_create_frame",
 		description:
-			"Creates a Frame: a page of html, mermaid, markdown or json blocks. Pass the whole page in blocks. " +
-			'surface "artifact" puts it on a project\'s Artifacts tab (projectId defaults to the project the user is in); "workspace" makes an organization Workspace. ' +
-			"Such pages run in a sandbox with no network; their script reaches Fabric as the viewer through fabric.call(tool, args) -> Promise, fabric.openAgent(prompt) and fabric.navigate('/app/...'). " +
-			"List every tool the script calls in runtimeTools. Example: " +
-			"<button onclick=\"fabric.call('fabric_list_workflows',{}).then(r=>out.textContent=JSON.stringify(r))\">Refresh</button><pre id=out></pre>. " +
-			"Create one only when the user asks for a page or something shareable; a chat that renders Markdown can show a ```mermaid block instead.",
+			"Creates html/json/mermaid/markdown blocks. surface=artifact uses projectId (defaults to current project); workspace creates an organization Workspace. No network; scripts act as viewer via window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'). Discover schemas via fabric_list_page_tools; declare calls in runtimeTools. PRIVATE is owner-only outside projects, retaining linked project members. Artifact/Workspace defaults grant project/organization access; shareOnCreate adds an allowed public link. Create only when requested; chat renders ```mermaid directly.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -109,8 +104,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_update_frame",
 		description:
-			"Updates a Frame's title, description, blocks or runtimeTools; omitted fields are unchanged. " +
-			"frameId defaults to the open Workspace. Pages use window.fabric as fabric_create_frame describes.",
+			"Updates title, description, blocks or runtimeTools; omitted fields stay. frameId defaults to open Workspace. Runtime: see fabric_create_frame.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -129,11 +123,14 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_get_frame",
 		description:
-			"Gets a Frame's blocks, surface, runtimeTools and share URL if published. frameId defaults to the open Workspace.",
+			"Reads blocks/surface/tools and published share URL. frameId defaults to open Workspace. For edits read offset:0,limit:6000; blockId defaults to first. Follow nextOffset; join only matching updatedAt chunks, restarting on change. Never edit summaries.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: { type: "string" },
+				blockId: { type: "string", minLength: 1 },
+				offset: { type: "integer", minimum: 0 },
+				limit: { type: "integer", minimum: 1, maximum: 6_000 },
 			},
 		},
 		annotations: READ,
@@ -142,7 +139,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_list_frames",
 		description:
-			"Lists Frames: yours by default; surface workspace lists the organization's Workspaces you can open; surface artifact with projectId lists a project's artifacts.",
+			"Lists yours; surface=workspace lists accessible organization Workspaces; artifact+projectId lists project artifacts.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -156,7 +153,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_share_frame",
 		description:
-			"Changes who can open a Frame you own. scope PUBLIC (default) returns a link anyone can view; PRIVATE stops sharing; EMAILS_ONLY or WORKSPACE_AND_EMAILS (plus the organization) can invite emails.",
+			"Changes your Frame's sharing: PUBLIC if the organization allows it, PRIVATE, EMAILS_ONLY or WORKSPACE_AND_EMAILS (last two invite emails).",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -164,7 +161,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 				scope: { type: "string", enum: [...FRAME_SHARE_SCOPES] },
 				emails: { type: "array", items: { type: "string" } },
 			},
-			required: ["frameId"],
+			required: ["frameId", "scope"],
 		},
 		annotations: WRITE,
 		scope: "frames:write",
@@ -173,7 +170,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_create_slideshow",
 		description:
-			"Creates a Slideshow: each component becomes one slide. shareOnCreate=true returns a public share URL.",
+			"Creates a Slideshow: one slide per component. Private; shareOnCreate=true adds a public link if allowed.",
 		inputSchema: {
 			type: "object",
 			properties: {

@@ -336,3 +336,84 @@ describe("who sends the Advisor origin", () => {
 		}
 	});
 });
+
+describe("Advisor document retrieval attribution", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.stubEnv("CACHE_HOST", "");
+		vi.stubEnv("REDIS_URL", "");
+		getSessionMock.mockResolvedValue({
+			user: { id: SESSION_USER_ID },
+			session: {},
+		});
+		memberFindFirstMock.mockResolvedValue({ id: "member-example" });
+		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
+		startWorkflowMock.mockResolvedValue({
+			workflowId: "run-example",
+			result: async () => ({
+				success: true,
+				context: "",
+				status: "completed",
+				response: "done",
+			}),
+			query: async () => {
+				throw new Error("closed");
+			},
+			describe: async () => ({
+				status: { name: "COMPLETED" },
+				memo: { userId: SESSION_USER_ID },
+			}),
+		});
+		getTemporalClientMock.mockResolvedValue({
+			workflow: { start: startWorkflowMock },
+		});
+	});
+	afterEach(() => vi.unstubAllEnvs());
+	it.each(["conversation-example", undefined])(
+		"uses the verified Advisor conversation, not the holder chat (%s)",
+		async (conversationId) => {
+			const { db } = await import("@repo/database");
+			vi.mocked(db.agentConversation.findFirst).mockResolvedValue({
+				id: conversationId,
+			} as never);
+			vi.mocked(db.aiChat.findFirst).mockResolvedValue({
+				id: "holder-example",
+				organizationId: ORGANIZATION_ID,
+			} as never);
+			const response = await post({
+				...CHAT_BODY,
+				conversationId,
+				chatId: "holder-example",
+				attachedDocumentIds: ["doc-example"],
+			});
+			expect(response.status).toBe(200);
+			const rag = startWorkflowMock.mock.calls.find(
+				(call) => call[0] === "ragContextRetrievalWorkflow",
+			);
+			expect(rag).toBeDefined();
+			expect(rag?.[1].args[0].usageConversationId).toBe(conversationId);
+			if (conversationId) {
+				expect(db.agentConversation.findFirst).toHaveBeenCalledWith({
+					where: {
+						id: conversationId,
+						userId: SESSION_USER_ID,
+						organizationId: ORGANIZATION_ID,
+					},
+					select: { id: true },
+				});
+			}
+		},
+	);
+	it("refuses an unowned conversation before starting RAG", async () => {
+		const { db } = await import("@repo/database");
+		vi.mocked(db.agentConversation.findFirst).mockResolvedValue(null);
+		const response = await post({
+			...CHAT_BODY,
+			conversationId: "unowned-example",
+			chatId: "holder-example",
+			attachedDocumentIds: ["doc-example"],
+		});
+		expect(response.status).toBe(403);
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+});

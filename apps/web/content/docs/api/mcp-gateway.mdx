@@ -40,6 +40,8 @@ API keys and browser sessions are accepted at a project's URL after a live
 check that the key's owner can read the project, and the session is then bound
 to the project: an organization key must belong to the organization hosting it.
 
+A new organization API key starts with `mcp:read` only. `mcp:write` satisfies every write tool, so a key that holds it can change workflows, pages and features; for an agent that should do one thing, give the key the narrow scope instead (`workflows:write`, `frames:write`, `features:write`, and so on). Keys created earlier keep the scopes they were given.
+
 Without valid credentials the gateway answers `401` with
 `WWW-Authenticate: Bearer resource_metadata="https://your-fabric.com/.well-known/oauth-protected-resource/api/mcp-gateway/projects/<project-id>", scope="mcp:read instructions:read instructions:write offline_access"`
 (the organization-wide URL names `.../oauth-protected-resource/api/mcp-gateway`),
@@ -104,9 +106,9 @@ and `call_tool`, which find, describe and run the same tools; see
 
 **Response includes:**
 
-- **Platform tools** (`fabric_*`) — always present, including the six coding-instruction
+- **Platform tools** (`fabric_*`): always present, including the six coding-instruction
   tools below
-- **Connected server tools** (`{prefix}__{tool}`) — from your MCP server connections
+- **Connected server tools** (`{prefix}__{tool}`): from your MCP server connections
 
 Connected tools include `_meta` saying whether a call needs runtime authority:
 
@@ -178,8 +180,8 @@ If not authorized, returns:
 
 ## Coding Instruction Tools
 
-A project's published coding instructions are served through six platform tools. Each is
-gated by the credential's scope: a call from a key or sign-in without it is refused with an
+A project's published coding instructions are served through six platform tools. Each
+requires a scope on the credential: a call from a key or sign-in without it is refused with an
 error naming the scope, and the `codingInstructions` field on `fabric_list_projects` and
 `fabric_get_project` is omitted for a credential that cannot read the instructions.
 
@@ -204,22 +206,30 @@ API key created for it carries, and it is not reachable from the gateway.
 
 ### Living Memory writes
 
-Three tools put plain files into the Living Memory folders a project administrator named,
+Four tools read and put plain files in the Living Memory folders a project administrator named,
 without a local clone. Files never reach the repository from the agent: Fabric commits them
 with the repository integration's own credential.
 
 | Tool | Scope | Kind | Purpose |
 |---|---|---|---|
-| `fabric_memory_targets` | `memory:write` | read | List the write folders, their mode, the branch and repository, and the commit the last sync applied |
+| `fabric_memory_targets` | `memory:write` | read | List the write folders, their mode and `indexMode` (`INDEXED`, or `STORE_ONLY` for files that stay readable but are left out of AI search, keyword search and summaries), the branch and repository, and the commit the last sync applied |
+| `fabric_memory_read` | `memory:write` | read | List the files under a write folder (`prefix`, paged by `after` and `limit`), or read one file's text (`path`, paged by `offset` and `maxBytes`, default 12,000 and at most 50,000, with `nextOffset`). Files of a Store only folder are listed and read like any other |
 | `fabric_memory_write` | `memory:write` | write | Write or delete files in one folder as a single commit; a file without `ifMatchOid` is create-only |
 | `fabric_memory_write_status` | `memory:write` | read | Read a write's receipt: committed, pull request opened, conflict, refused or failed |
 
 `memory:write` is the one scope that can land a commit without review: on a folder set to
 direct push the files are committed to the synced branch, and elsewhere a pull request is
-opened and the files are not in Living Memory until a person merges it. It is never part of
-a default sign-in; the agent asks for it by name and the person approves it. Coding
-instructions can never be written this way. Every call re-checks that the person can add
-project context.
+opened and the files are not in Living Memory until a person merges it. A direct push that
+loses a race with another write that reached the branch first is retried on the new branch
+tip; only a branch that refuses the push (branch protection, a server hook, or missing write
+permission) turns the write into a pull request with reason `protected`. `memory:write` is never part of
+a default sign-in, so a coding tool signed in to the gateway cannot write. The Fabric CLI
+asks for it by name when it signs in, the person approves it, and the CLI's session hooks
+deliver the files. The three reads also accept `mcp:read`, since they show only what the
+Context tab shows a reader (a coding tool's default sign-in can list and read memory
+files but not write them). Coding instructions can never be written this way. Every call
+re-checks the person's permission on the project: adding context to write, reading it to
+read.
 
 ## CLI Discovery
 

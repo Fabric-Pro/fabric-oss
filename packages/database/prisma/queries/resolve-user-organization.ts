@@ -97,11 +97,19 @@ export async function resolveUserOrganization(
 	// One read, not two. The memberships and the last-active pointer that is
 	// validated against them come from the same row, so the pointer can never
 	// be checked against a membership list fetched at a different instant.
+	//
+	// A soft-deleted organization keeps its member rows until the retention
+	// purge, but nobody can act in it: the tenant middleware refuses it with
+	// ORGANIZATION_DELETED. Counting it would seed a sign-in session — or
+	// resolve an API key — straight into that refusal, so only live
+	// organizations are memberships here, and a last-active pointer to a
+	// deleted one is stale like any other.
 	const user = await db.user.findUnique({
 		where: { id: userId },
 		select: {
 			lastActiveOrganizationId: true,
 			members: {
+				where: { organization: { deletedAt: null } },
 				select: { organizationId: true },
 				orderBy: { organizationId: "asc" },
 			},

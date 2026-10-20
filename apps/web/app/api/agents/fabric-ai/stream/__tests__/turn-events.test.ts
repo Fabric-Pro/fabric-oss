@@ -226,7 +226,11 @@ describe("stream route wiring", () => {
 
 	it("cancels the workflow when it runs out of poll budget", () => {
 		const timeout = source.slice(source.indexOf("Out of poll budget"));
-		expect(timeout).toMatch(/handle\.cancel\(\)/);
+		// Through the route's one bounded cancel, which calls handle.cancel().
+		expect(timeout).toMatch(/await cancelWorkflow\("poll time limit"\)/);
+		expect(source).toMatch(
+			/async function cancelWorkflowBounded[\s\S]*?handle\.cancel\(\)/,
+		);
 		expect(timeout).toMatch(/message: ROUTE_TIMEOUT_MESSAGE/);
 		expect(ROUTE_TIMEOUT_MESSAGE).toMatch(/stopped/);
 	});

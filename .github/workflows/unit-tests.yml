@@ -104,26 +104,33 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/private-promotion-policy.yml
 
-  changes:
+  plan:
     needs: [promotion_policy]
-    name: Detect changed paths
-    # Not needed for the cache-warming run on master (see header), and not
-    # relevant for PRs and explicit full validation runs.
+    name: Detect changes and plan shards
+    # Pushes only warm caches; reduced promotion runs reuse prior validation.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (github.event_name != 'push')
-    runs-on: ubuntu-latest
+    # arm64: architecture-neutral (JS actions, paths-filter, pnpm/node; turbo
+    # ships @turbo/linux-arm64). The plan matrix is package names only.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     outputs:
       code: ${{ steps.filter.outputs.code }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      # Keep detection independent of planning failures for the sibling checks.
+      filter_result: ${{ steps.filter.outcome }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_shards: ${{ steps.plan.outputs.has_shards }}
     steps:
       # On pull_request events dorny/paths-filter detects changed files via
       # the Pulls API (the `pull-requests: read` permission above) and does
       # not need the repo on disk. Checkout is only required for the
-      # git-based detection used on workflow_dispatch runs.
+      # git-based detection used on workflow_dispatch runs. Fetch full history
+      # here so dispatch planning can reuse this checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: github.event_name != 'pull_request'
         with:
-          fetch-depth: 1
+          fetch-depth: 0
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
@@ -163,27 +170,13 @@ jobs:
               - 'packages/database/package.json'
               - '.github/workflows/unit-tests.yml'
 
-  # Resolves the set of packages whose `test` task Turbo would actually run,
-  # and buckets it into shards (see SHARDING in the header).
-  #
-  # This job installs nothing: `pnpm dlx turbo@<pinned>` fetches the CLI into
-  # the pnpm store and Turbo reads the workspace graph straight from the
-  # package.json files on disk, so the plan is ready in well under a minute
-  # instead of behind a full `pnpm install`. `--dry-run=json` lists every task
-  # in scope including the ones with no script, which surface as the literal
-  # command `<NONEXISTENT>` and are dropped below.
-  plan:
-    name: Plan shards
-    needs: [changes, promotion_policy]
-    if: >-
-      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && ((github.event_name == 'workflow_dispatch' || needs.changes.outputs.code == 'true'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      has_shards: ${{ steps.plan.outputs.has_shards }}
-    steps:
+      # Resolve affected test packages and bucket them into shards (see header).
+      # pnpm dlx fetches the pinned Turbo CLI without a workspace install.
+      # PRs with no code changes leave matrix/has_shards empty, like the old
+      # skipped planning job. Dispatch already checked out above; each event
+      # executes at most one checkout.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'pull_request' && steps.filter.outputs.code == 'true'
         with:
           # Full history so Turbo's `[origin/<base>]` filter can resolve the
           # merge base and compute affected packages. With a shallow checkout
@@ -191,6 +184,7 @@ jobs:
           fetch-depth: 0
 
       - name: Setup pnpm
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true'
         # Version is read from root package.json's `packageManager` field.
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         env:
@@ -200,6 +194,7 @@ jobs:
           npm_config_audit: "false"
 
       - name: Setup Node.js
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
@@ -208,6 +203,7 @@ jobs:
 
       # BASE_REF is the PR target branch; non-PR events use the full plan.
       - name: Compute shard matrix
+        if: github.event_name == 'workflow_dispatch' || steps.filter.outputs.code == 'true'
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -334,9 +330,8 @@ jobs:
   vitest:
     name: Vitest (${{ matrix.name }})
     needs: [plan, promotion_policy]
-    # No `always()`/`!cancelled()`: the implicit success() on `needs` is what
-    # keeps the shards from starting when the plan failed, and the plan is
-    # itself skipped on push and on PRs with no code changes.
+    # Require successful planning and a nonempty shard set. On PRs with no
+    # code changes, planning steps are skipped and has_shards is empty.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.result == 'success' && (needs.plan.outputs.has_shards == 'true')
     strategy:
@@ -606,9 +601,9 @@ jobs:
   # @repo/utils/url-security, and a one-file run is cheap.
   browser-security:
     name: Browser relay security (real Chromium)
-    needs: [changes, promotion_policy]
+    needs: [plan, promotion_policy]
     if: >-
-      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'))
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.outputs.filter_result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.plan.outputs.code == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -675,9 +670,9 @@ jobs:
   # Runs only when a path in the `migrations` filter changed.
   migration-drift:
     name: Migration drift
-    needs: [changes, promotion_policy]
+    needs: [plan, promotion_policy]
     if: >-
-      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.changes.result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.migrations == 'true'))
+      always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.outputs.filter_result == 'success' && (github.event_name != 'push' && (github.event_name != 'pull_request' || needs.plan.outputs.migrations == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -822,34 +817,35 @@ jobs:
   # touched, and which are conditionally skipped altogether.
   unit-tests:
     name: unit-tests
-    needs: [changes, plan, vitest, browser-security, migration-drift, promotion_policy]
+    needs: [plan, vitest, browser-security, migration-drift, promotion_policy]
     # Not on push: the master run warms caches and runs no tests, so it has
-    # no verdict to report (and `changes` is skipped there, which the
-    # fail-closed check below would otherwise flag). Skipped entirely in the
-    # private staging and promotion PRs use the same fail-closed aggregate.
+    # no verdict to report. Reduced promotion runs reuse prior validation;
+    # other PRs use the fail-closed aggregate below.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
-    runs-on: ubuntu-latest
+    # arm64: this aggregate only runs bash and `gh api` — no checkout, no
+    # compiled binaries.
+    runs-on: ubuntu-24.04-arm
     env:
       EVENT_NAME: ${{ github.event_name }}
-      CHANGES_RESULT: ${{ needs.changes.result }}
-      CODE_CHANGED: ${{ needs.changes.outputs.code }}
+      CHANGES_RESULT: ${{ needs.plan.outputs.filter_result }}
+      CODE_CHANGED: ${{ needs.plan.outputs.code }}
       PLAN_RESULT: ${{ needs.plan.result }}
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}
       VITEST_RESULT: ${{ needs.vitest.result }}
       BROWSER_SECURITY_RESULT: ${{ needs.browser-security.result }}
-      MIGRATIONS_CHANGED: ${{ needs.changes.outputs.migrations }}
+      MIGRATIONS_CHANGED: ${{ needs.plan.outputs.migrations }}
       MIGRATION_DRIFT_RESULT: ${{ needs.migration-drift.result }}
     steps:
       - name: Aggregate
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # The path-filter job is a prerequisite. If it failed (or was
+          # The path-filter step is a prerequisite. If it failed (or was
           # cancelled), CODE_CHANGED is empty and we can't trust a "no
           # changes" answer — fail closed so PRs don't bypass the gate.
           if [[ "$CHANGES_RESULT" != "success" ]]; then
-            echo "::error::Path-filter job did not succeed (result: $CHANGES_RESULT). Cannot determine whether unit tests are required."
+            echo "::error::Path-filter step did not succeed (result: $CHANGES_RESULT). Cannot determine whether unit tests are required."
             exit 1
           fi
 

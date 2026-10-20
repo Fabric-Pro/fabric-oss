@@ -39,6 +39,14 @@ type BudgetLog = {
 	droppedSections: string[];
 	truncatedSections: string[];
 	requestedContextTokens: number;
+	fixedTokens: number;
+	availableForContext: number;
+	backlogBlock: {
+		requestedTokens: number;
+		grantedTokens: number;
+		omittedBacklogLines: number;
+		omittedPMLines: number;
+	};
 	sections: Array<{
 		key: string;
 		requestedTokens: number;
@@ -64,6 +72,72 @@ beforeEach(() => {
 });
 
 describe("applyTokenBudget — budget outcome logging", () => {
+	it("allocates decisions before security and pins the full order without meetings", () => {
+		const out = applyTokenBudget({
+			architectureDecisions: "decisions",
+			securityFindings: "findings",
+			applicationLogs: "logs",
+			teamsMessages: "teams",
+			slackMessages: "slack",
+			notionContent: "notion",
+			ragContext: huge,
+			backlog: small,
+			systemPrompt: small,
+			userPrompt: small,
+		});
+
+		const order = [
+			"architectureDecisions",
+			"securityFindings",
+			"applicationLogs",
+			"teamsMessages",
+			"slackMessages",
+			"notionContent",
+			"ragContext",
+		];
+		expect(
+			Object.keys(out).filter(
+				(key) =>
+					![
+						"backlog",
+						"pmWorkItems",
+						"meetingTranscriptBudget",
+					].includes(key),
+			),
+		).toEqual(order);
+		expect(budgetLog().sections.map((section) => section.key)).toEqual(
+			order,
+		);
+		expect(budgetLog().truncatedSections).toEqual(["ragContext"]);
+	});
+
+	it("logs the meeting as kept while background findings are truncated and logs dropped", () => {
+		const transcript = "Meeting: improve the export flow. ".repeat(2_000);
+		const out = applyTokenBudget({
+			meetingTranscripts: transcript,
+			securityFindings: huge,
+			applicationLogs: small,
+			backlog: small,
+			systemPrompt: small,
+			userPrompt: small,
+		});
+
+		expect(out.meetingTranscripts).toBe(transcript);
+		const log = budgetLog();
+		expect(log.underPressure).toBe(true);
+		expect(log.sections.map((section) => section.key)).toEqual([
+			"meetingTranscripts",
+			"securityFindings",
+			"applicationLogs",
+		]);
+		expect(log.sections[0]).toMatchObject({
+			outcome: "kept",
+			grantedTokens: log.sections[0]?.requestedTokens,
+		});
+		expect(log.truncatedSections).toEqual(["securityFindings"]);
+		expect(log.droppedSections).toEqual(["applicationLogs"]);
+	});
+
 	it("logs on the happy path too, so the pressure rate has a denominator", () => {
 		applyTokenBudget({
 			meetingTranscripts: "meetings",
@@ -117,7 +191,14 @@ describe("applyTokenBudget — budget outcome logging", () => {
 
 		const log = budgetLog();
 		expect(log.underPressure).toBe(true);
-		expect(log.sections).toEqual([]);
+		expect(log.sections).toEqual([
+			{
+				key: "meetingTranscripts",
+				requestedTokens: 2,
+				grantedTokens: 0,
+				outcome: "dropped",
+			},
+		]);
 	});
 
 	it("reports what was asked for, not merely what fit", () => {
@@ -132,4 +213,31 @@ describe("applyTokenBudget — budget outcome logging", () => {
 		// ~400k chars / 4 = ~100k tokens requested against an 80k ceiling.
 		expect(log.requestedContextTokens).toBeGreaterThan(80_000);
 	});
+});
+
+it("records requested and granted work-item tokens and omitted line counts", () => {
+	applyTokenBudget({
+		systemPrompt: small,
+		userPrompt: small,
+		backlog: Array.from(
+			{ length: 1_000 },
+			(_, i) => `- [id:${i}] ${"x".repeat(390)}`,
+		).join("\n"),
+		pmWorkItems: "- [101] External work",
+		meetingTranscripts: "meeting evidence",
+	});
+	expect(budgetLog()).toMatchObject({
+		fixedTokens: 500,
+		availableForContext: 79_500,
+		backlogBlock: {
+			requestedTokens: expect.any(Number),
+			grantedTokens: expect.any(Number),
+			omittedBacklogLines: expect.any(Number),
+			omittedPMLines: 1,
+		},
+	});
+	const block = budgetLog().backlogBlock;
+	expect(block.requestedTokens).toBeGreaterThan(80_000);
+	expect(block.grantedTokens).toBeLessThan(79_500);
+	expect(block.omittedBacklogLines).toBeGreaterThan(0);
 });

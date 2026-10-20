@@ -182,12 +182,25 @@ Das bedeutet, der Agent versteht Ihren Projektkontext und kann:
 
 ### Bibliothek verwalten
 
-- **Dateien hinzufügen** — Neue Dokumente jederzeit hochladen
-- **Dateien entfernen** — Veraltete Dokumente löschen
-- **Duplikate entfernen** — Ein Element mit demselben Inhalt wie ein anderes ist als *Duplikat von …* markiert; **Duplikate entfernen** löscht die zusätzlichen Kopien und behält das Original
-- **Living Memory** — Dateien, die ein verbundener Agent aus einem Arbeitsverzeichnis überträgt, erscheinen unter *Living Memory*, nach Ordner gruppiert und mit dem vollständigen Pfad unter dem Dateinamen
-- **Organisieren** — Ordner zur Organisation erstellen
-- **Suchen** — Bestimmte Dokumente schnell finden
+- **Dateien hinzufügen**: Neue Dokumente jederzeit hochladen
+- **Dateien entfernen**: Veraltete Dokumente löschen
+- **Duplikate entfernen**: Ein Element mit demselben Inhalt wie ein anderes ist als *Duplikat von …* markiert; **Duplikate entfernen** löscht die zusätzlichen Kopien und behält das Original
+- **Living Memory**: Dateien, die ein verbundener Agent aus einem Arbeitsverzeichnis überträgt, erscheinen unter *Living Memory*, nach Ordner gruppiert und mit dem vollständigen Pfad unter dem Dateinamen
+- **Organisieren**: Ordner zur Organisation erstellen
+- **Suchen**: Bestimmte Dokumente schnell finden
+
+### Schreibordner
+
+Wenn Living Memory eines Projekts aus einem Repository synchronisiert wird, können Sie **Schreibordner** festlegen: Ordner in diesem Repository, in denen über das Fabric-Plugin verbundene Agenten ihre Dateien ablegen, etwa Spezifikationen und Aufgabennotizen. Fabric committet die Dateien, die ein Agent dort schreibt, in das Repository, und die nächste Synchronisierung liest sie zurück in Living Memory, wo der nächste Agent sie sieht.
+
+Zum Verwalten öffnen Sie im Bereich Living Memory das Menü neben *Sync now* und wählen **Write folders**.
+
+- Um einen Ordner hinzuzufügen, wählen Sie ihn im Baum aus, der nur Ordner zeigt, die die Synchronisierung auswählt, oder geben Sie seinen Pfad ein. Ordner, die die Synchronisierung auslässt, versteckte Ordner wie `.github` und der Ordner, aus dem Ihre Coding Instructions gelesen werden, können keine Schreibordner sein. Schreibordner dürfen einander nicht enthalten, und ein Projekt kann bis zu zehn haben.
+- Für jeden Ordner legen Sie fest, wie seine Dateien ankommen. **Pull request** (die Voreinstellung) öffnet einen Pull Request gegen den synchronisierten Branch, sodass jemand die Dateien prüft, bevor sie in den Branch gelangen. **Push directly** committet ohne Prüfung direkt in den Branch, und der nächste Agent liest diese Dateien so, wie sie sind. Landet zuerst ein anderer Schreibvorgang auf dem Branch, wiederholt Fabric den Commit auf der neuen Branch-Spitze; ein Pull Request entsteht nur, wenn der Branch den Push ablehnt (Branch-Schutz, ein Server-Hook oder fehlende Schreibberechtigung). Nur Projekt-Admins und -Eigentümer können **Push directly** einschalten, Fabric bittet um Bestätigung, und die Liste zeigt, wer es wann eingeschaltet hat.
+- Für jeden Ordner legen Sie außerdem fest, ob die KI-Suche seine Dateien nutzt. **Index for AI search** (die Voreinstellung) erstellt Embeddings der Dateien, sodass Projektsuche und Kontextzusammenfassungen sie nutzen können. **Store only** behält die Dateien in Living Memory, lesbar im Kontext-Tab, über die Kontext-Tools und im CLI-Spiegel, erstellt aber nie Embeddings, sodass KI-Suche, Stichwortsuche und Kontextzusammenfassungen sie auslassen. Im Kontext-Tab erscheint jede solche Datei als Ready mit dem Label **Store only**, und Context Readiness zählt sie als Ready, nicht als Quelle, die noch verarbeitet wird. Verwenden Sie **Store only** für Ordner, die Tausende Aufgaben- oder Spezifikationsdateien aufnehmen werden und Suche und Zusammenfassungen sonst mit Rauschen füllen würden. Ein **Store only**-Badge kennzeichnet solche Ordner in der Liste. Eine Änderung wirkt ohne neue Synchronisierung: Beim Wechsel zu **Store only** werden die vorhandenen Suchdaten des Ordners entfernt, beim Zurückwechseln werden wieder Embeddings der Dateien erstellt (ein großer Ordner wird bei seiner nächsten Synchronisierung fertig).
+- Sie können Pfad, Modus oder Suchoption eines Ordners ändern oder den Ordner entfernen. Wird ein Ordner entfernt, schreiben Agenten nicht mehr dorthin, und seine Dateien werden wieder indexiert; bereits geschriebene Dateien bleiben im Repository.
+
+Mitglieder, die keinen Kontext hinzufügen dürfen, können die Liste öffnen, aber nicht ändern.
 
 ## Teamzusammenarbeit
 

@@ -24,6 +24,8 @@ import type { DirectChatWorkflowInput } from "../../../types";
 const state = vi.hoisted(() => ({
 	captured: undefined as unknown,
 	builtInTools: {} as Record<string, unknown>,
+	builtInOptions: undefined as unknown,
+	preparedSources: undefined as unknown,
 	fabric: null as null | {
 		tools: Record<string, unknown>;
 		runApproved: ReturnType<typeof import("vitest").vi.fn>;
@@ -101,7 +103,10 @@ vi.mock("../../shared/project-context-block", () => ({
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("../built-in-tools", () => ({
-	createBuiltInTools: async () => ({ ...state.builtInTools }),
+	createBuiltInTools: async (options: unknown) => {
+		state.builtInOptions = options;
+		return { ...state.builtInTools };
+	},
 }));
 vi.mock("../advisor-tools", () => ({
 	createAdvisorTools: () => ({ list_recent_sessions: {} }),
@@ -115,8 +120,10 @@ vi.mock("../../shared/agent-tool-runtime", () => ({
 	agentToolAbortSignal: () => undefined,
 	hasExactAgentToolApproval: vi.fn(),
 	observeAgentText: vi.fn(),
-	prepareAgentTools: async () => undefined,
-	requiredAgentTool: () => undefined,
+	prepareAgentTools: async (_tools: unknown, sources: unknown) => {
+		state.preparedSources = sources;
+		return undefined;
+	},
 }));
 vi.mock("../../shared/confirmed-workflow", () => ({
 	executeApprovedWorkflow: vi.fn(),
@@ -255,6 +262,53 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 		);
 	});
 
+	it("asks for no portal tools on a chat turn, which holds no project grant", async () => {
+		await runTurn({ message: "mark the task done" });
+
+		expect(state.loadFabricPlatformTools).toHaveBeenCalledTimes(1);
+		expect(state.loadFabricPlatformTools.mock.calls[0]).toHaveLength(1);
+	});
+
+	it("does not offer the portal schemas to a meeting turn that only asks a question", async () => {
+		await runTurn({
+			fabricPortalTools: true,
+			message: "what's the status of F-12?",
+		});
+
+		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
+			expect.anything(),
+			{ portal: { offer: false } },
+		);
+	});
+
+	it("offers them, in that same turn, when the request asks for what they do", async () => {
+		await runTurn({
+			fabricPortalTools: true,
+			message: "move F-12 to in review",
+		});
+
+		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
+			expect.anything(),
+			{ portal: { offer: true } },
+		);
+	});
+
+	it("counts the speaker's previous request, so a bare follow-up still gets them", async () => {
+		await runTurn({
+			fabricPortalTools: true,
+			message: "yes, go ahead",
+			history: [
+				{ role: "user", content: "mark the task done" },
+				{ role: "assistant", content: "Which task?" },
+			],
+		});
+
+		expect(state.loadFabricPlatformTools).toHaveBeenCalledWith(
+			expect.anything(),
+			{ portal: { offer: true } },
+		);
+	});
+
 	it("offers the frame tools on every turn: a page that is not an artifact or a Workspace asks for them just the same", async () => {
 		await runTurn({ projectId: undefined, surface: undefined });
 
@@ -291,6 +345,39 @@ describe("when Fabric MCP cannot be loaded", () => {
 		expect((state.captured as Captured).tools?.fabric_create_frame).toBe(
 			IN_PROCESS_FRAME_TOOL,
 		);
+	});
+});
+
+describe("a runtime that gates tools by their source", () => {
+	it("is told Fabric MCP's tools come from the platform source Fabric's own approval is recorded under", async () => {
+		await runTurn();
+
+		expect(state.preparedSources).toMatchObject({
+			fabric_create_workflow: {
+				configId: "fabric-platform",
+				originalName: "fabric_create_workflow",
+			},
+			fabric_list_workflows: {
+				configId: "fabric-platform",
+				originalName: "fabric_list_workflows",
+			},
+		});
+	});
+
+	it("is told nothing about a tool that did not come from Fabric MCP", async () => {
+		await runTurn({ fabricPlatformTools: undefined });
+
+		expect(state.preparedSources).not.toHaveProperty(
+			"fabric_create_workflow",
+		);
+	});
+
+	it("passes the caller's additional Fabric tools to the tool builder", async () => {
+		await runTurn({ additionalFabricToolIds: ["fabric_create_story"] });
+
+		expect(state.builtInOptions).toMatchObject({
+			additionalFabricToolIds: ["fabric_create_story"],
+		});
 	});
 });
 

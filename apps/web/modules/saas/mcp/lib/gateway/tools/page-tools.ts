@@ -28,6 +28,13 @@ import { PAGE_ASK_HANDLERS } from "./page-ask-tool";
 import { PAGE_COMMENT_HANDLERS } from "./page-comment-tools";
 import { PAGE_DATA_HANDLERS } from "./page-data-tools";
 import { PAGE_FILE_HANDLERS } from "./page-file-tools";
+import { handleGetReviewOptions } from "./page-review-options";
+import {
+	handleConfigureStoryReview,
+	handleGetStoryReview,
+	handleListStoryReviewRuns,
+	handleRunStoryReview,
+} from "./page-story-review";
 import { noInput, pageTool, refuse } from "./page-store";
 import {
 	type PlatformToolHandler,
@@ -106,6 +113,11 @@ export function createPageTools(): ToolFamily {
 	return toolFamily(
 		FABRIC_PAGE_TOOL_DEFINITIONS,
 		new Map<string, PlatformToolHandler>([
+			["fabric_page_get_story_review", handleGetStoryReview],
+			["fabric_page_configure_story_review", handleConfigureStoryReview],
+			["fabric_page_run_story_review", handleRunStoryReview],
+			["fabric_page_list_story_review_runs", handleListStoryReviewRuns],
+			["fabric_page_get_review_options", handleGetReviewOptions],
 			["fabric_get_page_viewer", handleGetPageViewer],
 			["fabric_page_read_connected", handleReadConnected],
 			...PAGE_DATA_HANDLERS,

@@ -24,6 +24,10 @@ import {
 	isChatGptPlanSpentCode,
 } from "@saas/shared/lib/ai-error-message";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	type ApprovalSendResult,
+	approvalSendResult,
+} from "../lib/approval-response";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
 import {
 	type ChatTurnTruncation,
@@ -100,6 +104,7 @@ export interface UseOrchestratorStreamOptions {
 	 * reconnect starts nothing.
 	 */
 	launchWorkspaceId?: string | null;
+	launchFrameId?: string | null;
 	launchSurface?: "artifact" | "workspace" | null;
 	/**
 	 * Surface that mounts this hook — used for the
@@ -147,6 +152,12 @@ interface SendMessageOverrides {
 	 * send and the hook's `conversationId` option has not caught up.
 	 */
 	conversationId?: string;
+	/**
+	 * A turn already running (opened after a reload mid-turn): show its
+	 * question and stream it by this id instead of starting a new one. Every
+	 * request is then a reconnect, the first included.
+	 */
+	attachExecutionId?: string;
 }
 
 export interface OrchestratorStreamMessage {
@@ -482,6 +493,33 @@ const REPLAY_HANDSHAKE_EVENT_TYPES = new Set([
 ]);
 
 /**
+ * The stream route writes at least a `: ping` every 15 s while a run is open,
+ * so a window that delivers nothing for three of them is a connection that
+ * died without closing. Without a limit the read waits forever: the turn
+ * hangs, and whatever the run asks next (an approval) never reaches the
+ * person. It is handled as any other mid-stream failure, by reconnecting, and
+ * the new window sends what is pending again.
+ */
+const STREAM_SILENCE_LIMIT_MS = 45_000;
+
+async function readBeforeSilence(
+	reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const silence = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			reader.cancel().catch(() => undefined);
+			reject(new Error("The stream went silent"));
+		}, STREAM_SILENCE_LIMIT_MS);
+	});
+	try {
+		return await Promise.race([reader.read(), silence]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
  * Sleep that gives up as soon as the turn is aborted. Resolves `true` when
  * the wait was cut short by the signal — the caller must not reconnect in
  * that case, because the user pressed Stop during the gap.
@@ -542,6 +580,7 @@ export function useOrchestratorStream(
 		modelOverride,
 		advisorOrigin = false,
 		launchWorkspaceId,
+		launchFrameId,
 		launchSurface,
 		surface = "loom-orchestrator",
 		telemetrySurface,
@@ -608,6 +647,13 @@ export function useOrchestratorStream(
 	// SSE progress events reset the phase back to "awaiting_approval" before the
 	// workflow has processed the approval signal
 	const isTransitioningFromApprovalRef = useRef(false);
+
+	/**
+	 * The approval the server raised last. A run can ask again while the answer
+	 * to its previous request is still on its way back, so an answer clears the
+	 * card only when it is still the one it decided.
+	 */
+	const latestApprovalIdRef = useRef<string | null>(null);
 
 	/**
 	 * Freeze gate — once an assistant message id has been added, all
@@ -799,6 +845,7 @@ export function useOrchestratorStream(
 			// `conversationId` option yet (#2040).
 			const effectiveConversationId =
 				overrides?.conversationId ?? conversationId;
+			const attachExecutionId = overrides?.attachExecutionId ?? null;
 
 			// Cancel any existing request
 			abortControllerRef.current?.abort();
@@ -859,10 +906,14 @@ export function useOrchestratorStream(
 			needsTextSeparatorRef.current = false;
 			// New turn — the previous run's executionId must not be reachable
 			// by this turn's resume loop, and its counted steps start over.
-			executionIdRef.current = null;
+			executionIdRef.current = attachExecutionId;
 			completedStepIdsRef.current = new Set();
-			// One key per user message; retries of this message reuse it.
-			const clientRequestKey = newClientRequestKey();
+			// One key per user message; retries of this message reuse it. An
+			// attached turn's key stayed with the tab that sent it, and its
+			// executionId already identifies it everywhere a key would.
+			const clientRequestKey = attachExecutionId
+				? null
+				: newClientRequestKey();
 			clientRequestKeyRef.current = clientRequestKey;
 			turnConversationIdRef.current = effectiveConversationId ?? null;
 
@@ -873,7 +924,7 @@ export function useOrchestratorStream(
 				// this one: Stop, follow-ups and approvals act on the current
 				// turn only (until `started` delivers its id, Stop uses the
 				// message's key).
-				executionId: null,
+				executionId: attachExecutionId,
 				plan: null,
 				result: null,
 				pendingApproval: null,
@@ -1060,6 +1111,7 @@ export function useOrchestratorStream(
 					// Omitted, not false, outside the Advisor.
 					advisorOrigin: advisorOrigin ? true : undefined,
 					launchWorkspaceId: launchWorkspaceId ?? undefined,
+					launchFrameId: launchFrameId ?? undefined,
 					launchSurface: launchSurface ?? undefined,
 					// The message's idempotency key: a retry of this POST
 					// attaches to the turn it already created.
@@ -1092,7 +1144,7 @@ export function useOrchestratorStream(
 				// Counts reconnects of BOTH kinds and is never reset — see
 				// MAX_TOTAL_RESUMES.
 				let totalResumes = 0;
-				let isResume = false;
+				let isResume = attachExecutionId !== null;
 
 				// One iteration per streaming window — the initial POST, then
 				// one per reconnect. `isLoading` and `state.status` are left
@@ -1304,7 +1356,8 @@ export function useOrchestratorStream(
 						let buffer = "";
 
 						while (true) {
-							const { done, value } = await reader.read();
+							const { done, value } =
+								await readBeforeSilence(reader);
 							if (done) {
 								break;
 							}
@@ -1603,9 +1656,43 @@ export function useOrchestratorStream(
 			modelOverride,
 			advisorOrigin,
 			launchWorkspaceId,
+			launchFrameId,
 			launchSurface,
 			resetPartykit,
 		],
+	);
+
+	/**
+	 * Show a turn that is already running — one the conversation's read says
+	 * is still in progress, after a reload or from another tab — as the live
+	 * turn: its question, then its progress, any pending approval and its
+	 * answer as they stream. Sends nothing new; Stop, approvals and follow-ups
+	 * act on it as on a turn sent here.
+	 */
+	const attach = useCallback(
+		(
+			executionId: string,
+			question: string,
+			attachConversationId?: string,
+		) =>
+			sendMessage(
+				question,
+				[],
+				false,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					attachExecutionId: executionId,
+					conversationId: attachConversationId,
+				},
+			),
+		[sendMessage],
 	);
 
 	/**
@@ -2014,6 +2101,7 @@ export function useOrchestratorStream(
 				case "approval_required":
 					// Reset transition flag - we're waiting for approval again
 					isTransitioningFromApprovalRef.current = false;
+					latestApprovalIdRef.current = data.approvalId;
 					setCurrentPhase("awaiting_approval");
 					setState((prev) => ({
 						...prev,
@@ -2317,13 +2405,18 @@ export function useOrchestratorStream(
 	);
 
 	/**
-	 * Send approval/rejection for a pending step
+	 * Send approval/rejection for a pending step. "stale" means the run no
+	 * longer waits on this approval; its card is cleared like an answered one.
 	 */
 	const sendApproval = useCallback(
-		async (approved: boolean, feedback?: string) => {
+		async (
+			approved: boolean,
+			feedback?: string,
+		): Promise<ApprovalSendResult> => {
 			if (!state.executionId) {
-				return false;
+				return "failed";
 			}
+			const decidedApprovalId = latestApprovalIdRef.current;
 
 			try {
 				const response = await fetch(
@@ -2335,33 +2428,49 @@ export function useOrchestratorStream(
 							executionId: state.executionId,
 							approved,
 							feedback,
+							// The run takes the answer only for this approval.
+							...(decidedApprovalId
+								? { approvalId: decidedApprovalId }
+								: {}),
 						}),
 					},
 				);
 
-				if (!response.ok) {
+				const result = approvalSendResult(response);
+				if (result === "failed") {
 					const error = await response.json();
 					throw new Error(error.error || "Failed to send approval");
 				}
 
+				// The run may already have asked again (the stream delivered
+				// the next request before this answer came back): that card
+				// stays.
+				if (latestApprovalIdRef.current !== decidedApprovalId) {
+					return result;
+				}
+
 				// Set transition flag BEFORE updating state to prevent race condition
 				// where progress events reset us back to awaiting_approval
-				if (approved) {
+				if (approved && result === "sent") {
 					isTransitioningFromApprovalRef.current = true;
 				}
 
-				// Clear pending approval state
+				// Clear pending approval state; a stale card is cleared too,
+				// since the run no longer waits on it.
 				setState((prev) => ({
 					...prev,
 					status: "running",
 					pendingApproval: null,
 				}));
 				setCurrentPhase("executing");
+				// "Approval needed: …" described the card just answered; left
+				// on screen it reads as a request with no card.
+				setProgressMessage("");
 
-				return true;
+				return result;
 			} catch (error) {
 				console.error("[OrchestratorStream] Approval error:", error);
-				return false;
+				return "failed";
 			}
 		},
 		[state.executionId],
@@ -2708,6 +2817,7 @@ export function useOrchestratorStream(
 
 		// Actions
 		sendMessage,
+		attach,
 		sendApproval,
 		sendClarification, // Answer/dismiss a pending up-front clarifying question
 		sendFollowUp, // Send follow-up message for mid-execution modifications

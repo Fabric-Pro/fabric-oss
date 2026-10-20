@@ -80,6 +80,7 @@ export async function formatResponseNode(
 		]);
 
 		await logAgentUsageFromRunnableConfig(config, response, {
+			model,
 			taskType: "COMPLEX",
 			agentId: "api_agent",
 			latencyMs: Date.now() - generationStart,

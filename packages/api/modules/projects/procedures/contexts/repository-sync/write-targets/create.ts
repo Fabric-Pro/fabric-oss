@@ -37,6 +37,7 @@ import {
 } from "../../../../../../orpc/procedures";
 import { resolveContextSyncAccess } from "../access";
 import { MAX_CONTEXT_SYNC_PATH_LENGTH } from "../paths";
+import { settleIndexingChange } from "./indexing-effects";
 import {
 	toWriteTargetView,
 	type WriteTargetRefusal,
@@ -61,6 +62,7 @@ export const createContextWriteTargetProcedure = tenantProtectedProcedure
 			mode: z
 				.enum(["PULL_REQUEST", "DIRECT_PUSH"])
 				.default("PULL_REQUEST"),
+			indexMode: z.enum(["INDEXED", "STORE_ONLY"]).default("INDEXED"),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -94,7 +96,12 @@ export const createContextWriteTargetProcedure = tenantProtectedProcedure
 				});
 				return problem
 					? { accept: false, refusal: { kind: "invalid", problem } }
-					: { accept: true, folder: input.folder, mode: input.mode };
+					: {
+							accept: true,
+							folder: input.folder,
+							mode: input.mode,
+							indexMode: input.indexMode,
+						};
 			},
 		);
 		if (result.status === "not-configured") {
@@ -104,7 +111,7 @@ export const createContextWriteTargetProcedure = tenantProtectedProcedure
 			throw writeTargetRefusalError(result.refusal);
 		}
 
-		const { target } = result;
+		const { target, reindex } = result;
 		recordAuditFromRequest(context, {
 			action: "project.context.write_target_created",
 			category: "project",
@@ -115,7 +122,18 @@ export const createContextWriteTargetProcedure = tenantProtectedProcedure
 				id: target.id,
 				name: target.folder,
 			},
-			metadata: { folder: target.folder, mode: target.mode },
+			metadata: {
+				folder: target.folder,
+				mode: target.mode,
+				indexMode: target.indexMode,
+			},
+		});
+		await settleIndexingChange({
+			reindex,
+			projectId: input.projectId,
+			organizationId,
+			syncId: target.syncId,
+			userId: context.user.id,
 		});
 		return toWriteTargetView(target);
 	});

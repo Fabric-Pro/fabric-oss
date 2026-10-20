@@ -65,6 +65,7 @@ vi.mock("@temporalio/workflow", () => ({
 
 import type { IterativeTurnOptions } from "../../turn-contract";
 import { createInitialState, type IterativeMessage } from "../../types";
+import { USAGE_ORIGIN_PATCH } from "../../workflow-usage-attribution";
 import { maybeCompactConversationHistory } from "../iterative-execution";
 import {
 	finalResponse,
@@ -137,7 +138,8 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 		).toMatchObject({ turnScope: TURN.turnScope });
 	});
 
-	it("passes the turn scope to the lookup activities, and nothing new without a turn", async () => {
+	it("passes legacy lookup turn scope with usage origin disabled, and nothing new without a turn", async () => {
+		mocks.off.add(USAGE_ORIGIN_PATCH);
 		const lookups = () => {
 			mocks
 				.stub("retrieveWorkspaceDocumentsActivity")
@@ -234,6 +236,7 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 
 		// A run with no turn schedules them exactly as before.
 		installDefaultStubs(mocks);
+		mocks.off.add(USAGE_ORIGIN_PATCH);
 		lookups();
 		await runTurn(mocks, {
 			message: "What is the launch date?",

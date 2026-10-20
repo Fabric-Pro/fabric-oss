@@ -5,7 +5,8 @@
  * version that is a copy of the archived one. The archived version remains in
  * history; a new ACTIVE version is created.
  *
- * AUTHORIZATION: Tenant-isolated — user must own the instance (XOR pattern)
+ * AUTHORIZATION: requires an organization; any member whose role there holds
+ * AGENT_TEMPLATE_MANAGE can restore an instance of that organization.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -14,15 +15,20 @@ import { z } from "zod";
 import {
 	Permissions,
 	requireInputOrgPermission,
-	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { resolvedOrganizationId } from "./conversations/resolved-organization";
 
 /**
- * AUTHORIZATION: Uses XOR tenant pattern — verifies userId + organizationId ownership
+ * AUTHORIZATION: Refuses a request that resolves no organization and checks
+ * membership and AGENT_TEMPLATE_MANAGE there before the tenant-scoped instance lookup.
  */
 export const restoreInstanceVersionProcedure = tenantProtectedProcedure
-	.use(requireInputOrgPermission(Permissions.AGENT_EXECUTE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/instances/restore",
@@ -47,22 +53,13 @@ export const restoreInstanceVersionProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
+		const organizationId = resolvedOrganizationId(input, context.session);
 
-		// XOR PATTERN: Strict tenant isolation
-		const tenantFilter = organizationId
-			? { organizationId }
-			: { userId: user.id, organizationId: null };
-
-		// Verify the user has access to this specific instance version
+		// Verify the instance belongs to the authorized organization
 		const instance = await db.agentTemplateInstance.findFirst({
 			where: {
 				id: input.instanceId,
-				...tenantFilter,
+				organizationId,
 			},
 			select: { id: true, status: true, sId: true },
 		});

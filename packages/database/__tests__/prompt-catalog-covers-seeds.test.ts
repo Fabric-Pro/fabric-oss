@@ -20,6 +20,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AGENT_TASK_PROMPT_AGENT_KEY } from "@repo/utils/agent-task-prompt";
+import {
+	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+} from "@repo/utils/completion-claim-prompts";
+import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/direct-chat-memory-prompt";
+import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "@repo/utils/page-ask-prompt";
 import {
 	listPromptActions,
@@ -73,6 +79,10 @@ const RETIRED_AGENTS = new Set([
  */
 const KEY_CONSTANTS: Record<string, string> = {
 	AGENT_TASK_PROMPT_AGENT_KEY,
+	ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+	DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
 	PAGE_ASK_PROMPT_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
@@ -399,4 +409,61 @@ describe("the Workflow Agent Task prompt is fully seeded", () => {
 				})),
 		).toEqual([{ documentType: "GENERAL", storyKind: null }]);
 	});
+});
+
+describe("the assistant prompts are fully seeded", () => {
+	// The rules for reading recalled conversations, and the completion-claim
+	// check, live in the database, not in the activities: a catalog target
+	// with no binding or no SYSTEM_PROMPTS row would leave them on the in-code
+	// fallback with nothing to edit in the UI.
+	for (const [key, constantName, body] of [
+		[
+			COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+			"COMPLETION_CLAIM_JUDGE_AGENT_KEY",
+			"COMPLETION_CLAIM_JUDGE_FALLBACK_BODY",
+		],
+		[
+			COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+			"COMPLETION_CLAIM_CORRECTION_AGENT_KEY",
+			"COMPLETION_CLAIM_CORRECTION_FALLBACK_BODY",
+		],
+		[
+			ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+			"ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY",
+			"ORCHESTRATOR_MEMORY_FALLBACK_BODY",
+		],
+		[
+			DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+			"DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY",
+			"DIRECT_CHAT_MEMORY_FALLBACK_BODY",
+		],
+	] as const) {
+		it(`${key} has a binding, a SYSTEM_PROMPTS row and a catalog target`, () => {
+			expect(seededTargetKeys()).toContain(key);
+			expect(seededSystemPromptKeys()).toContain(key);
+			expect(PROMPT_AGENT_TARGETS.map((target) => target.key)).toContain(
+				key,
+			);
+		});
+
+		it(`${key} seeds the shared body as HANDLEBARS`, () => {
+			const row = SEED.slice(
+				SEED.indexOf(`key: ${constantName},\n\t\tname:`),
+			);
+
+			expect(row.slice(0, 1200)).toContain('format: "HANDLEBARS"');
+			expect(row.slice(0, 1200)).toContain(`content: ${body}`);
+		});
+
+		it(`${key} is bound for GENERAL with no story kind`, () => {
+			expect(
+				seededSlots()
+					.filter((slot) => slot.targetKey === key)
+					.map(({ documentType, storyKind }) => ({
+						documentType,
+						storyKind,
+					})),
+			).toEqual([{ documentType: "GENERAL", storyKind: null }]);
+		});
+	}
 });

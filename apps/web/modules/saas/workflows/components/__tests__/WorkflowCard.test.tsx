@@ -76,3 +76,93 @@ describe("WorkflowCard — the Scheduled badge", () => {
 		expect(screen.getByText("Published")).toBeInTheDocument();
 	});
 });
+
+describe("WorkflowCard — the grid header", () => {
+	const LONG_NAME = "Ledger reconciliation weekly feature status page";
+
+	it("gives the title row only the icon, the title and the menu, so a long title keeps the card's width", () => {
+		render(
+			<WorkflowCard
+				workflow={{ ...workflow("SCHEDULE"), name: LONG_NAME }}
+			/>,
+		);
+
+		const header = screen.getByTestId("workflow-card-header");
+		const title = screen.getByRole("heading", { name: LONG_NAME });
+		const menu = screen.getByRole("button", { name: "Workflow actions" });
+
+		expect(header.children).toHaveLength(3);
+		expect(header.children[1]).toContainElement(title);
+		expect(header.children[2]).toContainElement(menu);
+		expect(header).not.toContainElement(screen.getByText("Published"));
+	});
+
+	it("shows the status in the meta row, in the flow rather than floated over the title", () => {
+		const { container } = render(
+			<WorkflowCard
+				workflow={{ ...workflow("SCHEDULE"), name: LONG_NAME }}
+			/>,
+		);
+
+		const status = screen.getByText("Published");
+		expect(screen.getByTestId("workflow-card-meta")).toContainElement(
+			status,
+		);
+		for (
+			let node: HTMLElement | null = status;
+			node && node !== container;
+			node = node.parentElement
+		) {
+			expect(node.className).not.toMatch(/\b(absolute|fixed)\b/);
+		}
+	});
+});
+
+describe("WorkflowCard — accessible controls", () => {
+	it("links a list row's summary to its workflow and keeps its menu outside the link", () => {
+		const { container } = render(
+			<WorkflowCard workflow={workflow("SCHEDULE")} variant="list" />,
+		);
+		const link = screen.getByRole("link", { name: /Weekly work items/ });
+		const menu = screen.getByRole("button", { name: "Workflow actions" });
+
+		expect(link).toHaveAttribute("href", "/app/org-example/workflows/wf-1");
+		expect(link).not.toContainElement(menu);
+		expect(container.querySelector("button button, a button")).toBeNull();
+	});
+
+	it("names the grid icon's navigation action", () => {
+		render(<WorkflowCard workflow={workflow("MANUAL")} />);
+
+		expect(
+			screen.getByRole("button", { name: "Open Weekly work items" }),
+		).toBeInTheDocument();
+	});
+});
+
+describe("WorkflowCard — the footer time", () => {
+	it("reads as the last run once the workflow has run", () => {
+		render(
+			<WorkflowCard
+				workflow={{
+					...workflow("MANUAL"),
+					lastRunAt: new Date("2026-01-15T09:00:00Z"),
+				}}
+			/>,
+		);
+
+		expect(screen.getByText(/^Last run .+ ago$/)).toBeInTheDocument();
+		expect(screen.queryByText(/^Edited /)).not.toBeInTheDocument();
+	});
+
+	it("reads as the last edit for a workflow that has never run", () => {
+		render(
+			<WorkflowCard
+				workflow={{ ...workflow("MANUAL"), lastRunAt: null }}
+			/>,
+		);
+
+		expect(screen.getByText(/^Edited .+ ago$/)).toBeInTheDocument();
+		expect(screen.queryByText(/^Last run /)).not.toBeInTheDocument();
+	});
+});

@@ -3,6 +3,7 @@
 Which secret each service uses, trust boundaries, and rotation expectations.
 
 - **Audience**: DevOps, Backend developers
+- **Owner**: Platform
 - **Last updated**: 2026-03-25
 
 ---
@@ -11,7 +12,7 @@ Which secret each service uses, trust boundaries, and rotation expectations.
 
 | Secret | Key Vault Name | Env Var | Used By | Purpose |
 |--------|---------------|---------|---------|---------|
-| Agent Service Secret | `agent-service-secret` | `AGENT_SERVICE_SECRET` | All 3 weave services, Temporal worker | HMAC signing/verification for inter-service A2A calls |
+| Agent Service Secret | `agent-service-secret` | `AGENT_SERVICE_SECRET` | Temporal worker, Next.js app/API, Fabric-operated agent services (Weave and SYSTEM-scope), PartyKit servers (`party`, `party-cf`) | Inter-service A2A signing and internal service authentication |
 | AI Token Secret | `ai-token-secret` | `AI_TOKEN_SECRET` | All 3 weave services, Temporal worker | Decrypt per-user AI provider API keys from database |
 | Fabric AI API Key | `fabric-ai-api-key` | `FABRIC_AI_API_KEY` / `AI_API_KEY` | All 3 weave services | Authenticate requests to the Fabric AI server |
 | Fabric API URL | `fabric-api-url` | `FABRIC_API_URL` | All 3 weave services, Temporal worker | Base URL for callbacks and token exchange |
@@ -22,6 +23,12 @@ Which secret each service uses, trust boundaries, and rotation expectations.
 ---
 
 ## Trust Boundaries
+
+`SecureA2AClient` sends the service credential and signed tenant headers only
+when the call opts in with `trustedDestination: true`. Reserve that option for
+SYSTEM-scope agents and Fabric-operated Weave URLs from environment
+configuration. User-supplied and user-registered URLs do not receive this
+credential; the agent chat proxy leaves the option unset.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -68,10 +75,9 @@ Which secret each service uses, trust boundaries, and rotation expectations.
 
 | Secret | Shared With | Notes |
 |--------|-------------|-------|
-| `AGENT_SERVICE_SECRET` | Temporal worker, all agent services (weave + non-weave) | Single HMAC key for all inter-service auth. Same value everywhere. |
+| `AGENT_SERVICE_SECRET` | Temporal worker, Next.js app/API, Fabric-operated agent services (Weave and SYSTEM-scope), PartyKit servers (`party`, `party-cf`) | Shared credential for A2A authentication and internal routes, including Shuttle's coding-run bridge. Do not distribute it to user-registered agents. |
 | `AI_TOKEN_SECRET` | Temporal worker, all agent services | Decrypts user API keys from the `EncryptedProviderKey` table. Must match the encryption key used by Better Auth. |
 | `FABRIC_AI_API_KEY` | Temporal worker, all agent services, Fabric AI server | Authenticates client→server requests. Server validates via `FABRIC_SERVER_API_KEY`. These SHOULD be the same value. |
-| `AGENT_SERVICE_SECRET` | All weave services, Temporal worker, Next.js app | Single HMAC key for all inter-service auth including Shuttle's coding-run bridge. |
 | `DATABASE_URL` | weave-planners, Temporal worker, Next.js app | Full PostgreSQL connection string. Pattern needs direct DB access. |
 
 ---
@@ -80,7 +86,7 @@ Which secret each service uses, trust boundaries, and rotation expectations.
 
 | Secret | Rotation Impact | Procedure |
 |--------|----------------|-----------|
-| `AGENT_SERVICE_SECRET` | **Service disruption** — all inter-service calls fail until all services restart with new value. | 1. Update Key Vault. 2. Restart all container apps simultaneously. |
+| `AGENT_SERVICE_SECRET` | **Service disruption** — consumers with mismatched values reject authenticated calls. | 1. Update Key Vault. 2. Coordinate rollout of the value to the Temporal worker, Next.js app/API, Fabric-operated agent services (Weave and SYSTEM-scope), and both PartyKit servers (`party`, `party-cf`). |
 | `AI_TOKEN_SECRET` | **Breaks AI calls** — existing encrypted keys can't be decrypted. | Must be rotated together with re-encryption of all stored provider keys. Avoid rotating unless compromised. |
 | `FABRIC_AI_API_KEY` | **Moderate** — AI server rejects requests until both sides updated. | Update `fabric-ai-api-key` and `fabric-server-api-key` in Key Vault simultaneously, restart AI server + agents. |
 

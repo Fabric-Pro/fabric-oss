@@ -1526,6 +1526,58 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 	});
 });
 
+describe("useOrchestratorStream — frame origin", () => {
+	const originalFetch = global.fetch;
+	afterEach(() => {
+		global.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	it.each(["artifact", "workspace"] as const)(
+		"sends the %s frame independently of retrieval and placement",
+		async (launchSurface) => {
+			const { windows, streamBodies } = mockStreamWindows(1);
+			const { result } = renderHook(() =>
+				useOrchestratorStream({
+					launchFrameId: "frame-example",
+					launchSurface,
+					launchWorkspaceId:
+						launchSurface === "workspace"
+							? "frame-example"
+							: undefined,
+					workspaceIds: ["retrieval-workspace"],
+				}),
+			);
+			let sendPromise: Promise<string | null | undefined> | undefined;
+			act(() => {
+				sendPromise = result.current.sendMessage("summarize this page");
+			});
+			await waitFor(() => expect(streamBodies).toHaveLength(1));
+			const body = JSON.parse(streamBodies[0] ?? "");
+			expect(body).toMatchObject({
+				launchFrameId: "frame-example",
+				launchSurface,
+				workspaceIds: ["retrieval-workspace"],
+			});
+			if (launchSurface === "artifact") {
+				expect(body).not.toHaveProperty("launchWorkspaceId");
+			} else {
+				expect(body.launchWorkspaceId).toBe("frame-example");
+			}
+			await act(async () => {
+				windows[0].enqueueLine(
+					'data: {"type":"started","executionId":"orch-example"}',
+				);
+				windows[0].enqueueLine(
+					'data: {"type":"completed","response":"done","status":"completed"}',
+				);
+				windows[0].enqueueDone();
+				await sendPromise;
+			});
+		},
+	);
+});
+
 /**
  * The Orchestrator's model picker (#2040).
  *

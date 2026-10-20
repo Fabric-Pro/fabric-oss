@@ -1,10 +1,9 @@
 /**
- * What Temporal's answer about a Glossy build run means (Fizzy #2589, KTD4).
- *
- * Only `gone` lets `get` read a stuck holder as failed and lets `build` take
- * its claim over, so every doubtful answer must come out `unknown`, never
- * `gone`: a paused run, a state this code does not name, an error, and a
- * question Temporal does not answer in time.
+ * How a Glossy build asks whether its stuck holder's run is gone (Fizzy
+ * #2589). The answer itself — every status, error and the time bound — is
+ * the shared probe's, pinned in `workflow-run-liveness.test.ts`; what is the
+ * build's own is that it asks through the shared Temporal client, inside the
+ * probe's bound, and asks nothing about a holder without a workflow id.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,8 +25,9 @@ vi.mock("../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: <T>(options: T) => options,
 }));
 
-const { GLOSSY_LIVENESS_TIMEOUT_MS, glossyRunLiveness } = await import(
-	"../dispatch-glossy-build"
+const { glossyRunLiveness } = await import("../dispatch-glossy-build");
+const { WORKFLOW_RUN_LIVENESS_TIMEOUT_MS } = await import(
+	"../workflow-run-liveness"
 );
 
 beforeEach(() => {
@@ -43,45 +43,25 @@ afterEach(() => {
 });
 
 describe("glossyRunLiveness", () => {
-	it.each([
-		["RUNNING", "running"],
-		["PAUSED", "running"],
-		["COMPLETED", "gone"],
-		["FAILED", "gone"],
-		["CANCELLED", "gone"],
-		["TERMINATED", "gone"],
-		["CONTINUED_AS_NEW", "gone"],
-		["TIMED_OUT", "gone"],
-		["UNSPECIFIED", "unknown"],
-		["UNKNOWN", "unknown"],
-	])("reads a run reported %s as %s", async (status, expected) => {
-		describeRun.mockResolvedValue({ status: { name: status } });
-
-		expect(await glossyRunLiveness("wf-1")).toBe(expected);
-	});
-
-	it("reads a run Temporal has never heard of as gone", async () => {
-		const notFound = new Error("workflow not found");
-		notFound.name = "WorkflowNotFoundError";
-		describeRun.mockRejectedValue(notFound);
-
+	it("asks the shared Temporal client about the holder's run", async () => {
+		describeRun.mockResolvedValue({ status: { name: "TIMED_OUT" } });
 		expect(await glossyRunLiveness("wf-1")).toBe("gone");
+
+		describeRun.mockResolvedValue({ status: { name: "PAUSED" } });
+		expect(await glossyRunLiveness("wf-1")).toBe("running");
 	});
 
-	it("reads any other error, and an unreachable client, as unknown", async () => {
-		describeRun.mockRejectedValue(new Error("connection reset"));
-		expect(await glossyRunLiveness("wf-1")).toBe("unknown");
-
+	it("reads an unreachable client as unknown", async () => {
 		getTemporalClient.mockRejectedValue(new Error("no connection"));
 		expect(await glossyRunLiveness("wf-1")).toBe("unknown");
 	});
 
-	it("gives up after the timeout and reads a run Temporal does not answer about as unknown", async () => {
+	it("bounds the client's connection by the probe's timeout", async () => {
 		vi.useFakeTimers();
-		describeRun.mockReturnValue(new Promise(() => {}));
+		getTemporalClient.mockReturnValue(new Promise(() => {}));
 
 		const answer = glossyRunLiveness("wf-1");
-		await vi.advanceTimersByTimeAsync(GLOSSY_LIVENESS_TIMEOUT_MS);
+		await vi.advanceTimersByTimeAsync(WORKFLOW_RUN_LIVENESS_TIMEOUT_MS);
 
 		expect(await answer).toBe("unknown");
 	});

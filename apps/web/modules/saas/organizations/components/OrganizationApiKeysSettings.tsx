@@ -57,8 +57,9 @@ export const AVAILABLE_SCOPES = [
 	},
 	{
 		id: "mcp:write",
-		label: "MCP Write",
-		description: "Execute MCP tools and modify configurations",
+		label: "MCP Write (all write tools)",
+		description:
+			"Grants every write tool, including workflows, pages and features, and modifies MCP configurations. To limit what a key can change, tick the narrower write scopes below instead.",
 	},
 	{
 		id: "ai:models:read",
@@ -237,20 +238,24 @@ const READ_ONLY_SCOPES: ReadonlySet<ApiKeyScope> = new Set<ApiKeyScope>([
 ]);
 
 /**
- * What the create dialog starts with, for the role holding it open.
+ * What the create dialog starts with: `mcp:read` alone, for every role.
  *
- * The procedure's input schema defaults `scopes` to `["mcp:read", "mcp:write"]`
- * and that default is not a viewer's set: a viewer who accepted it was refused
- * with FORBIDDEN on the write half, having ticked nothing. The schema default is
- * deliberately left alone — changing it would move the floor for every member —
- * so the fix belongs on the one caller that knows the role.
+ * `mcp:write` satisfies every write scope (`scopeSatisfied`), so a key that
+ * starts with it can create workflows and pages whatever narrower write scope
+ * its creator went on to tick. A key therefore starts read-only, and write
+ * access is something its creator ticks on purpose: `mcp:write` for every write
+ * tool, or the narrower scopes (`workflows:write`, `frames:write`, ...) to limit
+ * what the key can change.
  *
- * A read-only role gets `mcp:read` alone: the scope that connects a coding tool,
- * which is the capability this role was granted key creation for, and the same
+ * The procedure's input schema still defaults `scopes` to
+ * `["mcp:read", "mcp:write"]` for a caller that names none, and that default is
+ * deliberately left alone: existing keys and external agents rely on it, and
+ * changing it would move the floor for every member. A read-only role is also
+ * held to `mcp:read` by the procedure (`READ_ONLY_ORG_API_KEY_SCOPES`), the same
  * single scope `ConnectCliDialog` mints with.
  */
-function defaultScopesForRole(isReadOnlyRole: boolean): ApiKeyScope[] {
-	return isReadOnlyRole ? ["mcp:read"] : ["mcp:read", "mcp:write"];
+function defaultScopesForRole(): ApiKeyScope[] {
+	return ["mcp:read"];
 }
 
 /**
@@ -375,7 +380,7 @@ export function OrganizationApiKeysSettings() {
 	// (Fizzy #2457). Everything below that consults this exists so the request
 	// this component sends is one the caller can actually hold.
 	const isReadOnlyRole = userRole === "viewer";
-	const defaultScopes = defaultScopesForRole(isReadOnlyRole);
+	const defaultScopes = defaultScopesForRole();
 	const canHoldScope = (scope: ApiKeyScope) =>
 		!isReadOnlyRole || READ_ONLY_SCOPES.has(scope);
 

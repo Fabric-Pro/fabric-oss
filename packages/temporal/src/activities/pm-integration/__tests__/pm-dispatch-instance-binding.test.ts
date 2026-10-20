@@ -401,7 +401,9 @@ describe("activity dispatch after discovery", () => {
 		// Only the gitlab.com discovery client spoke; nothing reached the
 		// moved config's instance.
 		expect(
-			state.requests.filter((url) => url.includes("gitlab.example.com")),
+			state.requests.filter(
+				(url) => new URL(url).hostname === "gitlab.example.com",
+			),
 		).toEqual([]);
 	});
 });
@@ -514,7 +516,7 @@ describe("workflow dispatch after a completed preflight", () => {
 		expect(activityStubs.createStoryInPmWithClaim).toHaveBeenCalledWith(
 			expect.objectContaining({
 				toolName: "create_issue",
-				pmTarget: { additionalContext: undefined },
+				pmTarget: { additionalContext: undefined, containerId: "42" },
 			}),
 		);
 		expect(output.syncedCount).toBe(0);
@@ -560,6 +562,7 @@ describe("workflow dispatch after a completed preflight", () => {
 				externalId: "1007",
 				externalUrl: "https://gitlab.com/example-org/app/-/issues/7",
 				externalMcpServerId: "srv-gitlab",
+				externalPmTarget: null,
 			},
 			{ settlesPmCreateClaim: expect.any(String) },
 			// The transaction the SUCCESS status commits in.
@@ -611,11 +614,20 @@ describe("full pull on a moved config", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			direction: "pull",
+			additionalContext: { gitlabOrigin: "https://gitlab.com" },
 		});
 
 		expect(state.executed).toEqual(["list_issues"]);
-		expect(activityStubs.deleteStoriesNotInPMList).toHaveBeenCalledWith(
-			expect.objectContaining({ pmExternalIds: [] }),
-		);
+		expect(activityStubs.deleteStoriesNotInPMList).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			organizationId: "org-1",
+			pmExternalIds: [],
+			containerId: "42",
+			mcpServerId: "srv-gitlab",
+			mcpConfigId: "cfg-gl",
+			userId: "user-1",
+			pmTool: "gitlab",
+			additionalContext: { gitlabOrigin: "https://gitlab.com" },
+		});
 	});
 });

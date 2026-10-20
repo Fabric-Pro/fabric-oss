@@ -7,6 +7,7 @@ import {
 	getAIModelWithMetadata,
 	type LanguageModel,
 } from "@repo/ai";
+import { db } from "@repo/database";
 
 export interface MastraEvalModel {
 	model: LanguageModel;
@@ -17,14 +18,37 @@ export interface MastraEvalModel {
 export async function resolveEvalModel(params: {
 	userId: string;
 	organizationId?: string;
+	projectDocumentId?: string;
 }): Promise<MastraEvalModel | null> {
 	try {
+		let projectId: string | undefined;
+		if (params.projectDocumentId !== undefined) {
+			const document = await db.projectDocument.findUnique({
+				where: { id: params.projectDocumentId },
+				select: {
+					projectId: true,
+					project: { select: { organizationId: true } },
+				},
+			});
+			if (!document) {
+				throw new Error(
+					"Document not found for evaluation model resolution",
+				);
+			}
+			if (document.project.organizationId !== params.organizationId) {
+				throw new Error(
+					"Document project organization does not match evaluation organization",
+				);
+			}
+			projectId = document.projectId;
+		}
 		const result = await getAIModelWithMetadata(
 			{ taskType: "EVAL" },
 			{
 				userId: params.userId,
 				organizationId: params.organizationId,
 				featureKey: "document-quality",
+				...(projectId !== undefined ? { projectId } : {}),
 			},
 		);
 		return result;

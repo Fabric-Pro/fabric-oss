@@ -177,13 +177,16 @@ describe("ConnectCliDialog — the tool picker", () => {
 });
 
 describe("ConnectCliDialog — the terminal steps for a repository project", () => {
-	it("lists three numbered steps: the repository, the terminal, the browser", async () => {
+	it("lists four numbered steps: the repository, the terminal, the browser, the plugin", async () => {
 		renderInstructions();
 		await setupLine();
 
 		const steps = within(screen.getByRole("list")).getAllByRole("listitem");
 
-		expect(steps).toHaveLength(3);
+		expect(steps).toHaveLength(4);
+		expect(
+			within(steps[3]).getByText("Turn on the plugin in Claude Code"),
+		).toBeVisible();
 		expect(
 			within(steps[0]).getByText("Where's the repository?"),
 		).toBeVisible();
@@ -207,11 +210,13 @@ describe("ConnectCliDialog — the terminal steps for a repository project", () 
 			"1",
 			"2",
 			"3",
+			"4",
 		]);
 		expect(markers[0]?.className).toContain("bg-primary");
 		expect(markers[1]?.className).toContain("bg-primary");
 		expect(markers[2]?.className).toContain("border-input");
 		expect(markers[2]?.className).not.toContain("bg-primary");
+		expect(markers[3]?.className).toContain("bg-primary");
 	});
 
 	it("gives Claude Code exactly one line, with the project and the tool named and no organization, URL or key", async () => {
@@ -535,12 +540,15 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		const line = await setupLine();
 
 		const steps = within(screen.getByRole("list")).getAllByRole("listitem");
-		expect(steps).toHaveLength(2);
+		expect(steps).toHaveLength(3);
 		expect(
 			within(steps[0]).getByText("Run this in your terminal"),
 		).toBeVisible();
 		expect(
 			within(steps[1]).getByText("Approve in your browser"),
+		).toBeVisible();
+		expect(
+			within(steps[2]).getByText("Turn on the plugin in Claude Code"),
 		).toBeVisible();
 		expect(screen.queryByRole("radio")).not.toBeInTheDocument();
 		expect(screen.queryByText("Where's the repository?")).toBeNull();
@@ -568,23 +576,85 @@ describe("ConnectCliDialog — the terminal steps for an upload project", () => 
 		const step = screen.getAllByRole("listitem")[1];
 
 		expect(step).toHaveTextContent(
-			"A sign-in page opens. Then the setup asks you to approve the plugin's command once. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.",
+			"A sign-in page opens. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.",
 		);
 		expect(step.textContent).not.toMatch(/fast-forward/i);
+		expect(step.textContent).not.toMatch(/approve the plugin/i);
 	});
 
-	it("gives the exact command that approves the plugin in Claude Code, once, in the person's own terminal", async () => {
+	it("gives the exact command that installs the plugin in Claude Code, once, in the person's own terminal", async () => {
 		renderInstructions({ kind: "upload" });
 		await setupLine();
 
+		const step = screen.getAllByRole("listitem")[2];
+
 		expect(
-			screen.getByTestId("agent-sign-in-plugin-approval"),
+			within(step).getByTestId("agent-sign-in-plugin-approval"),
 		).toHaveTextContent(
 			"claude plugin install fabric-trewrite@fabric-trewrite --scope local",
 		);
-		expect(screen.getAllByRole("listitem")[1]).toHaveTextContent(
-			/in your own terminal/i,
+		expect(step).toHaveTextContent(/in your own terminal/i);
+		expect(step).toHaveTextContent("fabric-trewrite");
+	});
+
+	it("tells the person how to let the agent use Fabric's tools, naming the plugin's server", async () => {
+		renderInstructions({ kind: "upload" });
+		await setupLine();
+
+		const step = screen.getAllByRole("listitem")[2];
+
+		expect(step).toHaveTextContent(
+			"To let the agent use Fabric's tools, run /mcp, pick plugin:fabric-trewrite:fabric and choose Authenticate.",
 		);
+	});
+
+	it("turns the plugin on in Codex with a copyable command, and says the setup does it itself", async () => {
+		fetchMock.mockImplementation(async () =>
+			discoveryResponse(200, UNBAKED_DOCUMENT),
+		);
+		const user = setupUser();
+		renderInstructions({ kind: "upload" });
+		await setupLine();
+
+		await user.click(screen.getByRole("tab", { name: "Codex" }));
+		await setupLine();
+
+		const steps = screen.getAllByRole("listitem");
+		expect(steps).toHaveLength(3);
+		expect(steps[2]).toHaveTextContent("Turn on the plugin in Codex");
+		expect(steps[2]).toHaveTextContent(
+			"The setup installs this project's plugin, fabric-trewrite, in Codex. If it could not, run:",
+		);
+		expect(
+			within(steps[2]).getByTestId("agent-sign-in-codex-plugin"),
+		).toHaveTextContent("codex plugin add fabric-trewrite@personal");
+		expect(steps[2]).toHaveTextContent(
+			/marketplace is not named personal/i,
+		);
+		expect(steps[2]).toHaveTextContent(/trust this folder when asked/i);
+		expect(steps[1]).not.toHaveTextContent(/approve the plugin/i);
+		expect(steps[1]).not.toHaveTextContent(/trust this folder/i);
+	});
+
+	it("keeps the clone paths without a plugin step, and Codex's trust note in the sign-in step", async () => {
+		fetchMock.mockImplementation(async () =>
+			discoveryResponse(200, UNBAKED_DOCUMENT),
+		);
+		const user = setupUser();
+		renderInstructions();
+		await setupLine();
+		await user.click(screen.getByRole("tab", { name: "Codex" }));
+		await setupLine();
+
+		await user.click(
+			screen.getByRole("radio", { name: "Clone it for me" }),
+		);
+		await setupLine();
+
+		const steps = screen.getAllByRole("listitem");
+		expect(steps).toHaveLength(3);
+		expect(screen.queryByText(/Turn on the plugin/)).toBeNull();
+		expect(steps[2]).toHaveTextContent(/trust this folder when asked/i);
 	});
 
 	it("has no Claude Code approval command under Codex", async () => {

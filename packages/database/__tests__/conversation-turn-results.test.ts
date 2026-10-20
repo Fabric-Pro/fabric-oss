@@ -16,6 +16,7 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
+import { getAgentConversationForViewer } from "../prisma/queries/agent-conversation-sharing";
 import { getAgentConversationById } from "../prisma/queries/agent-conversations";
 import { hydrateConversationTurnResults } from "../prisma/queries/conversation-turn-results";
 
@@ -32,6 +33,7 @@ const turn = {
 	executionId: "execution-1",
 	generation: 1,
 	status: "COMPLETED" as const,
+	questionText: null as string | null,
 	responseText: "The project is ready.",
 	terminalAt: ended,
 	terminalReason: "completed",
@@ -568,12 +570,28 @@ describe("conversation load after a detached Advisor turn", () => {
 	);
 
 	it.each(["START_PENDING", "ACTIVE", "CANCEL_REQUESTED"])(
-		"leaves %s unchanged",
+		"shows a %s turn by its question only, and adds no answer",
 		async (status) => {
 			mocks.turns.mockResolvedValue([
 				{ ...turn, status, terminalAt: null },
 			]);
-			expect(await read()).toEqual(conversation);
+			const result = await read();
+			expect(result?.messages).toEqual(conversation.messages);
+			expect(result?.metadata).toEqual({
+				mode: "orchestrator",
+				executions: [
+					{
+						id: turn.executionId,
+						userMessage: question.content,
+						finalResponse: "",
+						status: "running",
+						startedAt: started.toISOString(),
+						recoveredFromTurn: true,
+						inProgress: true,
+						questionMessageId: question.id,
+					},
+				],
+			});
 		},
 	);
 
@@ -919,27 +937,233 @@ describe("conversation load after a detached Advisor turn", () => {
 		});
 	});
 
-	it("does not manufacture a saved execution for a later pending question", async () => {
+	describe("a turn still running when the conversation is read", () => {
 		const pending = {
 			...turn,
 			id: "turn-2",
 			executionId: "execution-2",
 			generation: 2,
-			status: "ACTIVE",
+			status: "ACTIVE" as const,
+			responseText: null,
 			terminalAt: null,
+			terminalReason: null,
+			questionText: "Make me a weekly status page",
 		};
-		const pendingQuestion = {
-			...question,
-			id: "pending-question",
-			metadata: { executionId: pending.executionId },
+		const runningRecord = {
+			id: pending.executionId,
+			finalResponse: "",
+			status: "running",
+			startedAt: started.toISOString(),
+			recoveredFromTurn: true,
+			inProgress: true,
 		};
-		mocks.conversation.mockResolvedValue({
-			...conversation,
-			messages: [question, pendingQuestion],
+
+		it("shows its question from the turn when the browser never saved it", async () => {
+			mocks.turns.mockResolvedValue([turn, pending]);
+
+			const result = await read();
+
+			expect(result?.metadata).toMatchObject({
+				executions: [
+					{ id: turn.executionId, userMessage: question.content },
+					{ ...runningRecord, userMessage: pending.questionText },
+				],
+			});
+			expect(
+				(result?.metadata as { executions: object[] }).executions[1],
+			).not.toHaveProperty("questionMessageId");
+			expect(result?.messages).toHaveLength(2);
 		});
-		mocks.turns.mockResolvedValue([turn, pending]);
-		expect((await read())?.metadata).toMatchObject({
-			executions: [{ id: turn.executionId }],
+
+		it("prefers the question a message saved for it over the turn's copy", async () => {
+			const pendingQuestion = {
+				...question,
+				id: "pending-question",
+				content: "Saved wording",
+				metadata: { executionId: pending.executionId },
+			};
+			mocks.conversation.mockResolvedValue({
+				...conversation,
+				messages: [question, pendingQuestion],
+			});
+			mocks.turns.mockResolvedValue([turn, pending]);
+
+			expect((await read())?.metadata).toMatchObject({
+				executions: [
+					{ id: turn.executionId },
+					{
+						...runningRecord,
+						userMessage: "Saved wording",
+						questionMessageId: pendingQuestion.id,
+					},
+				],
+			});
+		});
+
+		it("shows a new conversation's first question once, not also as a message pair", async () => {
+			mocks.turns.mockResolvedValue([
+				{ ...pending, generation: 1, questionText: question.content },
+			]);
+
+			const result = await read();
+
+			expect(result?.metadata).toMatchObject({
+				executions: [
+					{
+						...runningRecord,
+						userMessage: question.content,
+						questionMessageId: question.id,
+					},
+				],
+			});
+			expect(result?.messages).toEqual([question]);
+		});
+
+		it("adds nothing for a turn admitted before its question was kept", async () => {
+			mocks.turns.mockResolvedValue([
+				turn,
+				{ ...pending, questionText: null },
+			]);
+
+			expect((await read())?.metadata).toMatchObject({
+				executions: [{ id: turn.executionId }],
+			});
+		});
+
+		it("leaves a record the browser already saved for it as it is", async () => {
+			const saved = {
+				id: pending.executionId,
+				userMessage: "Saved by the browser",
+				finalResponse: "Partial",
+			};
+			mocks.conversation.mockResolvedValue({
+				...conversation,
+				metadata: { mode: "orchestrator", executions: [saved] },
+			});
+			mocks.turns.mockResolvedValue([pending]);
+
+			expect((await read())?.metadata).toMatchObject({
+				executions: [saved],
+			});
+		});
+	});
+
+	describe("the read the chat opens a conversation with", () => {
+		const unsaved = {
+			...turn,
+			id: "turn-2",
+			executionId: "execution-2",
+			generation: 2,
+			questionText: "Make me a weekly status page",
+		};
+
+		it.each([
+			["its owner", conversation.userId],
+			["someone it is shared with", "user-colleague"],
+		])(
+			"carries the turns' durable results when %s opens it, read as the owner's turns",
+			async (_label, viewerId) => {
+				mocks.turns.mockResolvedValue([unsaved]);
+
+				const result = await getAgentConversationForViewer({
+					id: conversation.id,
+					userId: viewerId,
+					organizationId: conversation.organizationId,
+				});
+
+				expect(result?.metadata).toMatchObject({
+					executions: expect.arrayContaining([
+						expect.objectContaining({
+							id: unsaved.executionId,
+							userMessage: unsaved.questionText,
+							finalResponse: turn.responseText,
+						}),
+					]),
+				});
+				expect(mocks.turns).toHaveBeenCalledWith(
+					expect.objectContaining({
+						where: {
+							conversationId: conversation.id,
+							userId: conversation.userId,
+							organizationId: conversation.organizationId,
+						},
+					}),
+				);
+			},
+		);
+	});
+
+	describe("a finished turn the browser never saved", () => {
+		it("takes the turn's own question over an unstamped first message", async () => {
+			mocks.turns.mockResolvedValue([
+				{ ...turn, questionText: "The question this turn was sent" },
+			]);
+
+			expect((await read())?.metadata).toMatchObject({
+				executions: [
+					expect.objectContaining({
+						id: turn.executionId,
+						userMessage: "The question this turn was sent",
+					}),
+				],
+			});
+		});
+
+		it("carries the question the turn was admitted with", async () => {
+			mocks.turns.mockResolvedValue([
+				{
+					...turn,
+					id: "turn-2",
+					executionId: "execution-2",
+					generation: 2,
+					questionText: "Make me a weekly status page",
+				},
+			]);
+
+			expect((await read())?.metadata).toMatchObject({
+				executions: expect.arrayContaining([
+					expect.objectContaining({
+						id: "execution-2",
+						userMessage: "Make me a weekly status page",
+						finalResponse: turn.responseText,
+						terminalStatus: "COMPLETED",
+					}),
+				]),
+			});
+		});
+
+		it("replaces the running record a browser save carried back, once", async () => {
+			mocks.conversation.mockResolvedValue({
+				...conversation,
+				metadata: {
+					mode: "orchestrator",
+					executions: [
+						{
+							id: turn.executionId,
+							userMessage: question.content,
+							finalResponse: "",
+							status: "running",
+							recoveredFromTurn: true,
+							inProgress: true,
+						},
+					],
+				},
+			});
+
+			const executions = (
+				(await read())?.metadata as {
+					executions: Array<Record<string, unknown>>;
+				}
+			).executions;
+
+			expect(executions).toHaveLength(1);
+			expect(executions[0]).toMatchObject({
+				id: turn.executionId,
+				userMessage: question.content,
+				finalResponse: turn.responseText,
+				terminalStatus: "COMPLETED",
+			});
+			expect(executions[0]).not.toHaveProperty("inProgress");
 		});
 	});
 

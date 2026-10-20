@@ -39,6 +39,7 @@ const PARAMS = {
 	organizationId: "org-1",
 	projectId: "proj-1",
 	jobType: "workflow-builder" as const,
+	executionId: "execution-example",
 };
 
 describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
@@ -66,6 +67,8 @@ describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
 			providerModelId: "google/gemini-3.1-flash-image-preview",
 			taskType: "IMAGE",
 			jobType: "workflow-builder",
+			workflowExecutionId: "execution-example",
+			featureKey: "workflow",
 			success: true,
 			totalTokens: 0,
 		});

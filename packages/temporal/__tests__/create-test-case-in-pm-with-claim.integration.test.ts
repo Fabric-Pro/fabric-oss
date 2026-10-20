@@ -48,7 +48,7 @@ vi.mock("../src/activities/pm-integration/record-pm-sync-log", () => ({
 	recordPmSyncLog,
 }));
 
-const { createTestCaseInPmWithClaim } = await import(
+const { createTestCaseInPmWithClaim, checkTestCasePmLink } = await import(
 	"../src/activities/pm-integration/create-test-case-in-pm-with-claim"
 );
 const { executeMcpTool } = await import(
@@ -61,9 +61,15 @@ const { computePmHash } = await import(
 	"../src/activities/pm-integration/pm-sync-hash"
 );
 
+const { legacyLinkOtherToolMessage } = await import(
+	"../src/activities/pm-integration/pm-tool-mismatch"
+);
+
 const prefix = `pm-create-tc-${randomUUID()}`;
 const USER_ID = `${prefix}-user`;
 const ORG_ID = `${prefix}-org`;
+const MCP_SERVER_ID = `${prefix}-active-server`;
+const OTHER_MCP_SERVER_ID = `${prefix}-other-server`;
 const CREATED_URL = "https://pm.example.com/cards/1075";
 
 function created(
@@ -92,6 +98,19 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 				INSERT INTO "organization" (id, name, slug, "createdAt")
 				VALUES (${ORG_ID}, ${"PM Create TC Test Org"}, ${ORG_ID}, ${now})
 			`);
+			await db.mCPServer.createMany({
+				data: [MCP_SERVER_ID, OTHER_MCP_SERVER_ID].map((id) => ({
+					id,
+					key: id,
+					name: "Example PM server",
+					authMethods: [],
+					defaultUrl: "https://pm.example.com",
+					isSystemProvided: false,
+					userId: USER_ID,
+					organizationId: ORG_ID,
+				})),
+			});
+
 			const project = await db.project.create({
 				data: {
 					name: "PM Create TC Test Project",
@@ -117,6 +136,10 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 			if (projectId) {
 				await db.project.deleteMany({ where: { id: projectId } });
 			}
+			await db.mCPServer.deleteMany({
+				where: { id: { in: [MCP_SERVER_ID, OTHER_MCP_SERVER_ID] } },
+			});
+
 			await db.$executeRaw(
 				Prisma.sql`DELETE FROM "organization" WHERE id = ${ORG_ID}`,
 			);
@@ -166,7 +189,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 				organizationId: ORG_ID,
 				userId: USER_ID,
 				mcpConfigId: null,
-				mcpServerId: "server-1",
+				mcpServerId: MCP_SERVER_ID,
 				pmTarget: {},
 				pmTool: "fizzy",
 				toolLabel: "fizzy",
@@ -204,7 +227,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 			expect(await read(id)).toMatchObject({
 				externalId: "1075",
 				externalUrl: CREATED_URL,
-				externalMcpServerId: "server-1",
+				externalMcpServerId: MCP_SERVER_ID,
 				pmCreateClaimId: null,
 				pmCreateClaimedAt: null,
 				lastSyncedAt: expect.any(Date),
@@ -408,6 +431,43 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 			});
 		});
 
+		it("refuses another server's link with a fenced FAILED stamp and preserves the link", async () => {
+			const link = {
+				externalId: "old-42",
+				externalUrl: "https://pm.example.com/cards/old-42",
+				externalMcpServerId: OTHER_MCP_SERVER_ID,
+			};
+			const id = await testCase({
+				...link,
+				lastPmSyncStatus: "PENDING",
+				lastPmSyncAttemptId: "attempt-A",
+			});
+			const result = await checkTestCasePmLink({
+				testCaseId: id,
+				projectId,
+				organizationId: ORG_ID,
+				userId: USER_ID,
+				mcpConfigId: null,
+				mcpServerId: MCP_SERVER_ID,
+				pmTool: "fizzy",
+				toolLabel: "fizzy",
+				...link,
+				pmSyncAttemptId: "attempt-A",
+			});
+			const error = legacyLinkOtherToolMessage("fizzy");
+			expect(result).toMatchObject({
+				success: false,
+				outcome: "block",
+				error,
+			});
+			expect(await read(id)).toMatchObject({
+				...link,
+				lastPmSyncStatus: "FAILED",
+				lastPmSyncError: error,
+				lastPmSyncAttemptId: "attempt-A",
+			});
+		});
+
 		it("a case another push linked (NULL URL) settles this run's attempt to SUCCESS, and only its attempt", async () => {
 			const mine = await testCase({
 				externalId: "88",
@@ -552,7 +612,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 				const linked = {
 					externalId: "88",
 					externalUrl: null,
-					externalMcpServerId: "server-1",
+					externalMcpServerId: MCP_SERVER_ID,
 					lastSyncedPmHash: "h",
 					lastPmSyncStatus: "FAILED" as const,
 					lastPmSyncError:
@@ -564,7 +624,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 					testCaseId: id,
 					expectedExternalId: "88",
 					expectedExternalUrl: null,
-					expectedExternalMcpServerId: "server-1",
+					expectedExternalMcpServerId: MCP_SERVER_ID,
 					expectedPmCreateClaimId: null,
 				};
 
@@ -599,7 +659,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 			it("neither clear touches a case PENDING for a retry attempt; a NULL status is not mistaken for one", async () => {
 				const linked = await testCase({
 					externalId: "88",
-					externalMcpServerId: "server-1",
+					externalMcpServerId: MCP_SERVER_ID,
 					lastPmSyncStatus: "PENDING",
 					lastPmSyncAttemptId: "attempt-A",
 				});
@@ -622,7 +682,7 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 						testCaseId: linked,
 						expectedExternalId: "88",
 						expectedExternalUrl: null,
-						expectedExternalMcpServerId: "server-1",
+						expectedExternalMcpServerId: MCP_SERVER_ID,
 						expectedPmCreateClaimId: null,
 					}),
 				).toEqual({ applied: false });

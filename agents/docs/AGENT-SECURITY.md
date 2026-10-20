@@ -2,9 +2,12 @@
 
 This guide explains how to secure inter-agent communication in the Fabric platform using the multi-tenant security framework.
 
+- **Audience**: Agent authors and platform engineers
+- **Owner**: Platform
+
 ## Overview
 
-The security framework provides:
+For Fabric-operated services, the security framework provides:
 
 1. **Service Token Authentication** - Proves requests are from trusted internal services
 2. **Signed Tenant Context** - HMAC-signed user/organization context
@@ -15,9 +18,9 @@ The security framework provides:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                          Security Headers                                │
+│ Trusted Destination Security Headers                                    │
 ├─────────────────────────────────────────────────────────────────────────┤
-│ X-Service-Token:     Shared secret between orchestrator and agents      │
+│ X-Service-Token:     Shared secret for Fabric-operated services         │
 │ X-Tenant-Payload:    Base64({userId, orgId, scopes, timestamp})         │
 │ X-Tenant-Signature:  HMAC-SHA256(payload, secret)                       │
 │ X-Tenant-Timestamp:  Unix timestamp (ms) when signed                    │
@@ -30,7 +33,7 @@ The security framework provides:
 
 ### 1. Set Environment Variable
 
-All agents and the orchestrator must share the same secret:
+Fabric-operated agents and the orchestrator share the service secret. Do not distribute it to user-registered agents:
 
 ```bash
 # In .env or production environment variables
@@ -139,7 +142,13 @@ app.post("/a2a/send", async (c) => {
 
 ## Orchestrator Integration
 
-The orchestrator uses `SecureA2AClient` to pass tenant context:
+The orchestrator uses `SecureA2AClient` to pass explicit tenant headers and tracing.
+The service credential and HMAC-signed tenant headers require the per-call
+`trustedDestination: true` option. Use it only for a SYSTEM-scope agent or a
+Fabric-operated Weave URL from environment configuration, never a URL supplied
+or registered by a user. A non-empty `agentApiKey` also requires this opt-in;
+otherwise the client throws before sending. The agent chat proxy leaves the
+option unset and still sends its short-lived `X-AI-Token`.
 
 ```typescript
 import { SecureA2AClient } from "@repo/agent-core";
@@ -149,11 +158,12 @@ const client = new SecureA2AClient({
   timeout: 120000,
 });
 
-// Tenant context is automatically signed and sent
+// This URL is a Fabric-operated SYSTEM agent, resolved by the caller.
 const task = await client.sendMessageSecure(
-  agentUrl,
+  systemAgentUrl,
   message,
-  { userId: "user_123", organizationId: "org_456" }
+  { userId: "user_123", organizationId: "org_456" },
+  { trustedDestination: true }
 );
 ```
 
@@ -161,7 +171,7 @@ const task = await client.sendMessageSecure(
 
 ### "AGENT_SERVICE_SECRET not set"
 
-Set the environment variable in all services:
+Set the environment variable in Fabric-operated services that use signed tenant authentication:
 ```bash
 export AGENT_SERVICE_SECRET="your-32-char-minimum-secret"
 ```
@@ -181,7 +191,7 @@ export AGENT_SERVICE_SECRET="your-32-char-minimum-secret"
 
 1. **Generate a strong secret**: Use `openssl rand -hex 32`
 2. **Rotate secrets periodically**: Update all services together
-3. **Use private networking**: Agents shouldn't be publicly accessible
+3. **Use private networking**: Keep Fabric-operated agents on private networking
 4. **Log security events**: Enable `logSecurityEvents: true`
 5. **Validate at startup**: Use `validateSecurityConfig()` to fail fast
 

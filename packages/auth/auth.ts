@@ -1349,7 +1349,7 @@ const authOptions = {
 				if (ctx.path.startsWith("/delete-user") && userId) {
 					try {
 						const { getTemporalClient } = await import(
-							"@repo/temporal"
+							"@repo/temporal/client"
 						);
 						const temporalClient = await getTemporalClient();
 						const workflows = temporalClient.workflow.list({

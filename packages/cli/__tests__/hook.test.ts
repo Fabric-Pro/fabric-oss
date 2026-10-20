@@ -696,7 +696,7 @@ describe("mergeCommandHook across events", () => {
 		const directory = path.join(tmpdir(), "fabric-instructions-hook-locks");
 		await mkdir(directory, { recursive: true });
 		const lockPath = path.join(directory, `${identity}.lock`);
-		await writeFile(lockPath, "0");
+		await writeFile(lockPath, "0", { flag: "wx", mode: 0o600 });
 		const old = new Date(Date.now() - 60_000);
 		await utimes(lockPath, old, old);
 

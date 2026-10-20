@@ -31,8 +31,18 @@ export async function listWorkflowsCommand(
 	filters: WorkflowFilters,
 ) {
 	await requireReadAccess(actor);
+	if (
+		actor.projectRestrictionId !== undefined &&
+		filters.projectId !== undefined &&
+		filters.projectId !== actor.projectRestrictionId
+	) {
+		throw new WorkflowCommandError("NOT_FOUND", "Project not found");
+	}
 	return listWorkflows({
 		...filters,
+		...(actor.projectRestrictionId !== undefined
+			? { projectId: actor.projectRestrictionId }
+			: {}),
 		userId: actor.userId,
 		organizationId: actor.organizationId,
 	});
@@ -72,6 +82,12 @@ export async function getWorkflowExecutionCommand(
 	);
 	if (!execution) {
 		throw new WorkflowCommandError("NOT_FOUND", "Execution not found");
+	}
+	if (actor.projectRestrictionId !== undefined) {
+		if (!execution.workflowId) {
+			throw new WorkflowCommandError("NOT_FOUND", "Execution not found");
+		}
+		await loadReadableWorkflow(actor, execution.workflowId);
 	}
 	return execution;
 }

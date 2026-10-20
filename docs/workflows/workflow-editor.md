@@ -33,6 +33,41 @@ Two invariants underpin most scenarios below:
 2. **Triggers execute the current graph, not the published snapshot.**
    `WorkflowVersion` exists for history and rollback only.
 
+## Edit and run timestamps
+
+`updatedAt` records workflow edits. `lastRunAt` records the latest accepted run's
+start time. Execution state, failure counters and automatic pauses leave
+`updatedAt` unchanged. The list footer shows `Last run` when `lastRunAt` exists;
+a workflow without an accepted run shows `Edited`. Execution history holds the
+individual run statuses and completion times.
+
+Runtime settings and pause writes use `writeWorkflowRunState` in
+[`workflows.ts`](../../packages/database/prisma/queries/workflows/workflows.ts).
+Its caller holds the workflow row lock in the transaction and supplies the row's
+organization context. The SQL update matches both the workflow ID and that
+context, replaces settings, optionally changes status, and preserves the edit
+timestamp. Use this helper for run-state writes that would otherwise trigger
+Prisma's `@updatedAt` behavior.
+
+The deployment seed `workflow-last-run-at-backfill` fills missing or older run
+timestamps from execution history. It considers non-PENDING executions with a
+Temporal identifier, plus SCHEDULE executions, whose creation path can leave
+`temporalRunId` null. Each statement scans at most 500 workflows, commits
+independently, and checks again before writing so it cannot replace a newer run
+timestamp. It leaves `updatedAt` unchanged. The deployment runner records the
+wrapper and implementation content hash after success and skips unchanged seeds.
+
+The same implementation supports a dry run from `packages/database`, with the
+database connection environment configured for the intended database:
+
+```bash
+pnpm exec tsx scripts/backfill-workflow-last-run-at.ts
+```
+
+Without `--apply`, it reports eligible rows without updating them. Use the normal
+deployment seed for managed environments. The implementation is
+[`backfill-workflow-last-run-at.ts`](../../packages/database/scripts/backfill-workflow-last-run-at.ts).
+
 ## Connection access
 
 Integration connections are private to their owner by default, including existing

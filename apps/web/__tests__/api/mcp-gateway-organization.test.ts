@@ -766,7 +766,13 @@ describe("MCP gateway — a tool executor failure is logged safely", () => {
 		// as a structured argument, not interpolated into the message (a %s
 		// placeholder counts as interpolation for CodeQL js/log-injection).
 		expect(message).not.toContain("fabric_get_identity");
-		expect(args).toContainEqual({ toolName: "fabric_get_identity" });
+		expect(args).toEqual([
+			{
+				toolName: "fabric_get_identity",
+				error: "boom",
+				stack: expect.stringContaining("Error: boom"),
+			},
+		]);
 
 		consoleError.mockRestore();
 	});

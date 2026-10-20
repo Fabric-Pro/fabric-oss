@@ -6,9 +6,8 @@ vi.mock("@repo/database", () => ({
 	TEST_CASE_STATES: ["PROPOSED", "DRAFT", "READY", "CLOSED"],
 	updateTestCase: vi.fn(),
 }));
-vi.mock("../../../lib/test-case-context", () => ({
-	syncTestCaseContext: vi.fn(),
-	buildTestCaseContextContent: vi.fn(() => "context-body"),
+vi.mock("@repo/temporal/test-case-context-sync", () => ({
+	mirrorTestCaseToContext: vi.fn(),
 }));
 vi.mock("../../../lib/enqueue-test-case-auto-sync", () => ({
 	enqueueTestCaseAutoSync: vi.fn(),

@@ -13,7 +13,10 @@ import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { runHook } from "./_helpers.mjs";
-import { GATED_GH_API_COMMANDS } from "./gate-fixtures.mjs";
+import {
+	GATED_GH_API_COMMANDS,
+	GATED_OPEN_PR_COMMANDS,
+} from "./gate-fixtures.mjs";
 
 const HOOK = "pr-quality-gate.mjs";
 
@@ -186,6 +189,78 @@ function askDecision(stdout) {
 	return parsed.hookSpecificOutput;
 }
 
+describe("pr-quality-gate — stale install decisions", () => {
+	it("denies type-check exit 3 with an agent-actionable worktree reason", async () => {
+		const stale =
+			"Type-check setup is stale: pnpm-lock.yaml does not match node_modules/.pnpm/lock.yaml. Run `pnpm install --frozen-lockfile` and retry.";
+		const result = await bash("gh pr create --fill", {
+			STUB_TYPECHECK_EXIT: "3",
+			STUB_TYPECHECK_OUTPUT: `${stale}\nELIFECYCLE Command failed with exit code 3.`,
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+		const decision = askDecision(result.stdout);
+		assert.equal(decision.hookEventName, "PreToolUse");
+		assert.equal(decision.permissionDecision, "deny");
+		assert.ok(decision.permissionDecisionReason.includes(stubRepoRoot));
+		assert.ok(decision.permissionDecisionReason.includes(stale));
+		assert.match(
+			decision.permissionDecisionReason,
+			/pnpm install --frozen-lockfile/,
+		);
+		assert.match(
+			decision.permissionDecisionReason,
+			/same PR command again/,
+		);
+	});
+
+	for (const [check, knob] of [
+		["lint", "STUB_LINT_EXIT"],
+		["format:check", "STUB_FORMAT_EXIT"],
+	]) {
+		it(`asks for ${check} exit 3`, async () => {
+			const result = await bash("gh pr create --fill", { [knob]: "3" });
+			assert.equal(result.exitCode, 0, result.stderr);
+			assert.equal(askDecision(result.stdout).permissionDecision, "ask");
+			assert.ok(
+				askDecision(result.stdout).permissionDecisionReason.includes(
+					`pnpm ${check}`,
+				),
+			);
+		});
+	}
+
+	it("asks for an output stream error even with type-check exit 3", async () => {
+		const result = await bash("gh pr create --fill", {
+			STUB_TYPECHECK_EXIT: "3",
+			FABRIC_GATE_TEST_STREAM_ERROR: "1",
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+		assert.equal(askDecision(result.stdout).permissionDecision, "ask");
+		assert.match(
+			askDecision(result.stdout).permissionDecisionReason,
+			/output stream error/,
+		);
+	});
+
+	it("asks for type-check exit 3 without the stale-setup line", async () => {
+		const result = await bash("gh pr create --fill", {
+			STUB_TYPECHECK_EXIT: "3",
+			STUB_TYPECHECK_OUTPUT:
+				"src/foo.ts(10,5): error TS2322: type mismatch",
+		});
+		assert.equal(result.exitCode, 0, result.stderr);
+		assert.equal(askDecision(result.stdout).permissionDecision, "ask");
+		assert.match(
+			askDecision(result.stdout).permissionDecisionReason,
+			/exit code 3/,
+		);
+	});
+
+	it("asks for a type-check timeout even with exit 3 configured", async () => {
+		await runHungCheck({ STUB_TYPECHECK_EXIT: "3" });
+	});
+});
+
 describe("pr-quality-gate — asks the user on a failing check", () => {
 	it("asks (does not hard-block) when type-check fails", async () => {
 		const result = await bash("gh pr create --fill", {
@@ -238,22 +313,6 @@ describe("pr-quality-gate — asks the user on a failing check", () => {
 		assert.equal(decision.permissionDecision, "ask");
 		assert.match(decision.permissionDecisionReason, /pnpm format:check/);
 		assert.match(decision.permissionDecisionReason, /would format/);
-	});
-
-	it("asks on `gh pr edit --body` when type-check fails", async () => {
-		const result = await bash('gh pr edit 5 --body "updated"', {
-			STUB_TYPECHECK_EXIT: "1",
-		});
-		assert.equal(result.exitCode, 0);
-		assert.equal(askDecision(result.stdout).permissionDecision, "ask");
-	});
-
-	it("asks on `gh pr edit --body-file` when lint fails", async () => {
-		const result = await bash("gh pr edit 5 --body-file body.md", {
-			STUB_LINT_EXIT: "1",
-		});
-		assert.equal(result.exitCode, 0);
-		assert.equal(askDecision(result.stdout).permissionDecision, "ask");
 	});
 
 	it("shows only the three prompt lines when the failing check prints nothing", async () => {
@@ -327,12 +386,6 @@ describe("pr-quality-gate — allows (no prompt) when all checks pass", () => {
 			"pass case must not emit an ask decision",
 		);
 	});
-
-	it("emits no decision for `gh pr edit 5 --body x` when all checks pass", async () => {
-		const result = await bash('gh pr edit 5 --body "x"');
-		assert.equal(result.exitCode, 0);
-		assert.equal(result.stdout.trim(), "");
-	});
 });
 
 describe("pr-quality-gate — skips for non-gated gh subcommands", () => {
@@ -343,8 +396,12 @@ describe("pr-quality-gate — skips for non-gated gh subcommands", () => {
 		"gh pr merge 5",
 		"gh pr review 5",
 		"gh pr comment 5 --body 'lgtm'", // comment, not edit
-		"gh pr edit 5 --add-label foo", // edit without body
-		"gh pr edit 5 --title 'new title'", // edit without body
+		"gh pr edit 5 --add-label foo",
+		"gh pr edit 5 --title 'new title'",
+		// A description edit changes no code, so it is not gated (Fizzy #3097).
+		'gh pr edit 5 --body "updated"',
+		"gh pr edit 5 --body-file body.md",
+		"gh pr edit 5 --body=x",
 	];
 	for (const command of skipped) {
 		it(`does not run checks for: ${command}`, async () => {
@@ -424,7 +481,7 @@ describe("pr-quality-gate — non-Bash / missing-env short-circuits", () => {
 	});
 });
 
-describe("pr-quality-gate — gates PR creation and body edits through `gh api`", () => {
+describe("pr-quality-gate — gates PR creation through `gh api`", () => {
 	const gated = GATED_GH_API_COMMANDS;
 	for (const command of gated) {
 		it(`runs the checks for: ${command}`, async () => {
@@ -447,6 +504,53 @@ describe("pr-quality-gate — gates PR creation and body edits through `gh api`"
 		"gh api -X=PATCH repos/o/r/pulls/5 -f title=x",
 		"gh api -iX PATCH repos/o/r/pulls/5 -f title=x",
 		"gh api graphql -f query=@q.graphql",
+		// PR edits, including the description, change no code.
+		"gh api -X PATCH repos/o/r/pulls/5 -f body=x",
+		"gh api -X PATCH repos/o/r/pulls/5 --input -",
+		"gh api -X PATCH repos/o/r/pulls/5 -F body=@body.md",
+		"gh api repos/o/r/pulls/5 -X PATCH -f=body=x",
+		"gh api -iXPATCH repos/o/r/pulls/5 -f body=x",
+		"gh api graphql -f query='mutation { updatePullRequest(input: {}) { clientMutationId } }'",
+	];
+	for (const command of notGated) {
+		it(`does not gate: ${command}`, async () => {
+			const result = await bash(command, {
+				STUB_TYPECHECK_EXIT: "1",
+				STUB_LINT_EXIT: "1",
+				STUB_FORMAT_EXIT: "1",
+			});
+			assert.equal(result.exitCode, 0, `stderr: ${result.stderr}`);
+			assert.equal(result.stdout.trim(), "");
+		});
+	}
+});
+
+describe("pr-quality-gate — gates PR creation through the open-pr.sh helper", () => {
+	for (const command of GATED_OPEN_PR_COMMANDS) {
+		it(`runs the checks for: ${command}`, async () => {
+			const result = await bash(command, { STUB_TYPECHECK_EXIT: "1" });
+			assert.equal(result.exitCode, 0, `stderr: ${result.stderr}`);
+			const decision = askDecision(result.stdout);
+			assert.equal(decision.permissionDecision, "ask");
+			assert.match(
+				decision.permissionDecisionReason,
+				/PR check failed: `pnpm type-check:changed`/,
+			);
+		});
+	}
+
+	const notGated = [
+		"cat ~/bin/open-pr.sh",
+		"sed -n 1,40p ~/bin/open-pr.sh",
+		"grep -n gh_run ~/bin/open-pr.sh",
+		"git log --oneline -- open-pr.sh",
+		"~/bin/open-pr.sh --selftest",
+		"bash -n ~/bin/open-pr.sh",
+		"sed -n '/--body-file/p' ~/bin/open-pr.sh",
+		'echo "run open-pr.sh next"',
+		"~/bin/open-pr.sh.bak --title t --body-file b.md",
+		"~/bin/my-open-pr.sh --title t --body-file b.md",
+		"gh pr view 5 --json title",
 	];
 	for (const command of notGated) {
 		it(`does not gate: ${command}`, async () => {
@@ -598,12 +702,12 @@ describe("pr-quality-gate — chatty and unstartable checks", () => {
 	it("keeps the tail and real exit code of > 1.5 MB of output", async () => {
 		const result = await bash("gh pr create --fill", {
 			STUB_TYPECHECK_BIG: "1",
-			STUB_TYPECHECK_EXIT: "3",
+			STUB_TYPECHECK_EXIT: "7",
 		});
 		assert.equal(result.exitCode, 0, `stderr: ${result.stderr}`);
 		const reason = askDecision(result.stdout).permissionDecisionReason;
 		assert.match(reason, /LAST-LINE-MARKER/);
-		assert.match(reason, /\(exit code 3\)/);
+		assert.match(reason, /\(exit code 7\)/);
 	});
 
 	it("asks (does not pass) when pnpm cannot be started", async () => {

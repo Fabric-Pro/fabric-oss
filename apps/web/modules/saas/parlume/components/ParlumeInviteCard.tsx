@@ -5,7 +5,6 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
-import { Checkbox } from "@ui/components/checkbox";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import {
@@ -66,7 +65,6 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
 	const [toolsReadOnly, setToolsReadOnly] = useState(true);
-	const [consent, setConsent] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
 	const agentsQuery = useQuery({
@@ -92,9 +90,7 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 			? "Choose an agent first"
 			: !urlValid
 				? "Paste a Teams meeting link first"
-				: !consent
-					? "Confirm you have told participants"
-					: null;
+				: null;
 
 	const invite = async () => {
 		if (!selectedAgent || blockedReason) {
@@ -114,7 +110,6 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 			});
 			setMeetingUrl("");
 			setToolsReadOnly(true);
-			setConsent(false);
 			await Promise.all([
 				queryClient.invalidateQueries({
 					queryKey: [SESSIONS_QUERY_KEY, projectId],
@@ -243,24 +238,10 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 				</div>
 
 				<div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
-					<div className="flex items-start gap-2.5">
-						<Checkbox
-							id="parlume-consent"
-							className="mt-0.5"
-							checked={consent}
-							onCheckedChange={(checked) =>
-								setConsent(checked === true)
-							}
-							disabled={isInviting}
-						/>
-						<Label
-							htmlFor="parlume-consent"
-							className="cursor-pointer text-sm font-normal leading-5"
-						>
-							I've told participants that Parlume will record and
-							transcribe this meeting.
-						</Label>
-					</div>
+					<p className="text-sm leading-5 text-muted-foreground">
+						Parlume records and transcribes the meeting. Tell
+						participants before you invite it.
+					</p>
 					<a
 						href="#pr-how"
 						className="whitespace-nowrap text-[13px] text-muted-foreground underline underline-offset-4 hover:text-foreground"

@@ -3,6 +3,7 @@
  * panel tests (Fizzy #2801, Fizzy #2946).
  */
 
+import type { ProposalAnalysisReport } from "@saas/projects/components/proposal-artifact/AnalysisReport";
 import type {
 	ProposalAnalysis,
 	ProposalAnalysisFinding,
@@ -105,9 +106,30 @@ export function newerRun(
 type ShownRun = NonNullable<ProposalAnalysis["run"]>;
 
 /**
- * The analysis read: a complete shown run with the given findings, no newer
- * run, nothing stale, read by a member the server lets respond. `run: null`
- * builds a document with no complete run.
+ * A run's report: an assessment, a summary and one thing to do before
+ * sending, with no full text and no citations unless overridden.
+ */
+export function report(
+	overrides: Partial<ProposalAnalysisReport> = {},
+): ProposalAnalysisReport {
+	return {
+		assessment: "Ready to send after two fixes",
+		summary: "The proposal covers the brief.\nTwo gaps remain.",
+		scope: [],
+		beforeSending: ["Confirm the hosting region"],
+		duringDiscovery: [],
+		text: null,
+		textTruncated: false,
+		plainText: false,
+		citations: [],
+		...overrides,
+	};
+}
+
+/**
+ * The analysis read: a complete shown run with the given findings and no
+ * report, no newer run, nothing stale, read by a member the server lets
+ * respond. `run: null` builds a document with no complete run.
  */
 export function analysis(
 	overrides: Partial<Omit<ProposalAnalysis, "run">> & {
@@ -136,6 +158,7 @@ export function analysis(
 		newerRun: null,
 		findings: [],
 		noLongerRaised: [],
+		report: null,
 		viewer: { canRespond: true },
 		...rest,
 	};

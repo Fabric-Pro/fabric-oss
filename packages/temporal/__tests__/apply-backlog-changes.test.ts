@@ -1214,3 +1214,36 @@ describe("applyBacklogChanges → convertedToCreate reporting", () => {
 		);
 	});
 });
+
+describe("applyBacklogChanges failure messages", () => {
+	it.each([
+		[
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: Timed out fetching a new connection from the connection pool",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+			"database error P2024",
+		],
+		[new Error("boom"), "boom"],
+	])("returns safe failure text for %s", async (error, expected) => {
+		mocks.createStoryFromProposal.mockRejectedValueOnce(error);
+		const result = await applyBacklogChanges({
+			projectId: "project-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			approvedChanges: [makeBugChange()],
+			existingBacklog: EMPTY_BACKLOG,
+		});
+		expect.soft(result.errors[0]?.error).toBe(expected);
+		expect.soft(result.errors[0]?.error).not.toContain("prisma.");
+		const { logger } = await import("@repo/logs");
+		expect
+			.soft(logger.error)
+			.toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({ error: error.message }),
+			);
+	});
+});

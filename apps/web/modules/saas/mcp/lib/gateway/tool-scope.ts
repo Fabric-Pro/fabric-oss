@@ -11,9 +11,10 @@ export type ToolScope = { scope: string; kind: "read" | "write" };
 
 /**
  * The most Fabric's own agent runtime may reach through the gateway: the
- * workflow and frame tools its chat engines expose. A session opened with the
- * service credential holds exactly these, so a leaked agent secret cannot be
- * turned into a way to read projects, documents or connected servers.
+ * workflow, frame and selected project/instruction reads its chat engines
+ * expose. The named service allowlist in project-binding also gates listing
+ * and execution: mcp:read does not grant the other portal reads or a connected
+ * server proxy. Every call still requires a valid acting grant.
  */
 export const SERVICE_CREDENTIAL_SCOPES: readonly string[] = [
 	"workflows:read",
@@ -21,7 +22,52 @@ export const SERVICE_CREDENTIAL_SCOPES: readonly string[] = [
 	"workflows:run",
 	"frames:read",
 	"frames:write",
+	"projects:read",
+	"instructions:read",
+	"mcp:read",
 ];
+
+/**
+ * The most a service session may hold beyond the base set, whatever its grant
+ * names, and only when the grant also names the one project they are for. It
+ * is every scope the portal tools need and nothing beyond: never `mcp:write`
+ * (which is what requesting or revoking delegated authority and calling a
+ * connected server's changes need) and never a wildcard. `mcp:read` is there
+ * for `fabric_list_connected_servers` and satisfies any read, so what holds a
+ * session to its tools is the named list in `./project-binding`, not the scope.
+ */
+export const SERVICE_GRANT_MAX_SCOPES: readonly string[] = [
+	"orgs:read",
+	"chats:read",
+	"mcp:read",
+	"projects:read",
+	"projects:write",
+	"features:read",
+	"features:write",
+	"instructions:read",
+	"instructions:write",
+	"workspaces:read",
+];
+
+/**
+ * The scopes a service session holds: the base set, plus the grant's scopes
+ * that are within the ceiling, and the latter only for a grant that names a
+ * project. A grant with scopes and no project, or with scopes outside the
+ * ceiling, is held to what is within it, and a chat grant (neither) to the base
+ * set exactly.
+ */
+export function serviceSessionScopes(grant: {
+	scopes?: readonly string[];
+	projectId?: string;
+}): string[] {
+	const extra =
+		grant.projectId && grant.scopes
+			? grant.scopes.filter((scope) =>
+					SERVICE_GRANT_MAX_SCOPES.includes(scope),
+				)
+			: [];
+	return [...new Set([...SERVICE_CREDENTIAL_SCOPES, ...extra])];
+}
 
 /** What a scope refusal calls the caller, so the message names what it holds. */
 export function credentialSubject(credential: GatewayCredential): string {

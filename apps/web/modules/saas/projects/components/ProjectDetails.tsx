@@ -83,6 +83,7 @@ import { ProjectHeader } from "./ProjectHeader";
 import { ProjectPresenceProvider } from "./ProjectPresenceProvider";
 import { ProjectSectionHero } from "./ProjectSectionHero";
 import { ProjectTabButton } from "./ProjectTabButton";
+import { ProjectUnavailable } from "./ProjectUnavailable";
 import {
 	NAVIGATE_TO_SETTINGS_TAB_EVENT,
 	type NavigateToSettingsTabDetail,
@@ -502,23 +503,19 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 		setIsFocusMode(false);
 	}, [rawActiveTab, setIsFocusMode]);
 
-	// Wait for org context to load on org routes before querying
-	// organizationSlug indicates we're on an org route and need the org context
-	const isOrgRoute = !!organizationSlug;
-	const orgContextReady = !isOrgRoute || organizationId !== undefined;
-
 	// IMPORTANT: Pass null explicitly for personal context to prevent
 	// session fallback which could leak org data to personal pages
 	const {
 		data,
+		error: projectError,
 		isLoading: isQueryLoading,
+		isFetching: isProjectFetching,
 		refetch,
-	} = useQuery({
-		...orpc.projects.get.queryOptions({
+	} = useQuery(
+		orpc.projects.get.queryOptions({
 			input: { id: projectId, organizationId },
 		}),
-		enabled: orgContextReady,
-	});
+	);
 
 	const tabGates = useProjectTabGates();
 
@@ -736,12 +733,11 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 		return () => clearTimeout(id);
 	}, [activeTab, projectId]);
 
-	// Include org context and tab-preference loading in the overall gate so
-	// neither the tab bar nor a content branch paints a set it is about to
-	// hide. The preference queries run in parallel with projects.get and are
-	// cached across consumers, so this adds no extra round trip.
-	const isLoading =
-		isQueryLoading || !orgContextReady || !tabCustomization.ready;
+	// Include tab-preference loading in the overall gate so neither the tab
+	// bar nor a content branch paints a set it is about to hide. The
+	// preference queries run in parallel with projects.get and are cached
+	// across consumers, so this adds no extra round trip.
+	const isLoading = isQueryLoading || !tabCustomization.ready;
 	const project = data?.project;
 
 	// Profile-dependent landing tab (plan Slice 6): once the project is known
@@ -781,7 +777,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 				includeSummary: true,
 			},
 		}),
-		enabled: orgContextReady && activeTab === "test-cases",
+		enabled: activeTab === "test-cases",
 		staleTime: 30_000,
 	});
 	const testCasesContext = useMemo(() => {
@@ -811,12 +807,8 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 					repositoryUrl: project.repositoryUrl ?? null,
 					repositoryOwner: project.repositoryOwner ?? null,
 					repositoryName: project.repositoryName ?? null,
-					prompt: "Answer using the current project context, roadmap, documents, attached files, links, transcripts, codebase, and related feature context when relevant.",
 				}
-			: {
-					projectId,
-					prompt: "Answer using the current project context, attached artifacts, and related feature context when relevant.",
-				};
+			: { projectId };
 		return {
 			...base,
 			...(testCasesContext ? { testCasesContext } : {}),
@@ -937,24 +929,12 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 
 	if (!project) {
 		return (
-			<div className="flex flex-col items-center justify-center py-12">
-				<div className="mb-4 rounded-2xl bg-muted p-4">
-					<FolderIcon className="size-8 text-muted-foreground" />
-				</div>
-				<p className="mb-2 font-medium text-foreground/70">
-					Project not found
-				</p>
-				<p className="mb-6 text-foreground/50 text-sm">
-					The project you're looking for doesn't exist or has been
-					deleted.
-				</p>
-				<Button
-					onClick={() => router.push("/app/projects")}
-					className="gap-2"
-				>
-					Back to Projects
-				</Button>
-			</div>
+			<ProjectUnavailable
+				error={projectError}
+				basePath={basePath}
+				onRetry={() => refetch()}
+				isRetrying={isProjectFetching}
+			/>
 		);
 	}
 

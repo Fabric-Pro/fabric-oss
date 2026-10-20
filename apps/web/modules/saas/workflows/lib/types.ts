@@ -142,6 +142,7 @@ export interface ConfigField {
 		| "json"
 		| "mcp-selector"
 		| "mcp-tool-selector"
+		| "capability-selector"
 		| "ai-model-selector";
 	required?: boolean;
 	placeholder?: string;

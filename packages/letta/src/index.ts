@@ -27,6 +27,10 @@ export type { CreateOrchestratorOptions } from "./agents/orchestrator";
 export type { CreateToolExecutorOptions } from "./agents/tool-executor";
 // Client
 export { getLettaClient, LettaClient, LettaError } from "./client";
+export {
+	matchesAgentMetadata,
+	orchestratorMemoryMetadata,
+} from "./agent-metadata";
 // Memory
 export {
 	createSharedBlockConfig,

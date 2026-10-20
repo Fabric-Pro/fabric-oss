@@ -18,6 +18,7 @@
  * by the half-the-slots rule. The company context queue (Fizzy #2719) is
  * pinned the same way: its worker carries the shared workflows and
  * activities, since company ingestion runs the project pipeline's own code.
+ * The Proposal export queue (Fizzy #2946) gets two slots, one Chromium each.
  *
  * Run with: pnpm --filter @repo/temporal test -- worker-bootstrap
  */
@@ -166,6 +167,24 @@ describe("worker bootstrap", () => {
 		);
 	});
 
+	it("creates a worker polling proposal-export with two slots and the shared workflows and activities", () => {
+		const proposalExport = mocks.create.mock.calls.find(
+			([options]) => options.taskQueue === "proposal-export",
+		);
+		expect(proposalExport).toBeDefined();
+		expect(proposalExport?.[0]).toMatchObject({
+			namespace: "default",
+			maxConcurrentActivityTaskExecutions: 2,
+			reuseV8Context: true,
+		});
+		expect(proposalExport?.[0].activities).toBe(
+			mocks.create.mock.calls[0][0].activities,
+		);
+		expect(proposalExport?.[0].workflowBundle).toBe(
+			mocks.create.mock.calls[0][0].workflowBundle,
+		);
+	});
+
 	it("creates a worker polling company-context with the shared ingestion workflows and activities", () => {
 		const company = mocks.create.mock.calls.find(
 			([options]) => options.taskQueue === "company-context",
@@ -232,6 +251,9 @@ describe("worker bootstrap", () => {
 		expect(active.map((entry) => entry.options.taskQueue)).toContain(
 			"company-context",
 		);
+		expect(active.map((entry) => entry.options.taskQueue)).toContain(
+			"proposal-export",
+		);
 		expect(new Set(createdQueues()).size).toBe(createdQueues().length);
 	});
 });
@@ -248,12 +270,16 @@ describe("activity slots and the database pool", () => {
 		expect(worker.ACTIVITY_SLOTS.companyContext).toBe(3);
 	});
 
+	it("gives Proposal exports two slots, one browser each", () => {
+		expect(worker.ACTIVITY_SLOTS.proposalExport).toBe(2);
+	});
+
 	it("sizes the pool at half the slot total, rounded up", () => {
-		expect(total()).toBe(102);
+		expect(total()).toBe(104);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
 			String(Math.ceil(total() / 2)),
 		);
-		expect(process.env.DATABASE_POOL_MAX).toBe("51");
+		expect(process.env.DATABASE_POOL_MAX).toBe("52");
 	});
 
 	it("gives every slot entry to exactly one created worker", () => {
@@ -271,7 +297,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(19);
+		expect(createdQueues()).toHaveLength(20);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());

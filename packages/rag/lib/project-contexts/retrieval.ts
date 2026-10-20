@@ -20,6 +20,7 @@ import {
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateEmbedding } from "../embedding";
+import type { TenantContext } from "../embedding/types";
 import { generateSparseVector } from "../embedding/sparse";
 import { rerankContexts } from "../reranking";
 import type { RerankerProviderType } from "../reranking/types";
@@ -44,6 +45,11 @@ const DEFAULT_DIVERSE_MAX_CONTEXTS = 8;
 const DIVERSE_CANDIDATE_CHUNKS = 120;
 
 export interface ProjectContextRetrievalOptions {
+	conversationId?: string;
+	usageOrigin?: Pick<
+		TenantContext,
+		"projectId" | "conversationId" | "frameId" | "featureKey"
+	>;
 	projectId: string;
 	query: string;
 	userId: string;
@@ -208,10 +214,12 @@ export async function retrieveProjectContexts(
 
 		// Generate embedding for the query
 		const embeddingResult = await generateEmbedding(query, {
+			conversationId: options.conversationId,
 			userId,
 			organizationId,
 			projectId,
 			tags: ["rag-query", "project-context"],
+			...options.usageOrigin,
 		});
 
 		if (

@@ -17,7 +17,9 @@
  *     DocumentVersionHistory.test);
  *   - a slot-free accept and an ordinary save send what they always sent;
  *   - a CONFLICT shows the conflict toast, reports no success, leaves the
- *     proposal in the editor, reads as unsaved, and refetches the document.
+ *     proposal in the editor, reads as unsaved, and refetches the document;
+ *     a CONFLICT because a generation run holds the document says a run is
+ *     writing instead (Fizzy #2946).
  *
  * Mocking harness copied from `DocumentEditor.visual-slots.test.tsx`. Changed
  * here: a small fake server behind `documents.get` and `documents.update`
@@ -53,6 +55,8 @@ let serverStatus = "COMPLETED";
 let serverType = "BUSINESS_CASE";
 let documentGetCalls = 0;
 const saveCalls: Array<Record<string, unknown>> = [];
+/** The next save is refused with this error, writing nothing. */
+let refuseNextSave: Error | null = null;
 
 function serverDocument() {
 	return {
@@ -69,6 +73,11 @@ function serverDocument() {
 
 async function fakeUpdate(vars: Record<string, unknown>) {
 	saveCalls.push({ ...vars });
+	const refusal = refuseNextSave;
+	refuseNextSave = null;
+	if (refusal) {
+		throw refusal;
+	}
 	if (
 		vars.expectedVersion !== undefined &&
 		vars.expectedVersion !== server.version
@@ -586,6 +595,7 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		serverStatus = "COMPLETED";
 		serverType = "BUSINESS_CASE";
 		documentGetCalls = 0;
+		refuseNextSave = null;
 		saveSlot = window.document.createElement("div");
 		window.document.body.appendChild(saveSlot);
 		queryClient = new QueryClient({
@@ -781,6 +791,39 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		expect(cachedDocument()).toMatchObject({
 			content: elsewhere,
 			version: 8,
+		});
+	});
+
+	it("a slotted accept refused because a generation run holds the document says a run is writing, not that the document changed, and keeps the proposal unsaved (Fizzy #2946)", async () => {
+		const { rerender, editor } = await mount(STORED);
+		const getCallsBeforeAccept = documentGetCalls;
+		refuseNextSave = Object.assign(
+			new Error(
+				"A generation run is writing this document; try again when it finishes.",
+			),
+			{
+				code: "CONFLICT",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			},
+		);
+
+		await acceptProposal(rerender, PROPOSED);
+
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0].expectedVersion).toBe(7);
+		expect(server).toEqual({ content: STORED, version: 7 });
+
+		expect(toast.info).toHaveBeenCalledWith("saveBlocked.runLive");
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(toast.success).not.toHaveBeenCalled();
+
+		const inEditor = getEditorMarkdownForSave(editor) ?? "";
+		expect(inEditor).toContain("then three");
+		expect(inEditor).toContain(SLOT_A);
+		expect(saveButton()).toHaveAccessibleName("Save document");
+
+		await waitFor(() => {
+			expect(documentGetCalls).toBeGreaterThan(getCallsBeforeAccept);
 		});
 	});
 

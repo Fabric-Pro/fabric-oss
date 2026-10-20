@@ -35,15 +35,17 @@ Sie können auch in jedem Chat mit Fabric Agent danach fragen: „Erstelle mir e
 
 ## Wer einen Workspace öffnen kann
 
-**Ein neuer Workspace wird mit allen in Ihrer Organisation geteilt.** Soll eine Seite nur Ihnen gehören, sagen Sie das bei der Anfrage („halte ihn privat"), und der Agent speichert sie als privat. Jede Karte in der Liste zeigt, mit wem die Seite geteilt ist.
+**Ein neuer Workspace wird mit allen in Ihrer Organisation geteilt.** Um diese organisationsweite Freigabe zu entfernen, bitten Sie den Agenten: „Halte ihn privat". Bei einer mit einem Projekt verknüpften Seite behalten akzeptierte Projektmitglieder ihren Zugriff; eine eigenständige private Seite kann nur ihre Autorin oder ihr Autor öffnen. Jede Karte in der Liste zeigt, mit wem die Seite geteilt ist.
 
 | Angezeigt als | Wer sie öffnen kann |
 |---------------|---------------------|
 | **Organization** | Jedes Mitglied Ihrer Organisation |
 | **Private** | Nur Sie (und bei einer mit einem Projekt verknüpften Seite die Mitglieder dieses Projekts) |
-| **Invited** | Die Personen, die Sie per E-Mail eingeladen haben |
+| **Invited** | Die Autorin oder der Autor und per E-Mail eingeladene Personen; bei einer Projektseite auch akzeptierte Projektmitglieder |
 | **Project** | Die akzeptierten Mitglieder des zugehörigen Projekts |
 | **Public** | Jeder mit dem Link, angemeldet oder nicht |
+
+Einen öffentlichen Link gibt es erst, nachdem die Person, die die Seite geschrieben hat, sie öffentlich geteilt hat, und nur wenn Ihre Organisation öffentliche Links erlaubt; eine Seite ist nie öffentlich, nur weil sie erstellt wurde. Eine Seite, die außerhalb eines Projekts und eines Workspaces geschrieben wird, zum Beispiel in einem Chat ohne geöffnetes Projekt, ist privat für die Person, die sie angefordert hat, bis diese sie teilt.
 
 Die Liste zeigt die Workspaces, die Sie geschrieben haben, die mit Ihrer Organisation geteilten und die eines Projekts, das Sie öffnen können. Ein Gast eines einzelnen Projekts, der kein Mitglied der Organisation ist, sieht die Liste nicht; eine Seite, die jemand mit ihm teilt, kann er trotzdem öffnen.
 
@@ -55,7 +57,19 @@ Unter jedem Workspace steht der Abschnitt **Comments**. Wer die Seite öffnen ka
 
 ## Eine Kopie anlegen
 
-**Make a copy** in der Kopfzeile der Seite legt eine Kopie des Workspace an, die nur Ihnen gehört, im selben Projekt, damit Sie sie mit Fabric Agent ändern können. Was Personen in der Seite gespeichert haben, wird nicht kopiert. Nutzt die Seite Fabric-Tools, behält die Kopie sie; Fabric listet sie deshalb zuerst auf und bittet Sie um Bestätigung.
+**Make a copy** in der Kopfzeile der Seite legt einen Workspace in Ihrem Besitz im selben Projekt an, den Sie mit Fabric Agent ändern können. Die Kopie beginnt mit der Freigabe **Private**; Mitglieder des zugehörigen Projekts können sie weiterhin öffnen. Was Personen in der Seite gespeichert haben, wird nicht kopiert. Nutzt die Seite Fabric-Tools, behält die Kopie sie; Fabric listet sie deshalb zuerst auf und bittet Sie um Bestätigung.
+
+## Zusammenfassungen von Azure-DevOps-Arbeitselementen
+
+Verbinden Sie Azure DevOps unter **Connections**. Öffnen Sie anschließend **Settings → Development** Ihres Fabric-Projekts und wählen Sie unter **Project Management Integration** das Azure-DevOps-Projekt aus. Jede Person, die den Workspace öffnet, verwendet ihre eigene Verbindung und ihre eigenen Berechtigungen.
+
+Bitten Sie Fabric Agent:
+
+> Erstelle für dieses Projekt einen Workspace mit einer Auswahl der Teammitglieder, der Anzahl aller zugewiesenen Arbeitselemente und der Anzahl im genauen Status "In Development". Zeige auch die Anzahl der verbundenen Coding-Instructions-Dateien. Deaktiviere Refresh, solange Azure DevOps nicht eingerichtet ist, und aktiviere es automatisch, sobald die Verbindung bereit ist.
+
+Die Auswahl enthält Mitglieder der Teams im eingerichteten Projekt, einschließlich Personen ohne zugewiesene Arbeitselemente. Wählen Sie eine Person aus, um ihre Zahlen abzurufen. **Refresh** liest die aktuellen Zahlen und Anweisungsdateien. Eine Seite, die ihre Verbindung prüft, kann Refresh nach der Einrichtung aktivieren, ohne neu geschrieben zu werden.
+
+Die Zahlen beziehen sich auf das ausgewählte Projekt und den Zugriff der betrachtenden Person. Kann ein Abruf nicht abgeschlossen werden, sollte die Seite das unvollständige Ergebnis erklären und keine exakten Gesamtzahlen anzeigen. Die Anzahl der Coding Instructions stammt aus der verbundenen Anweisungsquelle. Beim Lesen aus einem Repository wird der verwendete Git-Commit angegeben.
 
 ## Was eine Seite speichern, fragen und lesen kann
 
@@ -99,6 +113,7 @@ Wie ein Aufruf behandelt wird:
 - **Eine Seite arbeitet auf ihren eigenen Daten.** Jeder Aufruf, der Datensätze, Dateien oder Kommentare der Seite berührt, wird für diese Seite ausgeführt, was auch immer das Skript sagt.
 - **Lesen der eigenen Daten läuft sofort.** Ebenso Tools, die nur lesen, etwa Projekte oder Dokumente auflisten.
 - **Ändern fragt zuerst Sie.** Ein Tool, das etwas ändern kann, zeigt Ihnen, was die Seite tun will, einschließlich jedes Werts, den sie senden würde, und läuft nur, wenn Sie es erlauben. Ihr Ja gilt für dieses Tool in dieser Version der Seite, bis Sie den Browser-Tab schließen. Wird die Seite bearbeitet, werden Sie erneut gefragt.
+- **Eine Bearbeitung verwirft unbeantwortete Anfragen.** Ändert sich die Seite, während eine Frage offen ist oder auf ihre Antwort wartet, kann diese Anfrage nicht mehr ausgeführt werden. Versuchen Sie es auf der aktuellen Seite erneut; die Zustimmung zu einer früheren Frage gilt nie für deren Ersatz.
 - **Eine Frage an das Modell und das Lesen von einem verbundenen Server fragen einmal** pro Version der Seite, weil sie Ihre KI-Nutzung verbrauchen oder Ihre eigenen Konten erreichen.
 - **Eine Seite, die außerhalb ihrer eigenen Daten gelesen hat, fragt öfter.** Hat eine Seite erfahren, wer Sie sind, von einem verbundenen Server gelesen, eine Antwort vom Modell erhalten oder andere Fabric-Daten gelesen, fragt jede Änderung an den auf der Seite geteilten Daten erneut und zeigt den Wert, bis die Seite neu geladen wird. Eine Seite, die geteilte Daten festhält, fragt außerdem vor jeder anderen Art von Änderung jedes Mal.
 - **Einige Tools stehen einer Seite nie zur Verfügung:** die Organisation wechseln, Berechtigungen anfordern oder entziehen, ein Frame teilen, einen Workflow erstellen, bearbeiten oder veröffentlichen, ein Frame erstellen oder bearbeiten, herausfinden, wer Sie über einen Namen hinaus sind, Ihre Organisationen auflisten, eine frühere Version wiederherstellen, eine Kopie anlegen und einen Kommentar hinzufügen. Für die ersten bitten Sie Fabric Agent; Kommentare fügen Sie über den Bereich unter der Seite hinzu.
@@ -107,7 +122,7 @@ Wie ein Aufruf behandelt wird:
 
 ## Was eine Seite nicht kann
 
-Ein Workspace läuft in einem abgeschotteten Frame. Er kann keine Netzwerkanfragen stellen, Ihre Cookies oder Ihren Speicher nicht lesen, keine Skripte, Stile oder Schriften von einer anderen Website laden und keine anderen Seiten in sich öffnen. Bilder und Schriften müssen in die Seite eingebettet sein. So kann eine Seite, die jemand anderes geschrieben hat, das, was sie zeigt, nirgendwohin senden.
+Ein Workspace läuft in einem abgeschotteten Frame, auch beim Öffnen über einen öffentlichen Link. Er kann keine Netzwerkanfragen stellen, Ihre Cookies oder Ihren Speicher nicht lesen, keine Skripte, Stile oder Schriften von einer anderen Website laden und keine anderen Seiten in sich öffnen. Bilder und Schriften müssen in die Seite eingebettet sein. So kann eine Seite, die jemand anderes geschrieben hat, das, was sie zeigt, nirgendwohin senden.
 
 Eine Seite, die ein geplanter Workflow ohne Aufsicht geschrieben hat, wird ganz ohne Skript angezeigt und liest sich wie ein statischer Bericht. Seiten, die in einem Chat geschrieben wurden, behalten ihre Schaltflächen.
 

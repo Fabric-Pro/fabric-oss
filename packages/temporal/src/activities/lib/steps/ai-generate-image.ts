@@ -104,6 +104,8 @@ export async function executeAiGenerateImageStep(
 				providerModelId: imageModel,
 				taskType: "IMAGE",
 				jobType: params.jobType,
+				featureKey: "workflow",
+				workflowExecutionId: params.executionId,
 				inputTokens: 0,
 				outputTokens: 0,
 				totalTokens: 0,
@@ -178,6 +180,8 @@ async function enhanceImagePrompt(
 				organizationId: params.organizationId,
 				projectId: params.projectId,
 				jobType: params.jobType,
+				featureKey: "workflow",
+				workflowExecutionId: params.executionId,
 			},
 		);
 		const result = await generateText({

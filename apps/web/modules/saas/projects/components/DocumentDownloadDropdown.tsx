@@ -1,7 +1,13 @@
 "use client";
 
+import type {
+	ProposalExportFailureCode,
+	ProposalExportFormat,
+	ProposalExportWarningCode,
+} from "@repo/temporal/proposal-export-types";
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
 import { stripVisualSlots } from "@repo/utils/glossy/visual-slots";
+import { scrubProposalExport } from "@repo/utils/proposal-artifact/export-scrub";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { Button } from "@ui/components/button";
 import {
@@ -37,6 +43,11 @@ import {
 	triggerBlobDownload,
 	triggerUrlDownload,
 } from "../lib/markdown-to-document";
+import {
+	exportsOnServer,
+	type ProposalExportWarning,
+	runProposalExport,
+} from "../lib/proposal-export-client";
 import { getOrpcCode } from "./field-mapping/orpc-error";
 
 interface Props {
@@ -175,6 +186,48 @@ async function resolveS3Urls(
 	}
 }
 
+/** How long a click keeps the browser's user activation, near enough. */
+const ACTIVATION_WINDOW_MS = 4_000;
+
+/**
+ * Whether a download started now still counts as the reader's click. Where
+ * the browser cannot say, the time since the click stands in for it.
+ */
+function stillActivated(clickedAt: number): boolean {
+	const activation = (
+		navigator as Navigator & { userActivation?: { isActive: boolean } }
+	).userActivation;
+	return activation
+		? activation.isActive
+		: Date.now() - clickedAt < ACTIVATION_WINDOW_MS;
+}
+
+/** The words for each warning an export can carry; any other goes unnamed. */
+const EXPORT_WARNING_KEYS = {
+	DIAGRAM_PLACEHOLDER: "exportWarningDiagramPlaceholder",
+	DIAGRAM_LIMIT: "exportWarningDiagramLimit",
+	IMAGE_DROPPED: "exportWarningImageDropped",
+	IMAGE_LIMIT: "exportWarningImageLimit",
+	EXTERNAL_IMAGE_DROPPED: "exportWarningExternalImageDropped",
+	LOGO_UNAVAILABLE: "exportWarningLogoUnavailable",
+	CONTENTS_WITHOUT_PAGE_NUMBERS: "exportWarningContentsWithoutPageNumbers",
+} as const satisfies Readonly<Record<ProposalExportWarningCode, string>>;
+
+/** Failures the menu explains; any other reads as a plain failure. */
+const EXPORT_FAILURE_KEYS = {
+	DOCUMENT_TOO_LARGE: "exportFailureTooLarge",
+	TOO_MANY_PAGES: "exportFailureTooManyPages",
+} as const satisfies Readonly<
+	Partial<Record<ProposalExportFailureCode, string>>
+>;
+
+function keyFor<T extends Record<string, string>>(
+	keys: T,
+	code: string,
+): T[keyof T] | null {
+	return Object.hasOwn(keys, code) ? keys[code as keyof T] : null;
+}
+
 export function DocumentDownloadDropdown({
 	documentId,
 	title,
@@ -188,6 +241,9 @@ export function DocumentDownloadDropdown({
 	const t = useTranslations("projects.documentDownload");
 	const [isLoading, setIsLoading] = useState(false);
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	// A client-document Proposal (Fizzy #2946) is exported by the server from
+	// the theme its page wears; everything else keeps the browser export.
+	const serverExport = exportsOnServer(documentType, proposalArtifactEnabled);
 	// The href carries the gate; the type check keeps an ineligible
 	// document from offering the item whatever the parent passes (R2).
 	const glossyItemHref =
@@ -248,6 +304,11 @@ export function DocumentDownloadDropdown({
 			// DOCX renderers leave them out themselves; the Markdown file is
 			// written from the raw body, so it strips them here.
 			let content = stripVisualSlots(await fetchContent());
+			// The client document leaves the app without citation markers or a
+			// Source Index, as its PDF and Word files do (Fizzy #2946).
+			if (serverExport) {
+				content = scrubProposalExport(content).markdown;
+			}
 
 			// 1. Replace mermaid code blocks with rendered diagram images
 			const mermaidBlockRe = /```mermaid\n([\s\S]*?)```/g;
@@ -326,9 +387,7 @@ export function DocumentDownloadDropdown({
 		}
 	};
 
-	const handleDownloadPdf = async (e: React.MouseEvent) => {
-		e.stopPropagation();
-		setIsLoading(true);
+	const downloadPdfInBrowser = async () => {
 		try {
 			const content = await fetchContent();
 			const blob = await renderMarkdownToPdf(content);
@@ -337,14 +396,10 @@ export function DocumentDownloadDropdown({
 			toast.error(
 				`Failed to generate PDF: ${err instanceof Error ? err.message : "Unknown error"}`,
 			);
-		} finally {
-			setIsLoading(false);
 		}
 	};
 
-	const handleDownloadDocx = async (e: React.MouseEvent) => {
-		e.stopPropagation();
-		setIsLoading(true);
+	const downloadDocxInBrowser = async () => {
 		try {
 			const content = await fetchContent();
 			const blob = await renderMarkdownToDocx(content, title);
@@ -353,9 +408,126 @@ export function DocumentDownloadDropdown({
 			toast.error(
 				`Failed to generate DOCX: ${err instanceof Error ? err.message : "Unknown error"}`,
 			);
+		}
+	};
+
+	const downloadInBrowser = (exportFormat: ProposalExportFormat) =>
+		exportFormat === "pdf"
+			? downloadPdfInBrowser()
+			: downloadDocxInBrowser();
+
+	/** What an export left out, in one note, so the reader is not surprised. */
+	const announceWarnings = (
+		format: string,
+		warnings: ProposalExportWarning[],
+	) => {
+		const lines = warnings.flatMap((warning) => {
+			const key = keyFor(EXPORT_WARNING_KEYS, warning.code);
+			return key && warning.count > 0
+				? [t(key, { count: warning.count })]
+				: [];
+		});
+		if (lines.length > 0) {
+			toast.info(t("exportLeftOut", { format }), {
+				description: lines.join(" "),
+			});
+		}
+	};
+
+	/**
+	 * Export on the server, wait for it, and hand the file over. A document
+	 * the server says it does not cover goes to the browser export instead;
+	 * a client document whose export fails never does, so the reader never
+	 * receives an unthemed copy in its place.
+	 */
+	const exportOnServer = async (exportFormat: ProposalExportFormat) => {
+		const format = t(exportFormat === "pdf" ? "formatPdf" : "formatDocx");
+		const retry = {
+			label: t("exportRetry"),
+			onClick: () => {
+				void runExport(exportFormat);
+			},
+		};
+		const clickedAt = Date.now();
+		try {
+			const outcome = await runProposalExport({
+				projectId,
+				documentId,
+				format: exportFormat,
+			});
+			switch (outcome.kind) {
+				case "unsupported":
+					await downloadInBrowser(exportFormat);
+					return;
+				case "ready": {
+					const download = () =>
+						triggerUrlDownload(outcome.url, outcome.fileName);
+					if (stillActivated(clickedAt)) {
+						download();
+					} else {
+						toast.success(t("exportReady", { format }), {
+							duration: 60_000,
+							action: {
+								label: t("exportDownload"),
+								onClick: download,
+							},
+						});
+					}
+					announceWarnings(format, outcome.warnings);
+					return;
+				}
+				case "rate-limited":
+					toast.error(
+						outcome.retryAfterSeconds === null
+							? t("exportRateLimitedSoon")
+							: t("exportRateLimited", {
+									seconds: outcome.retryAfterSeconds,
+								}),
+						{ action: retry },
+					);
+					return;
+				case "deadline":
+					toast.error(t("exportStillRunning", { format }), {
+						action: retry,
+					});
+					return;
+				case "failed": {
+					const key = keyFor(EXPORT_FAILURE_KEYS, outcome.code);
+					toast.error(
+						key
+							? t(key, { format })
+							: t("exportFailed", { format }),
+						{ action: retry },
+					);
+					return;
+				}
+			}
+		} catch {
+			toast.error(t("exportFailed", { format }), { action: retry });
+		}
+	};
+
+	const runExport = async (format: ProposalExportFormat) => {
+		setIsLoading(true);
+		try {
+			if (serverExport) {
+				await exportOnServer(format);
+			} else {
+				await downloadInBrowser(format);
+			}
 		} finally {
 			setIsLoading(false);
 		}
+	};
+
+	const handleDownloadPdf = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		void runExport("pdf");
+	};
+
+	const handleDownloadDocx = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		void runExport("docx");
 	};
 
 	const originalExtension = fileExtension(sourceFile?.filename ?? null);

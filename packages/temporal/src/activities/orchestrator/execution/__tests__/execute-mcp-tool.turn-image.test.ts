@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: h.getCachedMcpClientForConfig,
 	invalidateMcpClientCache: vi.fn(),
+	isClosedClientRefusedBeforeSend: () => false,
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));

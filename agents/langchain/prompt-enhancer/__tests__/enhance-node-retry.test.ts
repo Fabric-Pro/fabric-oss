@@ -196,3 +196,24 @@ describe("enhanceNode retry gate", () => {
 		expect(update.error).toContain("The AI had difficulty processing");
 	});
 });
+
+it("clears a retry error when the next graph attempt succeeds", async () => {
+	const { START, StateGraph } = await import("@langchain/langgraph");
+	const { PromptEnhancerState } = await import("../state");
+	mockInvoke.mockReset();
+	mockInvoke.mockRejectedValueOnce(
+		Object.assign(new Error("Unavailable"), { status: 503 }),
+	);
+	mockInvoke.mockResolvedValueOnce(
+		new AIMessage("Here is the requested clarification."),
+	);
+	const graph = new StateGraph(PromptEnhancerState)
+		.addNode("enhance", enhanceNode)
+		.addEdge(START, "enhance")
+		.compile();
+	const result = await graph.invoke(createState());
+	expect(result.error).toBeUndefined();
+	expect(result.messages.at(-1)?.content).toBe(
+		"Here is the requested clarification.",
+	);
+});

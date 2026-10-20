@@ -2,7 +2,9 @@ import { BUILT_IN_TO_FABRIC_TOOLS } from "@repo/database";
 import { describe, expect, it } from "vitest";
 import { getAllFabricAiTools } from "../../activities/orchestrator/tools/fabric-ai-tools";
 import {
+	AGENT_TASK_CAPABILITY_KEYS,
 	agentTaskCapabilityProblem,
+	describeAgentTaskCapabilities,
 	unattendedCapabilityRefusal,
 } from "../agent-task-capabilities";
 
@@ -62,9 +64,29 @@ describe("agentTaskCapabilityProblem", () => {
 		expect(agentTaskCapabilityProblem("project-context")).toBeUndefined();
 	});
 
-	it("refuses a capability the platform does not know", () => {
-		expect(agentTaskCapabilityProblem("telepathy")).toBe(
+	it("refuses a capability the platform does not know, listing the ones it has", () => {
+		const problem = agentTaskCapabilityProblem("telepathy");
+
+		expect(problem).toContain(
 			'"telepathy" is not a built-in capability an agent can use.',
+		);
+		expect(problem).toContain(
+			`Use one of: ${AGENT_TASK_CAPABILITY_KEYS.join(", ")}.`,
+		);
+	});
+
+	it("refuses a tool name given where a capability belongs, pointing at project-context", () => {
+		const problem = agentTaskCapabilityProblem(
+			"fabric_list_project_features",
+		);
+
+		expect(problem).toContain("not a built-in capability");
+		expect(problem).toContain("project-context");
+	});
+
+	it("lists the capabilities when it refuses a refused one", () => {
+		expect(agentTaskCapabilityProblem("web-search")).toContain(
+			"Use one of: ",
 		);
 	});
 
@@ -73,6 +95,43 @@ describe("agentTaskCapabilityProblem", () => {
 			"not a built-in capability",
 		);
 		expect(unattendedCapabilityRefusal("constructor")).toBeUndefined();
+	});
+});
+
+describe("AGENT_TASK_CAPABILITY_KEYS", () => {
+	it("is every capability the platform has that an unattended agent may hold", () => {
+		const expected = Object.keys(BUILT_IN_TO_FABRIC_TOOLS).filter(
+			(capability) =>
+				unattendedCapabilityRefusal(capability) === undefined,
+		);
+
+		expect([...AGENT_TASK_CAPABILITY_KEYS]).toEqual(expected);
+	});
+
+	it("passes the check that refuses everything else", () => {
+		const problems = AGENT_TASK_CAPABILITY_KEYS.filter(
+			(capability) =>
+				agentTaskCapabilityProblem(capability) !== undefined,
+		);
+
+		expect(problems).toEqual([]);
+	});
+
+	it("includes project-context and leaves out every refused capability", () => {
+		expect(AGENT_TASK_CAPABILITY_KEYS).toContain("project-context");
+		expect(AGENT_TASK_CAPABILITY_KEYS).not.toContain("web-search");
+		expect(AGENT_TASK_CAPABILITY_KEYS).not.toContain("create-frames");
+	});
+
+	it("says what project-context grants, and describes every key", () => {
+		const description = describeAgentTaskCapabilities();
+
+		expect(description).toContain(
+			"project-context (read this project's roadmap, documents, sources and meetings)",
+		);
+		for (const capability of AGENT_TASK_CAPABILITY_KEYS) {
+			expect(description).toMatch(new RegExp(`${capability} \\(`));
+		}
 	});
 });
 

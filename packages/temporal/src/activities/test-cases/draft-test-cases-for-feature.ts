@@ -138,12 +138,12 @@ function aiGenerationFailureMessage(error: unknown): string {
 
 /**
  * Mirror a freshly-created case into its ProjectContext row and start the
- * embedding. These cases are brand new, so there is never an existing context to
- * reconcile — this is the create-only half of the request path's
- * `syncTestCaseContext`, sharing its content builder.
+ * embedding. These cases are brand new, so this is a create-only counterpart
+ * of syncTestCaseContext in ../../lib/test-case-context-sync.ts, sharing its
+ * content builder.
  *
- * Best-effort by construction: RAG mirroring must never fail the cases it
- * accompanies.
+ * Best-effort: the catch below contains mirror failures so they do not fail
+ * the case creation this accompanies.
  */
 async function mirrorDraftedCaseToContext(params: {
 	testCase: {

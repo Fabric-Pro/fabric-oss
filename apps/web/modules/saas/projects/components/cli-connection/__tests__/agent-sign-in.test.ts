@@ -13,14 +13,16 @@ import {
 	buildCursorInstallLink,
 	buildInitLine,
 	buildPluginInitLine,
-	claudePluginInstallCommand,
 	buildPortableMcpConfiguration,
 	buildVsCodeInstallLink,
+	claudePluginInstallCommand,
+	codexPluginAddCommand,
 	codexServerName,
 	editorServerName,
 	folderHint,
 	gatewayUrl,
 	gitCredentialHelp,
+	pluginNameForProject,
 } from "../lib/agent-sign-in";
 
 const ORIGIN = "https://app.example.com";
@@ -487,6 +489,33 @@ describe("claudePluginInstallCommand", () => {
 	it("falls back to a fixed name for an id with no letters or digits", () => {
 		expect(claudePluginInstallCommand("---")).toBe(
 			"claude plugin install fabric-project@fabric-project --scope local",
+		);
+	});
+});
+
+describe("pluginNameForProject", () => {
+	it("is fabric- and the last eight letters and digits of the id, lowercased", () => {
+		expect(pluginNameForProject("cm0example0project")).toBe(
+			"fabric-0project",
+		);
+		expect(pluginNameForProject("Ab_Cd-Ef-12")).toBe("fabric-abcdef12");
+	});
+
+	it("falls back to a fixed name for an id with no letters or digits", () => {
+		expect(pluginNameForProject("---")).toBe("fabric-project");
+	});
+});
+
+describe("codexPluginAddCommand", () => {
+	it("adds the plugin from the personal marketplace by its full reference", () => {
+		expect(codexPluginAddCommand("cm0example0project")).toBe(
+			"codex plugin add fabric-0project@personal",
+		);
+	});
+
+	it("falls back to a fixed name for an id with no letters or digits", () => {
+		expect(codexPluginAddCommand("---")).toBe(
+			"codex plugin add fabric-project@personal",
 		);
 	});
 });

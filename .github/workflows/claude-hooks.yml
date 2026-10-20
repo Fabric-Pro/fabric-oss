@@ -25,7 +25,8 @@ concurrency:
 jobs:
   validate:
     name: Validate hooks
-    runs-on: ubuntu-latest
+    # arm64: node syntax checks and node --test only.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 

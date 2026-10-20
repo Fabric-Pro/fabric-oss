@@ -6,6 +6,7 @@
 		"@fabricorg/integrations-notion": "workspace:*",
 		"@fabricorg/integrations-runtime": "workspace:*",
 		"@fabricorg/integrations-slack": "workspace:*",
+		"@fabricorg/sdk": "workspace:*",
 		"@orpc/client": "^1.15.2",
 		"@orpc/json-schema": "^1.15.2",
 		"@orpc/openapi": "^1.15.2",
@@ -49,7 +50,7 @@
 		"archiver": "^7.0.1",
 		"cron-parser": "^5.4.0",
 		"diff": "^8.0.3",
-		"hono": "^4.13.7",
+		"hono": "^4.13.11",
 		"ioredis": "^5.11.1",
 		"jose": "^6.2.2",
 		"nanoid": "^6.0.0",
@@ -71,6 +72,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsgo --noEmit"
 	},
-	"version": "0.0.16",
+	"version": "0.0.17",
 	"license": "Apache-2.0"
 }

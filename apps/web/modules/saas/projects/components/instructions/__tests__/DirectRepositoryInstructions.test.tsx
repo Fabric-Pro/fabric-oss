@@ -35,6 +35,11 @@ function queryOptions(
 	});
 }
 
+vi.mock("../InstructionsPluginReport", () => ({
+	InstructionsPluginReport: () => (
+		<div data-testid="instructions-plugin-report" />
+	),
+}));
 vi.mock("next-intl", () => ({
 	useTranslations: () =>
 		Object.assign((key: string) => key, { raw: () => ({}) }),
@@ -221,6 +226,14 @@ function renderDirectInstructions(
 }
 
 describe("DirectRepositoryInstructions — load order", () => {
+	it("shows the plugin report under the status facts", async () => {
+		renderDirectInstructions();
+
+		expect(
+			await screen.findByTestId("instructions-plugin-report"),
+		).toBeInTheDocument();
+	});
+
 	it("reads the default file while the file list is still loading, and the commit list only afterwards", async () => {
 		state.calls.length = 0;
 		let release = () => {};

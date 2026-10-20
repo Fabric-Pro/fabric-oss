@@ -21,7 +21,7 @@ const mockUpdateOrchestratorMemoryPreferences = vi.fn();
 const mockGetRecentEpisodes = vi.fn();
 const mockSearchEpisodicMemories = vi.fn();
 const mockBuildOrchestratorMemoryContext = vi.fn();
-const mockFormatMemoryContextPrompt = vi.fn();
+const mockBuildMemoryContextPromptVariables = vi.fn();
 const mockCreateEpisodicMemory = vi.fn();
 const mockUpdateRecentActivity = vi.fn();
 const mockLearnPattern = vi.fn();
@@ -37,13 +37,17 @@ vi.mock("@repo/database", () => ({
 		mockSearchEpisodicMemories(...args),
 	buildOrchestratorMemoryContext: (...args: unknown[]) =>
 		mockBuildOrchestratorMemoryContext(...args),
-	formatMemoryContextPrompt: (...args: unknown[]) =>
-		mockFormatMemoryContextPrompt(...args),
+	buildMemoryContextPromptVariables: (...args: unknown[]) =>
+		mockBuildMemoryContextPromptVariables(...args),
 	createEpisodicMemory: (...args: unknown[]) =>
 		mockCreateEpisodicMemory(...args),
 	updateRecentActivity: (...args: unknown[]) =>
 		mockUpdateRecentActivity(...args),
 	learnPattern: (...args: unknown[]) => mockLearnPattern(...args),
+}));
+
+vi.mock("../src/activities/lib/memory-context-prompt", () => ({
+	resolveOrchestratorMemoryPrompt: vi.fn().mockResolvedValue(""),
 }));
 
 // Mock RAG vector store
@@ -105,7 +109,7 @@ describe("Orchestrator Memory System", () => {
 			recentEpisodes: [],
 			relevantEpisodes: [],
 		});
-		mockFormatMemoryContextPrompt.mockReturnValue("");
+		mockBuildMemoryContextPromptVariables.mockReturnValue({});
 		mockGetAIEmbeddingModel.mockResolvedValue({});
 		mockEmbed.mockResolvedValue({ embedding: new Array(1536).fill(0.01) });
 	});
@@ -552,7 +556,7 @@ describe("Memory Evaluation", () => {
 			recentEpisodes: [],
 			relevantEpisodes: [],
 		});
-		mockFormatMemoryContextPrompt.mockReturnValue("");
+		mockBuildMemoryContextPromptVariables.mockReturnValue({});
 	});
 
 	describe("Memory Relevance Scoring", () => {

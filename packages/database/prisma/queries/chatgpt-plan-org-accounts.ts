@@ -41,12 +41,13 @@ export type {
 /**
  * The ChatGPT account is already connected to another organization. One
  * account serves at most one organization (`subject` is unique), and the
- * caller must not learn which one.
+ * caller must not learn which one, so the message says what to do without
+ * naming it.
  */
 export class ChatGptPlanSubjectBoundElsewhereError extends Error {
 	constructor() {
 		super(
-			"This ChatGPT account is already connected to another organization",
+			"This ChatGPT account is already shared by another organization. An admin there has to disconnect it in Settings → AI Providers first; then run this command again.",
 		);
 		this.name = "ChatGptPlanSubjectBoundElsewhereError";
 	}
@@ -328,7 +329,7 @@ export const DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL = "gpt-6-astra";
 export const DEFAULT_CHATGPT_PLAN_ORG_POLICY: ChatGptPlanOrgPolicyValues = {
 	apiFallbackInteractive: "ASK",
 	apiFallbackBackground: "NEVER",
-	headroomPct: 40,
+	headroomPct: 0,
 	fallbackModel: DEFAULT_CHATGPT_PLAN_FALLBACK_MODEL,
 	termsAcknowledgedById: null,
 	termsAcknowledgedAt: null,

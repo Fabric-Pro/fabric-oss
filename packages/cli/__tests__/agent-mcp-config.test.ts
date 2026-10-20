@@ -7,7 +7,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentRegistrationFacts } from "../src/lib/instructions/agent-mcp.js";
 import {
 	readClaudeServers,
@@ -22,6 +22,41 @@ import {
 	mergeSessionStartHook,
 } from "../src/lib/instructions/hook.js";
 import { resolveDestinationRoot } from "../src/lib/instructions/safe-write.js";
+
+const readRace = vi.hoisted(() => ({
+	file: "",
+	afterStat: undefined as (() => Promise<void>) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	async function afterStat(file: unknown) {
+		if (file === readRace.file && readRace.afterStat) {
+			const run = readRace.afterStat;
+			readRace.afterStat = undefined;
+			await run();
+		}
+	}
+	return {
+		...actual,
+		async stat(...args: Parameters<typeof actual.stat>) {
+			const info = await actual.stat(...args);
+			await afterStat(args[0]);
+			return info;
+		},
+		async open(...args: Parameters<typeof actual.open>) {
+			const handle = await actual.open(...args);
+			const stat = handle.stat.bind(handle);
+			handle.stat = (async (
+				...options: Parameters<typeof handle.stat>
+			) => {
+				const info = await stat(...options);
+				await afterStat(args[0]);
+				return info;
+			}) as typeof handle.stat;
+			return handle;
+		},
+	};
+});
 
 const ORIGIN = "https://deploy.example.com";
 const PROJECT = "project-example-one";
@@ -727,4 +762,97 @@ describe("readCodexServers", () => {
 			state: "unlocated",
 		});
 	});
+});
+
+describe("bounded configuration reads", () => {
+	it("rejects a configuration that grows after its descriptor metadata was checked", async () => {
+		const home = await folder("growth");
+		const file = path.join(home, "config.toml");
+		await writeFile(file, "# small\n");
+		readRace.file = file;
+		readRace.afterStat = async () => {
+			await writeFile(file, "#".repeat(16 * 1024 * 1024 + 1));
+		};
+		expect(
+			await readCodexServers({ home: null, env: { CODEX_HOME: home } }),
+		).toEqual({ state: "unreadable" });
+	});
+	it.skipIf(process.platform === "win32")(
+		"continues to read a regular configuration through a symlink",
+		async () => {
+			const { symlink } = await import("node:fs/promises");
+			const home = await folder("symlink");
+			await writeFile(
+				path.join(home, "real.toml"),
+				'[mcp_servers.example]\nurl = "https://example.com"\n',
+			);
+			await symlink("real.toml", path.join(home, "config.toml"));
+			expect(
+				await readCodexServers({
+					home: null,
+					env: { CODEX_HOME: home },
+				}),
+			).toEqual({
+				state: "read",
+				servers: [{ name: "example", url: "https://example.com" }],
+			});
+		},
+	);
+});
+
+it("reads the opened configuration when its pathname is replaced after metadata is checked", async () => {
+	const { rename } = await import("node:fs/promises");
+	const home = await folder("replacement");
+	const file = path.join(home, "config.toml");
+	await writeFile(
+		file,
+		'[mcp_servers.original]\nurl = "https://example.com"\n',
+	);
+	readRace.file = file;
+	readRace.afterStat = async () => {
+		await rename(file, `${file}.old`);
+		await writeFile(
+			file,
+			'[mcp_servers.replacement]\nurl = "https://example.com"\n',
+		);
+	};
+	expect(
+		await readCodexServers({ home: null, env: { CODEX_HOME: home } }),
+	).toEqual({
+		state: "read",
+		servers: [{ name: "original", url: "https://example.com" }],
+	});
+});
+it("rejects a Claude user configuration that grows after its metadata is checked", async () => {
+	const { home, cwd } = await claudeFiles({ claudeJson: {} });
+	readRace.file = path.join(home, ".claude.json");
+	readRace.afterStat = async () => {
+		await writeFile(readRace.file, `${" ".repeat(16 * 1024 * 1024)}{}`);
+	};
+	expect(
+		await readClaudeServers({
+			home,
+			cwd,
+			env: {},
+			platform: process.platform,
+		}),
+	).toEqual({ state: "unreadable" });
+});
+it("discards an oversized shared Claude configuration while keeping user registration readable", async () => {
+	const { home, cwd } = await claudeFiles({ claudeJson: {}, mcpJson: {} });
+	readRace.file = path.join(cwd, ".mcp.json");
+	readRace.afterStat = async () => {
+		await writeFile(
+			readRace.file,
+			`${" ".repeat(16 * 1024 * 1024)}{"mcpServers":{"replacement":{"url":"https://example.com"}}}`,
+		);
+	};
+	expect(
+		await readClaudeServers({
+			home,
+			cwd,
+			env: {},
+			platform: process.platform,
+		}),
+	).toEqual({ state: "read", servers: [] });
 });

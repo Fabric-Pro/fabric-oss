@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findScheduleCron } from "../../schedules/workflow-builder-schedule";
+import { AGENT_TASK_CAPABILITY_KEYS } from "../agent-task-capabilities";
 import {
 	AGENT_TASK_NODE_TYPE,
 	AgentTaskNodeConfigSchema,
@@ -7,10 +8,10 @@ import {
 	applyPresetPatch,
 	buildAgentTaskToFramePreset,
 	FRAME_SURFACES,
-	PUBLISH_FRAME_NODE_TYPE,
 	PresetCreateArgsSchema,
 	PresetPatchSchema,
 	PresetUpdateArgsSchema,
+	PUBLISH_FRAME_NODE_TYPE,
 	PublishFrameNodeConfigSchema,
 	readGraphFacts,
 	WorkflowDraftSchema,
@@ -432,6 +433,85 @@ describe("the arguments the MCP tools accept", () => {
 		for (const advertised of Object.keys(properties)) {
 			expect(accepted).toContain(advertised);
 		}
+	});
+
+	it("advertises no update preset property the zod arguments would refuse", () => {
+		const update = FABRIC_WORKFLOW_TOOL_DEFINITIONS.find(
+			(definition) => definition.name === "fabric_update_workflow",
+		);
+		const properties = (
+			update?.inputSchema.properties as {
+				preset: { properties: Record<string, unknown> };
+			}
+		).preset.properties;
+
+		const accepted = Object.keys(PresetUpdateArgsSchema.shape);
+
+		for (const advertised of Object.keys(properties)) {
+			expect(accepted).toContain(advertised);
+		}
+	});
+
+	it.each(["fabric_create_workflow", "fabric_update_workflow"])(
+		"%s offers builtInToolNames as the capability keys, not tool names",
+		(toolName) => {
+			const definition = FABRIC_WORKFLOW_TOOL_DEFINITIONS.find(
+				(candidate) => candidate.name === toolName,
+			);
+			const properties = (
+				definition?.inputSchema.properties as {
+					preset: {
+						properties: {
+							builtInToolNames: {
+								items: { enum: readonly string[] };
+								description: string;
+							};
+						};
+					};
+				}
+			).preset.properties;
+
+			const field = properties.builtInToolNames;
+
+			expect(field.items.enum).toEqual([...AGENT_TASK_CAPABILITY_KEYS]);
+			expect(field.items.enum).toContain("project-context");
+			expect(field.items.enum).not.toContain(
+				"fabric_list_project_features",
+			);
+			expect(field.description).toBeTruthy();
+		},
+	);
+
+	it("says on creation what each capability grants", () => {
+		const create = FABRIC_WORKFLOW_TOOL_DEFINITIONS.find(
+			(candidate) => candidate.name === "fabric_create_workflow",
+		);
+		const field = (
+			create?.inputSchema.properties as {
+				preset: {
+					properties: { builtInToolNames: { description: string } };
+				};
+			}
+		).preset.properties.builtInToolNames;
+
+		expect(field.description).toContain(
+			"project-context (read this project's roadmap, documents, sources and meetings)",
+		);
+	});
+
+	it("accepts every capability key the schema offers", () => {
+		const created = PresetCreateArgsSchema.safeParse({
+			name: "Weekly work items",
+			cron: "0 9 * * 1",
+			prompt: "Summarise.",
+			builtInToolNames: [...AGENT_TASK_CAPABILITY_KEYS],
+		});
+		const updated = PresetUpdateArgsSchema.safeParse({
+			builtInToolNames: [...AGENT_TASK_CAPABILITY_KEYS],
+		});
+
+		expect(created.success).toBe(true);
+		expect(updated.success).toBe(true);
 	});
 });
 

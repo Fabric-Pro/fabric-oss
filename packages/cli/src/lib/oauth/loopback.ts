@@ -6,9 +6,15 @@
  * path. A callback is accepted only when its `state` matches the one this login
  * started; anything else is answered with an error page and does not end the
  * wait, so a stray or hostile request cannot cancel a login in progress.
+ *
+ * By default the browser is answered the moment the code arrives. A caller
+ * whose real outcome comes later — `fabric connect chatgpt`, which still has to
+ * upload the sign-in to Fabric — can hold that reply open with `deferPage` and
+ * write the outcome itself with `finish`, so the tab never says "Signed in"
+ * above a refusal shown only in the terminal.
  */
 
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const CALLBACK_PATH = "/callback";
@@ -40,12 +46,45 @@ export class CallbackError extends Error {
 	}
 }
 
+/** A page the browser shows at the end of a sign-in; plain text, escaped on output. */
+export interface BrowserPage {
+	title: string;
+	body: string;
+}
+
+/** How long a held reply waits for `finish` when the caller does not say. */
+const DEFERRED_PAGE_TIMEOUT_MS = 60 * 1000;
+
 export interface LoopbackListener {
 	redirectUri: string;
 	/** Resolves with the code, or rejects on denial, timeout or abort. */
 	result: Promise<CallbackResult>;
+	/**
+	 * Stops listening. A reply held by `deferPage` stays open until
+	 * `finish` writes it, its timeout writes the fallback, or the browser
+	 * goes away.
+	 */
 	close: () => void;
+	/**
+	 * Writes the last page of a held reply and resolves once it is out, or
+	 * once the browser has gone. A no-op when nothing is held, so calling it
+	 * twice, or without `deferPage`, is safe.
+	 */
+	finish: (page: BrowserPage) => Promise<void>;
 }
+
+const escapeHtml = (text: string): string =>
+	text.replace(
+		/[&<>"']/g,
+		(char) =>
+			({
+				"&": "&amp;",
+				"<": "&lt;",
+				">": "&gt;",
+				'"': "&quot;",
+				"'": "&#39;",
+			})[char] ?? char,
+	);
 
 // The last page of a sign-in: the listener closes right after it, so the
 // browser is told not to keep the connection for another request.
@@ -54,8 +93,12 @@ const FINAL_PAGE_HEADERS = {
 	Connection: "close",
 };
 
-const PAGE = (title: string, body: string): string =>
-	`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-weight:400">${title}</h1><p>${body}</p></body>`;
+// Escaped: a held reply carries text from a server's refusal.
+const PAGE = (rawTitle: string, rawBody: string): string => {
+	const title = escapeHtml(rawTitle);
+	const body = escapeHtml(rawBody);
+	return `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem"><h1 style="font-weight:400">${title}</h1><p>${body}</p></body>`;
+};
 
 export async function startLoopbackListener(options: {
 	state: string;
@@ -71,7 +114,13 @@ export async function startLoopbackListener(options: {
 	/** The query parameter carrying the grant; `code` unless the sender names another. */
 	codeParam?: string;
 	/** What the browser shows once the grant arrived, when more follows than a terminal. */
-	successPage?: { title: string; body: string };
+	successPage?: BrowserPage;
+	/**
+	 * Hold the browser's reply to an accepted callback until `finish` writes
+	 * it. After `timeoutMs` (default {@link DEFERRED_PAGE_TIMEOUT_MS}) the
+	 * `fallback` page is written instead, so a tab never waits forever.
+	 */
+	deferPage?: { fallback: BrowserPage; timeoutMs?: number };
 }): Promise<LoopbackListener> {
 	const callbackPath = options.callbackPath ?? CALLBACK_PATH;
 	let settle: (outcome: CallbackResult | { error: Error }) => void = () => {};
@@ -87,6 +136,37 @@ export async function startLoopbackListener(options: {
 	// An unobserved rejection would crash the process when the listener is
 	// closed before anyone awaits it.
 	result.catch(() => {});
+
+	let closed = false;
+	let held: ServerResponse | null = null;
+	let heldTimer: NodeJS.Timeout | undefined;
+	// Once the held reply is written, or the browser left, nothing is
+	// waited for any more and a closed listener drops its last connection.
+	const release = () => {
+		held = null;
+		clearTimeout(heldTimer);
+		if (closed) {
+			server.closeAllConnections();
+		}
+	};
+	const finish = (page: BrowserPage): Promise<void> => {
+		const response = held;
+		if (!response) {
+			return Promise.resolve();
+		}
+		held = null;
+		clearTimeout(heldTimer);
+		return new Promise<void>((resolve) => {
+			response.once("close", resolve);
+			if (response.writableEnded || response.destroyed) {
+				resolve();
+				return;
+			}
+			response
+				.writeHead(200, FINAL_PAGE_HEADERS)
+				.end(PAGE(page.title, page.body), () => resolve());
+		}).finally(release);
+	};
 
 	const server: Server = createServer((request, response) => {
 		const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -142,6 +222,23 @@ export async function startLoopbackListener(options: {
 			return;
 		}
 
+		if (options.deferPage) {
+			const { fallback, timeoutMs } = options.deferPage;
+			held = response;
+			response.once("close", () => {
+				if (held === response) {
+					release();
+				}
+			});
+			heldTimer = setTimeout(
+				() => void finish(fallback),
+				timeoutMs ?? DEFERRED_PAGE_TIMEOUT_MS,
+			);
+			heldTimer.unref();
+			settle({ code, params: url.searchParams });
+			return;
+		}
+
 		// As above: the browser gets the whole page before anyone can close.
 		response
 			.writeHead(200, FINAL_PAGE_HEADERS)
@@ -182,9 +279,15 @@ export async function startLoopbackListener(options: {
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 
 	const close = () => {
+		closed = true;
 		clearTimeout(timer);
 		options.signal?.removeEventListener("abort", onAbort);
-		server.closeAllConnections();
+		if (held) {
+			// The held reply's own connection stays until it is written.
+			server.closeIdleConnections();
+		} else {
+			server.closeAllConnections();
+		}
 		server.close();
 	};
 	result.then(close, close);
@@ -193,5 +296,6 @@ export async function startLoopbackListener(options: {
 		redirectUri: `http://127.0.0.1:${port}${callbackPath}`,
 		result,
 		close,
+		finish,
 	};
 }

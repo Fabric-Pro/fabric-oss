@@ -3,7 +3,7 @@ name: Automations & pages
 description: Set up something that runs on a schedule (a weekly report, a daily digest) as a scheduled workflow, change, pause or debug one, and build interactive pages (project artifacts and workspaces) that read live Fabric data. Use when the user asks for a recurring job, a status page, a dashboard or a page with buttons, or asks why one did not run.
 category: automation
 tags: [automation, workflows, schedule, pages, frames, workspace]
-version: 3
+version: 8
 ---
 
 # Automations & pages
@@ -14,6 +14,7 @@ Two things people ask for in the same breath: "do this every Monday" and "show m
 ## Load the tools by name
 If your tools come through `search_tools`, load the ones this skill names by their exact names, all in one search. A descriptive search can rank them out.
 - A page: `search_tools({ query: "fabric_create_frame fabric_update_frame fabric_get_frame fabric_list_frames" })`
+- Live data for a page: `search_tools({ query: "fabric_list_page_tools fabric_list_projects fabric_get_project fabric_list_project_instructions fabric_get_project_instruction fabric_get_project_instruction_bundle fabric_list_connected_servers" })`. These project and Coding Instructions reads use the actual attached source; project artifacts are not a substitute for configuration files.
 - A page's data, comments and versions: `search_tools({ query: "fabric_page_data_list fabric_page_data_get fabric_page_data_set fabric_page_comment_list fabric_list_frame_versions fabric_restore_frame_version fabric_duplicate_frame fabric_share_frame" })`
 - A scheduled workflow: `search_tools({ query: "fabric_create_workflow fabric_update_workflow fabric_publish_workflow fabric_execute_workflow fabric_get_workflow_execution fabric_get_workflow fabric_list_workflows" })`, adding the pause, resume, unpublish or runs tool when you need it.
 
@@ -36,14 +37,14 @@ You need five things. Take them from the message and from where the chat was ope
 - **Which connected server**: pick it yourself from the servers whose tools you can see (for example the work-item tracker for "my work items"). Pass its name as the user would say it. Never ask for an id.
 - **Where the page goes**: the project the chat was opened from. Say it as an assumption in the draft, do not ask.
 
-### 2. Draft, then let the user decide
+### 2. Make the call; the approval card is the question
 Call `fabric_create_workflow` with a `preset`: `name`, `cron`, `timezone`, `prompt`, `mcpServers`, `builtInToolNames`, `outputTitle` (the page's title; the name when left out) and, only if the user named another one, `projectId`.
 
-Where the tool takes `dryRun`, call it with `dryRun: true` first. It writes nothing and returns the `draft`. Tell the user what will run and when, in plain words: the schedule in words and its time zone, the task, the servers and tools the agent may use, and where the page is published. Ask them to confirm, then make the real call without `dryRun`; saving asks for their approval. If the draft lists `problems`, fix them and draft again before asking.
+`builtInToolNames` takes the capability keys the tool lists, never tool names. The agent has no Fabric data unless you give it some: `project-context` is the key that lets it read this project's roadmap, documents, sources and meetings, so pass it for any task that reads them, or the run publishes a page built from nothing. Give the agent the fewest capabilities that do the job.
 
-Where the tool does not take `dryRun`, its answer is the approval request and the card shows the user those same facts. If the card lists problems, fix them with a new call and a new card.
+In Fabric's chat the tool takes no `dryRun`. Make the real call. It answers with the approval request, and the card shows the user the draft: the schedule in words and its time zone, the task, the servers and tools the agent may use, and where the page is published. That card is the question. Do not describe the draft in prose first and do not ask the user to confirm it: a yes given to a message in words reaches you with the draft gone, because tool results do not carry from one turn to the next. If the card lists `problems`, fix them with a new call and a new card.
 
-Give the agent the fewest tools that do the job. Leave out web and HTTP tools unless the user asked for them.
+Only where the tool's schema shows `dryRun` (an external client that has no approval card of its own), call it with `dryRun: true` first. It writes nothing and returns the `draft`. Tell the user what will run and when, in plain words, ask them to confirm, then make the real call without `dryRun`. If the draft lists `problems`, fix them and draft again before asking.
 
 ### 3. After the user approves
 The workflow now exists and its result is in your context. Next is `fabric_publish_workflow`, then `fabric_execute_workflow` for a first run now. In the chat, approving the new workflow covers publishing it and running it once; if either tool answers with an approval request of its own, that card is the question. Poll `fabric_get_workflow_execution` a few times while it is running. When it completes, tell the user the page title and where it appears, using the page's link if the result has one and never inventing one. If it has not finished, say so and that they will be notified.
@@ -66,6 +67,8 @@ Call `fabric_list_workflow_runs`, read the newest failed run's `error`, and expl
 
 A page is a frame: one self-contained HTML document with its CSS and JavaScript inline. Create one with `fabric_create_frame`, change it with `fabric_update_frame` (every change is a new version the user can go back to), find one with `fabric_list_frames` and `fabric_get_frame`.
 
+Before editing saved code, call `fabric_get_frame` with `offset: 0, limit: 6000` and optional `blockId` (the first block is the default). Follow `nextOffset` until `complete`, concatenate exact source, and restart if `updatedAt` changes between chunks. A summary or an internal history placeholder is never replacement page content.
+
 ### Where a page lives
 `surface` says where a page appears:
 - `surface: "artifact"` is a project artifact. It belongs to one project and shows on that project's Artifacts tab.
@@ -87,6 +90,22 @@ The page runs in a locked sandbox with no network: no requests of its own, no ex
 Declare `runtimeTools` on the frame: the exact name of every Fabric tool the script calls, and no others. A call to an undeclared tool is refused. Use the real tool names, for example `fabric_list_workflow_runs`, `fabric_get_workflow` or `fabric_get_frame`, and read their results the way you saw them. Tools that change the viewer's session, publish a frame, set up unattended work or write pages cannot be declared. Giving a page tools asks the user for approval, so say which tools and why before you make the call.
 
 A refresh button calls a read tool and redraws. It costs no agent run.
+
+Before writing `runtimeTools`, call `fabric_list_page_tools` with a name or a short query and inspect the returned input schemas. Narrow the query when `hasMore` is true. Chat-only project-feature reads cannot run inside a page: discover the page-compatible schema and its required project identifier instead. Do not copy chat-only names into runtime declarations or guess their arguments.
+
+For an Azure DevOps member/count dashboard, discover `fabric_get_project_pm_connection`, `fabric_list_project_pm_members` and `fabric_get_project_work_item_counts`, each with the attached Fabric `projectId`. Poll the connection status to detect later configuration, keep Refresh disabled until it is `ready`, and fetch the real project team members for the selector. Use the selected member's returned `uniqueName` as `assignee` for counts. Show `complete: false` as partial data, never as an exact count. Coding Instructions counts come from `fabric_list_project_instructions`, not project documents or features.
+
+Direct calls use the returned input schema; helper signatures differ. For example:
+
+```javascript
+await fabric.call("fabric_page_data_set", {
+  collection: "checklist",
+  records: [{ key: "review", value: { done: false } }]
+});
+await fabric.call("fabric_page_file_read", { id: uploadedFile.id });
+```
+
+Do not pass top-level `key`/`value` to `fabric_page_data_set`, or `fileId` to `fabric_page_file_read`. A connected read declares `connected:<provider>/<tool>` using the connection's `serverKey`; do not declare the generic connected-read proxy itself. The author's connected tool must explicitly be marked read-only.
 
 ### What a page can keep
 A page can remember things between visits and between viewers: a poll's votes, a checklist, a sign-up sheet, a tracker. Use the store; do not keep state in the page's own variables or `localStorage`, which is gone on reload and never reaches anyone else. These helpers on `window.fabric` call the tools named beside them, and the page declares those tool names in `runtimeTools` like any other (a connected read is declared as `connected:<provider>/<tool>`):
@@ -116,7 +135,8 @@ You can use the same tools yourself. With a Workspace open they default to it: s
 ### Versions, forks and sharing
 - `fabric_list_frame_versions` lists a page's saved versions. Version N is the page as it was before edit N. `fabric_restore_frame_version` puts one back for the page's owner, always asks, keeps the current content as a version so it can be undone, and keeps the tools the page declares now.
 - Only a page's owner edits it. Anyone who can open a page and may create pages forks it with `fabric_duplicate_frame`: a private copy of their own, in the same place (surface and project), with no page data. It has the original's tools only when you pass `runtimeTools`, which asks. When a person who is not the owner wants a change, fork the page and change their copy; do not try to edit the original.
-- `fabric_share_frame` takes `scope`: `PUBLIC` (anyone with the link, only if the organization allows public links), `WORKSPACE_AND_EMAILS`, `EMAILS_ONLY` or `PRIVATE`, and `emails` for the two scopes that invite people. Say which scope you are asking for; the user approves it.
+- A standalone PRIVATE page opens only for its creator. Accepted project members retain access to a project-linked page, even when its sharing scope is PRIVATE. Artifacts default to project access and Workspaces to organization sharing. A public link exists only after `fabric_share_frame` with `PUBLIC` (or `shareOnCreate: true` on creation), and only where the organization allows public links.
+- `fabric_share_frame` requires `scope`, which is one of: `PUBLIC` (anyone with the link, only if the organization allows public links), `WORKSPACE_AND_EMAILS`, `EMAILS_ONLY` or `PRIVATE`, and `emails` for the two scopes that invite people. Say which scope you are asking for; the user approves it.
 
 ### Never in a page
 No secrets: no tokens, keys, passwords or connection strings, not even for a moment. No private data copied in as text: fetch it with `window.fabric.call` when the page is viewed, so it shows what the viewer is allowed to see, and do not copy a viewer's private data into a shared record. No external scripts or fonts.

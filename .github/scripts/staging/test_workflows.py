@@ -478,7 +478,8 @@ class StagingWorkflowContracts(unittest.TestCase):
                     expression = ' '.join(expression.split())
                     suffix = expression.split("(needs.promotion_policy.result != 'success' or needs.promotion_policy.outputs.reduced != 'true') and ", 1)[1]
                     outputs = SimpleNamespace(has_shards='true', code='true', workflows='true',
-                        secret_eligible='true', migrations='true', db='true', temporal='true', reason='')
+                        secret_eligible='true', migrations='true', db='true', temporal='true', reason='',
+                        filter_result='success')
                     needs = SimpleNamespace(**{dependency.replace('-', '_'): SimpleNamespace(result='success', outputs=outputs)
                         for dependency in job['needs'] if dependency != 'promotion_policy'})
                     context = {
@@ -677,6 +678,8 @@ class PullRequestContracts(unittest.TestCase):
         self.assertNotEqual(run(CODE_CHANGED='true'), 0, 'code changes require browser and test checks')
         self.assertEqual(run(CODE_CHANGED='true', BROWSER_SECURITY_RESULT='success', PLAN_RESULT='success', HAS_SHARDS='true', VITEST_RESULT='success'), 0)
         self.assertNotEqual(run(CHANGES_RESULT='failure'), 0)
+        self.assertEqual(run(PLAN_RESULT='success'), 0, 'merged plan job succeeds with planning steps skipped on a no-code PR')
+        self.assertNotEqual(run(CHANGES_RESULT=''), 0, 'an empty filter outcome fails closed')
 
 if __name__ == '__main__':
     unittest.main()

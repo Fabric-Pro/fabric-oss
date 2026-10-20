@@ -31,6 +31,7 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { seedCarriedOverHistory } from "../carried-over-context";
 import { assertChatWorkflowPayload } from "../chat-workflow-payload";
+import { resolveUsageFrame } from "../resolve-usage-frame";
 import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
 import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
 import { historyWindowSchema } from "./history-window";
@@ -122,6 +123,7 @@ const streamRequestSchema = z.object({
 	// Where the chat was opened, for the tools that place what they create:
 	// a default, never a grant. The tools check access to whatever they touch.
 	workspaceId: z.string().max(200).nullish(),
+	launchFrameId: z.string().max(200).nullish(),
 	surface: z.enum(["artifact", "workspace"]).nullish(),
 	// A call the person approved in the chat card: the tool and the exact
 	// arguments the card showed. Only tools that ask for approval can be run
@@ -597,6 +599,7 @@ export async function POST(request: NextRequest) {
 			documentId,
 			taskId,
 			workspaceId,
+			launchFrameId,
 			surface,
 			approvedToolCall,
 			conversationId: requestedConversationId,
@@ -765,6 +768,18 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
+		const usageFrame = await resolveUsageFrame({
+			launchFrameId,
+			legacyLaunchFrameId: workspaceId,
+			userId,
+			userEmail: session.user.email,
+			organizationId,
+			projectId,
+		});
+		if (usageFrame.error) {
+			return usageFrame.error;
+		}
+
 		// Trusted instructions and route-derived project/focused context are
 		// kept apart from here on: only `systemPrompt` carries authority.
 		const { systemPrompt: contextualSystemPrompt, projectContext } =
@@ -904,6 +919,7 @@ export async function POST(request: NextRequest) {
 		// SECURITY: Credentials are fetched internally by activities, NOT passed in workflow inputs
 		// Workflow inputs are stored in Temporal's database and visible in Web UI
 		const response = await handleTemporalWorkflow({
+			clientSignal: request.signal,
 			message,
 			history: effectiveHistory,
 			userId,
@@ -926,6 +942,7 @@ export async function POST(request: NextRequest) {
 			modelOverride: modelOverride ?? undefined,
 			conversationId: conversationId ?? undefined,
 			workspaceId: workspaceId ?? undefined,
+			...usageFrame,
 			surface: surface ?? undefined,
 			approvedToolCall: approvedToolCall ?? undefined,
 		});
@@ -950,6 +967,47 @@ const MAX_POLL_DURATION = 300000; // 5 minutes max
 // SSE comment heartbeat so intermediaries don't idle-drop the stream during
 // silent stretches between progress events; clients ignore `:` comment lines.
 const HEARTBEAT_INTERVAL = 15000;
+// How long a cancel request may hold up the route before it gives up on it.
+const WORKFLOW_CANCEL_TIMEOUT_MS = 3000;
+// Statuses after which there is nothing left to cancel.
+const SETTLED_WORKFLOW_STATUSES = new Set([
+	"COMPLETED",
+	"FAILED",
+	"CANCELLED",
+	"TERMINATED",
+	"TIMED_OUT",
+	"CONTINUED_AS_NEW",
+]);
+
+/**
+ * Ask Temporal to cancel the turn's workflow, best-effort and bounded so a
+ * degraded cluster cannot hold the route open. Failures are logged, never
+ * thrown: the caller is already ending the stream.
+ */
+async function cancelWorkflowBounded(
+	handle: { cancel: () => Promise<unknown> },
+	why: string,
+): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			handle.cancel(),
+			new Promise((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("Workflow cancel timed out")),
+					WORKFLOW_CANCEL_TIMEOUT_MS,
+				);
+			}),
+		]);
+	} catch (cancelError) {
+		console.warn(
+			`[Fabric AI Stream] Failed to cancel workflow (${why}):`,
+			cancelError,
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+}
 
 /**
  * Handle chat using Temporal workflow for durability
@@ -964,6 +1022,12 @@ const HEARTBEAT_INTERVAL = 15000;
  * The results are streamed back as SSE events.
  */
 async function handleTemporalWorkflow(params: {
+	/**
+	 * The request's abort signal. Direct chat cannot be reattached to, so a
+	 * client that goes away (Stop aborts the fetch) ends the turn: the
+	 * workflow is cancelled rather than left running and spending.
+	 */
+	clientSignal?: AbortSignal;
 	message: string;
 	history: Array<{ role: "user" | "assistant"; content: string }>;
 	userId: string;
@@ -999,6 +1063,7 @@ async function handleTemporalWorkflow(params: {
 	 */
 	conversationId?: string;
 	workspaceId?: string;
+	usageFrameId?: string;
 	surface?: "artifact" | "workspace";
 	approvedToolCall?: { toolName: string; args: Record<string, unknown> };
 }): Promise<Response> {
@@ -1023,8 +1088,10 @@ async function handleTemporalWorkflow(params: {
 		modelOverride,
 		conversationId,
 		workspaceId,
+		usageFrameId,
 		surface,
 		approvedToolCall,
+		clientSignal,
 	} = params;
 	const executionId = `direct-chat-${uuidv4()}`;
 
@@ -1035,8 +1102,33 @@ async function handleTemporalWorkflow(params: {
 	const encoder = new TextEncoder();
 	let isClosed = false;
 
+	// Cancel the workflow once, and only while it may still be running.
+	let workflowHandle: { cancel: () => Promise<unknown> } | undefined;
+	let workflowSettled = false;
+	let cancelRequested = false;
+	const cancelWorkflow = async (why: string) => {
+		if (!workflowHandle || workflowSettled || cancelRequested) {
+			return;
+		}
+		cancelRequested = true;
+		await cancelWorkflowBounded(workflowHandle, why);
+	};
+	const onClientGone = () => {
+		isClosed = true;
+		void cancelWorkflow("client disconnected");
+	};
+	clientSignal?.addEventListener("abort", onClientGone, { once: true });
+
 	const stream = new ReadableStream({
 		async start(controller) {
+			const closeStream = () => {
+				isClosed = true;
+				try {
+					controller.close();
+				} catch {
+					// Already closed or cancelled by the client.
+				}
+			};
 			const sendEvent = (data: unknown) => {
 				if (isClosed) {
 					return; // Don't send if already closed
@@ -1271,6 +1363,7 @@ async function handleTemporalWorkflow(params: {
 						conversationId,
 					}),
 					workspaceId,
+					...(usageFrameId ? { usageFrameId } : {}),
 					surface,
 					approvedToolCall,
 					systemPrompt,
@@ -1289,6 +1382,12 @@ async function handleTemporalWorkflow(params: {
 					workflowInput,
 					"directChatWorkflow start",
 				);
+
+				// Nobody is left to read the turn: do not start one.
+				if (isClosed || clientSignal?.aborted) {
+					closeStream();
+					return;
+				}
 
 				const handle = await temporalClient.workflow.start(
 					"directChatWorkflow",
@@ -1326,6 +1425,16 @@ async function handleTemporalWorkflow(params: {
 					`[Fabric AI Stream] Started Temporal workflow: ${handle.workflowId}`,
 				);
 
+				workflowHandle = handle;
+				// The client went away while the start was in flight (Stop
+				// before `started` aborts the fetch too): the abort listener
+				// had no handle to cancel then, so cancel now.
+				if (isClosed || clientSignal?.aborted) {
+					closeStream();
+					await cancelWorkflow("client disconnected during start");
+					return;
+				}
+
 				// Send started event
 				sendEvent({ type: "started", executionId });
 
@@ -1359,6 +1468,13 @@ async function handleTemporalWorkflow(params: {
 						}
 
 						const description = await handle.describe();
+						if (
+							SETTLED_WORKFLOW_STATUSES.has(
+								description.status.name,
+							)
+						) {
+							workflowSettled = true;
+						}
 
 						if (description.status.name === "COMPLETED") {
 							// Get final result
@@ -1587,6 +1703,13 @@ async function handleTemporalWorkflow(params: {
 					}
 				}
 
+				// The stream stopped being writable without the abort or
+				// cancel callbacks firing (an enqueue failed): the client is
+				// gone all the same.
+				if (isClosed && !isComplete) {
+					await cancelWorkflow("client disconnected");
+				}
+
 				// Out of poll budget: stop the workflow too, or it keeps
 				// running (and spending) with nobody reading it. Bounded so
 				// the error event still lands inside `maxDuration`.
@@ -1594,27 +1717,7 @@ async function handleTemporalWorkflow(params: {
 					!isComplete &&
 					Date.now() - startTime >= MAX_POLL_DURATION
 				) {
-					try {
-						await Promise.race([
-							handle.cancel(),
-							new Promise((_, reject) =>
-								setTimeout(
-									() =>
-										reject(
-											new Error(
-												"Workflow cancel timed out",
-											),
-										),
-									3000,
-								),
-							),
-						]);
-					} catch (cancelError) {
-						console.warn(
-							"[Fabric AI Stream] Failed to cancel timed-out workflow:",
-							cancelError,
-						);
-					}
+					await cancelWorkflow("poll time limit");
 					sendEvent({
 						type: "error",
 						message: ROUTE_TIMEOUT_MESSAGE,
@@ -1635,14 +1738,17 @@ async function handleTemporalWorkflow(params: {
 					isClosed = true;
 					controller.close();
 				}
+			} finally {
+				clientSignal?.removeEventListener("abort", onClientGone);
 			}
 		},
-		cancel() {
+		async cancel() {
 			// Called when the client disconnects
 			isClosed = true;
 			console.log(
 				"[Fabric AI Stream] Client disconnected, stream cancelled",
 			);
+			await cancelWorkflow("client disconnected");
 		},
 	});
 

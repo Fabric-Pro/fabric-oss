@@ -47,6 +47,7 @@ const {
 	flagMock,
 	generateObjectMock,
 	getModelMock,
+	proposalClientMock,
 } = vi.hoisted(() => ({
 	getDocumentMock: vi.fn(),
 	updateDocumentMock: vi.fn(),
@@ -62,6 +63,7 @@ const {
 	flagMock: vi.fn(),
 	generateObjectMock: vi.fn(),
 	getModelMock: vi.fn(),
+	proposalClientMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -84,6 +86,7 @@ vi.mock("@repo/database", async () => {
 		// here, so a suite that stubs the flag on still exercises the sweep;
 		// the degraded-read case is covered separately.
 		isKillSwitchArmed: flagMock,
+		isProposalClientDocument: proposalClientMock,
 	};
 });
 
@@ -123,7 +126,11 @@ vi.mock("@repo/ai/lib/function-tag-context", () => ({
 	getProjectFunctionTagClause: vi.fn(async () => ""),
 }));
 
-import { DocumentVersionConflictError } from "@repo/database";
+import {
+	DocumentGenerationInProgressError,
+	DocumentVersionConflictError,
+} from "@repo/database";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { AI_REFRESH_AUTHOR_ID } from "@repo/utils/document-version-author";
 import {
 	type FeatureFlagKey,
@@ -239,6 +246,10 @@ beforeEach(() => {
 		autoApply: false,
 	});
 	runContextUpdateMock.mockResolvedValue(UPDATE);
+	proposalClientMock.mockImplementation(
+		async (args: { organizationId: string | null; documentType: string }) =>
+			args.documentType === "PROPOSAL" && args.organizationId === "org_1",
+	);
 });
 
 describe("proposal mode (the default)", () => {
@@ -900,6 +911,228 @@ describe("lost race", () => {
 		);
 		expect(notifyMock).not.toHaveBeenCalled();
 		expect(sideEffectsMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("Proposal under a generation run (Fizzy #2946)", () => {
+	// A Proposal run saves its new body at the OLD version and only moves the
+	// version at its next step, so the version guard alone cannot see it.
+	const PROPOSAL_DOCUMENT = {
+		...DOCUMENT,
+		type: "PROPOSAL",
+		project: { id: "proj_1", organizationId: "org_1" },
+	};
+
+	beforeEach(() => {
+		autoApplyOn();
+	});
+
+	// The gate's state must not matter: a run already in progress keeps
+	// writing after the Proposal gate is turned off.
+	it.each([
+		["QUEUED", true],
+		["GENERATING", true],
+		["QUEUED", false],
+		["GENERATING", false],
+	])(
+		"keeps the output as a proposal while the run is %s (Proposal gate on: %s)",
+		async (status, gateOn) => {
+			proposalClientMock.mockResolvedValue(gateOn);
+			getDocumentMock.mockResolvedValue({ ...PROPOSAL_DOCUMENT, status });
+
+			const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+			expect(outcome).toEqual({
+				status: "PROPOSED",
+				summary: UPDATE.summary,
+			});
+			expect(updateDocumentMock).not.toHaveBeenCalled();
+			expect(storeProposalMock).toHaveBeenCalledWith("doc_1", {
+				when: expect.any(Date),
+				content: UPDATE.updatedDocument,
+				summary: UPDATE.summary,
+				baselineVersion: 3,
+			});
+			expect(completeCycleMock).not.toHaveBeenCalled();
+			expect(sideEffectsMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("decides the run guard by type, without consulting the Proposal gate", async () => {
+		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
+
+		await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(proposalClientMock).not.toHaveBeenCalled();
+	});
+
+	it("conditions the write on the body the model read and refuses it under a run", async () => {
+		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("COMMITTED");
+		expect(updateDocumentMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(DOCUMENT.content),
+				refuseWhileGenerating: true,
+			}),
+		);
+	});
+
+	it("does not overwrite a body the run saved at the same version during generation", async () => {
+		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
+		// The run's final save lands while the model is thinking: the body
+		// changes, the version does not. The baseline hash is the one read
+		// BEFORE the model call, so the guarded write loses.
+		let storedBody = DOCUMENT.content;
+		runContextUpdateMock.mockImplementation(async () => {
+			storedBody = "# PRD\n\nThe run's generated body.";
+			return UPDATE;
+		});
+		updateDocumentMock.mockImplementation(
+			async (_id: string, data: { expectedContentHash?: string }) => {
+				if (
+					data.expectedContentHash !== undefined &&
+					data.expectedContentHash !== contentIdentity(storedBody)
+				) {
+					throw new DocumentVersionConflictError(
+						"doc_1",
+						3,
+						3,
+						"content",
+					);
+				}
+				storedBody = "overwritten";
+				return { ...DOCUMENT, version: 4 };
+			},
+		);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome).toEqual({ status: "SKIPPED_COLLISION" });
+		expect(storedBody).toBe("# PRD\n\nThe run's generated body.");
+		expect(completeCycleMock).not.toHaveBeenCalled();
+		expect(sideEffectsMock).not.toHaveBeenCalled();
+		expect(notifyMock).not.toHaveBeenCalled();
+		expect(recordOutcomeMock).toHaveBeenCalledWith(
+			"doc_1",
+			"SKIPPED_COLLISION",
+			expect.any(String),
+		);
+	});
+
+	it("keeps the output as a proposal when a run is queued between the read and the write", async () => {
+		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
+		updateDocumentMock.mockRejectedValue(
+			new DocumentGenerationInProgressError("doc_1"),
+		);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		// Returned, not thrown: a Temporal retry would only regenerate and hit
+		// the same run.
+		expect(outcome).toEqual({
+			status: "PROPOSED",
+			summary: UPDATE.summary,
+		});
+		expect(updateDocumentMock).toHaveBeenCalledTimes(1);
+		expect(storeProposalMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({
+				content: UPDATE.updatedDocument,
+				baselineVersion: 3,
+			}),
+		);
+		expect(notifyMock).toHaveBeenCalledWith(
+			expect.objectContaining({ kind: "proposed" }),
+		);
+		expect(completeCycleMock).not.toHaveBeenCalled();
+		expect(sideEffectsMock).not.toHaveBeenCalled();
+	});
+
+	it("guards a finished Proposal's write by the run after the Proposal gate is turned off", async () => {
+		proposalClientMock.mockResolvedValue(false);
+		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("COMMITTED");
+		expect(updateDocumentMock).toHaveBeenCalledWith(
+			"doc_1",
+			expect.objectContaining({
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(DOCUMENT.content),
+				refuseWhileGenerating: true,
+			}),
+		);
+	});
+
+	it("conditions every other document type on the body it read, without the run guard, even mid-generation", async () => {
+		getDocumentMock.mockResolvedValue({
+			...DOCUMENT,
+			type: "PRD",
+			status: "GENERATING",
+			project: { id: "proj_1", organizationId: "org_1" },
+		});
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("COMMITTED");
+		const [, data] = updateDocumentMock.mock.calls[0];
+		expect(data).toMatchObject({
+			expectedVersion: 3,
+			expectedContentHash: contentIdentity(DOCUMENT.content),
+		});
+		expect(data).not.toHaveProperty("refuseWhileGenerating");
+	});
+});
+
+describe("unattended write is conditioned on the body the model read", () => {
+	beforeEach(() => {
+		autoApplyOn();
+	});
+
+	it("abandons a PRD refresh when its body changed at the same version during generation", async () => {
+		// A save that keeps the version (a no-bump write) lands while the
+		// model is thinking: the version guard alone would let the refresh
+		// overwrite it.
+		let storedBody = DOCUMENT.content;
+		runContextUpdateMock.mockImplementation(async () => {
+			storedBody = "# PRD\n\nA body saved at the same version.";
+			return UPDATE;
+		});
+		updateDocumentMock.mockImplementation(
+			async (_id: string, data: { expectedContentHash?: string }) => {
+				if (
+					data.expectedContentHash !== undefined &&
+					data.expectedContentHash !== contentIdentity(storedBody)
+				) {
+					throw new DocumentVersionConflictError(
+						"doc_1",
+						3,
+						3,
+						"content",
+					);
+				}
+				storedBody = "overwritten";
+				return { ...DOCUMENT, version: 4 };
+			},
+		);
+
+		const outcome = await runDocumentRefreshActivity(DUE);
+
+		expect(outcome).toEqual({ status: "SKIPPED_COLLISION" });
+		expect(storedBody).toBe("# PRD\n\nA body saved at the same version.");
+		expect(completeCycleMock).not.toHaveBeenCalled();
+		expect(sideEffectsMock).not.toHaveBeenCalled();
+		expect(recordOutcomeMock).toHaveBeenCalledWith(
+			"doc_1",
+			"SKIPPED_COLLISION",
+			expect.any(String),
+		);
 	});
 });
 

@@ -11,7 +11,15 @@ import { MyOverridesList } from "@saas/prompts/components/MyOverridesList";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const listMineMock = vi.fn();
 const clearMock = vi.fn();
@@ -155,5 +163,68 @@ describe("MyOverridesList", () => {
 		const link = await screen.findByRole("link", { name: "catalog" });
 		expect(link).toHaveAttribute("href", "/app/acme/prompts/catalog");
 		expect(screen.getByText(/No personal overrides/)).toBeInTheDocument();
+	});
+});
+
+describe("MyOverridesList — a personal default at a legacy Proposal action (Fizzy #2946)", () => {
+	const LEGACY_ROW = {
+		...ROW,
+		targetKey: "project_document_generator",
+		documentType: "PROPOSAL",
+		actionLabel: "Project Document Generator — Proposal",
+		promptId: "p-proposal",
+		promptName: "My proposal",
+		promptVersionId: "pv-proposal",
+	};
+
+	beforeEach(() => {
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("says it is not used while the Proposal artifact is on, and only on that row", async () => {
+		listMineMock.mockResolvedValue([LEGACY_ROW, ROW]);
+		renderList();
+
+		await screen.findByText("Project Document Generator — Proposal");
+		const notes = screen.getAllByTestId("my-override-superseded-note");
+		expect(notes).toHaveLength(1);
+		expect(notes[0]).toHaveTextContent("actionNote");
+		expect(
+			notes[0].closest("li")?.textContent?.includes("My proposal"),
+		).toBe(true);
+	});
+
+	it("still hands it back", async () => {
+		listMineMock.mockResolvedValue([LEGACY_ROW]);
+		renderList();
+		await screen.findByText("Project Document Generator — Proposal");
+
+		await userEvent.click(
+			screen.getByRole("button", { name: "Hand back" }),
+		);
+
+		await waitFor(() =>
+			expect(clearMock).toHaveBeenCalledWith({
+				targetType: "AGENT",
+				targetKey: "project_document_generator",
+				documentType: "PROPOSAL",
+				storyKind: null,
+				scope: "USER",
+			}),
+		);
+	});
+
+	it("says nothing with the gate off", async () => {
+		flags.proposalArtifact = false;
+		listMineMock.mockResolvedValue([LEGACY_ROW]);
+		renderList();
+
+		await screen.findByText("Project Document Generator — Proposal");
+		expect(
+			screen.queryByTestId("my-override-superseded-note"),
+		).not.toBeInTheDocument();
 	});
 });

@@ -15,7 +15,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getConfigPath } from "../config.js";
 import type { FetchLike } from "../oauth/flow.js";
-import { CallbackError, startLoopbackListener } from "../oauth/loopback.js";
+import {
+	type BrowserPage,
+	CallbackError,
+	startLoopbackListener,
+} from "../oauth/loopback.js";
 import {
 	codeChallengeS256,
 	createCodeVerifier,
@@ -306,6 +310,11 @@ export interface ChatGptSignInOptions {
 	) => Promise<void>;
 	/** Told when the saved registration was refused and a fresh one is tried. */
 	onRetry?: () => void;
+	/**
+	 * Keep the ChatGPT tab waiting after the sign-in, so the caller can show
+	 * the real outcome there with `finishBrowser` once Fabric has answered.
+	 */
+	holdBrowserPage?: boolean;
 }
 
 export interface ChatGptSignIn {
@@ -313,6 +322,22 @@ export interface ChatGptSignIn {
 	clientId: string;
 	subject: string;
 	email?: string;
+	/** Shows the outcome in the held ChatGPT tab; a no-op unless `holdBrowserPage`. */
+	finishBrowser: (page: BrowserPage) => Promise<void>;
+}
+
+/** What a held tab shows when the outcome takes too long to arrive. */
+const CHECK_TERMINAL_PAGE: BrowserPage = {
+	title: "Check your terminal",
+	body: "Fabric is taking longer than expected to answer. Your terminal shows whether the ChatGPT plan was connected. You can close this tab.",
+};
+
+/** The tab's last word when the plan was not connected; the reason is escaped on output. */
+export function notConnectedPage(reason: string): BrowserPage {
+	return {
+		title: "Not connected",
+		body: `${reason} Your terminal shows the same message. You can close this tab.`,
+	};
 }
 
 async function attemptSignIn(
@@ -326,6 +351,9 @@ async function attemptSignIn(
 		state,
 		callbackPath: CHATGPT_CALLBACK_PATH,
 		preferredPort: options.preferredPort ?? CHATGPT_CALLBACK_PORT,
+		...(options.holdBrowserPage && {
+			deferPage: { fallback: CHECK_TERMINAL_PAGE },
+		}),
 	});
 	try {
 		options.open(
@@ -339,27 +367,39 @@ async function attemptSignIn(
 			}),
 		);
 		const { code, params } = await listener.result;
-		const clientId = issuedClientId(params, registration);
-		const tokens = await exchangeCode(
-			{
+		try {
+			const clientId = issuedClientId(params, registration);
+			const tokens = await exchangeCode(
+				{
+					clientId,
+					code,
+					codeVerifier: verifier,
+					redirectUri: listener.redirectUri,
+				},
+				options.fetchImpl,
+			);
+			const { sub, email } = checkIdToken(tokens.id_token ?? "", {
+				nonce,
+				subject: registration.subject,
+			});
+			await options.save?.({
+				hostId: registration.hostId,
+				subject: sub,
 				clientId,
-				code,
-				codeVerifier: verifier,
-				redirectUri: listener.redirectUri,
-			},
-			options.fetchImpl,
-		);
-		const { sub, email } = checkIdToken(tokens.id_token ?? "", {
-			nonce,
-			subject: registration.subject,
-		});
-		await options.save?.({
-			hostId: registration.hostId,
-			subject: sub,
-			clientId,
-			...(email !== undefined && { email }),
-		});
-		return { tokens, clientId, subject: sub, email };
+				...(email !== undefined && { email }),
+			});
+			return {
+				tokens,
+				clientId,
+				subject: sub,
+				email,
+				finishBrowser: listener.finish,
+			};
+		} catch (err: unknown) {
+			// The tab is still waiting: it says why, as the terminal will.
+			await listener.finish(notConnectedPage((err as Error).message));
+			throw err;
+		}
 	} finally {
 		listener.close();
 	}

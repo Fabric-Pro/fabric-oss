@@ -410,6 +410,7 @@ describe("(f) budget exhaustion still answers as before", () => {
 				"maxStepsPerIteration",
 				"modelOverride",
 				"organizationId",
+				"projectId",
 				"systemPrompt",
 				"userId",
 			].sort(),
@@ -421,8 +422,18 @@ describe("(f) budget exhaustion still answers as before", () => {
 			iteration: 4,
 			userId: "user-1",
 			organizationId: "org-1",
+			projectId: "project-1",
 			executionId: "exec-advisor-1",
 		});
+	});
+
+	it("preserves the legacy synthesis payload without the usage-origin patch", async () => {
+		mocks.off.add("orchestrator-complete-usage-origin-v1");
+		await turn([...TWO_ROUNDS, { answer: SYNTHESIZED }], LIMITED);
+		const req = mocks.stub("runAgentIteration").mock.calls[2][0];
+		expect(req).not.toHaveProperty("projectId");
+		expect(req).not.toHaveProperty("frameId");
+		expect(req).not.toHaveProperty("conversationId");
 	});
 
 	it("retries once with the RETRY NOTE prompt, then falls back to the step-budget summary", async () => {

@@ -7,6 +7,7 @@ export {
 	invalidateSkillCache,
 	isTextContentType,
 	listAvailableSkills,
+	listAvailableSkillPage,
 	loadSkillBundle,
 	MAX_SKILL_FILE_READ_BYTES,
 	readSkillFile,
@@ -15,6 +16,7 @@ export {
 	type SkillFileContent,
 	type SkillFileManifestEntry,
 	type SkillSummary,
+	type SkillReadOptions,
 	stripFrontmatter,
 } from "./loader";
 export { buildSkillsSystemBlock } from "./prompt-fragment";

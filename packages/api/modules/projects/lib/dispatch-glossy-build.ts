@@ -46,6 +46,10 @@ import {
 	getTemporalClient,
 } from "@repo/temporal";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
+import {
+	type WorkflowRunLiveness,
+	workflowRunLiveness,
+} from "./workflow-run-liveness";
 
 /**
  * The build workflow's execution timeout (KTD3). With every activity's
@@ -81,81 +85,21 @@ function isGlossyHeartbeatStale(heartbeatAt: Date | null, now: Date): boolean {
 	);
 }
 
-export type GlossyRunLiveness = "running" | "gone" | "unknown";
-
 /**
- * How long the liveness question may take. It runs inside `get` and `build`,
- * so a Temporal that accepts the connection but never answers must not hold
- * the request: an unanswered question is `unknown`, which keeps the claim.
- */
-export const GLOSSY_LIVENESS_TIMEOUT_MS = 5_000;
-
-/** Run states Temporal reports once a run has closed for good. */
-const CLOSED_RUN_STATUSES: ReadonlySet<string> = new Set([
-	"COMPLETED",
-	"FAILED",
-	"CANCELLED",
-	"TERMINATED",
-	"CONTINUED_AS_NEW",
-	"TIMED_OUT",
-]);
-
-/** Run states in which the run still holds its attempt. */
-const LIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["RUNNING", "PAUSED"]);
-
-function isNamed(error: unknown, name: string): boolean {
-	return error instanceof Error && error.name === name;
-}
-
-const LIVENESS_TIMED_OUT = Symbol("liveness timed out");
-
-async function withinLivenessTimeout<T>(
-	work: Promise<T>,
-): Promise<T | typeof LIVENESS_TIMED_OUT> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<typeof LIVENESS_TIMED_OUT>((resolve) => {
-		timer = setTimeout(
-			() => resolve(LIVENESS_TIMED_OUT),
-			GLOSSY_LIVENESS_TIMEOUT_MS,
-		);
-	});
-	try {
-		return await Promise.race([work, timeout]);
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-/**
- * What Temporal says about one build run: `running`, `gone` (closed for good,
- * or never heard of), or `unknown` when it could not be asked in time or
- * reports a state it does not name. Only `gone` lets a stuck claim be read as
- * failed or taken over; a paused run still holds its attempt.
+ * What Temporal says about one build run, through the shared probe
+ * ({@link workflowRunLiveness}): only `gone` lets a stuck claim be read as
+ * failed or taken over, and a paused run still holds its attempt. The
+ * client's connection falls inside the probe's time bound, so a Temporal that
+ * cannot be reached keeps the claim too. A holder with no workflow id cannot
+ * be asked about and is `unknown`.
  */
 export async function glossyRunLiveness(
 	workflowId: string | null,
-): Promise<GlossyRunLiveness> {
+): Promise<WorkflowRunLiveness> {
 	if (!workflowId) {
 		return "unknown";
 	}
-	try {
-		const answer = await withinLivenessTimeout(
-			(async () => {
-				const client = await getTemporalClient();
-				return client.workflow.getHandle(workflowId).describe();
-			})(),
-		);
-		if (answer === LIVENESS_TIMED_OUT) {
-			return "unknown";
-		}
-		const status = answer.status.name;
-		if (LIVE_RUN_STATUSES.has(status)) {
-			return "running";
-		}
-		return CLOSED_RUN_STATUSES.has(status) ? "gone" : "unknown";
-	} catch (error) {
-		return isNamed(error, "WorkflowNotFoundError") ? "gone" : "unknown";
-	}
+	return workflowRunLiveness(getTemporalClient(), workflowId);
 }
 
 /** A stale heartbeat AND a run Temporal reports closed or missing. */

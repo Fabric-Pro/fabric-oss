@@ -114,6 +114,7 @@ beforeEach(() => {
 describe("classifyQuestionTopics", () => {
 	it("returns [] and makes no model call for empty input", async () => {
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: [],
 			tenantFilter,
 		});
@@ -131,6 +132,7 @@ describe("classifyQuestionTopics", () => {
 			},
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -142,6 +144,7 @@ describe("classifyQuestionTopics", () => {
 			object: { assignments: [{ id: 2, topic: "UX & Design" }] },
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Unlabelled?", "Where does the panel go?"],
 			tenantFilter,
 		});
@@ -151,6 +154,7 @@ describe("classifyQuestionTopics", () => {
 	it("falls back to all 'Other' when the model call throws", async () => {
 		mocks.generateObject.mockRejectedValue(new Error("model down"));
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -169,6 +173,7 @@ describe("typed decision fast path", () => {
 			},
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -177,6 +182,7 @@ describe("typed decision fast path", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			featureKey: "maturation",
+			projectId: "project-1",
 		});
 		expect(mocks.generateObject).toHaveBeenCalledWith(
 			expect.objectContaining({ prompt: MASTER_PROMPT_TWO }),
@@ -187,6 +193,7 @@ describe("typed decision fast path", () => {
 				userId: "user-1",
 				organizationId: "org-1",
 				featureKey: "maturation",
+				projectId: "project-1",
 			},
 		);
 	});
@@ -196,6 +203,7 @@ describe("typed decision fast path", () => {
 			new Error("no language model"),
 		);
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -208,6 +216,7 @@ describe("typed decision fast path", () => {
 			object: { assignments: [{ id: 1, topic: "Other" }] },
 		});
 		await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?"],
 			tenantFilter: { organizationId: null, userId: "user-1" },
 		});
@@ -215,6 +224,7 @@ describe("typed decision fast path", () => {
 			userId: "user-1",
 			organizationId: undefined,
 			featureKey: "maturation",
+			projectId: "project-1",
 		});
 	});
 
@@ -227,6 +237,7 @@ describe("typed decision fast path", () => {
 			}),
 		);
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -249,6 +260,7 @@ describe("typed decision fast path", () => {
 			object: { assignments: [{ id: 1, topic: "UX & Design" }] },
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: [
 				"Which toolkit?",
 				"Where does the panel go?",
@@ -269,6 +281,7 @@ describe("typed decision fast path", () => {
 		);
 		mocks.generateObject.mockRejectedValue(new Error("model down"));
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Where does the panel go?"],
 			tenantFilter,
 		});
@@ -287,6 +300,7 @@ describe("typed decision fast path", () => {
 			object: { assignments: [{ id: 1, topic: "Testing & QA" }] },
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -300,6 +314,7 @@ describe("typed decision fast path", () => {
 			answers({ 0: choice("Other", 0.95) }),
 		);
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Ambiguous?"],
 			tenantFilter,
 		});
@@ -340,6 +355,7 @@ describe("typed decision fast path", () => {
 				object: { assignments: [{ id: 1, topic: "Data & Storage" }] },
 			});
 			const out = await classifyQuestionTopics({
+				projectId: "project-1",
 				questions: ["q?"],
 				tenantFilter,
 			});
@@ -365,6 +381,7 @@ describe("typed decision fast path", () => {
 			},
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -387,6 +404,7 @@ describe("typed decision fast path", () => {
 			},
 		});
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -441,6 +459,7 @@ describe("typed decision fast path", () => {
 		});
 
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["Which toolkit?", "Feature flag or big bang?"],
 			tenantFilter,
 		});
@@ -464,6 +483,7 @@ describe("typed decision fast path", () => {
 			new AiUsageLimitExceededError("limit"),
 		);
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -479,6 +499,7 @@ describe("typed decision fast path", () => {
 			new AiUsageLimitExceededError("limit"),
 		);
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -490,6 +511,7 @@ describe("typed decision fast path", () => {
 
 	it("empty input: the decision resolver is not called", async () => {
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: [],
 			tenantFilter,
 		});
@@ -508,7 +530,11 @@ describe("typed decision fast path", () => {
 			"Where does the panel go?",
 			"Do we need e2e coverage?",
 		];
-		await classifyQuestionTopics({ questions, tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions,
+			tenantFilter,
+		});
 
 		expect(mocks.experimental_decide).toHaveBeenCalledTimes(1);
 		const call = mocks.experimental_decide.mock.calls[0][0];
@@ -561,7 +587,11 @@ describe("typed decision fast path", () => {
 			object: { assignments: [{ id: 1, topic: "Other" }] },
 		});
 
-		await classifyQuestionTopics({ questions: ["a?"], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: ["a?"],
+			tenantFilter,
+		});
 
 		expect(order[0]).toBe("trackUsage");
 		expect(order).toContain("answers");
@@ -592,7 +622,11 @@ describe("typed decision fast path", () => {
 			"What e2e coverage do we need?",
 			"Where should the empty state render?",
 		];
-		const out = await classifyQuestionTopics({ questions, tenantFilter });
+		const out = await classifyQuestionTopics({
+			projectId: "project-1",
+			questions,
+			tenantFilter,
+		});
 
 		expect(out).toEqual([
 			"Data & Storage",
@@ -645,6 +679,7 @@ describe("decision telemetry", () => {
 		});
 
 		await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?", "c?"],
 			tenantFilter,
 		});
@@ -677,7 +712,11 @@ describe("decision telemetry", () => {
 		mocks.experimental_decide.mockRejectedValueOnce(
 			new Error("gateway timeout"),
 		);
-		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
 		mocks.experimental_decide.mockRejectedValueOnce(
 			new Experimental_DecisionRefusalError({
 				questionIds: ["question_0"],
@@ -685,7 +724,11 @@ describe("decision telemetry", () => {
 				modelId: "example/decider",
 			}),
 		);
-		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
 
 		expect(mocks.generateObject).toHaveBeenCalledTimes(2);
 		expect(
@@ -705,6 +748,7 @@ describe("decision telemetry", () => {
 			new AiUsageLimitExceededError(),
 		);
 		const decisionLimited = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -712,6 +756,7 @@ describe("decision telemetry", () => {
 			new AiUsageLimitExceededError(),
 		);
 		const resolutionLimited = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?", "c?"],
 			tenantFilter,
 		});
@@ -737,6 +782,7 @@ describe("decision telemetry", () => {
 		);
 
 		const out = await classifyQuestionTopics({
+			projectId: "project-1",
 			questions: ["a?", "b?"],
 			tenantFilter,
 		});
@@ -758,7 +804,11 @@ describe("decision telemetry", () => {
 			new Error("not configured"),
 		);
 
-		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
 
 		expect(capturedDecisionOutcomes).toEqual([
 			{
@@ -772,7 +822,11 @@ describe("decision telemetry", () => {
 	});
 
 	it("records nothing for empty input, which makes no decision call", async () => {
-		await classifyQuestionTopics({ questions: [], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: [],
+			tenantFilter,
+		});
 
 		expect(capturedDecisionOutcomes).toEqual([]);
 	});
@@ -782,7 +836,11 @@ describe("decision telemetry", () => {
 			decideWithFallbackRefusal,
 		);
 
-		await classifyQuestionTopics({ questions: ["a?", "b?"], tenantFilter });
+		await classifyQuestionTopics({
+			projectId: "project-1",
+			questions: ["a?", "b?"],
+			tenantFilter,
+		});
 
 		expect(
 			capturedDecisionOutcomes.map(({ outcome, model, count }) => [

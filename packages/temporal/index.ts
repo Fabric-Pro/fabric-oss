@@ -130,6 +130,7 @@ export {
 	syncTaskToPM,
 	updateStoryExternalRefs,
 } from "./src/activities/pm-integration";
+export { checkStoryPmLink } from "./src/activities/pm-integration/create-story-in-pm-with-claim";
 // The ids a story (or epic/feature) and a test-case create store for a PM
 // item, read from the tool's response. Link to existing item reads a fetched
 // item through these, so a link carries the id a create would have stored.
@@ -267,6 +268,10 @@ export {
 	type TriggerDuplicateDetectionParams,
 	triggerDuplicateDetection,
 } from "./src/lib/trigger-duplicate-detection";
+export {
+	type TriggerStoryBodyDraftParams,
+	triggerStoryBodyDraft,
+} from "./src/lib/trigger-story-body-draft";
 // "Update using context" engine (shared across api + temporal callers) — the
 // interactive procedures (documents + stories) and the scheduled document
 // refresh must run the exact same prompt, schema, and retrieval.
@@ -333,6 +338,7 @@ export {
 	ORCHESTRATOR_TASK_QUEUE,
 	PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	PROJECT_EMBEDDING_TASK_QUEUE,
+	PROPOSAL_EXPORT_TASK_QUEUE,
 } from "./src/task-queues";
 // Type exports
 export type {

@@ -156,10 +156,21 @@ export const SYSTEM_NODES: NodeTypeDefinition[] = [
 					"How the agent should behave and what to leave out.",
 			},
 			{
+				name: "modelId",
+				label: "Model (optional)",
+				type: "ai-model-selector",
+				placeholder: "Use the configured default",
+			},
+			{
 				name: "mcpConfigIds",
 				label: "MCP servers",
 				type: "mcp-selector",
 				placeholder: "Select MCP servers",
+			},
+			{
+				name: "builtInToolNames",
+				label: "Fabric data and tools the agent may use",
+				type: "capability-selector",
 			},
 			{
 				name: "maxIterations",

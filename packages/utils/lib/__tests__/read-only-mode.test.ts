@@ -36,6 +36,29 @@ describe("classifyReadOnlyToolAccess", () => {
 		expect(classifyReadOnlyToolAccess(name)).toBe("WRITE");
 	});
 
+	it.each([
+		"project_rag_query",
+		"workspace_rag_query",
+		"workspace_rag_summarize",
+	])(
+		"classifies Fabric's own lookup %s as READ by its exact name",
+		(name) => {
+			expect(classifyReadOnlyToolAccess(name)).toBe("READ");
+		},
+	);
+
+	it.each([
+		"rag_query",
+		"vendor_rag_query",
+		"vendor_project_rag_query",
+		"project_rag_query_and_delete",
+		"project_rag_update",
+		"orders_query",
+		"workspace_rag_publish",
+	])("does not read %s as a lookup: only the exact names are", (name) => {
+		expect(classifyReadOnlyToolAccess(name)).toBe("WRITE");
+	});
+
 	it("defaults unknown names to WRITE (conservative)", () => {
 		expect(classifyReadOnlyToolAccess("do_something")).toBe("WRITE");
 		expect(classifyReadOnlyToolAccess("sync")).toBe("WRITE");

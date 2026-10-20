@@ -435,6 +435,15 @@ const QA_EVIDENCE_RETENTION_WORKFLOW_NAME = "qaEvidenceRetentionWorkflow";
 // contend for the same connection pool.
 const QA_EVIDENCE_RETENTION_CRON_SCHEDULE = "45 4 * * *";
 
+// Exported because the registration test asserts the complete create()
+// payload against them.
+export const PROPOSAL_EXPORT_CLEANUP_SCHEDULE_ID = "proposal-export-cleanup";
+export const PROPOSAL_EXPORT_CLEANUP_WORKFLOW_NAME =
+	"proposalExportCleanupWorkflow";
+// Daily at 06:15 UTC, apart from the other object-store sweeps (03:15–05:45),
+// deletes Proposal exports older than their retention window (Fizzy #2946).
+export const PROPOSAL_EXPORT_CLEANUP_CRON_SCHEDULE = "15 6 * * *";
+
 /**
  * Register all system Temporal schedules.
  *
@@ -492,6 +501,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		await registerAttachmentFinalOrphanSweepSchedule(scheduleClient);
 		await registerAttachmentRetentionPurgeSchedule(scheduleClient);
 		await registerQaEvidenceRetentionSchedule(scheduleClient);
+		await registerProposalExportCleanupSchedule(scheduleClient);
 		await registerChatGptPlanSourceSweepSchedule(scheduleClient);
 		await ensureContextSummarizationSchedules(scheduleClient);
 		// Monitoring schedules
@@ -2421,6 +2431,55 @@ export async function registerMcpOAuthStateCleanupSchedule(
 		if (error instanceof ScheduleAlreadyRunning) {
 			console.log(
 				`[Worker] Schedule "${MCP_OAUTH_STATE_CLEANUP_SCHEDULE_ID}" already exists, skipping`,
+			);
+		} else {
+			throw error;
+		}
+	}
+}
+
+/**
+ * Register the Proposal export cleanup schedule (Fizzy #2946).
+ *
+ * Deletes exported PDF and Word files older than their retention window.
+ * Every run lists the whole `proposal-exports/` prefix and deletes by age, so
+ * a skipped or missed tick loses nothing: `overlap: "SKIP"` and a one-hour
+ * catchup window are safe.
+ *
+ * Idempotent registration via the `ScheduleAlreadyRunning` catch.
+ */
+export async function registerProposalExportCleanupSchedule(
+	scheduleClient: ScheduleClient,
+): Promise<void> {
+	try {
+		await scheduleClient.create({
+			scheduleId: PROPOSAL_EXPORT_CLEANUP_SCHEDULE_ID,
+			spec: {
+				cronExpressions: [PROPOSAL_EXPORT_CLEANUP_CRON_SCHEDULE],
+			},
+			action: {
+				type: "startWorkflow",
+				workflowType: PROPOSAL_EXPORT_CLEANUP_WORKFLOW_NAME,
+				taskQueue: TASK_QUEUE,
+				args: [],
+			},
+			policies: {
+				overlap: "SKIP",
+				catchupWindow: "1 hour",
+			},
+			state: {
+				paused: false,
+				note: "Deletes exported Proposal PDF and Word files older than their retention window. Idempotent: each run deletes whatever has aged out.",
+			},
+		});
+
+		console.log(
+			`[Worker] Schedule "${PROPOSAL_EXPORT_CLEANUP_SCHEDULE_ID}" registered (daily at 06:15 UTC)`,
+		);
+	} catch (error) {
+		if (error instanceof ScheduleAlreadyRunning) {
+			console.log(
+				`[Worker] Schedule "${PROPOSAL_EXPORT_CLEANUP_SCHEDULE_ID}" already exists, skipping`,
 			);
 		} else {
 			throw error;

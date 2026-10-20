@@ -11,10 +11,18 @@
  * - the client-document predicate: the PROPOSAL_ARTIFACT rollout gate is on
  *   for the project's OWNING organization and the document is a Proposal. It
  *   governs the theme, the exports and chat prompt resolution, for members
- *   and guests alike;
+ *   and guests alike. The gate half is its own organization-level predicate,
+ *   which also decides where a new default at a superseded prompt action is
+ *   refused;
  * - the internal predicate: the client-document predicate, and the reader
  *   holds a `member` row in that owning organization. It governs what stays
  *   inside the organization: the tabs, the Internal Analysis, the Style.
+ *
+ * Neither predicate decides whether outside writers refuse under a live
+ * generation run: that is `isRunGuardedDocumentType` in
+ * `@repo/utils/generation-run-guard`, decided by type alone, because a
+ * Proposal's run keeps going when the gate is turned off mid-run and a gate
+ * rollback must never reopen those writes.
  *
  * Every function here takes the owning organization, resolved by the caller
  * from the Project row. Never pass the session's organization or one from the
@@ -35,6 +43,27 @@ import { isRecipientLogoKeyForProject } from "./recipient-brand";
 export const PROPOSAL_DOCUMENT_TYPE = "PROPOSAL";
 
 /**
+ * Whether the organization's PROPOSAL_ARTIFACT gate is on. False without an
+ * organization, decided before the flag is read: nothing outside an
+ * organization ever reaches the flag store (ADR-018).
+ *
+ * The one place the gate is read for an organization, so the client-document
+ * predicate and the prompt bindings it supersedes can never disagree about it.
+ *
+ * `organizationId` must be the OWNING organization: the project's, for
+ * anything about a project or its documents; for an organization or project
+ * default, the organization the binding is written in.
+ */
+export async function isProposalArtifactEnabledForOrganization(
+	organizationId: string | null | undefined,
+): Promise<boolean> {
+	if (!organizationId) {
+		return false;
+	}
+	return await isFeatureEnabled("PROPOSAL_ARTIFACT", organizationId);
+}
+
+/**
  * Whether the document is a client document: a Proposal in an organization
  * whose PROPOSAL_ARTIFACT gate is on. False without an organization and for
  * any other type, both decided before the flag is read: a project outside
@@ -47,10 +76,10 @@ export async function isProposalClientDocument(args: {
 	organizationId: string | null | undefined;
 	documentType: string;
 }): Promise<boolean> {
-	if (!args.organizationId || args.documentType !== PROPOSAL_DOCUMENT_TYPE) {
+	if (args.documentType !== PROPOSAL_DOCUMENT_TYPE) {
 		return false;
 	}
-	return await isFeatureEnabled("PROPOSAL_ARTIFACT", args.organizationId);
+	return await isProposalArtifactEnabledForOrganization(args.organizationId);
 }
 
 /**

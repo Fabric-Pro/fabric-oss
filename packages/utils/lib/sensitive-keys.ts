@@ -70,3 +70,39 @@ export function keyIsSensitive(key: string): boolean {
 	}
 	return false;
 }
+
+/**
+ * Recursively redact values whose KEY matches the sensitive-key denylist.
+ * Walks nested objects and arrays; primitives and `null` pass through.
+ *
+ * Behaviour matrix (see unit tests for full coverage):
+ * - `{ password: "x" }` -> `{ password: "[REDACTED]" }`
+ * - `{ Password: "x", ACCESSTOKEN: "y" }` -> both redacted (case-insensitive)
+ * - `{ user_password_hash: "x" }` -> redacted (substring match)
+ * - `{ note: "my password is x" }` -> preserved (value not inspected)
+ * - `{ tokens: [{ accessToken: "x" }] }` -> array walked element-wise
+ * - `redactSensitiveKeys("hello")` -> `"hello"` (primitive at top level)
+ * - `redactSensitiveKeys(null)` -> `null`
+ */
+export function redactSensitiveKeys(input: unknown): unknown {
+	if (input === null || input === undefined) {
+		return input;
+	}
+	if (Array.isArray(input)) {
+		return input.map((entry) => redactSensitiveKeys(entry));
+	}
+	if (typeof input !== "object") {
+		return input;
+	}
+
+	const source = input as Record<string, unknown>;
+	const output: Record<string, unknown> = {};
+	for (const key of Object.keys(source)) {
+		if (keyIsSensitive(key)) {
+			output[key] = REDACTED;
+			continue;
+		}
+		output[key] = redactSensitiveKeys(source[key]);
+	}
+	return output;
+}

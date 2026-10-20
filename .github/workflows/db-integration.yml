@@ -109,7 +109,8 @@ jobs:
     needs: [promotion_policy]
     name: Detect changed paths
     # Public mirror only, except on workflow_dispatch (see header).
-    runs-on: ubuntu-latest
+    # arm64: checkout and paths-filter only, both architecture-neutral.
+    runs-on: ubuntu-24.04-arm
     outputs:
       db: ${{ steps.filter.outputs.db }}
       temporal: ${{ steps.filter.outputs.temporal }}
@@ -229,6 +230,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify Prisma generation patches
+        run: node --test packages/database/scripts/__tests__/prisma-generation-queue.test.mjs packages/database/scripts/__tests__/prisma-zod-dmmf.test.mjs
 
       # prisma/generated is gitignored and expensive to compile. Both DB jobs
       # share the compiled-client key published by the unit-tests push warmer.
@@ -917,9 +921,20 @@ jobs:
         # eight real connections race for the last free slot here and
         # exactly one must win. The count-then-insert pair this replaced
         # admitted all of them; a mocked client cannot show the difference.
+        # `record-workflow-run-started` proves the run-start stamp of
+        # `Workflow.lastRunAt` leaves `updatedAt` alone, which only a real
+        # write under Prisma's `@updatedAt` can show.
+        # `write-workflow-run-state` extends that proof to settings and pauses,
+        # including null-aware tenant isolation and ordinary user edits.
+        # The backfill suite checks bounded batches, restart after interruption,
+        # historical starts, edit preservation, and repeat application.
         run: |
           pnpm --filter @repo/database exec vitest run \
             __tests__/workflow-execution-reservation.integration.test.ts \
+            prisma/queries/workflows/__tests__/record-workflow-run-started.integration.test.ts \
+            prisma/queries/workflows/__tests__/write-workflow-run-state.integration.test.ts \
+            __tests__/workflow-last-run-backfill.integration.test.ts \
+            prisma/queries/workflows/__tests__/ado-review-baselines.integration.test.ts \
             --passWithNoTests=false \
             --reporter=dot \
             --reporter=json --outputFile=workflow-execution-reservation-results.json
@@ -936,9 +951,11 @@ jobs:
           const passed = report.numPassedTests ?? 0;
           const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
           console.log(`workflow-execution-reservation-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
-          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/workflow-execution-reservation.integration.test.ts)"); process.exit(1); }
+          if (files !== 5) { console.error("::error::expected exactly 5 test files (workflow-execution-reservation + record-workflow-run-started + write-workflow-run-state + workflow-last-run-backfill + ado-review-baselines)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          if (passed !== 6) { console.error(`::error::expected exactly 6 passing tests, got ${passed}`); process.exit(1); }
+          // 44: nineteen reservation, seven lastRunAt, seven runtime-state,
+          // one backfill and ten ADO baseline projection cases.
+          if (passed !== 44) { console.error(`::error::expected exactly 44 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the conversation turn admission suite against real Postgres
@@ -970,7 +987,7 @@ jobs:
           console.log(`conversation-turn-admission-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-admission.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          if (passed !== 22) { console.error(`::error::expected exactly 22 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 28) { console.error(`::error::expected exactly 28 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the conversation turn token ledger suite against real Postgres
@@ -1074,7 +1091,7 @@ jobs:
           console.log(`authority-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/authority.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite did not execute against Postgres`); process.exit(1); }
-          if (passed !== 60) { console.error(`::error::expected exactly 60 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 63) { console.error(`::error::expected exactly 63 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the chat-delivery kind-partitioning suite against real Postgres
@@ -1995,7 +2012,7 @@ jobs:
         run: |
           node <<'EOF'
           const fs = require("node:fs");
-          // 18: a PENDING kept while the link lands, three statuses replaced
+          // 19: a PENDING kept while the link lands, three statuses replaced
           // by SUCCESS in the link's commit, attempt-scoped SUCCESS, a no-id
           // orphan stamped under this claim, a link refused after Unlink &
           // re-create, an orphan beside another create's claim, the baseline
@@ -2004,8 +2021,9 @@ jobs:
           // ambiguous failure kept off a newer create's case, a slipping
           // claim that writes nothing, a soft-deleted case, and the
           // test-case unlink and claim clear (exact read, and refused while
-          // a retry attempt is PENDING).
-          const EXPECTED = 18;
+          // a retry attempt is PENDING), and a case linked in another PM tool
+          // refused with its link kept.
+          const EXPECTED = 19;
           const report = JSON.parse(fs.readFileSync("packages/temporal/create-test-case-in-pm-with-claim-integration-results.json","utf8"));
           const files = report.testResults?.length ?? 0;
           const total = report.numTotalTests ?? 0;

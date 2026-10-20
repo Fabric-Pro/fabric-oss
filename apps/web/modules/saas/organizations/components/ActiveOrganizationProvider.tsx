@@ -8,7 +8,9 @@ import { sessionQueryKey } from "@saas/auth/lib/api";
 import {
 	activeOrganizationQueryKey,
 	useActiveOrganizationQuery,
+	useOrganizationListQuery,
 } from "@saas/organizations/lib/api";
+import { Spinner } from "@shared/components/Spinner";
 import { useRouter } from "@shared/hooks/router";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -123,6 +125,48 @@ function findViewerMembership<TMembers extends readonly { userId: string }[]>(
 		return undefined;
 	}
 	return members?.find((member) => member.userId === userId);
+}
+
+/**
+ * The organization the session has to name for the API to agree with the URL,
+ * or `undefined` when there is nothing this viewer can be moved onto.
+ *
+ * Only a member can be moved onto a workspace: the organization plugin's
+ * set-active route refuses a caller who holds no membership in the
+ * organization it is handed, and a project guest sees the workspace on screen
+ * without belonging to it. Once the organization on screen has loaded, its
+ * member list decides — emptiness is not the test: an organization whose
+ * members exist but exclude the viewer is skipped just the same. Before it has
+ * loaded, the viewer's own organization list (their memberships) stands in.
+ * That list is hydrated by the SaaS layout's boundary ABOVE the provider,
+ * whereas the organization itself is hydrated by the org layout's boundary
+ * BELOW it — so the list is what lets the server render and the first client
+ * render reach the same answer.
+ */
+function resolveAlignmentTargetId({
+	organizationSlug,
+	organization,
+	organizationList,
+	userId,
+}: {
+	organizationSlug: string | undefined;
+	organization:
+		| { id: string; members?: readonly { userId: string }[] }
+		| null
+		| undefined;
+	organizationList: readonly { id: string; slug: string }[] | undefined;
+	userId: string | undefined;
+}): string | undefined {
+	if (!organizationSlug) {
+		return undefined;
+	}
+	if (organization) {
+		return findViewerMembership(organization.members, userId)
+			? organization.id
+			: undefined;
+	}
+	return organizationList?.find((listed) => listed.slug === organizationSlug)
+		?.id;
 }
 
 export function ActiveOrganizationProvider({
@@ -364,6 +408,40 @@ export function ActiveOrganizationProvider({
 	// Organizations we have already tried to reconcile the session onto, so a
 	// refusal is not retried on every render.
 	const reconciledOrganizationsRef = useRef(new Set<string>());
+	// Organizations whose alignment attempt has finished, either way. State
+	// rather than a ref because settling is what lifts the render gate below.
+	const [settledAlignments, setSettledAlignments] = useState<
+		ReadonlySet<string>
+	>(() => new Set());
+
+	const { data: organizationList } = useOrganizationListQuery();
+
+	const alignmentTargetId = resolveAlignmentTargetId({
+		organizationSlug: activeOrganizationSlug,
+		organization: activeOrganization,
+		organizationList,
+		userId: session?.userId,
+	});
+
+	// A deliberate switch owns the session field while it is in flight; a
+	// background correction underneath it would race that write.
+	const pendingAlignmentId =
+		session &&
+		!switchTarget &&
+		session.activeOrganizationId !== alignmentTargetId
+			? alignmentTargetId
+			: undefined;
+
+	// Hold the page back while the session is being moved. Everything below
+	// this provider queries the API, and a call whose tenant falls back to the
+	// session is refused while the session still names the organization the
+	// viewer came from — with `retry: false`, those refusals stick until a
+	// manual reload. Every input here is server-hydrated (URL, session,
+	// organization list) or starts empty on both sides, so the server render
+	// and the first client render agree.
+	const isAligningSession =
+		pendingAlignmentId !== undefined &&
+		!settledAlignments.has(pendingAlignmentId);
 
 	// Make the session name the organization the URL is already showing.
 	//
@@ -382,30 +460,17 @@ export function ActiveOrganizationProvider({
 	// cannot — so the client does it, through the same `setActive` the switcher
 	// uses. It refreshes the cookie cache and the row together.
 	//
-	// Deliberately quiet: the page is already rendering the right organization and
-	// the user asked for nothing here. A failure leaves the pre-existing staleness
-	// in place rather than interrupting them, and is not retried — the next switch
-	// or sign-in writes the field anyway.
+	// The page waits on it (see `isAligningSession`), and a success invalidates
+	// every query so nothing keeps an answer given for the previous organization.
+	// A failure is logged, not surfaced: the gate lifts and the page renders with
+	// the pre-existing staleness rather than blocking forever, and it is not
+	// retried — the next switch or sign-in writes the field anyway.
 	useEffect(() => {
-		if (!activeOrganization || switchTarget || switchInFlightRef.current) {
+		if (pendingAlignmentId === undefined || switchInFlightRef.current) {
 			return;
 		}
-		if (session?.activeOrganizationId === activeOrganization.id) {
-			return;
-		}
-		// Only a member can be moved onto this workspace: the organization
-		// plugin's set-active route refuses a caller who holds no membership in
-		// the organization it is handed. A project guest sees the workspace on
-		// screen without belonging to it, so the member list — not the page — is
-		// what decides whether the call is worth making. Emptiness is not the
-		// test: an organization whose members exist but exclude the viewer is
-		// skipped just the same.
-		if (
-			!findViewerMembership(activeOrganization.members, session?.userId)
-		) {
-			return;
-		}
-		if (reconciledOrganizationsRef.current.has(activeOrganization.id)) {
+		const organizationId = pendingAlignmentId;
+		if (reconciledOrganizationsRef.current.has(organizationId)) {
 			return;
 		}
 		// Recorded BEFORE the attempt, deliberately — that is what makes a
@@ -414,10 +479,10 @@ export function ActiveOrganizationProvider({
 		// cookie when it refuses, so a second attempt repairs nothing and clears
 		// the field again: retrying leaves the caller worse off than the single
 		// attempt did. One try per organization, then silence.
-		reconciledOrganizationsRef.current.add(activeOrganization.id);
+		reconciledOrganizationsRef.current.add(organizationId);
 
 		void authClient.organization
-			.setActive({ organizationId: activeOrganization.id })
+			.setActive({ organizationId })
 			.then(({ error }) => {
 				if (error) {
 					throw error;
@@ -428,23 +493,25 @@ export function ActiveOrganizationProvider({
 					...data,
 					session: {
 						...data?.session,
-						activeOrganizationId: activeOrganization.id,
+						activeOrganizationId: organizationId,
 					},
 				}));
+				// Anything that mounted outside the gate asked with the old
+				// session; refetch it under the new one.
+				queryClient.invalidateQueries();
 			})
 			.catch((error) => {
 				console.error(
 					"[ActiveOrganizationProvider] Failed to align the session with the workspace on screen — API calls that fall back to the session may resolve against the previous organization until its cached session expires",
 					error,
 				);
+			})
+			.finally(() => {
+				setSettledAlignments((settled) =>
+					new Set(settled).add(organizationId),
+				);
 			});
-	}, [
-		activeOrganization,
-		session?.activeOrganizationId,
-		session?.userId,
-		switchTarget,
-		queryClient,
-	]);
+	}, [pendingAlignmentId, queryClient]);
 
 	const [loaded, setLoaded] = useState(activeOrganization !== undefined);
 
@@ -492,7 +559,16 @@ export function ActiveOrganizationProvider({
 
 	return (
 		<ActiveOrganizationContext.Provider value={contextValue}>
-			{children}
+			{isAligningSession ? (
+				<output
+					aria-label={t("organizations.organizationSelect.opening")}
+					className="flex min-h-screen items-center justify-center"
+				>
+					<Spinner className="size-8" />
+				</output>
+			) : (
+				children
+			)}
 		</ActiveOrganizationContext.Provider>
 	);
 }

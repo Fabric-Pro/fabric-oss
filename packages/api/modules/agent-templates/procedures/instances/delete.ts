@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import {
 	deleteAgentTemplateInstance,
 	getAgentTemplateInstance,
@@ -5,40 +6,28 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 
 const deleteInputSchema = z.object({
 	id: z.string(),
+	organizationId: z.string().nullable().optional(),
 });
 
 export const deleteInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(deleteInputSchema)
 	.handler(async ({ input, context }) => {
-		// Verify ownership or org membership
+		const organizationId = resolvedOrganizationId(input, context.session);
 		const existing = await getAgentTemplateInstance(input.id);
-		if (!existing) {
-			throw new Error("Instance not found");
-		}
-
-		const isOwner = existing.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (existing.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error(
-				"You don't have permission to delete this instance",
-			);
+		if (!existing || existing.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		await deleteAgentTemplateInstance(input.id);

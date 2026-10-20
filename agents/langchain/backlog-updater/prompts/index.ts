@@ -63,7 +63,7 @@ function buildAvailableContextSection(state: BacklogUpdaterState): string {
 
 	if (state.hasTeamsIntegration) {
 		integrations.push(
-			"- Microsoft Teams: Connected. Recent messages from linked channels will be auto-fetched.",
+			"- Microsoft Teams: Connected. Messages are fetched only from channels/chats the user selects.",
 		);
 		integrations.push(
 			"- Meeting Transcripts: Available. User can select specific meetings to analyze.",
@@ -74,7 +74,7 @@ function buildAvailableContextSection(state: BacklogUpdaterState): string {
 
 	if (state.hasSlackIntegration) {
 		integrations.push(
-			"- Slack: Connected. Recent messages from linked channels will be auto-fetched.",
+			"- Slack: Connected. Messages are auto-fetched unless only meetings were selected; pass fetchSlackMessages: true when the user asks for Slack alongside meetings.",
 		);
 	} else {
 		integrations.push("- Slack: Not connected.");
@@ -116,6 +116,9 @@ function buildToolUsageSection(state: BacklogUpdaterState): string {
 		tools.push(
 			`${stepNum}. select_review_sources - Show a combined selector to the user for picking meetings AND project-linked Teams channels/group chats, within a shared date-range window. Call this when the user mentions meetings, recordings, transcripts, Teams chats/channels, or project conversations. Returns { selectedMeetings: Array<{ joinUrl, startTime }>, selectedChannels: Array<{ projectContextId }>, daysBack: number }.`,
 		);
+		tools.push(
+			"For different Teams meetings, channels, or a different Teams date range, call select_review_sources again before analyze_backlog rather than passing new selection values directly to analyze_backlog.",
+		);
 		stepNum++;
 	}
 
@@ -127,7 +130,7 @@ function buildToolUsageSection(state: BacklogUpdaterState): string {
 	}
 
 	tools.push(
-		`${stepNum}. analyze_backlog - Start the backlog analysis. Call this AFTER gathering context source selections (meetings, Notion pages, Teams channels/chats). Pass all context sources and the user's intent. This fetches context, analyzes it against the existing backlog, and returns a change proposal. IMPORTANT: Always include the user's original request as the userPrompt parameter. Pass through selectedMeetings, selectedChannels, and daysBack verbatim from the select_review_sources result.
+		`${stepNum}. analyze_backlog - Start the backlog analysis. Call this AFTER gathering context source selections (meetings, Notion pages, Teams channels/chats). Pass all context sources and the user's intent. This fetches context, analyzes it against the existing backlog, and returns a change proposal. IMPORTANT: Always include the user's original request as the userPrompt parameter. Pass through selectedMeetings, selectedChannels, and daysBack verbatim from the select_review_sources result. If analyze_backlog returns an error, do not call it again in the same turn; explain the error to the user.
 
 CRITICAL — call analyze_backlog IMMEDIATELY when source selection completes. Do NOT ask the user "what would you like me to focus on?" or any other clarifying question first. The user's original message is sufficient intent — pass it as userPrompt and run. Asking for further clarification before analyzing is a bug, not a feature: the analyzer is designed to identify all relevant backlog updates from the context regardless of focus area, and the user can accept/reject specific changes in the review step.`,
 	);

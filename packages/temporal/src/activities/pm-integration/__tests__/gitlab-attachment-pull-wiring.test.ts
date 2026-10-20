@@ -118,6 +118,7 @@ vi.mock("@repo/database", () => ({
 	importPulledStoryAttachment,
 	recordStoryAttachmentSyncIssue,
 	db: {
+		userStory: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
 		projectStoryStatus: { findMany: findManyStatuses },
 		project: { findUnique: findUniqueProject },
 	},

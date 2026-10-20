@@ -14,7 +14,10 @@ import {
 	buildPluginInitLine,
 	type CloneChoice,
 	claudePluginInstallCommand,
+	claudePluginMcpServerLabel,
+	codexPluginAddCommand,
 	type LocalSetupTool,
+	pluginNameForProject,
 } from "./lib/agent-sign-in";
 import type { CheckoutSetup } from "./lib/checkout-setup";
 import { REPOSITORY_STEP_TITLE, RepositoryChoice } from "./RepositoryChoice";
@@ -49,10 +52,11 @@ const CODEX_MCP_NEXT_STEP =
 	"The command opens your browser so you can approve the connection, and finishes once you have. Keep the terminal open until it does.";
 
 const PLUGIN_NOTE =
-	"Then the setup asks you to approve the plugin's command once. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.";
+	"After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.";
 
-const CLAUDE_PLUGIN_APPROVAL_NOTE =
-	"Claude Code shows the exact command the plugin runs and asks you to accept it once, in your own terminal; it will not take that answer from inside a coding session. If the setup could not ask you, run this in the project folder:";
+const CLAUDE_PLUGIN_STEP_TITLE = "Turn on the plugin in Claude Code";
+
+const CODEX_PLUGIN_STEP_TITLE = "Turn on the plugin in Codex";
 
 /* -------------------------------------------------------------------------- */
 /* The setup line                                                              */
@@ -100,22 +104,17 @@ function setupLineFor(args: {
 function ApproveStep({
 	tool,
 	route,
-	choice,
-	projectId,
-	announce,
+	viaPlugin,
 }: {
 	tool: LocalSetupTool;
 	route: LocalSetupRoute;
-	choice: CloneChoice;
-	projectId: string;
-	announce: (message: string) => void;
+	viaPlugin: boolean;
 }) {
-	const viaPlugin = choice === "plugin" || route.kind === "upload";
 	return (
 		<>
 			<p className="text-muted-foreground text-sm">
 				A sign-in page opens.{" "}
-				{viaPlugin ? (
+				{viaPlugin || route.kind === "upload" ? (
 					PLUGIN_NOTE
 				) : (
 					<>
@@ -126,26 +125,79 @@ function ApproveStep({
 					</>
 				)}
 			</p>
-			{viaPlugin && tool === "claude-code" ? (
-				<>
-					<p className="text-muted-foreground text-sm">
-						{CLAUDE_PLUGIN_APPROVAL_NOTE}
-					</p>
-					<CommandBlock
-						announce={announce}
-						command={claudePluginInstallCommand(projectId)}
-						label="Copy the plugin approval command"
-						testId="agent-sign-in-plugin-approval"
-					/>
-				</>
-			) : null}
-			{tool === "codex" ? (
+			{tool === "codex" && !viaPlugin ? <CodexTrustNote /> : null}
+		</>
+	);
+}
+
+function CodexTrustNote() {
+	return (
+		<p className="text-muted-foreground text-sm">
+			Then, in Codex, trust this folder when asked and run{" "}
+			<InlineCode>/hooks</InlineCode> once to trust the project hook.
+		</p>
+	);
+}
+
+/**
+ * The step after the sign-in on the plugin path. What it asks of the person
+ * differs by tool: Claude Code wants its command accepted once in their own
+ * terminal; Codex is installed by the setup itself.
+ */
+function PluginStep({
+	tool,
+	projectId,
+	announce,
+}: {
+	tool: LocalSetupTool;
+	projectId: string;
+	announce: (message: string) => void;
+}) {
+	const name = pluginNameForProject(projectId);
+	if (tool === "claude-code") {
+		return (
+			<>
 				<p className="text-muted-foreground text-sm">
-					Then, in Codex, trust this folder when asked and run{" "}
-					<InlineCode>/hooks</InlineCode> once to trust the project
-					hook.
+					The setup asks Claude Code to install this project's plugin,{" "}
+					<InlineCode>{name}</InlineCode>, and you confirm it once in
+					your own terminal, not from inside a coding session. If the
+					setup printed the line instead, run it in the same folder:
 				</p>
-			) : null}
+				<CommandBlock
+					announce={announce}
+					command={claudePluginInstallCommand(projectId)}
+					label="Copy the plugin install command"
+					testId="agent-sign-in-plugin-approval"
+				/>
+				<p className="text-muted-foreground text-sm">
+					To let the agent use Fabric's tools, run{" "}
+					<InlineCode>/mcp</InlineCode>, pick{" "}
+					<InlineCode>
+						{claudePluginMcpServerLabel(projectId)}
+					</InlineCode>{" "}
+					and choose Authenticate.
+				</p>
+			</>
+		);
+	}
+	return (
+		<>
+			<p className="text-muted-foreground text-sm">
+				The setup installs this project's plugin,{" "}
+				<InlineCode>{name}</InlineCode>, in Codex. If it could not, run:
+			</p>
+			<CommandBlock
+				announce={announce}
+				command={codexPluginAddCommand(projectId)}
+				label="Copy the Codex plugin command"
+				testId="agent-sign-in-codex-plugin"
+			/>
+			<p className="text-muted-foreground text-xs">
+				If your marketplace is not named{" "}
+				<InlineCode>personal</InlineCode>, the setup prints the line
+				with its name.
+			</p>
+			<CodexTrustNote />
 		</>
 	);
 }
@@ -161,6 +213,7 @@ function checkoutSteps(args: {
 }): SetupStep[] {
 	const { tool, route, projectId, line, choice, onChoiceChange, announce } =
 		args;
+	const viaPlugin = choice === "plugin" || route.kind === "upload";
 	return [
 		...(route.kind === "repository"
 			? [
@@ -204,15 +257,27 @@ function checkoutSteps(args: {
 			title: APPROVE_STEP_TITLE,
 			approve: true,
 			children: (
-				<ApproveStep
-					announce={announce}
-					choice={choice}
-					projectId={projectId}
-					route={route}
-					tool={tool}
-				/>
+				<ApproveStep route={route} tool={tool} viaPlugin={viaPlugin} />
 			),
 		},
+		...(viaPlugin
+			? [
+					{
+						id: "plugin",
+						title:
+							tool === "claude-code"
+								? CLAUDE_PLUGIN_STEP_TITLE
+								: CODEX_PLUGIN_STEP_TITLE,
+						children: (
+							<PluginStep
+								announce={announce}
+								projectId={projectId}
+								tool={tool}
+							/>
+						),
+					},
+				]
+			: []),
 	];
 }
 

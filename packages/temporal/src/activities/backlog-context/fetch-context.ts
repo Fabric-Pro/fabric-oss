@@ -1081,10 +1081,10 @@ async function readCachedTranscript(args: {
 		// stored whole however long it is (Fizzy #2316) — and this is now the
 		// only thing standing between a multi-hundred-kilobyte transcript and
 		// `applyTokenBudget`, which allocates greedily and ranks
-		// `meetingTranscripts` above `notionContent` and `ragContext`. Without
-		// this, one long meeting silently consumes the whole budget and drops
-		// the project's other context, which is a worse analysis than the
-		// summary. Same guard the imported path below applies, for the same
+		// `meetingTranscripts` just after the small architecture decision section
+		// (which includes binding constraints), ahead of the remaining sources.
+		// Without this, one long meeting can consume the remaining budget and
+		// drop other context, producing a worse analysis than the summary. Same guard the imported path below applies, for the same
 		// reason.
 		if (context.content.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
 			logger.info(
@@ -1262,10 +1262,10 @@ async function readImportedTranscript(args: {
 		// thing), which left this the only producer that could hand the
 		// analyzer a 1M-character section. That is not merely large:
 		// `applyTokenBudget` allocates greedily in priority order and ranks
-		// `meetingTranscripts` ahead of `notionContent` and `ragContext`, so one
-		// oversized import would consume the whole 80k-token budget and silently
-		// drop the project's other context — a worse analysis than if the
-		// meeting had never been imported.
+		// `meetingTranscripts` just after the small architecture decision section
+		// (which includes binding constraints), ahead of the remaining sources.
+		// One oversized import could consume the remaining budget and silently
+		// drop other context — a worse analysis than using a summary.
 		if (context.content.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
 			logger.info(
 				"[BacklogContext] Imported transcript exceeds threshold, summarizing",
@@ -1326,7 +1326,7 @@ async function summarizeTranscript(
 				taskType: "SIMPLE",
 				complexity: "simple",
 			},
-			{ userId, organizationId, featureKey: "backlog-update" },
+			{ userId, organizationId, projectId, featureKey: "backlog-update" },
 		);
 
 		const generationStart = Date.now();

@@ -9,8 +9,9 @@
  * The table below is keyed by the tools' names as a type, so a tool added to
  * the list without discovery text here does not compile. Running one goes
  * through the gateway (`fabric-catalog-adapter`), as the acting user, so the
- * Orchestrator offers exactly the arguments Direct chat and external coding
- * agents do (`surface`, `runtimeTools`, `sharedWithOrganization`, `dryRun`).
+ * Orchestrator offers the arguments Direct chat does (`surface`, `runtimeTools`,
+ * `sharedWithOrganization`), which are external coding agents' less `dryRun`:
+ * in chat the approval card is the draft (`withoutDryRun`).
  *
  * A `KEYWORDS:` section ends at the first sentence stop, so none of the phrases
  * below contain one.
@@ -20,6 +21,10 @@ import {
 	FABRIC_CHAT_TOOL_DEFINITIONS,
 	type FabricChatToolName,
 } from "../../../lib/fabric-gateway-tools";
+import {
+	withoutDryRun,
+	withoutDryRunNote,
+} from "../../../lib/fabric-tool-definition";
 import type { FabricAiTool } from "./fabric-ai-tools";
 
 interface Discovery {
@@ -31,6 +36,73 @@ interface Discovery {
 }
 
 const DISCOVERY: Record<FabricChatToolName, Discovery> = {
+	fabric_list_project_pm_assigned_items: {
+		when: "To enumerate real directly assigned work-item IDs in the attached project's configured Azure DevOps target before reading their requirements or comments.",
+		how: "Use current connection identity or an actual member uniqueName; pass returned cursor with the same filters until complete. This does not traverse parents, children or iterations.",
+		keywords:
+			"ADO assigned items, Azure DevOps assigned stories tasks, enumerate work items, assigned item IDs",
+	},
+	fabric_get_project_pm_item_snapshots: {
+		when: "To inspect real Azure DevOps item requirements and their own versioned comments, using IDs and requirementsAsOf from assigned-item enumeration.",
+		how: "Read at most 10 IDs; select the requirement fields named in project instructions. Historical requirements and current comments are separate captures. Honor incomplete, unreadIds and resultTruncated; linked item comments are not included.",
+		keywords:
+			"ADO item snapshots, Azure DevOps requirements comments, BusinessRules specification, read work item details",
+	},
+	fabric_list_project_pm_work_item_types: {
+		when: "To populate a work-item type selector from the configured Azure DevOps project's actual enabled types.",
+		keywords:
+			"ADO work item types, Azure DevOps type selector, story type options",
+	},
+	fabric_get_project_pm_connection: {
+		when: "To check whether an attached Fabric project has Azure DevOps project management configured and the current viewer has connected their own account.",
+		keywords:
+			"Azure DevOps connection, ADO connected, project management binding, refresh disabled, detect connection, dashboard setup",
+	},
+	fabric_list_project_pm_members: {
+		when: "To populate a member selector from the configured Azure DevOps project's actual team members, including those with no work items.",
+		keywords:
+			"ADO project members, Azure DevOps team members, member selector, assignee dropdown, project people",
+	},
+	fabric_get_project_work_item_counts: {
+		when: "To count current Azure DevOps work items in the attached project's configured PM target, optionally for a selected member and exact state.",
+		keywords:
+			"Azure DevOps work items, ADO work item counts, In Development status, assigned work counts, refresh dashboard",
+	},
+	fabric_list_projects: {
+		when: "To find a Fabric project by its name and get the projectId for its data or a Workspace.",
+		keywords:
+			"list Fabric projects workspaces, find project, projects coding instructions, project id, attached project",
+	},
+	fabric_get_project: {
+		when: "To read a Fabric project's details and see its Coding Instructions source.",
+		keywords:
+			"project details, coding instructions source, attached repository, project configuration",
+	},
+	fabric_list_project_instructions: {
+		when: "To list or count the actual Coding Instructions configuration files attached to a Fabric project, with pagination for repository sources.",
+		keywords:
+			"coding instructions configs, count configurations, list project instructions, repository skills agents rules settings",
+	},
+	fabric_get_project_instruction: {
+		when: "To read one of the Coding Instructions files listed for a project.",
+		keywords:
+			"read coding instructions file, project configuration content, instruction path",
+	},
+	fabric_get_project_instruction_bundle: {
+		when: "To get the full Coding Instructions bundle or native repository checkout guidance for a project.",
+		keywords:
+			"coding instructions bundle, connected instruction repository, download instructions, install project instructions",
+	},
+	fabric_list_connected_servers: {
+		when: "To see which MCP integrations the current user has connected before using their tools in a page.",
+		keywords:
+			"connected servers integrations, available tools, Azure DevOps connection, ADO connected, MCP servers",
+	},
+	fabric_list_page_tools: {
+		when: "Before building a live dashboard or a page with runtimeTools: discover the exact Fabric platform tools a page may call and their argument schemas.",
+		keywords:
+			"runtime tools frame fabric call list sources project, page compatible tools, runtimeTools schema, dashboard live data, Fabric page tools",
+	},
 	fabric_list_workflows: {
 		when: "To find a workflow or routine the person already has, or to see what is scheduled.",
 		keywords:
@@ -58,7 +130,7 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 	},
 	fabric_create_workflow: {
 		when: "For anything the person wants done on a schedule or repeatedly: a weekly status page, a daily digest, a recurring report or routine, such as every Monday at 9:00 make me a status page from my work items.",
-		how: "Call it with dryRun first, tell the person what will run and when, and save only once they agree; the save needs their approval.",
+		how: "Make the real call: the person is shown what will run and when as an approval card and decides there, so do not ask in prose first. Approving also covers publishing the new workflow and running it once, so call fabric_publish_workflow and fabric_execute_workflow next.",
 		keywords:
 			"on a schedule, scheduled workflow, recurring workflow, every day, every week, every monday, every morning, every weekday, run weekly, run daily, routine, automation, automate this, recurring report, weekly status page, publish a page every",
 	},
@@ -99,6 +171,7 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 	},
 	fabric_get_frame: {
 		when: "To read a page's content, surface and tools before changing it.",
+		how: "For source edits use offset:0, limit:6000; follow nextOffset until complete and keep updatedAt unchanged across chunks.",
 		keywords:
 			"show the page, read the page, open the workspace, page content",
 	},
@@ -205,6 +278,9 @@ function describe(tool: {
 export const FABRIC_GATEWAY_CATALOG_TOOLS: FabricAiTool[] =
 	FABRIC_CHAT_TOOL_DEFINITIONS.map((definition) => ({
 		name: definition.name,
-		description: describe(definition),
-		inputSchema: definition.inputSchema,
+		description: describe({
+			...definition,
+			description: withoutDryRunNote(definition.description),
+		}),
+		inputSchema: withoutDryRun(definition.inputSchema),
 	}));

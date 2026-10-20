@@ -135,6 +135,16 @@ export async function applyWorkflowUpdate(
 	current: EditableWorkflow,
 	input: UpdateWorkflowInput,
 ) {
+	return (await applyWorkflowUpdateWithSchedule(actor, current, input))
+		.workflow;
+}
+
+export async function applyWorkflowUpdateWithSchedule(
+	actor: WorkflowActor,
+	current: EditableWorkflow,
+	input: UpdateWorkflowInput,
+	options?: { expectedUpdatedAt: Date },
+) {
 	// A live workflow's graph is held to the same agentic checks as publish:
 	// editing nodes in place, or reviving a paused workflow, must not let an
 	// unvalidated agent onto its schedule.
@@ -154,11 +164,15 @@ export async function applyWorkflowUpdate(
 	}
 
 	const { id, ...patch } = input;
+	const updateOptions: [] | [{ expectedUpdatedAt: Date }] = options
+		? [options]
+		: [];
 	const workflow = await updateWorkflow(
 		id,
 		actor.userId,
 		patch,
 		actor.organizationId,
+		...updateOptions,
 	);
 
 	// Editing a PUBLISHED workflow's trigger must take effect immediately:
@@ -173,8 +187,10 @@ export async function applyWorkflowUpdate(
 	// no status, and reaching for Temporal on every keystroke would be a
 	// round trip for nothing.
 	const scheduleShouldBeLive = isWorkflowLive(workflow.status);
+	let schedule: Awaited<ReturnType<typeof syncWorkflowSchedule>> | null =
+		null;
 	if (scheduleShouldBeLive || input.status !== undefined) {
-		await syncWorkflowSchedule({
+		schedule = await syncWorkflowSchedule({
 			workflowId: id,
 			nodes: workflow.nodes,
 			userId: workflow.userId,
@@ -185,7 +201,7 @@ export async function applyWorkflowUpdate(
 		});
 	}
 
-	return workflow;
+	return { workflow, schedule };
 }
 
 interface PublishWorkflowInput {

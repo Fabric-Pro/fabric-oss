@@ -108,6 +108,11 @@ export interface AdmitConversationTurnInput {
 	executionId: string;
 	executionMode: string;
 	/**
+	 * The message the person sent, kept on a NEW turn (`questionText`) so the
+	 * question survives a reload before the browser saves the conversation.
+	 */
+	question?: string | null;
+	/**
 	 * The token ledger a NEW turn is admitted with: the budget contract
 	 * version, the allowance (the validated server-side execution mode's
 	 * `maxTotalTokens`) and the part of it held back for finalization. Written
@@ -260,6 +265,7 @@ export async function admitConversationTurn(
 					executionId: args.executionId,
 					generation,
 					executionMode: args.executionMode,
+					questionText: args.question || null,
 					status: "START_PENDING",
 					startToken: randomUUID(),
 					...(budget

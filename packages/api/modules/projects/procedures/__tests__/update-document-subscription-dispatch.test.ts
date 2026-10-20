@@ -116,6 +116,7 @@ describe("update-document subscriber dispatch gating", () => {
 		updateDoc.mockResolvedValue({
 			id: "doc-1",
 			title: "New title",
+			content: "body",
 			status: "DRAFT",
 			version: 3, // unchanged — updateDocument only bumps on content change
 		});
@@ -136,6 +137,7 @@ describe("update-document subscriber dispatch gating", () => {
 		updateDoc.mockResolvedValue({
 			id: "doc-1",
 			title: "Doc",
+			content: "new body",
 			status: "DRAFT",
 			version: 4, // bumped → real content change
 		});
@@ -162,6 +164,7 @@ describe("update-document subscriber dispatch gating", () => {
 		updateDoc.mockResolvedValue({
 			id: "doc-1",
 			title: "Doc",
+			content: "body",
 			status: "IN_REVIEW",
 			version: 3, // no content change
 		});

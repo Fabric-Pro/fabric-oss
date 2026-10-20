@@ -2,7 +2,7 @@ import { db } from "@repo/database";
 
 export interface RunPatternGenerationParams {
 	planId: string;
-	/** Resolved Pattern planner base URL (preflighted by the caller). */
+	/** Fabric-operated Pattern URL from environment configuration, preflighted by the caller. */
 	patternUrl: string;
 	/** The user-facing task statement sent to Pattern. */
 	message: string;
@@ -72,6 +72,7 @@ export async function runPatternGeneration(
 				userId: params.userId,
 				organizationId: params.organizationId,
 			},
+			{ trustedDestination: true },
 		);
 
 		const result = taskResult as unknown as {

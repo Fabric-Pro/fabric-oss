@@ -26,6 +26,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const usageLogCreate = vi.fn();
 const creditAccountUpsert = vi.fn();
+const findFrame = vi.fn();
+const findExecution = vi.fn();
 
 vi.mock("../prisma/client", () => ({
 	// Nothing under test constructs a Decimal; a placeholder keeps the sibling
@@ -36,6 +38,8 @@ vi.mock("../prisma/client", () => ({
 		aiCreditAccount: { upsert: creditAccountUpsert },
 		aiModelProviderMapping: { findFirst: vi.fn() },
 		aiModel: { findUnique: vi.fn() },
+		agentWorkspaceFile: { findFirst: findFrame },
+		workflowExecution: { findFirst: findExecution },
 	},
 }));
 
@@ -72,6 +76,65 @@ describe("logAiUsage — the credit ledger no longer accrues", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		usageLogCreate.mockResolvedValue({ id: "usage-1" });
+		findFrame.mockResolvedValue(null);
+		findExecution.mockResolvedValue(null);
+	});
+
+	it("writes one usage row with tenant-checked Workspace and persisted workflow origins", async () => {
+		findFrame.mockResolvedValue({ id: "frame-1" });
+		findExecution.mockResolvedValue({ id: "execution-1" });
+		await logAiUsage({
+			...BASE_USAGE,
+			organizationId: "org-1",
+			frameId: "frame-1",
+			workflowExecutionId: "execution-1",
+		});
+		expect(findFrame).toHaveBeenCalledWith({
+			where: { id: "frame-1", organizationId: "org-1" },
+			select: { id: true },
+		});
+		expect(findExecution).toHaveBeenCalledWith({
+			where: { id: "execution-1", organizationId: "org-1" },
+			select: { id: true },
+		});
+		expect(usageLogCreate).toHaveBeenCalledTimes(1);
+		expect(usageLogCreate.mock.calls[0][0].data).toMatchObject({
+			frameId: "frame-1",
+			workflowExecutionId: "execution-1",
+			inputTokens: 1000,
+			outputTokens: 500,
+		});
+	});
+
+	it("keeps accounting but omits deleted or foreign-tenant origins", async () => {
+		await logAiUsage({
+			...BASE_USAGE,
+			organizationId: "org-1",
+			frameId: "foreign-frame",
+			workflowExecutionId: "deleted-run",
+		});
+		expect(usageLogCreate).toHaveBeenCalledTimes(1);
+		expect(usageLogCreate.mock.calls[0][0].data).toMatchObject({
+			frameId: null,
+			workflowExecutionId: null,
+		});
+	});
+
+	it("preserves the accounting row when an origin is deleted during insertion", async () => {
+		findFrame.mockResolvedValue({ id: "frame-1" });
+		usageLogCreate.mockRejectedValueOnce({ code: "P2003" });
+		await logAiUsage({
+			...BASE_USAGE,
+			organizationId: "org-1",
+			frameId: "frame-1",
+		});
+		expect(usageLogCreate).toHaveBeenCalledTimes(2);
+		expect(usageLogCreate.mock.calls[1][0].data).toMatchObject({
+			frameId: null,
+			workflowExecutionId: null,
+			totalTokens: 1500,
+			costMicroUsd: 1500000,
+		});
 	});
 
 	it("writes the usage row for an organization without touching the ledger", async () => {

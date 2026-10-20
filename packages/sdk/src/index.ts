@@ -144,6 +144,16 @@ export class FabricClient {
 	}
 }
 
+export {
+	PLUGIN_LEFT_OUT_REASONS,
+	type PluginEntry,
+	type PluginLeftOutReason,
+	type PluginPlan,
+	type PluginTool,
+	planPluginFiles,
+	pluginPathFor,
+	projectRulePathFor,
+} from "./plugin-mapping.js";
 export type {
 	ExecuteAgentOptions,
 	InvokeAgentOptions,
@@ -180,6 +190,10 @@ export {
 	type UpsertSyncedContextFileOptions,
 } from "./resources/contexts.js";
 export type { ListFramesOptions } from "./resources/frames.js";
+export type {
+	DirectInstructionRepositoryFilesRead,
+	ReadDirectInstructionRepositoryFilesInput,
+} from "./resources/instruction-repository-files.js";
 export type {
 	CreateInstructionDownloadOptions,
 	CreateInstructionFileDownloadsInput,

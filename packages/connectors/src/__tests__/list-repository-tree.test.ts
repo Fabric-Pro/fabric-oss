@@ -74,6 +74,114 @@ function expectPlain(paths: string[]) {
 	}
 }
 
+describe("pinned gitlink identity", () => {
+	const sha = "a".repeat(40);
+	const treeId = "b".repeat(40);
+	it("retains GitHub gitlinks only for commit-pinned reads", async () => {
+		const body = {
+			tree: [
+				{
+					path: "vendor/lib",
+					type: "commit",
+					mode: "160000",
+					sha: treeId,
+				},
+			],
+			truncated: false,
+		};
+		mockFetch
+			.mockResolvedValueOnce(jsonResponse(200, body))
+			.mockResolvedValueOnce(jsonResponse(200, body));
+		await expect(listRepositoryTree(githubInput)).resolves.toMatchObject({
+			ok: true,
+			entries: [],
+		});
+		await expect(
+			listRepositoryTreeAtCommit({ ...githubInput, sha }),
+		).resolves.toMatchObject({
+			ok: true,
+			entries: [
+				{
+					path: "vendor/lib",
+					type: "file",
+					regular: false,
+					mode: "160000",
+					blobId: treeId,
+				},
+			],
+		});
+	});
+	it("retains Azure DevOps pinned gitlinks while branch listings still omit them", async () => {
+		mockFetch.mockResolvedValueOnce(
+			jsonResponse(200, {
+				value: [{ path: "/vendor/lib", gitObjectType: "commit" }],
+			}),
+		);
+		await expect(listRepositoryTree(adoInput)).resolves.toMatchObject({
+			ok: true,
+			entries: [],
+		});
+		mockFetch
+			.mockResolvedValueOnce(jsonResponse(200, { treeId }))
+			.mockResolvedValueOnce(
+				jsonResponse(200, {
+					treeEntries: [
+						{
+							relativePath: "vendor/lib",
+							gitObjectType: "commit",
+							mode: "160000",
+							objectId: treeId,
+						},
+					],
+				}),
+			);
+		await expect(
+			listRepositoryTreeAtCommit({ ...adoInput, sha }),
+		).resolves.toMatchObject({
+			ok: true,
+			entries: [
+				{
+					path: "vendor/lib",
+					type: "file",
+					regular: false,
+					mode: "160000",
+					blobId: treeId,
+				},
+			],
+		});
+	});
+	it("retains GitLab gitlinks without enabling unsupported branch listings", async () => {
+		await expect(listRepositoryTree(gitlabInput)).resolves.toEqual({
+			ok: false,
+			outcome: "unsupported",
+		});
+		mockFetch.mockResolvedValueOnce(
+			jsonResponse(200, [
+				{
+					path: "vendor/lib",
+					type: "commit",
+					mode: "160000",
+					id: treeId,
+				},
+			]),
+		);
+		await expect(
+			listRepositoryTreeAtCommit({ ...gitlabInput, sha }),
+		).resolves.toMatchObject({
+			ok: true,
+			entries: [
+				{
+					path: "vendor/lib",
+					type: "file",
+					regular: false,
+					mode: "160000",
+					blobId: treeId,
+				},
+			],
+		});
+	});
+});
+
 describe("listRepositoryTree — GitHub", () => {
 	it("refuses and cancels an oversized tree body before parsing it", async () => {
 		let cancelled = false;

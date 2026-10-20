@@ -129,7 +129,10 @@ it("refuses a folder of more than 5,000 files before any provider read, and acce
 		refusal: null,
 		files: files(5_000),
 	});
-	await expect(downloadDirectRepository(input)).resolves.toBeDefined();
+	const response = await downloadDirectRepository(input);
+	expect(response.status).toBe(200);
+	// An unread export keeps reading in the background through the next test's mocks.
+	await response.body?.cancel();
 });
 
 it("releases a cancelled streaming export so later downloads work", async () => {

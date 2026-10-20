@@ -1,6 +1,7 @@
 ---
 title: "A write that splices from an earlier read is only right for the version it read"
 date: 2026-09-25
+last_updated: 2026-10-19
 category: architecture-patterns
 module: project-documents visual-slots
 problem_type: architecture_pattern
@@ -11,7 +12,7 @@ applies_when:
   - "Adding a new AI, API, MCP or background writer for a field that already carries spliced-in content"
   - "Adding optimistic concurrency to an existing writer without changing behaviour for records that never needed it"
   - "A guarded background step stores or compares a body that a save normalizes before writing"
-tags: [visual-slots, optimistic-concurrency, compare-and-swap, extract-then-splice, write-path-fan-in, temporal, idempotency, fizzy-2589]
+tags: [visual-slots, optimistic-concurrency, compare-and-swap, extract-then-splice, write-path-fan-in, temporal, idempotency, collaborative-room, fizzy-2589, fizzy-2946]
 related_components: [api, mcp-gateway, temporal, web-editor]
 audience: Engineers adding or changing any path that rewrites a whole document body
 owner: Fabric platform
@@ -41,6 +42,7 @@ The invariant is "no writer drops or resurrects a slot", so it is only as strong
 | v1 `PATCH /documents/:id` | the existing row read before the update |
 | In-editor assistant accept | the editor's body at accept time |
 | Temporal regeneration (save + version step) | the body read when generation started |
+| Editor save from a collaborative room (autosave, manual save, Accept/Reject) | the saved body the room's content descends from, named by the room's stamp (section 5) |
 
 When you add a writer, add a row. When a writer is deliberately left out, name it and say why (see section 5).
 
@@ -76,6 +78,7 @@ A guard that throws the same generic error everywhere is only half done. Each su
 - **v1 PATCH**: `409` with code `DOCUMENT_VERSION_CONFLICT`, a contract that API clients can branch on.
 - **In-editor assistant accept**: keep the accepted text in the editor, show a toast, **do not autosave**, and refetch. Autosaving at this point would push the same stale body through the unguarded path and undo the guard.
 - **Temporal regeneration**: `ApplicationFailure.nonRetryable(..., "DOCUMENT_GENERATION_STALE")`. The document has moved on and will stay that way, so a retry loop achieves nothing. The run is marked failed, and the newer body is kept.
+- **Editor save from a collaborative room**: retry once when the room's stamp moved meanwhile (another tab in the same room saved and advanced it); otherwise the room is stale, so it waits for the room to converge on the saved body. It never falls back to an unguarded save, which would write the stale body over the newer one.
 
 ### 4. A guarded background step stores and matches the body *as saved*
 
@@ -96,14 +99,27 @@ const savedContent = contentAsSaved(content);
 
 The unguarded slot-free version step still stores the raw string, as it always did. That difference is intended: section 2's promise is that slot-free runs are unchanged.
 
-### 5. Name the writer you did not guard
+### 5. Name the writer you did not guard, and say when that changed
 
-The editor's ordinary manual save and autosave also write the whole body, and they are not guarded. That was a deliberate decision:
+The editor's manual save and autosave also write the whole body. They were first left unguarded on purpose:
 
 - they were already last-write-wins before slots existed;
 - a version check there produces false conflicts during Yjs co-editing, where collaborators move the version constantly.
 
-It is recorded as a waived review finding with a follow-up (a slot-aware editor save, such as a server-side slot merge). This isn't bureaucracy. The next person to read the fan-in table needs to know the gap is known, so they don't take it for an oversight or for proof that it is safe.
+That waiver is narrowed now (Fizzy #2946). Production showed what it cost: after a Proposal regeneration, a collaborative room still held the body from before the run, and a save from it could write that older body back over the run's. So, while the `DOCUMENT_ROOM_CONVERGENCE` flag is on for the owning organization, every save whose body comes from a collaborative room (autosave, manual save, the chat-triggered save, Accept/Reject and the assistant accept) sends a base of two halves, the version and the body identity (`contentIdentity`, the SHA-256 of the stored body, from `@repo/utils/content-identity`). `updateDocument` puts both in the update's `WHERE`, so the database refuses a write that lands in between, and the `skipVersionBump` revert path is guarded the same way.
+
+**The base comes from the room, not from the tab.** The room's Y.Doc carries a stamp {version, body hash} of the saved body its content descends from. It is written with every programmatic body application and advanced from each successful save's response, which returns `version` and `contentHash`. Two other choices fail:
+
+- **The tab's own loaded version** passes in exactly the case the guard exists for. The tab loaded version N, the room still holds the body from before the run, and the run wrote its body at version N. Version N matches, so the old body goes through.
+- **A strict per-tab `expectedVersion`** makes two people in one room conflict with each other. Tab A's autosave moves the version, so tab B's next save, carrying the same merged room content, is refused. That is the false conflict the original waiver was protecting against.
+
+The room's stamp is shared, so both tabs name the same base, and the stamp moves only when the room's content really descends from a newer saved body.
+
+**Why the body hash and not the version alone.** A run's final save writes the new body at the old version (the version moves at its next step), and a Reject rewinds the version. In both cases the version matches while the body does not.
+
+**What still goes without a base.** With the flag on, a client-document Proposal refuses a content-bearing save without a base. The refusal is `PRECONDITION_FAILED` with `data.code` `DOCUMENT_SAVE_BASE_REQUIRED`, which the web maps to "reload to keep editing", since such a save comes from an editor bundle older than the base. Other document types still accept a save without a base. They log it with ids and the caller surface only, so the base can be required for them once those saves stop. With the flag off, nothing requires a base. The server writers outside the editor keep the guards sections 2 and 3 give them. The v1 PATCH, the MCP tool and version restore now emit `document_change` after a write, as the editor's own save and the auto-refresh accept already did, so open rooms notice that they are stale and converge.
+
+The remaining gap is a content-bearing save of any type other than a client-document Proposal that arrives without a base, from an older editor bundle or a caller that sends none. It stays last-write-wins and is logged. The next person to read the fan-in table needs to know that this gap is known, so they don't take it for an oversight or for proof that it is safe.
 
 ## Why This Matters
 

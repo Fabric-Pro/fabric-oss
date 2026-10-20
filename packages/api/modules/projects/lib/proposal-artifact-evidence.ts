@@ -210,7 +210,7 @@ function contextHref(
  * @param input.manifest the shown run's manifest (a re-run's is its source
  *   run's); null when it has none, which resolves every finding to no
  *   evidence at all and reads no row.
- * @param input.sourceRefs every source number any finding cites.
+ * @param input.sourceRefs every source number any finding or the report cites.
  */
 export async function buildProposalEvidenceResolver(input: {
 	organizationId: string;

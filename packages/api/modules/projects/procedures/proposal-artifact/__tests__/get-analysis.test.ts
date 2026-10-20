@@ -129,6 +129,43 @@ function shownRun(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** A report as the report read returns it. */
+function storedReport(overrides: Record<string, unknown> = {}) {
+	return {
+		assessment: "Ready to send after two fixes",
+		summary: "The scope is clear; nobody owns the data migration.",
+		scope: [
+			{
+				item: "Data migration",
+				priority: "MUST",
+				inProposal: "Partly",
+				note: "No owner is named.",
+			},
+			{
+				item: "Reporting dashboard",
+				priority: null,
+				inProposal: "Yes",
+				note: "",
+			},
+		],
+		beforeSending: ["Name an owner for the data migration."],
+		duringDiscovery: ["Confirm how often reports are needed."],
+		sources: [],
+		textTruncated: false,
+		plainText: false,
+		text: "## Overall\n\nThe pilot is well framed, but the migration has no owner.",
+		...overrides,
+	};
+}
+
+/** Each run's stored report; the report read answers by run id. */
+function reportsByRun(byRun: Record<string, ReturnType<typeof storedReport>>) {
+	mocks.getAnalysisReport.mockImplementation(
+		async (input: { analysisId: string }) =>
+			byRun[input.analysisId] ?? null,
+	);
+}
+
 function showing(
 	run: ReturnType<typeof shownRun> | null,
 	extra: Record<string, unknown> = {},
@@ -179,6 +216,12 @@ type Read = {
 	newerRun: Record<string, unknown> | null;
 	findings: Array<Record<string, unknown>>;
 	noLongerRaised: Array<Record<string, unknown>>;
+	report:
+		| (Record<string, unknown> & {
+				text: string | null;
+				citations: Array<Record<string, unknown>>;
+		  })
+		| null;
 	viewer: { canRespond: boolean };
 };
 
@@ -207,8 +250,10 @@ describe("getAnalysis", () => {
 			newerRun: null,
 			findings: [],
 			noLongerRaised: [],
+			report: null,
 			viewer: { canRespond: true },
 		});
+		expect(mocks.getAnalysisReport).not.toHaveBeenCalled();
 		expect(mocks.getAnalysisForCurrentContent).toHaveBeenCalledWith({
 			organizationId: ORG_A,
 			documentId: DOC_A,
@@ -275,11 +320,16 @@ describe("getAnalysis", () => {
 		});
 	});
 
-	it("never returns the analyzed body, the source context, the manifest, hashes, the workflow key or tenant columns", async () => {
+	it("never returns the analyzed body, the source context, the manifest, hashes, the workflow key, tenant columns or the report columns", async () => {
+		reportsByRun({
+			"run-1": storedReport({ text: "INTERNAL REPORT TEXT" }),
+		});
 		showing(
 			shownRun({
 				analyzedContent: "INTERNAL MAIN BODY",
 				sourceContext: "INTERNAL SOURCE CONTEXT",
+				report: { v: 1, assessment: "INTERNAL REPORT OBJECT" },
+				reportText: "INTERNAL REPORT TEXT",
 			}),
 		);
 
@@ -297,13 +347,22 @@ describe("getAnalysis", () => {
 			"contentHash",
 			"proseHash",
 			"promptVersionId",
+			"report",
+			"reportText",
 		]) {
 			expect(read.run).not.toHaveProperty(key);
 		}
 		expect(read.findings[0]).not.toHaveProperty("sectionHash");
 		expect(read.findings[0]).not.toHaveProperty("sourceRefs");
+		expect(read.report).not.toHaveProperty("sources");
 		expect(serialized).not.toContain("INTERNAL MAIN BODY");
 		expect(serialized).not.toContain("INTERNAL SOURCE CONTEXT");
+		expect(serialized).not.toContain("INTERNAL REPORT OBJECT");
+		// The report text is served in one place only: the report's own field.
+		expect(read.report?.text).toBe("INTERNAL REPORT TEXT");
+		expect(
+			JSON.stringify({ ...read, report: { ...read.report, text: null } }),
+		).not.toContain("INTERNAL REPORT TEXT");
 	});
 
 	it("passes the stale label and the newer run through", async () => {
@@ -1087,6 +1146,276 @@ describe("getAnalysis", () => {
 				companySourceIds: ["company-1"],
 			});
 		});
+	});
+
+	describe("report", () => {
+		const LINK_HREF = `/app/${ORG_A_SLUG}/projects/${PROJECT_A}/contexts/ctx-link`;
+
+		const manifestEntry = (
+			source: number,
+			overrides: Record<string, unknown>,
+		) => ({
+			source,
+			kind: "projectContext",
+			id: null,
+			contextType: null,
+			title: null,
+			sourceName: null,
+			fingerprint: `fp-${source}`,
+			...overrides,
+		});
+
+		const MANIFEST = [
+			manifestEntry(1, { id: "ctx-text", contextType: "TEXT" }),
+			manifestEntry(2, { id: "ctx-link", contextType: "LINK" }),
+			manifestEntry(3, { id: "ctx-deleted", contextType: "FILE" }),
+			manifestEntry(4, { kind: "summary", title: "Project summary" }),
+		];
+
+		const NEWER_RUN = {
+			id: "run-2",
+			kind: "RERUN",
+			errorCode: null,
+			timedOut: false,
+			createdAt: minutesAfter(30),
+		};
+
+		beforeEach(() => {
+			world.contexts.set("ctx-text", {
+				projectId: PROJECT_A,
+				organizationId: ORG_A,
+				type: "TEXT",
+				sourceTitle: "Discovery notes",
+				content: "The client wants SSO.",
+			});
+			world.contexts.set("ctx-link", {
+				projectId: PROJECT_A,
+				organizationId: ORG_A,
+				type: "LINK",
+				sourceTitle: "Client website",
+				sourceUrl: "https://example.com/private-page",
+				content: "Our client sells industrial pumps.",
+			});
+		});
+
+		async function reportOf(
+			report: ReturnType<typeof storedReport>,
+			run: Record<string, unknown> = {},
+		) {
+			reportsByRun({ "run-1": report });
+			showing(shownRun({ sourceManifest: MANIFEST, ...run }));
+			return (await getAnalysis()).report;
+		}
+
+		it("returns the shown run's report field by field, read for that run in the owning organization", async () => {
+			const report = await reportOf(storedReport({ sources: [4, 1] }));
+
+			expect(mocks.getAnalysisReport).toHaveBeenCalledTimes(1);
+			expect(mocks.getAnalysisReport).toHaveBeenCalledWith({
+				organizationId: ORG_A,
+				documentId: DOC_A,
+				analysisId: "run-1",
+			});
+			expect(report).toEqual({
+				assessment: "Ready to send after two fixes",
+				summary: "The scope is clear; nobody owns the data migration.",
+				scope: [
+					{
+						item: "Data migration",
+						priority: "MUST",
+						inProposal: "Partly",
+						note: "No owner is named.",
+					},
+					{
+						item: "Reporting dashboard",
+						priority: null,
+						inProposal: "Yes",
+						note: "",
+					},
+				],
+				beforeSending: ["Name an owner for the data migration."],
+				duringDiscovery: ["Confirm how often reports are needed."],
+				text: "## Overall\n\nThe pilot is well framed, but the migration has no owner.",
+				textTruncated: false,
+				plainText: false,
+				citations: [
+					{
+						source: 1,
+						evidence: {
+							source: 1,
+							kind: "projectContext",
+							contextType: "TEXT",
+							title: "Discovery notes",
+							excerpt: "The client wants SSO.",
+							link: null,
+						},
+					},
+					{
+						source: 4,
+						evidence: {
+							source: 4,
+							kind: "summary",
+							title: "Project summary",
+						},
+					},
+				],
+			});
+		});
+
+		it("passes the truncation and plain-text flags through, and a report without text as a null text", async () => {
+			expect(
+				await reportOf(
+					storedReport({ textTruncated: true, plainText: true }),
+				),
+			).toMatchObject({ textTruncated: true, plainText: true });
+			expect(await reportOf(storedReport({ text: null }))).toMatchObject({
+				assessment: "Ready to send after two fixes",
+				text: null,
+			});
+		});
+
+		it("links a LINK context that only the report cites, resolved in the same evidence read as the findings' sources", async () => {
+			reportsByRun({ "run-1": storedReport({ sources: [2] }) });
+			showing(
+				shownRun({
+					sourceManifest: MANIFEST,
+					findings: [finding(0, { sourceRefs: [1] })],
+				}),
+			);
+
+			const read = await getAnalysis();
+
+			expect(read.report?.citations).toEqual([
+				{
+					source: 2,
+					evidence: {
+						source: 2,
+						kind: "projectContext",
+						contextType: "LINK",
+						title: "Client website",
+						excerpt: "Our client sells industrial pumps.",
+						link: { contextId: "ctx-link", href: LINK_HREF },
+					},
+				},
+			]);
+			expect(read.findings[0].evidence).toEqual([
+				expect.objectContaining({ source: 1, contextType: "TEXT" }),
+			]);
+			expect(mocks.readProposalEvidenceSources).toHaveBeenCalledTimes(1);
+			expect(mocks.readProposalEvidenceSources).toHaveBeenCalledWith({
+				organizationId: ORG_A,
+				projectId: PROJECT_A,
+				contextIds: ["ctx-text", "ctx-link"],
+				companySourceIds: [],
+			});
+			expect(JSON.stringify(read.report)).not.toContain("https://");
+		});
+
+		it("cites a source deleted since the run as removed, and nothing more", async () => {
+			const report = await reportOf(storedReport({ sources: [3] }));
+
+			expect(report?.citations).toEqual([
+				{ source: 3, evidence: { source: 3, kind: "removed" } },
+			]);
+		});
+
+		it("drops a cited number the run's manifest does not hold, so it names no source", async () => {
+			const report = await reportOf(storedReport({ sources: [2, 9] }));
+
+			expect(
+				report?.citations.map((citation) => citation.source),
+			).toEqual([2]);
+		});
+
+		it("lists each cited source once, in ascending order", async () => {
+			const report = await reportOf(storedReport({ sources: [4, 2, 4] }));
+
+			expect(
+				report?.citations.map((citation) => citation.source),
+			).toEqual([2, 4]);
+		});
+
+		it("returns the report with no citations, and reads no source, for a run without a manifest", async () => {
+			const report = await reportOf(storedReport({ sources: [1, 2] }), {
+				sourceManifest: null,
+			});
+
+			expect(report).toMatchObject({
+				assessment: "Ready to send after two fixes",
+				citations: [],
+			});
+			expect(mocks.readProposalEvidenceSources).not.toHaveBeenCalled();
+		});
+
+		it("returns null for a shown run that stored no report", async () => {
+			showing(shownRun({ sourceManifest: MANIFEST }));
+
+			const read = await getAnalysis();
+
+			expect(read.report).toBeNull();
+			expect(read.findings).toHaveLength(3);
+			expect(mocks.getAnalysisReport).toHaveBeenCalledWith({
+				organizationId: ORG_A,
+				documentId: DOC_A,
+				analysisId: "run-1",
+			});
+		});
+
+		it("reads no report while no run is shown, even with a newer run failed", async () => {
+			reportsByRun({ "run-2": storedReport() });
+			showing(null, { newerRun: { ...NEWER_RUN, status: "FAILED" } });
+
+			const read = await getAnalysis();
+
+			expect(read.report).toBeNull();
+			expect(mocks.getAnalysisReport).not.toHaveBeenCalled();
+		});
+
+		it("returns a stale shown run's own report", async () => {
+			reportsByRun({
+				"run-1": storedReport({ assessment: "The stale run's view" }),
+			});
+			showing(shownRun({ sourceManifest: MANIFEST }), { isStale: true });
+
+			const read = await getAnalysis();
+
+			expect(read.isStale).toBe(true);
+			expect(read.report).toMatchObject({
+				assessment: "The stale run's view",
+			});
+		});
+
+		it.each(["PENDING", "RUNNING", "FAILED"])(
+			"reads only the shown run's report while a newer run is %s",
+			async (status) => {
+				reportsByRun({
+					"run-1": storedReport(),
+					"run-2": storedReport({
+						assessment: "NEWER RUN ASSESSMENT",
+						text: "NEWER RUN TEXT",
+					}),
+				});
+				showing(shownRun({ sourceManifest: MANIFEST }), {
+					newerRun: { ...NEWER_RUN, status },
+				});
+
+				const read = await getAnalysis();
+
+				expect(mocks.getAnalysisReport.mock.calls).toEqual([
+					[
+						{
+							organizationId: ORG_A,
+							documentId: DOC_A,
+							analysisId: "run-1",
+						},
+					],
+				]);
+				expect(read.report).toMatchObject({
+					assessment: "Ready to send after two fixes",
+				});
+				expect(JSON.stringify(read)).not.toContain("NEWER RUN");
+			},
+		);
 	});
 
 	describe("viewer", () => {

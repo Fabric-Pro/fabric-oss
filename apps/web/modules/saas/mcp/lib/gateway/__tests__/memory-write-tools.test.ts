@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
 	resolveProjectAccess: vi.fn(),
 	getMemoryWriteTargetsView: vi.fn(),
 	getMemoryWriteView: vi.fn(),
+	getMemoryFolderFilesView: vi.fn(),
+	getMemoryFolderTextView: vi.fn(),
 	submitMemoryWriteRequest: vi.fn(),
 }));
 
@@ -38,6 +40,8 @@ vi.mock(
 	() => ({
 		getMemoryWriteTargetsView: mocks.getMemoryWriteTargetsView,
 		getMemoryWriteView: mocks.getMemoryWriteView,
+		getMemoryFolderFilesView: mocks.getMemoryFolderFilesView,
+		getMemoryFolderTextView: mocks.getMemoryFolderTextView,
 	}),
 );
 
@@ -144,6 +148,14 @@ describe("declarations", () => {
 		).toBe(false);
 	});
 
+	it("tells the agent which folders are searchable and which are stored only", () => {
+		const description = definition("fabric_memory_targets").description;
+
+		expect(description).toMatch(/indexMode/);
+		expect(description).toMatch(/STORE_ONLY/);
+		expect(description).toMatch(/INDEXED/);
+	});
+
 	it("tells the agent about create-only, ifMatchOid and both outcomes", () => {
 		const description = definition("fabric_memory_write").description;
 
@@ -172,6 +184,200 @@ describe("declarations", () => {
 		expect(description).toContain(
 			`${MAX_INLINE_BYTES_PER_REQUEST / (1024 * 1024)} MiB`,
 		);
+	});
+});
+
+describe("fabric_memory_read", () => {
+	const listing = {
+		targetId: "target-1",
+		folder: "docs/memory",
+		files: [{ path: "docs/memory/specs/x/spec.md" }],
+		nextCursor: null,
+	};
+	const TWO_FOLDERS = {
+		sync: { ref: "main" },
+		targets: [TARGET, { ...TARGET, id: "target-2", folder: "docs/ai" }],
+	};
+
+	beforeEach(() => {
+		mocks.getMemoryFolderFilesView.mockResolvedValue(listing);
+		mocks.getMemoryFolderTextView.mockResolvedValue({
+			targetId: "target-1",
+			path: "docs/memory/specs/x/spec.md",
+			content: "# Spec\n",
+			offset: 0,
+			nextOffset: null,
+			totalBytes: 7,
+		});
+	});
+
+	it("is a read tool under memory:write, so mcp:read satisfies it", async () => {
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_memory_read",
+		);
+		const result = await call(
+			"fabric_memory_read",
+			{},
+			{ scopes: ["mcp:read"] },
+		);
+
+		expect(definition?.annotations).toEqual({ readOnlyHint: true });
+		expect(result.isError).toBeUndefined();
+	});
+
+	it("refuses a credential with neither scope", async () => {
+		const result = await call(
+			"fabric_memory_read",
+			{},
+			{ scopes: ["instructions:write"] },
+		);
+
+		expect(result.isError).toBe(true);
+		expect(mocks.getMemoryFolderFilesView).not.toHaveBeenCalled();
+	});
+
+	it("lists a folder under a prefix, by default the only folder", async () => {
+		const result = await call("fabric_memory_read", {
+			prefix: "docs/memory/specs/x",
+			after: "docs/memory/specs/x/a.md",
+			limit: 20,
+		});
+
+		expect(mocks.getMemoryFolderFilesView).toHaveBeenCalledWith({
+			projectId: PROJECT,
+			organizationId: "org-1",
+			targetId: "target-1",
+			prefix: "docs/memory/specs/x",
+			after: "docs/memory/specs/x/a.md",
+			limit: 20,
+		});
+		expect(payload(result)).toEqual(listing);
+	});
+
+	it("reads one file, paged", async () => {
+		const result = await call("fabric_memory_read", {
+			path: "docs/memory/specs/x/spec.md",
+			offset: 100,
+			maxBytes: 5000,
+		});
+
+		expect(mocks.getMemoryFolderTextView).toHaveBeenCalledWith({
+			projectId: PROJECT,
+			organizationId: "org-1",
+			targetId: "target-1",
+			path: "docs/memory/specs/x/spec.md",
+			offset: 100,
+			maxBytes: 5000,
+		});
+		expect(payload(result)).toMatchObject({ content: "# Spec\n" });
+	});
+
+	it("picks the folder that holds the path when there are several", async () => {
+		mocks.getMemoryWriteTargetsView.mockResolvedValue(TWO_FOLDERS);
+
+		await call("fabric_memory_read", { path: "docs/ai/specs/y/spec.md" });
+
+		expect(mocks.getMemoryFolderTextView).toHaveBeenCalledWith(
+			expect.objectContaining({ targetId: "target-2" }),
+		);
+	});
+
+	it("needs a targetId, path or prefix to tell several folders apart", async () => {
+		mocks.getMemoryWriteTargetsView.mockResolvedValue(TWO_FOLDERS);
+
+		const result = await call("fabric_memory_read", {});
+
+		expect(result.isError).toBe(true);
+		expect(mocks.getMemoryFolderFilesView).not.toHaveBeenCalled();
+	});
+
+	it("explains a project with no write folders", async () => {
+		mocks.getMemoryWriteTargetsView.mockResolvedValue({
+			sync: null,
+			targets: [],
+		});
+
+		const result = await call("fabric_memory_read", {});
+
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toMatch(/no Living Memory/i);
+	});
+
+	it("answers a prefix outside the folder and a missing file as errors", async () => {
+		mocks.getMemoryFolderFilesView.mockResolvedValue(null);
+		mocks.getMemoryFolderTextView.mockResolvedValue(null);
+
+		const list = await call("fabric_memory_read", { prefix: "src" });
+		const file = await call("fabric_memory_read", {
+			path: "docs/memory/nope.md",
+		});
+
+		expect(list.isError).toBe(true);
+		expect(file.isError).toBe(true);
+	});
+
+	it("needs only CONTEXT_READ", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-1",
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:read"],
+		});
+
+		const result = await call("fabric_memory_read", {});
+
+		expect(result.isError).toBeUndefined();
+	});
+
+	it("is denied without CONTEXT_READ, for an invisible project, and for a project outside an organization", async () => {
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-1",
+			source: "project-member",
+			isVisible: true,
+			permissions: [],
+		});
+		const denied = await call("fabric_memory_read", {});
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: "org-1",
+			source: "org",
+			isVisible: false,
+			permissions: ["context:read"],
+		});
+		const invisible = await call("fabric_memory_read", {});
+		mocks.resolveProjectAccess.mockResolvedValue({
+			organizationId: null,
+			source: "project-member",
+			isVisible: true,
+			permissions: ["context:read"],
+		});
+		const orgLess = await call("fabric_memory_read", {});
+
+		expect(payload(denied).error).toMatch(/permission/i);
+		expect(payload(invisible).error).toBe(
+			"Project not found or access denied",
+		);
+		expect(orgLess.isError).toBe(true);
+		expect(mocks.getMemoryFolderFilesView).not.toHaveBeenCalled();
+	});
+
+	it("refuses another project than the one the session is bound to", async () => {
+		const result = await call("fabric_memory_read", {
+			projectId: "proj-2",
+		});
+
+		expect(payload(result).error).toBe(
+			"Project not found or access denied",
+		);
+	});
+
+	it("rejects bad paging arguments before reading", async () => {
+		const result = await call("fabric_memory_read", {
+			path: "docs/memory/a.md",
+			offset: -1,
+		});
+
+		expect(result.isError).toBe(true);
+		expect(mocks.getMemoryFolderTextView).not.toHaveBeenCalled();
 	});
 });
 

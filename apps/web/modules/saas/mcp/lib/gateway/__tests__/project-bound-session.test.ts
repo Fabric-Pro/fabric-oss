@@ -51,6 +51,7 @@ vi.mock("@repo/database", () => ({
 	// Destructured by the handlers before they authorize, so the strict mock
 	// has to carry them even though no case here reaches a write.
 	DocumentVersionConflictError: class extends Error {},
+	DocumentGenerationInProgressError: class extends Error {},
 	IntegrationContractStatusManagedError: class extends Error {},
 	readProjectContextBodyPage: vi.fn(),
 	hasPermission: () => true,
@@ -261,6 +262,49 @@ describe("the project a call names", () => {
 });
 
 describe("fabric_get_project and fabric_list_projects", () => {
+	it("lists a page's attachment through canonical filters before count and pagination", async () => {
+		mocks.listProjects.mockResolvedValue({
+			projects: [],
+			total: 1,
+			hasMore: false,
+		});
+		const result = await executePlatformTool(
+			"fabric_list_projects",
+			{
+				limit: 1,
+				offset: 1,
+				search: "Example",
+				status: "ACTIVE",
+			},
+			session({ projectId: null, pageProjectId: BOUND }),
+		);
+		expect(mocks.listProjects).toHaveBeenCalledExactlyOnceWith({
+			userId: "user-1",
+			organizationId: ORG,
+			projectId: BOUND,
+			limit: 1,
+			offset: 1,
+			search: "Example",
+			status: "ACTIVE",
+		});
+		expect(mocks.getProjectSummaryById).not.toHaveBeenCalled();
+		expect(JSON.parse(text(result))).toMatchObject({
+			projects: [],
+			total: 1,
+			hasMore: false,
+		});
+	});
+
+	it("refuses conflicting page and session attachments before listing", async () => {
+		const result = await executePlatformTool(
+			"fabric_list_projects",
+			{},
+			session({ pageProjectId: OTHER }),
+		);
+		expect(result.isError).toBe(true);
+		expect(mocks.listProjects).not.toHaveBeenCalled();
+		expect(mocks.getProjectSummaryById).not.toHaveBeenCalled();
+	});
 	it("get_project reads the bound project when asked for no project", async () => {
 		const result = await executePlatformTool(
 			"fabric_get_project",
@@ -334,6 +378,27 @@ describe("fabric_get_project and fabric_list_projects", () => {
 });
 
 describe("a tool that resolves its project from a feature, a document or a context", () => {
+	it.each([OTHER, null])(
+		"holds a document ID to the page project, including project %s",
+		async (projectId) => {
+			mocks.getDocumentById.mockResolvedValue({
+				id: "d1",
+				projectId,
+				type: "PRD",
+				title: "Private",
+				content: "foreign body",
+				status: "COMPLETE",
+			});
+			const result = await executePlatformTool(
+				"fabric_get_document",
+				{ documentId: "d1" },
+				session({ projectId: null, pageProjectId: BOUND }),
+			);
+			expect(result.isError).toBe(true);
+			expect(text(result)).not.toContain("foreign body");
+			expect(mocks.getProjectAccessContext).not.toHaveBeenCalled();
+		},
+	);
 	it("refuses a document of another project, though the person may read both", async () => {
 		mocks.getDocumentById.mockResolvedValue({
 			id: "d1",

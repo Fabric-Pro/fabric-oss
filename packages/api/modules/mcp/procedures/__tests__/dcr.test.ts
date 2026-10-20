@@ -192,8 +192,9 @@ describe("mcp.dcr.register", () => {
 			redirect: "error",
 		});
 		expect(
-			safeFetchOutboundMock.mock.calls.some((call) =>
-				String(call[0]).includes("stale.example.com"),
+			safeFetchOutboundMock.mock.calls.some(
+				(call) =>
+					new URL(String(call[0])).hostname === "stale.example.com",
 			),
 		).toBe(false);
 

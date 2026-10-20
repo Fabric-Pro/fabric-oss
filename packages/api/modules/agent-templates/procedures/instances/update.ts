@@ -12,11 +12,11 @@ import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { syncDeploymentTriggers } from "../../../agent-deployments/lib/sync-triggers";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 import {
 	knowledgeConnectionsSchema,
 	knowledgeResourcesSchema,
@@ -66,6 +66,7 @@ const agentInstanceStatusSchema = z.enum([
 const updateInputSchema = z
 	.object({
 		id: z.string(),
+		organizationId: z.string().nullable().optional(),
 		name: optionalTrimmedText("Name", 200),
 		description: optionalTrimmedText("Description", 500),
 		heroEmojis: z.array(z.string()).optional(),
@@ -111,30 +112,17 @@ const updateInputSchema = z
 	);
 
 export const updateInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(updateInputSchema)
 	.handler(async ({ input, context }) => {
-		// Verify ownership or org membership
+		const organizationId = resolvedOrganizationId(input, context.session);
 		const existing = await getAgentTemplateInstance(input.id);
-		if (!existing) {
-			throw new Error("Instance not found");
-		}
-
-		const isOwner = existing.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (existing.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error(
-				"You don't have permission to update this instance",
-			);
+		if (!existing || existing.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		// Validate workspace access if workspaceIds provided. Access alone only
@@ -151,11 +139,11 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				);
 				if (
 					access === null ||
-					access.organizationId !== (existing.organizationId ?? null)
+					access.organizationId !== organizationId
 				) {
-					throw new Error(
-						`You don't have access to workspace ${workspaceId}`,
-					);
+					throw new ORPCError("FORBIDDEN", {
+						message: `You don't have access to workspace ${workspaceId}`,
+					});
 				}
 			}
 		}
@@ -170,7 +158,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				input.knowledgeConnections,
 				input.toolConnections,
 				context.user.id,
-				existing.organizationId ?? undefined,
+				organizationId,
 				{
 					// OAuth providers already bound on this instance keep their
 					// binding (the editor re-sends every selection on save), so
@@ -183,9 +171,9 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			);
 
 			if (!connectionValidation.valid) {
-				throw new Error(
-					`Invalid integration connections: ${connectionValidation.errors.join("; ")}`,
-				);
+				throw new ORPCError("BAD_REQUEST", {
+					message: `Invalid integration connections: ${connectionValidation.errors.join("; ")}`,
+				});
 			}
 
 			// Databricks Vector Search requires an explicit index selection - a
@@ -206,7 +194,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			id: input.id,
 			// Required for OAuth lookup when resolving knowledgeConnections
 			userId: context.user.id,
-			organizationId: existing.organizationId ?? undefined,
+			organizationId,
 			name: input.name,
 			description: input.description,
 			heroEmojis: input.heroEmojis,
@@ -245,7 +233,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 				await syncDeploymentTriggers({
 					instanceId: instance.id,
 					userId: context.user.id,
-					organizationId: existing.organizationId,
+					organizationId,
 				});
 			} catch (error) {
 				console.error(
@@ -261,33 +249,21 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 // Archive an instance version
 const archiveInputSchema = z.object({
 	id: z.string(),
+	organizationId: z.string().nullable().optional(),
 });
 
 export const archiveInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(archiveInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolvedOrganizationId(input, context.session);
 		const existing = await getAgentTemplateInstance(input.id);
-		if (!existing) {
-			throw new Error("Instance not found");
-		}
-
-		// Verify ownership or org membership
-		const isOwner = existing.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (existing.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error(
-				"You don't have permission to archive this instance",
-			);
+		if (!existing || existing.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		const instance = await archiveInstanceVersion(input.id);
@@ -297,37 +273,27 @@ export const archiveInstanceProcedure = tenantProtectedProcedure
 // Restore an archived version (creates a new version from the archived one)
 const restoreInputSchema = z.object({
 	id: z.string(),
+	organizationId: z.string().nullable().optional(),
 });
 
 export const restoreInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(restoreInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolvedOrganizationId(input, context.session);
 		const existing = await getAgentTemplateInstance(input.id);
-		if (!existing) {
-			throw new Error("Instance not found");
-		}
-
-		// Verify ownership or org membership
-		const isOwner = existing.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (existing.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				existing.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error(
-				"You don't have permission to restore this instance",
-			);
+		if (!existing || existing.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		if (existing.status !== "ARCHIVED") {
-			throw new Error("Can only restore archived versions");
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Can only restore archived versions",
+			});
 		}
 
 		const instance = await restoreInstanceVersion(input.id);

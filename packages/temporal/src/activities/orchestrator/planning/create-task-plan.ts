@@ -14,6 +14,7 @@
 import { generateText } from "@repo/ai";
 import { db } from "@repo/database";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import { getTaskPlanningSystemPrompt } from "../../prompts";
 import { startTurnHeartbeat } from "../turn-dispatch";
 import type {
@@ -235,8 +236,8 @@ async function planTask(input: CreateTaskPlanInput): Promise<TaskPlan> {
 		false,
 		undefined,
 		undefined,
-		input.conversationId
-			? { conversationId: input.conversationId }
+		input.conversationId || input.frameId || input.projectId
+			? usageOriginFields(input)
 			: undefined,
 	);
 

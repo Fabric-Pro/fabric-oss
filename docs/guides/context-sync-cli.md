@@ -14,8 +14,8 @@ sends every text file in one folder into the project's Context, keyed by the
 file's path relative to that folder, and on later runs sends only what
 changed.
 
-This is project Context. It is not `fabric ctx`, which switches the CLI's
-default organization and never talks to a project.
+`fabric ctx` is a separate command: it switches the CLI's default
+organization and never talks to a project.
 
 Install and authenticate as for the coding-instructions commands (see
 [Coding Instructions on the Command Line](coding-instructions-cli.md)):
@@ -73,10 +73,10 @@ Exit code 0 when every file sent was stored or confirmed and every deletion
 asked for happened. A remaining conflict, including a file `--prune` did not
 delete because it changed on the server, exits 1. A failed request exits with
 the code its error maps to (a 400 is 7). A refusal that would repeat for every
-file — an invalid key, a missing scope, a missing permission (including the
-delete permission `--prune` needs), an unknown project, the rate limit, an
-unreachable server — stops the run at once, after recording what had already
-landed.
+file stops the run at once, after recording what had already landed: an
+invalid key, a missing scope, a missing permission (including the delete
+permission `--prune` needs), an unknown project, the rate limit, or an
+unreachable server.
 
 ## What gets sent
 
@@ -211,9 +211,9 @@ skipped (1)
 ```
 
 Nothing was written, the lock entry for that path is left exactly as it
-was, and `--force` never retries it — there is no version to replace; the
-file changes in the connected repository, and "Sync now" on the project's
-Context tab brings the change in.
+was, and `--force` never retries it, because there is no version to replace.
+The file changes in the connected repository, and "Sync now" on the
+project's Context tab brings the change in.
 
 ## Moves
 
@@ -324,15 +324,15 @@ third attempt.
 
 ## What it will not do
 
-- **Delete anything you did not ask it to.** Without `--prune`, nothing is
+- Delete anything you did not ask it to. Without `--prune`, nothing is
   deleted on the server. With it, only a path the lock names is deleted, and
   only in the version this folder last pushed (or, with `--force`, the
   version a conflict reported).
-- **Send binaries.** Images, PDFs and other non-text files are skipped.
-- **Send coding instructions.** `CLAUDE.md`, `AGENTS.md`, `.claude/` and the
+- Send binaries. Images, PDFs and other non-text files are skipped.
+- Send coding instructions. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the
   rest are excluded whatever your ignore rules say. They reach a project
   through `fabric instructions push`, which opens a proposal someone reviews.
-- **Follow symlinks.** Every entry is checked with `lstat`, and every read
+- Follow symlinks. Every entry is checked with `lstat`, and every read
   goes through the same guarded reader `fabric instructions` uses, which
   refuses a symlinked component anywhere on the path.
 
@@ -343,7 +343,7 @@ requires. The read-only key that **Connect your agent** mints cannot push,
 and a member with the read-only viewer role cannot put this scope on an
 organization key. `--prune` needs no other scope.
 
-The scope is a ceiling, not a grant. On every call the server also checks that
+The scope alone does not grant access. On every call the server also checks that
 the key's creator can still add context sources to that project in the app
 (or, for a `--prune` deletion, delete them), with the same permission and
 project-visibility checks the Context tab uses.

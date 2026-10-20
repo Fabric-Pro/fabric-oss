@@ -554,3 +554,25 @@ describe("the clear after an unconfirmed create", () => {
 		});
 	});
 });
+
+it("redacts a serialized database failure in the workflow result and row without changing scheduled activities", async () => {
+	stamp("attempt-a");
+	h.sync.mockRejectedValue({
+		message: "Activity task failed",
+		cause: {
+			type: "PrismaClientInitializationError",
+			message: "database server path and query text",
+		},
+	});
+	const result = await pmSyncSingleStoryWorkflow(input("attempt-a"));
+	expect(result.message).toBe("database error");
+	expect(h.stories.get(ITEM)?.lastPmSyncError).toBe("database error");
+	expect(argOf("recordPmSyncFailure")?.errorMessage).toBe(
+		"database server path and query text",
+	);
+	expect(h.calls).toEqual([
+		"syncWorkItemToPM",
+		"recordPmSyncFailure",
+		"clearPmSyncPendingIfLeaked",
+	]);
+});

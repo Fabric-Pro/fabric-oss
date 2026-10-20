@@ -60,9 +60,9 @@ export async function loadMcpTools(
 	if (!hasSpecificTools && stepApp && input.preloadedTools?.toolMap) {
 		if (input.preloadedTools.toolMap[stepApp]) {
 			inferredTools.push(stepApp);
-			console.log(
-				`[ToolLoader] Using exact tool from step.app: ${stepApp}`,
-			);
+			console.log("[ToolLoader] Using exact tool from step.app", {
+				stepApp,
+			});
 		} else {
 			const appPrefix = stepApp.split("_")[0];
 			if (appPrefix && appPrefix.length >= 3) {
@@ -77,9 +77,10 @@ export async function loadMcpTools(
 					}
 				}
 				if (inferredTools.length > 0) {
-					console.log(
-						`[ToolLoader] Using tools matching prefix '${appPrefix}': ${inferredTools.length} tools`,
-					);
+					console.log("[ToolLoader] Using tools matching prefix", {
+						appPrefix,
+						toolCount: inferredTools.length,
+					});
 				}
 			}
 		}
@@ -260,8 +261,9 @@ export async function loadMcpTools(
 
 			if (filteredConfigs.length > 0) {
 				console.log(
-					`[ToolLoader] Filtering MCP configs by step.app prefix '${appPrefix}'`,
+					"[ToolLoader] Filtering MCP configs by step.app prefix",
 					{
+						appPrefix,
 						before: mcpConfigs.length,
 						after: filteredConfigs.length,
 					},
@@ -293,12 +295,13 @@ export async function loadMcpTools(
 				});
 				if (result) {
 					if (!result.fromCache) {
-						console.log(
-							`[ToolLoader] Created new MCP connection to ${result.serverName}`,
-						);
+						console.log("[ToolLoader] Created new MCP connection", {
+							serverName: result.serverName,
+						});
 					} else {
 						console.log(
-							`[ToolLoader] Reusing cached MCP connection to ${result.serverName}`,
+							"[ToolLoader] Reusing cached MCP connection",
+							{ serverName: result.serverName },
 						);
 					}
 					const tools = await result.client.tools();
@@ -308,11 +311,11 @@ export async function loadMcpTools(
 			} catch (e) {
 				// Handle OAuth authorization required errors specially
 				if (e instanceof OAuthAuthorizationRequiredError) {
-					console.warn(
-						"[ToolLoader] OAuth authorization required:",
-						{ serverName: config.displayName },
-						e.message,
-					);
+					console.warn("[ToolLoader] OAuth authorization required:", {
+						serverName: config.displayName,
+						error: e instanceof Error ? e.message : e,
+						stack: e instanceof Error ? e.stack : undefined,
+					});
 					// Return auth required info so handler can propagate it
 					return {
 						authRequired: true,
@@ -322,11 +325,11 @@ export async function loadMcpTools(
 						displayName: config.displayName,
 					};
 				}
-				console.warn(
-					"Failed to connect to MCP server",
-					{ serverName: config.displayName },
-					e,
-				);
+				console.warn("Failed to connect to MCP server", {
+					serverName: config.displayName,
+					error: e instanceof Error ? e.message : e,
+					stack: e instanceof Error ? e.stack : undefined,
+				});
 				return null;
 			}
 		}),
@@ -348,9 +351,9 @@ export async function loadMcpTools(
 					serverName: value.serverName as string,
 					displayName: value.displayName as string | undefined,
 				});
-				console.log(
-					`[ToolLoader] Tracked auth required config: ${value.displayName || value.serverName}`,
-				);
+				console.log("[ToolLoader] Tracked auth required config", {
+					serverName: value.displayName || value.serverName,
+				});
 				continue;
 			}
 
@@ -367,9 +370,10 @@ export async function loadMcpTools(
 				continue;
 			}
 			const toolNamesList = Object.keys(tools);
-			console.log(
-				`[ToolLoader] Loaded ${toolNamesList.length} tools from ${result.serverName}`,
-			);
+			console.log("[ToolLoader] Loaded tools from MCP server", {
+				toolCount: toolNamesList.length,
+				serverName: result.serverName,
+			});
 			for (const [name, def] of Object.entries(tools)) {
 				allTools[name] = def;
 				toolToConfig[name] = {
@@ -386,7 +390,11 @@ export async function loadMcpTools(
 	if (authRequiredConfigs.length > 0) {
 		console.log(
 			`[ToolLoader] ${authRequiredConfigs.length} MCP server(s) require OAuth authorization`,
-			authRequiredConfigs.map((c) => c.displayName || c.serverName),
+			{
+				details: authRequiredConfigs.map(
+					(c) => c.displayName || c.serverName,
+				),
+			},
 		);
 	}
 
@@ -487,7 +495,10 @@ async function loadOAuthIntegrationTools(
 		} catch (e) {
 			console.warn(
 				"[ToolLoader] Failed to load GitHub tools from registry",
-				e,
+				{
+					error: e instanceof Error ? e.message : e,
+					stack: e instanceof Error ? e.stack : undefined,
+				},
 			);
 		}
 	}
@@ -560,7 +571,10 @@ async function loadOAuthIntegrationTools(
 		} catch (e) {
 			console.warn(
 				"[ToolLoader] Failed to load Microsoft Teams tools from registry",
-				e,
+				{
+					error: e instanceof Error ? e.message : e,
+					stack: e instanceof Error ? e.stack : undefined,
+				},
 			);
 		}
 	}
@@ -622,7 +636,10 @@ async function loadOAuthIntegrationTools(
 		} catch (e) {
 			console.warn(
 				"[ToolLoader] Failed to load GitLab tools from registry",
-				e,
+				{
+					error: e instanceof Error ? e.message : e,
+					stack: e instanceof Error ? e.stack : undefined,
+				},
 			);
 		}
 	}

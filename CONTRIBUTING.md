@@ -87,6 +87,27 @@ pnpm lint          # Biome linting
 pnpm format        # Biome formatting
 ```
 
+### Adding a dependency
+
+Let `pnpm add` write the `package.json` entry, but rebuild the lockfile with a
+workspace-wide install. An install scoped to one project — `pnpm --filter <pkg>
+add`, or `pnpm add` run inside a package directory — can re-pick peer-dependency
+variants for packages the change does not touch. Adding a workspace package to
+`@repo/agent-core` that way changed 61 lockfile lines (pnpm 11.28.6). The same
+dependency added as below changed only its own 3-line entry:
+
+```bash
+pnpm --filter <pkg> add <dep> --lockfile-only   # writes the package.json entry
+git checkout -- pnpm-lock.yaml                  # drop the scoped lockfile changes
+pnpm install --lockfile-only                    # re-resolve for the whole workspace
+pnpm install --frozen-lockfile                  # link node_modules
+```
+
+Start from a lockfile with no other uncommitted changes, since the second step
+discards them. In the same test, once the extra churn was in the lockfile,
+neither a later workspace-wide install nor `pnpm dedupe` took it back out, so check
+`git diff --stat pnpm-lock.yaml` before committing.
+
 ### Dependency updates
 
 A version has to be a day old before pnpm will resolve it (`minimumReleaseAge`

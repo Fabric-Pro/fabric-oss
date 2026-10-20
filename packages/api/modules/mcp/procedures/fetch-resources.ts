@@ -166,7 +166,7 @@ async function fetchMcpResources(
 	let accounts: AccountInfo[] = [];
 
 	if (identityTool) {
-		console.log(`[MCP Resources] Calling identity tool: ${identityTool}`);
+		console.log("[MCP Resources] Calling identity tool", { identityTool });
 		try {
 			const identity = await executeMcpTool<{ accounts?: AccountInfo[] }>(
 				tools,
@@ -176,16 +176,18 @@ async function fetchMcpResources(
 
 			if (identity?.accounts && Array.isArray(identity.accounts)) {
 				accounts = identity.accounts;
-				console.log(
-					`[MCP Resources] Found ${accounts.length} account(s):`,
-					accounts.map((a) => a.slug || a.name || a.id).join(", "),
-				);
+				console.log("[MCP Resources] Found accounts", {
+					accountCount: accounts.length,
+					details: accounts
+						.map((a) => a.slug || a.name || a.id)
+						.join(", "),
+				});
 			}
 		} catch (error) {
-			console.log(
-				"[MCP Resources] Identity call failed:",
-				error instanceof Error ? error.message : error,
-			);
+			console.log("[MCP Resources] Identity call failed:", {
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 		}
 	}
 
@@ -326,7 +328,7 @@ async function fetchMcpResources(
 			continue;
 		}
 
-		console.log(`[MCP Resources] Found ${type} tool: ${listTool}`);
+		console.log("[MCP Resources] Found resource tool", { type, listTool });
 
 		try {
 			if (accounts.length > 0 && slugParam) {
@@ -345,10 +347,10 @@ async function fetchMcpResources(
 						args[slugParam] = account.slug;
 					}
 
-					console.log(
-						`[MCP Resources] Calling ${listTool} with:`,
-						JSON.stringify(args),
-					);
+					console.log("[MCP Resources] Calling resource tool", {
+						listTool,
+						details: JSON.stringify(args),
+					});
 
 					const result = await executeMcpTool<
 						Array<Record<string, unknown>>
@@ -383,7 +385,8 @@ async function fetchMcpResources(
 			} else {
 				// No accounts needed or available - call directly
 				console.log(
-					`[MCP Resources] Calling ${listTool} (no account needed)`,
+					"[MCP Resources] Calling resource tool without account",
+					{ listTool },
 				);
 
 				const result = await executeMcpTool<
@@ -412,10 +415,11 @@ async function fetchMcpResources(
 				}
 			}
 		} catch (error) {
-			console.log(
-				`[MCP Resources] ${listTool} failed:`,
-				error instanceof Error ? error.message : error,
-			);
+			console.log("[MCP Resources] Resource tool failed", {
+				listTool,
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 		}
 	}
 
@@ -533,9 +537,10 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 			const serverTransport = mcpServer?.transport?.toUpperCase();
 			const transport = configTransport || serverTransport || "HTTP";
 
-			console.log(
-				`[MCP Resources] Connecting to ${serverName} (${transport})`,
-			);
+			console.log("[MCP Resources] Connecting to server", {
+				serverName,
+				transport,
+			});
 
 			// Create MCP client using createMcpClientForConfig which handles all transport types
 			// including STDIO (via wrapper service), HTTP, and SSE
@@ -550,11 +555,17 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 				});
 				mcpClient = clientResult.client;
 			} catch (clientError) {
-				console.error(
-					"[MCP Resources] Failed to create client:",
-					{ serverName },
-					clientError,
-				);
+				console.error("[MCP Resources] Failed to create client:", {
+					serverName,
+					error:
+						clientError instanceof Error
+							? clientError.message
+							: clientError,
+					stack:
+						clientError instanceof Error
+							? clientError.stack
+							: undefined,
+				});
 				return {
 					success: false,
 					serverName,
@@ -570,9 +581,10 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 			// Get available tools
 			const availableTools = await mcpClient.tools();
 			const toolNames = Object.keys(availableTools);
-			console.log(
-				`[MCP Resources] Available tools: ${toolNames.slice(0, 10).join(", ")}${toolNames.length > 10 ? "..." : ""}`,
-			);
+			console.log("[MCP Resources] Available tools", {
+				toolNames: toolNames.slice(0, 10),
+				truncated: toolNames.length > 10,
+			});
 
 			// Fetch resources using MCP tools
 			let resources = await fetchMcpResources(availableTools);
@@ -598,7 +610,10 @@ export const fetchResourcesProcedure = tenantProtectedProcedure
 				error: null,
 			};
 		} catch (err) {
-			console.error("[MCP Resources] Error fetching resources:", err);
+			console.error("[MCP Resources] Error fetching resources:", {
+				error: err instanceof Error ? err.message : err,
+				stack: err instanceof Error ? err.stack : undefined,
+			});
 
 			let errorMessage = "Unknown error";
 			if (err instanceof Error) {

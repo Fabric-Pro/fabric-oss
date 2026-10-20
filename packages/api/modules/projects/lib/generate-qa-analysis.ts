@@ -264,6 +264,7 @@ export async function generateQaAnalysis({
 		{
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
+			projectId: feature.projectId,
 		},
 	);
 

@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+} from "node:fs";
 import { join, relative } from "node:path";
 
 /**
@@ -17,15 +24,29 @@ export function seedContentHash(
 	dependencyPaths: readonly string[] = [],
 ): string {
 	const hash = createHash("sha256");
-	hash.update(readFileSync(seedFilePath, "utf-8"));
+	hash.update(readSeedFile(seedFilePath).toString("utf8"));
 	for (const dependency of dependencyPaths) {
-		if (!statSync(dependency).isDirectory()) {
-			hash.update(readFileSync(dependency, "utf-8"));
-			continue;
-		}
-		for (const [path, file] of filesUnder(dependency)) {
-			hash.update(path);
-			hash.update(readFileSync(file));
+		const descriptor = openSync(
+			dependency,
+			constants.O_RDONLY | constants.O_NONBLOCK,
+		);
+		try {
+			const info = fstatSync(descriptor);
+			if (info.isFile()) {
+				hash.update(readFileSync(descriptor, "utf-8"));
+				continue;
+			}
+			if (!info.isDirectory()) {
+				throw new Error(
+					"Seed dependency is not a regular file or directory.",
+				);
+			}
+			for (const [path, file] of filesUnder(dependency)) {
+				hash.update(path);
+				hash.update(readSeedFile(file));
+			}
+		} finally {
+			closeSync(descriptor);
 		}
 	}
 	return hash.digest("hex").slice(0, 16);
@@ -40,4 +61,20 @@ function filesUnder(directory: string): Array<[string, string]> {
 			return [relative(directory, file).replaceAll("\\", "/"), file];
 		})
 		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Metadata and content must describe the same opened file. */
+function readSeedFile(file: string): Buffer {
+	const descriptor = openSync(
+		file,
+		constants.O_RDONLY | constants.O_NONBLOCK,
+	);
+	try {
+		if (!fstatSync(descriptor).isFile()) {
+			throw new Error("Seed input is not a regular file.");
+		}
+		return readFileSync(descriptor);
+	} finally {
+		closeSync(descriptor);
+	}
 }

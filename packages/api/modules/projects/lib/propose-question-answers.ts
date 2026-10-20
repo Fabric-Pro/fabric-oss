@@ -212,6 +212,7 @@ export async function proposeQuestionAnswers({
 			{
 				userId: tenantFilter.userId,
 				organizationId: tenantFilter.organizationId ?? undefined,
+				projectId: feature.projectId,
 				featureKey: "answer-recommendation",
 				promptVersionId: boundPrompt?.version?.id,
 			},

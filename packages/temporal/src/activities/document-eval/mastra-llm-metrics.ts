@@ -716,6 +716,7 @@ export interface RunLLMMetricsWorkflowInput {
 	userPrompt?: string;
 	userId: string;
 	organizationId?: string;
+	projectDocumentId?: string;
 }
 
 /**
@@ -733,6 +734,7 @@ export async function runLLMMetricsActivity(
 		userPrompt,
 		userId,
 		organizationId,
+		projectDocumentId,
 	} = input;
 
 	console.log("[LLM Metrics Activity] Starting with input:", {
@@ -745,7 +747,11 @@ export async function runLLMMetricsActivity(
 	});
 
 	// Resolve the LLM model for EVAL task
-	const llmModel = await resolveEvalModel({ userId, organizationId });
+	const llmModel = await resolveEvalModel({
+		userId,
+		organizationId,
+		projectDocumentId,
+	});
 
 	if (!llmModel?.model) {
 		console.log(

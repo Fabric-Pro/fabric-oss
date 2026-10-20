@@ -104,6 +104,10 @@ describe("proposeQuestionAnswers", () => {
 			tenantFilter,
 		});
 
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		expect(out).toEqual({ recommended: 1 });
 		const call = mocks.setDecisionMetadata.mock.calls[0][0];
 		expect(call.id).toBe("dec-1");

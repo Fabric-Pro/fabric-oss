@@ -27,6 +27,7 @@ import {
 	useState,
 } from "react";
 import { getOrpcCode } from "../field-mapping/orpc-error";
+import { AnalysisReport } from "./AnalysisReport";
 import { FindingEvidence } from "./FindingEvidence";
 import {
 	AnswerStatus,
@@ -37,6 +38,10 @@ import {
 	useFindingControls,
 	useFocusAfterAction,
 } from "./FindingResponseControls";
+import {
+	type AnalysisReportState,
+	useAnalysisReportState,
+} from "./use-analysis-report-state";
 import {
 	findingNeedsDecision,
 	getOrpcErrorData,
@@ -179,7 +184,9 @@ function rerunErrorMessage(error: unknown, t: Translate): string {
  * polling.
  *
  * Every finding field is model output and renders as plain text: React
- * escapes it, and nothing here parses markdown or HTML.
+ * escapes it, and nothing here parses markdown or HTML. The run's report
+ * (`AnalysisReport`), above the findings, is the tab's one Markdown
+ * surface: only its full text is parsed, and it renders without HTML.
  */
 export function ProposalAnalysisPanel({
 	projectId,
@@ -212,6 +219,13 @@ export function ProposalAnalysisPanel({
 	const canRespond = !denied && (data?.viewer.canRespond ?? false);
 
 	useRunAnnouncements(denied ? undefined : data, announce, t);
+
+	const { reportProps, runSwapFocus } = useAnalysisReportState({
+		shownRunId: data?.run?.id ?? null,
+		denied,
+		ownRerunRunId: actions.rerun.data?.runId ?? null,
+		headingRef,
+	});
 
 	// A refused re-run speaks to the analysis as it was when refused; once a
 	// run starts or finishes, it no longer applies and is not shown.
@@ -333,6 +347,7 @@ export function ProposalAnalysisPanel({
 						analysis={data}
 						interactive={false}
 						controls={controls}
+						report={reportProps}
 						showStale={false}
 					/>
 				</div>
@@ -344,6 +359,7 @@ export function ProposalAnalysisPanel({
 				analysis={data}
 				interactive={canRespond}
 				controls={controls}
+				report={reportProps}
 				focusFallbackRef={headingRef}
 				showStale
 				failure={
@@ -377,6 +393,8 @@ export function ProposalAnalysisPanel({
 			<output aria-live="polite" className="sr-only">
 				{announcement}
 			</output>
+			{/* After the body, so the report's refs are set when it runs. */}
+			{runSwapFocus}
 		</Card>
 	);
 }
@@ -445,8 +463,8 @@ function newerRunLabel(newerRun: ProposalNewerRun, t: Translate): string {
 
 /**
  * A newer run that failed or stopped responding. With a complete run shown,
- * its findings stay visible below; the alert says the latest attempt did
- * not complete and offers a re-run.
+ * its report and findings stay visible below; the alert says the latest
+ * attempt did not complete and offers a re-run.
  */
 function FailedRunAlert({
 	newerRun,
@@ -545,6 +563,7 @@ function AnalysisRun({
 	analysis,
 	interactive,
 	controls,
+	report,
 	focusFallbackRef,
 	showStale,
 	failure = null,
@@ -553,6 +572,8 @@ function AnalysisRun({
 	/** Offer the answer actions: a member with edit rights, not greyed. */
 	interactive: boolean;
 	controls: FindingControls;
+	/** The report's "Full report" state and root, held by the panel. */
+	report: AnalysisReportState;
 	/** Takes focus when a cleared answer leaves nothing nearer to take it. */
 	focusFallbackRef?: RefObject<HTMLElement | null>;
 	showStale: boolean;
@@ -614,6 +635,12 @@ function AnalysisRun({
 			{orphanDrafts.length > 0 ? (
 				<OrphanDrafts drafts={orphanDrafts} controls={controls} />
 			) : null}
+			<AnalysisReport
+				report={analysis.report ?? null}
+				open={report.open}
+				onOpenChange={report.onOpenChange}
+				regionRef={report.regionRef}
+			/>
 			{findings.length === 0 ? (
 				<p className="text-sm">{t("empty")}</p>
 			) : (

@@ -7,6 +7,7 @@
  * at which tier rather than merely that one exists (FR9).
  */
 
+import { listPromptActions } from "@repo/utils/prompt-action-catalog";
 import { PromptCatalog } from "@saas/prompts/components/PromptCatalog";
 import {
 	onlineManager,
@@ -15,7 +16,23 @@ import {
 } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { catalogList } = vi.hoisted(() => ({ catalogList: vi.fn() }));
 
@@ -476,5 +493,201 @@ describe("PromptCatalog — overrides on actions no longer listed", () => {
 		await screen.findByText(/project documents/i);
 		await waitFor(() => expect(catalogList).toHaveBeenCalled());
 		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
+	});
+});
+
+describe("PromptCatalog — the Proposal artifact gate (Fizzy #2946)", () => {
+	const LEGACY = "project_document_generator:PROPOSAL:ANY";
+	const LEGACY_GENERATOR = "document_generator:PROPOSAL:ANY";
+	const MAIN = "proposal_client_main:PROPOSAL:ANY";
+	const legacyLabel = listPromptActions().find((a) => a.id === LEGACY)?.label;
+
+	const binding = (
+		name: string,
+		scope: "SYSTEM" | "ORG" | "USER",
+		isDefault: boolean,
+		isEffective: boolean,
+	) => ({
+		promptId: `p-${name}`,
+		promptName: name,
+		promptVersionId: `pv-${name}`,
+		scope,
+		projectId: null,
+		isDefault,
+		isEffective,
+	});
+	const legacySlot = (prompts: ReturnType<typeof binding>[]) => ({
+		targetKey: "project_document_generator",
+		documentType: "PROPOSAL",
+		storyKind: null,
+		effectiveScope: prompts.find((p) => p.isEffective)?.scope ?? null,
+		prompts,
+	});
+
+	beforeEach(() => {
+		catalogList.mockReset();
+		searchParams.current = new URLSearchParams();
+		isOrgAdmin.current = true;
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("offers Client proposal (Main), and not the legacy Proposal actions, with the gate on", async () => {
+		catalogList.mockResolvedValue({ entries: [] });
+		const user = userEvent.setup();
+		const { container } = wrap(<PromptCatalog />);
+
+		await user.click(await screen.findByText(/project documents/i));
+
+		await waitFor(() =>
+			expect(
+				container.querySelector(`[data-action-id="${MAIN}"]`),
+			).not.toBeNull(),
+		);
+		expect(
+			container.querySelector(`[data-action-id="${LEGACY}"]`),
+		).toBeNull();
+		expect(
+			container.querySelector(`[data-action-id="${LEGACY_GENERATOR}"]`),
+		).toBeNull();
+		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
+	});
+
+	it("lists an organization default at the legacy action as no longer listed, with Clear and the Client proposal (Main) note", async () => {
+		catalogList.mockResolvedValue({
+			entries: [
+				legacySlot([
+					binding("Org proposal", "ORG", true, true),
+					binding("Fabric proposal", "SYSTEM", true, false),
+				]),
+			],
+		});
+		const user = userEvent.setup();
+		const { container } = wrap(<PromptCatalog />);
+
+		const section = await screen.findByRole("region", {
+			name: /no longer listed/i,
+		});
+		expect(within(section).getByText(legacyLabel as string)).toBeVisible();
+		expect(
+			within(section).getByTestId("catalog-superseded-note"),
+		).toHaveTextContent("actionNote");
+		expect(
+			await within(section).findByRole("button", {
+				name: /clear override/i,
+			}),
+		).toBeInTheDocument();
+
+		// Not in the grid as well: the only row for it is the unlisted one.
+		await user.click(screen.getByText(/project documents/i));
+		expect(
+			container.querySelectorAll(`[data-action-id="${LEGACY}"]`),
+		).toHaveLength(1);
+		expect(
+			section.querySelector(`[data-action-id="${LEGACY}"]`),
+		).not.toBeNull();
+	});
+
+	it("lists a personal default at the legacy action the same way", async () => {
+		catalogList.mockResolvedValue({
+			entries: [
+				legacySlot([
+					binding("My proposal", "USER", true, true),
+					binding("Fabric proposal", "SYSTEM", true, false),
+				]),
+			],
+		});
+		wrap(<PromptCatalog />);
+
+		const section = await screen.findByRole("region", {
+			name: /no longer listed/i,
+		});
+		expect(within(section).getByText(legacyLabel as string)).toBeVisible();
+		expect(
+			within(section).getByTestId("catalog-superseded-note"),
+		).toHaveTextContent("actionNote");
+		expect(
+			await within(section).findByRole("button", {
+				name: /clear override/i,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("shows the legacy action nowhere when only Fabric's own prompt is bound there", async () => {
+		catalogList.mockResolvedValue({
+			entries: [
+				legacySlot([binding("Fabric proposal", "SYSTEM", true, true)]),
+			],
+		});
+		const user = userEvent.setup();
+		const { container } = wrap(<PromptCatalog />);
+
+		await user.click(await screen.findByText(/project documents/i));
+		await waitFor(() => expect(catalogList).toHaveBeenCalled());
+		await screen.findByText(/client proposal \(main\)/i);
+		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
+		expect(
+			container.querySelector(`[data-action-id="${LEGACY}"]`),
+		).toBeNull();
+	});
+
+	it("keeps the legacy action in the grid, and nothing unlisted, with the gate off", async () => {
+		flags.proposalArtifact = false;
+		catalogList.mockResolvedValue({
+			entries: [
+				legacySlot([
+					binding("Org proposal", "ORG", true, true),
+					binding("Fabric proposal", "SYSTEM", true, false),
+				]),
+			],
+		});
+		const user = userEvent.setup();
+		const { container } = wrap(<PromptCatalog />);
+
+		await user.click(await screen.findByText(/project documents/i));
+
+		await screen.findByText("Org proposal");
+		expect(
+			container.querySelector(`[data-action-id="${LEGACY}"]`),
+		).not.toBeNull();
+		expect(screen.queryByText(/no longer listed/i)).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("catalog-superseded-note"),
+		).not.toBeInTheDocument();
+	});
+
+	it("names the legacy action by its label under Also used for, never by its id", async () => {
+		const shared = binding("Shared proposal", "ORG", true, true);
+		catalogList.mockResolvedValue({
+			entries: [
+				{
+					targetKey: "proposal_client_main",
+					documentType: "PROPOSAL",
+					storyKind: null,
+					effectiveScope: "ORG",
+					prompts: [shared],
+				},
+				legacySlot([
+					shared,
+					binding("Fabric proposal", "SYSTEM", true, false),
+				]),
+			],
+		});
+		const user = userEvent.setup();
+		wrap(<PromptCatalog />);
+
+		await user.click(await screen.findByText(/project documents/i));
+
+		const links = await screen.findAllByRole("link", {
+			name: legacyLabel as string,
+		});
+		expect(links.length).toBeGreaterThan(0);
+		expect(links[0]).toHaveAttribute(
+			"href",
+			expect.stringContaining(`action=${encodeURIComponent(LEGACY)}`),
+		);
+		expect(screen.queryByText(LEGACY)).not.toBeInTheDocument();
 	});
 });

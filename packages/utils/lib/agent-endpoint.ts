@@ -1,8 +1,8 @@
 /**
  * Outbound guard for agent deployment URLs.
  *
- * Agent discovery, registration, health-checking and message relay all take a
- * URL and make the server fetch it. That is the textbook SSRF shape: an
+ * Agent discovery, registration and health checks accept deployment URLs, and
+ * delegation fetches registered endpoints. That is the textbook SSRF shape: an
  * ordinary member, with no elevated privilege, can map an internal network —
  * cloud metadata, an admin port, anything that trusts the network it sits on.
  *
@@ -31,8 +31,9 @@
  * This lives in `@repo/utils` rather than beside the oRPC procedures that
  * first needed it because the surfaces that must not be left unguarded span
  * packages that cannot import `@repo/api`: the Temporal activities that relay
- * to a stored `deploymentUrl`, and the web route that relays a caller-supplied
- * one. `@repo/api` keeps the oRPC-flavoured wrapper that throws `ORPCError`.
+ * to a stored `deploymentUrl`, and the web relay that resolves an ACTIVE SYSTEM
+ * registration before sending an AI token. `@repo/api` keeps the oRPC-flavoured
+ * wrapper that throws `ORPCError`.
  */
 
 import { getUnsafeUrlReason, safeFetchOutbound } from "./url-security";
@@ -113,11 +114,11 @@ export function agentEndpointRefusal(urlString: string): string | null {
  * Fetch an agent endpoint, refusing destinations the deployment has not
  * permitted.
  *
- * Use this in place of `fetch` for every request whose URL came from a caller
- * OR from a stored record. Guarding the request rather than only the
- * registration matters: a stored `deploymentUrl` can be changed later, and a
- * probe of a stored URL is the same outbound request as a probe of a supplied
- * one.
+ * Use this in place of `fetch` for caller URLs and non-SYSTEM registered
+ * endpoints; SYSTEM agents, which only operators register, keep plain fetch.
+ * Guarding the request rather than only the registration matters: a stored
+ * `deploymentUrl` can be changed later, and a probe of a stored URL is the
+ * same outbound request as a probe of a supplied one.
  */
 export async function fetchAgentEndpoint(
 	urlString: string,

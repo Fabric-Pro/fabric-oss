@@ -7,6 +7,7 @@
 
 import { generateText } from "@repo/ai";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { usageOriginFields } from "../../../../workflows/orchestrator/usage-attribution";
 import type { ExecuteStepInput } from "../../types";
 import { getAiModel } from "../../utils";
 import type { HandlerContext, HandlerResult, StepHandler } from "./types";
@@ -104,8 +105,8 @@ Please present the results in a clear, well-formatted manner.`;
 			false,
 			undefined,
 			undefined,
-			input.conversationId
-				? { conversationId: input.conversationId }
+			input.conversationId || input.frameId || input.projectId
+				? usageOriginFields(input)
 				: undefined,
 		);
 

@@ -97,18 +97,71 @@ describe("buildProjectFrameSrcdoc", () => {
 		expect(out).toContain("<h1>Demo</h1>");
 	});
 
+	describe("inline event handlers (the page's own script)", () => {
+		function attributesOf(srcdoc: string, selector: string) {
+			const element = new DOMParser()
+				.parseFromString(srcdoc, "text/html")
+				.querySelector(selector);
+			return element ? Array.from(element.attributes) : [];
+		}
+
+		it("keeps an onclick that calls fabric.openAgent, which is how a page's button reaches the agent", () => {
+			const out = buildProjectFrameSrcdoc(
+				'<button id="ask" onclick="fabric.openAgent(\'Summarise the roadmap\')">Ask</button>',
+			);
+
+			const onclick = attributesOf(out, "#ask").find(
+				(attribute) => attribute.name === "onclick",
+			);
+			expect(onclick?.value).toBe(
+				"fabric.openAgent('Summarise the roadmap')",
+			);
+		});
+
+		it("keeps other handlers a page uses, such as onchange and onsubmit", () => {
+			const out = buildProjectFrameSrcdoc(
+				'<form id="f" onsubmit="save(event)"><input id="i" onchange="update(this.value)"></form>',
+			);
+
+			expect(
+				attributesOf(out, "#f").map((attribute) => attribute.name),
+			).toContain("onsubmit");
+			expect(
+				attributesOf(out, "#i").map((attribute) => attribute.name),
+			).toContain("onchange");
+		});
+
+		it("still holds the line on what a handler cannot bring: nested contexts and a scheme-bearing href", () => {
+			const out = buildProjectFrameSrcdoc(
+				'<iframe src="https://evil.example" onload="x()"></iframe><a id="a" href="javascript:alert(1)" onclick="ok()">x</a>',
+			);
+
+			expect(out).not.toMatch(/<iframe/i);
+			expect(
+				attributesOf(out, "#a").map((attribute) => attribute.name),
+			).not.toContain("href");
+		});
+
+		it("leaves the handler out of a page drawn without scripts", () => {
+			const out = buildProjectFrameSrcdoc(
+				'<button id="ask" onclick="fabric.openAgent(\'x\')">Ask</button>',
+				{ scripts: false },
+			);
+
+			expect(out).toContain("Ask</button>");
+			expect(out).not.toMatch(/onclick/i);
+		});
+	});
+
 	it("neutralises look-alike </script> breakouts", () => {
 		const out = buildProjectFrameSrcdoc(
 			[
 				"<script>var s = 'ok';</script >",
-				'<img src="x" onerror="alert(1)">',
 				'<script>var t = "</scr" + "ipt>";</script>',
 				"<script><!--<script>x=1;</script>alert(2)--></script>",
 				"<p>tail</p>",
 			].join(""),
 		);
-		// Event handler attributes never survive.
-		expect(out).not.toMatch(/onerror/i);
 		// Every remaining `</script` is a real closing tag: count openings and
 		// closings and make sure no script *text* contains a closing sequence.
 		const opens = out.match(/<script\b/gi) ?? [];

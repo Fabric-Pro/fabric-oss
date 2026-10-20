@@ -121,6 +121,7 @@ export async function projectSearch(
 		sourcesSearched.push("project-context");
 		searchPromises.push(
 			searchProjectContexts({
+				conversationId: options.conversationId,
 				projectId,
 				query,
 				userId,
@@ -151,6 +152,7 @@ export async function projectSearch(
 		sourcesSearched.push("workspace");
 		searchPromises.push(
 			searchWorkspaceDocs({
+				conversationId: options.conversationId,
 				workspaceIds,
 				query,
 				userId,
@@ -179,6 +181,7 @@ export async function projectSearch(
 		sourcesSearched.push("connector");
 		searchPromises.push(
 			searchWorkspaceDocs({
+				conversationId: options.conversationId,
 				workspaceIds: workspaceIds ?? [],
 				query,
 				userId,
@@ -289,11 +292,13 @@ async function searchProjectContexts(options: {
 	projectId: string;
 	query: string;
 	userId: string;
+	conversationId?: string;
 	organizationId?: string;
 	topK: number;
 	minSimilarity: number;
 }): Promise<UnifiedSearchResult[]> {
 	const contexts = await retrieveProjectContexts({
+		conversationId: options.conversationId,
 		projectId: options.projectId,
 		query: options.query,
 		userId: options.userId,
@@ -337,6 +342,7 @@ async function searchWorkspaceDocs(options: {
 	workspaceIds: string[];
 	query: string;
 	userId: string;
+	conversationId?: string;
 	organizationId?: string;
 	topK: number;
 	minSimilarity: number;
@@ -361,6 +367,7 @@ async function searchWorkspaceDocs(options: {
 	>;
 }): Promise<UnifiedSearchResult[]> {
 	const embeddingResult = await generateEmbedding(options.query, {
+		conversationId: options.conversationId,
 		userId: options.userId,
 		organizationId: options.organizationId,
 		tags: ["rag-query", "workspace-search"],

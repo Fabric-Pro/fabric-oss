@@ -23,9 +23,11 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import { hydrateConversationTurnResults } from "../../../../../../../../packages/database/prisma/queries/conversation-turn-results";
+import { APPROVAL_STALE_MESSAGE } from "../../../lib/approval-response";
 
 // The read projection is real; this integration test needs no database client.
 vi.mock("../../../../../../../../packages/database/prisma/client", () => ({
@@ -71,6 +73,7 @@ function idleStream(overrides: Record<string, unknown> = {}) {
 			calls.order.push("sendMessage");
 			return null;
 		}),
+		attach: vi.fn(async () => null),
 		sendApproval: vi.fn(),
 		sendClarification: vi.fn(),
 		sendFollowUp: vi.fn(),
@@ -297,6 +300,73 @@ async function send(text: string) {
 		fireEvent.click(screen.getByRole("button", { name: "Send" }));
 	});
 }
+
+describe("FabricTemporalOrchestratorChat — stale approval notice", () => {
+	it.each(["Approve", "Decline", "Provide Feedback"])(
+		"shows the stale notice after %s instead of reporting success",
+		async (action) => {
+			const notify = vi
+				.spyOn(toast, "info")
+				.mockImplementation(() => "notice");
+			const success = vi
+				.spyOn(toast, "success")
+				.mockImplementation(() => "notice");
+			const sendApproval = vi.fn().mockResolvedValue("stale");
+			streamState.current = idleStream({
+				messages: [
+					{
+						id: "message-example",
+						role: "user",
+						content: "Run the workflow",
+					},
+				],
+				isAwaitingApproval: true,
+				sendApproval,
+				state: {
+					...idleStream().state,
+					status: "awaiting_approval",
+					pendingApproval: {
+						approvalId: "approval-example",
+						stepId: "step-example",
+						reason: "HIGH RISK: Allow the workflow to run?",
+					},
+				},
+			});
+			try {
+				render(
+					<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+				);
+				fireEvent.click(
+					screen.getByRole("button", { name: action, exact: true }),
+				);
+				if (action === "Provide Feedback") {
+					fireEvent.change(
+						screen.getByPlaceholderText(
+							"Provide feedback or alternative instructions...",
+						),
+						{
+							target: { value: "Use the newer decision" },
+						},
+					);
+					fireEvent.click(
+						screen.getByRole("button", {
+							name: "Send Feedback",
+							exact: true,
+						}),
+					);
+				}
+				await waitFor(() =>
+					expect(notify).toHaveBeenCalledWith(APPROVAL_STALE_MESSAGE),
+				);
+				expect(sendApproval).toHaveBeenCalledTimes(1);
+				expect(success).not.toHaveBeenCalled();
+			} finally {
+				notify.mockRestore();
+				success.mockRestore();
+			}
+		},
+	);
+});
 
 describe("FabricTemporalOrchestratorChat — conversation before the first stream call", () => {
 	it("creates the conversation, then streams the turn under its id", async () => {
@@ -1258,6 +1328,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 						executionId: "exec_partial",
 						generation: 1,
 						status: terminalStatus,
+						questionText: null,
 						responseText: null,
 						terminalAt: timestamp,
 						createdAt: timestamp,
@@ -1444,6 +1515,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 				executionId: "exec_saved",
 				generation: 1,
 				status: "COMPLETED" as const,
+				questionText: null,
 				responseText: "Durable answer",
 				terminalAt: timestamp,
 				createdAt: timestamp,
@@ -1497,6 +1569,124 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 		]);
 	});
 
+	it("attaches to a turn still running, then shows its answer once it finishes", async () => {
+		const timestamp = new Date("2026-10-01T10:01:00.000Z");
+		const source = { messages: [], metadata: { mode: "orchestrator" } };
+		const running = {
+			id: "turn_running",
+			executionId: "exec_running",
+			generation: 2,
+			status: "ACTIVE" as const,
+			questionText: "Make me a weekly status page",
+			responseText: null,
+			terminalAt: null,
+			createdAt: timestamp,
+			terminalReason: null,
+			limitSignalSummary: null,
+		};
+		const before = hydrateConversationTurnResults(source, [running]);
+		const { rerender } = render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_running"
+				activeConversation={{ id: "conv_running", ...before }}
+			/>,
+		);
+		// The live view takes the turn over (its stream is mocked here).
+		const attach = streamState.current.attach as ReturnType<typeof vi.fn>;
+		await waitFor(() => {
+			expect(attach).toHaveBeenCalledWith(
+				"exec_running",
+				"Make me a weekly status page",
+				"conv_running",
+			);
+		});
+		expect(attach).toHaveBeenCalledTimes(1);
+
+		const after = hydrateConversationTurnResults(source, [
+			{
+				...running,
+				status: "COMPLETED",
+				responseText: "Created the weekly workflow.",
+				terminalAt: timestamp,
+				terminalReason: "completed",
+			},
+		]);
+		rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_running"
+				activeConversation={{ id: "conv_running", ...after }}
+			/>,
+		);
+		expect(
+			await screen.findByText("Created the weekly workflow."),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByText(
+				"Still running when this conversation was opened",
+			),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getAllByText("Make me a weekly status page"),
+		).toHaveLength(1);
+	});
+
+	it("does not send a still-running turn's bare question as history", async () => {
+		const timestamp = new Date("2026-10-01T10:01:00.000Z");
+		const projected = hydrateConversationTurnResults(
+			{
+				messages: [],
+				metadata: {
+					mode: "orchestrator",
+					executions: [
+						{
+							id: "exec_done",
+							userMessage: "Earlier question",
+							finalResponse: "Earlier answer",
+							status: "complete",
+						},
+					],
+				},
+			},
+			[
+				{
+					id: "turn_running",
+					executionId: "exec_running",
+					generation: 2,
+					status: "ACTIVE",
+					questionText: "Make me a weekly status page",
+					responseText: null,
+					terminalAt: null,
+					createdAt: timestamp,
+					terminalReason: null,
+					limitSignalSummary: null,
+				},
+			],
+		);
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_running_history"
+				activeConversation={{
+					id: "conv_running_history",
+					...projected,
+				}}
+			/>,
+		);
+		expect(await screen.findByText("Earlier answer")).toBeInTheDocument();
+
+		await send("Next question");
+
+		const sendMessage = streamState.current.sendMessage as ReturnType<
+			typeof vi.fn
+		>;
+		expect(sendMessage.mock.calls[0][1]).toEqual([
+			{ role: "user", content: "Earlier question" },
+			{ role: "assistant", content: "Earlier answer" },
+		]);
+	});
+
 	it("shows the specific durable reason for an empty failed result", async () => {
 		const timestamp = new Date("2026-10-01T10:01:00.000Z");
 		const projected = hydrateConversationTurnResults(
@@ -1507,6 +1697,7 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 					executionId: "exec_failed",
 					generation: 1,
 					status: "FAILED",
+					questionText: null,
 					responseText: null,
 					terminalAt: timestamp,
 					createdAt: timestamp,

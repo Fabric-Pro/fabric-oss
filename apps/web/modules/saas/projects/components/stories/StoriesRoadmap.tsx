@@ -30,6 +30,10 @@ import { pmDetectedTypeDisplayName } from "@repo/utils";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
+import {
+	servesAnything,
+	useAiServesMemberHere,
+} from "@saas/shared/lib/use-ai-serves-member-here";
 import { ExecuteWithWeaveButton } from "@saas/weave/components";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -4472,19 +4476,13 @@ function CreateStoryDialog({
 		}
 	}, [open, duplicateCheckPrefetch]);
 
-	const { data: aiConfigStatus, isLoading: isLoadingAiConfig } = useQuery({
-		queryKey: ["aiConfigStatus", organizationId],
-		queryFn: async () =>
-			await orpcClient.aiConfig.resolution.getStatus({
-				organizationId,
-			}),
-		enabled: open,
-		staleTime: 30_000,
-	});
+	// What actually serves this member here — an organization or personal key
+	// the resolver lands on, or a ChatGPT plan — not whether the organization
+	// stored any key: an "Embeddings only" key cannot draft a work item, and a
+	// member on a personal key or a plan must not be blocked (Fizzy #3087).
+	// Unknown is not "nothing": the form stays usable until the answer is in.
 	const isAiNotConfigured =
-		!isLoadingAiConfig &&
-		aiConfigStatus !== undefined &&
-		!aiConfigStatus.isConfigured;
+		servesAnything(useAiServesMemberHere({ enabled: open })) === false;
 	const aiProviderSettingsUrl = `${basePath}/settings/ai-providers`;
 
 	// FMW v2: Map the three user-facing maturation statuses to their underlying

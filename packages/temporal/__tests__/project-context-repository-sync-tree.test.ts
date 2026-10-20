@@ -434,6 +434,40 @@ describe("syncContextTreeFromRepository — what a run applies", () => {
 		);
 	});
 
+	it("reconciles the write folders' store-only marks for the batch's paths inside the batch's own transaction", async () => {
+		const ctx = configure(["docs"]);
+		serve(SHA_A, [
+			{ path: "docs/a.md", body: "# Alpha" },
+			{ path: "docs/tasks/t.md", body: "task" },
+		]);
+		db.reconcileContextIndexing.mockClear();
+
+		await sync(ctx);
+
+		expect(db.reconcileContextIndexing).toHaveBeenCalledTimes(1);
+		const [tx, input] = db.reconcileContextIndexing.mock.calls[0] as [
+			unknown,
+			{
+				projectId: string;
+				organizationId: string;
+				syncId: string;
+				actingUserId: string;
+				sourcePaths: string[];
+			},
+		];
+		expect(tx).toBe(db.applyRepositoryContextBatch.mock.calls[0]?.[0]);
+		expect(input).toMatchObject({
+			projectId: PROJECT,
+			organizationId: ORG,
+			syncId: SYNC,
+			actingUserId: "user-1",
+		});
+		expect([...input.sourcePaths].sort()).toEqual([
+			"docs/a.md",
+			"docs/tasks/t.md",
+		]);
+	});
+
 	it("evaluates each selected folder's own .contextignore against paths relative to it", async () => {
 		const ctx = configure(["docs", "notes"]);
 		serve(SHA_A, [

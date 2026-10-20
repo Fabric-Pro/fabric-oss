@@ -65,6 +65,77 @@ describe("orchestrator frame intent", () => {
 	});
 });
 
+describe("orchestrator agent intent", () => {
+	it.each([
+		"Use an agent to research pricing",
+		"Ask the agent to summarize",
+		"use another agent",
+		"Run this agent again",
+		"Call any agent that can help",
+	])("does not name an agent in generic phrasing: %s", (message) => {
+		const intent = detectUserIntent(message);
+		expect(intent.requestedAgentName).toBeUndefined();
+		expect(intent.requestedAgent).toBeUndefined();
+	});
+
+	it.each([
+		"a",
+		"an",
+		"the",
+		"this",
+		"that",
+		"these",
+		"those",
+		"another",
+		"any",
+		"some",
+		"each",
+		"every",
+		"my",
+		"our",
+		"your",
+		"their",
+		"other",
+		"same",
+		"new",
+		"right",
+		"best",
+		"appropriate",
+		"relevant",
+		"suitable",
+		"specialized",
+		"specialised",
+		"correct",
+		"proper",
+		"available",
+		"an_agent",
+	])("rejects a generic capture ignoring case: %s", (word) => {
+		expect(
+			detectUserIntent(`use "${word.toUpperCase()}" agent`)
+				.requestedAgentName,
+		).toBeUndefined();
+	});
+
+	it.each([
+		{ message: "Use the agent called cuga to summarize", expected: "cuga" },
+		{
+			message: "Ask an agent named data_analyst to chart this",
+			expected: "data_analyst",
+		},
+		{
+			message: "Use this agent with the data_analyst agent",
+			expected: "data_analyst",
+		},
+		{ message: "use cuga agent", expected: "cuga" },
+		{ message: 'use "Task Planner" agent', expected: "Task Planner" },
+	])("keeps a named agent in $message", ({ message, expected }) => {
+		expect(detectUserIntent(message)).toMatchObject({
+			requestedAgentName: expected,
+			requestedAgent: expected,
+		});
+	});
+});
+
 describe("prompt guidance", () => {
 	it("tells the model mermaid renders inline and gates Excalidraw on an explicit ask", () => {
 		expect(DIAGRAM_RENDERING_GUIDANCE).toMatch(/```mermaid/);

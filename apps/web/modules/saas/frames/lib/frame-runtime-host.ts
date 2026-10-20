@@ -8,9 +8,10 @@ import {
 	confirmationRequired,
 } from "@repo/temporal/fabric-tool-definition";
 import { FabricToolError } from "@saas/mcp/lib/fabric-tool-client";
-import type {
-	FrameRuntimeCallResult,
-	FrameRuntimeRequest,
+import {
+	frameRuntimeCallExpiresAt,
+	type FrameRuntimeCallResult,
+	type FrameRuntimeRequest,
 } from "./frame-embed-protocol";
 import {
 	askModeFor,
@@ -62,6 +63,13 @@ interface ConfirmToolOptions {
 	/** Ask on every call; a yes covers that call only. */
 	every: boolean;
 	because?: ConfirmEveryBecause;
+	/** Trusted gateway metadata, used only to explain the question. */
+	readOnly?: boolean;
+}
+
+export interface FrameRuntimeCallLifetime {
+	signal: AbortSignal;
+	expiresAt: number;
 }
 
 const APP_PATH_PREFIX = "/app/";
@@ -107,6 +115,7 @@ export interface FrameRuntimeHostOptions {
 		toolName: string,
 		args: Record<string, unknown>,
 		options: ConfirmToolOptions,
+		lifetime: FrameRuntimeCallLifetime,
 	) => Promise<boolean>;
 	/** Asks the viewer whether to save a file a page offers. */
 	confirmDownload: (download: PageDownload) => Promise<boolean>;
@@ -202,81 +211,131 @@ export function createFrameRuntimeHost(options: FrameRuntimeHostOptions) {
 		return true;
 	};
 
-	return {
-		async handleCall(
-			request: CallRequest,
-		): Promise<FrameRuntimeCallResult> {
-			const { requestId, name } = request;
-			if (!withinRateLimit()) {
-				return failure(
-					requestId,
-					`This page is calling Fabric too often; at most ${FRAME_RUNTIME_RATE_LIMIT.maxCalls} calls a minute.`,
-				);
+	const executeCall = async (
+		request: CallRequest,
+		lifetime: FrameRuntimeCallLifetime,
+	): Promise<FrameRuntimeCallResult> => {
+		const assertLive = () => {
+			if (lifetime.signal.aborted || now() >= lifetime.expiresAt) {
+				throw new Error("This Fabric call expired or was cancelled.");
 			}
-			if (NOT_FOR_PAGES.has(name)) {
-				return failure(
-					requestId,
-					`${name} is not available to pages, so this page may not call it.`,
-				);
-			}
-			const declaration = declarationOf(name, request.args);
-			if (declaration === undefined || !declared.has(declaration)) {
-				return failure(
-					requestId,
-					`This page did not declare ${declaration ?? name}, so it may not call it.`,
-				);
-			}
-			const viewing = options.viewingOrganizationId();
-			if (viewing === null || viewing !== options.organizationId) {
-				return failure(requestId, FOREIGN_ORGANIZATION_ERROR);
-			}
-			if (!options.frameId) {
-				return failure(requestId, UNSAVED_PAGE_ERROR);
-			}
-			// The page's own id, whatever the page sent: its data, files and
-			// comments are the only ones it can reach.
-			const args = isPageScopedTool(name)
-				? { ...request.args, frameId: options.frameId }
-				: request.args;
-			try {
-				const toolInfo = (await options.loadToolInfo()).get(name);
-				const readOnly = toolInfo?.readOnlyHint === true;
-				const { mode, because } = askModeFor({
+		};
+		const { requestId, name } = request;
+		if (!withinRateLimit()) {
+			return failure(
+				requestId,
+				`This page is calling Fabric too often; at most ${FRAME_RUNTIME_RATE_LIMIT.maxCalls} calls a minute.`,
+			);
+		}
+		if (NOT_FOR_PAGES.has(name)) {
+			return failure(
+				requestId,
+				`${name} is not available to pages, so this page may not call it.`,
+			);
+		}
+		const declaration = declarationOf(name, request.args);
+		if (declaration === undefined || !declared.has(declaration)) {
+			return failure(
+				requestId,
+				`This page did not declare ${declaration ?? name}, so it may not call it.`,
+			);
+		}
+		const viewing = options.viewingOrganizationId();
+		if (viewing === null || viewing !== options.organizationId) {
+			return failure(requestId, FOREIGN_ORGANIZATION_ERROR);
+		}
+		if (!options.frameId) {
+			return failure(requestId, UNSAVED_PAGE_ERROR);
+		}
+		// The page's own id, whatever the page sent: its data, files and
+		// comments are the only ones it can reach.
+		const args = isPageScopedTool(name)
+			? { ...request.args, frameId: options.frameId }
+			: request.args;
+		try {
+			assertLive();
+			const toolInfo = (await options.loadToolInfo()).get(name);
+			assertLive();
+			const readOnly = toolInfo?.readOnlyHint === true;
+			const { mode, because } = askModeFor({
+				name,
+				args: request.args,
+				readOnly,
+				tainted: taint.isTainted(),
+				declaresStoreTools: keepsData,
+				confirmEveryCall: confirmationRequired(
+					toolInfo?.confirm,
+					request.args,
+				),
+			});
+			if (
+				mode !== "never" &&
+				!(await options.confirmTool(
 					name,
-					args: request.args,
-					readOnly,
-					tainted: taint.isTainted(),
-					declaresStoreTools: keepsData,
-					confirmEveryCall: confirmationRequired(
-						toolInfo?.confirm,
-						request.args,
-					),
-				});
-				if (
-					mode !== "never" &&
-					!(await options.confirmTool(name, request.args, {
+					request.args,
+					{
 						every: mode === "every",
 						because,
-					}))
-				) {
-					return failure(
-						requestId,
-						`The viewer did not allow ${name}.`,
-					);
-				}
-				const result = await options.callTool(name, args);
-				if (taintsPage(name, readOnly)) {
-					taint.mark();
-				}
-				return {
-					type: "fabric-frame:call-result",
-					requestId,
-					ok: true,
-					result,
-				};
-			} catch (error) {
-				return failure(requestId, messageOf(error), detailsOf(error));
+						...(readOnly ? { readOnly: true } : {}),
+					},
+					lifetime,
+				))
+			) {
+				return failure(requestId, `The viewer did not allow ${name}.`);
 			}
+			assertLive();
+			const result = await options.callTool(name, args);
+			if (taintsPage(name, readOnly)) {
+				taint.mark();
+			}
+			return {
+				type: "fabric-frame:call-result",
+				requestId,
+				ok: true,
+				result,
+			};
+		} catch (error) {
+			return failure(requestId, messageOf(error), detailsOf(error));
+		}
+	};
+
+	return {
+		handleCall(
+			request: CallRequest,
+			{ signal }: { signal?: AbortSignal } = {},
+		): Promise<FrameRuntimeCallResult> {
+			const controller = new AbortController();
+			const expiresAt = frameRuntimeCallExpiresAt(
+				request.expiresAt,
+				now(),
+			);
+			const cancel = () => controller.abort();
+			let onAbort!: () => void;
+			const cancelled = new Promise<FrameRuntimeCallResult>((resolve) => {
+				onAbort = () =>
+					resolve(
+						failure(
+							request.requestId,
+							"This Fabric call expired or was cancelled.",
+						),
+					);
+				controller.signal.addEventListener("abort", onAbort, {
+					once: true,
+				});
+			});
+			signal?.addEventListener("abort", cancel, { once: true });
+			const timer = setTimeout(cancel, Math.max(0, expiresAt - now()));
+			if (signal?.aborted || now() >= expiresAt) {
+				cancel();
+			}
+			return Promise.race([
+				cancelled,
+				executeCall(request, { signal: controller.signal, expiresAt }),
+			]).finally(() => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", cancel);
+				controller.signal.removeEventListener("abort", onAbort);
+			});
 		},
 
 		handleOpenAgent(prompt: string): void {

@@ -22,6 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { gitBlobOid } from "../src/lib/git-blob.js";
 import { serverNameFor } from "../src/lib/instructions/agent-mcp.js";
 import { machine } from "../src/lib/instructions/machine.js";
 import { projectResource } from "../src/lib/oauth/project-resource.js";
@@ -42,7 +43,7 @@ const { mocks } = vi.hoisted(() => ({
 		withoutContext: vi.fn(),
 		getClient: vi.fn(),
 		listRepositoryFiles: vi.fn(),
-		getRepositoryFile: vi.fn(),
+		readRepositoryFiles: vi.fn(),
 		getTargets: vi.fn(),
 		run: vi.fn(),
 	},
@@ -72,7 +73,7 @@ vi.mock("../src/lib/client.js", () => {
 			getPublished: mocks.getPublished,
 			createDownloadUrl: mocks.createDownloadUrl,
 			listRepositoryFiles: mocks.listRepositoryFiles,
-			getRepositoryFile: mocks.getRepositoryFile,
+			readRepositoryFiles: mocks.readRepositoryFiles,
 		},
 		memory: { getTargets: mocks.getTargets },
 		withoutContext: () => {
@@ -124,17 +125,23 @@ function serveRepository(
 			path: p,
 			kind: "OTHER",
 			size: files[p]?.length,
+			blobId: gitBlobOid(new TextEncoder().encode(files[p] ?? "")),
 		})),
 	});
-	mocks.getRepositoryFile.mockImplementation(
-		async (_project: string, input: { path: string }) => ({
+	mocks.readRepositoryFiles.mockImplementation(
+		async (_project: string, input: { paths: string[] }) => ({
 			generation: 1,
 			commitSha: commit,
-			state: "found",
-			body: files[input.path] ?? "",
-			offset: 0,
-			nextOffset: null,
-			truncated: false,
+			nextIndex: null,
+			files: input.paths.map((filePath) => ({
+				path: filePath,
+				read: {
+					state: "found",
+					text: files[filePath] ?? "",
+					size: new TextEncoder().encode(files[filePath] ?? "")
+						.length,
+				},
+			})),
 		}),
 	);
 }
@@ -147,7 +154,7 @@ beforeEach(async () => {
 	home = await mkdtemp(path.join(tmpdir(), "fabric-home-"));
 	mocks.getConfigPath.mockReturnValue(path.join(config, "config.json"));
 	mocks.listRepositoryFiles.mockReset();
-	mocks.getRepositoryFile.mockReset();
+	mocks.readRepositoryFiles.mockReset();
 	mocks.getTargets.mockReset();
 	mocks.run.mockReset();
 	mocks.run.mockResolvedValue({ kind: "missing" });
@@ -300,7 +307,11 @@ describe("fabric instructions render", () => {
 				path.join(home, ".codex", "plugins", "fabric-0project"),
 			);
 			expect(
-				(await stat(path.join(directory, "plugin.json"))).isFile(),
+				(
+					await stat(
+						path.join(directory, ".codex-plugin", "plugin.json"),
+					)
+				).isFile(),
 			).toBe(true);
 			const override = await readFile(
 				path.join(dest, "AGENTS.override.md"),
@@ -309,6 +320,169 @@ describe("fabric instructions render", () => {
 			expect(override.indexOf("tracked rules")).toBeLessThan(
 				override.indexOf("Use the tools."),
 			);
+		});
+
+		describe("refreshing Codex's installed copy", () => {
+			const addCalls = () =>
+				mocks.run.mock.calls.filter(
+					([command, args]) =>
+						command === "codex" && args[0] === "plugin",
+				);
+
+			async function listPlugin(marketplaceName = "personal") {
+				const file = path.join(
+					home,
+					".agents",
+					"plugins",
+					"marketplace.json",
+				);
+				await mkdir(path.dirname(file), { recursive: true });
+				await writeFile(
+					file,
+					JSON.stringify({
+						name: marketplaceName,
+						plugins: [
+							{
+								name: "fabric-0project",
+								source: {
+									source: "local",
+									path: "./.codex/plugins/fabric-0project",
+								},
+							},
+						],
+					}),
+				);
+			}
+
+			const hookRender = async () =>
+				runCli([
+					"render",
+					"--project",
+					PROJECT,
+					"--target",
+					"codex",
+					"--hook",
+					"--dest",
+					await makeTree(),
+				]);
+
+			it("runs codex plugin add with the listing marketplace whenever Codex does not hold the rendered version", async () => {
+				await listPlugin("mine");
+				// Like Codex: installing copies the plugin's version into its cache.
+				mocks.run.mockImplementation(async () => {
+					const manifest = JSON.parse(
+						await readFile(
+							path.join(
+								home,
+								".codex",
+								"plugins",
+								"fabric-0project",
+								".codex-plugin",
+								"plugin.json",
+							),
+							"utf8",
+						),
+					) as { version: string };
+					await mkdir(
+						path.join(
+							home,
+							".codex",
+							"plugins",
+							"cache",
+							"mine",
+							"fabric-0project",
+							manifest.version,
+						),
+						{ recursive: true },
+					);
+					return { kind: "exited", code: 0, stdout: "", stderr: "" };
+				});
+
+				const first = await hookRender();
+				const again = await hookRender();
+				serveRepository(
+					{ ...FILES, "AGENTS.md": "# New\n" },
+					"c".repeat(40),
+				);
+				const changed = await hookRender();
+
+				expect(first).toMatchObject({
+					code: 0,
+					stdout: "",
+					stderr: "",
+				});
+				expect(again).toMatchObject({
+					code: 0,
+					stdout: "",
+					stderr: "",
+				});
+				expect(changed).toMatchObject({
+					code: 0,
+					stdout: "",
+					stderr: "",
+				});
+				expect(addCalls()).toHaveLength(2);
+				expect(addCalls()[0]).toEqual([
+					"codex",
+					["plugin", "add", "fabric-0project@mine"],
+					expect.objectContaining({ timeoutMs: expect.any(Number) }),
+				]);
+				for (const [, , options] of addCalls()) {
+					expect(options.timeoutMs).toBeLessThanOrEqual(30_000);
+				}
+			});
+
+			it("does nothing when the plugin is not listed in a marketplace", async () => {
+				const result = await hookRender();
+
+				expect(result).toMatchObject({ code: 0, stdout: "" });
+				expect(addCalls()).toHaveLength(0);
+			});
+
+			it("never fails or prints when codex is missing, times out or throws", async () => {
+				await listPlugin();
+				for (const outcome of [
+					{ kind: "missing" },
+					{ kind: "timed-out" },
+				] as const) {
+					serveRepository(
+						{ ...FILES, "AGENTS.md": `# ${outcome.kind}\n` },
+						outcome.kind === "missing"
+							? "d".repeat(40)
+							: "e".repeat(40),
+					);
+					mocks.run.mockResolvedValue(outcome);
+
+					const result = await hookRender();
+
+					expect(result).toMatchObject({
+						code: 0,
+						stdout: "",
+						stderr: "",
+					});
+				}
+				serveRepository(
+					{ ...FILES, "AGENTS.md": "# boom\n" },
+					"f".repeat(40),
+				);
+				mocks.run.mockRejectedValue(new Error("spawn failed"));
+
+				const thrown = await hookRender();
+
+				expect(thrown).toMatchObject({
+					code: 0,
+					stdout: "",
+					stderr: "",
+				});
+			});
+
+			it("does not run it for a Claude Code render", async () => {
+				await listPlugin();
+
+				await runCli(["render", "--project", PROJECT]);
+
+				expect(addCalls()).toHaveLength(0);
+			});
 		});
 
 		it("in hook mode prints nothing and never fails", async () => {
@@ -406,7 +580,7 @@ describe("fabric instructions init --plugin", () => {
 		expect(JSON.stringify(written)).not.toContain('"source": "settings"');
 	});
 
-	it("adds the memory hooks: pull at session start, push when a turn ends", async () => {
+	it("adds the hooks: the rules sync and the memory pull at session start, the memory push when a turn ends", async () => {
 		const dest = await makeTree();
 
 		await runCli([
@@ -428,11 +602,115 @@ describe("fabric instructions init --plugin", () => {
 			group.hooks.map((h: any) => h.command),
 		);
 		expect(start).toEqual([
+			`fabric instructions rules --project ${PROJECT} --base-url https://fabric.pro --hook`,
 			`fabric memory pull --project ${PROJECT} --base-url https://fabric.pro --hook`,
 		]);
 		expect(stop).toEqual([
 			`fabric memory push --project ${PROJECT} --base-url https://fabric.pro --hook`,
 		]);
+	});
+
+	describe("project rules", () => {
+		const RULE = "---\npaths:\n  - src/**\n---\nValidate input.\n";
+		const FOLDER = ".claude/rules/fabric-0project";
+		const withRules = () =>
+			serveRepository({
+				...FILES,
+				"rules/api.md": RULE,
+				".claude/rules/team/naming.md": "Names.\n",
+			});
+		const initClaude = async (dest: string) =>
+			runCli([
+				"init",
+				"--plugin",
+				"--project",
+				PROJECT,
+				"--tool",
+				"claude-code",
+				"--dest",
+				dest,
+			]);
+
+		it("are in the project's rules folder by the end of init, as the instructions hold them, and out of commits", async () => {
+			withRules();
+			const dest = await makeTree();
+			execFileSync("git", ["init", "-q"], { cwd: dest });
+
+			const result = await initClaude(dest);
+
+			expect(result.code).toBe(0);
+			expect(
+				await readFile(path.join(dest, FOLDER, "api.md"), "utf8"),
+			).toBe(RULE);
+			expect(
+				await readFile(
+					path.join(dest, FOLDER, "team", "naming.md"),
+					"utf8",
+				),
+			).toBe("Names.\n");
+			expect(result.stdout).toContain(`delivered to ${FOLDER}/`);
+			const status = execFileSync(
+				"git",
+				["status", "--porcelain", "-uall"],
+				{
+					cwd: dest,
+					encoding: "utf8",
+				},
+			);
+			expect(status).not.toContain("api.md");
+			expect(status).not.toContain("fabric-0project");
+		});
+
+		it("are refreshed by the session hook's command, which prints nothing and exits 0", async () => {
+			withRules();
+			const dest = await makeTree();
+			await initClaude(dest);
+			serveRepository({ ...FILES, "rules/api.md": "Changed.\n" });
+
+			const result = await runCli([
+				"rules",
+				"--project",
+				PROJECT,
+				"--dest",
+				dest,
+				"--hook",
+			]);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(
+				await readFile(path.join(dest, FOLDER, "api.md"), "utf8"),
+			).toBe("Changed.\n");
+			await expect(
+				stat(path.join(dest, FOLDER, "team", "naming.md")),
+			).rejects.toThrow();
+		});
+
+		it("never fail the session hook, even when Fabric cannot be reached", async () => {
+			const dest = await makeTree();
+			mocks.getPublished.mockRejectedValue(new Error("offline"));
+
+			const result = await runCli([
+				"rules",
+				"--project",
+				PROJECT,
+				"--dest",
+				dest,
+				"--hook",
+			]);
+
+			expect(result.code).toBe(0);
+			expect(result.stdout).toBe("");
+			expect(result.stderr).toContain("rules failed");
+		});
+
+		it("a project without rules leaves no rules folder", async () => {
+			const dest = await makeTree();
+
+			await initClaude(dest);
+
+			await expect(stat(path.join(dest, FOLDER))).rejects.toThrow();
+		});
 	});
 
 	it("renders once so a broken setup shows now, and says how to approve the command", async () => {
@@ -1010,6 +1288,7 @@ describe("fabric instructions init --plugin", () => {
 							".codex",
 							"plugins",
 							entry.name,
+							".codex-plugin",
 							"plugin.json",
 						),
 					)
@@ -1076,7 +1355,117 @@ describe("fabric instructions init --plugin", () => {
 			expect(status).not.toContain(".codex");
 		});
 
-		it("writes no override when the instructions have no always-on text", async () => {
+		it("puts the project's rules after the memory file in AGENTS.override.md, with scopes noted, and no rules folder", async () => {
+			serveRepository({
+				...FILES,
+				"rules/api.md":
+					"---\npaths:\n  - src/**\n---\nValidate input.\n",
+				"rules/style.md": "Use tabs.\n",
+			});
+			const dest = await makeTree();
+
+			await runCli([
+				"init",
+				"--plugin",
+				"--project",
+				PROJECT,
+				"--tool",
+				"codex",
+				"--dest",
+				dest,
+			]);
+
+			const override = await readFile(
+				path.join(dest, "AGENTS.override.md"),
+				"utf8",
+			);
+			expect(override.indexOf("Use the tools.")).toBeLessThan(
+				override.indexOf("## Project rules"),
+			);
+			expect(override).toContain("### Rule: api.md");
+			expect(override).toContain("Applies when working on: src/**");
+			expect(override).toContain("Validate input.");
+			expect(override).toContain("### Rule: style.md\nUse tabs.");
+			await expect(
+				stat(path.join(dest, ".claude", "rules")),
+			).rejects.toThrow();
+		});
+
+		describe("installing the plugin in Codex", () => {
+			const initCodex = async () =>
+				runCli([
+					"init",
+					"--plugin",
+					"--project",
+					PROJECT,
+					"--tool",
+					"codex",
+					"--dest",
+					await makeTree(),
+				]);
+
+			it("runs codex plugin add and says the plugin is installed", async () => {
+				mocks.run.mockResolvedValue({
+					kind: "exited",
+					code: 0,
+					stdout: "",
+					stderr: "",
+				});
+
+				const result = await initCodex();
+
+				expect(result.code).toBe(0);
+				expect(mocks.run).toHaveBeenCalledWith(
+					"codex",
+					["plugin", "add", "fabric-0project@personal"],
+					expect.objectContaining({ timeoutMs: 120_000 }),
+				);
+				expect(result.stdout).toContain(
+					"Installed the fabric-0project plugin in Codex.",
+				);
+				expect(result.stdout).not.toContain("plugin browser");
+			});
+
+			it("prints the exact command, with the marketplace's own name, when codex cannot install it", async () => {
+				const file = path.join(
+					home,
+					".agents",
+					"plugins",
+					"marketplace.json",
+				);
+				await mkdir(path.dirname(file), { recursive: true });
+				await writeFile(
+					file,
+					JSON.stringify({ name: "mine", plugins: [] }),
+				);
+				mocks.run.mockResolvedValue({ kind: "missing" });
+
+				const result = await initCodex();
+
+				expect(result.code).toBe(0);
+				expect(result.stdout).toContain(
+					"Run: codex plugin add fabric-0project@mine",
+				);
+				expect(result.stdout).not.toContain("Installed the");
+			});
+
+			it("prints the command when codex exits with an error", async () => {
+				mocks.run.mockResolvedValue({
+					kind: "exited",
+					code: 1,
+					stdout: "",
+					stderr: "no",
+				});
+
+				const result = await initCodex();
+
+				expect(result.stdout).toContain(
+					"Run: codex plugin add fabric-0project@personal",
+				);
+			});
+		});
+
+		it("writes instruction access guidance when the instructions have no root text", async () => {
 			serveRepository({ ".claude/agents/reviewer.md": "reviewer\n" });
 			const dest = await makeTree();
 
@@ -1091,9 +1480,12 @@ describe("fabric instructions init --plugin", () => {
 				dest,
 			]);
 
-			await expect(
-				stat(path.join(dest, "AGENTS.override.md")),
-			).rejects.toThrow();
+			const override = await readFile(
+				path.join(dest, "AGENTS.override.md"),
+				"utf8",
+			);
+			expect(override).toContain("plugin fabric-0project");
+			expect(override).toContain("fabric-instruction-access");
 		});
 	});
 });

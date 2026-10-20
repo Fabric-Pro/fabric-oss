@@ -11,12 +11,11 @@ import type { Prisma } from "@repo/database/prisma/generated/client";
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { syncDeploymentTriggers } from "../../../agent-deployments/lib/sync-triggers";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 import {
 	knowledgeConnectionsSchema,
 	knowledgeResourcesSchema,
@@ -101,48 +100,36 @@ const createInputSchema = z
 	);
 
 export const createInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_MANAGE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_MANAGE, {
+			requireOrganization: true,
+		}),
+	)
 	.input(createInputSchema)
 	.handler(async ({ input, context }) => {
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
-
-		// Verify organization membership if creating an org instance
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				context.user.id,
-			);
-			if (!membership) {
-				throw new Error(
-					"You must be a member of the organization to create agents for it",
-				);
-			}
-		}
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		// Verify template exists and check scope permissions
 		const template = await getAgentTemplate(input.templateId);
 		if (!template) {
-			throw new Error("Template not found");
+			throw new ORPCError("NOT_FOUND", { message: "Template not found" });
 		}
 
 		// Validate template scope matches context
 		if (template.scope === "ORGANIZATION") {
 			// Organization templates can only be used within the same organization
-			if (!organizationId || template.organizationId !== organizationId) {
-				throw new Error(
-					"This template belongs to a different organization",
-				);
+			if (template.organizationId !== organizationId) {
+				throw new ORPCError("FORBIDDEN", {
+					message:
+						"This template belongs to a different organization",
+				});
 			}
 		} else if (template.scope === "USER") {
-			// User templates can only be used by the owner in personal context
-			if (organizationId || template.userId !== context.user.id) {
-				throw new Error(
+			// Personal templates have no organization context to run in (ADR-018).
+			throw new ORPCError("FORBIDDEN", {
+				message:
 					"This template is personal and cannot be used in this context",
-				);
-			}
+			});
 		}
 		// SYSTEM templates can be used by anyone
 
@@ -160,11 +147,11 @@ export const createInstanceProcedure = tenantProtectedProcedure
 				);
 				if (
 					access === null ||
-					access.organizationId !== (organizationId ?? null)
+					access.organizationId !== organizationId
 				) {
-					throw new Error(
-						`You don't have access to workspace ${workspaceId}`,
-					);
+					throw new ORPCError("FORBIDDEN", {
+						message: `You don't have access to workspace ${workspaceId}`,
+					});
 				}
 			}
 		}
@@ -175,13 +162,13 @@ export const createInstanceProcedure = tenantProtectedProcedure
 			input.knowledgeConnections,
 			input.toolConnections,
 			context.user.id,
-			organizationId ?? undefined,
+			organizationId,
 		);
 
 		if (!connectionValidation.valid) {
-			throw new Error(
-				`Invalid integration connections: ${connectionValidation.errors.join("; ")}`,
-			);
+			throw new ORPCError("BAD_REQUEST", {
+				message: `Invalid integration connections: ${connectionValidation.errors.join("; ")}`,
+			});
 		}
 
 		// Databricks Vector Search requires an explicit index selection - a
@@ -199,7 +186,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 		const instance = await createAgentTemplateInstance({
 			templateId: input.templateId,
 			userId: context.user.id,
-			organizationId: organizationId ?? undefined,
+			organizationId,
 			name: input.name,
 			description: input.description,
 			heroEmojis: input.heroEmojis,
@@ -234,7 +221,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 				agentInstanceId: instance.id,
 				templateId: input.templateId,
 				userId: context.user.id,
-				organizationId: organizationId ?? undefined,
+				organizationId,
 			});
 		} catch (error) {
 			// Log but don't fail - memory can be initialized later
@@ -265,17 +252,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 				const skillVisibility: Prisma.SkillWhereInput[] = [
 					{ scope: "SYSTEM" },
 				];
-				if (organizationId) {
-					skillVisibility.push({
-						scope: "ORGANIZATION",
-						organizationId,
-					});
-				} else {
-					skillVisibility.push({
-						scope: "USER",
-						userId: context.user.id,
-					});
-				}
+				skillVisibility.push({ scope: "ORGANIZATION", organizationId });
 				const skills = await db.skill.findMany({
 					where: {
 						id: { in: input.additionalSkillIds },
@@ -287,7 +264,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 				const memCtx = {
 					agentInstanceId: instance.id,
 					userId: context.user.id,
-					organizationId: organizationId ?? undefined,
+					organizationId,
 				};
 
 				for (const skill of skills) {
@@ -316,7 +293,7 @@ export const createInstanceProcedure = tenantProtectedProcedure
 				await syncDeploymentTriggers({
 					instanceId: instance.id,
 					userId: context.user.id,
-					organizationId: organizationId ?? null,
+					organizationId,
 				});
 			} catch (error) {
 				console.error(

@@ -123,8 +123,14 @@ export const generateDocumentProcedure = tenantProtectedProcedure
 			// Its discriminated result is returned as-is. `alreadyInProgress`
 			// is a normal answer here, not an error: regenerating with exactly
 			// the settings a live run already has joins that run instead of
-			// racing it, and the editor says so by reading the document's own
-			// status rather than being told a second run began.
+			// racing it — and a client-document Proposal joins any run still
+			// live on it, whoever started it and with whatever instructions
+			// (Fizzy #2946) — and the editor says so by reading the document's
+			// own status rather than being told a second run began.
+			// `liveRunUnknown` is the Proposal's "could not confirm that run"
+			// answer: nothing started, try again. `statusUnknown` is this
+			// request's own ambiguous start, already queued, so it reads as
+			// started.
 			return await dispatchDocumentGeneration({
 				documentId: document.id,
 				projectId: document.projectId,

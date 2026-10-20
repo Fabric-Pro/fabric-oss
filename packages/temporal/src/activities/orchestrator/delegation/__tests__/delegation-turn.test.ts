@@ -16,6 +16,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	checkDispatchable: vi.fn(),
+	fetchAgentEndpoint: vi.fn(),
+	pollCompleted: false,
+	isExternal: true,
 	/** Every outbound request, as "METHOD path". */
 	requests: [] as string[],
 	onAgentCard: { value: () => {} },
@@ -26,6 +29,10 @@ const h = vi.hoisted(() => ({
 	},
 }));
 
+vi.mock("@repo/utils/agent-endpoint", async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	fetchAgentEndpoint: h.fetchAgentEndpoint,
+}));
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<Record<string, unknown>>()),
 	checkConversationTurnDispatchable: h.checkDispatchable,
@@ -33,6 +40,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 // The real A2A clients, so the send, its retries and its signal are
 // exercised down to `fetch`.
 vi.mock("@repo/agent-core", async () => {
+	vi.stubEnv("AGENT_SERVICE_SECRET", "example-delegation-service-secret");
 	const a2a = await import("@repo/agent-core/a2a");
 	return { A2AClient: a2a.A2AClient, SecureA2AClient: a2a.SecureA2AClient };
 });
@@ -53,7 +61,7 @@ vi.mock("../resolve-endpoint", () => ({
 		name: "Example agent",
 		deploymentUrl: "https://agent.example.com",
 		protocol: "a2a",
-		isExternal: true,
+		isExternal: h.isExternal,
 	})),
 }));
 vi.mock("../../utils/partykit-publisher", () => ({
@@ -88,6 +96,11 @@ function json(body: unknown) {
 
 beforeEach(() => {
 	cancelled = false;
+	h.isExternal = true;
+	h.pollCompleted = false;
+	h.fetchAgentEndpoint
+		.mockReset()
+		.mockImplementation((url, init) => global.fetch(url, init));
 	h.requests.length = 0;
 	h.onAgentCard.value = () => {};
 	h.onSend.value = undefined;
@@ -113,7 +126,11 @@ beforeEach(() => {
 			return json({ id: "task-1", status: "completed", messages: [] });
 		}
 		if (url.pathname === "/a2a/tasks/task-1") {
-			return json({ id: "task-1", status: "working", messages: [] });
+			return json({
+				id: "task-1",
+				status: h.pollCompleted ? "completed" : "working",
+				messages: [],
+			});
 		}
 		throw new Error(`unexpected request ${url.pathname}`);
 	}) as unknown as typeof fetch;
@@ -121,6 +138,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	global.fetch = originalFetch;
+	vi.unstubAllEnvs();
+	vi.restoreAllMocks();
 });
 
 const sends = () => h.requests.filter((r) => r === "POST /a2a/send");
@@ -293,3 +312,221 @@ describe("delegation in a chat turn", () => {
 		expect(h.requests).not.toContain("POST /a2a/tasks/task-1/cancel");
 	});
 });
+
+describe("delegation agent API key", () => {
+	it("authenticates a system agent with the trimmed key", async () => {
+		vi.stubEnv("AGENT_API_KEY", "  example-agent-key  ");
+		h.isExternal = false;
+		let headers: Headers | undefined;
+		h.onSend.value = async (init) => {
+			headers = new Headers(init?.headers);
+			return json({ id: "task-1", status: "completed", messages: [] });
+		};
+		const outcome = await delegate(false);
+		expect(outcome).toHaveProperty("resolvedWith");
+		expect(sends()).toHaveLength(1);
+		expect(headers?.get("Authorization")).toBe("Bearer example-agent-key");
+		expect(headers?.get("X-Service-Token")).toBe(
+			"example-delegation-service-secret",
+		);
+		for (const name of [
+			"X-Tenant-Signature",
+			"X-Tenant-Payload",
+			"X-Tenant-Timestamp",
+		]) {
+			expect(headers?.has(name), name).toBe(true);
+		}
+	});
+
+	it.each([undefined, "   "])(
+		"logs a missing system-agent key without throwing (%j)",
+		async (key) => {
+			vi.stubEnv("AGENT_API_KEY", key);
+			h.isExternal = false;
+			const error = vi
+				.spyOn(console, "error")
+				.mockImplementation(() => {});
+			let headers: Headers | undefined;
+			h.onSend.value = async (init) => {
+				headers = new Headers(init?.headers);
+				return json({
+					id: "task-1",
+					status: "completed",
+					messages: [],
+				});
+			};
+			const outcome = await delegate(false);
+			expect(outcome).toHaveProperty("resolvedWith");
+			expect(sends()).toHaveLength(1);
+			expect(headers?.has("Authorization")).toBe(false);
+			expect(error).toHaveBeenCalledWith(
+				expect.stringContaining("AGENT_API_KEY is not set"),
+			);
+		},
+	);
+
+	it("withholds the agent key from an external agent", async () => {
+		vi.stubEnv("AGENT_API_KEY", "example-agent-key");
+		let headers: Headers | undefined;
+		h.onSend.value = async (init) => {
+			headers = new Headers(init?.headers);
+			return json({ id: "task-1", status: "completed", messages: [] });
+		};
+		const outcome = await delegate(false);
+		expect(outcome).toHaveProperty("resolvedWith");
+		expect(sends()).toHaveLength(1);
+		expect(headers).toBeDefined();
+		for (const name of [
+			"X-Service-Token",
+			"X-Tenant-Signature",
+			"X-Tenant-Payload",
+			"X-Tenant-Timestamp",
+		]) {
+			expect.soft(headers?.has(name), name).toBe(false);
+		}
+		expect
+			.soft(JSON.stringify(Array.from(headers ?? [])))
+			.not.toContain("example-delegation-service-secret");
+		expect(headers?.has("Authorization")).toBe(false);
+		expect(JSON.stringify(Array.from(headers ?? []))).not.toContain(
+			"example-agent-key",
+		);
+	});
+});
+
+describe("delegation outbound transport", () => {
+	it.each([true, false])(
+		"routes health, send and poll according to isExternal=%s",
+		async (isExternal) => {
+			h.isExternal = isExternal;
+			h.pollCompleted = true;
+			h.onSend.value = async () =>
+				json({ id: "task-1", status: "working", messages: [] });
+			const outcome = await delegate(false);
+			expect(outcome).toHaveProperty("resolvedWith");
+			expect(h.requests).toEqual([
+				"GET /.well-known/agent-card.json",
+				"POST /a2a/send",
+				"GET /a2a/tasks/task-1",
+			]);
+			if (isExternal) {
+				for (const path of [
+					"/.well-known/agent-card.json",
+					"/a2a/send",
+					"/a2a/tasks/task-1",
+				]) {
+					expect
+						.soft(h.fetchAgentEndpoint)
+						.toHaveBeenCalledWith(
+							`https://agent.example.com${path}`,
+							expect.any(Object),
+						);
+				}
+			} else {
+				expect(h.fetchAgentEndpoint).not.toHaveBeenCalled();
+			}
+		},
+	);
+});
+
+describe("failed delegation response", () => {
+	it.each(["Unable to answer", undefined, 42])(
+		"reads only a string metadata.error (%j)",
+		async (error) => {
+			h.onSend.value = async () =>
+				json({
+					id: "task-1",
+					status: "failed",
+					messages: [],
+					metadata: { error, ai_api_key: "example-secret" },
+				});
+			const { delegateToAgent } = await import("../delegate-to-agent");
+			const result = (await new MockActivityEnvironment().run(
+				delegateToAgent,
+				{
+					agentId: "agent-1",
+					message: "hello",
+					userId: TURN_SCOPE.userId,
+					organizationId: TURN_SCOPE.organizationId,
+				},
+			)) as Awaited<ReturnType<typeof delegateToAgent>>;
+			expect(result.status).toBe("failed");
+			expect(result.response).toContain(
+				"A2A delegation to Example agent failed:",
+			);
+			if (typeof error === "string") {
+				expect(result.response).toContain(error);
+			}
+			expect(result.response).not.toContain("example-secret");
+			expect(result.response).not.toContain("42");
+		},
+	);
+	it("returns readable failure text from an agent invoked as a tool", async () => {
+		h.onSend.value = async () =>
+			json({
+				id: "task-1",
+				status: "failed",
+				messages: [],
+				metadata: {
+					error: "Unable to answer",
+					ai_api_key: "example-secret",
+				},
+			});
+		const outcome = await delegate(false);
+		expect(outcome).toHaveProperty(
+			"resolvedWith.output",
+			"A2A delegation to Example agent failed: Unable to answer",
+		);
+		expect(JSON.stringify(outcome)).not.toContain("example-secret");
+		expect(sends()).toHaveLength(1);
+	});
+});
+
+it.each([
+	{
+		message: "Provider failed: api_key=example-secret",
+		secret: "example-secret",
+		expected: "Provider failed: <redacted>",
+	},
+	{
+		message: "Provider failed: Authorization: Bearer example-session-token",
+		secret: "example-session-token",
+		expected: "Provider failed: <redacted>",
+	},
+	{
+		message:
+			"Provider failed: 401 Incorrect API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+		secret: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+		expected: "Provider failed: 401 Incorrect API key <redacted>",
+	},
+])(
+	"sanitizes external metadata.error ($message)",
+	async ({ message, secret, expected }) => {
+		h.onSend.value = async () =>
+			json({
+				id: "task-1",
+				status: "failed",
+				messages: [],
+				metadata: {
+					error: message,
+					ai_api_key: "example-other-secret",
+				},
+			});
+		const { delegateToAgent } = await import("../delegate-to-agent");
+		const result = (await new MockActivityEnvironment().run(
+			delegateToAgent,
+			{
+				agentId: "agent-1",
+				message: "hello",
+				userId: TURN_SCOPE.userId,
+				organizationId: TURN_SCOPE.organizationId,
+			},
+		)) as Awaited<ReturnType<typeof delegateToAgent>>;
+		expect(result.status).toBe("failed");
+		expect(result.response).toBe(
+			`A2A delegation to Example agent failed: ${expected}`,
+		);
+		expect(JSON.stringify(result)).not.toContain(secret);
+		expect(JSON.stringify(result)).not.toContain("example-other-secret");
+	},
+);

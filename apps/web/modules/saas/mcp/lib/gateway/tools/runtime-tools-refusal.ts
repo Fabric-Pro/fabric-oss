@@ -52,7 +52,7 @@ export async function runtimeToolsRefusal(
 	const refused = undeclarableRuntimeTools(args, pageMayDeclare);
 	if (refused.length > 0) {
 		return errorResult(
-			`runtimeTools can only name Fabric platform tools a page may call, or connected:<provider>/<tool>; not usable: ${refused.join(", ")}.`,
+			`runtimeTools can only name Fabric platform tools a page may call, or connected:<provider>/<tool>; not usable: ${refused.join(", ")}. Call fabric_list_page_tools to discover valid names and their exact input schemas before retrying.${refused.includes("fabric_list_project_features") ? " fabric_list_project_features is chat-only; a page uses fabric_list_features with required projectId." : ""}`,
 		);
 	}
 	const connected = declaredEntries(args)

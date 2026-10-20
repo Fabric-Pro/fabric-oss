@@ -32,10 +32,11 @@ COPY packages/utils/package.json packages/utils/
 COPY tooling/typescript/package.json tooling/typescript/
 
 # Install dependencies. Only some workspace manifests are copied above, so the
-# install is filtered: since pnpm 11.28.0 an unfiltered frozen install fails
-# with ERR_PNPM_OUTDATED_LOCKFILE when the lockfile names a project whose
-# directory is missing. `--filter .` keeps the root project, whose `tsx` the
-# production CMD loads from /app/node_modules.
+# install is filtered to the wrapper's dependency closure (pnpm 11.28.0-11.28.3
+# also failed an unfiltered frozen install here with ERR_PNPM_OUTDATED_LOCKFILE,
+# because the lockfile names projects whose directories are missing).
+# `--filter .` keeps the root project, whose `tsx` the production CMD loads
+# from /app/node_modules.
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@repo/mcp-stdio-wrapper..." --filter .
 
 # =============================================================================
@@ -112,9 +113,14 @@ COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 # every tool result in untrusted-content delimiters, and imports keytar at
 # startup, which exits on this base image without libsecret-1-0.
 # The Twilio pin must match its catalog command in seed.ts; the Twilio launcher only runs for this preinstalled copy.
+# The Google Drive pin must match its catalog command in seed.ts too. 2025.1.14
+# is the last version npm lists for the archived reference server, and the
+# credential-file handoff in packages/mcp/lib/client.ts targets its behaviour.
+# Installing it here also saves each cold spawn from downloading googleapis
+# (googleapis@144 is ~115 MB unpacked).
 RUN npm install -g \
     @azure-devops/mcp@2.8.0 \
-    @modelcontextprotocol/server-github@latest \
+    @modelcontextprotocol/server-gdrive@2025.1.14 \
     @playwright/mcp@0.0.76 \
     @twilio-alpha/mcp@0.7.0 \
     && npm cache clean --force

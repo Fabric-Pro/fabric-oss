@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`pins a small PM prompt body apart from the requested header and rule changes 1`] = `"a309945f6270623c49521a934fc4ade18b9fa78f0f455e0b4903463f2918def7"`;
+
+exports[`work-item budget protects meeting evidence > pins the pre-fix small explore prompt byte for byte 1`] = `"3de2fc0ba5a691459940a2bd429e95dd91a38ed97385e79f3b12584b2b2c634c"`;
+
+exports[`work-item budget protects meeting evidence > pins the pre-fix small recommend prompt byte for byte 1`] = `"93ca0293c310ee3723469cd90477899ba5da420a4b2ebc248f02ebfc11dcdec7"`;
+
+exports[`work-item budget protects meeting evidence > pins the pre-fix small standard prompt byte for byte 1`] = `"a0d0b2da8c10683ab9e5e99c11d1e4ddb183f49d1252f100a3f884bfeb9292c8"`;

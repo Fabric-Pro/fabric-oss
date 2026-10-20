@@ -617,7 +617,7 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 
 	"project.parlume.action_confirmed": D(
 		"project.parlume.action_confirmed",
-		"Parlume action confirmed",
+		"Parlume action executed",
 		CheckCircle,
 		"info",
 		"project",

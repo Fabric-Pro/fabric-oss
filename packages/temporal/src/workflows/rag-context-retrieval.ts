@@ -133,6 +133,7 @@ export async function ragContextRetrievalWorkflow(
 			topK,
 			minSimilarity,
 			documentIds,
+			input.usageConversationId,
 		);
 
 		log.info("RAG context retrieved successfully", {

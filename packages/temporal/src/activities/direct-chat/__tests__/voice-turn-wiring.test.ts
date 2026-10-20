@@ -108,7 +108,6 @@ vi.mock("../../shared/agent-tool-runtime", () => ({
 	hasExactAgentToolApproval: vi.fn(),
 	observeAgentText: vi.fn(),
 	prepareAgentTools: async () => undefined,
-	requiredAgentTool: () => undefined,
 }));
 vi.mock("../../shared/confirmed-workflow", () => ({
 	executeApprovedWorkflow: vi.fn(),

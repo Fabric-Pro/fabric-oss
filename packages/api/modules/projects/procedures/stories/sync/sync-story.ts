@@ -235,6 +235,7 @@ export const syncStoryProcedure = tenantProtectedProcedure
 			mcpConfigId: syncMcpConfigId,
 			mcpServerId: project.projectManagementMcpServerId ?? undefined,
 			containerId: project.projectManagementContainerId,
+			stableContainerId: project.projectManagementContainerId,
 			additionalContext: additionalContext ?? undefined,
 			direction: input.direction,
 			userId: user.id,

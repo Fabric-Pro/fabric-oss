@@ -218,9 +218,11 @@ export const listToolsProcedure = tenantProtectedProcedure
 					const cached = await getMcpConfigCachedTools(serverId);
 
 					if (cached.tools && cached.tools.length > 0) {
-						console.log(
-							`[MCP Tools] Using cached tools for ${serverName} (${cached.toolCount} tools, cached at ${cached.cachedAt?.toISOString()})`,
-						);
+						console.log("[MCP Tools] Using cached tools", {
+							serverName,
+							toolCount: cached.toolCount,
+							cachedAt: cached.cachedAt?.toISOString(),
+						});
 
 						// Convert cached tools to full tool format
 						for (const cachedTool of cached.tools) {
@@ -256,12 +258,13 @@ export const listToolsProcedure = tenantProtectedProcedure
 						continue; // Move to next server
 					}
 
-					console.log(
-						`[MCP Tools] No cached tools for ${serverName}, will fetch live`,
-					);
+					console.log("[MCP Tools] No cached tools, fetching live", {
+						serverName,
+					});
 				} else {
 					console.log(
-						`[MCP Tools] Force refresh requested for ${serverName}, fetching live`,
+						"[MCP Tools] Force refresh requested, fetching live",
+						{ serverName },
 					);
 				}
 
@@ -283,7 +286,8 @@ export const listToolsProcedure = tenantProtectedProcedure
 				) {
 					if (!mcpConfig.encryptedAccessToken) {
 						console.log(
-							`[MCP Tools] Skipping OAuth2 server ${serverName} - not yet authenticated`,
+							"[MCP Tools] Skipping unauthenticated OAuth2 server",
+							{ serverName },
 						);
 						errors.push({
 							serverId,
@@ -299,7 +303,8 @@ export const listToolsProcedure = tenantProtectedProcedure
 						new Date(mcpConfig.tokenExpiresAt) < new Date()
 					) {
 						console.log(
-							`[MCP Tools] Skipping OAuth2 server ${serverName} - token expired`,
+							"[MCP Tools] Skipping OAuth2 server with expired token",
+							{ serverName },
 						);
 						errors.push({
 							serverId,
@@ -338,9 +343,10 @@ export const listToolsProcedure = tenantProtectedProcedure
 					}
 				}
 
-				console.log(
-					`[MCP Tools] Creating MCP client for ${serverName} (transport: ${transport})`,
-				);
+				console.log("[MCP Tools] Creating MCP client", {
+					serverName,
+					transport,
+				});
 
 				try {
 					// Use createMcpClientForConfig which handles all transport types
@@ -355,11 +361,17 @@ export const listToolsProcedure = tenantProtectedProcedure
 					});
 					mcpClient = clientResult.client;
 				} catch (clientError) {
-					console.error(
-						"[MCP Tools] Failed to create client:",
-						{ serverName },
-						clientError,
-					);
+					console.error("[MCP Tools] Failed to create client:", {
+						serverName,
+						error:
+							clientError instanceof Error
+								? clientError.message
+								: clientError,
+						stack:
+							clientError instanceof Error
+								? clientError.stack
+								: undefined,
+					});
 					errors.push({
 						serverId,
 						serverName,
@@ -375,9 +387,10 @@ export const listToolsProcedure = tenantProtectedProcedure
 				// @see https://ai-sdk.dev/docs/ai-sdk-core/mcp-tools#schema-discovery
 				const mcpTools = await mcpClient.tools();
 
-				console.log(
-					`[MCP Tools] Found ${Object.keys(mcpTools).length} tools from ${serverName}`,
-				);
+				console.log("[MCP Tools] Found tools", {
+					toolCount: Object.keys(mcpTools).length,
+					serverName,
+				});
 
 				// Process each tool
 				for (const [toolName, tool] of Object.entries(mcpTools)) {
@@ -428,10 +441,11 @@ export const listToolsProcedure = tenantProtectedProcedure
 					});
 				}
 			} catch (err: unknown) {
-				console.error(
-					`[MCP Tools] Error fetching tools from ${serverId}:`,
-					err,
-				);
+				console.error("[MCP Tools] Error fetching tools", {
+					serverId,
+					error: err instanceof Error ? err.message : err,
+					stack: err instanceof Error ? err.stack : undefined,
+				});
 
 				// Extract a meaningful error message
 				let errorMessage = "Unknown error";

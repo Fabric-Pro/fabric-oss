@@ -1,7 +1,7 @@
 /**
  * Proposal artifact mode (Fizzy #2946), without a database: the
- * client-document and internal predicates, the trusted organization logo
- * key, and the theme token resolvers.
+ * organization gate, the client-document and internal predicates, the
+ * trusted organization logo key, and the theme token resolvers.
  *
  * The load-bearing assertions are the negative ones: the predicates read no
  * flag for a document that cannot be a client document, and the guest-safe
@@ -27,6 +27,7 @@ vi.mock("../prisma/queries/verify-organization-membership", () => ({
 }));
 
 import {
+	isProposalArtifactEnabledForOrganization,
 	isProposalClientDocument,
 	isProposalInternalReader,
 	PROPOSAL_DOCUMENT_TYPE,
@@ -112,6 +113,51 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	gateOnForOrgA();
 	seedSources();
+});
+
+describe("isProposalArtifactEnabledForOrganization", () => {
+	it("is on when the organization's gate is on, read for that organization", async () => {
+		expect(await isProposalArtifactEnabledForOrganization(ORG)).toBe(true);
+		expect(isFeatureEnabled).toHaveBeenCalledTimes(1);
+		expect(isFeatureEnabled).toHaveBeenCalledWith("PROPOSAL_ARTIFACT", ORG);
+	});
+
+	it("is off when the organization's gate is off, read for that organization", async () => {
+		expect(await isProposalArtifactEnabledForOrganization(OTHER_ORG)).toBe(
+			false,
+		);
+		expect(isFeatureEnabled).toHaveBeenCalledWith(
+			"PROPOSAL_ARTIFACT",
+			OTHER_ORG,
+		);
+		expect(isFeatureEnabled).not.toHaveBeenCalledWith(
+			"PROPOSAL_ARTIFACT",
+			ORG,
+		);
+	});
+
+	it.each([null, undefined, ""])(
+		"is off and never reads the flag without an organization (%o)",
+		async (organizationId) => {
+			expect(
+				await isProposalArtifactEnabledForOrganization(organizationId),
+			).toBe(false);
+			expect(isFeatureEnabled).not.toHaveBeenCalled();
+		},
+	);
+
+	it("agrees with the client-document predicate for a Proposal", async () => {
+		for (const organizationId of [ORG, OTHER_ORG, null]) {
+			expect(
+				await isProposalClientDocument({
+					organizationId,
+					documentType: PROPOSAL_DOCUMENT_TYPE,
+				}),
+			).toBe(
+				await isProposalArtifactEnabledForOrganization(organizationId),
+			);
+		}
+	});
 });
 
 describe("isProposalClientDocument", () => {

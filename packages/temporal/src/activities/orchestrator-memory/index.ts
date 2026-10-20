@@ -10,10 +10,10 @@
 
 import { embed, getAIEmbeddingModel } from "@repo/ai";
 import {
+	buildMemoryContextPromptVariables,
 	buildOrchestratorMemoryContext,
 	createEpisodicMemory,
 	type EpisodeSummary,
-	formatMemoryContextPrompt,
 	getOrchestratorMemoryPreferences,
 	getRecentEpisodes,
 	learnPattern,
@@ -28,6 +28,11 @@ import {
 	storeEpisodeEmbedding,
 } from "@repo/rag/lib/vector-store";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../../workflows/orchestrator/usage-attribution";
+import { resolveOrchestratorMemoryPrompt } from "../lib/memory-context-prompt";
 import {
 	rethrowIfTurnStopped,
 	startTurnHeartbeat,
@@ -61,7 +66,7 @@ function toISOString(value: Date | string | null | undefined): string {
 // TYPES
 // =============================================================================
 
-export interface LoadOrchestratorMemoryInput {
+export interface LoadOrchestratorMemoryInput extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -84,7 +89,7 @@ export interface LoadOrchestratorMemoryOutput {
 	recentEpisodes: EpisodeSummary[];
 }
 
-export interface SearchEpisodicMemoryInput {
+export interface SearchEpisodicMemoryInput extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -95,7 +100,7 @@ export interface SearchEpisodicMemoryInput {
 	excludeConversationIds?: string[];
 }
 
-export interface CreateEpisodeInput {
+export interface CreateEpisodeInput extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -187,6 +192,8 @@ async function loadOrchestratorMemory(
 
 		if (currentQuery && currentQuery.trim().length > 10) {
 			const searchResults = await searchEpisodicMemoryActivity({
+				usageConversationId: input.usageConversationId,
+				usageOrigin: input.usageOrigin,
 				userId,
 				organizationId,
 				projectId,
@@ -209,8 +216,13 @@ async function loadOrchestratorMemory(
 			relevantEpisodeIds,
 		});
 
-		// Step 5: Format as system prompt addition
-		const memoryContextPrompt = formatMemoryContextPrompt(memoryContext);
+		// Step 5: Render the memory-context prompt against the recalled data
+		const memoryContextPrompt = await resolveOrchestratorMemoryPrompt({
+			userId,
+			organizationId: organizationId ?? undefined,
+			projectId: projectId ?? undefined,
+			variables: buildMemoryContextPromptVariables(memoryContext),
+		});
 
 		logger.info("[OrchestratorMemory] Memory context loaded", {
 			hasPreferences:
@@ -278,6 +290,7 @@ export async function searchEpisodicMemoryActivity(
 		// Generate embedding for the query
 		const embeddingModel = await getAIEmbeddingModel({
 			userId,
+			...secondaryUsageFields(input),
 			organizationId: organizationId ?? undefined,
 		});
 		const result = await embed({ model: embeddingModel, value: query });
@@ -357,6 +370,7 @@ export async function createEpisodicMemoryActivity(
 		const embeddingText = `${input.title}\n\n${input.summary}\n\nTopics: ${input.keyTopics.join(", ")}`;
 		const embeddingModel = await getAIEmbeddingModel({
 			userId: input.userId,
+			...secondaryUsageFields(input),
 			organizationId: input.organizationId || undefined,
 		});
 		const embeddingResult = await embed({
@@ -489,7 +503,7 @@ export async function updateRecentActivityActivity(
 // CONVERSATION SUMMARIZATION FOR EPISODE CREATION
 // =============================================================================
 
-export interface SummarizeConversationInput {
+export interface SummarizeConversationInput extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	conversationId: string;
@@ -554,6 +568,7 @@ export async function summarizeConversationActivity(
 			{ taskType: "SIMPLE" },
 			{
 				userId: input.userId,
+				...secondaryUsageFields(input),
 				organizationId: input.organizationId || undefined,
 			},
 		);
@@ -637,7 +652,7 @@ Rules:
  * Create episode from a completed orchestrator execution
  * Combines summarization + episode creation in one activity
  */
-export async function createEpisodeFromExecutionActivity(input: {
+export interface CreateEpisodeFromExecutionInput extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -651,7 +666,11 @@ export async function createEpisodeFromExecutionActivity(input: {
 	outcome: "success" | "partial" | "failure";
 	conversationStartedAt: Date;
 	conversationEndedAt?: Date | null;
-}): Promise<{ episodeId: string | null; created: boolean }> {
+}
+
+export async function createEpisodeFromExecutionActivity(
+	input: CreateEpisodeFromExecutionInput,
+): Promise<{ episodeId: string | null; created: boolean }> {
 	logger.info("[OrchestratorMemory] Creating episode from execution", {
 		executionId: input.executionId,
 		stepCount: input.steps.length,
@@ -671,6 +690,8 @@ export async function createEpisodeFromExecutionActivity(input: {
 
 		// Create the episode
 		const result = await createEpisodicMemoryActivity({
+			usageConversationId: input.usageConversationId,
+			usageOrigin: input.usageOrigin,
 			userId: input.userId,
 			organizationId: input.organizationId,
 			projectId: input.projectId,

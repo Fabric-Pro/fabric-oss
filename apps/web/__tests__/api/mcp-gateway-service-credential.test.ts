@@ -14,7 +14,11 @@
  *    is not recorded as a CLI connection.
  */
 
-import { mintActingGrant } from "@repo/api/lib/agent-service-auth";
+import {
+	mintActingGrant,
+	mintParlumeActingGrantForTurn,
+} from "@repo/api/lib/agent-service-auth";
+import { signToken } from "@repo/auth/lib/signed-token";
 import { fabricGatewayTool } from "@repo/temporal/fabric-gateway-tools";
 import { confirmationMeta } from "@repo/temporal/fabric-tool-definition";
 import {
@@ -68,7 +72,10 @@ vi.mock("@saas/mcp/lib/record-cli-reach", async (importOriginal) => ({
 
 const isOrganizationMember = vi.fn();
 const findUser = vi.fn();
+const resolveProjectTarget = vi.fn();
 vi.mock("@repo/database", () => ({
+	resolveOAuthProjectGrantTarget: (userId: string, projectId: string) =>
+		resolveProjectTarget(userId, projectId),
 	isOrganizationLive: vi.fn().mockResolvedValue(true),
 	db: { user: { findUnique: (...args: unknown[]) => findUser(...args) } },
 	isOrganizationMember: (userId: string, organizationId: string) =>
@@ -82,6 +89,7 @@ const GATEWAY_URL = "http://localhost:3001/api/mcp-gateway";
 const USER_ID = "user-1";
 const ORG_A = "org-example-alpha";
 const ORG_B = "org-example-beta";
+const PROJECT_ID = "project-meeting";
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
 	return {
@@ -160,6 +168,10 @@ beforeEach(() => {
 		banExpires: null,
 	});
 	getSession.mockResolvedValue(null);
+	resolveProjectTarget.mockResolvedValue({
+		organizationId: ORG_A,
+		projectId: PROJECT_ID,
+	});
 	executePlatformTool.mockResolvedValue({
 		content: [{ type: "text", text: "ok" }],
 	});
@@ -192,6 +204,9 @@ describe("MCP gateway — service credential", () => {
 				"workflows:run",
 				"frames:read",
 				"frames:write",
+				"projects:read",
+				"instructions:read",
+				"mcp:read",
 			],
 			actingContext: {
 				projectId: "project-1",
@@ -567,5 +582,256 @@ describe("MCP gateway — service calls are not CLI connections", () => {
 		const source = recordCliReach.mock.calls[0]?.[0];
 		expect(source.credential).toBe("service");
 		expect(source.keyIdentity).toBeUndefined();
+	});
+});
+
+const BASE_SCOPES = [
+	"workflows:read",
+	"workflows:write",
+	"workflows:run",
+	"frames:read",
+	"frames:write",
+	"projects:read",
+	"instructions:read",
+	"mcp:read",
+];
+
+const PORTAL_SCOPES = [
+	"orgs:read",
+	"projects:read",
+	"projects:write",
+	"features:read",
+	"features:write",
+	"instructions:read",
+	"instructions:write",
+	"workspaces:read",
+	"chats:read",
+	"mcp:read",
+];
+
+/** A call carrying a grant the web app signed, with exactly the payload named. */
+function grantedHeaders(
+	grantBody: Record<string, unknown>,
+): Record<string, string> {
+	return serviceHeaders({
+		"x-fabric-acting-grant": signToken(
+			{
+				purpose: "fabric-agent-acting-grant",
+				userId: USER_ID,
+				organizationId: ORG_A,
+				conversationId: null,
+				...grantBody,
+			},
+			{ ttlSec: 3_600 },
+		),
+	});
+}
+
+async function sessionFor(headersForCall: Record<string, string>) {
+	const { response, json } = await post(
+		callTool("fabric_list_workflows"),
+		headersForCall,
+	);
+	return {
+		response,
+		json,
+		session: executePlatformTool.mock.calls[0]?.[2] as
+			| Record<string, unknown>
+			| undefined,
+	};
+}
+
+describe("MCP gateway — a project-limited acting grant", () => {
+	it("gives a chat grant exactly the base scopes and no project", async () => {
+		const { session } = await sessionFor(serviceHeaders());
+
+		expect(session?.scopes).toEqual(BASE_SCOPES);
+		expect(session?.pinnedProjectId ?? null).toBeNull();
+		expect(resolveProjectTarget).not.toHaveBeenCalled();
+	});
+
+	it("adds the portal scopes a meeting grant names, and limits the session to that project", async () => {
+		const { response, session } = await sessionFor(
+			serviceHeaders({
+				"x-fabric-acting-grant":
+					mintParlumeActingGrantForTurn({
+						userId: USER_ID,
+						organizationId: ORG_A,
+						projectId: PROJECT_ID,
+						readOnly: false,
+					}) ?? "",
+			}),
+		);
+
+		expect(response.status).toBe(200);
+		expect(resolveProjectTarget).toHaveBeenCalledWith(USER_ID, PROJECT_ID);
+		expect(session?.scopes).toEqual([
+			...new Set([...BASE_SCOPES, ...PORTAL_SCOPES]),
+		]);
+		expect(session?.pinnedProjectId).toBe(PROJECT_ID);
+		expect(session?.projectId ?? null).toBeNull();
+	});
+
+	it("refuses a grant that names scopes but no project, which is never minted", async () => {
+		const { response, json } = await sessionFor(
+			grantedHeaders({ scopes: PORTAL_SCOPES }),
+		);
+
+		expect(response.status).toBe(401);
+		expect(json.reason).toBe("acting_grant_invalid");
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("refuses a grant that names a project but no scopes", async () => {
+		const { response, json } = await sessionFor(
+			grantedHeaders({ projectId: PROJECT_ID }),
+		);
+
+		expect(response.status).toBe(401);
+		expect(json.reason).toBe("acting_grant_invalid");
+	});
+
+	it("drops every scope outside the ceiling, whatever the grant names", async () => {
+		const { session } = await sessionFor(
+			grantedHeaders({
+				projectId: PROJECT_ID,
+				scopes: [
+					"features:read",
+					"mcp:write",
+					"*",
+					"authority:write",
+					"authority:read",
+					"orgs:write",
+					"chats:write",
+					"workflows:admin",
+					"made-up:scope",
+				],
+			}),
+		);
+
+		expect(session?.scopes).toEqual([...BASE_SCOPES, "features:read"]);
+	});
+
+	it("refuses a project the person cannot open", async () => {
+		resolveProjectTarget.mockResolvedValue(null);
+
+		const { response, json } = await sessionFor(
+			grantedHeaders({ projectId: PROJECT_ID, scopes: PORTAL_SCOPES }),
+		);
+
+		expect(response.status).toBe(403);
+		expect(json.reason).toBe("project_not_accessible");
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("refuses a project that belongs to another organization than the one acted in", async () => {
+		resolveProjectTarget.mockResolvedValue({
+			organizationId: ORG_B,
+			projectId: PROJECT_ID,
+		});
+
+		const { response, json } = await sessionFor(
+			grantedHeaders({ projectId: PROJECT_ID, scopes: PORTAL_SCOPES }),
+		);
+
+		expect(response.status).toBe(403);
+		expect(json.reason).toBe("project_not_accessible");
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("refuses a grant whose scopes were altered after it was signed", async () => {
+		const real = grantedHeaders({
+			projectId: PROJECT_ID,
+			scopes: ["features:read"],
+		});
+		const [head, signature] = real["x-fabric-acting-grant"].split(".");
+		const body = JSON.parse(Buffer.from(head, "base64url").toString());
+		body.p.scopes = [...PORTAL_SCOPES];
+		const tampered = `${Buffer.from(JSON.stringify(body)).toString("base64url")}.${signature}`;
+
+		const { response, json } = await sessionFor({
+			...real,
+			"x-fabric-acting-grant": tampered,
+		});
+
+		expect(response.status).toBe(401);
+		expect(json.reason).toBe("acting_grant_invalid");
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("refuses an expired meeting grant", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const grant = mintParlumeActingGrantForTurn({
+			userId: USER_ID,
+			organizationId: ORG_A,
+			projectId: PROJECT_ID,
+			readOnly: false,
+		});
+		vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+
+		try {
+			const { response, json } = await sessionFor(
+				serviceHeaders({ "x-fabric-acting-grant": grant ?? "" }),
+			);
+
+			expect(response.status).toBe(401);
+			expect(json.reason).toBe("acting_grant_expired");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("refuses a meeting grant minted for another user", async () => {
+		const { response, json } = await sessionFor(
+			serviceHeaders({
+				"x-fabric-acting-grant":
+					mintParlumeActingGrantForTurn({
+						userId: "someone-else",
+						organizationId: ORG_A,
+						projectId: PROJECT_ID,
+						readOnly: false,
+					}) ?? "",
+			}),
+		);
+
+		expect(response.status).toBe(401);
+		expect(json.reason).toBe("acting_grant_mismatch");
+	});
+
+	it("refuses a connected server's tool on a meeting session, though it holds mcp:read", async () => {
+		const { response, json } = await post(
+			callTool("example_server__list_things"),
+			serviceHeaders({
+				"x-fabric-acting-grant":
+					mintParlumeActingGrantForTurn({
+						userId: USER_ID,
+						organizationId: ORG_A,
+						projectId: PROJECT_ID,
+						readOnly: false,
+					}) ?? "",
+			}),
+		);
+
+		const result = json.result as {
+			isError?: boolean;
+			content: Array<{ text: string }>;
+		};
+		expect(response.status).toBe(200);
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.text).toContain(
+			"not available to the agent runtime on a meeting's project",
+		);
+		expect(executePlatformTool).not.toHaveBeenCalled();
+	});
+
+	it("keeps a session for another project's grant apart from this one's", async () => {
+		const { session } = await sessionFor(
+			grantedHeaders({
+				projectId: "another-meeting-project",
+				scopes: ["features:read"],
+			}),
+		);
+
+		expect(session?.pinnedProjectId).toBe("another-meeting-project");
 	});
 });

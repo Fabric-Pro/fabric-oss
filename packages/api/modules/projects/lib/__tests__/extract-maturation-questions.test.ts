@@ -239,6 +239,9 @@ describe("extractMaturationQuestions — mint/dedupe over the parsed set", () =>
 			),
 			tenantFilter,
 		});
+		expect(mocks.classifyQuestionTopics).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		expect(out).toMatchObject({ extracted: 2, minted: 2, skipped: 0 });
 		const first = mocks.createDecisionLogEntry.mock.calls[0][0];
 		expect(first).toMatchObject({

@@ -87,7 +87,7 @@ export const enterpriseServers = [
 		name: "Figma",
 		description:
 			"Connect to Figma for design file access, component inspection, code generation, and design context extraction. Requires a Figma Personal Access Token (PAT).",
-		command: "npx -y figma-developer-mcp --stdio",
+		command: "npx -y figma-developer-mcp@0.13.2 --stdio",
 		docsUrl:
 			"https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens",
 		transport: "STDIO" as const,
@@ -294,15 +294,6 @@ async function seedEnterpriseMcpServers() {
 			console.log(`  ✓ Created: ${server.name}`);
 			created++;
 		}
-	}
-
-	// Remove old system-provided GitHub STDIO entry (replaced by github-remote)
-	const oldGithub = await db.mCPServer.findFirst({
-		where: { key: "github", isSystemProvided: true },
-	});
-	if (oldGithub) {
-		await db.mCPServer.delete({ where: { id: oldGithub.id } });
-		console.log("  ✗ Removed old: GitHub (STDIO)");
 	}
 
 	console.log(`\nDone! Created: ${created}, Updated: ${updated}`);

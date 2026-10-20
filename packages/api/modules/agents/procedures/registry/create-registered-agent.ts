@@ -59,7 +59,11 @@ const ExtendedFrameworkSchema = z.enum([
  * Create a new registered agent
  */
 export const createRegisteredAgent = protectedProcedure
-	.use(requireInputOrgPermission(Permissions.AGENT_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/registry/create",
@@ -114,9 +118,9 @@ export const createRegisteredAgent = protectedProcedure
 		// SECURITY (SOC 2 CC6.1/CC6.3): a SYSTEM-scoped agent is visible to
 		// and executed by EVERY tenant, with an attacker-controlled
 		// deploymentUrl. Restrict SYSTEM creation to platform admins.
-		// (requireInputOrgPermission above already verifies membership for
-		// ORGANIZATION-scoped creates; SYSTEM agents have no org, so they
-		// need this explicit gate.)
+		// requireInputOrgPermission above refuses a request that resolves no
+		// organization and checks membership and AGENT_CREATE there. SYSTEM
+		// scope additionally requires this platform-admin gate.
 		if (input.scope === "SYSTEM" && context.user.role !== "admin") {
 			throw new ORPCError("FORBIDDEN", {
 				message: "Only platform admins can create SYSTEM-scoped agents",

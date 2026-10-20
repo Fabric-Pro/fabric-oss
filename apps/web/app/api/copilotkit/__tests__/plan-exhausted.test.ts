@@ -12,6 +12,8 @@ const RESET = new Date("2026-10-08T16:37:00.000Z");
 const mocks = vi.hoisted(() => ({
 	pickChatGptPlanSource: vi.fn(),
 	interactiveApiFallback: vi.fn(),
+	personalKeyFallback: vi.fn(),
+	resolveModelWithProvider: vi.fn(),
 	resolvePlanModel: vi.fn(),
 	resolveCopilotOrgModel: vi.fn(),
 	handleRequest: vi.fn(),
@@ -59,6 +61,7 @@ vi.mock("@repo/ai", () => ({
 		baseUrl: "https://gateway.example.com/v1",
 	}),
 	isReasoningModelName: () => false,
+	resolveModelWithProvider: mocks.resolveModelWithProvider,
 	toDatabricksServingBaseUrl: (url: string) => url,
 }));
 
@@ -89,6 +92,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/models", () => ({
 vi.mock("@repo/ai/lib/chatgpt-plan/pool", () => ({
 	pickChatGptPlanSource: mocks.pickChatGptPlanSource,
 	chatGptPlanInteractiveApiFallback: mocks.interactiveApiFallback,
+	chatGptPlanPersonalKeyFallback: mocks.personalKeyFallback,
 	chatGptPlanPoolExhaustedMessage: () =>
 		"Every ChatGPT plan this work may use has no usage left in this window.",
 }));
@@ -169,6 +173,7 @@ beforeEach(() => {
 	mocks.resolveCopilotOrgModel.mockResolvedValue(PROVIDER_MODEL);
 	mocks.resolvePlanModel.mockResolvedValue({ model: "gpt-5" });
 	mocks.interactiveApiFallback.mockResolvedValue(false);
+	mocks.personalKeyFallback.mockResolvedValue(null);
 	// Reading the body proves the route's peek left it unread.
 	mocks.handleRequest.mockImplementation(async (req: Request) => {
 		await req.text();
@@ -194,8 +199,65 @@ describe("/api/copilotkit — every ChatGPT plan for the member's work is spent"
 			code: "subscription_sharing_usage_limit_exceeded",
 			resetAt: RESET.toISOString(),
 			apiBillingOption: true,
+			personalKeyOption: false,
 		});
 		expect(mocks.handleRequest).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #3085: where the organization would stop the turn, the member's
+	// own opted-in key runs the agents instead.
+	it("runs the agents on the member's own opted-in key instead of stopping", async () => {
+		const spent = {
+			exhausted: true,
+			audience: "interactive",
+			policy: { apiFallbackInteractive: "ASK" },
+			resetAt: RESET,
+			ownPlanSpent,
+		};
+		const personal = {
+			apiKey: "encrypted:example-personal-key",
+			configId: "cfg-personal",
+			provider: "ANTHROPIC_DIRECT",
+			source: "user",
+		};
+		mocks.pickChatGptPlanSource.mockResolvedValue(spent);
+		mocks.personalKeyFallback.mockResolvedValue({ config: personal });
+		mocks.resolveModelWithProvider.mockResolvedValue({
+			modelString: "claude-example",
+		});
+
+		const response = await call("agent/run");
+
+		expect(response.status).toBe(200);
+		expect(mocks.handleRequest).toHaveBeenCalled();
+		expect(mocks.personalKeyFallback).toHaveBeenCalledWith(spent, {
+			userId: "user-1",
+			organizationId: expect.anything(),
+		});
+		expect(mocks.resolveModelWithProvider).toHaveBeenCalledWith(
+			"COMPLEX",
+			expect.objectContaining({ userId: "user-1" }),
+			{ providerConfig: personal },
+		);
+		expect(mocks.resolvePlanModel).not.toHaveBeenCalled();
+	});
+
+	// Fizzy #3086: the stop links to opting a key in, when that would help.
+	it("offers to set up a personal key when none is opted in", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue({
+			exhausted: true,
+			audience: "interactive",
+			policy: { apiFallbackInteractive: "ASK" },
+			resetAt: RESET,
+		});
+		mocks.personalKeyFallback.mockResolvedValue({ config: null });
+
+		const response = await call("agent/run");
+
+		expect(response.status).toBe(429);
+		await expect(response.json()).resolves.toMatchObject({
+			personalKeyOption: true,
+		});
 	});
 
 	// Fizzy #3048: "Use API billing" for people's own work.

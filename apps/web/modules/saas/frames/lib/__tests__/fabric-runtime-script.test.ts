@@ -103,6 +103,7 @@ describe("window.fabric.call", () => {
 		expect(posted[0].message).toEqual({
 			type: "fabric-frame:call",
 			requestId: expect.any(String),
+			expiresAt: Date.now() + FABRIC_RUNTIME_CALL_TIMEOUT_MS,
 			name: "fabric_list_workflows",
 			args: { limit: 2 },
 		});
@@ -240,13 +241,34 @@ describe("window.fabric.call", () => {
 	});
 
 	it("gives up waiting when the host never answers", async () => {
-		const { fabric } = runInPage();
+		const { fabric, posted } = runInPage();
 
 		const result = fabric.call("fabric_list_workflows");
 		const settled = expect(result).rejects.toThrow("did not answer");
 		await vi.advanceTimersByTimeAsync(FABRIC_RUNTIME_CALL_TIMEOUT_MS);
 
 		await settled;
+		expect(posted.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: "call-1",
+		});
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("rejects a late reply even when the deadline timer has not run", async () => {
+		const { fabric, deliver, posted } = runInPage();
+		const result = fabric.call("fabric_list_workflows");
+		const settled = expect(result).rejects.toThrow("did not answer");
+		vi.setSystemTime(Date.now() + FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		deliver({
+			type: "fabric-frame:call-result",
+			requestId: "call-1",
+			ok: true,
+			result: "late",
+		});
+		await settled;
+		expect(posted.at(-1)?.message.type).toBe("fabric-frame:cancel-call");
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });
 
@@ -847,6 +869,7 @@ describe("the handshake with the parent", () => {
 		expect(posted[0].message).toEqual({
 			type: "fabric-frame:call",
 			requestId: expect.any(String),
+			expiresAt: Date.now() + FABRIC_RUNTIME_CALL_TIMEOUT_MS,
 			name: "fabric_list_workflows",
 			args: { limit: 2 },
 		});
@@ -965,7 +988,9 @@ describe("the handshake with the parent", () => {
 		await vi.advanceTimersByTimeAsync(FABRIC_RUNTIME_CALL_TIMEOUT_MS);
 
 		await settled;
-		expect(posted).toEqual([]);
+		expect(posted.map((entry) => entry.message.type)).toEqual([
+			"fabric-frame:cancel-call",
+		]);
 	});
 
 	it("does not send a call that has already given up when the parent finally says it is listening", async () => {
@@ -978,7 +1003,9 @@ describe("the handshake with the parent", () => {
 
 		deliver(HOST_READY);
 
-		expect(posted).toEqual([]);
+		expect(posted.map((entry) => entry.message.type)).toEqual([
+			"fabric-frame:cancel-call",
+		]);
 	});
 
 	it("sends the held calls that are still waiting and drops only the ones that gave up", async () => {
@@ -992,8 +1019,23 @@ describe("the handshake with the parent", () => {
 
 		deliver(HOST_READY);
 
-		expect(posted.map((entry) => entry.message.name)).toEqual([
-			"fabric_get_frame",
+		expect(
+			posted
+				.filter((entry) => entry.message.type === "fabric-frame:call")
+				.map((entry) => entry.message.name),
+		).toEqual(["fabric_get_frame"]);
+	});
+
+	it("does not flush a held expired call while timers are delayed", async () => {
+		const { fabric, posted, deliver } = runInPage({ hostReady: false });
+		const result = fabric.call("fabric_list_workflows");
+		const settled = expect(result).rejects.toThrow("did not answer");
+		vi.setSystemTime(Date.now() + FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		deliver(HOST_READY);
+		await settled;
+		expect(posted.map((entry) => entry.message.type)).toEqual([
+			"fabric-frame:cancel-call",
 		]);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });

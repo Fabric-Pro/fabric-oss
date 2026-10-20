@@ -36,7 +36,7 @@ async function hooksOf(file: string): Promise<Record<string, string[]>> {
 }
 
 describe("the hooks wanted", () => {
-	it("are a pull at session start and a push at the end of a turn for Claude Code", () => {
+	it("are the rules sync and a pull at session start and a push at the end of a turn for Claude Code", () => {
 		const wanted = desiredHooks({
 			tool: "claude-code",
 			projectId: PROJECT,
@@ -47,6 +47,11 @@ describe("the hooks wanted", () => {
 		expect(
 			wanted.map((hook) => [hook.event, hook.command, hook.timeout]),
 		).toEqual([
+			[
+				"SessionStart",
+				`fabric instructions rules --project ${PROJECT} --base-url https://example.com --hook`,
+				60,
+			],
 			[
 				"SessionStart",
 				`fabric memory pull --project ${PROJECT} --base-url https://example.com --hook`,
@@ -118,6 +123,7 @@ describe("installing them", () => {
 		expect(result).toMatchObject({ createdFile: true, changed: true });
 		expect(await hooksOf(".claude/settings.local.json")).toEqual({
 			SessionStart: [
+				`fabric instructions rules --project ${PROJECT} --base-url https://example.com --hook`,
 				`fabric memory pull --project ${PROJECT} --base-url https://example.com --hook`,
 			],
 			Stop: [
@@ -132,9 +138,10 @@ describe("installing them", () => {
 		await install();
 
 		const hooks = await hooksOf(".claude/settings.local.json");
-		expect(hooks.SessionStart).toHaveLength(1);
+		expect(hooks.SessionStart).toHaveLength(2);
 		expect(hooks.Stop).toHaveLength(1);
-		expect(hooks.SessionStart?.[0]).toMatch(/^fabric memory pull/);
+		expect(hooks.SessionStart?.[0]).toMatch(/^fabric instructions rules/);
+		expect(hooks.SessionStart?.[1]).toMatch(/^fabric memory pull/);
 	});
 
 	it("leaves everyone else's hooks, another project's, and the rest of the file", async () => {
@@ -177,6 +184,7 @@ describe("installing them", () => {
 		).toEqual([
 			"echo mine",
 			"fabric memory pull --project another --hook",
+			`fabric instructions rules --project ${PROJECT} --base-url https://example.com --hook`,
 			`fabric memory pull --project ${PROJECT} --base-url https://example.com --hook`,
 		]);
 	});
@@ -187,7 +195,17 @@ describe("installing them", () => {
 
 		expect(
 			(await hooksOf(".claude/settings.local.json")).SessionStart,
-		).toHaveLength(2);
+		).toHaveLength(4);
+	});
+
+	it("does not take another project's rules hook for its own", async () => {
+		await install({ projectId: "another" });
+		await install();
+
+		const rules = (
+			await hooksOf(".claude/settings.local.json")
+		).SessionStart?.filter((c) => c.includes("instructions rules"));
+		expect(rules).toHaveLength(2);
 	});
 
 	it("is byte-for-byte the same file when run again", async () => {

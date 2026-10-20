@@ -28,6 +28,38 @@ describe("project resource URLs", () => {
 		).toBe(buildProjectResource(APP_URL, "mcp", "project-example-one"));
 	});
 
+	it.each([
+		["a plain origin", APP_URL],
+		["a long slash suffix", `${APP_URL}${"/".repeat(8_192)}`],
+		["a long interior slash run", `${APP_URL}/${"/".repeat(8_192)}tail`],
+		[
+			"interior slashes, query and fragment",
+			`${APP_URL}/base//path?value=/#fragment`,
+		],
+		["an empty base", ""],
+		["only slashes", "///"],
+	])("removes only trailing slashes from %s", (_label, appUrl) => {
+		// Splitting defines the expected spelling without another suffix regex.
+		const segments = appUrl.split("/");
+		while (segments.at(-1) === "") {
+			segments.pop();
+		}
+		const base = segments.join("/");
+		for (const audience of ["mcp", "api"] as const) {
+			const path = audience === "mcp" ? "/api/mcp-gateway" : "/api/v1";
+			const resource = `${base}${path}/projects/project-example-one`;
+			expect(
+				buildProjectResource(appUrl, audience, "project-example-one"),
+			).toBe(resource);
+			expect(staticResourceFor(appUrl, audience)).toBe(`${base}${path}`);
+			expect(parseProjectResource(appUrl, resource)).toEqual({
+				audience,
+				projectId: "project-example-one",
+			});
+			expect(looksLikeProjectResource(appUrl, resource)).toBe(true);
+		}
+	});
+
 	it("refuses to build a resource for an id that could add a segment", () => {
 		for (const projectId of ["", "a/b", "a?b", "a#b", "a b", "..", "a.b"]) {
 			expect(() =>

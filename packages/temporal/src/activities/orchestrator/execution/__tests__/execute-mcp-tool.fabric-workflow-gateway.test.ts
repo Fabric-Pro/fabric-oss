@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
 	close: vi.fn(async () => undefined),
 	loadFabricPlatformTools: vi.fn(),
 	ensureSensitiveOperationAuthority: vi.fn(),
+	createApprovedRequestGrants: vi.fn(),
 	isProjectReadOnly: vi.fn(async () => false),
 }));
 
@@ -37,6 +38,7 @@ vi.mock("../../../shared/fabric-platform-mcp", () => ({
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: vi.fn(),
 	invalidateMcpClientCache: vi.fn(),
+	isClosedClientRefusedBeforeSend: () => false,
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));
@@ -52,6 +54,7 @@ vi.mock("@repo/database", () => ({
 	isProjectReadOnly: h.isProjectReadOnly,
 	checkAuthority: vi.fn(),
 	ensureSensitiveOperationAuthority: h.ensureSensitiveOperationAuthority,
+	createApprovedRequestGrants: h.createApprovedRequestGrants,
 	authorityRequestFingerprint: (
 		tool: string,
 		args: Record<string, unknown>,
@@ -147,6 +150,10 @@ beforeEach(() => {
 		runApproved: vi.fn(),
 		callAuthorized: h.callAuthorized,
 		close: h.close,
+	});
+	h.createApprovedRequestGrants.mockReset();
+	h.createApprovedRequestGrants.mockResolvedValue({
+		id: "follow-up-session",
 	});
 	h.ensureSensitiveOperationAuthority.mockReset();
 	grantNotInForce();
@@ -353,8 +360,55 @@ describe("a call that asks is refused until the person says yes", () => {
 		const summary = result.authorityRequired?.callSummary ?? "";
 		expect(summary).toContain("preset.name: Weekly digest");
 		expect(summary).toContain("preset.cron: 0 9 * * 1");
+		expect(summary).toContain("preset.mcpServers: Example Tracker");
 		expect(summary.length).toBeLessThan(400);
-		expect(summary.split("; ")).toHaveLength(4);
+		expect(summary.split("; ")).toHaveLength(5);
+	});
+
+	it("shows the tools a page is given even when other fields would fill the card, and not its content", async () => {
+		const result = await executeMcpTool({
+			...call,
+			toolName: "fabric_create_frame",
+			args: {
+				title: "Workflow monitor",
+				description: "Shows every workflow",
+				blocks: [
+					{ type: "html", content: "<h1>SECRET-PAGE-BODY</h1>" },
+				],
+				surface: "workspace",
+				runtimeTools: ["fabric_list_workflows", "fabric_get_workflow"],
+				sharedWithOrganization: true,
+			},
+		});
+
+		const summary = result.authorityRequired?.callSummary ?? "";
+		expect(summary).toContain(
+			"runtimeTools: fabric_list_workflows, fabric_get_workflow",
+		);
+		expect(summary).toContain("sharedWithOrganization: true");
+		expect(summary).not.toContain("SECRET-PAGE-BODY");
+	});
+
+	it("shows what a scheduled agent is given: its tools and servers", async () => {
+		const result = await executeMcpTool({
+			...call,
+			toolName: "fabric_create_workflow",
+			args: {
+				preset: {
+					name: "Weekly digest",
+					cron: "0 9 * * 1",
+					timezone: "UTC",
+					prompt: "Summarise",
+					outputTitle: "Digest",
+					mcpServers: ["Example Tracker"],
+					builtInToolNames: ["project-context"],
+				},
+			},
+		});
+
+		const summary = result.authorityRequired?.callSummary ?? "";
+		expect(summary).toContain("preset.builtInToolNames: project-context");
+		expect(summary).toContain("preset.mcpServers: Example Tracker");
 	});
 
 	it("shows no arguments for a one-tool approval: it is not about one call", async () => {
@@ -378,6 +432,194 @@ describe("a call that asks is refused until the person says yes", () => {
 		const [request] = h.ensureSensitiveOperationAuthority.mock.calls[0];
 		expect(request.toolScope).toEqual(["fabric_create_story"]);
 		expect(request.requestFingerprint).toBeUndefined();
+	});
+});
+
+describe("approving a created workflow also covers publishing it and running it once", () => {
+	const create = {
+		...call,
+		toolName: "fabric_create_workflow",
+		args: {
+			preset: {
+				name: "Weekly digest",
+				cron: "0 9 * * 1",
+				prompt: "Summarise",
+			},
+		},
+	};
+
+	it("records one already-approved one-shot grant per follow-up, for the id the create returned", async () => {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ workflow: { id: "wf-new" } });
+
+		const result = await executeMcpTool(create);
+
+		expect(result.success).toBe(true);
+		expect(h.createApprovedRequestGrants).toHaveBeenCalledTimes(1);
+		expect(h.createApprovedRequestGrants).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user-1",
+				organizationId: "org-1",
+				runType: "ORCHESTRATOR",
+				runId: "conv-1",
+				providerKey: "fabric",
+				accessLevel: "WRITE",
+				calls: [
+					{
+						toolName: "fabric_publish_workflow",
+						requestFingerprint:
+							'fingerprint:fabric_publish_workflow:{"workflowId":"wf-new"}',
+					},
+					{
+						toolName: "fabric_execute_workflow",
+						requestFingerprint:
+							'fingerprint:fabric_execute_workflow:{"workflowId":"wf-new"}',
+					},
+				],
+			}),
+		);
+	});
+
+	it("matches the fingerprint the publish call is later asked about, so only that call is covered", async () => {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ workflow: { id: "wf-new" } });
+		await executeMcpTool(create);
+		const [{ calls }] = h.createApprovedRequestGrants.mock.calls[0];
+
+		await executeMcpTool({
+			...call,
+			toolName: "fabric_publish_workflow",
+			args: { workflowId: "wf-new" },
+		});
+		const [asked] =
+			h.ensureSensitiveOperationAuthority.mock.calls.at(-1) ?? [];
+
+		expect(asked.requestFingerprint).toBe(calls[0].requestFingerprint);
+		expect(asked.requestFingerprint).not.toBe(
+			`fingerprint:fabric_publish_workflow:${JSON.stringify({ workflowId: "wf-other" })}`,
+		);
+	});
+
+	async function askedAfterCreate(
+		toolName: string,
+		args: Record<string, unknown>,
+	): Promise<{ asked: string; covered: string[] }> {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ workflow: { id: "wf-new" } });
+		await executeMcpTool(create);
+		const [{ calls }] = h.createApprovedRequestGrants.mock.calls[0];
+		grantNotInForce();
+
+		await executeMcpTool({ ...call, toolName, args });
+		const [request] =
+			h.ensureSensitiveOperationAuthority.mock.calls.at(-1) ?? [];
+
+		return {
+			asked: request.requestFingerprint,
+			covered: calls.map(
+				(followUp: { requestFingerprint: string }) =>
+					followUp.requestFingerprint,
+			),
+		};
+	}
+
+	it.each([
+		["with no inputs", { workflowId: "wf-new" }],
+		["with empty inputs", { workflowId: "wf-new", inputs: {} }],
+	])(
+		"covers the run the model starts %s: it is the same run",
+		async (_label, args) => {
+			const { asked, covered } = await askedAfterCreate(
+				"fabric_execute_workflow",
+				args,
+			);
+
+			expect(asked).toBe(covered[1]);
+		},
+	);
+
+	it("asks for a run started with inputs: the approval did not cover them", async () => {
+		const { asked, covered } = await askedAfterCreate(
+			"fabric_execute_workflow",
+			{ workflowId: "wf-new", inputs: { x: 1 } },
+		);
+
+		expect(covered).not.toContain(asked);
+	});
+
+	it("asks for a run of another workflow, with or without empty inputs", async () => {
+		for (const args of [
+			{ workflowId: "wf-other" },
+			{ workflowId: "wf-other", inputs: {} },
+		]) {
+			const { asked, covered } = await askedAfterCreate(
+				"fabric_execute_workflow",
+				args,
+			);
+
+			expect(covered).not.toContain(asked);
+		}
+	});
+
+	it("folds empty inputs for a run only, never for another tool", async () => {
+		const { asked, covered } = await askedAfterCreate(
+			"fabric_publish_workflow",
+			{ workflowId: "wf-new", inputs: {} },
+		);
+
+		expect(covered).not.toContain(asked);
+	});
+
+	it("records nothing when the create did not return a workflow", async () => {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ problems: ["bad cron"] });
+
+		await executeMcpTool(create);
+
+		expect(h.createApprovedRequestGrants).not.toHaveBeenCalled();
+	});
+
+	it("records nothing when the create was not approved and ran nothing", async () => {
+		const result = await executeMcpTool(create);
+
+		expect(result.authorityRequired).toBeDefined();
+		expect(h.createApprovedRequestGrants).not.toHaveBeenCalled();
+	});
+
+	it("records nothing for any other approved write", async () => {
+		grantInForce();
+
+		await executeMcpTool({
+			...call,
+			toolName: "fabric_publish_workflow",
+			args: { workflowId: "wf-1" },
+		});
+
+		expect(h.createApprovedRequestGrants).not.toHaveBeenCalled();
+	});
+
+	it("records nothing for a run that has neither a conversation nor an execution", async () => {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ workflow: { id: "wf-new" } });
+
+		await executeMcpTool({
+			...create,
+			conversationId: undefined,
+			executionId: undefined,
+		});
+
+		expect(h.createApprovedRequestGrants).not.toHaveBeenCalled();
+	});
+
+	it("still reports the create as done when the follow-ups could not be recorded, which only makes them ask", async () => {
+		grantInForce();
+		h.callAuthorized.mockResolvedValue({ workflow: { id: "wf-new" } });
+		h.createApprovedRequestGrants.mockRejectedValue(new Error("db down"));
+
+		const result = await executeMcpTool(create);
+
+		expect(result.success).toBe(true);
+		expect(result.output).toEqual({ workflow: { id: "wf-new" } });
 	});
 });
 

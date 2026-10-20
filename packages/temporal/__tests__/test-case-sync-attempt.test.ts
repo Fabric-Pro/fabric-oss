@@ -111,6 +111,7 @@ beforeEach(() => {
 	act("detectAndStampPmPushConflict").mockResolvedValue({
 		hasConflict: false,
 	});
+	act("checkTestCasePmLink").mockResolvedValue({ success: true });
 	act("executeMcpTool").mockResolvedValue({ success: true, output: {} });
 });
 
@@ -168,4 +169,17 @@ describe("testCaseSyncWorkflow attempt hand-off", () => {
 		}
 		expect(act("updateTestCaseExternalRefs")).toHaveBeenCalledTimes(2);
 	});
+});
+
+it("redacts uncoded database failures in per-case results and the failure-stamp input", async () => {
+	act("executeMcpTool").mockRejectedValue(
+		Object.assign(new Error("query with server path"), {
+			name: "DriverAdapterError",
+		}),
+	);
+	const result = await testCaseSyncWorkflow(input());
+	expect(result.results[0]?.error).toBe("database error");
+	expect(act("recordPmSyncFailure")).toHaveBeenCalledWith(
+		expect.objectContaining({ errorMessage: "database error" }),
+	);
 });

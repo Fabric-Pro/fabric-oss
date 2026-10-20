@@ -73,12 +73,6 @@ const GATEWAY_TOOLS = [
 		_meta: confirmationMeta(tool),
 	})),
 	{
-		name: "fabric_list_projects",
-		description: "Lists projects.",
-		inputSchema: { type: "object", properties: {} },
-		annotations: { readOnlyHint: true },
-	},
-	{
 		name: "linear__list_issues",
 		description: "Lists issues.",
 		inputSchema: { type: "object", properties: {} },
@@ -130,10 +124,41 @@ describe("which tools the model gets", () => {
 		expect(Object.keys(platform.tools).sort()).toEqual(
 			FABRIC_CHAT_TOOL_DEFINITIONS.map((tool) => tool.name).sort(),
 		);
-		expect(platform.tools.fabric_list_projects).toBeUndefined();
+		expect(platform.tools.fabric_list_projects).toBeDefined();
 		expect(platform.tools.linear__list_issues).toBeUndefined();
 		expect(platform.tools.fabric_create_frame).toBeDefined();
 		expect(platform.tools.fabric_page_data_set).toBeDefined();
+	});
+
+	it.each([
+		"fabric_list_projects",
+		"fabric_get_project",
+		"fabric_list_project_instructions",
+		"fabric_get_project_instruction",
+		"fabric_get_project_instruction_bundle",
+		"fabric_list_connected_servers",
+		"fabric_list_page_tools",
+		"fabric_get_project_pm_connection",
+		"fabric_list_project_pm_members",
+		"fabric_get_project_work_item_counts",
+		"fabric_list_project_pm_assigned_items",
+		"fabric_get_project_pm_item_snapshots",
+	])("offers and executes %s using the canonical schema", async (name) => {
+		const { platform, tool } = await load();
+		const definition = FABRIC_CHAT_TOOL_DEFINITIONS.find(
+			(entry) => entry.name === name,
+		);
+		expect(tool(name).inputSchema.jsonSchema).toMatchObject(
+			definition?.inputSchema ?? {},
+		);
+		expect(platform.access[name]).toBe("READ");
+		await tool(name).execute({ projectId: "project-1" });
+		expect(mocks.callTool).toHaveBeenCalledWith(
+			expect.objectContaining({
+				name,
+				arguments: { projectId: "project-1" },
+			}),
+		);
 	});
 
 	it("does not offer the model a tool only a page's script has a use for, though the gateway lists it", async () => {
@@ -439,6 +464,114 @@ describe("tools that need the person's yes", () => {
 		).not.toContain("fabric_publish_workflow");
 	});
 
+	it("covers one publish and one run with no inputs, as the Orchestrator does, and asks for anything more", async () => {
+		mocks.callTool.mockImplementation(async ({ name }: { name: string }) =>
+			ok(
+				name === "fabric_create_workflow"
+					? { created: true, workflow: { id: "wf-new" } }
+					: { done: name },
+			),
+		);
+		const { platform, tool } = await load();
+		await platform.runApproved("fabric_create_workflow", {
+			preset: { name: "x" },
+		});
+		const ran = () =>
+			mocks.callTool.mock.calls
+				.map(([call]) => call)
+				.filter(
+					(call: { name: string }) =>
+						call.name === "fabric_publish_workflow" ||
+						call.name === "fabric_execute_workflow",
+				);
+		mocks.callTool.mockClear();
+
+		const withInputs = await tool("fabric_execute_workflow").execute({
+			workflowId: "wf-new",
+			inputs: { x: 1 },
+		});
+		expect(withInputs).toMatchObject({ requiresConfirmation: true });
+		expect(ran()).toEqual([]);
+
+		await tool("fabric_execute_workflow").execute({
+			workflowId: "wf-new",
+			inputs: {},
+		});
+		await tool("fabric_publish_workflow").execute({ workflowId: "wf-new" });
+		expect(ran().map((call: { name: string }) => call.name)).toEqual([
+			"fabric_execute_workflow",
+			"fabric_publish_workflow",
+		]);
+
+		mocks.callTool.mockClear();
+		const secondRun = await tool("fabric_execute_workflow").execute({
+			workflowId: "wf-new",
+		});
+		const secondPublish = await tool("fabric_publish_workflow").execute({
+			workflowId: "wf-new",
+		});
+		expect(secondRun).toMatchObject({ requiresConfirmation: true });
+		expect(secondPublish).toMatchObject({ requiresConfirmation: true });
+		expect(ran()).toEqual([]);
+	});
+
+	it("keeps the run covered when the gateway refused the first try, and covers it once", async () => {
+		let published = false;
+		mocks.callTool.mockImplementation(
+			async ({ name }: { name: string }) => {
+				if (name === "fabric_create_workflow") {
+					return ok({ created: true, workflow: { id: "wf-new" } });
+				}
+				if (name === "fabric_publish_workflow") {
+					published = true;
+					return ok({ published: true });
+				}
+				if (name === "fabric_execute_workflow" && !published) {
+					return {
+						isError: true,
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									error: "The workflow is not published",
+								}),
+							},
+						],
+					};
+				}
+				return ok({ done: name });
+			},
+		);
+		const { platform, tool } = await load();
+		await platform.runApproved("fabric_create_workflow", {
+			preset: { name: "x" },
+		});
+		const runs = () =>
+			mocks.callTool.mock.calls.filter(
+				([call]) => call.name === "fabric_execute_workflow",
+			).length;
+
+		expect(
+			await tool("fabric_execute_workflow").execute({
+				workflowId: "wf-new",
+			}),
+		).toMatchObject({ error: "The workflow is not published" });
+		await tool("fabric_publish_workflow").execute({ workflowId: "wf-new" });
+		expect(
+			await tool("fabric_execute_workflow").execute({
+				workflowId: "wf-new",
+			}),
+		).toEqual({ done: "fabric_execute_workflow" });
+		expect(runs()).toBe(2);
+
+		expect(
+			await tool("fabric_execute_workflow").execute({
+				workflowId: "wf-new",
+			}),
+		).toMatchObject({ requiresConfirmation: true });
+		expect(runs()).toBe(2);
+	});
+
 	it("refuses to run an action that needs no approval, or one the gateway does not offer, as an approved call", async () => {
 		const { platform } = await load();
 
@@ -534,7 +667,7 @@ describe("a call the caller has already authorized", () => {
 		const { platform } = await load();
 
 		expect(
-			await platform.callAuthorized("fabric_list_projects", {}),
+			await platform.callAuthorized("fabric_create_project", {}),
 		).toMatchObject({ error: expect.stringContaining("not available") });
 		expect(
 			await platform.callAuthorized("linear__list_issues", {}),

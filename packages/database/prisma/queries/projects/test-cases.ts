@@ -159,6 +159,7 @@ const testCaseDetailSelect = {
 	externalId: true,
 	externalUrl: true,
 	externalMcpServerId: true,
+	externalPmTarget: true,
 	pmAutoSyncEnabled: true,
 	lastSyncedPmHash: true,
 	lastSyncedAt: true,
@@ -332,6 +333,7 @@ export interface CreateTestCaseInput extends TestCaseAutomationInput {
 	externalId?: string | null;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	lastSyncedPmHash?: string | null;
 	lastSyncedAt?: Date | null;
 }
@@ -393,6 +395,9 @@ export async function createTestCase(
 							: {}),
 						...(input.externalUrl !== undefined
 							? { externalUrl: input.externalUrl }
+							: {}),
+						...(input.externalPmTarget !== undefined
+							? { externalPmTarget: input.externalPmTarget }
 							: {}),
 						...(input.externalMcpServerId !== undefined
 							? { externalMcpServerId: input.externalMcpServerId }

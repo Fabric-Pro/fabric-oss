@@ -31,7 +31,7 @@ vi.mock("@repo/ai-token", () => ({
 vi.mock("@repo/ai", () => ({
 	DEFAULT_BASE_URLS: {},
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
-	getRAGProviderConfig: vi.fn(),
+	getRAGProviderConfigForModel: vi.fn(),
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
@@ -160,6 +160,7 @@ describe("POST /api/ai/keys/exchange — shared plans", () => {
 			error: "Every plan is spent.",
 			code: "CHATGPT_PLAN_EXHAUSTED",
 			resetAt: resetAt.toISOString(),
+			personalKeyOption: false,
 		});
 	});
 });

@@ -4,8 +4,47 @@ import { keyIsSensitive } from "@repo/utils/sensitive-keys";
 import { z } from "zod";
 import type { AgentToolSource } from "./shared/agent-tool-runtime";
 
-export const PARLUME_APPROVAL_TTL_MS = 2 * 60 * 1000;
 type JsonValue = z.infer<ReturnType<typeof z.json>>;
+
+/** What a tool says about how it ended, as opposed to what it created or returned. */
+function outcomeText(result: object): string {
+	const parts: unknown[] = [];
+	if ("error" in result) {
+		parts.push(
+			typeof result.error === "string"
+				? result.error
+				: JSON.stringify(result.error),
+		);
+	}
+	if ("message" in result) {
+		parts.push(result.message);
+	}
+	if (
+		"isError" in result &&
+		result.isError === true &&
+		"content" in result &&
+		Array.isArray(result.content)
+	) {
+		parts.push(
+			...result.content.map((part: unknown) =>
+				typeof part === "object" && part !== null && "text" in part
+					? part.text
+					: undefined,
+			),
+		);
+	}
+	return parts.filter((part) => typeof part === "string").join(" ");
+}
+
+const CREATED_RESOURCE_KEYS = ["storyId", "identifier", "id", "url"];
+
+/** A result that names the thing it made, such as a work item's id and link. */
+function namesCreatedResource(result: object): boolean {
+	return CREATED_RESOURCE_KEYS.some((key) => {
+		const value = (result as Record<string, unknown>)[key];
+		return typeof value === "string" && value.length > 0;
+	});
+}
 
 export function parlumeActionOutcome(
 	result: unknown,
@@ -13,10 +52,9 @@ export function parlumeActionOutcome(
 	if (typeof result !== "object" || result === null) {
 		return "OUTCOME_UNKNOWN";
 	}
-	const text = JSON.stringify(result);
 	if (
 		/timed? ?out|timeout|did not respond|connection (?:lost|closed)|aborted|cancelled after/i.test(
-			text,
+			outcomeText(result),
 		)
 	) {
 		return "OUTCOME_UNKNOWN";
@@ -45,33 +83,10 @@ export function parlumeActionOutcome(
 	}
 	return ("success" in result && result.success === true) ||
 		("status" in result &&
-			(result.status === "completed" || result.status === "succeeded"))
+			(result.status === "completed" || result.status === "succeeded")) ||
+		namesCreatedResource(result)
 		? "COMPLETED"
 		: "OUTCOME_UNKNOWN";
-}
-
-export function parseParlumeDecision(
-	text: string,
-): "confirm" | "cancel" | null {
-	const normalized = text
-		.toLowerCase()
-		.replace(/[.!?,]/g, "")
-		.trim();
-	if (
-		/^(?:yes )?(?:confirm|confirmed|please confirm|go ahead|do it|proceed|yes please)$/.test(
-			normalized,
-		)
-	) {
-		return "confirm";
-	}
-	if (
-		/^(?:no|cancel|cancel it|never mind|nevermind|do not do it|dont do it|stop)$/.test(
-			normalized,
-		)
-	) {
-		return "cancel";
-	}
-	return null;
 }
 
 function canonicalJson(value: unknown): string {
@@ -147,7 +162,7 @@ export function parlumeActionArguments(value: unknown) {
 	return args;
 }
 
-export function describeParlumeAction(
+export function summarizeParlumeAction(
 	name: string,
 	args: Record<string, JsonValue>,
 ): string {
@@ -159,8 +174,6 @@ export function describeParlumeAction(
 		)
 		.join("; ");
 	const excerpt =
-		details.length <= 430
-			? details
-			: `${details.slice(0, 430)}… Full details are in Parlume history.`;
-	return `I am going to ${action}${excerpt ? `. ${excerpt}` : ""}. Please say confirm to approve, or cancel.`;
+		details.length <= 430 ? details : `${details.slice(0, 430)}…`;
+	return `${action.charAt(0).toUpperCase()}${action.slice(1)}${excerpt ? `. ${excerpt}` : ""}`;
 }

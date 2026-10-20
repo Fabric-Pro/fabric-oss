@@ -22,6 +22,7 @@ import {
 	classifyGitFailure,
 	type GitCallBase,
 	GitCommandError,
+	isLostRefRace,
 	isPushWriteRefusal,
 	MAX_CLONE_BYTES,
 	porcelainFlag,
@@ -103,7 +104,8 @@ export async function pushMemoryWriteBranch(
 	if (
 		line?.flag === "=" ||
 		(line?.flag === "!" &&
-			/stale info|already exists|fetch first/.test(line.summary))
+			(/already exists/.test(line.summary) ||
+				isLostRefRace(line.summary, error)))
 	) {
 		return { kind: "exists" };
 	}

@@ -42,6 +42,12 @@ export function useAiRoutingData() {
 		onlyEmbeddingsKeys: configured.length > 0 && apiProviders.length === 0,
 		embeddingProvider,
 		embeddingModel: status.data?.embeddingModel ?? null,
+		/**
+		 * The VIEWER's own key that serves their work while every plan is
+		 * spent (Fizzy #3085), never another member's; null when none.
+		 */
+		planSpentPersonalProvider:
+			status.data?.planSpentPersonalProvider ?? null,
 		providersHref: organizationSlug
 			? `/app/${organizationSlug}/settings/ai-providers`
 			: null,

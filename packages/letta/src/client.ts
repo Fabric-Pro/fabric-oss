@@ -8,6 +8,7 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { matchesAgentMetadata } from "./agent-metadata";
 import type {
 	ArchivalMemoryEntry,
 	ArchivalSearchResult,
@@ -91,10 +92,10 @@ export class LettaClient {
 		});
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to create agent: ${error}`,
+				`Failed to create agent (HTTP ${response.status})`,
 				"CREATE_AGENT_FAILED",
+				response.status,
 			);
 		}
 
@@ -110,13 +111,15 @@ export class LettaClient {
 		if (!response.ok) {
 			if (response.status === 404) {
 				throw new LettaError(
-					`Agent not found: ${agentId}`,
+					"Agent not found (HTTP 404)",
 					"AGENT_NOT_FOUND",
+					response.status,
 				);
 			}
 			throw new LettaError(
-				`Failed to get agent: ${response.statusText}`,
+				`Failed to get agent (HTTP ${response.status})`,
 				"GET_AGENT_FAILED",
+				response.status,
 			);
 		}
 
@@ -130,6 +133,7 @@ export class LettaClient {
 		limit?: number;
 		after?: string;
 		identifierKeys?: string[];
+		signal?: AbortSignal;
 	}): Promise<LettaAgent[]> {
 		const params = new URLSearchParams();
 		if (options?.limit) {
@@ -142,19 +146,39 @@ export class LettaClient {
 			params.set("identifier_keys", options.identifierKeys.join(","));
 		}
 
-		const response = await this.fetch(`/v1/agents?${params}`);
+		const response = await this.fetch(`/v1/agents?${params}`, {
+			signal: options?.signal,
+		});
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to list agents: ${response.statusText}`,
+				`Failed to list agents (HTTP ${response.status})`,
 				"LIST_AGENTS_FAILED",
+				response.status,
 			);
 		}
 
-		const data = (await response.json()) as
-			| { agents?: unknown[] }
-			| unknown[];
-		const agents = Array.isArray(data) ? data : data.agents || [];
+		const data: unknown = await response.json();
+		const agents =
+			data !== null && typeof data === "object" && "agents" in data
+				? data.agents
+				: data;
+		if (
+			!Array.isArray(agents) ||
+			agents.some(
+				(agent: unknown) =>
+					agent === null ||
+					typeof agent !== "object" ||
+					!("id" in agent) ||
+					typeof agent.id !== "string" ||
+					agent.id.length === 0,
+			)
+		) {
+			throw new LettaError(
+				"Invalid agent list response",
+				"INVALID_AGENT_LIST",
+			);
+		}
 		return agents.map((a: unknown) => this.transformAgent(a));
 	}
 
@@ -164,23 +188,42 @@ export class LettaClient {
 	async findAgentByMetadata(
 		metadata: Record<string, unknown>,
 	): Promise<LettaAgent | null> {
-		const agents = await this.listAgents({ limit: 100 });
-
-		for (const agent of agents) {
-			if (!agent.metadata) {
-				continue;
+		const controller = new AbortController();
+		const timeout = setTimeout(
+			() => controller.abort(),
+			Math.min(this.options.timeout, 10_000),
+		);
+		try {
+			let after: string | undefined;
+			const cursors = new Set<string>();
+			for (let page = 0; page < 20; page++) {
+				const agents = await this.listAgents({
+					limit: 100,
+					after,
+					signal: controller.signal,
+				});
+				const match = agents.find((agent) =>
+					matchesAgentMetadata(agent.metadata, metadata),
+				);
+				if (match) {
+					return match;
+				}
+				if (agents.length < 100) {
+					return null;
+				}
+				after = agents.at(-1)?.id;
+				if (!after || cursors.has(after)) {
+					break;
+				}
+				cursors.add(after);
 			}
-
-			const matches = Object.entries(metadata).every(
-				([key, value]) => agent.metadata?.[key] === value,
+			throw new LettaError(
+				"Agent metadata search did not complete",
+				"AGENT_SEARCH_INCOMPLETE",
 			);
-
-			if (matches) {
-				return agent;
-			}
+		} finally {
+			clearTimeout(timeout);
 		}
-
-		return null;
 	}
 
 	/**
@@ -193,8 +236,9 @@ export class LettaClient {
 
 		if (!response.ok && response.status !== 204) {
 			throw new LettaError(
-				`Failed to delete agent: ${response.statusText}`,
+				`Failed to delete agent (HTTP ${response.status})`,
 				"DELETE_AGENT_FAILED",
+				response.status,
 			);
 		}
 	}
@@ -218,10 +262,10 @@ export class LettaClient {
 		});
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to create identity: ${error}`,
+				`Failed to create identity (HTTP ${response.status})`,
 				"CREATE_IDENTITY_FAILED",
+				response.status,
 			);
 		}
 
@@ -243,8 +287,9 @@ export class LettaClient {
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to list identities: ${response.statusText}`,
+				`Failed to list identities (HTTP ${response.status})`,
 				"LIST_IDENTITIES_FAILED",
+				response.status,
 			);
 		}
 
@@ -260,8 +305,9 @@ export class LettaClient {
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to get identity: ${response.statusText}`,
+				`Failed to get identity (HTTP ${response.status})`,
 				"GET_IDENTITY_FAILED",
+				response.status,
 			);
 		}
 
@@ -297,10 +343,10 @@ export class LettaClient {
 		});
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to send message: ${error}`,
+				`Failed to send message (HTTP ${response.status})`,
 				"SEND_MESSAGE_FAILED",
+				response.status,
 			);
 		}
 
@@ -334,10 +380,10 @@ export class LettaClient {
 		);
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to stream message: ${error}`,
+				`Failed to stream message (HTTP ${response.status})`,
 				"STREAM_MESSAGE_FAILED",
+				response.status,
 			);
 		}
 
@@ -402,8 +448,9 @@ export class LettaClient {
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to get messages: ${response.statusText}`,
+				`Failed to get messages (HTTP ${response.status})`,
 				"GET_MESSAGES_FAILED",
+				response.status,
 			);
 		}
 
@@ -451,8 +498,9 @@ export class LettaClient {
 		}
 
 		throw new LettaError(
-			`Failed to get memory block: ${response.statusText}`,
+			`Failed to get memory block (HTTP ${response.status})`,
 			"GET_BLOCK_FAILED",
+			response.status,
 		);
 	}
 
@@ -508,10 +556,10 @@ export class LettaClient {
 			}
 		}
 
-		const error = await response.text();
 		throw new LettaError(
-			`Failed to update memory block: ${error}`,
+			`Failed to update memory block (HTTP ${response.status})`,
 			"UPDATE_BLOCK_FAILED",
+			response.status,
 		);
 	}
 
@@ -525,8 +573,9 @@ export class LettaClient {
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to get memory blocks: ${response.statusText}`,
+				`Failed to get memory blocks (HTTP ${response.status})`,
 				"GET_BLOCKS_FAILED",
+				response.status,
 			);
 		}
 
@@ -562,10 +611,10 @@ export class LettaClient {
 		});
 
 		if (!createResponse.ok) {
-			const error = await createResponse.text();
 			throw new LettaError(
-				`Failed to create memory block: ${error}`,
+				`Failed to create memory block (HTTP ${createResponse.status})`,
 				"CREATE_BLOCK_FAILED",
+				createResponse.status,
 			);
 		}
 
@@ -664,7 +713,7 @@ export class LettaClient {
 				}
 
 				console.warn(
-					`[Letta] Block created but failed to attach: ${error}`,
+					`[Letta] Block created but failed to attach (HTTP ${attachResponse.status})`,
 				);
 				// Return the block anyway - it exists but isn't attached
 			}
@@ -817,10 +866,10 @@ export class LettaClient {
 		});
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to insert archival memory: ${error}`,
+				`Failed to insert archival memory (HTTP ${response.status})`,
 				"INSERT_ARCHIVAL_FAILED",
+				response.status,
 			);
 		}
 
@@ -846,8 +895,9 @@ export class LettaClient {
 
 		if (!response.ok) {
 			throw new LettaError(
-				`Failed to search archival memory: ${response.statusText}`,
+				`Failed to search archival memory (HTTP ${response.status})`,
 				"SEARCH_ARCHIVAL_FAILED",
+				response.status,
 			);
 		}
 
@@ -870,8 +920,9 @@ export class LettaClient {
 
 		if (!response.ok && response.status !== 204) {
 			throw new LettaError(
-				`Failed to delete archival memory: ${response.statusText}`,
+				`Failed to delete archival memory (HTTP ${response.status})`,
 				"DELETE_ARCHIVAL_FAILED",
+				response.status,
 			);
 		}
 	}
@@ -890,10 +941,10 @@ export class LettaClient {
 		});
 
 		if (!response.ok) {
-			const error = await response.text();
 			throw new LettaError(
-				`Failed to attach tools: ${error}`,
+				`Failed to attach tools (HTTP ${response.status})`,
 				"ATTACH_TOOLS_FAILED",
+				response.status,
 			);
 		}
 	}
@@ -909,8 +960,9 @@ export class LettaClient {
 
 		if (!response.ok && response.status !== 204) {
 			throw new LettaError(
-				`Failed to detach tools: ${response.statusText}`,
+				`Failed to detach tools (HTTP ${response.status})`,
 				"DETACH_TOOLS_FAILED",
+				response.status,
 			);
 		}
 	}
@@ -944,7 +996,9 @@ export class LettaClient {
 		try {
 			return await fetch(`${this.options.baseUrl}${path}`, {
 				...init,
-				signal: controller.signal,
+				signal: init?.signal
+					? AbortSignal.any([controller.signal, init.signal])
+					: controller.signal,
 				headers: {
 					"Content-Type": "application/json",
 					...(this.options.apiKey && {
@@ -953,6 +1007,13 @@ export class LettaClient {
 					...init?.headers,
 				},
 			});
+		} catch (error) {
+			rethrowIfDispatchStopped(error);
+			const timedOut = controller.signal.aborted || init?.signal?.aborted;
+			throw new LettaError(
+				timedOut ? "Letta request timed out" : "Letta request failed",
+				timedOut ? "REQUEST_TIMEOUT" : "REQUEST_FAILED",
+			);
 		} finally {
 			clearTimeout(timeoutId);
 		}
@@ -1012,7 +1073,11 @@ export class LettaClient {
 export class LettaError extends Error {
 	code: string;
 
-	constructor(message: string, code: string) {
+	constructor(
+		message: string,
+		code: string,
+		public readonly status?: number,
+	) {
 		super(message);
 		this.name = "LettaError";
 		this.code = code;

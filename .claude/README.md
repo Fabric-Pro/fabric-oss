@@ -26,12 +26,13 @@ that itself).
 | `block-shared-env-sql-writes.mjs` | `psql *` | Any non-`SELECT`/`WITH`/`EXPLAIN`/`SHOW` / `\…` statement when the `psql` invocation targets a host containing `neon.tech`, `staging`, `prod`, or `production`. Local connections (`localhost`, `127.0.0.1`, `host.docker.internal`, no host) are not gated | `AGENTS.md` § Database and migration safety |
 | `block-secret-paths.mjs` | `Edit`/`Write`/`MultiEdit`/`NotebookEdit` | Edits to `.env` / `.env.*` (except `.example`/`.sample`/`.template`), `**/*.pem` / `**/*.key`, `.npmrc`, or any basename starting with `credentials` (case-insensitive). **`.md` files are exempt** — docs about credentials are not credentials. `Read` is never blocked | conventions: environment variables / secrets |
 | `enforce-branch-naming.mjs` | `git push*` | `git push` from a branch whose name does not match `^(feature\|fix\|docs\|refactor)/[a-z0-9._-]+$`. Explicit allow-list: `main`, `master`, detached HEAD, `--tags`, and pushes whose positional ref is a semver tag (`v1.2.3`, `v0.0.0-rc.1`) — those are tag pushes, not branch pushes. Does **not** run `lint`/`type-check`: `git push` stays fast | `CONTRIBUTING.md:50-57` |
-| `pr-quality-gate.mjs` | `*gh*` (one `settings.json` entry routes every command containing `gh` to the script, which then narrows to the cases below and exits immediately for the rest) | `gh pr create`, `gh pr edit` calls that mutate the PR body (`--body`/`--body-file`), and `gh api` calls that create a PR (POST `repos/<o>/<r>/pulls`, including the implied POST of `-f`/`-F`/`--input`), set a PR body (PATCH `repos/<o>/<r>/pulls/<n>` with a `body` field or any `--input`), or run a GraphQL `createPullRequest`/`updatePullRequest`. Runs `pnpm type-check:changed`, `pnpm lint`, and `pnpm format:check` from the git worktree the PR command runs in — a leading `cd <dir>`, else the session cwd, falling back to `$CLAUDE_PROJECT_DIR` — sequentially with fail-fast, each under its own time limit. On the first non-zero exit or timeout it does **not** hard-block — it returns `permissionDecision: "ask"`, escalating to a short user confirmation prompt: which check failed, what to review, what Yes and No do, and the last 8 lines of its output. **You** decide: fix it first, or approve and create the PR anyway. Allows `gh pr view`/`list`/`checkout`/`merge`/`review`/`comment` and `gh pr edit` calls without `--body`/`--body-file` (label/title/reviewer changes), and `gh api` GETs, title-only PATCHes and POSTs to other endpoints (comments, reviews, labels). **Slow by design** — see "PR-quality-gate latency" below | `CONTRIBUTING.md:79-86` |
+| `pr-quality-gate.mjs` | every `Bash` call (one `settings.json` entry with no `if` condition; the script narrows to the cases below and exits in tens of milliseconds for the rest) | `gh pr create`; `gh api` calls that create a PR (POST `repos/<o>/<r>/pulls`, including the implied POST of `-f`/`-F`/`--input`), run a GraphQL `createPullRequest`, or send a GraphQL query the hook cannot read (`--input`, or a `-F` field read from a file or stdin); and a run of the `open-pr.sh` PR-opening helper, which creates the PR through an internal `gh api` call. The helper needs `--title` and `--body-file`, so a command that names `open-pr.sh` and contains either flag anywhere is gated, however it is launched or its arguments are built. A run whose flags come from outside the command text (a file, an environment variable) is not seen, and any command mentioning both (an `echo`, a heredoc, a `grep` for the flag) also runs the checks. Reading the helper without either flag (`cat`, `bash -n`) and `open-pr.sh --selftest` are not gated. Runs `pnpm type-check:changed`, `pnpm lint`, and `pnpm format:check` from the git worktree the PR command runs in — a leading `cd <dir>`, else the session cwd, falling back to `$CLAUDE_PROJECT_DIR` — sequentially with fail-fast, each under its own time limit. If type-check exits 3 for an existing local install whose lock snapshot or workspace links have drifted, it returns `permissionDecision: "deny"` with a reason Claude can read: the worktree, stale diagnostic, and install-and-retry instructions. Other failures, timeouts, checks that cannot start, output stream errors, other setup errors, and missing local installs return `permissionDecision: "ask"`, escalating to a short user confirmation prompt: which check failed, what to review, what Yes and No do, and the last 8 lines of its output. **You** decide: fix it first, or approve and create the PR anyway. Allows `gh pr view`/`list`/`checkout`/`merge`/`review`/`comment`, every `gh pr edit` (description, label, title and reviewer changes), and `gh api` GETs, PATCHes to a PR, GraphQL `updatePullRequest` and POSTs to other endpoints (comments, reviews, labels). Editing an open PR changes no code, and CI's required checks run on every commit pushed to it. **Slow by design** — see "PR-quality-gate latency" below | `CONTRIBUTING.md:79-86` |
 
 ### PR-quality-gate latency
 
-`pr-quality-gate.mjs` runs three monorepo-wide checks before letting
-`gh pr create` (or a PR-body edit) through. On a warm Turbo cache the
+`pr-quality-gate.mjs` runs three checks before letting a PR create
+through: type-check scoped to the changed packages and their dependents,
+then whole-tree lint and format. On a warm Turbo cache the
 trio finishes in ~10-30 s; on a cold cache it can reach 1-2 minutes.
 The agent's tool call waits for that run regardless of the outcome.
 Each check has a time limit (`hooks/lib/gate-timeouts.mjs`):
@@ -53,8 +54,20 @@ value above a limit is ignored); it exists for the test suite, not for
 normal use, as do `FABRIC_GATE_TEST_STREAM_ERROR` (`1`, or `after-exit`),
 `FABRIC_GATE_TEST_IGNORE_KILL=1` and `FABRIC_GATE_TEST_KILL_LOG=<file>`
 (Windows: records each taskkill attempt).
-If a check fails the gate does **not** block — it surfaces the findings
-and asks you whether to fix first or create the PR anyway. The cost
+If type-check exits 3 and prints its "Type-check setup is stale:" line, the
+worktree has its own pnpm lock snapshot but its lockfile or workspace links
+have drifted. An exit 3 without that line (Turbo's own status, passed
+through) asks like any other failure. On a stale install the gate refuses
+the PR command with `permissionDecision: "deny"`; Claude Code shows the
+reason to the model.
+It names the worktree, includes the stale diagnostic, and tells the agent to
+run `pnpm install --frozen-lockfile` there and run the same PR command again.
+A worktree without its own snapshot still asks; nested worktrees may use a
+parent checkout's dependencies and should not be installed into.
+
+Real type, lint or format failures, timeouts, checks that cannot start,
+output stream errors, and other setup errors retain the user confirmation
+prompt. Exit 3 from lint or format also asks. The cost
 buys you that informed decision before the PR exists rather than a
 surprise red check after. If even the wait is intolerable, the
 documented escape paths still apply (run `gh pr create` yourself, or
@@ -67,8 +80,9 @@ session-disable hooks).
 
 ## When you hit a block
 
-> `pr-quality-gate.mjs` is the one exception: instead of hard-blocking it
-> asks you to confirm (see above). Everything below applies to the other
+> `pr-quality-gate.mjs` uses JSON decisions: it refuses a stale local install
+> with repair instructions for the agent, and asks you to confirm other check
+> failures (see above). The three-line diagnostic below applies to the other
 > hooks, which hard-block.
 
 The block message Claude shows you is always three lines:
@@ -202,8 +216,11 @@ Be honest about what these hooks can and can't catch:
   three checks still run one after another. The gate inspects the Bash
   command Claude Code is about to run (plus the script string of a
   `bash -c '...'`), so a wrapper script or tool that calls `gh api`
-  or `gh pr create` internally is not seen. `gh api` detection is a
-  shell-word heuristic, not a full shell parser.
+  or `gh pr create` internally is not seen. The `open-pr.sh` helper is
+  the one wrapper it recognises, by its file name plus a `--title` or
+  `--body-file` flag anywhere in the command; a copy renamed to anything
+  else is not. `gh api` detection is a shell-word heuristic, not a full
+  shell parser.
 - **No PostToolUse hooks.** Phase 1 + Phase 2 are blocking-only;
   notifications, logging, and transformations are explicitly out of
   scope for v1.

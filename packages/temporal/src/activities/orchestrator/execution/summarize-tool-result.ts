@@ -25,6 +25,7 @@ import { classifyLimitError } from "@repo/ai/limits";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { generateText } from "ai";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import {
 	activityAbortSignal,
 	activityCancellationSignal,
@@ -46,6 +47,8 @@ export interface SummarizeToolResultInput {
 	 * the usage-log row for cost attribution only.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	/**
 	 * The chat turn this summary belongs to (path 2 only). When set, the turn
 	 * record is consulted before EVERY model call — each chunk, the combining
@@ -158,9 +161,8 @@ export async function summarizeLargeToolResult(
 			{
 				userId,
 				organizationId,
-				...(input.conversationId
-					? { conversationId: input.conversationId }
-					: {}),
+				featureKey: "chat-agent",
+				...usageOriginFields(input),
 			},
 		);
 		// Every physical request — each chunk, the combining pass, each

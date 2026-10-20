@@ -9,6 +9,7 @@ import {
 	isEmptyExtractionAgainstBaseline,
 	isNoOpProposedContent,
 } from "../../lib/confirm-noop-guards";
+import type { DocumentSaveBase } from "../../lib/document-save-input";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,14 @@ interface UseUpdateDocumentWithContextOptions {
 	) => string;
 	/** Called after a confirm is saved, with the version the server answered. */
 	onSaved: (documentVersion: number) => void;
+	/**
+	 * The base an editor save names right now (Fizzy #2946): the saved body
+	 * the editor's content descends from, `null`/`undefined` when saves name
+	 * none, or `"unavailable"` while a collaborative room has no stamp yet.
+	 * Read when the preview starts and sent with the confirm, so a confirm is
+	 * refused when the document changed since the preview was drafted.
+	 */
+	resolveBase?: () => DocumentSaveBase | null | undefined | "unavailable";
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -54,12 +63,15 @@ export function useUpdateDocumentWithContext({
 	fromMarkdown,
 	diffPartialText,
 	onSaved,
+	resolveBase,
 }: UseUpdateDocumentWithContextOptions) {
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [preview, setPreview] = useState<DocumentContextUpdatePreview | null>(
 		null,
 	);
 	const baselineRef = useRef<string>("");
+	// The base of the body the preview is drafted from, captured with it.
+	const previewBaseRef = useRef<DocumentSaveBase | null>(null);
 	const elapsedSeconds = useElapsedTimer(phase === "loading");
 
 	const start = useCallback(async () => {
@@ -77,6 +89,17 @@ export function useUpdateDocumentWithContext({
 			);
 			return;
 		}
+		// The confirm names the base the preview was drafted from. A room
+		// without a stamp yet has none to name, and a confirm without one
+		// could write over a body saved since: try again once it has one.
+		const base = resolveBase?.();
+		if (base === "unavailable") {
+			toast.info(
+				"The document is still syncing with the latest saved version — try again in a moment.",
+			);
+			return;
+		}
+		previewBaseRef.current = base ?? null;
 		baselineRef.current = baseline;
 		// Lock the editor while the preview RPC is in flight so mid-review
 		// typing isn't silently overwritten by the setContent that builds the
@@ -153,6 +176,7 @@ export function useUpdateDocumentWithContext({
 		getEditorMarkdownForSave,
 		fromMarkdown,
 		diffPartialText,
+		resolveBase,
 	]);
 
 	const confirm = useCallback(async () => {
@@ -187,6 +211,7 @@ export function useUpdateDocumentWithContext({
 		}
 
 		setPhase("applying");
+		const base = previewBaseRef.current;
 		try {
 			const response =
 				await orpcClient.projects.documents.updateWithContext({
@@ -196,6 +221,12 @@ export function useUpdateDocumentWithContext({
 					preview: false,
 					confirmedContent: finalContent,
 					documentVersion: preview.documentVersion,
+					...(base
+						? {
+								expectedVersion: base.version,
+								expectedContentHash: base.contentHash,
+							}
+						: {}),
 				});
 
 			setPhase("idle");

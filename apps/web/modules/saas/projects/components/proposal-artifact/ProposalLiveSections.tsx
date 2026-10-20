@@ -1,6 +1,10 @@
 "use client";
 
 import { parseOutline } from "@repo/utils/glossy/outline";
+import {
+	PROPOSAL_FINISHING_PROGRESS,
+	PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+} from "@repo/utils/proposal-artifact/live-progress";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
@@ -110,6 +114,11 @@ export type ProposalLiveSectionsProps = {
 	savedContent: string | null | undefined;
 	/** The server status: QUEUED or GENERATING. */
 	status: string;
+	/**
+	 * The run's progress: 80 once the agent's stream has ended, and the fixed
+	 * "preview stopped" milestone while the fallback writes the Main without
+	 * a preview (Fizzy #2946).
+	 */
 	progress: number;
 	title?: string;
 	generationError?: string | null;
@@ -130,14 +139,14 @@ export type ProposalLiveSectionsProps = {
  * hidden, and this pane shows the sections finished so far as they are saved.
  * Before the first one it hosts the generation progress (the queued wait, and
  * a Retry once a run stalls) above the previous body, dimmed, or a skeleton
- * for a document that has none yet.
+ * for a document that has none yet. The previous body shows only then: once
+ * this run has written a section, its sections stay, also when the live
+ * preview stops and the fallback writes the Main without one (Fizzy #2946);
+ * the pane then says the preview stopped and the result may differ.
  *
- * One polite region announces how many sections are ready. Nothing here moves
- * focus.
+ * One polite region announces how many sections are ready, and once that the
+ * preview stopped. Nothing here moves focus.
  */
-/** The generation's progress once the agent's stream has ended (Fizzy #2801). */
-const FINISHING_PROGRESS = 80;
-
 export function ProposalLiveSections({
 	liveContent,
 	savedContent,
@@ -164,6 +173,16 @@ export function ProposalLiveSections({
 		generationStartedAt,
 		updatedAt,
 	);
+	// A milestone, not a range: the run writes exactly this value when its
+	// preview stops, and 80 once the stream has ended.
+	const previewStopped =
+		live.length > 0 && progress === PROPOSAL_PREVIEW_STOPPED_PROGRESS;
+	const announcement = [
+		sectionCount > 0 ? t("sectionsReady", { count: sectionCount }) : "",
+		previewStopped ? t("previewStopped") : "",
+	]
+		.filter(Boolean)
+		.join(". ");
 
 	// The pane is the desk and only the document goes on the theme's paper:
 	// the progress card, the "writing next" line, the previous-version label
@@ -178,9 +197,7 @@ export function ProposalLiveSections({
 		>
 			{themeRootProps && <ProposalThemeStyle />}
 			<output aria-live="polite" className="sr-only">
-				{sectionCount > 0
-					? t("sectionsReady", { count: sectionCount })
-					: ""}
+				{announcement}
 			</output>
 
 			{live ? (
@@ -196,10 +213,13 @@ export function ProposalLiveSections({
 								aria-hidden="true"
 							/>
 							{/* The run writes progress 80 once the agent's stream has ended;
-							    visuals and the final save follow, so nothing is being written. */}
-							{progress >= FINISHING_PROGRESS
+							    visuals and the final save follow, so nothing is being written.
+							    A stopped preview stays on screen while the fallback writes. */}
+							{progress >= PROPOSAL_FINISHING_PROGRESS
 								? t("finishing")
-								: t("writingNext")}
+								: previewStopped
+									? t("previewStopped")
+									: t("writingNext")}
 						</p>
 						{isStalled && (
 							<div className="flex flex-wrap items-center justify-center gap-3">

@@ -15,8 +15,46 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedContentHash } from "../scripts/seed-content-hash";
+
+const seedRace = vi.hoisted(() => ({
+	file: "",
+	afterStat: undefined as (() => void) | undefined,
+}));
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	function trigger(file: unknown) {
+		if (file === seedRace.file && seedRace.afterStat) {
+			const run = seedRace.afterStat;
+			seedRace.afterStat = undefined;
+			run();
+		}
+	}
+	const paths = new Map<number, unknown>();
+	return {
+		...actual,
+		statSync(...args: Parameters<typeof actual.statSync>) {
+			const info = actual.statSync(...args);
+			trigger(args[0]);
+			return info;
+		},
+		openSync(...args: Parameters<typeof actual.openSync>) {
+			const fd = actual.openSync(...args);
+			paths.set(fd, args[0]);
+			return fd;
+		},
+		fstatSync(...args: Parameters<typeof actual.fstatSync>) {
+			const info = actual.fstatSync(...args);
+			trigger(paths.get(args[0]));
+			return info;
+		},
+		closeSync(fd: number) {
+			paths.delete(fd);
+			return actual.closeSync(fd);
+		},
+	};
+});
 
 let root: string;
 let seedFile: string;
@@ -94,4 +132,43 @@ describe("seedContentHash", () => {
 			seedContentHash(seedSkills, [join(prisma, "skills-seed")]),
 		).not.toBe(seedContentHash(seedSkills));
 	});
+});
+
+it("hashes the opened dependency when its path is replaced after metadata is read", () => {
+	const dependency = join(root, "catalog.ts");
+	const original = "export const catalog = [];\n";
+	writeFileSync(dependency, original);
+	const expected = seedContentHash(seedFile, [dependency]);
+	seedRace.file = dependency;
+	seedRace.afterStat = () => {
+		renameSync(dependency, `${dependency}.old`);
+		writeFileSync(dependency, "replacement\n");
+	};
+	expect(seedContentHash(seedFile, [dependency])).toBe(expected);
+});
+
+it("keeps UTF-8 replacement decoding for a direct binary dependency", () => {
+	const dependency = join(root, "catalog.bin");
+	const bytes = Buffer.from([0xff, 0x61, 0x00]);
+	writeFileSync(dependency, bytes);
+	const expected = createHash("sha256")
+		.update("export const seed = 1;\n")
+		.update(bytes.toString("utf8"))
+		.digest("hex")
+		.slice(0, 16);
+	expect(seedContentHash(seedFile, [dependency])).toBe(expected);
+});
+it("hashes directory files by sorted relative name and raw bytes", () => {
+	const expected = createHash("sha256")
+		.update("export const seed = 1;\n")
+		.update("first/SKILL.md")
+		.update("# First\n")
+		.update("first/assets/logo.bin")
+		.update(Buffer.from([0, 1, 2]))
+		.digest("hex")
+		.slice(0, 16);
+	expect(seedContentHash(seedFile, [folder])).toBe(expected);
+});
+it("rejects a directory in place of the seed file", () => {
+	expect(() => seedContentHash(folder)).toThrow(/not a regular file/);
 });

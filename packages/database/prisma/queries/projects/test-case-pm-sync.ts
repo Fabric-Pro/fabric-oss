@@ -30,6 +30,7 @@ const testCaseSyncSelect = {
 	externalId: true,
 	externalUrl: true,
 	externalMcpServerId: true,
+	externalPmTarget: true,
 	lastSyncedPmHash: true,
 	pmAutoSyncEnabled: true,
 	// Denormalized current run result — the execution-sync push reads it
@@ -101,6 +102,7 @@ export async function updateTestCasePmRefs(input: {
 	externalId: string;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	lastSyncedPmHash?: string | null;
 }): Promise<void> {
 	await db.testCase.updateMany({
@@ -109,6 +111,9 @@ export async function updateTestCasePmRefs(input: {
 			externalId: input.externalId,
 			...(input.externalUrl !== undefined
 				? { externalUrl: input.externalUrl }
+				: {}),
+			...(input.externalPmTarget !== undefined
+				? { externalPmTarget: input.externalPmTarget }
 				: {}),
 			...(input.externalMcpServerId !== undefined
 				? { externalMcpServerId: input.externalMcpServerId }

@@ -139,10 +139,10 @@ export async function resolveAtlassianSiteId({
 		);
 		siteId = extractAtlassianSiteId(parseResult ? parseResult(raw) : raw);
 	} catch (err) {
-		console.warn(
-			"[MCP Tool API] Atlassian site id lookup failed",
-			err instanceof Error ? err.message : String(err),
-		);
+		console.warn("[MCP Tool API] Atlassian site id lookup failed", {
+			error: err instanceof Error ? err.message : err,
+			stack: err instanceof Error ? err.stack : undefined,
+		});
 		return null;
 	}
 	if (siteId && cacheKey) {

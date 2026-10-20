@@ -15,6 +15,7 @@ import {
 	rmSync,
 	writeSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { constants as osConstants, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -22,6 +23,8 @@ import {
 	extractBaseArg,
 	resolveAndAnnounce,
 } from "./lib/resolve-base.mjs";
+
+const require = createRequire(import.meta.url);
 
 /** @param {string} text */
 function out(text) {
@@ -149,10 +152,9 @@ function main() {
 		}
 
 		const status = spawnSync(
-			"pnpm",
+			process.execPath,
 			[
-				"exec",
-				"changeset",
+				require.resolve("@changesets/cli/bin.js"),
 				"status",
 				`--since=${base}`,
 				`--output=${outputFile}`,

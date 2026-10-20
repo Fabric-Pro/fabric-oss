@@ -548,7 +548,9 @@ describe("issuer identity", () => {
 				string
 			>,
 		).toMatchObject({ Authorization: "Bearer new-access" });
-		expect(urls.some((url) => url.includes("://gitlab.com"))).toBe(false);
+		expect(urls.some((url) => new URL(url).hostname === "gitlab.com")).toBe(
+			false,
+		);
 	});
 });
 

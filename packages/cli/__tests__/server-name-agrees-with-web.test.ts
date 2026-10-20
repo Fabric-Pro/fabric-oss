@@ -17,14 +17,20 @@
 import { describe, expect, it } from "vitest";
 import {
 	buildCodexCommand,
+	claudePluginInstallCommand,
+	codexPluginAddCommand,
 	codexServerName as dialogCodexServerName,
 	editorServerName,
 	gatewayUrl,
+	pluginNameForProject,
 } from "../../../apps/web/modules/saas/projects/components/cli-connection/lib/agent-sign-in.js";
 import {
 	codexServerName,
 	registerAgentMcp,
 } from "../src/lib/instructions/agent-mcp.js";
+import { codexPluginReference } from "../src/lib/plugin/codex-install.js";
+import { pluginNameFor } from "../src/lib/plugin/layout.js";
+import { pluginIdFor } from "../src/lib/plugin/register.js";
 import { simulateAgentTools } from "./helpers/agent-tools.js";
 
 const ORIGIN = "https://deploy.example.com";
@@ -91,6 +97,27 @@ describe("the Codex server name, in the CLI and in the Connect dialog", () => {
 				`codex mcp login ${dialogCodexServerName(id)}`,
 			);
 			expect(result?.url).toBe(gatewayUrl(ORIGIN, id));
+		},
+	);
+});
+
+describe("the plugin name, in the CLI and in the Connect dialog", () => {
+	it.each(PROJECT_IDS)("is the same name for the id %s", (id) => {
+		expect(pluginNameForProject(id)).toBe(pluginNameFor(id));
+	});
+
+	it.each(PROJECT_IDS)(
+		"gives the Claude Code and Codex lines the dialog shows the CLI's own plugin reference, for the id %s",
+		(id) => {
+			const name = pluginNameFor(id);
+
+			expect(claudePluginInstallCommand(id)).toBe(
+				`claude plugin install ${pluginIdFor(id)} --scope local`,
+			);
+			expect(pluginIdFor(id)).toBe(`${name}@${name}`);
+			expect(codexPluginAddCommand(id)).toBe(
+				`codex plugin add ${codexPluginReference(id, "personal")}`,
+			);
 		},
 	);
 });

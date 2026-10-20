@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import {
 	db,
 	getActiveInstanceVersion,
@@ -7,12 +8,13 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "../../../agents/procedures/conversations/resolved-organization";
 
 const getInputSchema = z.object({
+	organizationId: z.string().nullable().optional(),
 	// Can query by id OR by sId
 	id: z.string().optional(),
 	sId: z.string().optional(),
@@ -21,9 +23,14 @@ const getInputSchema = z.object({
 });
 
 export const getInstanceProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(getInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolvedOrganizationId(input, context.session);
 		// biome-ignore lint/suspicious/noImplicitAnyLet: type inferred from Prisma query with select/include — cannot be statically declared
 		let instance;
 
@@ -72,27 +79,13 @@ export const getInstanceProcedure = tenantProtectedProcedure
 				instance = await getActiveInstanceVersion(input.sId);
 			}
 		} else {
-			throw new Error("Either id or sId must be provided");
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Either id or sId must be provided",
+			});
 		}
 
-		if (!instance) {
-			throw new Error("Instance not found");
-		}
-
-		// Verify access - check if user owns the instance or is member of the org
-		const isOwner = instance.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (instance.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				instance.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error("You don't have access to this instance");
+		if (!instance || instance.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		return { instance };
@@ -100,38 +93,28 @@ export const getInstanceProcedure = tenantProtectedProcedure
 
 // Version history endpoint
 const versionHistoryInputSchema = z.object({
+	organizationId: z.string().nullable().optional(),
 	sId: z.string(),
 	limit: z.number().min(1).max(50).default(10),
 	includeArchived: z.boolean().default(true),
 });
 
 export const getVersionHistoryProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_TEMPLATE_READ))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_TEMPLATE_READ, {
+			requireOrganization: true,
+		}),
+	)
 	.input(versionHistoryInputSchema)
 	.handler(async ({ input, context }) => {
+		const organizationId = resolvedOrganizationId(input, context.session);
 		// First, get any version to verify access
 		const anyVersion = await db.agentTemplateInstance.findFirst({
 			where: { sId: input.sId },
 		});
 
-		if (!anyVersion) {
-			throw new Error("Instance not found");
-		}
-
-		// Verify access
-		const isOwner = anyVersion.userId === context.user.id;
-		let isOrgMember = false;
-
-		if (anyVersion.organizationId) {
-			const membership = await verifyOrganizationMembership(
-				anyVersion.organizationId,
-				context.user.id,
-			);
-			isOrgMember = !!membership;
-		}
-
-		if (!isOwner && !isOrgMember) {
-			throw new Error("You don't have access to this instance");
+		if (!anyVersion || anyVersion.organizationId !== organizationId) {
+			throw new ORPCError("NOT_FOUND", { message: "Instance not found" });
 		}
 
 		const versions = await getInstanceVersionHistory(input.sId, {

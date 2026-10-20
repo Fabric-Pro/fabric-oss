@@ -2681,6 +2681,7 @@ export async function getUnembeddedContexts(projectId: string) {
 		where: {
 			projectId,
 			embeddedAt: null,
+			indexingExcluded: false,
 		},
 		orderBy: { createdAt: "asc" },
 	});

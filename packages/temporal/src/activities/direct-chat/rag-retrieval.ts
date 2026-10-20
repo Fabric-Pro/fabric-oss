@@ -13,6 +13,10 @@ import {
 } from "@repo/database";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../../workflows/orchestrator/usage-attribution";
+import {
 	runWithTurnDispatch,
 	startTurnHeartbeat,
 	type TurnScope,
@@ -56,6 +60,7 @@ export async function retrieveRagContextForDirectChatActivity(
 	minSimilarity = 0.1,
 	/** When set, uses enrichment mode (files as additional context for project work) */
 	projectId?: string,
+	usageConversationId?: string,
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -192,6 +197,7 @@ export async function retrieveRagContextForDirectChatActivity(
 
 		// Retrieve relevant chunks
 		const chunks = await retrieveContext({
+			conversationId: usageConversationId,
 			chatId: effectiveChatId,
 			query: message,
 			userId,
@@ -298,7 +304,7 @@ export async function retrieveWorkspaceDocumentsActivity(
 	documentIds?: string[],
 	topKOverride?: number,
 	minSimilarityOverride?: number,
-	options?: { turnScope?: TurnScope },
+	options?: SecondaryUsageInput & { turnScope?: TurnScope },
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -316,6 +322,7 @@ export async function retrieveWorkspaceDocumentsActivity(
 				documentIds,
 				topKOverride,
 				minSimilarityOverride,
+				options,
 			),
 		);
 	} finally {
@@ -331,6 +338,7 @@ async function retrieveWorkspaceDocuments(
 	documentIds: string[] | undefined,
 	topKOverride: number | undefined,
 	minSimilarityOverride: number | undefined,
+	usage?: SecondaryUsageInput,
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -444,7 +452,12 @@ async function retrieveWorkspaceDocuments(
 		logger.info("[WorkspaceRAG] Generating query embedding...");
 		const embeddingResult = await generateEmbedding(
 			message,
-			{ userId, organizationId, tags: ["workspace-rag", "query"] },
+			{
+				userId,
+				organizationId,
+				...secondaryUsageFields(usage ?? {}),
+				tags: ["workspace-rag", "query"],
+			},
 			providerConfig,
 		);
 		logger.info("[WorkspaceRAG] Query embedding generated", {

@@ -86,10 +86,11 @@ export async function publishTaskAgentEvent(
 		}
 	} catch (error) {
 		// Non-blocking - just log the error
-		console.warn(
-			`[TaskAgentPartyKit] Publish error for ${eventType}:`,
-			error instanceof Error ? error.message : "Unknown error",
-		);
+		console.warn("[TaskAgentPartyKit] Publish error", {
+			eventType,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 }
 

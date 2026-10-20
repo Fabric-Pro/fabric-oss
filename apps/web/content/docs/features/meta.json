@@ -3,6 +3,7 @@
 	"pages": [
 		"dashboard",
 		"projects",
+		"coding-instructions",
 		"pm-sync",
 		"testing",
 		"security-accessibility-scanning",

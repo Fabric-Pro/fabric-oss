@@ -30,6 +30,8 @@ const getAIModelWithMetadataMock = vi.fn();
 const hasOrganizationTieMock = vi.fn();
 const startWorkflowMock = vi.fn();
 const findConversationMock = vi.fn();
+const getAccessibleFrameByIdMock = vi.fn();
+const getProjectAccessContextMock = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -71,11 +73,18 @@ vi.mock("@repo/database", () => ({
 		agentConversation: {
 			findFirst: (...args: unknown[]) => findConversationMock(...args),
 		},
+		project: { findUnique: vi.fn(async () => null) },
+		userStory: { findMany: vi.fn(async () => []) },
+		projectDocument: { findMany: vi.fn(async () => []) },
+		codingRun: { findMany: vi.fn(async () => []) },
 	},
 	hasOrganizationTie: (...args: unknown[]) => hasOrganizationTieMock(...args),
 	getConversationWorkspaces: vi.fn(async () => []),
 	getConversationProject: vi.fn(async () => null),
-	getProjectAccessContext: vi.fn(async () => null),
+	getProjectAccessContext: (...args: unknown[]) =>
+		getProjectAccessContextMock(...args),
+	getAccessibleFrameById: (...args: unknown[]) =>
+		getAccessibleFrameByIdMock(...args),
 	filterAccessibleWorkspaceIds: vi.fn(async () => ({
 		allowed: [],
 		dropped: [],
@@ -85,6 +94,14 @@ vi.mock("@repo/database", () => ({
 const SESSION_USER_ID = "user-1";
 const ORGANIZATION_ID = "example-org";
 const CONVERSATION_ID = "conversation-1";
+const SESSION_EMAIL = "member@example.com";
+const PROJECT_ID = "project-1";
+const FRAME_ID = "frame-1";
+
+const CHAT_BODY = {
+	message: "Make me a weekly status page",
+	organizationId: ORGANIZATION_ID,
+};
 
 function postBody(b: Record<string, unknown>) {
 	return { json: async () => b } as never;
@@ -116,10 +133,12 @@ describe("POST fabric-ai/stream — the acting grant", () => {
 		vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
 		getSessionMock.mockResolvedValue({
-			user: { id: SESSION_USER_ID },
+			user: { id: SESSION_USER_ID, email: SESSION_EMAIL },
 			session: { activeOrganizationId: ORGANIZATION_ID },
 		});
 		hasOrganizationTieMock.mockResolvedValue(true);
+		getAccessibleFrameByIdMock.mockResolvedValue(null);
+		getProjectAccessContextMock.mockResolvedValue(null);
 		findConversationMock.mockResolvedValue({
 			id: CONVERSATION_ID,
 			organizationId: ORGANIZATION_ID,
@@ -187,6 +206,162 @@ describe("POST fabric-ai/stream — the acting grant", () => {
 			}),
 		).toEqual({ ok: false, reason: "mismatch" });
 	});
+
+	it.each(["workspace", "artifact"] as const)(
+		"authorizes the current %s frame before starting with its usage origin",
+		async (surface) => {
+			getProjectAccessContextMock.mockResolvedValue({
+				organizationId: ORGANIZATION_ID,
+			});
+			getAccessibleFrameByIdMock.mockResolvedValue({
+				id: FRAME_ID,
+				projectId: PROJECT_ID,
+			});
+			const response = await post({
+				...CHAT_BODY,
+				projectId: PROJECT_ID,
+				launchFrameId: FRAME_ID,
+				workspaceId: surface === "workspace" ? FRAME_ID : undefined,
+				surface,
+				usageFrameId: "client-forged-frame",
+			});
+
+			expect(response.status).toBe(200);
+			expect(getProjectAccessContextMock).toHaveBeenCalledWith(
+				PROJECT_ID,
+				SESSION_USER_ID,
+			);
+			expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith({
+				id: FRAME_ID,
+				userId: SESSION_USER_ID,
+				userEmail: SESSION_EMAIL,
+				organizationId: ORGANIZATION_ID,
+			});
+			expect(startWorkflowMock).toHaveBeenCalledTimes(1);
+			expect(startedInput()).toMatchObject({
+				projectId: PROJECT_ID,
+				usageFrameId: FRAME_ID,
+				surface,
+			});
+			expect(startedInput().workspaceId).toBe(
+				surface === "workspace" ? FRAME_ID : undefined,
+			);
+		},
+	);
+
+	it("validates the legacy Workspace launcher before deriving usage origin", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: FRAME_ID,
+			projectId: null,
+		});
+		const response = await post({
+			...CHAT_BODY,
+			workspaceId: FRAME_ID,
+			surface: "workspace",
+		});
+
+		expect(response.status).toBe(200);
+		expect(startedInput().usageFrameId).toBe(FRAME_ID);
+		expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith({
+			id: FRAME_ID,
+			userId: SESSION_USER_ID,
+			userEmail: SESSION_EMAIL,
+			organizationId: ORGANIZATION_ID,
+		});
+	});
+
+	it.each(["launchFrameId", "workspaceId"])(
+		"refuses malformed %s before charging or starting",
+		async (field) => {
+			const response = await post({ ...CHAT_BODY, [field]: { not: "" } });
+
+			expect(response.status).toBe(400);
+			expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+			expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses conflicting explicit and legacy launch frames", async () => {
+		const response = await post({
+			...CHAT_BODY,
+			launchFrameId: FRAME_ID,
+			workspaceId: "another-frame",
+		});
+
+		expect(response.status).toBe(400);
+		expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it.each(["missing-frame", "inaccessible-frame", "foreign-tenant-frame"])(
+		"refuses a canonical access denial for %s before charging or starting",
+		async (launchFrameId) => {
+			const response = await post({ ...CHAT_BODY, launchFrameId });
+
+			expect(response.status).toBe(403);
+			expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith({
+				id: launchFrameId,
+				userId: SESSION_USER_ID,
+				userEmail: SESSION_EMAIL,
+				organizationId: ORGANIZATION_ID,
+			});
+			expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a frame attached to a different authorized project", async () => {
+		getProjectAccessContextMock.mockResolvedValue({
+			organizationId: ORGANIZATION_ID,
+		});
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: FRAME_ID,
+			projectId: "another-project",
+		});
+		const response = await post({
+			...CHAT_BODY,
+			projectId: PROJECT_ID,
+			launchFrameId: FRAME_ID,
+		});
+
+		expect(response.status).toBe(403);
+		expect(getProjectAccessContextMock).toHaveBeenCalledWith(
+			PROJECT_ID,
+			SESSION_USER_ID,
+		);
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses an attached frame after current project access is denied", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: FRAME_ID,
+			projectId: PROJECT_ID,
+		});
+		const response = await post({
+			...CHAT_BODY,
+			projectId: PROJECT_ID,
+			launchFrameId: FRAME_ID,
+		});
+
+		expect(response.status).toBe(403);
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it.each([{}, { usageFrameId: "client-forged-frame" }])(
+		"leaves the usage frame absent without a launch origin (%j)",
+		async (body) => {
+			const response = await post({ ...CHAT_BODY, ...body });
+
+			expect(response.status).toBe(200);
+			expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).toHaveBeenCalledTimes(1);
+			expect(startedInput()).not.toHaveProperty("usageFrameId");
+		},
+	);
 
 	it("binds the grant to the conversation the turn belongs to", async () => {
 		const { checkActingGrant } = await import(

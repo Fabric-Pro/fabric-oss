@@ -5,7 +5,7 @@
 
 import {
 	db,
-	type Prisma,
+	Prisma,
 	type WorkflowBuilderStatus,
 	type WorkflowTriggerType,
 } from "../../client";
@@ -187,6 +187,7 @@ export async function updateWorkflow(
 		settings?: Prisma.InputJsonValue;
 	},
 	organizationId?: string,
+	options?: { expectedUpdatedAt: Date },
 ) {
 	// Strict isolation: if no organizationId, only allow updating personal workflows
 	const orgFilter = organizationId
@@ -198,9 +199,41 @@ export async function updateWorkflow(
 			id: workflowId,
 			userId,
 			...orgFilter,
+			...(options ? { updatedAt: options.expectedUpdatedAt } : {}),
 		},
 		data,
 	});
+}
+
+/**
+ * Write the state a run leaves on its workflow: the whole `settings` object,
+ * plus `status` when the run pauses the workflow. A run is not an edit, so this
+ * is one raw statement that leaves `updatedAt` alone (Prisma's `@updatedAt`
+ * would bump it on any client update, and the card footer and list order read
+ * it). Same reasoning as `recordWorkflowRunStarted`.
+ *
+ * Callers hold the workflow's row lock in `tx` and pass the organization the
+ * row was read under (null for a personal workflow), so the write can only land
+ * on that tenant's row. Returns the number of rows written (0 or 1).
+ */
+export async function writeWorkflowRunState(
+	tx: Prisma.TransactionClient,
+	args: {
+		workflowId: string;
+		organizationId: string | null;
+		settings: Record<string, unknown>;
+		status?: WorkflowBuilderStatus;
+	},
+): Promise<number> {
+	const status = args.status
+		? Prisma.sql`, "status" = ${args.status}::"WorkflowBuilderStatus"`
+		: Prisma.empty;
+	return await tx.$executeRaw`
+		UPDATE "workflow"
+		SET "settings" = ${JSON.stringify(args.settings)}::jsonb${status}
+		WHERE "id" = ${args.workflowId}
+			AND "organizationId" IS NOT DISTINCT FROM ${args.organizationId}
+	`;
 }
 
 /**
@@ -391,7 +424,9 @@ export async function getWorkflowStats(
 
 	const [total, active, draft, paused] = await Promise.all([
 		db.workflow.count({ where }),
-		db.workflow.count({ where: { ...where, status: "ACTIVE" } }),
+		db.workflow.count({
+			where: { ...where, status: { in: ["PUBLISHED", "ACTIVE"] } },
+		}),
 		db.workflow.count({ where: { ...where, status: "DRAFT" } }),
 		db.workflow.count({ where: { ...where, status: "PAUSED" } }),
 	]);

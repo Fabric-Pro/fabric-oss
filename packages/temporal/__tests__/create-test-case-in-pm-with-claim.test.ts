@@ -21,6 +21,7 @@ type StoreWrite = { via: "tx" | "db"; data: Record<string, unknown> };
 
 const h = vi.hoisted(() => ({
 	cases: new Map<string, Record<string, unknown> & { id: string }>(),
+	workflowActs: {} as Record<string, ReturnType<typeof vi.fn>>,
 	recordPmSyncLog: vi.fn(),
 	writes: [] as { via: "tx" | "db"; data: Record<string, unknown> }[],
 	/** Runs once, right after the next transaction commits. */
@@ -151,6 +152,32 @@ function testCaseTable(view: StoreView) {
 	};
 }
 
+// Exercise the workflow with the real link guard and store; other activities
+// are stubbed at the workflow boundary.
+vi.mock("@temporalio/workflow", async () => {
+	const actual = await vi.importActual<typeof import("@temporalio/workflow")>(
+		"@temporalio/workflow",
+	);
+	return {
+		...actual,
+		defineQuery: (name: string) => name,
+		defineSignal: (name: string) => name,
+		setHandler: vi.fn(),
+		patched: () => true,
+		log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+		proxyActivities: () =>
+			new Proxy(
+				{},
+				{
+					get: (_target, name: string) => {
+						h.workflowActs[name] ??= vi.fn();
+						return h.workflowActs[name];
+					},
+				},
+			),
+	};
+});
+
 vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -166,6 +193,7 @@ vi.mock("@repo/database", () => ({
 			write: () => undefined,
 		}),
 		mCPServer: { findUnique: vi.fn(async () => null) },
+		mCPConfig: { findFirst: vi.fn() },
 		$transaction: vi.fn(async (fn: (tx: object) => Promise<unknown>) => {
 			const staged = new Map<string, Record<string, unknown>>();
 			const result = await fn({
@@ -202,19 +230,27 @@ vi.mock("../src/activities/pm-integration/record-pm-sync-log", () => ({
 	recordPmSyncLog: h.recordPmSyncLog,
 }));
 
-const { createTestCaseInPmWithClaim } = await import(
+const { createTestCaseInPmWithClaim, checkTestCasePmLink } = await import(
 	"../src/activities/pm-integration/create-test-case-in-pm-with-claim"
 );
 const { db } = await import("@repo/database");
+const defaultFindFirst = vi
+	.mocked(db.testCase.findFirst)
+	.getMockImplementation();
+const { testCaseSyncWorkflow } = await import(
+	"../src/workflows/test-case-sync-workflow"
+);
+const defaultUpdateMany = vi
+	.mocked(db.testCase.updateMany)
+	.getMockImplementation();
 const { executeMcpTool } = await import(
 	"../src/activities/orchestrator/execution/execute-mcp-tool"
 );
 const { fetchPmTicket } = await import(
 	"../src/activities/pm-integration/fetch-pm-ticket"
 );
-const { writePmSyncStatusForAttempt } = await import(
-	"../src/activities/pm-integration/pm-sync-attempt-fence"
-);
+const { writePmSyncStatusForAttempt, writePmSyncStatusUnattempted } =
+	await import("../src/activities/pm-integration/pm-sync-attempt-fence");
 const { computePmHash } = await import(
 	"../src/activities/pm-integration/pm-sync-hash"
 );
@@ -290,6 +326,17 @@ function successWrites(): StoreWrite[] {
 
 beforeEach(() => {
 	h.cases.clear();
+	for (const activity of Object.values(h.workflowActs)) {
+		activity.mockReset();
+	}
+	vi.mocked(db.testCase.findFirst).mockReset();
+	vi.mocked(db.testCase.findFirst).mockImplementation(
+		defaultFindFirst as never,
+	);
+	vi.mocked(db.testCase.updateMany).mockReset();
+	vi.mocked(db.testCase.updateMany).mockImplementation(
+		defaultUpdateMany as never,
+	);
 	h.recordPmSyncLog.mockReset();
 	h.writes.length = 0;
 	h.afterCommit = null;
@@ -299,6 +346,13 @@ beforeEach(() => {
 	vi.mocked(fetchPmTicket).mockReset();
 	vi.mocked(fetchPmTicket).mockResolvedValue(null);
 	vi.mocked(db.$transaction).mockClear();
+	vi.mocked(db.mCPServer.findUnique).mockReset();
+	vi.mocked(db.mCPServer.findUnique).mockResolvedValue(null);
+	vi.mocked(db.mCPConfig.findFirst).mockReset();
+	vi.mocked(db.mCPConfig.findFirst).mockResolvedValue({
+		baseUrl: "https://pm.example.com",
+		mcpServer: { key: "azure-devops", defaultUrl: null },
+	} as never);
 });
 
 describe("createTestCaseInPmWithClaim", () => {
@@ -521,7 +575,7 @@ describe("createTestCaseInPmWithClaim", () => {
 			});
 		});
 
-		it("a link that changed after this activity saw it is not settled on", async () => {
+		it("a changed link is not used and this attempt is settled to FAILED", async () => {
 			h.cases.set(
 				"tc1",
 				unlinkedRow({
@@ -544,7 +598,8 @@ describe("createTestCaseInPmWithClaim", () => {
 
 			expect(row()).toMatchObject({
 				externalId: "99",
-				lastPmSyncStatus: "PENDING",
+				lastPmSyncStatus: "FAILED",
+				lastPmSyncError: expect.stringContaining("PM link changed"),
 			});
 		});
 
@@ -1639,4 +1694,622 @@ describe("createTestCaseInPmWithClaim", () => {
 			expect(fetchPmTicket).not.toHaveBeenCalled();
 		});
 	});
+});
+
+const judgedLink = {
+	externalId: "42",
+	externalUrl: "https://linear.app/example-org/issue/42",
+	externalMcpServerId: "server-old",
+};
+const checkInput = {
+	...common,
+	...judgedLink,
+	pmTool: "azure-devops",
+	toolLabel: "azure-devops",
+};
+
+describe("checkTestCasePmLink refusal", () => {
+	it.each(["server-old", null])(
+		"stamps a mismatched link (%s) FAILED with the UI recovery message",
+		async (externalMcpServerId) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({ ...judgedLink, externalMcpServerId }),
+			);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				externalMcpServerId,
+			});
+			expect(result).toMatchObject({
+				success: false,
+				error: expect.stringMatching(
+					/linked to a ticket in a different PM tool.*Unlink & re-create/,
+				),
+			});
+			expect(row()).toMatchObject({
+				...judgedLink,
+				externalMcpServerId,
+				lastPmSyncStatus: "FAILED",
+				lastPmSyncError: "error" in result ? result.error : undefined,
+			});
+		},
+	);
+
+	it("allows a link stamped with the active server without changing its state", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...judgedLink,
+				externalMcpServerId: "server-1",
+				lastPmSyncStatus: "SUCCESS",
+			}),
+		);
+		expect(
+			await checkTestCasePmLink({
+				...checkInput,
+				externalMcpServerId: "server-1",
+			}),
+		).toEqual({ success: true });
+		expect(row().lastPmSyncStatus).toBe("SUCCESS");
+		expect(h.writes).toHaveLength(0);
+	});
+
+	it.each(["externalId", "externalUrl", "externalMcpServerId"])(
+		"does not judge a link whose %s changed before the activity read",
+		async (field) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({
+					...judgedLink,
+					[field]: "replacement",
+					lastPmSyncStatus: "SUCCESS",
+				}),
+			);
+			const result = await checkTestCasePmLink(checkInput);
+			expect(result).toMatchObject({
+				success: false,
+				outcome: "link-changed",
+			});
+			expect(row().lastPmSyncStatus).toBe("SUCCESS");
+			expect(h.writes).toHaveLength(0);
+		},
+	);
+
+	it.each([undefined, "attempt-A"])(
+		"fences the refusal at the write on the complete link and attempt (%s)",
+		async (pmSyncAttemptId) => {
+			for (const field of [
+				"externalId",
+				"externalUrl",
+				"externalMcpServerId",
+				"lastPmSyncAttemptId",
+			]) {
+				h.cases.set(
+					"tc1",
+					unlinkedRow({
+						...judgedLink,
+						lastPmSyncAttemptId: pmSyncAttemptId ?? null,
+						lastPmSyncStatus: pmSyncAttemptId
+							? "PENDING"
+							: "SUCCESS",
+					}),
+				);
+				// The config read is an await between the row snapshot and the fenced write.
+				vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce(
+					(() => {
+						Object.assign(row(), { [field]: "replacement" });
+						return {
+							baseUrl: "https://pm.example.com",
+							mcpServer: { key: "azure-devops" },
+						} as never;
+					}) as never,
+				);
+				const result = await checkTestCasePmLink({
+					...checkInput,
+					pmSyncAttemptId,
+				});
+				expect(result).toMatchObject({
+					success: false,
+					outcome:
+						field === "lastPmSyncAttemptId"
+							? "attempt-superseded"
+							: "link-changed",
+				});
+				expect(row().lastPmSyncStatus).toBe(
+					pmSyncAttemptId && field !== "lastPmSyncAttemptId"
+						? "FAILED"
+						: pmSyncAttemptId
+							? "PENDING"
+							: "SUCCESS",
+				);
+			}
+		},
+	);
+
+	it("records refusal for the current single-case retry while it is PENDING", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...judgedLink,
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		const result = await checkTestCasePmLink({
+			...checkInput,
+			pmSyncAttemptId: "attempt-A",
+		});
+		expect(result.success).toBe(false);
+		expect(row()).toMatchObject({
+			lastPmSyncStatus: "FAILED",
+			lastPmSyncError: expect.stringContaining("Unlink & re-create"),
+		});
+	});
+
+	it("refuses an unstamped link on another self-hosted tool instance", async () => {
+		const link = {
+			externalId: "42",
+			externalUrl: "https://old.example.com/issues/42",
+			externalMcpServerId: null,
+		};
+		h.cases.set("tc1", unlinkedRow(link));
+		const result = await checkTestCasePmLink({ ...checkInput, ...link });
+		expect(result).toMatchObject({
+			success: false,
+			outcome: "legacy-other-tool",
+		});
+		expect(row().lastPmSyncStatus).toBe("FAILED");
+	});
+});
+
+describe("test-case legacy GitLab link instance", () => {
+	it.each(["https://gitlab.com", "https://gitlab.example.com:8443"])(
+		"refuses link origin %s when the active GitLab has another origin",
+		async (origin) => {
+			const link = {
+				externalId: "42",
+				externalUrl: `${origin}/example-org/project/issues/42`,
+				externalMcpServerId: null,
+			};
+			h.cases.set("tc1", unlinkedRow(link));
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue({
+				baseUrl: "https://gitlab.example.com",
+				mcpServer: { key: "gitlab", defaultUrl: null },
+			} as never);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				...link,
+				pmTool: "gitlab",
+				toolLabel: "gitlab",
+			});
+			expect(result).toMatchObject({
+				success: false,
+				outcome: "legacy-other-tool",
+			});
+			expect(row().lastPmSyncStatus).toBe("FAILED");
+		},
+	);
+});
+
+describe("a stale link discovered on the create path", () => {
+	it.each(["server-old", null])(
+		"does not report a link (%s) as synced for the execution push",
+		async (externalMcpServerId) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({ ...judgedLink, externalMcpServerId }),
+			);
+			const result = await createTestCaseInPmWithClaim(common);
+			expect(result).toMatchObject({
+				success: false,
+				error: expect.stringContaining("Unlink & re-create"),
+			});
+			expect(row().lastPmSyncStatus).toBe("FAILED");
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("test-case link guard state settlement", () => {
+	it.each([undefined, "attempt-A"])(
+		"reports another attempt rather than a changed link (%s)",
+		async (pmSyncAttemptId) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({
+					...judgedLink,
+					lastPmSyncAttemptId: "attempt-B",
+					lastPmSyncStatus: "PENDING",
+				}),
+			);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				pmSyncAttemptId,
+			});
+			expect(result).toMatchObject({
+				success: false,
+				outcome: "attempt-superseded",
+				error: expect.stringContaining("Another PM sync attempt"),
+			});
+			expect(row()).toMatchObject({
+				lastPmSyncStatus: "PENDING",
+				lastPmSyncAttemptId: "attempt-B",
+			});
+		},
+	);
+
+	it.each(["guard", "already-linked"])(
+		"throws on a failed refusal stamp with an unchanged link through %s",
+		async (entry) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({
+					...judgedLink,
+					lastPmSyncAttemptId: "attempt-A",
+					lastPmSyncStatus: "PENDING",
+				}),
+			);
+			// Inject at the refusal boundary, after any create-claim acquisition.
+			vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce((() => {
+				vi.mocked(db.testCase.updateMany).mockRejectedValueOnce(
+					new Error("state write unavailable"),
+				);
+				return {
+					baseUrl: "https://pm.example.com",
+					mcpServer: { key: "azure-devops" },
+				} as never;
+			}) as never);
+			const result =
+				entry === "guard"
+					? checkTestCasePmLink({
+							...checkInput,
+							pmSyncAttemptId: "attempt-A",
+						})
+					: createTestCaseInPmWithClaim({
+							...common,
+							pmSyncAttemptId: "attempt-A",
+						});
+			await expect(result).rejects.toThrow(
+				/could not record.*PM link refusal/i,
+			);
+			expect(row().lastPmSyncStatus).toBe("PENDING");
+		},
+	);
+
+	it.each(["externalId", "externalUrl", "externalMcpServerId"])(
+		"settles its own attempt when %s changed before the guard read",
+		async (field) => {
+			h.cases.set(
+				"tc1",
+				unlinkedRow({
+					...judgedLink,
+					[field]: "replacement",
+					lastPmSyncAttemptId: "attempt-A",
+					lastPmSyncStatus: "PENDING",
+				}),
+			);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				pmSyncAttemptId: "attempt-A",
+			});
+			expect(result).toMatchObject({
+				success: false,
+				outcome: "link-changed",
+			});
+			expect(row()).toMatchObject({
+				[field]: "replacement",
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "FAILED",
+				lastPmSyncError: expect.stringContaining("PM link changed"),
+			});
+		},
+	);
+
+	it("does not overwrite a newer attempt that takes over during link-changed settlement", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...judgedLink,
+				externalUrl: "https://pm.example.com/replacement",
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		const update = vi
+			.mocked(db.testCase.updateMany)
+			.getMockImplementation();
+		vi.mocked(db.testCase.updateMany).mockImplementationOnce(((
+			...args: unknown[]
+		) => {
+			Object.assign(row(), { lastPmSyncAttemptId: "attempt-B" });
+			return (update as (...args: unknown[]) => unknown)(...args);
+		}) as never);
+		const result = await checkTestCasePmLink({
+			...checkInput,
+			pmSyncAttemptId: "attempt-A",
+		});
+		expect(result).toMatchObject({
+			success: false,
+			outcome: "attempt-superseded",
+		});
+		expect(row()).toMatchObject({
+			lastPmSyncAttemptId: "attempt-B",
+			lastPmSyncStatus: "PENDING",
+		});
+	});
+
+	it("propagates a link-changed settlement write failure", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...judgedLink,
+				externalUrl: "https://pm.example.com/replacement",
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		vi.mocked(db.testCase.updateMany).mockRejectedValueOnce(
+			new Error("settlement unavailable"),
+		);
+		await expect(
+			checkTestCasePmLink({
+				...checkInput,
+				pmSyncAttemptId: "attempt-A",
+			}),
+		).rejects.toThrow("settlement unavailable");
+	});
+
+	it.each(["same", "other"])(
+		"judges an unstamped %s-instance link without an MCP config",
+		async (instance) => {
+			const link = {
+				externalId: "42",
+				externalUrl: `https://${instance === "same" ? "gitlab" : "old"}.example.com/example-org/project/issues/42`,
+				externalMcpServerId: null,
+			};
+			h.cases.set("tc1", unlinkedRow(link));
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+				key: "gitlab",
+				defaultUrl: "https://gitlab.example.com",
+			} as never);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				...link,
+				mcpConfigId: null,
+				pmTool: "gitlab",
+			});
+			expect(result).toMatchObject(
+				instance === "same"
+					? { success: true }
+					: { success: false, outcome: "legacy-other-tool" },
+			);
+			expect(row().lastPmSyncStatus).toBe(
+				instance === "same" ? null : "FAILED",
+			);
+		},
+	);
+
+	it.each(["config-1", null])(
+		"throws a non-retryable PM error when the configuration/server is missing (%s)",
+		async (mcpConfigId) => {
+			h.cases.set("tc1", unlinkedRow(judgedLink));
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(null);
+			await expect(
+				checkTestCasePmLink({ ...checkInput, mcpConfigId }),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "PmConfigNotFoundError",
+				message: expect.stringContaining(
+					"PM configuration is no longer available",
+				),
+			});
+		},
+	);
+});
+
+describe("unattempted active-server pushes", () => {
+	const link = {
+		externalId: "42",
+		externalUrl: "https://pm.example.com/cards/42",
+		externalMcpServerId: "server-1",
+	};
+
+	it("sends the update while a different attempt owns the row's PENDING status", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...link,
+				lastPmSyncAttemptId: "attempt-B",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		h.workflowActs.checkTestCasePmLink.mockImplementation(
+			checkTestCasePmLink,
+		);
+		h.workflowActs.getTestCasesToSync.mockResolvedValue([
+			{
+				...row(),
+				identifier: "TC-1",
+				steps: [],
+				state: "READY",
+				priority: "MEDIUM",
+				tags: [],
+			},
+		]);
+		h.workflowActs.discoverPMToolCapabilities.mockResolvedValue({
+			hasPMCapabilities: true,
+			detectedType: "fizzy",
+			taskUpdate: {
+				toolName: "update_card",
+				idParam: "card_id",
+				titleParam: "title",
+				descriptionParam: "description",
+				allParams: [],
+			},
+		});
+		h.workflowActs.detectAndStampPmPushConflict.mockResolvedValue({
+			hasConflict: false,
+		});
+		h.workflowActs.executeMcpTool.mockResolvedValue({
+			success: true,
+			output: {},
+		});
+		h.workflowActs.updateTestCaseExternalRefs.mockImplementation(() =>
+			writePmSyncStatusUnattempted({
+				itemId: "tc1",
+				itemType: "testCase",
+				data: { lastPmSyncStatus: "SUCCESS" },
+			}),
+		);
+		const result = await testCaseSyncWorkflow({
+			projectId: "project-1",
+			organizationId: "org-1",
+			userId: "u-1",
+			mcpConfigId: "config-1",
+			mcpServerId: "server-1",
+			containerId: "board-1",
+			direction: "push",
+			unsyncedOnly: false,
+		});
+		expect(h.workflowActs.executeMcpTool).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "update_card",
+				args: expect.objectContaining({ card_id: "42" }),
+			}),
+		);
+		expect(result).toMatchObject({
+			success: true,
+			syncedCount: 1,
+			failedCount: 0,
+		});
+		expect(row()).toMatchObject({
+			...link,
+			lastPmSyncStatus: "PENDING",
+			lastPmSyncAttemptId: "attempt-B",
+		});
+	});
+
+	it("returns already-linked while a different attempt owns the row's PENDING status", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...link,
+				lastPmSyncAttemptId: "attempt-B",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		const result = await createTestCaseInPmWithClaim(common);
+		expect(result).toMatchObject({
+			success: true,
+			outcome: "already-linked",
+			externalId: "42",
+		});
+		expect(row()).toMatchObject({
+			...link,
+			lastPmSyncStatus: "PENDING",
+			lastPmSyncAttemptId: "attempt-B",
+		});
+	});
+
+	it("uses the guard's own server stamp instead of turning a separate link-read failure into FAILED", async () => {
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...link,
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		vi.mocked(db.testCase.findFirst).mockImplementation(((args: {
+			select?: Record<string, unknown>;
+		}) => {
+			// Only the removed readPersistedLink shape fails; the scoped guard
+			// read includes attempt ownership and must supply the server stamp.
+			if (args.select?.externalId && !args.select.lastPmSyncAttemptId) {
+				throw new Error("separate link read unavailable");
+			}
+			return (defaultFindFirst as (...args: unknown[]) => unknown)(args);
+		}) as never);
+		const result = await createTestCaseInPmWithClaim({
+			...common,
+			pmSyncAttemptId: "attempt-A",
+		});
+		expect(result).toMatchObject({
+			success: true,
+			outcome: "already-linked",
+			externalId: "42",
+		});
+		expect(row()).toMatchObject({
+			...link,
+			lastPmSyncStatus: "SUCCESS",
+			lastPmSyncError: null,
+		});
+	});
+});
+
+describe("legacy link server-stamp backfill", () => {
+	it("accepts a NULL snapshot stamp backfilled to the active server without failing a successful case", async () => {
+		const link = {
+			externalId: "42",
+			externalUrl: "https://pm.example.com/cards/42",
+			externalMcpServerId: "server-1",
+		};
+		h.cases.set(
+			"tc1",
+			unlinkedRow({
+				...link,
+				lastPmSyncAttemptId: "attempt-A",
+				lastPmSyncStatus: "SUCCESS",
+			}),
+		);
+		const result = await checkTestCasePmLink({
+			...checkInput,
+			...link,
+			externalMcpServerId: null,
+			pmSyncAttemptId: "attempt-A",
+		});
+		expect(result).toEqual({ success: true });
+		expect(row()).toMatchObject({
+			...link,
+			lastPmSyncStatus: "SUCCESS",
+			lastPmSyncError: null,
+		});
+	});
+
+	it.each([undefined, "attempt-A"])(
+		"accepts the same link backfilled during a refusal's fenced write (%s)",
+		async (pmSyncAttemptId) => {
+			const link = { ...judgedLink, externalMcpServerId: null };
+			h.cases.set(
+				"tc1",
+				unlinkedRow({
+					...link,
+					lastPmSyncAttemptId: pmSyncAttemptId ?? null,
+					lastPmSyncStatus: "SUCCESS",
+				}),
+			);
+			vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce((() => {
+				Object.assign(row(), {
+					externalMcpServerId: "server-1",
+					lastPmSyncStatus: "SUCCESS",
+				});
+				return {
+					baseUrl: "https://pm.example.com",
+					mcpServer: { key: "azure-devops" },
+				} as never;
+			}) as never);
+			const result = await checkTestCasePmLink({
+				...checkInput,
+				...link,
+				pmSyncAttemptId,
+			});
+			expect(result).toEqual({ success: true });
+			expect(row()).toMatchObject({
+				...link,
+				externalMcpServerId: "server-1",
+				lastPmSyncStatus: "SUCCESS",
+				lastPmSyncError: null,
+			});
+		},
+	);
 });

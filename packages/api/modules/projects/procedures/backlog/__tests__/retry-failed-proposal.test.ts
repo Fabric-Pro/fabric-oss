@@ -501,3 +501,44 @@ describe("retryFailedProposalProcedure — ROADMAP_RECOMMENDATION batch", () => 
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 });
+
+describe("workflow start failure messages", () => {
+	it.each([
+		[
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: connection pool timeout",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+			"database error P2024",
+		],
+		[new Error("boom"), "boom"],
+	])(
+		"redacts database errors and preserves other failures: %s",
+		async (error, expected) => {
+			mocks.getPendingBacklogProposal.mockResolvedValue(baseProposal);
+			mocks.workflowStart.mockRejectedValueOnce(error);
+			await expect
+				.soft(
+					handlers.retry({
+						input: {
+							projectId: "project-1",
+							proposalId: "proposal-1",
+							organizationId: "org-1",
+						},
+						context: ctx,
+					}),
+				)
+				.rejects.toMatchObject({ message: expected });
+			expect.soft(mocks.proposalUpdate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						status: "FAILED",
+						applyError: expected,
+					}),
+				}),
+			);
+		},
+	);
+});

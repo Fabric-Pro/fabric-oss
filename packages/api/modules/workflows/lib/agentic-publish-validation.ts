@@ -1,4 +1,8 @@
 import { ownMcpConfigIds, projectPlacementRefusal } from "@repo/database";
+import {
+	type AdoStoryReviewConfig,
+	adoStoryReviewConfigSchema,
+} from "@repo/temporal/ado-story-review-config";
 import { agentTaskCapabilityProblem } from "@repo/temporal/agent-task-capabilities";
 import {
 	type AgentTaskNodeConfig,
@@ -8,6 +12,7 @@ import {
 	PublishFrameNodeConfigSchema,
 } from "@repo/temporal/agentic-workflow-preset";
 import {
+	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
 	PUBLISH_FRAME_NODE_TYPE,
 } from "@repo/temporal/workflow-node-types";
@@ -16,6 +21,7 @@ import {
 	findScheduleTimezone,
 	isValidScheduleTimeZone,
 } from "@repo/temporal/workflow-builder-schedule";
+import { adoStoryReviewPublishProblems } from "./ado-story-review-publish-validation";
 import { minimumCronIntervalMinutes } from "./cron-interval";
 
 interface GraphNode {
@@ -86,12 +92,12 @@ function scheduleIntervalProblems(nodes: unknown[]): string[] {
 	const interval = minimumCronIntervalMinutes(cron);
 	if (interval === null) {
 		return [
-			`Schedule: "${cron}" is not a schedule whose interval can be checked. An agent task needs one that runs at most ${describeInterval(MIN_SCHEDULE_INTERVAL_MINUTES)}.`,
+			`Schedule: "${cron}" is not a schedule whose interval can be checked. An AI review or agent task needs one that runs at most ${describeInterval(MIN_SCHEDULE_INTERVAL_MINUTES)}.`,
 		];
 	}
 	if (interval < MIN_SCHEDULE_INTERVAL_MINUTES) {
 		return [
-			`Schedule: "${cron}" runs ${describeInterval(interval)}. An agent task may run at most ${describeInterval(MIN_SCHEDULE_INTERVAL_MINUTES)}.`,
+			`Schedule: "${cron}" runs ${describeInterval(interval)}. An AI review or agent task may run at most ${describeInterval(MIN_SCHEDULE_INTERVAL_MINUTES)}.`,
 		];
 	}
 	return [];
@@ -248,7 +254,7 @@ export interface AgenticPublishCheck {
 }
 
 /**
- * Problems that keep a graph with agent-task / publish-frame nodes from going
+ * Problems that keep a graph with agent tasks, story reviews or frame publishing from going
  * live. A scheduled agent runs unattended, so everything it may do is settled
  * here, before the schedule exists. Returns no problems when the graph has no
  * agentic nodes or every node is valid.
@@ -257,7 +263,8 @@ export interface AgenticPublishCheck {
  * runs no more often than the minimum interval; MCP servers that are the
  * owner's own in this organization; and built-in capabilities an unattended
  * agent may hold. A publish frame is held to a project the owner may add to. A
- * schedule's time zone must be a real one whatever the graph holds.
+ * story review uses the owner's connected project and accessible instructions.
+ * A schedule's time zone must be a real one whatever the graph holds.
  *
  * `userId` is the workflow's owner, whose rights the unattended run uses.
  * `projectId` is the workflow's project (null for none), so an artifact that
@@ -277,7 +284,9 @@ export async function findAgenticPublishProblems(input: {
 
 	const agents: ParsedNode<AgentTaskNodeConfig>[] = [];
 	const publishers: ParsedNode<PublishFrameNodeConfig>[] = [];
+	const reviews: ParsedNode<AdoStoryReviewConfig>[] = [];
 	let hasAgentTask = false;
+	let hasReview = false;
 	for (const node of nodes as GraphNode[]) {
 		if (node?.type === AGENT_TASK_NODE_TYPE) {
 			hasAgentTask = true;
@@ -288,6 +297,16 @@ export async function findAgenticPublishProblems(input: {
 			);
 			if (parsed) {
 				agents.push(parsed);
+			}
+		} else if (node?.type === ADO_STORY_REVIEW_NODE_TYPE) {
+			hasReview = true;
+			const parsed = parseConfig(
+				node,
+				adoStoryReviewConfigSchema,
+				problems,
+			);
+			if (parsed) {
+				reviews.push(parsed);
 			}
 		} else if (node?.type === PUBLISH_FRAME_NODE_TYPE) {
 			const parsed = parseConfig(
@@ -302,8 +321,10 @@ export async function findAgenticPublishProblems(input: {
 	}
 
 	let mcpServers: ResolvedMcpServer[] = [];
-	if (hasAgentTask) {
+	if (hasAgentTask || hasReview) {
 		problems.push(...scheduleIntervalProblems(nodes));
+	}
+	if (hasAgentTask) {
 		problems.push(...builtInCapabilityProblems(agents));
 		if (input.organizationId) {
 			const checked = await mcpServerChecks(agents, {
@@ -318,6 +339,15 @@ export async function findAgenticPublishProblems(input: {
 			);
 		}
 	}
+	problems.push(
+		...(await adoStoryReviewPublishProblems(
+			reviews.map(({ node, config }) => ({
+				name: nodeName(node),
+				config,
+			})),
+			input,
+		)),
+	);
 	problems.push(...(await frameProjectProblems(publishers, input)));
 	return { problems, mcpServers };
 }

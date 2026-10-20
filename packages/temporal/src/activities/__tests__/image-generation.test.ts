@@ -100,3 +100,30 @@ describe("generateImageActivity — usage marker (Fizzy #1894)", () => {
 		expect(row.errorMessage).toContain("Unauthenticated");
 	});
 });
+
+describe("image conversation attribution", () => {
+	it.each(["conversation-example", undefined])(
+		"records only the supplied conversation (%s)",
+		async (usageConversationId) => {
+			logAiUsageAsync.mockReset();
+			const { generateText, getRAGProviderConfig } = await import(
+				"@repo/ai"
+			);
+			vi.mocked(getRAGProviderConfig).mockResolvedValue({
+				apiKey: "key-example",
+			} as never);
+			vi.mocked(generateText).mockRejectedValue(
+				new Error("provider-example"),
+			);
+			await generateImageActivity({
+				prompt: "boat",
+				provider: "gateway",
+				userId: "user-example",
+				usageConversationId,
+			});
+			expect(logAiUsageAsync.mock.calls[0][0].conversationId).toBe(
+				usageConversationId,
+			);
+		},
+	);
+});

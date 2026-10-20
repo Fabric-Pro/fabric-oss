@@ -296,8 +296,6 @@ export const ragInstrumentation = {
 		},
 		fn: (span: Span) => Promise<T>,
 	): Promise<T> {
-		const _startTime = Date.now();
-
 		return tracer.startActiveSpan(
 			"rag.chunking",
 			{

@@ -135,12 +135,53 @@ describe("what the question says", () => {
 		renderDialog({
 			kind: "tool",
 			toolName: "fabric_execute_workflow",
-			args: {},
+			args: { readOnlyHint: true },
 		});
 
 		expect(screen.getByRole("alertdialog")).toHaveTextContent(
 			"asking to run workflow as you, which can change data in Fabric.",
 		);
+	});
+
+	it.each([
+		"fabric_list_project_pm_members",
+		"fabric_get_project_work_item_counts",
+	])(
+		"describes trusted read-only %s without claiming it writes",
+		(toolName) => {
+			renderDialog({
+				kind: "tool",
+				toolName,
+				args: { projectId: "project-1" },
+				readOnly: true,
+				because: "tainted",
+			});
+			const dialog = screen.getByRole("alertdialog");
+			expect(dialog).toHaveTextContent("reads data without changing it");
+			expect(dialog).toHaveTextContent("before every sensitive read");
+			expect(dialog).not.toHaveTextContent("can change data in Fabric");
+			expect(dialog).not.toHaveTextContent("change to shared data");
+		},
+	);
+
+	it("keeps the shared-write warning after external reads", () => {
+		renderDialog({
+			kind: "tool",
+			toolName: "fabric_page_data_set",
+			args: { collection: "votes", records: [] },
+			because: "tainted",
+		});
+		expect(screen.getByRole("alertdialog")).toHaveTextContent(
+			"before every change to shared data",
+		);
+	});
+
+	it("describes a repeated AI request and preserves its allowance cost", () => {
+		renderDialog({ ...ASK, because: "tainted" });
+		const dialog = screen.getByRole("alertdialog");
+		expect(dialog).toHaveTextContent("spends your AI allowance");
+		expect(dialog).toHaveTextContent("before each AI request");
+		expect(dialog).not.toHaveTextContent("change to shared data");
 	});
 });
 

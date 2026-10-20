@@ -7,6 +7,7 @@
  * with persisted Temporal histories; syncing them now fails fast with a clear
  * capabilities error.
  */
+
 import {
 	db,
 	formatBackLinkForProvider,
@@ -29,6 +30,7 @@ import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { assertPmMcpTargetOrigin } from "../pm-source";
 import { refreshAtlassianCloudToken } from "./atlassian-cloud-refresh";
 import { extractCreatedWorkItemRefs as extractExternalInfo } from "./created-item-refs";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import { fillJiraCreateArgs } from "./fetch-pm-hierarchy";
 import { fetchPmTicket } from "./fetch-pm-ticket";
 import { mayUseMcpConfigCredential } from "./mcp-credential-gate";
@@ -45,6 +47,7 @@ import {
 	startPmCreateSendDeadline,
 } from "./pm-create-claim";
 import {
+	describeLinkWriteCause,
 	describeOrphanCause,
 	recordCreateOrphan,
 	recordCreateUnconfirmed,
@@ -53,6 +56,7 @@ import { mcpConfigPmInstanceOrigin } from "./pm-link-instance";
 import { PM_MISSING_SENTINEL } from "./pm-missing-constants";
 import { writePmSyncRunStatus } from "./pm-sync-attempt-fence";
 import { computePmHash } from "./pm-sync-hash";
+import { describeSyncErrorForUser } from "./pm-sync-user-error";
 import { truncateTitleForProvider } from "./pm-title-limits";
 import {
 	detectExternalLinkMismatch,
@@ -61,6 +65,7 @@ import {
 import { updateStoryFromPm as updateStory } from "./pm-update-story";
 import { recordPmSyncLog } from "./record-pm-sync-log";
 import {
+	canBeTicketNotFoundEvidence,
 	discoverPMToolCapabilities,
 	extractFizzyTables,
 	fetchPMItemsByIds,
@@ -380,6 +385,7 @@ async function getWorkItemData(
 	externalId?: string | null;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	draftingStage?: string | null;
 	kind?: string | null;
 } | null> {
@@ -393,6 +399,7 @@ async function getWorkItemData(
 				externalId: story.externalId,
 				externalUrl: story.externalUrl,
 				externalMcpServerId: story.externalMcpServerId,
+				externalPmTarget: story.externalPmTarget,
 				draftingStage: story.draftingStage,
 				kind: story.kind,
 			}
@@ -419,6 +426,7 @@ async function updateWorkItemExternalRefs(
 	 * the write applies only while the row holds it, and clears it.
 	 */
 	pmCreateClaimId?: string,
+	externalPmTarget?: string | null,
 ): Promise<void> {
 	const data: {
 		externalId: string;
@@ -437,9 +445,11 @@ async function updateWorkItemExternalRefs(
 		try {
 			const storyData: typeof data & {
 				externalMcpServerId?: string | null;
+				externalPmTarget?: string | null;
 			} = { ...data };
 			if (externalMcpServerId !== undefined) {
 				storyData.externalMcpServerId = externalMcpServerId;
+				storyData.externalPmTarget = externalPmTarget ?? null;
 			}
 			await updateStory(
 				itemId,
@@ -501,6 +511,7 @@ async function proposeFlagMissingOnPushNotFound(args: {
 	projectId: string;
 	externalId: string;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	previousState?: string | null;
 }): Promise<void> {
 	try {
@@ -643,6 +654,7 @@ export async function syncWorkItemToPM(
 			mcpConfigId: null,
 			mcpServerId,
 			containerId,
+			stableContainerId: containerId,
 			additionalContext,
 			direction: "push",
 			userId,
@@ -1054,6 +1066,17 @@ export async function syncWorkItemToPM(
 	// migration detection — saves a database round-trip and keeps the test
 	// mocks consistent across the two code paths.
 	const activeServerId = mcpConfig?.mcpServerId ?? null;
+	const activePmTarget = await resolveExternalPmTarget({
+		projectId,
+		mcpServerId: activeServerId,
+		mcpConfigId,
+		userId,
+		organizationId,
+		containerId,
+		additionalContext,
+		config: mcpConfig,
+		stableContainerId: containerId,
+	});
 	const pmToolBaseUrl =
 		mcpConfig?.baseUrl || mcpConfig?.mcpServer?.defaultUrl || null;
 
@@ -1067,6 +1090,8 @@ export async function syncWorkItemToPM(
 			externalId,
 			externalUrl,
 			externalMcpServerId: item.externalMcpServerId,
+			externalPmTarget: item.externalPmTarget,
+			activePmTarget,
 			activeServerId,
 			currentDetectedType: capabilities.detectedType,
 			currentBaseUrl: pmToolBaseUrl,
@@ -1131,6 +1156,8 @@ export async function syncWorkItemToPM(
 			externalId,
 			undefined,
 			activeServerId ?? undefined,
+			undefined,
+			activePmTarget,
 		);
 		logger.info("[Hierarchy Sync] Linked item to PM tool from proposal", {
 			itemType,
@@ -1405,15 +1432,21 @@ export async function syncWorkItemToPM(
 					}
 				}
 			}
-			// A failed UPDATE whose error is an unambiguous "not found" means the
-			// linked PM card was deleted on its server (the user-reported 404).
+			// Treat an eligible failed UPDATE with not-found text as a missing
+			// linked PM card, subject to the provenance and permission gates below.
 			// Classify it as PmNotFoundError (parity with the GitLab-REST path) and
 			// immediately propose a FLAG_MISSING unlink, so the user can heal the
 			// stale link from the Review Center instead of dead-ending at a generic
 			// FAILED that re-fails on every push until the hourly poll notices.
 			// `isPmNotFoundError` vetoes permission/transient errors, so a
 			// 401/403/timeout still throws the generic PmUpdateError below.
-			if (externalId && isPmNotFoundError(errorDetail)) {
+			// Dispatch refusals and Fabric database failures say nothing about
+			// whether the card exists.
+			if (
+				externalId &&
+				canBeTicketNotFoundEvidence(updateResult) &&
+				isPmNotFoundError(errorDetail)
+			) {
 				await proposeFlagMissingOnPushNotFound({
 					itemType,
 					itemId,
@@ -1495,6 +1528,17 @@ export async function syncWorkItemToPM(
 			pmHash: pmCanonicalHash ?? computePmHash(title, description),
 			pushedAt: new Date().toISOString(),
 		};
+	}
+
+	// Linked, but the PM tool exposes no update tool. Falling through to the
+	// create branch would report the row as already linked and return a
+	// SUCCESS that sent nothing. Fail instead, matching `syncStoryToPM`.
+	if (externalId && !capabilities.taskUpdate) {
+		throw ApplicationFailure.nonRetryable(
+			`${itemType} ${item.identifier} is linked to external ID ${externalId} but the PM tool does not support updates. ` +
+				"Disconnect it first or use a PM tool that supports updating work items.",
+			"PmCapabilitiesError",
+		);
 	}
 
 	if (capabilities.taskCreation) {
@@ -1744,7 +1788,7 @@ export async function syncWorkItemToPM(
 			return unconfirmed(
 				createIndeterminateMessage(
 					toolLabel,
-					describeOrphanCause(createError),
+					describeSyncErrorForUser(createError),
 				),
 			);
 		}
@@ -1825,6 +1869,7 @@ export async function syncWorkItemToPM(
 					extracted.externalUrl,
 					activeServerId ?? undefined,
 					pmCreateClaimId,
+					activePmTarget,
 				);
 			} catch (linkError) {
 				// The ticket exists but the row still has no link. A throw
@@ -1833,14 +1878,16 @@ export async function syncWorkItemToPM(
 				// it as an orphaned create instead: FAILED by id with the
 				// ticket's id in the message, no retry, and the claim kept
 				// so no later push creates a second card.
-				const errorMessage = `Card ${extracted.externalId} was created in ${toolLabel} but Fabric could not save its link (${describeOrphanCause(
+				const errorMessage = `Card ${extracted.externalId} was created in ${toolLabel} but Fabric could not save its link (${describeLinkWriteCause(
 					linkError,
+					"item",
 				)}), so this item is not linked to it. Check ${toolLabel}: use Unlink & re-create only if card ${extracted.externalId} was deleted or a second card is wanted.`;
 				logger.warn("pm.sync.create_orphan", {
 					itemType,
 					itemId,
 					mcpConfigId,
 					externalId: extracted.externalId,
+					error: describeOrphanCause(linkError),
 					reason: "link-write-failed",
 				});
 				await recordCreateOrphan({
@@ -2203,7 +2250,7 @@ export async function stampPmSyncSuccess(input: {
 			error: message,
 		});
 		throw ApplicationFailure.nonRetryable(
-			`Failed to stamp PM sync success: ${message}`,
+			`Failed to stamp PM sync success: ${describeSyncErrorForUser(error)}`,
 			"PmStampError",
 		);
 	}

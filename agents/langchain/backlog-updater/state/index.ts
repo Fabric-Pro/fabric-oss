@@ -67,7 +67,8 @@ export const BacklogUpdaterStateAnnotation = Annotation.Root({
 
 	// Standard agent fields
 	error: Annotation<string | undefined>({
-		reducer: (x, y) => y ?? x,
+		// Explicit undefined updates clear a previous attempt's error.
+		reducer: (_previous, next) => next,
 		default: () => undefined,
 	}),
 	retryCount: Annotation<number>({

@@ -198,9 +198,7 @@ describe("ParlumePage requests", () => {
 		) as HTMLElement;
 		expect(within(item).getByText("Attendee One")).toBeInTheDocument();
 		expect(within(item).getByText("AO")).toBeInTheDocument();
-		expect(
-			within(item).getByText(/Actions with confirmation/),
-		).toBeInTheDocument();
+		expect(within(item).getByText(/ Actions( |$)/)).toBeInTheDocument();
 		expect(within(item).getByText("On track.")).toBeInTheDocument();
 		expect(within(item).queryByText("Exact action details")).toBeNull();
 	});
@@ -271,11 +269,11 @@ describe("ParlumePage requests", () => {
 		).toBeInTheDocument();
 	});
 
-	it("flags an unidentified speaker only where actions are blocked for it", async () => {
+	it("names an unidentified speaker without saying their actions are blocked", async () => {
 		mocks.history.mockResolvedValue(
 			historyPage([
 				request({
-					id: "blocked",
+					id: "unknown",
 					requestText: "Unknown asks in actions mode",
 					speakerId: null,
 					speakerName: null,
@@ -284,41 +282,18 @@ describe("ParlumePage requests", () => {
 						toolsReadOnly: false,
 					},
 				}),
-				request({
-					id: "readonly",
-					requestText: "Unknown asks in read-only mode",
-					speakerId: null,
-					speakerName: null,
-				}),
-				request({
-					id: "known",
-					requestText: "Known asks in actions mode",
-					session: {
-						agentLabel: "Fabric Agent",
-						toolsReadOnly: false,
-					},
-				}),
 			]),
 		);
 		await openRequests();
-		const itemOf = async (text: string) =>
-			(await screen.findByText(text)).closest("li") as HTMLElement;
-		const badge = "Speaker not identified · actions blocked";
 
-		const blocked = within(await itemOf("Unknown asks in actions mode"));
-		expect(blocked.getByText(badge)).toBeInTheDocument();
-		expect(blocked.getByText("Unidentified attendee")).toBeInTheDocument();
-		expect(blocked.getByText("?")).toBeInTheDocument();
-		expect(
-			within(await itemOf("Unknown asks in read-only mode")).queryByText(
-				badge,
-			),
-		).toBeNull();
-		expect(
-			within(await itemOf("Known asks in actions mode")).queryByText(
-				badge,
-			),
-		).toBeNull();
+		const item = within(
+			(await screen.findByText("Unknown asks in actions mode")).closest(
+				"li",
+			) as HTMLElement,
+		);
+		expect(item.getByText("Unidentified attendee")).toBeInTheDocument();
+		expect(item.getByText("?")).toBeInTheDocument();
+		expect(item.queryByText(/blocked/)).toBeNull();
 	});
 
 	it("shows an action's status, steps, outcome and exact arguments", async () => {
@@ -341,7 +316,6 @@ describe("ParlumePage requests", () => {
 					`^Requested\\s+${formatClock("2026-09-30T10:05:00Z")}`,
 				),
 			),
-			expect.stringMatching(/^Confirmed\s/),
 			expect.stringMatching(/^Finished\s/),
 		]);
 		expect(view.getByText("Moved EX-1.")).toBeInTheDocument();
@@ -352,7 +326,7 @@ describe("ParlumePage requests", () => {
 		expect(view.getByText(/"itemKey": "EX-1"/)).toBeVisible();
 	});
 
-	it("reads a proposal nobody confirmed in time as expired", async () => {
+	it("shows a change that is still running with only its request", async () => {
 		mocks.history.mockResolvedValue(
 			historyPage([
 				request({
@@ -360,11 +334,9 @@ describe("ParlumePage requests", () => {
 					requestText: "Move EX-1",
 					actions: [
 						action({
-							status: "AWAITING_CONFIRMATION",
-							confirmedAt: null,
+							status: "EXECUTING",
 							completedAt: null,
 							outcome: null,
-							expiresAt: new Date("2026-09-30T10:07:00Z"),
 						}),
 					],
 				}),
@@ -376,12 +348,12 @@ describe("ParlumePage requests", () => {
 			await screen.findByText("Move EX-1 to Sprint 2.")
 		).closest("div[class*=rounded]") as HTMLElement;
 		const view = within(block);
-		expect(view.getAllByText("Expired")[0]).toBeInTheDocument();
+		expect(view.getByText("Executing")).toBeInTheDocument();
 		expect(
 			view
 				.getAllByRole("listitem")
 				.map((step) => step.textContent?.split(" ")[0]),
-		).toEqual(["Requested", "Expired"]);
+		).toEqual(["Requested"]);
 	});
 
 	it("marks a failed action", async () => {

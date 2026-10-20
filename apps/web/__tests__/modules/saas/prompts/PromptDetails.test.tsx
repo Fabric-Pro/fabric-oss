@@ -21,9 +21,17 @@ import {
 	QueryClient,
 	QueryClientProvider,
 } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { getById, listForPrompt, updatePrompt, createVersion, confirmMock } =
 	vi.hoisted(() => ({
@@ -547,5 +555,83 @@ describe("PromptDetails — a failed background refetch keeps the loaded prompt"
 		expect(screen.getByLabelText("Prompt content")).toHaveValue(
 			"Unsaved edit",
 		);
+	});
+});
+
+describe("PromptDetails — a prompt the Proposal artifact no longer runs for Proposals (Fizzy #2946)", () => {
+	const bound = (targetKey: string, documentType: string) => ({
+		targetKey,
+		documentType,
+		storyKind: null,
+		scope: "ORG",
+		isDefault: true,
+	});
+	const LEGACY = bound("project_document_generator", "PROPOSAL");
+	const LEGACY_GENERATOR = bound("document_generator", "PROPOSAL");
+	const MAIN = bound("proposal_client_main", "PROPOSAL");
+	const PRD = bound("project_document_generator", "PRD");
+
+	const note = () => screen.queryByTestId("prompt-superseded-note");
+
+	async function open(actions: unknown[]) {
+		listForPrompt.mockResolvedValue({ actions });
+		wrap(<PromptDetails promptId="p-1" organizationSlug="example-org" />);
+		await screen.findByText("Test Case Drafter Prompt");
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalled());
+		// Let the bound-actions read settle into the render before an absence
+		// is asserted.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		});
+	}
+
+	beforeEach(() => {
+		getById.mockReset();
+		getById.mockResolvedValue({ ...basePrompt, scope: "ORG" });
+		listForPrompt.mockReset();
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("says so, naming Client proposal (Main), when its only binding is the legacy Proposal action", async () => {
+		await open([LEGACY]);
+
+		const shown = await screen.findByTestId("prompt-superseded-note");
+		expect(shown).toHaveTextContent("promptNote");
+		expect(
+			within(shown).getByRole("link", { name: "openCatalog" }),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/prompts/catalog?action=proposal_client_main%3APROPOSAL%3AANY",
+		);
+	});
+
+	it("says so when every Proposal binding is superseded, whatever else it serves", async () => {
+		await open([LEGACY, LEGACY_GENERATOR, PRD]);
+
+		expect(
+			await screen.findByTestId("prompt-superseded-note"),
+		).toBeVisible();
+	});
+
+	it("says nothing when it is also bound to Client proposal (Main)", async () => {
+		await open([MAIN, LEGACY]);
+
+		expect(note()).not.toBeInTheDocument();
+	});
+
+	it("says nothing for a prompt with no Proposal binding", async () => {
+		await open([PRD]);
+
+		expect(note()).not.toBeInTheDocument();
+	});
+
+	it("says nothing with the gate off", async () => {
+		flags.proposalArtifact = false;
+		await open([LEGACY]);
+
+		expect(note()).not.toBeInTheDocument();
 	});
 });

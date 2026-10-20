@@ -45,6 +45,7 @@ const testCaseListSelect = {
 	externalId: true,
 	externalUrl: true,
 	externalMcpServerId: true,
+	externalPmTarget: true,
 	pmAutoSyncEnabled: true,
 	lastPmSyncStatus: true,
 	lastSyncedAt: true,

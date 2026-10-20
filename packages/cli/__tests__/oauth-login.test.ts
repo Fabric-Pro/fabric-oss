@@ -29,6 +29,8 @@ interface FakeServer {
 	codes: Map<string, { challenge: string; redirectUri: string }>;
 	/** Client ids the server knows; registration adds to it. */
 	knownClients: Set<string>;
+	/** Known clients registered before a scope the CLI now asks for. */
+	narrowClients: Set<string>;
 	/** Client ids the authorization endpoint was asked about by a JSON probe. */
 	probes: string[];
 	issuerOverride?: string;
@@ -57,6 +59,7 @@ async function startFakeServer(): Promise<FakeServer> {
 	const authorizations: Array<URLSearchParams> = [];
 	const codes: FakeServer["codes"] = new Map();
 	const knownClients = new Set<string>();
+	const narrowClients = new Set<string>();
 	const probes: string[] = [];
 	let origin = "";
 	const fake: FakeServer = {
@@ -66,6 +69,7 @@ async function startFakeServer(): Promise<FakeServer> {
 		authorizations,
 		codes,
 		knownClients,
+		narrowClients,
 		probes,
 		close: async () => {},
 	};
@@ -109,9 +113,11 @@ async function startFakeServer(): Promise<FakeServer> {
 			probes.push(clientId);
 			return json(response, 200, {
 				redirect: true,
-				url: knownClients.has(clientId)
-					? `${origin}/auth/login?client_id=${clientId}`
-					: `${origin}/api/auth/error?error=invalid_client`,
+				url: !knownClients.has(clientId)
+					? `${origin}/api/auth/error?error=invalid_client`
+					: narrowClients.has(clientId)
+						? `${origin}/api/auth/error?error=invalid_scope`
+						: `${origin}/auth/login?client_id=${clientId}`,
 			});
 		}
 		if (url.pathname === "/api/auth/oauth2/token") {
@@ -271,6 +277,29 @@ describe("fabric auth login in the browser", () => {
 		expect(fake.authorizations[0]?.get("resource")).toBe(
 			`${fake.origin}/api/v1/projects/project-example-one`,
 		);
+	});
+
+	it("registers afresh when the saved client's scope ceiling predates a scope it now asks for", async () => {
+		fake.knownClients.add("client-before-memory-write");
+		fake.narrowClients.add("client-before-memory-write");
+
+		const credentials = await loginWithBrowser({
+			baseUrl: fake.origin,
+			project: "project-example-one",
+			previous: {
+				clientId: "client-before-memory-write",
+				redirectUri: "http://127.0.0.1:1/callback",
+				tokenEndpoint: `${fake.origin}/api/auth/oauth2/token`,
+			},
+			announce: () => {},
+			openBrowser: browserThatApproves(fake),
+		});
+
+		expect(fake.probes).toEqual(["client-before-memory-write"]);
+		expect(fake.registrations).toHaveLength(1);
+		expect(fake.registrations[0]?.scope).toContain("memory:write");
+		expect(fake.authorizations[0]?.get("client_id")).toBe("client-example");
+		expect(credentials.accessToken).toBe("fat_access");
 	});
 
 	it("ignores a callback whose state is not the one it started and still completes", async () => {

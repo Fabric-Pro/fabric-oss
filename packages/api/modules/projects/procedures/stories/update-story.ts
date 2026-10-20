@@ -110,6 +110,7 @@ export const updateStoryProcedure = tenantProtectedProcedure
 			},
 			select: {
 				assigneeId: true,
+				externalId: true,
 				title: true,
 				version: true,
 				// Read so the sign-off gate can fire on the TRANSITION to DONE
@@ -243,6 +244,10 @@ export const updateStoryProcedure = tenantProtectedProcedure
 				storyPoints: input.storyPoints,
 				assigneeId: input.assigneeId,
 				externalId: input.externalId,
+				...(input.externalId !== undefined &&
+				input.externalId !== prior?.externalId
+					? { externalPmTarget: null }
+					: {}),
 				externalUrl: input.externalUrl,
 				draftingStage: input.draftingStage as
 					| FeatureDraftingStage

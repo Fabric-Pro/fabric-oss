@@ -124,6 +124,7 @@ export function buildProjectKnowledgeSearchQuery(
    ${contextTitle},
    NULL, c.type::text, c."sourceUrl", c.content
    FROM project_context c WHERE c."projectId" = ${projectId} AND c."organizationId" = ${organizationId}
+    AND NOT c."indexingExcluded"
     AND c.type::text NOT IN ('CODE_FILE', 'CODE_FILE_SUMMARY')
     AND (c.type::text <> 'LINK' OR c."urlScope"::text IS DISTINCT FROM 'PATH_PREFIX')
     AND NOT (c.type::text = 'INTEGRATION' AND EXISTS

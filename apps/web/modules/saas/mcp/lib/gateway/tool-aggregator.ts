@@ -13,7 +13,13 @@
  */
 
 import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
-import { boundProjectId, projectBoundTools } from "./project-binding";
+import {
+	boundProjectId,
+	pinnedProjectId,
+	pinnedSessionTools,
+	projectBoundTools,
+	serviceSessionHasTool,
+} from "./project-binding";
 import {
 	PLATFORM_SERVER_NAME,
 	selectionAllowsTool,
@@ -118,14 +124,22 @@ export async function getAggregatedTools(
 		const { PLATFORM_TOOL_DEFINITIONS, platformToolScope } = await import(
 			"./platform-tools"
 		);
-		return {
-			tools: PLATFORM_TOOL_DEFINITIONS.filter((tool) =>
+		const reachable = PLATFORM_TOOL_DEFINITIONS.filter(
+			(tool) =>
+				serviceSessionHasTool(session, tool.name) &&
 				scopeSatisfied(
 					session.scopes,
 					platformToolScope(tool.name),
 					session.credential,
 				),
-			),
+		);
+		return {
+			// A session limited to a meeting's project is offered its portal
+			// and runtime-family tools and no other, whatever its scopes reach.
+			tools:
+				pinnedProjectId(session) === null
+					? reachable
+					: pinnedSessionTools(reachable),
 			servers: [],
 		};
 	}
@@ -470,11 +484,11 @@ async function discoverConnectedServerTools(
 					});
 				}
 				// Otherwise just skip this server — it's unreachable
-				console.warn(
-					"[MCP Gateway] Failed to discover tools:",
-					{ serverName },
-					error instanceof Error ? error.message : error,
-				);
+				console.warn("[MCP Gateway] Failed to discover tools:", {
+					serverName,
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 			}
 		}
 	}
@@ -714,11 +728,11 @@ export async function executeConnectedServerTool(
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Tool execution failed";
-		console.error(
-			"[MCP Gateway] Connected tool error:",
-			{ namespacedToolName },
-			error,
-		);
+		console.error("[MCP Gateway] Connected tool error:", {
+			namespacedToolName,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return {
 			content: [
 				{ type: "text", text: JSON.stringify({ error: message }) },

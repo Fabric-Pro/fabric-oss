@@ -4,6 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { contentIdentity } from "@repo/utils/content-identity";
 import {
 	isAiRefreshAuthor,
 	resolveDocumentVersionAuthor,
@@ -365,25 +366,54 @@ export function buildDocumentLink(args: {
 }
 
 /**
- * Thrown when `updateDocument` is given an `expectedVersion` that no longer
- * matches the document. It means the caller lost a race — someone saved while
- * the caller was preparing its write — and the caller's content is stale.
+ * Thrown when `updateDocument` is given a base (`expectedVersion`,
+ * `expectedContentHash`, or both) that no longer matches the document. It
+ * means the caller lost a race — someone saved while the caller was preparing
+ * its write — and the caller's content is stale.
  *
- * Only reachable when `expectedVersion` is supplied, so no existing caller can
- * see it.
+ * `reason` says which half moved: `"version"`, or `"content"` when the body
+ * changed while the version stayed (a run's final save writes its body at the
+ * old version) or came back to it (a rejected regeneration rewinds it).
+ *
+ * Only reachable when a base is supplied, so a caller without one never sees
+ * it.
  */
 export class DocumentVersionConflictError extends Error {
 	constructor(
 		readonly documentId: string,
 		readonly expectedVersion: number,
 		readonly actualVersion: number,
+		readonly reason: "version" | "content" = "version",
 	) {
 		super(
-			`Document ${documentId} moved from version ${expectedVersion} to ${actualVersion} while the update was being prepared.`,
+			reason === "content"
+				? `Document ${documentId} body changed at version ${actualVersion} while the update was being prepared.`
+				: `Document ${documentId} moved from version ${expectedVersion} to ${actualVersion} while the update was being prepared.`,
 		);
 		this.name = "DocumentVersionConflictError";
 	}
 }
+
+/**
+ * Thrown when `updateDocument` is called with `refuseWhileGenerating` and a
+ * generation run holds the document (status QUEUED or GENERATING), whether
+ * that was true at its read or became true before its write landed. The run
+ * owns the body until it finishes (Fizzy #2946), so nothing was written.
+ */
+export class DocumentGenerationInProgressError extends Error {
+	constructor(readonly documentId: string) {
+		super(
+			`Document ${documentId} is being written by a generation run; the update was not applied.`,
+		);
+		this.name = "DocumentGenerationInProgressError";
+	}
+}
+
+/** The statuses in which a generation run holds a document's body. */
+const GENERATION_RUN_STATUSES: ProjectDocumentStatus[] = [
+	"QUEUED",
+	"GENERATING",
+];
 
 /**
  * Update document and create version
@@ -423,9 +453,42 @@ export async function updateDocument(
 		 * context, the MCP and v1 document updates, the in-editor assistant
 		 * accept) pass the version of that read whenever a slot is involved, so
 		 * a slot added or deleted in between is neither lost nor resurrected.
-		 * Ordinary saves and slot-free writes omit it and are unchanged.
+		 * Saves from a collaborative editor room send it with
+		 * `expectedContentHash` (below). Slot-free writes from the other
+		 * surfaces omit it and are unchanged.
 		 */
 		expectedVersion?: number;
+		/**
+		 * The body half of the base (Fizzy #2946): `contentIdentity` of the
+		 * stored body the caller's content descends from, as
+		 * `projects.documents.get` and `projects.documents.update` return it.
+		 * When supplied, the write is abandoned with
+		 * `DocumentVersionConflictError` (reason `"content"`) unless the stored
+		 * body still has this identity, and the update's WHERE carries the
+		 * body it was checked against, so a write landing in between is
+		 * refused by the database rather than overwritten.
+		 *
+		 * The version alone does not name a body: a Proposal run's final save
+		 * writes the new body at the old version (the version moves at its
+		 * next step), and a rejected regeneration rewinds the version. A save
+		 * from a collaborative editor room sends both halves, from the room's
+		 * stamp. Given alone, the write is conditioned on the version read
+		 * here and the checked body. The `skipVersionBump` path is guarded
+		 * the same way.
+		 */
+		expectedContentHash?: string;
+		/**
+		 * Refuse the write with `DocumentGenerationInProgressError` while a
+		 * generation run holds the document (QUEUED or GENERATING). The
+		 * status is checked at the read and again in the update's WHERE, so
+		 * a run queued between a caller's own read and this write is refused
+		 * by the database too. Implies the guarded write: the update is
+		 * conditioned on the version read here even without a base. The MCP
+		 * and v1 document updates set it for a client-document Proposal's
+		 * content and status writes, and `projects.documents.update` for its
+		 * status writes (Fizzy #2946).
+		 */
+		refuseWhileGenerating?: boolean;
 	},
 ) {
 	// Get current document
@@ -438,6 +501,13 @@ export async function updateDocument(
 	}
 
 	if (
+		data.refuseWhileGenerating &&
+		GENERATION_RUN_STATUSES.includes(currentDoc.status)
+	) {
+		throw new DocumentGenerationInProgressError(documentId);
+	}
+
+	if (
 		data.expectedVersion !== undefined &&
 		currentDoc.version !== data.expectedVersion
 	) {
@@ -447,6 +517,66 @@ export async function updateDocument(
 			currentDoc.version,
 		);
 	}
+	if (
+		data.expectedContentHash !== undefined &&
+		contentIdentity(currentDoc.content) !== data.expectedContentHash
+	) {
+		throw new DocumentVersionConflictError(
+			documentId,
+			data.expectedVersion ?? currentDoc.version,
+			currentDoc.version,
+			"content",
+		);
+	}
+
+	// A caller that named a base needs its write to LOSE rather than clobber
+	// if someone else got there first. The checks above read and only then
+	// write, leaving a window in between, so the guarded writes below repeat
+	// them in the update's WHERE and let the database arbitrate: the version
+	// read here and, when the caller named a body, the body that was just
+	// checked against its identity. A version-only caller (the auto-refresh,
+	// the visual-slot splices) keeps exactly the condition it had.
+	// A caller refusing to write under a live run gets the same treatment,
+	// with the status in the WHERE as well.
+	const guarded =
+		data.expectedVersion !== undefined ||
+		data.expectedContentHash !== undefined ||
+		data.refuseWhileGenerating === true;
+	const guardedWhere = {
+		id: documentId,
+		version: currentDoc.version,
+		...(data.expectedContentHash !== undefined
+			? { content: currentDoc.content }
+			: {}),
+		...(data.refuseWhileGenerating
+			? { status: { notIn: GENERATION_RUN_STATUSES } }
+			: {}),
+	};
+	// The guarded UPDATE matched nothing: someone wrote between the read and
+	// this update. Say which half moved, so a log can tell a version step from
+	// a body written at the same version, and say so when a generation run
+	// took the document in between for a caller that refuses to write under
+	// one.
+	const conflictAfterLostRace = async (tx: Prisma.TransactionClient) => {
+		const actual = await tx.projectDocument.findUnique({
+			where: { id: documentId },
+			select: { version: true, status: true },
+		});
+		if (
+			data.refuseWhileGenerating &&
+			actual &&
+			GENERATION_RUN_STATUSES.includes(actual.status)
+		) {
+			return new DocumentGenerationInProgressError(documentId);
+		}
+		const actualVersion = actual?.version ?? -1;
+		return new DocumentVersionConflictError(
+			documentId,
+			currentDoc.version,
+			actualVersion,
+			actualVersion === currentDoc.version ? "content" : "version",
+		);
+	};
 
 	// Integration-contract status is owned by the Discovery run. A changed
 	// status is refused; an unchanged one is not written at all, so a generic
@@ -481,18 +611,34 @@ export async function updateDocument(
 		contentActuallyChanged &&
 		sanitizedContent !== undefined
 	) {
+		const revertWrite = {
+			...(data.title ? { title: data.title } : {}),
+			content: sanitizedContent,
+			wordCount: countDocumentWords(sanitizedContent),
+			// Version stays the same — this is a revert, not an edit
+			...(nextStatus ? { status: nextStatus } : {}),
+			...(data.lastEditedBy ? { lastEditedBy: data.lastEditedBy } : {}),
+		};
+		// A revert that named a base writes over the body it read, or over
+		// nothing: the Reject fallback restores the body from before a run,
+		// and a server write that landed since must not be replaced by it.
+		if (guarded) {
+			return await db.$transaction(async (tx) => {
+				const { count } = await tx.projectDocument.updateMany({
+					where: guardedWhere,
+					data: revertWrite,
+				});
+				if (count !== 1) {
+					throw await conflictAfterLostRace(tx);
+				}
+				return await tx.projectDocument.findUniqueOrThrow({
+					where: { id: documentId },
+				});
+			});
+		}
 		return await db.projectDocument.update({
 			where: { id: documentId },
-			data: {
-				...(data.title ? { title: data.title } : {}),
-				content: sanitizedContent,
-				wordCount: countDocumentWords(sanitizedContent),
-				// Version stays the same — this is a revert, not an edit
-				...(nextStatus ? { status: nextStatus } : {}),
-				...(data.lastEditedBy
-					? { lastEditedBy: data.lastEditedBy }
-					: {}),
-			},
+			data: revertWrite,
 		});
 	}
 
@@ -536,17 +682,19 @@ export async function updateDocument(
 		...(data.lastEditedBy ? { lastEditedBy: data.lastEditedBy } : {}),
 	};
 
-	// Guarded path — the caller supplied an expectedVersion, so it needs the
-	// write to LOSE rather than clobber if someone else got there first.
+	// Guarded path — the caller supplied a base (`expectedVersion`,
+	// `expectedContentHash`, or both), so it needs the write to LOSE rather
+	// than clobber if someone else got there first.
 	//
-	// The equality check above is not enough on its own: it reads, and only then
-	// writes, leaving a window in between. That window is microseconds for a
-	// human save, but the auto-refresh reads the document, spends MINUTES in a
-	// model call, and writes — a person can comfortably land a save in the middle
-	// and nobody is watching to notice it vanish. Closing it needs the version to
-	// be part of the WHERE clause, in a transaction, so the database itself
-	// arbitrates. Same shape as `updateStory`'s optimistic-concurrency guard.
-	if (data.expectedVersion !== undefined) {
+	// The equality checks above are not enough on their own: they read, and
+	// only then write, leaving a window in between. That window is microseconds
+	// for a human save, but the auto-refresh reads the document, spends MINUTES
+	// in a model call, and writes — a person can comfortably land a save in the
+	// middle and nobody is watching to notice it vanish. Closing it needs the
+	// base to be part of the WHERE clause, in a transaction, so the database
+	// itself arbitrates. Same shape as `updateStory`'s optimistic-concurrency
+	// guard.
+	if (guarded) {
 		return await db.$transaction(async (tx) => {
 			if (contentActuallyChanged) {
 				const existingVersion = await tx.documentVersion.findFirst({
@@ -558,21 +706,13 @@ export async function updateDocument(
 			}
 
 			const { count } = await tx.projectDocument.updateMany({
-				where: { id: documentId, version: currentDoc.version },
+				where: guardedWhere,
 				data: documentWrite,
 			});
 			if (count !== 1) {
 				// Someone wrote between our read and this update. Roll the snapshot
 				// back with the transaction and let the caller decide what to do.
-				const actual = await tx.projectDocument.findUnique({
-					where: { id: documentId },
-					select: { version: true },
-				});
-				throw new DocumentVersionConflictError(
-					documentId,
-					currentDoc.version,
-					actual?.version ?? -1,
-				);
+				throw await conflictAfterLostRace(tx);
 			}
 
 			return await tx.projectDocument.findUniqueOrThrow({
@@ -581,9 +721,10 @@ export async function updateDocument(
 		});
 	}
 
-	// Unguarded path — unchanged. Every interactive caller lands here: a human is
-	// present, the read-to-write window is negligible, and last-write-wins is the
-	// behavior the editor has always had.
+	// Unguarded path — unchanged. Every caller without a base lands here: a
+	// human is present, the read-to-write window is negligible, and
+	// last-write-wins is the behavior the editor had before saves from a
+	// collaborative room started naming their base.
 	if (contentActuallyChanged) {
 		// Check if a version record for this version number already exists
 		// (e.g., initial version created by createDocument)
@@ -793,6 +934,16 @@ export async function restoreDocumentVersion(
 		userId: string;
 		organizationId?: string;
 	},
+	options: {
+		/**
+		 * Passed through to `updateDocument`: refuse the restore with
+		 * `DocumentGenerationInProgressError` while a generation run holds
+		 * the document, at the read and again in the write's WHERE. The
+		 * restore procedure sets it for a client-document Proposal, whose run
+		 * owns the body until it finishes (Fizzy #2946).
+		 */
+		refuseWhileGenerating?: boolean;
+	} = {},
 ) {
 	const versionData = await getDocumentVersion(documentId, version);
 
@@ -806,6 +957,9 @@ export async function restoreDocumentVersion(
 		changeDescription: `Restored to version ${version}`,
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
+		...(options.refuseWhileGenerating
+			? { refuseWhileGenerating: true }
+			: {}),
 	});
 }
 
@@ -833,15 +987,32 @@ export async function rejectDocumentRegeneration(
 	options: {
 		userId: string;
 		organizationId?: string | null;
+		/**
+		 * Refuse the rewind with `DocumentGenerationInProgressError` while a
+		 * generation run holds the document (QUEUED or GENERATING): at the
+		 * read, and again in the rewind's WHERE, which also carries the
+		 * version and body read here, so a run queued (or any write landing)
+		 * in between is refused by the database and the transaction, the
+		 * version-row delete included, rolls back. The reject procedure sets
+		 * it for a client-document Proposal, whose run owns the body until it
+		 * finishes (Fizzy #2946).
+		 */
+		refuseWhileGenerating?: boolean;
 	},
 ): Promise<{ id: string; version: number; content: string }> {
 	return await db.$transaction(async (tx) => {
 		const doc = await tx.projectDocument.findUnique({
 			where: { id: documentId },
-			select: { id: true, version: true, content: true },
+			select: { id: true, version: true, content: true, status: true },
 		});
 		if (!doc) {
 			throw new Error("Document not found");
+		}
+		if (
+			options.refuseWhileGenerating &&
+			GENERATION_RUN_STATUSES.includes(doc.status)
+		) {
+			throw new DocumentGenerationInProgressError(documentId);
 		}
 
 		const latest = await tx.documentVersion.findFirst({
@@ -878,14 +1049,47 @@ export async function rejectDocumentRegeneration(
 
 		await tx.documentVersion.delete({ where: { id: latest.id } });
 
+		const rewind = {
+			content: previous.content,
+			version: previous.version,
+			wordCount: countDocumentWords(previous.content),
+			lastEditedBy: options.userId,
+		};
+		if (options.refuseWhileGenerating) {
+			const { count } = await tx.projectDocument.updateMany({
+				where: {
+					id: documentId,
+					version: doc.version,
+					content: doc.content,
+					status: { notIn: GENERATION_RUN_STATUSES },
+				},
+				data: rewind,
+			});
+			if (count !== 1) {
+				const actual = await tx.projectDocument.findUnique({
+					where: { id: documentId },
+					select: { version: true, status: true },
+				});
+				if (actual && GENERATION_RUN_STATUSES.includes(actual.status)) {
+					throw new DocumentGenerationInProgressError(documentId);
+				}
+				const actualVersion = actual?.version ?? -1;
+				throw new DocumentVersionConflictError(
+					documentId,
+					doc.version,
+					actualVersion,
+					actualVersion === doc.version ? "content" : "version",
+				);
+			}
+			return await tx.projectDocument.findUniqueOrThrow({
+				where: { id: documentId },
+				select: { id: true, version: true, content: true },
+			});
+		}
+
 		const updated = await tx.projectDocument.update({
 			where: { id: documentId },
-			data: {
-				content: previous.content,
-				version: previous.version,
-				wordCount: countDocumentWords(previous.content),
-				lastEditedBy: options.userId,
-			},
+			data: rewind,
 			select: { id: true, version: true, content: true },
 		});
 
@@ -953,11 +1157,12 @@ export async function markDocumentGenerationStarted(documentId: string) {
  * keyed regeneration's timestamp, so that request can no longer drag an
  * in-flight run back to QUEUED either.
  *
- * The accepted cost: an unrelated write inside that window — an embed stamping
- * `embeddedAt`, a human save — also declines the mark. The run itself is
- * unaffected and still writes its own outcome; the row simply never advertises
- * the wait. Losing a status label is the cheap side of this trade, and
- * resurrecting a terminal row is the expensive one.
+ * The cost: an unrelated write inside that window — an embed stamping
+ * `embeddedAt`, a title edit, a human save — also declines the mark, and that
+ * is not just a lost status label. The run takes its row by this attempt's
+ * identity before its model call, waits only a few seconds for this mark, and
+ * then stops as superseded, so a declined mark strands the request. `reclaim`
+ * (below) takes the row back when the decline was such a write.
  *
  * Returns whether it applied, and the `generationStartedAt` it wrote — that
  * timestamp is this attempt's identity, and every later write in the run
@@ -975,12 +1180,64 @@ export async function markDocumentGenerationStarted(documentId: string) {
  *    check reads it, and for a QUEUED row — which has no age ceiling, since a
  *    dependency wait can legitimately last an hour — that check is the only
  *    thing that can ever recover an orphan.
+ *  - `reclaim` lets the dispatcher, whose workflow already started, take the
+ *    row back when the freshness mark was declined by a write that does not
+ *    own a run (a title edit, an embed stamp, a save). It applies once more
+ *    by identity instead of freshness: only while no newer attempt has
+ *    stamped the row. This attempt's own run cannot have written it in
+ *    between: every write it makes before its model call is scoped to this
+ *    identity, which the row does not carry until this mark lands. A row
+ *    still QUEUED or GENERATING under an older attempt may be a run that is
+ *    still writing, so it is taken only when the caller has already
+ *    established that its workflow is gone (`liveRowJudged`, the
+ *    client-document Proposal's locked dispatch); otherwise the decline
+ *    stands as before.
+ *
+ * `declinedFor` says why a mark did not apply: `newer-run` (a newer attempt
+ * owns the row; the answer stands), `live-row` (an older attempt's run may
+ * still own it and the caller did not rule on it), or `unowned` (nothing
+ * matched, and no newer attempt explains it: the row is gone, or moved under
+ * the retry).
  */
 export async function markDocumentGenerationQueued(
 	documentId: string,
-	options: { generationStartedAt?: Date; workflowId?: string } = {},
-): Promise<{ applied: boolean; generationStartedAt: Date }> {
+	options: {
+		generationStartedAt?: Date;
+		workflowId?: string;
+		reclaim?: { liveRowJudged: boolean };
+	} = {},
+): Promise<{
+	applied: boolean;
+	generationStartedAt: Date;
+	declinedFor?: "newer-run" | "live-row" | "unowned";
+}> {
 	const generationStartedAt = options.generationStartedAt ?? new Date();
+	const queuedWrite = {
+		status: "QUEUED" as const,
+		generationProgress: 0,
+		generationError: null,
+		generationStartedAt,
+		// Released here, not on the way out. The claim makes a notification
+		// exactly-once per RUN, not per document: a regeneration a week
+		// later is a new outcome its requester is owed. Clearing it as the
+		// new attempt is accepted keeps the claim's whole lifetime inside
+		// one run, so a late terminal write from the previous one still
+		// finds its own claim taken.
+		generationNotificationEmittedAt: null,
+		// The previous coordinated Proposal run's ownership ends here
+		// (Fizzy #2801). Its writes are guarded by its run token, and this
+		// attempt's own run claims the document only later, at its plan;
+		// keeping the token until then would let a late progress or
+		// terminal write of the previous run move this attempt off QUEUED,
+		// and its start, which requires QUEUED, would give the generation
+		// up. A null token matches none of them. Its preview goes too.
+		liveRunId: null,
+		liveAttempt: null,
+		liveContent: null,
+		// Only when supplied: a caller with no workflow to point at must
+		// not blank out the id an earlier attempt left behind.
+		...(options.workflowId ? { workflowId: options.workflowId } : {}),
+	};
 	const { count } = await db.projectDocument.updateMany({
 		where: {
 			id: documentId,
@@ -990,34 +1247,59 @@ export async function markDocumentGenerationQueued(
 			// this mark, which is the write this guard exists to lose to.
 			updatedAt: { lt: generationStartedAt },
 		},
-		data: {
-			status: "QUEUED",
-			generationProgress: 0,
-			generationError: null,
-			generationStartedAt,
-			// Released here, not on the way out. The claim makes a notification
-			// exactly-once per RUN, not per document: a regeneration a week
-			// later is a new outcome its requester is owed. Clearing it as the
-			// new attempt is accepted keeps the claim's whole lifetime inside
-			// one run, so a late terminal write from the previous one still
-			// finds its own claim taken.
-			generationNotificationEmittedAt: null,
-			// The previous coordinated Proposal run's ownership ends here
-			// (Fizzy #2801). Its writes are guarded by its run token, and this
-			// attempt's own run claims the document only later, at its plan;
-			// keeping the token until then would let a late progress or
-			// terminal write of the previous run move this attempt off QUEUED,
-			// and its start, which requires QUEUED, would give the generation
-			// up. A null token matches none of them. Its preview goes too.
-			liveRunId: null,
-			liveAttempt: null,
-			liveContent: null,
-			// Only when supplied: a caller with no workflow to point at must
-			// not blank out the id an earlier attempt left behind.
-			...(options.workflowId ? { workflowId: options.workflowId } : {}),
-		},
+		data: queuedWrite,
 	});
-	return { applied: count > 0, generationStartedAt };
+	if (count > 0) {
+		return { applied: true, generationStartedAt };
+	}
+
+	// Declined. Who wrote decides what happens next: a newer attempt's stamp
+	// stands, anything else may be taken back when the caller asked to.
+	const row = await db.projectDocument.findUnique({
+		where: { id: documentId },
+		select: { status: true, generationStartedAt: true },
+	});
+	if (!row) {
+		return { applied: false, generationStartedAt, declinedFor: "unowned" };
+	}
+	if (
+		row.generationStartedAt &&
+		row.generationStartedAt.getTime() > generationStartedAt.getTime()
+	) {
+		return {
+			applied: false,
+			generationStartedAt,
+			declinedFor: "newer-run",
+		};
+	}
+	const liveRow = row.status === "QUEUED" || row.status === "GENERATING";
+	if (!options.reclaim || (liveRow && !options.reclaim.liveRowJudged)) {
+		return {
+			applied: false,
+			generationStartedAt,
+			declinedFor: liveRow ? "live-row" : "unowned",
+		};
+	}
+
+	// Once more, by identity: no newer attempt may have stamped the row, and
+	// unless the caller ruled on a live row, none may hold it now either.
+	// The database arbitrates against a write landing after the read above.
+	const { count: reclaimed } = await db.projectDocument.updateMany({
+		where: {
+			id: documentId,
+			OR: [
+				{ generationStartedAt: null },
+				{ generationStartedAt: { lte: generationStartedAt } },
+			],
+			...(options.reclaim.liveRowJudged
+				? {}
+				: { status: { notIn: GENERATION_RUN_STATUSES } }),
+		},
+		data: queuedWrite,
+	});
+	return reclaimed > 0
+		? { applied: true, generationStartedAt }
+		: { applied: false, generationStartedAt, declinedFor: "unowned" };
 }
 
 /**

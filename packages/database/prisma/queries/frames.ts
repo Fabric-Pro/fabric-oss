@@ -9,6 +9,7 @@ import type {
 	FrameShareScope,
 } from "../generated/client";
 import { saveFrameEdit } from "./frame-edit-history";
+import { assertPublicSharingAllowed } from "./frame-share";
 import { checkFrameAccess } from "./frame-sharing";
 import {
 	type ProjectPlacementRefusal,
@@ -207,6 +208,9 @@ export async function createFrame(input: CreateFrameInput) {
 	if (input.storyId && !input.projectId) {
 		throw new Error("storyId requires projectId on a frame");
 	}
+	if (input.isPublic) {
+		await assertPublicSharingAllowed(input.organizationId);
+	}
 	const document = FrameDocumentSchema.parse({
 		version: 1,
 		kind,
@@ -283,8 +287,9 @@ export class FramePlacementRefusedError extends Error {
  * A copy of a page for `userId`, the one command behind "duplicate" in the app
  * and "fork" for the Fabric Agent. The copy has the original's content (every
  * block under a new id), kind and theme, and stays where the original is shown:
- * same surface, same project. It is private to its owner, with no public link,
- * and declares no tools unless `runtimeTools` is passed, so duplicating a page
+ * same surface, same project. It is saved PRIVATE with no copied public link
+ * or sharing grants; inherited project access still applies. It declares no
+ * tools unless `runtimeTools` is passed, so duplicating a page
  * never carries its capabilities along unasked. Page data is not copied.
  *
  * A copy in a project is a thing put into that project, so it is held to the
@@ -339,6 +344,7 @@ export async function duplicateFrame(input: {
 		authoritySessionId: input.authoritySessionId,
 		providerKeys: input.providerKeys,
 		isPublic: false,
+		shareScope: "PRIVATE",
 		projectId: original.projectId,
 		surface: original.surface,
 		runtimeTools: input.runtimeTools,
@@ -693,6 +699,9 @@ export async function updateFrame(input: UpdateFrameInput) {
 	if (!existing) {
 		return null;
 	}
+	if (input.isPublic === true && !existing.isPublic) {
+		await assertPublicSharingAllowed(input.organizationId);
+	}
 
 	const current = parseFrameContent(existing);
 	const nextDocument = FrameDocumentSchema.parse({
@@ -770,6 +779,7 @@ export async function publishFrame(input: {
 	if (!existing) {
 		return null;
 	}
+	await assertPublicSharingAllowed(input.organizationId);
 	// Immediately before the write (see updateFrame).
 	throwIfDispatchStopped();
 	const updated = await db.agentWorkspaceFile.update({

@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { handlers, mocks } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mocks = {
+		workflowStart: vi.fn(),
 		getPendingBacklogProposal: vi.fn(),
 		markPendingProposalApproved: vi.fn(),
 		markPendingProposalApplied: vi.fn(),
@@ -71,7 +72,12 @@ vi.mock("@repo/database", () => ({
 			: "FEATURE",
 }));
 
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal", async () => ({
+	unwrapPmSyncError: (
+		await import(
+			"../../../../../../temporal/src/workflows/pm-sync-error-unwrap"
+		)
+	).unwrapPmSyncError,
 	createStoryFromProposal: mocks.createStoryFromProposal,
 	// Fire-and-forget duplicate detection enqueued after the create loop (flags
 	// "Possible duplicate"); stub the trigger so it's a no-op in this test.
@@ -79,7 +85,7 @@ vi.mock("@repo/temporal", () => ({
 		workflowId: "dup-detect-test",
 	})),
 	getTemporalClient: vi.fn().mockResolvedValue({
-		workflow: { start: vi.fn() },
+		workflow: { start: mocks.workflowStart },
 	}),
 }));
 
@@ -400,4 +406,147 @@ describe("approvePendingProposal (Slack) — ROADMAP_RECOMMENDATION refusal", ()
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
 	});
+});
+
+describe("approval failure messages", () => {
+	it.each([
+		[
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: Timed out fetching a new connection from the connection pool",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+			"database error P2024",
+		],
+		[new Error("boom"), "boom"],
+		[
+			new Error("Activity task failed", {
+				cause: Object.assign(
+					new Error("Connection pool unavailable at /app/x.ts"),
+					{ name: "PrismaClientKnownRequestError" },
+				),
+			}),
+			"database error",
+		],
+		["failure", "Failed to create story from proposal"],
+	])(
+		"persists and returns safe create failure text for %s",
+		async (error, expected) => {
+			mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+				makeProposalRow({ changes: [CHANGE_BUG] }),
+			);
+			mocks.createStoryFromProposal.mockRejectedValueOnce(error);
+			const log = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				const result = (await handlers.approve?.({
+					input: {
+						projectId: PROJECT_ID,
+						organizationId: ORG_ID,
+						proposalId: PROPOSAL_ID,
+						approvedChanges: [CHANGE_BUG],
+						syncToPM: false,
+					},
+					context: APPROVAL_CTX,
+				})) as { status: string; errors: string[] };
+				expect.soft(result.status).toBe("failed");
+				expect.soft(result.errors).toEqual([expected]);
+				expect
+					.soft(mocks.markPendingProposalFailed)
+					.toHaveBeenCalledWith(
+						PROPOSAL_ID,
+						expect.objectContaining({
+							errorMessage: expected,
+							rawApplyError: expected,
+						}),
+					);
+				expect
+					.soft(JSON.stringify(result.errors))
+					.not.toContain("prisma.");
+				expect
+					.soft(log)
+					.toHaveBeenCalledWith(
+						expect.any(String),
+						expect.any(String),
+						error,
+					);
+			} finally {
+				log.mockRestore();
+			}
+		},
+	);
+});
+
+describe("approval workflow start failure messages", () => {
+	it.each([
+		[
+			Object.assign(
+				new Error(
+					"Invalid `prisma.story.update()` invocation in /app/x.ts: pool timeout",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2024" },
+			),
+			"database error P2024",
+			"database error",
+		],
+		[
+			new Error("Activity task failed", {
+				cause: Object.assign(new Error("Pool timeout at /app/x.ts"), {
+					name: "PrismaClientKnownRequestError",
+				}),
+			}),
+			"database error",
+			"database error",
+		],
+		[new Error("boom"), "boom", "boom"],
+		["failure", "Failed to start backlog apply workflow", "failure"],
+	])(
+		"persists and returns safe workflow failure text for %s",
+		async (error, expected, classifiedMessage) => {
+			const change = {
+				...CHANGE_BUG,
+				action: "update" as const,
+				existingId: "story-1",
+			};
+			mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+				makeProposalRow({
+					changes: [change as unknown as typeof CHANGE_BUG],
+				}),
+			);
+			mocks.workflowStart.mockRejectedValueOnce(error);
+			const log = vi.spyOn(console, "error").mockImplementation(() => {});
+			try {
+				const result = (await handlers.approve?.({
+					input: {
+						projectId: PROJECT_ID,
+						organizationId: ORG_ID,
+						proposalId: PROPOSAL_ID,
+						approvedChanges: [change],
+						syncToPM: false,
+					},
+					context: APPROVAL_CTX,
+				})) as { status: string; errors: string[] };
+				expect.soft(result.status).toBe("failed");
+				expect.soft(result.errors).toEqual([expected]);
+				expect
+					.soft(mocks.markPendingProposalFailed)
+					.toHaveBeenCalledWith(
+						PROPOSAL_ID,
+						expect.objectContaining({
+							errorMessage: classifiedMessage,
+							rawApplyError: expected,
+						}),
+					);
+				expect
+					.soft(log)
+					.toHaveBeenCalledWith(
+						expect.any(String),
+						expect.any(String),
+						error,
+					);
+			} finally {
+				log.mockRestore();
+			}
+		},
+	);
 });

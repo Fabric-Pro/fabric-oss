@@ -33,6 +33,14 @@ vi.mock("@repo/utils", async (importOriginal) => ({
 const executePlatformTool = vi.fn();
 const executeConnectedServerTool = vi.fn();
 const getAggregatedTools = vi.fn();
+vi.mock("@saas/mcp/lib/gateway/platform-tools", () => ({
+	PLATFORM_TOOL_DEFINITIONS: [
+		{
+			name: "fabric_list_documents",
+			inputSchema: { properties: { projectId: { type: "string" } } },
+		},
+	],
+}));
 vi.mock("@saas/mcp/lib/gateway", async () => {
 	const store = await import(
 		"../../modules/saas/mcp/lib/gateway/session-store"
@@ -76,7 +84,10 @@ const updateOrganizationApiKeyUsage = vi.fn();
 const isOrganizationMember = vi.fn();
 const resolveUserOrganization = vi.fn();
 const isOrganizationLive = vi.fn();
+const getAccessibleFrameById = vi.fn();
 vi.mock("@repo/database", () => ({
+	getAccessibleFrameById: (...args: unknown[]) =>
+		getAccessibleFrameById(...args),
 	isOrganizationLive: (...args: unknown[]) => isOrganizationLive(...args),
 	verifyOAuthAccessToken: (...args: unknown[]) =>
 		verifyOAuthAccessToken(...args),
@@ -273,6 +284,70 @@ beforeEach(() => {
 		content: [{ type: "text", text: "ok" }],
 	});
 	getAggregatedTools.mockResolvedValue({ tools: [], servers: [] });
+});
+
+describe("page project restrictions at dispatch", () => {
+	it("isolates concurrent page calls and leaves the cached session unchanged", async () => {
+		const { sessionId } = await postOrganization(initializeBody, {
+			authorization: WIDE_TOKEN,
+		});
+		if (!sessionId) {
+			throw new Error("Expected an initialized session");
+		}
+		const cached = await storedSession(sessionId);
+		if (!cached) {
+			throw new Error("Expected a cached session");
+		}
+		getAccessibleFrameById.mockImplementation(
+			async ({ id }: { id: string }) => ({
+				id,
+				projectId: id === "page-one" ? PROJECT_ONE : PROJECT_TWO,
+				surface: "workspace",
+				runtimeTools: ["fabric_list_documents"],
+			}),
+		);
+		const responses = await Promise.all(
+			["page-one", "page-two"].map((pageId) =>
+				postOrganization(
+					rpc("tools/call", {
+						name: "fabric_list_documents",
+						arguments: {},
+					}),
+					{
+						authorization: WIDE_TOKEN,
+						"mcp-session-id": sessionId,
+						"x-fabric-page-frame": pageId,
+					},
+				),
+			),
+		);
+		expect(responses.map(({ response }) => response.status)).toEqual([
+			200, 200,
+		]);
+		expect(executePlatformTool).toHaveBeenCalledTimes(2);
+		const calls = executePlatformTool.mock.calls;
+		expect(calls.map((call) => call[2].pageProjectId).sort()).toEqual(
+			[PROJECT_ONE, PROJECT_TWO].sort(),
+		);
+		for (const [, args, callSession] of calls) {
+			expect(args.projectId).toBe(callSession.pageProjectId);
+			expect(callSession).not.toBe(cached);
+			expect(callSession.scopes).toBe(cached.scopes);
+			expect(callSession.credential).toBe(cached.credential);
+			expect(callSession.projectId).toBeNull();
+			expect(callSession.pinnedProjectId).toBeUndefined();
+		}
+		expect(await storedSession(sessionId)).toBe(cached);
+		expect(cached).not.toHaveProperty("pageProjectId");
+		await postOrganization(
+			rpc("tools/call", {
+				name: "fabric_list_documents",
+				arguments: { projectId: PROJECT_TWO },
+			}),
+			{ authorization: WIDE_TOKEN, "mcp-session-id": sessionId },
+		);
+		expect(executePlatformTool.mock.calls.at(-1)?.[2]).toBe(cached);
+	});
 });
 
 describe("a project's token at its own URL", () => {

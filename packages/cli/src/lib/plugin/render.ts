@@ -24,12 +24,21 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import path from "node:path";
-import type {
-	FabricClient,
-	MemoryWriteTargets,
-	PublishedInstructions,
+import {
+	type FabricClient,
+	type MemoryWriteTargets,
+	type PublishedInstructions,
+	planPluginFiles,
 } from "@fabricorg/sdk";
 import { projectResource } from "../oauth/project-resource.js";
+import {
+	assertLocationFree,
+	BINDING_FILE,
+	bindingText,
+	originOf,
+	type PluginBinding,
+} from "./binding.js";
+import { instructionAccessBootstrap } from "./instruction-access.js";
 import {
 	alwaysOnFile,
 	buildPlugin,
@@ -39,6 +48,7 @@ import {
 	pluginNameFor,
 	RENDER_VERSION,
 } from "./layout.js";
+import { type ProjectRule, selectRules } from "./rules.js";
 import { readInstructions } from "./source.js";
 
 /** Pins kept per project besides the newest: Claude Code may still be copying an older one. */
@@ -69,9 +79,35 @@ export interface Rendered {
 	pin: string;
 	/** The directory was already there. */
 	reused: boolean;
-	/** The memory file the session context is built from, for Codex's override. */
+	/** Access guidance and optional root text, for Codex's override. */
 	alwaysOn: { file: string; text: string } | null;
+	/** The project rules for automatic delivery by the caller. */
+	rules: ProjectRule[];
 	files: PluginFile[];
+}
+
+/** Files named in the line about what the plugin leaves out. */
+const LEFT_OUT_NAMED = 3;
+
+/**
+ * One line about the instruction files the plugin has no place for: how many,
+ * the first few, and where the whole list and the reasons are. `null` when the
+ * plugin carries everything.
+ */
+function leftOutLine(paths: readonly string[]): string | null {
+	if (paths.length === 0) {
+		return null;
+	}
+	const named = paths.slice(0, LEFT_OUT_NAMED).join(", ");
+	const more =
+		paths.length > LEFT_OUT_NAMED
+			? ` and ${paths.length - LEFT_OUT_NAMED} more`
+			: "";
+	const count =
+		paths.length === 1
+			? "1 instruction file is"
+			: `${paths.length} instruction files are`;
+	return `${count} not part of the plugin (${named}${more}). Their paths remain in the fabric-instruction-access skill's catalog; use the project's Fabric MCP tools to read available text on demand. The Coding Instructions tab lists the layout reasons.`;
 }
 
 function memoryFoldersOf(targets: MemoryWriteTargets): MemoryFolders {
@@ -202,7 +238,13 @@ async function installCodex(
 	directory: string,
 	pin: string,
 	files: readonly PluginFile[],
+	binding: PluginBinding,
 ): Promise<{ directory: string; reused: boolean }> {
+	await assertLocationFree({
+		directory,
+		location: "codex-plugin",
+		wanted: binding,
+	});
 	const marker = await readFile(
 		path.join(directory, CODEX_PIN_MARKER),
 		"utf8",
@@ -216,6 +258,11 @@ async function installCodex(
 	try {
 		await writeTree(temporary, [
 			...files,
+			{
+				path: BINDING_FILE,
+				bytes: new TextEncoder().encode(bindingText(binding)),
+				mode: 0o644,
+			},
 			{
 				path: CODEX_PIN_MARKER,
 				bytes: new TextEncoder().encode(`${pin}\n`),
@@ -257,7 +304,19 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		fetchImpl: input.fetchImpl,
 	});
 	for (const skipped of read.skipped) {
-		input.log?.(`${skipped} is not text, so the plugin leaves it out.`);
+		input.log?.(
+			`${skipped} is unavailable as inline text, so the plugin leaves its bytes out. Its path remains in the fabric-instruction-access catalog; MCP reads may report a binary or size refusal.`,
+		);
+	}
+	// The other tool's memory file is not left out: CLAUDE.md serves Claude
+	// Code and AGENTS.md Codex.
+	const notPartOfPlugin = leftOutLine(
+		planPluginFiles(read.listed, input.tool)
+			.leftOut.filter((entry) => entry.reason !== "always-on-shadowed")
+			.map((entry) => entry.path),
+	);
+	if (notPartOfPlugin !== null) {
+		input.log?.(notPartOfPlugin);
 	}
 	const memory = await readMemoryFolders(input);
 	const pin = pinOf(read.pin, memory, input.tool);
@@ -268,8 +327,13 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 		memory,
 		gatewayUrl: projectResource(input.origin, "mcp", input.projectId),
 		pin,
+		instructionAccess: { listed: read.listed, source: read.source },
 	});
 	const always = alwaysOnFile(read.files, input.tool);
+	const guidance = instructionAccessBootstrap(
+		pluginNameFor(input.projectId),
+		input.tool,
+	);
 	const installed =
 		input.tool === "claude-code"
 			? await installClaude(
@@ -284,12 +348,19 @@ export async function renderPlugin(input: RenderInput): Promise<Rendered> {
 					),
 					pin,
 					files,
+					{
+						projectId: input.projectId,
+						origin: originOf(input.origin),
+					},
 				);
 	return {
 		...installed,
 		pin,
-		alwaysOn:
-			always === null ? null : { file: always.file, text: always.text },
+		alwaysOn: {
+			file: always?.file ?? "Fabric instruction access",
+			text: `${guidance}${always === null ? "" : `\n${always.text}`}`,
+		},
+		rules: selectRules(read, input.tool),
 		files,
 	};
 }

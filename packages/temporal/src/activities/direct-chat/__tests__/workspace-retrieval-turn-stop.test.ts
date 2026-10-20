@@ -47,6 +47,7 @@ vi.mock("@repo/rag", () => ({
 	generateSparseVector: () => ({ indices: [], values: [] }),
 }));
 
+import type { SecondaryUsageInput } from "../../../workflows/orchestrator/usage-attribution";
 import { runWithTurnDispatch } from "../../orchestrator/turn-dispatch";
 import { retrieveWorkspaceDocumentsActivity } from "../rag-retrieval";
 
@@ -66,7 +67,9 @@ function turnStopped() {
 	});
 }
 
-function retrieve(options?: { turnScope?: typeof TURN_SCOPE }) {
+function retrieve(
+	options?: SecondaryUsageInput & { turnScope?: typeof TURN_SCOPE },
+) {
 	return retrieveWorkspaceDocumentsActivity(
 		"what is the launch date",
 		TURN_SCOPE.userId,
@@ -85,6 +88,30 @@ beforeEach(() => {
 });
 
 describe("retrieveWorkspaceDocumentsActivity", () => {
+	it("attributes query embedding to the origin while retaining workspace tenant filtering", async () => {
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			projectId: "origin-project",
+			frameId: "origin-frame",
+			featureKey: "chat-agent" as const,
+		};
+		mocks.generateEmbedding.mockResolvedValue({ embedding: [0.1] });
+		await retrieve({ usageOrigin });
+		expect(mocks.generateEmbedding).toHaveBeenCalledWith(
+			"what is the launch date",
+			{
+				userId: TURN_SCOPE.userId,
+				organizationId: TURN_SCOPE.organizationId,
+				...usageOrigin,
+				tags: ["workspace-rag", "query"],
+			},
+			{},
+		);
+		expect(mocks.searchMultipleWorkspaces).toHaveBeenCalledWith(
+			expect.objectContaining({ workspaceIds: ["ws-1"] }),
+		);
+	});
+
 	it("rethrows a stop in a chat turn", async () => {
 		const stop = turnStopped();
 		mocks.generateEmbedding.mockRejectedValue(stop);

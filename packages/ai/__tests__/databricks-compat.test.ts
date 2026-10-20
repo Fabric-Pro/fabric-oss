@@ -1303,6 +1303,50 @@ describe("stripReasoningFromMessages", () => {
 		expect(payload.choices[0].message.content).toBe("The answer");
 	});
 
+	it.each([
+		[
+			"before<think>one</think>middle<think>two</think>after",
+			"beforemiddleafter",
+		],
+		["before<think>outer<think>inner</think>after", "beforeafter"],
+		["before<think>one</think>after<think>unfinished", "beforeafter"],
+		[
+			"literal <thi and </think> and <think",
+			"literal <thi and </think> and <think",
+		],
+		["before<think>unfinished</thi", "before"],
+		["<th<think>hidden</think>ink>unfinished", ""],
+	])(
+		"preserves span and literal-tag behavior for %j",
+		(content, expected) => {
+			const payload = { choices: [{ message: { content } }] };
+			expect(stripReasoningFromMessages(payload)).toBe(
+				content !== expected,
+			);
+			expect(payload.choices[0].message.content).toBe(expected);
+		},
+	);
+
+	it("drops repeated unmatched opening tags and keeps surrounding answers", () => {
+		const content = `Answer<think>${"<think>".repeat(8_192)}unfinished`;
+		const payload = { choices: [{ message: { content } }] };
+		expect(stripReasoningFromMessages(payload)).toBe(true);
+		expect(payload.choices[0].message.content).toBe("Answer");
+	});
+
+	it("handles many complete spans in each independent choice", () => {
+		const content = "v<think>hidden</think>".repeat(8_192);
+		const payload = {
+			choices: [
+				{ message: { content } },
+				{ message: { content: "untouched <thi" } },
+			],
+		};
+		expect(stripReasoningFromMessages(payload)).toBe(true);
+		expect(payload.choices[0].message.content).toBe("v".repeat(8_192));
+		expect(payload.choices[1].message.content).toBe("untouched <thi");
+	});
+
 	it("leaves content without think tags untouched", () => {
 		const payload = { choices: [{ message: { content: "plain answer" } }] };
 		expect(stripReasoningFromMessages(payload)).toBe(false);

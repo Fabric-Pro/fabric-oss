@@ -636,16 +636,33 @@ export class PlanSourceRotatedError extends Error {
  */
 export class SubscriptionPlanExhaustedError extends Error {
 	readonly code = CHATGPT_PLAN_EXHAUSTED_CODE;
+	/**
+	 * The member could run this work on a personal key of their own while
+	 * the plans are spent, had they opted one in (Fizzy #3086): the refusal
+	 * then links to where they can.
+	 */
+	readonly personalKeyOption: boolean;
 
 	constructor(
 		message: string,
 		/** When the window resets, if the provider said; null otherwise. */
 		readonly resetAt: Date | null,
+		options: { personalKeyOption?: boolean } = {},
 	) {
 		super(message);
 		this.name = "SubscriptionPlanExhaustedError";
+		this.personalKeyOption = options.personalKeyOption === true;
 	}
 }
+
+/**
+ * Set on a chat stream whose turn runs on the member's own personal key
+ * because every ChatGPT plan is spent (Fizzy #3086), alongside
+ * {@link CHATGPT_PLAN_API_BILLING_HEADER} for the reset time. Its value is
+ * the key's provider, never the key.
+ */
+export const CHATGPT_PLAN_PERSONAL_KEY_HEADER =
+	"x-fabric-chatgpt-plan-personal-key";
 
 function exhaustedFromBody(
 	body: unknown,

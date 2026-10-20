@@ -19,18 +19,45 @@ import { db } from "@repo/database";
 import { logger } from "@repo/logs";
 import { CREATE_UNCONFIRMED_ERROR_CLASS } from "./pm-create-claim";
 import {
+	describeOrphanCause,
+	isDatabaseError,
+	prismaErrorCode,
+} from "./pm-sync-user-error";
+import {
 	type PmSyncItemType,
 	recordPmSyncFailure,
 	recordPmSyncFailureLog,
 } from "./record-pm-sync-state";
 
-/** An error's message, without throwing on an odd value. */
-export function describeOrphanCause(error: unknown): string {
-	try {
-		return error instanceof Error ? error.message : String(error);
-	} catch {
-		return "unknown error";
+export { describeOrphanCause, prismaErrorCode } from "./pm-sync-user-error";
+
+/**
+ * The failed link write's cause, for the user-visible message. Leaves out
+ * message text for recognised Prisma client and driver adapter errors; other
+ * errors contribute their first line only, capped at 200 characters.
+ * The full error is for the log only.
+ */
+export function describeLinkWriteCause(
+	error: unknown,
+	itemNoun: string,
+): string {
+	const code = prismaErrorCode(error);
+	if (code === "P2002") {
+		return `another ${itemNoun} in this project is already linked to that item`;
 	}
+	if (code) {
+		return `database error ${code}`;
+	}
+	if (isDatabaseError(error)) {
+		return "database error";
+	}
+	return (
+		describeOrphanCause(error)
+			.trim()
+			.split("\n")[0]
+			?.trim()
+			.slice(0, 200) || "unknown error"
+	);
 }
 
 /**

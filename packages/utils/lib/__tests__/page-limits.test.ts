@@ -109,6 +109,18 @@ describe("cleanPageFileName", () => {
 		expect(cleanPageFileName("\u202E\u200B")).toBe("");
 	});
 
+	it("keeps interior dots and spaces while removing only the suffix", () => {
+		expect(cleanPageFileName("report.. draft . .")).toBe("report.. draft");
+		expect(cleanPageFileName("a.b .csv . ")).toBe("a.b .csv");
+	});
+
+	it("handles long dot runs before a nonmatching final character", () => {
+		expect(cleanPageFileName(`a${".".repeat(8_192)}b`)).toBe(
+			`a${".".repeat(98)}b`,
+		);
+		expect(cleanPageFileName(`a${". ".repeat(8_192)}`)).toBe("a");
+	});
+
 	it("cuts a long name to 100 characters and keeps its extension", () => {
 		const cleaned = cleanPageFileName(`${"a".repeat(300)}.csv`);
 

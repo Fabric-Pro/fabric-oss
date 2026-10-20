@@ -41,6 +41,14 @@
 			"types": "./src/runtime/index.ts",
 			"default": "./src/runtime/index.ts"
 		},
+		"./services/agent-configurable": {
+			"types": "./src/services/agent-configurable.ts",
+			"default": "./src/services/agent-configurable.ts"
+		},
+		"./services/seed-default-mcp-configs": {
+			"types": "./src/services/seed-default-mcp-configs.ts",
+			"default": "./src/services/seed-default-mcp-configs.ts"
+		},
 		"./services/usage-logging": {
 			"types": "./src/services/usage-logging.ts",
 			"default": "./src/services/usage-logging.ts"
@@ -60,6 +68,10 @@
 		"./message-shape": {
 			"types": "./src/message-shape.ts",
 			"default": "./src/message-shape.ts"
+		},
+		"./utils/message-converter": {
+			"types": "./src/utils/message-converter.ts",
+			"default": "./src/utils/message-converter.ts"
 		},
 		"./utils/sanitize-error": {
 			"types": "./src/utils/sanitize-error.ts",
@@ -100,7 +112,8 @@
 		"@repo/mcp": "workspace:*",
 		"@repo/observability": "workspace:*",
 		"@repo/rag": "workspace:*",
-		"hono": "^4.13.7",
+		"@repo/utils": "workspace:*",
+		"hono": "^4.13.11",
 		"undici": "^8.5.0",
 		"uuid": "^14.0.2",
 		"zod": "^4.1.12"

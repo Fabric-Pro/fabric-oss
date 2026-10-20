@@ -257,7 +257,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 								"BEARER",
 						};
 					} catch (error) {
-						console.error("Error decrypting API key:", error);
+						console.error("Error decrypting API key:", {
+							error:
+								error instanceof Error ? error.message : error,
+							stack:
+								error instanceof Error
+									? error.stack
+									: undefined,
+						});
 						return NextResponse.json(
 							{
 								success: false,
@@ -275,7 +282,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 					}
 				}
 			} catch (error) {
-				console.error("Error retrieving config credentials:", error);
+				console.error("Error retrieving config credentials:", {
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 				return NextResponse.json(
 					{
 						success: false,
@@ -410,7 +420,9 @@ async function testMcpConnection(
 
 		// Log the request for debugging (only in development)
 		if (process.env.NODE_ENV === "development") {
-			console.log("[MCP Test] Testing connection to:", input.baseUrl);
+			console.log("[MCP Test] Testing connection to:", {
+				baseUrl: input.baseUrl,
+			});
 			console.log("[MCP Test] Transport:", input.transport);
 			console.log("[MCP Test] Auth Type:", input.authType);
 			console.log("[MCP Test] Has Auth Header:", !!headers.Authorization);
@@ -467,7 +479,9 @@ async function testMcpConnection(
 				toolNames.length,
 				"tools",
 			);
-			console.log("[MCP Test] Server info:", serverVersion);
+			console.log("[MCP Test] Server info:", {
+				serverVersion,
+			});
 		}
 
 		// For authenticated connections, verify the API key/token actually works
@@ -532,7 +546,7 @@ async function testMcpConnection(
 						if (process.env.NODE_ENV === "development") {
 							console.warn(
 								"[MCP Test] Auth verification failed:",
-								errMsg,
+								{ errMsg },
 							);
 						}
 					}
@@ -599,7 +613,10 @@ async function testMcpConnection(
 		const responseTime = Date.now() - startTime;
 
 		if (process.env.NODE_ENV === "development") {
-			console.error("[MCP Test] Connection failed:", error);
+			console.error("[MCP Test] Connection failed:", {
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 		}
 
 		// Parse error for better messaging with auth-specific guidance

@@ -4,6 +4,7 @@ import {
 	resolveDirectRepositoryState,
 } from "../projects/procedures/instructions/repository/direct-state";
 
+export { readDirectRepositoryFilesForApi } from "../projects/procedures/instructions/repository/direct-batch";
 export {
 	getDirectRepositoryFileForApi,
 	listDirectRepositoryFilesForApi,

@@ -28,7 +28,7 @@ const database = vi.hoisted(() => ({
 	getFrameById: vi.fn(),
 	findFrameForSourceRun: vi.fn(),
 	workflowFindFirst: vi.fn(),
-	workflowUpdate: vi.fn(),
+	writeWorkflowRunState: vi.fn(),
 	organizationFindUnique: vi.fn(),
 	queryRaw: vi.fn(),
 }));
@@ -42,11 +42,11 @@ vi.mock("@repo/database", () => ({
 	updateFrame: database.updateFrame,
 	getFrameById: database.getFrameById,
 	findFrameForSourceRun: database.findFrameForSourceRun,
+	writeWorkflowRunState: database.writeWorkflowRunState,
 	db: {
 		organization: { findUnique: database.organizationFindUnique },
 		workflow: {
 			findFirst: database.workflowFindFirst,
-			update: database.workflowUpdate,
 		},
 		$transaction: async (
 			run: (tx: unknown) => Promise<unknown>,
@@ -55,7 +55,6 @@ vi.mock("@repo/database", () => ({
 				$queryRaw: database.queryRaw,
 				workflow: {
 					findFirst: database.workflowFindFirst,
-					update: database.workflowUpdate,
 				},
 			}),
 	},
@@ -150,9 +149,12 @@ beforeEach(() => {
 	database.workflowFindFirst.mockImplementation(async () => ({
 		settings: store.workflowSettings,
 	}));
-	database.workflowUpdate.mockImplementation(async ({ data }) => {
-		store.workflowSettings = data.settings;
-	});
+	database.writeWorkflowRunState.mockImplementation(
+		async (_tx, { settings }) => {
+			store.workflowSettings = settings;
+			return 1;
+		},
+	);
 });
 
 describe("executePublishFrameStep - creating", () => {
@@ -291,10 +293,22 @@ describe("executePublishFrameStep - new-version mode", () => {
 		expect(store.workflowSettings).toEqual({
 			publishFrameIds: { "publish-frame": first.output?.frameId },
 		});
+		expect(database.writeWorkflowRunState).toHaveBeenCalledTimes(1);
+		expect(database.writeWorkflowRunState).toHaveBeenCalledWith(
+			expect.anything(),
+			{
+				workflowId: "wf-1",
+				organizationId: "org-1",
+				settings: {
+					publishFrameIds: { "publish-frame": first.output?.frameId },
+				},
+			},
+		);
 	});
 
 	it("does not add a version when the page did not change", async () => {
 		await executePublishFrameStep(params());
+		database.writeWorkflowRunState.mockClear();
 
 		const second = await executePublishFrameStep(
 			params({ executionId: "exec-2" }),
@@ -303,6 +317,7 @@ describe("executePublishFrameStep - new-version mode", () => {
 		expect(second.output?.action).toBe("unchanged");
 		expect(database.updateFrame).not.toHaveBeenCalled();
 		expect(database.saveFullUpdateToHistory).not.toHaveBeenCalled();
+		expect(database.writeWorkflowRunState).not.toHaveBeenCalled();
 	});
 
 	it("preserves other settings when it records the frame id", async () => {
@@ -378,7 +393,7 @@ describe("executePublishFrameStep - new-frame mode", () => {
 		);
 
 		expect(frames()).toHaveLength(2);
-		expect(database.workflowUpdate).not.toHaveBeenCalled();
+		expect(database.writeWorkflowRunState).not.toHaveBeenCalled();
 	});
 
 	it("still creates only one frame when a run's step is retried", async () => {

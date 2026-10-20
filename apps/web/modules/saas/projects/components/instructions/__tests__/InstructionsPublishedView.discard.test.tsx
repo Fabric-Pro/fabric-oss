@@ -13,6 +13,9 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InstructionsSnapshot } from "../../../lib/instructions-snapshot";
 
+vi.mock("../InstructionsPluginReport", () => ({
+	InstructionsPluginReport: () => null,
+}));
 vi.mock("next-intl", async () =>
 	(await import("../../../__tests__/en-copy")).nextIntlMock(),
 );

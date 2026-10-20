@@ -31,7 +31,7 @@ export function isLiveSession(session: Pick<ParlumeSession, "status">) {
 }
 
 export function modeLabel(toolsReadOnly: boolean): string {
-	return toolsReadOnly ? "Read-only" : "Actions with confirmation";
+	return toolsReadOnly ? "Read-only" : "Actions";
 }
 
 export function statusLabel(status: string): string {

@@ -23,11 +23,23 @@ import {
 	useAcknowledgeChatgptPlanPoolTerms,
 	useUpdateChatgptPlanPoolPolicy,
 } from "../chatgpt-plan-pool/chatgpt-plan-pool-queries";
+import {
+	CHATGPT_PLAN_TERMS_ANCHOR,
+	scrollToTermsWhenTargeted,
+} from "../chatgpt-plan-pool/chatgpt-plan-terms-anchor";
+import { InfoTip } from "../chatgpt-plan-pool/InfoTip";
 import { PROVIDER_DISPLAY_NAMES } from "../org-ai-model-preferences/use-org-api-model-preferences";
 import { SegmentedControl } from "./SegmentedControl";
 import type { AiRoutingData } from "./use-ai-routing-data";
 
-const HEADROOM_CHOICES = [0, 20, 40, 60, 80] as const;
+/**
+ * What background work may use of each shared account's window, in percent.
+ * Stored the other way round, as `headroomPct`: the share left for people,
+ * so what is shown is `100 - headroomPct` (Fizzy #3085 FR8).
+ */
+const BACKGROUND_SHARE_CHOICES = [20, 40, 60, 80, 100] as const;
+/** The stored `headroomPct` of an organization that never chose one: no limit. */
+const DEFAULT_HEADROOM_PCT = 0;
 const NO_FALLBACK = "__none__";
 
 function Step({
@@ -89,8 +101,10 @@ function PolicyRow({
 }
 
 /**
- * How AI work runs in the organization (Fizzy #2770 F6): the three sources a
- * request tries in order with their live status, then the organization's
+ * How AI work runs in the organization (Fizzy #2770 F6): the sources a
+ * request tries in order with their live status — the last one the viewer's
+ * own personal key, shown only as it stands for them (Fizzy #3085) — then
+ * the organization's
  * policy — what happens when every plan is spent, and the fallback
  * for a model a plan stops serving. The one home of that policy.
  */
@@ -171,6 +185,7 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 						: t("spentHelpPeopleStopWait"),
 			].join(" ");
 	const spentDisabled = !canEdit || updatePolicy.isPending;
+	const backgroundShare = 100 - (policy?.headroomPct ?? DEFAULT_HEADROOM_PCT);
 	// Why "Use API billing" cannot be chosen, said next to it.
 	const apiDisabledReason = data.hasApiProvider
 		? null
@@ -204,7 +219,7 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 				</p>
 			</div>
 
-			<ol className="grid gap-2.5 md:grid-cols-[1fr_auto_1fr_auto_1fr]">
+			<ol className="grid gap-2.5 lg:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr]">
 				<Step
 					body={t("ownPlansBody")}
 					number={1}
@@ -264,12 +279,47 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 					testId="ai-routing-step-api"
 					title={t("apiTitle")}
 				/>
+				<StepArrow />
+				<Step
+					action={
+						data.providersHref ? (
+							<Link
+								className="w-fit text-primary text-sm underline underline-offset-4"
+								href={`${data.providersHref}?tab=personal`}
+							>
+								{data.planSpentPersonalProvider
+									? t("personalManage")
+									: t("personalSetUp")}
+							</Link>
+						) : undefined
+					}
+					body={t("personalBody")}
+					number={4}
+					status={
+						data.planSpentPersonalProvider ? (
+							<Badge status="success">
+								{t("personalUsed", {
+									provider:
+										PROVIDER_DISPLAY_NAMES[
+											data.planSpentPersonalProvider
+										] ?? data.planSpentPersonalProvider,
+								})}
+							</Badge>
+						) : (
+							<Badge status="info">{t("personalNotSet")}</Badge>
+						)
+					}
+					testId="ai-routing-step-personal"
+					title={t("personalTitle")}
+				/>
 			</ol>
 
 			{policy && !policy.termsAcknowledged ? (
 				<div
-					className="space-y-2 rounded-md border border-border p-3"
+					className="scroll-mt-24 space-y-2 rounded-md border border-border p-3"
 					data-testid="ai-routing-terms"
+					id={CHATGPT_PLAN_TERMS_ANCHOR}
+					ref={scrollToTermsWhenTargeted}
 				>
 					<p className="font-medium text-sm">{tPool("termsTitle")}</p>
 					<p className="text-muted-foreground text-sm">
@@ -351,36 +401,39 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 					</p>
 				) : null}
 				<AdvancedSettings testId="ai-routing-advanced">
-					<p className="max-w-sm text-muted-foreground text-xs sm:text-right">
-						{t("headroomHelp")}
-					</p>
 					<div className="flex flex-wrap items-center gap-2 sm:justify-end">
-						<Label
-							className="font-normal text-muted-foreground"
-							htmlFor="ai-routing-headroom"
-						>
-							{t("headroomLabel")}
-						</Label>
+						<div className="flex items-center gap-1.5">
+							<Label
+								className="font-normal text-muted-foreground"
+								htmlFor="ai-routing-background-share"
+							>
+								{t("backgroundShareLabel")}
+							</Label>
+							<InfoTip
+								setting={t("backgroundShareLabel")}
+								text={t("backgroundShareTooltip")}
+							/>
+						</div>
 						<Select
 							disabled={spentDisabled}
 							onValueChange={(value) =>
 								updatePolicy.mutate({
-									headroomPct: Number(value),
+									headroomPct: 100 - Number(value),
 								})
 							}
-							value={String(policy?.headroomPct ?? 40)}
+							value={String(backgroundShare)}
 						>
 							<SelectTrigger
 								className="w-24"
-								id="ai-routing-headroom"
+								id="ai-routing-background-share"
 							>
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
 								{[
 									...new Set<number>([
-										...HEADROOM_CHOICES,
-										policy?.headroomPct ?? 40,
+										...BACKGROUND_SHARE_CHOICES,
+										backgroundShare,
 									]),
 								]
 									.sort((a, b) => a - b)
@@ -395,6 +448,9 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 							</SelectContent>
 						</Select>
 					</div>
+					<p className="max-w-sm text-muted-foreground text-xs sm:text-right">
+						{t("backgroundShareDescription")}
+					</p>
 				</AdvancedSettings>
 				{data.hasApiProvider &&
 				sharingOn &&
@@ -455,8 +511,8 @@ export function AiRoutingCard({ data }: { data: AiRoutingData }) {
 function StepArrow() {
 	return (
 		<li aria-hidden="true" className="self-center justify-self-center">
-			<ArrowRightIcon className="hidden size-4 text-muted-foreground md:block" />
-			<ArrowDownIcon className="size-4 text-muted-foreground md:hidden" />
+			<ArrowRightIcon className="hidden size-4 text-muted-foreground lg:block" />
+			<ArrowDownIcon className="size-4 text-muted-foreground lg:hidden" />
 		</li>
 	);
 }

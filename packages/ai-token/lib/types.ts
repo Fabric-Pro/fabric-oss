@@ -9,6 +9,8 @@
  * Claims embedded in an AI token
  */
 export interface AITokenClaims {
+	/** Signed model selection for delegated system agents. */
+	mo?: string;
 	/** Issuer - always "fabric-portal" */
 	iss: "fabric-portal";
 	/** Subject - the user ID */
@@ -55,6 +57,8 @@ export interface AITokenClaims {
  * Options for issuing an AI token
  */
 export interface IssueTokenOptions {
+	/** Model selection written as the signed mo claim. */
+	modelOverride?: string;
 	/** User ID */
 	userId: string;
 	/** Organization ID (optional) */
@@ -101,6 +105,12 @@ export interface VerifyTokenError {
  * Result of exchanging a token for an API key
  */
 export interface ExchangeResult {
+	/** Catalog metadata for the pinned model; null caps mean unknown. */
+	isReasoningModel?: boolean;
+	maxOutputTokens?: number | null;
+	contextWindow?: number | null;
+	/** The exchange applied the signed model selection. */
+	modelPinned?: boolean;
 	/** The decrypted API key */
 	apiKey: string;
 	/** The AI provider type */

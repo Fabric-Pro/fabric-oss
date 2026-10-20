@@ -4,8 +4,6 @@
  * Supports both system agents and dynamically registered external agents
  */
 
-import type { A2AValidationResult } from "../a2a";
-import { A2AClient, extractAgentMetadata, validateA2AEndpoint } from "../a2a";
 import { globalAgentRegistry } from "../registry";
 
 /**
@@ -74,14 +72,11 @@ interface CacheEntry {
 export class AgentLoaderService {
 	private cache: Map<string, CacheEntry> = new Map();
 	private cacheTtlMs: number;
-	private a2aClient: A2AClient;
 
 	constructor(options?: {
 		cacheTtlMs?: number;
-		a2aClientOptions?: ConstructorParameters<typeof A2AClient>[0];
 	}) {
 		this.cacheTtlMs = options?.cacheTtlMs ?? 5 * 60 * 1000; // 5 minutes default
-		this.a2aClient = new A2AClient(options?.a2aClientOptions);
 	}
 
 	/**
@@ -219,104 +214,6 @@ export class AgentLoaderService {
 		}
 
 		return Array.from(agentMap.values());
-	}
-
-	/**
-	 * Register a new external agent
-	 * Validates the A2A protocol and extracts metadata
-	 */
-	async registerExternalAgent(
-		deploymentUrl: string,
-		context: AgentLoadContext,
-		options?: {
-			scope?: "user" | "organization";
-			overrides?: Partial<
-				Pick<LoadedAgent, "displayName" | "description">
-			>;
-		},
-	): Promise<{
-		valid: boolean;
-		agent?: Omit<DbAgent, "id">;
-		validationResult: A2AValidationResult;
-	}> {
-		// Validate A2A protocol
-		const validation = await validateA2AEndpoint(deploymentUrl, {
-			testSendMessage: false,
-			timeout: 10000,
-		});
-
-		if (!validation.valid || !validation.agentCard) {
-			return { valid: false, validationResult: validation };
-		}
-
-		// Extract metadata from agent card
-		const extracted = extractAgentMetadata(validation.agentCard);
-
-		// Build agent record
-		const agent: Omit<DbAgent, "id"> = {
-			agentId: `external-${validation.agentCard.name}-${Date.now()}`,
-			name: validation.agentCard.name,
-			displayName:
-				options?.overrides?.displayName || extracted.displayName,
-			description:
-				options?.overrides?.description || extracted.description,
-			framework: "A2A",
-			deploymentUrl,
-			status: "ACTIVE",
-			scope: options?.scope?.toUpperCase() || "USER",
-			config: {
-				capabilities: extracted.capabilities,
-				skills: extracted.skills,
-				supportsStreaming: extracted.supportsStreaming,
-				protocolVersion: validation.protocolVersion,
-			},
-			metadata: {
-				registeredBy: context.userId,
-				registeredAt: new Date().toISOString(),
-				agentCard: validation.agentCard,
-			},
-			lastHealthCheck: new Date(),
-		};
-
-		return { valid: true, agent, validationResult: validation };
-	}
-
-	/**
-	 * Health check for an agent
-	 */
-	async healthCheck(agent: LoadedAgent): Promise<boolean> {
-		if (!agent.deploymentUrl) {
-			return true; // System agents without URL are always healthy
-		}
-
-		if (agent.framework === "A2A") {
-			return this.a2aClient.healthCheck(agent.deploymentUrl);
-		}
-
-		// For other frameworks, try a simple fetch
-		try {
-			const response = await fetch(`${agent.deploymentUrl}/health`, {
-				method: "GET",
-				signal: AbortSignal.timeout(5000),
-			});
-			return response.ok;
-		} catch {
-			return false;
-		}
-	}
-
-	/**
-	 * Filter to only healthy agents
-	 */
-	async filterHealthyAgents(agents: LoadedAgent[]): Promise<LoadedAgent[]> {
-		const results = await Promise.all(
-			agents.map(async (agent) => ({
-				agent,
-				healthy: await this.healthCheck(agent),
-			})),
-		);
-
-		return results.filter((r) => r.healthy).map((r) => r.agent);
 	}
 
 	/**

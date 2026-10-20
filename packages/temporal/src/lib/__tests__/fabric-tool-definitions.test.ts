@@ -18,6 +18,8 @@ import {
 	type FabricToolDefinition,
 	readConfirmationPolicy,
 	toolAccess,
+	withoutDryRun,
+	withoutDryRunNote,
 } from "../fabric-tool-definition";
 import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "../fabric-workflow-tool-definitions";
 
@@ -27,6 +29,21 @@ const FRAME_TOOLS: readonly FabricToolDefinition[] =
 	FABRIC_FRAME_TOOL_DEFINITIONS;
 const WORKFLOW_TOOLS: readonly FabricToolDefinition[] =
 	FABRIC_WORKFLOW_TOOL_DEFINITIONS;
+
+it("publishes bounded source-window arguments on the canonical frame read", () => {
+	const read = FRAME_TOOLS.find(
+		(definition) => definition.name === "fabric_get_frame",
+	);
+	expect(read?.inputSchema).toMatchObject({
+		properties: {
+			blockId: { type: "string" },
+			offset: { type: "integer", minimum: 0 },
+			limit: { type: "integer", minimum: 1, maximum: 6_000 },
+		},
+	});
+	expect(read?.description).toContain("nextOffset");
+	expect(read?.description).toContain("updatedAt");
+});
 
 type JsonSchemaNode = {
 	type?: string;
@@ -94,6 +111,15 @@ describe("the preset a model is shown", () => {
 		);
 		expect(shown.required).toEqual(["name", "cron", "prompt"]);
 	});
+
+	it.each(["fabric_create_workflow", "fabric_update_workflow"])(
+		"%s exposes the preset's optional model ID",
+		(name) => {
+			expect(presetSchemaOf(name).properties?.modelId?.type).toBe(
+				"string",
+			);
+		},
+	);
 });
 
 describe("Fabric's tool definitions", () => {
@@ -104,9 +130,11 @@ describe("Fabric's tool definitions", () => {
 		expect(
 			GATEWAY_TOOLS.filter(
 				(tool) =>
-					!/^(workflows|frames):(read|write|run)$/.test(tool.scope),
+					!/^(workflows|frames|projects|instructions|mcp):(read|write|run)$/.test(
+						tool.scope,
+					),
 			).map((tool) => [tool.name, tool.scope]),
-		).toEqual([["fabric_page_read_connected", "mcp:read"]]);
+		).toEqual([]);
 	});
 
 	it("keep the tools only a page's script has a use for out of what the chat engines offer", () => {
@@ -114,7 +142,12 @@ describe("Fabric's tool definitions", () => {
 
 		expect(pageOnly.map((tool) => tool.name).sort()).toEqual([
 			"fabric_page_ask",
+			"fabric_page_configure_story_review",
+			"fabric_page_get_review_options",
+			"fabric_page_get_story_review",
+			"fabric_page_list_story_review_runs",
 			"fabric_page_read_connected",
+			"fabric_page_run_story_review",
 		]);
 		const chat = FABRIC_CHAT_TOOL_DEFINITIONS.map((tool) => tool.name);
 		for (const tool of pageOnly) {
@@ -178,7 +211,7 @@ describe("Fabric's tool definitions", () => {
 		).toBe(true);
 	});
 
-	it("ask before a page's data or files are deleted, and let everything else the page keeps be written without asking", () => {
+	it("asks before page review runs, configuration saves and shared deletes", () => {
 		const pageTools: readonly FabricToolDefinition[] =
 			FABRIC_PAGE_TOOL_DEFINITIONS;
 		const asking = pageTools
@@ -186,6 +219,8 @@ describe("Fabric's tool definitions", () => {
 			.map((tool) => [tool.name, tool.confirm]);
 
 		expect(asking).toEqual([
+			["fabric_page_run_story_review", "always"],
+			["fabric_page_configure_story_review", "always"],
 			["fabric_page_data_delete", "always"],
 			["fabric_page_file_delete", "always"],
 		]);
@@ -302,5 +337,65 @@ describe("readConfirmationPolicy", () => {
 				"fabric/confirm": { whenArgumentPresent: "runtimeTools" },
 			}),
 		).toEqual({ whenArgumentPresent: "runtimeTools" });
+	});
+});
+
+describe("what Fabric's chat shows its model of dryRun", () => {
+	const WITH_DRY_RUN = GATEWAY_TOOLS.filter(
+		(tool) =>
+			(tool.inputSchema.properties as Record<string, unknown> | undefined)
+				?.dryRun !== undefined,
+	);
+
+	it("finds the tools that take one, so the checks below cannot pass on none", () => {
+		expect(WITH_DRY_RUN.map((tool) => tool.name)).toEqual(
+			expect.arrayContaining([
+				"fabric_create_workflow",
+				"fabric_update_workflow",
+			]),
+		);
+	});
+
+	it("leaves dryRun out of the schema and keeps every other property", () => {
+		for (const tool of WITH_DRY_RUN) {
+			const shown = withoutDryRun(tool.inputSchema);
+			const before = Object.keys(
+				(tool.inputSchema.properties as Record<string, unknown>) ?? {},
+			);
+
+			expect(Object.keys(shown.properties as object), tool.name).toEqual(
+				before.filter((name) => name !== "dryRun"),
+			);
+		}
+	});
+
+	it("does not change the definition it was given", () => {
+		const create = WITH_DRY_RUN[0];
+
+		withoutDryRun(create.inputSchema);
+
+		expect(create.inputSchema.properties).toHaveProperty("dryRun");
+	});
+
+	it("returns a schema with no properties as it came", () => {
+		const schema = { type: "object" };
+
+		expect(withoutDryRun(schema)).toBe(schema);
+	});
+
+	it("leaves no mention of dryRun in the description of any tool that takes one", () => {
+		for (const tool of WITH_DRY_RUN) {
+			expect(tool.description, tool.name).toContain("dryRun");
+			expect(
+				withoutDryRunNote(tool.description),
+				tool.name,
+			).not.toContain("dryRun");
+		}
+	});
+
+	it("leaves a description that does not offer dryRun as it was", () => {
+		expect(withoutDryRunNote("Lists your workflows.")).toBe(
+			"Lists your workflows.",
+		);
 	});
 });

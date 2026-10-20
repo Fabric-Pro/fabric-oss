@@ -26,6 +26,7 @@ import { heartbeat } from "@temporalio/activity";
 import type { ModelMessage } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import type {
 	IterativeMessage,
 	OrchestratorBudgetAttemptKind,
@@ -224,6 +225,8 @@ export interface RunAgentIterationInput {
 	 * starters with no conversation. Never the execution ID.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	/** Current iteration number */
 	iteration: number;
 	/** Max steps within this iteration (for multi-tool scenarios) */
@@ -857,8 +860,8 @@ async function runAgentIterationRound(
 		hasTools,
 		modelOverride,
 		undefined,
-		input.conversationId
-			? { conversationId: input.conversationId }
+		input.conversationId || input.frameId || input.projectId
+			? usageOriginFields(input)
 			: undefined,
 	);
 	// The model every provider request of this round goes through: checked

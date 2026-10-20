@@ -27,6 +27,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { FABRIC_PROJECT_PM_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-pm-tool-definitions";
 import { describe, expect, it } from "vitest";
 import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 import {
@@ -37,6 +38,22 @@ import {
 // Resolved from the vitest root (`apps/web`) rather than from `import.meta.url`,
 // which this runner does not give as a file URL.
 const GATEWAY_DIRECTORY = "modules/saas/mcp/lib/gateway";
+const PM_FAMILY_SOURCE = readFileSync(
+	resolve(process.cwd(), GATEWAY_DIRECTORY, "tools/project-pm-tools.ts"),
+	"utf8",
+);
+const PM_HANDLER_BODY =
+	PM_FAMILY_SOURCE.match(
+		/handlers\.set\(tool\.name, async \(args, session\) => \{([\s\S]*?)\n\t\t\}\);/,
+	)?.[1] ?? "";
+
+function handlerOf(tool: string): string {
+	return `handle${tool
+		.replace(/^fabric_/, "")
+		.split("_")
+		.map((word) => word[0].toUpperCase() + word.slice(1))
+		.join("")}`;
+}
 
 // The handlers of the platform table: its own file, and the modules whose tools
 // it registers (`./tools`), which each carry their handlers beside their
@@ -79,6 +96,7 @@ const VISIBILITY_GATES = [
 	// Builds a handler that opens the page as the caller (`openPage`) before
 	// it runs anything, so a handler written with it cannot leave that out.
 	"pageTool(",
+	"await authorize(",
 ] as const;
 
 /** Handler name prefixes that mean the handler changes something. */
@@ -212,6 +230,12 @@ function handlerBodies(): Array<{ name: string; body: string }> {
 			}
 		}
 	}
+	out.push(
+		...FABRIC_PROJECT_PM_TOOL_DEFINITIONS.map(({ name }) => ({
+			name: handlerOf(name),
+			body: PM_HANDLER_BODY,
+		})),
+	);
 	return out;
 }
 
@@ -219,6 +243,24 @@ const isWrite = (name: string) =>
 	WRITE_PREFIXES.some((prefix) => name.startsWith(prefix));
 
 describe("platform tool authorization coverage", () => {
+	it("wires every PM definition through the canonical project guard before any PM lookup", () => {
+		const platform = readFileSync(SOURCES[0], "utf8");
+		expect(platform).toMatch(
+			/const PROJECT_PM_TOOLS = createProjectPmTools\(resolveGatewayProjectReadAccess\);/,
+		);
+		expect(platform).toContain("...PROJECT_PM_TOOLS.definitions");
+		expect(platform).toContain("...PROJECT_PM_TOOLS.handlers");
+		expect(PM_FAMILY_SOURCE).toContain(
+			"for (const tool of FABRIC_PROJECT_PM_TOOL_DEFINITIONS)",
+		);
+		expect(PM_FAMILY_SOURCE).toContain(
+			"return toolFamily(FABRIC_PROJECT_PM_TOOL_DEFINITIONS, handlers)",
+		);
+		expect(PM_HANDLER_BODY).toMatch(
+			/const access = await authorize\(\s*parsed\.data\.input\.projectId,\s*session,?\s*\);\s*if \(!access\?\.organizationId\) \{\s*return errorResult\("Project not found or access denied"\);\s*\}\s*const \{ resolveProjectPmRead \}/,
+		);
+	});
+
 	it("every write resolves the caller's permission, not just their sight of the resource", () => {
 		const ungated = handlerBodies()
 			.filter(({ name }) => isWrite(name) && !WRITE_EXEMPT.has(name))
@@ -325,13 +367,8 @@ describe("platform tools classified for a project-bound session", () => {
 			"resolveProjectForStoryWrite",
 			"sessionMayReachProject",
 			"boundProjectId",
+			"await authorize(",
 		];
-		const handlerOf = (tool: string) =>
-			`handle${tool
-				.replace(/^fabric_/, "")
-				.split("_")
-				.map((word) => word[0].toUpperCase() + word.slice(1))
-				.join("")}`;
 		const bodies = new Map(
 			handlerBodies().map(({ name, body }) => [name, body]),
 		);

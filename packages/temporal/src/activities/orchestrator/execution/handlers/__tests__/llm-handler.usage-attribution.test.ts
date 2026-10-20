@@ -60,7 +60,10 @@ beforeEach(() => {
 
 describe("LlmHandler — usage attribution", () => {
 	it("passes the step's conversation to the model selector", async () => {
-		const input = buildInput({ conversationId: "conv-1" });
+		const input = buildInput({
+			conversationId: "conv-1",
+			frameId: "frame-1",
+		});
 		const result = await new LlmHandler().execute({
 			input,
 			variables: {},
@@ -73,7 +76,11 @@ describe("LlmHandler — usage attribution", () => {
 		const args = h.getAiModel.mock.calls[0];
 		expect(args[0]).toBe("user-1");
 		expect(args[1]).toBe("org-1");
-		expect(args[5]).toEqual({ conversationId: "conv-1" });
+		expect(args[5]).toEqual({
+			conversationId: "conv-1",
+			frameId: "frame-1",
+		});
+		expect(args[5]).not.toHaveProperty("workflowExecutionId");
 	});
 
 	it("passes no attribution without a conversation, never the execution ID", async () => {

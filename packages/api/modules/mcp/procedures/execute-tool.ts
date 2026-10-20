@@ -122,9 +122,7 @@ export const executeToolProcedure = tenantProtectedProcedure
 				};
 			}
 
-			console.log(
-				`[MCP Tools] Executing tool "${toolName}" on server "${serverName}"`,
-			);
+			console.log("[MCP Tools] Executing tool", { toolName, serverName });
 
 			// Create MCP client
 			try {
@@ -137,11 +135,17 @@ export const executeToolProcedure = tenantProtectedProcedure
 				});
 				mcpClient = clientResult.client;
 			} catch (clientError) {
-				console.error(
-					"[MCP Tools] Failed to create client:",
-					{ serverName },
-					clientError,
-				);
+				console.error("[MCP Tools] Failed to create client:", {
+					serverName,
+					error:
+						clientError instanceof Error
+							? clientError.message
+							: clientError,
+					stack:
+						clientError instanceof Error
+							? clientError.stack
+							: undefined,
+				});
 
 				const errorMessage =
 					clientError instanceof Error
@@ -201,19 +205,21 @@ export const executeToolProcedure = tenantProtectedProcedure
 				};
 			}
 
-			console.log(
-				`[MCP Tools] Tool "${toolName}" executed successfully on "${serverName}"`,
-			);
+			console.log("[MCP Tools] Tool executed successfully", {
+				toolName,
+				serverName,
+			});
 
 			return {
 				success: true,
 				result,
 			};
 		} catch (err: unknown) {
-			console.error(
-				`[MCP Tools] Error executing tool "${toolName}":`,
-				err,
-			);
+			console.error("[MCP Tools] Error executing tool", {
+				toolName,
+				error: err instanceof Error ? err.message : err,
+				stack: err instanceof Error ? err.stack : undefined,
+			});
 
 			// Extract a meaningful error message
 			let errorMessage = "Unknown error";

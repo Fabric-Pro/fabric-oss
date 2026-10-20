@@ -2181,6 +2181,22 @@ export function ProjectContextsList({ projectId }: Props) {
 										</span>
 									)}
 
+									{/* A file in a Store only write folder is kept
+									    and readable but never embedded. */}
+									{context.indexingExcluded && (
+										<span
+											className="flex items-center gap-1"
+											title={tLivingMemory(
+												"writeFolders.form.storeOnlyHint",
+											)}
+										>
+											<InfoIcon className="size-3" />
+											{tLivingMemory(
+												"writeFolders.indexMode.STORE_ONLY",
+											)}
+										</span>
+									)}
+
 									{/* Created time */}
 									{context.createdAt && (
 										<span>

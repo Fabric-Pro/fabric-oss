@@ -140,6 +140,7 @@ function target(
 		id: "wt_1",
 		folder: "docs/ai",
 		mode: "PULL_REQUEST",
+		indexMode: "INDEXED",
 		version: 1,
 		directPushEnabledById: null,
 		directPushEnabledAt: null,
@@ -576,6 +577,149 @@ describe("direct push", () => {
 			}),
 		);
 		expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+	});
+});
+
+describe("indexing choice", () => {
+	it("marks only Store only folders in the list", async () => {
+		listMock.mockResolvedValue(
+			list({
+				targets: [
+					target(),
+					target({
+						id: "wt_2",
+						folder: "docs/tasks",
+						indexMode: "STORE_ONLY",
+					}),
+				],
+			}),
+		);
+
+		mount();
+
+		const rows = await screen.findAllByTestId("write-folder-row");
+		expect(
+			within(rows[0]).queryByText(`${NS}.indexMode.STORE_ONLY`),
+		).not.toBeInTheDocument();
+		expect(
+			within(rows[1]).getByText(`${NS}.indexMode.STORE_ONLY`),
+		).toBeInTheDocument();
+	});
+
+	it("offers Index for AI search by default and sends nothing extra for it", async () => {
+		const user = userEvent.setup();
+		mount();
+		await openForm(user);
+		await typeFolder(user, "docs/notes");
+
+		expect(
+			screen.getByRole("radio", {
+				name: new RegExp(`${NS}.indexMode.INDEXED`),
+			}),
+		).toBeChecked();
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.form.add` }),
+		);
+
+		await waitFor(() =>
+			expect(createMock).toHaveBeenCalledWith({
+				projectId: "project_1",
+				folder: "docs/notes",
+				mode: "PULL_REQUEST",
+			}),
+		);
+	});
+
+	it("creates a Store only folder", async () => {
+		const user = userEvent.setup();
+		mount();
+		await openForm(user);
+		await typeFolder(user, "docs/notes");
+
+		await user.click(
+			screen.getByRole("radio", {
+				name: new RegExp(`${NS}.indexMode.STORE_ONLY`),
+			}),
+		);
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.form.add` }),
+		);
+
+		await waitFor(() =>
+			expect(createMock).toHaveBeenCalledWith({
+				projectId: "project_1",
+				folder: "docs/notes",
+				mode: "PULL_REQUEST",
+				indexMode: "STORE_ONLY",
+			}),
+		);
+	});
+
+	it("switches an existing folder to Store only, sending only that, and does not ask for confirmation", async () => {
+		listMock.mockResolvedValue(list({ targets: [target()] }));
+		const user = userEvent.setup();
+		mount();
+		await user.click(
+			await screen.findByRole("button", {
+				name: `${NS}.row.edit{"folder":"docs/ai"}`,
+			}),
+		);
+
+		await user.click(
+			screen.getByRole("radio", {
+				name: new RegExp(`${NS}.indexMode.STORE_ONLY`),
+			}),
+		);
+		await user.click(
+			screen.getByRole("button", { name: `${NS}.form.save` }),
+		);
+
+		await waitFor(() =>
+			expect(updateMock).toHaveBeenCalledWith({
+				projectId: "project_1",
+				targetId: "wt_1",
+				indexMode: "STORE_ONLY",
+			}),
+		);
+	});
+
+	it("starts an edit on the folder's current choice", async () => {
+		listMock.mockResolvedValue(
+			list({ targets: [target({ indexMode: "STORE_ONLY" })] }),
+		);
+		const user = userEvent.setup();
+		mount();
+		await user.click(
+			await screen.findByRole("button", {
+				name: `${NS}.row.edit{"folder":"docs/ai"}`,
+			}),
+		);
+
+		expect(
+			screen.getByRole("radio", {
+				name: new RegExp(`${NS}.indexMode.STORE_ONLY`),
+			}),
+		).toBeChecked();
+	});
+
+	it("has copy in en.json for both choices, their hints and the legend", () => {
+		const messages = JSON.parse(
+			readFileSync(
+				path.resolve(
+					__dirname,
+					"../../../../../../../packages/i18n/translations/en.json",
+				),
+				"utf8",
+			),
+		);
+		const writeFolders =
+			messages.projects.contexts.livingMemory.writeFolders;
+
+		expect(writeFolders.indexMode.INDEXED).toBe("Index for AI search");
+		expect(writeFolders.indexMode.STORE_ONLY).toBe("Store only");
+		for (const key of ["indexLegend", "indexedHint", "storeOnlyHint"]) {
+			expect(writeFolders.form[key].length, key).toBeGreaterThan(10);
+		}
 	});
 });
 

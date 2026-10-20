@@ -4,6 +4,7 @@ import {
 	getDocumentById,
 	hasProjectAccess,
 } from "@repo/database";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { z } from "zod";
 import {
 	Permissions,
@@ -69,6 +70,12 @@ export const getDocumentProcedure = tenantProtectedProcedure
 			document: {
 				...document,
 				organizationId: organizationIdAfterAdoption,
+				// The body's identity, beside its `version`: together the base
+				// a save from this body names, and the stamp a collaborative
+				// editor room records for the body it holds (Fizzy #2946). It
+				// shadows the embed-owned `contentHash` column, which no reader
+				// of this response uses and which can lag the body.
+				contentHash: contentIdentity(document.content),
 			},
 		};
 	});

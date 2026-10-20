@@ -434,7 +434,14 @@ export async function createSamplingMcpClient(
 				} catch (error) {
 					console.error(
 						"[MCP Sampling] Error handling sampling request:",
-						error,
+						{
+							error:
+								error instanceof Error ? error.message : error,
+							stack:
+								error instanceof Error
+									? error.stack
+									: undefined,
+						},
 					);
 					throw error;
 				}

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
-	chmodSync,
 	copyFileSync,
 	existsSync,
 	mkdirSync,
@@ -26,7 +25,7 @@ function git(cwd, args) {
 }
 
 /**
- * A git repo with the gate copied in and a fake `pnpm` first on PATH. The fake
+ * A git repo with the gate copied in and a fake Changesets CLI. The fake
  * records what the gate gave it and writes the status JSON named by the
  * FAKE_STATUS env var ("none" writes no file; "garbage" writes bad JSON).
  * It reports whether the untracked changeset was visible through
@@ -34,7 +33,7 @@ function git(cwd, args) {
  * @param {import("node:test").TestContext} t
  */
 function createFixture(t) {
-	const dir = mkdtempSync(join(tmpdir(), "changeset-gate-test-"));
+	const dir = mkdtempSync(join(tmpdir(), "changeset gate test-"));
 	t.after(() => rmSync(dir, { force: true, recursive: true }));
 	git(dir, ["init", "-q", "-b", "work"]);
 	mkdirSync(join(dir, ".changeset"));
@@ -63,9 +62,16 @@ function createFixture(t) {
 		join(dir, "scripts/lib/resolve-base.mjs"),
 	);
 
-	const bin = join(dir, "fake-bin");
-	mkdirSync(bin);
-	const fake = join(bin, "pnpm");
+	const bin = join(dir, "node_modules/@changesets/cli");
+	mkdirSync(bin, { recursive: true });
+	writeFileSync(
+		join(bin, "package.json"),
+		JSON.stringify({
+			name: "@changesets/cli",
+			exports: { "./bin.js": "./bin.js" },
+		}),
+	);
+	const fake = join(bin, "bin.js");
 	writeFileSync(
 		fake,
 		[
@@ -87,7 +93,6 @@ function createFixture(t) {
 			'if (process.env.FAKE_EXIT) { console.error("fake changeset stderr"); process.exit(Number(process.env.FAKE_EXIT)); }',
 		].join("\n"),
 	);
-	chmodSync(fake, 0o755);
 	return { dir, record: join(dir, "record.json") };
 }
 
@@ -105,7 +110,6 @@ function gate(fixture, args = [], env = {}) {
 			encoding: "utf8",
 			env: {
 				...process.env,
-				PATH: `${join(fixture.dir, "fake-bin")}:${process.env.PATH}`,
 				FAKE_RECORD: fixture.record,
 				...env,
 			},
@@ -126,6 +130,7 @@ test("exits 0 and lists releases when .releases is non-empty", (t) => {
 	assert.match(result.stdout, /^fabric-app: patch$/m);
 	assert.match(result.stderr, /Base: origin\/staging/);
 	const { args } = JSON.parse(readFileSync(fixture.record, "utf8"));
+	assert.equal(args[0], "status");
 	assert.ok(args.includes("--since=origin/staging"));
 });
 
@@ -229,38 +234,53 @@ test("rejects changeset names that git quotes, naming them", (t) => {
 	assert.equal(existsSync(fixture.record), false, "changeset must not run");
 });
 
-test("an interrupt during changeset exits 130 and leaves no temp files", async (t) => {
-	const fixture = createFixture(t);
-	const tmp = mkdtempSync(join(tmpdir(), "gate-tmp-"));
-	t.after(() => rmSync(tmp, { force: true, recursive: true }));
-	const child = spawn(
-		process.execPath,
-		[join(fixture.dir, "scripts/changeset-gate.mjs")],
-		{
-			cwd: fixture.dir,
-			env: {
-				...process.env,
-				PATH: `${join(fixture.dir, "fake-bin")}:${process.env.PATH}`,
-				FAKE_RECORD: fixture.record,
-				FAKE_SLEEP: "1500",
-				TMPDIR: tmp,
+test(
+	"an interrupt during changeset exits 130 and leaves no temp files",
+	{
+		skip:
+			process.platform === "win32" &&
+			"child.kill does not deliver a catchable SIGINT on Windows",
+	},
+	async (t) => {
+		const fixture = createFixture(t);
+		const tmp = mkdtempSync(join(tmpdir(), "gate-tmp-"));
+		t.after(() => rmSync(tmp, { force: true, recursive: true }));
+		const child = spawn(
+			process.execPath,
+			[join(fixture.dir, "scripts/changeset-gate.mjs")],
+			{
+				cwd: fixture.dir,
+				env: {
+					...process.env,
+					FAKE_RECORD: fixture.record,
+					FAKE_SLEEP: "1500",
+					TMPDIR: tmp,
+				},
+				stdio: "ignore",
 			},
-			stdio: "ignore",
-		},
-	);
-	const exited = new Promise((resolve) =>
-		child.on("exit", (code, signal) => resolve({ code, signal })),
-	);
-	for (let i = 0; i < 100 && !existsSync(fixture.record); i++) {
-		await new Promise((r) => setTimeout(r, 50));
-	}
-	assert.equal(existsSync(fixture.record), true, "fake pnpm never started");
-	assert.equal(readdirSync(tmp).length, 1, "temp dir should exist mid-run");
-	child.kill("SIGINT");
-	const result = await exited;
-	assert.deepEqual(result, { code: 130, signal: null });
-	assert.deepEqual(readdirSync(tmp), []);
-});
+		);
+		const exited = new Promise((resolve) =>
+			child.on("exit", (code, signal) => resolve({ code, signal })),
+		);
+		for (let i = 0; i < 100 && !existsSync(fixture.record); i++) {
+			await new Promise((r) => setTimeout(r, 50));
+		}
+		assert.equal(
+			existsSync(fixture.record),
+			true,
+			"fake Changesets CLI never started",
+		);
+		assert.equal(
+			readdirSync(tmp).length,
+			1,
+			"temp dir should exist mid-run",
+		);
+		child.kill("SIGINT");
+		const result = await exited;
+		assert.deepEqual(result, { code: 130, signal: null });
+		assert.deepEqual(readdirSync(tmp), []);
+	},
+);
 
 /** @param {{ dir: string }} fixture @param {string} name */
 function addChangeset(fixture, name, body = "x") {

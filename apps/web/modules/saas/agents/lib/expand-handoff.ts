@@ -1,8 +1,14 @@
+import type { FabricAgentLaunchContext } from "@saas/agents/components/FabricAgentLauncher";
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
+
+export type FrameLaunchContext = Pick<
+	FabricAgentLaunchContext,
+	"launchFrameId" | "workspaceId" | "surface"
+>;
 
 /**
  * What the ⌘J drawer hands the full page when the user clicks Expand
- * (Fizzy #2040): the unsent draft, the attached files and the project.
+ * (Fizzy #2040): the draft, attached files, project and untrusted frame origin.
  *
  * Held in the launcher provider's memory rather than in sessionStorage. The
  * provider is mounted by `AppWrapper`, above the route, so it survives the
@@ -17,6 +23,7 @@ export interface ExpandHandoff {
 	draft: string;
 	attachments: AttachedFile[];
 	projectId: string | null;
+	frameLaunchContext?: FrameLaunchContext;
 	createdAt: number;
 }
 
@@ -46,12 +53,27 @@ export function buildExpandHandoff(input: {
 	draft: string;
 	attachments: readonly AttachedFile[];
 	projectId: string | null | undefined;
+	launchContext?: FabricAgentLaunchContext | null;
 	now: number;
 }): ExpandHandoff | null {
 	const attachments = transferableAttachments(input.attachments);
 	const draft = input.draft.trim() ? input.draft : "";
 	const projectId = input.projectId ?? null;
-	if (!draft && attachments.length === 0 && !projectId) {
+	const context = input.launchContext;
+	const frameLaunchContext =
+		context?.launchFrameId || context?.workspaceId || context?.surface
+			? {
+					launchFrameId: context.launchFrameId ?? null,
+					workspaceId: context.workspaceId ?? null,
+					surface: context.surface ?? null,
+				}
+			: undefined;
+	if (
+		!draft &&
+		attachments.length === 0 &&
+		!projectId &&
+		!frameLaunchContext
+	) {
 		return null;
 	}
 	return {
@@ -59,8 +81,93 @@ export function buildExpandHandoff(input: {
 		draft,
 		attachments,
 		projectId,
+		...(frameLaunchContext ? { frameLaunchContext } : {}),
 		createdAt: input.now,
 	};
+}
+
+export interface ExpandedFrameOrigin {
+	conversationId: string | null;
+	projectId: string | null;
+	context: FrameLaunchContext;
+	/** The URL may still name the new-chat page until navigation settles. */
+	previousConversationId?: string | null;
+}
+
+type ExpandedFrameOriginAction =
+	| { type: "handoff"; handoff: ExpandHandoff }
+	| { type: "created"; conversationId: string }
+	| {
+			type: "location";
+			conversationId: string | null;
+			projectId: string | null;
+	  }
+	| { type: "clear" };
+
+export function expandedFrameContextFor(
+	origin: ExpandedFrameOrigin | null,
+	conversationId: string | null,
+	projectId: string | null,
+): FrameLaunchContext | null {
+	return origin &&
+		origin.projectId === projectId &&
+		(origin.conversationId === conversationId ||
+			origin.previousConversationId === conversationId)
+		? origin.context
+		: null;
+}
+
+export function expandedFrameOriginReducer(
+	origin: ExpandedFrameOrigin | null,
+	action: ExpandedFrameOriginAction,
+): ExpandedFrameOrigin | null {
+	switch (action.type) {
+		case "handoff":
+			return action.handoff.frameLaunchContext
+				? {
+						conversationId: action.handoff.conversationId,
+						projectId: action.handoff.projectId,
+						context: action.handoff.frameLaunchContext,
+					}
+				: null;
+		case "created":
+			return origin?.conversationId === null
+				? {
+						...origin,
+						conversationId: action.conversationId,
+						previousConversationId: null,
+					}
+				: origin;
+		case "location": {
+			if (
+				!expandedFrameContextFor(
+					origin,
+					action.conversationId,
+					action.projectId,
+				)
+			) {
+				return null;
+			}
+			if (
+				origin &&
+				action.conversationId === origin.conversationId &&
+				origin.previousConversationId !== undefined
+			) {
+				return {
+					conversationId: origin.conversationId,
+					projectId: origin.projectId,
+					context: origin.context,
+				};
+			}
+			return origin;
+		}
+		case "clear":
+			return null;
+		default: {
+			const exhaustive: never = action;
+			return exhaustive;
+		}
+	}
 }
 
 /**

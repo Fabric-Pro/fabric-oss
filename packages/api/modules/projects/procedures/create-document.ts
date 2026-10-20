@@ -56,6 +56,7 @@ import {
 	dispatchDocumentGeneration,
 	MAX_RUN_INSTRUCTIONS_CHARS,
 } from "../lib/dispatch-document-generation";
+import { assertNotGenerationOwnedStatus } from "../lib/generation-owned-status";
 import {
 	isBlankSuppliedText,
 	MAX_SUPPLIED_SOURCE_TEXT_CHARS,
@@ -82,9 +83,10 @@ interface CreateDocumentResult {
 	sourceContextId: string | null;
 	/**
 	 * Null when no generation was requested; otherwise the dispatch's own
-	 * discriminated answer — `started`, `alreadyInProgress`, or
-	 * `statusUnknown`. All three are successful calls: only a thrown dispatch
-	 * fails the request. `alreadyInProgress` is near-impossible on this route,
+	 * discriminated answer — `started`, `alreadyInProgress`, `statusUnknown`,
+	 * or `liveRunUnknown` (only when a regeneration meets a live Proposal run
+	 * it cannot confirm; never on this route, whose document is new). All are
+	 * successful calls: only a thrown dispatch fails the request. `alreadyInProgress` is near-impossible on this route,
 	 * since the document id is minted moments earlier and is part of the
 	 * workflow id, but it is passed through rather than flattened so the client
 	 * branches on the same shape it gets from the regenerate route.
@@ -172,6 +174,11 @@ export const createDocumentProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
+
+		// QUEUED and GENERATING belong to generation runs; every route below
+		// that needs one writes it itself. Refused before anything is gated,
+		// written or dispatched.
+		assertNotGenerationOwnedStatus(input.status);
 
 		const suppliedText = input.sourceText ?? "";
 		const hasSuppliedText = suppliedText.length > 0;

@@ -23,32 +23,39 @@ import type {
 	FabricClient,
 	PublishedInstructions,
 } from "@fabricorg/sdk";
-import { matchesBlobOid } from "../git-blob.js";
+import { projectRulePathFor } from "@fabricorg/sdk";
+import { matchesBlobOid, objectFormatOf } from "../git-blob.js";
 import { downloadFilesByUrl } from "../instructions/file-downloads.js";
+import { checkRelativePath, findCollision } from "../instructions/paths.js";
+import type {
+	InstructionCatalogEntry,
+	InstructionSourceIdentity,
+} from "./instruction-access.js";
 import { type InstructionFile, pluginPathFor } from "./layout.js";
 
-/** Files read at once. */
-const READ_CONCURRENCY = 6;
+const READ_BATCH_SIZE = 200;
+const MAX_INLINE_BYTES = 256 * 1024;
 
-/** A text page of a direct file; the server's own cap is lower, this only bounds a runaway loop. */
-const MAX_PAGES_PER_FILE = 64;
-
-/** The root files a plugin turns into the session's context. */
+/** The root files a plugin turns into the session's context; project rules are read too, for delivery outside the plugin. */
 const ALWAYS_ON = new Set(["CLAUDE.md", "AGENTS.md"]);
 
 function isWantedPath(instructionPath: string): boolean {
 	return (
 		ALWAYS_ON.has(instructionPath) ||
-		pluginPathFor(instructionPath) !== null
+		pluginPathFor(instructionPath) !== null ||
+		projectRulePathFor(instructionPath) !== null
 	);
 }
 
 export interface InstructionRead {
 	/** Names the exact content: the same pin is the same files. */
 	pin: string;
+	source: InstructionSourceIdentity;
 	files: InstructionFile[];
 	/** Files the plugin would have carried that could not be read as text. */
 	skipped: string[];
+	/** Every file the instructions hold, read or not, for what the plugin leaves out. */
+	listed: InstructionCatalogEntry[];
 }
 
 export interface ReadInstructionsInput {
@@ -101,42 +108,13 @@ function sha256Of(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
-async function inBatches<T>(
-	items: readonly T[],
-	work: (item: T) => Promise<void>,
-): Promise<void> {
-	const queue = items.values();
-	const failures: unknown[] = [];
-	const worker = async () => {
-		for (;;) {
-			const next = queue.next();
-			if (next.done || failures.length > 0) {
-				return;
-			}
-			try {
-				await work(next.value);
-			} catch (error) {
-				failures.push(error);
-			}
-		}
-	};
-	await Promise.all(
-		Array.from(
-			{ length: Math.min(READ_CONCURRENCY, items.length) },
-			worker,
-		),
-	);
-	if (failures.length > 0) {
-		throw failures[0];
-	}
-}
-
 async function readDirect(
 	input: ReadInstructionsInput,
 ): Promise<InstructionRead> {
 	const listing = await input.client.instructions.listRepositoryFiles(
 		input.projectId,
 		{ org: input.org },
+		{ signal: input.signal },
 	);
 	if (listing.incomplete || listing.refusal !== null) {
 		throw new Error(
@@ -147,60 +125,122 @@ async function readDirect(
 		generation: listing.generation,
 		commitSha: listing.commitSha,
 	};
+	const listed = listing.files.map((file) => ({
+		path: file.path,
+		size: file.size,
+		kind: file.kind,
+		blobId: file.blobId,
+		mode: file.mode,
+	}));
 	const wanted = listing.files.filter((file) => isWantedPath(file.path));
 	const files: InstructionFile[] = [];
 	const skipped: string[] = [];
+	const missing: DirectInstructionRepositoryFile[] = [];
+	if (
+		listing.files.some((file) => !checkRelativePath(file.path).ok) ||
+		findCollision(listing.files.map((file) => file.path)) !== null
+	) {
+		throw new Error("The repository returned unsafe or colliding paths.");
+	}
 
-	const readOne = async (file: DirectInstructionRepositoryFile) => {
+	for (const file of wanted) {
+		input.signal?.throwIfAborted();
 		const blobId = file.blobId;
-		if (blobId !== undefined) {
-			const hit = await cached(
-				input.cacheDirectory,
-				`git-${blobId}`,
-				(b) => matchesBlobOid(b, blobId),
+		if (blobId === undefined || objectFormatOf(blobId) === null) {
+			throw new Error(
+				`The repository did not identify the Git blob for ${file.path}.`,
 			);
-			if (hit !== null) {
-				files.push({
-					path: file.path,
-					bytes: hit,
-					mode: modeOf(file.mode),
-				});
-				return;
-			}
 		}
-		const chunks: string[] = [];
-		let offset = 0;
-		for (let page = 0; page < MAX_PAGES_PER_FILE; page++) {
-			const read = await input.client.instructions.getRepositoryFile(
+		const hit = await cached(
+			input.cacheDirectory,
+			`git-${blobId}`,
+			(b) =>
+				b.byteLength <= MAX_INLINE_BYTES && matchesBlobOid(b, blobId),
+		);
+		if (hit !== null) {
+			files.push({
+				path: file.path,
+				bytes: hit,
+				mode: modeOf(file.mode),
+			});
+			continue;
+		}
+		missing.push(file);
+	}
+	for (let offset = 0; offset < missing.length; offset += READ_BATCH_SIZE) {
+		const batch = missing.slice(offset, offset + READ_BATCH_SIZE);
+		const paths = batch.map((file) => file.path);
+		let startIndex = 0;
+		for (;;) {
+			input.signal?.throwIfAborted();
+			const page = await input.client.instructions.readRepositoryFiles(
 				input.projectId,
-				{ ...pin, path: file.path, offset, org: input.org },
+				{ ...pin, paths, startIndex },
+				{ org: input.org, signal: input.signal },
 			);
-			if (read.state !== "found") {
-				skipped.push(file.path);
-				return;
+			input.signal?.throwIfAborted();
+			const end = page.nextIndex === null ? paths.length : page.nextIndex;
+			if (
+				page.generation !== pin.generation ||
+				page.commitSha !== pin.commitSha ||
+				!Number.isInteger(end) ||
+				end <= startIndex ||
+				end > paths.length ||
+				!Array.isArray(page.files) ||
+				page.files.length !== end - startIndex
+			) {
+				throw new Error(
+					"The repository returned an invalid pinned batch.",
+				);
 			}
-			chunks.push(read.body);
-			if (read.nextOffset === null) {
-				const bytes = new TextEncoder().encode(chunks.join(""));
-				if (blobId !== undefined && matchesBlobOid(bytes, blobId)) {
-					await remember(
-						input.cacheDirectory,
-						`git-${blobId}`,
-						bytes,
+			for (const [index, result] of page.files.entries()) {
+				const file = batch[startIndex + index];
+				if (file === undefined || result.path !== file.path) {
+					throw new Error(
+						"The repository returned unexpected or missing paths.",
 					);
 				}
+				const read = result.read;
+				if (read.state === "binary" || read.state === "tooLarge") {
+					skipped.push(file.path);
+					continue;
+				}
+				if (read.state !== "found" || typeof read.text !== "string") {
+					throw new Error(
+						`The repository could not read ${file.path}.`,
+					);
+				}
+				const bytes = new TextEncoder().encode(read.text);
+				if (
+					bytes.byteLength !== read.size ||
+					bytes.byteLength > MAX_INLINE_BYTES ||
+					file.blobId === undefined ||
+					!matchesBlobOid(bytes, file.blobId)
+				) {
+					throw new Error(
+						`The repository returned different bytes for ${file.path}.`,
+					);
+				}
+				await remember(
+					input.cacheDirectory,
+					`git-${file.blobId}`,
+					bytes,
+				);
 				files.push({ path: file.path, bytes, mode: modeOf(file.mode) });
-				return;
 			}
-			offset = read.nextOffset;
+			if (page.nextIndex === null) {
+				break;
+			}
+			startIndex = end;
 		}
-		throw new Error(`${file.path} is too long to read.`);
-	};
-	await inBatches(wanted, readOne);
+	}
+	input.signal?.throwIfAborted();
 	return {
 		pin: `repo:${pin.generation}:${pin.commitSha}`,
+		source: { kind: "repository", ...pin },
 		files,
 		skipped: skipped.sort(),
+		listed,
 	};
 }
 
@@ -218,9 +258,22 @@ async function readUploaded(
 ): Promise<InstructionRead> {
 	const { published } = input;
 	if (!published.published || published.snapshot === undefined) {
-		return { pin: "upload:none", files: [], skipped: [] };
+		return {
+			pin: "upload:none",
+			source: { kind: "upload", digest: null },
+			files: [],
+			skipped: [],
+			listed: [],
+		};
 	}
 	const digest = published.snapshot.digest;
+	const listed = (published.manifest ?? []).map((entry) => ({
+		path: entry.path,
+		size: entry.size,
+		kind: entry.kind,
+		sha256: entry.sha256,
+		mode: entry.mode,
+	}));
 	const manifest = (published.manifest ?? []).filter((entry) =>
 		isWantedPath(entry.path),
 	);
@@ -265,7 +318,13 @@ async function readUploaded(
 			},
 		);
 	}
-	return { pin: `upload:${digest}`, files, skipped: [] };
+	return {
+		pin: `upload:${digest}`,
+		source: { kind: "upload", digest },
+		files,
+		skipped: [],
+		listed,
+	};
 }
 
 export async function readInstructions(

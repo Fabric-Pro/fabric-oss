@@ -51,7 +51,7 @@ export async function findGitHubMcpConfig(
 ): Promise<FindGitHubMcpConfigOutput> {
 	const { userId, organizationId } = input;
 
-	// Strategy 1: Try the seeded "github" server key (STDIO path)
+	// Strategy 1: Try the legacy "github" STDIO server key (no longer seeded; kept for existing connections)
 	const githubServer = await getMcpServerByKey("github", {
 		userId,
 		organizationId,

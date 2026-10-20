@@ -279,7 +279,7 @@ describe("ParlumePage live session", () => {
 		).toHaveTextContent("Fabric Agent — this project");
 		expect(
 			definitions.getByText("Mode").nextElementSibling,
-		).toHaveTextContent("Actions with confirmation");
+		).toHaveTextContent(/^Actions$/);
 		await waitFor(() =>
 			expect(
 				definitions.getByText("Spend so far").nextElementSibling,

@@ -78,6 +78,8 @@ const MAX_REEMBED_PASSES = 3;
 interface StoredVersion {
 	content: string;
 	contentHash: string | null;
+	/** The row is under a Store only write folder: it is never embedded. */
+	indexingExcluded: boolean;
 }
 
 async function readStoredVersion(
@@ -85,7 +87,7 @@ async function readStoredVersion(
 ): Promise<StoredVersion | null> {
 	return db.projectContext.findUnique({
 		where: { id: contextId },
-		select: { content: true, contentHash: true },
+		select: { content: true, contentHash: true, indexingExcluded: true },
 	});
 }
 
@@ -120,7 +122,14 @@ async function readStoredVersion(
  * points, so a failure from then on — the delete's own included, which may
  * have removed some — is recorded as one that left the row unindexed.
  *
- * Returns `null` when there is nothing to index: the row is gone or empty.
+ * A row under a Store only write folder is never embedded: its points, if
+ * any, are removed and nothing is marked. The flag is read with the version,
+ * and again with the hash after the embed, so a folder that turned Store only
+ * while a pass was running does not leave that pass's points behind (the
+ * toggle's own cleanup may already have run before they were written).
+ *
+ * Returns `null` when there is nothing to index: the row is gone, empty or
+ * store-only.
  */
 async function reembedStoredVersion(params: {
 	contextId: string;
@@ -154,6 +163,11 @@ async function reembedStoredVersion(params: {
 			return null;
 		}
 
+		if (version.indexingExcluded) {
+			await deleteAllPoints();
+			return null;
+		}
+
 		await deleteAllPoints();
 
 		const result = await embedProjectContext({
@@ -169,11 +183,15 @@ async function reembedStoredVersion(params: {
 
 		const current = await db.projectContext.findUnique({
 			where: { id: contextId },
-			select: { contentHash: true },
+			select: { contentHash: true, indexingExcluded: true },
 		});
 		if (!current) {
 			// Deleted while we embedded: the points just written belong to
 			// nothing, so remove them rather than leave them searchable.
+			await deleteAllPoints();
+			return null;
+		}
+		if (current.indexingExcluded) {
 			await deleteAllPoints();
 			return null;
 		}
@@ -340,7 +358,7 @@ export async function embedSingleContextActivity(
 				});
 				if (!reembedded) {
 					activityLogger.info(
-						"Context was deleted or emptied during re-embed; nothing to index",
+						"Context was deleted, emptied or made store-only during re-embed; nothing to index",
 						{ contextId },
 					);
 					return { success: true };

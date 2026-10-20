@@ -1245,6 +1245,36 @@ export function porcelainFlag(
 }
 
 /**
+ * Whether a refused ref (`!` in `porcelainFlag`) lost a race with another
+ * writer rather than being refused outright. git reports a ref that moved
+ * before the push as `stale info` (the lease) or `fetch first`. A ref that
+ * moves while the push is in flight is rejected by the server instead: Azure
+ * DevOps puts "TF401028: The reference '…' has already been updated by another
+ * client" in the ref's summary; git's own receive-pack answers "incorrect old
+ * value provided" (git 2.55), or "failed to update ref" in older versions,
+ * with "cannot lock ref '…': is at … but expected …" on stderr. Any other
+ * refusal is protection, a hook or missing permission.
+ */
+export function isLostRefRace(
+	summary: string,
+	error: GitCommandError | null,
+): boolean {
+	if (
+		/stale info|fetch first|incorrect old value provided|\bTF401028\b|\bbut expected\b/.test(
+			summary,
+		)
+	) {
+		return true;
+	}
+	return (
+		/failed to update ref/.test(summary) &&
+		/cannot lock ref '[^']*': is at [0-9a-f]+ but expected/.test(
+			error?.stderrTail ?? "",
+		)
+	);
+}
+
+/**
  * Runs a push and returns its stdout whether or not git exited 0; any other
  * failure rethrows. Exported (member proposal branch spec §7) for
  * `pushFastForward` (`instruction-branch-git.ts`).
@@ -1307,7 +1337,8 @@ export async function pushCreateOnly(
 	if (
 		line?.flag === "=" ||
 		(line?.flag === "!" &&
-			/stale info|already exists|fetch first/.test(line.summary))
+			(/already exists/.test(line.summary) ||
+				isLostRefRace(line.summary, error)))
 	) {
 		return { kind: "exists" };
 	}
@@ -1378,7 +1409,7 @@ export async function deleteBranch(
 		if (line?.flag === "-" && error === null) {
 			return { kind: "deleted" };
 		}
-		if (line?.flag === "!" && /stale info/.test(line.summary)) {
+		if (line?.flag === "!" && isLostRefRace(line.summary, error)) {
 			const now = await lsRemoteRef({
 				cwd: input.cwd,
 				url: input.url,

@@ -131,6 +131,11 @@ export interface ActionConfigField {
 	defaultExpanded?: boolean;
 }
 
+export interface ActionConfigComponentProps {
+	config: Record<string, unknown>;
+	onChange: (config: Record<string, unknown>) => void;
+}
+
 /**
  * Action definition for a plugin
  * Aligned with Vercel template action structure
@@ -165,6 +170,8 @@ export interface IntegrationAction {
 	category: string;
 	/** Declarative config fields (not React components) */
 	configFields: ActionConfigField[];
+	/** Optional editor for structured config; configFields still describe discovery. */
+	configComponent?: ComponentType<ActionConfigComponentProps>;
 	/** Output fields for template autocomplete */
 	outputFields?: OutputField[];
 	/** Output display configuration */

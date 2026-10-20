@@ -112,6 +112,25 @@ function isAfterTerminalTool(messages: BaseMessage[]): boolean {
 	});
 }
 
+// Browser producer: analysisFailureMessage in apps/web/modules/saas/projects/lib/backlog-analysis-sources.ts.
+const ANALYSIS_FAILURE_PREFIX = "Analysis error:";
+
+function isAfterAnalysisFailure(messages: BaseMessage[]): boolean {
+	const lastMessage = messages.at(-1);
+	if (!lastMessage || getMessageType(lastMessage) !== "tool") {
+		return false;
+	}
+	// Use the result's own name: incoming assistant tool_calls may be absent.
+	// unified-server.ts currently drops tool-result names while normalizing.
+	// For unnamed results, the browser's specific failure prefix identifies this path.
+	const toolName = lastMessage.name;
+	return (
+		(!toolName || toolName === "analyze_backlog") &&
+		typeof lastMessage.content === "string" &&
+		lastMessage.content.startsWith(ANALYSIS_FAILURE_PREFIX)
+	);
+}
+
 /**
  * Sanitize messages for the model API call.
  *
@@ -334,7 +353,12 @@ export async function chatNode(
 		const copilotKitTools = state.tools || [];
 
 		let modelToInvoke: any;
-		if (copilotKitTools.length > 0 && model.bindTools) {
+		const afterAnalysisFailure = isAfterAnalysisFailure(state.messages);
+		if (
+			!afterAnalysisFailure &&
+			copilotKitTools.length > 0 &&
+			model.bindTools
+		) {
 			modelToInvoke = model.bindTools(copilotKitTools, {
 				parallel_tool_calls: false,
 			} as Record<string, unknown>);
@@ -342,9 +366,11 @@ export async function chatNode(
 				toolCount: copilotKitTools.length,
 			});
 		} else {
-			// No tools available — model operates in pure chat mode
+			// An analysis failure or no available tools selects text-only chat mode
 			modelToInvoke = model;
-			logger.info("[Backlog Updater] No tools to bind, using chat mode");
+			logger.info("[Backlog Updater] Using chat mode", {
+				afterAnalysisFailure,
+			});
 		}
 
 		// Sanitize messages for Anthropic alternation requirement
@@ -362,6 +388,7 @@ export async function chatNode(
 			runnableConfig,
 		);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "backlog_updater",
 			latencyMs: Date.now() - generationStart,

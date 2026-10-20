@@ -637,6 +637,7 @@ export async function countRawContextChars(input: {
 	const rows = await db.projectContext.findMany({
 		where: {
 			projectId: input.projectId,
+			indexingExcluded: false,
 			...(input.after ? { createdAt: { gt: input.after } } : {}),
 		},
 		select: { content: true },
@@ -658,6 +659,7 @@ export async function countRawContextRows(input: {
 		where: {
 			projectId: input.projectId,
 			content: { not: "" },
+			indexingExcluded: false,
 			...sourceTenantWhere(input.tenancy),
 			...(input.lte || input.gt
 				? {
@@ -742,6 +744,7 @@ export async function fetchProjectContextBatch(input: {
 		where: {
 			projectId: input.projectId,
 			content: { not: "" },
+			indexingExcluded: false,
 			...sourceTenantWhere(input.tenancy),
 			AND: [
 				{ createdAt: { lte: input.snapshotThrough } },
@@ -1326,6 +1329,7 @@ export async function listContextSummarySources(input: {
 			where: {
 				projectId,
 				content: { not: "" },
+				indexingExcluded: false,
 				...sourceTenantWhere(tenancy),
 			},
 			orderBy: { createdAt: "desc" },
@@ -1417,7 +1421,7 @@ export async function getContextVolumeCandidates(input: {
 		       COUNT(*)::int AS context_count,
 		       MAX("createdAt") AS latest_context_at
 		FROM "project_context"
-		WHERE "content" <> ''
+		WHERE "content" <> '' AND NOT "indexingExcluded"
 		GROUP BY "projectId", "userId", "organizationId"
 		HAVING SUM(LENGTH("content")) >= ${input.minChars}
 	`;

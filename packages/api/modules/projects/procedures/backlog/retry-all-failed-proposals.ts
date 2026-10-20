@@ -12,6 +12,7 @@ import {
 	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -153,6 +154,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 		}> = [];
 
 		const client = await getTemporalClient().catch((error) => {
+			console.error("[backlog] Temporal client unavailable:", error);
 			// Temporal unavailable — every row will return as `error`. We
 			// still walk the list to give the user a per-row breakdown.
 			return { error } as { error: unknown };
@@ -299,7 +301,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						client &&
 						"error" in client &&
 						client.error instanceof Error
-							? client.error.message
+							? describeSyncErrorForUser(client.error)
 							: "Temporal client unavailable",
 				});
 				continue;
@@ -378,6 +380,10 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 							: undefined,
 				});
 			} catch (error) {
+				console.error(
+					"[backlog] retry-all-failed-proposals failed:",
+					error,
+				);
 				// Revert the row to FAILED so the inbox still surfaces it.
 				await db.pendingBacklogProposal
 					.update({
@@ -385,7 +391,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						data: {
 							status: "FAILED",
 							applyError: (error instanceof Error
-								? error.message
+								? describeSyncErrorForUser(error)
 								: "retry-workflow-start failed"
 							).slice(0, 4000),
 							errorClass: "TemporalScheduleFailed",
@@ -400,7 +406,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					status: "error",
 					message:
 						error instanceof Error
-							? error.message
+							? describeSyncErrorForUser(error)
 							: "Failed to start retry workflow",
 				});
 			}

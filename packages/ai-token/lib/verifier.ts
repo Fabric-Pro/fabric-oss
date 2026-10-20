@@ -99,6 +99,8 @@ export async function verifyAIToken(
 			iat: payload.iat as number,
 			org: payload.org as string | undefined,
 			src: payload.src as string,
+			...(typeof payload.mo === "string" &&
+				payload.mo.length > 0 && { mo: payload.mo }),
 			...(payload.pe === true && { pe: true as const }),
 			...(payload.imp === true && { imp: true as const }),
 			...(typeof payload.jt === "string" &&

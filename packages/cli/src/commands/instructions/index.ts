@@ -227,6 +227,7 @@ import { isPlainOrigin } from "../../lib/shell-words.js";
 import { takeUpgradeNotice } from "../../lib/user-agent.js";
 import { runPluginInit } from "./init-plugin.js";
 import { registerRenderCommand } from "./render.js";
+import { registerRulesCommand } from "./rules.js";
 
 /**
  * The whole of hook mode, end to end, including the bundle download.
@@ -327,6 +328,7 @@ export function buildInstructionsCommand(): Command {
 	);
 
 	registerRenderCommand(instructions);
+	registerRulesCommand(instructions);
 
 	// Started by the session hook, detached, when it had no time left for
 	// the kept copy's daily update (`startBackgroundSelfUpdate`). Not for

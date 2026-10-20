@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric Coding Instructions (documentation examples)</title>
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Current light tokens from tooling/tailwind/theme.css. */
+:root{
+  --border:#e5e5e5; --ring:#0d0d0d;
+  --background:#ffffff; --foreground:#0d0d0d;
+  --primary:#0d0d0d; --primary-foreground:#ffffff;
+  --muted:#f4f4f4; --muted-foreground:#5d5d5d;
+  --accent:#ececec; --card:#ffffff;
+  --radius:0.625rem; --radius-lg:var(--radius);
+  --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1048px;padding:24px;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.shot{margin-bottom:40px;background:var(--background);padding:24px;border:1px solid var(--border);border-radius:12px}
+.wide{width:1000px}.dialog{width:760px;background:var(--card);padding:24px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.between{justify-content:space-between}.top{align-items:flex-start}
+.muted{color:var(--muted-foreground)}.small{font-size:12px}.space{margin-top:18px}.tight{margin-top:8px}
+h1{font-size:20px;font-weight:600}h2{font-size:18px;font-weight:600}h3{font-size:14px;font-weight:500}
+button{border:1px solid var(--border);border-radius:7px;padding:7px 11px;background:var(--card);font:inherit;font-size:13px;color:var(--foreground);white-space:nowrap}
+.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground)}
+.badge{font-family:"JetBrains Mono",monospace;font-size:12px;border:1px solid var(--border);border-radius:6px;padding:2px 7px}
+.files{display:grid;grid-template-columns:235px 1fr;border:1px solid var(--border);border-radius:10px;background:var(--card);overflow:hidden;margin-top:18px;min-height:350px}
+.tree{border-right:1px solid var(--border);padding:12px}.tree p{padding:7px 9px}.selected{background:var(--muted);border-radius:6px}.indent{padding-left:26px!important}
+.file-head{padding:12px 16px;border-bottom:1px solid var(--border)}.body{padding:20px 24px}.body h2{margin-bottom:14px}.body h3{margin-top:16px;margin-bottom:8px}.body ul{padding-left:20px}
+code,pre,.mono{font-family:"JetBrains Mono",monospace;font-size:12px}code{background:var(--muted);padding:2px 4px;border-radius:4px}
+pre{padding:14px;border:1px solid var(--border);border-radius:8px;background:var(--muted);line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.tabs{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:20px}.tabs button{display:flex;flex-direction:column;align-items:center;gap:8px;background:var(--muted);padding:12px 6px}.tabs img{width:28px;height:28px;object-fit:contain}.tabs .active{background:var(--background);border-color:var(--foreground);font-weight:500}
+.facts{display:flex;gap:28px;border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-top:16px;background:var(--card)}.facts dt{font-size:12px;color:var(--muted-foreground)}.facts dd{margin-top:5px;font-size:13px}.facts button{border:0;padding:0;margin-left:7px;text-decoration:underline;font-size:12px}
+.segment{display:inline-flex;background:var(--muted);padding:3px;border-radius:8px;margin:10px 0}.segment span{padding:7px 10px;font-size:13px}.segment .chosen{background:var(--background);border:1px solid var(--border);border-radius:6px;font-weight:500}
+.step{display:grid;grid-template-columns:26px 1fr;gap:10px;margin-top:22px}.number{width:24px;height:24px;border:1px solid var(--border);border-radius:50%;text-align:center;line-height:22px;font-size:12px}.step p{margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:18px}th{text-align:left;font-weight:500;color:var(--muted-foreground)}td,th{padding:11px 10px;border-bottom:1px solid var(--border)}.excluded{color:var(--muted-foreground);background:var(--muted)}
+.check{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:var(--primary);color:var(--primary-foreground);border-radius:4px;margin-right:7px;font-size:11px}
+.footer{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}.input{padding:10px 12px;border:1px solid var(--border);border-radius:7px;margin-top:7px;background:var(--background)}
+.editor{min-height:170px;background:var(--background);border:1px solid var(--border);border-radius:7px;padding:15px;white-space:pre-wrap;line-height:1.8}
+.choice{display:grid;grid-template-columns:16px 1fr;gap:12px;margin-top:16px}.radio{border:1px solid var(--foreground);border-radius:50%;width:16px;height:16px;margin-top:3px}.radio.on:after{content:"";display:block;width:8px;height:8px;margin:3px;border-radius:50%;background:var(--foreground)}
+</style>
+</head>
+<body>
+<!-- Synthetic data; mirrors InstructionsPageFrame, file tree and InstructionFileView. -->
+<section id="shot-browse" class="shot wide">
+  <p class="small muted">Projects / Example project / Coding Instructions</p>
+  <div class="row between space top"><div><div class="row"><h1>Coding instructions</h1><span class="badge">main · a1b2c3d</span></div></div><div class="row"><button>Commits</button><button>Download</button><button aria-label="More">•••</button></div></div>
+  <dl class="facts"><div><dt>Source</dt><dd>example-org/team-guide · main</dd></div><div><dt>Files</dt><dd>4 files</dd></div><div><dt>Agents read it through</dt><dd>Fabric MCP <button>Connect your agent</button></dd></div></dl>
+  <div class="files"><nav class="tree" aria-label="Instruction files"><p class="muted small">Files</p><p class="selected mono">AGENTS.md</p><p class="mono">CLAUDE.md</p><p class="mono">▾ .claude</p><p class="indent mono">▾ skills</p><p class="indent mono">&nbsp; review/SKILL.md</p><p class="mono">▾ scripts</p><p class="indent mono">test.sh</p></nav><article><div class="file-head row between"><span class="mono">AGENTS.md</span><button>Edit</button></div><div class="body"><h2>Project coding instructions</h2><p>Use the existing project patterns when you make a change.</p><h3>Before changing code</h3><ul><li>Read the nearby implementation and tests.</li><li>Keep each change focused on its task.</li><li>Ask before changing a public interface.</li></ul><h3>Verify your change</h3><p>Run <code>pnpm test</code> and the affected package's typecheck.</p></div></article></div>
+</section>
+<!-- UploadFolderDialog review state; no real files or credentials. -->
+<section id="shot-upload" class="shot dialog">
+  <div class="row between"><h2>Review what will be uploaded</h2><span class="muted">×</span></div><p class="muted tight">Greyed rows are left out and the reason is shown.</p>
+  <div class="row space"><button>Add folder</button><button>Add files</button></div>
+  <table><thead><tr><th>Path</th><th>Size</th><th></th></tr></thead><tbody><tr><td class="mono">AGENTS.md</td><td>1.2 KB</td><td></td></tr><tr><td class="mono">.claude/skills/review/SKILL.md</td><td>2.4 KB</td><td></td></tr><tr><td class="mono">scripts/test.sh</td><td>0.6 KB</td><td></td></tr><tr class="excluded"><td class="mono">tasks/session.log</td><td>4.0 KB</td><td>default rule</td></tr></tbody></table>
+  <p class="small muted space">3 files, 4.2 KB will be uploaded. 1 file will be left out.</p><p class="space"><span class="check">✓</span>Publish as soon as the upload passes checks</p><div class="footer"><button>Cancel</button><button class="primary">Upload 3 files</button></div>
+</section>
+<!-- ConnectCliDialog / TerminalToolSteps / RepositoryChoice. Example setup URL only. -->
+<section id="shot-connect" class="shot dialog">
+  <div class="row between"><h2>Connect your coding tool</h2><span class="muted">×</span></div><p class="muted tight">Your tool will load this project's coding instructions and stay in sync.</p>
+  <div class="tabs"><button><img src="../../../apps/web/public/integrations/Anthropic.svg" alt="">Claude Code</button><button class="active"><img src="../../../apps/web/public/integrations/Openai.svg" alt="">Codex</button><button><img src="../../../apps/web/public/integrations/VisualStudioCode.svg" alt="">VS Code</button><button><img src="../../../apps/web/public/integrations/Cursor.svg" alt="">Cursor</button><button><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 22v-5M9 8V2m6 6V2M6 8h12v4a6 6 0 0 1-12 0Z"/></svg>Other</button></div>
+  <div class="step"><span class="number">1</span><div><h3>Where's the repository?</h3><div class="segment"><span class="chosen">No clone (recommended)</span><span>Already cloned</span><span>Clone it for me</span></div><p class="small muted">example-org/team-guide · Run in the folder your agent works in.</p></div></div>
+  <div class="step"><span class="number">2</span><div><h3>Run this in your terminal</h3><pre class="tight">npx -y https://example.com/cli/fabric-example.tgz instructions init --project example-project --tool codex --plugin</pre><p class="small muted">Needs Node.js 22 or later.</p></div></div>
+  <div class="step"><span class="number">3</span><div><h3>Approve in your browser</h3><p class="muted">A sign-in page opens. After that, the instructions come from Fabric as a plugin at each session start, and files your agent writes in the project's memory folders reach the repository through Fabric.</p></div></div>
+  <div class="step"><span class="number">4</span><div><h3>Turn on the plugin in Codex</h3><p class="muted">The setup installs this project's plugin, <code>fabric-eproject</code>, in Codex. If it could not, run:</p><pre class="tight">codex plugin add fabric-eproject@personal</pre><p class="small muted">If your marketplace is not named <code>personal</code>, the setup prints the line with its name.</p><p class="muted">Then, in Codex, trust this folder when asked and run <code>/hooks</code> once to trust the project hook.</p></div></div>
+  <div class="footer"><button class="primary">Done</button></div>
+</section>
+<!-- WriteFolderForm / WriteFolderPicker with a synthetic repository and branch. -->
+<section id="shot-memory" class="shot dialog">
+  <div class="row between"><h2>Write folders</h2><span class="muted">×</span></div><p class="muted tight">Folders of the synced repository that agents write their files into.</p>
+  <h3 class="space">Folder</h3><div class="input mono"><p>▾ docs</p><p class="indent selected">☑ ai</p></div>
+  <label class="small tight" style="display:block">Or type a folder</label><div class="row"><div class="input muted mono" style="flex:1">e.g. docs/ai</div><button>Use</button></div><p class="small muted tight">A folder path inside what this project syncs, such as docs/ai. Press Enter or Use.</p><p class="small tight">Chosen folder: <code>docs/ai</code></p>
+  <div class="choice"><span class="radio on"></span><div><h3>Pull request</h3><p class="small muted">Fabric opens a pull request against main. Someone reviews the files before they join the branch.</p></div></div>
+  <div class="choice"><span class="radio"></span><div><h3>Push directly</h3><p class="small muted">Fabric commits straight to main, with no review.</p></div></div>
+  <div class="choice"><span class="radio on"></span><div><h3>Index for AI search</h3><p class="small muted">Files are embedded, so project search and summaries can use them.</p></div></div>
+  <div class="choice"><span class="radio"></span><div><h3>Store only</h3><p class="small muted">Files are kept and readable, but left out of AI search and summaries. Use it for large folders of task files.</p></div></div>
+  <div class="footer"><button>Cancel</button><button class="primary">Add write folder</button></div>
+</section>
+<!-- InstructionFileView editing state, synthetic repository and commit text. -->
+<section id="shot-edit" class="shot dialog">
+  <div class="row between"><h2 class="mono">AGENTS.md</h2><span class="small muted">Editing</span></div>
+  <div class="editor mono space"># Project coding instructions
+
+Before changing code, read the nearby implementation and tests.
+
+## Verification
+Run pnpm test and the affected package's typecheck.</div>
+  <p class="small muted space">Committing pushes to main in example-org/team-guide.</p><label class="space" style="display:block">Commit message</label><div class="input">Clarify the verification commands</div>
+  <div class="row space"><button class="primary">Commit to main</button><button>Suggest as a pull request</button><button>Cancel</button></div>
+</section>
+</body>
+</html>

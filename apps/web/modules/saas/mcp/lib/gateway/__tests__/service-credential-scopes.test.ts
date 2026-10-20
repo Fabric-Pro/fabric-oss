@@ -16,6 +16,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 vi.mock("@repo/database", () => ({ db: {} }));
 
 import { executePlatformTool, TOOL_SCOPES } from "../platform-tools";
+import { serviceSessionHasTool } from "../project-binding";
 import {
 	credentialSubject,
 	SERVICE_CREDENTIAL_SCOPES,
@@ -44,19 +45,46 @@ function serviceSession(): GatewaySession {
 }
 
 describe("the service credential's scope ceiling", () => {
-	it("refuses a platform tool outside the workflow and frame families, naming the agent runtime", async () => {
-		const result = await executePlatformTool(
-			"fabric_list_projects",
-			{},
-			serviceSession(),
-		);
+	it.each([
+		"fabric_list_documents",
+		"fabric_create_project",
+		"fabric_list_features",
+		"fabric_page_read_connected",
+	])(
+		"refuses %s outside the explicit service allowlist despite read scopes",
+		async (toolName) => {
+			const result = await executePlatformTool(
+				toolName,
+				{},
+				serviceSession(),
+			);
 
-		expect(result.isError).toBe(true);
-		expect(result.content[0]?.text).toContain("agent runtime");
-		expect(result.content[0]?.text).toContain("projects:read");
+			expect(result.isError).toBe(true);
+			expect(result.content[0]?.text).toContain("agent runtime");
+			expect(result.content[0]?.text).toContain("not available");
+		},
+	);
+
+	it.each([
+		"fabric_list_projects",
+		"fabric_get_project",
+		"fabric_list_project_instructions",
+		"fabric_get_project_instruction",
+		"fabric_get_project_instruction_bundle",
+		"fabric_list_connected_servers",
+		"fabric_list_page_tools",
+	])("allows the selected read %s", (name) => {
+		expect(serviceSessionHasTool(serviceSession(), name)).toBe(true);
+		expect(
+			scopeSatisfied(
+				[...SERVICE_CREDENTIAL_SCOPES],
+				TOOL_SCOPES[name],
+				"service",
+			),
+		).toBe(true);
 	});
 
-	it("refuses a connected-server write: it holds neither mcp scope", () => {
+	it("holds MCP read for listing connections but refuses a connected-server write", () => {
 		expect(
 			scopeSatisfied(
 				SERVICE_CREDENTIAL_SCOPES as string[],
@@ -70,7 +98,7 @@ describe("the service credential's scope ceiling", () => {
 				{ scope: "mcp:read", kind: "read" },
 				"service",
 			),
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("only lists scopes some platform tool actually requires", () => {
@@ -105,7 +133,7 @@ describe("the service credential's scope ceiling", () => {
 
 		expect(result.isError).toBe(true);
 		expect(result.content[0]?.text).toContain(
-			"acts in a single organization",
+			"not available to this agent runtime",
 		);
 	});
 });

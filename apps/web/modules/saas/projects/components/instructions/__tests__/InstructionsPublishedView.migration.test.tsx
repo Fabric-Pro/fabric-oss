@@ -15,6 +15,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { RepositoryMigrationView } from "../../../lib/instructions-migration";
 import type { RepositorySyncState } from "../../../lib/instructions-repository-sync";
 
+vi.mock("../InstructionsPluginReport", () => ({
+	InstructionsPluginReport: () => null,
+}));
 vi.mock("next-intl", async () =>
 	(await import("../../../__tests__/en-copy")).nextIntlMock(),
 );

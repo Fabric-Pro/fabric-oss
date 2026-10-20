@@ -182,7 +182,7 @@ describe("share", () => {
 		expect(mocks.share).not.toHaveBeenCalled();
 	});
 
-	it("says an account already shared must be taken back first", async () => {
+	it("says how an account already shared is released, without naming where", async () => {
 		mocks.share.mockRejectedValue(
 			new ChatGptPlanMoveError("already_shared"),
 		);
@@ -190,7 +190,9 @@ describe("share", () => {
 			handler(shareChatGptPlanProcedure)({ context: context() }),
 		);
 		expect(error.code).toBe("CONFLICT");
-		expect(error.message).toMatch(/take it back/);
+		expect(error.message).toMatch(
+			/Stop sharing.*Settings → AI Providers.*an admin there has to disconnect it/,
+		);
 		expect(mocks.audit).not.toHaveBeenCalled();
 	});
 });

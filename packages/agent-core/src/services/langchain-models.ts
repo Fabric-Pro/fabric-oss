@@ -37,6 +37,7 @@ import {
 	reportChatGptPlanExhausted,
 } from "./chatgpt-plan-reexchange";
 import { createLangChainTelemetryCallback } from "./langchain-telemetry";
+import { recordServedModel } from "./served-model";
 
 /**
  * Shared emergency kill switch for Anthropic prompt caching.
@@ -506,7 +507,7 @@ const MAX_CONTEXT_SHARE_FOR_OUTPUT = 0.25;
  *
  * @param requested Explicit budget from the caller, when it has a reason.
  * @param config Resolved provider config; carries the catalog caps when the
- *   task-config endpoint supplied them.
+ *   resolution supplied them.
  */
 export function resolveOutputTokenBudget(
 	requested: number | undefined,
@@ -1960,6 +1961,10 @@ export function createProviderModel(
 	options: ModelOptions = {},
 ): BaseChatModel {
 	const model = createUninstrumentedProviderModel(config, options);
+	recordServedModel(model, {
+		provider: config.provider,
+		model: config.model,
+	});
 	model.callbacks = [
 		createLangChainTelemetryCallback({
 			provider: config.provider ?? "unknown",
@@ -1992,6 +1997,15 @@ export function extractProviderConfig(
 	// #1942 review). Present as a real boolean; absent for older callers (then
 	// the Databricks branch falls back to a name check on the alias).
 	const aiIsReasoning = configurable.ai_is_reasoning;
+	const pinnedCap = (key: string): number | undefined => {
+		const value = configurable[key];
+		return configurable.ai_model_pinned === true &&
+			typeof value === "number" &&
+			Number.isFinite(value) &&
+			value > 0
+			? value
+			: undefined;
+	};
 
 	if (aiApiKey && aiModel) {
 		return {
@@ -2004,6 +2018,8 @@ export function extractProviderConfig(
 				: undefined,
 			isReasoningModel:
 				typeof aiIsReasoning === "boolean" ? aiIsReasoning : undefined,
+			maxOutputTokens: pinnedCap("ai_max_output_tokens"),
+			contextWindow: pinnedCap("ai_context_window"),
 		};
 	}
 
@@ -2084,6 +2100,7 @@ export async function getAgentModelAsync(
 	// A member's own ChatGPT plan has one model; the task endpoint resolves
 	// the organization's provider and would replace it (Fizzy #2939).
 	if (
+		configurable?.ai_model_pinned !== true &&
 		options.taskType &&
 		tenantUserId &&
 		providerConfig &&

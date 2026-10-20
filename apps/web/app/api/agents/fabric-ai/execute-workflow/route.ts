@@ -25,6 +25,7 @@ const REFUSAL_STATUS = {
 	NOT_FOUND: 404,
 	FORBIDDEN: 403,
 	BAD_REQUEST: 400,
+	CONFLICT: 409,
 	TOO_MANY_REQUESTS: 429,
 	INTERNAL_SERVER_ERROR: 500,
 } as const satisfies Record<WorkflowCommandErrorCode, number>;

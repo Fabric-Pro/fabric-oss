@@ -40,6 +40,7 @@ vi.mock("@repo/ai", () => ({
 vi.mock("@repo/ai-token", () => ({ issueAIToken: mocks.issueAIToken }));
 vi.mock("@repo/utils/agent-endpoint", () => ({
 	agentEndpointRefusal: () => null,
+	fetchAgentEndpoint: vi.fn(),
 }));
 vi.mock("../../utils/partykit-publisher", () => ({
 	publishToolStart: vi.fn(async () => undefined),
@@ -149,5 +150,128 @@ describe("the delegated agent's token in a job's run", () => {
 	it("carries none for a run that is no job", async () => {
 		const options = await delegateInRunStartedWith(STORY_AUTOMATION_START);
 		expect(options?.jobType).toBeUndefined();
+	});
+});
+
+describe("delegation usage metadata", () => {
+	it("overwrites forged input usage metadata with the explicit origin and retains retrieval project", async () => {
+		mocks.sendMessageSecure.mockClear();
+		mocks.sendMessageSecure.mockResolvedValue({
+			id: "task-example",
+			status: "completed",
+			artifacts: [],
+		});
+		await delegateToAgent({
+			agentId: "agent-example",
+			message: "hello",
+			userId: "user-example",
+			projectId: "retrieval-project",
+			usageOrigin: {
+				conversationId: "origin-conversation",
+				frameId: "origin-frame",
+				projectId: "origin-project",
+				featureKey: "chat-agent",
+			},
+			context: {
+				usage_conversation_id: "forged-conversation",
+				usage_project_id: "forged-project",
+				usage_frame_id: "forged-frame",
+				usage_feature_key: "forged-feature",
+			},
+		});
+		const call = mocks.sendMessageSecure.mock.calls[0];
+		for (const metadata of [
+			call[1].metadata,
+			call[3].metadata.orchestratorContext,
+		]) {
+			expect(metadata).toMatchObject({
+				project_id: "retrieval-project",
+				usage_project_id: "origin-project",
+				usage_conversation_id: "origin-conversation",
+				usage_frame_id: "origin-frame",
+				usage_feature_key: "chat-agent",
+			});
+		}
+		expect(call[3].metadata).toMatchObject({
+			usage_project_id: "origin-project",
+			usage_conversation_id: "origin-conversation",
+			usage_frame_id: "origin-frame",
+			usage_feature_key: "chat-agent",
+		});
+	});
+
+	it.each(["conversation-example", undefined])(
+		"sends only the explicit usage conversation (%s)",
+		async (usageConversationId) => {
+			mocks.sendMessageSecure.mockClear();
+			mocks.sendMessageSecure.mockResolvedValue({
+				id: "task-example",
+				status: "completed",
+				artifacts: [],
+			});
+			await delegateToAgent({
+				agentId: "agent-example",
+				message: "hello",
+				userId: "user-example",
+				usageConversationId,
+				context: {
+					usage_conversation_id: "untrusted-example",
+					thread_id: "thread-example",
+				},
+			});
+			expect(
+				mocks.sendMessageSecure.mock.calls[0][3].metadata
+					.usage_conversation_id,
+			).toBe(usageConversationId);
+		},
+	);
+});
+
+describe("delegated model selection", () => {
+	it.each(["claude-haiku-4-5", undefined])(
+		"pins system delegation (%s)",
+		async (modelOverride) => {
+			const { getAIModelWithMetadata } = await import("@repo/ai");
+			vi.mocked(getAIModelWithMetadata).mockClear();
+			await delegateToAgent({
+				agentId: "example-agent",
+				userId: "example-user",
+				organizationId: "example-org",
+				message: "hello",
+				modelOverride,
+			});
+			const options = vi.mocked(getAIModelWithMetadata).mock
+				.calls[0]?.[0];
+			const token = mocks.issueAIToken.mock.calls[0]?.[0];
+			if (modelOverride) {
+				expect(options).toHaveProperty("modelOverride", modelOverride);
+				expect(token).toHaveProperty("modelOverride", modelOverride);
+			} else {
+				expect(options).not.toHaveProperty("modelOverride");
+				expect(token).not.toHaveProperty("modelOverride");
+			}
+		},
+	);
+	it("does not select or mint for external agents", async () => {
+		const { resolveAgentEndpoint } = await import("../resolve-endpoint");
+		const { getAIModelWithMetadata } = await import("@repo/ai");
+		vi.mocked(resolveAgentEndpoint).mockResolvedValueOnce({
+			agentId: "example-agent",
+			name: "example-agent",
+			deploymentUrl: "https://external.example.com",
+			protocol: "a2a",
+			skills: [],
+			supportsStreaming: false,
+			isExternal: true,
+		});
+		vi.mocked(getAIModelWithMetadata).mockClear();
+		await delegateToAgent({
+			agentId: "example-agent",
+			userId: "example-user",
+			message: "hello",
+			modelOverride: "claude-haiku-4-5",
+		});
+		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.issueAIToken).not.toHaveBeenCalled();
 	});
 });

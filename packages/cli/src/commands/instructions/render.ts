@@ -22,15 +22,21 @@ import type { Command } from "commander";
 import { getClient } from "../../lib/client.js";
 import { CliFailure, describeError } from "../../lib/command-boundary.js";
 import { getApiKey, getBaseUrl, getConfigPath } from "../../lib/config.js";
+import { createAgentRunner } from "../../lib/instructions/agent-run.js";
 import * as git from "../../lib/instructions/git.js";
 import { excludeLocalFiles } from "../../lib/instructions/git-exclude.js";
 import { isIdentifier } from "../../lib/instructions/identifiers.js";
 import { machine } from "../../lib/instructions/machine.js";
 import { resolveExistingRoot } from "../../lib/instructions/safe-write.js";
 import { DEFAULT_ORIGIN, normalizeOrigin } from "../../lib/origin.js";
-import type { PluginTool } from "../../lib/plugin/layout.js";
+import { refreshCodexInstall } from "../../lib/plugin/codex-install.js";
+import {
+	codexPluginVersion,
+	type PluginTool,
+} from "../../lib/plugin/layout.js";
 import { writeAgentsOverride } from "../../lib/plugin/register.js";
 import { renderPlugin } from "../../lib/plugin/render.js";
+import { agentsInstructions } from "../../lib/plugin/rules.js";
 
 /** One request's budget: a cold render reads every file. */
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -59,20 +65,11 @@ function toolOf(target: string | undefined): PluginTool {
 	throw new CliFailure("--target is claude-code or codex", 2);
 }
 
-export interface RenderedPlugin {
-	directory: string;
-	alwaysOn: { file: string; text: string } | null;
-}
-
-/** The render itself, for `render` and for `init`: no printing. */
-export async function renderForProject(input: {
+/** Who to ask and where the CLI keeps what it reads, for one project. */
+export function connectForProject(input: {
 	project: string;
 	baseUrl?: string;
-	org?: string;
-	tool: PluginTool;
-	out?: string;
-	log?: (line: string) => void;
-}): Promise<RenderedPlugin> {
+}) {
 	const origin = normalizeOrigin(
 		input.baseUrl ?? getBaseUrl() ?? DEFAULT_ORIGIN,
 	);
@@ -88,12 +85,41 @@ export async function renderForProject(input: {
 			3,
 		);
 	}
-	const client = getClient({
-		baseUrl: input.baseUrl,
-		project: input.project,
-		timeoutMs: REQUEST_TIMEOUT_MS,
-	}).withoutContext();
-	const cacheDirectory = path.join(path.dirname(getConfigPath()), "cache");
+	return {
+		origin,
+		client: getClient({
+			baseUrl: input.baseUrl,
+			project: input.project,
+			timeoutMs: REQUEST_TIMEOUT_MS,
+		}).withoutContext(),
+		cacheDirectory: path.join(path.dirname(getConfigPath()), "cache"),
+	};
+}
+
+export interface RenderedPlugin {
+	directory: string;
+	/** The version was already rendered: nothing new was written. */
+	reused: boolean;
+	/** What the rendered folder holds, as the plugin's own version is built from it. */
+	pin: string;
+	alwaysOn: { file: string; text: string } | null;
+	/**
+	 * What goes in a Codex `AGENTS.override.md` between Fabric's markers: the
+	 * memory file and the project rules. `null` when there is neither.
+	 */
+	agentsText: string | null;
+}
+
+/** The render itself, for `render` and for `init`: no printing. */
+export async function renderForProject(input: {
+	project: string;
+	baseUrl?: string;
+	org?: string;
+	tool: PluginTool;
+	out?: string;
+	log?: (line: string) => void;
+}): Promise<RenderedPlugin> {
+	const { origin, client, cacheDirectory } = connectForProject(input);
 	const rendered = await renderPlugin({
 		client,
 		projectId: input.project,
@@ -115,7 +141,19 @@ export async function renderForProject(input: {
 		timeoutMs: REQUEST_TIMEOUT_MS,
 		log: input.log,
 	});
-	return { directory: rendered.directory, alwaysOn: rendered.alwaysOn };
+	return {
+		directory: rendered.directory,
+		reused: rendered.reused,
+		pin: rendered.pin,
+		alwaysOn: rendered.alwaysOn,
+		agentsText:
+			input.tool === "codex"
+				? agentsInstructions(
+						rendered.alwaysOn?.text ?? null,
+						rendered.rules,
+					)
+				: null,
+	};
 }
 
 /**
@@ -180,11 +218,25 @@ export function registerRenderCommand(instructions: Command): void {
 					out: opts.out,
 					log: (text) => process.stderr.write(`fabric: ${text}\n`),
 				});
-				if (tool === "codex" && rendered.alwaysOn !== null) {
+				if (tool === "codex" && rendered.agentsText !== null) {
 					await refreshAgentsOverride(
 						opts.dest ?? process.cwd(),
-						rendered.alwaysOn.text,
+						rendered.agentsText,
 					);
+				}
+				if (tool === "codex" && opts.out === undefined) {
+					const env = machine.env();
+					const home = machine.home() ?? os.homedir();
+					await refreshCodexInstall({
+						run: createAgentRunner({
+							lookup: { env, platform: machine.platform() },
+						}),
+						home,
+						codexHome: env.CODEX_HOME ?? path.join(home, ".codex"),
+						projectId: opts.project as string,
+						version: codexPluginVersion(rendered.pin),
+						cwd: path.resolve(opts.dest ?? process.cwd()),
+					});
 				}
 				if (!opts.hook) {
 					process.stdout.write(`${rendered.directory}\n`);

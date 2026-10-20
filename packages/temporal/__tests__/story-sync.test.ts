@@ -5,6 +5,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	fixtureTarget,
+	mutablePmSettings,
+	pmTargetFixtures,
+} from "../../utils/test-fixtures/pm-target";
 
 // Mock @repo/agent-core/backend. Explicit mock (no importOriginal) avoids
 // loading real @repo/database, which would keep pg.Pool handles alive
@@ -85,6 +90,8 @@ vi.mock("@repo/database", () => {
 		canReadOrganizationMcpConfigs: vi.fn(async () => true),
 		isOrganizationMember: vi.fn(async () => true),
 		db: {
+			mCPConfig: { findFirst: vi.fn() },
+			mCPServer: { findUnique: vi.fn() },
 			userStory: {
 				findMany: vi.fn(),
 				findFirst: vi.fn(),
@@ -207,6 +214,7 @@ import {
 	discoverPMToolCapabilities,
 	extractFizzyTables,
 	extractPreBlocks,
+	getStoriesToSync,
 	getWorkItemsByIdsFromPM,
 	listAllFizzyCards,
 	listWorkItemsFromPM,
@@ -4991,7 +4999,15 @@ describe("createOrUpdateStoryFromPMItem — REST pull on existing story", () => 
 		mockDb.userStory.findFirst.mockResolvedValue({
 			id: "story-existing-1",
 			identifier: "F-42",
+			externalId: "gl-issue-99",
+			externalUrl: "https://gitlab.com/group/proj/-/issues/99",
+			externalMcpServerId: "srv-rest-gitlab",
 		});
+
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
+			defaultUrl: "https://gitlab.com",
+		} as never);
 
 		vi.mocked(updateStory).mockResolvedValue(undefined as never);
 
@@ -5037,7 +5053,13 @@ describe("createOrUpdateStoryFromPMItem — REST pull on existing story", () => 
 				title: "Bug: login broken",
 				externalUrl: "https://gitlab.com/group/proj/-/issues/99",
 			}),
-			{ lastEditedSource: "PM_PULL" },
+			{
+				lastEditedSource: "PM_PULL",
+				onlyIfPmLink: {
+					externalId: "gl-issue-99",
+					externalMcpServerId: "srv-rest-gitlab",
+				},
+			},
 		);
 
 		expect(result).toEqual({
@@ -6121,13 +6143,59 @@ describe("syncStoryToPM create claim", () => {
 		},
 	);
 
+	it("a create with no readable id is a create_orphan result with one FAILURE log row (Fizzy #3070)", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: { id: null },
+			durationMs: 1,
+		});
+		// The row the orphan's audit row is written from.
+		vi.mocked(db.userStory.findUnique).mockResolvedValue({
+			title: "Test Story",
+			externalId: null,
+			externalUrl: null,
+			projectId: "project-456",
+			project: { organizationId: "org-1", userId: "user-123" },
+			externalMcpServerId: null,
+		} as never);
+
+		const result = await syncStoryToPM(input);
+
+		const failureRows = mockRecordPmSyncLog.mock.calls
+			.map(([arg]) => arg as { status?: string; errorPayload?: unknown })
+			.filter((row) => row.status === "FAILURE");
+		expect(failureRows).toHaveLength(1);
+		expect(failureRows[0]?.errorPayload).toMatchObject({
+			errorClass: "create_orphan",
+		});
+		expect(failedStamp()?.lastPmSyncError).toEqual(
+			expect.stringContaining("returned no work item id"),
+		);
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_CREATE_ORPHAN",
+		});
+		expect(result.externalId).toBeUndefined();
+	});
+
 	it("a failed link write is a create_orphan that keeps the claim (no throw into a retry)", async () => {
 		vi.mocked(executeMcpTool).mockResolvedValue(createdOutput);
 		vi.mocked(updateStory).mockRejectedValue(
-			new Error("database unavailable"),
+			Object.assign(
+				new Error(
+					"Invalid `prisma.userStory.update()` invocation in\n/app/packages/database/x.ts:12:3\nquery text",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2002" },
+			),
 		);
 
 		const result = await syncStoryToPM(input);
+
+		expect(result.error).toContain(
+			"another story in this project is already linked to that item",
+		);
+		expect(result.error).not.toContain("/app/packages/database/x.ts");
+		expect(result.error).not.toContain("prisma.");
 
 		expect(result).toMatchObject({
 			success: false,
@@ -6451,6 +6519,7 @@ describe("syncStoryToPM create claim", () => {
 						(data as { externalId?: unknown }).externalId === null,
 				);
 			expect(clear?.[2]).toEqual({
+				externalPmTarget: null,
 				externalId: null,
 				externalUrl: null,
 				externalMcpServerId: null,
@@ -6519,4 +6588,560 @@ describe("syncStoryToPM create claim", () => {
 			expect(updateStory).not.toHaveBeenCalled();
 		});
 	});
+});
+
+describe("bulk story link snapshot", () => {
+	it("returns the server stamp with the id and URL in the scoped workflow payload", async () => {
+		const linked = {
+			id: "example-story",
+			identifier: "F-42",
+			title: "Example story",
+			externalId: "42",
+			externalUrl: "https://pm.example.com/cards/42",
+			externalMcpServerId: "example-server",
+		};
+		vi.mocked(db.userStory.findMany).mockImplementationOnce((async ({
+			select,
+		}: {
+			select: Record<string, boolean>;
+		}) => [
+			Object.fromEntries(
+				Object.entries(linked).filter(([key]) => select[key]),
+			),
+		]) as never);
+		expect(
+			await getStoriesToSync({
+				projectId: "example-project",
+				organizationId: "example-org",
+				direction: "push",
+				unsyncedOnly: false,
+			}),
+		).toEqual([linked]);
+		expect(db.userStory.findMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				where: {
+					projectId: "example-project",
+					project: { organizationId: "example-org" },
+				},
+			}),
+		);
+	});
+});
+
+describe("story pull link ownership", () => {
+	const capabilities = {
+		hasPMCapabilities: true,
+		detectedType: "fizzy",
+		containerHierarchy: [],
+		availableTools: [],
+	};
+	const input = {
+		projectId: "example-project",
+		externalId: "42",
+		title: "Incoming title",
+		description: "Incoming body",
+		externalUrl: "https://example.com/cards/42",
+		userId: "example-user",
+		organizationId: "example-org",
+		mcpConfigId: "example-config",
+		mcpServerId: "example-server",
+		containerId: "example-board",
+		capabilities: capabilities as never,
+	};
+	const row = {
+		id: "example-story",
+		identifier: "EX-42",
+		kind: "STORY",
+		title: "Original title",
+		description: "Original body",
+		externalId: "42",
+		externalUrl: "https://example.com/cards/42",
+		externalMcpServerId: "example-server" as string | null,
+		lastPmSyncAttemptId: null,
+		lastPmSyncStatus: null,
+		projectId: "example-project",
+		project: { organizationId: "example-org", userId: null },
+	};
+	const config = {
+		id: "example-config",
+		mcpServerId: "example-server",
+		baseUrl: "https://example.com",
+		mcpServer: { key: "fizzy", defaultUrl: "https://example.com" },
+	};
+	const getCapabilities = {
+		...capabilities,
+		taskGet: {
+			toolName: "get_card",
+			idParam: "card_id",
+			additionalRequiredParams: [],
+		},
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			...row,
+		} as never);
+		vi.mocked(db.userStory.findUnique).mockResolvedValue({
+			...row,
+		} as never);
+		vi.mocked(db.userStory.updateMany).mockResolvedValue({ count: 1 });
+		vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(config as never);
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue(
+			config.mcpServer as never,
+		);
+		vi.mocked(getMcpConfigById).mockResolvedValue(config as never);
+		vi.mocked(getStoryById).mockResolvedValue({ ...row } as never);
+		vi.mocked(updateStory).mockResolvedValue({ ...row } as never);
+	});
+
+	it("accepts a self-hosted unstamped REST pull", async () => {
+		const linked = {
+			...row,
+			externalMcpServerId: null,
+			externalUrl:
+				"https://gitlab.example.com/example/project/-/issues/42",
+		};
+		vi.mocked(db.userStory.findFirst).mockResolvedValue(linked as never);
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
+			defaultUrl: "https://gitlab.com",
+		} as never);
+		await expect(
+			createOrUpdateStoryFromPMItem({
+				...input,
+				mcpConfigId: null,
+				additionalContext: {
+					gitlabOrigin: "https://gitlab.example.com",
+				},
+				capabilities: {
+					...capabilities,
+					detectedType: "gitlab",
+				} as never,
+			}),
+		).resolves.toMatchObject({ created: false });
+		expect(updateStory).toHaveBeenCalledWith(
+			row.id,
+			input.projectId,
+			expect.objectContaining({ title: input.title }),
+			expect.objectContaining({
+				onlyIfPmLink: { externalId: "42", externalMcpServerId: null },
+			}),
+		);
+	});
+
+	it("a failed REST post-create content pull still logs creation", async () => {
+		const rest = await import(
+			"../src/activities/pm-integration/gitlab-rest-story-sync"
+		);
+		const pull = vi
+			.spyOn(rest, "syncGitLabStoryViaRest")
+			.mockResolvedValue({
+				success: false,
+				error: "example fetch denied",
+				direction: "pull",
+				syncedAt: new Date(),
+			});
+		try {
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
+			vi.mocked(createStory).mockResolvedValue({
+				id: row.id,
+				identifier: row.identifier,
+			} as never);
+			await expect(
+				createOrUpdateStoryFromPMItem({
+					...input,
+					mcpConfigId: null,
+					capabilities: {
+						...getCapabilities,
+						detectedType: "gitlab",
+					} as never,
+				}),
+			).resolves.toMatchObject({ created: true });
+			expect(pull).toHaveBeenCalledTimes(1);
+			expect(mockRecordPmSyncLog).toHaveBeenCalledWith(
+				expect.objectContaining({
+					direction: "pull",
+					status: "SUCCESS",
+				}),
+			);
+		} finally {
+			pull.mockRestore();
+		}
+	});
+
+	it.each([null, "example-server"])(
+		"a relink before the no-get write preserves content (stamp: %s)",
+		async (stamp) => {
+			const current = { ...row, externalMcpServerId: stamp };
+			vi.mocked(db.userStory.findFirst).mockImplementation((async () => ({
+				...current,
+			})) as never);
+			vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce(
+				(async () => {
+					current.externalId = "43";
+					current.externalMcpServerId = "example-new-server";
+					return config;
+				}) as never,
+			);
+			vi.mocked(updateStory).mockImplementation(
+				async (_id, _project, data, context) => {
+					const fence = context?.onlyIfPmLink;
+					if (
+						fence &&
+						(fence.externalId !== current.externalId ||
+							fence.externalMcpServerId !==
+								current.externalMcpServerId)
+					) {
+						throw Object.assign(new Error("PM link changed"), {
+							name: "StoryLinkChangedError",
+						});
+					}
+					Object.assign(current, data);
+					return current as never;
+				},
+			);
+			await expect(
+				createOrUpdateStoryFromPMItem(input),
+			).rejects.toMatchObject({
+				type: "StoryPullLinkMismatchError",
+				nonRetryable: true,
+				message: expect.stringContaining("did not pull it"),
+			});
+			expect(current).toMatchObject({
+				title: row.title,
+				description: row.description,
+				externalUrl: row.externalUrl,
+				externalId: "43",
+			});
+			expect(mockRecordPmSyncLog).not.toHaveBeenCalledWith(
+				expect.objectContaining({ status: "SUCCESS" }),
+			);
+		},
+	);
+
+	it("a single-story legacy pull logs pull wording and direction", async () => {
+		vi.mocked(getStoryById).mockResolvedValue({
+			...row,
+			externalMcpServerId: null,
+			externalUrl: "https://example.net/42",
+		} as never);
+		const result = await syncStoryToPM({
+			...input,
+			storyId: row.id,
+			direction: "pull",
+			capabilities: getCapabilities as never,
+		});
+		expect(result.error).toContain("did not pull");
+		expect(mockRecordPmSyncLog).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "pull", status: "FAILURE" }),
+		);
+	});
+
+	it("a refused post-create content pull still logs the successful creation", async () => {
+		vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
+		vi.mocked(createStory).mockResolvedValue({
+			id: row.id,
+			identifier: row.identifier,
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue({
+			...row,
+			externalMcpServerId: "example-old-server",
+		} as never);
+		await expect(
+			createOrUpdateStoryFromPMItem({
+				...input,
+				capabilities: getCapabilities as never,
+			}),
+		).resolves.toMatchObject({ created: true });
+		expect(
+			mockRecordPmSyncLog.mock.calls.filter(
+				([entry]) =>
+					entry.direction === "pull" && entry.status === "SUCCESS",
+			),
+		).toHaveLength(1);
+		expect(
+			mockRecordPmSyncLog.mock.calls.filter(
+				([entry]) =>
+					entry.direction === "pull" && entry.status === "FAILURE",
+			),
+		).toHaveLength(1);
+	});
+
+	it.each([false, true])(
+		"refuses a differently stamped story before dispatch (get tool: %s)",
+		async (getTool) => {
+			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				...row,
+				externalMcpServerId: "example-old-server",
+			} as never);
+			await expect(
+				createOrUpdateStoryFromPMItem({
+					...input,
+					capabilities: getTool
+						? (getCapabilities as never)
+						: (capabilities as never),
+				}),
+			).rejects.toMatchObject({
+				type: "StoryPullLinkMismatchError",
+				nonRetryable: true,
+			});
+			expect(updateStory).not.toHaveBeenCalled();
+			expect(getStoryById).not.toHaveBeenCalled();
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses an unstamped other-tool URL and records the fenced failure", async () => {
+		vi.mocked(db.userStory.findFirst).mockResolvedValue({
+			...row,
+			externalMcpServerId: null,
+			externalUrl: "https://example.net/group/project/-/issues/42",
+		} as never);
+		await expect(
+			createOrUpdateStoryFromPMItem(input),
+		).rejects.toMatchObject({ type: "StoryPullLinkMismatchError" });
+		expect(updateStory).not.toHaveBeenCalled();
+		expect(executeMcpTool).not.toHaveBeenCalled();
+		expect(db.userStory.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					lastPmSyncStatus: "FAILED",
+					lastPmSyncError: expect.stringContaining(
+						"linked to a ticket in a different PM tool",
+					),
+				}),
+				where: expect.objectContaining({
+					externalUrl:
+						"https://example.net/group/project/-/issues/42",
+					externalMcpServerId: null,
+				}),
+			}),
+		);
+	});
+
+	it.each(["example-server", null])(
+		"updates a story on the active tool (stamp: %s)",
+		async (stamp) => {
+			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				...row,
+				externalMcpServerId: stamp,
+			} as never);
+			await expect(
+				createOrUpdateStoryFromPMItem(input),
+			).resolves.toMatchObject({ created: false, storyId: row.id });
+			expect(updateStory).toHaveBeenCalledWith(
+				row.id,
+				input.projectId,
+				expect.objectContaining({ title: input.title }),
+				{
+					lastEditedSource: "PM_PULL",
+					onlyIfPmLink: {
+						externalId: "42",
+						externalMcpServerId: stamp,
+					},
+				},
+			);
+		},
+	);
+
+	it("refuses an existing story when no server id resolves", async () => {
+		vi.mocked(getMcpConfigById).mockResolvedValue(null);
+		await expect(
+			createOrUpdateStoryFromPMItem({ ...input, mcpServerId: undefined }),
+		).rejects.toMatchObject({
+			type: "StoryPullLinkMismatchError",
+			nonRetryable: true,
+		});
+		expect(updateStory).not.toHaveBeenCalled();
+	});
+
+	it("throws the failed get-tool pull error without logging it twice", async () => {
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: false,
+			output: "example fetch denied",
+		} as never);
+		await expect(
+			createOrUpdateStoryFromPMItem({
+				...input,
+				capabilities: getCapabilities as never,
+			}),
+		).rejects.toMatchObject({
+			message: "Failed to fetch from PM tool: example fetch denied",
+			nonRetryable: true,
+		});
+		expect(updateStory).not.toHaveBeenCalled();
+		expect(
+			mockRecordPmSyncLog.mock.calls.filter(
+				([entry]) => entry.status === "FAILURE",
+			),
+		).toHaveLength(1);
+	});
+
+	it("refuses a single-story pull with an unstamped other-tool URL", async () => {
+		vi.mocked(getStoryById).mockResolvedValue({
+			...row,
+			externalMcpServerId: null,
+			externalUrl: "https://example.net/group/project/-/issues/42",
+		} as never);
+		const result = await syncStoryToPM({
+			...input,
+			storyId: row.id,
+			direction: "pull",
+			capabilities: getCapabilities as never,
+		});
+		expect(result).toMatchObject({
+			success: false,
+			errorCode: "PM_TOOL_MISMATCH_LEGACY",
+		});
+		expect(executeMcpTool).not.toHaveBeenCalled();
+		expect(updateStory).not.toHaveBeenCalled();
+	});
+});
+
+describe("pull-create target consistency", () => {
+	it.each(pmTargetFixtures)(
+		"$name: pull-create uses the writer/checker identity",
+		async (fixture) => {
+			vi.clearAllMocks();
+			vi.mocked(db.userStory.findFirst).mockResolvedValue(null);
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(
+				fixture.config as never,
+			);
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue(
+				fixture.config.mcpServer as never,
+			);
+			vi.mocked(createStory).mockResolvedValue({
+				id: "example-story",
+				identifier: "EX-1",
+			} as never);
+			await createOrUpdateStoryFromPMItem({
+				projectId: "example-project",
+				userId: "example-user",
+				organizationId: "example-org",
+				externalId: "42",
+				title: "Example",
+				mcpConfigId: fixture.name.startsWith("GitLab REST")
+					? null
+					: "example-config",
+				mcpServerId: "example-server",
+				containerId: fixture.containerId,
+				stableContainerId: fixture.containerId,
+				additionalContext: fixture.additionalContext,
+				capabilities: {
+					detectedType: fixture.pmTool,
+					availableTools: [],
+					containerHierarchy: [],
+					hasPMCapabilities: true,
+				} as never,
+			});
+			const written = vi.mocked(db.userStory.update).mock.calls[0]?.[0]
+				.data;
+			vi.mocked(db.userStory.findFirst).mockResolvedValue({
+				...written,
+				externalId: "42",
+				externalUrl: null,
+			} as never);
+			const { checkStoryPmLink } = await import(
+				"../src/activities/pm-integration/create-story-in-pm-with-claim"
+			);
+			await expect(
+				checkStoryPmLink({
+					storyId: "example-story",
+					projectId: "example-project",
+					userId: "example-user",
+					organizationId: "example-org",
+					mcpConfigId: fixture.name.startsWith("GitLab REST")
+						? null
+						: "example-config",
+					mcpServerId: "example-server",
+					pmTool: fixture.pmTool,
+					toolLabel: fixture.pmTool,
+					externalId: "42",
+					externalUrl: null,
+					externalMcpServerId: "example-server",
+					pmTarget: {
+						containerId: fixture.containerId,
+						additionalContext: {
+							...fixture.additionalContext,
+							...mutablePmSettings,
+						},
+					},
+				}),
+			).resolves.toMatchObject({ success: true });
+
+			expect(db.userStory.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						externalPmTarget:
+							fixture.name === "GitLab REST legacy"
+								? expect.toBeOneOf([
+										null,
+										fixtureTarget(
+											fixture,
+											"example-server",
+										),
+									])
+								: fixtureTarget(fixture, "example-server"),
+					}),
+				}),
+			);
+		},
+	);
+});
+
+it("pull adoption preserves missing-ticket streaks and pending proposals", async () => {
+	vi.clearAllMocks();
+	setupMcpClientMock();
+	const existing = {
+		...MOCK_SYNCED_STORY,
+		externalMcpServerId: "example-server",
+		externalPmTarget: null,
+	};
+	const missing = { streak: 2, proposal: "PENDING" };
+	vi.mocked(getStoryById).mockResolvedValue(existing as never);
+	vi.mocked(getMcpConfigById).mockResolvedValue({
+		mcpServerId: "example-server",
+		mcpServer: { key: "fizzy" },
+	} as never);
+	vi.mocked(executeMcpTool).mockResolvedValue({
+		success: true,
+		output: { id: existing.externalId, title: "Example" },
+		durationMs: 1,
+	});
+	// Model updateStory's link-change cleanup, independently of the direct column write.
+	vi.mocked(updateStory).mockImplementation(async (_id, _project, data) => {
+		if (Object.hasOwn(data, "externalPmTarget")) {
+			missing.streak = 0;
+			missing.proposal = "DISMISSED";
+		}
+		return existing as never;
+	});
+	const result = await syncStoryToPM({
+		storyId: "story-123",
+		projectId: "project-456",
+		mcpConfigId: "example-config",
+		containerId: "example-board",
+		additionalContext: { account_slug: "/example-account" },
+		direction: "pull",
+		userId: "example-user",
+	});
+	expect(result.success).toBe(true);
+	expect(missing).toEqual({ streak: 2, proposal: "PENDING" });
+	expect(db.userStory.updateMany).toHaveBeenCalledWith({
+		where: {
+			id: "story-123",
+			projectId: "project-456",
+			externalId: existing.externalId,
+			externalPmTarget: null,
+		},
+		data: {
+			externalPmTarget:
+				'pmt1:["example-server","/example-account","example-board"]',
+		},
+	});
+	expect(updateStory).toHaveBeenCalled();
+	for (const [, , data] of vi.mocked(updateStory).mock.calls) {
+		expect(data).not.toHaveProperty("externalPmTarget");
+	}
 });

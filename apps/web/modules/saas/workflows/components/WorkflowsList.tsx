@@ -1,5 +1,6 @@
 "use client";
 
+import { isWorkflowLive } from "@repo/utils/workflow-status";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -14,8 +15,8 @@ import {
 	PlusIcon,
 	SearchIcon,
 } from "lucide-react";
-import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
@@ -23,6 +24,9 @@ import { WorkflowCard } from "./WorkflowCard";
 import { WorkflowsHero } from "./WorkflowsHero";
 
 type ViewMode = "grid" | "list";
+
+/** The "Active" tab: every live workflow, whichever of its two statuses it has. */
+const LIVE_FILTER = "ACTIVE";
 
 export function WorkflowsList() {
 	const router = useRouter();
@@ -65,24 +69,28 @@ export function WorkflowsList() {
 				offset: 0,
 				search: debouncedSearch || undefined,
 				triggerType: scheduledOnly ? "SCHEDULE" : undefined,
+				// The Active tab is the live workflows, which are PUBLISHED or
+				// ACTIVE; the list takes one status, so it is narrowed below.
 				status:
-					statusFilter === "all"
+					statusFilter === "all" || statusFilter === LIVE_FILTER
 						? undefined
-						: (statusFilter as
-								| "DRAFT"
-								| "ACTIVE"
-								| "PAUSED"
-								| "ARCHIVED"),
+						: (statusFilter as "DRAFT" | "PAUSED" | "ARCHIVED"),
 			},
 		}),
 	);
 
-	const workflows = data?.workflows ?? [];
+	const fetched = data?.workflows ?? [];
+	const workflows =
+		statusFilter === LIVE_FILTER
+			? fetched.filter((w) => isWorkflowLive(w.status))
+			: fetched;
 
 	// Calculate counts for each status
 	const allCount = workflows.length;
 	const draftCount = workflows.filter((w) => w.status === "DRAFT").length;
-	const activeCount = workflows.filter((w) => w.status === "ACTIVE").length;
+	const activeCount = workflows.filter((w) =>
+		isWorkflowLive(w.status),
+	).length;
 	const pausedCount = workflows.filter((w) => w.status === "PAUSED").length;
 	const archivedCount = workflows.filter(
 		(w) => w.status === "ARCHIVED",

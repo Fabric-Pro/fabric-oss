@@ -40,6 +40,8 @@ const {
 }));
 
 vi.mock("@repo/database", () => ({
+	// Gate off: the superseded-action refusal (Fizzy #2946) is not this file's subject.
+	isProposalArtifactEnabledForOrganization: vi.fn(async () => false),
 	createPromptNomination,
 	approvePromptNomination,
 	getNominationById,

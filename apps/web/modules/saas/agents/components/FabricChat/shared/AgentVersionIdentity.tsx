@@ -29,6 +29,7 @@ export function AgentVersionIdentity({
 			}
 			const { instance } = await orpcClient.agentTemplates.instances.get({
 				id: instanceId,
+				organizationId,
 			});
 			if (
 				instance.id !== instanceId ||
@@ -63,6 +64,7 @@ export function AgentVersionIdentity({
 			}
 			const { instance } = await orpcClient.agentTemplates.instances.get({
 				sId: pinned.sId,
+				organizationId,
 			});
 			if (
 				!instance ||

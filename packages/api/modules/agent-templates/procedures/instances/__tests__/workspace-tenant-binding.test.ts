@@ -85,9 +85,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 			return makeChainable();
 		},
 		Permissions: { AGENT_TEMPLATE_MANAGE: "AGENT_TEMPLATE_MANAGE" },
-		requirePermission: () => (c: unknown) => c,
-		resolveOrganizationId: (input: string | null | undefined) =>
-			input ?? null,
+		requireInputOrgPermission: () => (c: unknown) => c,
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) => (input === undefined ? session.activeOrganizationId : input),
 	};
 });
 
@@ -109,7 +111,10 @@ const updateHandler = (
 const USER_ID = "user-1";
 const ORG_A = "org-a";
 const ORG_B = "org-b";
-const context = { user: { id: USER_ID }, session: {} };
+const context = {
+	user: { id: USER_ID },
+	session: { activeOrganizationId: ORG_A },
+};
 
 const createInput = (workspaceIds: string[]) => ({
 	organizationId: ORG_A,
@@ -214,7 +219,27 @@ describe("updateInstanceProcedure — workspace tenant binding", () => {
 		expect(mockUpdateAgentTemplateInstance).not.toHaveBeenCalled();
 	});
 
-	it("refuses an organization workspace on a personal instance", async () => {
+	it("refuses a personal workspace on an organization instance", async () => {
+		mockGetWorkspaceAccessContext.mockResolvedValue({
+			organizationId: null,
+		});
+		await expect(
+			updateHandler({
+				input: {
+					id: "instance-1",
+					workspaceIds: ["example-personal-workspace"],
+					createNewVersion: false,
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "FORBIDDEN",
+			message:
+				"You don't have access to workspace example-personal-workspace",
+		});
+		expect(mockUpdateAgentTemplateInstance).not.toHaveBeenCalled();
+	});
+	it("refuses a personal instance before checking workspace access", async () => {
 		mockGetAgentTemplateInstance.mockResolvedValue({
 			id: "instance-1",
 			userId: USER_ID,
@@ -233,7 +258,11 @@ describe("updateInstanceProcedure — workspace tenant binding", () => {
 				},
 				context,
 			}),
-		).rejects.toThrow("You don't have access to workspace ws-a");
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "Instance not found",
+		});
+		expect(mockGetWorkspaceAccessContext).not.toHaveBeenCalled();
 		expect(mockUpdateAgentTemplateInstance).not.toHaveBeenCalled();
 	});
 

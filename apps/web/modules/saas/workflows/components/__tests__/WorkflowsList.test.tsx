@@ -67,6 +67,53 @@ beforeEach(() => {
 	];
 });
 
+describe("WorkflowsList — the Active tab", () => {
+	it("counts a published workflow under Active, which is where live workflows belong", () => {
+		render(<WorkflowsList />);
+
+		expect(
+			screen.getByRole("button", { name: /^Active/ }),
+		).toHaveTextContent("Active (2)");
+		expect(
+			screen.getByRole("button", { name: /^Paused/ }),
+		).toHaveTextContent("Paused (1)");
+	});
+
+	it("counts a workflow from before publishing had its own status as live too", () => {
+		mocks.workflows = [
+			workflow("a", "SCHEDULE", "PUBLISHED"),
+			workflow("b", "MANUAL", "ACTIVE"),
+			workflow("c", "MANUAL", "DRAFT"),
+		];
+		render(<WorkflowsList />);
+
+		expect(
+			screen.getByRole("button", { name: /^Active/ }),
+		).toHaveTextContent("Active (2)");
+		expect(
+			screen.getByRole("button", { name: /^Draft/ }),
+		).toHaveTextContent("Draft (1)");
+	});
+
+	it("lists the published and active workflows and no others when it is chosen", () => {
+		render(<WorkflowsList />);
+
+		fireEvent.click(screen.getByRole("button", { name: /^Active/ }));
+
+		expect(screen.getByText("Workflow a")).toBeInTheDocument();
+		expect(screen.getByText("Workflow b")).toBeInTheDocument();
+		expect(screen.queryByText("Workflow c")).not.toBeInTheDocument();
+	});
+
+	it("asks the list for every status, since it takes one and a live workflow has two", () => {
+		render(<WorkflowsList />);
+
+		fireEvent.click(screen.getByRole("button", { name: /^Active/ }));
+
+		expect(lastInput().status).toBeUndefined();
+	});
+});
+
 describe("WorkflowsList — the Scheduled filter", () => {
 	it("counts the scheduled workflows on its pill", () => {
 		render(<WorkflowsList />);

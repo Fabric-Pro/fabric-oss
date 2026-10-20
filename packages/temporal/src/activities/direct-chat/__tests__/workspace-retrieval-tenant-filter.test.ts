@@ -117,4 +117,28 @@ describe("retrieveWorkspaceDocumentsActivity tenant filter", () => {
 		expect(mocks.generateEmbedding).not.toHaveBeenCalled();
 		expect(mocks.getEffectiveRagSettings).not.toHaveBeenCalled();
 	});
+
+	it.each(["conversation-example", undefined])(
+		"attributes workspace query embeddings to the supplied conversation (%s)",
+		async (usageConversationId) => {
+			mocks.generateEmbedding.mockResolvedValue({ embedding: [0.1] });
+			mocks.filterWorkspaceIdsForTenant.mockResolvedValue({
+				allowed: ["ws-a"],
+				dropped: [],
+			});
+			await retrieveWorkspaceDocumentsActivity(
+				"query",
+				"user-1",
+				"example-org-a",
+				["ws-a"],
+				undefined,
+				undefined,
+				undefined,
+				{ usageConversationId },
+			);
+			expect(
+				mocks.generateEmbedding.mock.calls[0][1].conversationId,
+			).toBe(usageConversationId);
+		},
+	);
 });

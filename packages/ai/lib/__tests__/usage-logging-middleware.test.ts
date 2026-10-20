@@ -958,6 +958,23 @@ describe("usage-logging middleware — gateway generationId capture", () => {
 });
 
 describe("usage-logging middleware — aggregate stream usage", () => {
+	it("passes aggregate stream-start error details to the written row", () => {
+		logAiUsageAsync.mockReset();
+		recordAggregateUsage(CTX, {
+			usage: { inputTokens: 190, outputTokens: 2, totalTokens: 192 },
+			latencyMs: 10,
+			success: false,
+			errorMessage: "Stopped",
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			inputTokens: 190,
+			success: false,
+			errorDetails: { usageReportedAt: "stream_start" },
+		});
+	});
+
 	beforeEach(() => logAiUsageAsync.mockReset());
 
 	it("writes one multi-step aggregate row with cache and reasoning fields but no step generation ID", () => {

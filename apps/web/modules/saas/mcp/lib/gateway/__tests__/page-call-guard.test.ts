@@ -20,7 +20,13 @@ vi.mock("@repo/database", () => ({
 	getAccessibleFrameById: mocks.getAccessibleFrameById,
 }));
 
-import { checkPageCall as checkCall } from "../page-call-guard";
+import {
+	checkPageCall as checkCall,
+	pageCallSession,
+} from "../page-call-guard";
+import { sessionMayReachProject } from "../project-binding";
+import type { GatewaySession } from "../types";
+import { accessibleFrame } from "../tools/frame-context";
 import { isPlatformToolName } from "../server-selection";
 
 const checkPageCall = (
@@ -68,6 +74,296 @@ beforeEach(() => {
 });
 
 describe("a call a page makes", () => {
+	it.each(["foreign-project", null])(
+		"refuses a resolved frame in project %s",
+		async (projectId) => {
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId }),
+			);
+			await expect(
+				accessibleFrame("foreign-frame", {
+					...viewer,
+					pageProjectId: "project-1",
+				}),
+			).resolves.toBeNull();
+		},
+	);
+
+	it.each(["projectId", "pinnedProjectId"] as const)(
+		"refuses an attachment conflicting with %s",
+		async (binding) => {
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId: "project-1" }),
+			);
+			const checked = await checkPageCall(
+				"page-1",
+				"fabric_list_frames",
+				{},
+				{
+					...viewer,
+					[binding]: "foreign-project",
+				},
+			);
+			expect(refusalOf(checked).reason).toBe("other_project");
+		},
+	);
+
+	it.each([
+		["fabric_list_workspaces", {}],
+		["fabric_get_workspace", { workspaceId: "workspace-1" }],
+		["fabric_query_workspace", {}],
+		["fabric_list_chats", {}],
+		[
+			"fabric_page_read_connected",
+			{
+				provider: "github",
+				tool: "list_issues",
+				args: { repository: "example" },
+			},
+		],
+		["fabric_execute_workflow", { workflowId: "workflow-1" }],
+		["fabric_unpublish_workflow", { workflowId: "workflow-1" }],
+		["fabric_pause_workflow", { workflowId: "workflow-1" }],
+		["fabric_resume_workflow", { workflowId: "workflow-1" }],
+	] as const)(
+		"refuses unscoped attached-page %s but preserves unattached calls",
+		async (tool, args) => {
+			const runtimeTools = [tool, "connected:github/list_issues"];
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId: "project-1", runtimeTools }),
+			);
+			expect(
+				refusalOf(await checkPageCall("page-1", tool, args, viewer))
+					.reason,
+			).toBe("attached_page_unscoped_tool");
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ runtimeTools }),
+			);
+			expect((await checkPageCall("page-1", tool, args, viewer)).ok).toBe(
+				true,
+			);
+		},
+	);
+
+	it("defaults declared project arguments without adding them to strict page-review calls", async () => {
+		mocks.getAccessibleFrameById.mockResolvedValue(
+			pageRecord({
+				projectId: "project-1",
+				runtimeTools: [
+					"fabric_list_documents",
+					"fabric_page_run_story_review",
+				],
+			}),
+		);
+		expect(
+			await checkCall(
+				"page-1",
+				"fabric_list_documents",
+				{},
+				viewer,
+				isPlatformToolName,
+				true,
+			),
+		).toEqual({
+			ok: true,
+			args: { projectId: "project-1" },
+			pageProjectId: "project-1",
+		});
+		expect(
+			await checkPageCall(
+				"page-1",
+				"fabric_page_run_story_review",
+				{},
+				viewer,
+			),
+		).toEqual({
+			ok: true,
+			args: { frameId: "page-1" },
+			pageProjectId: "project-1",
+		});
+		expect(
+			refusalOf(
+				await checkCall(
+					"page-1",
+					"fabric_list_documents",
+					{
+						projectId: "foreign-project",
+					},
+					viewer,
+					isPlatformToolName,
+					true,
+				),
+			).reason,
+		).toBe("other_project");
+	});
+
+	it("preserves arbitrary projectId fields in page data and question payloads", async () => {
+		mocks.getAccessibleFrameById.mockResolvedValue(
+			pageRecord({
+				projectId: "project-1",
+				runtimeTools: ["fabric_page_data_set", "fabric_page_ask"],
+			}),
+		);
+		const args = {
+			records: [
+				{ key: "example", value: { projectId: "external-project" } },
+			],
+		};
+		expect(
+			await checkPageCall("page-1", "fabric_page_data_set", args, viewer),
+		).toEqual({
+			ok: true,
+			args: { ...args, frameId: "page-1" },
+			pageProjectId: "project-1",
+		});
+		const question = {
+			question: "Summarize",
+			context: JSON.stringify({ projectId: "external-project" }),
+		};
+		expect(
+			await checkPageCall("page-1", "fabric_page_ask", question, viewer),
+		).toEqual({
+			ok: true,
+			args: { ...question, frameId: "page-1" },
+			pageProjectId: "project-1",
+		});
+	});
+
+	it.each([
+		"fabric_page_get_story_review",
+		"fabric_page_configure_story_review",
+		"fabric_page_run_story_review",
+		"fabric_page_list_story_review_runs",
+	])(
+		"preserves attached-page %s with only its frame argument",
+		async (tool) => {
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({
+					projectId: "project-1",
+					runtimeTools: [tool],
+				}),
+			);
+			expect(await checkPageCall("page-1", tool, {}, viewer)).toEqual({
+				ok: true,
+				args: { frameId: "page-1" },
+				pageProjectId: "project-1",
+			});
+		},
+	);
+
+	it("keeps concurrent page constraints out of the shared session", async () => {
+		const session: GatewaySession = Object.freeze({
+			...viewer,
+			sessionId: "session-1",
+			userName: "Viewer",
+			role: "user",
+			credential: "session",
+			scopes: ["mcp:read"],
+			createdAt: new Date(),
+			expiresAt: new Date(),
+		});
+		const [first, second] = await Promise.all([
+			Promise.resolve().then(() => pageCallSession(session, "project-1")),
+			Promise.resolve().then(() => pageCallSession(session, "project-2")),
+		]);
+		expect(first.scopes).toBe(session.scopes);
+		expect(first.credential).toBe(session.credential);
+		expect(first).not.toBe(session);
+		expect(session).not.toHaveProperty("pageProjectId");
+		expect(session).not.toHaveProperty("projectId");
+		expect(session).not.toHaveProperty("pinnedProjectId");
+		expect(sessionMayReachProject(first, "project-1")).toBe(true);
+		expect(sessionMayReachProject(second, "project-1")).toBe(false);
+		expect(sessionMayReachProject(first, null)).toBe(false);
+		expect(sessionMayReachProject(session, null)).toBe(true);
+		expect(pageCallSession(first, "project-2").pageProjectId).toBe(
+			"project-1",
+		);
+	});
+
+	it.each([
+		"fabric_page_get_story_review",
+		"fabric_page_configure_story_review",
+		"fabric_page_run_story_review",
+		"fabric_page_list_story_review_runs",
+	])("derives %s's Workspace and refuses another page", async (tool) => {
+		mocks.getAccessibleFrameById.mockResolvedValue(
+			pageRecord({ runtimeTools: [tool] }),
+		);
+		expect(
+			await checkPageCall(
+				"page-1",
+				tool,
+				{ workflowId: "workflow-1" },
+				viewer,
+			),
+		).toEqual({
+			ok: true,
+			args: { workflowId: "workflow-1", frameId: "page-1" },
+		});
+		expect(
+			refusalOf(
+				await checkPageCall(
+					"page-1",
+					tool,
+					{ frameId: "other-page", workflowId: "workflow-1" },
+					viewer,
+				),
+			).reason,
+		).toBe("other_page");
+	});
+	it.each([
+		"fabric_get_project_pm_connection",
+		"fabric_list_project_pm_members",
+		"fabric_list_project_pm_work_item_types",
+		"fabric_get_project_work_item_counts",
+	])("keeps %s on the attached project before dispatch", async (tool) => {
+		mocks.getAccessibleFrameById.mockResolvedValue(
+			pageRecord({ projectId: "project-1", runtimeTools: [tool] }),
+		);
+		expect(await checkPageCall("page-1", tool, {}, viewer)).toEqual({
+			ok: true,
+			pageProjectId: "project-1",
+			args: { projectId: "project-1" },
+		});
+		expect(
+			await checkPageCall(
+				"page-1",
+				tool,
+				{ projectId: "project-1" },
+				viewer,
+			),
+		).toEqual({
+			ok: true,
+			args: { projectId: "project-1" },
+			pageProjectId: "project-1",
+		});
+		expect(
+			refusalOf(
+				await checkPageCall(
+					"page-1",
+					tool,
+					{ projectId: "foreign-project" },
+					viewer,
+				),
+			).reason,
+		).toBe("other_project");
+	});
+
+	it("preserves explicit project PM reads for an unbound Workspace", async () => {
+		const tool = "fabric_list_project_pm_members";
+		mocks.getAccessibleFrameById.mockResolvedValue(
+			pageRecord({ runtimeTools: [tool] }),
+		);
+		expect(
+			await checkPageCall(
+				"page-1",
+				tool,
+				{ projectId: "project-1" },
+				viewer,
+			),
+		).toEqual({ ok: true, args: { projectId: "project-1" } });
+	});
 	it("opens the page as the viewer, in the viewer's organization", async () => {
 		await checkPageCall("page-1", "fabric_list_frames", {}, viewer);
 
@@ -165,6 +461,8 @@ describe("a call a page may not make", () => {
 		"fabric_publish_workflow",
 		"fabric_switch_organization",
 		"fabric_request_authority",
+		"fabric_list_project_pm_assigned_items",
+		"fabric_get_project_pm_item_snapshots",
 	])("refuses %s, even when the page declares it", async (tool) => {
 		mocks.getAccessibleFrameById.mockResolvedValue(
 			pageRecord({ runtimeTools: [tool] }),

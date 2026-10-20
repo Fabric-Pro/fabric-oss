@@ -45,7 +45,10 @@ import type {
 	TrajectoryStep,
 	WorkflowState,
 } from "../types";
-import { conversationIdField } from "../usage-attribution";
+import {
+	secondaryUsageOriginFields,
+	usageOriginFields,
+} from "../workflow-usage-attribution";
 
 // =============================================================================
 // Completion Child Workflow Input
@@ -64,6 +67,7 @@ export interface CompletionWorkflowInput {
 	finalResponse: string;
 	executionMode: string;
 	conversationId?: string;
+	usageFrameId?: string;
 	projectId?: string;
 	workspaceIds?: string[];
 	startTime: number;
@@ -287,7 +291,7 @@ export async function orchestratorCompletionWorkflow(
 			durationMs: Date.now() - startTime,
 			userId,
 			organizationId,
-			...conversationIdField({ conversationId }),
+			...usageOriginFields(input),
 		});
 
 		if (!workflowInfo().unsafe.isReplaying) {
@@ -332,6 +336,8 @@ export async function orchestratorCompletionWorkflow(
 		const effectiveConversationId = conversationId || executionId;
 
 		await createEpisodeFromExecutionActivity({
+			...(conversationId ? { usageConversationId: conversationId } : {}),
+			...secondaryUsageOriginFields(input),
 			userId,
 			organizationId,
 			projectId,
@@ -720,6 +726,7 @@ export async function executeCompletionPhase(
 			finalResponse,
 			executionMode: input.executionMode,
 			conversationId: input.conversationId,
+			...(input.usageFrameId ? { usageFrameId: input.usageFrameId } : {}),
 			projectId: input.projectId,
 			workspaceIds: input.workspaceIds,
 			startTime: state.startTime,

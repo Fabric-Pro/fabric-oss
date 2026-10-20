@@ -10,10 +10,11 @@
  * This gives users fine-grained control over what the orchestrator can use.
  */
 
+import { sessionQueryKey } from "@saas/auth/lib/api";
 import { McpLogo } from "@saas/mcp/components/McpLogo";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { orpcClient } from "@shared/lib/orpc-client";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import {
 	Collapsible,
@@ -34,15 +35,21 @@ import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-	executeWithRetry,
 	getFromLocalStorage,
+	getOrganizationStorageKey,
 	hasLocalStorageKey,
+	removeLegacyOrganizationStorage,
 	STORAGE_KEYS,
 	setToLocalStorage,
-	showSyncError,
-	showSyncSuccess,
 } from "../hooks/useAgentConfigPersistence";
 import { integrationCredentialBadge } from "../lib/integration-credential-badge";
+import {
+	enqueueOrchestratorPreferences,
+	flushOrchestratorPreferences,
+	getUnsentOrchestratorPreferences,
+	type OrchestratorPreferenceFields,
+	subscribeOrchestratorPreferenceSaveQueue,
+} from "../lib/orchestrator-preference-save-queue";
 
 // Fabric AI tools available for semantic routing
 const FABRIC_AI_TOOLS = [
@@ -284,7 +291,7 @@ const INTEGRATION_PROVIDERS: Record<
 	},
 };
 
-// System agents that are always available (from AGENT_REGISTRY in orchestrator-types.ts)
+// System agents from AGENT_REGISTRY in orchestrator-types.ts.
 const SYSTEM_AGENTS = [
 	{
 		id: "project_document_generator",
@@ -1618,7 +1625,6 @@ export function OrchestratorConfigPanel({
 // =============================================================================
 
 const SYNC_DEBOUNCE_MS = 500;
-const MAX_RETRY_ATTEMPTS = 3;
 
 /**
  * Hook to manage orchestrator config state with database persistence and localStorage caching
@@ -1626,24 +1632,89 @@ const MAX_RETRY_ATTEMPTS = 3;
  * Data flow:
  * 1. Load from localStorage immediately (for fast UX)
  * 2. Fetch from database to sync/verify (source of truth for security)
- * 3. When database has values, use them (overrides localStorage)
- * 4. On toggle: update localStorage immediately (UX), then sync to database (security)
+ * 3. Hydrate from the database with this owner's unsent queue values overlaid.
+ *    An empty saved agent list is treated as not chosen unless it is queued.
+ *    Agent preferences arriving after an edit in this mount are not applied.
+ * 4. On toggle with a resolved user and organization: cache locally, then sync.
+ *    Unmount or an organization change flushes the pending batch with its
+ *    captured organization, which is also sent on retries. A batch whose
+ *    captured user is no longer the session user is dropped instead.
  *
  * Error Handling:
- * - Failed database syncs show toast notifications
- * - Automatic retry with exponential backoff
- * - localStorage fallback for offline scenarios
- * - Conflicts resolved by database taking precedence
+ * - Sends run one at a time per user/organization, including retry backoff. Each
+ *   attempt skips fields superseded in that key's pending batch.
+ * - Queues are shared across mounts and keyed by user/organization. Failed fields
+ *   rejoin their own queue without replacing newer edits; session changes drop them.
+ * - Retry, online, the next edit, or cleanup flushes pending fields. Cleanup can
+ *   request a flush while a send is running; its settlement drains that request.
+ * - The error notice is dismissed on a sent success with nothing pending, by its
+ *   close button, by the project toast cap (toast-error-defaults.ts), or on a
+ *   session-user drop.
+ * - localStorage is a cache. DB hydration replaces it only when the DB has any
+ *   preferences or the owner has unsent fields. Agents require a non-empty DB
+ *   list or an unsent selection, including an explicitly empty one. Values already
+ *   sent are not written back to the preferences query cache, so a remount can
+ *   still hydrate from an older cached response.
  */
-export function useOrchestratorConfig(organizationId?: string) {
-	const _queryClient = useQueryClient();
-	const dbSyncInProgress = useRef(false);
-	const retryCountRef = useRef(0);
-	const lastSyncErrorRef = useRef<string | null>(null);
+export function useOrchestratorConfig(
+	organizationId?: string,
+	userId?: string,
+) {
+	const hasResolvedIdentity = Boolean(organizationId && userId);
+	const organizationStorageKeys = useMemo(
+		() => ({
+			AGENTS: getOrganizationStorageKey(
+				STORAGE_KEYS.AGENTS,
+				organizationId,
+				userId,
+			),
+			MCP: getOrganizationStorageKey(
+				STORAGE_KEYS.MCP,
+				organizationId,
+				userId,
+			),
+			WORKSPACES: getOrganizationStorageKey(
+				STORAGE_KEYS.WORKSPACES,
+				organizationId,
+				userId,
+			),
+			INTEGRATIONS: getOrganizationStorageKey(
+				STORAGE_KEYS.INTEGRATIONS,
+				organizationId,
+				userId,
+			),
+			PRIORITIZED_AGENTS: getOrganizationStorageKey(
+				STORAGE_KEYS.PRIORITIZED_AGENTS,
+				organizationId,
+				userId,
+			),
+			PRIORITIZED_MCP: getOrganizationStorageKey(
+				STORAGE_KEYS.PRIORITIZED_MCP,
+				organizationId,
+				userId,
+			),
+			PRIORITIZED_INTEGRATIONS: getOrganizationStorageKey(
+				STORAGE_KEYS.PRIORITIZED_INTEGRATIONS,
+				organizationId,
+				userId,
+			),
+		}),
+		[organizationId, userId],
+	);
+	useEffect(() => {
+		removeLegacyOrganizationStorage();
+	}, []);
+
+	const queryClient = useQueryClient();
+	const [dbSyncInProgress, setDbSyncInProgress] = useState(false);
+	const dbHydrationInProgress = useRef(false);
 
 	// Initialize from localStorage or defaults
 	const [enabledAgentIds, setEnabledAgentIds] = useState<string[]>(() => {
-		const saved = getFromLocalStorage<string[]>(STORAGE_KEYS.AGENTS, []);
+		const saved = getFromLocalStorage<string[]>(
+			organizationStorageKeys.AGENTS,
+			[],
+		);
 		if (saved.length > 0) {
 			return saved;
 		}
@@ -1652,11 +1723,15 @@ export function useOrchestratorConfig(organizationId?: string) {
 	});
 
 	const [enabledMcpConfigIds, setEnabledMcpConfigIds] = useState<string[]>(
-		() => getFromLocalStorage<string[]>(STORAGE_KEYS.MCP, []),
+		() => getFromLocalStorage<string[]>(organizationStorageKeys.MCP, []),
 	);
 
 	const [enabledWorkspaceIds, setEnabledWorkspaceIds] = useState<string[]>(
-		() => getFromLocalStorage<string[]>(STORAGE_KEYS.WORKSPACES, []),
+		() =>
+			getFromLocalStorage<string[]>(
+				organizationStorageKeys.WORKSPACES,
+				[],
+			),
 	);
 
 	// Fabric AI tools - default to all enabled except YouTube and Frames.
@@ -1723,7 +1798,9 @@ export function useOrchestratorConfig(organizationId?: string) {
 	// Workflow integrations - default to all with credentials enabled
 	const [enabledIntegrationIds, setEnabledIntegrationIds] = useState<
 		string[]
-	>(() => getFromLocalStorage<string[]>(STORAGE_KEYS.INTEGRATIONS, []));
+	>(() =>
+		getFromLocalStorage<string[]>(organizationStorageKeys.INTEGRATIONS, []),
+	);
 
 	// Prioritization state - tools/agents/MCP servers/integrations that get boosted confidence
 	const [prioritizedToolIds, setPrioritizedToolIds] = useState<string[]>(() =>
@@ -1731,16 +1808,24 @@ export function useOrchestratorConfig(organizationId?: string) {
 	);
 	const [prioritizedAgentIds, setPrioritizedAgentIds] = useState<string[]>(
 		() =>
-			getFromLocalStorage<string[]>(STORAGE_KEYS.PRIORITIZED_AGENTS, []),
+			getFromLocalStorage<string[]>(
+				organizationStorageKeys.PRIORITIZED_AGENTS,
+				[],
+			),
 	);
 	const [prioritizedMcpConfigIds, setPrioritizedMcpConfigIds] = useState<
 		string[]
-	>(() => getFromLocalStorage<string[]>(STORAGE_KEYS.PRIORITIZED_MCP, []));
+	>(() =>
+		getFromLocalStorage<string[]>(
+			organizationStorageKeys.PRIORITIZED_MCP,
+			[],
+		),
+	);
 	const [prioritizedIntegrationIds, setPrioritizedIntegrationIds] = useState<
 		string[]
 	>(() =>
 		getFromLocalStorage<string[]>(
-			STORAGE_KEYS.PRIORITIZED_INTEGRATIONS,
+			organizationStorageKeys.PRIORITIZED_INTEGRATIONS,
 			[],
 		),
 	);
@@ -1753,14 +1838,16 @@ export function useOrchestratorConfig(organizationId?: string) {
 	>("idle");
 
 	// Track if we loaded from localStorage (separate for agents, MCP, and workspaces)
-	const [loadedAgentsFromStorage] = useState(() =>
-		hasLocalStorageKey(STORAGE_KEYS.AGENTS),
+	const [loadedAgentsFromStorage] = useState(
+		() =>
+			getFromLocalStorage<string[]>(organizationStorageKeys.AGENTS, [])
+				.length > 0,
 	);
 	const [loadedMcpFromStorage] = useState(() =>
-		hasLocalStorageKey(STORAGE_KEYS.MCP),
+		hasLocalStorageKey(organizationStorageKeys.MCP),
 	);
 	const [loadedWorkspacesFromStorage] = useState(() =>
-		hasLocalStorageKey(STORAGE_KEYS.WORKSPACES),
+		hasLocalStorageKey(organizationStorageKeys.WORKSPACES),
 	);
 
 	// ==========================================================================
@@ -1772,8 +1859,11 @@ export function useOrchestratorConfig(organizationId?: string) {
 		// FabricAIClient key exactly so the two observers still share a cache
 		// entry within an org).
 		queryKey: ["orchestrator-preferences", organizationId ?? null],
+		enabled: hasResolvedIdentity,
 		queryFn: async () => {
-			return await orpcClient.users.orchestratorPreferences.get();
+			return await orpcClient.users.orchestratorPreferences.get({
+				organizationId: organizationId ?? undefined,
+			});
 		},
 		staleTime: 30000, // Cache for 30 seconds
 		retry: 2, // Retry failed fetches
@@ -1800,133 +1890,98 @@ export function useOrchestratorConfig(organizationId?: string) {
 		loadedWorkspacesFromStorage,
 	]);
 
-	// Mutation to sync preferences to database with retry logic
-	const syncToDb = useMutation({
-		mutationFn: async (prefs: {
-			enabledMcpConfigIds?: string[];
-			enabledAgentIds?: string[];
-			enabledWorkspaceIds?: string[];
-		}) => {
-			setSyncStatus("syncing");
-
-			// Use retry logic for resilience
-			return await executeWithRetry(
-				async () => {
-					const result =
-						await orpcClient.users.orchestratorPreferences.update(
-							prefs,
-						);
-					return result;
-				},
-				{
-					maxRetries: MAX_RETRY_ATTEMPTS,
-					baseDelayMs: 1000,
-					onRetry: (attempt, error) => {
-						console.warn(
-							`[OrchestratorConfig] Sync retry ${attempt}/${MAX_RETRY_ATTEMPTS}:`,
-							error.message,
-						);
-						retryCountRef.current = attempt;
-					},
-				},
-			);
-		},
-		onSuccess: () => {
-			setSyncStatus("success");
-			retryCountRef.current = 0;
-			lastSyncErrorRef.current = null;
-			showSyncSuccess();
-			// Don't invalidate the query - this causes an infinite loop
-			// The local state is already the source of truth after user changes
-		},
-		onError: (error) => {
-			setSyncStatus("error");
-			const errorMessage =
-				error instanceof Error ? error.message : "Unknown error";
-			lastSyncErrorRef.current = errorMessage;
-
-			// Show user-friendly error notification
-			showSyncError(
-				"Failed to save settings",
-				"Your changes are saved locally and will sync when connection is restored.",
-			);
-
-			console.error(
-				"[OrchestratorConfig] Database sync failed after retries:",
-				error,
-			);
-		},
-	});
-
-	// Sync to database when values change (debounced)
 	const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-	const pendingPrefsRef = useRef<{
-		enabledMcpConfigIds?: string[];
-		enabledAgentIds?: string[];
-		enabledWorkspaceIds?: string[];
-	}>({});
-
-	const syncToDatabase = useCallback(
-		(prefs: {
-			enabledMcpConfigIds?: string[];
-			enabledAgentIds?: string[];
-			enabledWorkspaceIds?: string[];
-		}) => {
-			// Merge with any pending prefs to batch changes
-			pendingPrefsRef.current = { ...pendingPrefsRef.current, ...prefs };
-
-			// Cancel any pending sync
-			if (syncTimeoutRef.current) {
-				clearTimeout(syncTimeoutRef.current);
-			}
-
-			// Debounce database sync to batch rapid changes
-			syncTimeoutRef.current = setTimeout(() => {
-				const prefsToSync = { ...pendingPrefsRef.current };
-				pendingPrefsRef.current = {};
-				syncToDb.mutate(prefsToSync);
-			}, SYNC_DEBOUNCE_MS);
-		},
-		[syncToDb],
+	const saveOwner = useMemo(
+		() => (userId && organizationId ? { userId, organizationId } : null),
+		[userId, organizationId],
 	);
+	const getSessionUserId = useCallback(
+		() =>
+			queryClient.getQueryData<{ user?: { id: string } } | null>(
+				sessionQueryKey,
+			)?.user?.id,
+		[queryClient],
+	);
+	useEffect(() => {
+		if (!saveOwner) {
+			setSyncStatus("idle");
+			return;
+		}
+		return subscribeOrchestratorPreferenceSaveQueue(
+			saveOwner,
+			getSessionUserId,
+			(status) => {
+				setSyncStatus(status === "dropped" ? "idle" : status);
+			},
+		);
+	}, [saveOwner, getSessionUserId]);
 
-	// Manual retry function for error recovery
 	const retrySyncNow = useCallback(() => {
 		if (syncTimeoutRef.current) {
 			clearTimeout(syncTimeoutRef.current);
 		}
-		// Sync all current state
-		syncToDb.mutate({
-			enabledAgentIds,
-			enabledMcpConfigIds,
-			enabledWorkspaceIds,
-		});
-	}, [syncToDb, enabledAgentIds, enabledMcpConfigIds, enabledWorkspaceIds]);
+		syncTimeoutRef.current = null;
+		if (saveOwner) {
+			void flushOrchestratorPreferences(saveOwner);
+		}
+	}, [saveOwner]);
+
+	// Cleanup flushes the captured owner, even if another owner is now rendering.
+	useEffect(() => () => retrySyncNow(), [retrySyncNow]);
+	useEffect(() => {
+		window.addEventListener("online", retrySyncNow);
+		return () => window.removeEventListener("online", retrySyncNow);
+	}, [retrySyncNow]);
+
+	const syncToDatabase = useCallback(
+		(prefs: OrchestratorPreferenceFields) => {
+			if (!saveOwner) {
+				return;
+			}
+			enqueueOrchestratorPreferences(saveOwner, prefs, getSessionUserId);
+			if (syncTimeoutRef.current) {
+				clearTimeout(syncTimeoutRef.current);
+			}
+			syncTimeoutRef.current = setTimeout(retrySyncNow, SYNC_DEBOUNCE_MS);
+		},
+		[saveOwner, getSessionUserId, retrySyncNow],
+	);
 
 	// Track if we've already applied DB preferences to prevent re-applying
 	const dbPreferencesApplied = useRef(false);
+	const prevWorkspaceIds = useRef<string[] | null>(null);
+	const prevIntegrationIds = useRef<string[] | null>(null);
+	const prevMcpIdsForIntegration = useRef<string[] | null>(null);
 
-	// Apply database preferences when they load (database is source of truth)
+	// Hydrate once from DB values overlaid by this owner's unsent edits.
 	// Only apply ONCE on initial load to prevent infinite loops
 	useEffect(() => {
 		if (
-			dbPreferences?.exists &&
-			!dbSyncInProgress.current &&
+			saveOwner &&
+			dbPreferences &&
+			!dbSyncInProgress &&
 			!dbPreferencesApplied.current
 		) {
-			dbSyncInProgress.current = true;
+			const unsent = getUnsentOrchestratorPreferences(saveOwner);
+			if (!dbPreferences.exists && Object.keys(unsent).length === 0) {
+				return;
+			}
+			const preferences = { ...dbPreferences, ...unsent };
+			// Block sibling sync effects before React commits the hydration state.
+			dbHydrationInProgress.current = true;
+			setDbSyncInProgress(true);
 			dbPreferencesApplied.current = true; // Mark as applied
 
-			// Database has preferences - use them (overrides localStorage)
+			// Unsent edits take precedence over older DB values, including empty lists.
 			const hasAnyPreferences =
 				dbPreferences.enabledMcpConfigIds.length > 0 ||
 				dbPreferences.enabledAgentIds.length > 0 ||
 				dbPreferences.enabledWorkspaceIds.length > 0;
 
-			if (hasAnyPreferences) {
+			if (hasAnyPreferences || unsent.enabledMcpConfigIds !== undefined) {
 				// Separate MCP config IDs from OAuth integration IDs
 				// Use "oauth:" prefix to catch all OAuth ID formats (not just "oauth:integration:")
-				const allMcpConfigIds = dbPreferences.enabledMcpConfigIds;
+				const allMcpConfigIds = preferences.enabledMcpConfigIds;
 				const mcpOnlyIds = allMcpConfigIds.filter(
 					(id: string) => !id.startsWith("oauth:"),
 				);
@@ -1934,66 +1989,63 @@ export function useOrchestratorConfig(organizationId?: string) {
 					.filter((id: string) => id.startsWith("oauth:integration:"))
 					.map((id: string) => id.replace("oauth:integration:", ""));
 
+				prevMcpIdsForIntegration.current = mcpOnlyIds;
+				prevIntegrationIds.current = integrationIds;
 				setEnabledMcpConfigIds(mcpOnlyIds);
 				setEnabledIntegrationIds(integrationIds);
-				setEnabledAgentIds(dbPreferences.enabledAgentIds);
-				setEnabledWorkspaceIds(dbPreferences.enabledWorkspaceIds);
 
-				// Update localStorage to match database
-				setToLocalStorage(STORAGE_KEYS.MCP, mcpOnlyIds);
-				setToLocalStorage(STORAGE_KEYS.INTEGRATIONS, integrationIds);
+				// Cache the same effective values shown in the panel.
+				setToLocalStorage(organizationStorageKeys.MCP, mcpOnlyIds);
 				setToLocalStorage(
-					STORAGE_KEYS.AGENTS,
-					dbPreferences.enabledAgentIds,
+					organizationStorageKeys.INTEGRATIONS,
+					integrationIds,
 				);
+			}
+			if (hasAnyPreferences || unsent.enabledWorkspaceIds !== undefined) {
+				prevWorkspaceIds.current = preferences.enabledWorkspaceIds;
+				setEnabledWorkspaceIds(preferences.enabledWorkspaceIds);
 				setToLocalStorage(
-					STORAGE_KEYS.WORKSPACES,
-					dbPreferences.enabledWorkspaceIds,
+					organizationStorageKeys.WORKSPACES,
+					preferences.enabledWorkspaceIds,
 				);
 			}
 			// Keep the flag true for longer to prevent sync effects from triggering
 			// Use requestAnimationFrame to ensure React has processed state updates
 			requestAnimationFrame(() => {
 				requestAnimationFrame(() => {
-					dbSyncInProgress.current = false;
+					dbHydrationInProgress.current = false;
+					setDbSyncInProgress(false);
 				});
 			});
 		}
-	}, [dbPreferences]);
+	}, [dbPreferences, organizationStorageKeys, saveOwner, dbSyncInProgress]);
 
-	// Track previous values to detect actual user changes (not initialization)
-	const prevAgentIds = useRef<string[] | null>(null);
+	// Agent handlers mark save intent even when the selected IDs stay the same.
+	const agentSavePending = useRef(false);
+	const agentSeedingDecided = useRef(false);
+	const dbAgentPreferencesApplied = useRef(false);
+	// Set only by the agent handlers: a saved list arriving later must not
+	// overwrite an edit the user already made in this mount.
+	const userEditedAgents = useRef(false);
 	const _prevMcpIds = useRef<string[] | null>(null);
-	const prevWorkspaceIds = useRef<string[] | null>(null);
 
-	// Save to localStorage when enabled IDs change and sync to database
-	// Only sync when user actually makes changes, not on initialization
+	// Consume explicit agent edits, including selections equal to the current list.
+	// Hydration and seeding do not set agentSavePending, so they do not queue saves.
 	useEffect(() => {
-		if (typeof window === "undefined" || !initialized) {
-			return;
-		}
-		if (dbSyncInProgress.current) {
-			return;
-		}
-
-		// Skip if this is the first render (initialization)
-		if (prevAgentIds.current === null) {
-			prevAgentIds.current = enabledAgentIds;
+		if (
+			typeof window === "undefined" ||
+			!initialized ||
+			!agentSavePending.current
+		) {
 			return;
 		}
 
-		// Check if the value actually changed (not just a re-render)
-		const hasChanged =
-			JSON.stringify(prevAgentIds.current) !==
-			JSON.stringify(enabledAgentIds);
-		if (!hasChanged) {
-			return;
-		}
-
-		prevAgentIds.current = enabledAgentIds;
-		setToLocalStorage(STORAGE_KEYS.AGENTS, enabledAgentIds);
+		// The agent hydration guard preserves this selection during DB loading.
+		// Clear intent before syncing so callback identity changes cannot requeue it.
+		agentSavePending.current = false;
+		setToLocalStorage(organizationStorageKeys.AGENTS, enabledAgentIds);
 		syncToDatabase({ enabledAgentIds });
-	}, [enabledAgentIds, initialized, syncToDatabase]);
+	}, [enabledAgentIds, initialized, syncToDatabase, organizationStorageKeys]);
 
 	// NOTE: MCP config sync is handled in the integration sync effect below
 	// to avoid redundant writes and ensure OAuth integrations are included
@@ -2002,7 +2054,7 @@ export function useOrchestratorConfig(organizationId?: string) {
 		if (typeof window === "undefined" || !initialized) {
 			return;
 		}
-		if (dbSyncInProgress.current) {
+		if (dbSyncInProgress || dbHydrationInProgress.current) {
 			return;
 		}
 
@@ -2019,19 +2071,26 @@ export function useOrchestratorConfig(organizationId?: string) {
 		}
 
 		prevWorkspaceIds.current = enabledWorkspaceIds;
-		setToLocalStorage(STORAGE_KEYS.WORKSPACES, enabledWorkspaceIds);
+		setToLocalStorage(
+			organizationStorageKeys.WORKSPACES,
+			enabledWorkspaceIds,
+		);
 		syncToDatabase({ enabledWorkspaceIds });
-	}, [enabledWorkspaceIds, initialized, syncToDatabase]);
+	}, [
+		enabledWorkspaceIds,
+		initialized,
+		dbSyncInProgress,
+		syncToDatabase,
+		organizationStorageKeys,
+	]);
 
 	// Sync enabledIntegrationIds to database (merged into enabledMcpConfigIds)
 	// OAuth integrations are stored alongside MCP configs in the same array
-	const prevIntegrationIds = useRef<string[] | null>(null);
-	const prevMcpIdsForIntegration = useRef<string[] | null>(null);
 	useEffect(() => {
 		if (typeof window === "undefined" || !initialized) {
 			return;
 		}
-		if (dbSyncInProgress.current) {
+		if (dbSyncInProgress || dbHydrationInProgress.current) {
 			return;
 		}
 
@@ -2058,10 +2117,13 @@ export function useOrchestratorConfig(organizationId?: string) {
 
 		// Update localStorage for both if they changed
 		if (integrationChanged) {
-			setToLocalStorage(STORAGE_KEYS.INTEGRATIONS, enabledIntegrationIds);
+			setToLocalStorage(
+				organizationStorageKeys.INTEGRATIONS,
+				enabledIntegrationIds,
+			);
 		}
 		if (mcpChanged) {
-			setToLocalStorage(STORAGE_KEYS.MCP, enabledMcpConfigIds);
+			setToLocalStorage(organizationStorageKeys.MCP, enabledMcpConfigIds);
 		}
 
 		// Merge integration IDs with MCP config IDs for database storage
@@ -2076,9 +2138,11 @@ export function useOrchestratorConfig(organizationId?: string) {
 
 		syncToDatabase({ enabledMcpConfigIds: mergedIds });
 	}, [
+		organizationStorageKeys,
 		enabledIntegrationIds,
 		enabledMcpConfigIds,
 		initialized,
+		dbSyncInProgress,
 		syncToDatabase,
 	]);
 
@@ -2086,6 +2150,7 @@ export function useOrchestratorConfig(organizationId?: string) {
 	// SECURITY: Strict isolation between personal and organizational data
 	const { data: mcpConfigsData = [] } = useQuery({
 		queryKey: ["mcp-configs", { organizationId }],
+		enabled: hasResolvedIdentity,
 		queryFn: async () => {
 			if (organizationId) {
 				// Organization context: fetch only org configs
@@ -2104,6 +2169,7 @@ export function useOrchestratorConfig(organizationId?: string) {
 			"workflow-integrations",
 			{ organizationId: organizationId ?? null },
 		],
+		enabled: hasResolvedIdentity,
 		queryFn: async () => {
 			const result = await orpcClient.workflows.integrations.list({
 				organizationId: organizationId ?? null,
@@ -2113,9 +2179,10 @@ export function useOrchestratorConfig(organizationId?: string) {
 		staleTime: 0,
 	});
 
-	// Fetch registered agents to add them to enabled list
+	// Fetch registered agents for default seeding and explicit user selections.
 	const { data: registeredAgentsData } = useQuery({
 		queryKey: ["agents", "registry", "list", organizationId],
+		enabled: hasResolvedIdentity,
 		queryFn: async () => {
 			const result = await orpcClient.agents.registry.list({
 				limit: 100,
@@ -2129,6 +2196,9 @@ export function useOrchestratorConfig(organizationId?: string) {
 	// Initialize MCP configs - enable ALL by default in orchestrator mode
 	// Skip if already loaded from localStorage or database
 	useEffect(() => {
+		if (!hasResolvedIdentity) {
+			return;
+		}
 		// Don't initialize if database preferences exist
 		if (dbPreferences?.exists) {
 			setInitialized(true);
@@ -2148,37 +2218,76 @@ export function useOrchestratorConfig(organizationId?: string) {
 		if (mcpConfigsData && !initialized) {
 			setInitialized(true);
 		}
-	}, [mcpConfigsData, initialized, loadedMcpFromStorage, dbPreferences]);
+	}, [
+		mcpConfigsData,
+		initialized,
+		loadedMcpFromStorage,
+		dbPreferences,
+		hasResolvedIdentity,
+	]);
 
-	// Add registered A2A agents to enabled list when they load
-	// Skip adding new agents if loaded from localStorage or database (user already made choices)
+	// Decide default seeding once per mount, after both sources can be checked.
+	// Keep agent hydration separate from MCP/workspaces: an empty DB agent list
+	// can be created by mode/MCP writes without the user choosing agents.
 	useEffect(() => {
-		// Don't add agents if database preferences exist
-		if (dbPreferences?.exists) {
+		if (!hasResolvedIdentity) {
 			return;
 		}
-		if (registeredAgentsData?.agents && !loadedAgentsFromStorage) {
-			const a2aAgentIds = registeredAgentsData.agents
+		const unsentAgents = saveOwner
+			? getUnsentOrchestratorPreferences(saveOwner).enabledAgentIds
+			: undefined;
+		const savedAgents =
+			unsentAgents ??
+			(dbPreferences?.exists && dbPreferences.enabledAgentIds.length > 0
+				? dbPreferences.enabledAgentIds
+				: undefined);
+		if (savedAgents !== undefined) {
+			if (
+				!dbAgentPreferencesApplied.current &&
+				!userEditedAgents.current
+			) {
+				dbAgentPreferencesApplied.current = true;
+				agentSeedingDecided.current = true;
+				setEnabledAgentIds(savedAgents);
+				setToLocalStorage(organizationStorageKeys.AGENTS, savedAgents);
+			}
+			return;
+		}
+		if (
+			agentSeedingDecided.current ||
+			!registeredAgentsData?.agents ||
+			(!dbPreferences && !dbFetchError)
+		) {
+			return;
+		}
+		agentSeedingDecided.current = true;
+		if (loadedAgentsFromStorage) {
+			return;
+		}
+
+		const defaultIds = [
+			...SYSTEM_AGENTS.map((a) => a.id),
+			...registeredAgentsData.agents
 				.filter(
 					(a: any) => a.framework === "A2A" && a.status === "ACTIVE",
 				)
-				.map((a: any) => a.agentId);
-
-			if (a2aAgentIds.length > 0) {
-				setEnabledAgentIds((prev) => {
-					const newIds = a2aAgentIds.filter(
-						(id: string) => !prev.includes(id),
-					);
-					if (newIds.length === 0) {
-						return prev;
-					}
-					return [...prev, ...newIds];
-				});
-			}
-		}
-	}, [registeredAgentsData, loadedAgentsFromStorage, dbPreferences]);
+				.map((a: any) => a.agentId),
+		];
+		setEnabledAgentIds(defaultIds);
+	}, [
+		hasResolvedIdentity,
+		organizationStorageKeys,
+		registeredAgentsData,
+		loadedAgentsFromStorage,
+		dbPreferences,
+		dbFetchError,
+		saveOwner,
+	]);
 
 	const handleAgentToggle = (agentId: string, enabled: boolean) => {
+		agentSeedingDecided.current = true;
+		userEditedAgents.current = true;
+		agentSavePending.current = true;
 		setEnabledAgentIds((prev) =>
 			enabled ? [...prev, agentId] : prev.filter((id) => id !== agentId),
 		);
@@ -2201,6 +2310,9 @@ export function useOrchestratorConfig(organizationId?: string) {
 	};
 
 	const handleEnableAllAgents = () => {
+		agentSeedingDecided.current = true;
+		userEditedAgents.current = true;
+		agentSavePending.current = true;
 		const allIds = [
 			...SYSTEM_AGENTS.map((a) => a.id),
 			...(registeredAgentsData?.agents
@@ -2211,6 +2323,9 @@ export function useOrchestratorConfig(organizationId?: string) {
 	};
 
 	const handleDisableAllAgents = () => {
+		agentSeedingDecided.current = true;
+		userEditedAgents.current = true;
+		agentSavePending.current = true;
 		setEnabledAgentIds([]);
 	};
 
@@ -2260,19 +2375,19 @@ export function useOrchestratorConfig(organizationId?: string) {
 			const newIds = enabled
 				? [...prev, integrationId]
 				: prev.filter((id) => id !== integrationId);
-			setToLocalStorage(STORAGE_KEYS.INTEGRATIONS, newIds);
+			setToLocalStorage(organizationStorageKeys.INTEGRATIONS, newIds);
 			return newIds;
 		});
 	};
 
 	const handleEnableAllIntegrations = (integrationIds: string[]) => {
 		setEnabledIntegrationIds(integrationIds);
-		setToLocalStorage(STORAGE_KEYS.INTEGRATIONS, integrationIds);
+		setToLocalStorage(organizationStorageKeys.INTEGRATIONS, integrationIds);
 	};
 
 	const handleDisableAllIntegrations = () => {
 		setEnabledIntegrationIds([]);
-		setToLocalStorage(STORAGE_KEYS.INTEGRATIONS, []);
+		setToLocalStorage(organizationStorageKeys.INTEGRATIONS, []);
 	};
 
 	// Prioritization handlers
@@ -2291,7 +2406,10 @@ export function useOrchestratorConfig(organizationId?: string) {
 			const newIds = prioritized
 				? [...prev, agentId]
 				: prev.filter((id) => id !== agentId);
-			setToLocalStorage(STORAGE_KEYS.PRIORITIZED_AGENTS, newIds);
+			setToLocalStorage(
+				organizationStorageKeys.PRIORITIZED_AGENTS,
+				newIds,
+			);
 			return newIds;
 		});
 	};
@@ -2301,7 +2419,7 @@ export function useOrchestratorConfig(organizationId?: string) {
 			const newIds = prioritized
 				? [...prev, configId]
 				: prev.filter((id) => id !== configId);
-			setToLocalStorage(STORAGE_KEYS.PRIORITIZED_MCP, newIds);
+			setToLocalStorage(organizationStorageKeys.PRIORITIZED_MCP, newIds);
 			return newIds;
 		});
 	};
@@ -2314,7 +2432,10 @@ export function useOrchestratorConfig(organizationId?: string) {
 			const newIds = prioritized
 				? [...prev, integrationId]
 				: prev.filter((id) => id !== integrationId);
-			setToLocalStorage(STORAGE_KEYS.PRIORITIZED_INTEGRATIONS, newIds);
+			setToLocalStorage(
+				organizationStorageKeys.PRIORITIZED_INTEGRATIONS,
+				newIds,
+			);
 			return newIds;
 		});
 	};
@@ -2325,9 +2446,9 @@ export function useOrchestratorConfig(organizationId?: string) {
 		setPrioritizedMcpConfigIds([]);
 		setPrioritizedIntegrationIds([]);
 		setToLocalStorage(STORAGE_KEYS.PRIORITIZED_TOOLS, []);
-		setToLocalStorage(STORAGE_KEYS.PRIORITIZED_AGENTS, []);
-		setToLocalStorage(STORAGE_KEYS.PRIORITIZED_MCP, []);
-		setToLocalStorage(STORAGE_KEYS.PRIORITIZED_INTEGRATIONS, []);
+		setToLocalStorage(organizationStorageKeys.PRIORITIZED_AGENTS, []);
+		setToLocalStorage(organizationStorageKeys.PRIORITIZED_MCP, []);
+		setToLocalStorage(organizationStorageKeys.PRIORITIZED_INTEGRATIONS, []);
 	};
 
 	// SECURITY FIX: Filter enabled IDs to only include those that exist in the current tenant's data
@@ -2431,7 +2552,7 @@ export function useOrchestratorConfig(organizationId?: string) {
 		handleIntegrationPrioritize,
 		handleClearAllPrioritized,
 		// Expose sync status for UI feedback
-		isSyncing: syncToDb.isPending,
+		isSyncing: syncStatus === "syncing",
 		syncStatus,
 		// Manual retry function for error recovery
 		retrySyncNow,

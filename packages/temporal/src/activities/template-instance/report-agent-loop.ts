@@ -53,7 +53,8 @@ function readGatheredDataMaxBytes(): number {
 	}
 	if (!/^\d+$/.test(raw)) {
 		console.warn(
-			`[AgentLoop] Ignoring malformed FABRIC_REPORT_GATHERED_DATA_MAX_BYTES="${raw}" (must be a bare byte count); using default ${DEFAULT_GATHERED_DATA_MAX_BYTES}`,
+			"[AgentLoop] Ignoring malformed FABRIC_REPORT_GATHERED_DATA_MAX_BYTES; using default",
+			{ value: raw, defaultBytes: DEFAULT_GATHERED_DATA_MAX_BYTES },
 		);
 		return DEFAULT_GATHERED_DATA_MAX_BYTES;
 	}
@@ -88,9 +89,13 @@ function finalizeGatheredData(
 		return { data: bounded.data, trimmed: false };
 	}
 	console.warn(
-		`[AgentLoop] gatheredData exceeded the payload budget for ${executionId} ` +
-			`(${bounded.originalBytes} → ${bounded.finalBytes} bytes); trimmed to fit ` +
-			`Temporal's activity-result limit: ${bounded.notes.join("; ")}`,
+		"[AgentLoop] Trimmed gathered data to fit the Temporal activity result limit",
+		{
+			executionId,
+			originalBytes: bounded.originalBytes,
+			finalBytes: bounded.finalBytes,
+			notes: bounded.notes,
+		},
 	);
 	return {
 		data: bounded.data,
@@ -1154,7 +1159,8 @@ export function consolidateIndividualCards(
 	}
 
 	console.log(
-		`[AgentLoop:Consolidate] Merging ${individualCards.length} individual fizzy_get_card results into ${bulkKey}`,
+		"[AgentLoop:Consolidate] Merging individual card results into bulk data",
+		{ cardCount: individualCards.length, bulkKey },
 	);
 
 	// Merge into the bulk cards array
@@ -1248,10 +1254,10 @@ async function loadConfigDisplayNames(
 		}
 		return map;
 	} catch (error) {
-		console.warn(
-			"[AgentLoop] Failed to load MCP config display names:",
-			error,
-		);
+		console.warn("[AgentLoop] Failed to load MCP config display names:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return {};
 	}
 }
@@ -1308,9 +1314,11 @@ async function probeMcpConfig(
 		}
 
 		const readOnlyCount = Object.keys(tools).length;
-		console.log(
-			`[AgentLoop] Connected to ${serverName}, ${readOnlyCount}/${total} read-only tools`,
-		);
+		console.log("[AgentLoop] Connected to MCP server", {
+			serverName,
+			readOnlyCount,
+			toolCount: total,
+		});
 		return {
 			configId,
 			tools,
@@ -1331,11 +1339,12 @@ async function probeMcpConfig(
 			(error as { serverName?: string })?.serverName ||
 			displayName ||
 			configId;
-		console.warn(
-			"[AgentLoop] Failed to connect to MCP config:",
-			{ configId, outcome },
-			raw,
-		);
+		console.warn("[AgentLoop] Failed to connect to MCP config:", {
+			configId,
+			outcome,
+			error: raw,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return {
 			configId,
 			tools: {},
@@ -1511,9 +1520,11 @@ export async function gatherMcpReadOnlyTools(params: {
 	for (const probe of probes) {
 		for (const [toolName, def] of Object.entries(probe.tools)) {
 			if (toolName in tools) {
-				console.warn(
-					`[AgentLoop] Tool name collision "${toolName}": keeping config ${toolConfigMap[toolName]}, ignoring ${probe.configId}`,
-				);
+				console.warn("[AgentLoop] Tool name collision", {
+					toolName,
+					keptConfigId: toolConfigMap[toolName],
+					ignoredConfigId: probe.configId,
+				});
 				continue;
 			}
 			tools[toolName] = def;
@@ -1565,9 +1576,10 @@ export async function executeAgentDataGatheringLoop(
 
 	try {
 		// 1. Connect to MCP servers and discover tools
-		console.log(
-			`[AgentLoop] Connecting to ${mcpConfigIds.length} MCP servers for execution ${executionId}`,
-		);
+		console.log("[AgentLoop] Connecting to MCP servers", {
+			serverCount: mcpConfigIds.length,
+			executionId,
+		});
 
 		// Resolve friendly names up-front so a connection that fails before the
 		// server identifies itself still shows a human name (not a raw config id).
@@ -1615,10 +1627,11 @@ export async function executeAgentDataGatheringLoop(
 					inputSchema: zodSchema,
 				} as unknown as Parameters<typeof tool>[0]);
 			} catch (error) {
-				console.warn(
-					`[AgentLoop] Failed to convert tool ${toolName}:`,
-					error,
-				);
+				console.warn("[AgentLoop] Failed to convert tool", {
+					toolName,
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 			}
 		}
 
@@ -1634,9 +1647,11 @@ export async function executeAgentDataGatheringLoop(
 			const paramNames = actualProps
 				? Object.keys(actualProps as Record<string, unknown>)
 				: [];
-			console.log(
-				`[AgentLoop] Tool schema: ${toolName}(${paramNames.join(", ")}) — ${toolDef.description?.substring(0, 100)}`,
-			);
+			console.log("[AgentLoop] Tool schema", {
+				toolName,
+				params: paramNames,
+				description: toolDef.description?.substring(0, 100),
+			});
 		}
 
 		// 3. Build system prompt
@@ -1677,16 +1692,17 @@ export async function executeAgentDataGatheringLoop(
 		);
 
 		// --- Structured logging: Activity start ---
-		console.log(`[AgentLoop] ===== EXECUTION START (${executionId}) =====`);
+		console.log("[AgentLoop] Execution started", { executionId });
 		console.log(
 			`[AgentLoop] Config: tools=${Object.keys(aiSdkTools).length}, maxIterations=${maxIterations}, promptSource=${promptSource}`,
 		);
-		console.log(
-			`[AgentLoop] Available tools: ${Object.keys(aiSdkTools).join(", ")}`,
-		);
-		console.log(
-			`[AgentLoop] System prompt (${systemPrompt.length} chars):\n${systemPrompt}`,
-		);
+		console.log("[AgentLoop] Available tools", {
+			toolNames: Object.keys(aiSdkTools),
+		});
+		console.log("[AgentLoop] System prompt", {
+			length: systemPrompt.length,
+			systemPrompt,
+		});
 
 		// 5. Run agentic loop
 		// taskDescription is always the actionable task (what data to gather/report to produce)
@@ -1709,7 +1725,7 @@ export async function executeAgentDataGatheringLoop(
 			}
 		}
 
-		console.log(`[AgentLoop] User message: ${userMessage}`);
+		console.log("[AgentLoop] User message", { userMessage });
 
 		const conversationHistory: Array<{
 			role: "user" | "assistant" | "tool";
@@ -1793,9 +1809,10 @@ export async function executeAgentDataGatheringLoop(
 				console.log(
 					`[AgentLoop] AI completed data gathering (response: ${responseText.length} chars)`,
 				);
-				console.log(
-					`[AgentLoop] AI final response:\n${responseText.substring(0, 2000)}${responseText.length > 2000 ? "\n... [truncated]" : ""}`,
-				);
+				console.log("[AgentLoop] AI final response", {
+					response: responseText.substring(0, 2000),
+					truncated: responseText.length > 2000,
+				});
 
 				// Compile gathered data from tool results (merge multiple calls to same tool)
 				for (const tr of toolResults) {
@@ -1816,18 +1833,18 @@ export async function executeAgentDataGatheringLoop(
 					organizationId,
 				});
 
-				console.log(
-					`[AgentLoop] ===== EXECUTION COMPLETE (${executionId}) =====`,
-				);
-				console.log(
-					`[AgentLoop] Summary: ${iterationCount} iterations, ${toolCallCount} tool calls, tools=[${toolsUsed.join(", ")}]`,
-				);
+				console.log("[AgentLoop] Execution completed", { executionId });
+				console.log("[AgentLoop] Summary", {
+					iterationCount,
+					toolCallCount,
+					toolsUsed,
+				});
 				console.log(
 					`[AgentLoop] Total tokens: input=${totalInputTokens}, output=${totalOutputTokens}`,
 				);
-				console.log(
-					`[AgentLoop] Data keys: ${Object.keys(gatheredData).join(", ")}`,
-				);
+				console.log("[AgentLoop] Data keys", {
+					keys: Object.keys(gatheredData),
+				});
 
 				// Bound the payload so a large board's data cannot exceed
 				// Temporal's activity-result blob limit.
@@ -1856,9 +1873,11 @@ export async function executeAgentDataGatheringLoop(
 			}
 
 			// Log tool calls for this iteration
-			console.log(
-				`[AgentLoop] Iteration ${iterationCount}: AI requested ${result.toolCalls.length} tool call(s): ${result.toolCalls.map((tc: any) => tc.toolName).join(", ")}`,
-			);
+			console.log("[AgentLoop] AI requested tool calls", {
+				iterationCount,
+				toolCallCount: result.toolCalls.length,
+				toolNames: result.toolCalls.map((tc: any) => tc.toolName),
+			});
 
 			// Build assistant message with ALL tool calls from this turn
 			// AI SDK uses 'input' not 'args' for tool calls
@@ -1911,8 +1930,8 @@ export async function executeAgentDataGatheringLoop(
 					allTools[toolName]?.inputSchema,
 				);
 
-				console.log(`[AgentLoop] Executing tool: ${toolName}`);
-				console.log(`[AgentLoop]   Args: ${JSON.stringify(args)}`);
+				console.log("[AgentLoop] Executing tool", { toolName });
+				console.log("[AgentLoop] Tool arguments", { args });
 
 				toolCallCount++;
 				if (!toolsUsed.includes(toolName)) {
@@ -2037,7 +2056,12 @@ export async function executeAgentDataGatheringLoop(
 							projectedStr.length <= MAX_RESULT_CHARS
 						) {
 							console.log(
-								`[AgentLoop] Projected ${toolName}: ${resultStr.length} -> ${projectedStr.length} chars (no summarization needed)`,
+								"[AgentLoop] Projected tool result without summarization",
+								{
+									toolName,
+									originalLength: resultStr.length,
+									projectedLength: projectedStr.length,
+								},
 							);
 							resultForContext = {
 								_projected: true,
@@ -2056,7 +2080,12 @@ export async function executeAgentDataGatheringLoop(
 										"../orchestrator/execution/summarize-tool-result"
 									);
 								console.log(
-									`[AgentLoop] Summarizing large result for ${toolName} (${summarizerInput.length} chars -> target ${MAX_RESULT_CHARS})`,
+									"[AgentLoop] Summarizing large tool result",
+									{
+										toolName,
+										length: summarizerInput.length,
+										targetLength: MAX_RESULT_CHARS,
+									},
 								);
 								const summary = await summarizeLargeToolResult({
 									toolName,
@@ -2076,12 +2105,28 @@ export async function executeAgentDataGatheringLoop(
 									summary,
 								};
 								console.log(
-									`[AgentLoop] Summarized ${toolName}: ${summarizerInput.length} -> ${summary.length} chars`,
+									"[AgentLoop] Summarized tool result",
+									{
+										toolName,
+										originalLength: summarizerInput.length,
+										summaryLength: summary.length,
+									},
 								);
 							} catch (summarizeError) {
 								// Fallback to simple truncation if summarization fails
 								console.log(
-									`[AgentLoop] Summarization failed for ${toolName}, falling back to truncation: ${summarizeError instanceof Error ? summarizeError.message : "Unknown error"}`,
+									"[AgentLoop] Summarization failed, falling back to truncation",
+									{
+										toolName,
+										error:
+											summarizeError instanceof Error
+												? summarizeError.message
+												: summarizeError,
+										stack:
+											summarizeError instanceof Error
+												? summarizeError.stack
+												: undefined,
+									},
 								);
 								resultForContext = {
 									_truncated: true,
@@ -2197,18 +2242,26 @@ export async function executeAgentDataGatheringLoop(
 		});
 
 		const compiledEmpty = Object.keys(gatheredData).length === 0;
-		console.log(
-			`[AgentLoop] ===== EXECUTION COMPLETE - PARTIAL${salvagedFromEmptyTurn ? " (empty-turn salvage)" : " (iteration limit)"} (${executionId}) =====`,
-		);
-		console.log(
-			`[AgentLoop] Summary: ${iterationCount} iterations (${salvagedFromEmptyTurn ? "empty-turn salvage" : "limit reached"}), ${toolCallCount} tool calls, tools=[${toolsUsed.join(", ")}]`,
-		);
+		console.log("[AgentLoop] Execution completed with partial data", {
+			executionId,
+			reason: salvagedFromEmptyTurn
+				? "empty-turn salvage"
+				: "iteration limit",
+		});
+		console.log("[AgentLoop] Partial execution summary", {
+			iterationCount,
+			reason: salvagedFromEmptyTurn
+				? "empty-turn salvage"
+				: "limit reached",
+			toolCallCount,
+			toolsUsed,
+		});
 		console.log(
 			`[AgentLoop] Total tokens: input=${totalInputTokens}, output=${totalOutputTokens}`,
 		);
-		console.log(
-			`[AgentLoop] Data keys: ${Object.keys(gatheredData).join(", ")}`,
-		);
+		console.log("[AgentLoop] Data keys", {
+			keys: Object.keys(gatheredData),
+		});
 
 		// Bound the payload so a large board's data cannot exceed Temporal's
 		// activity-result blob limit. Already a partial run.
@@ -2242,10 +2295,11 @@ export async function executeAgentDataGatheringLoop(
 		if (planRefusal) {
 			throw planRefusal;
 		}
-		console.error(
-			`[AgentLoop] ===== EXECUTION FAILED (${executionId}) =====`,
-		);
-		console.error("[AgentLoop] Error:", error);
+		console.error("[AgentLoop] Execution failed", { executionId });
+		console.error("[AgentLoop] Error:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return {
 			gatheredData: {},
 			toolCallCount: toolResults.length,
@@ -2326,9 +2380,12 @@ async function fetchBoardSpecificCards(params: {
 	});
 
 	const mismatchRatio = 1 - matchingCards.length / cardsData.length;
-	console.log(
-		`[AgentLoop:BoardFix] Board match: ${matchingCards.length}/${cardsData.length} cards match target board ${targetBoardId} (${Math.round(mismatchRatio * 100)}% mismatch)`,
-	);
+	console.log("[AgentLoop:BoardFix] Board match", {
+		matchingCardCount: matchingCards.length,
+		cardCount: cardsData.length,
+		targetBoardId,
+		mismatchPercent: Math.round(mismatchRatio * 100),
+	});
 
 	// If more than 50% of cards already match, no fix needed
 	if (mismatchRatio <= 0.5) {
@@ -2410,9 +2467,10 @@ async function fetchBoardSpecificCards(params: {
 			gatheredData.fizzy_get_columns = columns;
 		}
 
-		console.log(
-			`[AgentLoop:BoardFix] Found ${columns.length} columns for board ${targetBoardId}`,
-		);
+		console.log("[AgentLoop:BoardFix] Found columns for board", {
+			columnCount: columns.length,
+			targetBoardId,
+		});
 
 		// Step 2: Fetch cards for each column
 		const allCards: unknown[] = [];
@@ -2478,18 +2536,27 @@ async function fetchBoardSpecificCards(params: {
 						}
 					}
 					console.log(
-						`[AgentLoop:BoardFix] Column "${columnName}": ${columnCards.length} cards fetched, ${addedCount} new unique`,
+						"[AgentLoop:BoardFix] Fetched cards for column",
+						{
+							columnName,
+							cardCount: columnCards.length,
+							addedCount,
+						},
 					);
 				} else {
 					console.log(
-						`[AgentLoop:BoardFix] Column "${columnName}": no card list result`,
+						"[AgentLoop:BoardFix] No card list result for column",
+						{ columnName },
 					);
 				}
 			} catch (error) {
 				console.warn(
 					"[AgentLoop:BoardFix] Failed to fetch cards for column:",
-					{ columnName },
-					error,
+					{
+						columnName,
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					},
 				);
 			}
 		}
@@ -2514,10 +2581,10 @@ async function fetchBoardSpecificCards(params: {
 			return true;
 		}
 	} catch (error) {
-		console.error(
-			"[AgentLoop:BoardFix] Board-specific fetch failed:",
-			error,
-		);
+		console.error("[AgentLoop:BoardFix] Board-specific fetch failed:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		// Keep original data on failure
 	}
 	return false;

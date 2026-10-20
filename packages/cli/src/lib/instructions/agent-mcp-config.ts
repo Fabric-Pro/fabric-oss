@@ -15,9 +15,11 @@
  * this reader does not understand, is an answer of its own and never an error:
  * the caller that is about to write refuses to, and the one that reports says so.
  */
-import { readFile, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import path from "node:path";
 import type { InstructionsHookTool } from "./hook.js";
+import { readOpenedFileBounded } from "./safe-write.js";
 
 /**
  * The name Claude Code's server was given before every tool's server carried
@@ -91,11 +93,22 @@ type Text =
 
 async function readText(file: string): Promise<Text> {
 	try {
-		const info = await stat(file);
-		if (!info.isFile() || info.size > MAX_CONFIG_BYTES) {
-			return { kind: "unusable" };
+		// Tool configuration may deliberately be symlinked. Follow it once,
+		// then validate and bound all reads through that descriptor.
+		const handle = await open(
+			file,
+			constants.O_RDONLY | constants.O_NONBLOCK,
+		);
+		try {
+			const read = await readOpenedFileBounded(
+				handle,
+				MAX_CONFIG_BYTES,
+				file,
+			);
+			return { kind: "text", text: read.bytes.toString("utf8") };
+		} finally {
+			await handle.close();
 		}
-		return { kind: "text", text: await readFile(file, "utf8") };
 	} catch (error) {
 		return (error as NodeJS.ErrnoException).code === "ENOENT"
 			? { kind: "absent" }

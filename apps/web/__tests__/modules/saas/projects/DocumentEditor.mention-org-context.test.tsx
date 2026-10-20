@@ -99,6 +99,12 @@ vi.mock("@tiptap/react", () => ({
 	useEditor: () => null,
 }));
 
+// The editor reads the collaborative room flag (Fizzy #2946); off here,
+// so it behaves as it did before that flag.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
 
 describe("DocumentEditor — mentioned-document org context", () => {

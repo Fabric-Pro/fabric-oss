@@ -32,6 +32,12 @@ const h = vi.hoisted(() => {
 		targets: [] as Row[],
 		instructionSyncs: [] as Row[],
 		log: [] as string[],
+		reconcileCalls: [] as Array<{ logAtCall: string[]; input: unknown }>,
+		reconcileResult: {
+			excluded: 0,
+			included: 0,
+			cleanups: [] as unknown[],
+		},
 		transactionOptions: [] as unknown[],
 		nextId: 1,
 	};
@@ -126,6 +132,15 @@ vi.mock("../prisma/client", () => ({
 	Prisma: { sql: vi.fn(), join: vi.fn(), DbNull: "DbNull" },
 }));
 vi.mock("../prisma/queries/audit-log", () => ({ recordAuditTx: vi.fn() }));
+vi.mock("../prisma/queries/projects/context-index-mode", () => ({
+	reconcileContextIndexing: vi.fn(async (_tx: unknown, input: unknown) => {
+		h.state.reconcileCalls.push({
+			logAtCall: [...h.state.log],
+			input,
+		});
+		return h.state.reconcileResult;
+	}),
+}));
 vi.mock("../prisma/queries/projects/projects", () => ({
 	canCreateProjectInstructions: vi.fn(),
 }));
@@ -164,6 +179,7 @@ function target(overrides: Row = {}): Row {
 		userId: "user-earlier",
 		folder: "docs/agents-notes",
 		mode: "PULL_REQUEST",
+		indexMode: "INDEXED",
 		directPushEnabledById: null,
 		directPushEnabledAt: null,
 		version: 3,
@@ -176,7 +192,13 @@ function target(overrides: Row = {}): Row {
 const accept = (
 	folder: string,
 	mode: "PULL_REQUEST" | "DIRECT_PUSH",
-): ContextWriteTargetDecision<string> => ({ accept: true, folder, mode });
+	indexMode?: "INDEXED" | "STORE_ONLY",
+): ContextWriteTargetDecision<string> => ({
+	accept: true,
+	folder,
+	mode,
+	...(indexMode ? { indexMode } : {}),
+});
 
 beforeEach(() => {
 	h.state.sync = { ...lockedSync };
@@ -185,6 +207,8 @@ beforeEach(() => {
 	h.state.log = [];
 	h.state.transactionOptions = [];
 	h.state.nextId = 1;
+	h.state.reconcileCalls = [];
+	h.state.reconcileResult = { excluded: 0, included: 0, cleanups: [] };
 	vi.clearAllMocks();
 });
 
@@ -515,6 +539,114 @@ describe("deleteContextWriteTarget", () => {
 		const result = await deleteContextWriteTarget(input);
 
 		expect(result).toEqual({ status: "not-configured" });
+	});
+});
+
+describe("indexing choice (Index for AI search / Store only)", () => {
+	const createInput = { ...scope, userId: "user-1" };
+	const updateInput = { ...createInput, targetId: "target-existing" };
+
+	it("stores a new folder as INDEXED unless the decision says otherwise", async () => {
+		const result = await createContextWriteTarget(createInput, () =>
+			accept("docs/notes", "PULL_REQUEST"),
+		);
+
+		expect(result).toMatchObject({
+			status: "created",
+			target: { indexMode: "INDEXED" },
+		});
+	});
+
+	it("stores a STORE_ONLY folder and reconciles the sync's rows after the write, in the same transaction", async () => {
+		const result = await createContextWriteTarget(createInput, () =>
+			accept("docs/tasks", "PULL_REQUEST", "STORE_ONLY"),
+		);
+
+		expect(result).toMatchObject({
+			status: "created",
+			target: { indexMode: "STORE_ONLY" },
+		});
+		expect(h.state.reconcileCalls).toHaveLength(1);
+		expect(h.state.reconcileCalls[0]?.logAtCall.at(-1)).toBe(
+			"targets.create",
+		);
+		expect(h.state.reconcileCalls[0]?.input).toEqual({
+			...scope,
+			syncId: "sync-1",
+			actingUserId: "user-delegate",
+		});
+	});
+
+	it("hands the reconcile's outcome back with the target", async () => {
+		h.state.reconcileResult = {
+			excluded: 4,
+			included: 0,
+			cleanups: [{ id: "c-1", contextIds: ["a", "b", "c", "d"] }],
+		};
+
+		const result = await createContextWriteTarget(createInput, () =>
+			accept("docs/tasks", "PULL_REQUEST", "STORE_ONLY"),
+		);
+
+		expect(result).toMatchObject({
+			status: "created",
+			reindex: h.state.reconcileResult,
+		});
+	});
+
+	it("keeps a folder's indexing choice when an update does not name one", async () => {
+		h.state.targets = [target({ indexMode: "STORE_ONLY" })];
+
+		const result = await updateContextWriteTarget(updateInput, () =>
+			accept("docs/agents-notes", "DIRECT_PUSH"),
+		);
+
+		expect(result).toMatchObject({
+			status: "updated",
+			target: { indexMode: "STORE_ONLY" },
+		});
+	});
+
+	it("changes a folder's indexing choice and reconciles after the update", async () => {
+		h.state.targets = [target({ indexMode: "INDEXED" })];
+
+		const result = await updateContextWriteTarget(updateInput, () =>
+			accept("docs/agents-notes", "PULL_REQUEST", "STORE_ONLY"),
+		);
+
+		expect(result).toMatchObject({
+			status: "updated",
+			target: { indexMode: "STORE_ONLY" },
+			previous: { indexMode: "INDEXED" },
+		});
+		expect(h.state.reconcileCalls[0]?.logAtCall.at(-1)).toBe(
+			"targets.update",
+		);
+	});
+
+	it("reconciles after a folder is removed, so its rows are indexed again", async () => {
+		h.state.targets = [target({ indexMode: "STORE_ONLY" })];
+
+		await deleteContextWriteTarget({
+			...scope,
+			targetId: "target-existing",
+		});
+
+		expect(h.state.reconcileCalls[0]?.logAtCall.at(-1)).toBe(
+			"targets.delete",
+		);
+	});
+
+	it("does not reconcile when nothing was written", async () => {
+		h.state.targets = [target()];
+
+		await updateContextWriteTarget(updateInput, () => ({
+			accept: false,
+			refusal: "no",
+		}));
+		await deleteContextWriteTarget({ ...scope, targetId: "missing" });
+
+		expect(h.state.reconcileCalls).toEqual([]);
 	});
 });
 

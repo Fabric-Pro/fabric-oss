@@ -93,6 +93,12 @@ export interface AiUsageActivityRow {
 	taskType: AiTaskType | null;
 	agentId: string | null;
 	conversationId: string | null;
+	frameId: string | null;
+	workflowExecutionId: string | null;
+	workflowId: string | null;
+	originOrganizationSlug: string | null;
+	featureKey: string | null;
+	promptVersionId: string | null;
 	/** Background-attribution label (Fizzy #1894); null = user-initiated. */
 	jobType: string | null;
 	projectId: string | null;
@@ -289,6 +295,11 @@ export async function listAiUsageActivity(
 				taskType: true,
 				agentId: true,
 				conversationId: true,
+				frameId: true,
+				workflowExecutionId: true,
+				workflowExecution: { select: { workflowId: true } },
+				featureKey: true,
+				promptVersionId: true,
 				jobType: true,
 				projectId: true,
 				inputTokens: true,
@@ -384,6 +395,14 @@ export async function listAiUsageActivity(
 	const hasMore = rawRows.length > limit;
 	const sliced = hasMore ? rawRows.slice(0, limit) : rawRows;
 	const nextCursor = hasMore ? (sliced[sliced.length - 1]?.id ?? null) : null;
+	const originOrganization =
+		params.organizationId &&
+		sliced.some((row) => row.frameId || row.workflowExecutionId)
+			? await db.organization.findUnique({
+					where: { id: params.organizationId },
+					select: { slug: true },
+				})
+			: null;
 
 	// Enrich with user name/email for org context — multi-member orgs need
 	// to see who ran each call. Personal context is the caller, so skip.
@@ -424,6 +443,12 @@ export async function listAiUsageActivity(
 			taskType: row.taskType,
 			agentId: row.agentId,
 			conversationId: row.conversationId,
+			frameId: row.frameId ?? null,
+			workflowExecutionId: row.workflowExecutionId ?? null,
+			workflowId: row.workflowExecution?.workflowId ?? null,
+			originOrganizationSlug: originOrganization?.slug ?? null,
+			featureKey: row.featureKey ?? null,
+			promptVersionId: row.promptVersionId ?? null,
 			jobType: row.jobType,
 			projectId: row.projectId,
 			projectName: row.project?.name ?? null,

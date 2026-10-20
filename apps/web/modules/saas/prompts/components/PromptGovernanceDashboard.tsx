@@ -1,8 +1,8 @@
 "use client";
 
 import {
-	listPromptActions,
 	PROMPT_FEATURE_TYPES,
+	type PromptAction,
 	type PromptFeatureTypeKey,
 	promptActionId,
 } from "@repo/utils/prompt-action-catalog";
@@ -14,6 +14,7 @@ import { Badge } from "@ui/components/badge";
 import { ChevronRightIcon } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { LoadFailure } from "./LoadFailure";
 
 /**
@@ -30,6 +31,10 @@ import { LoadFailure } from "./LoadFailure";
  * payload rather than a query of its own: the tier in force is already computed
  * there, by the same rule the runtime resolver uses, and a second computation is
  * a second chance to disagree with it.
+ *
+ * Only the actions this organization is offered are counted: with the Proposal
+ * artifact on, the legacy Proposal actions never run, so they are neither a
+ * gap to fill nor an override in force (Fizzy #2946).
  */
 
 type CatalogEntry = {
@@ -40,8 +45,6 @@ type CatalogEntry = {
 };
 
 type Tier = "ORG" | "SYSTEM" | "NONE";
-
-const ALL_ACTIONS = listPromptActions();
 
 /** What an org admin can do about each state, which is why they are grouped. */
 const TIER_PRESENTATION: Record<
@@ -107,6 +110,7 @@ function Section({
 
 export function PromptGovernanceDashboard() {
 	const { organizationId, basePath } = useOrganizationContext();
+	const { actions: offeredActions } = useOfferedPromptActions();
 	const [overridesOpen, setOverridesOpen] = useState(true);
 	const [fallbacksOpen, setFallbacksOpen] = useState(true);
 
@@ -146,26 +150,20 @@ export function PromptGovernanceDashboard() {
 	}, [data]);
 
 	const { overridden, fallbacks } = useMemo(() => {
-		const overridden: Array<{
-			action: (typeof ALL_ACTIONS)[number];
-			tier: Tier;
-		}> = [];
-		const fallbacks: Array<{
-			action: (typeof ALL_ACTIONS)[number];
-			tier: Tier;
-		}> = [];
-		for (const action of ALL_ACTIONS) {
+		const overridden: Array<{ action: PromptAction; tier: Tier }> = [];
+		const fallbacks: Array<{ action: PromptAction; tier: Tier }> = [];
+		for (const action of offeredActions) {
 			const tier = tierByAction.get(action.id) ?? "NONE";
 			(tier === "ORG" ? overridden : fallbacks).push({ action, tier });
 		}
 		return { overridden, fallbacks };
-	}, [tierByAction]);
+	}, [tierByAction, offeredActions]);
 
 	const renderRow = ({
 		action,
 		tier,
 	}: {
-		action: (typeof ALL_ACTIONS)[number];
+		action: PromptAction;
 		tier: Tier;
 	}) => {
 		const presentation = TIER_PRESENTATION[tier];
@@ -219,7 +217,7 @@ export function PromptGovernanceDashboard() {
 			<p className="text-muted-foreground text-sm">
 				{isLoading
 					? "Checking every action…"
-					: `${fallbacks.length} of ${ALL_ACTIONS.length} actions have no organization prompt.`}
+					: `${fallbacks.length} of ${offeredActions.length} actions have no organization prompt.`}
 			</p>
 
 			{isLoading ? (

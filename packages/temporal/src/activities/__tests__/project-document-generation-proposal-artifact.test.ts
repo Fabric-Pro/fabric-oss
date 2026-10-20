@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => {
 		claimLiveAttempt: vi.fn(),
 		writeLiveSections: vi.fn(),
 		clearLiveContent: vi.fn(),
+		markLivePreviewStopped: vi.fn(),
 		emitDocumentChange: vi.fn(),
 		activityContext: vi.fn(),
 		buildSettledDecisionsBlock: vi.fn(),
@@ -90,6 +91,8 @@ vi.mock("@repo/database", () => ({
 	claimLiveAttempt: (...args: unknown[]) => mocks.claimLiveAttempt(...args),
 	writeLiveSections: (...args: unknown[]) => mocks.writeLiveSections(...args),
 	clearLiveContent: (...args: unknown[]) => mocks.clearLiveContent(...args),
+	markLivePreviewStopped: (...args: unknown[]) =>
+		mocks.markLivePreviewStopped(...args),
 	// Behind the real settled-decisions builder, for the tests that run it.
 	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
 	isOrganizationMember: (...args: unknown[]) =>
@@ -296,6 +299,7 @@ beforeEach(() => {
 	mocks.claimLiveAttempt.mockResolvedValue("written");
 	mocks.writeLiveSections.mockResolvedValue("written");
 	mocks.clearLiveContent.mockResolvedValue("written");
+	mocks.markLivePreviewStopped.mockResolvedValue("written");
 	mocks.emitDocumentChange.mockResolvedValue(undefined);
 	mocks.activityContext.mockReturnValue({
 		info: { attempt: 1 },
@@ -311,8 +315,25 @@ beforeEach(() => {
 	mocks.buildSettledDecisionsBlock.mockResolvedValue(null);
 });
 
+/** The variables the agent stream's limits read, as the run found them. */
+const STREAM_ENV = Object.fromEntries(
+	[
+		"AGENT_STREAM_TIMEOUT_MS",
+		"AGENT_STREAM_IDLE_TIMEOUT_MS",
+		"AGENT_STREAM_FIRST_CHUNK_TIMEOUT_MS",
+		"AGENT_STREAM_FALLBACK_RESERVE_MS",
+	].map((name) => [name, process.env[name]]),
+);
+
 afterEach(() => {
 	vi.useRealTimers();
+	for (const [name, value] of Object.entries(STREAM_ENV)) {
+		if (value === undefined) {
+			delete process.env[name];
+		} else {
+			process.env[name] = value;
+		}
+	}
 });
 
 // -----------------------------------------------------------------------------
@@ -1400,6 +1421,46 @@ describe("artifact mode — live sections", () => {
 		});
 	});
 
+	it("records the workflow it runs in with its claim (Fizzy #2946)", async () => {
+		// A wizard, batch or setup run is never dispatched, so its claim is
+		// what tells a later request which workflow holds the document.
+		mocks.activityContext.mockReturnValue({
+			info: {
+				attempt: 2,
+				workflowExecution: {
+					workflowId: "batch-example-child-doc-1",
+					runId: "temporal-run-1",
+				},
+			},
+			cancellationSignal: new AbortController().signal,
+		});
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+
+		await generateArtifact();
+
+		expect(mocks.claimLiveAttempt).toHaveBeenCalledTimes(1);
+		expect(mocks.claimLiveAttempt).toHaveBeenCalledWith({
+			documentId: "doc-1",
+			runId: "run-2",
+			attempt: 2,
+			workflowId: "batch-example-child-doc-1",
+		});
+	});
+
+	it("claims without a workflow when the activity was not started by one", async () => {
+		agentStreams([finalValues(FINAL_DOCUMENT)]);
+
+		await generateArtifact();
+
+		const [claim] = mocks.claimLiveAttempt.mock.calls[0] ?? [];
+		expect(claim).toEqual({
+			documentId: "doc-1",
+			runId: "run-2",
+			attempt: 1,
+		});
+		expect(claim).not.toHaveProperty("workflowId");
+	});
+
 	it("writes once per completed section: three previews across two headings make two writes, each a prefix of the final document, then the whole document once the stream ends", async () => {
 		agentStreamsAt([
 			[0, preview("## Executive Summary\n\nThe client")],
@@ -1886,7 +1947,7 @@ describe("artifact mode — a live preview that repeats a settled decision", () 
 });
 
 // -----------------------------------------------------------------------------
-// Artifact mode: timeout, cancellation and the gateway fallback
+// Artifact mode: a cut stream, cancellation and the gateway fallback
 // -----------------------------------------------------------------------------
 
 /** The gateway fallback produces `text` and finishes normally. */
@@ -1921,29 +1982,31 @@ function sleep(ms: number): Promise<void> {
 
 const FALLBACK_DOCUMENT = "## Executive Summary\n\nWritten by the fallback.";
 
-/** The agent stream timeout these tests run with, in real milliseconds. */
-const STREAM_TIMEOUT_MS = 100;
-/** Comfortably past {@link STREAM_TIMEOUT_MS}, so the order never races. */
+/** The idle limit these tests enforce, in real milliseconds. */
+const STREAM_IDLE_MS = 100;
+/** Comfortably past {@link STREAM_IDLE_MS}, so the order never races. */
 const WELL_PAST_TIMEOUT_MS = 250;
 
-describe("artifact mode — timeout, cancellation and fallback", () => {
-	const previousTimeout = process.env.AGENT_STREAM_TIMEOUT_MS;
+/** What the activity logs when the agent stream fails and the fallback runs. */
+const FALLING_BACK = "Agent stream failed; falling back to Gateway generation";
 
+/** The milestone writes, in order. */
+function milestoneWrites(): unknown[] {
+	return mocks.markLivePreviewStopped.mock.calls.map(([input]) => input);
+}
+
+/** This attempt's milestone write: the run token and attempt 1. */
+const MILESTONE = { documentId: "doc-1", runId: "run-2", attempt: 1 };
+
+describe("artifact mode — a cut stream, cancellation and fallback", () => {
 	beforeEach(() => {
 		promptLibraryRenders();
 		fallbackProduces(FALLBACK_DOCUMENT);
-		process.env.AGENT_STREAM_TIMEOUT_MS = String(STREAM_TIMEOUT_MS);
+		// The idle limit cuts only when its variable is set.
+		process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = String(STREAM_IDLE_MS);
 	});
 
-	afterEach(() => {
-		if (previousTimeout === undefined) {
-			delete process.env.AGENT_STREAM_TIMEOUT_MS;
-		} else {
-			process.env.AGENT_STREAM_TIMEOUT_MS = previousTimeout;
-		}
-	});
-
-	it("on a stream timeout aborts the stream, clears the preview, and falls back without writing live", async () => {
+	it("on an idle stream aborts it, keeps the sections, marks the preview stopped, and falls back without writing live", async () => {
 		let streamSignal: AbortSignal | undefined;
 		mocks.runsStream.mockImplementation(
 			(
@@ -1963,26 +2026,33 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 
 		expect(streamSignal?.aborted).toBe(true);
 		expect(liveWrites()).toEqual([SECTIONS_ONE]);
-		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
+		// The sections stay: the page never falls back to the previous body.
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
 		// Scoped to this attempt: an attempt Temporal gave up on, finishing
-		// late, must not erase the preview its retry is writing.
-		expect(mocks.clearLiveContent).toHaveBeenCalledWith({
-			documentId: "doc-1",
-			runId: "run-2",
-			attempt: 1,
-		});
+		// late, must not mark the preview its retry is writing.
+		expect(milestoneWrites()).toEqual([MILESTONE]);
 		expect(
-			mocks.clearLiveContent.mock.invocationCallOrder[0],
+			mocks.markLivePreviewStopped.mock.invocationCallOrder[0],
 		).toBeGreaterThan(
 			mocks.writeLiveSections.mock.invocationCallOrder[0] ?? 0,
 		);
+		expect(
+			mocks.markLivePreviewStopped.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.streamText.mock.invocationCallOrder[0] ?? 0);
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		expect(result.content).toBe(FALLBACK_DOCUMENT);
-		// The page is told the preview is gone.
+		// The page is told the preview stopped.
 		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(2);
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			FALLING_BACK,
+			expect.objectContaining({
+				error: `Agent stream timeout after ${STREAM_IDLE_MS}ms (idle)`,
+				cutReason: "idle",
+			}),
+		);
 	});
 
-	it("writes no preview that arrives after the timeout", async () => {
+	it("writes no preview that arrives after the cut", async () => {
 		vi.useFakeTimers({ toFake: ["Date"] });
 		const start = Date.now();
 		mocks.runsStream.mockImplementation(() =>
@@ -1997,14 +2067,15 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 		);
 
 		const result = await generateArtifact();
-		await sleep(WELL_PAST_TIMEOUT_MS + STREAM_TIMEOUT_MS);
+		await sleep(WELL_PAST_TIMEOUT_MS + STREAM_IDLE_MS);
 
 		expect(result.content).toBe(FALLBACK_DOCUMENT);
 		expect(liveWrites()).toEqual([SECTIONS_ONE]);
-		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
 	});
 
-	it("clears the preview only after a write in flight at the timeout has settled", async () => {
+	it("marks the preview stopped only after a write in flight at the cut has settled", async () => {
 		const order: string[] = [];
 		mocks.writeLiveSections.mockImplementation(async () => {
 			order.push("write started");
@@ -2012,8 +2083,8 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 			order.push("write settled");
 			return "written";
 		});
-		mocks.clearLiveContent.mockImplementation(async () => {
-			order.push("cleared");
+		mocks.markLivePreviewStopped.mockImplementation(async () => {
+			order.push("marked stopped");
 			return "written";
 		});
 		mocks.runsStream.mockImplementation(
@@ -2030,11 +2101,15 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 
 		await generateArtifact();
 
-		expect(order).toEqual(["write started", "write settled", "cleared"]);
+		expect(order).toEqual([
+			"write started",
+			"write settled",
+			"marked stopped",
+		]);
 	});
 
-	it("clears the preview when the stream fails and the gateway takes over", async () => {
-		process.env.AGENT_STREAM_TIMEOUT_MS = "300000";
+	it("keeps the sections and marks the preview stopped when the stream fails and the gateway takes over", async () => {
+		delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
 		mocks.runsStream.mockImplementation(() =>
 			(async function* () {
 				yield preview(PREVIEW_ONE);
@@ -2045,21 +2120,27 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 		const result = await generateArtifact();
 
 		expect(liveWrites()).toEqual([SECTIONS_ONE]);
-		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
-		expect(mocks.clearLiveContent.mock.invocationCallOrder[0]).toBeLessThan(
-			mocks.streamText.mock.invocationCallOrder[0] ?? 0,
-		);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		expect(
+			mocks.markLivePreviewStopped.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.streamText.mock.invocationCallOrder[0] ?? 0);
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(2);
 		expect(result.content).toBe(FALLBACK_DOCUMENT);
 	});
 
-	it("clears the preview when the agent ends without a document", async () => {
-		process.env.AGENT_STREAM_TIMEOUT_MS = "300000";
+	it("keeps the sections and marks the preview stopped when the agent ends without a document", async () => {
+		delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
 		agentStreams([preview(PREVIEW_ONE)]);
 
 		const result = await generateArtifact();
 
 		expect(liveWrites()).toEqual([SECTIONS_ONE]);
-		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		expect(
+			mocks.markLivePreviewStopped.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.streamText.mock.invocationCallOrder[0] ?? 0);
 		expect(result.content).toBe(FALLBACK_DOCUMENT);
 	});
 
@@ -2077,14 +2158,17 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 				})(),
 		);
 
-		await generateArtifact();
+		const result = await generateArtifact();
 
 		expect(mocks.writeLiveSections).not.toHaveBeenCalled();
 		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+		// The save's run guard decides what becomes of this attempt's text.
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
 	});
 
 	it("on cancellation aborts the stream, writes nothing more, and does not fall back", async () => {
-		process.env.AGENT_STREAM_TIMEOUT_MS = "300000";
+		delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
 		const cancellation = new AbortController();
 		mocks.activityContext.mockReturnValue({
 			info: { attempt: 1 },
@@ -2112,8 +2196,42 @@ describe("artifact mode — timeout, cancellation and fallback", () => {
 		expect(error).toBeInstanceOf(Error);
 		expect(streamSignal?.aborted).toBe(true);
 		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
 		expect(mocks.streamText).not.toHaveBeenCalled();
 		expect(mocks.recordAuditDurable).not.toHaveBeenCalled();
+	});
+
+	it("leaves a run that is not a coordinated Proposal's on today's timeout and fallback", async () => {
+		delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
+		process.env.AGENT_STREAM_TIMEOUT_MS = String(STREAM_IDLE_MS);
+		mocks.runsStream.mockImplementation(() =>
+			(async function* () {
+				// Silent, and deaf to any abort: only today's race ends it.
+				await sleep(WELL_PAST_TIMEOUT_MS);
+				yield* [];
+			})(),
+		);
+
+		const result = await generateLegacy();
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(mocks.streamText).toHaveBeenCalledTimes(1);
+		expect(mocks.streamText.mock.calls[0]?.[0]).not.toHaveProperty(
+			"abortSignal",
+		);
+		expect(mocks.activityContext).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			FALLING_BACK,
+			expect.not.objectContaining({ cutReason: expect.anything() }),
+		);
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			FALLING_BACK,
+			expect.objectContaining({
+				error: `Agent stream timeout after ${STREAM_IDLE_MS}ms`,
+			}),
+		);
+		await sleep(WELL_PAST_TIMEOUT_MS);
 	});
 });
 
@@ -2129,7 +2247,9 @@ function stalls(): Promise<never> {
 	return new Promise<never>(() => {});
 }
 
-function expectSettleTimeout(step: "clear" | "stop" | "finish") {
+function expectSettleTimeout(
+	step: "clear" | "stop" | "finish" | "mark" | "signOfLife",
+) {
 	expect(activityLogger.warn).toHaveBeenCalledWith(
 		"Live sections did not settle in time; carrying on without them",
 		{
@@ -2161,8 +2281,8 @@ describe("artifact mode — a stalled preview never holds the run up", () => {
 		}
 	});
 
-	it("falls back after a bounded wait when clearing the preview stalls, heartbeating meanwhile", async () => {
-		mocks.clearLiveContent.mockImplementation(stalls);
+	it("falls back after a bounded wait when marking the preview stopped stalls, heartbeating meanwhile", async () => {
+		mocks.markLivePreviewStopped.mockImplementation(stalls);
 		mocks.runsStream.mockImplementation(() =>
 			(async function* () {
 				yield preview(PREVIEW_ONE);
@@ -2175,16 +2295,15 @@ describe("artifact mode — a stalled preview never holds the run up", () => {
 		const result = await pending;
 
 		expect(result.content).toBe(FALLBACK_DOCUMENT);
-		expect(mocks.clearLiveContent).toHaveBeenCalledTimes(1);
+		expect(mocks.markLivePreviewStopped).toHaveBeenCalledTimes(1);
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		expect(heartbeat).toHaveBeenCalledWith(
 			expect.objectContaining({ phase: "live_sections" }),
 		);
-		expectSettleTimeout("clear");
+		expectSettleTimeout("mark");
 	});
 
-	it("fails a cancelled attempt after a bounded wait for a write that stalled", async () => {
-		process.env.AGENT_STREAM_TIMEOUT_MS = "1000";
+	it("fails a cancelled attempt at once, after a bounded wait for a write that stalled", async () => {
 		const cancellation = new AbortController();
 		mocks.activityContext.mockReturnValue({
 			info: { attempt: 1 },
@@ -2196,13 +2315,16 @@ describe("artifact mode — a stalled preview never holds the run up", () => {
 		});
 		agentStreams([preview(PREVIEW_ONE), finalValues(FINAL_DOCUMENT)]);
 
+		// Only the bounded wait for the stalled write: the cancellation, not
+		// the stream's five-minute cap, ends the wait for the stream.
 		const pending = failureOf(generateArtifact());
-		await vi.advanceTimersByTimeAsync(1_000 + SETTLE_TIMEOUT_MS);
+		await vi.advanceTimersByTimeAsync(SETTLE_TIMEOUT_MS);
 		const error = await pending;
 
 		expect(error).toBeInstanceOf(Error);
-		expect((error as Error).message).toMatch(/timeout/);
+		expect((error as Error).message).toBe("Agent stream cancelled");
 		expect(mocks.streamText).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
 		expectSettleTimeout("stop");
 	});
 
@@ -2239,6 +2361,453 @@ describe("artifact mode — a stalled preview never holds the run up", () => {
 				error: "TIMEOUT",
 			},
 		);
+	});
+});
+
+// -----------------------------------------------------------------------------
+// Artifact mode: the stream's limits (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+/** The production attempt budget: a fifteen-minute start-to-close. */
+const ATTEMPT_MS = 15 * 60_000;
+const MINUTE = 60_000;
+
+/** The activity runs under a start-to-close timeout of `startToCloseMs`. */
+function attemptRunsFor(
+	startToCloseMs: number,
+	cancellation = new AbortController(),
+): AbortController {
+	mocks.activityContext.mockReturnValue({
+		info: { attempt: 1, startToCloseTimeoutMs: startToCloseMs },
+		cancellationSignal: cancellation.signal,
+	});
+	return cancellation;
+}
+
+/**
+ * An agent stream on the fake clock: each chunk after its delay, then the end
+ * or, with `hang`, silence until the stream is aborted.
+ */
+function agentStreamsOnClock(
+	steps: Array<[number, StreamChunk]>,
+	end: "end" | "hang" = "end",
+) {
+	mocks.runsStream.mockImplementation(
+		(
+			_thread: unknown,
+			_assistant: unknown,
+			payload: { signal: AbortSignal },
+		) =>
+			(async function* () {
+				for (const [delay, chunk] of steps) {
+					await sleep(delay);
+					yield chunk;
+				}
+				if (end === "hang") {
+					await abortOf(payload.signal);
+				}
+			})(),
+	);
+}
+
+function metadata(): StreamChunk {
+	return { event: "metadata", data: { run_id: "agent-run-1" } };
+}
+
+/** The fallback log line's fields. */
+function fallbackLogFields(): Record<string, unknown> | undefined {
+	return vi
+		.mocked(activityLogger.warn)
+		.mock.calls.find(([message]) => message === FALLING_BACK)?.[1] as
+		| Record<string, unknown>
+		| undefined;
+}
+
+describe("artifact mode — the stream's limits", () => {
+	beforeEach(() => {
+		promptLibraryRenders();
+		fallbackProduces(FALLBACK_DOCUMENT);
+		attemptRunsFor(ATTEMPT_MS);
+		vi.useFakeTimers();
+	});
+
+	it("by default only logs a silence past the idle limit, with the gap, and lets the stream finish", async () => {
+		agentStreamsOnClock([
+			[0, preview(PREVIEW_ONE)],
+			[2_000, preview(PREVIEW_TWO)],
+			[200_000, finalValues(FINAL_DOCUMENT)],
+		]);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(210_000);
+		const result = await pending;
+
+		expect(result.content).toBe(FINAL_DOCUMENT);
+		expect((streamPayload().signal as AbortSignal).aborted).toBe(false);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			"Agent stream silent past its idle limit; it would have been cut",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "run-2",
+				attempt: 1,
+				idleLimitMs: 180_000,
+				gapMs: 180_000,
+				largestGapMs: 180_000,
+			},
+		);
+		expect(activityLogger.info).toHaveBeenCalledWith(
+			"Document stream completed successfully",
+			expect.objectContaining({ largestChunkGapMs: 200_000 }),
+		);
+		expect(activityLogger.info).toHaveBeenCalledWith(
+			"Document generation completed successfully",
+			expect.objectContaining({
+				streamCutReason: null,
+				largestChunkGapMs: 200_000,
+			}),
+		);
+	});
+
+	it("with the idle limit set, cuts a stream gone silent after two sections, keeps them and falls back", async () => {
+		process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = String(3 * MINUTE);
+		agentStreamsOnClock(
+			[
+				[0, preview(PREVIEW_ONE)],
+				[2_000, preview(PREVIEW_TWO)],
+			],
+			"hang",
+		);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(2_000 + 3 * MINUTE);
+		const result = await pending;
+
+		expect((streamPayload().signal as AbortSignal).aborted).toBe(true);
+		expect(liveWrites()).toEqual([SECTIONS_ONE, SECTIONS_TWO]);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		// Two sections and the stopped preview.
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(3);
+		expect(mocks.streamText).toHaveBeenCalledTimes(1);
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "idle",
+			largestChunkGapMs: 3 * MINUTE,
+			error: `Agent stream timeout after ${3 * MINUTE}ms (idle)`,
+		});
+	});
+
+	it("never cuts a stream whose chunks keep arriving just inside the idle limit, past five minutes", async () => {
+		process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = String(3 * MINUTE);
+		agentStreamsOnClock([
+			[0, preview(PREVIEW_ONE)],
+			[170_000, preview(PREVIEW_TWO)],
+			[170_000, preview(PREVIEW_TWO)],
+			[170_000, finalValues(FINAL_DOCUMENT)],
+		]);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(520_000);
+		const result = await pending;
+
+		expect(result.content).toBe(FINAL_DOCUMENT);
+		expect((streamPayload().signal as AbortSignal).aborted).toBe(false);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+	});
+
+	it("cuts a stream still producing at the wall cap the attempt's deadline leaves, and falls back in the reserve", async () => {
+		mocks.runsStream.mockImplementation(
+			(
+				_thread: unknown,
+				_assistant: unknown,
+				payload: { signal: AbortSignal },
+			) =>
+				(async function* () {
+					yield preview(PREVIEW_ONE);
+					while (!payload.signal.aborted) {
+						await sleep(MINUTE);
+						yield preview(PREVIEW_TWO);
+					}
+				})(),
+		);
+
+		const pending = generateArtifact();
+		// Fifteen minutes less the five-minute reserve: ten minutes in.
+		await vi.advanceTimersByTimeAsync(10 * MINUTE - 1);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "wall",
+			error: `Agent stream timeout after ${10 * MINUTE}ms (wall)`,
+		});
+		expect(activityLogger.info).toHaveBeenCalledWith(
+			"Document generation completed successfully",
+			expect.objectContaining({ streamCutReason: "wall" }),
+		);
+	});
+
+	it("fails the attempt instead of falling back when less than the reserve is left", async () => {
+		attemptRunsFor(6 * MINUTE);
+		// An explicit cap replaces the one the deadline leaves.
+		process.env.AGENT_STREAM_TIMEOUT_MS = String(5.5 * MINUTE);
+		agentStreamsOnClock([[0, preview(PREVIEW_ONE)]], "hang");
+
+		const pending = failureOf(generateArtifact());
+		await vi.advanceTimersByTimeAsync(5.5 * MINUTE);
+		const error = await pending;
+
+		expect(error).toBeInstanceOf(ApplicationFailure);
+		expect((error as ApplicationFailure).type).toBe(
+			"FALLBACK_TIME_EXHAUSTED",
+		);
+		expect((error as ApplicationFailure).nonRetryable).toBe(false);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			"Too little of the attempt is left for the fallback; failing the attempt",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "run-2",
+				attempt: 1,
+				remainingMs: 0.5 * MINUTE,
+				fallbackReserveMs: 5 * MINUTE,
+				cutReason: "wall",
+				error: "FALLBACK_TIME_EXHAUSTED",
+			},
+		);
+	});
+
+	it("cuts a stream that sends nothing but its opening metadata within the first-chunk allowance", async () => {
+		agentStreamsOnClock([[0, metadata()]], "hang");
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(5 * MINUTE - 1);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(1);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(fallbackLogFields()).toMatchObject({
+			cutReason: "first-chunk",
+			error: `Agent stream timeout after ${5 * MINUTE}ms (first-chunk)`,
+		});
+	});
+
+	it("does not take the opening metadata for the first chunk: silence past the idle limit inside the allowance is no cut", async () => {
+		process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = String(3 * MINUTE);
+		agentStreamsOnClock([
+			[0, metadata()],
+			[200_000, finalValues(FINAL_DOCUMENT)],
+		]);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(200_000);
+		const result = await pending;
+
+		expect(result.content).toBe(FINAL_DOCUMENT);
+		expect(mocks.streamText).not.toHaveBeenCalled();
+	});
+
+	it("leaves no timer behind after a stream that succeeds", async () => {
+		process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = String(3 * MINUTE);
+		agentStreams([preview(PREVIEW_ONE), finalValues(FINAL_DOCUMENT)]);
+
+		const result = await generateArtifact();
+
+		expect(result.content).toBe(FINAL_DOCUMENT);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("rethrows a cancellation during the stream at once, writes nothing after it and leaves no timer", async () => {
+		const cancellation = attemptRunsFor(ATTEMPT_MS);
+		mocks.runsStream.mockImplementation(() =>
+			(async function* () {
+				yield preview(PREVIEW_ONE);
+				// Deaf to the abort.
+				await stalls();
+			})(),
+		);
+
+		const pending = failureOf(generateArtifact());
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		cancellation.abort();
+		const error = await pending;
+
+		expect((error as Error).message).toBe("Agent stream cancelled");
+		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(mocks.streamText).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+});
+
+// -----------------------------------------------------------------------------
+// Artifact mode: the fallback's bound and its sign of life (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+/** The agent stream writes one section and fails at once. */
+function agentFailsAfterOneSection() {
+	mocks.runsStream.mockImplementation(() =>
+		(async function* () {
+			yield preview(PREVIEW_ONE);
+			throw new Error("socket hang up");
+		})(),
+	);
+}
+
+/** The fallback writes the document after `ms` on the fake clock. */
+function fallbackTakes(ms: number) {
+	mocks.streamText.mockImplementation(() => ({
+		textStream: (async function* () {
+			await sleep(ms);
+			yield FALLBACK_DOCUMENT;
+		})(),
+		finishReason: Promise.resolve("stop"),
+		usage: Promise.resolve({ outputTokens: 100 }),
+	}));
+}
+
+/** A fallback that never answers and ignores its abort; records the signal. */
+function fallbackHangs(): { signal: () => AbortSignal | undefined } {
+	let signal: AbortSignal | undefined;
+	mocks.streamText.mockImplementation(
+		(input: { abortSignal?: AbortSignal }) => {
+			signal = input.abortSignal;
+			return {
+				textStream: (async function* () {
+					await stalls();
+					yield* [];
+				})(),
+				finishReason: stalls(),
+				usage: stalls(),
+			};
+		},
+	);
+	return { signal: () => signal };
+}
+
+describe("artifact mode — the fallback's bound and its sign of life", () => {
+	let marks: number[];
+
+	beforeEach(() => {
+		promptLibraryRenders();
+		attemptRunsFor(ATTEMPT_MS);
+		vi.useFakeTimers();
+		agentFailsAfterOneSection();
+		marks = [];
+		mocks.markLivePreviewStopped.mockImplementation(async () => {
+			marks.push(Date.now());
+			return "written";
+		});
+	});
+
+	it("writes the milestone again about once a minute while the fallback runs, and stops when it ends", async () => {
+		fallbackTakes(150_000);
+		const start = Date.now();
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(150_000);
+		const result = await pending;
+		await vi.advanceTimersByTimeAsync(3 * MINUTE);
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(marks.map((at) => at - start)).toEqual([0, MINUTE, 2 * MINUTE]);
+		for (const input of milestoneWrites()) {
+			expect(input).toEqual(MILESTONE);
+		}
+		// Only the first write nudges: the page polls while a run is live.
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(2);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("a superseded attempt writes neither the milestone nor a sign of life", async () => {
+		mocks.claimLiveAttempt.mockResolvedValue("superseded");
+		fallbackTakes(150_000);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(150_000);
+		const result = await pending;
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(mocks.markLivePreviewStopped).not.toHaveBeenCalled();
+	});
+
+	it("stops its sign of life once a later attempt owns the preview", async () => {
+		mocks.markLivePreviewStopped
+			.mockResolvedValueOnce("written")
+			.mockResolvedValueOnce("superseded");
+		fallbackTakes(200_000);
+
+		const pending = generateArtifact();
+		await vi.advanceTimersByTimeAsync(200_000);
+		await pending;
+
+		expect(mocks.markLivePreviewStopped).toHaveBeenCalledTimes(2);
+	});
+
+	it("waits for a sign of life in flight before returning, so none lands after the run's next step", async () => {
+		const order: string[] = [];
+		mocks.markLivePreviewStopped
+			.mockResolvedValueOnce("written")
+			.mockImplementationOnce(async () => {
+				await sleep(8_000);
+				order.push("sign of life landed");
+				return "written";
+			});
+		fallbackTakes(65_000);
+
+		const pending = generateArtifact().then((result) => {
+			order.push("returned");
+			return result;
+		});
+		await vi.advanceTimersByTimeAsync(80_000);
+		await pending;
+
+		expect(order).toEqual(["sign of life landed", "returned"]);
+	});
+
+	it("aborts the fallback at once on cancellation, and leaves no timer", async () => {
+		const cancellation = attemptRunsFor(ATTEMPT_MS);
+		const fallback = fallbackHangs();
+
+		const pending = failureOf(generateArtifact());
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(fallback.signal()?.aborted).toBe(false);
+		cancellation.abort();
+		const error = await pending;
+
+		expect((error as Error).message).toBe("Fallback generation cancelled");
+		expect(fallback.signal()?.aborted).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("aborts a fallback that would outrun the attempt's deadline at its bound", async () => {
+		const fallback = fallbackHangs();
+
+		const pending = failureOf(generateArtifact());
+		// The deadline less the time the activity keeps to finish.
+		await vi.advanceTimersByTimeAsync(ATTEMPT_MS - 30_000 - 1);
+		expect(fallback.signal()?.aborted).toBe(false);
+		await vi.advanceTimersByTimeAsync(1);
+		const error = await pending;
+
+		expect((error as Error).message).toBe(
+			"Fallback generation did not finish before the attempt's deadline",
+		);
+		expect(fallback.signal()?.aborted).toBe(true);
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });
 

@@ -121,6 +121,7 @@ beforeEach(() => {
 	act("detectAndStampPmPushConflict").mockResolvedValue({
 		hasConflict: false,
 	});
+	act("checkTestCasePmLink").mockResolvedValue({ success: true });
 	act("executeMcpTool").mockResolvedValue({ success: true, output: {} });
 	act("createTestCaseInPmWithClaim").mockResolvedValue({
 		success: true,
@@ -145,7 +146,10 @@ describe("testCaseSyncWorkflow create under the PM create claim", () => {
 			userId: "u-1",
 			mcpConfigId: "config-1",
 			mcpServerId: "server-1",
-			pmTarget: { additionalContext: { account_slug: "example-org" } },
+			pmTarget: {
+				additionalContext: { account_slug: "example-org" },
+				containerId: "board-1",
+			},
 			pmTool: "fizzy",
 			toolLabel: "fizzy",
 			toolName: "create_card",
@@ -273,9 +277,9 @@ describe("testCaseSyncWorkflow create under the PM create claim", () => {
 		}
 	});
 
-	it("a linked case is updated, never created, whichever PM server its link names", async () => {
+	it("a linked case on the active server is updated, never created", async () => {
 		act("getTestCasesToSync").mockResolvedValue([
-			{ ...caseRow("case-1", "PM-1"), externalMcpServerId: "server-old" },
+			{ ...caseRow("case-1", "PM-1"), externalMcpServerId: "server-1" },
 		]);
 
 		await testCaseSyncWorkflow(input());

@@ -18,8 +18,8 @@
  * which refreshes the cookie cache and the row together.
  *
  * These tests pin that it fires exactly when the two disagree, stays silent
- * when they agree, and never turns a background correction into something the
- * user has to see.
+ * when they agree, holds the page back only while the correction is in flight,
+ * and never turns a failed correction into an error the user has to see.
  */
 
 import { act, render, waitFor } from "@testing-library/react";
@@ -61,12 +61,15 @@ let activeOrganizationMock:
 			members: { userId: string; role: string }[];
 	  }
 	| undefined;
+// The viewer's memberships, as the SaaS layout hydrates them above the provider.
+let organizationListMock: { id: string; slug: string }[] | undefined;
 vi.mock("@saas/organizations/lib/api", () => ({
 	// Fizzy #2462: the switcher subtracts deactivated organizations from
 	// the switchable list, so it reads this alongside the org list.
 	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	activeOrganizationQueryKey: (slug: string) => ["active-org", slug],
 	useActiveOrganizationQuery: () => ({ data: activeOrganizationMock }),
+	useOrganizationListQuery: () => ({ data: organizationListMock }),
 }));
 
 vi.mock("@shared/hooks/router", () => ({
@@ -158,6 +161,7 @@ describe("session alignment with the workspace on screen", () => {
 			members: [{ userId: "u-1", role: "owner" }],
 		};
 		sessionMock = { activeOrganizationId: "org-1", userId: "u-1" };
+		organizationListMock = undefined;
 		startSwitch = undefined;
 		setActiveMock.mockResolvedValue({ data: { id: "org-2" }, error: null });
 	});
@@ -307,31 +311,141 @@ describe("session alignment with the workspace on screen", () => {
 		});
 	});
 
-	it("paints its children without waiting on the precondition or the call", () => {
-		// The alignment is a background correction. Nothing on the page may be
-		// gated on it, so the call is left pending here and the child has to be
-		// on screen already — and the same holds on the path where the
-		// precondition skips the call entirely.
-		setActiveMock.mockReturnValue(new Promise(() => {}));
+	describe("render gate", () => {
+		// Staging, right after sign-in: the page under /app/{slug} mounted while
+		// the session still named another organization, every query that fell
+		// back to the session came back FORBIDDEN, and with `retry: false` the
+		// page stayed broken until a manual reload. The children now wait.
 
-		const { getByText, rerender } = renderProvider();
+		it("holds the children back while the session is being moved", () => {
+			setActiveMock.mockReturnValue(new Promise(() => {}));
 
-		expect(getByText("child")).toBeDefined();
-		expect(setActiveMock).toHaveBeenCalledTimes(1);
+			const { queryByText, getByRole } = renderProvider();
 
-		activeOrganizationMock = {
-			id: "org-3",
-			slug: "example-org",
-			members: [{ userId: "u-other", role: "owner" }],
-		};
-		rerender(
-			<ActiveOrganizationProvider>
-				<div>child</div>
-			</ActiveOrganizationProvider>,
-		);
+			expect(queryByText("child")).toBeNull();
+			expect(
+				getByRole("status", {
+					name: "organizations.organizationSelect.opening",
+				}),
+			).toBeDefined();
+			expect(setActiveMock).toHaveBeenCalledTimes(1);
+		});
 
-		expect(getByText("child")).toBeDefined();
-		expect(setActiveMock).toHaveBeenCalledTimes(1);
+		it("renders the children and refetches every query once the session lands", async () => {
+			const { findByText } = renderProvider();
+
+			expect(await findByText("child")).toBeDefined();
+			expect(queryClientStub.setQueryData).toHaveBeenCalledWith(
+				["session"],
+				expect.any(Function),
+			);
+			expect(queryClientStub.invalidateQueries).toHaveBeenCalledWith();
+		});
+
+		it("renders the children after a refused alignment instead of blocking forever", async () => {
+			setActiveMock.mockResolvedValue({
+				data: null,
+				error: new Error("network"),
+			});
+
+			const { findByText } = renderProvider();
+
+			expect(await findByText("child")).toBeDefined();
+			expect(queryClientStub.invalidateQueries).not.toHaveBeenCalled();
+			expect(setActiveMock).toHaveBeenCalledTimes(1);
+		});
+
+		it("renders the children after a rejected alignment call", async () => {
+			setActiveMock.mockRejectedValue(new Error("offline"));
+
+			const { findByText } = renderProvider();
+
+			expect(await findByText("child")).toBeDefined();
+		});
+
+		it("does not gate when the session already names the organization", () => {
+			sessionMock = { activeOrganizationId: "org-2", userId: "u-1" };
+
+			const { getByText } = renderProvider();
+
+			expect(getByText("child")).toBeDefined();
+		});
+
+		it("does not gate a viewer the workspace excludes", () => {
+			activeOrganizationMock = {
+				id: "org-2",
+				slug: "example-org",
+				members: [{ userId: "u-other", role: "owner" }],
+			};
+			// Even when a stale membership list still names the workspace, the
+			// loaded member list is what decides.
+			organizationListMock = [{ id: "org-2", slug: "example-org" }];
+
+			const { getByText } = renderProvider();
+
+			expect(getByText("child")).toBeDefined();
+			expect(setActiveMock).not.toHaveBeenCalled();
+		});
+
+		it("does not gate a personal page", () => {
+			paramsMock = {};
+			activeOrganizationMock = undefined;
+			organizationListMock = [{ id: "org-2", slug: "example-org" }];
+
+			const { getByText } = renderProvider();
+
+			expect(getByText("child")).toBeDefined();
+		});
+
+		it("gates on the first render from the membership list, before the organization has loaded", () => {
+			// The organization is hydrated BELOW this provider, so on the server
+			// render and the first client render it is not there yet. The
+			// membership list is hydrated ABOVE it, so both renders reach the
+			// same answer from it — no hydration mismatch, no flash of a page
+			// whose queries are about to be refused.
+			activeOrganizationMock = undefined;
+			organizationListMock = [
+				{ id: "org-1", slug: "previous-org" },
+				{ id: "org-2", slug: "example-org" },
+			];
+			setActiveMock.mockReturnValue(new Promise(() => {}));
+
+			const { queryByText } = renderProvider();
+
+			expect(queryByText("child")).toBeNull();
+			expect(setActiveMock).toHaveBeenCalledWith({
+				organizationId: "org-2",
+			});
+		});
+
+		it("does not gate a guest whose memberships do not include the workspace", () => {
+			activeOrganizationMock = undefined;
+			organizationListMock = [{ id: "org-1", slug: "previous-org" }];
+
+			const { getByText } = renderProvider();
+
+			expect(getByText("child")).toBeDefined();
+			expect(setActiveMock).not.toHaveBeenCalled();
+		});
+
+		it("does not gate again after the session has landed, even if a refetch reports the old organization", async () => {
+			const { findByText, rerender, getByText } = renderProvider();
+			await findByText("child");
+
+			activeOrganizationMock = {
+				id: "org-2",
+				slug: "example-org",
+				members: [{ userId: "u-1", role: "owner" }],
+			};
+			rerender(
+				<ActiveOrganizationProvider>
+					<div>child</div>
+				</ActiveOrganizationProvider>,
+			);
+
+			expect(getByText("child")).toBeDefined();
+			expect(setActiveMock).toHaveBeenCalledTimes(1);
+		});
 	});
 
 	it("stays out of the way of a deliberate workspace switch", async () => {

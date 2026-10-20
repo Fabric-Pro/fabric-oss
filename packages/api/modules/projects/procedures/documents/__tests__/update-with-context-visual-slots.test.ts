@@ -30,6 +30,11 @@ const { handlers, mocks } = vi.hoisted(() => {
 
 vi.mock("@repo/database", () => ({
 	DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
+	DocumentGenerationInProgressError: class DocumentGenerationInProgressError extends Error {},
+	// The slot splice is the same for every type; the client-document
+	// Proposal rules are covered in update-with-context-phase2.test.ts.
+	isProposalClientDocument: vi.fn(async () => false),
+	isFeatureEnabled: vi.fn(async () => false),
 	hasProjectAccess: mocks.hasProjectAccess,
 	getDocumentById: mocks.getDocumentById,
 	updateDocument: mocks.updateDocument,

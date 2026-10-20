@@ -7,7 +7,7 @@ vi.mock("@repo/database", () => ({
 	recordAudit: vi.fn(),
 }));
 
-vi.mock("@repo/agent-core/backend", () => ({
+vi.mock("@repo/agent-core/services/seed-default-mcp-configs", () => ({
 	seedDefaultMcpConfigsForTenant: vi.fn(),
 }));
 
@@ -24,7 +24,7 @@ vi.mock("../organization", () => ({
 	updateSeatsInOrganizationSubscription: vi.fn(),
 }));
 
-import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/backend";
+import { seedDefaultMcpConfigsForTenant } from "@repo/agent-core/services/seed-default-mcp-configs";
 import {
 	db,
 	enrollProjectMemberIfNewsletterEnabled,

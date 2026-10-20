@@ -19,7 +19,7 @@
  * does not see two sets of tools.
  */
 import path from "node:path";
-import { CliFailure } from "../../lib/command-boundary.js";
+import { CliFailure, describeError } from "../../lib/command-boundary.js";
 import { getConfigPath } from "../../lib/config.js";
 import { runningInCi } from "../../lib/environment.js";
 import {
@@ -50,6 +50,7 @@ import { installPluginHooks } from "../../lib/memory/hooks.js";
 import { writeProjectMarker } from "../../lib/memory/project-root.js";
 import { createRuntime } from "../../lib/memory/runtime.js";
 import { printOutput } from "../../lib/output.js";
+import { installCodexPlugin } from "../../lib/plugin/codex-install.js";
 import {
 	type GatewayRemoval,
 	removeLocalClaudeGateway,
@@ -63,7 +64,9 @@ import {
 	renderCommandLine,
 	writeClaudeMarketplace,
 } from "../../lib/plugin/register.js";
+import { rulesFolderFor, rulesSyncLines } from "../../lib/plugin/rules-sync.js";
 import { refreshAgentsOverride, renderForProject } from "./render.js";
+import { syncRulesForProject } from "./rules.js";
 
 export interface PluginInitOptions {
 	project: string;
@@ -141,6 +144,36 @@ async function approveClaudePlugin(input: {
 	return installed.kind === "exited" && installed.code === 0
 		? { kind: "approved" }
 		: { kind: "manual", lines: [commands.install] };
+}
+
+/**
+ * Put the project's rules in `.claude/rules/fabric-<id>/` so the first session
+ * already has them. A failure is a line for the person, never a failed setup:
+ * the session hook tries again every time.
+ */
+async function deliverRules(
+	options: PluginInitOptions,
+	root: string,
+): Promise<string[]> {
+	try {
+		const result = await syncRulesForProject({
+			project: options.project,
+			baseUrl: options.origin,
+			org: options.org,
+			root,
+		});
+		const notes = rulesSyncLines(result);
+		return result.written.length + result.unchanged > 0 || notes.length > 0
+			? [
+					`Project rules are delivered to ${rulesFolderFor(options.project)}/ (kept out of commits; refreshed at each session start).`,
+					...notes,
+				]
+			: [];
+	} catch (error) {
+		return [
+			`The project's rules could not be delivered now (${describeError(error)}); the session hook retries at each start.`,
+		];
+	}
 }
 
 function line(text: string): void {
@@ -236,6 +269,7 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 					"cache",
 				),
 				projectId: options.project,
+				origin: options.origin,
 				command,
 			});
 			const registered = await registerClaudePlugin({
@@ -244,6 +278,7 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 				marketplaceDirectory,
 			});
 			excludes.push(CLAUDE_SETTINGS_RELATIVE_PATH);
+			steps.push(...(await deliverRules(options, root)));
 			steps.push(
 				`Registered the ${pluginNameFor(options.project)} plugin in ${path.relative(root, registered.settingsPath) || registered.settingsPath} (marketplace folder ${marketplaceDirectory}); Claude Code builds it from Fabric at the start of each session.`,
 			);
@@ -254,13 +289,24 @@ export async function runPluginInit(options: PluginInitOptions): Promise<void> {
 				pluginDirectory: rendered.directory,
 			});
 			steps.push(
-				`Rendered the ${pluginNameFor(options.project)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}"). Install it from Codex's plugin browser if it is not on yet.`,
+				`Rendered the ${pluginNameFor(options.project)} plugin to ${rendered.directory} and listed it in ${registration.marketplaceFile} (marketplace "${registration.marketplaceName}").`,
 			);
-			if (rendered.alwaysOn !== null) {
-				await refreshAgentsOverride(root, rendered.alwaysOn.text);
+			const installed = await installCodexPlugin({
+				run,
+				projectId: options.project,
+				marketplaceName: registration.marketplaceName,
+				cwd: root,
+			});
+			steps.push(
+				installed.kind === "installed"
+					? `Installed the ${pluginNameFor(options.project)} plugin in Codex.`
+					: `Codex did not install the plugin. Run: ${installed.line ?? "codex plugin add, with the plugin and marketplace names above"}`,
+			);
+			if (rendered.agentsText !== null) {
+				await refreshAgentsOverride(root, rendered.agentsText);
 				excludes.push("AGENTS.override.md");
 				steps.push(
-					"Wrote AGENTS.override.md (kept out of commits): the project's AGENTS.md, then the instructions.",
+					"Wrote AGENTS.override.md (kept out of commits): the project's AGENTS.md, then the instructions and the project's rules.",
 				);
 			}
 		}

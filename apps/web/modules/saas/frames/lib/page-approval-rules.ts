@@ -128,8 +128,9 @@ export function declaresStoreTools(declared: ReadonlySet<string>): boolean {
 /**
  * Whether a page has read outside its own store. Kept by whoever owns the page
  * on screen, not by the host that decides, so a host made again for the same
- * page (the viewer switched organization and back) does not forget it. Another
- * version of the page, or a reload, starts over (`reset`).
+ * page (the viewer switched organization and back) does not forget it. The
+ * bridge retains it until its page shell is remounted or reloaded; editing
+ * content inside a surviving shell does not erase what that page learned.
  */
 export interface PageTaint {
 	isTainted: () => boolean;

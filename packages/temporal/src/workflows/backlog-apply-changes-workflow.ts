@@ -22,12 +22,12 @@ import {
 	startChild,
 	workflowInfo,
 } from "@temporalio/workflow";
-
 import type {
 	applyBacklogChanges as ApplyBacklogChangesFn,
 	ChangeProposal,
 } from "../activities/backlog-context/analyze-context";
 import type { syncWorkItemToPM as SyncWorkItemToPMFn } from "../activities/pm-integration/hierarchy-sync";
+import { redactDatabaseErrorText } from "../activities/pm-integration/pm-sync-user-error";
 import type {
 	clearPmSyncPendingIfLeaked as ClearPmSyncPendingIfLeakedFn,
 	recordPmSyncFailure as RecordPmSyncFailureFn,
@@ -773,7 +773,7 @@ export async function backlogApplyChangesWorkflow(
 								);
 							} else {
 								progress.errors.push(
-									`PM sync failed for ${change.type} "${change.title.to}": ${errorMsg}`,
+									`PM sync failed for ${change.type} "${change.title.to}": ${redactDatabaseErrorText(errorMsg, errorClass)}`,
 								);
 								log.warn("PM sync failed for item", {
 									changeType: change.type,
@@ -786,7 +786,10 @@ export async function backlogApplyChangesWorkflow(
 									itemType,
 									status: "FAILED",
 									errorClass,
-									message: errorMsg,
+									message: redactDatabaseErrorText(
+										errorMsg,
+										errorClass,
+									),
 								});
 							}
 							// Stamp the per-story sync failure either way (roadmap
@@ -1098,7 +1101,10 @@ export async function backlogApplyChangesWorkflow(
 				error: errorMessage,
 			});
 			progress.status = "failed";
-			progress.message = errorMessage;
+			progress.message = redactDatabaseErrorText(
+				errorMessage,
+				unwrapPmSyncError(error).errorClass,
+			);
 		}
 
 		// finalizePendingProposalActivity (existing behaviour preserved),
@@ -1127,8 +1133,14 @@ export async function backlogApplyChangesWorkflow(
 				await finalizeProposal({
 					outcome: "failed",
 					errorClass: classifiedErrorClass,
-					errorMessage: classifiedMessage,
-					rawApplyError: errorMessage,
+					errorMessage: redactDatabaseErrorText(
+						classifiedMessage,
+						classifiedErrorClass,
+					),
+					rawApplyError: redactDatabaseErrorText(
+						errorMessage,
+						classifiedErrorClass,
+					),
 				});
 			} catch (finalizeError) {
 				log.warn(
@@ -1176,7 +1188,10 @@ export async function backlogApplyChangesWorkflow(
 						operationKey: `${workflowInfo().workflowId}-result`,
 						outcome: stepOutcome,
 						operationLabel: "Backlog apply",
-						summary: errorMessage,
+						summary: redactDatabaseErrorText(
+							errorMessage,
+							classifiedErrorClass,
+						),
 					});
 				});
 			} catch (postError) {
@@ -1198,7 +1213,7 @@ export async function backlogApplyChangesWorkflow(
 		}
 
 		throw ApplicationFailure.nonRetryable(
-			errorMessage,
+			redactDatabaseErrorText(errorMessage, classifiedErrorClass),
 			"BACKLOG_APPLY_FAILED",
 		);
 	}

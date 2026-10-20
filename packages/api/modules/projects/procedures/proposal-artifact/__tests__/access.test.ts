@@ -90,6 +90,37 @@ const CLEAR_INPUT = {
 	version: 1,
 };
 
+/** A complete run of the document, as the analysis read shows it. */
+const SHOWN_RUN = {
+	id: "run-1",
+	kind: "GENERATION",
+	status: "COMPLETE",
+	proseHash: null,
+	sourceRunId: null,
+	documentVersion: 1,
+	contextCount: 0,
+	model: null,
+	startedAt: new Date("2026-10-07T09:00:00.000Z"),
+	completedAt: new Date("2026-10-07T09:05:00.000Z"),
+	createdAt: new Date("2026-10-07T09:00:00.000Z"),
+	updatedAt: new Date("2026-10-07T09:05:00.000Z"),
+	findings: [],
+	sourceManifest: null,
+};
+
+/** A stored report whose text a refused caller must never see. */
+const STORED_REPORT = {
+	assessment: "Not ready to send",
+	summary: "The scope leaves the data migration unowned.",
+	scope: [],
+	beforeSending: ["Name an owner for the data migration."],
+	duringDiscovery: [],
+	sources: [],
+	textTruncated: false,
+	plainText: false,
+	text: "INTERNAL REPORT TEXT",
+};
+
 const ANALYSIS_WRITES = [
 	{
 		name: "respondToFinding",
@@ -122,6 +153,7 @@ const PROCEDURES = [
 /** Every query and outside call a procedure makes past the access gate. */
 const READS_AND_WRITES = [
 	mocks.getAnalysisForCurrentContent,
+	mocks.getAnalysisReport,
 	mocks.listResponsesForDocument,
 	mocks.upsertFindingResponse,
 	mocks.clearFindingResponse,
@@ -281,6 +313,12 @@ describe.each(PROCEDURES)("$name", (entry) => {
 		// must be the project's, so a guest's own workspace never selects
 		// anything and the membership asked about is the owning one.
 		mocks.isOrganizationMember.mockResolvedValue(true);
+		// A run is shown, so the analysis read goes on to read its report.
+		mocks.getAnalysisForCurrentContent.mockResolvedValue({
+			run: SHOWN_RUN,
+			isStale: false,
+			newerRun: null,
+		});
 
 		await callAs(entry, USERS.guestEditor).catch(() => undefined);
 
@@ -299,6 +337,21 @@ describe.each(PROCEDURES)("$name", (entry) => {
 		for (const args of reads) {
 			expect(args).toMatchObject({ organizationId: ORG_A });
 		}
+		// Only the analysis read reads a report: the shown run's, in the
+		// owning organization.
+		expect(mocks.getAnalysisReport.mock.calls).toEqual(
+			entry.name === "getAnalysis"
+				? [
+						[
+							{
+								organizationId: ORG_A,
+								documentId: DOC_A,
+								analysisId: "run-1",
+							},
+						],
+					]
+				: [],
+		);
 	});
 
 	it("refuses a member of another organization naming this project's document", async () => {
@@ -428,6 +481,59 @@ describe.each(PROCEDURES)("$name", (entry) => {
 	it("serves the project owner and an org member who edits the project", async () => {
 		await expect(callAs(entry, USERS.owner)).resolves.not.toThrow();
 		await expect(callAs(entry, USERS.editor)).resolves.not.toThrow();
+	});
+});
+
+describe("the Internal Analysis report", () => {
+	beforeEach(() => {
+		mocks.getAnalysisForCurrentContent.mockResolvedValue({
+			run: SHOWN_RUN,
+			isStale: false,
+			newerRun: null,
+		});
+		mocks.getAnalysisReport.mockResolvedValue(STORED_REPORT);
+	});
+
+	it.each([
+		["EDITOR", USERS.guestEditor],
+		["VIEWER", USERS.guestViewer],
+	])(
+		"is never read for a project guest with a %s role, and the refusal carries none of it",
+		async (_role, userId) => {
+			const result = await refusal(
+				call(
+					getProposalAnalysisProcedure,
+					{ projectId: PROJECT_A, documentId: DOC_A },
+					userId,
+				),
+			);
+
+			expect(result).toMatchObject({
+				code: "FORBIDDEN",
+				data: { code: ORGANIZATION_MEMBERSHIP_REQUIRED_CODE },
+			});
+			expect(JSON.stringify(result)).not.toContain(
+				"INTERNAL REPORT TEXT",
+			);
+			nothingRead();
+		},
+	);
+
+	it("is read for a member in the project's owning organization", async () => {
+		await expect(
+			call(
+				getProposalAnalysisProcedure,
+				{ projectId: PROJECT_A, documentId: DOC_A },
+				USERS.memberViewer,
+			),
+		).resolves.toMatchObject({
+			report: { text: "INTERNAL REPORT TEXT", citations: [] },
+		});
+		expect(mocks.getAnalysisReport).toHaveBeenCalledWith({
+			organizationId: ORG_A,
+			documentId: DOC_A,
+			analysisId: "run-1",
+		});
 	});
 });
 

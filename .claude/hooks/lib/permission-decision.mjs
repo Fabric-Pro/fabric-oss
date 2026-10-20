@@ -24,3 +24,23 @@ export function writeAskDecision(reason) {
 		})}\n`,
 	);
 }
+
+/**
+ * Emits a PreToolUse denial as JSON on stdout. Claude Code shows `reason`
+ * to the model so it can act on the refusal. The caller must exit 0 afterward
+ * for the decision JSON to be authoritative.
+ *
+ * @param {string} reason
+ */
+export function writeDenyDecision(reason) {
+	writeFileSync(
+		1,
+		`${JSON.stringify({
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "deny",
+				permissionDecisionReason: reason,
+			},
+		})}\n`,
+	);
+}

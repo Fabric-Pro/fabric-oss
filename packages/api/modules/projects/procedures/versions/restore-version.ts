@@ -1,10 +1,15 @@
 import { ORPCError } from "@orpc/client";
 import {
+	DocumentGenerationInProgressError,
+	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
 	restoreDocumentVersion,
 } from "@repo/database";
+import { contentIdentity } from "@repo/utils/content-identity";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { z } from "zod";
+import { emitDocumentChange } from "../../../../lib/realtime";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -58,6 +63,28 @@ export const restoreVersionProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A Proposal's body belongs to its generation run while the run is
+		// queued or writing (Fizzy #2946): a restore landing
+		// under it would replace the body the run streams into, and the run's
+		// own final save would then overwrite the restore or fail against a
+		// baseline that moved. Refused here, and again by the write itself, so
+		// a run queued between this read and the restore is refused by the
+		// database too. Decided by type, not by the rollout gate: a run keeps
+		// writing when the gate is turned off mid-run.
+		const refuseWhileGenerating = isRunGuardedDocumentType(document.type);
+		const generationInProgress = () =>
+			new ORPCError("CONFLICT", {
+				message:
+					"A generation run is writing this document; try again when it finishes.",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			});
+		if (
+			refuseWhileGenerating &&
+			(document.status === "QUEUED" || document.status === "GENERATING")
+		) {
+			throw generationInProgress();
+		}
+
 		// Restore version
 		// TENANT ISOLATION: Pass tenant context for proper tenant filtering
 		const restoredDocument = await restoreDocumentVersion(
@@ -68,7 +95,45 @@ export const restoreVersionProcedure = tenantProtectedProcedure
 				userId: user.id,
 				organizationId,
 			},
-		);
+			refuseWhileGenerating ? { refuseWhileGenerating: true } : {},
+		).catch((error: unknown) => {
+			// A run queued between the read above and the restore's write.
+			if (error instanceof DocumentGenerationInProgressError) {
+				throw generationInProgress();
+			}
+			// Reachable only for a guarded restore: the write is conditioned on
+			// the version it read, and someone saved in between. Nothing was
+			// written.
+			if (error instanceof DocumentVersionConflictError) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"The document changed while the version was being restored, so nothing was restored. Review the latest version and try again.",
+				});
+			}
+			throw error;
+		});
 
-		return { document: restoredDocument };
+		// Open editors refetch on `document_change`, so a collaborative room
+		// holding the body this restore replaced brings itself to the
+		// restored one instead of saving the older body back (Fizzy #2946).
+		// Never throws.
+		await emitDocumentChange({
+			projectId: input.projectId,
+			documentId: input.documentId,
+			action: "updated",
+			userId: user.id,
+			userName: user.name || "Anonymous",
+			documentType: restoredDocument.type,
+			documentTitle: restoredDocument.title,
+		});
+
+		return {
+			document: {
+				...restoredDocument,
+				// The restored body's identity, beside its `version`: the base
+				// the next save from it names, as `projects.documents.update`
+				// returns it. It shadows the embed-owned `contentHash` column.
+				contentHash: contentIdentity(restoredDocument.content),
+			},
+		};
 	});

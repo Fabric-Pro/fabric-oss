@@ -223,6 +223,10 @@ describe("updateDocumentProcedure mention dispatch", () => {
 			id: "doc_1",
 			title: "PRD",
 			content: "",
+			// The saved body's identity (SHA-256 of the empty body), returned
+			// beside the version as the base of the next save (Fizzy #2946).
+			contentHash:
+				"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		});
 	});
 

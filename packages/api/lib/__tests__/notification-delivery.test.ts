@@ -24,7 +24,7 @@ const { getDeliveryPrefs, start, getClient } = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({
 	getDeliveryPreferences: getDeliveryPrefs,
 }));
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal/client", () => ({
 	getTemporalClient: getClient,
 }));
 vi.mock("./temporal-correlation", () => ({

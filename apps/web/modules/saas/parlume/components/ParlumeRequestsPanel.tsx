@@ -52,7 +52,6 @@ export function ParlumeRequestsPanel({
 }) {
 	const items = history.items.filter((request) => matchesKind(request, kind));
 	const filtered = sessionFilter !== ALL_SESSIONS || kind !== "all";
-	const now = Date.now();
 
 	return (
 		<div>
@@ -124,7 +123,6 @@ export function ParlumeRequestsPanel({
 						<ParlumeRequestItem
 							key={request.id}
 							request={request}
-							now={now}
 						/>
 					))}
 				</ol>

@@ -10,6 +10,7 @@ import {
 	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -355,6 +356,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				}.`,
 			};
 		} catch (error) {
+			console.error("[backlog] retry-failed-proposal failed:", error);
 			// Workflow start failed AFTER we flipped the row to PENDING.
 			// Revert the row back to FAILED so the inbox + banner still
 			// surface it. Best-effort — if the revert fails the inbox will
@@ -365,7 +367,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					data: {
 						status: "FAILED",
 						applyError: (error instanceof Error
-							? error.message
+							? describeSyncErrorForUser(error)
 							: "retry-workflow-start failed"
 						).slice(0, 4000),
 						errorClass: "TemporalScheduleFailed",
@@ -379,7 +381,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					error instanceof Error
-						? error.message
+						? describeSyncErrorForUser(error)
 						: "Failed to start retry workflow",
 			});
 		}

@@ -52,6 +52,13 @@ const outDir = path.join(repoRoot, "apps/web/public/images/docs/qa");
  * the published contract and should not change because a mock was reordered.
  */
 const SHOTS = {
+	"coding-instructions": [
+		["#shot-browse", "coding-instructions-browse.png"],
+		["#shot-upload", "coding-instructions-upload.png"],
+		["#shot-connect", "coding-instructions-connect.png"],
+		["#shot-memory", "coding-instructions-memory.png"],
+		["#shot-edit", "coding-instructions-edit.png"],
+	],
 	"pr-review": [
 		["#shot-panel", "pr-review-panel.png"],
 		["#shot-sheet", "pr-review-diff.png"],

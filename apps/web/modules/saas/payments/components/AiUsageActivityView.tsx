@@ -93,7 +93,13 @@ import {
 	XAxis,
 	YAxis,
 } from "recharts";
+import {
+	AI_USAGE_ORIGIN_CSV_HEADERS,
+	aiUsageOriginCsvFields,
+	type AiUsageOrigin,
+} from "../lib/ai-usage-origin";
 import { AiUsageLimitsCard } from "./AiUsageLimitsCard";
+import { AiUsageOriginDetails } from "./AiUsageOriginDetails";
 import { ChatgptPlanUsageBreakdown } from "./ChatgptPlanUsageBreakdown";
 import { PlanCoveredEstimate } from "./PlanCoveredEstimate";
 
@@ -317,7 +323,7 @@ function formatTaskType(value: string | null): string {
 
 type DateRange = { from: Date | undefined; to: Date | undefined };
 
-type ActivityRow = {
+type ActivityRow = AiUsageOrigin & {
 	id: string;
 	createdAt: string | Date;
 	userId: string | null;
@@ -1809,6 +1815,9 @@ export function AiUsageActivityView({
 									<DetailRow
 										label="Project"
 										value={selectedRow.projectName ?? "—"}
+									/>
+									<AiUsageOriginDetails
+										origin={selectedRow}
 									/>
 									{selectedRow.jobType ? (
 										<DetailRow
@@ -3852,6 +3861,7 @@ async function exportCsv(
 		`timestamp_${tzLabel}`,
 		"taskType",
 		"jobType",
+		...AI_USAGE_ORIGIN_CSV_HEADERS,
 		"provider",
 		"model",
 		"project",
@@ -3879,26 +3889,7 @@ async function exportCsv(
 		const page = (await orpcClient.payments.listAiActivity(
 			exportInput,
 		)) as {
-			rows: Array<{
-				id: string;
-				createdAt: string | Date;
-				provider: string;
-				modelCanonicalName: string | null;
-				providerModelId: string;
-				taskType: string | null;
-				jobType: string | null;
-				projectName: string | null;
-				userId: string | null;
-				userName: string | null;
-				userEmail: string | null;
-				inputTokens: number;
-				outputTokens: number;
-				totalTokens: number;
-				latencyMs: number;
-				costMicroUsd: number;
-				success: boolean;
-				errorMessage: string | null;
-			}>;
+			rows: ActivityRow[];
 			nextCursor: string | null;
 		};
 		for (const r of page.rows) {
@@ -3914,6 +3905,7 @@ async function exportCsv(
 				created,
 				r.taskType ?? "",
 				r.jobType ?? "",
+				...aiUsageOriginCsvFields(r),
 				r.provider,
 				r.modelCanonicalName ?? r.providerModelId,
 				r.projectName ?? "",

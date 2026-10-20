@@ -14,8 +14,8 @@
  * stashes or checks out a branch. git's own words are never returned: stderr
  * is classified by shape only.
  */
-import { lstat, readFile } from "node:fs/promises";
-import path from "node:path";
+
+import { realpath } from "node:fs/promises";
 import { COMMIT_SHA, isBranchLiteral, isRemoteName } from "./git-literals.js";
 import {
 	type GitDeadline,
@@ -23,6 +23,7 @@ import {
 	lines,
 	runGit,
 } from "./git-run.js";
+import { readFileSafely } from "./safe-write.js";
 
 export type FetchFailure =
 	| "auth"
@@ -409,35 +410,38 @@ async function restorableBytes(
 	entry: { mode: string },
 	indexed: string | null | undefined,
 	fileMode: boolean,
-): Promise<Buffer | null> {
+): Promise<RestorableFile | null> {
 	if (indexed === null || indexed === undefined || entry.mode === "120000") {
 		return null;
 	}
-	const absolute = path.join(root, file);
-	const info = await lstat(absolute).catch(() => null);
-	if (info === null || !info.isFile() || info.size > MAX_COMPARED_BYTES) {
+	const read = await readFileSafely(root, file, {
+		maxBytes: MAX_COMPARED_BYTES,
+	}).catch(() => null);
+	if (read === null) {
 		return null;
 	}
-	const executable = (info.mode & 0o111) !== 0;
+	const executable = (read.mode & 0o111) !== 0;
 	if (fileMode && executable !== (entry.mode === "100755")) {
 		return null;
 	}
-	const local = await readFile(absolute).catch(() => null);
-	if (local === null) {
-		return null;
-	}
+	const local = Buffer.from(read.bytes);
 	const mine = local.toString("latin1");
 	if (mine.includes("\0") || indexed.includes("\0")) {
 		return null;
 	}
 	return mine.replace(CRLF, "\n") === indexed.replace(CRLF, "\n")
-		? local
+		? { bytes: local, mode: read.mode }
 		: null;
+}
+
+interface RestorableFile {
+	bytes: Buffer;
+	mode: number;
 }
 
 interface Judged {
 	real: string[];
-	restorable: Map<string, Buffer>;
+	restorable: Map<string, RestorableFile>;
 }
 
 /**
@@ -583,7 +587,7 @@ async function realBlockers(
 		return blobs === undefined ? null : blobs;
 	}
 	const real: string[] = [];
-	const restorable = new Map<string, Buffer>();
+	const restorable = new Map<string, RestorableFile>();
 	for (const file of files) {
 		const entry = entries.get(file);
 		const bytes =
@@ -611,11 +615,17 @@ const RESTORE_AND_MERGE_FLOOR_MS = 1_500;
 /** The files still hold the bytes that were judged, checked again just before they are overwritten. */
 async function stillUntouched(
 	root: string,
-	restorable: ReadonlyMap<string, Buffer>,
+	restorable: ReadonlyMap<string, RestorableFile>,
 ): Promise<boolean> {
-	for (const [file, bytes] of restorable) {
-		const now = await readFile(path.join(root, file)).catch(() => null);
-		if (now === null || !now.equals(bytes)) {
+	for (const [file, previous] of restorable) {
+		const now = await readFileSafely(root, file, {
+			maxBytes: MAX_COMPARED_BYTES,
+		}).catch(() => null);
+		if (
+			now === null ||
+			now.mode !== previous.mode ||
+			!Buffer.from(now.bytes).equals(previous.bytes)
+		) {
 			return false;
 		}
 	}
@@ -653,7 +663,14 @@ export async function fastForwardTo(
 	) {
 		return first;
 	}
-	const judged = await realBlockers(root, first.files, deadline);
+	// Git may spell a Windows root with forward slashes or reach a checkout
+	// through an alias. Guarded reads require a canonical native root, and
+	// checkout must use the same root those reads validated.
+	const restoreRoot = await realpath(root).catch(() => null);
+	if (restoreRoot === null) {
+		return first;
+	}
+	const judged = await realBlockers(restoreRoot, first.files, deadline);
 	if (judged === "ran-out-of-time") {
 		return { kind: "timed-out" };
 	}
@@ -663,16 +680,17 @@ export async function fastForwardTo(
 	if (judged.real.length > 0) {
 		return { kind: "failed", reason: "local-changes", files: judged.real };
 	}
-	// Close the gap between judging the bytes and overwriting them, and do not
-	// start what a deadline would cut off half way.
+	// Recheck bytes, type and mode immediately before checkout. An editor can
+	// still change the path after this check while Git starts; Git offers no
+	// descriptor-bound checkout. Do not start a restore the deadline would cut off.
 	if (
 		deadline - Date.now() < RESTORE_AND_MERGE_FLOOR_MS ||
-		!(await stillUntouched(root, judged.restorable))
+		!(await stillUntouched(restoreRoot, judged.restorable))
 	) {
 		return first;
 	}
 	const restored = await runGit(
-		root,
+		restoreRoot,
 		["--literal-pathspecs", "checkout", "--", ...first.files],
 		deadline,
 		{ write: true, unattended: true },
@@ -680,5 +698,5 @@ export async function fastForwardTo(
 	if (restored.kind !== "exited" || restored.code !== 0) {
 		return first;
 	}
-	return mergeOnce(root, sha, deadline);
+	return mergeOnce(restoreRoot, sha, deadline);
 }

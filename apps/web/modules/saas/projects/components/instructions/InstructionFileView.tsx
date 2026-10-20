@@ -42,6 +42,7 @@ import {
 	extraFrontmatterFields,
 	InstructionFileHeader,
 } from "./InstructionFileHeader";
+import { InstructionFileHistory } from "./InstructionFileHistory";
 import { InstructionFileToolbar } from "./InstructionFileToolbar";
 import { InstructionMarkdown } from "./InstructionMarkdown";
 import type { RepositoryLinks } from "./instruction-links";
@@ -718,6 +719,25 @@ export function InstructionFileView({
 						) : (
 							editControl
 						)
+					) : null
+				}
+				history={
+					nativeBase ? (
+						<InstructionFileHistory
+							projectId={projectId}
+							path={f.path}
+							canRestore={canCommit && repositoryTarget !== null}
+							blockedReason={
+								pausedReason ??
+								(hasDraft
+									? t("historyDraftBlocked")
+									: busy
+										? t("historyChangePending")
+										: null)
+							}
+							onChanged={onChanged}
+							onCommitted={onCommitted}
+						/>
 					) : null
 				}
 				menu={

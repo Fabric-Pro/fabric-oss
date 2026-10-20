@@ -10,6 +10,9 @@
  * indistinguishable from working sync, which is how #1746 came to be marked
  * done with no engine behind it.
  */
+
+import { logger } from "@repo/logs";
+import { describeSyncErrorForUser } from "./pm-sync-user-error";
 export class NotImplementedError extends Error {}
 
 export type AttachmentAdapter = {
@@ -221,9 +224,10 @@ export async function reconcileStoryAttachments(input: {
 				mimeType: r.mimeType,
 			});
 		} catch (err) {
+			logger.warn("[PM Attachments] Reconcile failed", { error: err });
 			result.failures.push({
 				filename: r.filename,
-				message: err instanceof Error ? err.message : String(err),
+				message: describeSyncErrorForUser(err),
 				kind: "upload",
 			});
 			continue;
@@ -236,11 +240,12 @@ export async function reconcileStoryAttachments(input: {
 			});
 			result.links.push({ filename: r.filename, path: uploaded.path });
 		} catch (err) {
+			logger.warn("[PM Attachments] Reconcile failed", { error: err });
 			result.failures.push({
 				filename: r.filename,
-				message: `uploaded to PM but failed to persist locally: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
+				message: `uploaded to PM but failed to persist locally: ${describeSyncErrorForUser(
+					err,
+				)}`,
 				kind: "persist",
 			});
 		}
@@ -334,11 +339,12 @@ export async function reconcilePulledStoryAttachments(input: {
 				filename: candidate.filename,
 			});
 		} catch (err) {
+			logger.warn("[PM Attachments] Reconcile failed", { error: err });
 			// AC-4's rule applied to the pull direction: one bad file must not
 			// cost the user the others.
 			result.failures.push({
 				filename: candidate.filename,
-				message: err instanceof Error ? err.message : String(err),
+				message: describeSyncErrorForUser(err),
 			});
 			continue;
 		}
@@ -429,15 +435,16 @@ export async function reconcilePulledStoryAttachments(input: {
 				externalAttachmentId: candidate.path,
 			});
 		} catch (err) {
+			logger.warn("[PM Attachments] Reconcile failed", { error: err });
 			// Mirrors the push half's persist guard. Without it a single
 			// storage hiccup throws out of the activity AFTER the story has
 			// already been updated, so the user sees a failed pull for one
 			// that actually landed — and loses the other files with it.
 			result.failures.push({
 				filename: candidate.filename,
-				message: `downloaded from GitLab but could not be saved: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
+				message: `downloaded from GitLab but could not be saved: ${describeSyncErrorForUser(
+					err,
+				)}`,
 			});
 			continue;
 		}

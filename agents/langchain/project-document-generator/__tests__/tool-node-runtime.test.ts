@@ -18,6 +18,7 @@
  */
 
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { agentUsageConfigFromInput } from "@repo/agent-core/services/usage-logging";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolNode } from "../nodes/tool-node";
 import type { AgentState } from "../state";
@@ -101,6 +102,31 @@ function mockFetchOk(formatted = "Found: auth notes") {
 describe("toolNode — tools read state/token from ToolRuntime, not a closure", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
+	});
+
+	it("does not use the logger-only token to authenticate graph tools", async () => {
+		const fetchMock = mockFetchOk();
+		vi.stubGlobal("fetch", fetchMock);
+		await toolNode(
+			createMockState({
+				messages: [searchKnowledgeCall("call-example")],
+				projectId: "project-example",
+				userId: "user-example",
+			}),
+			{
+				configurable: agentUsageConfigFromInput({
+					ai_token: "usage-token-example",
+					ai_model: "model-example",
+					ai_provider: "CUSTOM",
+				}),
+			},
+		);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(
+			(fetchMock.mock.calls[0][1].headers as Record<string, string>)[
+				"X-AI-Token"
+			],
+		).toBeUndefined();
 	});
 
 	it("reads projectId from this invocation's state and the AI token from this invocation's config", async () => {

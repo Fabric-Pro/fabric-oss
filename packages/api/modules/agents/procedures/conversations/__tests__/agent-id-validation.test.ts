@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
 	createAgentConversation: vi.fn(),
 	getRegisteredAgentByAgentId: vi.fn(),
 	resolveOrganizationId: vi.fn(),
+	verifyOrganizationMembership: vi.fn(),
 	captured: {
 		createConversation: null as
 			| ((args: { context: any; input: any }) => Promise<any>)
@@ -58,6 +59,10 @@ vi.mock("@repo/database", () => ({
 	getProviderMetadata: vi.fn(),
 	isDirectProvider: vi.fn(),
 	isGatewayProvider: vi.fn(),
+}));
+
+vi.mock("../../../../organizations/lib/membership", () => ({
+	verifyOrganizationMembership: mocks.verifyOrganizationMembership,
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -105,12 +110,14 @@ beforeEach(() => {
 	mocks.createAgentConversation.mockReset();
 	mocks.getRegisteredAgentByAgentId.mockReset();
 	mocks.resolveOrganizationId.mockReset();
+	mocks.verifyOrganizationMembership.mockReset();
 	// Default-active stub so a future test that forgets `mockResolvedValueOnce`
 	// doesn't silently land in the unknown-agent path (which would then mask
 	// the real intent of that test). Each test below uses `mockResolvedValueOnce`
 	// to override per-case.
 	mocks.getRegisteredAgentByAgentId.mockResolvedValue({
 		agentId: "default-active",
+		scope: "SYSTEM",
 		status: "ACTIVE",
 		name: "Default Active",
 		displayName: "Default Active",
@@ -136,6 +143,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		// that PR #1233 wired into Step 6.
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "fabric-workspace-assistant",
+			scope: "SYSTEM",
 			status: "ACTIVE",
 			name: "fabric_workspace_assistant",
 			displayName: "Fabric",
@@ -178,6 +186,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		// rather than silently 400ing stale clients.
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "fabric-ai",
+			scope: "SYSTEM",
 			status: "ACTIVE",
 			name: "fabric_ai",
 			displayName: "Fabric",
@@ -209,6 +218,7 @@ describe("createConversation handler — agentId validation gate", () => {
 	it("delegates to createAgentConversation when agent is registered and ACTIVE", async () => {
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "backlog_updater",
+			scope: "SYSTEM",
 			status: "ACTIVE",
 			name: "Backlog Updater",
 			displayName: "Backlog Updater",
@@ -296,6 +306,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "fabric-workspace-assistant",
+			scope: "SYSTEM",
 			status: "INACTIVE",
 			name: "Fabric",
 			displayName: "Fabric",
@@ -331,6 +342,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "broken_agent",
+			scope: "SYSTEM",
 			status: "ERROR",
 			name: "Broken",
 			displayName: "Broken",
@@ -364,6 +376,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "fabric-workspace-assistant",
+			scope: "SYSTEM",
 			status: "ERROR",
 			name: "Fabric",
 			displayName: "Fabric",
@@ -397,6 +410,7 @@ describe("createConversation handler — agentId validation gate", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "fabric-workspace-assistant",
+			scope: "SYSTEM",
 			status: "ACTIVE",
 			name: "Fabric",
 			displayName: "Fabric",
@@ -421,14 +435,11 @@ describe("createConversation handler — agentId validation gate", () => {
 		warnSpy.mockRestore();
 	});
 
-	it("runs agentId validation BEFORE resolveOrganizationId (ordering)", async () => {
-		// The handler should reject bad agentIds before doing any other work,
-		// both because agentId is a context-free input field and because a bad
-		// agentId is a cheap input error that should short-circuit early.
-		// `invocationCallOrder` is Vitest's monotonic global counter — strictly
-		// less means "called earlier".
+	it("resolves organization context BEFORE agentId validation (ordering)", async () => {
+		// Scope authorization uses the resolved organization context.
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
 			agentId: "task_planner",
+			scope: "SYSTEM",
 			status: "ACTIVE",
 			name: "Task Planner",
 			displayName: "Task Planner",
@@ -458,8 +469,8 @@ describe("createConversation handler — agentId validation gate", () => {
 			mocks.resolveOrganizationId.mock.invocationCallOrder[0]!;
 		const createOrder =
 			mocks.createAgentConversation.mock.invocationCallOrder[0]!;
-		expect(lookupOrder).toBeLessThan(resolveOrder);
-		expect(resolveOrder).toBeLessThan(createOrder);
+		expect(resolveOrder).toBeLessThan(lookupOrder);
+		expect(lookupOrder).toBeLessThan(createOrder);
 	});
 
 	it("rejects empty-string agentId at the handler level (defense in depth)", async () => {
@@ -483,9 +494,8 @@ describe("createConversation handler — agentId validation gate", () => {
 		).rejects.toThrow(ORPCError);
 
 		expect(mocks.createAgentConversation).not.toHaveBeenCalled();
-		// resolveOrganizationId must not run either — bad agentId short-circuits
-		// before any context-bound work happens.
-		expect(mocks.resolveOrganizationId).not.toHaveBeenCalled();
+		// Organization context is resolved before the catalog scope check.
+		expect(mocks.resolveOrganizationId).toHaveBeenCalledTimes(1);
 	});
 
 	it("rejects whitespace-only agentId at the handler level (defense in depth)", async () => {
@@ -511,16 +521,11 @@ describe("createConversation handler — agentId validation gate", () => {
 		).rejects.toThrow(ORPCError);
 
 		expect(mocks.createAgentConversation).not.toHaveBeenCalled();
-		expect(mocks.resolveOrganizationId).not.toHaveBeenCalled();
+		expect(mocks.resolveOrganizationId).toHaveBeenCalledTimes(1);
 	});
 
-	it("does NOT call resolveOrganizationId when agentId is rejected", async () => {
-		// Companion to the empty-string case: this verifies the
-		// short-circuit holds for the more common "typo'd agentId" path too.
-		// After RV1 (reordering), agentId validation is the FIRST async work
-		// in the handler — when it throws, nothing downstream runs. This is a
-		// mini-regression test against a future refactor that puts
-		// resolveOrganizationId back above the catalog lookup.
+	it("resolves organization context even when agentId is unknown", async () => {
+		// Unknown ids still fail before the conversation write.
 		mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce(null);
 
 		await expect(
@@ -533,7 +538,116 @@ describe("createConversation handler — agentId validation gate", () => {
 			}),
 		).rejects.toThrow(ORPCError);
 
-		expect(mocks.resolveOrganizationId).not.toHaveBeenCalled();
+		expect(mocks.resolveOrganizationId).toHaveBeenCalledTimes(1);
 		expect(mocks.createAgentConversation).not.toHaveBeenCalled();
 	});
+});
+
+describe("createConversation tenant scope", () => {
+	const agentId = "example-agent";
+	const input = { agentId, organizationId: "example-org" };
+	const invoke = () => {
+		const handler = mocks.captured.createConversation;
+		if (!handler) {
+			throw new Error("createConversation handler was not captured");
+		}
+		return handler({
+			context: {
+				user: { id: USER_ID },
+				session: { activeOrganizationId: "example-org" },
+			},
+			input,
+		});
+	};
+
+	beforeEach(() => {
+		mocks.resolveOrganizationId.mockReturnValue("example-org");
+		mocks.createAgentConversation.mockResolvedValue({
+			id: CONV_ID,
+			agentId,
+			title: null,
+			createdAt: new Date(),
+		});
+	});
+	afterEach(() => vi.restoreAllMocks());
+	it.each([
+		[
+			"another organization's agent",
+			{ scope: "ORGANIZATION", organizationId: "other-org" },
+			true,
+		],
+		[
+			"organization agent without membership",
+			{ scope: "ORGANIZATION", organizationId: "example-org" },
+			false,
+		],
+		[
+			"another user's agent",
+			{
+				scope: "USER",
+				userId: "other-user",
+				organizationId: "example-org",
+			},
+			true,
+		],
+		[
+			"own personal agent in organization context",
+			{ scope: "USER", userId: USER_ID, organizationId: null },
+			true,
+		],
+	])(
+		"hides %s as an unknown id without writing or warning",
+		async (_name, agent, member) => {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce(null);
+			const unknown = await invoke().catch((error: unknown) => error);
+			expect(unknown).toBeInstanceOf(ORPCError);
+			expect(unknown).toMatchObject({
+				code: "BAD_REQUEST",
+				message: `Unknown agentId: "${agentId}". Agent must be registered in the catalog before a conversation can be created.`,
+			});
+			mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
+				agentId,
+				status: "ERROR",
+				...agent,
+			});
+			mocks.verifyOrganizationMembership.mockResolvedValue(
+				member ? { role: "member" } : null,
+			);
+			await expect(invoke()).rejects.toMatchObject({
+				code: unknown.code,
+				message: unknown.message,
+			});
+			expect(mocks.createAgentConversation).not.toHaveBeenCalled();
+			expect(warn).not.toHaveBeenCalled();
+		},
+	);
+	it.each([
+		{ scope: "SYSTEM", userId: null, organizationId: null },
+		{ scope: "ORGANIZATION", userId: null, organizationId: "example-org" },
+		{ scope: "USER", userId: USER_ID, organizationId: "example-org" },
+	])(
+		"allows a visible $scope agent with its exact catalog id",
+		async (agent) => {
+			mocks.getRegisteredAgentByAgentId.mockResolvedValueOnce({
+				agentId,
+				status: "ACTIVE",
+				...agent,
+			});
+			mocks.verifyOrganizationMembership.mockResolvedValue({
+				role: "member",
+			});
+			await expect(invoke()).resolves.toMatchObject({ agentId });
+			expect(
+				mocks.getRegisteredAgentByAgentId,
+			).toHaveBeenCalledExactlyOnceWith(agentId);
+			expect(mocks.createAgentConversation).toHaveBeenCalledWith(
+				expect.objectContaining({
+					agentId,
+					userId: USER_ID,
+					organizationId: "example-org",
+				}),
+			);
+		},
+	);
 });

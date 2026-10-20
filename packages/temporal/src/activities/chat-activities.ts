@@ -83,7 +83,12 @@ export async function streamAndSaveMessage(
 		// record a feature key against a call that never happens.
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "CHAT", modelOverride },
-			{ userId, organizationId, featureKey: "chat-agent" },
+			{
+				userId,
+				organizationId,
+				featureKey: "chat-agent",
+				conversationId: chatId,
+			},
 		);
 
 		console.log(

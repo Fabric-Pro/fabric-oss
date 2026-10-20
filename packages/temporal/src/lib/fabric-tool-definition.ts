@@ -191,6 +191,38 @@ export function toolAccess(tool: {
 	return tool.annotations?.readOnlyHint === true ? "READ" : "WRITE";
 }
 
+/**
+ * A tool's input schema as Fabric's chat shows it to its model: without
+ * `dryRun`. In chat the approval card is the draft the person decides on, so a
+ * model that drafts with `dryRun` first and asks in prose loses the draft
+ * between turns and has nothing to save when the person says yes. The chat
+ * engines make the real call, and the call that needs a yes comes back as the
+ * card. Clients that see `dryRun` (external MCP clients) are served the full
+ * schema.
+ */
+export function withoutDryRun<S extends Record<string, unknown>>(
+	inputSchema: S,
+): S {
+	const { properties } = inputSchema;
+	if (typeof properties !== "object" || properties === null) {
+		return inputSchema;
+	}
+	return {
+		...inputSchema,
+		properties: Object.fromEntries(
+			Object.entries(properties).filter(([name]) => name !== "dryRun"),
+		),
+	};
+}
+
+/** The sentence a tool's description uses to offer `dryRun`. */
+const DRY_RUN_NOTE = /\s*`dryRun` writes nothing\./;
+
+/** A tool's description without its offer of `dryRun`; see `withoutDryRun`. */
+export function withoutDryRunNote(description: string): string {
+	return description.replace(DRY_RUN_NOTE, "");
+}
+
 /** Whether the tool takes `dryRun`: the call it can be tried with, which writes nothing. */
 export function supportsDryRun(tool: {
 	inputSchema?: { properties?: Record<string, unknown> };

@@ -1,6 +1,8 @@
 "use client";
 
+import { getBaseUrl } from "@repo/utils/base-url";
 import { cn } from "@ui/lib";
+import { defaultRehypePlugins, type StreamdownProps } from "streamdown";
 import { Mermaid } from "../../modules/marketing/blog/components/Mermaid";
 import { CodeBlock, CodeBlockCopyButton, InlineCode } from "./code-block";
 
@@ -316,4 +318,16 @@ export const chatMarkdownComponents = {
 
 export function getChatMarkdownClassName(className?: string) {
 	return cn(CHAT_MARKDOWN_CLASSNAME, className);
+}
+
+export function getChatMarkdownRehypePlugins() {
+	// Chat treats raw HTML as text; dedicated viewers own sandboxed HTML.
+	return [defaultRehypePlugins.harden, defaultRehypePlugins.katex].map<
+		NonNullable<StreamdownProps["rehypePlugins"]>[number]
+	>((plugin) => {
+		if (plugin !== defaultRehypePlugins.harden || !Array.isArray(plugin)) {
+			return plugin;
+		}
+		return [plugin[0], { ...plugin[1], defaultOrigin: getBaseUrl() }];
+	});
 }

@@ -242,6 +242,13 @@ describe("routeActionItemsToExistingTickets", () => {
 			changes: [createChange()],
 		});
 
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
+		expect(mockGetDecisionModel).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
 		expect(result.enriched).toBe(1);
 		const change = result.changes[0];
 		expect(change.action).toBe("update");

@@ -1,15 +1,21 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ownMcpConfigIds, executeAgentTurn, getBoundPromptForAgent } =
-	vi.hoisted(() => ({
-		ownMcpConfigIds: vi.fn(),
-		executeAgentTurn: vi.fn(),
-		getBoundPromptForAgent: vi.fn(),
-	}));
+const {
+	ownMcpConfigIds,
+	executeAgentTurn,
+	getBoundPromptForAgent,
+	getWorkflowById,
+} = vi.hoisted(() => ({
+	ownMcpConfigIds: vi.fn(),
+	executeAgentTurn: vi.fn(),
+	getBoundPromptForAgent: vi.fn(),
+	getWorkflowById: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
 	ownMcpConfigIds,
 	getBoundPromptForAgent,
+	getWorkflowById,
 	BUILT_IN_TO_FABRIC_TOOLS: {
 		"project-context": ["project_rag_query"],
 		"create-frames": ["fabric_create_frame"],
@@ -31,6 +37,7 @@ import {
 	AGENT_TASK_MAX_DOCUMENT_CHARS,
 	buildUpstreamDataBlock,
 	buildUserMessage,
+	describeRunTime,
 	executeAgentTaskStep,
 	extractHtmlDocument,
 	extractMarkdownDocument,
@@ -81,6 +88,7 @@ beforeEach(() => {
 		{ id: "mcp-1", enabled: true, displayName: null, mcpServer: null },
 	]);
 	getBoundPromptForAgent.mockResolvedValue(null);
+	getWorkflowById.mockResolvedValue({ nodes: [] });
 	agentReplies(`Here you go.\n\`\`\`html\n${HTML_PAGE}\n\`\`\``);
 });
 
@@ -111,6 +119,8 @@ describe("executeAgentTaskStep - agent turn input", () => {
 			featureKey: "scheduled-agent-task",
 			maxIterations: 4,
 			executionId: "exec-1",
+			workflowExecutionId: "exec-1",
+			jobType: "workflow-builder",
 		});
 		expect(input.systemPrompt).toContain("You are a delivery analyst.");
 		expect(input.systemPrompt).toContain("```html fenced block");
@@ -256,8 +266,111 @@ describe("executeAgentTaskStep - upstream data in the agent turn", () => {
 		await executeAgentTaskStep(params({ inputs: {} }));
 
 		const { systemPrompt, userMessage } = executeAgentTurn.mock.calls[0][0];
-		expect(userMessage).toBe("Summarise the open work items.");
+		expect(
+			userMessage.startsWith(
+				"Summarise the open work items.\n\nRun time:",
+			),
+		).toBe(true);
+		expect(userMessage).not.toContain("upstream-data");
 		expect(systemPrompt).not.toContain("upstream-data");
+	});
+});
+
+describe("describeRunTime", () => {
+	const moment = new Date("2026-10-16T01:24:13.000Z");
+
+	it("writes the time on the schedule's clock, not UTC's", () => {
+		const text = describeRunTime(moment, "Europe/London");
+
+		expect(text).toContain("02:24");
+		expect(text).toContain("16 October 2026");
+		expect(text).toContain("time zone Europe/London");
+		expect(text).toContain("UTC 2026-10-16T01:24:13.000Z");
+	});
+
+	it("reads the same moment differently in another zone", () => {
+		const text = describeRunTime(moment, "Asia/Tokyo");
+
+		expect(text).toContain("10:24");
+		expect(text).toContain("time zone Asia/Tokyo");
+	});
+});
+
+describe("executeAgentTaskStep - the run's clock", () => {
+	const scheduled = (timezone?: string) => ({
+		nodes: [
+			{
+				id: "trigger",
+				type: "trigger",
+				data: {
+					config: {
+						triggerType: "Schedule",
+						scheduleCron: "0 9 * * 1",
+						...(timezone ? { scheduleTimezone: timezone } : {}),
+					},
+				},
+			},
+		],
+	});
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-16T01:24:13.000Z"));
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("tells the agent the current time in the schedule's time zone", async () => {
+		getWorkflowById.mockResolvedValue(scheduled("Europe/London"));
+
+		await executeAgentTaskStep(params());
+
+		const { userMessage } = executeAgentTurn.mock.calls[0][0];
+		expect(userMessage).toContain("02:24");
+		expect(userMessage).toContain("time zone Europe/London");
+		expect(getWorkflowById).toHaveBeenCalledWith("wf-1", "user-1", "org-1");
+	});
+
+	it("uses UTC when the schedule names no time zone", async () => {
+		getWorkflowById.mockResolvedValue(scheduled());
+
+		await executeAgentTaskStep(params());
+
+		const { userMessage } = executeAgentTurn.mock.calls[0][0];
+		expect(userMessage).toContain("01:24");
+		expect(userMessage).toContain("time zone UTC");
+	});
+
+	it("uses UTC when the named time zone is not one", async () => {
+		getWorkflowById.mockResolvedValue(scheduled("Mars/Olympus"));
+
+		await executeAgentTaskStep(params());
+
+		expect(executeAgentTurn.mock.calls[0][0].userMessage).toContain(
+			"time zone UTC",
+		);
+	});
+
+	it("uses UTC and reads no workflow for a step run outside a workflow", async () => {
+		await executeAgentTaskStep(params({ workflowId: undefined }));
+
+		expect(getWorkflowById).not.toHaveBeenCalled();
+		expect(executeAgentTurn.mock.calls[0][0].userMessage).toContain(
+			"time zone UTC",
+		);
+	});
+
+	it("puts the time before the data block, so the task and its clock lead", async () => {
+		await executeAgentTaskStep(
+			params({ inputs: { Trigger: { source: "schedule" } } }),
+		);
+
+		const { userMessage } = executeAgentTurn.mock.calls[0][0];
+		expect(userMessage.indexOf("Run time:")).toBeLessThan(
+			userMessage.indexOf("<upstream-data"),
+		);
 	});
 });
 
@@ -305,6 +418,7 @@ describe("executeAgentTaskStep - instructions from the prompt library", () => {
 			`HOUSE RULES. Return html. Data: true. Boundary: ${boundary}.`,
 		);
 		expect(systemPrompt).not.toContain("automation agent");
+		expect(executeAgentTurn.mock.calls[0][0].promptVersionId).toBe("v-3");
 		expect(result.output?.instructions).toEqual({
 			source: "BOUND",
 			promptVersion: 3,
@@ -371,6 +485,9 @@ describe("executeAgentTaskStep - instructions from the prompt library", () => {
 			const { systemPrompt } = executeAgentTurn.mock.calls[0][0];
 			expect(systemPrompt).toContain("do not ask for clarification");
 			expect(systemPrompt).not.toContain("{{");
+			expect(
+				executeAgentTurn.mock.calls[0][0].promptVersionId,
+			).toBeUndefined();
 			expect(result.output?.instructions).toEqual({
 				source: "DEFAULT_RENDER_FAILED",
 				promptVersion: null,
