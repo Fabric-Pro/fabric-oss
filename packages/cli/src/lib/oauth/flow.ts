@@ -53,13 +53,17 @@ type PreviousClient = Pick<
 
 /**
  * Authorization errors that mean the client itself is unusable, as the server
- * reports them before it asks anyone to sign in.
+ * reports them before it asks anyone to sign in. `invalid_scope` belongs here
+ * because a dynamically registered client keeps the scope ceiling it was
+ * registered with: a client saved before the CLI asked for a newer scope
+ * (`memory:write`) can never be granted it, and only a fresh registration can.
  */
 const UNUSABLE_CLIENT_ERRORS = new Set([
 	"invalid_client",
 	"client_disabled",
 	"invalid_redirect",
 	"unauthorized_client",
+	"invalid_scope",
 ]);
 
 export interface LoginOptions {

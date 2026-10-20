@@ -202,6 +202,7 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		/** Link provenance — the poll reads only stories linked to the ACTIVE PM
 		 *  tool and decides that from these (Fizzy #2304 follow-up). */
 		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
 		externalUrl: string | null;
 	}>
 > {
@@ -215,6 +216,7 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 			lastSyncedPmHash: true,
 			lastPmSyncStatus: true,
 			externalMcpServerId: true,
+			externalPmTarget: true,
 			externalUrl: true,
 		},
 	});
@@ -228,6 +230,7 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		lastSyncedPmHash: s.lastSyncedPmHash,
 		lastPmSyncStatus: s.lastPmSyncStatus,
 		externalMcpServerId: s.externalMcpServerId,
+		externalPmTarget: s.externalPmTarget,
 		externalUrl: s.externalUrl,
 	}));
 }
@@ -341,6 +344,7 @@ export async function findFabricItemsByExternalId(
 		entityId: string;
 		draftingStage: string;
 		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
 	}>
 > {
 	const stories = await db.userStory.findMany({
@@ -349,6 +353,7 @@ export async function findFabricItemsByExternalId(
 			id: true,
 			draftingStage: true,
 			externalMcpServerId: true,
+			externalPmTarget: true,
 		},
 	});
 	return stories.map((s) => ({
@@ -356,6 +361,7 @@ export async function findFabricItemsByExternalId(
 		entityId: s.id,
 		draftingStage: s.draftingStage,
 		externalMcpServerId: s.externalMcpServerId,
+		externalPmTarget: s.externalPmTarget,
 	}));
 }
 

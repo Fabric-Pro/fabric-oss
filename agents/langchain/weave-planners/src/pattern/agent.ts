@@ -105,6 +105,7 @@ async function fetchReaderSummary(
 					metadata: payload.metadata,
 				},
 				tenantContext,
+				{ trustedDestination: true },
 			);
 
 			// Extract text from A2A task response
@@ -295,6 +296,7 @@ Analyze this request and break down what's needed. Be specific about:
 		],
 	]);
 	await logAgentUsageFromRunnableConfig(config, response, {
+		model,
 		taskType: "COMPLEX",
 		agentId: "pattern_planner",
 		latencyMs: Date.now() - generationStart,
@@ -344,6 +346,7 @@ Format as JSON array:
 		],
 	]);
 	await logAgentUsageFromRunnableConfig(config, response, {
+		model,
 		taskType: "COMPLEX",
 		agentId: "pattern_planner",
 		latencyMs: Date.now() - generationStart,

@@ -17,6 +17,11 @@ import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../InstructionsPluginReport", () => ({
+	InstructionsPluginReport: () => (
+		<div data-testid="instructions-plugin-report" />
+	),
+}));
 vi.mock("next-intl", async () =>
 	(await import("../../../__tests__/en-copy")).nextIntlMock(),
 );
@@ -1218,6 +1223,14 @@ describe("InstructionsPublishedView", () => {
  * published instructions rather than general project context.
  */
 describe("InstructionsPublishedView — connect your agent", () => {
+	it("shows the plugin report for a published version", () => {
+		renderPublished();
+
+		expect(
+			screen.getByTestId("instructions-plugin-report"),
+		).toBeInTheDocument();
+	});
+
 	function renderPublished() {
 		return render(
 			<InstructionsPublishedView

@@ -59,6 +59,8 @@ export interface UsageLoggingContext {
 	billingCustomerId?: string | null;
 	agentId?: string;
 	conversationId?: string;
+	frameId?: string;
+	workflowExecutionId?: string;
 	/** User-facing AI feature this call belongs to (Fizzy #2230). */
 	featureKey?: string;
 	/** Resolved PromptVersion id the call ran with, when known. */
@@ -81,6 +83,7 @@ export interface AggregateUsageRecord {
 	latencyMs: number;
 	success: boolean;
 	errorMessage?: string;
+	errorDetails?: Record<string, unknown>;
 	/**
 	 * Full SDK step list. A generation id is safe to attach only if this has
 	 * exactly one entry; an aggregate of several provider calls has no single
@@ -250,7 +253,7 @@ function numberOr0(value: unknown): number {
  * (`convertAnthropicUsage`): the input total includes both cache buckets.
  * The OpenAI and Google providers in use emit no usage before `finish`.
  */
-function streamStartUsageOf(chunk: Record<string, unknown>): unknown {
+export function streamStartUsageOf(chunk: Record<string, unknown>) {
 	if (chunk.type !== "custom" || chunk.kind !== "anthropic.message_start") {
 		return undefined;
 	}
@@ -532,6 +535,8 @@ function emit(
 			taskType: context.taskType,
 			agentId: context.agentId,
 			conversationId: context.conversationId,
+			frameId: context.frameId,
+			workflowExecutionId: context.workflowExecutionId,
 			featureKey: context.featureKey,
 			promptVersionId: context.promptVersionId,
 			jobType: context.jobType,
@@ -583,6 +588,8 @@ export function recordAggregateUsage(
 		record.success,
 		record.errorMessage,
 		singleStepGatewayGenerationId(record.steps),
+		undefined,
+		record.errorDetails,
 	);
 }
 

@@ -348,6 +348,7 @@ export async function getProjectNameById(
 export async function listProjects(options: {
 	userId: string;
 	organizationId?: string;
+	projectId?: string;
 	limit?: number;
 	offset?: number;
 	status?: ProjectStatus;
@@ -517,9 +518,12 @@ export async function listProjects(options: {
 			}
 		: {};
 
+	const projectFilter: Prisma.ProjectWhereInput =
+		options.projectId !== undefined ? { id: options.projectId } : {};
 	const where: Prisma.ProjectWhereInput = {
 		...accessFilter,
 		...deletedFilter,
+		...projectFilter,
 		// Default: exclude DRAFT projects unless caller explicitly requests a specific status
 		...(status
 			? { status }
@@ -532,11 +536,13 @@ export async function listProjects(options: {
 	// Also count deleted projects for the UI badge
 	const deletedCountFilter: Prisma.ProjectWhereInput = {
 		...accessFilter,
+		...projectFilter,
 		deletedAt: { not: null },
 	};
 
 	const ownerDeletedCountFilter: Prisma.ProjectWhereInput = {
 		...ownerAccessFilter,
+		...projectFilter,
 		deletedAt: { not: null },
 	};
 
@@ -547,6 +553,7 @@ export async function listProjects(options: {
 	// hand-written tenant filter).
 	const statusCountsFilter: Prisma.ProjectWhereInput = {
 		...accessFilter,
+		...projectFilter,
 		deletedAt: null,
 		...searchFilter,
 	};

@@ -4,6 +4,9 @@ import { CopilotKit } from "@copilotkit/react-core";
 import "@copilotkit/react-ui/styles.css";
 import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { isGlossyEligible } from "@repo/utils/glossy/eligibility";
+// The context, not `useSession`: that hook throws outside a provider, and
+// the page only needs the member's id to recognise its own saves.
+import { SessionContext } from "@saas/auth/lib/session-context";
 import { useIsGuestInOrg } from "@saas/organizations/hooks/use-is-guest-in-org";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import {
@@ -18,7 +21,12 @@ import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { SubscribeToggle } from "@saas/subscriptions/components/SubscribeToggle";
 import { getAvatarInitials } from "@shared/lib/avatar-initials";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	type QueryClient,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import {
@@ -51,6 +59,7 @@ import type { ErrorInfo, ReactNode } from "react";
 import {
 	Component,
 	useCallback,
+	useContext,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -67,6 +76,7 @@ import {
 import { isDocumentGenerationRunning } from "../lib/document-pipeline";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
+import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentEditor, getDocumentTypeLabel } from "./DocumentEditor";
 import { DocumentEditorAiUnavailable } from "./DocumentEditorAiUnavailable";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
@@ -74,6 +84,10 @@ import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
+import {
+	describeGenerationRefusal,
+	resolveRegenerateToastKey,
+} from "./proposal-artifact/generation-feedback";
 import { ProposalAnalysisPanel } from "./proposal-artifact/ProposalAnalysisPanel";
 import { ProposalLiveSections } from "./proposal-artifact/ProposalLiveSections";
 import { ProposalStylePanel } from "./proposal-artifact/ProposalStylePanel";
@@ -252,6 +266,12 @@ function LibraryPromptLabel() {
  * offers. The editor that would otherwise offer it is hidden while the run
  * is under way, so the retry starts the run from here, as the documents
  * list's Regenerate does.
+ *
+ * A stalled run may still be running: the server then joins it instead of
+ * starting another (Fizzy #2946), and the Retry says so, or says the run's
+ * state could not be confirmed, rather than seeming to do nothing. A refusal
+ * the server explains with a code is told in the reader's locale, with the
+ * link that resolves it.
  */
 function ProposalLiveMain({
 	projectId,
@@ -278,10 +298,32 @@ function ProposalLiveMain({
 	themeRootProps?: ProposalThemeRootProps;
 }) {
 	const t = useTranslations("projects.proposalArtifactPage.live");
+	const tRegenerateToast = useTranslations(
+		"projects.documents.regenerateToast",
+	);
+	const tGenerationFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const { basePath } = useOrganizationContext();
+	const router = useRouter();
 	const queryClient = useQueryClient();
 	const retry = useMutation(
 		orpc.projects.documents.generate.mutationOptions({
-			onSuccess: () => {
+			onSuccess: (result) => {
+				// The run already under way decides between "already queued"
+				// and "already running"; a live run the server could not
+				// confirm asks for another try. A new run needs no word, and
+				// neither does this request's own ambiguous start, which the
+				// server has already queued.
+				const toastKey = resolveRegenerateToastKey({
+					outcome: result?.outcome,
+					documentStatus: document.status ?? null,
+				});
+				if (toastKey === "liveRunUnknown") {
+					toast.warning(tRegenerateToast(toastKey));
+				} else if (toastKey !== "started") {
+					toast.info(tRegenerateToast(toastKey));
+				}
 				void queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.get.queryKey({
 						input: { id: documentId, projectId, organizationId },
@@ -289,6 +331,19 @@ function ProposalLiveMain({
 				});
 			},
 			onError: (error) => {
+				const refusal = describeGenerationRefusal(error, {
+					t: tGenerationFeedback,
+					basePath,
+				});
+				if (refusal) {
+					toast.error(refusal.message, {
+						action: {
+							label: refusal.catalog.label,
+							onClick: () => router.push(refusal.catalog.href),
+						},
+					});
+					return;
+				}
 				toast.error(t("retryFailed", { message: error.message }));
 			},
 		}),
@@ -352,6 +407,59 @@ function useKeptScrollPositions(root: HTMLElement | null, shown: boolean) {
 			}
 		}
 	}, [shown]);
+}
+
+/**
+ * How long another member's `document_change` nudges are gathered into one
+ * refetch of the document on a collaborative page.
+ */
+const DOCUMENT_CHANGE_GATHER_MS = 1_000;
+
+/**
+ * How long after it was sent a finished save of this tab still explains a
+ * nudge carrying this member's id. The server sends the nudge before it
+ * answers the save, so the nudge normally arrives while the save is pending;
+ * the window covers a delivery that lags the answer.
+ */
+const OWN_SAVE_ECHO_WINDOW_MS = 10_000;
+
+/**
+ * Whether this tab's own save of the document explains a nudge carrying this
+ * member's id. Each save explains one nudge at most, so it is claimed, and a
+ * second nudge — the member's MCP client, API key or another tab writing at
+ * the same moment — still refetches. A save that failed is no echo: a refused
+ * save sends no nudge.
+ */
+function claimOwnSaveEcho(
+	queryClient: QueryClient,
+	documentId: string,
+	claimed: Set<number>,
+	now: number,
+): boolean {
+	const saves = queryClient.getMutationCache().findAll({
+		mutationKey: orpc.projects.documents.update.mutationKey(),
+		predicate: (mutation) =>
+			(mutation.state.variables as { id?: unknown } | undefined)?.id ===
+			documentId,
+	});
+	// Forget saves the cache has let go of, so the set never outgrows it.
+	for (const id of claimed) {
+		if (!saves.some((save) => save.mutationId === id)) {
+			claimed.delete(id);
+		}
+	}
+	const echo = saves.find(
+		(save) =>
+			!claimed.has(save.mutationId) &&
+			((save.state.status === "pending" && !save.state.isPaused) ||
+				(save.state.status === "success" &&
+					now - save.state.submittedAt <= OWN_SAVE_ECHO_WINDOW_MS)),
+	);
+	if (!echo) {
+		return false;
+	}
+	claimed.add(echo.mutationId);
+	return true;
 }
 
 type Props = {
@@ -616,28 +724,98 @@ export function DocumentEditorPage({
 	// handler reads the mode, the run state and the tenant through refs so
 	// its identity — which the realtime connection depends on — never
 	// changes.
+	//
+	// Every collaborative document refetches on one too while the room flag
+	// is on (Fizzy #2946): a server write outside a run — the API, the MCP
+	// gateway, a restored version — moves the saved document past what the
+	// open rooms hold, and the editor brings its room back to it only once
+	// it has seen the newer document.
+	//
+	// Most of those nudges are editor saves, so they are thinned out. The
+	// echo of a save from this tab is skipped, in artifact mode too: the
+	// save's answer already put the saved document in the cache. Another
+	// member's saves are gathered into one refetch a moment later, so a room
+	// of autosaving editors does not make every tab read the document on
+	// every save. A nudge of this member's that no save of this tab explains
+	// — a restored version, their MCP client or API key, another tab — and,
+	// in artifact mode, every other nudge, since a run nudges each section it
+	// writes, refetch at once.
 	const queryClient = useQueryClient();
+	const sessionUserId = useContext(SessionContext)?.user?.id ?? null;
+	const sessionUserIdRef = useRef(sessionUserId);
+	sessionUserIdRef.current = sessionUserId;
+	const claimedOwnSavesRef = useRef(new Set<number>());
+	const gatheredRefetchRef = useRef<ReturnType<typeof setTimeout> | null>(
+		null,
+	);
+	useEffect(
+		() => () => {
+			if (gatheredRefetchRef.current) {
+				clearTimeout(gatheredRefetchRef.current);
+				gatheredRefetchRef.current = null;
+			}
+		},
+		[],
+	);
+	const roomConvergence = useFeatureFlag("DOCUMENT_ROOM_CONVERGENCE");
+	const collaborationEnabled =
+		process.env.NEXT_PUBLIC_ENABLE_COLLABORATION === "true";
 	const artifactModeRef = useRef(artifactMode);
 	artifactModeRef.current = artifactMode;
+	const refetchesOnChangeRef = useRef(false);
+	refetchesOnChangeRef.current =
+		artifactMode || (roomConvergence && collaborationEnabled);
 	const isGenerationRunningRef = useRef(isGenerationRunning);
 	isGenerationRunningRef.current = isGenerationRunning;
 	const organizationIdRef = useRef(organizationId);
 	organizationIdRef.current = organizationId;
 	const handleDocumentChange = useCallback(
 		(event: DocumentChangeEvent) => {
-			if (event.documentId !== documentId || !artifactModeRef.current) {
+			if (
+				event.documentId !== documentId ||
+				!refetchesOnChangeRef.current
+			) {
 				return;
 			}
-			void queryClient.invalidateQueries({
-				queryKey: orpc.projects.documents.get.queryKey({
-					input: {
-						id: documentId,
-						projectId,
-						organizationId: organizationIdRef.current,
-					},
-				}),
-			});
-			if (isGenerationRunningRef.current) {
+			const refetchDocument = () => {
+				if (gatheredRefetchRef.current) {
+					clearTimeout(gatheredRefetchRef.current);
+					gatheredRefetchRef.current = null;
+				}
+				void queryClient.invalidateQueries({
+					queryKey: orpc.projects.documents.get.queryKey({
+						input: {
+							id: documentId,
+							projectId,
+							organizationId: organizationIdRef.current,
+						},
+					}),
+				});
+			};
+			const fromThisMember =
+				sessionUserIdRef.current !== null &&
+				event.userId === sessionUserIdRef.current;
+			if (
+				fromThisMember &&
+				claimOwnSaveEcho(
+					queryClient,
+					documentId,
+					claimedOwnSavesRef.current,
+					Date.now(),
+				)
+			) {
+				// This tab's own save: its answer is already in the cache.
+			} else if (artifactModeRef.current || fromThisMember) {
+				refetchDocument();
+			} else if (!gatheredRefetchRef.current) {
+				// Trailing, and not pushed back by later nudges, so a steady
+				// stream of saves still refetches once per window.
+				gatheredRefetchRef.current = setTimeout(
+					refetchDocument,
+					DOCUMENT_CHANGE_GATHER_MS,
+				);
+			}
+			if (!artifactModeRef.current || isGenerationRunningRef.current) {
 				return;
 			}
 			void queryClient.invalidateQueries({
@@ -1006,6 +1184,18 @@ export function DocumentEditorPage({
 					documentId={documentId}
 					documentType={document.type}
 				/>
+				{/* A client-document Proposal downloads from its own page too,
+				  for members and guests alike: its PDF and Word file are printed
+				  by the server from the theme this page wears (Fizzy #2946). */}
+				{isArtifactProposal && (
+					<DocumentDownloadDropdown
+						documentId={documentId}
+						title={document.title}
+						projectId={projectId}
+						documentType={document.type}
+						organizationId={organizationId ?? null}
+					/>
+				)}
 				<div className="flex-1" />
 				{/* The editor's own controls (Raw, Version history, Save) go
 				  with it when it is hidden: on another tab they would act on

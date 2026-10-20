@@ -47,6 +47,11 @@ import {
 	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
 	COMPANY_CONTEXT_SEARCH_TOOL_NAME,
 } from "../company-context-tool-schemas";
+import {
+	COMPLETION_CLAIM_CHECK_PATCH,
+	correctionForUnbackedClaim,
+	shouldCheckCompletionClaim,
+} from "../completion-claim-check";
 import { DIAGRAM_RENDERING_GUIDANCE } from "../diagram-rendering";
 import {
 	FABRIC_AI_SERVER_CONFIG_ID,
@@ -106,7 +111,6 @@ import {
 	rethrowTurnStop,
 	speaksBudgetContract,
 	turnScopeField,
-	turnScopeOptionArgs,
 } from "../turn-contract";
 import type {
 	ALTKConfig,
@@ -121,7 +125,11 @@ import type {
 	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
-import { conversationIdField } from "../usage-attribution";
+import {
+	secondaryUsageOriginFields,
+	secondaryUsageOptionArgs,
+	usageOriginFields,
+} from "../workflow-usage-attribution";
 import {
 	attachedImagesSystemNote,
 	attachedImagesUserNote,
@@ -227,6 +235,7 @@ const {
 	summarizeLargeToolResult,
 	preloadMcpToolsForConfigsActivity,
 	compactConversationHistoryActivity,
+	checkCompletionClaimActivity,
 	// Default-MCP surface routing — see `applyDefaultMcpEagerRouting`.
 	// `findExcalidrawConfigActivity` is the legacy-name alias kept proxied
 	// for replay-compat against pre-rename workflow histories.
@@ -833,7 +842,7 @@ async function synthesizeFinalAnswer(params: {
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
-			...conversationIdField(input),
+			...usageOriginFields(input),
 			iteration: state.currentIteration + 1,
 			maxStepsPerIteration: 1,
 			modelOverride: input.modelOverride,
@@ -893,7 +902,7 @@ async function synthesizeFinalAnswer(params: {
 				userId: input.userId,
 				organizationId: input.organizationId,
 				executionId: state.executionId,
-				...conversationIdField(input),
+				...usageOriginFields(input),
 				iteration: state.currentIteration + 2,
 				maxStepsPerIteration: 1,
 				modelOverride: input.modelOverride,
@@ -2329,6 +2338,10 @@ async function runIterativeLoop(
 	const turnStableSystemPrompt = patched(TURN_STABLE_SYSTEM_PROMPT_PATCH);
 	// The turn's system prompt under that marker, built on the first call.
 	let stableSystemPrompt: string | undefined;
+	// Read once for the whole turn, for the same reason.
+	const completionClaimCheck = patched(COMPLETION_CLAIM_CHECK_PATCH);
+	let completionClaimChecked = false;
+	let toolRoundSeen = false;
 
 	/**
 	 * Builds the system prompt for one call. Unpatched, the caller passes the
@@ -2606,7 +2619,7 @@ Never guess or use example values — always use real data from API responses.`;
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
-			...conversationIdField(input),
+			...usageOriginFields(input),
 			iteration,
 			maxStepsPerIteration: stepsPerIteration,
 			modelOverride: input.modelOverride,
@@ -2707,6 +2720,51 @@ Never guess or use example values — always use real data from API responses.`;
 
 		// Check if this is a final response
 		if (iterationResult.type === "response") {
+			// A reply from a turn that called no tool may claim an action it
+			// never took; if it does, the turn gets one corrective round with
+			// the same tools, whose answer replaces this one.
+			if (
+				shouldCheckCompletionClaim({
+					enabled: completionClaimCheck,
+					alreadyChecked: completionClaimChecked,
+					toolRoundSeen,
+					boundToolCount: Object.keys(availableTools).length,
+				})
+			) {
+				completionClaimChecked = true;
+				const correction = await correctionForUnbackedClaim({
+					check: checkCompletionClaimActivity,
+					input: {
+						userId: input.userId,
+						organizationId: input.organizationId,
+						projectId: input.projectId,
+						...usageOriginFields(input),
+						userRequest: input.message,
+						reply: iterationResult.content,
+						...turnScopeField(turn),
+					},
+					turn,
+					iterationCosts: state.iterationCosts,
+					iteration,
+				});
+				const note = correction
+					? formatTurnNotice([correction])
+					: undefined;
+				if (note) {
+					const timestamp = new Date().toISOString();
+					conversationHistory.push(
+						{
+							role: "assistant",
+							content: iterationResult.content,
+							timestamp,
+							iteration,
+						},
+						{ role: "user", content: note, timestamp, iteration },
+					);
+					continue;
+				}
+			}
+
 			let finalResponse = iterationResult.content;
 
 			// Inject generated image URLs that the LLM may have omitted from its response
@@ -2787,6 +2845,7 @@ Never guess or use example values — always use real data from API responses.`;
 		}
 
 		// Process tool calls
+		toolRoundSeen = true;
 		const toolCalls = iterationResult.toolCalls;
 		log.info("Agent requested tool calls", {
 			iteration,
@@ -2986,6 +3045,10 @@ Never guess or use example values — always use real data from API responses.`;
 					// CRITICAL: Use workflow input's enabledMcpConfigIds and enabledIntegrationIds
 					// NOT database preferences - workflow input represents the user's current session preferences
 					const searchResult = await searchAvailableTools({
+						...secondaryUsageOriginFields(input),
+						...(input.conversationId
+							? { usageConversationId: input.conversationId }
+							: {}),
 						query: (toolCall.args.query as string) || "",
 						originalQuery: input.message,
 						category: toolCall.args.category as
@@ -3024,6 +3087,10 @@ Never guess or use example values — always use real data from API responses.`;
 					}> = [];
 					try {
 						const agentSearchResult = await searchAvailableAgents({
+							...secondaryUsageOriginFields(input),
+							...(input.conversationId
+								? { usageConversationId: input.conversationId }
+								: {}),
 							query: (toolCall.args.query as string) || "",
 							userId: input.userId,
 							organizationId: input.organizationId,
@@ -3104,6 +3171,13 @@ Never guess or use example values — always use real data from API responses.`;
 					try {
 						const integrationSearchResult =
 							await searchAvailableIntegrations({
+								...secondaryUsageOriginFields(input),
+								...(input.conversationId
+									? {
+											usageConversationId:
+												input.conversationId,
+										}
+									: {}),
 								query: (toolCall.args.query as string) || "",
 								limit: 5,
 								minConfidence: 0.3,
@@ -3330,6 +3404,13 @@ Never guess or use example values — always use real data from API responses.`;
 					);
 
 					const agentResult = await executeAgentAsTool({
+						...secondaryUsageOriginFields(input),
+						...(input.modelOverride
+							? { modelOverride: input.modelOverride }
+							: {}),
+						...(input.conversationId
+							? { usageConversationId: input.conversationId }
+							: {}),
 						agentId,
 						input: { message: delegationMessage },
 						userId: input.userId,
@@ -3404,7 +3485,7 @@ Never guess or use example values — always use real data from API responses.`;
 								undefined,
 								topK,
 								minSimilarity,
-								...turnScopeOptionArgs(turn),
+								...secondaryUsageOptionArgs(input, turn),
 							);
 
 						if (ragResult.context && ragResult.chunkCount > 0) {
@@ -3442,7 +3523,7 @@ Never guess or use example values — always use real data from API responses.`;
 							input.userId,
 							input.organizationId,
 							topK,
-							...turnScopeOptionArgs(turn),
+							...secondaryUsageOptionArgs(input, turn),
 						);
 
 						if (ragResult.context && ragResult.chunkCount > 0) {
@@ -4071,7 +4152,7 @@ Never guess or use example values — always use real data from API responses.`;
 							maxOutputLength: contentLimit - 500,
 							userId: input.userId,
 							organizationId: input.organizationId,
-							...conversationIdField(input),
+							...usageOriginFields(input),
 							...turnScopeField(turn),
 						});
 						if (reserved > 0) {
@@ -4224,6 +4305,8 @@ Never guess or use example values — always use real data from API responses.`;
 			input.organizationId,
 			turn,
 			input.conversationId,
+			input.usageFrameId,
+			input.projectId,
 		);
 
 		// Update progress for next iteration
@@ -4305,6 +4388,8 @@ export async function maybeCompactConversationHistory(
 	turn?: IterativeTurnOptions,
 	/** The chat conversation the run answers, for usage attribution only. */
 	conversationId?: string,
+	usageFrameId?: string,
+	projectId?: string,
 ): Promise<void> {
 	const budgetPct =
 		maxTotalTokens > 0 ? (cumulativeTokens / maxTotalTokens) * 100 : 0;
@@ -4368,7 +4453,7 @@ export async function maybeCompactConversationHistory(
 			executionId: state.executionId,
 			iteration,
 			historyLengthBefore: conversationHistory.length,
-			...(conversationId ? { conversationId } : {}),
+			...usageOriginFields({ conversationId, usageFrameId, projectId }),
 			...turnScopeField(turn),
 		});
 	} catch (error) {

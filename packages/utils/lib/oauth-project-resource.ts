@@ -60,7 +60,11 @@ export function isProjectId(value: string): boolean {
 }
 
 function trimTrailingSlash(url: string): string {
-	return url.replace(/\/+$/, "");
+	let end = url.length;
+	while (end > 0 && url[end - 1] === "/") {
+		end--;
+	}
+	return url.slice(0, end);
 }
 
 function requireProjectId(projectId: string): string {

@@ -13,6 +13,7 @@
  *     and fall through to the org-role path — they must not restrict.
  */
 
+import { formatWithOptions } from "node:util";
 import { type Permission, Permissions } from "@repo/permissions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -479,6 +480,7 @@ describe("requireProjectPermission — RBAC_DRY_RUN security property", () => {
 	});
 
 	it("demoted viewer: denial is logged, request continues, but grantProjectAccess is NOT called", async () => {
+		const userId = "guest\r\nFORGED\u001b[31m";
 		mocks.projectFindUnique.mockResolvedValue({
 			id: PROJECT_ID,
 			organizationId: ORG_ID,
@@ -495,12 +497,25 @@ describe("requireProjectPermission — RBAC_DRY_RUN security property", () => {
 		const requireProjectPermission = await loadMiddleware();
 		const mw = requireProjectPermission(Permissions.PROJECT_UPDATE);
 
-		const { next } = await invokeMw(mw, makeCtx(GUEST_ID), {
+		const { next } = await invokeMw(mw, makeCtx(userId), {
 			projectId: PROJECT_ID,
 		});
 		// Under dry-run, the deny helper logs and returns — next() runs.
 		expect(next).toHaveBeenCalled();
 		expect(warnSpy).toHaveBeenCalled();
+		const logArgs = warnSpy.mock.calls[0];
+		expect(logArgs[0]).toBe("[RBAC dry-run] Permission denied");
+		expect(logArgs[1]).toMatchObject({
+			userId,
+			permission: Permissions.PROJECT_UPDATE,
+		});
+		const rendered = formatWithOptions(
+			{ breakLength: Number.POSITIVE_INFINITY },
+			...logArgs,
+		);
+		expect(rendered).not.toContain("\r");
+		expect(rendered).not.toContain("\n");
+		expect(rendered).not.toContain("\u001b");
 		// The load-bearing security property: no tenant-context grant for a
 		// denied caller, even when enforcement is off.
 		expect(grantSpy).not.toHaveBeenCalled();

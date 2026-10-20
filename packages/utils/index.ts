@@ -2,6 +2,7 @@ export * from "./lib/ai-gateway-encryption";
 export * from "./lib/base-url";
 export * from "./lib/blank-content";
 export * from "./lib/context-upload";
+export * from "./lib/document-save-base";
 export * from "./lib/markdown-entities";
 // `realtime-emit` is intentionally NOT re-exported from this barrel: it
 // statically imports `@upstash/realtime`, `@upstash/redis`, and `zod`,

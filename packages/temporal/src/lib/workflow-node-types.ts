@@ -8,3 +8,4 @@
  */
 export const AGENT_TASK_NODE_TYPE = "agent-task";
 export const PUBLISH_FRAME_NODE_TYPE = "publish-frame";
+export const ADO_STORY_REVIEW_NODE_TYPE = "mcp-review-ado-stories";

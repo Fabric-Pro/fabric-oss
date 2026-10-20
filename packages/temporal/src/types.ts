@@ -127,6 +127,8 @@ export interface ChatMessageOutput {
  * API keys are NOT passed in workflow inputs to avoid storing them in Temporal history.
  */
 export interface RagContextRetrievalInput {
+	/** Conversation served by this query, supplied after caller verification. */
+	usageConversationId?: string;
 	chatId: string;
 	userId: string;
 	organizationId?: string;
@@ -317,6 +319,8 @@ export interface DirectChatProgressEvent {
 export interface DirectChatWorkflowInput {
 	/** Unique execution ID for tracking */
 	executionId: string;
+	/** Launch frame authorized by the request boundary; absent in old histories. */
+	usageFrameId?: string;
 	/**
 	 * Usage attribution for the model calls of this turn. Chat surfaces leave
 	 * it unset ("chat-agent"); Parlume runs the same built-in agent from a
@@ -345,6 +349,12 @@ export interface DirectChatWorkflowInput {
 	enabledMcpConfigIds?: string[];
 	/** Enabled Fabric built-in tool IDs (optional filter) */
 	enabledFabricToolIds?: string[];
+	/**
+	 * Fabric tool IDs added to whatever the turn would otherwise offer, whether
+	 * that is the default set or an explicit `enabledFabricToolIds` list. For a
+	 * caller that keeps the default set and needs a capability on top of it.
+	 */
+	additionalFabricToolIds?: string[];
 	/** RAG context (pre-fetched if documents attached) */
 	ragContext?: string;
 	/**
@@ -435,6 +445,13 @@ export interface DirectChatWorkflowInput {
 	 * other caller leaves it unset and keeps the tools it always had.
 	 */
 	fabricPlatformTools?: boolean;
+	/**
+	 * The acting grant is limited to one project and carries the Fabric portal
+	 * scopes (a Parlume meeting turn). The turn lists the portal tools, and
+	 * offers their schemas to the model only when the request asks for something
+	 * they do: see `needsFabricPortalTools`.
+	 */
+	fabricPortalTools?: boolean;
 	/**
 	 * Proof from the stream route that this turn acts for this user in this
 	 * organization, which Fabric MCP requires of the agent runtime. Minted by the

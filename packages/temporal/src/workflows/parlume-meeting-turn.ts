@@ -10,6 +10,7 @@ const { executeParlumeMeetingTurn, failParlumeMeetingTurn } = proxyActivities<
 
 export async function parlumeMeetingTurnWorkflow(input: {
 	turnId: string;
+	actingGrant?: string;
 }): Promise<void> {
 	try {
 		await executeParlumeMeetingTurn(input);

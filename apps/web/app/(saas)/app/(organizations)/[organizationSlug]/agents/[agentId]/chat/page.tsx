@@ -114,9 +114,7 @@ export default function OrganizationAgentChatPage() {
 					</div>
 				) : isCugaAgent ? (
 					<CugaAuthenticatedChat
-						agentUrl={
-							agent?.deploymentUrl || "http://localhost:9999"
-						}
+						agentId={agent.agentId}
 						className="h-full"
 					/>
 				) : (

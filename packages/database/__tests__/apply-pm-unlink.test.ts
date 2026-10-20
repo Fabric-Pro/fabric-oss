@@ -41,6 +41,7 @@ describe("applyPmUnlink", () => {
 		const data = tx.userStory.updateMany.mock.calls[0][0].data;
 		expect(data.externalId).toBeNull();
 		expect(data.externalMcpServerId).toBeNull();
+		expect(data.externalPmTarget).toBeNull();
 		expect(data.pmAutoHidden).toBe(false);
 		expect(data.pmTicketTerminal).toBe(false);
 		expect(data.pmTicketTerminalStatus).toBeNull();

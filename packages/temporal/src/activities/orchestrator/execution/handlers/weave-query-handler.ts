@@ -148,6 +148,7 @@ export class WeaveQueryHandler implements StepHandler {
 				organizationId: input.organizationId ?? null,
 			},
 			{
+				trustedDestination: true,
 				// The Weave reader answers with its own model calls. Inside a
 				// chat turn that has stopped or used its token allowance the
 				// client sends nothing (checked in the same synchronous run as

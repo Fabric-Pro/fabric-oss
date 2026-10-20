@@ -23,7 +23,14 @@
 
 import { FABRIC_FRAME_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-tool-definitions";
 import { FABRIC_FRAME_VERSION_TOOL_DEFINITIONS } from "@repo/temporal/fabric-frame-version-tool-definitions";
+import { isFabricChatTool } from "@repo/temporal/fabric-gateway-tools";
+import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
 import { FABRIC_PAGE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-tool-definitions";
+import {
+	foreignProjectId,
+	isFabricPortalProjectTool,
+	isFabricPortalTool,
+} from "@repo/temporal/fabric-portal-tools";
 import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow-tool-definitions";
 import type { GatewaySession, GatewayToolDefinition } from "./types";
 
@@ -36,6 +43,12 @@ import type { GatewaySession, GatewayToolDefinition } from "./types";
 export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_list_projects",
 	"fabric_get_project",
+	"fabric_get_project_pm_connection",
+	"fabric_list_project_pm_members",
+	"fabric_list_project_pm_work_item_types",
+	"fabric_get_project_work_item_counts",
+	"fabric_list_project_pm_assigned_items",
+	"fabric_get_project_pm_item_snapshots",
 	"fabric_update_project",
 	"fabric_get_project_statuses",
 	"fabric_list_features",
@@ -64,6 +77,7 @@ export const PROJECT_BOUND_TOOL_NAMES = [
 	"fabric_propose_project_instruction_change",
 	"fabric_add_instruction_lesson",
 	"fabric_memory_targets",
+	"fabric_memory_read",
 	"fabric_memory_write",
 	"fabric_memory_write_status",
 ] as const;
@@ -86,6 +100,7 @@ export const PROJECT_BOUND_HIDDEN_TOOL_NAMES: readonly string[] = [
 	...FABRIC_FRAME_TOOL_DEFINITIONS.map((tool) => tool.name),
 	...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS.map((tool) => tool.name),
 	...FABRIC_PAGE_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS.map((tool) => tool.name),
 	"fabric_list_chats",
 	"fabric_list_connected_servers",
 	"fabric_request_authority",
@@ -108,15 +123,72 @@ export function boundProjectId(
 }
 
 /**
+ * The project a service session's grant is limited to, or null. A pinned
+ * session is not a project connection ({@link boundProjectId} stays null): it
+ * keeps the workflow, frame and workspace tools the agent runtime has always
+ * had, and holds every call that reaches a project to this one.
+ */
+export function pinnedProjectId(
+	session: Pick<GatewaySession, "pinnedProjectId">,
+): string | null {
+	return session.pinnedProjectId ?? null;
+}
+
+/**
  * Whether this session may act on `projectId`. An organization-wide session may
- * as far as its other checks say; a bound one only on its own project.
+ * as far as its other checks say; a bound or pinned one only on its own project.
  */
 export function sessionMayReachProject(
-	session: Pick<GatewaySession, "projectId">,
-	projectId: string,
+	session: Pick<
+		GatewaySession,
+		"projectId" | "pinnedProjectId" | "pageProjectId"
+	>,
+	projectId: string | null | undefined,
 ): boolean {
 	const bound = boundProjectId(session);
-	return bound === null || bound === projectId;
+	const pinned = pinnedProjectId(session);
+	return (
+		(bound === null || bound === projectId) &&
+		(pinned === null || pinned === projectId) &&
+		(session.pageProjectId === undefined ||
+			session.pageProjectId === projectId)
+	);
+}
+
+/**
+ * What a pinned service session may call: the 38 portal tools the runtime is
+ * offered, and the families it always held, none of which a project's grant
+ * takes away. Everything else, the authority tools, the memory tools and the
+ * page-only tools included, is refused here whatever scopes the session holds.
+ * The page-only tools are served to a page in the browser, never to the
+ * runtime, and `fabric_page_read_connected` would turn the grant's `mcp:read`
+ * into a read of the inviter's connected servers.
+ */
+const PINNED_RUNTIME_FAMILY_TOOLS: ReadonlySet<string> = new Set([
+	...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_WORKFLOW_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_FRAME_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_FRAME_VERSION_TOOL_DEFINITIONS.map((tool) => tool.name),
+	...FABRIC_PAGE_TOOL_DEFINITIONS.filter((tool) => !("pageOnly" in tool)).map(
+		(tool) => tool.name,
+	),
+]);
+
+export function pinnedSessionHasTool(toolName: string): boolean {
+	return (
+		isFabricPortalTool(toolName) ||
+		PINNED_RUNTIME_FAMILY_TOOLS.has(toolName)
+	);
+}
+
+/** A service read scope is not authority to call the gateway's other portal reads. */
+export function serviceSessionHasTool(
+	session: Pick<GatewaySession, "pinnedProjectId">,
+	toolName: string,
+): boolean {
+	return pinnedProjectId(session) !== null
+		? pinnedSessionHasTool(toolName)
+		: isFabricChatTool(toolName) || toolName === "fabric_page_ask";
 }
 
 function withOptionalProjectId(
@@ -149,9 +221,48 @@ export function projectBoundTools(
 		.map(withOptionalProjectId);
 }
 
+/**
+ * The tools a pinned service session is offered: its portal and runtime-family
+ * tools only, with `projectId` no longer required of the portal tools that take
+ * one.
+ */
+export function pinnedSessionTools(
+	definitions: GatewayToolDefinition[],
+): GatewayToolDefinition[] {
+	return definitions
+		.filter((tool) => pinnedSessionHasTool(tool.name))
+		.map((tool) =>
+			isFabricPortalProjectTool(tool.name)
+				? withOptionalProjectId(tool)
+				: tool,
+		);
+}
+
 export type BoundToolCall =
 	| { ok: true; args: Record<string, unknown> }
 	| { ok: false; message: string };
+
+function bindPinnedCall(
+	toolName: string,
+	args: Record<string, unknown>,
+	pinned: string,
+): BoundToolCall {
+	if (!pinnedSessionHasTool(toolName)) {
+		return {
+			ok: false,
+			message: `${toolName} is not available to the agent runtime on a meeting's project.`,
+		};
+	}
+	if (foreignProjectId(args, pinned) !== null) {
+		return { ok: false, message: "Project not found or access denied" };
+	}
+	return isFabricPortalProjectTool(toolName) &&
+		(args.projectId === undefined ||
+			args.projectId === null ||
+			args.projectId === "")
+		? { ok: true, args: { ...args, projectId: pinned } }
+		: { ok: true, args };
+}
 
 /**
  * What a tool call on this session may be. An organization-wide session's call
@@ -161,11 +272,14 @@ export type BoundToolCall =
 export function bindToolCall(
 	toolName: string,
 	args: Record<string, unknown>,
-	session: Pick<GatewaySession, "projectId">,
+	session: Pick<GatewaySession, "projectId" | "pinnedProjectId">,
 ): BoundToolCall {
 	const bound = boundProjectId(session);
 	if (bound === null) {
-		return { ok: true, args };
+		const pinned = pinnedProjectId(session);
+		return pinned === null
+			? { ok: true, args }
+			: bindPinnedCall(toolName, args, pinned);
 	}
 	if (!PROJECT_BOUND_TOOLS.has(toolName)) {
 		return {

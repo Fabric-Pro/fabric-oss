@@ -128,6 +128,20 @@ export class ParlumeSentenceQueue implements AsyncIterable<string> {
 		this.wake();
 	}
 
+	/**
+	 * Releases what has been pushed so far as a sentence now, however short and
+	 * whether or not its end has been seen: used when the agent stops writing to
+	 * run a tool, so a short line ahead of the tool is spoken while it runs.
+	 */
+	flush(): void {
+		if (this.ended || !this.pending) {
+			return;
+		}
+		this.release(this.pending);
+		this.pending = "";
+		this.wake();
+	}
+
 	end(): void {
 		if (this.ended) {
 			return;

@@ -32,6 +32,7 @@ vi.mock("@repo/rag", () => ({
 	contextMetaHeader: () => "",
 }));
 
+import type { SecondaryUsageInput } from "../../workflows/orchestrator/usage-attribution";
 import { retrieveProjectContextsActivity } from "../project-metadata";
 
 const TURN_SCOPE = {
@@ -51,7 +52,9 @@ function turnStopped() {
 }
 
 /** Runs the activity in an activity context (its logger needs one). */
-function retrieve(options?: { turnScope?: typeof TURN_SCOPE }) {
+function retrieve(
+	options?: SecondaryUsageInput & { turnScope?: typeof TURN_SCOPE },
+) {
 	return new MockActivityEnvironment().run(
 		retrieveProjectContextsActivity,
 		"what is the launch date",
@@ -68,6 +71,27 @@ beforeEach(() => {
 });
 
 describe("retrieveProjectContextsActivity", () => {
+	it("keeps accounting origin independent of the retrieval project", async () => {
+		mocks.retrieveProjectContexts.mockResolvedValue([]);
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			projectId: "origin-project",
+			frameId: "origin-frame",
+			featureKey: "chat-agent" as const,
+		};
+		await retrieve({ usageOrigin });
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "project-1",
+				userId: TURN_SCOPE.userId,
+				organizationId: TURN_SCOPE.organizationId,
+				usageOrigin,
+				diversify: true,
+				skipRerank: true,
+			}),
+		);
+	});
+
 	it("rethrows a stop in a chat turn", async () => {
 		const stop = turnStopped();
 		mocks.retrieveProjectContexts.mockRejectedValue(stop);

@@ -20,16 +20,23 @@
  * project has overridden, and what it inherits. An admin deciding where to
  * spend effort wants the second list, and thirty expanded rows is how it does
  * not get read.
+ *
+ * Only the actions this organization is offered are grouped and counted. With
+ * the Proposal artifact on, a project default saved at a legacy Proposal action
+ * never runs (Fizzy #2946); it is listed apart as no longer used, with Clear,
+ * because dropping it from the list would leave no way to remove it.
  */
 
 import {
 	listPromptActions,
 	PROMPT_FEATURE_TYPES,
+	type PromptAction,
 	type PromptFeatureTypeKey,
 	promptActionId,
 } from "@repo/utils/prompt-action-catalog";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useOfferedPromptActions } from "@saas/prompts/hooks/use-offered-prompt-actions";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -43,6 +50,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -64,7 +72,9 @@ type CatalogEntry = {
 	prompts: CatalogBinding[];
 };
 
-const ALL_ACTIONS = listPromptActions();
+const ALL_ACTIONS_BY_ID = new Map(
+	listPromptActions().map((action) => [action.id, action]),
+);
 
 const TIER_LABEL: Record<string, string> = {
 	// The same word PromptDefaultBadge uses. Two names for one tier read as two
@@ -82,6 +92,10 @@ export function ProjectPromptDefaultsSettings({
 	projectId: string;
 }) {
 	const { organizationId } = useOrganizationContext();
+	const offered = useOfferedPromptActions();
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
 	// Deliberately NOT the project's own settings permission. A project default
 	// is an organization binding, and `bind.set` requires organization admin or
 	// owner — a project admin who is not one would be shown a control the
@@ -124,7 +138,7 @@ export function ProjectPromptDefaultsSettings({
 		return map;
 	}, [data]);
 
-	const target = (action: (typeof ALL_ACTIONS)[number]) => ({
+	const target = (action: PromptAction) => ({
 		targetKey: action.targetKey,
 		documentType: action.documentType,
 		storyKind: action.storyKind ?? null,
@@ -135,7 +149,7 @@ export function ProjectPromptDefaultsSettings({
 			action,
 			promptVersionId,
 		}: {
-			action: (typeof ALL_ACTIONS)[number];
+			action: PromptAction;
 			promptVersionId: string;
 			/** Whether the writer's own personal default was in force for this
 			 *  action, and so is about to be stood down by this write. */
@@ -171,7 +185,7 @@ export function ProjectPromptDefaultsSettings({
 	});
 
 	const clearForProject = useMutation({
-		mutationFn: async (action: (typeof ALL_ACTIONS)[number]) =>
+		mutationFn: async (action: PromptAction) =>
 			await orpcClient.prompts.bindings.clear({
 				targetType: "AGENT",
 				...target(action),
@@ -197,7 +211,7 @@ export function ProjectPromptDefaultsSettings({
 	// override outranks the project tier (SCOPE_RANK: USER 0, PROJECT 1) — so
 	// keying off it would file an admin's own project default under "inherited",
 	// show it as "Personal", and hide the control to clear it.
-	const projectDefaultOf = (action: (typeof ALL_ACTIONS)[number]) =>
+	const projectDefaultOf = (action: PromptAction) =>
 		byAction
 			.get(action.id)
 			?.prompts.find(
@@ -208,9 +222,9 @@ export function ProjectPromptDefaultsSettings({
 			);
 
 	const { overridden, inherited } = useMemo(() => {
-		const overridden: Array<(typeof ALL_ACTIONS)[number]> = [];
-		const inherited: Array<(typeof ALL_ACTIONS)[number]> = [];
-		for (const action of ALL_ACTIONS) {
+		const overridden: Array<PromptAction> = [];
+		const inherited: Array<PromptAction> = [];
+		for (const action of offered.actions) {
 			const own = byAction
 				.get(action.id)
 				?.prompts.find(
@@ -222,7 +236,31 @@ export function ProjectPromptDefaultsSettings({
 			(own ? overridden : inherited).push(action);
 		}
 		return { overridden, inherited };
-	}, [byAction, projectId]);
+	}, [byAction, projectId, offered.actions]);
+
+	// Project defaults at an action the Proposal artifact supersedes. Named
+	// from the full catalog, so the row reads as the action it was saved at.
+	const noLongerUsed = useMemo(() => {
+		const rows: Array<PromptAction> = [];
+		for (const [id, entry] of byAction) {
+			if (
+				!offered.isSuperseded(entry.targetKey, entry.documentType) ||
+				!entry.prompts.some(
+					(p) =>
+						p.scope === "ORG" &&
+						p.projectId === projectId &&
+						p.isDefault,
+				)
+			) {
+				continue;
+			}
+			const action = ALL_ACTIONS_BY_ID.get(id);
+			if (action) {
+				rows.push(action);
+			}
+		}
+		return rows;
+	}, [byAction, projectId, offered]);
 
 	const inheritedOpen = inheritedOpenChoice ?? overridden.length === 0;
 
@@ -261,7 +299,7 @@ export function ProjectPromptDefaultsSettings({
 		);
 	}
 
-	const row = (action: (typeof ALL_ACTIONS)[number]) => {
+	const row = (action: PromptAction, superseded = false) => {
 		const entry = byAction.get(action.id);
 		const own = projectDefaultOf(action);
 		const isProject = !!own;
@@ -301,6 +339,11 @@ export function ProjectPromptDefaultsSettings({
 								: " · built-in text"}
 						{shadowed && " · your personal default runs instead"}
 					</p>
+					{superseded && (
+						<p className="text-muted-foreground text-xs">
+							{tSuperseded("actionNote")}
+						</p>
+					)}
 				</div>
 
 				<div className="flex shrink-0 items-center gap-2">
@@ -375,7 +418,7 @@ export function ProjectPromptDefaultsSettings({
 				<p className="mt-1 text-muted-foreground text-sm">
 					{isLoading
 						? "Checking every action…"
-						: `${overridden.length} of ${ALL_ACTIONS.length} actions use a prompt chosen for this project. The rest follow the organization, then the system default. Anyone who has set their own prompt for an action keeps it here.`}
+						: `${overridden.length} of ${offered.actions.length} actions use a prompt chosen for this project. The rest follow the organization, then the system default. Anyone who has set their own prompt for an action keeps it here.`}
 				</p>
 				{!canEdit && (
 					<p className="mt-1 text-muted-foreground text-xs">
@@ -404,7 +447,7 @@ export function ProjectPromptDefaultsSettings({
 				{overriddenOpen &&
 					(overridden.length > 0 ? (
 						<ul className="divide-y rounded-lg border">
-							{overridden.map(row)}
+							{overridden.map((action) => row(action))}
 						</ul>
 					) : (
 						<p className="px-1 py-2 text-muted-foreground text-sm">
@@ -444,11 +487,28 @@ export function ProjectPromptDefaultsSettings({
 										.toLowerCase()
 										.includes(filter.trim().toLowerCase()),
 								)
-								.map(row)}
+								.map((action) => row(action))}
 						</ul>
 					</div>
 				)}
 			</section>
+
+			{noLongerUsed.length > 0 && (
+				<section aria-labelledby="project-prompt-defaults-no-longer-used">
+					<p
+						id="project-prompt-defaults-no-longer-used"
+						className="px-1 py-2 font-medium text-sm"
+					>
+						{tSuperseded("projectGroupTitle")}
+					</p>
+					<p className="px-1 pb-2 text-muted-foreground text-sm">
+						{tSuperseded("projectGroupDescription")}
+					</p>
+					<ul className="divide-y rounded-lg border">
+						{noLongerUsed.map((action) => row(action, true))}
+					</ul>
+				</section>
+			)}
 		</Card>
 	);
 }

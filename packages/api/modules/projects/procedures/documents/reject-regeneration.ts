@@ -1,9 +1,12 @@
 import { ORPCError } from "@orpc/client";
 import {
+	DocumentGenerationInProgressError,
+	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
 	rejectDocumentRegeneration,
 } from "@repo/database";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
 import {
@@ -25,6 +28,11 @@ import {
  * regeneration was the first generation), the helper throws
  * `NO_PRIOR_VERSION`; we surface that as 409 so the client can fall back
  * to its old `skipVersionBump` reject path.
+ *
+ * A client-document Proposal is refused while a generation run holds it
+ * (409 with `data.code` `DOCUMENT_GENERATION_IN_PROGRESS`), which the client
+ * must not treat as "no prior version": a review dialog can still be open
+ * when a newer run starts (Fizzy #2946).
  */
 export const rejectRegenerationProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
@@ -66,10 +74,32 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A Proposal's body belongs to its generation run while the run is
+		// queued or writing (Fizzy #2946). Refused here, and again by the
+		// rewind itself, so a run queued between this read and the rewind is
+		// refused by the database too. Decided by type, not by the rollout
+		// gate: a run keeps writing when the gate is turned off mid-run.
+		const refuseWhileGenerating = isRunGuardedDocumentType(document.type);
+		const generationInProgress = () =>
+			new ORPCError("CONFLICT", {
+				message:
+					"A generation run is writing this document; try again when it finishes.",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			});
+		if (
+			refuseWhileGenerating &&
+			(document.status === "QUEUED" || document.status === "GENERATING")
+		) {
+			throw generationInProgress();
+		}
+
 		try {
 			const reverted = await rejectDocumentRegeneration(input.id, {
 				userId: user.id,
 				organizationId,
+				...(refuseWhileGenerating
+					? { refuseWhileGenerating: true }
+					: {}),
 			});
 
 			// Re-embed for RAG so the index reflects the reverted content,
@@ -89,6 +119,18 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 
 			return { document: reverted };
 		} catch (error) {
+			if (error instanceof DocumentGenerationInProgressError) {
+				throw generationInProgress();
+			}
+			// Reachable only for a guarded rewind: a write landed between its
+			// read and its update, and the transaction rolled back. The client
+			// falls back to its guarded save, which names the body it holds.
+			if (error instanceof DocumentVersionConflictError) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"The document changed while the regeneration was being rejected, so nothing was reverted.",
+				});
+			}
 			if (
 				error instanceof Error &&
 				error.message === "NO_PRIOR_VERSION"

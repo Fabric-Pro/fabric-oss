@@ -145,6 +145,7 @@ vi.mock("../src/activities/pm-integration/fetch-pm-ticket", () => ({
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: h.getClient,
 	invalidateMcpClientCache: vi.fn(async () => undefined),
+	isClosedClientRefusedBeforeSend: () => false,
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));

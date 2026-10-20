@@ -67,6 +67,7 @@ export async function retrieveRagContextActivity(
 	topK = 5,
 	minSimilarity = 0.1,
 	documentIds?: string[],
+	usageConversationId?: string,
 ): Promise<{ context: string; chunkCount: number }> {
 	console.log(`[Activity] Retrieving RAG context for chat: ${chatId}`);
 	console.log(`[Activity] Query: "${query.substring(0, 100)}..."`);
@@ -100,6 +101,7 @@ export async function retrieveRagContextActivity(
 			);
 		}
 		const relevantChunks = await retrieveContext({
+			conversationId: usageConversationId,
 			chatId,
 			userId,
 			organizationId,

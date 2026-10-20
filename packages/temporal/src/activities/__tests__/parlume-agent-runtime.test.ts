@@ -124,7 +124,6 @@ describe("Parlume canonical agent adapters", () => {
 				voiceInstructions: "Voice",
 				knowledgeContext: "Project",
 				history: [],
-				confirmation: false,
 			});
 			expect(mocks.builtin).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -138,26 +137,69 @@ describe("Parlume canonical agent adapters", () => {
 			);
 		},
 	);
-	it("preserves the canonical empty tool preference instead of enabling arbitrary servers", async () => {
-		expect(await loadParlumeAgent(session)).toMatchObject({
-			enabledMcpConfigIds: [],
-			reasoningMode: "balanced",
-		});
-	});
-	it("loads no knowledge or memory for an exact confirmation", async () => {
+	it.each([
+		["no saved preferences", null],
+		["an empty saved selection", { enabledMcpConfigIds: [] }],
+	])(
+		"reaches no external MCP server with %s, as the chat does for that user",
+		async (_name, saved) => {
+			mocks.preferences.mockResolvedValue(saved);
+
+			const agent = await loadParlumeAgent(session);
+
+			expect(agent).toMatchObject({
+				enabledMcpConfigIds: [],
+				reasoningMode: "balanced",
+			});
+		},
+	);
+	it("hands an explicit empty server list, not an unset one, to the chat engine", async () => {
 		const agent = await loadParlumeAgent(session);
 		await executeParlumeAgent({
 			agent,
 			session,
 			turnId: "turn",
-			message: "confirm",
+			message: "Question",
 			voiceInstructions: "",
 			knowledgeContext: "",
 			history: [],
-			confirmation: true,
 		});
-		expect(mocks.memory).not.toHaveBeenCalled();
-		expect(mocks.workspaceKnowledge).not.toHaveBeenCalled();
+		expect(mocks.mcp).toHaveBeenCalledWith("user", "org", []);
+		expect(mocks.builtin).toHaveBeenCalledWith(
+			expect.objectContaining({ enabledMcpConfigIds: [] }),
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+		);
+	});
+	it("gives the Fabric Agent turn Fabric's platform tools as the inviter, with the turn's grant", async () => {
+		const agent = await loadParlumeAgent(session);
+		await executeParlumeAgent({
+			agent,
+			session,
+			turnId: "turn",
+			message: "Create a work item",
+			voiceInstructions: "",
+			knowledgeContext: "",
+			history: [],
+			actingGrant: "grant-for-this-turn",
+		});
+		expect(mocks.builtin).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userId: "user",
+				organizationId: "org",
+				projectId: "project",
+				fabricPlatformTools: true,
+				actingGrant: "grant-for-this-turn",
+				additionalFabricToolIds: ["fabric_create_story"],
+			}),
+			expect.anything(),
+			expect.anything(),
+			expect.anything(),
+		);
+		expect(mocks.builtin.mock.calls[0]?.[0]).not.toHaveProperty(
+			"enabledFabricToolIds",
+		);
 	});
 	it("reloads the current active custom version and forwards its complete canonical tool configuration", async () => {
 		const customSession = {
@@ -204,7 +246,6 @@ describe("Parlume canonical agent adapters", () => {
 			voiceInstructions: "Voice",
 			knowledgeContext: "Project",
 			history: [],
-			confirmation: false,
 		});
 		expect(mocks.instance).toHaveBeenCalledWith(
 			expect.objectContaining({

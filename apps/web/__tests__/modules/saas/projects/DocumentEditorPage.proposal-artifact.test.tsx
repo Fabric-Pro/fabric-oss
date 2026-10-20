@@ -14,12 +14,17 @@
  *   editor is the same instance throughout, so a regeneration it started
  *   still ends in its review with Reject; only someone who can edit has the
  *   editor attached to a run it did not start;
+ * - the live pane's Retry says what the server did (Fizzy #2946): joined the
+ *   run already going, could not confirm its state, or refused with a code,
+ *   told in the reader's words with the link that resolves it;
  * - switching tabs never unmounts the editor, and hidden panels are out of
  *   the tab order;
  * - a `document_change` nudge for this document refetches the document, and
  *   the analysis too unless a run is still writing; the end of a run
  *   refetches the analysis without one; a nudge for another document does
- *   nothing;
+ *   nothing; the echo of this tab's own save refetches no document, and on a
+ *   collaborative page other members' nudges are gathered into one refetch
+ *   a moment later (Fizzy #2946);
  * - the Analysis tab's indicator, the library prompt label and the Glossy link
  *   rule;
  * - the shared Proposal theme (Fizzy #2946): worn by a member's and a project
@@ -41,11 +46,20 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+	MutationObserver,
+	onlineManager,
 	QueryClient,
 	QueryClientProvider,
 	useQuery,
 } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -77,6 +91,18 @@ const fixtures = vi.hoisted(() => ({
 		getThemeTokens: vi.fn(),
 		generate: vi.fn(),
 	},
+	toast: {
+		success: vi.fn(),
+		info: vi.fn(),
+		warning: vi.fn(),
+		error: vi.fn(),
+	},
+	router: { push: vi.fn() },
+}));
+
+vi.mock("sonner", async (importOriginal) => ({
+	...(await importOriginal<typeof import("sonner")>()),
+	toast: fixtures.toast,
 }));
 
 vi.mock("next-intl", async () => {
@@ -141,6 +167,12 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 							...config,
 						}),
 					},
+					update: {
+						mutationKey: () => [
+							["projects", "documents", "update"],
+							{ type: "mutation" },
+						],
+					},
 				},
 			},
 		},
@@ -166,6 +198,7 @@ vi.mock("@shared/lib/orpc-client", () => ({
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: "org-1",
+		basePath: "/app/example-org",
 		isLoading: false,
 	}),
 }));
@@ -199,7 +232,7 @@ vi.mock("@saas/projects/hooks", () => ({
 	},
 }));
 vi.mock("next/navigation", () => ({
-	useRouter: () => ({ push: vi.fn() }),
+	useRouter: () => fixtures.router,
 }));
 vi.mock("@saas/subscriptions/components/SubscribeToggle", () => ({
 	SubscribeToggle: () => null,
@@ -312,6 +345,7 @@ import {
 	buildProposalThemeTokens,
 	NEUTRAL_THEME,
 } from "@repo/utils/proposal-artifact/theme-tokens";
+import { SessionContext } from "@saas/auth/lib/session-context";
 import { DocumentEditorPage } from "@saas/projects/components/DocumentEditorPage";
 import { proposalAnalysisQueryKey } from "@saas/projects/components/proposal-artifact/use-proposal-analysis";
 import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
@@ -381,16 +415,81 @@ function newerRun(status: string, overrides: Record<string, unknown> = {}) {
 
 let client: QueryClient;
 
+/** The signed-in member the page renders for. */
+const SESSION_USER_ID = "user-1";
+
 function renderPage() {
 	return render(
-		<QueryClientProvider client={client}>
-			<DocumentEditorPage
-				projectId="proj-1"
-				documentId="doc-1"
-				organizationSlug="example-org"
-			/>
-		</QueryClientProvider>,
+		<SessionContext.Provider
+			value={{
+				session: null,
+				user: { id: SESSION_USER_ID } as never,
+				loaded: true,
+				reloadSession: async () => {},
+			}}
+		>
+			<QueryClientProvider client={client}>
+				<DocumentEditorPage
+					projectId="proj-1"
+					documentId="doc-1"
+					organizationSlug="example-org"
+				/>
+			</QueryClientProvider>
+		</SessionContext.Provider>,
 	);
+}
+
+const UPDATE_KEY = orpc.projects.documents.update.mutationKey();
+
+/**
+ * A save of the document from this tab, in the cache where the editor's own
+ * `documents.update` mutation would be: still in flight, or answered.
+ */
+async function saveFromThisTab(
+	settles: "pending" | "success" | "error" | "paused",
+) {
+	const save = new MutationObserver<
+		unknown,
+		Error,
+		{ id: string; content: string }
+	>(client, {
+		mutationKey: UPDATE_KEY,
+		mutationFn: () =>
+			settles === "success"
+				? Promise.resolve({})
+				: settles === "error"
+					? Promise.reject(new Error("refused"))
+					: new Promise<never>(() => {}),
+	});
+	// Offline, a save waits paused rather than going out.
+	if (settles === "paused") {
+		onlineManager.setOnline(false);
+	}
+	const done = save
+		.mutate({ id: "doc-1", content: "## Scope\n\nMine." })
+		.catch(() => undefined);
+	if (settles === "success" || settles === "error") {
+		await act(async () => {
+			await done;
+		});
+	} else {
+		await act(async () => {
+			await Promise.resolve();
+		});
+	}
+}
+
+/** A `document_change` nudge for this document from `userId`. */
+function nudge(userId?: string) {
+	act(() => {
+		fixtures.presence.onDocumentChange?.({
+			projectId: "proj-1",
+			documentId: "doc-1",
+			action: "updated",
+			userId,
+			userName: "Example member",
+		});
+	});
 }
 
 /**
@@ -456,6 +555,10 @@ beforeEach(() => {
 	fixtures.api.getThemeTokens.mockImplementation(async () => themeTokens());
 	fixtures.api.generate.mockReset();
 	fixtures.api.generate.mockResolvedValue({ outcome: "started" });
+	for (const notify of Object.values(fixtures.toast)) {
+		notify.mockReset();
+	}
+	fixtures.router.push.mockReset();
 });
 
 afterEach(() => {
@@ -526,6 +629,47 @@ describe("DocumentEditorPage — who gets the Proposal tabs", () => {
 		await pageReady();
 		expect(fixtures.editor.lastProps.statTiles).toBe(true);
 	});
+
+	it("offers the download menu on a client-document Proposal's page, to members and guests alike", async () => {
+		renderPage();
+		await pageReady();
+		expect(
+			screen.getByRole("button", { name: "Download" }),
+		).toBeInTheDocument();
+
+		cleanup();
+		fixtures.isGuest = true;
+		renderPage();
+		await pageReady();
+		expect(
+			screen.getByRole("button", { name: "Download" }),
+		).toBeInTheDocument();
+	});
+
+	it.each([
+		[
+			"a Business Case",
+			() => {
+				fixtures.document = proposal({ type: "BUSINESS_CASE" });
+			},
+		],
+		[
+			"a Proposal with the gate off",
+			() => {
+				fixtures.flags.PROPOSAL_ARTIFACT = false;
+			},
+		],
+	])(
+		"keeps the download menu off the page of %s",
+		async (_label, arrange) => {
+			arrange();
+			renderPage();
+			await pageReady();
+			expect(
+				screen.queryByRole("button", { name: "Download" }),
+			).not.toBeInTheDocument();
+		},
+	);
 
 	it("keeps today's page with the gate off", async () => {
 		fixtures.flags.PROPOSAL_ARTIFACT = false;
@@ -688,6 +832,144 @@ describe("DocumentEditorPage — the Main tab follows the server's status", () =
 
 		await waitFor(() =>
 			expect(fixtures.api.generate).toHaveBeenCalledWith({ id: "doc-1" }),
+		);
+	});
+});
+
+describe("DocumentEditorPage — the live pane's Retry says what the server did", () => {
+	const regenerateToast = messages.projects.documents.regenerateToast;
+	const generationFeedback =
+		messages.projects.proposalArtifact.generationFeedback;
+
+	/** A run whose last write is ten minutes old, so the pane offers Retry. */
+	async function retryStalledRun() {
+		const user = userEvent.setup();
+		const stalledAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+		fixtures.document = proposal({
+			status: "GENERATING",
+			generationStartedAt: stalledAt,
+			updatedAt: stalledAt,
+			generationProgress: 50,
+			liveContent: "## Scope\n\nFirst finished section.",
+		});
+		renderPage();
+		await pageReady();
+		const readsBefore = fixtures.api.getDocument.mock.calls.length;
+		await user.click(
+			screen.getByRole("button", { name: /retry generation/i }),
+		);
+		await waitFor(() =>
+			expect(fixtures.api.generate).toHaveBeenCalledWith({ id: "doc-1" }),
+		);
+		return { readsBefore };
+	}
+
+	it("says the run is already running when the Retry joined it, and refetches the document", async () => {
+		fixtures.api.generate.mockResolvedValue({
+			outcome: "alreadyInProgress",
+			workflowId: "workflow-live",
+			runId: null,
+		});
+
+		const { readsBefore } = await retryStalledRun();
+
+		await waitFor(() =>
+			expect(fixtures.toast.info).toHaveBeenCalledWith(
+				regenerateToast.alreadyRunning,
+			),
+		);
+		await waitFor(() =>
+			expect(fixtures.api.getDocument.mock.calls.length).toBeGreaterThan(
+				readsBefore,
+			),
+		);
+		expect(fixtures.toast.error).not.toHaveBeenCalled();
+	});
+
+	it("says the run's state could not be confirmed when the server could not tell", async () => {
+		fixtures.api.generate.mockResolvedValue({
+			outcome: "liveRunUnknown",
+			workflowId: "workflow-live",
+			runId: null,
+		});
+
+		await retryStalledRun();
+
+		await waitFor(() =>
+			expect(fixtures.toast.warning).toHaveBeenCalledWith(
+				regenerateToast.liveRunUnknown,
+			),
+		);
+		expect(fixtures.toast.info).not.toHaveBeenCalled();
+	});
+
+	it("treats its own ambiguous start as started: no word, and the document is refetched", async () => {
+		// The server already queued the row for this request; only a live run
+		// it could not confirm asks for another try.
+		fixtures.api.generate.mockResolvedValue({
+			outcome: "statusUnknown",
+			workflowId: "workflow-new",
+			runId: null,
+		});
+
+		const { readsBefore } = await retryStalledRun();
+
+		await waitFor(() =>
+			expect(fixtures.api.getDocument.mock.calls.length).toBeGreaterThan(
+				readsBefore,
+			),
+		);
+		expect(fixtures.toast.warning).not.toHaveBeenCalled();
+		expect(fixtures.toast.info).not.toHaveBeenCalled();
+		expect(fixtures.toast.error).not.toHaveBeenCalled();
+	});
+
+	it("adds no word to a new run, as before, and refetches the document", async () => {
+		const { readsBefore } = await retryStalledRun();
+
+		await waitFor(() =>
+			expect(fixtures.api.getDocument.mock.calls.length).toBeGreaterThan(
+				readsBefore,
+			),
+		);
+		expect(fixtures.toast.info).not.toHaveBeenCalled();
+		expect(fixtures.toast.warning).not.toHaveBeenCalled();
+		expect(fixtures.toast.error).not.toHaveBeenCalled();
+	});
+
+	it("tells a coded refusal in the reader's words, with the link that resolves it", async () => {
+		fixtures.api.generate.mockRejectedValue({
+			code: "PRECONDITION_FAILED",
+			message: "Server wording that must not reach the toast",
+			data: { code: "PROPOSAL_PROMPT_NOT_BOUND" },
+		});
+
+		await retryStalledRun();
+
+		await waitFor(() => expect(fixtures.toast.error).toHaveBeenCalled());
+		const [message, options] = fixtures.toast.error.mock.calls[0] as [
+			string,
+			{ action: { label: string; onClick: () => void } },
+		];
+		expect(message).toBe(generationFeedback.promptNotBound);
+		expect(options.action.label).toBe(generationFeedback.openCatalog);
+		options.action.onClick();
+		expect(fixtures.router.push).toHaveBeenCalledWith(
+			expect.stringMatching(
+				/^\/app\/example-org\/prompts\/catalog\?action=/,
+			),
+		);
+	});
+
+	it("keeps today's message for any other failure", async () => {
+		fixtures.api.generate.mockRejectedValue(new Error("Network down"));
+
+		await retryStalledRun();
+
+		await waitFor(() =>
+			expect(fixtures.toast.error).toHaveBeenCalledWith(
+				pageCopy.live.retryFailed.replace("{message}", "Network down"),
+			),
 		);
 	});
 });
@@ -903,6 +1185,207 @@ describe("DocumentEditorPage — document nudges", () => {
 		invalidate.mockClear();
 		await serverReports({ status: "COMPLETE", content: "## Scope\n\nC." });
 		expect(invalidate).not.toHaveBeenCalledWith({ queryKey: analysisKey });
+	});
+
+	it("skips the document refetch for this tab's own save, and still refetches the analysis", async () => {
+		renderPage();
+		await pageReady();
+		await waitFor(() =>
+			expect(fixtures.api.getAnalysis).toHaveBeenCalled(),
+		);
+		await saveFromThisTab("pending");
+		const invalidate = vi.spyOn(client, "invalidateQueries");
+
+		nudge(SESSION_USER_ID);
+
+		// The save's answer carries the saved document; the analysis may now
+		// read as behind the Main, so it is asked for as before.
+		expect(invalidate).not.toHaveBeenCalledWith({ queryKey: DOCUMENT_KEY });
+		expect(invalidate).toHaveBeenCalledWith({
+			queryKey: proposalAnalysisQueryKey("proj-1", "doc-1"),
+		});
+	});
+
+	describe("outside artifact mode, on a collaborative document (Fizzy #2946)", () => {
+		beforeEach(() => {
+			vi.stubEnv("NEXT_PUBLIC_ENABLE_COLLABORATION", "true");
+			fixtures.flags = {
+				PROPOSAL_ARTIFACT: false,
+				GLOSSY_EDITION: false,
+				DOCUMENT_ROOM_CONVERGENCE: true,
+			};
+		});
+		afterEach(() => {
+			onlineManager.setOnline(true);
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		});
+
+		/** Renders the page, then takes over the clock for the nudges. */
+		async function renderCollaborativePage() {
+			renderPage();
+			await pageReady();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			return vi.spyOn(client, "invalidateQueries");
+		}
+
+		function documentRefetches(invalidate: {
+			mock: { calls: unknown[][] };
+		}): number {
+			return invalidate.mock.calls.filter(
+				([filters]) =>
+					JSON.stringify(
+						(filters as { queryKey?: unknown }).queryKey,
+					) === JSON.stringify(DOCUMENT_KEY),
+			).length;
+		}
+
+		it("refetches the document a moment after another member's nudge, so an open room sees a server write", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			nudge("user-2");
+
+			expect(documentRefetches(invalidate)).toBe(0);
+			act(() => {
+				vi.advanceTimersByTime(999);
+			});
+			expect(documentRefetches(invalidate)).toBe(0);
+			act(() => {
+				vi.advanceTimersByTime(1);
+			});
+			expect(documentRefetches(invalidate)).toBe(1);
+			expect(invalidate).not.toHaveBeenCalledWith({
+				queryKey: proposalAnalysisQueryKey("proj-1", "doc-1"),
+			});
+		});
+
+		it("gathers a burst of other members' saves into one refetch", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			nudge("user-2");
+			act(() => {
+				vi.advanceTimersByTime(400);
+			});
+			nudge("user-3");
+			nudge("user-2");
+			act(() => {
+				vi.advanceTimersByTime(600);
+			});
+			expect(documentRefetches(invalidate)).toBe(1);
+
+			// A steady stream still refetches once per window.
+			nudge("user-3");
+			act(() => {
+				vi.advanceTimersByTime(1_000);
+			});
+			expect(documentRefetches(invalidate)).toBe(2);
+		});
+
+		it("does not refetch on the echo of this tab's own save, in flight or just answered", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			await saveFromThisTab("pending");
+			nudge(SESSION_USER_ID);
+			await saveFromThisTab("success");
+			nudge(SESSION_USER_ID);
+			act(() => {
+				vi.advanceTimersByTime(5_000);
+			});
+
+			expect(documentRefetches(invalidate)).toBe(0);
+		});
+
+		it("refetches at once on a nudge of this member's that no save of this tab explains", async () => {
+			// A restored version, their MCP client or API key, another tab.
+			const invalidate = await renderCollaborativePage();
+
+			nudge(SESSION_USER_ID);
+			expect(documentRefetches(invalidate)).toBe(1);
+
+			// One save explains one nudge: a second one during it is a write
+			// from somewhere else.
+			await saveFromThisTab("pending");
+			nudge(SESSION_USER_ID);
+			expect(documentRefetches(invalidate)).toBe(1);
+			nudge(SESSION_USER_ID);
+			expect(documentRefetches(invalidate)).toBe(2);
+		});
+
+		it("refetches at once when this tab's only save failed: a refused save sends no nudge", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			await saveFromThisTab("error");
+			nudge(SESSION_USER_ID);
+
+			expect(documentRefetches(invalidate)).toBe(1);
+		});
+
+		it("refetches at once when this tab's only save is paused offline: it has not reached the server", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			await saveFromThisTab("paused");
+			nudge(SESSION_USER_ID);
+
+			expect(documentRefetches(invalidate)).toBe(1);
+		});
+
+		it("refetches at once when this tab's only save was answered more than ten seconds ago", async () => {
+			const invalidate = await renderCollaborativePage();
+			await saveFromThisTab("success");
+			const later = Date.now() + 10_001;
+			const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+			try {
+				nudge(SESSION_USER_ID);
+			} finally {
+				clock.mockRestore();
+			}
+
+			expect(documentRefetches(invalidate)).toBe(1);
+		});
+
+		it("drops a gathered refetch still waiting when the page goes away", async () => {
+			renderPage();
+			await pageReady();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			const invalidate = vi.spyOn(client, "invalidateQueries");
+
+			nudge("user-2");
+			cleanup();
+			act(() => {
+				vi.advanceTimersByTime(2_000);
+			});
+
+			expect(documentRefetches(invalidate)).toBe(0);
+		});
+
+		it("does not take another member's nudge for this tab's save", async () => {
+			const invalidate = await renderCollaborativePage();
+
+			await saveFromThisTab("pending");
+			nudge("user-2");
+			act(() => {
+				vi.advanceTimersByTime(1_000);
+			});
+
+			expect(documentRefetches(invalidate)).toBe(1);
+		});
+
+		it("leaves the document to its own polling with the room flag off, as before", async () => {
+			fixtures.flags.DOCUMENT_ROOM_CONVERGENCE = false;
+			renderPage();
+			await pageReady();
+			const invalidate = vi.spyOn(client, "invalidateQueries");
+
+			act(() => {
+				fixtures.presence.onDocumentChange?.({
+					projectId: "proj-1",
+					documentId: "doc-1",
+					action: "updated",
+				});
+			});
+
+			expect(invalidate).not.toHaveBeenCalled();
+		});
 	});
 
 	it("ignores a nudge for another document", async () => {

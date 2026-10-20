@@ -182,10 +182,11 @@ export const refreshToolsProcedure = tenantProtectedProcedure
 					);
 				}
 			} catch (error) {
-				console.error(
-					`[MCP Refresh] Failed to trigger refresh for ${serverId}:`,
-					error,
-				);
+				console.error("[MCP Refresh] Failed to trigger refresh", {
+					serverId,
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 				results.push({
 					serverId,
 					serverName: null,

@@ -324,6 +324,7 @@ export function registerChatRoutes(
 				{
 					userId: ctx.userId,
 					organizationId: chat.organizationId ?? undefined,
+					conversationId: chatId,
 					// The caller is an API credential, never a member at a
 					// screen: the turn runs as background work, on the
 					// organization's shared ChatGPT plans when they serve it
@@ -434,6 +435,7 @@ export function registerChatRoutes(
 					generateChatTitle(content, {
 						userId: ctx.userId,
 						organizationId: chat.organizationId ?? undefined,
+						conversationId: chatId,
 						projectId: chat.projectId ?? undefined,
 					}),
 				);

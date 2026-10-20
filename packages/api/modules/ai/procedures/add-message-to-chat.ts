@@ -126,6 +126,7 @@ export const addMessageToChat = tenantProtectedProcedure
 				{
 					userId: user.id,
 					organizationId: chat.organizationId || undefined,
+					conversationId: chatId,
 					// The member's own chat message (Fizzy #2939).
 					planEligible: true,
 				},
@@ -201,6 +202,7 @@ export const addMessageToChat = tenantProtectedProcedure
 				// Prepare workflow input
 				// SECURITY: Credentials are fetched internally by the workflow activities
 				const workflowInput: RagContextRetrievalInput = {
+					usageConversationId: chatId,
 					chatId,
 					userId: user.id,
 					organizationId: chat.organizationId || undefined,
@@ -301,6 +303,7 @@ export const addMessageToChat = tenantProtectedProcedure
 						chatId,
 						userId: user.id,
 						organizationId: chat.organizationId || undefined,
+						conversationId: chatId,
 						query: userQuery,
 						topK: 5,
 						minSimilarity: 0.1, // Very low threshold for testing
@@ -447,6 +450,7 @@ export const addMessageToChat = tenantProtectedProcedure
 										organizationId:
 											chat.organizationId || undefined,
 										projectId: chat.projectId || undefined,
+										conversationId: chatId,
 									},
 								);
 							} catch (error) {

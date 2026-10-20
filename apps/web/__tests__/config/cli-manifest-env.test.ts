@@ -14,7 +14,6 @@
  */
 
 import {
-	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -131,10 +130,16 @@ describe("next.config.ts", () => {
 	beforeEach(() => {
 		// A real pack leaves this file; a checkout nobody packed does not, and
 		// the config has to be shown reading it either way.
-		if (!existsSync(manifestPath)) {
-			mkdirSync(path.dirname(manifestPath), { recursive: true });
-			writeFileSync(manifestPath, JSON.stringify(MANIFEST));
+		mkdirSync(path.dirname(manifestPath), { recursive: true });
+		try {
+			writeFileSync(manifestPath, JSON.stringify(MANIFEST), {
+				flag: "wx",
+			});
 			created = true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+				throw error;
+			}
 		}
 	});
 

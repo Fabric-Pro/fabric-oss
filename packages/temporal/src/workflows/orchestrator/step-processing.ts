@@ -15,6 +15,7 @@ import {
 	sleep,
 	workflowInfo,
 } from "@temporalio/workflow";
+import { usageOriginFields } from "./workflow-usage-attribution";
 
 // ---------------------------------------------------------------------------
 // Temporal-deterministic time helpers
@@ -550,6 +551,7 @@ export async function executeStepWithContext(
 			organizationId: input.organizationId,
 			executionId: state.executionId,
 			conversationId: input.conversationId,
+			...usageOriginFields(input),
 			enabledMcpConfigIds: input.enabledMcpConfigIds,
 			enabledAgentIds: input.enabledAgentIds,
 			executionMode: input.executionMode,

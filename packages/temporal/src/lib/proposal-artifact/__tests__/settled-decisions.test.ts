@@ -1195,3 +1195,30 @@ describe("echoedStableKeys (Fizzy #2946)", () => {
 		).toEqual([]);
 	});
 });
+
+// -----------------------------------------------------------------------------
+// The analysis report never feeds a prompt (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+describe("buildSettledDecisionsBlock: the analysis report", () => {
+	it("carries no report text into either block, even if the shown run held one", async () => {
+		const marker = "report-marker-7f3a9c";
+		const analysis = shownRun(["scope-migration"]);
+		happyPath([responseRow({ stableKey: "scope-migration" })], {
+			...analysis,
+			run: {
+				...analysis.run,
+				report: { v: 1, assessment: marker, summary: marker },
+				reportText: `## Report\n\n${marker}`,
+			},
+		});
+
+		const result = await buildSettledDecisionsBlock(BASE_INPUT);
+
+		expect(result).not.toBeNull();
+		expect(result?.block).not.toContain(marker);
+		expect(result?.analysisBlock).not.toContain(marker);
+		expect(JSON.stringify(result?.carried)).not.toContain(marker);
+		expect(loggedText()).not.toContain(marker);
+	});
+});

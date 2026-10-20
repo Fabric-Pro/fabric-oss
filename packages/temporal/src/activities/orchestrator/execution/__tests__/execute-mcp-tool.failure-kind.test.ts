@@ -9,11 +9,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	execute: vi.fn(),
 	getClient: vi.fn(),
+	invalidate: vi.fn(async () => undefined),
 }));
 
 vi.mock("@repo/mcp", () => ({
 	getCachedMcpClientForConfig: h.getClient,
-	invalidateMcpClientCache: vi.fn(async () => undefined),
+	invalidateMcpClientCache: h.invalidate,
+	// Mirrors the real check (an SDK client error with no JSON-RPC code),
+	// which @repo/mcp's own tests cover against the SDK's error class.
+	isClosedClientRefusedBeforeSend: (error: unknown) =>
+		error instanceof Error &&
+		(error as { code?: unknown }).code === undefined &&
+		error.message === "Attempted to send a request from a closed client",
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));
@@ -40,11 +47,16 @@ vi.mock("../../../shared/read-only-gate", () => ({
 	guardToolWriteForReadOnly: vi.fn(async () => null),
 }));
 
-function connected() {
+function connected(readOnlyHint?: boolean) {
 	// A fresh client object per acquisition, as after a reconnect.
 	h.getClient.mockImplementation(async () => ({
 		client: {
-			tools: async () => ({ create_card: { execute: h.execute } }),
+			tools: async () => ({
+				create_card: {
+					execute: h.execute,
+					metadata: { annotations: { readOnlyHint } },
+				},
+			}),
 		},
 		serverName: "Fizzy",
 		fromCache: false,
@@ -64,6 +76,7 @@ describe("executeMcpTool failureKind", () => {
 		vi.useRealTimers();
 		h.execute.mockReset();
 		h.getClient.mockReset();
+		h.invalidate.mockReset();
 	});
 
 	// An error result is the server's answer after the call was sent; it is
@@ -119,6 +132,108 @@ describe("executeMcpTool failureKind", () => {
 			expect(isDefiniteMcpCreateRejection(res)).toBe(false);
 		},
 	);
+
+	function prismaError() {
+		return Object.assign(new Error("Record required but not found."), {
+			name: "PrismaClientKnownRequestError",
+			code: "P2025",
+		});
+	}
+
+	it.each([
+		["direct", () => prismaError()],
+		["native cause", () => new Error("x", { cause: prismaError() })],
+		[
+			"MCP originalCause",
+			() =>
+				Object.assign(new Error("x"), { originalCause: prismaError() }),
+		],
+	])(
+		"marks a %s database error after dispatch without changing failureKind",
+		async (_label, makeError) => {
+			connected();
+			h.execute.mockRejectedValueOnce(makeError());
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+			const res = await executeMcpTool(call);
+			expect(res).toMatchObject({
+				success: false,
+				failureKind: "indeterminate",
+				localDatabaseError: true,
+			});
+		},
+	);
+
+	it("keeps database provenance when the reconnect/resend failure is relabelled", async () => {
+		connected();
+		h.execute
+			.mockRejectedValueOnce(
+				new Error("Attempted to send a request from a closed client"),
+			)
+			.mockRejectedValueOnce(prismaError());
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+		const res = await executeMcpTool(call);
+		expect(h.execute).toHaveBeenCalledTimes(2);
+		expect(res).toMatchObject({
+			success: false,
+			failureKind: "indeterminate",
+			localDatabaseError: true,
+		});
+	});
+
+	it("marks a database error in the reconnect retryError catch", async () => {
+		connected();
+		h.execute.mockRejectedValueOnce(
+			new Error("Attempted to send a request from a closed client"),
+		);
+		h.invalidate.mockRejectedValueOnce(prismaError());
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+		const res = await executeMcpTool(call);
+		expect(res).toMatchObject({
+			success: false,
+			failureKind: "indeterminate",
+			localDatabaseError: true,
+		});
+	});
+
+	it("marks a wrapped database error on the closed-client at-most-once exit", async () => {
+		connected();
+		h.execute.mockRejectedValueOnce(
+			new Error("Connection closed", { cause: prismaError() }),
+		);
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+		const res = await executeMcpTool({ ...call, sendAtMostOnce: true });
+		expect(h.execute).toHaveBeenCalledTimes(1);
+		expect(res).toMatchObject({
+			success: false,
+			failureKind: "indeterminate",
+			localDatabaseError: true,
+		});
+	});
+
+	it("marks a database error before dispatch without changing rejection semantics", async () => {
+		h.getClient.mockRejectedValueOnce(prismaError());
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+		const res = await executeMcpTool(call);
+		expect(res).toMatchObject({
+			success: false,
+			failureKind: "rejected",
+			localDatabaseError: true,
+		});
+	});
+
+	it("does not mark a genuine JSON-RPC Resource not found error as local database failure", async () => {
+		connected();
+		h.execute.mockRejectedValueOnce(
+			new Error("Resource not found: example-card"),
+		);
+		const { executeMcpTool } = await import("../execute-mcp-tool");
+		const res = await executeMcpTool(call);
+		expect(res).toMatchObject({
+			success: false,
+			failureKind: "indeterminate",
+		});
+		expect(res.localDatabaseError).toBeUndefined();
+	});
 
 	it("a success carries no failureKind", async () => {
 		connected();
@@ -404,7 +519,7 @@ describe("executeMcpTool failureKind", () => {
 	});
 
 	describe("a connection that closes after the call was sent", () => {
-		it("by default the call is resent on a fresh connection (unchanged)", async () => {
+		it("a write tool is not resent after an in-flight connection closes", async () => {
 			connected();
 			h.execute
 				.mockRejectedValueOnce(new Error("Connection closed"))
@@ -413,12 +528,178 @@ describe("executeMcpTool failureKind", () => {
 
 			const res = await executeMcpTool(call);
 
-			expect(h.execute).toHaveBeenCalledTimes(2);
-			expect(res.success).toBe(true);
+			expect(h.execute).toHaveBeenCalledTimes(1);
+			expect(res).toMatchObject({
+				success: false,
+				failureKind: "indeterminate",
+				output: { error: "Connection closed" },
+			});
+			// Only the client this call used is evicted, not a replacement.
+			const { client: used } = await h.getClient.mock.results[0].value;
+			expect(h.invalidate).toHaveBeenCalledWith(
+				"cfg1",
+				"u1",
+				undefined,
+				used,
+			);
+		});
+
+		it.each([
+			["Attempted to send a request from a closed client", undefined],
+			["Connection closed", true],
+		])(
+			"resends once for %s with readOnlyHint=%s",
+			async (message, readOnly) => {
+				connected(readOnly);
+				h.execute
+					.mockRejectedValueOnce(new Error(message))
+					.mockResolvedValueOnce({ id: "1" });
+				const { executeMcpTool } = await import("../execute-mcp-tool");
+				expect(await executeMcpTool(call)).toMatchObject({
+					success: true,
+				});
+				expect(h.execute).toHaveBeenCalledTimes(2);
+				expect(h.invalidate).toHaveBeenCalledTimes(1);
+				expect(h.getClient).toHaveBeenCalledTimes(2);
+			},
+		);
+
+		it.each([
+			"Transport closed",
+			"Attempted to send a request from a closed client",
+		])(
+			"bounds a read-only resend when both attempts fail with %s",
+			async (message) => {
+				connected(true);
+				h.execute
+					.mockRejectedValueOnce(new Error(message))
+					.mockRejectedValueOnce(new Error(message))
+					.mockResolvedValue({ id: "unexpected-third-send" });
+				const { executeMcpTool } = await import("../execute-mcp-tool");
+				const res = await executeMcpTool(call);
+				expect(h.execute).toHaveBeenCalledTimes(2);
+				expect(res).toMatchObject({
+					success: false,
+					failureKind: "indeterminate",
+				});
+			},
+		);
+
+		it.each(["resend", "invalidation", "no-resend invalidation"])(
+			"propagates a dispatch stop from %s",
+			async (site) => {
+				connected();
+				const stop = new Error("turn stopped");
+				h.execute.mockRejectedValueOnce(
+					new Error(
+						site === "no-resend invalidation"
+							? "Connection closed"
+							: "Attempted to send a request from a closed client",
+					),
+				);
+				if (site === "resend") {
+					h.execute.mockRejectedValueOnce(stop);
+				} else {
+					h.invalidate.mockRejectedValueOnce(stop);
+				}
+				const { runWithDispatchGuard } = await import(
+					"@repo/utils/dispatch-guard"
+				);
+				const { executeMcpTool } = await import("../execute-mcp-tool");
+				await expect(
+					runWithDispatchGuard(
+						{
+							key: "example-turn",
+							assertDispatchable: async () => undefined,
+							abortSignal: () => undefined,
+							rethrowIfStopped: (error) => {
+								if (error === stop) {
+									throw error;
+								}
+							},
+						},
+						() => executeMcpTool(call),
+					),
+				).rejects.toBe(stop);
+			},
+		);
+
+		it("propagates a GitLab origin mismatch during resend acquisition", async () => {
+			connected();
+			const { McpGitLabOriginMismatchError } = await import("@repo/mcp");
+			h.execute.mockRejectedValueOnce(
+				new Error("Attempted to send a request from a closed client"),
+			);
+			const firstClient = await h.getClient();
+			h.getClient
+				.mockReset()
+				.mockResolvedValueOnce(firstClient)
+				.mockRejectedValueOnce(
+					new McpGitLabOriginMismatchError("example origin mismatch"),
+				);
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+			await expect(executeMcpTool(call)).rejects.toMatchObject({
+				type: "GitLabPmOriginMismatch",
+				nonRetryable: true,
+			});
+		});
+
+		it("a connection that closes before either attempt sends is rejected, and reconnects once", async () => {
+			h.getClient
+				.mockRejectedValueOnce(new Error("Connection closed"))
+				.mockRejectedValueOnce(new Error("Connection closed"));
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+
+			const res = await executeMcpTool(call);
+
+			expect(h.getClient).toHaveBeenCalledTimes(2);
+			expect(h.execute).not.toHaveBeenCalled();
+			// No client was acquired, so a concurrent call's cached client stays.
+			expect(h.invalidate).not.toHaveBeenCalled();
+			expect(res).toMatchObject({
+				success: false,
+				failureKind: "rejected",
+			});
+		});
+
+		it("a read-only resend that no longer finds the tool is indeterminate, not rejected", async () => {
+			connected(true);
+			const listed = h.getClient.getMockImplementation();
+			h.getClient
+				.mockImplementationOnce(async () => listed?.())
+				.mockImplementationOnce(async () => ({
+					client: { tools: async () => ({}) },
+					serverName: "Fizzy",
+					fromCache: false,
+				}));
+			h.execute.mockRejectedValueOnce(new Error("Connection closed"));
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+
+			const res = await executeMcpTool(call);
+
+			expect(h.execute).toHaveBeenCalledTimes(1);
+			expect(res).toMatchObject({
+				success: false,
+				failureKind: "indeterminate",
+			});
+		});
+
+		it("swallows an ordinary invalidation failure when a write is not resent", async () => {
+			connected();
+			h.execute.mockRejectedValueOnce(new Error("Connection closed"));
+			h.invalidate.mockRejectedValueOnce(new Error("cache unavailable"));
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+			expect(await executeMcpTool(call)).toMatchObject({
+				success: false,
+				failureKind: "indeterminate",
+				output: { error: "Connection closed" },
+			});
+			expect(h.execute).toHaveBeenCalledTimes(1);
+			expect(h.invalidate).toHaveBeenCalledTimes(1);
 		});
 
 		it("a failed resend is indeterminate: the first send may have landed", async () => {
-			connected();
+			connected(true);
 			h.execute
 				.mockRejectedValueOnce(new Error("Connection closed"))
 				.mockResolvedValueOnce({
@@ -433,8 +714,25 @@ describe("executeMcpTool failureKind", () => {
 			expect(res.failureKind).toBe("indeterminate");
 		});
 
-		it("with sendAtMostOnce it is not resent, and comes back indeterminate", async () => {
+		it.each([
+			"Connection closed",
+			"Attempted to send a request from a closed client",
+		])("with sendAtMostOnce %s is not resent", async (message) => {
 			connected();
+			h.execute
+				.mockRejectedValueOnce(new Error(message))
+				.mockResolvedValueOnce({ id: "2" });
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+
+			const res = await executeMcpTool({ ...call, sendAtMostOnce: true });
+
+			expect(h.execute).toHaveBeenCalledTimes(1);
+			expect(res.success).toBe(false);
+			expect(res.failureKind).toBe("indeterminate");
+		});
+
+		it("with sendAtMostOnce a read-only tool is not resent either", async () => {
+			connected(true);
 			h.execute
 				.mockRejectedValueOnce(new Error("Connection closed"))
 				.mockResolvedValueOnce({ id: "2" });
@@ -443,7 +741,28 @@ describe("executeMcpTool failureKind", () => {
 			const res = await executeMcpTool({ ...call, sendAtMostOnce: true });
 
 			expect(h.execute).toHaveBeenCalledTimes(1);
-			expect(res.success).toBe(false);
+			expect(res.failureKind).toBe("indeterminate");
+		});
+
+		it("a server's JSON-RPC error quoting the closed-client text is not resent", async () => {
+			// A proxy server relaying its own downstream's error: the call
+			// reached the proxy, so it was sent.
+			connected();
+			h.execute
+				.mockRejectedValueOnce(
+					Object.assign(
+						new Error(
+							"Attempted to send a request from a closed client",
+						),
+						{ code: -32603 },
+					),
+				)
+				.mockResolvedValueOnce({ id: "2" });
+			const { executeMcpTool } = await import("../execute-mcp-tool");
+
+			const res = await executeMcpTool(call);
+
+			expect(h.execute).toHaveBeenCalledTimes(1);
 			expect(res.failureKind).toBe("indeterminate");
 		});
 	});

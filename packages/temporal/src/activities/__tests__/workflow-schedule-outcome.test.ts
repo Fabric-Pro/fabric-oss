@@ -52,21 +52,6 @@ vi.mock("@repo/database", () => {
 						: null;
 				},
 			),
-			update: vi.fn(
-				async ({
-					data,
-				}: {
-					data: { status?: string; settings?: never };
-				}) => {
-					const row = world.workflow as WorkflowRow;
-					if (data.status) {
-						row.status = data.status;
-					}
-					if (data.settings) {
-						row.settings = data.settings;
-					}
-				},
-			),
 		},
 		workflowExecution: {
 			findFirst: vi.fn(async () => ({ output: world.executionOutput })),
@@ -81,6 +66,26 @@ vi.mock("@repo/database", () => {
 		canRunOrganizationWorkflows: vi.fn(),
 		createWorkflowExecution: vi.fn(),
 		getWorkflowById: vi.fn(),
+		writeWorkflowRunState: vi.fn(
+			async (
+				_tx: unknown,
+				data: {
+					workflowId: string;
+					organizationId: string | null;
+					settings: Record<string, unknown>;
+					status?: string;
+				},
+			) => {
+				const row = world.workflow as WorkflowRow;
+				expect(data.workflowId).toBe(row.id);
+				expect(data.organizationId).toBe(row.organizationId);
+				row.settings = data.settings;
+				if (data.status) {
+					row.status = data.status;
+				}
+				return 1;
+			},
+		),
 		isWorkflowLive: (status: string) =>
 			status === "PUBLISHED" || status === "ACTIVE",
 		db: { $transaction: async (run: (t: typeof tx) => unknown) => run(tx) },

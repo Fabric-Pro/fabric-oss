@@ -149,10 +149,26 @@ describe("resolveUserOrganization", () => {
 			select: {
 				lastActiveOrganizationId: true,
 				members: {
+					where: { organization: { deletedAt: null } },
 					select: { organizationId: true },
 					orderBy: { organizationId: "asc" },
 				},
 			},
+		});
+	});
+
+	it("does not resolve to a last-active organization that has been deleted", async () => {
+		// The query leaves the deleted organization's membership out, so the
+		// pointer to it is stale: several live memberships stay ambiguous
+		// rather than seeding a session the tenant middleware would refuse.
+		givenUser({
+			lastActiveOrganizationId: ORG_C,
+			organizationIds: [ORG_A, ORG_B],
+		});
+
+		await expect(resolveUserOrganization(USER_ID)).resolves.toEqual({
+			kind: "ambiguous",
+			organizationIds: [ORG_A, ORG_B],
 		});
 	});
 });

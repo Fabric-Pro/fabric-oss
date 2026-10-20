@@ -328,6 +328,12 @@ describe("v1 chats — POST /chats/:id/messages", () => {
 		expect(persistedCall.messages[1]?.role).toBe("assistant");
 		// First-turn title generation kicked in
 		expect(mockGenerateChatTitle).toHaveBeenCalledTimes(1);
+		expect(mockGenerateChatTitle.mock.calls[0][1].conversationId).toBe(
+			"chat-1",
+		);
+		expect(mockGetAIModelWithMetadata.mock.calls[0][1].conversationId).toBe(
+			"chat-1",
+		);
 		expect(persistedCall.title).toBe("Generated Title");
 	});
 

@@ -21,6 +21,7 @@ describe("getLinkedExternalIds", () => {
 				lastSyncedPmHash: "h",
 				lastPmSyncStatus: null,
 				externalMcpServerId: "srv-gl",
+				externalPmTarget: 'pmt1:["srv-gl","https://gitlab.com","42"]',
 				externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
 			},
 		]);
@@ -35,6 +36,7 @@ describe("getLinkedExternalIds", () => {
 				lastSyncedPmHash: true,
 				lastPmSyncStatus: true,
 				externalMcpServerId: true,
+				externalPmTarget: true,
 				externalUrl: true,
 			},
 		});
@@ -47,6 +49,7 @@ describe("getLinkedExternalIds", () => {
 			lastSyncedPmHash: "h",
 			lastPmSyncStatus: null,
 			externalMcpServerId: "srv-gl",
+			externalPmTarget: 'pmt1:["srv-gl","https://gitlab.com","42"]',
 			externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
 		});
 	});

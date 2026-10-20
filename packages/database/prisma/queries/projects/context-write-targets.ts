@@ -25,10 +25,24 @@
  * set when a target comes to be DIRECT_PUSH (new, or moved from another mode,
  * or re-pointed at another folder, since the approval was for that folder),
  * cleared when it is not. No other code sets either column.
+ *
+ * `indexMode` (Index for AI search, or Store only) is the folder's choice
+ * about embedding its files. The rows under a folder carry a derived copy of
+ * it, recomputed (`reconcileContextIndexing`) in the same transaction as
+ * every change here, under the same lock; the writers hand back what that
+ * moved (`reindex`) so the caller can delete the vectors of rows that became
+ * store-only and index the ones that stopped being.
  */
 
 import { db, type Prisma } from "../../client";
-import type { ProjectContextWriteMode } from "../../generated/client";
+import type {
+	ProjectContextIndexMode,
+	ProjectContextWriteMode,
+} from "../../generated/client";
+import {
+	type ContextIndexReconcileResult,
+	reconcileContextIndexing,
+} from "./context-index-mode";
 import {
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
 	type LockedContextRepositorySync,
@@ -38,6 +52,9 @@ import {
 /** How a write folder's files land: derived from the enum, not restated. */
 export type ContextWriteMode = ProjectContextWriteMode;
 
+/** Whether a folder's files are embedded for AI search: derived from the enum. */
+export type ContextWriteIndexMode = ProjectContextIndexMode;
+
 const targetSelect = {
 	id: true,
 	syncId: true,
@@ -46,6 +63,7 @@ const targetSelect = {
 	userId: true,
 	folder: true,
 	mode: true,
+	indexMode: true,
 	directPushEnabledById: true,
 	directPushEnabledAt: true,
 	version: true,
@@ -84,13 +102,23 @@ export interface ContextWriteTargetState {
 }
 
 export type ContextWriteTargetDecision<Refusal> =
-	| { accept: true; folder: string; mode: ContextWriteMode }
+	| {
+			accept: true;
+			folder: string;
+			mode: ContextWriteMode;
+			/** Absent: INDEXED for a new folder, the stored choice for an update. */
+			indexMode?: ContextWriteIndexMode;
+	  }
 	| { accept: false; refusal: Refusal };
 
 export type CreateContextWriteTargetResult<Refusal> =
 	| { status: "not-configured" }
 	| { status: "refused"; refusal: Refusal }
-	| { status: "created"; target: ContextWriteTargetView };
+	| {
+			status: "created";
+			target: ContextWriteTargetView;
+			reindex: ContextIndexReconcileResult;
+	  };
 
 export type UpdateContextWriteTargetResult<Refusal> =
 	| { status: "not-configured" }
@@ -99,13 +127,22 @@ export type UpdateContextWriteTargetResult<Refusal> =
 	| {
 			status: "updated";
 			target: ContextWriteTargetView;
-			previous: { folder: string; mode: ContextWriteMode };
+			previous: {
+				folder: string;
+				mode: ContextWriteMode;
+				indexMode: ContextWriteIndexMode;
+			};
+			reindex: ContextIndexReconcileResult;
 	  };
 
 export type DeleteContextWriteTargetResult =
 	| { status: "not-configured" }
 	| { status: "not-found" }
-	| { status: "deleted"; target: ContextWriteTargetView };
+	| {
+			status: "deleted";
+			target: ContextWriteTargetView;
+			reindex: ContextIndexReconcileResult;
+	  };
 
 /** The sync's write folders, by folder. The project has at most one sync. */
 export function listContextWriteTargets(
@@ -184,12 +221,19 @@ export function createContextWriteTarget<Refusal>(
 					userId: input.userId,
 					folder: decision.folder,
 					mode: decision.mode,
+					indexMode: decision.indexMode ?? "INDEXED",
 					directPushEnabledById: directPush ? input.userId : null,
 					directPushEnabledAt: directPush ? sync.now : null,
 				},
 				select: targetSelect,
 			});
-			return { status: "created", target };
+			const reindex = await reconcileContextIndexing(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				syncId: sync.id,
+				actingUserId: sync.userId,
+			});
+			return { status: "created", target, reindex };
 		},
 		{ timeout: CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS },
 	);
@@ -237,6 +281,7 @@ export function updateContextWriteTarget<Refusal>(
 					userId: input.userId,
 					folder: decision.folder,
 					mode: decision.mode,
+					indexMode: decision.indexMode ?? existing.indexMode,
 					version: { increment: 1 },
 					...(keepsApproval
 						? {}
@@ -251,10 +296,21 @@ export function updateContextWriteTarget<Refusal>(
 				},
 				select: targetSelect,
 			});
+			const reindex = await reconcileContextIndexing(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				syncId: sync.id,
+				actingUserId: sync.userId,
+			});
 			return {
 				status: "updated",
 				target,
-				previous: { folder: existing.folder, mode: existing.mode },
+				previous: {
+					folder: existing.folder,
+					mode: existing.mode,
+					indexMode: existing.indexMode,
+				},
+				reindex,
 			};
 		},
 		{ timeout: CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS },
@@ -284,7 +340,13 @@ export function deleteContextWriteTarget(
 			await tx.projectContextWriteTarget.delete({
 				where: { id: target.id },
 			});
-			return { status: "deleted", target };
+			const reindex = await reconcileContextIndexing(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				syncId: sync.id,
+				actingUserId: sync.userId,
+			});
+			return { status: "deleted", target, reindex };
 		},
 		{ timeout: CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS },
 	);

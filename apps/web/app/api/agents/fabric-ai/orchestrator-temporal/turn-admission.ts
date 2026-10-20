@@ -398,6 +398,8 @@ export async function admitChatTurn(args: {
 	conversationId: string | null;
 	clientRequestKey: string;
 	executionMode: string;
+	/** The message the turn answers, kept on a new turn's row. */
+	question: string;
 	temporalClient: TemporalClientLike;
 }): Promise<ChatTurnAdmission> {
 	for (let attempt = 0; attempt < 2; attempt++) {
@@ -408,6 +410,7 @@ export async function admitChatTurn(args: {
 			clientRequestKey: args.clientRequestKey,
 			executionId: `orch-${uuidv4()}`,
 			executionMode: args.executionMode,
+			question: args.question,
 			budget: turnBudgetForExecutionMode(
 				args.executionMode as ExecutionMode,
 			),

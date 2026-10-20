@@ -1,19 +1,21 @@
 /**
  * Downloads and the Glossy entry of a Proposal under the `PROPOSAL_ARTIFACT`
- * rollout gate (Fizzy #2801).
+ * rollout gate (Fizzy #2801, Fizzy #2946).
  *
- * Export is Main only. PDF and DOCX read the document through
- * `projects.documents.get` and render its `content` — the client-ready Main
- * document — and nothing else: the Internal Analysis lives in its own tables
- * behind its own procedures, so the proof is that an export makes exactly one
- * client call, the document read. The oRPC client is a recording proxy, so a
- * call to any other procedure, present or future, shows up by name.
+ * A client-document Proposal's PDF and Word file are made by the server from
+ * the theme its page wears: the menu calls `proposalArtifact.export`, polls
+ * `proposalArtifact.exportStatus`, and downloads the link it is handed. It
+ * never reads the document to render it in the browser, and a failed export
+ * never falls back to the browser renderer. The oRPC client is a recording
+ * proxy, so a call to any other procedure, present or future, shows up by
+ * name.
  *
- * The visuals a coordinated run writes into Main are mermaid fences, and an
- * export renders each as an image, not as its source text. Only what jsdom
- * cannot do is stubbed: the canvas step (`svgToPng`) and the diagram engine;
- * the PDF and DOCX renderers run for real, with jsPDF's `addImage` and docx's
- * `ImageRun` recorded.
+ * Everything else — a Business Case, and a Proposal with the gate off, or
+ * one the server says it does not cover — keeps today's browser export:
+ * `projects.documents.get`, then the PDF and DOCX renderers, which run for
+ * real here with jsPDF's `addImage` and docx's `ImageRun` recorded. Only
+ * what jsdom cannot do is stubbed: the canvas step (`svgToPng`) and the
+ * diagram engine.
  *
  * The Glossy item: such a Proposal needs no Glossy edition, so the menu, and
  * the list that hands it the link, offer the item only when a legacy edition
@@ -64,7 +66,10 @@ const rec = vi.hoisted(() => {
 		docxImages: 0,
 		docxTexts: [] as string[],
 		downloads: [] as { blob: Blob; filename: string }[],
+		urlDownloads: [] as { url: string; filename: string }[],
 		documentsList: vi.fn(),
+		/** The export client's clock; tests that wait out the deadline move it. */
+		now: (() => Date.now()) as () => number,
 	};
 });
 
@@ -90,6 +95,28 @@ vi.mock("@saas/projects/lib/markdown-to-document", async (importOriginal) => {
 		triggerBlobDownload: (blob: Blob, filename: string) => {
 			rec.downloads.push({ blob, filename });
 		},
+		triggerUrlDownload: (url: string, filename: string) => {
+			rec.urlDownloads.push({ url, filename });
+		},
+	};
+});
+
+// The export client for real, with its waits skipped and its clock the test's.
+vi.mock("@saas/projects/lib/proposal-export-client", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@saas/projects/lib/proposal-export-client")
+		>();
+	return {
+		...actual,
+		runProposalExport: (
+			args: Parameters<typeof actual.runProposalExport>[0],
+		) =>
+			actual.runProposalExport({
+				...args,
+				sleep: async () => undefined,
+				now: () => rec.now(),
+			}),
 	};
 });
 
@@ -171,7 +198,7 @@ vi.mock("docx", async (importOriginal) => {
 });
 
 vi.mock("sonner", () => ({
-	toast: { success: vi.fn(), error: vi.fn() },
+	toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 // DocumentsList's own collaborators, for the list half below.
@@ -225,6 +252,7 @@ vi.mock("@saas/projects/components/ProjectSectionHero", () => ({
 
 import { DocumentDownloadDropdown } from "@saas/projects/components/DocumentDownloadDropdown";
 import { DocumentsList } from "@saas/projects/components/DocumentsList";
+import { toast } from "sonner";
 
 // ── Fixtures and helpers ─────────────────────────────────────────────────
 
@@ -306,32 +334,354 @@ function resetRecords() {
 	rec.docxImages = 0;
 	rec.docxTexts.length = 0;
 	rec.downloads.length = 0;
+	rec.urlDownloads.length = 0;
 	rec.documentsList.mockReset();
+	rec.now = () => Date.now();
+	vi.mocked(toast.success).mockReset();
+	vi.mocked(toast.error).mockReset();
+	vi.mocked(toast.info).mockReset();
 	rec.flags.glossy = false;
 	rec.flags.proposalArtifact = false;
 }
 
-// ── Export: Main only, visuals as images ─────────────────────────────────
+// ── Export of a client-document Proposal: on the server ────────────────
 
-describe("DocumentDownloadDropdown — export of a Proposal under the Proposal artifact gate", () => {
+const EXPORT_ID = `proposal-export-${"0f".repeat(16)}`;
+const READY = {
+	status: "READY",
+	url: "https://storage.example.com/proposal-exports/proj_1/export.pdf?signed",
+	expiresAt: "2026-10-15T12:05:00.000Z",
+	fileName: "example-proposal.pdf",
+	warnings: [],
+};
+
+/** Status answers in order; the last one repeats. */
+function statusSequence(...answers: unknown[]) {
+	const queue = [...answers];
+	rec.handlers["projects.proposalArtifact.exportStatus"] = async () =>
+		queue.length > 1 ? queue.shift() : queue[0];
+}
+
+function orpcError(code: string, data?: unknown) {
+	return Object.assign(new Error(code), { code, data });
+}
+
+/** The toast action a call carried, to click it as the reader would. */
+function toastAction(
+	mock: typeof toast.error,
+): { label: string; onClick: () => void } | undefined {
+	const options = vi.mocked(mock).mock.calls.at(-1)?.[1] as
+		| { action?: { label: string; onClick: () => void } }
+		| undefined;
+	return options?.action;
+}
+
+async function choose(item: "PDF (.pdf)" | "Word (.docx)" | "Markdown (.md)") {
+	renderDropdown();
+	const user = await openMenu();
+	await user.click(screen.getByRole("menuitem", { name: item }));
+}
+
+describe("DocumentDownloadDropdown — server export of a client-document Proposal", () => {
 	beforeEach(() => {
 		resetRecords();
 		rec.flags.proposalArtifact = true;
+		rec.handlers["projects.proposalArtifact.export"] = async () => ({
+			exportId: EXPORT_ID,
+		});
+		statusSequence({ status: "RUNNING" }, READY);
+	});
+
+	it("exports the PDF on the server and downloads the link it is handed", async () => {
+		const exportCall = vi.fn(async () => ({ exportId: EXPORT_ID }));
+		rec.handlers["projects.proposalArtifact.export"] = exportCall;
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(rec.urlDownloads).toHaveLength(1));
+		expect(rec.urlDownloads[0]).toEqual({
+			url: READY.url,
+			filename: "example-proposal.pdf",
+		});
+		expect(exportCall).toHaveBeenCalledWith({
+			projectId: "proj_1",
+			documentId: "doc_1",
+			format: "pdf",
+		});
+		// No document read, no browser rendering: the server made the file.
+		expect(rec.calls).toEqual([
+			"projects.proposalArtifact.export",
+			"projects.proposalArtifact.exportStatus",
+			"projects.proposalArtifact.exportStatus",
+		]);
+		expect(rec.downloads).toEqual([]);
+		expect(rec.pdfImages).toEqual([]);
+	});
+
+	it("exports the Word file on the server too", async () => {
+		const exportCall = vi.fn(async () => ({ exportId: EXPORT_ID }));
+		rec.handlers["projects.proposalArtifact.export"] = exportCall;
+		statusSequence({ ...READY, fileName: "example-proposal.docx" });
+		await choose("Word (.docx)");
+
+		await waitFor(() => expect(rec.urlDownloads).toHaveLength(1));
+		expect(exportCall).toHaveBeenCalledWith(
+			expect.objectContaining({ format: "docx" }),
+		);
+		expect(rec.urlDownloads[0].filename).toBe("example-proposal.docx");
+		expect(rec.calls).not.toContain("projects.documents.get");
+		expect(rec.docxImages).toBe(0);
+	});
+
+	it("offers a Download action instead when the click no longer counts", async () => {
+		Object.defineProperty(navigator, "userActivation", {
+			configurable: true,
+			value: { isActive: false },
+		});
+		try {
+			await choose("PDF (.pdf)");
+			await waitFor(() => expect(toast.success).toHaveBeenCalled());
+			expect(rec.urlDownloads).toEqual([]);
+			expect(vi.mocked(toast.success).mock.calls[0][0]).toBe(
+				"exportReady",
+			);
+
+			const action = toastAction(toast.success);
+			expect(action?.label).toBe("exportDownload");
+			action?.onClick();
+			expect(rec.urlDownloads).toEqual([
+				{ url: READY.url, filename: "example-proposal.pdf" },
+			]);
+		} finally {
+			Reflect.deleteProperty(navigator, "userActivation");
+		}
+	});
+
+	it("names what the export left out", async () => {
+		statusSequence({
+			...READY,
+			warnings: [
+				{ code: "DIAGRAM_PLACEHOLDER", count: 2 },
+				{ code: "IMAGE_DROPPED", count: 1 },
+			],
+		});
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.info).toHaveBeenCalled());
+		expect(vi.mocked(toast.info).mock.calls[0]).toEqual([
+			"exportLeftOut",
+			{
+				description:
+					"exportWarningDiagramPlaceholder exportWarningImageDropped",
+			},
+		]);
+		expect(rec.urlDownloads).toHaveLength(1);
+	});
+
+	it("shows a failure with Retry and never falls back to the browser renderer", async () => {
+		statusSequence({ status: "FAILED", code: "EXPORT_FAILED" });
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(vi.mocked(toast.error).mock.calls[0][0]).toBe("exportFailed");
+		expect(rec.calls).not.toContain("projects.documents.get");
+		expect(rec.downloads).toEqual([]);
+		expect(rec.urlDownloads).toEqual([]);
+
+		// Retry starts a new export.
+		statusSequence(READY);
+		toastAction(toast.error)?.onClick();
+		await waitFor(() => expect(rec.urlDownloads).toHaveLength(1));
+		expect(
+			rec.calls.filter(
+				(call) => call === "projects.proposalArtifact.export",
+			),
+		).toHaveLength(2);
+	});
+
+	it("keeps waiting through a dropped status read", async () => {
+		let reads = 0;
+		rec.handlers["projects.proposalArtifact.exportStatus"] = async () => {
+			reads++;
+			if (reads === 1) {
+				throw new Error("Failed to fetch");
+			}
+			return READY;
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(rec.urlDownloads).toHaveLength(1));
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(reads).toBe(2);
+	});
+
+	it("gives up after three status reads fail in a row", async () => {
+		let reads = 0;
+		rec.handlers["projects.proposalArtifact.exportStatus"] = async () => {
+			reads++;
+			throw new Error("Failed to fetch");
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(reads).toBe(3);
+		expect(rec.urlDownloads).toEqual([]);
+	});
+
+	it("counts only failures in a row: a good read starts the count again", async () => {
+		const answers: Array<"fail" | "running" | "ready"> = [
+			"fail",
+			"running",
+			"fail",
+			"fail",
+			"ready",
+		];
+		rec.handlers["projects.proposalArtifact.exportStatus"] = async () => {
+			const next = answers.shift();
+			if (next === "fail") {
+				throw new Error("Failed to fetch");
+			}
+			return next === "running" ? { status: "RUNNING" } : READY;
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(rec.urlDownloads).toHaveLength(1));
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(answers).toEqual([]);
+	});
+
+	it("stops waiting at once when the status read is refused", async () => {
+		rec.handlers["projects.proposalArtifact.exportStatus"] = async () => {
+			throw orpcError("NOT_FOUND");
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(
+			rec.calls.filter(
+				(call) => call === "projects.proposalArtifact.exportStatus",
+			),
+		).toHaveLength(1);
+		expect(rec.urlDownloads).toEqual([]);
+	});
+
+	it("explains a document too long to print", async () => {
+		statusSequence({ status: "FAILED", code: "TOO_MANY_PAGES" });
+		await choose("PDF (.pdf)");
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(vi.mocked(toast.error).mock.calls[0][0]).toBe(
+			"exportFailureTooManyPages",
+		);
+	});
+
+	it("stops waiting at its deadline and offers a retry", async () => {
+		let calls = 0;
+		const start = Date.now();
+		// Each read of the clock moves it a minute on.
+		rec.now = () => start + 60_000 * calls++;
+		statusSequence({ status: "RUNNING" });
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(vi.mocked(toast.error).mock.calls[0][0]).toBe(
+			"exportStillRunning",
+		);
+		expect(toastAction(toast.error)?.label).toBe("exportRetry");
+		expect(rec.urlDownloads).toEqual([]);
+	});
+
+	it("tells a reader over the export limit when to try again", async () => {
+		rec.handlers["projects.proposalArtifact.export"] = async () => {
+			throw orpcError("TOO_MANY_REQUESTS", { retryAfter: 42 });
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(vi.mocked(toast.error).mock.calls[0][0]).toBe(
+			"exportRateLimited",
+		);
+		expect(rec.calls).toEqual(["projects.proposalArtifact.export"]);
+	});
+
+	it("shows an error, not the browser export, when the start is refused", async () => {
+		rec.handlers["projects.proposalArtifact.export"] = async () => {
+			throw orpcError("NOT_FOUND");
+		};
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(toast.error).toHaveBeenCalled());
+		expect(vi.mocked(toast.error).mock.calls[0][0]).toBe("exportFailed");
+		expect(rec.calls).toEqual(["projects.proposalArtifact.export"]);
+	});
+
+	it("exports in the browser when the server says the document is not a client document", async () => {
+		rec.handlers["projects.proposalArtifact.export"] = async () => {
+			throw orpcError("BAD_REQUEST", {
+				code: "PROPOSAL_EXPORT_UNSUPPORTED",
+			});
+		};
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: { content: MAIN_CONTENT },
+		});
+		await choose("PDF (.pdf)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(rec.calls).toEqual([
+			"projects.proposalArtifact.export",
+			"projects.documents.get",
+		]);
+		expect(rec.downloads[0].filename).toBe("example-proposal.pdf");
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
+	it("downloads the Markdown without citation markers or a Source Index", async () => {
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: {
+				content: [
+					"# Example proposal",
+					"",
+					"The pilot runs for six weeks [S2].",
+					"",
+					"## Appendix",
+					"",
+					"Start date: TBD",
+					"",
+					"## Source Index",
+					"",
+					"- [S2] Kickoff notes",
+				].join("\n"),
+			},
+		});
+		await choose("Markdown (.md)");
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		const markdown = await readBlobText(rec.downloads[0].blob);
+		expect(markdown).toContain("The pilot runs for six weeks.");
+		expect(markdown).toContain("## Appendix");
+		expect(markdown).toContain("Start date: TBD");
+		expect(markdown).not.toContain("[S2]");
+		expect(markdown).not.toContain("Source Index");
+		expect(markdown).not.toContain("Kickoff notes");
+		expect(rec.calls).toEqual(["projects.documents.get"]);
+	});
+});
+
+// ── Everything else: today's browser export ──────────────────────────────
+
+describe("DocumentDownloadDropdown — browser export of every other document", () => {
+	beforeEach(() => {
+		resetRecords();
 		rec.handlers["projects.documents.get"] = async () => ({
 			document: { content: MAIN_CONTENT },
 		});
 	});
 
-	it("builds the PDF from the document read alone, with the visual as an image", async () => {
-		const user = await (async () => {
-			renderDropdown();
-			return openMenu();
-		})();
+	it("builds a Business Case's PDF from the document read alone, with the visual as an image", async () => {
+		rec.flags.proposalArtifact = true;
+		renderDropdown({ documentType: "BUSINESS_CASE" });
+		const user = await openMenu();
 		await user.click(screen.getByRole("menuitem", { name: "PDF (.pdf)" }));
 
 		await waitFor(() => expect(rec.downloads).toHaveLength(1));
-		// One client call, and it is the document read: no analysis, no
-		// style, no other procedure is consulted for an export.
 		expect(rec.calls).toEqual(["projects.documents.get"]);
 		expect(rec.calls.some((call) => /proposalArtifact/i.test(call))).toBe(
 			false,
@@ -343,12 +693,11 @@ describe("DocumentDownloadDropdown — export of a Proposal under the Proposal a
 		const pdf = await readBlobText(rec.downloads[0].blob);
 		expect(pdf).toContain("Delivery plan");
 		expect(pdf).toContain("A fixed fee per phase.");
-		// The diagram went in as an image, not as its source or a placeholder.
 		expect(pdf).not.toContain("Discovery --> Build");
 		expect(pdf).not.toContain("[Diagram:");
 	});
 
-	it("builds the DOCX from the document read alone, with the visual as an image", async () => {
+	it("builds a gate-off Proposal's DOCX in the browser, with the visual as an image", async () => {
 		renderDropdown();
 		const user = await openMenu();
 		await user.click(
@@ -366,6 +715,23 @@ describe("DocumentDownloadDropdown — export of a Proposal under the Proposal a
 		);
 		expect(rec.docxTexts.join("\n")).not.toMatch(
 			/Discovery --> Build|\[Diagram:/,
+		);
+	});
+
+	it("keeps a Business Case's Markdown as written", async () => {
+		rec.flags.proposalArtifact = true;
+		rec.handlers["projects.documents.get"] = async () => ({
+			document: { content: "Revenue grew [S1]." },
+		});
+		renderDropdown({ documentType: "BUSINESS_CASE" });
+		const user = await openMenu();
+		await user.click(
+			screen.getByRole("menuitem", { name: "Markdown (.md)" }),
+		);
+
+		await waitFor(() => expect(rec.downloads).toHaveLength(1));
+		expect(await readBlobText(rec.downloads[0].blob)).toBe(
+			"Revenue grew [S1].",
 		);
 	});
 

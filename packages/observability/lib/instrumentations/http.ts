@@ -35,7 +35,6 @@ import {
 
 // Semantic conventions
 const HTTP_METHOD = "http.request.method";
-const _HTTP_ROUTE = "http.route";
 const HTTP_STATUS_CODE = "http.response.status_code";
 const HTTP_TARGET = "url.path";
 

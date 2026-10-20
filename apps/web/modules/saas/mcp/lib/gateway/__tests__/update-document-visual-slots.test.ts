@@ -15,6 +15,7 @@
  * Run with: pnpm vitest run modules/saas/mcp/lib/gateway/__tests__/update-document-visual-slots.test.ts
  */
 
+import { contentIdentity } from "@repo/utils/content-identity";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -22,6 +23,13 @@ const mocks = vi.hoisted(() => ({
 	hasPermission: vi.fn(),
 	updateDocument: vi.fn(),
 	getDocumentById: vi.fn(),
+	emitDocumentChange: vi.fn(),
+	isProposalClientDocument: vi.fn(),
+	getProjectAccessContext: vi.fn(),
+}));
+
+vi.mock("@repo/api/lib/realtime", () => ({
+	emitDocumentChange: mocks.emitDocumentChange,
 }));
 
 vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
@@ -42,8 +50,11 @@ vi.mock("@repo/database", () => ({
 	},
 	updateDocument: mocks.updateDocument,
 	getDocumentById: mocks.getDocumentById,
+	isProposalClientDocument: mocks.isProposalClientDocument,
+	getProjectAccessContext: mocks.getProjectAccessContext,
 	IntegrationContractStatusManagedError: class extends Error {},
 	DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
+	DocumentGenerationInProgressError: class DocumentGenerationInProgressError extends Error {},
 }));
 
 import {
@@ -137,10 +148,12 @@ beforeEach(() => {
 			permissions.includes(required),
 	);
 	mocks.getDocumentById.mockResolvedValue(storedDocument(STORED_WITH_SLOT));
+	mocks.isProposalClientDocument.mockResolvedValue(false);
 	mocks.updateDocument.mockResolvedValue({
 		id: "doc-1",
 		title: "Proposal",
 		status: "DRAFT",
+		content: STORED_WITH_SLOT,
 		version: 2,
 	});
 });
@@ -238,9 +251,12 @@ describe("fabric_update_document guards a slot-involving write", () => {
 	});
 
 	it("keeps the unguarded write when neither body holds a slot", async () => {
-		mocks.getDocumentById.mockResolvedValue(
-			storedDocument(STORED_WITHOUT_SLOT),
-		);
+		// A PRD: a Proposal's content write is always guarded by its read,
+		// for the run that may write its body.
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(STORED_WITHOUT_SLOT),
+			type: "PRD",
+		});
 
 		await updateContent(`${STORED_WITHOUT_SLOT}\n\nOne more line.`);
 
@@ -263,6 +279,63 @@ describe("fabric_update_document guards a slot-involving write", () => {
 		expect(JSON.stringify(result)).toMatch(
 			/changed while it was being updated/,
 		);
+	});
+});
+
+// Open editors refetch on `document_change`, so a collaborative room holding
+// the body an agent's write replaced brings itself to the saved one instead
+// of saving the older body back (Fizzy #2946).
+describe("fabric_update_document nudges open editors", () => {
+	beforeEach(() => {
+		mocks.getDocumentById.mockResolvedValue(
+			storedDocument(STORED_WITHOUT_SLOT),
+		);
+		mocks.emitDocumentChange.mockResolvedValue(undefined);
+	});
+
+	it("emits document_change once after a content write", async () => {
+		await updateContent(`${STORED_WITHOUT_SLOT}\n\nOne more line.`);
+
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+		expect(mocks.emitDocumentChange).toHaveBeenCalledWith({
+			projectId: "proj-1",
+			documentId: "doc-1",
+			action: "updated",
+			userId: "user-1",
+			userName: "Example Agent",
+			documentType: "PROPOSAL",
+			documentTitle: "Proposal",
+		});
+	});
+
+	it("emits after a title-only write too, as the editor's own save does", async () => {
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", title: "Proposal for example-org" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("emits nothing when the write was refused", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			storedDocument(STORED_WITH_SLOT),
+		);
+		const { DocumentVersionConflictError } = await import("@repo/database");
+		mocks.updateDocument.mockRejectedValue(
+			new DocumentVersionConflictError("doc-1", 7, 8),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: STORED_WITH_SLOT },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
 	});
 });
 
@@ -292,5 +365,523 @@ describe("fabric_update_document content description", () => {
 		expect(content).toContain("<visual-slot");
 		expect(content).toMatch(/kept in place/);
 		expect(content).toMatch(/ignored/);
+	});
+});
+
+// An agent reads a document, then writes it back. The read names its base
+// (`version`, `contentHash`); a write may send it back, and a client-document
+// Proposal's content write is guarded by the body the call read even when it
+// does not, so a generated body landing in between is never overwritten
+// (Fizzy #2946).
+describe("fabric_get_document returns the document's base", () => {
+	it("returns the version and the body identity", async () => {
+		mocks.getProjectAccessContext.mockResolvedValue({
+			organizationId: "org-1",
+		});
+		mocks.getDocumentById.mockResolvedValue(
+			storedDocument(STORED_WITHOUT_SLOT),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_get_document",
+			{ documentId: "doc-1" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		const payload = JSON.parse(
+			(result.content[0] as { text: string }).text,
+		) as { version: number; contentHash: string };
+		expect(payload.version).toBe(7);
+		expect(payload.contentHash).toBe(contentIdentity(STORED_WITHOUT_SLOT));
+	});
+});
+
+describe("fabric_update_document honours a base", () => {
+	const GENERATED_BODY = "# Proposal\n\nThe body a generation run saved.";
+
+	// Stands in for the query layer's guard: a write that names a base is
+	// refused unless the stored document still matches it.
+	let stored: { content: string; version: number };
+	let written: string[];
+
+	function proposalRow(overrides: Record<string, unknown> = {}) {
+		return {
+			...storedDocument(STORED_WITHOUT_SLOT),
+			project: { organizationId: "org-owner" },
+			...overrides,
+		};
+	}
+
+	function writeOptions() {
+		return mocks.updateDocument.mock.calls[0][1] as Record<string, unknown>;
+	}
+
+	beforeEach(async () => {
+		const { DocumentVersionConflictError } = await import("@repo/database");
+		stored = { content: STORED_WITHOUT_SLOT, version: 7 };
+		written = [];
+		mocks.emitDocumentChange.mockResolvedValue(undefined);
+		mocks.getDocumentById.mockResolvedValue(
+			storedDocument(STORED_WITHOUT_SLOT),
+		);
+		mocks.updateDocument.mockImplementation(
+			async (
+				_id: string,
+				data: {
+					content?: string;
+					expectedVersion?: number;
+					expectedContentHash?: string;
+				},
+			) => {
+				if (
+					(data.expectedVersion !== undefined &&
+						data.expectedVersion !== stored.version) ||
+					(data.expectedContentHash !== undefined &&
+						data.expectedContentHash !==
+							contentIdentity(stored.content))
+				) {
+					throw new DocumentVersionConflictError();
+				}
+				if (data.content !== undefined) {
+					written.push(data.content);
+					stored = {
+						content: data.content,
+						version: stored.version + 1,
+					};
+				}
+				return {
+					id: "doc-1",
+					title: "Proposal",
+					status: "DRAFT",
+					content: stored.content,
+					version: stored.version,
+				};
+			},
+		);
+	});
+
+	it("passes the caller's base to the write", async () => {
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: 7,
+				expectedContentHash: contentIdentity(STORED_WITHOUT_SLOT),
+			},
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(writeOptions().expectedVersion).toBe(7);
+		expect(writeOptions().expectedContentHash).toBe(
+			contentIdentity(STORED_WITHOUT_SLOT),
+		);
+	});
+
+	it("returns the saved base, so a second guarded update chains from it without a read", async () => {
+		const first = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# First edit",
+				expectedVersion: 7,
+				expectedContentHash: contentIdentity(STORED_WITHOUT_SLOT),
+			},
+			session,
+		);
+		expect(first.isError).toBeUndefined();
+		const firstResult = JSON.parse(first.content[0].text as string);
+		expect(firstResult).toMatchObject({
+			version: 8,
+			contentHash: contentIdentity("# First edit"),
+		});
+
+		const second = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Second edit",
+				expectedVersion: firstResult.version,
+				expectedContentHash: firstResult.contentHash,
+			},
+			session,
+		);
+
+		expect(second.isError).toBeUndefined();
+		expect(written).toEqual(["# First edit", "# Second edit"]);
+		expect(mocks.getDocumentById).toHaveBeenCalledTimes(2);
+	});
+
+	it("treats a null base as no base", async () => {
+		// A PRD: a Proposal without a base is guarded by its read instead.
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(STORED_WITHOUT_SLOT),
+			type: "PRD",
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: null,
+				expectedContentHash: null,
+			},
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(writeOptions()).not.toHaveProperty("expectedVersion");
+		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
+		expect(written).toEqual(["# Edited"]);
+	});
+
+	it("still rejects a null half beside a real one", async () => {
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: 7,
+				expectedContentHash: null,
+			},
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(/both expectedVersion/);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it("refuses a stale base and writes nothing", async () => {
+		stored = { content: "# A newer save", version: 8 };
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: 7,
+				expectedContentHash: contentIdentity(STORED_WITHOUT_SLOT),
+			},
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(/Read it again/);
+		expect(written).toEqual([]);
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("rejects a malformed base before writing", async () => {
+		const badVersion = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: "7",
+				expectedContentHash: contentIdentity(STORED_WITHOUT_SLOT),
+			},
+			session,
+		);
+		const badHash = await executePlatformTool(
+			"fabric_update_document",
+			{
+				documentId: "doc-1",
+				content: "# Edited",
+				expectedVersion: 7,
+				expectedContentHash: 1,
+			},
+			session,
+		);
+
+		expect(badVersion.isError).toBe(true);
+		expect(badHash.isError).toBe(true);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["only a version", { expectedVersion: 7 }],
+		[
+			"only a body identity",
+			{ expectedContentHash: contentIdentity(STORED_WITHOUT_SLOT) },
+		],
+	])("rejects half a base: %s", async (_name, base) => {
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockResolvedValue(proposalRow());
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Agent rewrite", ...base },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(/both expectedVersion/);
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+	});
+
+	// The gate's state must not matter: a run already in progress keeps
+	// writing after the Proposal gate is turned off.
+	it.each([
+		["QUEUED", true],
+		["GENERATING", true],
+		["QUEUED", false],
+		["GENERATING", false],
+	])(
+		"refuses a Proposal content write while it is %s (Proposal gate on: %s)",
+		async (status, gateOn) => {
+			mocks.isProposalClientDocument.mockResolvedValue(gateOn);
+			mocks.getDocumentById.mockResolvedValue(proposalRow({ status }));
+
+			const result = await executePlatformTool(
+				"fabric_update_document",
+				{ documentId: "doc-1", content: "# Agent rewrite" },
+				session,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(JSON.stringify(result)).toMatch(
+				/generation run is writing this document/,
+			);
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+		},
+	);
+
+	// The gate's state must not matter: a run already in progress keeps
+	// writing after the Proposal gate is turned off.
+	it.each([
+		["QUEUED", true],
+		["GENERATING", true],
+		["QUEUED", false],
+		["GENERATING", false],
+	])(
+		"refuses a Proposal status-only write while it is %s (Proposal gate on: %s)",
+		async (status, gateOn) => {
+			mocks.isProposalClientDocument.mockResolvedValue(gateOn);
+			mocks.getDocumentById.mockResolvedValue(proposalRow({ status }));
+
+			const result = await executePlatformTool(
+				"fabric_update_document",
+				{ documentId: "doc-1", status: "COMPLETE" },
+				session,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(JSON.stringify(result)).toMatch(
+				/generation run is writing this document/,
+			);
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+		},
+	);
+
+	it("does not let a status write end a run's hold so a content write can follow", async () => {
+		const { DocumentGenerationInProgressError } = await import(
+			"@repo/database"
+		);
+		// Stands in for the stored row and the query layer's run guard.
+		let storedStatus = "GENERATING";
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockImplementation(async () =>
+			proposalRow({ status: storedStatus }),
+		);
+		mocks.updateDocument.mockImplementation(
+			async (
+				_id: string,
+				data: {
+					content?: string;
+					status?: string;
+					refuseWhileGenerating?: boolean;
+				},
+			) => {
+				if (
+					data.refuseWhileGenerating &&
+					(storedStatus === "QUEUED" || storedStatus === "GENERATING")
+				) {
+					throw new DocumentGenerationInProgressError();
+				}
+				if (data.status !== undefined) {
+					storedStatus = data.status;
+				}
+				if (data.content !== undefined) {
+					written.push(data.content);
+				}
+				return {
+					id: "doc-1",
+					title: "Proposal",
+					status: storedStatus,
+					content: stored.content,
+					version: stored.version,
+				};
+			},
+		);
+
+		const statusResult = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", status: "COMPLETE" },
+			session,
+		);
+		const contentResult = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Agent rewrite" },
+			session,
+		);
+
+		expect(statusResult.isError).toBe(true);
+		expect(contentResult.isError).toBe(true);
+		expect(storedStatus).toBe("GENERATING");
+		expect(written).toEqual([]);
+	});
+
+	it("asks a status-only write to refuse a run queued after the read", async () => {
+		const { DocumentGenerationInProgressError } = await import(
+			"@repo/database"
+		);
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockResolvedValue(proposalRow());
+		mocks.updateDocument.mockRejectedValue(
+			new DocumentGenerationInProgressError(),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", status: "COMPLETE" },
+			session,
+		);
+
+		expect(writeOptions().status).toBe("COMPLETE");
+		expect(writeOptions().refuseWhileGenerating).toBe(true);
+		// A status-only write carries no body, so it names no body base.
+		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(
+			/generation run is writing this document/,
+		);
+	});
+
+	it("leaves a status-only write to a non-Proposal document unguarded during a run", async () => {
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(STORED_WITHOUT_SLOT),
+			type: "PRD",
+			status: "GENERATING",
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", status: "COMPLETE" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(writeOptions()).not.toHaveProperty("refuseWhileGenerating");
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
+	});
+
+	it("asks the write to refuse a run queued after the read, and reports it as a live run", async () => {
+		const { DocumentGenerationInProgressError } = await import(
+			"@repo/database"
+		);
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockResolvedValue(proposalRow());
+		mocks.updateDocument.mockRejectedValue(
+			new DocumentGenerationInProgressError(),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Agent rewrite" },
+			session,
+		);
+
+		expect(writeOptions().refuseWhileGenerating).toBe(true);
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(
+			/generation run is writing this document/,
+		);
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("guards a finished Proposal's write with the Proposal gate off, without consulting it", async () => {
+		mocks.isProposalClientDocument.mockResolvedValue(false);
+		mocks.getDocumentById.mockResolvedValue(proposalRow());
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Agent rewrite" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
+		expect(writeOptions().expectedVersion).toBe(7);
+		expect(writeOptions().expectedContentHash).toBe(
+			contentIdentity(STORED_WITHOUT_SLOT),
+		);
+		expect(writeOptions().refuseWhileGenerating).toBe(true);
+	});
+
+	it("guards a client-document Proposal write without a base by the body it read", async () => {
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockImplementation(async () => {
+			const row = proposalRow();
+			// A run's final save lands after the read, at the same version.
+			stored = { content: GENERATED_BODY, version: 7 };
+			return row;
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Agent rewrite" },
+			session,
+		);
+
+		expect(result.isError).toBe(true);
+		expect(JSON.stringify(result)).toMatch(/Read it again/);
+		expect(written).toEqual([]);
+		expect(stored.content).toBe(GENERATED_BODY);
+		expect(writeOptions().expectedVersion).toBe(7);
+		expect(writeOptions().expectedContentHash).toBe(
+			contentIdentity(STORED_WITHOUT_SLOT),
+		);
+	});
+
+	it("lets a client-document Proposal title change through during a run", async () => {
+		mocks.isProposalClientDocument.mockResolvedValue(true);
+		mocks.getDocumentById.mockResolvedValue(
+			proposalRow({ status: "GENERATING" }),
+		);
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", title: "Proposal for example-org" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
+	});
+
+	it("keeps a PRD write without a base unguarded", async () => {
+		mocks.getDocumentById.mockResolvedValue({
+			...storedDocument(STORED_WITHOUT_SLOT),
+			type: "PRD",
+		});
+
+		const result = await executePlatformTool(
+			"fabric_update_document",
+			{ documentId: "doc-1", content: "# Edited" },
+			session,
+		);
+
+		expect(result.isError).toBeUndefined();
+		expect(writeOptions()).not.toHaveProperty("expectedVersion");
+		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
+		expect(writeOptions()).not.toHaveProperty("refuseWhileGenerating");
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
+		expect(written).toEqual(["# Edited"]);
 	});
 });

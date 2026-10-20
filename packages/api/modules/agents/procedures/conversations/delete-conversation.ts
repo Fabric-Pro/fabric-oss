@@ -7,17 +7,20 @@ import {
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "./resolved-organization";
 
 /**
  * Delete an agent conversation
  */
 export const deleteConversation = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_DELETE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "DELETE",
 		path: "/agents/conversations/{id}",
@@ -32,24 +35,8 @@ export const deleteConversation = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			await deleteAgentConversation({
@@ -70,7 +57,11 @@ export const deleteConversation = tenantProtectedProcedure
  * Archive an agent conversation (soft delete)
  */
 export const archiveConversation = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_DELETE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/conversations/{id}/archive",
@@ -85,24 +76,8 @@ export const archiveConversation = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const conversation = await archiveAgentConversation({
@@ -126,7 +101,11 @@ export const archiveConversation = tenantProtectedProcedure
  * Toggle pin status for a conversation
  */
 export const togglePin = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_DELETE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_DELETE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/conversations/{id}/toggle-pin",
@@ -141,24 +120,8 @@ export const togglePin = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const conversation = await toggleConversationPin({

@@ -31,6 +31,20 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	// The client-document rule, from the same gate without a second read.
+	isProposalClientDocument: async (args: {
+		organizationId?: string | null;
+		documentType: string;
+	}) =>
+		args.documentType === "PROPOSAL" &&
+		!!args.organizationId &&
+		gateOn.has(args.organizationId),
+	// A client-document Proposal's dispatch takes the document's lock over
+	// a row with no live run (Fizzy #2946).
+	withLiveRunDispatchLock: (
+		_documentId: string,
+		dispatch: (current: null) => Promise<unknown>,
+	) => dispatch(null),
 }));
 
 vi.mock("@repo/database/prisma/queries/projects/documents", () => ({
@@ -54,6 +68,8 @@ vi.mock("@repo/temporal", () => ({
 			start: mocks.workflowStart,
 			getHandle: () => ({ describe: vi.fn() }),
 		},
+		// A locked dispatch bounds its start with the client's deadline.
+		withDeadline: <R>(_deadline: number, fn: () => Promise<R>) => fn(),
 	}),
 }));
 

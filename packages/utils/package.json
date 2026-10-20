@@ -25,6 +25,21 @@
 			"import": "./lib/fnv1a.ts",
 			"default": "./lib/fnv1a.ts"
 		},
+		"./content-identity": {
+			"types": "./lib/content-identity.ts",
+			"import": "./lib/content-identity.ts",
+			"default": "./lib/content-identity.ts"
+		},
+		"./document-save-base": {
+			"types": "./lib/document-save-base.ts",
+			"import": "./lib/document-save-base.ts",
+			"default": "./lib/document-save-base.ts"
+		},
+		"./generation-run-guard": {
+			"types": "./lib/generation-run-guard.ts",
+			"import": "./lib/generation-run-guard.ts",
+			"default": "./lib/generation-run-guard.ts"
+		},
 		"./sensitive-keys": {
 			"types": "./lib/sensitive-keys.ts",
 			"import": "./lib/sensitive-keys.ts",
@@ -134,6 +149,21 @@
 			"types": "./lib/agent-task-prompt.ts",
 			"import": "./lib/agent-task-prompt.ts",
 			"default": "./lib/agent-task-prompt.ts"
+		},
+		"./orchestrator-memory-prompt": {
+			"types": "./lib/orchestrator-memory-prompt.ts",
+			"import": "./lib/orchestrator-memory-prompt.ts",
+			"default": "./lib/orchestrator-memory-prompt.ts"
+		},
+		"./completion-claim-prompts": {
+			"types": "./lib/completion-claim-prompts.ts",
+			"import": "./lib/completion-claim-prompts.ts",
+			"default": "./lib/completion-claim-prompts.ts"
+		},
+		"./direct-chat-memory-prompt": {
+			"types": "./lib/direct-chat-memory-prompt.ts",
+			"import": "./lib/direct-chat-memory-prompt.ts",
+			"default": "./lib/direct-chat-memory-prompt.ts"
 		},
 		"./untrusted-fence": {
 			"types": "./lib/untrusted-fence.ts",
@@ -465,6 +495,11 @@
 			"import": "./lib/proposal-artifact/live-sections.ts",
 			"default": "./lib/proposal-artifact/live-sections.ts"
 		},
+		"./proposal-artifact/live-progress": {
+			"types": "./lib/proposal-artifact/live-progress.ts",
+			"import": "./lib/proposal-artifact/live-progress.ts",
+			"default": "./lib/proposal-artifact/live-progress.ts"
+		},
 		"./proposal-artifact/visual-insert": {
 			"types": "./lib/proposal-artifact/visual-insert.ts",
 			"import": "./lib/proposal-artifact/visual-insert.ts",
@@ -479,6 +514,16 @@
 			"types": "./lib/proposal-artifact/section-hash.ts",
 			"import": "./lib/proposal-artifact/section-hash.ts",
 			"default": "./lib/proposal-artifact/section-hash.ts"
+		},
+		"./proposal-artifact/report-text": {
+			"types": "./lib/proposal-artifact/report-text.ts",
+			"import": "./lib/proposal-artifact/report-text.ts",
+			"default": "./lib/proposal-artifact/report-text.ts"
+		},
+		"./proposal-artifact/report-citations": {
+			"types": "./lib/proposal-artifact/report-citations.ts",
+			"import": "./lib/proposal-artifact/report-citations.ts",
+			"default": "./lib/proposal-artifact/report-citations.ts"
 		},
 		"./proposal-artifact/finding-constants": {
 			"types": "./lib/proposal-artifact/finding-constants.ts",
@@ -505,10 +550,20 @@
 			"import": "./lib/proposal-artifact/stat-tiles.ts",
 			"default": "./lib/proposal-artifact/stat-tiles.ts"
 		},
+		"./proposal-artifact/export-scrub": {
+			"types": "./lib/proposal-artifact/export-scrub.ts",
+			"import": "./lib/proposal-artifact/export-scrub.ts",
+			"default": "./lib/proposal-artifact/export-scrub.ts"
+		},
 		"./brand-colors": {
 			"types": "./lib/brand-colors.ts",
 			"import": "./lib/brand-colors.ts",
 			"default": "./lib/brand-colors.ts"
+		},
+		"./pm-target": {
+			"types": "./lib/pm-target.ts",
+			"import": "./lib/pm-target.ts",
+			"default": "./lib/pm-target.ts"
 		}
 	},
 	"name": "@repo/utils",

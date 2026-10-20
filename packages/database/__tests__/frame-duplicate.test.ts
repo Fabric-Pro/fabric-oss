@@ -4,7 +4,8 @@
  * `duplicateFrame` is the one command behind "duplicate" in the app and "fork"
  * for the Fabric Agent. The copy keeps the original's content (every block under
  * a new id), kind and theme; stays on the original's surface and in its
- * project; is private to its owner; and declares the Fabric tools its caller
+ * project; is saved PRIVATE without copied sharing grants or a public link;
+ * retains inherited project access; and declares the Fabric tools its caller
  * names and no others, so duplicating a page never carries its capabilities
  * along unasked. Where the copy says it came from is the caller's.
  *
@@ -154,7 +155,7 @@ describe("duplicateFrame", () => {
 
 		expect(written().data).toMatchObject({
 			projectId: "project-1",
-			shareScope: "PROJECT",
+			shareScope: "PRIVATE",
 			metadata: { surface: "artifact" },
 		});
 	});
@@ -223,7 +224,7 @@ describe("duplicateFrame", () => {
 		expect(mocks.placementRefusal).not.toHaveBeenCalled();
 	});
 
-	it("makes a private copy for the new owner, with no public link, whatever the original shared", async () => {
+	it("saves PRIVATE for the new owner with no public link, whatever the original shared", async () => {
 		await duplicateFrame({
 			original: original(),
 			userId: "forker-1",
@@ -236,8 +237,27 @@ describe("duplicateFrame", () => {
 			isPublic: false,
 			shareToken: null,
 		});
-		expect(written().data.shareScope).toBeUndefined();
+		expect(written().data.shareScope).toBe("PRIVATE");
 	});
+
+	it.each(["PRIVATE", "PROJECT", "PUBLIC"] as const)(
+		"saves a project Workspace copy as PRIVATE when the original scope is %s",
+		async (shareScope) => {
+			await duplicateFrame({
+				original: original({ projectId: "project-1", shareScope }),
+				userId: "forker-1",
+				organizationId: "org-1",
+			});
+
+			expect(written().data).toMatchObject({
+				projectId: "project-1",
+				shareScope: "PRIVATE",
+				isPublic: false,
+				shareToken: null,
+				metadata: { surface: "workspace" },
+			});
+		},
+	);
 
 	it("declares no tools on the copy unless the caller names them", async () => {
 		await duplicateFrame({ original: original(), userId: "forker-1" });

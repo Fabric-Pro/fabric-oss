@@ -192,6 +192,7 @@ describe("POST /api/agents/fabric-ai/execute-workflow", () => {
 			["FORBIDDEN", 403],
 			["NOT_FOUND", 404],
 			["BAD_REQUEST", 400],
+			["CONFLICT", 409],
 			["INTERNAL_SERVER_ERROR", 500],
 		])(
 			"answers %s with %i and the command's message",

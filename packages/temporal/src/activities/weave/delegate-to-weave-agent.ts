@@ -309,6 +309,7 @@ export async function delegateToPatternPlanner(
 				userId: input.userId,
 				organizationId: input.organizationId ?? null,
 			},
+			{ trustedDestination: true },
 		);
 
 		// Pattern route returns JSON directly (not A2A task format)

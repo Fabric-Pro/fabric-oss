@@ -37,6 +37,7 @@ export {
 	getCachedMcpClientForConfig,
 	getMcpClientCacheStats,
 	invalidateMcpClientCache,
+	isClosedClientRefusedBeforeSend,
 	McpClientError,
 	type McpClientType,
 	McpGitLabOriginMismatchError,

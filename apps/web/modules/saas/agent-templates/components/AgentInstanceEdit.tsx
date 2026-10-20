@@ -67,7 +67,10 @@ export function AgentInstanceEdit({
 }: Props) {
 	const { data, isLoading, error } = useQuery(
 		orpc.agentTemplates.instances.get.queryOptions({
-			input: { id: instanceId },
+			input: {
+				id: instanceId,
+				organizationId: organizationId ?? undefined,
+			},
 		}),
 	);
 

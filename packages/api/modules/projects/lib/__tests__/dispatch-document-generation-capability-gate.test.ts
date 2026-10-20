@@ -30,6 +30,7 @@ const { mocks } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	isProposalClientDocument: async () => false,
 	// The flag is resolved for the project's own organization (Fizzy #1930).
 	db: {
 		project: {

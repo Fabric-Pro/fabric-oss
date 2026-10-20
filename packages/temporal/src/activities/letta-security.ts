@@ -15,7 +15,11 @@
  */
 
 import type { LettaClient } from "@repo/letta";
-import { getLettaClient } from "@repo/letta";
+import {
+	getLettaClient,
+	matchesAgentMetadata,
+	orchestratorMemoryMetadata,
+} from "@repo/letta";
 
 // ============================================================================
 // Constants
@@ -174,7 +178,6 @@ function getLettaClientFromEnv(): LettaClient | null {
  * This function checks:
  * 1. The agent exists
  * 2. The agent's metadata matches the requesting user/organization
- * 3. The agent's identity_ids include an identity for the user/org
  *
  * @security Prevents unauthorized access to Letta agents and their memory blocks
  */
@@ -202,61 +205,18 @@ export async function verifyLettaAgentOwnership(
 			};
 		}
 
-		// Check agent metadata for ownership
-		const metadata = agent.metadata as Record<string, unknown> | undefined;
-		if (!metadata) {
+		if (
+			!matchesAgentMetadata(
+				agent.metadata,
+				orchestratorMemoryMetadata(context),
+			)
+		) {
 			return {
 				valid: false,
-				error: "Agent has no metadata for ownership verification",
-				errorCode: "UNAUTHORIZED_AGENT_ACCESS",
+				error: "Agent metadata does not match the requesting tenant",
+				errorCode: "TENANT_ISOLATION_VIOLATION",
 			};
 		}
-
-		// Verify ownership based on tenancy model
-		const agentUserId = metadata.userId as string | undefined;
-		const agentOrgId = metadata.organizationId as string | undefined;
-		const identityType = metadata.identityType as string | undefined;
-
-		// For organization-level tenancy
-		if (context.organizationId && agentOrgId) {
-			if (agentOrgId !== context.organizationId) {
-				console.warn(
-					`[LettaSecurity] Organization mismatch: expected ${context.organizationId}, found ${agentOrgId}`,
-				);
-				return {
-					valid: false,
-					error: "Organization does not own this agent",
-					errorCode: "TENANT_ISOLATION_VIOLATION",
-				};
-			}
-			// Organization members can access org-level agents
-			return { valid: true };
-		}
-
-		// For user-level tenancy
-		if (agentUserId && agentUserId !== context.userId) {
-			console.warn(
-				`[LettaSecurity] User mismatch: expected ${context.userId}, found ${agentUserId}`,
-			);
-			return {
-				valid: false,
-				error: "User does not own this agent",
-				errorCode: "UNAUTHORIZED_AGENT_ACCESS",
-			};
-		}
-
-		// Verify identity type matches the context
-		if (identityType === "org" && !context.organizationId) {
-			console.warn(
-				"[LettaSecurity] Identity type mismatch: agent is organization-level but no organizationId provided",
-			);
-			return {
-				valid: false,
-				error: "Organization context required for this agent",
-				errorCode: "AGENT_IDENTITY_MISMATCH",
-			};
-		}
-
 		return { valid: true };
 	} catch (error) {
 		console.error(
@@ -268,88 +228,6 @@ export async function verifyLettaAgentOwnership(
 			error: error instanceof Error ? error.message : "Unknown error",
 			errorCode: "UNAUTHORIZED_AGENT_ACCESS",
 		};
-	}
-}
-
-/**
- * Verify that the agent's identity_ids match the expected user/organization.
- *
- * This is an additional check beyond metadata to ensure the Letta server's
- * identity system properly isolates tenant data.
- *
- * @security Provides defense-in-depth for multi-tenant isolation
- */
-export async function verifyAgentIdentity(
-	context: LettaSecurityContext,
-): Promise<SecurityValidationResult> {
-	const client = getLettaClientFromEnv();
-	if (!client) {
-		return {
-			valid: false,
-			error: "Letta not configured",
-			errorCode: "LETTA_NOT_CONFIGURED",
-		};
-	}
-
-	try {
-		// Get the expected identifier key
-		const expectedIdentifierKey = context.organizationId || context.userId;
-
-		// List identities to find the one matching our context
-		const identities = await client.listIdentities({
-			identifierKey: expectedIdentifierKey,
-		});
-
-		if (identities.length === 0) {
-			return {
-				valid: false,
-				error: `No identity found for ${expectedIdentifierKey}`,
-				errorCode: "AGENT_IDENTITY_MISMATCH",
-			};
-		}
-
-		// Get the agent
-		const agent = await client.getAgent(context.lettaAgentId);
-		if (!agent) {
-			return {
-				valid: false,
-				error: `Agent not found: ${context.lettaAgentId}`,
-				errorCode: "UNAUTHORIZED_AGENT_ACCESS",
-			};
-		}
-
-		// List agents associated with the identity to verify this agent belongs to it
-		const identityKey = expectedIdentifierKey;
-		const agentsForIdentity = await client.listAgents({
-			identifierKeys: [identityKey],
-		});
-
-		const agentBelongsToIdentity = agentsForIdentity.some(
-			(a) => a.id === context.lettaAgentId,
-		);
-
-		if (!agentBelongsToIdentity) {
-			console.warn(
-				`[LettaSecurity] Agent ${context.lettaAgentId} not associated with identity ${identityKey}`,
-			);
-			return {
-				valid: false,
-				error: "Agent not associated with the expected identity",
-				errorCode: "AGENT_IDENTITY_MISMATCH",
-			};
-		}
-
-		return { valid: true };
-	} catch (error) {
-		console.error(
-			"[LettaSecurity] Failed to verify agent identity:",
-			error,
-		);
-		// Don't fail on identity verification errors - fall back to metadata check
-		console.warn(
-			"[LettaSecurity] Identity verification failed, relying on metadata check",
-		);
-		return { valid: true };
 	}
 }
 
@@ -649,7 +527,6 @@ export async function checkLettaRateLimit(
  * This function combines:
  * 1. Agent ownership verification
  * 2. Rate limiting
- * 3. (Optional) Identity verification
  *
  * @security Single entry point for all Letta security checks
  */
@@ -658,7 +535,6 @@ export async function validateLettaOperation(
 	operation: keyof typeof LETTA_RATE_LIMITS,
 	options?: {
 		skipRateLimit?: boolean;
-		skipIdentityCheck?: boolean;
 	},
 ): Promise<SecurityValidationResult> {
 	// 1. Check rate limit first (fail fast)
@@ -677,17 +553,6 @@ export async function validateLettaOperation(
 	const ownershipResult = await verifyLettaAgentOwnership(context);
 	if (!ownershipResult.valid) {
 		return ownershipResult;
-	}
-
-	// 3. Verify agent identity (optional, for defense-in-depth)
-	if (!options?.skipIdentityCheck) {
-		const identityResult = await verifyAgentIdentity(context);
-		if (!identityResult.valid) {
-			// Log warning but don't fail - metadata check passed
-			console.warn(
-				`[LettaSecurity] Identity check failed for agent ${context.lettaAgentId}: ${identityResult.error}`,
-			);
-		}
 	}
 
 	return { valid: true };

@@ -5,6 +5,61 @@ import {
 } from "../src/activities/shared/frame-args";
 
 describe("frame-args", () => {
+	it.each([
+		"[content omitted: 3005 chars - rendered to frame]",
+		" \n[content omitted: 0 chars - rendered to frame]\t ",
+	])(
+		"rejects retained placeholder content in both write operations: %s",
+		(content) => {
+			const args = {
+				frameId: "frame-1",
+				title: "Example",
+				blocks: [{ id: "page", type: "html", content }],
+			};
+			for (const result of [
+				validateCreateFrameArgs(args),
+				validateUpdateFrameArgs(args),
+			]) {
+				expect(result).toMatchObject({ ok: false });
+				if (!result.ok) {
+					expect(result.error).toContain(
+						"Provide actual block content",
+					);
+					expect(result.error).toContain("fabric_get_frame");
+				}
+			}
+		},
+	);
+
+	it("also rejects placeholder content supplied through the create components fallback", () => {
+		expect(
+			validateCreateFrameArgs({
+				title: "Example",
+				components: [
+					{
+						type: "html",
+						content:
+							"[content omitted: 12 chars - rendered to frame]",
+					},
+				],
+			}),
+		).toMatchObject({ ok: false });
+	});
+
+	it.each([
+		"<p>Actual page content</p>",
+		"A text example: [content omitted: 3005 chars - rendered to frame]",
+	])("preserves legitimate block content: %s", (content) => {
+		const blocks = [{ id: "page", type: "html", content }];
+		const args = { frameId: "frame-1", title: "Example", blocks };
+		for (const result of [
+			validateCreateFrameArgs(args),
+			validateUpdateFrameArgs(args),
+		]) {
+			expect(result).toMatchObject({ ok: true, value: { blocks } });
+		}
+	});
+
 	it("validates create args with defaults", () => {
 		const result = validateCreateFrameArgs({
 			title: "Frame",

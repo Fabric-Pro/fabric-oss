@@ -472,6 +472,7 @@ async function applyInputBudgetGate(
 		// it back, and `logAgentUsageFromRunnableConfig` never rejects — so
 		// awaiting it only added a round trip to the critical path.
 		void logAgentUsageFromRunnableConfig(config, summaryResp, {
+			model: summaryModel,
 			taskType: "SIMPLE",
 			agentId: "project_document_generator:budget_gate",
 			latencyMs: Date.now() - gateStart,
@@ -3531,6 +3532,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// Fire-and-forget — see the budget-gate call site above. This is the
 		// hottest of the five: it runs on every one of the up-to-21 turns.
 		void logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "project_document_generator",
 			latencyMs: Date.now() - generationStart,
@@ -3734,6 +3736,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				);
 				// Fire-and-forget — see the main invocation above.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
+					model,
 					taskType: "TOOL_CALLING",
 					agentId: "project_document_generator:finalize_guard",
 					latencyMs: Date.now() - generationStart,
@@ -3789,6 +3792,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				);
 				// Fire-and-forget — see the main invocation above.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
+					model,
 					taskType: "TOOL_CALLING",
 					agentId:
 						"project_document_generator:finalize_guard_fallback",
@@ -3908,6 +3912,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			);
 			// Fire-and-forget — see the main invocation above.
 			void logAgentUsageFromRunnableConfig(runnableConfig, response, {
+				model: retryModel,
 				taskType: "TOOL_CALLING",
 				agentId: "project_document_generator:truncation_retry",
 				latencyMs: Date.now() - generationStart,

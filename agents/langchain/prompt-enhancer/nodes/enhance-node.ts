@@ -407,6 +407,7 @@ export async function enhanceNode(
 		const turnStart = Date.now();
 		const response = await modelWithTools.invoke(messages, runnableConfig);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "prompt_enhancer",
 			latencyMs: Date.now() - generationStart,

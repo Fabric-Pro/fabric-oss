@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 	canCreateOrganizationFrames: vi.fn(),
 	canUpdateOrganizationFrames: vi.fn(),
 	projectPlacementRefusal: vi.fn(),
+	publicSharingRefusal: vi.fn(),
 	createFrame: vi.fn(),
 	updateFrame: vi.fn(),
 	getFrameById: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 		canCreateOrganizationFrames: mocks.canCreateOrganizationFrames,
 		canUpdateOrganizationFrames: mocks.canUpdateOrganizationFrames,
 		projectPlacementRefusal: mocks.projectPlacementRefusal,
+		publicSharingRefusal: mocks.publicSharingRefusal,
 		createFrame: mocks.createFrame,
 		updateFrame: mocks.updateFrame,
 		getFrameById: mocks.getFrameById,
@@ -88,6 +90,7 @@ beforeEach(() => {
 	mocks.canCreateOrganizationFrames.mockResolvedValue(true);
 	mocks.canUpdateOrganizationFrames.mockResolvedValue(true);
 	mocks.projectPlacementRefusal.mockResolvedValue(null);
+	mocks.publicSharingRefusal.mockResolvedValue(null);
 	mocks.createFrame.mockImplementation(async (input) =>
 		frameRecord({
 			title: input.title,
@@ -98,6 +101,69 @@ beforeEach(() => {
 		}),
 	);
 	mocks.updateFrame.mockResolvedValue(frameRecord());
+});
+
+describe("frame content retention placeholders", () => {
+	it.each(["create", "update"] as const)(
+		"rejects the whole %s operation without saving any block",
+		async (operation) => {
+			const write =
+				operation === "create"
+					? createFirstClassFrame
+					: updateFirstClassFrame;
+			const result = await write({
+				userId: USER,
+				organizationId: ORG,
+				args: {
+					frameId: "frame-1",
+					title: "Example",
+					surface: "workspace",
+					blocks: [
+						...blocks,
+						{
+							id: "incomplete",
+							type: "html",
+							content:
+								" \n[content omitted: 3005 chars - rendered to frame]\t ",
+						},
+					],
+				},
+			});
+
+			expect(result).toMatchObject({
+				error: expect.stringContaining("Provide actual block content"),
+			});
+			expect(mocks.createFrame).not.toHaveBeenCalled();
+			expect(mocks.updateFrame).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["create", "update"] as const)(
+		"preserves full HTML when it reaches the %s write",
+		async (operation) => {
+			const write =
+				operation === "create"
+					? createFirstClassFrame
+					: updateFirstClassFrame;
+			const result = await write({
+				userId: USER,
+				organizationId: ORG,
+				args: {
+					frameId: "frame-1",
+					title: "Example",
+					surface: "workspace",
+					blocks,
+				},
+			});
+
+			expect(result).not.toHaveProperty("error");
+			const save =
+				operation === "create" ? mocks.createFrame : mocks.updateFrame;
+			expect(save).toHaveBeenCalledWith(
+				expect.objectContaining({ blocks }),
+			);
+		},
+	);
 });
 
 describe("validateCreateFrameArgs: surface and runtimeTools", () => {
@@ -418,8 +484,18 @@ describe("createFirstClassFrame on a surface", () => {
 		expect(mocks.projectPlacementRefusal).not.toHaveBeenCalled();
 	});
 
-	it("keeps a loose frame public from the start, as before", async () => {
-		await createFirstClassFrame({
+	it("makes a loose frame private: no public flag, no link in the answer", async () => {
+		mocks.createFrame.mockImplementation(async (input) =>
+			frameRecord({
+				title: input.title,
+				isPublic: input.isPublic,
+				shareToken: input.isPublic ? "token-1" : null,
+				shareScope: input.shareScope ?? "PRIVATE",
+				document: { blocks: input.blocks },
+			}),
+		);
+
+		const result = await createFirstClassFrame({
 			args: { title: "Loose", blocks },
 			userId: USER,
 			organizationId: ORG,
@@ -427,11 +503,98 @@ describe("createFirstClassFrame on a surface", () => {
 
 		expect(mocks.createFrame).toHaveBeenCalledWith(
 			expect.objectContaining({
-				isPublic: true,
+				isPublic: false,
 				surface: undefined,
 				projectId: undefined,
 			}),
 		);
+		expect(mocks.publicSharingRefusal).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			shareScope: "PRIVATE",
+			shareUrl: undefined,
+			shareEmbedUrl: undefined,
+		});
+	});
+
+	it("reports a link only when the frame has a live public one, whatever token the row holds", async () => {
+		mocks.createFrame.mockResolvedValue(
+			frameRecord({ isPublic: false, shareToken: "stale-token" }),
+		);
+
+		const result = await createFirstClassFrame({
+			args: { title: "Loose", blocks },
+			userId: USER,
+			organizationId: ORG,
+		});
+
+		expect(result).toMatchObject({
+			shareUrl: undefined,
+			shareEmbedUrl: undefined,
+		});
+	});
+
+	it("makes a loose frame public when asked and the organization allows public links", async () => {
+		mocks.createFrame.mockImplementation(async (input) =>
+			frameRecord({
+				isPublic: input.isPublic,
+				shareToken: "token-1",
+				shareScope: input.shareScope,
+				document: { blocks: input.blocks },
+			}),
+		);
+
+		const result = await createFirstClassFrame({
+			args: { title: "Loose", blocks, shareOnCreate: true },
+			userId: USER,
+			organizationId: ORG,
+		});
+
+		expect(mocks.publicSharingRefusal).toHaveBeenCalledWith(ORG);
+		expect(mocks.createFrame).toHaveBeenCalledWith(
+			expect.objectContaining({ isPublic: true, shareScope: "PUBLIC" }),
+		);
+		expect(result).toMatchObject({
+			shareScope: "PUBLIC",
+			shareUrl: expect.stringContaining("token-1"),
+		});
+	});
+
+	it("refuses a public frame the organization's policy does not allow, and writes nothing", async () => {
+		mocks.publicSharingRefusal.mockResolvedValue(
+			"Public sharing is disabled for this organization.",
+		);
+
+		const result = await createFirstClassFrame({
+			args: { title: "Loose", blocks, shareOnCreate: true },
+			userId: USER,
+			organizationId: ORG,
+		});
+
+		expect(result).toEqual({
+			error: "Public sharing is disabled for this organization.",
+		});
+		expect(mocks.createFrame).not.toHaveBeenCalled();
+	});
+
+	it("applies the same policy to a public frame in a project", async () => {
+		mocks.publicSharingRefusal.mockResolvedValue(
+			"Public sharing is disabled for this organization.",
+		);
+
+		const result = await createFirstClassFrame({
+			args: {
+				title: "Report",
+				surface: "artifact",
+				blocks,
+				shareOnCreate: true,
+			},
+			userId: USER,
+			organizationId: ORG,
+			projectId: PROJECT,
+		});
+
+		expect(result).toHaveProperty("error");
+		expect(mocks.createFrame).not.toHaveBeenCalled();
 	});
 });
 
@@ -505,6 +668,44 @@ describe("updateFirstClassFrame on a surface", () => {
 });
 
 describe("getFirstClassFrame", () => {
+	it("selects the first block for a window without blockId, while default reads remain full", async () => {
+		mocks.getAccessibleFrameById.mockResolvedValue(frameRecord());
+		const input = { userId: USER, organizationId: ORG };
+		const full = await getFirstClassFrame({
+			...input,
+			args: { frameId: "frame-1" },
+		});
+		expect(full).toMatchObject({ blocks });
+		expect(full).not.toHaveProperty("source");
+		const source = await getFirstClassFrame({
+			...input,
+			args: { frameId: "frame-1", offset: 0, limit: 3 },
+		});
+		expect(source).toMatchObject({
+			source: true,
+			block: { id: "page", content: "<p>" },
+			nextOffset: 3,
+			complete: false,
+		});
+	});
+
+	it("never returns source for a denied frame, and forwards viewer identity", async () => {
+		mocks.getAccessibleFrameById.mockResolvedValue(null);
+		const result = await getFirstClassFrame({
+			args: { frameId: "frame-1", offset: 0 },
+			userId: USER,
+			userEmail: "viewer@example.com",
+			organizationId: ORG,
+		});
+		expect(result).toEqual({ error: "Frame not found." });
+		expect(mocks.getAccessibleFrameById).toHaveBeenCalledWith({
+			id: "frame-1",
+			userId: USER,
+			userEmail: "viewer@example.com",
+			organizationId: ORG,
+		});
+	});
+
 	it("opens the frame through the access rules of the caller's organization", async () => {
 		mocks.getAccessibleFrameById.mockResolvedValue(
 			frameRecord({

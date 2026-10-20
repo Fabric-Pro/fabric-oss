@@ -36,16 +36,18 @@
  * still carries this link and no baseline (`stampCreatedBaseline`). The link
  * write clears any earlier baseline, which belonged to another item.
  *
- * A case linked to another PM tool never reaches here: the workflow sends a
- * linked case down its update path, never the create.
+ * Linked cases use `checkTestCasePmLink` before the workflow update path.
+ * The create entry point below handles unlinked cases under the create claim.
  */
 
 import { db, PmSyncStatus } from "@repo/database";
 import { logger } from "@repo/logs";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import type { ExecuteMcpToolOutput } from "../orchestrator/types";
 import { readCreatedTestCaseRefs } from "./created-item-refs";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import { fetchPmTicket } from "./fetch-pm-ticket";
 import {
 	acquirePmCreateClaim,
@@ -60,17 +62,27 @@ import {
 	startPmCreateSendDeadline,
 } from "./pm-create-claim";
 import {
+	describeLinkWriteCause,
 	describeOrphanCause,
 	logCreateOrphanBesideOtherLink,
+	prismaErrorCode,
 	recordClaimedCreateOrphan,
 	recordCreateUnconfirmed,
 } from "./pm-create-orphan";
+import { mcpConfigPmInstanceOrigin } from "./pm-link-instance";
+import { writePmSyncStatusForAttempt } from "./pm-sync-attempt-fence";
 import { computePmHash } from "./pm-sync-hash";
+import { describeSyncErrorForUser } from "./pm-sync-user-error";
+import {
+	detectExternalLinkMismatch,
+	legacyLinkOtherToolMessage,
+} from "./pm-tool-mismatch";
 import {
 	recordPmSyncFailure,
 	recordPmSyncFailureLog,
 	writePmSyncSuccessState,
 } from "./record-pm-sync-state";
+import { resolveTestCasePmLinkConfig } from "./test-case-pm-link-config";
 import type { UpdateTestCaseExternalRefsInput } from "./test-case-sync";
 
 export interface CreateTestCaseInPmWithClaimInput {
@@ -83,7 +95,7 @@ export interface CreateTestCaseInPmWithClaimInput {
 	/** The MCP server the create is sent to, stamped on the new link. */
 	mcpServerId?: string;
 	/** The PM container's instance binding, as the workflow dispatches it. */
-	pmTarget: { additionalContext?: unknown };
+	pmTarget: { additionalContext?: unknown; containerId?: string };
 	/** The PM tool's detected type, for the recorded failures. */
 	pmTool?: string;
 	/** The PM tool's name in messages (e.g. "fizzy", "the PM tool"). */
@@ -115,7 +127,236 @@ export interface CreateTestCaseInPmWithClaimResult {
 		| "claim-held"
 		| "create-unconfirmed"
 		| "create-orphan"
-		| "create-rejected";
+		| "create-rejected"
+		| "block"
+		| "legacy-other-tool"
+		| "link-changed"
+		| "attempt-superseded";
+}
+
+/** The link snapshot that the workflow would send to the active PM server. */
+export interface CheckTestCasePmLinkInput {
+	pmTarget?: { additionalContext?: unknown; containerId?: string };
+	externalPmTarget?: string | null;
+	testCaseId: string;
+	projectId: string;
+	organizationId?: string;
+	userId: string;
+	mcpConfigId: string | null;
+	mcpServerId: string;
+	pmTool?: string;
+	toolLabel: string;
+	externalId: string;
+	externalUrl: string | null;
+	/** Workflow snapshot stamp; omit when the caller captured only ID/URL. */
+	externalMcpServerId?: string | null;
+	pmSyncAttemptId?: string;
+}
+
+export type CheckTestCasePmLinkResult =
+	| { success: true }
+	| {
+			success: false;
+			outcome:
+				| "block"
+				| "legacy-other-tool"
+				| "link-changed"
+				| "attempt-superseded"
+				| "not-in-project";
+			error: string;
+	  };
+
+/**
+ * Judge the link before the workflow's update and execution paths. Config I/O
+ * stays here; refusal uses the same failure writer as the create-claim path.
+ * The status write compares the link and attempt at the database boundary.
+ */
+export async function checkTestCasePmLink(
+	input: CheckTestCasePmLinkInput,
+): Promise<CheckTestCasePmLinkResult> {
+	await jobHeartbeat();
+	const errorMessage =
+		"This test case's PM link changed while it was syncing, so Fabric did not push it. Sync again to use the current link.";
+	const superseded = (): CheckTestCasePmLinkResult => ({
+		success: false,
+		outcome: "attempt-superseded",
+		error: "Another PM sync attempt now owns this test case, so Fabric did not push it.",
+	});
+	const missing = (): CheckTestCasePmLinkResult => ({
+		success: false,
+		outcome: "not-in-project",
+		error: "This test case is no longer in this project, so Fabric did not push it.",
+	});
+	const readRow = () =>
+		db.testCase.findFirst({
+			where: {
+				id: input.testCaseId,
+				projectId: input.projectId,
+				deletedAt: null,
+				...(input.organizationId !== undefined
+					? { project: { organizationId: input.organizationId } }
+					: {}),
+			},
+			select: {
+				externalId: true,
+				externalUrl: true,
+				externalMcpServerId: true,
+				externalPmTarget: true,
+				lastPmSyncAttemptId: true,
+				lastPmSyncStatus: true,
+			},
+		});
+	type LinkRow = NonNullable<Awaited<ReturnType<typeof readRow>>>;
+	const linkChanged = (
+		row: LinkRow,
+		expectedServerId = input.externalMcpServerId,
+	) =>
+		row.externalId !== input.externalId ||
+		row.externalUrl !== input.externalUrl ||
+		pmTargetsConflict(row.externalPmTarget, input.externalPmTarget) ||
+		(expectedServerId !== undefined &&
+			row.externalMcpServerId !== expectedServerId &&
+			// A concurrent successful sync can backfill this same legacy link.
+			!(
+				expectedServerId === null &&
+				row.externalMcpServerId === input.mcpServerId
+			));
+	const ownedByAnotherAttempt = (row: LinkRow) =>
+		input.pmSyncAttemptId !== undefined
+			? row.lastPmSyncAttemptId !== input.pmSyncAttemptId
+			: row.lastPmSyncStatus === PmSyncStatus.PENDING &&
+				row.lastPmSyncAttemptId !== null;
+	const changed = async (): Promise<CheckTestCasePmLinkResult> => {
+		if (input.pmSyncAttemptId !== undefined) {
+			// Settle this attempt, not the old link: requiring that link would
+			// leave it PENDING. The attempt fence preserves a newer run's state.
+			const wrote = await writePmSyncStatusForAttempt({
+				itemId: input.testCaseId,
+				itemType: "testCase",
+				projectId: input.projectId,
+				attemptId: input.pmSyncAttemptId,
+				data: {
+					lastPmSyncStatus: PmSyncStatus.FAILED,
+					lastPmSyncError: errorMessage,
+					lastPmSyncAttemptAt: new Date(),
+				},
+			});
+			if (!wrote) {
+				const current = await readRow();
+				if (!current) {
+					return missing();
+				}
+				if (ownedByAnotherAttempt(current)) {
+					return superseded();
+				}
+				throw new Error(
+					"Fabric could not settle this test case's PM sync attempt. Sync again.",
+				);
+			}
+			await recordPmSyncFailureLog({
+				itemId: input.testCaseId,
+				itemType: "testCase",
+				errorMessage,
+				errorClass: "PM_LINK_CHANGED",
+				triggerSource: "manual-edit",
+				pmTool: input.pmTool,
+				actorUserId: input.userId,
+			});
+		}
+		return { success: false, outcome: "link-changed", error: errorMessage };
+	};
+	const row = await readRow();
+	if (!row) {
+		return missing();
+	}
+	// Unattempted pushes may update eligible links; the status writers yield
+	// to PENDING attempts independently.
+	if (input.pmSyncAttemptId !== undefined && ownedByAnotherAttempt(row)) {
+		return superseded();
+	}
+	if (linkChanged(row)) {
+		return changed();
+	}
+
+	const config = await resolveTestCasePmLinkConfig(input);
+	const mismatch = detectExternalLinkMismatch({
+		externalId: input.externalId,
+		externalUrl: input.externalUrl,
+		externalMcpServerId: row.externalMcpServerId,
+		...(row.externalPmTarget !== undefined
+			? { externalPmTarget: row.externalPmTarget }
+			: {}),
+		activePmTarget:
+			row.externalPmTarget == null
+				? null
+				: await resolveExternalPmTarget({
+						...input,
+						stableContainerId: input.pmTarget?.containerId,
+						containerId: input.pmTarget?.containerId,
+						additionalContext: input.pmTarget?.additionalContext,
+						config,
+					}),
+		activeServerId: input.mcpServerId,
+		currentDetectedType: input.pmTool,
+		currentBaseUrl: config.baseUrl || config.mcpServer?.defaultUrl || null,
+		currentInstanceOrigin: mcpConfigPmInstanceOrigin(config),
+	});
+	if (mismatch.resolution === "ok") {
+		return { success: true };
+	}
+	const error = legacyLinkOtherToolMessage(input.toolLabel);
+	const recorded = await recordPmSyncFailure({
+		itemId: input.testCaseId,
+		itemType: "testCase",
+		errorMessage: error,
+		errorClass: "PM_TOOL_MISMATCH_LEGACY",
+		triggerSource: "manual-edit",
+		pmTool: input.pmTool,
+		actorUserId: input.userId,
+		onlyIfAttempt: input.pmSyncAttemptId,
+		onlyIfRowUnchanged: {
+			externalId: row.externalId,
+			externalUrl: row.externalUrl,
+			externalMcpServerId: row.externalMcpServerId,
+			...(row.externalPmTarget !== undefined
+				? { externalPmTarget: row.externalPmTarget }
+				: {}),
+			lastPmSyncAttemptId: row.lastPmSyncAttemptId,
+		},
+	});
+	if (recorded) {
+		return { success: false, outcome: mismatch.resolution, error };
+	}
+	// A predicate miss and a failed state write both return false. Re-read
+	// before naming the cause; an unchanged, unowned row needs a retry.
+	const current = await readRow();
+	if (!current) {
+		return missing();
+	}
+	// The refused legacy link may have been confirmed by a concurrent sync.
+	// Its new active-server stamp supersedes that refusal, but not a replaced
+	// attempt belonging to this run.
+	if (
+		row.externalMcpServerId === null &&
+		current.externalMcpServerId === input.mcpServerId &&
+		!linkChanged(current, row.externalMcpServerId) &&
+		(input.pmSyncAttemptId === undefined ||
+			current.lastPmSyncAttemptId === input.pmSyncAttemptId)
+	) {
+		return { success: true };
+	}
+	if (
+		ownedByAnotherAttempt(current) ||
+		current.lastPmSyncAttemptId !== row.lastPmSyncAttemptId
+	) {
+		return superseded();
+	}
+	if (linkChanged(current, row.externalMcpServerId)) {
+		return changed();
+	}
+	throw new Error(
+		"Fabric could not record this test case's PM link refusal. Sync again.",
+	);
 }
 
 /** How many times the link write after a create is tried. */
@@ -135,6 +376,14 @@ export async function createTestCaseInPmWithClaim(
 	input: CreateTestCaseInPmWithClaimInput,
 ): Promise<CreateTestCaseInPmWithClaimResult> {
 	await jobHeartbeat();
+	const externalPmTarget = input.mcpServerId
+		? await resolveExternalPmTarget({
+				...input,
+				stableContainerId: input.pmTarget?.containerId,
+				containerId: input.pmTarget?.containerId,
+				additionalContext: input.pmTarget?.additionalContext,
+			})
+		: null;
 	const { testCaseId, projectId, organizationId, toolLabel } = input;
 
 	// `acquirePmCreateClaim` matches the case by id only, so the run's
@@ -329,6 +578,7 @@ export async function createTestCaseInPmWithClaim(
 			dispatchDeadline: sendDeadline,
 		});
 	} catch (createError) {
+		logger.warn("[PM Sync] Create request threw", { error: createError });
 		// Refused before anything was sent: the instance check.
 		if (
 			createError instanceof Error &&
@@ -341,7 +591,7 @@ export async function createTestCaseInPmWithClaim(
 		return recordUnconfirmed(
 			createIndeterminateMessage(
 				toolLabel,
-				describeOrphanCause(createError),
+				describeSyncErrorForUser(createError),
 			),
 			"create-threw",
 			pmCreateClaimId,
@@ -428,7 +678,11 @@ export async function createTestCaseInPmWithClaim(
 		externalUrl: externalUrl || undefined,
 		outcome: "created",
 	};
-	const link = { externalId, externalUrl: externalUrl || null };
+	const link = {
+		externalId,
+		externalUrl: externalUrl || null,
+		externalPmTarget,
+	};
 
 	// The link and this create's SUCCESS, in one transaction: the link write
 	// clears this attempt's claim (scoped to it, and to an unlinked case),
@@ -453,7 +707,10 @@ export async function createTestCaseInPmWithClaim(
 						externalId,
 						externalUrl: link.externalUrl,
 						...(input.mcpServerId
-							? { externalMcpServerId: input.mcpServerId }
+							? {
+									externalMcpServerId: input.mcpServerId,
+									externalPmTarget,
+								}
 							: {}),
 						// An earlier link's baseline is not this item's.
 						lastSyncedPmHash: null,
@@ -497,7 +754,7 @@ export async function createTestCaseInPmWithClaim(
 					link,
 					createdResult,
 					claimLost,
-					cause: linkWriteCause(linkError),
+					cause: describeLinkWriteCause(linkError, "test case"),
 				});
 			}
 			await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
@@ -508,6 +765,7 @@ export async function createTestCaseInPmWithClaim(
 }
 
 interface CreatedLink {
+	externalPmTarget?: string | null;
 	externalId: string;
 	externalUrl: string | null;
 }
@@ -618,6 +876,7 @@ async function readPersistedLink(
 				externalId: true,
 				externalUrl: true,
 				externalMcpServerId: true,
+				externalPmTarget: true,
 			},
 		});
 	} catch (readError) {
@@ -689,7 +948,10 @@ async function stampCreatedBaseline(
 				externalId: link.externalId,
 				externalUrl: link.externalUrl,
 				...(input.mcpServerId
-					? { externalMcpServerId: input.mcpServerId }
+					? {
+							externalMcpServerId: input.mcpServerId,
+							externalPmTarget: link.externalPmTarget,
+						}
 					: {}),
 				lastSyncedPmHash: null,
 			},
@@ -714,30 +976,6 @@ async function stampCreatedBaseline(
 	}
 }
 
-/** A Prisma known-request error's code (`P2002`, ...), when it has one. */
-function prismaErrorCode(error: unknown): string | null {
-	const code = (error as { code?: unknown } | null)?.code;
-	return typeof code === "string" && /^P\d{4}$/.test(code) ? code : null;
-}
-
-/**
- * The failed link write's cause, for the message on the case: short, and
- * free of the query text and file paths a Prisma error message carries
- * (the full error is logged).
- */
-function linkWriteCause(error: unknown): string {
-	const code = prismaErrorCode(error);
-	if (code === "P2002") {
-		return "another test case in this project is already linked to that item";
-	}
-	if (code) {
-		return `database error ${code}`;
-	}
-	return (
-		describeOrphanCause(error).trim().split("\n")[0]?.slice(0, 200) ?? ""
-	);
-}
-
 /**
  * Another push linked the case, and this activity sent no create. The case
  * needs no create; what is left is this run's own attempt: a retry stamped
@@ -754,6 +992,21 @@ async function alreadyLinked(
 ): Promise<CreateTestCaseInPmWithClaimResult> {
 	const { testCaseId } = input;
 	logger.info("pm.sync.create_skipped", { testCaseId, reason: "linked" });
+	// A concurrent linker may have supplied a link to another tool. Do not
+	// report it as synced: the workflow uses successful results for execution
+	// pushes. The guard reads the server stamp with its link and attempt state.
+	if (input.mcpServerId) {
+		const checked = await checkTestCasePmLink({
+			...input,
+			mcpServerId: input.mcpServerId,
+			externalId: link.externalId,
+			externalUrl: link.externalUrl,
+		});
+		if (!checked.success) {
+			return checked;
+		}
+	}
+
 	if (input.pmSyncAttemptId !== undefined) {
 		try {
 			const { count } = await db.testCase.updateMany({

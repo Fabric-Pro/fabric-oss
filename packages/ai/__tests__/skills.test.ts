@@ -44,6 +44,7 @@ const {
 	createSkillTools,
 	invalidateSkillCache,
 	listAvailableSkills,
+	listAvailableSkillPage,
 	loadSkillBundle,
 	MAX_SKILL_FILE_READ_BYTES,
 	readSkillFile,
@@ -175,6 +176,32 @@ describe("listAvailableSkills", () => {
 });
 
 describe("loadSkillBundle", () => {
+	it("rechecks publication/visibility for fresh reads even after a bundle was cached", async () => {
+		const context = { userId: "user-1", organizationId: "org-1" };
+		mockSkillFindFirst
+			.mockResolvedValueOnce(mockedSkill())
+			.mockResolvedValueOnce(null);
+		await loadSkillBundle("architecture-diagram", context);
+		await expect(
+			loadSkillBundle("architecture-diagram", context, { fresh: true }),
+		).rejects.toThrow("not found");
+		expect(mockSkillFindFirst).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					isPublished: true,
+					slug: "architecture-diagram",
+					OR: [
+						{ scope: "SYSTEM", userId: null, organizationId: null },
+						{
+							scope: "ORGANIZATION",
+							userId: null,
+							organizationId: "org-1",
+						},
+					],
+				}),
+			}),
+		);
+	});
 	it("returns SKILL.md with frontmatter stripped + manifest", async () => {
 		mockSkillFindFirst.mockResolvedValueOnce(mockedSkill());
 		const bundle = await loadSkillBundle("architecture-diagram", {});
@@ -195,6 +222,46 @@ describe("loadSkillBundle", () => {
 });
 
 describe("readSkillFile", () => {
+	it("fresh version-aware file reads cannot reuse cached bytes after unpublication or version change", async () => {
+		const context = { userId: "user-1", organizationId: "org-1" };
+		mockSkillFileFindFirst.mockResolvedValueOnce({
+			path: "rubric.md",
+			contentType: "text/markdown",
+			sizeBytes: 3,
+			storageKey: "skills/example/rubric.md",
+		});
+		mockDownloadFile.mockResolvedValueOnce({
+			data: Buffer.from("old"),
+			contentType: "text/markdown",
+		});
+		await readSkillFile("example", "rubric.md", context);
+		mockSkillFileFindFirst.mockResolvedValueOnce(null);
+		await expect(
+			readSkillFile("example", "rubric.md", context, {
+				fresh: true,
+				expectedVersion: 1,
+			}),
+		).rejects.toThrow("not found");
+		expect(mockSkillFileFindFirst).toHaveBeenLastCalledWith({
+			where: {
+				path: "rubric.md",
+				skill: {
+					slug: "example",
+					version: 1,
+					isPublished: true,
+					OR: [
+						{ scope: "SYSTEM", userId: null, organizationId: null },
+						{
+							scope: "ORGANIZATION",
+							userId: null,
+							organizationId: "org-1",
+						},
+					],
+				},
+			},
+		});
+		expect(mockDownloadFile).toHaveBeenCalledTimes(1);
+	});
 	it("returns utf-8 text for text content types", async () => {
 		mockSkillFileFindFirst.mockResolvedValueOnce({
 			id: "file_1",
@@ -264,6 +331,57 @@ describe("readSkillFile", () => {
 		await expect(
 			readSkillFile("architecture-diagram", "assets/huge.bin", {}),
 		).rejects.toThrow(/exceeds per-call limit/);
+	});
+});
+
+describe("fresh published skill selector pages", () => {
+	it("uses the canonical tenant filter and bounded metadata-only queries without summary-cache reuse", async () => {
+		const context = { userId: "user-1", organizationId: "org-1" };
+		mockSkillFindMany.mockResolvedValueOnce([mockedSkill()]);
+		await listAvailableSkills(context);
+		const files = Array.from({ length: 101 }, (_, index) => ({
+			path: `file-${index}.md`,
+			contentType: "text/markdown",
+			sizeBytes: 2,
+		}));
+		mockSkillFindMany.mockResolvedValueOnce([
+			{ slug: "example-skill", name: "Example Skill", version: 2, files },
+			{ slug: "next-skill", name: "Next Skill", version: 1, files: [] },
+		]);
+		const page = await listAvailableSkillPage(context, {
+			offset: 2,
+			limit: 1,
+		});
+		expect(page.hasMore).toBe(true);
+		expect(page.skills).toHaveLength(1);
+		expect(page.skills[0].files).toHaveLength(100);
+		expect(page.skills[0].fileManifestComplete).toBe(false);
+		expect(mockSkillFindMany).toHaveBeenLastCalledWith({
+			where: {
+				isPublished: true,
+				OR: [
+					{ scope: "SYSTEM", userId: null, organizationId: null },
+					{
+						scope: "ORGANIZATION",
+						organizationId: "org-1",
+						userId: null,
+					},
+				],
+			},
+			select: {
+				slug: true,
+				name: true,
+				version: true,
+				files: {
+					select: { path: true, contentType: true, sizeBytes: true },
+					orderBy: { path: "asc" },
+					take: 101,
+				},
+			},
+			orderBy: { slug: "asc" },
+			skip: 2,
+			take: 2,
+		});
 	});
 });
 

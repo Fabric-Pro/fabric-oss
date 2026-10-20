@@ -512,11 +512,11 @@ import {
 	acquireContextRepositorySyncRunKey,
 	applyRepositoryContextBatch,
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
-	confirmUnchangedRepositoryContext,
 	type ContextSyncPlan,
 	type ContextSyncRunFence,
 	completeContextRepositorySyncRun,
 	completeInterruptedContextRepositorySyncRuns,
+	confirmUnchangedRepositoryContext,
 	countAwaitingIndexContexts,
 	countContextRepositorySyncRunCleanupPending,
 	countManagedContexts,
@@ -641,6 +641,7 @@ function seedContext(overrides: Row = {}): Row {
 		contentHash: "hash-old",
 		metadata: { title: "a.md", sourcePath: "docs/a.md" },
 		repositorySyncId: null,
+		indexingExcluded: false,
 		embeddedAt: new Date("2026-09-20T09:00:00Z"),
 		...overrides,
 	};
@@ -1324,6 +1325,26 @@ describe("deleteContextRepositorySync (disable, §5.1)", () => {
 		expect(committed().run).toHaveLength(1);
 		expect(h.state.log).toEqual(["lock:sync"]);
 		expect(h.state.transactionOptions).toEqual([{ timeout: 30_000 }]);
+	});
+
+	it("releases the store-only mark of the rows it frees, so they index like any synced file", async () => {
+		seedSync();
+		seedContext({ repositorySyncId: SYNC, indexingExcluded: true });
+		seedContext({
+			repositorySyncId: "sync-other",
+			sourcePath: "docs/other.md",
+			indexingExcluded: true,
+		});
+
+		await deleteContextRepositorySync({
+			projectId: PROJECT,
+			organizationId: ORG,
+		});
+
+		expect(committed().context.map((row) => row.indexingExcluded)).toEqual([
+			false,
+			true,
+		]);
 	});
 
 	it("never locks or deletes another organization's configuration", async () => {
@@ -3120,6 +3141,20 @@ describe("deleteRepoIntegrationReleasingSyncs (disconnect, §5.1)", () => {
 		expect(h.state.transactionOptions).toEqual([
 			{ timeout: CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS },
 		]);
+	});
+
+	it("releases the store-only mark of the rows the disconnect frees", async () => {
+		seedProject();
+		seedIntegration();
+		seedSync();
+		seedContext({ repositorySyncId: SYNC, indexingExcluded: true });
+
+		await deleteRepoIntegrationReleasingSyncs({
+			integrationId: "int-1",
+			projectId: PROJECT,
+		});
+
+		expect(committed().context[0]?.indexingExcluded).toBe(false);
 	});
 
 	it("leaves a configuration that reads from another integration alone", async () => {

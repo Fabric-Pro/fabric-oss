@@ -326,7 +326,9 @@ function makeProvider(onAuthorizationRequired?: () => void) {
 
 /** Nothing sent to B carries any credential. */
 function expectNothingSentToB(...secrets: string[]) {
-	for (const request of requests.filter((r) => r.url.startsWith(AS_B))) {
+	for (const request of requests.filter(
+		(r) => new URL(r.url).origin === AS_B,
+	)) {
 		for (const secret of secrets) {
 			expect(request.body).not.toContain(secret);
 			expect(request.headers).not.toContain(secret);
@@ -359,7 +361,9 @@ describe("the SDK's auth() with an MCP server that names another AS", () => {
 		// read the MCP server's own protected-resource metadata), and B is
 		// not contacted at all.
 		expect(requests.some((r) => r.url.includes("/token"))).toBe(false);
-		expect(requests.some((r) => r.url.startsWith(AS_B))).toBe(false);
+		expect(requests.some((r) => new URL(r.url).origin === AS_B)).toBe(
+			false,
+		);
 		expectNothingSentToB("a-refresh-1", "secret-a");
 		expect(storedRow).toMatchObject({
 			encryptedAccessToken: "ENC:a-access-1",
@@ -381,7 +385,9 @@ describe("the SDK's auth() with an MCP server that names another AS", () => {
 			}),
 		).rejects.toBeInstanceOf(OAuthAuthorizationRequiredError);
 
-		expect(requests.some((r) => r.url.startsWith(AS_B))).toBe(false);
+		expect(requests.some((r) => new URL(r.url).origin === AS_B)).toBe(
+			false,
+		);
 		expectNothingSentToB("code-xyz", "secret-a");
 		expect(storedRow).toMatchObject({
 			encryptedAccessToken: "ENC:a-access-1",

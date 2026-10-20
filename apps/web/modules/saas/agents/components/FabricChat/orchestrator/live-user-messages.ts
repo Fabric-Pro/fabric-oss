@@ -45,3 +45,66 @@ export function turnQuestionMessageId(
 	}
 	return latestUser;
 }
+
+/**
+ * Stopped assistant messages whose turn is still shown live. A message's turn
+ * is the last user message before it: the hook appends each question together
+ * with its assistant placeholder (`sendMessage` in `useOrchestratorStream`),
+ * and the user messages added mid-turn (clarification answers, follow-ups)
+ * come after that placeholder. Once the question's turn has moved into the
+ * completed list, that entry shows the stopped answer instead, so it is not
+ * repeated under a later question.
+ */
+export function selectLiveStoppedAssistantMessages<
+	TMessage extends { id: string; role: string; streamStatus?: string },
+>(
+	messages: ReadonlyArray<TMessage>,
+	completedExecutions: ReadonlyArray<CompletedExecution | null | undefined>,
+): TMessage[] {
+	const completedQuestionIds = new Set<string>();
+	for (const execution of completedExecutions) {
+		if (execution?.userMessageId) {
+			completedQuestionIds.add(execution.userMessageId);
+		}
+	}
+	const stopped: TMessage[] = [];
+	let questionId: string | undefined;
+	for (const message of messages) {
+		if (message.role === "user") {
+			questionId = message.id;
+			continue;
+		}
+		if (
+			message.role === "assistant" &&
+			message.streamStatus === "cancelled" &&
+			!(questionId && completedQuestionIds.has(questionId))
+		) {
+			stopped.push(message);
+		}
+	}
+	return stopped;
+}
+
+/**
+ * The partial answer of a stopped turn: the latest assistant message's text
+ * when that message was stopped. Undefined when it was not stopped or had no
+ * text yet.
+ */
+export function stoppedAnswerText(
+	messages: ReadonlyArray<{
+		role: string;
+		content: string;
+		streamStatus?: string;
+	}>,
+): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role !== "assistant") {
+			continue;
+		}
+		return message.streamStatus === "cancelled" && message.content.trim()
+			? message.content
+			: undefined;
+	}
+	return undefined;
+}

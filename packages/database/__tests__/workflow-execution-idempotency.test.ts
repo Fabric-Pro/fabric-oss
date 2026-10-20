@@ -19,9 +19,11 @@ const executeRawMock = vi.fn();
 const findFirstMock = vi.fn();
 const countMock = vi.fn();
 const createMock = vi.fn();
+const queryRawMock = vi.fn();
 
 vi.mock("../prisma/client", () => {
 	const tx = {
+		$queryRaw: (...args: unknown[]) => queryRawMock(...args),
 		$executeRaw: (...args: unknown[]) => executeRawMock(...args),
 		workflowExecution: {
 			findFirst: (args: unknown) => findFirstMock(args),
@@ -41,7 +43,10 @@ import {
 	createWorkflowExecutionIdempotent,
 	EXECUTION_IDEMPOTENCY_KEY_PATH,
 	releasedIdempotencyTriggerInput,
+	reserveWorkflowExecution,
 } from "../prisma/queries/workflows/executions";
+import { listWorkspaceReviewHistory } from "../prisma/queries/workflows/workspace-review-history";
+import { WorkspaceWorkflowBindingConflictError } from "../prisma/queries/workflows/workspace-workflow-binding";
 
 const BASE = {
 	workflowId: "wf-1",
@@ -64,6 +69,7 @@ function rawSql(callIndex: number): string {
 }
 
 beforeEach(() => {
+	queryRawMock.mockReset().mockResolvedValue([{ id: "matched-row" }]);
 	executeRawMock.mockReset().mockResolvedValue(1);
 	findFirstMock.mockReset().mockResolvedValue(null);
 	countMock.mockReset().mockResolvedValue(0);
@@ -71,6 +77,149 @@ beforeEach(() => {
 		id: "exec-new",
 		...(args as { data: Record<string, unknown> }).data,
 	}));
+});
+
+const binding = {
+	workflowId: BASE.workflowId,
+	userId: BASE.userId,
+	organizationId: "org-1",
+	projectId: "project-1",
+	workspaceFrameId: "workspace-1",
+	workflowUpdatedAt: new Date("2026-01-01T12:00:00Z"),
+	frameUpdatedAt: new Date("2026-01-01T11:00:00Z"),
+	status: "PUBLISHED" as const,
+};
+
+describe("bound controller reservations and history", () => {
+	it("checks binding under row locks before returning an existing key, without consulting capacity", async () => {
+		findFirstMock.mockResolvedValueOnce({ id: "existing-run" });
+		const result = await createWorkflowExecutionIdempotent({
+			...BASE,
+			organizationId: binding.organizationId,
+			workspaceBinding: binding,
+		});
+		expect(result.outcome).toBe("existing");
+		expect(queryRawMock).toHaveBeenCalledTimes(3);
+		expect(executeRawMock.mock.invocationCallOrder[0]).toBeLessThan(
+			queryRawMock.mock.invocationCallOrder[0],
+		);
+		expect(queryRawMock.mock.invocationCallOrder[2]).toBeLessThan(
+			findFirstMock.mock.invocationCallOrder[0],
+		);
+		expect(countMock).not.toHaveBeenCalled();
+		expect(createMock).not.toHaveBeenCalled();
+		const sql = queryRawMock.mock.calls.map(([strings]) =>
+			strings.join("?"),
+		);
+		expect(sql[0]).toContain('"updatedAt" = ?');
+		expect(sql[0]).toContain('status = ?::"WorkflowBuilderStatus"');
+		expect(sql[1]).toContain("metadata->>'surface' = 'workspace'");
+		expect(sql[2]).toContain('"deletedAt" IS NULL');
+		for (const statement of sql) expect(statement).toContain("FOR SHARE");
+	});
+
+	it.each([0, 1, 2])(
+		"fails closed when binding row %i no longer matches, before deduplication or insertion",
+		async (missing) => {
+			queryRawMock.mockImplementation(async () =>
+				queryRawMock.mock.calls.length - 1 === missing
+					? []
+					: [{ id: "matched-row" }],
+			);
+			await expect(
+				createWorkflowExecutionIdempotent({
+					...BASE,
+					organizationId: binding.organizationId,
+					workspaceBinding: binding,
+				}),
+			).rejects.toBeInstanceOf(WorkspaceWorkflowBindingConflictError);
+			expect(findFirstMock).not.toHaveBeenCalled();
+			expect(countMock).not.toHaveBeenCalled();
+			expect(createMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("uses binding rows before the cap on the unkeyed path too", async () => {
+		await reserveWorkflowExecution({
+			userId: BASE.userId,
+			organizationId: binding.organizationId,
+			limit: 25,
+			workspaceBinding: binding,
+			data: {
+				workflowId: BASE.workflowId,
+				version: 1,
+				triggerType: "MANUAL",
+			},
+		});
+		expect(queryRawMock.mock.invocationCallOrder[2]).toBeLessThan(
+			executeRawMock.mock.invocationCallOrder[0],
+		);
+		expect(createMock).toHaveBeenCalledOnce();
+	});
+
+	it("rejects mismatched guard actors before creating a row", async () => {
+		await expect(
+			createWorkflowExecutionIdempotent({
+				...BASE,
+				organizationId: binding.organizationId,
+				workspaceBinding: { ...binding, userId: "foreign-user" },
+			}),
+		).rejects.toBeInstanceOf(WorkspaceWorkflowBindingConflictError);
+		expect(queryRawMock).not.toHaveBeenCalled();
+		expect(createMock).not.toHaveBeenCalled();
+	});
+
+	it("reads history only after checking the same binding inside its transaction", async () => {
+		queryRawMock
+			.mockResolvedValueOnce([{ id: "workflow" }])
+			.mockResolvedValueOnce([{ id: "frame" }])
+			.mockResolvedValueOnce([{ id: "project" }])
+			.mockResolvedValueOnce([
+				{ id: "one" },
+				{ id: "two" },
+				{ id: "extra" },
+			]);
+		expect(
+			await listWorkspaceReviewHistory({
+				binding,
+				nodeId: "review",
+				limit: 2,
+				offset: 0,
+			}),
+		).toEqual({
+			executions: [{ id: "one" }, { id: "two" }],
+			hasMore: true,
+			nextOffset: 2,
+		});
+		expect(queryRawMock).toHaveBeenCalledTimes(4);
+		const [strings, ...values] = queryRawMock.mock.calls[3];
+		expect(strings.join("?")).toContain(
+			"octet_length(summary.review::text) <= ?",
+		);
+		expect(strings.join("?")).toContain("LIMIT ? OFFSET ?");
+		expect(values).toEqual(
+			expect.arrayContaining([
+				binding.workflowId,
+				binding.userId,
+				binding.organizationId,
+				"review",
+				16_384,
+				3,
+				0,
+			]),
+		);
+		queryRawMock.mockClear();
+		queryRawMock.mockResolvedValueOnce([]);
+		await expect(
+			listWorkspaceReviewHistory({
+				binding,
+				nodeId: "review",
+				limit: 2,
+				offset: 0,
+			}),
+		).rejects.toBeInstanceOf(WorkspaceWorkflowBindingConflictError);
+		expect(queryRawMock).toHaveBeenCalledOnce();
+	});
 });
 
 describe("serialisation", () => {

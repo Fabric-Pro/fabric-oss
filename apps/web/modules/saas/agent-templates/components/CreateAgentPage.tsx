@@ -898,6 +898,7 @@ export function CreateAgentPage({
 
 				const result = await updateInstanceMutation.mutateAsync({
 					id: instanceId,
+					organizationId: organizationId ?? undefined,
 					name: trimmedName,
 					description: trimmedDescription,
 					customInstructions: {
@@ -994,7 +995,7 @@ export function CreateAgentPage({
 					: template.id,
 				name: trimmedName,
 				description: trimmedDescription,
-				organizationId: organizationId ?? null,
+				organizationId: organizationId ?? undefined,
 				heroEmojis: template.heroEmojis,
 				workspaceIds:
 					workspaceIdsOnly.length > 0 ? workspaceIdsOnly : undefined,

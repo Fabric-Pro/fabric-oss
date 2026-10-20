@@ -8,7 +8,7 @@
  * write takes the workflow's row lock first and re-reads inside it.
  */
 
-import { db, type Prisma } from "@repo/database";
+import { db, type Prisma, writeWorkflowRunState } from "@repo/database";
 
 export type WorkflowSettings = Record<string, unknown>;
 
@@ -111,12 +111,14 @@ export async function lockWorkflowRow(
 
 /**
  * Apply `change` to the workflow's settings under its row lock. Scoped to the
- * organization so a run can never write another tenant's workflow. Returns
- * false when no such workflow exists in that organization.
+ * organization so a run can never write another tenant's workflow. `change`
+ * returns null when there is nothing to write. A run's write is not an edit, so
+ * it leaves `updatedAt` alone (see `writeWorkflowRunState`). Returns false when
+ * no such workflow exists in that organization.
  */
 export async function updateWorkflowSettings(
 	input: { workflowId: string; organizationId: string },
-	change: (current: WorkflowSettings) => WorkflowSettings,
+	change: (current: WorkflowSettings) => WorkflowSettings | null,
 ): Promise<boolean> {
 	return db.$transaction(async (tx) => {
 		await lockWorkflowRow(tx, input.workflowId);
@@ -130,14 +132,14 @@ export async function updateWorkflowSettings(
 		if (!workflow) {
 			return false;
 		}
-		await tx.workflow.update({
-			where: { id: input.workflowId },
-			data: {
-				settings: change(
-					parseWorkflowSettings(workflow.settings),
-				) as Prisma.InputJsonValue,
-			},
-		});
+		const settings = change(parseWorkflowSettings(workflow.settings));
+		if (settings) {
+			await writeWorkflowRunState(tx, {
+				workflowId: input.workflowId,
+				organizationId: input.organizationId,
+				settings,
+			});
+		}
 		return true;
 	});
 }

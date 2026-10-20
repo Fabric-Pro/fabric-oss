@@ -224,7 +224,10 @@ describe("generateMaturationSummary — usage attribution", () => {
 
 		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
 			{ taskType: "COMPLEX" },
-			expect.objectContaining({ featureKey: "maturation" }),
+			expect.objectContaining({
+				featureKey: "maturation",
+				projectId: "project-1",
+			}),
 		);
 	});
 });

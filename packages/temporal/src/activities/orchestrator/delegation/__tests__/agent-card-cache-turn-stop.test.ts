@@ -21,7 +21,6 @@ const h = vi.hoisted(() => ({
 	stopped: false,
 	executeRaw: vi.fn(),
 	getAgentCard: vi.fn(),
-	getRegisteredAgentByAgentId: vi.fn(),
 }));
 
 vi.mock("../../../../../../database/prisma/client", async (importOriginal) => {
@@ -37,7 +36,6 @@ vi.mock("@repo/database", async () => {
 		"../../../../../../database/prisma/queries/registered-agents"
 	);
 	return {
-		getRegisteredAgentByAgentId: h.getRegisteredAgentByAgentId,
 		updateAgentCardCache: queries.updateAgentCardCache,
 	};
 });
@@ -51,7 +49,11 @@ vi.mock("@repo/agent-core", () => ({
 }));
 
 vi.mock("../resolve-endpoint", () => ({
-	resolveAgentEndpoint: vi.fn().mockResolvedValue({
+	resolveVisibleRegisteredAgent: vi.fn().mockResolvedValue({
+		agentId: "agent-example-1",
+		metadata: {},
+	}),
+	endpointFromRegisteredAgent: vi.fn().mockReturnValue({
 		deploymentUrl: "https://agent.example.com",
 	}),
 }));
@@ -93,7 +95,6 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 beforeEach(() => {
 	h.stopped = false;
 	h.executeRaw.mockReset().mockResolvedValue(1);
-	h.getRegisteredAgentByAgentId.mockReset().mockResolvedValue(null);
 	h.getAgentCard.mockReset().mockImplementation(async () => {
 		await Promise.resolve();
 		return { name: "Example agent", capabilities: {} };

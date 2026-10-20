@@ -123,6 +123,16 @@ Dies bietet eine vollständige Referenz aller verfügbaren Authentifizierungs-En
 
 ---
 
+## API-Schlüssel für das MCP-Gateway
+
+Fabric-API-Schlüssel (Format: `fab_xxxx_xxxxxxxxxx`) authentifizieren sich auch am Gateway, für CI und Clients ohne Oberfläche. Erstellen Sie Schlüssel unter **Einstellungen → API-Schlüssel**.
+
+### Schlüssel-Scopes
+
+Ein neuer Schlüssel ist zunächst schreibgeschützt: **MCP Read** (`mcp:read`) ist der einzige angekreuzte Scope, der Schlüssel kann also lesen, aber nichts ändern, bis sein Ersteller einen Schreib-Scope ankreuzt. **MCP Write** (`mcp:write`) gewährt jedes Schreib-Tool, einschließlich Workflows und Seiten. Um zu begrenzen, was ein Schlüssel ändern kann, kreuzen Sie stattdessen die engeren Schreib-Scopes an, etwa `workflows:write`, `frames:write` oder `features:write`; bevorzugen Sie diese für einen Agenten, der nur eine Sache tun soll. Schlüssel, die früher erstellt wurden, behalten ihre Scopes.
+
+---
+
 ## Nächste Schritte
 
 <Cards>

@@ -11,6 +11,11 @@ import {
 	type WorkflowTriggerType,
 } from "../../client";
 import { advisoryObjectKey } from "../lib/refresh-lock-key";
+import {
+	assertWorkspaceWorkflowBindingWithin,
+	WorkspaceWorkflowBindingConflictError,
+	type WorkspaceWorkflowBindingGuard,
+} from "./workspace-workflow-binding";
 
 /**
  * Create a new workflow execution
@@ -109,6 +114,7 @@ export async function reserveWorkflowExecution(args: {
 	userId: string;
 	organizationId?: string | null;
 	limit: number;
+	workspaceBinding?: WorkspaceWorkflowBindingGuard;
 	data: {
 		workflowId: string;
 		version: number;
@@ -129,8 +135,9 @@ export async function reserveWorkflowExecution(args: {
  * for instance one that has just looked a client idempotency key up under
  * its own lock and found nothing, and must reserve capacity for the new row
  * before that lock is released. Lock ORDER matters for such a caller: any
- * key-scoped lock is taken first and the tenant lock here second, on every
- * path, so two reservations can never wait on each other.
+ * key-scoped lock is taken first, then optional binding rows (workflow,
+ * frame, project), then the tenant lock. Guarded starts keep that order on
+ * both the keyed and unkeyed paths.
  */
 export async function reserveWorkflowExecutionWithin(
 	tx: Prisma.TransactionClient,
@@ -138,6 +145,7 @@ export async function reserveWorkflowExecutionWithin(
 		userId: string;
 		organizationId?: string | null;
 		limit: number;
+		workspaceBinding?: WorkspaceWorkflowBindingGuard;
 		data: {
 			workflowId: string;
 			version: number;
@@ -146,6 +154,10 @@ export async function reserveWorkflowExecutionWithin(
 		};
 	},
 ): Promise<ReserveWorkflowExecutionResult> {
+	if (args.workspaceBinding) {
+		assertBindingActor(args.workspaceBinding, args);
+		await assertWorkspaceWorkflowBindingWithin(tx, args.workspaceBinding);
+	}
 	const tenantFilter = args.organizationId
 		? { organizationId: args.organizationId }
 		: { userId: args.userId, organizationId: null };
@@ -250,6 +262,7 @@ export async function createWorkflowExecutionIdempotent(data: {
 	windowMs: number;
 	/** The tenant's in-flight ceiling, applied only when a row is created. */
 	limit: number;
+	workspaceBinding?: WorkspaceWorkflowBindingGuard;
 }): Promise<IdempotentWorkflowExecutionResult> {
 	const lockKey = `wfexec:${data.userId}:${data.workflowId}:${data.idempotencyKey}`;
 	const since = new Date(Date.now() - data.windowMs);
@@ -260,6 +273,17 @@ export async function createWorkflowExecutionIdempotent(data: {
 			// the driver adapter's `$queryRaw` cannot deserialise (see
 			// `acquirePromptKeyRetirementLock`).
 			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${EXECUTION_IDEMPOTENCY_ADVISORY_CLASS}::int, ${advisoryObjectKey(lockKey)}::int)`;
+			if (data.workspaceBinding) {
+				assertBindingActor(data.workspaceBinding, {
+					userId: data.userId,
+					organizationId: data.organizationId,
+					data: { workflowId: data.workflowId },
+				});
+				await assertWorkspaceWorkflowBindingWithin(
+					tx,
+					data.workspaceBinding,
+				);
+			}
 
 			const existing = await tx.workflowExecution.findFirst({
 				where: {
@@ -479,6 +503,23 @@ export async function listWorkflowExecutions(options: {
 	};
 }
 
+function assertBindingActor(
+	guard: WorkspaceWorkflowBindingGuard,
+	input: {
+		userId: string;
+		organizationId?: string | null;
+		data: { workflowId?: string };
+	},
+) {
+	if (
+		guard.userId !== input.userId ||
+		guard.organizationId !== input.organizationId ||
+		guard.workflowId !== input.data.workflowId
+	) {
+		throw new WorkspaceWorkflowBindingConflictError();
+	}
+}
+
 /**
  * Update workflow execution status
  */
@@ -499,6 +540,39 @@ export async function updateWorkflowExecution(
 		where: { id: executionId },
 		data,
 	});
+}
+
+/**
+ * Stamp the parent `Workflow.lastRunAt` when the run's workflow starts
+ * executing. Called from the workflow's RUNNING activity, before its status
+ * write.
+ *
+ * One raw statement, so that:
+ *   - `Workflow.updatedAt` is untouched (Prisma's `@updatedAt` would bump it on
+ *     any client update, and the card footer and list order read updatedAt);
+ *   - only a live execution counts, PENDING or RUNNING. Reserved starts are
+ *     already RUNNING here (`markExecutionRunningIfPending` runs once the
+ *     Temporal start is confirmed); scheduled runs are still PENDING. A run
+ *     that was cancelled, failed or completed before this point stamps nothing;
+ *   - an execution without a workflow (pipeline runs) matches no row;
+ *   - `lastRunAt` never moves backwards, and a retry with the same `startedAt`
+ *     is a no-op.
+ *
+ * Returns the number of workflow rows stamped (0 or 1).
+ */
+export async function recordWorkflowRunStarted(args: {
+	executionId: string;
+	startedAt: Date;
+}): Promise<number> {
+	return await db.$executeRaw`
+		UPDATE "workflow" AS w
+		SET "lastRunAt" = ${args.startedAt}
+		FROM "workflow_execution" AS e
+		WHERE e."id" = ${args.executionId}
+			AND e."status" IN ('PENDING', 'RUNNING')
+			AND w."id" = e."workflowId"
+			AND (w."lastRunAt" IS NULL OR w."lastRunAt" < ${args.startedAt})
+	`;
 }
 
 /**

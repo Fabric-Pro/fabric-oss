@@ -19,8 +19,11 @@ vi.mock("@repo/database", () => mocks);
 import {
 	getMemoryFolderFilesView,
 	getMemoryFolderFileView,
+	getMemoryFolderTextView,
 	getMemoryWriteTargetsView,
 	getMemoryWriteView,
+	MEMORY_READ_DEFAULT_BYTES,
+	MEMORY_READ_MAX_BYTES,
 } from "../memory-write-views";
 
 const scope = { projectId: "proj-1", organizationId: "org-1" };
@@ -84,6 +87,7 @@ describe("getMemoryWriteTargetsView", () => {
 				id: "target-1",
 				folder: "docs/memory",
 				mode: "DIRECT_PUSH",
+				indexMode: "STORE_ONLY",
 				version: 3,
 				directPushEnabledById: "user-9",
 			},
@@ -107,6 +111,7 @@ describe("getMemoryWriteTargetsView", () => {
 					id: "target-1",
 					folder: "docs/memory",
 					mode: "DIRECT_PUSH",
+					indexMode: "STORE_ONLY",
 					version: 3,
 				},
 			],
@@ -173,6 +178,154 @@ describe("getMemoryFolderFilesView", () => {
 		expect(mocks.listMemoryFolderFiles).toHaveBeenCalledWith(
 			expect.objectContaining({ limit: 1001 }),
 		);
+	});
+});
+
+describe("getMemoryFolderFilesView prefix", () => {
+	it("lists under a prefix inside the folder, with or without a trailing slash", async () => {
+		mocks.listMemoryFolderFiles.mockResolvedValue([file("specs/x/a.md")]);
+
+		for (const prefix of ["docs/memory/specs/x", "docs/memory/specs/x/"]) {
+			mocks.listMemoryFolderFiles.mockClear();
+			const view = await getMemoryFolderFilesView({
+				...scope,
+				targetId: "target-1",
+				after: null,
+				limit: 10,
+				prefix,
+			});
+
+			expect(view?.files).toHaveLength(1);
+			expect(mocks.listMemoryFolderFiles).toHaveBeenCalledWith(
+				expect.objectContaining({ folder: "docs/memory/specs/x" }),
+			);
+		}
+	});
+
+	it("accepts the folder itself as the prefix", async () => {
+		mocks.listMemoryFolderFiles.mockResolvedValue([]);
+
+		await getMemoryFolderFilesView({
+			...scope,
+			targetId: "target-1",
+			after: null,
+			limit: 10,
+			prefix: "docs/memory",
+		});
+
+		expect(mocks.listMemoryFolderFiles).toHaveBeenCalledWith(
+			expect.objectContaining({ folder: "docs/memory" }),
+		);
+	});
+
+	it.each([
+		"src",
+		"docs/memory-archive",
+		"docs",
+		"docs/memory/../secrets",
+		"/docs/memory",
+	])(
+		"refuses the prefix %s, which is not inside the folder",
+		async (prefix) => {
+			expect(
+				await getMemoryFolderFilesView({
+					...scope,
+					targetId: "target-1",
+					after: null,
+					limit: 10,
+					prefix,
+				}),
+			).toBeNull();
+			expect(mocks.listMemoryFolderFiles).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("getMemoryFolderTextView", () => {
+	const text = (content: string) =>
+		mocks.getMemoryFolderFile.mockResolvedValue({
+			...file("a.md"),
+			content,
+		});
+	const read = (extra: Record<string, unknown> = {}) =>
+		getMemoryFolderTextView({
+			...scope,
+			targetId: "target-1",
+			path: "docs/memory/a.md",
+			...extra,
+		});
+
+	it("is null for a path outside the folder or a missing file", async () => {
+		expect(
+			await getMemoryFolderTextView({
+				...scope,
+				targetId: "target-1",
+				path: "src/a.md",
+			}),
+		).toBeNull();
+		mocks.getMemoryFolderFile.mockResolvedValue(null);
+		expect(await read()).toBeNull();
+	});
+
+	it("returns a small file whole, with no next offset", async () => {
+		text("# A\n");
+
+		expect(await read()).toMatchObject({
+			path: "docs/memory/a.md",
+			content: "# A\n",
+			offset: 0,
+			nextOffset: null,
+			totalBytes: 4,
+		});
+	});
+
+	it("pages a large file by bytes and resumes at nextOffset", async () => {
+		text("x".repeat(30_000));
+
+		const first = await read();
+		const second = await read({ offset: first?.nextOffset });
+		const last = await read({ offset: 24_000 });
+
+		expect(MEMORY_READ_DEFAULT_BYTES).toBe(12_000);
+		expect(first?.content).toHaveLength(12_000);
+		expect(first?.nextOffset).toBe(12_000);
+		expect(second?.content).toHaveLength(12_000);
+		expect(second?.nextOffset).toBe(24_000);
+		expect(last?.content).toHaveLength(6_000);
+		expect(last?.nextOffset).toBeNull();
+	});
+
+	it("bounds maxBytes", async () => {
+		text("x".repeat(80_000));
+
+		const view = await read({ maxBytes: 1_000_000 });
+
+		expect(MEMORY_READ_MAX_BYTES).toBe(50_000);
+		expect(view?.content).toHaveLength(50_000);
+		expect(view?.nextOffset).toBe(50_000);
+	});
+
+	it("never cuts a multi-byte character in two", async () => {
+		text("é".repeat(10));
+
+		const first = await read({ maxBytes: 5 });
+		const second = await read({
+			offset: first?.nextOffset ?? 0,
+			maxBytes: 5,
+		});
+
+		expect(first?.content).toBe("éé");
+		expect(first?.nextOffset).toBe(4);
+		expect(second?.content).toBe("éé");
+	});
+
+	it("answers an offset past the end with empty text and no next offset", async () => {
+		text("abc");
+
+		expect(await read({ offset: 99 })).toMatchObject({
+			content: "",
+			nextOffset: null,
+		});
 	});
 });
 

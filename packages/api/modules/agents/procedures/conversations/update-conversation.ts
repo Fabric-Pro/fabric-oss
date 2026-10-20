@@ -8,11 +8,10 @@ import { z } from "zod";
 import { INPUT_BOUNDS } from "../../../..//lib/zod-bounds";
 import {
 	Permissions,
-	requirePermission,
-	resolveOrganizationId,
+	requireInputOrgPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { resolvedOrganizationId } from "./resolved-organization";
 
 /**
  * Persisted per-message attachment envelope.
@@ -156,7 +155,11 @@ const TrajectorySchema = z.object({
  * Update an agent conversation
  */
 export const updateConversation = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "PATCH",
 		path: "/agents/conversations/{id}",
@@ -178,24 +181,8 @@ export const updateConversation = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const conversation = await updateAgentConversation({
@@ -228,7 +215,11 @@ export const updateConversation = tenantProtectedProcedure
  * Add a single message to a conversation
  */
 export const addMessage = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/conversations/{conversationId}/messages",
@@ -244,24 +235,8 @@ export const addMessage = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const conversation = await addMessageToConversation({
@@ -289,7 +264,11 @@ export const addMessage = tenantProtectedProcedure
  * Update trajectory for a conversation
  */
 export const updateTrajectory = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_UPDATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "PUT",
 		path: "/agents/conversations/{conversationId}/trajectory",
@@ -305,24 +284,8 @@ export const updateTrajectory = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const { user, session } = context;
-		const organizationId = resolveOrganizationId(
-			input.organizationId,
-			session,
-		);
-
-		// Verify organization membership if in org context
-		if (organizationId) {
-			const membership = await verifyOrganizationMembership(
-				organizationId,
-				user.id,
-			);
-			if (!membership) {
-				throw new ORPCError("FORBIDDEN", {
-					message: "You are not a member of this organization",
-				});
-			}
-		}
+		const { user } = context;
+		const organizationId = resolvedOrganizationId(input, context.session);
 
 		try {
 			const conversation = await updateConversationTrajectory({

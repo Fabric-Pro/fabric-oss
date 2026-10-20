@@ -113,6 +113,18 @@ const TOKEN_WRITE_VERBS = new Set([
 	"cancel",
 ]);
 
+/**
+ * Fabric's own built-in lookups whose names end in the read verb instead of
+ * starting with it, so no prefix rule can see them. Matched as whole names
+ * only: a third-party tool that merely ends in `_query` stays a WRITE, and a
+ * vendor-prefixed copy of one of these names is not one of them.
+ */
+const FABRIC_READ_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"project_rag_query",
+	"workspace_rag_query",
+	"workspace_rag_summarize",
+]);
+
 /** camelCase/PascalCase → snake_case, lowercased (`getJiraIssue` → `get_jira_issue`). */
 export function toSnakeLower(name: string): string {
 	return name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
@@ -187,6 +199,9 @@ export function toolNameReadCandidates(snakeName: string): string[] {
 
 export function classifyReadOnlyToolAccess(toolName: string): "READ" | "WRITE" {
 	const snake = toSnakeLower(toolName);
+	if (FABRIC_READ_TOOL_NAMES.has(snake)) {
+		return "READ";
+	}
 	if (WRITE_SUBSTRINGS.some((verb) => snake.includes(verb))) {
 		return "WRITE";
 	}

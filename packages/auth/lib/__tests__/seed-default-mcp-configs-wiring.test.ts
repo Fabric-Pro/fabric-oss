@@ -9,7 +9,7 @@
  * and slow. Instead, this suite verifies the wiring statically: we read the
  * source of `auth.ts` and assert (a) it shares the canonical lazy helper
  * with invite reconciliation, (b) the helper dynamically loads
- * `@repo/agent-core/backend` only when it seeds, and (c) every required hook
+ * `@repo/agent-core/services/seed-default-mcp-configs` only when it seeds, and (c) every required hook
  * site contains a call that passes the right tenant tuple. This catches the
  * most common regression mode — a refactor that silently deletes one of the
  * call sites — without booting the full auth instance.
@@ -71,10 +71,10 @@ describe("auth.ts hook wiring — seedDefaultMcpConfigsForTenant", () => {
 			);
 		}
 		expect(SEED_DEFAULT_MCP_CONFIGS_SOURCE).toMatch(
-			/type\s+SeedDefaultMcpConfigsForTenant\s*=\s*typeof\s+import\(["']@repo\/agent-core\/backend["']\)\.seedDefaultMcpConfigsForTenant/,
+			/type\s+SeedDefaultMcpConfigsForTenant\s*=\s*typeof\s+import\(["']@repo\/agent-core\/services\/seed-default-mcp-configs["']\)\.seedDefaultMcpConfigsForTenant/,
 		);
 		expect(SEED_DEFAULT_MCP_CONFIGS_SOURCE).toMatch(
-			/await\s+import\(\s*["']@repo\/agent-core\/backend["']\s*\)/,
+			/await\s+import\(\s*["']@repo\/agent-core\/services\/seed-default-mcp-configs["']\s*\)/,
 		);
 	});
 
@@ -83,9 +83,10 @@ describe("auth.ts hook wiring — seedDefaultMcpConfigsForTenant", () => {
 			'if (ctx.path.startsWith("/delete-user") && userId)';
 
 		const deleteUserGuardIndex = AUTH_SOURCE.indexOf(deleteUserGuard);
-		const temporalImport = /await\s+import\(\s*"@repo\/temporal"\s*\)/.exec(
-			AUTH_SOURCE,
-		);
+		const temporalImport =
+			/await\s+import\(\s*"@repo\/temporal\/client"\s*\)/.exec(
+				AUTH_SOURCE,
+			);
 
 		expect(AUTH_SOURCE).not.toMatch(
 			/import\s+\{[^}]*getTemporalClient[^}]*\}\s+from\s+["']@repo\/temporal["']/,

@@ -127,11 +127,11 @@ const baseMessage = {
 };
 
 function makeContext() {
-	mocks.resolveOrganizationId.mockReturnValue(null);
+	mocks.resolveOrganizationId.mockReturnValue("example-org");
 	mocks.verifyOrganizationMembership.mockResolvedValue(true);
 	return {
 		user: { id: USER_ID },
-		session: { activeOrganizationId: null },
+		session: { activeOrganizationId: "example-org" },
 	};
 }
 
@@ -149,6 +149,7 @@ beforeEach(() => {
 	mocks.getRegisteredAgentByAgentId.mockReset();
 	mocks.getRegisteredAgentByAgentId.mockResolvedValue({
 		agentId: "fabric-workspace-assistant",
+		scope: "SYSTEM",
 		status: "ACTIVE",
 		name: "Fabric AI",
 		displayName: "Fabric AI",

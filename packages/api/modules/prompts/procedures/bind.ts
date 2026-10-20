@@ -23,6 +23,7 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 import { announceDefaultChange } from "../lib/announce-default-change";
+import { assertNotSupersededAction } from "../lib/assert-not-superseded-action";
 import { assertWithinPromptContentLimit } from "../lib/assert-valid-template";
 import { assertPromptVersionReachable } from "../lib/prompt-version-access";
 import { resolveProjectForOrg } from "../lib/resolve-project-for-org";
@@ -196,6 +197,14 @@ export const bindProcedures = {
 
 			const projectId = await resolveProjectForOrg(
 				input.projectId,
+				organizationId,
+			);
+
+			// After the tier and project checks, so only an org admin of the
+			// project's own organization learns anything about its gate.
+			await assertNotSupersededAction(
+				input.scope,
+				[input],
 				organizationId,
 			);
 
@@ -430,6 +439,13 @@ export const bindProcedures = {
 
 			const projectId = await resolveProjectForOrg(
 				input.projectId,
+				organizationId,
+			);
+
+			// All or nothing again, and placed as in `set`.
+			await assertNotSupersededAction(
+				input.scope,
+				input.targets,
 				organizationId,
 			);
 

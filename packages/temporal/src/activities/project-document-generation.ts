@@ -68,6 +68,7 @@ import {
 	listEmbeddedDocumentsForSweep,
 	markDocumentGenerationFailed,
 	markDocumentGenerationRunning,
+	markLivePreviewStopped,
 	type Prisma,
 	type ProjectDocumentType,
 	recordAuditDurable,
@@ -148,6 +149,15 @@ import {
 	jobStep,
 	seedJobSteps,
 } from "./lib/job-progress";
+import {
+	assertFallbackTimeLeft,
+	collectText,
+	FALLBACK_CANCELLED_MESSAGE,
+	FallbackBound,
+	type ProposalAttemptBudget,
+	ProposalStreamLimits,
+	proposalAttemptBudget,
+} from "./lib/proposal-generation-bounds";
 
 // =============================================================================
 // Agent Skills resolution
@@ -850,6 +860,13 @@ const LIVE_SECTIONS_SETTLE_HEARTBEAT = {
 };
 
 /**
+ * How often, at most, the gateway fallback writes the "preview stopped"
+ * milestone again as its sign of life (Fizzy #2946): well inside the three
+ * minutes after which the page calls a silent run stalled.
+ */
+const LIVE_PREVIEW_SIGN_OF_LIFE_INTERVAL_MS = 60_000;
+
+/**
  * Whether `work` settled within {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}.
  * `work` must never reject; when it runs out of time it carries on
  * unawaited.
@@ -1040,12 +1057,21 @@ interface LiveSectionsRun {
  * the generation fails with {@link RESPONSE_ECHOED}. With nothing carried no
  * preview is checked.
  *
- * It also owns the stream's abort signal: on a timeout or a cancellation the
+ * It also owns the stream's abort signal: on a cut or a cancellation the
  * stream is aborted and live writing stops at the same moment.
  *
- * Every wait after the stream (finish, clear, stop) and every nudge is
- * bounded by {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}, so a stalled database or
- * realtime call delays neither the fallback nor the result.
+ * When the gateway fallback takes over (Fizzy #2946), the preview is kept,
+ * not cleared: {@link LiveSections.markStopped} gives the document the fixed
+ * "preview stopped" progress milestone, so the page keeps the sections with a
+ * notice that the result may differ instead of falling back to the previous
+ * body, and {@link LiveSections.signOfLife} writes it again about once a
+ * minute while the fallback runs, so a healthy fallback does not look
+ * stalled. A superseded attempt writes neither.
+ *
+ * Every wait after the stream (finish, clear, stop, the milestone and its
+ * sign of life) and every nudge is bounded by
+ * {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}, so a stalled database or realtime
+ * call delays neither the fallback nor the result.
  */
 class LiveSections {
 	private readonly streamAbort = new AbortController();
@@ -1056,11 +1082,19 @@ class LiveSections {
 	private cleared = false;
 	/** What every preview is checked against; null when nothing was carried. */
 	private echoGuard: ResponseEchoGuard | null = null;
+	/** When this attempt last started a "preview stopped" milestone write. */
+	private milestoneAt = Number.NEGATIVE_INFINITY;
+	/** The milestone write in flight, the first one or a sign of life. */
+	private milestoneInFlight: Promise<void> | null = null;
+	/** A sign-of-life write in flight, which the fallback waits for. */
+	private signOfLifeInFlight: Promise<void> | null = null;
 
 	private constructor(
 		private readonly run: LiveSectionsRun,
 		private readonly attempt: number | undefined,
 		private readonly cancellationSignal: AbortSignal | undefined,
+		/** The workflow this attempt runs in, recorded with the claim. */
+		private readonly workflowId: string | undefined,
 	) {
 		this.state = attempt === undefined ? "stopped" : "open";
 		cancellationSignal?.addEventListener("abort", () => this.abort(), {
@@ -1078,16 +1112,23 @@ class LiveSections {
 	static async open(run: LiveSectionsRun): Promise<LiveSections> {
 		let attempt: number | undefined;
 		let cancellationSignal: AbortSignal | undefined;
+		let workflowId: string | undefined;
 		try {
 			const context = Context.current();
 			attempt = context.info.attempt;
 			cancellationSignal = context.cancellationSignal;
+			workflowId = context.info.workflowExecution?.workflowId;
 		} catch {
 			// Outside an activity there is no attempt to claim with, and a
 			// guessed one could overwrite a real attempt's preview: generate
 			// without one.
 		}
-		const live = new LiveSections(run, attempt, cancellationSignal);
+		const live = new LiveSections(
+			run,
+			attempt,
+			cancellationSignal,
+			workflowId,
+		);
 		await live.claim();
 		return live;
 	}
@@ -1102,15 +1143,52 @@ class LiveSections {
 		return this.cancellationSignal?.aborted ?? false;
 	}
 
+	/** The activity's cancellation signal; absent outside an activity. */
+	get cancellation(): AbortSignal | undefined {
+		return this.cancellationSignal;
+	}
+
+	/**
+	 * A wait that rejects as soon as Temporal cancels this attempt, at once
+	 * when it already has, so a stream that ignores its abort cannot hold a
+	 * cancelled attempt until a limit fires. `dispose` removes the listener.
+	 */
+	whenCancelled(): { promise: Promise<never>; dispose: () => void } {
+		const signal = this.cancellationSignal;
+		let onAbort: (() => void) | undefined;
+		const promise = new Promise<never>((_, reject) => {
+			onAbort = () => reject(new Error("Agent stream cancelled"));
+			if (signal?.aborted) {
+				onAbort();
+			} else {
+				signal?.addEventListener("abort", onAbort, { once: true });
+			}
+		});
+		// The loser of a race may reject after it has been decided.
+		promise.catch(() => {});
+		return {
+			promise,
+			dispose: () => {
+				if (onAbort) {
+					signal?.removeEventListener("abort", onAbort);
+				}
+			},
+		};
+	}
+
 	private async claim(): Promise<void> {
 		if (this.attempt === undefined) {
 			return;
 		}
 		try {
+			// The claim also records the running workflow on the document, so a
+			// request to generate it again asks Temporal about this run, also
+			// when no dispatch started it (a wizard, batch or setup run).
 			const outcome = await claimLiveAttempt({
 				documentId: this.run.documentId,
 				runId: this.run.liveRunId,
 				attempt: this.attempt,
+				...(this.workflowId && { workflowId: this.workflowId }),
 			});
 			if (outcome === "superseded") {
 				this.state = "superseded";
@@ -1277,10 +1355,10 @@ class LiveSections {
 	}
 
 	/**
-	 * Abort, wait for any write in flight, then drop this run's preview so the
-	 * page shows progress instead: the gateway fallback writes nothing live.
-	 * Left alone when a newer run or a later attempt owns the preview.
-	 * Bounded; never throws; clears at most once.
+	 * Abort, wait for any write in flight, then drop this run's preview, when
+	 * a preview repeated a settled decision's wording and the run fails. Left
+	 * alone when a newer run or a later attempt owns the preview. Bounded;
+	 * never throws; clears at most once.
 	 */
 	async clear(): Promise<void> {
 		this.abort();
@@ -1323,11 +1401,125 @@ class LiveSections {
 	}
 
 	/**
+	 * Say the preview stopped while the run carries on without it (Fizzy
+	 * #2946), once {@link LiveSections.stop} has settled: the gateway
+	 * fallback writes the Main with no preview. The sections written so far
+	 * stay; the document takes the "preview stopped" milestone, guarded by
+	 * the run, this attempt and GENERATING, and the page is nudged. Nothing
+	 * is written when a newer run or a later attempt owns the preview.
+	 * Bounded; never throws.
+	 */
+	async markStopped(): Promise<void> {
+		if (!this.mayMarkStopped()) {
+			return;
+		}
+		await this.settle("mark", async () => {
+			await this.writeMilestone("mark");
+		});
+	}
+
+	/**
+	 * The fallback's sign of life, from its heartbeat loop: write the
+	 * milestone again when the last write started at least
+	 * {@link LIVE_PREVIEW_SIGN_OF_LIFE_INTERVAL_MS} ago and none is in
+	 * flight, so the page's stall check sees a fallback that is still
+	 * working. Not awaited here; {@link LiveSections.settleSignOfLife} waits
+	 * for it. Never throws.
+	 */
+	signOfLife(): void {
+		if (
+			!this.mayMarkStopped() ||
+			this.milestoneInFlight ||
+			Date.now() - this.milestoneAt <
+				LIVE_PREVIEW_SIGN_OF_LIFE_INTERVAL_MS
+		) {
+			return;
+		}
+		const write = this.writeMilestone("signOfLife");
+		this.signOfLifeInFlight = write;
+		void write.finally(() => {
+			if (this.signOfLifeInFlight === write) {
+				this.signOfLifeInFlight = null;
+			}
+		});
+	}
+
+	/**
+	 * Wait for a sign-of-life write in flight once the fallback has ended,
+	 * so it lands before the activity returns and the workflow reports the
+	 * stream's end. Bounded; never throws.
+	 */
+	async settleSignOfLife(): Promise<void> {
+		const write = this.signOfLifeInFlight;
+		if (!write) {
+			return;
+		}
+		await this.settle("signOfLife", async () => {
+			await write;
+		});
+	}
+
+	/** A milestone write is allowed: an attempt that still owns the preview. */
+	private mayMarkStopped(): boolean {
+		return (
+			this.attempt !== undefined &&
+			this.state !== "superseded" &&
+			!this.cleared
+		);
+	}
+
+	/**
+	 * Write the "preview stopped" milestone, tracked so the sign of life
+	 * never overlaps it. Never rejects; nudges the page after the first one.
+	 */
+	private async writeMilestone(step: "mark" | "signOfLife"): Promise<void> {
+		const attempt = this.attempt;
+		if (attempt === undefined) {
+			return;
+		}
+		this.milestoneAt = Date.now();
+		const write = (async () => {
+			try {
+				const outcome = await markLivePreviewStopped({
+					documentId: this.run.documentId,
+					runId: this.run.liveRunId,
+					attempt,
+				});
+				if (outcome === "superseded") {
+					this.state = "superseded";
+					activityLogger.info(
+						"Live preview not marked stopped: a newer run or a later attempt owns it",
+						{ ...this.logIds(), step },
+					);
+					return;
+				}
+				if (step === "mark") {
+					await this.nudge();
+				}
+			} catch (error) {
+				activityLogger.warn("Could not mark the live preview stopped", {
+					...this.logIds(),
+					step,
+					error: errorCode(error),
+				});
+			}
+		})();
+		this.milestoneInFlight = write;
+		try {
+			await write;
+		} finally {
+			if (this.milestoneInFlight === write) {
+				this.milestoneInFlight = null;
+			}
+		}
+	}
+
+	/**
 	 * Run `work` (which never rejects) with the heartbeat ticking, for at most
 	 * {@link LIVE_SECTIONS_SETTLE_TIMEOUT_MS}.
 	 */
 	private async settle(
-		step: "finish" | "clear" | "stop",
+		step: "finish" | "clear" | "stop" | "mark" | "signOfLife",
 		work: () => Promise<void>,
 	): Promise<void> {
 		const settled = await withHeartbeatTicker(() => settlesInTime(work()), {
@@ -1368,13 +1560,114 @@ class LiveSections {
 		}
 	}
 
-	private logIds() {
+	/** The ids every artifact-mode log line of this attempt carries. */
+	logIds() {
 		return {
 			projectId: this.run.projectId,
 			documentId: this.run.documentId,
 			liveRunId: this.run.liveRunId,
 			attempt: this.attempt,
 		};
+	}
+}
+
+/** How often a running gateway fallback heartbeats. */
+const FALLBACK_HEARTBEAT_INTERVAL_MS = 10_000;
+
+/** The heartbeat of the fallback that replaces a failed agent stream. */
+const AGENT_FALLBACK_HEARTBEAT = {
+	phase: "fallback_generation",
+	message: "Generating document via fallback model",
+	progress: 50,
+};
+
+/** The heartbeat of the fallback for an agent that wrote no document. */
+const DIRECT_FALLBACK_HEARTBEAT = {
+	phase: "direct_fallback_generation",
+	message: "Generating document via direct fallback",
+	progress: 55,
+};
+
+/**
+ * Write the whole document on the gateway fallback model and return it
+ * trimmed. With a live run (artifact mode) the call is bounded by the
+ * attempt's deadline and tied to the activity's cancellation (Fizzy #2946);
+ * every other run's fallback is today's.
+ */
+async function runBoundedFallback(input: {
+	model: Parameters<typeof streamText>[0]["model"];
+	modelMetadata: Parameters<typeof computeMaxOutputTokenBudget>[0];
+	systemPrompt: string | undefined;
+	fullPrompt: string;
+	documentType: string;
+	primaryStreamFailure: string | undefined;
+	heartbeat: typeof AGENT_FALLBACK_HEARTBEAT;
+	live: LiveSections | undefined;
+	attemptBudget: ProposalAttemptBudget | undefined;
+}): Promise<string> {
+	const { live } = input;
+	// Whole-document generation from a short prompt — maximal mode. Without
+	// an explicit budget Databricks/Anthropic-direct cap the document at
+	// their injected defaults (8,192 / 4,096) and silently truncate it.
+	//
+	// The ceiling matches what the agent allows ITSELF. This path stands in
+	// for the agent, and a stand-in that asks for less output than the thing
+	// it replaces turns an outage into a truncated document (Fizzy #2210).
+	const maxOutputTokens = computeMaxOutputTokenBudget(input.modelMetadata, {
+		promptChars:
+			(input.systemPrompt?.length ?? 0) + input.fullPrompt.length,
+		ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
+	});
+	const bound = live
+		? new FallbackBound(input.attemptBudget, live.cancellation)
+		: undefined;
+	try {
+		// Use streamText instead of generateText to keep the gateway connection alive
+		// and prevent idle timeout errors on long-running generations
+		const stream = streamText({
+			model: input.model,
+			instructions: input.systemPrompt,
+			prompt: input.fullPrompt,
+			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			...(bound ? { abortSignal: bound.signal } : {}),
+		});
+		let text = "";
+		safeHeartbeat(input.heartbeat);
+		const heartbeatLoop = setInterval(() => {
+			safeHeartbeat(input.heartbeat);
+			// The stopped preview's sign of life, at most once a minute.
+			live?.signOfLife();
+		}, FALLBACK_HEARTBEAT_INTERVAL_MS);
+		try {
+			text = bound
+				? await bound.collect(stream.textStream)
+				: await collectText(stream.textStream);
+		} finally {
+			clearInterval(heartbeatLoop);
+			// No sign of life may land after the activity returns.
+			await live?.settleSignOfLife();
+		}
+		// A provider that ignored the abort may answer after a
+		// cancellation; a cancelled attempt never returns a document.
+		if (live?.cancelled) {
+			throw new Error(FALLBACK_CANCELLED_MESSAGE);
+		}
+		// Fail loudly: a document cut off at the output-token limit is not a
+		// success. Throw rather than save a truncated document (workflows must
+		// fail loudly — same rule as ContextUpdateTruncatedError).
+		if ((await stream.finishReason) === "length") {
+			throw new Error(
+				describeTruncation({
+					documentType: input.documentType,
+					requestedBudget: maxOutputTokens,
+					observedOutputTokens: await readOutputTokens(stream.usage),
+					primaryStreamFailure: input.primaryStreamFailure,
+				}),
+			);
+		}
+		return text.trim();
+	} finally {
+		bound?.dispose();
 	}
 }
 
@@ -1464,6 +1757,11 @@ export async function generateDocumentWithAgent(params: {
 	// Use direct function instead of import to avoid module resolution issues in Temporal worker
 	const documentType = rawDocumentType.toLowerCase();
 	const startTime = Date.now();
+	// Artifact mode bounds its agent stream and its fallback by this attempt's
+	// deadline, read once, on entry (Fizzy #2946). Every other run keeps
+	// today's stream limit and never reads the activity context here.
+	const attemptBudget =
+		artifact && documentId ? proposalAttemptBudget() : undefined;
 
 	// Determine if this is a regeneration (existing content being replaced, not first generation)
 	const isRegeneration =
@@ -2386,6 +2684,8 @@ ${formattingRules}`;
 		const HEARTBEAT_INTERVAL_MS = 10000; // Send heartbeat every 10 seconds (well under 2m timeout)
 		let streamComplete = false;
 		let heartbeatLoop: ReturnType<typeof setInterval> | undefined;
+		// Artifact mode's stream limits; every other run keeps today's race.
+		let streamLimits: ProposalStreamLimits | undefined;
 		try {
 			// CRITICAL: Start background heartbeat loop BEFORE stream initialization.
 			// The stream call can take a long time for complex documents (architecture, tech specs)
@@ -2429,6 +2729,21 @@ ${formattingRules}`;
 					slug: activeSkill.slug,
 					fileCount: activeSkill.files.length,
 				});
+			}
+
+			// Artifact mode: the stream is cut by silence, not by the clock
+			// (Fizzy #2946). A cut stops the heartbeat and live writing and
+			// aborts the stream at once, as today's timeout does.
+			if (live && attemptBudget) {
+				streamLimits = new ProposalStreamLimits(
+					attemptBudget,
+					() => {
+						clearInterval(heartbeatLoop);
+						streamComplete = true;
+						live.abort();
+					},
+					live.logIds(),
+				);
 			}
 
 			const stream = client.runs.stream(
@@ -2492,6 +2807,8 @@ ${formattingRules}`;
 				try {
 					for await (const chunk of stream) {
 						chunkCount++;
+						// Counted as received, before any live write it causes.
+						streamLimits?.observe(chunk.event);
 
 						if (chunk.event === "values" && chunk.data) {
 							const data = chunk.data as { document?: string };
@@ -2520,21 +2837,45 @@ ${formattingRules}`;
 					streamComplete = true;
 				}
 			})();
-			const timeoutMs = Number(
-				process.env.AGENT_STREAM_TIMEOUT_MS ?? 300000, // 5 minutes for longer documents
-			);
-			const timedOut = new Promise<string>((resolve) =>
-				setTimeout(() => {
-					clearInterval(heartbeatLoop); // Clear heartbeat loop on timeout
-					streamComplete = true;
-					// Nothing is written live once the run gives up on the stream.
-					live?.abort();
-					resolve("__TIMED_OUT__");
-				}, timeoutMs),
-			);
-			const result = await Promise.race([collectPromise, timedOut]);
-			if (result === "__TIMED_OUT__") {
-				throw new Error(`Agent stream timeout after ${timeoutMs}ms`);
+			if (live && streamLimits) {
+				// The stream ends, a limit cuts it, or Temporal cancels the
+				// attempt: a stream that ignores its abort holds neither of
+				// the last two. Every timer goes on every exit.
+				const cancelled = live.whenCancelled();
+				try {
+					const cutReason = await Promise.race([
+						collectPromise.then(() => undefined),
+						streamLimits.cut,
+						cancelled.promise,
+					]);
+					if (cutReason !== undefined) {
+						throw new Error(
+							`Agent stream timeout after ${streamLimits.limitMs(cutReason)}ms (${cutReason})`,
+						);
+					}
+				} finally {
+					cancelled.dispose();
+					streamLimits.dispose();
+				}
+			} else {
+				const timeoutMs = Number(
+					process.env.AGENT_STREAM_TIMEOUT_MS ?? 300000, // 5 minutes for longer documents
+				);
+				const timedOut = new Promise<string>((resolve) =>
+					setTimeout(() => {
+						clearInterval(heartbeatLoop); // Clear heartbeat loop on timeout
+						streamComplete = true;
+						// Nothing is written live once the run gives up on the stream.
+						live?.abort();
+						resolve("__TIMED_OUT__");
+					}, timeoutMs),
+				);
+				const result = await Promise.race([collectPromise, timedOut]);
+				if (result === "__TIMED_OUT__") {
+					throw new Error(
+						`Agent stream timeout after ${timeoutMs}ms`,
+					);
+				}
 			}
 			if (live?.cancelled) {
 				// An aborted stream can end quietly instead of throwing.
@@ -2548,10 +2889,13 @@ ${formattingRules}`;
 				chunkCount,
 				streamDurationMs: streamDuration,
 				streamDurationSeconds: (streamDuration / 1000).toFixed(2),
+				...(streamLimits && {
+					largestChunkGapMs: streamLimits.largestGapMs,
+				}),
 			});
 			// The agent has finished the whole document: show its last
 			// section now rather than after the visuals step. An empty
-			// document is left to the direct fallback below, which clears.
+			// document is left to the direct fallback below.
 			if (live && documentContent) {
 				await live.finish(documentContent);
 			}
@@ -2562,6 +2906,7 @@ ${formattingRules}`;
 				clearInterval(heartbeatLoop);
 			}
 			streamComplete = true;
+			streamLimits?.dispose();
 
 			// A preview repeated a settled decision's wording: the preview is
 			// already cleared, and no fallback may stand in for this run.
@@ -2576,9 +2921,17 @@ ${formattingRules}`;
 					await live.stop();
 					throw err;
 				}
-				// The gateway fallback below writes nothing live: drop the
-				// preview so the page shows progress until the final save.
-				await live.clear();
+				// The gateway fallback below writes nothing live. The sections
+				// written so far stay, marked as a stopped preview, so the page
+				// never shows the previous body as current (Fizzy #2946); a
+				// fallback that could not finish fails the attempt instead.
+				await live.stop();
+				assertFallbackTimeLeft(
+					attemptBudget,
+					live.logIds(),
+					streamLimits?.cutReason,
+				);
+				await live.markStopped();
 			}
 
 			const streamDuration = Date.now() - startTime;
@@ -2597,6 +2950,10 @@ ${formattingRules}`;
 					streamDurationMs: streamDuration,
 					error: err instanceof Error ? err.message : String(err),
 					...(err instanceof Error && { stack: err.stack }),
+					...(streamLimits && {
+						cutReason: streamLimits.cutReason ?? null,
+						largestChunkGapMs: streamLimits.largestGapMs,
+					}),
 				},
 			);
 			// Durable, and AWAITED. The fire-and-forget variant returns before the
@@ -2683,68 +3040,22 @@ ${formattingRules}`;
 					clearInterval(auditHeartbeatLoop);
 				}
 			}
-			// Whole-document generation from a short prompt — maximal mode. Without
-			// an explicit budget Databricks/Anthropic-direct cap the document at
-			// their injected defaults (8,192 / 4,096) and silently truncate it.
-			//
-			// The ceiling matches what the agent allows ITSELF. This path stands in
-			// for the agent, and a stand-in that asks for less output than the thing
-			// it replaces turns an outage into a truncated document (Fizzy #2210).
-			const fallbackMaxOutputTokens = computeMaxOutputTokenBudget(
-				modelMetadata,
-				{
-					promptChars:
-						(systemPrompt?.length ?? 0) + fullPrompt.length,
-					ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
-				},
-			);
-			// Use streamText instead of generateText to keep the gateway connection alive
-			// and prevent idle timeout errors on long-running generations
-			const fallbackStream = streamText({
+			// Temporal cancelled the attempt during the handover: nothing is
+			// left to fall back for.
+			if (live?.cancelled) {
+				throw err;
+			}
+			documentContent = await runBoundedFallback({
 				model: fallbackModel,
-				instructions: systemPrompt,
-				prompt: fullPrompt,
-				...(fallbackMaxOutputTokens !== undefined
-					? { maxOutputTokens: fallbackMaxOutputTokens }
-					: {}),
+				modelMetadata,
+				systemPrompt,
+				fullPrompt,
+				documentType,
+				primaryStreamFailure,
+				heartbeat: AGENT_FALLBACK_HEARTBEAT,
+				live,
+				attemptBudget,
 			});
-			let fallbackText = "";
-			safeHeartbeat({
-				phase: "fallback_generation",
-				message: "Generating document via fallback model",
-				progress: 50,
-			});
-			const fallbackHeartbeatLoop = setInterval(() => {
-				safeHeartbeat({
-					phase: "fallback_generation",
-					message: "Generating document via fallback model",
-					progress: 50,
-				});
-			}, 10_000);
-			try {
-				for await (const chunk of fallbackStream.textStream) {
-					fallbackText += chunk;
-				}
-			} finally {
-				clearInterval(fallbackHeartbeatLoop);
-			}
-			// Fail loudly: a document cut off at the output-token limit is not a
-			// success. Throw rather than save a truncated document (workflows must
-			// fail loudly — same rule as ContextUpdateTruncatedError).
-			const fallbackFinishReason = await fallbackStream.finishReason;
-			if (fallbackFinishReason === "length") {
-				throw new Error(
-					describeTruncation({
-						documentType,
-						requestedBudget: fallbackMaxOutputTokens,
-						observedOutputTokens: await readOutputTokens(
-							fallbackStream.usage,
-						),
-						primaryStreamFailure,
-					}),
-				);
-			}
-			documentContent = fallbackText.trim();
 		}
 
 		if (!documentContent) {
@@ -2755,65 +3066,32 @@ ${formattingRules}`;
 					documentType,
 				},
 			);
-			// As for the agent-stream fallback: no preview survives this one.
-			await live?.clear();
-			// Whole-document generation from a short prompt — maximal mode (see the
-			// agent-stream fallback above for why an explicit budget is required).
-			const directFallbackMaxOutputTokens = computeMaxOutputTokenBudget(
-				modelMetadata,
-				{
-					promptChars:
-						(systemPrompt?.length ?? 0) + fullPrompt.length,
-					ceilingTokens: DOCUMENT_GENERATION_FALLBACK_CEILING,
-				},
-			);
-			// Use streamText instead of generateText to keep the gateway connection alive
-			// and prevent idle timeout errors on long-running generations
-			const directFallbackStream = streamText({
-				model: fallbackModel,
-				instructions: systemPrompt,
-				prompt: fullPrompt,
-				...(directFallbackMaxOutputTokens !== undefined
-					? { maxOutputTokens: directFallbackMaxOutputTokens }
-					: {}),
-			});
-			let directFallbackText = "";
-			safeHeartbeat({
-				phase: "direct_fallback_generation",
-				message: "Generating document via direct fallback",
-				progress: 55,
-			});
-			const directFallbackHeartbeatLoop = setInterval(() => {
-				safeHeartbeat({
-					phase: "direct_fallback_generation",
-					message: "Generating document via direct fallback",
-					progress: 55,
-				});
-			}, 10_000);
-			try {
-				for await (const chunk of directFallbackStream.textStream) {
-					directFallbackText += chunk;
+			// As for the agent-stream fallback: the sections written so far
+			// stay, marked as a stopped preview (Fizzy #2946).
+			if (live) {
+				if (live.cancelled) {
+					await live.stop();
+					throw new Error("Agent stream cancelled");
 				}
-			} finally {
-				clearInterval(directFallbackHeartbeatLoop);
-			}
-			// Fail loudly on an output-limit cut-off rather than saving a truncated
-			// document as a success (see the agent-stream fallback above).
-			const directFallbackFinishReason =
-				await directFallbackStream.finishReason;
-			if (directFallbackFinishReason === "length") {
-				throw new Error(
-					describeTruncation({
-						documentType,
-						requestedBudget: directFallbackMaxOutputTokens,
-						observedOutputTokens: await readOutputTokens(
-							directFallbackStream.usage,
-						),
-						primaryStreamFailure,
-					}),
+				await live.stop();
+				assertFallbackTimeLeft(
+					attemptBudget,
+					live.logIds(),
+					streamLimits?.cutReason,
 				);
+				await live.markStopped();
 			}
-			documentContent = directFallbackText.trim();
+			documentContent = await runBoundedFallback({
+				model: fallbackModel,
+				modelMetadata,
+				systemPrompt,
+				fullPrompt,
+				documentType,
+				primaryStreamFailure,
+				heartbeat: DIRECT_FALLBACK_HEARTBEAT,
+				live,
+				attemptBudget,
+			});
 			if (!documentContent) {
 				throw new Error("Fallback generation produced empty content");
 			}
@@ -2950,6 +3228,11 @@ ${formattingRules}`;
 			wordCount: documentContent.split(/\s+/).length,
 			totalDurationMs: totalDuration,
 			totalDurationSeconds: (totalDuration / 1000).toFixed(2),
+			// Artifact mode: how the stream ended, to tune its limits.
+			...(streamLimits && {
+				streamCutReason: streamLimits.cutReason ?? null,
+				largestChunkGapMs: streamLimits.largestGapMs,
+			}),
 		});
 		return {
 			content,

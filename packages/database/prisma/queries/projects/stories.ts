@@ -2,6 +2,7 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { splitInternalStoryTags } from "../../../src/story-internal-tags";
 /**
  * Database queries for User Stories & Tasks
@@ -922,6 +923,8 @@ export async function createStory(data: {
 	pmAutoSyncEnabled?: boolean;
 	externalId?: string;
 	externalUrl?: string;
+	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	// The PendingBacklogProposal this story came from. Passed by the
 	// proposal-approval and AI Update apply paths so the provenance is written
 	// in the same INSERT as the row itself (never a post-create stamp).
@@ -1099,6 +1102,12 @@ export async function createStory(data: {
 					...(data.externalUrl !== undefined && {
 						externalUrl: data.externalUrl,
 					}),
+					...(data.externalMcpServerId !== undefined
+						? { externalMcpServerId: data.externalMcpServerId }
+						: {}),
+					...(data.externalPmTarget !== undefined
+						? { externalPmTarget: data.externalPmTarget }
+						: {}),
 					// Proposal provenance, written in the same INSERT so a
 					// created story can never be missing its link. Omitted for
 					// callers that have no proposal, leaving the column null.
@@ -1203,6 +1212,7 @@ export type UpdateStoryData = {
 	externalId?: string | null;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	lastSyncedStatusId?: string | null;
 	draftingStage?: FeatureDraftingStage;
 	maturationStatus?: MaturationStatus | null;
@@ -1436,8 +1446,9 @@ export type UpdateStoryVersionContext = {
 	 */
 	onlyIfPmLink?: {
 		externalId: string | null;
-		/** A stamp is required: an unstamped link gives no such guarantee. */
-		externalMcpServerId: string;
+		/** Null fences a legacy link against a concurrent server stamp. */
+		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
 	};
 };
 
@@ -1482,6 +1493,7 @@ export async function updateStory(
 				roadmapOrder: true,
 				externalId: true,
 				externalMcpServerId: true,
+				externalPmTarget: true,
 				source: true,
 				firstHumanEditAt: true,
 			},
@@ -1593,7 +1605,12 @@ export async function updateStory(
 			(data.externalId !== undefined &&
 				data.externalId !== currentStory.externalId) ||
 			(data.externalMcpServerId !== undefined &&
-				data.externalMcpServerId !== currentStory.externalMcpServerId);
+				data.externalMcpServerId !==
+					currentStory.externalMcpServerId) ||
+			pmTargetsConflict(
+				data.externalPmTarget,
+				currentStory.externalPmTarget,
+			);
 
 		// Relink/re-tool/manual-unlink: stale FLAG_MISSING state must not bleed
 		// into the new link (#1360). Clears streaks and supersedes any PENDING
@@ -1624,6 +1641,12 @@ export async function updateStory(
 				? {
 						externalId: expectedLink.externalId,
 						externalMcpServerId: expectedLink.externalMcpServerId,
+						...(expectedLink.externalPmTarget !== undefined
+							? {
+									externalPmTarget:
+										expectedLink.externalPmTarget,
+								}
+							: {}),
 					}
 				: {}),
 		};

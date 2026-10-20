@@ -7,6 +7,7 @@
 
 import { registerIntegration } from "../registry";
 import type { IntegrationPlugin } from "../types";
+import { AdoStoryReviewConfigFields } from "./AdoStoryReviewConfigFields";
 import { McpIcon } from "./icon";
 
 export const mcpPlugin: IntegrationPlugin = {
@@ -27,6 +28,96 @@ export const mcpPlugin: IntegrationPlugin = {
 	testConfig: { skipClientTest: true },
 
 	actions: [
+		{
+			slug: "review-ado-stories",
+			label: "Review ADO Stories",
+			description:
+				"Review assigned stories and summarize changes since the previous completed run",
+			category: "AI",
+			stepFunction: "executeAdoStoryReviewStep",
+			stepImportPath: "mcp-review-ado-stories",
+			configComponent: AdoStoryReviewConfigFields,
+			configFields: [
+				{
+					key: "assignee",
+					label: "Assigned to: connected account or selected unique name",
+					type: "group",
+					required: true,
+				},
+				{
+					key: "sprintContext",
+					label: "Sprint tasks, parent stories and immediate context (optional)",
+					type: "group",
+				},
+				{
+					key: "workItemTypes",
+					label: "Work item types",
+					type: "textarea",
+				},
+				{
+					key: "requirementFields",
+					label: "Requirement field reference names",
+					type: "textarea",
+				},
+				{
+					key: "model",
+					label: "Review model (optional override)",
+					type: "ai-model-selector",
+				},
+				{
+					key: "agentInstructionsInstanceId",
+					label: "Agent instructions and model only (optional)",
+					type: "text",
+				},
+				{
+					key: "skills",
+					label: "Published skills: SKILL.md and selected text files",
+					type: "group",
+				},
+				{
+					key: "rubric",
+					label: "Review criteria",
+					type: "textarea",
+					required: true,
+				},
+				{
+					key: "maxStories",
+					label: "Maximum stories per run",
+					type: "number",
+					min: 1,
+				},
+				{
+					key: "workspaceFrameId",
+					label: "Parent Workspace ID (optional)",
+					type: "text",
+				},
+			],
+			outputFields: [
+				{
+					field: "html",
+					description: "Static, escaped story review report",
+				},
+				{
+					field: "summary",
+					description: "Requirement review and daily change summary",
+				},
+				{
+					field: "counts",
+					description:
+						"Total, reviewed, reused and removed story counts",
+				},
+				{
+					field: "capture",
+					description: "Requirement and comment capture metadata",
+				},
+				{
+					field: "forced",
+					description:
+						"Whether the manual run requested fresh reviews",
+				},
+			],
+			outputConfig: { type: "json", field: "counts" },
+		},
 		{
 			slug: "execute-tool",
 			// Pinned: predates the <type>-<slug> convention. Renaming it

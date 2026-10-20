@@ -105,22 +105,54 @@ describe("resolvePreinstalledCommand", () => {
 	});
 });
 
-describe("Twilio preinstalled MCP pin", () => {
-	it("pins the same Twilio version in Dockerfile and seed.ts", async () => {
-		const dockerfile = await readFile(
-			new URL("../../Dockerfile", import.meta.url),
-			"utf8",
-		);
-		const seed = await readFile(
-			new URL("../../../database/prisma/seed.ts", import.meta.url),
-			"utf8",
-		);
+// Each catalog command here must name the exact version the image installs, so
+// the wrapper runs the preinstalled copy instead of npx.
+const PINNED_PREINSTALLS = [
+	"@twilio-alpha/mcp",
+	"@modelcontextprotocol/server-gdrive",
+];
 
-		const dockerMatch = dockerfile.match(/@twilio-alpha\/mcp@([^\s\\]+)/);
-		const seedMatch = seed.match(/@twilio-alpha\/mcp@([^\s"']+)/);
+/**
+ * Version of every command-line spec of the package. Comment lines are dropped
+ * so a commented-out install does not count, and a URL path is skipped.
+ */
+function versionSpecs(text: string, packageName: string): (string | null)[] {
+	const code = text
+		.split("\n")
+		.filter((line) => !/^\s*(#|\/\/|\*|\/\*)/.test(line))
+		.join("\n");
+	const escaped = packageName.replace(/[/.]/g, "\\$&");
+	return [
+		...code.matchAll(
+			new RegExp(`(?<=\\s)${escaped}(?:@([^\\s"'\\\\]+))?`, "g"),
+		),
+	].map((match) => match[1] ?? null);
+}
 
-		assert.ok(dockerMatch, "Dockerfile pins @twilio-alpha/mcp");
-		assert.ok(seedMatch, "seed.ts pins @twilio-alpha/mcp");
-		assert.equal(dockerMatch[1], seedMatch[1]);
-	});
+describe("Preinstalled MCP pins", () => {
+	for (const packageName of PINNED_PREINSTALLS) {
+		it(`pins one exact ${packageName} version in Dockerfile and seed.ts`, async () => {
+			const dockerfile = await readFile(
+				new URL("../../Dockerfile", import.meta.url),
+				"utf8",
+			);
+			const seed = await readFile(
+				new URL("../../../database/prisma/seed.ts", import.meta.url),
+				"utf8",
+			);
+
+			const dockerSpecs = versionSpecs(dockerfile, packageName);
+			const seedSpecs = versionSpecs(seed, packageName);
+
+			assert.ok(
+				dockerSpecs.length > 0,
+				`Dockerfile installs ${packageName}`,
+			);
+			assert.ok(seedSpecs.length > 0, `seed.ts names ${packageName}`);
+			for (const spec of [...dockerSpecs, ...seedSpecs]) {
+				assert.match(String(spec), /^\d+\.\d+\.\d+$/);
+			}
+			assert.equal(new Set([...dockerSpecs, ...seedSpecs]).size, 1);
+		});
+	}
 });

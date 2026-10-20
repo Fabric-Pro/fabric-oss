@@ -43,6 +43,7 @@ vi.mock("../summary-injection", () => ({
 import { getProjectRagSettings } from "@repo/database";
 import { generateEmbedding } from "../../embedding";
 import { retrieveProjectContexts } from "../retrieval";
+import { searchSimilarProjectContexts } from "../store";
 
 class StopError extends Error {}
 
@@ -74,6 +75,29 @@ beforeEach(() => {
 });
 
 describe("retrieveProjectContexts failures", () => {
+	it("sends accounting origin only to embedding while searching the requested project", async () => {
+		vi.mocked(generateEmbedding).mockResolvedValue({
+			embedding: [0.1],
+			model: "example-model",
+			tokens: 1,
+		});
+		vi.mocked(searchSimilarProjectContexts).mockResolvedValue([]);
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			projectId: "origin-project",
+			frameId: "origin-frame",
+			featureKey: "chat-agent" as const,
+		};
+		await retrieveProjectContexts({ ...OPTIONS, usageOrigin });
+		expect(generateEmbedding).toHaveBeenCalledWith(
+			OPTIONS.query,
+			expect.objectContaining(usageOrigin),
+		);
+		expect(searchSimilarProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: OPTIONS.projectId }),
+		);
+	});
+
 	it("rethrows a stop as it is inside the dispatch guard", async () => {
 		const stop = new StopError("turn stopped");
 		vi.mocked(generateEmbedding).mockRejectedValue(stop);

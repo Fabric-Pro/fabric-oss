@@ -28,8 +28,9 @@ type ReadableEvidence = Exclude<ProposalAnalysisEvidence, { kind: "removed" }>;
  *
  * Internal review material: this renders only inside the Internal Analysis
  * tab, never in the Main Document, and it never shows the `[S#]` numbers the
- * analysis used — a chip is named by its source. Titles and excerpts are
- * text from sources and render escaped.
+ * analysis used — a chip is named by its source. (The report's citations,
+ * built on the same chip, do show them: see `EvidenceChip`.) Titles and
+ * excerpts are text from sources and render escaped.
  */
 export function FindingEvidence({
 	evidence,
@@ -60,15 +61,55 @@ export function FindingEvidence({
 	);
 }
 
-function EvidenceChip({ evidence }: { evidence: ProposalAnalysisEvidence }) {
+/**
+ * How a report cites a source (Fizzy #2946): the chip reads `S<N>` instead
+ * of the source's title, and names the source to screen readers.
+ */
+type EvidenceCitation = {
+	/** The visible label, `S<N>`. */
+	label: string;
+	/**
+	 * Show a chip with nothing to open beside its source's title: the
+	 * report's first citation of that source.
+	 */
+	showTitle: boolean;
+};
+
+/**
+ * One source as a chip, by the kinds `FindingEvidence` lists. With
+ * `citation`, the chip is a report's citation: it reads `S<N>`, its link or
+ * popover is named "S<N>: title", a chip with nothing to open shows the
+ * title beside it at its first citation only, and a removed source reads
+ * "S<N> · Source removed".
+ */
+export function EvidenceChip({
+	evidence,
+	citation,
+}: {
+	evidence: ProposalAnalysisEvidence;
+	citation?: EvidenceCitation;
+}) {
 	const t = useTranslations("projects.proposalArtifact.analysis.evidence");
+	const tReport = useTranslations(
+		"projects.proposalArtifact.analysis.report",
+	);
 
 	if (evidence.kind === "removed") {
-		return <Badge variant="outline">{t("removed")}</Badge>;
+		return (
+			<Badge variant="outline">
+				{citation
+					? tReport("sourceRemoved", { label: citation.label })
+					: t("removed")}
+			</Badge>
+		);
 	}
 
 	const title = evidenceTitle(evidence, t);
 	const excerpt = "excerpt" in evidence ? evidence.excerpt : null;
+	const chipText = citation?.label ?? title;
+	const citationName = citation
+		? tReport("citationName", { label: citation.label, title })
+		: null;
 
 	if (evidence.kind === "projectContext" && evidence.link) {
 		return (
@@ -77,8 +118,13 @@ function EvidenceChip({ evidence }: { evidence: ProposalAnalysisEvidence }) {
 					href={evidence.link.href}
 					target="_blank"
 					rel="noopener noreferrer"
+					aria-label={
+						citationName
+							? `${citationName} ${t("opensInNewTab")}`
+							: undefined
+					}
 				>
-					{title}
+					{chipText}
 					<ExternalLinkIcon aria-hidden="true" />
 					<span className="sr-only">{t("opensInNewTab")}</span>
 				</a>
@@ -87,7 +133,23 @@ function EvidenceChip({ evidence }: { evidence: ProposalAnalysisEvidence }) {
 	}
 
 	if (!excerpt) {
-		return <Badge variant="outline">{title}</Badge>;
+		if (!citation) {
+			return <Badge variant="outline">{title}</Badge>;
+		}
+		return (
+			<>
+				<Badge variant="outline">{citation.label}</Badge>{" "}
+				<span
+					className={
+						citation.showTitle
+							? "text-muted-foreground text-xs"
+							: "sr-only"
+					}
+				>
+					{title}
+				</span>
+			</>
+		);
 	}
 
 	return (
@@ -96,9 +158,9 @@ function EvidenceChip({ evidence }: { evidence: ProposalAnalysisEvidence }) {
 				<Badge variant="outline" asChild>
 					<button
 						type="button"
-						aria-label={t("viewSource", { title })}
+						aria-label={citationName ?? t("viewSource", { title })}
 					>
-						{title}
+						{chipText}
 					</button>
 				</Badge>
 			</PopoverTrigger>

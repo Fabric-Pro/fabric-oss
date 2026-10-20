@@ -3,12 +3,13 @@ import {
 	PAGE_FILE_MAX_BYTES,
 } from "@repo/utils/page-limits";
 import {
+	FRAME_RUNTIME_CALL_TIMEOUT_MS,
 	FRAME_RUNTIME_HELLO_TYPE,
 	FRAME_RUNTIME_HOST_READY_TYPE,
 } from "./frame-embed-protocol";
 
 /** How long a `fabric.call` waits for the host before the page is told no. */
-export const FABRIC_RUNTIME_CALL_TIMEOUT_MS = 300_000;
+export const FABRIC_RUNTIME_CALL_TIMEOUT_MS = FRAME_RUNTIME_CALL_TIMEOUT_MS;
 
 const MEGABYTE = 1024 * 1024;
 
@@ -46,6 +47,10 @@ const RUNTIME_SOURCE = `
 			if (entry.message.requestId && !pending[entry.message.requestId]) {
 				continue;
 			}
+			if (entry.message.expiresAt <= Date.now()) {
+				pending[entry.message.requestId].expire();
+				continue;
+			}
 			if (!post(entry.message) && entry.fail) {
 				entry.fail();
 			}
@@ -70,6 +75,10 @@ const RUNTIME_SOURCE = `
 		}
 		var p = pending[d.requestId];
 		if (!p) {
+			return;
+		}
+		if (Date.now() >= p.expiresAt) {
+			p.expire();
 			return;
 		}
 		delete pending[d.requestId];
@@ -102,12 +111,18 @@ const RUNTIME_SOURCE = `
 				return;
 			}
 			var id = "call-" + (++seq);
-			var timer = setTimeout(function () {
+			var expiresAt = Date.now() + ${FABRIC_RUNTIME_CALL_TIMEOUT_MS};
+			function expire() {
+				if (!pending[id]) return;
 				delete pending[id];
+				clearTimeout(timer);
+				queue = queue.filter(function (entry) { return entry.message.requestId !== id; });
+				post({ type: "fabric-frame:cancel-call", requestId: id });
 				reject(new Error("Fabric did not answer"));
-			}, ${FABRIC_RUNTIME_CALL_TIMEOUT_MS});
-			pending[id] = { resolve: resolve, reject: reject, timer: timer };
-			send({ type: "fabric-frame:call", requestId: id, name: name, args: args }, function () {
+			}
+			var timer = setTimeout(expire, ${FABRIC_RUNTIME_CALL_TIMEOUT_MS});
+			pending[id] = { resolve: resolve, reject: reject, timer: timer, expire: expire, expiresAt: expiresAt };
+			send({ type: "fabric-frame:call", requestId: id, name: name, args: args, expiresAt: expiresAt }, function () {
 				delete pending[id];
 				clearTimeout(timer);
 				reject(new Error("fabric.call arguments cannot be sent"));

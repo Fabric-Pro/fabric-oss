@@ -50,6 +50,7 @@ import {
 	getCurrentDateContext,
 	getRAGProviderConfig,
 	isReasoningModelName,
+	resolveModelWithProvider,
 	toDatabricksServingBaseUrl,
 } from "@repo/ai";
 import { chatGptPlanReconnectRefusal } from "@repo/ai/lib/chatgpt-plan/agent-config";
@@ -64,6 +65,7 @@ import {
 } from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
 import {
 	chatGptPlanInteractiveApiFallback,
+	chatGptPlanPersonalKeyFallback,
 	pickChatGptPlanSource,
 } from "@repo/ai/lib/chatgpt-plan/pool";
 import { AI_TOKEN_HEADER, issueAIToken } from "@repo/ai-token";
@@ -701,6 +703,7 @@ async function isAgentRunRequest(req: NextRequest): Promise<boolean> {
 function planExhaustedResponse(
 	error: SubscriptionPlanExhaustedError,
 	apiBillingOption: boolean,
+	personalKeyOption: boolean,
 ): Response {
 	return new Response(
 		JSON.stringify({
@@ -708,6 +711,7 @@ function planExhaustedResponse(
 			code: CHATGPT_PLAN_EXHAUSTED_CODE,
 			resetAt: error.resetAt?.toISOString() ?? null,
 			apiBillingOption,
+			personalKeyOption,
 		}),
 		{ status: 429, headers: { "Content-Type": "application/json" } },
 	);
@@ -821,6 +825,9 @@ export async function POST(req: NextRequest) {
 		let agentOnPlan: boolean;
 		let planEligible: boolean;
 		let planModelHint: string | null = null;
+		// The member's own key the agents run on while the plans are spent
+		// (Fizzy #3085), with the model the key exchange will resolve on it.
+		let personalKeyHint: { provider: string; model: string } | null = null;
 		try {
 			tenantConfig = await getTenantConfig(
 				session.user.id,
@@ -843,12 +850,34 @@ export async function POST(req: NextRequest) {
 				plan !== null &&
 				"exhausted" in plan &&
 				(await chatGptPlanInteractiveApiFallback(plan, organizationId));
+			// Where the organization would stop the member's work instead, a
+			// personal key they opted in runs it (Fizzy #3085); the exchange,
+			// resolving the same member's own work, makes the same call.
+			const personalKey =
+				plan !== null && "exhausted" in plan && !apiFallback
+					? await chatGptPlanPersonalKeyFallback(plan, {
+							userId: session.user.id,
+							organizationId,
+						})
+					: null;
+			if (personalKey?.config?.provider) {
+				const resolved = await resolveModelWithProvider(
+					"COMPLEX",
+					{ userId: session.user.id, organizationId },
+					{ providerConfig: personalKey.config },
+				);
+				personalKeyHint = {
+					provider: personalKey.config.provider,
+					model: resolved.modelString,
+				};
+			}
 			planEligible = plan !== null;
-			agentOnPlan = plan !== null && !apiFallback;
+			agentOnPlan = plan !== null && !apiFallback && !personalKeyHint;
 			if (
 				plan &&
 				"exhausted" in plan &&
 				!apiFallback &&
+				!personalKeyHint &&
 				(await isAgentRunRequest(req))
 			) {
 				return planExhaustedResponse(
@@ -857,6 +886,7 @@ export async function POST(req: NextRequest) {
 						plan,
 						tenantConfig.providerConfig !== null,
 					),
+					personalKey !== null,
 				);
 			}
 			if (plan && agentOnPlan) {
@@ -875,7 +905,11 @@ export async function POST(req: NextRequest) {
 			}
 		} catch (error) {
 			if (error instanceof SubscriptionPlanExhaustedError) {
-				return planExhaustedResponse(error, false);
+				return planExhaustedResponse(
+					error,
+					false,
+					error.personalKeyOption,
+				);
 			}
 			// The member's plan is on here but needs reconnecting: refuse rather
 			// than run the agents on the organization's API billing.
@@ -952,14 +986,19 @@ export async function POST(req: NextRequest) {
 		trackUsage();
 
 		// The CopilotKit service adapter itself stays on the organization's
-		// provider; only the agents' hints follow the plan.
+		// provider; only the agents' hints follow the plan, or the member's
+		// own key. Neither may be pointed at the organization's base URL or
+		// deployment: the agent would send that key there.
+		const agentOffOrgProvider = agentOnPlan || personalKeyHint !== null;
 		const agentProvider = agentOnPlan
 			? "OPENAI_CHATGPT_PLAN"
-			: metadata.provider;
+			: (personalKeyHint?.provider ?? metadata.provider);
 		const agentModel =
-			agentOnPlan && planModelHint ? planModelHint : metadata.modelString;
-		const agentGatewayUrl = agentOnPlan ? null : aiGatewayUrl;
-		const agentDeploymentName = agentOnPlan
+			agentOnPlan && planModelHint
+				? planModelHint
+				: (personalKeyHint?.model ?? metadata.modelString);
+		const agentGatewayUrl = agentOffOrgProvider ? null : aiGatewayUrl;
+		const agentDeploymentName = agentOffOrgProvider
 			? undefined
 			: providerConfig?.deploymentName;
 
@@ -1099,7 +1138,7 @@ export async function POST(req: NextRequest) {
 			ai_token: aiToken, // Token for secure API key exchange
 			ai_model: agentModel,
 			ai_gateway_url: agentGatewayUrl,
-			...(!agentOnPlan &&
+			...(!agentOffOrgProvider &&
 				providerConfig?.baseUrl && {
 					ai_base_url: providerConfig.baseUrl,
 				}),

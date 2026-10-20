@@ -294,3 +294,8 @@ patchedDependencies:
   '@better-auth/oauth-provider@1.7.7': patches/@better-auth__oauth-provider@1.7.7.patch
   '@graphql-tools/utils@10.10.1': patches/@graphql-tools__utils@10.10.1.patch
   braces@3.0.3: patches/braces@3.0.3.patch
+  # Backport upstream f3558ed: reuse Prisma's DMMF instead of rebuilding it.
+  prisma-zod-generator@1.31.2: patches/prisma-zod-generator@1.31.2.patch
+  # Preserve Prisma's BFS order without quadratic Array.shift queue movement.
+  # Both bundled client generators are covered by prisma-generation-queue.test.mjs.
+  prisma@6.19.3: patches/prisma@6.19.3.patch

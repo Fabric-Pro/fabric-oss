@@ -159,6 +159,7 @@ describe("changing a session", () => {
 
 		expect(conversations.update).toHaveBeenCalledWith({
 			id: "c1",
+			organizationId: "org-1",
 			title: "New name",
 		});
 		expect(invalidate).toHaveBeenCalledWith({
@@ -174,9 +175,13 @@ describe("changing a session", () => {
 		await act(() => result.current.archive("c1"));
 		await act(() => result.current.restore("c1"));
 
-		expect(conversations.archive).toHaveBeenCalledWith({ id: "c1" });
+		expect(conversations.archive).toHaveBeenCalledWith({
+			id: "c1",
+			organizationId: "org-1",
+		});
 		expect(conversations.update).toHaveBeenCalledWith({
 			id: "c1",
+			organizationId: "org-1",
 			status: "ACTIVE",
 		});
 		expect(invalidate).toHaveBeenCalledTimes(2);
@@ -190,8 +195,14 @@ describe("changing a session", () => {
 		await act(() => result.current.togglePin("c1"));
 		await act(() => result.current.remove("c1"));
 
-		expect(conversations.togglePin).toHaveBeenCalledWith({ id: "c1" });
-		expect(conversations.delete).toHaveBeenCalledWith({ id: "c1" });
+		expect(conversations.togglePin).toHaveBeenCalledWith({
+			id: "c1",
+			organizationId: "org-1",
+		});
+		expect(conversations.delete).toHaveBeenCalledWith({
+			id: "c1",
+			organizationId: "org-1",
+		});
 	});
 
 	it("sets who can read it, in the organization of the list, and refreshes every list", async () => {
@@ -222,4 +233,30 @@ describe("changing a session", () => {
 
 		expect(invalidate).not.toHaveBeenCalled();
 	});
+});
+
+it("omits a missing organization on list mutations instead of sending null", async () => {
+	conversations.list.mockResolvedValue({ conversations: [] });
+	conversations.update.mockResolvedValue({ id: "example-conversation" });
+	conversations.archive.mockResolvedValue({ id: "example-conversation" });
+	conversations.togglePin.mockResolvedValue({ id: "example-conversation" });
+	conversations.delete.mockResolvedValue({ id: "example-conversation" });
+	const { result } = setup({ organizationId: null });
+	await act(async () => {
+		await result.current.rename("example-conversation", "Example");
+		await result.current.archive("example-conversation");
+		await result.current.restore("example-conversation");
+		await result.current.togglePin("example-conversation");
+		await result.current.remove("example-conversation");
+	});
+	for (const mutation of [
+		conversations.update,
+		conversations.archive,
+		conversations.togglePin,
+		conversations.delete,
+	]) {
+		expect(mutation).toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: undefined }),
+		);
+	}
 });

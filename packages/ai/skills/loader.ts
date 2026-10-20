@@ -27,6 +27,12 @@ export interface SkillContext {
 	organizationId?: string | null;
 }
 
+export interface SkillReadOptions {
+	/** Recheck publication and visibility rather than using a process-local cache. */
+	fresh?: boolean;
+	expectedVersion?: number;
+}
+
 export interface SkillFileManifestEntry {
 	path: string;
 	contentType: string;
@@ -207,15 +213,22 @@ export async function listAvailableSkills(
 export async function loadSkillBundle(
 	slug: string,
 	ctx: SkillContext,
+	options: SkillReadOptions = {},
 ): Promise<SkillBundle> {
 	const cacheKey = `bundle:${tenantKey(ctx)}:${slug}`;
 	const cached = bundleCache.get(cacheKey);
-	if (cached) {
+	if (cached && !options.fresh && options.expectedVersion === undefined) {
 		return cached;
 	}
 
 	const skill = await db.skill.findFirst({
-		where: { ...scopeWhere(ctx), slug },
+		where: {
+			...scopeWhere(ctx),
+			slug,
+			...(options.expectedVersion === undefined
+				? {}
+				: { version: options.expectedVersion }),
+		},
 		include: {
 			files: {
 				select: { path: true, contentType: true, sizeBytes: true },
@@ -253,15 +266,25 @@ export async function readSkillFile(
 	slug: string,
 	path: string,
 	ctx: SkillContext,
+	options: SkillReadOptions = {},
 ): Promise<SkillFileContent> {
 	const cacheKey = `file:${tenantKey(ctx)}:${slug}:${path}`;
 	const cached = fileCache.get(cacheKey);
-	if (cached) {
+	if (cached && !options.fresh && options.expectedVersion === undefined) {
 		return cached;
 	}
 
 	const file = await db.skillFile.findFirst({
-		where: { path, skill: { ...scopeWhere(ctx), slug } },
+		where: {
+			path,
+			skill: {
+				...scopeWhere(ctx),
+				slug,
+				...(options.expectedVersion === undefined
+					? {}
+					: { version: options.expectedVersion }),
+			},
+		},
 	});
 	if (!file) {
 		throw new Error(
@@ -304,4 +327,44 @@ export function isTextContentType(contentType: string): boolean {
 		contentType.includes("yaml") ||
 		contentType.includes("svg")
 	);
+}
+
+/** Fresh, paginated published catalog for selectors; never loads instructions or file bytes. */
+export async function listAvailableSkillPage(
+	ctx: SkillContext,
+	options: { offset: number; limit: number },
+) {
+	if (
+		!Number.isInteger(options.offset) ||
+		options.offset < 0 ||
+		!Number.isInteger(options.limit) ||
+		options.limit < 1 ||
+		options.limit > 100
+	) {
+		throw new Error("Invalid skill page");
+	}
+	const skills = await db.skill.findMany({
+		where: scopeWhere(ctx),
+		select: {
+			slug: true,
+			name: true,
+			version: true,
+			files: {
+				select: { path: true, contentType: true, sizeBytes: true },
+				orderBy: { path: "asc" },
+				take: 101,
+			},
+		},
+		orderBy: { slug: "asc" },
+		skip: options.offset,
+		take: options.limit + 1,
+	});
+	return {
+		skills: skills.slice(0, options.limit).map((skill) => ({
+			...skill,
+			files: skill.files.slice(0, 100),
+			fileManifestComplete: skill.files.length <= 100,
+		})),
+		hasMore: skills.length > options.limit,
+	};
 }

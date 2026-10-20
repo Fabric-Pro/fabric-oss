@@ -140,6 +140,7 @@ vi.mock("../../../../../../orpc/procedures", () => {
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? undefined,
 		requirePermission: vi.fn(() => ({})),
+		requireInputOrgPermission: vi.fn(() => ({})),
 		requireProjectPermission: vi.fn(() => ({})),
 		Permissions: new Proxy(
 			{},
@@ -169,6 +170,7 @@ vi.mock("../../../orpc/procedures", () => {
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? undefined,
 		requirePermission: vi.fn(() => ({})),
+		requireInputOrgPermission: vi.fn(() => ({})),
 		requireProjectPermission: vi.fn(() => ({})),
 		Permissions: new Proxy(
 			{},
@@ -198,6 +200,7 @@ vi.mock("../../../../orpc/procedures", () => {
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? undefined,
 		requirePermission: vi.fn(() => ({})),
+		requireInputOrgPermission: vi.fn(() => ({})),
 		requireProjectPermission: vi.fn(() => ({})),
 		Permissions: new Proxy(
 			{},

@@ -14,3 +14,4 @@ export { LocalTextExtractor } from "./local-text";
 // which causes Turbopack module resolution errors when bundled with Next.js.
 // Import it directly: import { LocalXlsxExtractor } from "./extractors/local-xlsx"
 export { OcrExtractor } from "./ocr-extractor";
+export { extractPdfPageTexts, type PdfPageTexts } from "./pdf-page-texts";

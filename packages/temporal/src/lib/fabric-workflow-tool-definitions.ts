@@ -19,6 +19,10 @@
  * allow.
  */
 
+import {
+	AGENT_TASK_CAPABILITY_KEYS,
+	describeAgentTaskCapabilities,
+} from "./agent-task-capabilities";
 import { defineFabricTools } from "./fabric-tool-definition";
 
 export const WORKFLOW_STATUSES = [
@@ -29,12 +33,50 @@ export const WORKFLOW_STATUSES = [
 	"ARCHIVED",
 ] as const;
 
+/**
+ * The numeric bounds the workflow tools hold their arguments to. Both the JSON
+ * schema below and the gateway's zod schema read them, so what a client is
+ * told is what the gateway accepts. A `limit` above `max` is brought down to
+ * it (the way the frame and page tools treat theirs) instead of refused, since
+ * a page's script is written by a model and a refusal breaks the page.
+ */
+export const WORKFLOW_LIST_LIMIT = { min: 1, max: 50, default: 20 } as const;
+export const WORKFLOW_RUNS_LIMIT = { min: 1, max: 20, default: 10 } as const;
+export const WORKFLOW_GRAPH_LIMITS = { nodes: 100, edges: 300 } as const;
+
+const GRAPH_NODES = {
+	type: "array",
+	maxItems: WORKFLOW_GRAPH_LIMITS.nodes,
+} as const;
+const GRAPH_EDGES = {
+	type: "array",
+	maxItems: WORKFLOW_GRAPH_LIMITS.edges,
+} as const;
+
 const WORKFLOW_ID = { workflowId: { type: "string" } } as const;
 
 const BY_ID = {
 	type: "object",
 	properties: WORKFLOW_ID,
 	required: ["workflowId"],
+} as const;
+
+/**
+ * The data and tools a scheduled agent may be given. The agent runs unattended
+ * and has none unless this names them, so a model that leaves it out, or passes
+ * tool names where these keys belong, publishes a page built from nothing.
+ */
+const BUILT_IN_TOOL_NAMES = {
+	type: "array",
+	items: { type: "string", enum: [...AGENT_TASK_CAPABILITY_KEYS] },
+	description: `What the agent may use: ${describeAgentTaskCapabilities()}.`,
+} as const;
+
+/** The same keys on an edit, which does not repeat what each grants. */
+const BUILT_IN_TOOL_NAMES_UPDATE = {
+	type: "array",
+	items: BUILT_IN_TOOL_NAMES.items,
+	description: "As in fabric_create_workflow.",
 } as const;
 
 const READ = { readOnlyHint: true } as const;
@@ -61,8 +103,13 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 				status: { type: "string", enum: [...WORKFLOW_STATUSES] },
 				scheduled: { type: "boolean" },
 				search: { type: "string" },
-				limit: { type: "number" },
-				offset: { type: "number" },
+				limit: {
+					type: "integer",
+					minimum: WORKFLOW_LIST_LIMIT.min,
+					maximum: WORKFLOW_LIST_LIMIT.max,
+					default: WORKFLOW_LIST_LIMIT.default,
+				},
+				offset: { type: "integer", minimum: 0 },
 			},
 		},
 		annotations: READ,
@@ -80,7 +127,15 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 		description: "Lists a workflow's recent runs.",
 		inputSchema: {
 			type: "object",
-			properties: { ...WORKFLOW_ID, limit: { type: "number" } },
+			properties: {
+				...WORKFLOW_ID,
+				limit: {
+					type: "integer",
+					minimum: WORKFLOW_RUNS_LIMIT.min,
+					maximum: WORKFLOW_RUNS_LIMIT.max,
+					default: WORKFLOW_RUNS_LIMIT.default,
+				},
+			},
 			required: ["workflowId"],
 		},
 		annotations: READ,
@@ -127,9 +182,11 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 							type: "array",
 							items: { type: "string" },
 						},
-						builtInToolNames: {
-							type: "array",
-							items: { type: "string" },
+						builtInToolNames: BUILT_IN_TOOL_NAMES,
+						modelId: {
+							type: "string",
+							description:
+								"Optional AI model ID for the agent task.",
 						},
 						outputTitle: { type: "string" },
 						projectId: { type: "string" },
@@ -137,8 +194,8 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 					required: ["name", "cron", "prompt"],
 				},
 				name: { type: "string" },
-				nodes: { type: "array" },
-				edges: { type: "array" },
+				nodes: GRAPH_NODES,
+				edges: GRAPH_EDGES,
 				dryRun: { type: "boolean" },
 			},
 		},
@@ -155,9 +212,27 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 			properties: {
 				...WORKFLOW_ID,
 				name: { type: "string" },
-				preset: { type: "object" },
-				nodes: { type: "array" },
-				edges: { type: "array" },
+				preset: {
+					type: "object",
+					properties: {
+						cron: { type: "string" },
+						timezone: { type: "string" },
+						prompt: { type: "string" },
+						mcpServers: {
+							type: "array",
+							items: { type: "string" },
+						},
+						builtInToolNames: BUILT_IN_TOOL_NAMES_UPDATE,
+						modelId: {
+							type: "string",
+							description: "AI model ID for the agent task.",
+						},
+						outputTitle: { type: "string" },
+						projectId: { type: "string" },
+					},
+				},
+				nodes: GRAPH_NODES,
+				edges: GRAPH_EDGES,
 				dryRun: { type: "boolean" },
 			},
 			required: ["workflowId"],
@@ -202,3 +277,61 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 
 export type FabricWorkflowToolName =
 	(typeof FABRIC_WORKFLOW_TOOL_DEFINITIONS)[number]["name"];
+
+/**
+ * What the person's yes to a created workflow also covers, for that workflow
+ * only: putting it on its schedule and one run now. Both chat engines read
+ * this one list, and the approval each shows says so.
+ */
+export const CREATE_WORKFLOW_FOLLOW_UPS = [
+	"fabric_publish_workflow",
+	"fabric_execute_workflow",
+] as const satisfies readonly FabricWorkflowToolName[];
+
+const CREATE_FOLLOW_UP_NAMES: ReadonlySet<string> = new Set(
+	CREATE_WORKFLOW_FOLLOW_UPS,
+);
+
+function isEmptyObject(value: unknown): boolean {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		!Array.isArray(value) &&
+		Object.keys(value).length === 0
+	);
+}
+
+/**
+ * A Fabric call's arguments as what it does rather than how the model spelled
+ * it: a run started with empty `inputs` is the run started with none (it
+ * starts on `inputs ?? {}`). Nothing else is folded together.
+ */
+export function canonicalFabricCallArgs(
+	toolName: string,
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	return toolName === "fabric_execute_workflow" && isEmptyObject(args.inputs)
+		? Object.fromEntries(
+				Object.entries(args).filter(([key]) => key !== "inputs"),
+			)
+		: args;
+}
+
+/**
+ * Whether a call is one of the follow-ups a created workflow's approval
+ * covers, for that workflow: publishing it, or running it with no inputs.
+ */
+export function isCreateFollowUpCall(
+	toolName: string,
+	args: Record<string, unknown>,
+	workflowId: string,
+): boolean {
+	if (!CREATE_FOLLOW_UP_NAMES.has(toolName)) {
+		return false;
+	}
+	const canonical = canonicalFabricCallArgs(toolName, args);
+	return (
+		Object.keys(canonical).length === 1 &&
+		canonical.workflowId === workflowId
+	);
+}

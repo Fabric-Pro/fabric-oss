@@ -8,6 +8,7 @@ import { logModelUsageAsync } from "./usage-logging";
  * When provided, uses dynamic model selection based on user/org preferences
  */
 export interface TitleGenerationContext {
+	conversationId?: string;
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
@@ -41,6 +42,7 @@ export async function generateChatTitle(
 				// recorder now (logModelUsageAsync is a documented no-op), so a
 				// projectId that stops here is a usage row filed under no project.
 				projectId: context.projectId,
+				conversationId: context.conversationId,
 			},
 		);
 

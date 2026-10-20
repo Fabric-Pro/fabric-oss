@@ -20,7 +20,7 @@ vi.mock("@repo/ai", () => ({
 	buildEffectiveBaseUrl: () => "https://gateway.example.com/v1",
 	requiresBaseUrl: () => false,
 	isReasoningModelName: () => false,
-	getRAGProviderConfig: vi.fn(),
+	getRAGProviderConfigForModel: vi.fn(),
 	getAIModelWithMetadata: async () => {
 		throw new SubscriptionPlanExhaustedError(
 			"Every ChatGPT plan this work may use has no usage left in this window.",
@@ -51,6 +51,7 @@ describe("ai-config routes — every plan spent", () => {
 				error: "Every ChatGPT plan this work may use has no usage left in this window.",
 				code: "CHATGPT_PLAN_EXHAUSTED",
 				resetAt: RESET.toISOString(),
+				personalKeyOption: false,
 			});
 		},
 	);

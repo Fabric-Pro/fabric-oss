@@ -258,6 +258,11 @@ const ALLOWED_ATTR = [
 	"label",
 ];
 
+/** An inline event handler attribute: `onclick`, `onsubmit`, `onchange`, … */
+function isInlineEventHandler(attributeName: string): boolean {
+	return /^on[a-z]+$/.test(attributeName);
+}
+
 /**
  * Inside a `<script>` the only way to end the element is a literal
  * `</script` sequence. DOMPurify already re-parses and re-serialises the
@@ -342,7 +347,8 @@ function shieldScriptBodies(html: string): {
  * - Sanitises with a profile that forbids nested browsing contexts
  *   (`iframe`, `frame`, `object`, `embed`, `portal`) and URL-rewriting head
  *   elements (`base`, `link`, `meta`). Scripts and inline styles are kept —
- *   the sandbox and CSP are the isolation boundary, not the tag list.
+ *   the sandbox and CSP are the isolation boundary, not the tag list. So are
+ *   inline event handlers (`onclick` and the like), which are the same script.
  * - Rebuilds a full document so the CSP `<meta>` is the first child of
  *   `<head>` (a CSP meta outside `<head>` is ignored by browsers).
  * - Defines the page runtime (`window.fabric`) right after it, ahead of every
@@ -370,6 +376,13 @@ export function buildProjectFrameSrcdoc(
 	const sanitised = DOMPurify.sanitize(shielded, {
 		ALLOWED_TAGS,
 		ALLOWED_ATTR,
+		// Inline handlers (`onclick="fabric.openAgent(…)"`) are the page's own
+		// script, exactly as a `<script>` block is: the CSP's `script-src
+		// 'unsafe-inline'` covers both and the sandbox is the boundary for both,
+		// so stripping them only broke the page's own buttons. Kept only where
+		// the page's scripts are (`scripts: true`); a page drawn without scripts
+		// has no handlers either.
+		ADD_ATTR: scripts ? isInlineEventHandler : [],
 		FORBID_TAGS: forbiddenTags,
 		ALLOW_DATA_ATTR: true,
 		// DOM clobbering protection removes an `id` or `name` that shadows a

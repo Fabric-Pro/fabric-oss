@@ -4,6 +4,7 @@
  */
 
 import { db, type FrameSurface, getAccessibleFrameById } from "@repo/database";
+import { sessionMayReachProject } from "../project-binding";
 import type { GatewaySession } from "../types";
 
 export function nonEmptyString(value: unknown): string | undefined {
@@ -64,17 +65,30 @@ export function legacyFrameIdOf(
 /** The page, when the caller may open it, in the caller's organization. */
 export async function accessibleFrame(
 	frameId: string,
-	session: Pick<GatewaySession, "userId" | "email" | "organizationId">,
+	session: Pick<
+		GatewaySession,
+		| "userId"
+		| "email"
+		| "organizationId"
+		| "projectId"
+		| "pinnedProjectId"
+		| "pageProjectId"
+	>,
 ) {
 	if (!session.organizationId) {
 		return null;
 	}
-	return getAccessibleFrameById({
+	const frame = await getAccessibleFrameById({
 		id: frameId,
 		userId: session.userId,
 		userEmail: session.email,
 		organizationId: session.organizationId,
 	});
+	return frame &&
+		(session.pageProjectId === undefined ||
+			sessionMayReachProject(session, frame.projectId))
+		? frame
+		: null;
 }
 
 export async function organizationSlug(

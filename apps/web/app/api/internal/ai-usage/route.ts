@@ -1,13 +1,17 @@
 import { parseExchangedPlanSource } from "@repo/ai/lib/chatgpt-plan/plan-source-key";
-import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
+import {
+	AI_FEATURE_KEYS,
+	featureKeyForAgentId,
+} from "@repo/ai/lib/feature-keys";
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
 	getChatGptPlanOrgAccount,
-	hasProjectAccess,
+	getProjectAccessContext,
 	logAiUsage,
 } from "@repo/database";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { resolveUsageFrame } from "../../agents/fabric-ai/resolve-usage-frame";
 
 export const runtime = "nodejs";
 
@@ -18,9 +22,10 @@ const bodySchema = z.object({
 	agentId: z.string().optional(),
 	conversationId: z.string().optional(),
 	projectId: z.string().optional(),
+	frameId: z.string().min(1).max(200).optional(),
 	// Product-feature attribution (Fizzy #2230): lets out-of-process agent
 	// runtimes tag their calls the same way in-process callers do.
-	featureKey: z.string().max(64).optional(),
+	featureKey: z.enum(AI_FEATURE_KEYS).optional(),
 	promptVersionId: z.string().max(64).optional(),
 	latencyMs: z.number().int().nonnegative().default(0),
 	inputTokens: z.number().int().nonnegative(),
@@ -101,19 +106,29 @@ export async function POST(request: Request) {
 			);
 		}
 
-		const body = bodySchema.parse(await request.json());
+		const parsed = bodySchema.safeParse(await request.json());
+		if (!parsed.success) {
+			return NextResponse.json(
+				{ error: "Invalid AI usage" },
+				{ status: 400 },
+			);
+		}
+		const body = parsed.data;
 
 		// Drop unverified projectId (still log at user/org level) rather than
 		// failing the request — prevents a misbehaving agent from mis-attributing
-		// cost. hasProjectAccess covers owners, org members, and project collaborators.
+		// cost. Project access and the token's tenant must both match.
 		let verifiedProjectId: string | undefined;
 		if (body.projectId) {
-			const allowed = await hasProjectAccess(
+			const accessContext = await getProjectAccessContext(
 				body.projectId,
 				verified.claims.sub,
-				verified.claims.org ?? undefined,
 			);
-			if (allowed) {
+			if (
+				accessContext &&
+				(accessContext.organizationId ?? null) ===
+					(verified.claims.org ?? null)
+			) {
 				verifiedProjectId = body.projectId;
 			} else {
 				console.warn(
@@ -125,6 +140,29 @@ export async function POST(request: Request) {
 					},
 				);
 			}
+		}
+
+		let verifiedFrameId: string | undefined;
+		if (body.frameId) {
+			if (
+				!verified.claims.org ||
+				(body.projectId && !verifiedProjectId)
+			) {
+				return NextResponse.json(
+					{ error: "Invalid usage origin" },
+					{ status: 403 },
+				);
+			}
+			const frame = await resolveUsageFrame({
+				launchFrameId: body.frameId,
+				userId: verified.claims.sub,
+				organizationId: verified.claims.org,
+				projectId: verifiedProjectId,
+			});
+			if (frame.error) {
+				return frame.error;
+			}
+			verifiedFrameId = frame.usageFrameId;
 		}
 
 		// Strip provider prefix ("anthropic/claude-haiku-4.5" → "claude-haiku-4.5")
@@ -148,6 +186,7 @@ export async function POST(request: Request) {
 			userId: verified.claims.sub,
 			organizationId: verified.claims.org,
 			projectId: verifiedProjectId,
+			frameId: verifiedFrameId,
 			provider: body.provider as any,
 			providerConfigId,
 			providerModelId: body.model,

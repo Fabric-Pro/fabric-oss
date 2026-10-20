@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { revokeFrameShare } from "@repo/database";
 import { z } from "zod";
 import {
@@ -33,7 +34,7 @@ export const revokeFrameShareProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 		return {
 			id: frame.id,

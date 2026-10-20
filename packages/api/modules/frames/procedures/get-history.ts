@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { getFrameById, getFrameEditHistory } from "@repo/database";
 import { z } from "zod";
 import {
@@ -57,7 +58,7 @@ export const getFrameHistoryProcedure = tenantProtectedProcedure
 		});
 
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		const history = await getFrameEditHistory(input.id, input.limit);

@@ -16,16 +16,24 @@ import {
 	createTestCase,
 	db,
 	getTestCasesToSync as dbGetTestCasesToSync,
+	getTestCase,
 	PmSyncStatus,
 	type TestCaseForSync,
 	type TestCaseStepInput,
 	updateTestCase,
 	updateTestCasePmRefs,
 } from "@repo/database";
+import { logger } from "@repo/logs";
+import { ApplicationFailure } from "@temporalio/activity";
+import { mirrorTestCaseToContext } from "../../lib/test-case-context-sync";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import { fetchPmTicket } from "./fetch-pm-ticket";
+import { mcpConfigPmInstanceOrigin } from "./pm-link-instance";
 import { writePmSyncRunStatus } from "./pm-sync-attempt-fence";
 import { computePmHash } from "./pm-sync-hash";
+import { detectExternalLinkMismatch } from "./pm-tool-mismatch";
 import { recordPmSyncLog } from "./record-pm-sync-log";
+import { resolveTestCasePmLinkConfig } from "./test-case-pm-link-config";
 import { parseTestCaseStepsFromBody } from "./test-case-serializer";
 import type { PMToolCapabilities } from "./tool-analyzer";
 
@@ -71,11 +79,20 @@ export async function getTestCasesToSync(
 // =============================================================================
 
 export interface UpdateTestCaseExternalRefsInput {
+	/** Accepted from scheduled inputs; target adoption is handled by pull/create. */
+	target?: {
+		mcpConfigId: string | null;
+		userId: string;
+		organizationId?: string;
+		containerId: string;
+		additionalContext?: unknown;
+	};
 	testCaseId: string;
 	projectId: string;
 	externalId: string;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
 	/**
 	 * Post-push drift baseline. When supplied (an MCP push with a `get`-capable
 	 * tool), the activity reads the PM item BACK and stamps `lastSyncedPmHash`
@@ -157,7 +174,9 @@ export async function updateTestCaseExternalRefs(
 			? { externalUrl: input.externalUrl }
 			: {}),
 		...(input.externalMcpServerId !== undefined
-			? { externalMcpServerId: input.externalMcpServerId }
+			? {
+					externalMcpServerId: input.externalMcpServerId,
+				}
 			: {}),
 		...(pmHash !== null ? { lastSyncedPmHash: pmHash } : {}),
 		lastSyncedAt: now,
@@ -173,6 +192,7 @@ export async function updateTestCaseExternalRefs(
 		where: { id: input.testCaseId, projectId: input.projectId },
 		data: link,
 	});
+
 	await writePmSyncRunStatus({
 		itemType: "testCase",
 		itemId: input.testCaseId,
@@ -187,12 +207,18 @@ export async function updateTestCaseExternalRefs(
 // =============================================================================
 
 export interface CreateOrUpdateTestCaseFromPMItemInput {
+	/** Request correlation for inline imports; absent for background pulls. */
+	memo?: Record<string, unknown>;
 	projectId: string;
 	externalId: string;
 	title: string;
 	description?: string | null;
 	externalUrl?: string | null;
 	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
+	containerId?: string;
+	additionalContext?: unknown;
+	mcpConfigId?: string | null;
 	userId: string;
 	organizationId?: string;
 	/** Detected PM tool slug (`capabilities.detectedType`), drives step parse-back. */
@@ -209,11 +235,16 @@ export interface CreateOrUpdateTestCaseFromPMItemResult {
 
 /**
  * Create or update a Fabric test case from a PM item (the pull direction).
- * Mirrors `createOrUpdateStoryFromPMItem` against `db.testCase`:
- * `findFirst({ projectId, externalId })` → update, else create as DRAFT. Steps
+ * The migration-managed partial unique index test_case_projectId_externalId_key
+ * permits one case per project/external ID, including deleted cases, so the
+ * lookup includes deleted rows: inserting beside one would hit that index.
+ * Refuse a mismatched link before writes, then restore a deleted case and
+ * update it. Create a DRAFT case only when no row has this external ID. Steps
  * are parsed back from the body (ADO native XML or the numbered block), the
  * drift baseline (`lastSyncedPmHash`) is stamped, and a `pull` `PmSyncLog` row
- * (`entityType: "TEST_CASE"`) is recorded.
+ * (`entityType: "TEST_CASE"`) is recorded. After logPull succeeds, the persisted
+ * detail is mirrored into project RAG context on a best-effort basis; the mirror
+ * catches indexing failures so they do not fail the pull row.
  */
 export async function createOrUpdateTestCaseFromPMItem(
 	input: CreateOrUpdateTestCaseFromPMItemInput,
@@ -254,15 +285,90 @@ export async function createOrUpdateTestCaseFromPMItem(
 			projectId,
 		});
 
+	const mirror = async (id: string): Promise<void> => {
+		try {
+			const detail = await getTestCase({ id, projectId });
+			if (detail) {
+				await mirrorTestCaseToContext(detail, {
+					userId,
+					organizationId,
+					memo: input.memo,
+				});
+			}
+		} catch (error) {
+			logger.error(
+				`[TestCases] Failed to load RAG context for pulled test case ${id}: ${error}`,
+			);
+		}
+	};
+
 	const existing = await db.testCase.findFirst({
-		// Ignore soft-deleted cases: a pull to a dead row must not stamp refs or
-		// log SUCCESS on a hidden case (updateTestCase already no-ops on
-		// `deletedAt`, but updateTestCasePmRefs/logPull would still touch it).
-		where: { projectId, externalId, deletedAt: null },
-		select: { id: true, identifier: true },
+		where: { projectId, externalId },
+		select: {
+			id: true,
+			identifier: true,
+			externalUrl: true,
+			externalMcpServerId: true,
+			externalPmTarget: true,
+			deletedAt: true,
+		},
 	});
 
 	if (existing) {
+		if (!externalMcpServerId) {
+			logger.warn("pm.sync.test_case_pull.link_other_tool", {
+				id: existing.id,
+				reason: "active PM server id is missing",
+			});
+			throw ApplicationFailure.nonRetryable(
+				`Fabric could not confirm which PM tool this project syncs with, so it did not overwrite test case ${existing.identifier}. Select the PM tool in Project Settings → Project Management, then pull again.`,
+				"TestCasePullLinkMismatchError",
+			);
+		}
+		const config = !existing.externalMcpServerId
+			? await resolveTestCasePmLinkConfig({
+					mcpConfigId: input.mcpConfigId,
+					mcpServerId: externalMcpServerId,
+					userId,
+					organizationId,
+				})
+			: null;
+		const mismatch = detectExternalLinkMismatch({
+			externalId,
+			externalUrl: existing.externalUrl,
+			externalMcpServerId: existing.externalMcpServerId,
+			externalPmTarget: existing.externalPmTarget,
+			activePmTarget: await resolveExternalPmTarget({
+				...input,
+				stableContainerId: input.containerId,
+				pmTool: toolKey,
+				mcpServerId: externalMcpServerId,
+				config,
+			}),
+			activeServerId: externalMcpServerId,
+			currentDetectedType: toolKey ?? undefined,
+			currentBaseUrl:
+				config?.baseUrl || config?.mcpServer?.defaultUrl || null,
+			currentInstanceOrigin: mcpConfigPmInstanceOrigin(config),
+		});
+		if (mismatch.resolution !== "ok") {
+			logger.warn("pm.sync.test_case_pull.link_other_tool", {
+				id: existing.id,
+				reason: mismatch.reason,
+			});
+			const toolLabel = toolKey ?? "the PM tool";
+			throw ApplicationFailure.nonRetryable(
+				`Test case ${existing.identifier} is linked to an item in a different PM tool, so Fabric did not overwrite it with ${toolLabel} item ${externalId}.`,
+				"TestCasePullLinkMismatchError",
+			);
+		}
+		if (existing.deletedAt) {
+			await db.testCase.updateMany({
+				where: { id: existing.id, projectId },
+				data: { deletedAt: null },
+			});
+			logger.info("pm.sync.test_case_pull.restored", { id: existing.id });
+		}
 		await updateTestCase({
 			id: existing.id,
 			projectId,
@@ -282,7 +388,29 @@ export async function createOrUpdateTestCaseFromPMItem(
 			externalMcpServerId: externalMcpServerId ?? undefined,
 			lastSyncedPmHash,
 		});
+		if (existing.externalPmTarget == null) {
+			const externalPmTarget = await resolveExternalPmTarget({
+				...input,
+				stableContainerId: input.containerId,
+				pmTool: toolKey,
+				mcpServerId: externalMcpServerId,
+			});
+			if (externalPmTarget != null) {
+				await db.testCase.updateMany({
+					where: {
+						id: existing.id,
+						projectId,
+						externalId,
+						externalMcpServerId,
+						externalPmTarget: null,
+					},
+					data: { externalPmTarget },
+				});
+			}
+		}
+
 		await logPull(existing.id);
+		await mirror(existing.id);
 		return {
 			testCaseId: existing.id,
 			identifier: existing.identifier,
@@ -309,10 +437,17 @@ export async function createOrUpdateTestCaseFromPMItem(
 		externalId,
 		externalUrl: externalUrl ?? undefined,
 		externalMcpServerId: externalMcpServerId ?? undefined,
+		externalPmTarget: await resolveExternalPmTarget({
+			...input,
+			stableContainerId: input.containerId,
+			pmTool: toolKey,
+			mcpServerId: externalMcpServerId,
+		}),
 		lastSyncedPmHash,
 		lastSyncedAt: new Date(),
 	});
 	await logPull(created.id);
+	await mirror(created.id);
 	return {
 		testCaseId: created.id,
 		identifier: created.identifier,

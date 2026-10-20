@@ -19,7 +19,6 @@ import { db } from "@repo/database";
 export interface LoadAvailableAgentsInput {
 	userId: string;
 	organizationId?: string;
-	includeHealthCheck?: boolean;
 }
 
 export interface LoadAvailableAgentsOutput {
@@ -104,20 +103,15 @@ export async function loadAvailableAgents(
 	try {
 		const agents = await loader.loadAgentsForContext(context, dbLoader);
 
-		// Optionally filter to healthy agents
-		const finalAgents = input.includeHealthCheck
-			? await loader.filterHealthyAgents(agents)
-			: agents;
-
-		const systemCount = finalAgents.filter((a) => !a.isExternal).length;
-		const externalCount = finalAgents.filter((a) => a.isExternal).length;
+		const systemCount = agents.filter((a) => !a.isExternal).length;
+		const externalCount = agents.filter((a) => a.isExternal).length;
 
 		console.log(
-			`[AgentLoader] Loaded ${finalAgents.length} agents (${systemCount} system, ${externalCount} external)`,
+			`[AgentLoader] Loaded ${agents.length} agents (${systemCount} system, ${externalCount} external)`,
 		);
 
 		return {
-			agents: finalAgents,
+			agents,
 			systemCount,
 			externalCount,
 		};
@@ -145,7 +139,6 @@ export async function getAgentRoutingContext(
 	const { agents } = await loadAvailableAgents({
 		userId: input.userId,
 		organizationId: input.organizationId,
-		includeHealthCheck: false, // Faster without health checks for routing
 	});
 
 	// Format agent descriptions for AI
@@ -177,135 +170,6 @@ export async function getAgentRoutingContext(
 		agentDescriptions,
 		agentList,
 	};
-}
-
-// ============================================================================
-// Activity: Execute External Agent Task
-// ============================================================================
-
-export interface ExecuteExternalAgentInput {
-	deploymentUrl: string;
-	message: string;
-	contextId?: string;
-	timeout?: number;
-}
-
-export interface ExecuteExternalAgentOutput {
-	taskId: string;
-	status: string;
-	response?: string;
-	artifacts?: unknown[];
-}
-
-/**
- * Execute a task on an external A2A agent
- */
-export async function executeExternalAgent(
-	input: ExecuteExternalAgentInput,
-): Promise<ExecuteExternalAgentOutput> {
-	const { A2AClient } = await import("@repo/agent-core");
-	const client = new A2AClient({ timeout: input.timeout || 60000 });
-
-	console.log(
-		`[AgentLoader] Executing external agent: ${input.deploymentUrl}`,
-	);
-
-	try {
-		const task = await client.sendMessage(
-			input.deploymentUrl,
-			{
-				role: "user",
-				parts: [{ type: "text", text: input.message }],
-			},
-			{ contextId: input.contextId },
-		);
-
-		// Wait for task completion
-		const result = await client.waitForCompletion(
-			input.deploymentUrl,
-			task.id,
-			{ timeout: input.timeout || 60000, pollInterval: 1000 },
-		);
-
-		// Extract text response from artifacts
-		let response = "";
-		if (result.artifacts) {
-			for (const artifact of result.artifacts) {
-				if (artifact.parts) {
-					for (const part of artifact.parts) {
-						if (part.type === "text") {
-							response += `${part.text}\n`;
-						}
-					}
-				}
-			}
-		}
-
-		return {
-			taskId: result.id,
-			status: result.status,
-			response: response.trim() || undefined,
-			artifacts: result.artifacts,
-		};
-	} catch (error) {
-		console.error("[AgentLoader] External agent execution failed:", error);
-		throw error;
-	}
-}
-
-// ============================================================================
-// Activity: Health Check Agent
-// ============================================================================
-
-export interface HealthCheckAgentInput {
-	agentId: string;
-	deploymentUrl: string;
-	framework: string;
-}
-
-export interface HealthCheckAgentOutput {
-	healthy: boolean;
-	responseTime?: number;
-	error?: string;
-}
-
-/**
- * Health check an agent
- */
-export async function healthCheckAgent(
-	input: HealthCheckAgentInput,
-): Promise<HealthCheckAgentOutput> {
-	const startTime = Date.now();
-
-	try {
-		const loader = getAgentLoader();
-		const healthy = await loader.healthCheck({
-			agentId: input.agentId,
-			name: input.agentId,
-			displayName: input.agentId,
-			description: "",
-			framework: input.framework,
-			deploymentUrl: input.deploymentUrl,
-			scope: "system",
-			capabilities: [],
-			skills: [],
-			tools: [],
-			isExternal: !!input.deploymentUrl,
-			supportsStreaming: false,
-			status: "active",
-		});
-
-		return {
-			healthy,
-			responseTime: Date.now() - startTime,
-		};
-	} catch (error) {
-		return {
-			healthy: false,
-			responseTime: Date.now() - startTime,
-			error: error instanceof Error ? error.message : "Unknown error",
-		};
-	}
 }
 
 // ============================================================================

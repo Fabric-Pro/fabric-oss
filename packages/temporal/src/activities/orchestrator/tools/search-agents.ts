@@ -16,6 +16,7 @@ import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { CacheKeys, CacheTTL, RedisCache } from "../../../lib/redis-cache";
+import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import {
 	rethrowIfTurnStopped,
 	settleAll,
@@ -178,6 +179,14 @@ async function runAgentSearch(
 	);
 
 	if (agents.length === 0) {
+		if (
+			input.enabledAgentIds &&
+			allAgents.some((a) => !FABRIC_AGENT_SELF_IDS.has(a.agentId))
+		) {
+			console.log(
+				`[SearchAgents] Loaded ${allAgents.length} agents; enabled list allowed none (length: ${input.enabledAgentIds.length})`,
+			);
+		}
 		return {
 			results: [],
 			totalAgentsSearched: 0,
@@ -224,6 +233,7 @@ async function runAgentSearch(
 	let resolvedEmbeddingModel: string | undefined;
 	try {
 		const tenantContext: TenantContext = {
+			...secondaryUsageFields(input),
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};
@@ -345,6 +355,7 @@ async function runAgentSearch(
 			if (queryEmbedding) {
 				try {
 					const tenantContext: TenantContext = {
+						...secondaryUsageFields(input),
 						userId: input.userId,
 						organizationId: input.organizationId,
 					};

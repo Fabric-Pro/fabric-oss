@@ -304,6 +304,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2801. The rollout gate for the Proposal artifact, read for the project's OWNING organization, never the session's. Off, Proposals keep today's Draft and Glossy flow, the document page is unchanged, and every Internal Analysis and Style procedure answers NOT_FOUND; documents, analyses and styles already written are kept, so turning it back on restores them. The recipient brand procedures accept this gate or GLOSSY_EDITION; every other Glossy and Brand kit procedure still needs GLOSSY_EDITION. The worker reads the gate once at the start of each generation, so a run already under way keeps the flow it started with. Enable it per organization only, after BOTH the web deployment and the Temporal worker rollout have completed and the client-only Main prompt action is bound: an organization gated on with nothing bound has its Proposal generation refused. Business Case and every other document type are unaffected. Resolve it in API code and activities, never in workflow code.",
 	},
+	DOCUMENT_ROOM_CONVERGENCE: {
+		label: "Collaborative editor room convergence",
+		description:
+			"Keeps a collaborative editor room on the saved document: after a generation or another server write, open editors bring the room to the saved body, and every save from the room names the version and body it was based on, so an older body can never be saved over a newer one.",
+		envVar: "FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE",
+		default: true,
+		orgScopable: true,
+		note: "Fizzy #2946. Default-ON rollback lever, read for the project's OWNING organization. Off, the editor behaves as before it: no room stamp, no convergence, saves send no base, and the server requires no base from a client-document Proposal; on, a Proposal save without a base (an editor bundle from before this change) is refused with a reload code, and other document types accept and log it. No data is migrated either way: the stamp lives in the room, so turning it back on resumes from the next save or server write.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;

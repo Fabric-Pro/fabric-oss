@@ -188,6 +188,7 @@ async function runDirectBuilderTool(
 		"../../direct-chat/built-in-tools"
 	);
 	const context = {
+		usageConversationId: call.conversationId,
 		userId: call.userId,
 		organizationId: call.organizationId,
 		projectId: call.projectId,

@@ -8,8 +8,10 @@ import {
 } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { fetchAgentEndpoint } from "@repo/utils/agent-endpoint";
 import { resolveAgentUrl } from "../../lib/agent-url-resolver";
 import { CacheKeys, CacheTTL, RedisCache } from "../../lib/redis-cache";
+import { isExternalAgentScope } from "../orchestrator/delegation/resolve-endpoint";
 
 /**
  * Refresh gate for the stored agent card. Mirrors CacheTTL.agentCard (the
@@ -86,12 +88,25 @@ export async function checkAgentHealth(
 	const resolvedUrl = resolveAgentUrl(input.agentId, input.deploymentUrl);
 	let healthy = false;
 	let healthError: string | undefined;
+	let stored: Awaited<ReturnType<typeof getRegisteredAgentByAgentId>> = null;
+	try {
+		stored = await getRegisteredAgentByAgentId(input.agentId);
+	} catch (err) {
+		console.warn(
+			`[HealthMonitor] Failed to read stored metadata for ${input.agentId}, treating as empty:`,
+			err,
+		);
+	}
+	// Only a loaded SYSTEM row permits operator-managed private endpoints.
+	const probeFetch = isExternalAgentScope(stored?.scope ?? "USER")
+		? fetchAgentEndpoint
+		: fetch;
 
 	try {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 5000);
 		try {
-			const response = await fetch(`${resolvedUrl}/health`, {
+			const response = await probeFetch(`${resolvedUrl}/health`, {
 				signal: controller.signal,
 			});
 			healthy = response.ok;
@@ -127,17 +142,8 @@ export async function checkAgentHealth(
 	// changed, and the embedding is only regenerated when the search text it
 	// was built from changes (bounded by AGENT_EMBEDDING_REFRESH_TTL_MS).
 	if (healthy) {
-		let metadata: Record<string, unknown> = {};
-		try {
-			const stored = await getRegisteredAgentByAgentId(input.agentId);
-			metadata =
-				(stored?.metadata as Record<string, unknown> | null) ?? {};
-		} catch (err) {
-			console.warn(
-				`[HealthMonitor] Failed to read stored metadata for ${input.agentId}, treating as empty:`,
-				err,
-			);
-		}
+		const metadata =
+			(stored?.metadata as Record<string, unknown> | null) ?? {};
 
 		try {
 			const cachedAtMs = parseIsoMs(metadata.agentCardCachedAt);
@@ -157,7 +163,7 @@ export async function checkAgentHealth(
 
 				let agentCardRaw: Record<string, unknown> | null = null;
 				try {
-					const cardResponse = await fetch(
+					const cardResponse = await probeFetch(
 						`${resolvedUrl}/.well-known/agent.json`,
 						{ signal: controller.signal },
 					);

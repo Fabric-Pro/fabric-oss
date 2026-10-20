@@ -671,6 +671,25 @@ describe("publish, unpublish, pause and resume", () => {
 });
 
 describe("reads", () => {
+	it("carries the page project into the canonical workflow read actor", async () => {
+		mocks.listWorkflowsCommand.mockResolvedValue({
+			workflows: [],
+			total: 0,
+			hasMore: false,
+		});
+		await executePlatformTool(
+			"fabric_list_workflows",
+			{},
+			sessionWith({ pageProjectId: PROJECT }),
+		);
+		expect(mocks.listWorkflowsCommand).toHaveBeenCalledWith(
+			expect.objectContaining({
+				...ACTOR,
+				projectRestrictionId: PROJECT,
+			}),
+			expect.any(Object),
+		);
+	});
 	const LISTED = {
 		id: "wf-1",
 		name: "Weekly report",
@@ -824,14 +843,112 @@ describe("reads", () => {
 		expect(payload(result)).toEqual({ workflowId: "wf-1", runs: [] });
 	});
 
-	it("refuses a run limit above 20", async () => {
+	it("brings a run limit above 20 down to 20 instead of refusing it, since a page's script asked for it", async () => {
+		mocks.listWorkflowRunsCommand.mockResolvedValue([]);
+
 		const result = await executePlatformTool(
 			"fabric_list_workflow_runs",
 			{ workflowId: "wf-1", limit: 200 },
 			sessionWith(),
 		);
 
+		expect(result.isError).toBeFalsy();
+		expect(mocks.listWorkflowRunsCommand).toHaveBeenCalledWith(ACTOR, {
+			workflowId: "wf-1",
+			limit: 20,
+		});
+	});
+});
+
+describe("numeric bounds: what the tools advertise is what they accept", () => {
+	const advertised = (toolName: string, property: string) => {
+		const properties = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === toolName,
+		)?.inputSchema.properties as
+			| Record<string, Record<string, unknown>>
+			| undefined;
+		return properties?.[property];
+	};
+
+	it("advertises the list limit's minimum and maximum", () => {
+		expect(advertised("fabric_list_workflows", "limit")).toMatchObject({
+			minimum: 1,
+			maximum: 50,
+		});
+	});
+
+	it("advertises the runs limit's minimum and maximum", () => {
+		expect(advertised("fabric_list_workflow_runs", "limit")).toMatchObject({
+			minimum: 1,
+			maximum: 20,
+		});
+	});
+
+	it("advertises the graph size the create and update tools accept", () => {
+		for (const tool of [
+			"fabric_create_workflow",
+			"fabric_update_workflow",
+		]) {
+			expect(advertised(tool, "nodes")).toMatchObject({ maxItems: 100 });
+			expect(advertised(tool, "edges")).toMatchObject({ maxItems: 300 });
+		}
+	});
+
+	it("passes the largest advertised list limit through and brings a larger one down to it", async () => {
+		mocks.listWorkflowsCommand.mockResolvedValue({
+			workflows: [],
+			total: 0,
+			hasMore: false,
+		});
+		const max = (advertised("fabric_list_workflows", "limit")?.maximum ??
+			0) as number;
+
+		await executePlatformTool(
+			"fabric_list_workflows",
+			{ limit: max },
+			sessionWith(),
+		);
+		const result = await executePlatformTool(
+			"fabric_list_workflows",
+			{ limit: max + 1000 },
+			sessionWith(),
+		);
+
+		expect(result.isError).toBeFalsy();
+		expect(
+			mocks.listWorkflowsCommand.mock.calls.map(
+				([, input]) => input.limit,
+			),
+		).toEqual([max, max]);
+	});
+
+	it("keeps a limit below the minimum at the minimum", async () => {
+		mocks.listWorkflowsCommand.mockResolvedValue({
+			workflows: [],
+			total: 0,
+			hasMore: false,
+		});
+
+		await executePlatformTool(
+			"fabric_list_workflows",
+			{ limit: 0 },
+			sessionWith(),
+		);
+
+		expect(mocks.listWorkflowsCommand.mock.calls[0][1].limit).toBe(1);
+	});
+
+	it("still refuses a graph larger than the advertised size", async () => {
+		const nodes = Array.from({ length: 101 }, (_, index) => ({
+			id: `n${index}`,
+		}));
+
+		const result = await executePlatformTool(
+			"fabric_create_workflow",
+			{ name: "Big", nodes, edges: [] },
+			sessionWith(),
+		);
+
 		expect(result.isError).toBe(true);
-		expect(mocks.listWorkflowRunsCommand).not.toHaveBeenCalled();
 	});
 });

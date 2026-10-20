@@ -1,7 +1,9 @@
 /**
- * Tracks finished SDK steps so a later stream failure can still charge the
- * completed provider calls as one Direct Chat turn.
+ * Tracks finished SDK steps and Anthropic stream-start usage so Direct Chat
+ * retains measured spend on Stop and in-stream provider errors.
  */
+
+import { streamStartUsageOf } from "@repo/ai/lib/usage-logging-middleware";
 
 type UsageDetails = {
 	cacheReadTokens?: number;
@@ -30,6 +32,16 @@ function usage(value: unknown): Usage {
 	return value && typeof value === "object" ? (value as Usage) : {};
 }
 
+function hasTokenCounts(value: Usage): boolean {
+	return [
+		value.inputTokens,
+		value.outputTokens,
+		value.totalTokens,
+		...Object.values(value.inputTokenDetails ?? {}),
+		...Object.values(value.outputTokenDetails ?? {}),
+	].some((count) => typeof count === "number" && Number.isFinite(count));
+}
+
 function sumUsage(current: Usage, next: Usage): Usage {
 	return {
 		inputTokens: number(current.inputTokens) + number(next.inputTokens),
@@ -53,23 +65,57 @@ function sumUsage(current: Usage, next: Usage): Usage {
 
 export function createDirectChatAggregateUsageTracker() {
 	let aggregate: Usage | undefined;
+	let pendingStreamStartUsage: Usage | undefined;
+	let usedStreamStartUsage = false;
 	let startedSteps = 0;
 	const steps: { providerMetadata?: unknown }[] = [];
 
 	return {
 		startStep(): void {
 			startedSteps++;
+			pendingStreamStartUsage = undefined;
+		},
+		addStreamStartUsage(part: Record<string, unknown>): void {
+			const reported = streamStartUsageOf(part);
+			if (reported) {
+				pendingStreamStartUsage = {
+					inputTokens: reported.inputTokens.total,
+					outputTokens: reported.outputTokens.total,
+					totalTokens:
+						reported.inputTokens.total +
+						reported.outputTokens.total,
+					inputTokenDetails: {
+						cacheReadTokens: reported.inputTokens.cacheRead,
+						cacheWriteTokens: reported.inputTokens.cacheWrite,
+					},
+				};
+			}
 		},
 		addCompletedStep(step: CompletedStep): void {
-			aggregate = sumUsage(aggregate ?? {}, usage(step.usage));
+			const completedUsage = usage(step.usage);
+			if (pendingStreamStartUsage && !hasTokenCounts(completedUsage)) {
+				aggregate = sumUsage(aggregate ?? {}, pendingStreamStartUsage);
+				usedStreamStartUsage = true;
+			} else {
+				aggregate = sumUsage(aggregate ?? {}, completedUsage);
+			}
+			pendingStreamStartUsage = undefined;
 			steps.push({ providerMetadata: step.providerMetadata });
 		},
 		partialAggregate(): {
 			usage: Usage | undefined;
+			usageReportedAt?: "stream_start";
 			steps: { providerMetadata?: unknown }[];
 		} {
 			return {
-				usage: aggregate,
+				usage: pendingStreamStartUsage
+					? sumUsage(aggregate ?? {}, pendingStreamStartUsage)
+					: aggregate,
+				// The row includes at least one step counted from stream-start usage;
+				// output after that point for those steps is not counted.
+				...((usedStreamStartUsage || pendingStreamStartUsage) && {
+					usageReportedAt: "stream_start" as const,
+				}),
 				// A failed started step has no metadata, but it still makes the
 				// whole turn multi-step. Keep a placeholder so callers cannot bind
 				// the aggregate to a completed step's gateway generation id.

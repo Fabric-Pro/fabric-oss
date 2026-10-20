@@ -31,6 +31,7 @@ import {
 	getAICredentialsFromHeaders,
 } from "./services/token-exchange";
 import { tokenExchangeFailure } from "./services/token-exchange-failure";
+import { sanitizeMcpErrorMessage } from "./utils/sanitize-error";
 
 // Note: @repo/observability is imported dynamically in start() to avoid
 // bundling OpenTelemetry packages in environments that don't support them (e.g., Turbopack)
@@ -387,13 +388,58 @@ export interface UnifiedServerConfig {
 	maxAutonomyLevel?: "step" | "subtask" | "task" | "session";
 }
 
+/** Reserved graph context comes from the authenticated transport and token exchange. */
+function serverResolvedAgentConfig(
+	headers: Headers,
+	credentials: AICredentials | null,
+) {
+	const baseUrl =
+		credentials?.baseUrl || headers.get("X-AI-Base-URL") || undefined;
+	return {
+		tenant_user_id: headers.get("X-Tenant-User-ID") || undefined,
+		tenant_organization_id:
+			headers.get("X-Tenant-Organization-ID") || undefined,
+		ai_base_url: baseUrl,
+		ai_gateway_url: baseUrl,
+		ai_deployment_name:
+			credentials?.deploymentName ||
+			headers.get("X-AI-Deployment-Name") ||
+			undefined,
+		ai_billing_mode: credentials?.billingMode,
+		ai_billing_customer_id: credentials?.billingCustomerId,
+		ai_plan_source: credentials?.planSource,
+		ai_model_pinned: credentials?.modelPinned === true ? true : undefined,
+		ai_max_output_tokens:
+			credentials?.modelPinned === true
+				? credentials.maxOutputTokens
+				: undefined,
+		ai_context_window:
+			credentials?.modelPinned === true
+				? credentials.contextWindow
+				: undefined,
+		// Reapply pinned credentials after the route's request-body spreads.
+		...(credentials?.modelPinned === true && {
+			ai_is_reasoning: credentials.isReasoningModel,
+			ai_model: credentials.model,
+			ai_provider: credentials.provider,
+			ai_api_key: credentials.apiKey,
+		}),
+		ai_token: extractAIToken(headers) || undefined,
+		// Usage logging falls back to the sanitized flat fields; body records are untrusted.
+		fabric_usage: undefined,
+	};
+}
+
 /**
  * LangGraph executor function type
  */
-export type LangGraphExecutor = (input: {
-	messages: Array<{ role: string; content: string }>;
-	[key: string]: unknown;
-}) => Promise<{
+export type LangGraphExecutor = (
+	input: {
+		messages: Array<{ role: string; content: string }>;
+		[key: string]: unknown;
+	},
+	config?: AgentRuntimeConfig,
+) => Promise<{
 	messages?: Array<{ role: string; content: string }>;
 	[key: string]: unknown;
 }>;
@@ -488,9 +534,24 @@ export type LangGraphPlatformStreamExecutor = (
  * Output transform result type
  */
 export interface TransformResult {
+	/** Set by an agent's transform when the run failed; sanitized before it leaves the executor. */
+	error?: string;
 	response: string;
 	artifacts?: Artifact[];
 	metadata?: Record<string, unknown>;
+}
+
+/** Prefer the agent's user-facing response to its telemetry error. */
+export function getUserFacingError(
+	error: unknown,
+	response?: unknown,
+): string | undefined {
+	if (typeof error !== "string" || !error.trim()) {
+		return undefined;
+	}
+	return typeof response === "string" && response.trim()
+		? response.trim()
+		: error.trim();
 }
 
 /**
@@ -658,6 +719,18 @@ export function createUnifiedServer(
 		);
 	}
 
+	function resolveInvocationInput(
+		c: Context,
+		input: Parameters<LangGraphExecutor>[0],
+	): Parameters<LangGraphExecutor>[0] {
+		return {
+			...input,
+			...serverResolvedAgentConfig(c.req.raw.headers, null),
+			// Preserve the legacy callbacks' existing tool credential exposure.
+			ai_token: input.ai_token,
+		};
+	}
+
 	// Create A2A executor that wraps the LangGraph agent
 	const a2aExecutor: A2AAgentExecutor = {
 		async execute(message, contextId, metadata) {
@@ -677,7 +750,11 @@ export function createUnifiedServer(
 			});
 
 			// Transform output for A2A
-			return transformOutput(result);
+			const output = transformOutput(result);
+			if (output.error?.trim()) {
+				throw new Error(sanitizeMcpErrorMessage(output.error));
+			}
+			return output;
 		},
 
 		async *executeStream(message, contextId, metadata) {
@@ -693,6 +770,7 @@ export function createUnifiedServer(
 				textPart && "text" in textPart ? textPart.text : "";
 			const messages = [{ role: "user" as const, content: userMessage }];
 
+			// A supplied streamAgent bypasses transformOutput and does not see transform errors.
 			const stream = streamAgent({
 				messages,
 				contextId,
@@ -1260,20 +1338,12 @@ export function createUnifiedServer(
 		const headerTenantUserId =
 			c.req.header("X-Tenant-User-ID") ||
 			c.req.header("x-tenant-user-id");
-		const headerTenantOrgId =
-			c.req.header("X-Tenant-Organization-ID") ||
-			c.req.header("x-tenant-organization-id");
 
 		// Extract AI config headers (non-sensitive hints)
 		const headerAiModel =
 			c.req.header("X-AI-Model") || c.req.header("x-ai-model");
 		const headerAiProvider =
 			c.req.header("X-AI-Provider") || c.req.header("x-ai-provider");
-		const headerAiBaseUrl =
-			c.req.header("X-AI-Base-URL") || c.req.header("x-ai-base-url");
-		const headerAiDeploymentName =
-			c.req.header("X-AI-Deployment-Name") ||
-			c.req.header("x-ai-deployment-name");
 		// Canonical-derived "emits <think>" signal (Bug #1942 review). Header is a
 		// string ("true"/"false"); CopilotKit props pass a real boolean.
 		const headerAiIsReasoning =
@@ -1343,14 +1413,6 @@ export function createUnifiedServer(
 					(properties.ai_model as string | undefined) ||
 					(topLevelBody.ai_model as string | undefined) ||
 					(input.ai_model as string | undefined),
-				ai_gateway_url:
-					exchangedCredentials?.baseUrl ||
-					headerAiBaseUrl ||
-					(configurable.ai_gateway_url as string | undefined) ||
-					(context.ai_gateway_url as string | undefined) ||
-					(properties.ai_gateway_url as string | undefined) ||
-					(topLevelBody.ai_gateway_url as string | undefined) ||
-					(input.ai_gateway_url as string | undefined),
 				ai_provider:
 					exchangedCredentials?.provider ||
 					headerAiProvider ||
@@ -1359,14 +1421,6 @@ export function createUnifiedServer(
 					(properties.ai_provider as string | undefined) ||
 					(topLevelBody.ai_provider as string | undefined) ||
 					(input.ai_provider as string | undefined),
-				ai_deployment_name:
-					exchangedCredentials?.deploymentName ||
-					headerAiDeploymentName ||
-					(configurable.ai_deployment_name as string | undefined) ||
-					(context.ai_deployment_name as string | undefined) ||
-					(properties.ai_deployment_name as string | undefined) ||
-					(topLevelBody.ai_deployment_name as string | undefined) ||
-					(input.ai_deployment_name as string | undefined),
 				// Coerce header string / prop boolean to a boolean (Bug #1942 review).
 				ai_is_reasoning: coerceReasoningFlag(
 					headerAiIsReasoning ??
@@ -1376,43 +1430,39 @@ export function createUnifiedServer(
 						topLevelBody.ai_is_reasoning ??
 						input.ai_is_reasoning,
 				),
-				ai_billing_mode: exchangedCredentials?.billingMode,
-				ai_billing_customer_id: exchangedCredentials?.billingCustomerId,
-				// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
-				ai_plan_source: exchangedCredentials?.planSource,
-				// Pass through tenant context
-				tenant_user_id:
-					headerTenantUserId ||
-					(configurable.tenant_user_id as string | undefined) ||
-					(context.tenant_user_id as string | undefined) ||
-					(properties.tenant_user_id as string | undefined) ||
-					(topLevelBody.tenant_user_id as string | undefined) ||
-					(input.tenant_user_id as string | undefined),
-				tenant_organization_id:
-					headerTenantOrgId ||
-					(configurable.tenant_organization_id as
-						| string
-						| undefined) ||
-					(context.tenant_organization_id as string | undefined) ||
-					(properties.tenant_organization_id as string | undefined) ||
-					(topLevelBody.tenant_organization_id as
-						| string
-						| undefined) ||
-					(input.tenant_organization_id as string | undefined),
+				// Usage attribution is separate from the agent thread and A2A context.
+				usage_conversation_id: pickFirstString(
+					[configurable, context, properties, topLevelBody, input],
+					["usage_conversation_id"],
+				),
+				usage_project_id: pickFirstString(
+					[configurable, context, properties, topLevelBody, input],
+					["usage_project_id"],
+				),
+				usage_frame_id: pickFirstString(
+					[configurable, context, properties, topLevelBody, input],
+					["usage_frame_id"],
+				),
+				usage_feature_key: pickFirstString(
+					[configurable, context, properties, topLevelBody, input],
+					["usage_feature_key"],
+				),
 				// Project context for per-project AI usage attribution.
 				// A2A callers may pass either snake_case or camelCase.
 				project_id: pickFirstString(
 					[configurable, context, properties, topLevelBody, input],
 					["project_id", "projectId"],
 				),
-				// Pass AI token for MCP configs API access
-				ai_token: aiToken || undefined,
 				// Spread any additional configurable properties
 				...configurable,
 				// Also spread context properties
 				...context,
 				// Also spread properties (lower priority than configurable)
 				...properties,
+				...serverResolvedAgentConfig(
+					c.req.raw.headers,
+					exchangedCredentials,
+				),
 			},
 		};
 
@@ -1753,11 +1803,18 @@ export function createUnifiedServer(
 			`[UnifiedServer:${config.name}] Using synchronous invoke (no platform streaming)`,
 		);
 
-		const rawResult = await invokeAgent({
-			messages,
-			threadId,
-			...input,
-		});
+		const rawResult = await invokeAgent(
+			{
+				messages,
+				threadId,
+				...input,
+				...serverResolvedAgentConfig(
+					c.req.raw.headers,
+					exchangedCredentials,
+				),
+			},
+			runtimeConfig,
+		);
 
 		// Sanitize result for CopilotKit compatibility
 		const result = sanitizeStateForCopilotKitWithLog(rawResult);
@@ -2032,10 +2089,12 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] LangGraph /runs with ${messages.length} messages`,
 			);
 
-			const result = await invokeAgent({
-				messages,
-				...input,
-			});
+			const result = await invokeAgent(
+				resolveInvocationInput(c, {
+					messages,
+					...input,
+				}),
+			);
 
 			return c.json({
 				run_id: `run_${Date.now()}`,
@@ -2071,11 +2130,13 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] LangGraph /threads/${threadId}/runs with ${messages.length} messages`,
 			);
 
-			const result = await invokeAgent({
-				messages,
-				threadId,
-				...input,
-			});
+			const result = await invokeAgent(
+				resolveInvocationInput(c, {
+					messages,
+					threadId,
+					...input,
+				}),
+			);
 
 			return c.json({
 				run_id: `run_${Date.now()}`,
@@ -2118,10 +2179,12 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] CopilotKit /run with ${messages.length} messages`,
 			);
 
-			const result = await invokeAgent({
-				messages,
-				...body,
-			});
+			const result = await invokeAgent(
+				resolveInvocationInput(c, {
+					messages,
+					...body,
+				}),
+			);
 
 			return c.json(result);
 		} catch (error) {
@@ -2151,10 +2214,12 @@ export function createUnifiedServer(
 				`[UnifiedServer:${config.name}] AG-UI /invoke with ${messages.length} messages`,
 			);
 
-			const result = await invokeAgent({
-				messages,
-				...body,
-			});
+			const result = await invokeAgent(
+				resolveInvocationInput(c, {
+					messages,
+					...body,
+				}),
+			);
 
 			return c.json(result);
 		} catch (error) {
@@ -2186,10 +2251,12 @@ export function createUnifiedServer(
 
 			if (!streamAgent) {
 				// Fall back to non-streaming
-				const result = await invokeAgent({
-					messages,
-					...body,
-				});
+				const result = await invokeAgent(
+					resolveInvocationInput(c, {
+						messages,
+						...body,
+					}),
+				);
 				return c.json(result);
 			}
 
@@ -2230,10 +2297,12 @@ export function createUnifiedServer(
 					};
 
 					try {
-						const generator = streamAgent({
-							messages,
-							...body,
-						});
+						const generator = streamAgent(
+							resolveInvocationInput(c, {
+								messages,
+								...body,
+							}),
+						);
 
 						for await (const chunk of generator) {
 							const data = JSON.stringify(chunk);
@@ -2321,11 +2390,6 @@ export function createUnifiedServer(
 				c.req.header("X-AI-Model") || c.req.header("x-ai-model");
 			const headerAiProvider =
 				c.req.header("X-AI-Provider") || c.req.header("x-ai-provider");
-			const headerAiBaseUrl =
-				c.req.header("X-AI-Base-URL") || c.req.header("x-ai-base-url");
-			const headerAiDeploymentName =
-				c.req.header("X-AI-Deployment-Name") ||
-				c.req.header("x-ai-deployment-name");
 
 			// Token-based AI config (secure) - exchange token for API key
 			// Token is REQUIRED for system agents - no insecure fallback
@@ -2388,26 +2452,10 @@ export function createUnifiedServer(
 						exchangedCredentials?.provider ||
 						headerAiProvider ||
 						body.metadata?.ai_provider,
-					ai_base_url:
-						exchangedCredentials?.baseUrl ||
-						headerAiBaseUrl ||
-						body.metadata?.ai_base_url,
-					ai_deployment_name:
-						exchangedCredentials?.deploymentName ||
-						headerAiDeploymentName ||
-						body.metadata?.ai_deployment_name,
-					ai_billing_mode: exchangedCredentials?.billingMode,
-					ai_billing_customer_id:
-						exchangedCredentials?.billingCustomerId,
-					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
-					ai_plan_source: exchangedCredentials?.planSource,
-					tenant_user_id:
-						headerTenantUserId || body.metadata?.tenant_user_id,
-					tenant_organization_id:
-						headerTenantOrgId ||
-						body.metadata?.tenant_organization_id,
-					// Pass AI token for MCP configs API access
-					ai_token: aiToken || undefined,
+					...serverResolvedAgentConfig(
+						c.req.raw.headers,
+						exchangedCredentials,
+					),
 				},
 			};
 
@@ -2437,23 +2485,12 @@ export function createUnifiedServer(
 			const body = await c.req.json();
 
 			// Extract tenant context from headers
-			const headerTenantUserId =
-				c.req.header("X-Tenant-User-ID") ||
-				c.req.header("x-tenant-user-id");
-			const headerTenantOrgId =
-				c.req.header("X-Tenant-Organization-ID") ||
-				c.req.header("x-tenant-organization-id");
 
 			// Extract AI config headers (non-sensitive hints)
 			const headerAiModel =
 				c.req.header("X-AI-Model") || c.req.header("x-ai-model");
 			const headerAiProvider =
 				c.req.header("X-AI-Provider") || c.req.header("x-ai-provider");
-			const headerAiBaseUrl =
-				c.req.header("X-AI-Base-URL") || c.req.header("x-ai-base-url");
-			const headerAiDeploymentName =
-				c.req.header("X-AI-Deployment-Name") ||
-				c.req.header("x-ai-deployment-name");
 
 			// Token-based AI config (secure) - exchange token for API key
 			// Token is REQUIRED for system agents - no insecure fallback
@@ -2495,26 +2532,10 @@ export function createUnifiedServer(
 						exchangedCredentials?.provider ||
 						headerAiProvider ||
 						body.metadata?.ai_provider,
-					ai_base_url:
-						exchangedCredentials?.baseUrl ||
-						headerAiBaseUrl ||
-						body.metadata?.ai_base_url,
-					ai_deployment_name:
-						exchangedCredentials?.deploymentName ||
-						headerAiDeploymentName ||
-						body.metadata?.ai_deployment_name,
-					ai_billing_mode: exchangedCredentials?.billingMode,
-					ai_billing_customer_id:
-						exchangedCredentials?.billingCustomerId,
-					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
-					ai_plan_source: exchangedCredentials?.planSource,
-					tenant_user_id:
-						headerTenantUserId || body.metadata?.tenant_user_id,
-					tenant_organization_id:
-						headerTenantOrgId ||
-						body.metadata?.tenant_organization_id,
-					// Pass AI token for MCP configs API access
-					ai_token: aiToken || undefined,
+					...serverResolvedAgentConfig(
+						c.req.raw.headers,
+						exchangedCredentials,
+					),
 				},
 			};
 
@@ -2626,15 +2647,8 @@ export function createUnifiedServer(
 			// Extract AI config headers (non-sensitive hints)
 			const headerAiModel =
 				c.req.header("X-AI-Model") || c.req.header("x-ai-model");
-			const headerAiBaseUrl =
-				c.req.header("X-AI-Base-URL") ||
-				c.req.header("X-AI-Base-Url") ||
-				c.req.header("x-ai-base-url");
 			const headerAiProvider =
 				c.req.header("X-AI-Provider") || c.req.header("x-ai-provider");
-			const headerAiDeploymentName =
-				c.req.header("X-AI-Deployment-Name") ||
-				c.req.header("x-ai-deployment-name");
 
 			// Token-based AI config (secure) - exchange token for API key
 			// Token is REQUIRED for AI operations - no insecure fallback
@@ -2739,18 +2753,6 @@ export function createUnifiedServer(
 						(bodyForwardedProps.ai_model as string | undefined) ||
 						(bodyProperties.ai_model as string | undefined) ||
 						(body.ai_model as string | undefined),
-					ai_gateway_url:
-						exchangedCredentials?.baseUrl ||
-						headerAiBaseUrl ||
-						(bodyConfigurable.ai_gateway_url as
-							| string
-							| undefined) ||
-						(bodyContext.ai_gateway_url as string | undefined) ||
-						(bodyForwardedProps.ai_gateway_url as
-							| string
-							| undefined) ||
-						(bodyProperties.ai_gateway_url as string | undefined) ||
-						(body.ai_gateway_url as string | undefined),
 					ai_provider:
 						exchangedCredentials?.provider ||
 						headerAiProvider ||
@@ -2761,37 +2763,15 @@ export function createUnifiedServer(
 							| undefined) ||
 						(bodyProperties.ai_provider as string | undefined) ||
 						(body.ai_provider as string | undefined),
-					ai_deployment_name:
-						exchangedCredentials?.deploymentName ||
-						headerAiDeploymentName ||
-						(bodyConfigurable.ai_deployment_name as
-							| string
-							| undefined) ||
-						(bodyContext.ai_deployment_name as
-							| string
-							| undefined) ||
-						(bodyForwardedProps.ai_deployment_name as
-							| string
-							| undefined) ||
-						(bodyProperties.ai_deployment_name as
-							| string
-							| undefined) ||
-						(body.ai_deployment_name as string | undefined),
-					ai_billing_mode: exchangedCredentials?.billingMode,
-					ai_billing_customer_id:
-						exchangedCredentials?.billingCustomerId,
-					// The ChatGPT plan behind the key, for the usage row (Fizzy #2770).
-					ai_plan_source: exchangedCredentials?.planSource,
-					// Tenant context
-					tenant_user_id: tenantUserId,
-					tenant_organization_id: tenantOrgId,
-					// Pass AI token for MCP configs API access
-					ai_token: aiToken || undefined,
 					// Spread any additional config
 					...bodyConfigurable,
 					...bodyContext,
 					...bodyForwardedProps,
 					...bodyProperties,
+					...serverResolvedAgentConfig(
+						c.req.raw.headers,
+						exchangedCredentials,
+					),
 				},
 			};
 
@@ -3435,11 +3415,9 @@ export function createUnifiedServer(
 							// skipped whenever frontend tool calls were emitted.
 							// Without this branch such a run ends as
 							// STATE_SNAPSHOT + RUN_FINISHED with no assistant
-							// turn at all: the spinner resolves, nothing is
-							// rendered, and nothing is persisted to the
-							// transcript. Nothing on the client reads `error` off
-							// the state snapshot, so this event is the only thing
-							// the user ever sees.
+							// turn at all. DocumentEditor reads snapshot.error for
+							// a toast, but an assistant text event is needed to
+							// record the failure in the conversation transcript.
 							//
 							// PREFER `response` OVER `error`. Several agents
 							// (data-analyst, api-agent) deliberately keep the raw
@@ -3448,19 +3426,15 @@ export function createUnifiedServer(
 							// `error` unconditionally would publish internal
 							// failure detail into durable chat history, so the
 							// friendly copy wins whenever the graph supplied one.
-							const rawTerminalError =
-								typeof finalState.error === "string" &&
-								finalState.error.trim()
-									? finalState.error.trim()
-									: null;
 							const terminalResponse =
 								typeof finalState.response === "string" &&
 								finalState.response.trim()
 									? finalState.response.trim()
 									: null;
-							const terminalError = rawTerminalError
-								? (terminalResponse ?? rawTerminalError)
-								: null;
+							const terminalError = getUserFacingError(
+								finalState.error,
+								terminalResponse,
+							);
 							// Same key shape the streaming path uses, so an error
 							// the graph already surfaced as AI text isn't shown
 							// twice.
@@ -3636,6 +3610,10 @@ export function createUnifiedServer(
 							const generator = streamAgent({
 								messages,
 								...body,
+								...serverResolvedAgentConfig(
+									c.req.raw.headers,
+									exchangedCredentials,
+								),
 							});
 
 							for await (const chunk of generator) {
@@ -3658,10 +3636,17 @@ export function createUnifiedServer(
 							}
 						} else {
 							// Non-streaming fallback
-							const result = await invokeAgent({
-								messages,
-								...body,
-							});
+							const result = await invokeAgent(
+								{
+									messages,
+									...body,
+									...serverResolvedAgentConfig(
+										c.req.raw.headers,
+										exchangedCredentials,
+									),
+								},
+								runtimeConfig,
+							);
 
 							sendEvent({
 								type: "TEXT_MESSAGE_START",

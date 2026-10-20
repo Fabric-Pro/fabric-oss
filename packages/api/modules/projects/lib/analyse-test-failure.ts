@@ -243,6 +243,7 @@ async function resolveFailureAnalysisInstructions(tenant: {
  * an analysis from an invisible prompt.
  */
 export async function analyseTestFailure(input: {
+	projectId: string;
 	failure: FailureAnalysisInput;
 	tenant: { userId: string; organizationId?: string | null };
 }): Promise<FailureAnalysis | null> {
@@ -256,6 +257,7 @@ export async function analyseTestFailure(input: {
 		{
 			userId: input.tenant.userId,
 			organizationId: input.tenant.organizationId ?? undefined,
+			projectId: input.projectId,
 		},
 	);
 

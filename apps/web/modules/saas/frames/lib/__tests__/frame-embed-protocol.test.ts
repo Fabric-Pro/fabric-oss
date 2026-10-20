@@ -4,9 +4,56 @@ import {
 } from "@repo/utils/page-limits";
 import { describe, expect, it } from "vitest";
 import {
+	FRAME_RUNTIME_CALL_TIMEOUT_MS,
+	frameRuntimeCallExpiresAt,
 	isFrameRuntimeCallResult,
 	isFrameRuntimeRequest,
 } from "../frame-embed-protocol";
+
+describe("call lifetimes", () => {
+	it("admits legacy calls and finite deadlines, and rejects malformed deadlines", () => {
+		const call = {
+			type: "fabric-frame:call",
+			requestId: "call-1",
+			name: "fabric_list_workflows",
+			args: {},
+		};
+		expect(isFrameRuntimeRequest(call)).toBe(true);
+		expect(isFrameRuntimeRequest({ ...call, expiresAt: 1 })).toBe(true);
+		for (const expiresAt of [
+			Number.NaN,
+			Number.POSITIVE_INFINITY,
+			Number.NEGATIVE_INFINITY,
+			"later",
+			null,
+		]) {
+			expect(isFrameRuntimeRequest({ ...call, expiresAt })).toBe(false);
+		}
+		expect(
+			isFrameRuntimeRequest({
+				type: "fabric-frame:cancel-call",
+				requestId: "call-1",
+			}),
+		).toBe(true);
+		expect(
+			isFrameRuntimeRequest({
+				type: "fabric-frame:cancel-call",
+				requestId: 1,
+			}),
+		).toBe(false);
+	});
+
+	it("caps deadlines at five minutes without extending an earlier deadline", () => {
+		expect(frameRuntimeCallExpiresAt(undefined, 100)).toBe(
+			100 + FRAME_RUNTIME_CALL_TIMEOUT_MS,
+		);
+		expect(frameRuntimeCallExpiresAt(1_000_000, 100)).toBe(
+			100 + FRAME_RUNTIME_CALL_TIMEOUT_MS,
+		);
+		expect(frameRuntimeCallExpiresAt(150, 100)).toBe(150);
+		expect(frameRuntimeCallExpiresAt(50, 100)).toBe(50);
+	});
+});
 
 const DOWNLOAD = {
 	type: "fabric-frame:download",

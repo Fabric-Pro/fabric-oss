@@ -18,6 +18,7 @@
  * Run with: pnpm --filter web test modules/saas/mcp/lib/gateway/__tests__/frame-tools
  */
 
+import { FABRIC_PROJECT_READ_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-read-tool-definitions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -206,6 +207,42 @@ describe("frame tool definitions", () => {
 });
 
 describe("fabric_create_frame", () => {
+	it("refuses the chat-only feature tool with actionable canonical discovery guidance", async () => {
+		const result = await executePlatformTool(
+			"fabric_create_frame",
+			{
+				title: "Dashboard",
+				surface: "workspace",
+				blocks,
+				runtimeTools: ["fabric_list_project_features"],
+			},
+			session,
+		);
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toContain("fabric_list_page_tools");
+		expect(payload(result).error).toContain(
+			"fabric_list_features with required projectId",
+		);
+		expect(mocks.createFirstClassFrame).not.toHaveBeenCalled();
+	});
+
+	it("accepts the gateway's actual project reads in a Workspace", async () => {
+		const result = await executePlatformTool(
+			"fabric_create_frame",
+			{
+				title: "Dashboard",
+				surface: "workspace",
+				blocks,
+				runtimeTools: [
+					"fabric_list_features",
+					"fabric_list_project_instructions",
+				],
+			},
+			session,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(mocks.createFirstClassFrame).toHaveBeenCalledOnce();
+	});
 	it("refuses a declared tool that is not in the tool table, without creating the page", async () => {
 		const result = await executePlatformTool(
 			"fabric_create_frame",
@@ -541,6 +578,69 @@ describe("fabric_create_frame", () => {
 	});
 });
 
+describe("fabric_list_page_tools", () => {
+	it("returns only actual page-compatible tools and their exact schemas", async () => {
+		const result = await executePlatformTool(
+			"fabric_list_page_tools",
+			{ query: "fabric_list_features" },
+			session,
+		);
+		const data = payload(result);
+		expect(data.tools).toHaveLength(1);
+		const definition = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_list_features",
+		);
+		expect(data.tools[0]).toMatchObject({
+			name: definition?.name,
+			inputSchema: definition?.inputSchema,
+			annotations: definition?.annotations,
+		});
+		expect(data.tools[0].inputSchema.required).toContain("projectId");
+	});
+
+	it("excludes session-changing, authoring and chat-only tools", async () => {
+		for (const query of [
+			"fabric_list_project_features",
+			"fabric_create_frame",
+			"fabric_switch_organization",
+			"fabric_list_page_tools",
+			"fabric_page_read_connected",
+		]) {
+			const result = await executePlatformTool(
+				"fabric_list_page_tools",
+				{ query },
+				session,
+			);
+			expect(payload(result).tools, query).toEqual([]);
+		}
+	});
+
+	it("bounds returned schemas and offers query narrowing without truncating individual schemas", async () => {
+		const result = await executePlatformTool(
+			"fabric_list_page_tools",
+			{ limit: 1 },
+			session,
+		);
+		expect(payload(result)).toMatchObject({
+			hasMore: true,
+			tools: [
+				expect.objectContaining({ inputSchema: expect.any(Object) }),
+			],
+		});
+		expect(payload(result).tools).toHaveLength(1);
+	});
+
+	it("shares all six project/instruction schemas unchanged with the gateway", () => {
+		for (const definition of FABRIC_PROJECT_READ_TOOL_DEFINITIONS) {
+			expect(
+				PLATFORM_TOOL_DEFINITIONS.find(
+					(tool) => tool.name === definition.name,
+				)?.inputSchema,
+			).toEqual(definition.inputSchema);
+		}
+	});
+});
+
 describe("fabric_update_frame", () => {
 	it("updates the Workspace the user has open when no frame is named", async () => {
 		await executePlatformTool(
@@ -595,6 +695,42 @@ describe("fabric_update_frame", () => {
 });
 
 describe("fabric_get_frame", () => {
+	it("passes bounded source arguments and viewer context through the ordinary gateway", async () => {
+		const content = '"\n\\\u0000😀'.repeat(600);
+		const source = {
+			source: true,
+			frameId: "frame-1",
+			title: "Example",
+			updatedAt: "2026-10-14T10:00:00.000Z",
+			block: { id: "page", type: "html", content },
+			offset: 0,
+			returnedLength: content.length,
+			totalChars: content.length + 1,
+			nextOffset: content.length,
+			complete: false,
+		};
+		mocks.getFirstClassFrame.mockResolvedValueOnce(source);
+		const result = await executePlatformTool(
+			"fabric_get_frame",
+			{ blockId: "page", offset: 0, limit: 6_000 },
+			onWorkspace("frame-1"),
+		);
+		expect(mocks.getFirstClassFrame).toHaveBeenCalledWith({
+			args: {
+				frameId: "frame-1",
+				blockId: "page",
+				offset: 0,
+				limit: 6_000,
+			},
+			userId: "user-1",
+			userEmail: "agent@example.com",
+			organizationId: "org-1",
+		});
+		expect(payload(result)).toEqual(source);
+		expect(result.content[0].text.length).toBeLessThanOrEqual(10_000);
+		expect(JSON.stringify(payload(result)).length).toBeLessThan(12_000);
+	});
+
 	it("reads the open Workspace by default, as the caller, in their organization", async () => {
 		await executePlatformTool(
 			"fabric_get_frame",
@@ -626,6 +762,31 @@ describe("fabric_get_frame", () => {
 });
 
 describe("fabric_list_frames", () => {
+	it("carries the page restriction to frame get and list without trusting the requested project", async () => {
+		const pageSession = { ...session, pageProjectId: "project-1" };
+		await executePlatformTool(
+			"fabric_get_frame",
+			{ frameId: "frame-2" },
+			pageSession,
+		);
+		await executePlatformTool(
+			"fabric_list_frames",
+			{ projectId: "project-2" },
+			pageSession,
+		);
+		expect(mocks.getFirstClassFrame).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectRestrictionId: "project-1",
+				args: { frameId: "frame-2" },
+			}),
+		);
+		expect(mocks.listFirstClassFrames).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectRestrictionId: "project-1",
+				projectId: "project-2",
+			}),
+		);
+	});
 	it("lists the caller's own frames when told nothing else", async () => {
 		await executePlatformTool(
 			"fabric_list_frames",

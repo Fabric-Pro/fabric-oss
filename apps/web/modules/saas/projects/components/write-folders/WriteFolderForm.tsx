@@ -20,6 +20,7 @@ import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
 import type { ContextSyncConfiguration } from "../../lib/context-repository-sync";
 import {
+	type WriteTargetIndexMode,
 	type WriteTargetMode,
 	type WriteTargetsList,
 	type WriteTargetView,
@@ -39,6 +40,11 @@ const NAMESPACE = "projects.contexts.livingMemory.writeFolders";
  * synced branch with no review, and the next agent reads them. A change that
  * ends in direct push asks whether or not the folder already was one, since
  * re-pointing a direct-push folder is turning it on for the new folder.
+ *
+ * Each folder also chooses whether its files are embedded: **Index for AI
+ * search** (the default) or **Store only**, which keeps the files readable
+ * but out of project search and summaries. Either is a plain change: nothing
+ * is confirmed, and the server deletes or creates the vectors itself.
  *
  * Every refusal the server gives is shown under the form in its own words
  * (`writeTargetErrorMessage`), and the form stays as it was so it can be
@@ -66,6 +72,9 @@ export function WriteFolderForm({
 	const [mode, setMode] = useState<WriteTargetMode>(
 		editing?.mode ?? "PULL_REQUEST",
 	);
+	const [indexMode, setIndexMode] = useState<WriteTargetIndexMode>(
+		editing?.indexMode ?? "INDEXED",
+	);
 	const [error, setError] = useState<string | null>(null);
 	const [confirming, setConfirming] = useState(false);
 
@@ -80,8 +89,15 @@ export function WriteFolderForm({
 		.filter((target) => target.id !== editing?.id)
 		.map((target) => target.folder);
 	const changed =
-		editing === null || folder !== editing.folder || mode !== editing.mode;
-	const askFirst = mode === "DIRECT_PUSH" && changed;
+		editing === null ||
+		folder !== editing.folder ||
+		mode !== editing.mode ||
+		indexMode !== editing.indexMode;
+	const askFirst =
+		mode === "DIRECT_PUSH" &&
+		(editing === null ||
+			folder !== editing.folder ||
+			mode !== editing.mode);
 	const canSave = folder !== "" && changed && !pending;
 	const directPushAllowed = list.canEnableDirectPush;
 	const errorId = `${id}-error`;
@@ -92,13 +108,19 @@ export function WriteFolderForm({
 		setError(null);
 		try {
 			if (editing === null) {
-				await create.mutateAsync({ projectId, folder, mode });
+				await create.mutateAsync({
+					projectId,
+					folder,
+					mode,
+					...(indexMode !== "INDEXED" ? { indexMode } : {}),
+				});
 			} else {
 				await update.mutateAsync({
 					projectId,
 					targetId: editing.id,
 					...(folder !== editing.folder ? { folder } : {}),
 					...(mode !== editing.mode ? { mode } : {}),
+					...(indexMode !== editing.indexMode ? { indexMode } : {}),
 				});
 			}
 		} catch (failure) {
@@ -193,6 +215,53 @@ export function WriteFolderForm({
 							{directPushAllowed
 								? t("form.directPushHint", { branch: sync.ref })
 								: t("form.directPushNeedsAdmin")}
+						</span>
+					</Label>
+				</div>
+			</RadioGroup>
+
+			<RadioGroup
+				value={indexMode}
+				onValueChange={(next) => {
+					setIndexMode(next as WriteTargetIndexMode);
+					setError(null);
+				}}
+				aria-label={t("form.indexLegend")}
+				disabled={pending}
+			>
+				<div className="flex items-start gap-3">
+					<RadioGroupItem
+						value="INDEXED"
+						id={`${id}-indexed`}
+						className="mt-1"
+					/>
+					<Label
+						htmlFor={`${id}-indexed`}
+						className="grid gap-0.5 font-normal"
+					>
+						<span className="font-medium">
+							{t("indexMode.INDEXED")}
+						</span>
+						<span className="text-muted-foreground text-xs">
+							{t("form.indexedHint")}
+						</span>
+					</Label>
+				</div>
+				<div className="flex items-start gap-3">
+					<RadioGroupItem
+						value="STORE_ONLY"
+						id={`${id}-store-only`}
+						className="mt-1"
+					/>
+					<Label
+						htmlFor={`${id}-store-only`}
+						className="grid gap-0.5 font-normal"
+					>
+						<span className="font-medium">
+							{t("indexMode.STORE_ONLY")}
+						</span>
+						<span className="text-muted-foreground text-xs">
+							{t("form.storeOnlyHint")}
 						</span>
 					</Label>
 				</div>

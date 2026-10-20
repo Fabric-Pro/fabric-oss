@@ -26,6 +26,7 @@ import {
 	type StatusSyncOutcome,
 } from "@repo/integrations/pm";
 import { logger } from "@repo/logs";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 // Fizzy #2304 — a failed fetch's message is shown to users, so it is scrubbed.
 import { scrubSecrets } from "@repo/utils/scrub-secrets";
 import { Context } from "@temporalio/activity";
@@ -45,6 +46,7 @@ import {
 	resolvePmServerKey,
 	resolvePmSource,
 } from "../pm-source";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import {
 	type NormalizedPmState,
 	normalizePolledState,
@@ -200,6 +202,7 @@ export interface PmActiveProject {
  * only), and `totalLinked` (denominator for the outage guard).
  */
 export interface FetchAdoWorkItemStatesResult {
+	activePmTarget?: string | null;
 	items: PmWorkItemState[];
 	seenExternalIds: string[];
 	/** Definite not-found ids (404 / "does not exist"). Drives FLAG_MISSING. */
@@ -1200,8 +1203,20 @@ async function fetchLinkedItemStates(
 	);
 	const resolveStamp = createStampToolTypeResolver();
 	const allLinked = await getLinkedExternalIds(projectId);
+	const activePmTarget = allLinked.some(
+		(link) => link.externalPmTarget != null,
+	)
+		? await resolveExternalPmTarget({
+				...input,
+				additionalContext: projectManagementAdditionalContext,
+				stableContainerId: input.containerId,
+			})
+		: undefined;
 	const linked: typeof allLinked = [];
 	for (const link of allLinked) {
+		if (pmTargetsConflict(link.externalPmTarget, activePmTarget)) {
+			continue;
+		}
 		if (await linkBelongsToActiveTool(link, activeToolType, resolveStamp)) {
 			linked.push(link);
 		}
@@ -1260,7 +1275,15 @@ async function fetchLinkedItemStates(
 		try {
 			// Every batch chunk is attempted: nothing is deferred.
 			return {
-				out: await fetchViaAdoBatch(input, linkedItems, ctx, watermark),
+				out: {
+					...(await fetchViaAdoBatch(
+						input,
+						linkedItems,
+						ctx,
+						watermark,
+					)),
+					...(activePmTarget !== undefined ? { activePmTarget } : {}),
+				},
 				notAttemptedIds: [],
 			};
 		} catch (err) {
@@ -1358,6 +1381,7 @@ async function fetchLinkedItemStates(
 		(i) => i.stateChangedDate === null,
 	).length;
 	const out: FetchAdoWorkItemStatesResult = {
+		...(activePmTarget !== undefined ? { activePmTarget } : {}),
 		items: allItems,
 		seenExternalIds: result.items.map((i) => i.id),
 		// Only DEFINITE not-found ids feed missing-detection (review Fix A).
@@ -1879,6 +1903,7 @@ export async function updateProjectPollTimestamp(
 export async function reconcileMissingTickets(input: {
 	projectId: string;
 	activeServerId: string;
+	activePmTarget?: string | null;
 	/** Per-cycle idempotency token (the poll child workflow's runId). */
 	pollRunId: string;
 	seenExternalIds: string[];
@@ -1971,7 +1996,13 @@ export async function reconcileMissingTickets(input: {
 		for (const fabricItem of fabricItems) {
 			// Source scope: require a POSITIVE active-server match. null (unknown
 			// provenance) and a different server are NOT eligible.
-			if (fabricItem.externalMcpServerId !== activeServerId) {
+			if (
+				fabricItem.externalMcpServerId !== activeServerId ||
+				pmTargetsConflict(
+					fabricItem.externalPmTarget,
+					input.activePmTarget,
+				)
+			) {
 				continue;
 			}
 

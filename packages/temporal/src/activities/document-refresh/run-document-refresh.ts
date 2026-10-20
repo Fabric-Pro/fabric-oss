@@ -4,6 +4,7 @@ import {
 	clearRefreshProposal,
 	completeRefreshCycle,
 	createDocumentRefreshNotifications,
+	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	getAutoRefreshSettings,
 	getDocumentById,
@@ -15,7 +16,9 @@ import {
 	updateDocument,
 } from "@repo/database";
 import { logger } from "@repo/logs";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { AI_REFRESH_AUTHOR_ID } from "@repo/utils/document-version-author";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure, heartbeat } from "@temporalio/activity";
 import {
@@ -114,6 +117,10 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 
 		const baselineVersion = document.version;
 		const documentMarkdown = document.content ?? "";
+		// The body the model is about to read. The version alone does not name
+		// it: a Proposal run's final save writes its body at the old version
+		// and only moves the version at its next step (Fizzy #2946).
+		const baselineContentHash = contentIdentity(documentMarkdown);
 		const organizationId = due.organizationId ?? undefined;
 
 		// A refresh is an UPDATE. With nothing to update, the model would be handed
@@ -299,9 +306,10 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 			result.updatedDocument,
 		);
 
-		// The default. The model's output is stored for a human to accept or reject
-		// — the same contract the interactive button has always had.
-		if (!settings.autoApply) {
+		// The model's output stored for a human to accept or reject — the same
+		// contract the interactive button has always had. Overwrites any earlier
+		// proposal, so a retried cycle stores it once.
+		const propose = async (): Promise<RefreshOutcome> => {
 			await storeRefreshProposal(due.documentId, {
 				when: new Date(),
 				content: contentToPersist,
@@ -313,6 +321,31 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 				documentId: due.documentId,
 			});
 			return { status: "PROPOSED", summary: result.summary };
+		};
+
+		// The default.
+		if (!settings.autoApply) {
+			return await propose();
+		}
+
+		// A Proposal's body belongs to its generation run while the run is
+		// queued or writing (Fizzy #2946), and that run saves its body at the
+		// old version, so the version guard alone cannot see it. For such a
+		// document the unattended write is refused under a run. Decided by
+		// type, not by the rollout gate: a run keeps writing when the gate is
+		// turned off mid-run. A refused write keeps the output as a proposal,
+		// so nothing is lost and the accept is judged against the document
+		// once the run is done.
+		const guardProposalRun = isRunGuardedDocumentType(document.type);
+		if (
+			guardProposalRun &&
+			(document.status === "QUEUED" || document.status === "GENERATING")
+		) {
+			logger.info(
+				"[DocumentRefresh] Proposing instead of applying: a generation run holds the document",
+				{ documentId: due.documentId },
+			);
+			return await propose();
 		}
 
 		try {
@@ -323,17 +356,31 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 				userId: due.userId ?? due.triggeredByUserId,
 				organizationId,
 				// Lost race → DocumentVersionConflictError → we abandon rather than
-				// overwrite whoever saved while the model was thinking.
+				// overwrite whoever saved while the model was thinking. Conditioned
+				// on the body the model read as well as its version, for every
+				// type: a body saved at the same version is a collision too.
 				expectedVersion: baselineVersion,
+				expectedContentHash: baselineContentHash,
+				...(guardProposalRun ? { refuseWhileGenerating: true } : {}),
 			});
 		} catch (error) {
+			// A run queued between the read above and this write. Nothing was
+			// written; the output waits as a proposal.
+			if (error instanceof DocumentGenerationInProgressError) {
+				logger.info(
+					"[DocumentRefresh] Proposing instead of applying: a generation run took the document during generation",
+					{ documentId: due.documentId },
+				);
+				return await propose();
+			}
 			if (error instanceof DocumentVersionConflictError) {
 				logger.info(
-					"[DocumentRefresh] Abandoned: a human saved during generation",
+					"[DocumentRefresh] Abandoned: the document changed during generation",
 					{
 						documentId: due.documentId,
 						expectedVersion: error.expectedVersion,
 						actualVersion: error.actualVersion,
+						reason: error.reason,
 					},
 				);
 				await recordRefreshOutcome(

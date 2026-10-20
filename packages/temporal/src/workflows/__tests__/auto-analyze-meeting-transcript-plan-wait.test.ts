@@ -164,6 +164,58 @@ describe("autoAnalyzeMeetingTranscriptWorkflow — a spent ChatGPT plan", () => 
 		]);
 		expect(calls()).toBe(1);
 		expect(estimates).toEqual([]);
-		expect(failed).toHaveLength(1);
+		expect(failed).toEqual([
+			{
+				transcriptRecordId: "tr-rec-1",
+				projectId: "proj-1",
+				error: "bad input",
+			},
+		]);
+	}, 60_000);
+});
+
+// Fizzy #3174: the stored reason is the activity's own message, not the
+// "Activity task failed" text of Temporal's ActivityFailure wrapper.
+describe("autoAnalyzeMeetingTranscriptWorkflow — the stored failure reason", () => {
+	const REASON =
+		"This meeting transcript is too long to analyze with the configured model.";
+	const tooLong = (): Outcome => {
+		throw ApplicationFailure.nonRetryable(REASON, "ValidationError");
+	};
+
+	it("stores the activity's message for the automatic scan", async () => {
+		const { failed } = await run([tooLong]);
+		expect(failed).toEqual([
+			{
+				transcriptRecordId: "tr-rec-1",
+				projectId: "proj-1",
+				error: REASON,
+			},
+		]);
+	}, 60_000);
+
+	it("stores the activity's message for a person's own request", async () => {
+		const { failed } = await run([tooLong], {
+			...INPUT,
+			userInitiated: true,
+		});
+		expect(failed).toEqual([
+			{
+				transcriptRecordId: "tr-rec-1",
+				projectId: "proj-1",
+				error: REASON,
+			},
+		]);
+	}, 60_000);
+
+	it("stores the plan-spent message when the plans are still spent after the wait", async () => {
+		const { failed } = await run([spent, spent]);
+		expect(failed).toEqual([
+			{
+				transcriptRecordId: "tr-rec-1",
+				projectId: "proj-1",
+				error: "Every ChatGPT plan this work may use has no usage left in this window.",
+			},
+		]);
 	}, 60_000);
 });

@@ -15,6 +15,7 @@ import {
 	createProviderModel,
 	extractProviderConfig,
 	getAgentModelAsync,
+	getAgentModelFromConfig,
 	getGatewayReasoningConfig,
 	getReasoningConfig,
 	isGatewayClaudeReasoningModel,
@@ -26,6 +27,9 @@ import {
 	reasoningOutputAllowanceForConfig,
 	resolveOutputTokenBudget,
 } from "../src/services/langchain-models";
+
+import { servedModelIdentity } from "../src/services/served-model";
+import { logAgentUsageFromRunnableConfig } from "../src/services/usage-logging";
 
 describe("isReasoningCapableModel", () => {
 	// Anthropic — supports `thinking`
@@ -2433,4 +2437,181 @@ describe("getAgentModelAsync — AI-config API fallback failures", () => {
 			expect(isRetryableError(error)).toBe(false);
 		},
 	);
+});
+
+describe("delegated model pin", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.unstubAllGlobals();
+	});
+	it.each([true, false, undefined])(
+		"preserves pinned model and otherwise fetches task config (%s)",
+		async (pinned) => {
+			vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+			vi.stubEnv(
+				"AGENT_SERVICE_SECRET",
+				"example-service-secret-0123456789abcdef",
+			);
+			const fetchMock = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							provider: "GROQ",
+							model: "task-model",
+							apiKey: "example-key",
+						}),
+						{ status: 200 },
+					),
+			);
+			vi.stubGlobal("fetch", fetchMock);
+			const model = await getAgentModelAsync(
+				{
+					configurable: {
+						tenant_user_id: "example-user",
+						tenant_organization_id: "example-org",
+						ai_provider: "GROQ",
+						ai_api_key: "example-key",
+						ai_model: "selected-model",
+						ai_model_pinned: pinned,
+					},
+				},
+				{ taskType: "COMPLEX" },
+			);
+			expect(fetchMock).toHaveBeenCalledTimes(pinned ? 0 : 1);
+			expect((model as unknown as { model: string }).model).toBe(
+				pinned ? "selected-model" : "task-model",
+			);
+		},
+	);
+});
+
+it("clamps a pinned opaque model's explicit output request to its catalog cap", async () => {
+	const config = {
+		configurable: {
+			ai_model_pinned: true,
+			ai_api_key: "example-key",
+			ai_provider: "GROQ",
+			ai_model: "opaque-example-alias",
+			ai_is_reasoning: true,
+			ai_max_output_tokens: 8192,
+			ai_context_window: 32768,
+			tenant_user_id: "example-user",
+		},
+	};
+	const fetchMock = vi.fn();
+	vi.stubGlobal("fetch", fetchMock);
+	try {
+		const model = await getAgentModelAsync(config, {
+			taskType: "COMPLEX",
+			maxTokens: 16000,
+		});
+		expect((model as unknown as { maxTokens: number }).maxTokens).toBe(
+			8192,
+		);
+		const provider = extractProviderConfig(config);
+		expect(provider).toMatchObject({
+			isReasoningModel: true,
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+describe("task model usage attribution", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+	it("records and logs separate task models without changing the starting configuration", async () => {
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"example-service-secret-0123456789abcdef",
+		);
+		const send = vi.fn(async (url: string, _init?: RequestInit) => {
+			if (url.includes("/api/agents/ai-config/task")) {
+				return new Response(
+					JSON.stringify({
+						provider: "GROQ",
+						model: url.includes("SIMPLE")
+							? "summary-model"
+							: "task-model",
+						apiKey: "example-key",
+					}),
+				);
+			}
+			return new Response(null, { status: 204 });
+		});
+		vi.stubGlobal("fetch", send);
+		const config = {
+			configurable: {
+				tenant_user_id: "example-user",
+				tenant_organization_id: "example-org",
+				ai_provider: "OPENAI_DIRECT",
+				ai_model: "exchanged-model",
+				ai_api_key: "example-key",
+				ai_token: "example-token",
+			},
+		};
+		const summaryModel = await getAgentModelAsync(config, {
+			taskType: "SIMPLE",
+		});
+		const model = await getAgentModelAsync(config, {
+			taskType: "TOOL_CALLING",
+		});
+		expect(servedModelIdentity(model)).toEqual({
+			provider: "GROQ",
+			model: "task-model",
+		});
+		expect(servedModelIdentity(summaryModel)).toEqual({
+			provider: "GROQ",
+			model: "summary-model",
+		});
+		expect(config.configurable.ai_model).toBe("exchanged-model");
+		expect(config.configurable.ai_provider).toBe("OPENAI_DIRECT");
+		for (const instance of [summaryModel, model]) {
+			await logAgentUsageFromRunnableConfig(
+				config,
+				{ usage_metadata: { input_tokens: 10, output_tokens: 2 } },
+				{ taskType: "TOOL_CALLING", model: instance },
+			);
+		}
+		const bodies = send.mock.calls
+			.filter(([url]) => url.endsWith("/api/internal/ai-usage"))
+			.map(([, init]) => JSON.parse(String(init?.body)));
+		expect(bodies).toHaveLength(2);
+		expect(bodies).toMatchObject([
+			{ provider: "GROQ", model: "summary-model" },
+			{ provider: "GROQ", model: "task-model" },
+		]);
+	});
+});
+
+it("records identities for direct and synchronous factory callers", () => {
+	const model = createProviderModel({
+		provider: "GROQ",
+		model: "direct-model",
+		apiKey: "example-key",
+	});
+	const syncModel = getAgentModelFromConfig({
+		configurable: {
+			ai_provider: "OPENAI_DIRECT",
+			ai_model: "sync-model",
+			ai_api_key: "example-key",
+		},
+	});
+	expect(servedModelIdentity(model)).toEqual({
+		provider: "GROQ",
+		model: "direct-model",
+	});
+	expect(servedModelIdentity(syncModel)).toEqual({
+		provider: "OPENAI_DIRECT",
+		model: "sync-model",
+	});
+	for (const unrecorded of [undefined, null, "example-model", 1, {}]) {
+		expect(servedModelIdentity(unrecorded)).toBeUndefined();
+	}
 });

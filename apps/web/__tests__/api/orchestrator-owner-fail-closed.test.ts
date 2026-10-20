@@ -60,6 +60,7 @@ vi.mock("@repo/database", () => ({
 const USER_ID = "user-owner-1";
 const ORG_ID = "org-example-1";
 const EXEC = "orch-dddddddd-0000-4000-8000-000000000004";
+const PENDING_APPROVAL_ID = "authority-sess-1-call-1";
 
 type RouteCall = () => Promise<Response>;
 
@@ -122,7 +123,9 @@ beforeEach(() => {
 		resetInSeconds: 60,
 	});
 	m.getConversationTurnOwnerForExecution.mockResolvedValue(null);
-	m.query.mockResolvedValue(null);
+	m.query.mockImplementation(async (name: string) =>
+		name === "pendingApproval" ? { approvalId: PENDING_APPROVAL_ID } : null,
+	);
 });
 
 describe.each(routes)("%s — owner check fails closed", (_name, call) => {
@@ -168,5 +171,108 @@ describe.each(routes)("%s — owner check fails closed", (_name, call) => {
 		});
 		const response = await call();
 		expect(response.status).toBe(200);
+	});
+});
+
+describe("approve — names the approval the person answered", () => {
+	async function approve(body: Record<string, unknown>) {
+		m.describe.mockResolvedValue({
+			status: { name: "RUNNING" },
+			memo: { userId: USER_ID, organizationId: ORG_ID },
+		});
+		const { POST } = await import(
+			"../../app/api/agents/fabric-ai/orchestrator-temporal/approve/route"
+		);
+		return POST(
+			jsonRequest({ executionId: EXEC, approved: true, ...body }),
+		);
+	}
+
+	it("passes the approval id to the run, which takes the answer only for that approval", async () => {
+		const response = await approve({
+			approvalId: "authority-sess-1-call-1",
+		});
+
+		expect(response.status).toBe(200);
+		expect(m.signal).toHaveBeenCalledWith("approval", {
+			approved: true,
+			feedback: undefined,
+			decidedBy: USER_ID,
+			approvalId: "authority-sess-1-call-1",
+		});
+	});
+
+	it("still signals an answer from a client that names no approval", async () => {
+		const response = await approve({});
+
+		expect(response.status).toBe(200);
+		expect(m.signal).toHaveBeenCalledWith(
+			"approval",
+			expect.not.objectContaining({ approvalId: expect.anything() }),
+		);
+	});
+
+	it.each([[""], [42], ["x".repeat(501)]])(
+		"refuses an approval id that is not one (%s)",
+		async (approvalId) => {
+			const response = await approve({ approvalId });
+
+			expect(response.status).toBe(400);
+			expect(m.signal).not.toHaveBeenCalled();
+		},
+	);
+});
+
+describe("approve — reports an answer the run would drop", () => {
+	async function approve(body: Record<string, unknown>) {
+		m.describe.mockResolvedValue({
+			status: { name: "RUNNING" },
+			memo: { userId: USER_ID, organizationId: ORG_ID },
+		});
+		const { POST } = await import(
+			"../../app/api/agents/fabric-ai/orchestrator-temporal/approve/route"
+		);
+		return POST(
+			jsonRequest({ executionId: EXEC, approved: true, ...body }),
+		);
+	}
+
+	it("refuses with 409 and sends nothing when no approval is pending", async () => {
+		m.query.mockResolvedValue(null);
+
+		for (const body of [{ approvalId: PENDING_APPROVAL_ID }, {}]) {
+			const response = await approve(body);
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toEqual({
+				error: "This approval is no longer pending.",
+				code: "APPROVAL_NOT_PENDING",
+			});
+		}
+		expect(m.query).toHaveBeenCalledWith("pendingApproval");
+		expect(m.signal).not.toHaveBeenCalled();
+	});
+
+	it("refuses with 409 and sends nothing when a different approval is pending", async () => {
+		const response = await approve({
+			approvalId: "authority-sess-0-call-0",
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			code: "APPROVAL_NOT_PENDING",
+		});
+		expect(m.signal).not.toHaveBeenCalled();
+	});
+
+	it("signals and returns 200 when the answered approval is the pending one", async () => {
+		const response = await approve({ approvalId: PENDING_APPROVAL_ID });
+
+		expect(response.status).toBe(200);
+		expect(m.signal).toHaveBeenCalledTimes(1);
+		expect(m.signal).toHaveBeenCalledWith(
+			"approval",
+			expect.objectContaining({ approvalId: PENDING_APPROVAL_ID }),
+		);
 	});
 });

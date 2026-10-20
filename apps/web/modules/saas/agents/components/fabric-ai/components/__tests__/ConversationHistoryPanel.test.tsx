@@ -335,7 +335,10 @@ describe("pinning a conversation", () => {
 		await waitFor(() =>
 			expect(mocks.toast.success).toHaveBeenCalledWith("Unpinned"),
 		);
-		expect(mocks.conversations.togglePin).toHaveBeenCalledWith({ id: "2" });
+		expect(mocks.conversations.togglePin).toHaveBeenCalledWith({
+			id: "2",
+			organizationId: "org-1",
+		});
 	});
 
 	it("says it could not pin, and not that it could not change", async () => {
@@ -374,6 +377,7 @@ describe("changing a conversation", () => {
 			expect(mocks.conversations.update).toHaveBeenCalledWith({
 				id: "1",
 				title: "Quarterly plan",
+				organizationId: "org-1",
 			}),
 		);
 		expect(mocks.toast.success).toHaveBeenCalledWith(
@@ -393,6 +397,7 @@ describe("changing a conversation", () => {
 		await waitFor(() =>
 			expect(mocks.conversations.archive).toHaveBeenCalledWith({
 				id: "1",
+				organizationId: "org-1",
 			}),
 		);
 		expect(mocks.toast.success).toHaveBeenCalledWith(
@@ -417,6 +422,7 @@ describe("changing a conversation", () => {
 			expect(mocks.conversations.update).toHaveBeenCalledWith({
 				id: "9",
 				status: "ACTIVE",
+				organizationId: "org-1",
 			}),
 		);
 		expect(mocks.toast.success).toHaveBeenCalledWith(
@@ -483,6 +489,7 @@ describe("changing a conversation", () => {
 		await waitFor(() =>
 			expect(mocks.conversations.delete).toHaveBeenCalledWith({
 				id: "1",
+				organizationId: "org-1",
 			}),
 		);
 		await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("1"));

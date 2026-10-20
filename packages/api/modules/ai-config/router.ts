@@ -12,6 +12,7 @@ import {
 	deleteUserModelPreferenceProcedure,
 	setUserModelPreferenceProcedure,
 } from "./procedures/preferences/set-user";
+import { setPlanSpentFallbackProcedure } from "./procedures/providers/set-plan-spent-fallback";
 import {
 	testProviderConnectionProcedure,
 	testSavedProviderConnectionProcedure,
@@ -44,6 +45,7 @@ export const aiConfigRouter = {
 		delete: deleteUserProviderProcedure,
 		setDefault: setDefaultProviderProcedure,
 		setEmbedding: setEmbeddingProviderProcedure,
+		setPlanSpentFallback: setPlanSpentFallbackProcedure,
 		updateEnabled: updateEnabledProvidersProcedure,
 		getConfig: getProviderConfigProcedure,
 	},

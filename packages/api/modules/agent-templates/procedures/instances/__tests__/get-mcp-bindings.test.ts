@@ -20,7 +20,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chain,
 		Permissions: { AGENT_TEMPLATE_READ: "AGENT_TEMPLATE_READ" },
-		requirePermission: () => vi.fn(),
+		requireInputOrgPermission: () => vi.fn(),
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId: string },
+		) => (input === undefined ? session.activeOrganizationId : input),
 	};
 });
 
@@ -30,7 +34,10 @@ const handler = (
 	getInstanceProcedure as unknown as {
 		_handler: (args: {
 			input: { id: string };
-			context: { user: { id: string } };
+			context: {
+				user: { id: string };
+				session: { activeOrganizationId: string };
+			};
 		}) => Promise<{ instance: Record<string, unknown> }>;
 	}
 )._handler;
@@ -78,7 +85,10 @@ describe("instance getter MCP rehydration", () => {
 		bindings = [configuredBindings[1]];
 		const result = await handler({
 			input: { id: "example-agent" },
-			context: { user: { id: "example-member" } },
+			context: {
+				user: { id: "example-member" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 		expect(result.instance.mcpServerConfigurations).toEqual([]);
 		expect(result.instance._count).toEqual({ mcpServerConfigurations: 1 });
@@ -86,7 +96,10 @@ describe("instance getter MCP rehydration", () => {
 	it("returns only enabled relation bindings for an authorized instance read", async () => {
 		const result = await handler({
 			input: { id: "example-agent" },
-			context: { user: { id: "example-member" } },
+			context: {
+				user: { id: "example-member" },
+				session: { activeOrganizationId: "example-org" },
+			},
 		});
 		expect(result.instance._count).toEqual({ mcpServerConfigurations: 2 });
 		expect(result.instance.mcpServerConfigurations).toEqual([
@@ -103,13 +116,19 @@ describe("instance getter MCP rehydration", () => {
 			}),
 		);
 	});
-	it("does not expose instance bindings to a non-owner without organization membership", async () => {
+	it("does not expose instance bindings outside the authorized organization", async () => {
 		h.membership.mockResolvedValue(null);
 		await expect(
 			handler({
 				input: { id: "example-agent" },
-				context: { user: { id: "example-outsider" } },
+				context: {
+					user: { id: "example-outsider" },
+					session: { activeOrganizationId: "example-other-org" },
+				},
 			}),
-		).rejects.toThrow("You don't have access to this instance");
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "Instance not found",
+		});
 	});
 });

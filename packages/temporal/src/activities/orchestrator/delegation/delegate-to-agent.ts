@@ -2,16 +2,17 @@
  * Agent Delegation Module
  *
  * Handles delegation of tasks to specialized agents via A2A protocol.
- * All agents MUST support A2A protocol for orchestrator communication.
+ * The orchestrator delegates through agents that support A2A.
  *
- * Security: Uses SecureA2AClient to pass signed tenant context to agents,
- * ensuring multi-tenant isolation and preventing unauthorized access.
+ * Security: Uses SecureA2AClient to pass explicit tenant headers and tracing.
+ * Only system agents receive the service credential and signed tenant context.
  *
  * AI Config: For system agents, fetches the user's AI provider configuration
  * and passes it via headers so agents use the correct model/provider.
  */
 
 import { A2AClient, type AIConfig, SecureA2AClient } from "@repo/agent-core";
+import { sanitizeMcpErrorMessage } from "@repo/agent-core/utils/sanitize-error";
 import {
 	DEFAULT_BASE_URLS,
 	GATEWAY_PROVIDERS,
@@ -23,12 +24,16 @@ import {
 } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { currentAiJobType } from "@repo/ai/lib/job-context";
 import { issueAIToken } from "@repo/ai-token";
-import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
+import {
+	agentEndpointRefusal,
+	fetchAgentEndpoint,
+} from "@repo/utils/agent-endpoint";
 import {
 	getDispatchGuard,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
+import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import {
 	activityAbortSignal,
 	assertTurnDispatchable,
@@ -52,6 +57,17 @@ const a2aClient = new A2AClient({ timeout: 120000 });
 const secureA2aClient = new SecureA2AClient({
 	timeout: 120000,
 	sourceAgent: "orchestrator",
+});
+
+// External registrations use the operator-aware DNS/redirect guard per request.
+const externalA2aClient = new A2AClient({
+	timeout: 120000,
+	fetch: fetchAgentEndpoint,
+});
+const externalSecureA2aClient = new SecureA2AClient({
+	timeout: 120000,
+	sourceAgent: "orchestrator",
+	fetch: fetchAgentEndpoint,
 });
 
 /**
@@ -134,8 +150,8 @@ export async function delegateToAgent(
 	// has to be checked: a stored URL can be rewritten by a later update, can
 	// predate the guard shipping, and can be written by a path that never went
 	// through those procedures at all — a seed, a migration, a direct edit.
-	// Three outbound calls below share this address (health check, send, poll),
-	// so one check here covers all of them.
+	// Keep this lexical check for both scopes. External requests additionally
+	// check DNS at connect time and refuse redirects via fetchAgentEndpoint.
 	//
 	// The weave activities are deliberately NOT guarded the same way: their
 	// destination comes from `requireServiceUrl`, which is the operator's own
@@ -171,7 +187,8 @@ export async function delegateToAgent(
 	let isHealthy = false;
 
 	try {
-		isHealthy = await a2aClient.healthCheck(agent.deploymentUrl);
+		const client = agent.isExternal ? externalA2aClient : a2aClient;
+		isHealthy = await client.healthCheck(agent.deploymentUrl);
 	} catch (healthError) {
 		console.warn(
 			`[Orchestrator] Health check threw error for ${agent.name}:`,
@@ -267,10 +284,9 @@ export async function delegateToAgent(
 /**
  * Delegate via A2A protocol (Google's Agent-to-Agent protocol)
  *
- * Uses SecureA2AClient to pass signed tenant context, ensuring:
- * - Multi-tenant isolation (userId/organizationId propagated)
- * - Tamper protection (HMAC-signed context)
- * - Audit trail (request tracing)
+ * Uses SecureA2AClient to propagate explicit tenant headers and request tracing.
+ * The isSystemAgent gate opts only system agents into the service credential
+ * and HMAC-signed tenant context.
  *
  * For system agents (isExternal=false), also passes AI config so they
  * use the user's configured AI provider instead of defaults.
@@ -282,6 +298,18 @@ async function delegateViaA2A(
 ): Promise<DelegateToAgentOutput> {
 	const isCompleteTaskDelegation = input.delegationMode === "complete-task";
 	const isSystemAgent = !agent.isExternal;
+	const client = isSystemAgent ? a2aClient : externalA2aClient;
+	const secureClient = isSystemAgent
+		? secureA2aClient
+		: externalSecureA2aClient;
+	const agentApiKey = isSystemAgent
+		? process.env.AGENT_API_KEY?.trim()
+		: undefined;
+	if (isSystemAgent && !agentApiKey) {
+		console.error(
+			"[Orchestrator] AGENT_API_KEY is not set — system agent may reject requests with 401",
+		);
+	}
 
 	console.log(
 		`[Orchestrator] Using A2A protocol for ${agent.name} (mode: ${input.delegationMode || "single-step"}, isSystemAgent: ${isSystemAgent})`,
@@ -294,7 +322,12 @@ async function delegateViaA2A(
 		try {
 			// Get AI model configuration using centralized entry point
 			const { metadata, trackUsage } = await getAIModelWithMetadata(
-				{ taskType: "COMPLEX" },
+				{
+					taskType: "COMPLEX",
+					...(input.modelOverride
+						? { modelOverride: input.modelOverride }
+						: {}),
+				},
 				{
 					userId: input.userId,
 					organizationId: input.organizationId,
@@ -307,6 +340,9 @@ async function delegateViaA2A(
 			// Issue a short-lived token instead of passing raw API key
 			// Agent will exchange this token for the actual API key
 			const aiToken = await issueAIToken({
+				...(input.modelOverride
+					? { modelOverride: input.modelOverride }
+					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
 				impersonated: isAiImpersonatedRequest(),
@@ -361,8 +397,13 @@ async function delegateViaA2A(
 	}
 
 	// Build delegation context for generalist agents
+	const usageOrigin = secondaryUsageFields(input);
 	const delegationContext: Record<string, unknown> = {
 		...input.context,
+		usage_conversation_id: usageOrigin.conversationId,
+		usage_project_id: usageOrigin.projectId,
+		usage_frame_id: usageOrigin.frameId,
+		usage_feature_key: usageOrigin.featureKey,
 		delegationMode: input.delegationMode || "single-step",
 		preserveContext: input.preserveContext || false,
 		// Forward project scope to agent so it can attribute AI usage back to the project
@@ -458,7 +499,7 @@ async function delegateViaA2A(
 
 	let task: Awaited<ReturnType<typeof secureA2aClient.sendMessageSecure>>;
 	try {
-		task = await secureA2aClient.sendMessageSecure(
+		task = await secureClient.sendMessageSecure(
 			agent.deploymentUrl,
 			{
 				role: "user",
@@ -469,11 +510,17 @@ async function delegateViaA2A(
 			{
 				metadata: {
 					orchestratorContext: delegationContext,
+					usage_conversation_id: usageOrigin.conversationId,
+					usage_project_id: usageOrigin.projectId,
+					usage_frame_id: usageOrigin.frameId,
+					usage_feature_key: usageOrigin.featureKey,
 					delegationMode: input.delegationMode || "single-step",
 					isCompleteTaskDelegation,
 					history: input.conversationHistory || [],
 				},
-				// Pass AI config only to system agents
+				// Opt system agents into service authentication, agent key and AI config
+				trustedDestination: isSystemAgent,
+				agentApiKey: isSystemAgent ? agentApiKey : undefined,
 				aiConfig: isSystemAgent ? aiConfig : undefined,
 				...turnControl,
 			},
@@ -500,7 +547,7 @@ async function delegateViaA2A(
 			ReturnType<typeof a2aClient.waitForCompletion>
 		>;
 		try {
-			completedTask = await a2aClient.waitForCompletion(
+			completedTask = await client.waitForCompletion(
 				agent.deploymentUrl,
 				task.id,
 				{
@@ -514,10 +561,10 @@ async function delegateViaA2A(
 			clearInterval(heartbeatInterval);
 		}
 
-		return formatA2AResponse(completedTask, startTime);
+		return formatA2AResponse(completedTask, startTime, agent.name);
 	}
 
-	return formatA2AResponse(task, startTime);
+	return formatA2AResponse(task, startTime, agent.name);
 }
 
 /**
@@ -526,6 +573,7 @@ async function delegateViaA2A(
 function formatA2AResponse(
 	task: {
 		id: string;
+		metadata?: { error?: unknown };
 		status: string;
 		messages: Array<{
 			role: string;
@@ -539,6 +587,7 @@ function formatA2AResponse(
 		}>;
 	},
 	startTime: number,
+	agentName: string,
 ): DelegateToAgentOutput {
 	// Extract response from agent messages
 	const agentMessages = task.messages.filter((m) => m.role === "agent");
@@ -551,6 +600,11 @@ function formatA2AResponse(
 				response += part.text;
 			}
 		}
+	}
+
+	if (task.status === "failed" && !response.trim()) {
+		const error = task.metadata?.error;
+		response = `A2A delegation to ${agentName} failed: ${typeof error === "string" && error.trim() ? sanitizeMcpErrorMessage(error) : "Agent execution failed"}`;
 	}
 
 	// Extract artifacts

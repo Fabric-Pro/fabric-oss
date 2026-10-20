@@ -1,7 +1,12 @@
 "use client";
 
+import { getBaseUrl } from "@repo/utils/base-url";
 import { memo, useMemo } from "react";
-import { Streamdown, type StreamdownProps } from "streamdown";
+import {
+	defaultRehypePlugins,
+	Streamdown,
+	type StreamdownProps,
+} from "streamdown";
 import {
 	chatMarkdownComponents,
 	getChatMarkdownClassName,
@@ -31,6 +36,24 @@ export const Response = memo(
 		streaming = false,
 		normalizeMarkdown = true,
 	}: ResponseProps) => {
+		const rehypePlugins = useMemo(
+			() =>
+				Object.values(defaultRehypePlugins).map<
+					NonNullable<StreamdownProps["rehypePlugins"]>[number]
+				>((plugin) => {
+					if (
+						plugin !== defaultRehypePlugins.harden ||
+						!Array.isArray(plugin)
+					) {
+						return plugin;
+					}
+					return [
+						plugin[0],
+						{ ...plugin[1], defaultOrigin: getBaseUrl() },
+					];
+				}),
+			[],
+		);
 		// Normalize text to convert Unicode formatting to markdown
 		const normalizedText = useMemo(() => {
 			if (!children) {
@@ -39,25 +62,14 @@ export const Response = memo(
 			if (!normalizeMarkdown || typeof children !== "string") {
 				return children;
 			}
-			let text = normalizeTextToMarkdown(children);
-			// Convert relative image proxy URLs to absolute so rehype-harden can resolve them
-			// (rehype-harden blocks relative URLs when defaultOrigin is not set)
-			if (
-				typeof window !== "undefined" &&
-				text.includes("/api/storage/image")
-			) {
-				text = text.replace(
-					/!\[([^\]]*)\]\(\/api\/storage\/image\?/g,
-					`![$1](${window.location.origin}/api/storage/image?`,
-				);
-			}
-			return text;
+			return normalizeTextToMarkdown(children);
 		}, [children, normalizeMarkdown]);
 
 		return (
 			<Streamdown
 				className={getChatMarkdownClassName(className)}
 				components={{ ...chatMarkdownComponents, ...components }}
+				rehypePlugins={rehypePlugins}
 				remarkPlugins={remarkPlugins}
 				parseIncompleteMarkdown={streaming}
 			>

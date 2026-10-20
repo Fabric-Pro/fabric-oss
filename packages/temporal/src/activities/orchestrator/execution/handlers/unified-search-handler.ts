@@ -128,6 +128,7 @@ export class UnifiedSearchHandler implements StepHandler {
 				undefined,
 				10,
 				0.3,
+				{ usageConversationId: input.conversationId },
 			);
 			result =
 				ragResult.context ||
@@ -281,6 +282,7 @@ export class UnifiedSearchHandler implements StepHandler {
 			}
 
 			const searchResponse = await projectSearch({
+				conversationId: input.conversationId,
 				projectId,
 				query,
 				userId: input.userId,

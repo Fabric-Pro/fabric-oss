@@ -382,6 +382,14 @@ export function ActionConfigPanel({
 		},
 		[config, onChange],
 	);
+	const ConfigComponent = action.configComponent;
+	if (ConfigComponent) {
+		return (
+			<div className={cn("space-y-4", className)}>
+				<ConfigComponent config={config} onChange={onChange} />
+			</div>
+		);
+	}
 
 	return (
 		<div className={cn("space-y-4", className)}>

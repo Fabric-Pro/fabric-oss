@@ -191,7 +191,9 @@ beforeAll(async () => {
 				res.writeHead(200, { "content-type": "text/html" });
 				return res.end(
 					'<form action="/post?status=' +
-						url.searchParams.get("status") +
+						encodeURIComponent(
+							url.searchParams.get("status") ?? "",
+						) +
 						'" method="post"><input name="value" value="fixture"><button>Submit</button></form>',
 				);
 			default:
@@ -269,6 +271,18 @@ function caseInput(path: string): RunAgenticCaseInput {
 	};
 }
 describe.skipIf(SKIP)("QA runner browser security (real Chromium)", () => {
+	it("keeps the form status query inside its action attribute", async () => {
+		const status = '307" data-injected="yes';
+		const { page } = current();
+		await page.goto(`${origin}/form?status=${encodeURIComponent(status)}`);
+		const form = page.locator("form");
+		expect(await form.getAttribute("data-injected")).toBeNull();
+		const action = await form.getAttribute("action");
+		expect(
+			new URL(action as string, origin).searchParams.get("status"),
+		).toBe(status);
+	});
+
 	it("aborts an uncooperative relay before Playwright's navigation timeout", async () => {
 		await closeBrowser(current());
 		runner = await openBrowser({

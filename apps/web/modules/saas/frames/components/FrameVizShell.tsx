@@ -145,6 +145,7 @@ export function FrameVizShell({
 		frameKey: frameId ?? embedUrl,
 		frameId: frameId ?? null,
 		contentFingerprint,
+		contentVersion: codeView,
 		organizationId,
 		runtimeTools,
 		embedWindows,
@@ -152,7 +153,7 @@ export function FrameVizShell({
 		openAgent: onOpenAgent,
 		// The question is a dialog; the fullscreen layer sits above every dialog.
 		onQuestion: () => setIsFullscreen(false),
-		enabled: headerMode !== "public",
+		enabled: headerMode !== "public" && interactive,
 	});
 
 	const exporter = useFrameExport({

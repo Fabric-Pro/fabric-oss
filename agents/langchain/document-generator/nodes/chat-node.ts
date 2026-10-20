@@ -674,6 +674,7 @@ export async function chatNode(
 			runnableConfig,
 		);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "document_generator",
 			latencyMs: Date.now() - generationStart,
@@ -742,6 +743,7 @@ export async function chatNode(
 				runnableConfig,
 			);
 			await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+				model: retryModel,
 				taskType: "TOOL_CALLING",
 				agentId: "document_generator:truncation_retry",
 				latencyMs: Date.now() - generationStart,

@@ -5,7 +5,10 @@ import type {
 	AgentConversationVisibility,
 	Prisma,
 } from "../generated/client";
-import { ConversationNotFoundError } from "./agent-conversations";
+import {
+	ConversationNotFoundError,
+	withConversationTurnResults,
+} from "./agent-conversations";
 
 /**
  * Who may read a Fabric Agent session. The owner always can; every member of
@@ -232,7 +235,7 @@ export async function getAgentConversationForViewer({
 	}
 	const { user, ...conversation } = row;
 	return {
-		...conversation,
+		...(await withConversationTurnResults(conversation)),
 		isOwn: conversation.userId === userId,
 		owner: user,
 	};

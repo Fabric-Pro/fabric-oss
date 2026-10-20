@@ -12,7 +12,12 @@
  */
 
 import type { LettaClient } from "@repo/letta";
-import { getLettaClient } from "@repo/letta";
+import {
+	getLettaClient,
+	LettaError,
+	orchestratorMemoryMetadata,
+} from "@repo/letta";
+import { logger } from "@repo/logs";
 import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
@@ -159,35 +164,9 @@ export async function initializeLettaMemory(
 			organizationId: input.organizationId,
 		});
 
-		// Get or create Identity
-		console.log("🔍 [Letta] Looking for identity...", {
-			identifierKey,
-			identityType,
-		});
-		const identities = await client.listIdentities({ identifierKey });
-		let identity = identities[0];
-
-		if (!identity) {
-			console.log("🆕 [Letta] Creating new identity...");
-			identity = await client.createIdentity({
-				identifierKey,
-				name: identifierKey,
-				identityType,
-			});
-			console.log("✅ [Letta] Created identity", { id: identity.id });
-		} else {
-			console.log("✅ [Letta] Using existing identity", {
-				id: identity.id,
-			});
-		}
-
-		// Find agents associated with this identity
 		console.log("🔍 [Letta] Looking for memory agent...");
-		const agents = await client.listAgents({
-			identifierKeys: [identifierKey],
-		});
-		const memoryAgent = agents.find(
-			(a) => a.metadata?.type === "orchestrator-memory",
+		const memoryAgent = await client.findAgentByMetadata(
+			orchestratorMemoryMetadata(input),
 		);
 
 		if (memoryAgent) {
@@ -202,7 +181,6 @@ export async function initializeLettaMemory(
 		const agent = await client.createAgent({
 			name: `orchestrator-memory-${identifierKey}`,
 			description: `Semantic memory for orchestrator execution patterns (${identityType}: ${identifierKey})`,
-			identityIds: [identity.id], // ✅ Associate with identity
 			memoryBlocks: [
 				{
 					label: "persona",
@@ -247,24 +225,32 @@ Your goals:
 			],
 			metadata: {
 				userId: input.userId,
-				organizationId: input.organizationId,
-				type: "orchestrator-memory",
-				identityType,
-				identifierKey,
-				version: "2.0", // Bumped version for Identity support
+				...orchestratorMemoryMetadata(input),
+				version: "2.0",
 				createdAt: new Date().toISOString(),
 			},
 		});
 
 		console.log("✅ [Letta] Created new memory agent", {
 			agentId: agent.id,
-			identityId: identity.id,
 			identityType,
 			memoryBlocks: agent.memoryBlocks?.length || 0,
 		});
 		return { agentId: agent.id, isNew: true };
 	} catch (error) {
-		console.error("❌ [Letta] Failed to initialize:", error);
+		logger.error(
+			{
+				event: "letta.memory.initialization_failed",
+				code:
+					error instanceof LettaError
+						? error.code
+						: "INITIALIZATION_FAILED",
+				httpStatus:
+					error instanceof LettaError ? (error.status ?? 0) : 0,
+				operation: "initializeLettaMemory",
+			},
+			"Letta memory initialization failed",
+		);
 		return null;
 	}
 }
@@ -306,7 +292,6 @@ export async function cacheToolResult(
 		const validationResult = await validateLettaOperation(
 			securityContext,
 			"toolCache",
-			{ skipIdentityCheck: true }, // Skip for performance on cache ops
 		);
 
 		if (!validationResult.valid) {
@@ -487,7 +472,6 @@ export async function getCachedToolResult(
 		const validationResult = await validateLettaOperation(
 			securityContext,
 			"memoryRead",
-			{ skipIdentityCheck: true }, // Skip for performance on cache reads
 		);
 
 		if (!validationResult.valid) {

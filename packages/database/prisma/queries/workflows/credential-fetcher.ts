@@ -140,7 +140,7 @@ const credentialMappers: Partial<
 		CANVA_ACCESS_TOKEN: getOAuthToken(config),
 	}),
 	CLICKUP: (config) => ({
-		CLICKUP_API_TOKEN: getOAuthToken(config),
+		CLICKUP_API_TOKEN: (config.apiToken as string) || getOAuthToken(config),
 		CLICKUP_TEAM_ID: (config.teamId as string) || "",
 	}),
 	FRESHSERVICE: (config) => ({

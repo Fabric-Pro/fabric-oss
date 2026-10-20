@@ -8,6 +8,7 @@ export async function loadInstanceAgentConfig(
 ) {
 	const { instance } = await orpcClient.agentTemplates.instances.get({
 		id: instanceId,
+		organizationId: organizationId ?? undefined,
 	});
 	if (!organizationId || instance.organizationId !== organizationId) {
 		throw new Error("The agent is not available in this organization.");

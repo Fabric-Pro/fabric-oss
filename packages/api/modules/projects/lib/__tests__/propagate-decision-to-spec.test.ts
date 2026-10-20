@@ -147,6 +147,11 @@ describe("propagateDecisionToCleanSpec — AUTO_ACCEPT", () => {
 			tenantFilter,
 			decisionText: "Defer MFA",
 		});
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		const prompt = mocks.generateObject.mock.calls[0][0].prompt as string;
 		expect(prompt).toContain("DEDICATED ATTACHMENTS");
 	});

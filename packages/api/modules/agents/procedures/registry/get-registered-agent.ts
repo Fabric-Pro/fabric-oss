@@ -19,7 +19,7 @@ import {
 	requireInputOrgPermission,
 	resolveOrganizationId,
 } from "../../../../orpc/procedures";
-import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
+import { checkRegisteredAgentAccess } from "../../lib/registered-agent-access";
 
 /**
  * Get registered agent by ID or agentId
@@ -91,62 +91,13 @@ export const getRegisteredAgent = protectedProcedure
 			throw new ORPCError("NOT_FOUND", { message: "Agent not found" });
 		}
 
-		// Check authorization based on scope
-		switch (agent.scope) {
-			case "SYSTEM":
-				// System agents are accessible to all authenticated users
-				break;
-
-			case "ORGANIZATION": {
-				// Organization-scoped agents require membership in the agent's organization
-				if (!agent.organizationId) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "Invalid organization agent configuration",
-					});
-				}
-
-				// Verify user is a member of the agent's organization
-				const membership = await verifyOrganizationMembership(
-					agent.organizationId,
-					user.id,
-				);
-				if (!membership) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You do not have access to this agent",
-					});
-				}
-
-				// If caller specified an organizationId, it must match the agent's org
-				if (organizationId && organizationId !== agent.organizationId) {
-					throw new ORPCError("FORBIDDEN", {
-						message:
-							"Agent does not belong to the specified organization",
-					});
-				}
-				break;
-			}
-
-			case "USER":
-				// User-scoped agents must be owned by the requesting user
-				if (agent.userId !== user.id) {
-					throw new ORPCError("FORBIDDEN", {
-						message: "You do not have access to this agent",
-					});
-				}
-
-				// User agents in personal context should not be accessible from org context
-				if (organizationId && !agent.organizationId) {
-					throw new ORPCError("FORBIDDEN", {
-						message:
-							"Personal agent not accessible in organization context",
-					});
-				}
-				break;
-
-			default:
-				throw new ORPCError("FORBIDDEN", {
-					message: "Invalid agent scope",
-				});
+		const access = await checkRegisteredAgentAccess(
+			agent,
+			user.id,
+			organizationId,
+		);
+		if (!access.allowed) {
+			throw new ORPCError("FORBIDDEN", { message: access.reason });
 		}
 
 		return agent;

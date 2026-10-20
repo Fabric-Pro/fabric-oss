@@ -186,6 +186,7 @@ describe("a Workspace page", () => {
 
 		expect(mocks.registerContext).toHaveBeenLastCalledWith({
 			surface: "workspace",
+			launchFrameId: "frame-1",
 			workspaceId: "frame-1",
 			projectId: "project-1",
 		});
@@ -198,6 +199,7 @@ describe("a Workspace page", () => {
 
 		expect(mocks.registerContext).toHaveBeenLastCalledWith({
 			surface: "workspace",
+			launchFrameId: "frame-1",
 			workspaceId: "frame-1",
 			projectId: null,
 		});
@@ -248,6 +250,7 @@ describe("a Workspace page", () => {
 
 		const context = {
 			surface: "workspace",
+			launchFrameId: "frame-1",
 			workspaceId: "frame-1",
 			projectId: "project-1",
 		};
@@ -287,11 +290,14 @@ describe("a Workspace page", () => {
 		);
 	});
 
-	it("tells its author a private Workspace is theirs alone, and a reader how it reached them", () => {
+	it("shows inherited project access for a PRIVATE Workspace to its author and a reader", () => {
 		answerWith({ data: { ...frame, shareScope: "PRIVATE" } });
 		const author = renderPage();
 		expect(screen.getByTestId("workspace-sharing")).toHaveTextContent(
-			/Private: only you can open it/,
+			"Open to its owner and accepted project members.",
+		);
+		expect(screen.getByTestId("workspace-sharing")).not.toHaveTextContent(
+			"only you can open it",
 		);
 		author.unmount();
 
@@ -300,7 +306,20 @@ describe("a Workspace page", () => {
 		});
 		renderPage();
 		expect(screen.getByTestId("workspace-sharing")).toHaveTextContent(
-			"Opened with you through its project.",
+			"Open to its owner and accepted project members.",
+		);
+	});
+
+	it("keeps owner-only wording for a standalone PRIVATE Workspace", () => {
+		answerWith({
+			data: { ...frame, projectId: undefined, shareScope: "PRIVATE" },
+		});
+		renderPage();
+		expect(screen.getByTestId("workspace-sharing")).toHaveTextContent(
+			"Private: only you can open it.",
+		);
+		expect(screen.getByTestId("workspace-sharing")).not.toHaveTextContent(
+			"project members",
 		);
 	});
 });

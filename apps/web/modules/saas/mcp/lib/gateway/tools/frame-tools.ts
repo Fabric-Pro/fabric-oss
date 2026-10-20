@@ -193,6 +193,9 @@ async function handleGetFrame(
 		userId: session.userId,
 		userEmail: session.email,
 		organizationId: session.organizationId || undefined,
+		...(session.pageProjectId !== undefined
+			? { projectRestrictionId: session.pageProjectId }
+			: {}),
 	});
 	return "error" in result
 		? errorResult(String(result.error || "Unknown frame error"))
@@ -222,6 +225,9 @@ async function handleListFrames(
 		organizationId: session.organizationId || undefined,
 		surface,
 		projectId,
+		...(session.pageProjectId !== undefined
+			? { projectRestrictionId: session.pageProjectId }
+			: {}),
 	});
 	const slug = await organizationSlug(session.organizationId);
 	return jsonResult({

@@ -28,7 +28,13 @@
  */
 
 import { AGENT_TASK_PROMPT_AGENT_KEY } from "./agent-task-prompt";
+import {
+	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+} from "./completion-claim-prompts";
+import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "./direct-chat-memory-prompt";
 import { documentTypeShortLabel } from "./document-type-catalog";
+import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "./orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
@@ -60,6 +66,17 @@ export const PROPOSAL_CLIENT_MAIN_AGENT_KEY = "proposal_client_main";
  */
 export const PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY =
 	"proposal_internal_analysis";
+
+/**
+ * The `data.code` of a `BAD_REQUEST` refusing a new organization or project
+ * default at a prompt action the Proposal artifact supersedes, while the
+ * owning organization has the artifact on (Fizzy #2946): Proposals are then
+ * written from {@link PROPOSAL_CLIENT_MAIN_AGENT_KEY}, so a default at the
+ * legacy slot would never run. Kept here, free of server imports, so the bind
+ * and nomination procedures and the web's localized refusal copy share one
+ * string.
+ */
+export const PROPOSAL_ACTION_SUPERSEDED = "PROPOSAL_ACTION_SUPERSEDED";
 
 /**
  * Document types that exist only in the prompt layer.
@@ -160,6 +177,11 @@ export const PROMPT_FEATURE_TYPES = {
 		label: "Workspaces",
 		description:
 			"What Fabric says when a published page asks it a question.",
+	},
+	ASSISTANT: {
+		label: "Assistant",
+		description:
+			"How the workspace assistant uses what it remembers from earlier conversations and runs, and how it is held to what it actually did.",
 	},
 } as const satisfies Record<string, { label: string; description: string }>;
 
@@ -501,6 +523,45 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: nonStage("GENERAL"),
 	},
 	{
+		// How the Orchestrator assistant reads what it remembers: the user's
+		// preferences, learned patterns and recalled past conversations. Editing
+		// it changes the section wording and the rules for using memory. Which
+		// conversations are recalled, and how each is summarized, is decided
+		// code-side.
+		key: ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+		label: "Assistant Memory (Orchestrator)",
+		featureType: "ASSISTANT",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// How the Direct assistant reads the past executions recalled for a
+		// turn. Editing it changes how those executions are framed and used.
+		// Which executions are recalled is decided code-side.
+		key: DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+		label: "Assistant Memory (Direct)",
+		featureType: "ASSISTANT",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The yes/no question asked of an Advisor reply when its turn called no
+		// tool: does it claim an action was done? Editing it changes what counts
+		// as a claim. Which turns are checked, and the confidence a "yes" needs,
+		// are decided code-side.
+		key: COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+		label: "Assistant Completion Claim Check",
+		featureType: "ASSISTANT",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The instruction an Advisor turn gets when its reply claimed an action
+		// with no tool call behind it; the turn then runs once more with the
+		// same tools. Editing it changes how the assistant is told to recover.
+		key: COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+		label: "Assistant Completion Claim Correction",
+		featureType: "ASSISTANT",
+		actions: nonStage("GENERAL"),
+	},
+	{
 		// The daily scan that decides which of a project's recent work is worth
 		// publishing at all, and writes the summary every Topic Item Page opens
 		// with. Editing it changes what counts as newsworthy, how recency is
@@ -715,6 +776,92 @@ export function promptActionId(
 	return `${targetKey}:${documentType}:${storyKind ?? "ANY"}`;
 }
 
+/**
+ * The prompt actions the Proposal artifact supersedes (Fizzy #2946): with its
+ * rollout gate on, a Proposal's Main document is written from
+ * {@link PROPOSAL_CLIENT_MAIN_AGENT_KEY}, so a prompt at either of these slots
+ * never runs for a Proposal. `document_generator`'s Proposal is read by
+ * nothing at any organization, so it is superseded with the Draft flow's.
+ *
+ * Proposals are never kind-scoped, so the rule names an agent and a document
+ * type and ignores the story kind.
+ */
+const PROPOSAL_ARTIFACT_SUPERSEDED_ACTIONS: readonly {
+	targetKey: string;
+	documentType: string;
+}[] = [
+	{ targetKey: "project_document_generator", documentType: "PROPOSAL" },
+	{ targetKey: "document_generator", documentType: "PROPOSAL" },
+];
+
+/**
+ * Whether an action is superseded for an organization whose PROPOSAL_ARTIFACT
+ * gate reads `proposalArtifactOn`. A function of the gate value alone: the
+ * caller reads the gate for the organization the action is shown or bound in.
+ *
+ * Nothing about a superseded action is deleted. Bindings saved at it stay, a
+ * gate-off organization keeps offering it, and switching the gate off makes
+ * them live again; only new organization and project defaults are refused, and
+ * the web stops offering it.
+ */
+export function isSupersededPromptAction(
+	targetKey: string,
+	documentType: string,
+	proposalArtifactOn: boolean,
+): boolean {
+	return (
+		proposalArtifactOn &&
+		PROPOSAL_ARTIFACT_SUPERSEDED_ACTIONS.some(
+			(action) =>
+				action.targetKey === targetKey &&
+				action.documentType === documentType,
+		)
+	);
+}
+
+/**
+ * The actions a surface offers in an organization whose gate reads
+ * `proposalArtifactOn`: {@link listPromptActions} without the superseded ones,
+ * entries and labels otherwise identical. With the gate off it is the full
+ * list.
+ */
+export function listOfferedPromptActions(
+	proposalArtifactOn: boolean,
+): PromptAction[] {
+	return listPromptActions().filter(
+		(action) =>
+			!isSupersededPromptAction(
+				action.targetKey,
+				action.documentType,
+				proposalArtifactOn,
+			),
+	);
+}
+
+/**
+ * {@link bindableDocumentTypes} without the document types whose action the
+ * gate supersedes for this agent.
+ */
+export function offeredDocumentTypes(
+	agent: PromptAgentTarget,
+	storyKind: PromptStoryKind,
+	proposalArtifactOn: boolean,
+): readonly string[] {
+	return bindableDocumentTypes(agent, storyKind).filter(
+		(documentType) =>
+			!isSupersededPromptAction(
+				agent.key,
+				documentType,
+				proposalArtifactOn,
+			),
+	);
+}
+
+/**
+ * Every action a prompt can be bound to, superseded ones included. Surfaces
+ * that offer actions to a person use {@link listOfferedPromptActions}; this
+ * full list is for labels and for code that must see every slot.
+ */
 export function listPromptActions(): PromptAction[] {
 	const actions: PromptAction[] = [];
 

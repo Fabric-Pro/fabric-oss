@@ -96,7 +96,9 @@ function isSilentAiCall(url: string): boolean {
  * retries (`TURN_STATE_UNAVAILABLE`) or shows the message as stopped
  * (`TURN_CANCELLED`); `useMultiAgentStream` shows any of them on the agent's
  * own card. A generic "AI request rejected" toast on top would duplicate the
- * chat's own account of what happened.
+ * chat's own account of what happened. Expired approval answers likewise return
+ * to `useOrchestratorStream`, which clears the stale controls and lets the chat
+ * show its approval-expired notice.
  */
 const CALLER_HANDLED_TURN_CODES: ReadonlySet<string> = new Set([
 	"TURN_IN_PROGRESS",
@@ -105,11 +107,19 @@ const CALLER_HANDLED_TURN_CODES: ReadonlySet<string> = new Set([
 	"TURN_STATE_UNAVAILABLE",
 ]);
 
-function isCallerHandledTurnRefusal(url: string, code: unknown): boolean {
+function isCallerHandledOrchestratorRefusal(
+	url: string,
+	status: number,
+	code: unknown,
+): boolean {
 	return (
-		url.includes("/api/agents/fabric-ai/orchestrator-temporal") &&
-		typeof code === "string" &&
-		CALLER_HANDLED_TURN_CODES.has(code)
+		(url.includes("/api/agents/fabric-ai/orchestrator-temporal") &&
+			typeof code === "string" &&
+			CALLER_HANDLED_TURN_CODES.has(code)) ||
+		(status === 409 &&
+			code === "APPROVAL_NOT_PENDING" &&
+			new URL(url, window.location.origin).pathname ===
+				"/api/agents/fabric-ai/orchestrator-temporal/approve")
 	);
 }
 
@@ -268,6 +278,33 @@ export function CopilotFetchErrorInterceptor() {
 			};
 		};
 	}, [activeOrganization?.id, queryClient, tChatgptPlan]);
+	// Where an opted-in personal key would have carried the member's work
+	// (Fizzy #3086), the stop links to where they opt one in. Offered only
+	// when the organization billing switch is not, so it never replaces it.
+	const personalKeyActionRef = useRef<
+		(requestOrganizationId: string | null) => AiErrorToastAction | undefined
+	>(() => undefined);
+	useEffect(() => {
+		personalKeyActionRef.current = (requestOrganizationId) => {
+			if (
+				!activeOrganization?.slug ||
+				(requestOrganizationId !== null &&
+					requestOrganizationId !== activeOrganization.id)
+			) {
+				return undefined;
+			}
+			const href = `/app/${activeOrganization.slug}/settings/ai-providers?tab=personal`;
+			return {
+				label: tChatgptPlan("configurePersonalFallback"),
+				onClick: () => router.push(href),
+			};
+		};
+	}, [
+		activeOrganization?.id,
+		activeOrganization?.slug,
+		router,
+		tChatgptPlan,
+	]);
 	const showAiUsageLimitToastRef = useRef(showAiUsageLimitToast);
 	useEffect(() => {
 		showAiUsageLimitToastRef.current = showAiUsageLimitToast;
@@ -425,7 +462,13 @@ export function CopilotFetchErrorInterceptor() {
 								data?: unknown;
 						  }
 						| undefined;
-					if (isCallerHandledTurnRefusal(url, body?.code)) {
+					if (
+						isCallerHandledOrchestratorRefusal(
+							url,
+							response.status,
+							body?.code,
+						)
+					) {
 						return response;
 					}
 					// A spent plan is not rate limiting: retrying sooner
@@ -441,7 +484,11 @@ export function CopilotFetchErrorInterceptor() {
 								? planBillingActionRef.current(
 										requestOrganizationId(url),
 									)
-								: undefined,
+								: copy.planPersonalKeyActionable
+									? personalKeyActionRef.current(
+											requestOrganizationId(url),
+										)
+									: undefined,
 						);
 						return response;
 					}

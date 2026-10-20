@@ -756,6 +756,47 @@ describe("status and the outbox", () => {
 		expect(result.problems).toEqual([]);
 	});
 
+	it("resolves a conflict on a file the server removed since, when the person takes the server's version", async () => {
+		server.set("docs/ai/note.md", "v1\n");
+		await pull(context());
+		await write("docs/ai/note.md", "my edit\n");
+		await push(context());
+		server.settle("w1", {
+			status: "CONFLICT",
+			paths: [
+				{
+					path: "docs/ai/note.md",
+					code: "IF_MATCH_MISMATCH",
+					currentOid: "f".repeat(40),
+				},
+			],
+		});
+		server.files.delete("docs/ai/note.md");
+		expect((await pull(context())).kept).toEqual([
+			{ path: "docs/ai/note.md", reason: "modified-and-removed" },
+		]);
+
+		const result = await pull(context(), {
+			acceptRemote: ["docs/ai/note.md"],
+		});
+
+		expect(await read("docs/ai/note.md")).toBeNull();
+		expect(result.deleted).toEqual(["docs/ai/note.md"]);
+		expect(result.problems).toEqual([]);
+		expect((await push(context())).sent).toEqual([]);
+	});
+
+	it("never removes a path outside the memory folders, whatever accept-remote names", async () => {
+		server.set("docs/ai/note.md", "v1\n");
+		await write("src/app.ts", "product code\n");
+
+		await pull(context(), {
+			acceptRemote: ["src/app.ts", "docs/ai/../../src/app.ts"],
+		});
+
+		expect(await read("src/app.ts")).toBe("product code\n");
+	});
+
 	it("keeps a refusal and a failure until dismissed, and a failure can be sent again", async () => {
 		await sendOne();
 		server.settle("w1", {

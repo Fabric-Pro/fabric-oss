@@ -5,6 +5,7 @@ import {
 	type FindingResponseCurrent,
 	type FindingResponseView,
 	getAnalysisForCurrentContent,
+	getAnalysisReport,
 	isOrganizationMember,
 	listResponsesForDocument,
 	PROPOSAL_ANALYSIS_KINDS,
@@ -12,6 +13,9 @@ import {
 	PROPOSAL_FINDING_RESPONSE_KINDS,
 	PROPOSAL_FINDING_SEVERITIES,
 	PROPOSAL_FINDING_TYPES,
+	PROPOSAL_REPORT_PRIORITIES,
+	type ProposalAnalysisReport,
+	type ProposalSourceManifest,
 } from "@repo/database";
 import { hasPermission } from "@repo/permissions";
 import {
@@ -147,6 +151,48 @@ const newerRunSchema = z.object({
 	createdAt: z.date(),
 });
 
+const reportScopeItemSchema = z.object({
+	item: z.string(),
+	/** Null when the report gave no Must, Should or Could. */
+	priority: z.enum(PROPOSAL_REPORT_PRIORITIES).nullable(),
+	/** How the Proposal covers the item, in the report's own words. */
+	inProposal: z.string(),
+	note: z.string(),
+});
+
+/** A source the report text cites as `[S<N>]`, named as finding evidence is. */
+const reportCitationSchema = z.object({
+	/** The `<N>` of the marker. */
+	source: z.number().int().positive(),
+	evidence: proposalEvidenceSchema,
+});
+
+const reportSchema = z.object({
+	/** The overall assessment, as written. */
+	assessment: z.string(),
+	summary: z.string(),
+	scope: z.array(reportScopeItemSchema),
+	/** What to resolve before the Proposal is sent. */
+	beforeSending: z.array(z.string()),
+	/** What can wait for discovery. */
+	duringDiscovery: z.array(z.string()),
+	/** The full report as Markdown; null when it has structured fields only. */
+	text: z.string().nullable(),
+	/** The text was cut short, when stored or by the model's output limit. */
+	textTruncated: z.boolean(),
+	/**
+	 * The text's structure is past what the page renders as Markdown: show it
+	 * as escaped plain text.
+	 */
+	plainText: z.boolean(),
+	/**
+	 * Every source the text cites that the run's manifest holds, once each in
+	 * ascending order. A marker for any other number names no source, and a
+	 * run without a manifest cites none.
+	 */
+	citations: z.array(reportCitationSchema),
+});
+
 /** What the caller may do here, by the rule the server enforces. */
 const viewerSchema = z.object({
 	/**
@@ -174,8 +220,56 @@ const proposalAnalysisSchema = z.object({
 	findings: z.array(findingSchema),
 	/** Answers whose key the shown run does not raise. */
 	noLongerRaised: z.array(noLongerRaisedSchema),
+	/**
+	 * The report of the shown run (Fizzy #2946), never a newer run's: what the
+	 * analysis concluded overall, beside its findings. Organization members
+	 * only, like everything here. Null without a shown run and for a run that
+	 * stored no report.
+	 */
+	report: reportSchema.nullable(),
 	viewer: viewerSchema,
 });
+
+type ProposalEvidenceResolver = Awaited<
+	ReturnType<typeof buildProposalEvidenceResolver>
+>;
+
+/**
+ * A stored report as the read returns it, built field by field. Its cited
+ * numbers resolve through the resolver the findings use, so a source reads
+ * the same in both; a number the run's manifest does not hold is no citation
+ * at all, so the page can never turn its marker into a source.
+ */
+function presentReport(
+	report: ProposalAnalysisReport,
+	manifest: ProposalSourceManifest | null,
+	resolveEvidence: ProposalEvidenceResolver,
+): z.infer<typeof reportSchema> {
+	const inManifest = new Set((manifest ?? []).map((entry) => entry.source));
+	const cited = [...new Set(report.sources)].sort((a, b) => a - b);
+	return {
+		assessment: report.assessment,
+		summary: report.summary,
+		scope: report.scope.map((entry) => ({
+			item: entry.item,
+			priority: entry.priority,
+			inProposal: entry.inProposal,
+			note: entry.note,
+		})),
+		beforeSending: [...report.beforeSending],
+		duringDiscovery: [...report.duringDiscovery],
+		text: report.text,
+		textTruncated: report.textTruncated,
+		plainText: report.plainText,
+		citations: cited.flatMap((source) => {
+			if (!inManifest.has(source)) {
+				return [];
+			}
+			const [evidence] = resolveEvidence([source]);
+			return evidence ? [{ source, evidence }] : [];
+		}),
+	};
+}
 
 /** Display names of the given users; deleted users are simply absent. */
 async function authorNames(
@@ -283,9 +377,9 @@ async function callerCanRespond(input: {
 /**
  * The Internal Analysis of a Proposal (Fizzy #2801, Fizzy #2946): the run
  * that describes the document's current content, every finding's state and
- * answer and the evidence it cites, the answers to findings no longer
- * raised, whether a newer run is pending, running or failed, and whether the
- * caller may respond.
+ * answer and the evidence it cites, the run's report and the sources it
+ * cites, the answers to findings no longer raised, whether a newer run is
+ * pending, running or failed, and whether the caller may respond.
  *
  * The run shown is the newest COMPLETE run whose prose hash equals the
  * current content's, else the newest COMPLETE run marked stale, so a newer
@@ -298,7 +392,9 @@ async function callerCanRespond(input: {
  * role. The response is built field by field: the analyzed Main body and the
  * source context stored with a run never leave the server, nor do tenant
  * columns, workflow keys or stored source URLs. Evidence shows a source's
- * text as the row holds it now, never as the run read it.
+ * text as the row holds it now, never as the run read it. The report is the
+ * shown run's own, read only here and only after the access checks; its
+ * text appears in this response alone, never in a log or an error.
  *
  * AUTHORIZATION: `requireProposalArtifactEnabled` first (gate off → NOT_FOUND
  * for every caller), then `requireProjectPermission(DOCUMENT_READ)`, then
@@ -314,7 +410,7 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Proposal artifact"],
 		summary: "Get the Internal Analysis",
 		description:
-			"The Internal Analysis of a Proposal that describes its current content, with each finding's state, answer and evidence, the answers to findings no longer raised, the status of any newer run, and whether the caller may respond. Organization members only.",
+			"The Internal Analysis of a Proposal that describes its current content, with each finding's state, answer and evidence, the run's report and the sources it cites, the answers to findings no longer raised, the status of any newer run, and whether the caller may respond. Organization members only.",
 	})
 	.input(z.object({ projectId: z.string(), documentId: z.string() }))
 	.output(proposalAnalysisSchema)
@@ -343,6 +439,7 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 		]);
 		const shown = read.run;
 		const shownFindings = shown?.findings ?? [];
+		const manifest = shown?.sourceManifest ?? null;
 
 		const states = deriveFindingStates<FindingResponseView>({
 			responses,
@@ -361,7 +458,7 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 		const authorIds = responses.flatMap((response) =>
 			response.authorId ? [response.authorId] : [],
 		);
-		const [names, rightsHolders, resolveEvidence, canRespond] =
+		const [names, rightsHolders, { report, resolveEvidence }, canRespond] =
 			await Promise.all([
 				authorNames(authorIds),
 				authorsWithEditRights({
@@ -369,14 +466,32 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 					projectId: input.projectId,
 					authorIds,
 				}),
-				buildProposalEvidenceResolver({
-					organizationId,
-					projectId: input.projectId,
-					manifest: shown?.sourceManifest ?? null,
-					sourceRefs: shownFindings.flatMap(
-						(finding) => finding.sourceRefs,
-					),
-				}),
+				// The shown run's report is read before the evidence batch, so its
+				// cited sources resolve in that same batch. A newer run's report is
+				// never read: it is not the run on screen.
+				(async () => {
+					const shownReport = shown
+						? await getAnalysisReport({
+								organizationId,
+								documentId: document.id,
+								analysisId: shown.id,
+							})
+						: null;
+					return {
+						report: shownReport,
+						resolveEvidence: await buildProposalEvidenceResolver({
+							organizationId,
+							projectId: input.projectId,
+							manifest,
+							sourceRefs: [
+								...shownFindings.flatMap(
+									(finding) => finding.sourceRefs,
+								),
+								...(shownReport?.sources ?? []),
+							],
+						}),
+					};
+				})(),
 				callerCanRespond({
 					organizationId,
 					projectId: input.projectId,
@@ -469,6 +584,9 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 				reason: derived.reason,
 				response: presentResponse(derived),
 			})),
+			report: report
+				? presentReport(report, manifest, resolveEvidence)
+				: null,
 			viewer: { canRespond },
 		};
 	});

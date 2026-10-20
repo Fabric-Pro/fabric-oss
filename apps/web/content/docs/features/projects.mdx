@@ -15,6 +15,10 @@ A project is a container for related work:
 - **Conversations** — Chat history with agents about this project
 - **Settings** — Project-specific configuration and templates
 
+Use the project's [Coding Instructions](/docs/features/coding-instructions) tab
+to share coding rules and connect Claude Code, Codex, or another coding tool.
+The guide covers repository setup, folder uploads, and reviewing changes.
+
 ## Creating a Project
 
 <Steps>
@@ -182,22 +186,23 @@ This means the agent understands your project context and can:
 
 ### Managing the Library
 
-- **Add files** — Upload new documents anytime
-- **Remove files** — Delete outdated documents
-- **Remove duplicates** — An item whose content matches another item's is marked *Duplicate of …*; **Remove duplicates** deletes the extra copies and keeps the original
-- **Living Memory** — Files a connected agent pushes from a working tree appear under *Living Memory*, grouped by folder, with each file's full path under its name
-- **Organize** — Create folders for organization
-- **Search** — Find specific documents quickly
+- **Add files**: Upload new documents anytime
+- **Remove files**: Delete outdated documents
+- **Remove duplicates**: An item whose content matches another item's is marked *Duplicate of …*; **Remove duplicates** deletes the extra copies and keeps the original
+- **Living Memory**: Files a connected agent pushes from a working tree appear under *Living Memory*, grouped by folder, with each file's full path under its name
+- **Organize**: Create folders for organization
+- **Search**: Find specific documents quickly
 
 ### Write Folders
 
-When a project's Living Memory is synced from a repository, you can name **write folders**: folders of that repository that agents connected through the Fabric plugin save their files into, such as specs and task notes. The files an agent writes there are committed to the repository by Fabric and read back into Living Memory by the next sync, so the next agent sees them.
+When a project's Living Memory is synced from a repository, you can name **write folders**: folders in that repository where agents connected through the Fabric plugin save their files, such as specs and task notes. Fabric commits the files an agent writes there to the repository, and the next sync reads them back into Living Memory, where the next agent sees them.
 
-Open the menu beside *Sync now* in the Living Memory section and choose **Write folders**.
+To manage them, open the menu beside *Sync now* in the Living Memory section and choose **Write folders**.
 
-- **Add a folder** — Pick one in the tree, which shows only folders the sync selects, or type its path. Folders that sync leaves out, hidden folders such as `.github`, and the folder your coding instructions are read from can't be write folders. Folders can't contain one another, and a project can have up to ten.
-- **Choose how files land** — **Pull request** (the default) opens a pull request against the synced branch, so someone reviews the files before they join it. **Push directly** commits straight to the branch with no review, and the next agent reads those files as they are. Only project admins and owners can turn it on, Fabric asks you to confirm, and the list shows who turned it on and when.
-- **Change or remove a folder** — Edit its folder or mode, or remove it. Removing a folder stops agents writing there; files already written stay in the repository.
+- To add a folder, pick one in the tree, which shows only folders the sync selects, or type its path. Folders the sync leaves out, hidden folders such as `.github`, and the folder your coding instructions are read from can't be write folders. Folders can't contain one another, and a project can have up to ten.
+- Each folder sets how its files land. **Pull request** (the default) opens a pull request against the synced branch, so someone reviews the files before they join it. **Push directly** commits straight to the branch with no review, and the next agent reads those files as they are. If another write lands on the branch first, Fabric retries the commit on the new branch tip; the write becomes a pull request only when the branch refuses the push (branch protection, a server hook, or missing write permission). Only project admins and owners can turn on **Push directly**, Fabric asks you to confirm, and the list shows who turned it on and when.
+- Each folder also sets whether AI search uses its files. **Index for AI search** (the default) embeds the files, so project search and context summaries can use them. **Store only** keeps the files in Living Memory, readable in the Context tab, through the context tools and in the CLI mirror, but never embeds them, so AI search, keyword search and context summaries leave them out. In the Context tab each such file shows as Ready with a **Store only** label, and Context Readiness counts it as Ready, not as a source still processing. Use **Store only** for folders that will hold thousands of task or spec files, which would otherwise fill search and summaries with noise. A **Store only** badge marks such folders in the list. Changing the choice takes effect without a new sync: switching to **Store only** removes the folder's existing search data, and switching back embeds the files again (a large folder finishes over its next sync).
+- You can change a folder's path, mode or search choice, or remove the folder. Removing a folder stops agents writing there, and its files are indexed again; files already written stay in the repository.
 
 Members who can't add context can open the list but not change it.
 

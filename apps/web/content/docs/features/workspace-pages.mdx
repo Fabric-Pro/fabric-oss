@@ -35,15 +35,17 @@ You can also ask from any chat with Fabric Agent: "make me a Workspace with a bo
 
 ## Who can open a Workspace
 
-**A new Workspace is shared with everyone in your organization.** If a page should stay yours alone, say so when you ask ("keep it private") and the agent saves it as private. Each card in the list shows who the page is shared with.
+**A new Workspace is shared with everyone in your organization.** To turn off organization-wide sharing, ask the agent to "keep it private". A page linked to a project still opens for accepted project members; a standalone private page opens only for its author. Each card in the list shows who the page is shared with.
 
 | Shown as | Who can open it |
 |----------|-----------------|
 | **Organization** | Every member of your organization |
 | **Private** | Only you (and, for a page linked to a project, the members of that project) |
-| **Invited** | The people you invited by email |
+| **Invited** | The author and people invited by email, plus accepted project members for a project-linked page |
 | **Project** | The accepted members of its project |
 | **Public** | Anyone with the link, signed in or not |
+
+A public link exists only after the person who wrote the page has shared it publicly, and only if your organization allows public links; a page is never public just because it was created. A page written outside a project or a Workspace, for example from a chat with no project open, is private to the person who asked for it until they share it.
 
 The list shows the Workspaces you wrote, the ones shared with your organization, and those linked to a project you can open. A guest of a single project, who is not a member of the organization, does not see the list; they can still open a page someone shares with them.
 
@@ -55,7 +57,19 @@ Under every Workspace is a **Comments** section. Anyone who can open the page ca
 
 ## Make a copy
 
-**Make a copy** in the page header gives you a copy of the Workspace that is yours alone, in the same project, for you to change with Fabric Agent. Nothing people saved in the page is copied. If the page uses Fabric tools, the copy keeps them, so Fabric lists them first and asks you to confirm.
+**Make a copy** in the page header creates a Workspace you own, in the same project, for you to change with Fabric Agent. The copy starts with **Private** sharing; members of its attached project can still open it. Nothing people saved in the page is copied. If the page uses Fabric tools, the copy keeps them, so Fabric lists them first and asks you to confirm.
+
+## Azure DevOps work-item summaries
+
+Connect Azure DevOps under **Connections**, then open your Fabric project's **Settings → Development** and select its Azure DevOps project under **Project Management Integration**. Each person viewing the Workspace uses their own connection and permissions.
+
+Ask Fabric Agent:
+
+> Create a Workspace for this project with a team-member selector, a count of all assigned work items and a count in the exact state "In Development". Show the attached Coding Instructions file count too. Disable Refresh while Azure DevOps is unconfigured, and enable it automatically when the connection is ready.
+
+The selector lists members of the configured project's teams, including people with no assigned work items. Choose a member to read their counts. **Refresh** reads the latest counts and instruction files. A page that checks its connection can enable Refresh after you finish setup, without being rewritten.
+
+Counts apply to the selected project and the viewer's access. When a read cannot finish, the page should explain that the result is incomplete and leave exact totals unavailable. Coding Instructions counts come from the attached instruction source; repository reads identify the Git commit they used.
 
 ## What a page can keep, ask and read
 
@@ -99,6 +113,7 @@ How a call is treated:
 - **A page works on its own data.** Every call that touches the page's records, files or comments is made for that page, whatever the script says.
 - **Reading its own data runs at once.** So do tools that only read, such as listing projects or documents.
 - **Changing asks you first.** A tool that can change something shows you what the page wants to do, including every value it would send, and runs only if you allow it. Your yes holds for that tool on that version of the page until you close the browser tab. When the page is edited, you are asked again.
+- **An edit cancels unanswered requests.** If the page changes while a question is open or waiting its turn, that request cannot run. Use the current page to try again; approving an earlier question never approves its replacement.
 - **Asking the model and reading a connected server ask once** per version of the page, because they spend your AI usage or reach your own accounts.
 - **A page that has read outside its own data asks more.** Once a page has learned who you are, read from a connected server, had an answer from the model or read other Fabric data, every change to data shared on the page asks again, and shows the value, until the page is reloaded. A page that keeps shared data also asks every time before any other kind of change.
 - **A few tools are never available to a page:** switching organization, requesting or revoking authority, sharing a frame, creating, editing or publishing a workflow, creating or editing a frame, finding out who you are beyond a name, listing your organizations, restoring an earlier version, making a copy and adding a comment. Asking Fabric Agent is the way to do the first ones; comments are added from the panel under the page.
@@ -107,7 +122,7 @@ How a call is treated:
 
 ## What a page cannot do
 
-A Workspace runs in a locked frame. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
+A Workspace runs in a locked frame, including when opened through a public link. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
 
 A page that a scheduled workflow wrote with nobody watching is shown without any script, so it reads as a static report. Pages written in a chat keep their buttons.
 

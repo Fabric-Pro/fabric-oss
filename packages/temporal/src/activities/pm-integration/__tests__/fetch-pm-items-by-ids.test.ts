@@ -30,6 +30,7 @@ const mcp = vi.hoisted(() => ({
 	// `invalidateMcpClientCache(...).catch(...)`); mirror that so `.catch` is a
 	// function, not `undefined`.
 	invalidateMcpClientCache: vi.fn().mockResolvedValue(undefined),
+	isClosedClientRefusedBeforeSend: () => false,
 }));
 vi.mock("@repo/mcp", () => mcp);
 // The container-instance checks are covered in pm-mcp-instance-binding.test.ts;
@@ -78,6 +79,44 @@ describe("fetchPMItemsByIds bounded fetch", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.clearAllMocks();
+	});
+
+	it.each([
+		"CREDENTIALS_EXPIRED",
+		"MCP_CONFIG_NOT_FOUND",
+		"CONNECTION_FAILED",
+	])(
+		"preserves %s discovery failure rather than inventing an unsupported capability",
+		async (code) => {
+			backend.getMcpClientResult.mockResolvedValue({
+				ok: false,
+				error: { code, message: "Safe connection diagnostic" },
+			});
+			const { fetchPMItemsByIds } = await import("../story-sync");
+			await expect(
+				fetchPMItemsByIds({ ...baseInput, externalIds: ["1"] }),
+			).rejects.toMatchObject({
+				type: code,
+				message: "Safe connection diagnostic",
+			});
+			expect(exec.executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reports unsupported lookup only after successful discovery", async () => {
+		healthyDiscovery();
+		analyzer.analyzePMToolCapabilities.mockReturnValue({
+			...FIZZY_CAPS,
+			taskGet: undefined,
+		});
+		const { fetchPMItemsByIds } = await import("../story-sync");
+		await expect(
+			fetchPMItemsByIds({ ...baseInput, externalIds: ["1"] }),
+		).rejects.toMatchObject({
+			message: "PM tool does not support fetching items by ID",
+			nonRetryable: true,
+		});
+		expect(exec.executeMcpTool).not.toHaveBeenCalled();
 	});
 
 	it("forwards callTimeoutMs to each per-card call; a timed-out card is a failedId, not notFound; items keep input order", async () => {
@@ -168,6 +207,36 @@ describe("fetchPMItemsByIds bounded fetch", () => {
 			}),
 		);
 	});
+
+	it.each([
+		{ failureKind: "rejected" as const },
+		{
+			failureKind: "indeterminate" as const,
+			localDatabaseError: true as const,
+		},
+	])(
+		"a local not-found-looking failure $failureKind keeps the link out of deletion handling",
+		async (failure) => {
+			healthyDiscovery();
+			exec.executeMcpTool.mockResolvedValue({
+				success: false,
+				output: {
+					error: "Record to update not found.",
+				},
+				durationMs: 1,
+				cached: false,
+				...failure,
+			});
+			const { fetchPMItemsByIds } = await import("../story-sync");
+			const res = await fetchPMItemsByIds({
+				...baseInput,
+				externalIds: ["404"],
+			});
+
+			expect(res.failedIds).toEqual(["404"]);
+			expect(res.notFoundIds).toEqual([]);
+		},
+	);
 
 	it("logs a structurally absent success at info", async () => {
 		healthyDiscovery();

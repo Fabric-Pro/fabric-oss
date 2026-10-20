@@ -136,6 +136,26 @@ describe("getAIDecisionModelWithMetadata", () => {
 		});
 	});
 
+	it.each(["conversation-example", undefined])(
+		"passes the explicit decision conversation to the usage wrapper (%s)",
+		async (conversationId) => {
+			await getAIDecisionModelWithMetadata({
+				userId: "user-1",
+				organizationId: "org-1",
+				conversationId,
+			});
+			expect(
+				(
+					wrapEvaluationModelWithUsageLoggingMock.mock
+						.calls[0] as unknown as [
+						unknown,
+						{ conversationId?: string },
+					]
+				)[1].conversationId,
+			).toBe(conversationId);
+		},
+	);
+
 	it("uses the organization's Vercel Gateway decision preference even when it is not the text default", async () => {
 		const resolved = await getAIDecisionModelWithMetadata({
 			userId: "user-1",

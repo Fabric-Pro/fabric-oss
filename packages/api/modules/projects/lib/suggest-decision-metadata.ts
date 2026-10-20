@@ -55,6 +55,7 @@ interface DecisionOwnerCandidate {
 }
 
 export interface SuggestDecisionMetadataInput {
+	projectId: string;
 	title: string;
 	decision: string;
 	contextProblem?: string | null;
@@ -165,6 +166,7 @@ export async function suggestDecisionMetadata(
 			{
 				userId: input.tenantFilter.userId,
 				organizationId: input.tenantFilter.organizationId ?? undefined,
+				projectId: input.projectId,
 				featureKey: "decision-tagging",
 			},
 		);

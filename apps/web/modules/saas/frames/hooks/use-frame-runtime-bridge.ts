@@ -22,6 +22,7 @@ import {
 } from "../lib/frame-runtime-approvals";
 import {
 	createFrameRuntimeHost,
+	type FrameRuntimeCallLifetime,
 	type FrameRuntimeToolInfo,
 } from "../lib/frame-runtime-host";
 import {
@@ -68,6 +69,8 @@ export interface FrameRuntimeBridgeOptions {
 	 * none, every write asks.
 	 */
 	contentFingerprint: string | null;
+	/** Synchronous content identity; hashing a replacement must not retain its predecessor's consent. */
+	contentVersion: string | null;
 	/** The organization the page belongs to; a page of another one is refused. */
 	organizationId: string | null;
 	/** Tools the page declared; none means every call is refused. */
@@ -96,6 +99,8 @@ export type PendingCall =
 			args: Record<string, unknown>;
 			/** Set when the viewer is asked on every call, and why. */
 			because?: ConfirmEveryBecause;
+			/** Trusted tool-list metadata from the host, never a page-supplied hint. */
+			readOnly?: boolean;
 	  }
 	| { kind: "download"; download: PageDownload };
 
@@ -131,55 +136,96 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 	const resolveConfirmation = useRef<((allowed: boolean) => void) | null>(
 		null,
 	);
-	const confirmationQueue = useRef<Promise<boolean>>(Promise.resolve(false));
-	const pendingQuestions = useRef(0);
+	const shownQuestion = useRef<PendingCall | null>(null);
 	const taint = useMemo(createPageTaint, []);
 
-	const latest = useRef({ options, router, viewingOrganizationId });
-	latest.current = { options, router, viewingOrganizationId };
-
-	const answerConfirmation = useCallback((allowed: boolean) => {
-		resolveConfirmation.current?.(allowed);
-		resolveConfirmation.current = null;
-		setPendingCall(null);
-	}, []);
-
-	const { enabled, frameKey, embedUrl, contentFingerprint } = options;
+	const { enabled, frameKey, frameId, embedUrl, contentVersion } = options;
 	const frameOrganizationId = options.organizationId;
 	const runtimeToolsKey = options.runtimeTools.join("\n");
+	const scope = useMemo(
+		() => ({
+			enabled,
+			frameKey,
+			frameId,
+			embedUrl,
+			contentVersion,
+			frameOrganizationId,
+			viewingOrganizationId,
+			runtimeToolsKey,
+		}),
+		[
+			enabled,
+			frameKey,
+			frameId,
+			embedUrl,
+			contentVersion,
+			frameOrganizationId,
+			viewingOrganizationId,
+			runtimeToolsKey,
+		],
+	);
+	const latest = useRef({ options, router, scope });
+	latest.current = { options, router, scope };
 
-	// Another version of the page is another page: what the last one had read is
-	// not carried over. A host made again for the same version keeps it.
-	const version = contentFingerprint
-		? approvalKeyOf(frameKey, contentFingerprint)
-		: null;
-	const lastVersion = useRef<string | null>(null);
-	useEffect(() => {
-		if (version === null) {
-			return;
-		}
-		if (lastVersion.current !== null && lastVersion.current !== version) {
-			taint.reset();
-		}
-		lastVersion.current = version;
-	}, [version, taint]);
+	const answerConfirmation = useCallback(
+		(allowed: boolean) => {
+			if (
+				latest.current.scope !== scope ||
+				shownQuestion.current !== pendingCall ||
+				!resolveConfirmation.current
+			) {
+				return;
+			}
+			resolveConfirmation.current(allowed);
+			resolveConfirmation.current = null;
+			setPendingCall(null);
+		},
+		[scope, pendingCall],
+	);
 
 	useEffect(() => {
+		const {
+			enabled,
+			frameKey,
+			frameId,
+			embedUrl,
+			frameOrganizationId,
+			viewingOrganizationId,
+			runtimeToolsKey,
+		} = scope;
 		const embedOrigin = resolveEmbedOrigin(embedUrl);
-		// Read when asked and when answered, not when the host is made: the
-		// fingerprint is worked out a moment after the page appears, and a
-		// question already open must survive that.
+		let active = true;
+		let confirmationQueue = Promise.resolve(false);
+		let pendingQuestions = 0;
+		const calls = new Map<Window, Map<string, AbortController>>();
+		const isCurrent = () => active && latest.current.scope === scope;
+		// The digest may hydrate while a question is open; the synchronous
+		// content identity above keeps it bound to the version that asked.
 		const currentApprovalKey = () => {
 			const fingerprint = latest.current.options.contentFingerprint;
-			return fingerprint ? approvalKeyOf(frameKey, fingerprint) : null;
+			return isCurrent() && fingerprint
+				? approvalKeyOf(
+						`${viewingOrganizationId}:${frameKey}`,
+						fingerprint,
+					)
+				: null;
 		};
 
 		// One question at a time, whatever it is about.
 		const askViewer = (
 			question: PendingCall,
 			{ remember }: AskOptions,
+			lifetime?: FrameRuntimeCallLifetime,
 		): Promise<boolean> => {
-			if (pendingQuestions.current >= MAX_PENDING_QUESTIONS) {
+			const isLive = () =>
+				isCurrent() &&
+				(!lifetime ||
+					(!lifetime.signal.aborted &&
+						Date.now() < lifetime.expiresAt));
+			if (!isLive()) {
+				return Promise.resolve(false);
+			}
+			if (pendingQuestions >= MAX_PENDING_QUESTIONS) {
 				return Promise.reject(
 					new FabricToolError(
 						TOO_MANY_QUESTIONS,
@@ -190,54 +236,98 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 					),
 				);
 			}
-			pendingQuestions.current += 1;
+			pendingQuestions += 1;
+			let settled = false;
+			let complete!: (allowed: boolean) => void;
+			const answer = new Promise<boolean>((resolve) => {
+				complete = resolve;
+			});
+			const settle = (allowed: boolean) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				pendingQuestions -= 1;
+				lifetime?.signal.removeEventListener("abort", cancelled);
+				if (shownQuestion.current === question) {
+					shownQuestion.current = null;
+					resolveConfirmation.current = null;
+					setPendingCall(null);
+				}
+				complete(allowed && isLive());
+			};
+			const cancelled = () => settle(false);
+			lifetime?.signal.addEventListener("abort", cancelled, {
+				once: true,
+			});
 			const ask = async () => {
+				if (settled || !isLive()) {
+					settle(false);
+					return;
+				}
 				const known = currentApprovalKey();
 				if (
 					remember &&
 					known &&
 					isApproved(known, remember.declaration)
 				) {
-					return true;
+					settle(true);
+					return;
 				}
-				const allowed = await new Promise<boolean>((resolve) => {
-					resolveConfirmation.current = resolve;
-					latest.current.options.onQuestion?.();
-					setPendingCall(question);
-				});
+				shownQuestion.current = question;
+				resolveConfirmation.current = settle;
+				latest.current.options.onQuestion?.();
+				setPendingCall(question);
+				const allowed = await answer;
 				const answeredFor = currentApprovalKey();
-				if (allowed && remember && answeredFor) {
+				if (allowed && isLive() && remember && answeredFor) {
 					approve(answeredFor, remember.declaration);
 				}
-				return allowed;
 			};
 			// A tool approved while it waited is not asked again.
-			const turn = confirmationQueue.current.then(ask);
-			confirmationQueue.current = turn.finally(() => {
-				pendingQuestions.current -= 1;
-			});
-			return turn;
+			const turn = confirmationQueue.then(ask);
+			confirmationQueue = turn.then(
+				() => false,
+				() => {
+					settle(false);
+					return false;
+				},
+			);
+			return answer;
 		};
 
 		const host = createFrameRuntimeHost({
 			runtimeTools: enabled
 				? runtimeToolsKey.split("\n").filter(Boolean)
 				: [],
-			frameId: latest.current.options.frameId ?? null,
+			frameId,
 			taint,
 			organizationId: frameOrganizationId,
-			viewingOrganizationId: () => latest.current.viewingOrganizationId,
-			loadToolInfo: () =>
-				loadToolInfo(latest.current.viewingOrganizationId),
-			callTool: (name, args) =>
-				callFabricTool(name, args, {
-					organizationId: latest.current.viewingOrganizationId,
-					pageFrameId: latest.current.options.frameId ?? undefined,
-				}),
-			confirmTool: (toolName, args, { every, because }) =>
+			viewingOrganizationId: () =>
+				latest.current.scope.viewingOrganizationId,
+			loadToolInfo: () => loadToolInfo(viewingOrganizationId),
+			callTool: (name, args) => {
+				if (!isCurrent()) {
+					throw new FabricToolError(
+						"This page changed. Try again from the current version.",
+						name,
+					);
+				}
+				return callFabricTool(name, args, {
+					organizationId: viewingOrganizationId,
+					pageFrameId: frameId ?? undefined,
+				});
+			},
+			confirmTool: (
+				toolName,
+				args,
+				{ every, because, readOnly },
+				lifetime,
+			) =>
 				askViewer(
-					{ kind: "tool", toolName, args, because },
+					{ kind: "tool", toolName, args, because, readOnly },
 					{ remember: every ? null : rememberedAs(toolName, args) },
+					lifetime,
 				),
 			// A file offered beyond the questions a page may have waiting is
 			// declined: the page is not told, as with any answer to a download.
@@ -248,21 +338,25 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 							{ remember: null },
 						).catch(() => false)
 					: Promise.resolve(false),
-			saveDownload: saveBase64File,
+			saveDownload: (download) => {
+				if (isCurrent()) {
+					saveBase64File(download);
+				}
+			},
 			openAgent: (prompt) => {
-				if (enabled) {
+				if (enabled && isCurrent()) {
 					latest.current.options.openAgent?.(prompt);
 				}
 			},
 			navigate: (path) => {
-				if (enabled) {
+				if (enabled && isCurrent()) {
 					latest.current.router.push(path);
 				}
 			},
 		});
 
 		const onMessage = (event: MessageEvent) => {
-			if (event.origin !== embedOrigin || !event.source) {
+			if (!isCurrent() || event.origin !== embedOrigin || !event.source) {
 				return;
 			}
 			const embed = latest.current.options
@@ -273,10 +367,36 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 			}
 			const request = event.data;
 			switch (request.type) {
-				case "fabric-frame:call":
-					void host.handleCall(request).then((result) => {
-						embed.postMessage(result, embedOrigin);
-					});
+				case "fabric-frame:call": {
+					const embedCalls =
+						calls.get(embed) ?? new Map<string, AbortController>();
+					if (embedCalls.has(request.requestId)) {
+						return;
+					}
+					const controller = new AbortController();
+					embedCalls.set(request.requestId, controller);
+					calls.set(embed, embedCalls);
+					void host
+						.handleCall(request, { signal: controller.signal })
+						.then((result) => {
+							if (isCurrent()) {
+								embed.postMessage(result, embedOrigin);
+							}
+						})
+						.finally(() => {
+							if (
+								embedCalls.get(request.requestId) === controller
+							) {
+								embedCalls.delete(request.requestId);
+								if (embedCalls.size === 0) {
+									calls.delete(embed);
+								}
+							}
+						});
+					return;
+				}
+				case "fabric-frame:cancel-call":
+					calls.get(embed)?.get(request.requestId)?.abort();
 					return;
 				case "fabric-frame:open-agent":
 					host.handleOpenAgent(request.prompt);
@@ -296,20 +416,20 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 
 		window.addEventListener("message", onMessage);
 		return () => {
+			active = false;
 			window.removeEventListener("message", onMessage);
+			for (const embedCalls of calls.values()) {
+				for (const controller of embedCalls.values()) {
+					controller.abort();
+				}
+			}
+			calls.clear();
 			resolveConfirmation.current?.(false);
 			resolveConfirmation.current = null;
+			shownQuestion.current = null;
 			setPendingCall(null);
 		};
-	}, [
-		enabled,
-		frameKey,
-		embedUrl,
-		runtimeToolsKey,
-		frameOrganizationId,
-		taint,
-		options.frameId,
-	]);
+	}, [scope, taint]);
 
 	return { pendingCall, answerConfirmation };
 }

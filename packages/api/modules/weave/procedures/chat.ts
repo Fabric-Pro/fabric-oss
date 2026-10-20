@@ -97,6 +97,7 @@ export const chatProcedure = protectedProcedure
 					},
 				},
 				{ userId, organizationId: organizationId ?? null },
+				{ trustedDestination: true },
 			);
 
 			const resultObj = result as unknown as Record<string, unknown>;

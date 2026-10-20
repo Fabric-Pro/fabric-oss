@@ -862,10 +862,11 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				// Fizzy #2801: under the Proposal artifact gate a Proposal is
 				// written client-ready and offers no Glossy entry unless it
 				// already has an edition, so the copy stops promising one.
+				// Fizzy #2946: its Download menu prints it from its theme.
 				gatedCopy: {
 					runtimeGate: "proposalArtifact",
 					title: "A Glossy edition for stakeholders",
-					body: "A Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, with Main Document, Internal Analysis and Style tabs on its page, and one that already has a Glossy edition keeps it.",
+					body: "A Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, with Main Document, Internal Analysis and Style tabs on its page, and its Download menu, on the card or at the top of its page, saves it as a branded PDF or Word file in the same look. One that already has a Glossy edition keeps it.",
 				},
 			},
 		],
@@ -1109,7 +1110,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "parlume-history",
 				anchor: "parlume-history",
 				title: "Open Parlume",
-				body: "Open Parlume to invite the voice agent into a Teams meeting, watch the live session, and review past sessions, requests, approvals and spend. Invitations are read-only by default; actions require the requester to confirm.",
+				body: "Open Parlume to invite the voice agent into a Teams meeting, watch the live session, and review past sessions, requests and spend. Invitations are read-only by default; with actions on, Parlume makes the changes attendees ask for, with your permissions.",
 				conditional: true,
 			},
 			{

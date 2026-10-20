@@ -289,6 +289,7 @@ export async function POST(request: NextRequest) {
 					conversationId,
 					clientRequestKey: clientRequestKey.key,
 					executionMode,
+					question: message,
 					temporalClient,
 				})
 			: null;

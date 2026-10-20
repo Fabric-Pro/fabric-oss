@@ -1,4 +1,5 @@
 import { servingChatGptPlanSource } from "./chatgpt-plan-reexchange";
+import { servedModelIdentity } from "./served-model";
 import { AI_TOKEN_HEADER } from "./token-exchange";
 
 function getDefaultFabricBaseUrl(): string {
@@ -10,11 +11,44 @@ function getDefaultFabricBaseUrl(): string {
 	);
 }
 
+/** Logger-only A2A metadata; graph consumers read their existing top-level fields. */
+export function agentUsageConfigFromInput(input: Record<string, unknown>): {
+	fabric_usage: Record<string, string>;
+} {
+	const fields = [
+		"ai_token",
+		"ai_provider",
+		"ai_model",
+		"ai_billing_mode",
+		"ai_billing_customer_id",
+		"ai_plan_source",
+		"project_id",
+		"usage_conversation_id",
+		"usage_project_id",
+		"usage_frame_id",
+		"usage_feature_key",
+	];
+	const result: Record<string, string> = {};
+	for (const field of fields) {
+		if (typeof input[field] === "string") {
+			result[field] = input[field];
+		}
+	}
+	return { fabric_usage: result };
+}
+
 export interface AgentUsageLoggerConfig {
 	configurable?: Record<string, unknown>;
 }
 
 export interface AgentUsageLogOptions {
+	/**
+	 * Pass the instance returned by getAgentModelAsync/createProviderModel, not
+	 * a bindTools result. Required so a new call site cannot silently fall back
+	 * to the exchanged model (Fizzy #3121); pass `undefined` only when no such
+	 * instance produced the response.
+	 */
+	model: object | undefined;
 	taskType: string;
 	agentId?: string;
 	conversationId?: string;
@@ -180,20 +214,30 @@ async function sendAgentUsageEvent(
 	options: AgentUsageLogOptions,
 ): Promise<void> {
 	const configurable = config?.configurable;
-	const aiToken = configurable?.ai_token;
-	const provider = configurable?.ai_provider;
-	const model = configurable?.ai_model;
-	const billingMode = configurable?.ai_billing_mode;
-	const billingCustomerId = configurable?.ai_billing_customer_id;
+	const nestedUsage = configurable?.fabric_usage;
+	// Flat fields are the graph's current config and win over the initial A2A
+	// copy; the nested record supplies logger fields the graph's config lacks.
+	const usageConfig =
+		nestedUsage &&
+		typeof nestedUsage === "object" &&
+		!Array.isArray(nestedUsage)
+			? { ...(nestedUsage as Record<string, unknown>), ...configurable }
+			: configurable;
+	const aiToken = usageConfig?.ai_token;
+	const served = servedModelIdentity(options.model);
+	const provider = served?.provider ?? usageConfig?.ai_provider;
+	const model = served?.model ?? usageConfig?.ai_model;
+	const billingMode = usageConfig?.ai_billing_mode;
+	const billingCustomerId = usageConfig?.ai_billing_customer_id;
 	// After a re-exchange the run's model answered on another plan; the row
 	// names the plan that served it (Fizzy #2770 D2).
-	const planAccessToken = configurable?.ai_api_key;
+	const planAccessToken = usageConfig?.ai_api_key;
 	const planSource =
 		(provider === "OPENAI_CHATGPT_PLAN" &&
 		typeof planAccessToken === "string"
 			? servingChatGptPlanSource(planAccessToken)
-			: null) ?? configurable?.ai_plan_source;
-	const configProjectId = configurable?.project_id;
+			: null) ?? usageConfig?.ai_plan_source;
+	const configProjectId = usageConfig?.project_id;
 
 	if (
 		typeof aiToken !== "string" ||
@@ -222,12 +266,26 @@ async function sendAgentUsageEvent(
 				model,
 				taskType: options.taskType,
 				agentId: options.agentId,
-				conversationId: options.conversationId,
+				conversationId:
+					options.conversationId ??
+					(typeof usageConfig?.usage_conversation_id === "string"
+						? usageConfig.usage_conversation_id
+						: undefined),
 				projectId:
-					options.projectId ??
+					(typeof usageConfig?.usage_project_id === "string"
+						? usageConfig.usage_project_id
+						: options.projectId) ??
 					(typeof configProjectId === "string"
 						? configProjectId
 						: undefined),
+				frameId:
+					typeof usageConfig?.usage_frame_id === "string"
+						? usageConfig.usage_frame_id
+						: undefined,
+				featureKey:
+					typeof usageConfig?.usage_feature_key === "string"
+						? usageConfig.usage_feature_key
+						: undefined,
 				latencyMs: options.latencyMs ?? 0,
 				inputTokens: usage.inputTokens,
 				outputTokens: usage.outputTokens,

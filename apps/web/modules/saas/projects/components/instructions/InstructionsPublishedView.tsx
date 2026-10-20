@@ -45,6 +45,7 @@ import { InstructionsDeferredScanAlerts } from "./InstructionsDeferredScanAlerts
 import { InstructionsFailedChecksBanner } from "./InstructionsFailedChecksBanner";
 import { InstructionsHistory } from "./InstructionsHistory";
 import { InstructionsPageFrame } from "./InstructionsPageFrame";
+import { InstructionsPluginReport } from "./InstructionsPluginReport";
 import {
 	InstructionsRejectedBanner,
 	REJECTED_BANNER_ID,
@@ -620,6 +621,9 @@ export function InstructionsPublishedView({
 								: undefined
 						}
 					/>
+				) : null}
+				{published ? (
+					<InstructionsPluginReport projectId={projectId} />
 				) : null}
 				<InstructionsCheckingStatus
 					checking={checkingInSync ? null : checking}

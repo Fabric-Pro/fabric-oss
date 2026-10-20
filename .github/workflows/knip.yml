@@ -51,7 +51,9 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
     needs: [promotion_policy]
     name: Knip (dead code and dependencies)
-    runs-on: ubuntu-latest
+    # arm64: pnpm install plus knip — architecture-neutral, the same install
+    # the Biome job already runs on arm64.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

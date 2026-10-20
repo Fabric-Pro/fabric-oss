@@ -697,7 +697,13 @@ export async function resolveRoutingModels(params: {
 	// like a clean evaluation.
 	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: "COMPLEX" },
-		{ userId, organizationId, featureKey: "backlog-update", jobType },
+		{
+			userId,
+			organizationId,
+			projectId,
+			featureKey: "backlog-update",
+			jobType,
+		},
 	);
 
 	// Optional typed decision model. It is a fast path, not a dependency: an

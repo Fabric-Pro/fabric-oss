@@ -693,6 +693,7 @@ describe("syncWorkItemToPM", () => {
 	describe("push not-found (404) → classify + propose FLAG_MISSING", () => {
 		const NOT_FOUND_OUTPUT = {
 			success: false as const,
+			failureKind: "indeterminate" as const,
 			output: {
 				error: 'Resource not found: {"status":404,"error":"Not Found"}',
 			},
@@ -745,6 +746,24 @@ describe("syncWorkItemToPM", () => {
 			},
 		);
 
+		it("an update 404 result with no failureKind still proposes FLAG_MISSING", async () => {
+			vi.mocked(getStoryById).mockResolvedValue(
+				makeStory({ externalMcpServerId: "srv-1" }) as never,
+			);
+			const { failureKind: _omitted, ...withoutFailureKind } =
+				NOT_FOUND_OUTPUT;
+			vi.mocked(executeMcpTool).mockResolvedValue(
+				withoutFailureKind as never,
+			);
+
+			await expect(syncWorkItemToPM(baseInput)).rejects.toMatchObject({
+				type: "PmNotFoundError",
+			});
+			expect(upsertPendingChange).toHaveBeenCalledWith(
+				expect.objectContaining({ proposedAction: "FLAG_MISSING" }),
+			);
+		});
+
 		it("BUG update 404 → proposes FLAG_MISSING logged as entityType STORY (bugs are UserStory rows)", async () => {
 			vi.mocked(getStoryById).mockResolvedValue(
 				makeStory({ externalMcpServerId: "srv-1" }) as never,
@@ -763,6 +782,32 @@ describe("syncWorkItemToPM", () => {
 				}),
 			);
 		});
+
+		it.each([
+			{ failureKind: "rejected" as const },
+			{
+				failureKind: "indeterminate" as const,
+				localDatabaseError: true as const,
+			},
+		])(
+			"a local not-found-looking failure $failureKind keeps the link out of deletion handling",
+			async (failure) => {
+				vi.mocked(getStoryById).mockResolvedValue(
+					makeStory({ externalMcpServerId: "srv-1" }) as never,
+				);
+				vi.mocked(executeMcpTool).mockResolvedValue({
+					...NOT_FOUND_OUTPUT,
+					...failure,
+				} as never);
+
+				await expect(syncWorkItemToPM(baseInput)).rejects.toMatchObject(
+					{
+						type: "PmUpdateError",
+					},
+				);
+				expect(upsertPendingChange).not.toHaveBeenCalled();
+			},
+		);
 
 		it("permission error (403) is NOT treated as missing → PmUpdateError, no FLAG_MISSING", async () => {
 			vi.mocked(getStoryById).mockResolvedValue(

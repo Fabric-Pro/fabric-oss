@@ -19,6 +19,7 @@ import {
 } from "../../../orpc/procedures";
 import { announceDefaultChange } from "../lib/announce-default-change";
 import { announceNomination } from "../lib/announce-nomination";
+import { assertNotSupersededAction } from "../lib/assert-not-superseded-action";
 import { assertWithinPromptContentLimit } from "../lib/assert-valid-template";
 import { summariseNominationChange } from "../lib/nomination-summary";
 import {
@@ -174,6 +175,14 @@ export const nominateProcedures = {
 				organizationId,
 				userId: user.id,
 			});
+
+			// A proposal that could never be approved is refused up front,
+			// before the summary sends its body to a model.
+			await assertNotSupersededAction(
+				input.targetScope,
+				input.targets,
+				organizationId,
+			);
 
 			const version = await db.promptVersion.findUnique({
 				where: { id: input.promptVersionId },
@@ -348,6 +357,14 @@ export const nominateProcedures = {
 					message: "A nomination must name at least one action",
 				});
 			}
+
+			// Approving IS binding, so the bind refusal applies to the final
+			// action set, judged by the ROW's organization. Declining stays open.
+			await assertNotSupersededAction(
+				nomination.targetScope,
+				targets,
+				nomination.organizationId,
+			);
 
 			const targetScope = nomination.targetScope;
 			const result = await approvePromptNomination({

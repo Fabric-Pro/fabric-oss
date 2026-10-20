@@ -13,6 +13,7 @@ import {
 	parseConnectedDeclaration,
 	TAINTING_TOOLS,
 } from "../fabric-page-tool-definitions";
+import { FABRIC_PROJECT_PM_TOOL_DEFINITIONS } from "../fabric-project-pm-tool-definitions";
 
 describe("a connected read as a page declares it", () => {
 	it("is connected:<provider>/<tool>, and reads back as the same two parts", () => {
@@ -98,6 +99,8 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_restore_frame_version",
 		"fabric_duplicate_frame",
 		"fabric_page_comment_add",
+		"fabric_list_project_pm_assigned_items",
+		"fabric_get_project_pm_item_snapshots",
 	])("keeps %s from pages", (name) => {
 		expect(NOT_FOR_PAGES.has(name)).toBe(true);
 	});
@@ -119,6 +122,7 @@ describe("pageMayDeclareTool", () => {
 		"fabric_page_data_list",
 		"fabric_get_identity",
 		"fabric_duplicate_frame",
+		"fabric_page_read_connected",
 	]);
 
 	it("allows a platform tool that is not barred", () => {
@@ -133,6 +137,19 @@ describe("pageMayDeclareTool", () => {
 			false,
 		);
 		expect(pageMayDeclareTool("anything_else", platform)).toBe(false);
+	});
+
+	it("requires a specific connected alias instead of declaring the proxy", () => {
+		expect(pageMayDeclareTool("fabric_page_read_connected", platform)).toBe(
+			false,
+		);
+		expect(NOT_FOR_PAGES.has("fabric_page_read_connected")).toBe(false);
+		expect(
+			declarationOf("fabric_page_read_connected", {
+				provider: "example-provider",
+				tool: "list_items",
+			}),
+		).toBe("connected:example-provider/list_items");
 	});
 });
 
@@ -192,6 +209,9 @@ describe("the page definitions", () => {
 			"fabric_page_data_list",
 			"fabric_page_file_list",
 			"fabric_page_file_read",
+			"fabric_page_get_review_options",
+			"fabric_page_get_story_review",
+			"fabric_page_list_story_review_runs",
 		]);
 	});
 
@@ -233,23 +253,42 @@ describe("the sets the page host derives from the definitions", () => {
 		]);
 		expect([...TAINTING_TOOLS].sort()).toEqual([
 			"fabric_get_page_viewer",
+			"fabric_get_project_work_item_counts",
+			"fabric_list_project_pm_members",
+			"fabric_list_project_pm_work_item_types",
 			"fabric_page_ask",
+			"fabric_page_configure_story_review",
+			"fabric_page_get_review_options",
+			"fabric_page_get_story_review",
+			"fabric_page_list_story_review_runs",
 			"fabric_page_read_connected",
+			"fabric_page_run_story_review",
 		]);
 		expect([...ASKS_ONCE].sort()).toEqual([
+			"fabric_get_project_work_item_counts",
+			"fabric_list_project_pm_members",
+			"fabric_list_project_pm_work_item_types",
 			"fabric_page_ask",
 			"fabric_page_read_connected",
 		]);
 	});
 
-	it("name the tools asked about on every call: the deletes of a page's shared data and files, and not the comment a page cannot add", () => {
+	it("asks every time for shared deletes and constrained review configuration", () => {
 		expect([...ASKS_EVERY_TIME].sort()).toEqual([
+			"fabric_page_configure_story_review",
 			"fabric_page_data_delete",
 			"fabric_page_file_delete",
+			"fabric_page_run_story_review",
 		]);
-		for (const name of ASKS_EVERY_TIME) {
+		for (const name of [
+			"fabric_page_data_delete",
+			"fabric_page_file_delete",
+		]) {
 			expect(PAGE_SHARED_WRITES.has(name), name).toBe(true);
 		}
+		expect(
+			PAGE_SHARED_WRITES.has("fabric_page_configure_story_review"),
+		).toBe(false);
 		expect(ASKS_EVERY_TIME.has("fabric_page_comment_add")).toBe(false);
 	});
 
@@ -266,7 +305,10 @@ describe("the sets the page host derives from the definitions", () => {
 
 	it("name only page tools, each in the sets its effect puts it in", () => {
 		const names: ReadonlySet<string> = new Set(
-			FABRIC_PAGE_TOOL_DEFINITIONS.map((tool) => tool.name),
+			[
+				...FABRIC_PAGE_TOOL_DEFINITIONS,
+				...FABRIC_PROJECT_PM_TOOL_DEFINITIONS,
+			].map((tool) => tool.name),
 		);
 		for (const set of [
 			PAGE_STORE_READS,

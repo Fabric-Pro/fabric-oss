@@ -5,22 +5,22 @@
  * Handles Docker container name resolution and environment overrides.
  */
 
-import { db, findAgentsByCapabilityTag } from "@repo/database";
+import { db } from "@repo/database";
 import { resolveAgentUrl } from "../../../lib/agent-url-resolver";
 import type { ResolvedAgent } from "../types";
 
 // Re-exported so existing consumers (orchestrator barrel, @repo/temporal/activities) keep working.
 export { resolveAgentUrl };
 
+export function isExternalAgentScope(scope: string): boolean {
+	return scope !== "SYSTEM";
+}
+
 /**
- * Resolves an agent ID to its deployment endpoint.
- * All agents MUST support A2A protocol for the orchestrator to communicate with them.
- *
- * Resolution order:
- * 1. RegisteredAgent table (database) - PRIMARY source for all agents
- * 2. Fallback URLs (for backwards compatibility when DB is empty)
- *
- * To register agents, run: pnpm --filter @repo/database seed:system-agents
+ * Resolves exact agentId/name matches and case-insensitive SYSTEM
+ * agentId/name/displayName matches to an A2A endpoint.
+ * SYSTEM registrations shadow member registrations that name the same key,
+ * including when the winning SYSTEM registration is unavailable.
  */
 export async function resolveAgentEndpoint(
 	agentId: string,
@@ -29,28 +29,152 @@ export async function resolveAgentEndpoint(
 ): Promise<ResolvedAgent | null> {
 	console.log(`[Orchestrator] Resolving agent endpoint: ${agentId}`);
 
-	// PRIMARY: Check RegisteredAgent table (includes system, org, and user agents)
-	const registeredAgent = await db.registeredAgent.findFirst({
+	const registeredAgent = await resolveVisibleRegisteredAgent(
+		agentId,
+		userId,
+		organizationId,
+	);
+	return endpointFromRegisteredAgent(registeredAgent, agentId);
+}
+
+/** Whether a registration names the trimmed key, ignoring case. */
+export function registeredAgentNamesKey(
+	agent: { agentId: string; name: string; displayName: string },
+	key: string,
+): boolean {
+	const normalizedKey = key.trim().toLowerCase();
+	return [agent.agentId, agent.name, agent.displayName].some(
+		(value) => value.toLowerCase() === normalizedKey,
+	);
+}
+
+type AgentEndpointRegistration = {
+	status: string;
+	deploymentUrl: string | null;
+	metadata: unknown;
+};
+
+/** Availability shared by explicit routing and endpoint resolution. */
+export function isRegisteredAgentEndpointAvailable(
+	agent: AgentEndpointRegistration,
+): agent is AgentEndpointRegistration & { deploymentUrl: string } {
+	const metadata = agent.metadata as Record<string, unknown> | null;
+	const protocols = metadata?.protocols;
+	return (
+		agent.status === "ACTIVE" &&
+		Boolean(agent.deploymentUrl) &&
+		Array.isArray(protocols) &&
+		protocols.some(
+			(protocol) =>
+				typeof protocol === "string" &&
+				protocol.toLowerCase() === "a2a",
+		)
+	);
+}
+
+/** Scope first, then caller-supplied match rank, oldest registration and id. */
+export function compareRegisteredAgentPrecedence(
+	a: { scope: string; createdAt: Date; id: string },
+	b: { scope: string; createdAt: Date; id: string },
+	aMatchRank: number,
+	bMatchRank: number,
+): number {
+	const rank = (scope: string) =>
+		scope === "SYSTEM" ? 0 : scope === "USER" ? 1 : 2;
+	return (
+		rank(a.scope) - rank(b.scope) ||
+		aMatchRank - bMatchRank ||
+		a.createdAt.getTime() - b.createdAt.getTime() ||
+		(a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+	);
+}
+
+export async function resolveVisibleRegisteredAgent(
+	agentId: string,
+	userId: string,
+	organizationId?: string,
+) {
+	const key = agentId.trim();
+	const filters = {
+		OR: [
+			{ scope: "SYSTEM" },
+			{ userId, scope: "USER" },
+			...(organizationId
+				? [{ organizationId, scope: "ORGANIZATION" }]
+				: []),
+		],
+	};
+	const candidates = await db.registeredAgent.findMany({
 		where: {
 			AND: [
-				{
-					OR: [{ agentId }, { name: agentId }],
-				},
-				{ status: "ACTIVE" },
+				filters,
 				{
 					OR: [
-						{ scope: "SYSTEM" },
-						{ userId, scope: "USER" },
-						...(organizationId
-							? [{ organizationId, scope: "ORGANIZATION" }]
-							: []),
+						{ agentId: key },
+						{ name: key },
+						{
+							scope: "SYSTEM",
+							OR: [
+								{
+									agentId: {
+										equals: key,
+										mode: "insensitive",
+									},
+								},
+								{ name: { equals: key, mode: "insensitive" } },
+								{
+									displayName: {
+										equals: key,
+										mode: "insensitive",
+									},
+								},
+							],
+						},
 					],
 				},
 			],
 		},
 	});
+	const hasNamingSystem = candidates.some(
+		(agent) =>
+			agent.scope === "SYSTEM" && registeredAgentNamesKey(agent, key),
+	);
+	const competing = candidates.filter((agent) =>
+		hasNamingSystem
+			? agent.scope === "SYSTEM" && registeredAgentNamesKey(agent, key)
+			: agent.agentId === key || agent.name === key,
+	);
+	const matchRank = (agent: (typeof candidates)[number]) => {
+		if (agent.agentId === key) {
+			return 0;
+		}
+		if (agent.scope !== "SYSTEM" || agent.name === key) {
+			return 1;
+		}
+		if (
+			[agent.agentId, agent.name].some(
+				(value) => value.toLowerCase() === key.toLowerCase(),
+			)
+		) {
+			return 2;
+		}
+		return 3; // SYSTEM displayName match
+	};
+	const winner = competing.sort((a, b) =>
+		compareRegisteredAgentPrecedence(a, b, matchRank(a), matchRank(b)),
+	)[0];
+	// Keep the winning snapshot for availability logging and capability fallback tags.
+	return winner ?? null;
+}
 
-	if (registeredAgent?.deploymentUrl) {
+export function endpointFromRegisteredAgent(
+	registeredAgent: Awaited<ReturnType<typeof resolveVisibleRegisteredAgent>>,
+	agentId: string,
+): ResolvedAgent | null {
+	if (
+		registeredAgent &&
+		isRegisteredAgentEndpointAvailable(registeredAgent)
+	) {
 		// Warn if health check is stale (older than 5 minutes)
 		const staleThreshold = new Date(Date.now() - 5 * 60 * 1000);
 		if (
@@ -68,23 +192,8 @@ export async function resolveAgentEndpoint(
 			unknown
 		> | null;
 
-		// Check if agent supports A2A protocol from metadata.protocols
-		// This is set during agent registration from the agent card
+		// The shared availability check validated protocol support.
 		const protocols = (metadata?.protocols as string[]) || [];
-		const supportsA2A = protocols.some((p) => p.toLowerCase() === "a2a");
-
-		// Agents MUST support A2A protocol for orchestrator communication
-		// The protocol support must be declared in metadata.protocols (from agent card)
-		if (!supportsA2A) {
-			console.warn(
-				`[Orchestrator] Agent ${registeredAgent.name} does not support A2A protocol. ` +
-					`Protocols: [${protocols.join(", ")}]. ` +
-					`Agents must have "A2A" in their protocols for orchestrator delegation. ` +
-					`Run 'pnpm --filter @repo/database seed:system-agents' to update system agents.`,
-			);
-			// Return null to skip agents that don't support A2A
-			return null;
-		}
 
 		// Resolve the actual runtime URL (handles Docker vs localhost)
 		const resolvedUrl = resolveAgentUrl(
@@ -113,160 +222,27 @@ export async function resolveAgentEndpoint(
 			protocol: "a2a",
 			skills,
 			supportsStreaming: true,
-			isExternal: registeredAgent.scope !== "SYSTEM",
+			isExternal: isExternalAgentScope(registeredAgent.scope),
 		};
 	}
 
-	// Agent not found in database
-	console.warn(`[Orchestrator] Agent not found: ${agentId}`);
-	console.warn(
-		`[Orchestrator] Run 'pnpm --filter @repo/database seed:system-agents' to register system agents`,
-	);
-	return null;
-}
-
-/**
- * Resolve an agent's endpoint along with capability-matched fallback agents.
- *
- * Returns an ordered list of `ResolvedAgent` values: the primary agent first
- * (if found), followed by any fallback agents discovered dynamically from the
- * database by matching the primary agent's capability tags.
- *
- * This replaces the static `fallbackMap` in the recovery manager with a
- * database-driven lookup that automatically reflects newly registered agents.
- *
- * @param primaryAgentId - The agent ID of the preferred/primary agent
- * @param userId         - Required for tenant-scoped DB lookups
- * @param organizationId - Optional; when provided switches to org context
- * @returns Array of resolved agents, primary first. Empty if primary is not
- *          found and no capability-matched fallbacks exist.
- */
-export async function resolveAgentEndpointWithFallbacks(
-	primaryAgentId: string,
-	userId: string,
-	organizationId?: string,
-): Promise<ResolvedAgent[]> {
-	const results: ResolvedAgent[] = [];
-
-	// 1. Resolve the primary agent
-	const primary = await resolveAgentEndpoint(
-		primaryAgentId,
-		userId,
-		organizationId,
-	);
-
-	// Collect the capability tags from the primary agent's DB record so we can
-	// find agents with overlapping capabilities even when the primary is down.
-	let capabilityTags: string[] = [];
-
-	// Tenant-scoped condition — mirrors the XOR pattern used in resolveAgentEndpoint.
-	const scopeConditions = [
-		{ scope: "SYSTEM" as const },
-		{ userId, scope: "USER" as const },
-		...(organizationId
-			? [{ organizationId, scope: "ORGANIZATION" as const }]
-			: []),
-	];
-
-	if (primary) {
-		results.push(primary);
-
-		// Fetch the raw DB record to extract tags/skills from metadata
-		const dbRecord = await db.registeredAgent.findFirst({
-			where: {
-				AND: [
-					{
-						OR: [
-							{ agentId: primaryAgentId },
-							{ name: primaryAgentId },
-						],
-					},
-					{ status: "ACTIVE" },
-					{ OR: scopeConditions },
-				],
-			},
-			select: { metadata: true },
+	if (registeredAgent?.status === "ACTIVE" && registeredAgent.deploymentUrl) {
+		console.warn(
+			`[Orchestrator] Agent ${registeredAgent.name} does not support A2A protocol.`,
+			{ scope: registeredAgent.scope, status: registeredAgent.status },
+		);
+	} else if (registeredAgent) {
+		console.warn("[Orchestrator] Registered agent endpoint unavailable", {
+			agentId: registeredAgent.agentId,
+			scope: registeredAgent.scope,
+			status: registeredAgent.status,
+			hasDeploymentUrl: Boolean(registeredAgent.deploymentUrl),
 		});
-
-		if (dbRecord?.metadata) {
-			const meta = dbRecord.metadata as Record<string, unknown>;
-			const metaTags = (meta.tags as string[] | undefined) ?? [];
-			const skills =
-				(meta.skills as Array<{ id: string }> | undefined) ?? [];
-			capabilityTags = [...metaTags, ...skills.map((s) => s.id)];
-		}
 	} else {
-		// Primary not found — attempt to discover any agent with a name/id
-		// matching agentId so we can still pull capability tags for fallback.
-		// We query without status restriction to recover tags even when STALE.
-		const staleRecord = await db.registeredAgent.findFirst({
-			where: {
-				AND: [
-					{
-						OR: [
-							{ agentId: primaryAgentId },
-							{ name: primaryAgentId },
-						],
-					},
-					{ OR: scopeConditions },
-				],
-			},
-			select: { metadata: true },
-		});
-
-		if (staleRecord?.metadata) {
-			const meta = staleRecord.metadata as Record<string, unknown>;
-			const metaTags = (meta.tags as string[] | undefined) ?? [];
-			const skills =
-				(meta.skills as Array<{ id: string }> | undefined) ?? [];
-			capabilityTags = [...metaTags, ...skills.map((s) => s.id)];
-		}
+		console.warn(`[Orchestrator] Agent not found: ${agentId}`);
+		console.warn(
+			`[Orchestrator] Run 'pnpm --filter @repo/database seed:system-agents' to register system agents`,
+		);
 	}
-
-	// 2. Find fallback agents by capability tags (excludes the primary)
-	if (capabilityTags.length > 0) {
-		const fallbackAgents = await findAgentsByCapabilityTag({
-			tags: capabilityTags,
-			userId,
-			organizationId,
-			excludeAgentId: primaryAgentId,
-		});
-
-		for (const agent of fallbackAgents) {
-			// Skip agents without a deployment URL (shouldn't happen after the
-			// DB query but guard defensively)
-			if (!agent.deploymentUrl) {
-				continue;
-			}
-
-			const meta = agent.metadata as Record<string, unknown> | null;
-			const skills =
-				(meta?.skills as
-					| Array<{ id: string; name: string; description: string }>
-					| undefined) ?? [];
-
-			const resolvedUrl = resolveAgentUrl(
-				agent.agentId,
-				agent.deploymentUrl,
-			);
-
-			results.push({
-				agentId: agent.agentId,
-				name: agent.displayName,
-				deploymentUrl: resolvedUrl,
-				protocol: "a2a",
-				skills,
-				supportsStreaming: true,
-				isExternal: agent.scope !== "SYSTEM",
-			});
-		}
-	}
-
-	console.log(
-		`[Orchestrator] resolveAgentEndpointWithFallbacks(${primaryAgentId}): ` +
-			`found ${results.length} candidate(s) ` +
-			`(primary=${primary ? "yes" : "no"}, fallbacks=${results.length - (primary ? 1 : 0)})`,
-	);
-
-	return results;
+	return null;
 }

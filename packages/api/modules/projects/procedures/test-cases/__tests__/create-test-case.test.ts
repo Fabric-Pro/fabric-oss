@@ -7,9 +7,8 @@ vi.mock("@repo/database", () => ({
 	db: { userStory: { findMany: vi.fn() } },
 	createTestCase: vi.fn(),
 }));
-vi.mock("../../../lib/test-case-context", () => ({
-	syncTestCaseContext: vi.fn(),
-	buildTestCaseContextContent: vi.fn(() => "context-body"),
+vi.mock("@repo/temporal/test-case-context-sync", () => ({
+	mirrorTestCaseToContext: vi.fn(),
 }));
 vi.mock("../../../../../orpc/procedures", () => {
 	const chain: Record<string, unknown> = {};
@@ -34,7 +33,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 import { createTestCase, db } from "@repo/database";
-import { syncTestCaseContext } from "../../../lib/test-case-context";
+import { mirrorTestCaseToContext } from "@repo/temporal/test-case-context-sync";
 import { createTestCaseProcedure } from "../create-test-case";
 
 const handler = (createTestCaseProcedure as unknown as { handler: Function })
@@ -82,7 +81,7 @@ describe("createTestCaseProcedure", () => {
 		).toBe("test-case:create");
 	});
 
-	it("creates the case and mirrors it into the RAG context (syncTestCaseContext)", async () => {
+	it("creates the case and mirrors it into the RAG context (mirrorTestCaseToContext)", async () => {
 		const res = await handler({
 			input: {
 				projectId: "p1",
@@ -93,9 +92,10 @@ describe("createTestCaseProcedure", () => {
 		});
 
 		expect(createTestCase).toHaveBeenCalledTimes(1);
-		expect(syncTestCaseContext).toHaveBeenCalledTimes(1);
-		expect(syncTestCaseContext).toHaveBeenCalledWith(
-			expect.objectContaining({ testCaseId: "tc1", projectId: "p1" }),
+		expect(mirrorTestCaseToContext).toHaveBeenCalledTimes(1);
+		expect(mirrorTestCaseToContext).toHaveBeenCalledWith(
+			expect.objectContaining({ id: "tc1", projectId: "p1" }),
+			expect.objectContaining({ userId: "u1" }),
 		);
 		expect(res).toEqual({ testCase: fakeDetail() });
 	});
@@ -145,6 +145,6 @@ describe("createTestCaseProcedure", () => {
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 
 		expect(createTestCase).not.toHaveBeenCalled();
-		expect(syncTestCaseContext).not.toHaveBeenCalled();
+		expect(mirrorTestCaseToContext).not.toHaveBeenCalled();
 	});
 });

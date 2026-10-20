@@ -110,6 +110,8 @@ patchedDependencies:
   '@better-auth/oauth-provider@1.7.7': 3959345e4eabdec45beafd505dbe8abf931ad58eece4feb073398ae8fb46bf4b
   '@graphql-tools/utils@10.10.1': d20fc7fa1ff651691ab252c082cc06dec88f1e8250b04b9b299107ed56bb56be
   braces@3.0.3: 8b35ecd5f79ae60312b3f2470d458c7f00c870a6e9a450a068654745c435a195
+  prisma-zod-generator@1.31.2: 4e97431559cae4eec3cd2a26f682e4f1a4594a4956b5458b101e5ca61103424b
+  prisma@6.19.3: 0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83
 
 importers:
 
@@ -150,7 +152,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -174,7 +176,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -254,10 +256,10 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       uuid:
         specifier: ^14.0.2
         version: 14.0.2
@@ -297,7 +299,7 @@ importers:
         version: 0.2.141(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -342,7 +344,7 @@ importers:
         version: 2.1.1
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       next:
         specifier: 16.3.8
         version: 16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@20.19.27)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -424,7 +426,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -460,7 +462,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -497,7 +499,7 @@ importers:
         version: 1.70.1(2fca5d1cb33b3400c8ed98a24198278e)
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -536,7 +538,7 @@ importers:
         version: link:../../../packages/utils
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -573,7 +575,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -600,7 +602,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -628,7 +630,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -655,7 +657,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -689,7 +691,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -716,7 +718,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -750,7 +752,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/core':
         specifier: ^1.2.9
         version: 1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
@@ -774,7 +776,7 @@ importers:
         version: link:../../../packages/rag
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -794,12 +796,15 @@ importers:
       typescript:
         specifier: ^5.3.0
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.11
+        version: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@20.19.27)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@29.0.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@20.19.27)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
 
   agents/langchain/weave-readers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@repo/agent-runtime':
         specifier: workspace:*
         version: link:../../../packages/agent-runtime
@@ -814,7 +819,7 @@ importers:
         version: 7.0.140(zod@3.25.76)
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       nunjucks:
         specifier: ^3.2.4
         version: 3.2.4(chokidar@3.6.0)
@@ -848,7 +853,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@repo/agent-runtime':
         specifier: workspace:*
         version: link:../../../packages/agent-runtime
@@ -857,7 +862,7 @@ importers:
         version: link:../../../packages/observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
     devDependencies:
       '@types/node':
         specifier: ^20.10.0
@@ -1095,7 +1100,7 @@ importers:
         version: link:../../packages/utils
       '@scalar/hono-api-reference':
         specifier: ^0.9.23
-        version: 0.9.23(hono@4.13.7)
+        version: 0.9.23(hono@4.13.13)
       '@tanstack/react-query':
         specifier: ^5.90.6
         version: 5.90.6(react@19.2.0)
@@ -1209,7 +1214,7 @@ importers:
         version: 1.1.3
       better-auth:
         specifier: 1.7.7
-        version: 1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11)
+        version: 1.7.7(fccb08799d698ea1a6738939a63a5bf7)
       canvas-confetti:
         specifier: ^1.9.4
         version: 1.9.4
@@ -1237,6 +1242,9 @@ importers:
       docx:
         specifier: ^9.5.0
         version: 9.6.1
+      dompurify:
+        specifier: ^3.4.13
+        version: 3.4.16
       es-toolkit:
         specifier: ^1.41.0
         version: 1.41.0
@@ -1248,7 +1256,7 @@ importers:
         version: 16.8.2(@tailwindcss/oxide@4.1.16)(@types/mdx@2.0.13)(@types/react-dom@19.2.2(@types/react@19.2.2))(@types/react@19.2.2)(fumadocs-core@16.8.2(@mdx-js/mdx@3.1.1(supports-color@10.2.2))(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.2)(lucide-react@0.552.0(react@19.2.0))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(supports-color@10.2.2)(zod@4.1.12))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(tailwindcss@4.1.16)
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       html-to-image:
         specifier: ^1.11.13
         version: 1.11.13
@@ -1504,7 +1512,7 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@langchain/anthropic':
         specifier: ^1.5.9
         version: 1.5.9(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.1.12))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -1547,9 +1555,12 @@ importers:
       '@repo/rag':
         specifier: workspace:*
         version: link:../rag
+      '@repo/utils':
+        specifier: workspace:*
+        version: link:../utils
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       undici:
         specifier: ^8.11.2
         version: 8.11.2
@@ -1617,7 +1628,7 @@ importers:
     dependencies:
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       uuid:
         specifier: ^14.0.2
         version: 14.0.2
@@ -1768,6 +1779,9 @@ importers:
       '@fabricorg/integrations-slack':
         specifier: workspace:*
         version: link:../integrations-slack
+      '@fabricorg/sdk':
+        specifier: workspace:*
+        version: link:../sdk
       '@orpc/client':
         specifier: ^1.15.2
         version: 1.15.2(@opentelemetry/api@1.9.1)
@@ -1866,7 +1880,7 @@ importers:
         version: link:../utils
       '@scalar/hono-api-reference':
         specifier: ^0.9.23
-        version: 0.9.23(hono@4.13.7)
+        version: 0.9.23(hono@4.13.13)
       '@sindresorhus/slugify':
         specifier: ^3.0.0
         version: 3.0.0
@@ -1899,7 +1913,7 @@ importers:
         version: 8.0.3
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1(supports-color@10.2.2)
@@ -1979,10 +1993,10 @@ importers:
     dependencies:
       '@better-auth/oauth-provider':
         specifier: 1.7.7
-        version: 1.7.7(patch_hash=3959345e4eabdec45beafd505dbe8abf931ad58eece4feb073398ae8fb46bf4b)(0d7d4186339e348ae3ab28a2eb96ffe9)
+        version: 1.7.7(patch_hash=3959345e4eabdec45beafd505dbe8abf931ad58eece4feb073398ae8fb46bf4b)(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.7(fccb08799d698ea1a6738939a63a5bf7))(better-call@1.4.0(zod@4.6.5))
       '@better-auth/passkey':
         specifier: 1.7.7
-        version: 1.7.7(9782291aaa2e3dc30fdd996f5e8cb0d3)
+        version: 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.7(fccb08799d698ea1a6738939a63a5bf7))(better-call@1.4.0(zod@4.6.5))(nanostores@1.3.0)
       '@repo/agent-core':
         specifier: workspace:*
         version: link:../agent-core
@@ -2024,7 +2038,7 @@ importers:
         version: 3.0.2
       better-auth:
         specifier: 1.7.7
-        version: 1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11)
+        version: 1.7.7(fccb08799d698ea1a6738939a63a5bf7)
       cookie:
         specifier: ^1.0.2
         version: 1.0.2
@@ -2132,11 +2146,11 @@ importers:
         specifier: ^3.1.0
         version: 3.1.0
       '@prisma/adapter-pg':
-        specifier: ^6.18.0
-        version: 6.18.0
+        specifier: ^6.19.3
+        version: 6.19.3
       '@prisma/client':
-        specifier: 6.18.0
-        version: 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+        specifier: 6.19.3
+        version: 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       '@repo/config':
         specifier: workspace:*
         version: link:../../config
@@ -2157,13 +2171,13 @@ importers:
         version: link:../utils
       better-auth:
         specifier: 1.7.7
-        version: 1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11)
+        version: 1.7.7(fccb08799d698ea1a6738939a63a5bf7)
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
       drizzle-orm:
         specifier: ^0.45.2
-        version: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))
+        version: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))
       pg:
         specifier: ^8.16.0
         version: 8.16.3
@@ -2193,11 +2207,11 @@ importers:
         specifier: ^0.31.6
         version: 0.31.6(supports-color@10.2.2)
       prisma:
-        specifier: 6.18.0
-        version: 6.18.0(magicast@0.3.5)(typescript@5.9.3)
+        specifier: 6.19.3
+        version: 6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)
       prisma-zod-generator:
         specifier: ^1.31.2
-        version: 1.31.2(magicast@0.3.5)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(supports-color@10.2.2)(typescript@5.9.3)(zod@4.1.12)
+        version: 1.31.2(patch_hash=4e97431559cae4eec3cd2a26f682e4f1a4594a4956b5458b101e5ca61103424b)(magicast@0.3.5)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(supports-color@10.2.2)(typescript@5.9.3)(zod@4.1.12)
       tsx:
         specifier: ^4.20.6
         version: 4.20.6
@@ -2599,6 +2613,9 @@ importers:
       '@repo/ai':
         specifier: workspace:*
         version: link:../ai
+      '@repo/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@repo/database':
         specifier: workspace:*
         version: link:../database
@@ -2666,13 +2683,13 @@ importers:
     dependencies:
       '@hono/node-server':
         specifier: ^2.0.11
-        version: 2.0.11(hono@4.13.7)
+        version: 2.0.11(hono@4.13.13)
       '@repo/observability':
         specifier: workspace:*
         version: link:../observability
       hono:
         specifier: ^4.13.7
-        version: 4.13.7
+        version: 4.13.13
       shell-quote:
         specifier: ^1.11.0
         version: 1.12.0
@@ -3079,8 +3096,8 @@ importers:
         specifier: ^1.40.0
         version: 1.40.0
       '@prisma/client':
-        specifier: 6.18.0
-        version: 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+        specifier: 6.19.3
+        version: 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       '@qdrant/js-client-rest':
         specifier: ^1.16.2
         version: 1.16.2(typescript@5.9.3)
@@ -3183,9 +3200,15 @@ importers:
       ai:
         specifier: ^7.0.140
         version: 7.0.140(zod@4.3.6)
+      beautiful-mermaid:
+        specifier: ^1.1.3
+        version: 1.1.3
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
+      docx:
+        specifier: ^9.6.1
+        version: 9.6.1
       fast-xml-parser:
         specifier: ^5.11.1
         version: 5.11.1
@@ -3210,6 +3233,9 @@ importers:
       resend:
         specifier: ^6.4.0
         version: 6.4.0(@react-email/render@1.4.0(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
+      sharp:
+        specifier: ^0.35.5
+        version: 0.35.5(@types/node@22.19.0)
       simple-git:
         specifier: 4.0.2
         version: 4.0.2(supports-color@10.2.2)
@@ -3224,8 +3250,8 @@ importers:
         version: 4.3.6
     devDependencies:
       '@prisma/adapter-pg':
-        specifier: ^6.18.0
-        version: 6.18.0
+        specifier: ^6.19.3
+        version: 6.19.3
       '@repo/tsconfig':
         specifier: workspace:*
         version: link:../../tooling/typescript
@@ -7787,11 +7813,11 @@ packages:
   '@preact/signals-core@1.14.4':
     resolution: {integrity: sha512-HNB6HYeYKhQbJ1aKl+YRjrS4+QWHLKX6qKoUsfS/m0vqzsVaEBiZiaKbG/e+NKk2ch5ALQr/ihWaMHxiCuuWHA==}
 
-  '@prisma/adapter-pg@6.18.0':
-    resolution: {integrity: sha512-eBtBOL1z2Sh0Rc2hwa4dmwoNeFs5T69tsA62AkhBvnzNfTcr/YfLeJae/wjNmvRttYDPmdiuhqZCRPNY1+8fOA==}
+  '@prisma/adapter-pg@6.19.3':
+    resolution: {integrity: sha512-ocbvVIP/wX2uJWWLvo1/UK0nH8L5dv4MlE1DddVPID0/VRiEZDguWmAgKLVuPM6BuWTH3wGluZR40VgXb4WjiQ==}
 
-  '@prisma/client@6.18.0':
-    resolution: {integrity: sha512-jnL2I9gDnPnw4A+4h5SuNn8Gc+1mL1Z79U/3I9eE2gbxJG1oSA+62ByPW4xkeDgwE0fqMzzpAZ7IHxYnLZ4iQA==}
+  '@prisma/client@6.19.3':
+    resolution: {integrity: sha512-mKq3jQFhjvko5LTJFHGilsuQs+W+T3Gm451NzuTDGQxwCzwXHYnIu2zGkRoW+Exq3Rob7yp2MfzSrdIiZVhrBg==}
     engines: {node: '>=18.18'}
     peerDependencies:
       prisma: '*'
@@ -7805,8 +7831,14 @@ packages:
   '@prisma/config@6.18.0':
     resolution: {integrity: sha512-rgFzspCpwsE+q3OF/xkp0fI2SJ3PfNe9LLMmuSVbAZ4nN66WfBiKqJKo/hLz3ysxiPQZf8h1SMf2ilqPMeWATQ==}
 
+  '@prisma/config@6.19.3':
+    resolution: {integrity: sha512-CBPT44BjlQxEt8kiMEauji2WHTDoVBOKl7UlewXmUgBPnr/oPRZC3psci5chJnYmH0ivEIog2OU9PGWoki3DLQ==}
+
   '@prisma/debug@6.18.0':
     resolution: {integrity: sha512-PMVPMmxPj0ps1VY75DIrT430MoOyQx9hmm174k6cmLZpcI95rAPXOQ+pp8ANQkJtNyLVDxnxVJ0QLbrm/ViBcg==}
+
+  '@prisma/debug@6.19.3':
+    resolution: {integrity: sha512-ljkJ+SgpXNktLG0Q/n4JGYCkKf0f8oYLyjImS2I8e2q2WCfdRRtWER062ZV/ixaNP2M2VKlWXVJiGzZaUgbKZw==}
 
   '@prisma/dmmf@6.18.0':
     resolution: {integrity: sha512-x0ItbLDxAnciEMFnGUm90Bkpzx2ja5Lp8Lz+9UkepIClZOMC4WvtMUHaMMfCFqfoBb+KUbxa/xV+FJ6EAaw4wQ==}
@@ -7814,14 +7846,26 @@ packages:
   '@prisma/driver-adapter-utils@6.18.0':
     resolution: {integrity: sha512-9wgSriEKs4j1ePxlv1/RNfJV9Gu5rzG37Neshg+DfrCcUY3amroERvTjyR04w5J1THdGdOTgGL9VdJcVaKRMmQ==}
 
+  '@prisma/driver-adapter-utils@6.19.3':
+    resolution: {integrity: sha512-UUxn6VLfKKVqm5n9vexOQgFJ9TCBIxupb7F5FzLQ6iM2VV0WZxhgzbQVqBDsGY+VmQLmqaSoKRusEfy3O5KZpA==}
+
   '@prisma/engines-version@6.18.0-8.34b5a692b7bd79939a9a2c3ef97d816e749cda2f':
     resolution: {integrity: sha512-T7Af4QsJQnSgWN1zBbX+Cha5t4qjHRxoeoWpK4JugJzG/ipmmDMY5S+O0N1ET6sCBNVkf6lz+Y+ZNO9+wFU8pQ==}
+
+  '@prisma/engines-version@7.1.1-3.c2990dca591cba766e3b7ef5d9e8a84796e47ab7':
+    resolution: {integrity: sha512-03bgb1VD5gvuumNf+7fVGBzfpJPjmqV423l/WxsWk2cNQ42JD0/SsFBPhN6z8iAvdHs07/7ei77SKu7aZfq8bA==}
 
   '@prisma/engines@6.18.0':
     resolution: {integrity: sha512-i5RzjGF/ex6AFgqEe2o1IW8iIxJGYVQJVRau13kHPYEL1Ck8Zvwuzamqed/1iIljs5C7L+Opiz5TzSsUebkriA==}
 
+  '@prisma/engines@6.19.3':
+    resolution: {integrity: sha512-RSYxtlYFl5pJ8ZePgMv0lZ9IzVCOdTPOegrs2qcbAEFrBI1G33h6wyC9kjQvo0DnYEhEVY0X4LsuFHXLKQk88g==}
+
   '@prisma/fetch-engine@6.18.0':
     resolution: {integrity: sha512-TdaBvTtBwP3IoqVYoGIYpD4mWlk0pJpjTJjir/xLeNWlwog7Sl3bD2J0jJ8+5+q/6RBg+acb9drsv5W6lqae7A==}
+
+  '@prisma/fetch-engine@6.19.3':
+    resolution: {integrity: sha512-tKtl/qco9Nt7LU5iKhpultD8O4vMCZcU2CHjNTnRrL1QvSUr5W/GcyFPjNL87GtRrwBc7ubXXD9xy4EvLvt8JA==}
 
   '@prisma/generator-helper@6.18.0':
     resolution: {integrity: sha512-kmlCDRRewLwBkHpkAjzyuNHD5ISlDLzUTcTsZbwmjDilQVt/S72xvvCAa+hxY16APTkqbtDYn3p7zL/XFO+C0A==}
@@ -7831,6 +7875,9 @@ packages:
 
   '@prisma/get-platform@6.18.0':
     resolution: {integrity: sha512-uXNJCJGhxTCXo2B25Ta91Rk1/Nmlqg9p7G9GKh8TPhxvAyXCvMNQoogj4JLEUy+3ku8g59cpyQIKFhqY2xO2bg==}
+
+  '@prisma/get-platform@6.19.3':
+    resolution: {integrity: sha512-xFj1VcJ1N3MKooOQAGO0W5tsd0W2QzIvW7DD7c/8H14Zmp4jseeWAITm+w2LLoLrlhoHdPPh0NMZ8mfL6puoHA==}
 
   '@prisma/internals@6.18.0':
     resolution: {integrity: sha512-BLqA1Dk3MEKgYJ6gLSGNHq3dgm+T5qPb0pq4h2iQw1QdaB8aS9tLg/XVRE1HNhARELJmGj2EZw3cckoGMS0NeQ==}
@@ -14492,8 +14539,8 @@ packages:
       hono:
         optional: true
 
-  hono@4.13.7:
-    resolution: {integrity: sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ==}
+  hono@4.13.13:
+    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
     engines: {node: '>=16.9.0'}
 
   hookable@6.1.2:
@@ -16888,8 +16935,8 @@ packages:
     peerDependencies:
       zod: '>=3.25.0 <5'
 
-  prisma@6.18.0:
-    resolution: {integrity: sha512-bXWy3vTk8mnRmT+SLyZBQoC2vtV9Z8u7OHvEu+aULYxwiop/CPiFZ+F56KsNRNf35jw+8wcu8pmLsjxpBxAO9g==}
+  prisma@6.19.3:
+    resolution: {integrity: sha512-++ZJ0ijLrDJF6hNB4t4uxg2br3fC4H9Yc9tcbjr2fcNFP3rh/SBNrAgjhsqBU4Ght8JPrVofG/ZkXfnSfnYsFg==}
     engines: {node: '>=18.18'}
     hasBin: true
     peerDependencies:
@@ -21093,12 +21140,12 @@ snapshots:
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
 
-  '@better-auth/drizzle-adapter@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))':
+  '@better-auth/drizzle-adapter@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)))':
     dependencies:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
     optionalDependencies:
-      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))
+      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))
 
   '@better-auth/kysely-adapter@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(kysely@0.28.17)':
     dependencies:
@@ -21117,35 +21164,35 @@ snapshots:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
 
-  '@better-auth/oauth-provider@1.7.7(patch_hash=3959345e4eabdec45beafd505dbe8abf931ad58eece4feb073398ae8fb46bf4b)(0d7d4186339e348ae3ab28a2eb96ffe9)':
+  '@better-auth/oauth-provider@1.7.7(patch_hash=3959345e4eabdec45beafd505dbe8abf931ad58eece4feb073398ae8fb46bf4b)(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.7(fccb08799d698ea1a6738939a63a5bf7))(better-call@1.4.0(zod@4.6.5))':
     dependencies:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.2
-      better-auth: 1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11)
+      better-auth: 1.7.7(fccb08799d698ea1a6738939a63a5bf7)
       better-call: 1.4.0(zod@4.6.5)
       jose: 6.2.12
       zod: 4.6.5
 
-  '@better-auth/passkey@1.7.7(9782291aaa2e3dc30fdd996f5e8cb0d3)':
+  '@better-auth/passkey@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-auth@1.7.7(fccb08799d698ea1a6738939a63a5bf7))(better-call@1.4.0(zod@4.6.5))(nanostores@1.3.0)':
     dependencies:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.2
       '@simplewebauthn/browser': 13.3.0
       '@simplewebauthn/server': 13.3.3
-      better-auth: 1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11)
+      better-auth: 1.7.7(fccb08799d698ea1a6738939a63a5bf7)
       better-call: 1.4.0(zod@4.6.5)
       nanostores: 1.3.0
       zod: 4.6.5
 
-  '@better-auth/prisma-adapter@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))':
+  '@better-auth/prisma-adapter@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))':
     dependencies:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
       '@better-auth/utils': 0.4.2
     optionalDependencies:
-      '@prisma/client': 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
-      prisma: 6.18.0(magicast@0.3.5)(typescript@5.9.3)
+      '@prisma/client': 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      prisma: 6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)
 
   '@better-auth/telemetry@1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)':
     dependencies:
@@ -21684,7 +21731,7 @@ snapshots:
       '@copilotkit/license-verifier': 0.5.0
       '@copilotkit/shared': 1.70.1(@ag-ui/core@0.0.59)(encoding@0.1.13)
       '@graphql-yoga/plugin-defer-stream': 3.16.2(graphql-yoga@5.16.2(graphql@16.14.2))(graphql@16.14.2)
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       '@langchain/core': 1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.1.12))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)
       '@remix-run/node-fetch-server': 0.13.3
@@ -21701,7 +21748,7 @@ snapshots:
       graphql: 16.14.2
       graphql-scalars: 1.25.0(graphql@16.14.2)
       graphql-yoga: 5.16.2(graphql@16.14.2)
-      hono: 4.13.7
+      hono: 4.13.13
       partial-json: 0.1.7
       phoenix: 1.8.13
       pino: 9.14.0
@@ -21752,7 +21799,7 @@ snapshots:
       '@copilotkit/license-verifier': 0.5.0
       '@copilotkit/shared': 1.70.1(@ag-ui/core@0.0.59)(encoding@0.1.13)
       '@graphql-yoga/plugin-defer-stream': 3.16.2(graphql-yoga@5.16.2(graphql@16.14.2))(graphql@16.14.2)
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       '@langchain/core': 1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.8.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.1.12))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)
       '@remix-run/node-fetch-server': 0.13.3
@@ -21769,7 +21816,7 @@ snapshots:
       graphql: 16.14.2
       graphql-scalars: 1.25.0(graphql@16.14.2)
       graphql-yoga: 5.16.2(graphql@16.14.2)
-      hono: 4.13.7
+      hono: 4.13.13
       partial-json: 0.1.7
       phoenix: 1.8.13
       pino: 9.14.0
@@ -22783,30 +22830,30 @@ snapshots:
 
   '@hexagon/base64@1.1.28': {}
 
-  '@hono/node-server@1.19.17(hono@4.13.7)':
+  '@hono/node-server@1.19.17(hono@4.13.13)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.13
 
-  '@hono/node-server@2.0.11(hono@4.13.7)':
+  '@hono/node-server@2.0.11(hono@4.13.13)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.13
 
-  '@hono/node-server@2.1.1(hono@4.13.7)':
+  '@hono/node-server@2.1.1(hono@4.13.13)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.13
 
-  '@hono/node-ws@1.3.1(@hono/node-server@2.1.1(hono@4.13.7))(bufferutil@4.0.9)(hono@4.13.7)(utf-8-validate@5.0.10)':
+  '@hono/node-ws@1.3.1(@hono/node-server@2.1.1(hono@4.13.13))(bufferutil@4.0.9)(hono@4.13.13)(utf-8-validate@5.0.10)':
     dependencies:
-      '@hono/node-server': 2.1.1(hono@4.13.7)
-      hono: 4.13.7
+      '@hono/node-server': 2.1.1(hono@4.13.13)
+      hono: 4.13.13
       ws: 8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@hono/zod-validator@0.7.6(hono@4.13.7)(zod@4.4.3)':
+  '@hono/zod-validator@0.7.6(hono@4.13.13)(zod@4.4.3)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.13
       zod: 4.4.3
 
   '@hookform/resolvers@5.2.2(react-hook-form@7.66.0(react@19.2.0))':
@@ -23167,9 +23214,9 @@ snapshots:
   '@langchain/langgraph-api@1.4.5(a73b40d30145ae562e051d02bc095706)':
     dependencies:
       '@babel/code-frame': 7.29.7
-      '@hono/node-server': 2.1.1(hono@4.13.7)
-      '@hono/node-ws': 1.3.1(@hono/node-server@2.1.1(hono@4.13.7))(bufferutil@4.0.9)(hono@4.13.7)(utf-8-validate@5.0.10)
-      '@hono/zod-validator': 0.7.6(hono@4.13.7)(zod@4.4.3)
+      '@hono/node-server': 2.1.1(hono@4.13.13)
+      '@hono/node-ws': 1.3.1(@hono/node-server@2.1.1(hono@4.13.13))(bufferutil@4.0.9)(hono@4.13.13)(utf-8-validate@5.0.10)
+      '@hono/zod-validator': 0.7.6(hono@4.13.13)(zod@4.4.3)
       '@langchain/core': 1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@langchain/langgraph': 1.4.14(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(zod@4.4.3)
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -23180,7 +23227,7 @@ snapshots:
       dedent: 1.7.0
       dotenv: 16.6.1
       exit-hook: 4.0.0
-      hono: 4.13.7
+      hono: 4.13.13
       langsmith: 0.8.10(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@4.6.5))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       open: 10.2.0
       semver: 7.8.5
@@ -23207,9 +23254,9 @@ snapshots:
   '@langchain/langgraph-api@1.4.5(e55a10aa145b5a2292e8b305f05bd27b)':
     dependencies:
       '@babel/code-frame': 7.29.7
-      '@hono/node-server': 2.1.1(hono@4.13.7)
-      '@hono/node-ws': 1.3.1(@hono/node-server@2.1.1(hono@4.13.7))(bufferutil@4.0.9)(hono@4.13.7)(utf-8-validate@5.0.10)
-      '@hono/zod-validator': 0.7.6(hono@4.13.7)(zod@4.4.3)
+      '@hono/node-server': 2.1.1(hono@4.13.13)
+      '@hono/node-ws': 1.3.1(@hono/node-server@2.1.1(hono@4.13.13))(bufferutil@4.0.9)(hono@4.13.13)(utf-8-validate@5.0.10)
+      '@hono/zod-validator': 0.7.6(hono@4.13.13)(zod@4.4.3)
       '@langchain/core': 1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@langchain/langgraph': 1.4.14(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(zod@3.25.76)
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.9(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10)))
@@ -23220,7 +23267,7 @@ snapshots:
       dedent: 1.7.0
       dotenv: 16.6.1
       exit-hook: 4.0.0
-      hono: 4.13.7
+      hono: 4.13.13
       langsmith: 0.8.10(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.22.0(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.25.76))(ws@8.21.3(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       open: 10.2.0
       semver: 7.8.5
@@ -23626,8 +23673,8 @@ snapshots:
       '@modelcontextprotocol/sdk': 1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.3.6)
       '@sindresorhus/slugify': 2.2.1
       dotenv: 17.2.3
-      hono: 4.13.7
-      hono-openapi: 1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(zod@4.3.6))(@types/json-schema@7.0.15)(hono@4.13.7)(openapi-types@12.1.3)
+      hono: 4.13.13
+      hono-openapi: 1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(zod@4.3.6))(@types/json-schema@7.0.15)(hono@4.13.13)(openapi-types@12.1.3)
       js-tiktoken: 1.0.21
       json-schema: 0.4.0
       lru-cache: 11.2.2
@@ -23754,7 +23801,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       ajv: 8.18.0
       ajv-formats: 3.0.1
       content-type: 1.0.5
@@ -23764,7 +23811,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.4.1(express@5.2.1(supports-color@10.2.2))
-      hono: 4.13.7
+      hono: 4.13.13
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -23778,7 +23825,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.1.12)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       ajv: 8.18.0
       ajv-formats: 3.0.1
       content-type: 1.0.5
@@ -23788,7 +23835,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.4.1(express@5.2.1(supports-color@10.2.2))
-      hono: 4.13.7
+      hono: 4.13.13
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -23802,7 +23849,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.1)(supports-color@10.2.2)(zod@4.3.6)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       ajv: 8.18.0
       ajv-formats: 3.0.1
       content-type: 1.0.5
@@ -23812,7 +23859,7 @@ snapshots:
       eventsource-parser: 3.1.1
       express: 5.2.1(supports-color@10.2.2)
       express-rate-limit: 8.4.1(express@5.2.1(supports-color@10.2.2))
-      hono: 4.13.7
+      hono: 4.13.13
       jose: 6.2.12
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -25223,17 +25270,17 @@ snapshots:
 
   '@preact/signals-core@1.14.4': {}
 
-  '@prisma/adapter-pg@6.18.0':
+  '@prisma/adapter-pg@6.19.3':
     dependencies:
-      '@prisma/driver-adapter-utils': 6.18.0
+      '@prisma/driver-adapter-utils': 6.19.3
       pg: 8.16.3
       postgres-array: 3.0.4
     transitivePeerDependencies:
       - pg-native
 
-  '@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)':
+  '@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)':
     optionalDependencies:
-      prisma: 6.18.0(magicast@0.3.5)(typescript@5.9.3)
+      prisma: 6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)
       typescript: 5.9.3
 
   '@prisma/config@6.18.0(magicast@0.3.5)':
@@ -25245,7 +25292,18 @@ snapshots:
     transitivePeerDependencies:
       - magicast
 
+  '@prisma/config@6.19.3(magicast@0.3.5)':
+    dependencies:
+      c12: 3.1.0(magicast@0.3.5)
+      deepmerge-ts: 8.0.2
+      effect: 3.21.0
+      empathic: 2.0.0
+    transitivePeerDependencies:
+      - magicast
+
   '@prisma/debug@6.18.0': {}
+
+  '@prisma/debug@6.19.3': {}
 
   '@prisma/dmmf@6.18.0': {}
 
@@ -25253,7 +25311,13 @@ snapshots:
     dependencies:
       '@prisma/debug': 6.18.0
 
+  '@prisma/driver-adapter-utils@6.19.3':
+    dependencies:
+      '@prisma/debug': 6.19.3
+
   '@prisma/engines-version@6.18.0-8.34b5a692b7bd79939a9a2c3ef97d816e749cda2f': {}
+
+  '@prisma/engines-version@7.1.1-3.c2990dca591cba766e3b7ef5d9e8a84796e47ab7': {}
 
   '@prisma/engines@6.18.0':
     dependencies:
@@ -25262,11 +25326,24 @@ snapshots:
       '@prisma/fetch-engine': 6.18.0
       '@prisma/get-platform': 6.18.0
 
+  '@prisma/engines@6.19.3':
+    dependencies:
+      '@prisma/debug': 6.19.3
+      '@prisma/engines-version': 7.1.1-3.c2990dca591cba766e3b7ef5d9e8a84796e47ab7
+      '@prisma/fetch-engine': 6.19.3
+      '@prisma/get-platform': 6.19.3
+
   '@prisma/fetch-engine@6.18.0':
     dependencies:
       '@prisma/debug': 6.18.0
       '@prisma/engines-version': 6.18.0-8.34b5a692b7bd79939a9a2c3ef97d816e749cda2f
       '@prisma/get-platform': 6.18.0
+
+  '@prisma/fetch-engine@6.19.3':
+    dependencies:
+      '@prisma/debug': 6.19.3
+      '@prisma/engines-version': 7.1.1-3.c2990dca591cba766e3b7ef5d9e8a84796e47ab7
+      '@prisma/get-platform': 6.19.3
 
   '@prisma/generator-helper@6.18.0':
     dependencies:
@@ -25279,6 +25356,10 @@ snapshots:
   '@prisma/get-platform@6.18.0':
     dependencies:
       '@prisma/debug': 6.18.0
+
+  '@prisma/get-platform@6.19.3':
+    dependencies:
+      '@prisma/debug': 6.19.3
 
   '@prisma/internals@6.18.0(magicast@0.3.5)(typescript@5.9.3)':
     dependencies:
@@ -26957,10 +27038,10 @@ snapshots:
     dependencies:
       '@scalar/types': 0.4.0
 
-  '@scalar/hono-api-reference@0.9.23(hono@4.13.7)':
+  '@scalar/hono-api-reference@0.9.23(hono@4.13.13)':
     dependencies:
       '@scalar/core': 0.3.21
-      hono: 4.13.7
+      hono: 4.13.13
 
   '@scalar/openapi-types@0.5.1':
     dependencies:
@@ -28648,7 +28729,7 @@ snapshots:
 
   '@types/pg@8.15.6':
     dependencies:
-      '@types/node': 20.19.27
+      '@types/node': 24.10.0
       pg-protocol: 1.10.3
       pg-types: 2.2.0
 
@@ -29061,7 +29142,7 @@ snapshots:
       obug: 2.1.1
       std-env: 4.1.0
       tinyrainbow: 3.1.0
-      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.10.0)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@29.0.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.10.0)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@29.0.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.20.6)(yaml@2.9.0))
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -29810,14 +29891,14 @@ snapshots:
       elkjs: 0.11.0
       entities: 7.0.1
 
-  better-auth@1.7.7(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(drizzle-kit@0.31.6(supports-color@10.2.2))(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0))(pg@8.16.3)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(vitest@4.1.11):
+  better-auth@1.7.7(fccb08799d698ea1a6738939a63a5bf7):
     dependencies:
       '@better-auth/core': 1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0)
-      '@better-auth/drizzle-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)))
+      '@better-auth/drizzle-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)))
       '@better-auth/kysely-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(kysely@0.28.17)
       '@better-auth/memory-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)
       '@better-auth/mongo-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)
-      '@better-auth/prisma-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))
+      '@better-auth/prisma-adapter': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))
       '@better-auth/telemetry': 1.7.7(@better-auth/core@1.7.7(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(@opentelemetry/api@1.9.1)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)
       '@better-auth/utils': 0.4.2
       '@better-fetch/fetch': 1.3.2
@@ -29830,12 +29911,12 @@ snapshots:
       nanostores: 1.3.0
       zod: 4.6.5
     optionalDependencies:
-      '@prisma/client': 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      '@prisma/client': 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       drizzle-kit: 0.31.6(supports-color@10.2.2)
-      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))
+      drizzle-orm: 0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))
       next: 16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@playwright/test@1.56.1)(@types/node@24.10.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(sass@1.51.0)
       pg: 8.16.3
-      prisma: 6.18.0(magicast@0.3.5)(typescript@5.9.3)
+      prisma: 6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)
       react: 19.2.0
       react-dom: 19.2.0(react@19.2.0)
       vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.10.0)(@vitest/coverage-v8@4.1.11)(happy-dom@20.9.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(jsdom@26.1.0(bufferutil@4.0.9)(supports-color@10.2.2)(utf-8-validate@5.0.10))(vite@7.3.6(@types/node@24.10.0)(jiti@2.7.0)(lightningcss@1.30.2)(terser@5.51.2)(tsx@4.21.0)(yaml@2.9.0))
@@ -30843,17 +30924,17 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3)):
+  drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(@prisma/client@6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3))(@types/pg@8.15.6)(@upstash/redis@1.37.0)(kysely@0.28.17)(pg@8.16.3)(postgres@3.4.8)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)):
     optionalDependencies:
       '@cloudflare/workers-types': 4.20260702.1
       '@opentelemetry/api': 1.9.1
-      '@prisma/client': 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      '@prisma/client': 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       '@types/pg': 8.15.6
       '@upstash/redis': 1.37.0
       kysely: 0.28.17
       pg: 8.16.3
       postgres: 3.4.8
-      prisma: 6.18.0(magicast@0.3.5)(typescript@5.9.3)
+      prisma: 6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3)
 
   dset@3.1.4: {}
 
@@ -32535,16 +32616,16 @@ snapshots:
 
   highlightjs-vue@1.0.0: {}
 
-  hono-openapi@1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(zod@4.3.6))(@types/json-schema@7.0.15)(hono@4.13.7)(openapi-types@12.1.3):
+  hono-openapi@1.1.2(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-community/standard-openapi@0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(zod@4.3.6))(@types/json-schema@7.0.15)(hono@4.13.13)(openapi-types@12.1.3):
     dependencies:
       '@standard-community/standard-json': 0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6)
       '@standard-community/standard-openapi': 0.2.9(@standard-community/standard-json@0.3.5(@standard-schema/spec@1.1.0)(@types/json-schema@7.0.15)(effect@3.21.0)(quansync@0.2.11)(zod-to-json-schema@3.25.2(zod@4.3.6))(zod@4.3.6))(@standard-schema/spec@1.1.0)(effect@3.21.0)(openapi-types@12.1.3)(zod@4.3.6)
       '@types/json-schema': 7.0.15
       openapi-types: 12.1.3
     optionalDependencies:
-      hono: 4.13.7
+      hono: 4.13.13
 
-  hono@4.13.7: {}
+  hono@4.13.13: {}
 
   hookable@6.1.2: {}
 
@@ -35459,9 +35540,9 @@ snapshots:
 
   printable-characters@1.0.42: {}
 
-  prisma-zod-generator@1.31.2(magicast@0.3.5)(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(supports-color@10.2.2)(typescript@5.9.3)(zod@4.1.12):
+  prisma-zod-generator@1.31.2(patch_hash=4e97431559cae4eec3cd2a26f682e4f1a4594a4956b5458b101e5ca61103424b)(magicast@0.3.5)(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(supports-color@10.2.2)(typescript@5.9.3)(zod@4.1.12):
     dependencies:
-      '@prisma/client': 6.18.0(prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
+      '@prisma/client': 6.19.3(prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3))(typescript@5.9.3)
       '@prisma/generator-helper': 6.18.0
       '@prisma/internals': 6.18.0(magicast@0.3.5)(typescript@5.9.3)
       '@types/cors': 2.8.19
@@ -35481,10 +35562,10 @@ snapshots:
       - supports-color
       - typescript
 
-  prisma@6.18.0(magicast@0.3.5)(typescript@5.9.3):
+  prisma@6.19.3(patch_hash=0e6e53e427a4f1c57ad42eaa3b3e12bb0c0f3ee05b4871a6943c94e73089af83)(magicast@0.3.5)(typescript@5.9.3):
     dependencies:
-      '@prisma/config': 6.18.0(magicast@0.3.5)
-      '@prisma/engines': 6.18.0
+      '@prisma/config': 6.19.3(magicast@0.3.5)
+      '@prisma/engines': 6.19.3
     optionalDependencies:
       typescript: 5.9.3
     transitivePeerDependencies:

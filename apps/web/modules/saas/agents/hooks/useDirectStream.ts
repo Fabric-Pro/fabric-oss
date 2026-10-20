@@ -93,6 +93,7 @@ export interface UseDirectStreamOptions {
 	 * or workspace surface. A default, never a grant.
 	 */
 	launchWorkspaceId?: string | null;
+	launchFrameId?: string | null;
 	launchSurface?: "artifact" | "workspace" | null;
 	/** Conversation ID - backend will fetch attached workspaces if workspaceIds not provided */
 	conversationId?: string | null;
@@ -452,6 +453,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 		documentId,
 		taskId,
 		launchWorkspaceId,
+		launchFrameId,
 		launchSurface,
 		conversationId,
 		systemPrompt,
@@ -707,6 +709,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						documentId,
 						taskId,
 						workspaceId: launchWorkspaceId ?? undefined,
+						launchFrameId: launchFrameId ?? undefined,
 						surface: launchSurface ?? undefined,
 						approvedToolCall,
 						// Pass conversation ID so backend can fetch attached workspaces if needed
@@ -901,6 +904,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 			projectId,
 			repositoryUrl,
 			launchWorkspaceId,
+			launchFrameId,
 			launchSurface,
 			conversationId,
 			systemPrompt,

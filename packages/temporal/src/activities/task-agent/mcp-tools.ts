@@ -504,11 +504,11 @@ export async function loadMcpConfiguration(
 				});
 			}
 		} catch (error) {
-			console.warn(
-				"Failed to load tools from MCP server:",
-				{ serverName: config.mcpServer.name },
-				error,
-			);
+			console.warn("Failed to load tools from MCP server:", {
+				serverName: config.mcpServer.name,
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			// Continue with other configs
 		}
 	}
@@ -527,7 +527,7 @@ export async function loadMcpConfiguration(
 				if (tool.name === "createSession") {
 					console.log(
 						"[DEBUG loadMcpConfiguration] Sandbox createSession inputSchema from registry:",
-						JSON.stringify(schema),
+						{ details: JSON.stringify(schema) },
 					);
 				}
 				tools.push({

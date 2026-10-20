@@ -79,3 +79,12 @@ export const PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE =
  */
 export const PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE =
 	"project-operations" as const;
+
+/**
+ * Server-side export of client-document Proposals to PDF and Word (Fizzy
+ * #2946). Its own queue with two activity slots: each export runs one
+ * headless Chromium, so the queue bounds how many browsers one worker holds
+ * at a time and keeps a slow print off the generation queues. A queue bounds
+ * concurrency, not memory: every queue still shares one worker process.
+ */
+export const PROPOSAL_EXPORT_TASK_QUEUE = "proposal-export" as const;

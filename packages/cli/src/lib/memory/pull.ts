@@ -8,6 +8,7 @@
  * lock. A file the developer edited is never overwritten or deleted, and a
  * path git tracks is left to git.
  */
+import path from "node:path";
 import type { MemoryFolderFile, MemoryWriteTarget } from "@fabricorg/sdk";
 import {
 	deleteFileSafely,
@@ -129,13 +130,22 @@ export async function pull(
 	}
 	const folders = targets.map((target) => target.folder);
 	const tracked = (await context.git.tracked(folders)) ?? new Set<string>();
+	const acceptRemote = new Set(
+		(options.acceptRemote ?? []).filter(
+			(file) =>
+				path.posix.normalize(file) === file &&
+				folders.some((folder) => file.startsWith(`${folder}/`)),
+		),
+	);
 
-	// Hash only the files a decision depends on: what the server lists and what
-	// the lock holds. Everything else under the folders is the person's.
+	// Hash only the files a decision depends on: what the server lists, what
+	// the lock holds and what the person named. Everything else under the
+	// folders is the person's.
 	const local = new Map<string, string>();
 	const relevant = new Set([
 		...remote.map((file) => file.path),
 		...Object.keys(lock.files),
+		...acceptRemote,
 	]);
 	for (const file of relevant) {
 		const hash = await hashLocalFile(context.root, file);
@@ -149,7 +159,7 @@ export async function pull(
 		local,
 		lock,
 		tracked,
-		acceptRemote: new Set(options.acceptRemote ?? []),
+		acceptRemote,
 	});
 	await applyPull(context, lock, actions, result);
 	await resolveOutbox(context, lock);

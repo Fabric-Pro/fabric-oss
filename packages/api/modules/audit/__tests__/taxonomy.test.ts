@@ -285,7 +285,14 @@ describe("audit.taxonomy handler", () => {
 		// request to write into a write folder admitted, and how it ended;
 		// folder, mode, status and commit or branch, never file content or the
 		// message, ADR-022) = 213.
-		expect(result.actions).toHaveLength(213);
+		// + 1 project.proposal_artifact.export_started (a member or a project
+		// guest started a PDF or Word export of a client-document Proposal;
+		// format, export id and the guest flag, never content, Fizzy #2946)
+		// = 214.
+		expect(result.actions).toHaveLength(214);
+		expect(result.actions).toContain(
+			"project.proposal_artifact.export_started",
+		);
 		expect(result.actions).toContain("project.document_analysis.responded");
 		expect(result.actions).toContain("project.document_analysis.cleared");
 		expect(result.actions).toContain(

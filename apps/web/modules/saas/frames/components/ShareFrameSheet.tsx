@@ -1,5 +1,6 @@
 "use client";
 
+import type { FrameShareScope } from "@repo/database/prisma/zod";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -43,31 +44,15 @@ interface ShareFrameSheetProps {
 	onOpenChange: (open: boolean) => void;
 }
 
-type ShareScope =
-	| "PRIVATE"
-	| "EMAILS_ONLY"
-	| "WORKSPACE_AND_EMAILS"
-	| "PROJECT"
-	| "PUBLIC";
-
 /**
  * PROJECT is assigned by the backend when an agent creates a project frame
  * (spike demo); `frames.share` does not accept it, so it is shown as the
  * current state but cannot be selected here.
  */
-type SelectableShareScope = Exclude<ShareScope, "PROJECT">;
-
-interface _SharingGrant {
-	id: string;
-	email: string | null;
-	invitedBy: string;
-	invitedAt: string;
-	lastAccessedAt: string | null;
-	accessCount: number;
-}
+type SelectableShareScope = Exclude<FrameShareScope, "PROJECT">;
 
 const SCOPE_OPTIONS: {
-	value: ShareScope;
+	value: FrameShareScope;
 	label: string;
 	description: string;
 	icon: React.ReactNode;
@@ -75,13 +60,13 @@ const SCOPE_OPTIONS: {
 	{
 		value: "PRIVATE",
 		label: "Private",
-		description: "Only you can access this frame",
+		description: "No additional sharing",
 		icon: <Lock className="h-4 w-4" />,
 	},
 	{
 		value: "EMAILS_ONLY",
 		label: "Email invites only",
-		description: "Only people you invite by email can view",
+		description: "People you invite by email can also view",
 		icon: <Mail className="h-4 w-4" />,
 	},
 	{
@@ -118,7 +103,11 @@ export function ShareFrameSheet({
 	const [copied, setCopied] = useState(false);
 
 	// Fetch grants and current scope
-	const { data: grantsData, isLoading: _isLoadingGrants } = useQuery({
+	const {
+		data: grantsData,
+		isError: grantsError,
+		refetch: refetchGrants,
+	} = useQuery({
 		queryKey: ["frame", "grants", frameId],
 		queryFn: () =>
 			orpcClient.frames.listGrants({
@@ -165,10 +154,10 @@ export function ShareFrameSheet({
 			});
 			toast({ title: "Invitations sent" });
 		},
-		onError: (error: any) => {
+		onError: (error) => {
 			toast({
 				title: "Failed to send invitations",
-				description: error?.message,
+				description: error.message,
 				variant: "destructive",
 			});
 		},
@@ -190,7 +179,7 @@ export function ShareFrameSheet({
 		},
 	});
 
-	const currentScope = (grantsData?.shareScope ?? "PRIVATE") as ShareScope;
+	const currentScope = grantsError ? undefined : grantsData?.shareScope;
 	// PROJECT only makes sense for project-scoped frames; keep it visible when
 	// it is already the current scope so the label is never blank.
 	const scopeOptions = SCOPE_OPTIONS.filter(
@@ -241,183 +230,216 @@ export function ShareFrameSheet({
 					</SheetDescription>
 				</SheetHeader>
 
-				<div className="space-y-6 py-6">
-					{/* Scope Selection */}
-					<div className="space-y-4">
-						<Label>Access Level</Label>
-						<RadioGroup
-							value={currentScope}
-							onValueChange={(value) => {
-								if (value === "PROJECT") {
-									return;
-								}
-								shareMutation.mutate(
-									value as SelectableShareScope,
-								);
-							}}
-							className="space-y-3"
+				{grantsError && (
+					<div role="alert" className="space-y-3 py-6">
+						<p>
+							Unable to load sharing settings. Current access
+							could not be verified.
+						</p>
+						<Button
+							variant="outline"
+							onClick={() => refetchGrants()}
 						>
-							{scopeOptions.map((option) => (
-								<div
-									key={option.value}
-									className="flex items-start space-x-3"
-								>
-									<RadioGroupItem
-										value={option.value}
-										id={option.value}
-										className="mt-1"
-										disabled={option.value === "PROJECT"}
-									/>
-									<div className="flex-1">
-										<Label
-											htmlFor={option.value}
-											className="flex items-center gap-2 font-medium cursor-pointer"
-										>
-											{option.icon}
-											{option.label}
-										</Label>
-										<p className="text-sm text-muted-foreground mt-1">
-											{option.description}
-										</p>
-									</div>
-								</div>
-							))}
-						</RadioGroup>
+							Try again
+						</Button>
 					</div>
-
-					{/* Share Link (for PUBLIC) */}
-					{currentScope === "PUBLIC" && (
-						<div className="space-y-2">
-							<Label>Share Link</Label>
-							<div className="flex gap-2">
-								<Input
-									value={`${window.location.origin}/share/frame/${frameId}`}
-									readOnly
-									className="flex-1"
-								/>
-								<Button
-									variant="outline"
-									size="icon"
-									onClick={handleCopyLink}
-								>
-									{copied ? (
-										<Check className="h-4 w-4" />
-									) : (
-										<Copy className="h-4 w-4" />
-									)}
-								</Button>
-							</div>
-						</div>
-					)}
-
-					{/* Email Invites */}
-					{showEmailSection && (
+				)}
+				{!grantsError && !grantsData && (
+					<p role="status" className="py-6 text-muted-foreground">
+						Loading sharing settings…
+					</p>
+				)}
+				{currentScope && (
+					<div className="space-y-6 py-6">
+						{/* Scope Selection */}
 						<div className="space-y-4">
+							<Label>Access Level</Label>
+							<RadioGroup
+								value={currentScope}
+								onValueChange={(value) => {
+									const option = scopeOptions.find(
+										(option) => option.value === value,
+									);
+									if (option && option.value !== "PROJECT") {
+										shareMutation.mutate(option.value);
+									}
+								}}
+								className="space-y-3"
+							>
+								{scopeOptions.map((option) => (
+									<div
+										key={option.value}
+										className="flex items-start space-x-3"
+									>
+										<RadioGroupItem
+											value={option.value}
+											id={option.value}
+											className="mt-1"
+											disabled={
+												option.value === "PROJECT"
+											}
+										/>
+										<div className="flex-1">
+											<Label
+												htmlFor={option.value}
+												className="flex items-center gap-2 font-medium cursor-pointer"
+											>
+												{option.icon}
+												{option.label}
+											</Label>
+											<p className="text-sm text-muted-foreground mt-1">
+												{option.description}
+											</p>
+										</div>
+									</div>
+								))}
+							</RadioGroup>
+						</div>
+
+						{/* Share Link (for PUBLIC) */}
+						{currentScope === "PUBLIC" && (
 							<div className="space-y-2">
-								<Label>Invite by Email</Label>
+								<Label>Share Link</Label>
 								<div className="flex gap-2">
 									<Input
-										placeholder="Enter emails (comma or newline separated)"
-										value={emailInput}
-										onChange={(e) =>
-											setEmailInput(e.target.value)
-										}
+										value={`${window.location.origin}/share/frame/${frameId}`}
+										readOnly
 										className="flex-1"
-										onKeyDown={(e) => {
-											if (e.key === "Enter") {
-												handleAddEmails();
-											}
-										}}
 									/>
 									<Button
-										onClick={handleAddEmails}
-										disabled={inviteMutation.isPending}
+										variant="outline"
+										size="icon"
+										onClick={handleCopyLink}
 									>
-										{inviteMutation.isPending
-											? "Adding..."
-											: "Add"}
+										{copied ? (
+											<Check className="h-4 w-4" />
+										) : (
+											<Copy className="h-4 w-4" />
+										)}
 									</Button>
 								</div>
 							</div>
+						)}
 
-							{/* Grant List */}
-							{grants.length > 0 && (
+						{/* Email Invites */}
+						{showEmailSection && (
+							<div className="space-y-4">
 								<div className="space-y-2">
-									<Label className="text-sm text-muted-foreground">
-										People with access ({grants.length})
-									</Label>
-									<div className="space-y-2 max-h-60 overflow-y-auto">
-										{grants.map((grant) => (
-											<div
-												key={grant.id}
-												className="flex items-center justify-between p-2 rounded-lg border bg-card"
-											>
-												<div className="min-w-0 flex-1">
-													<p className="font-medium text-sm truncate">
-														{grant.email}
-													</p>
-													<p className="text-xs text-muted-foreground">
-														Invited{" "}
-														{formatDistanceToNow(
-															new Date(
-																grant.invitedAt,
-															),
-															{
-																addSuffix: true,
-															},
-														)}
-														{grant.accessCount >
-															0 &&
-															` • Accessed ${grant.accessCount} time${grant.accessCount > 1 ? "s" : ""}`}
-													</p>
-												</div>
-												<Button
-													variant="ghost"
-													size="icon"
-													className="h-8 w-8 shrink-0"
-													onClick={() =>
-														grant.email &&
-														revokeMutation.mutate(
-															grant.email,
-														)
-													}
-													disabled={
-														revokeMutation.isPending
-													}
-												>
-													<X className="h-4 w-4" />
-												</Button>
-											</div>
-										))}
+									<Label>Invite by Email</Label>
+									<div className="flex gap-2">
+										<Input
+											placeholder="Enter emails (comma or newline separated)"
+											value={emailInput}
+											onChange={(e) =>
+												setEmailInput(e.target.value)
+											}
+											className="flex-1"
+											onKeyDown={(e) => {
+												if (e.key === "Enter") {
+													handleAddEmails();
+												}
+											}}
+										/>
+										<Button
+											onClick={handleAddEmails}
+											disabled={inviteMutation.isPending}
+										>
+											{inviteMutation.isPending
+												? "Adding..."
+												: "Add"}
+										</Button>
 									</div>
 								</div>
-							)}
-						</div>
-					)}
 
-					{/* Info Card */}
-					<Card className="bg-muted/50">
-						<CardHeader className="pb-2">
-							<CardTitle className="text-sm font-medium">
-								Sharing Information
-							</CardTitle>
-						</CardHeader>
-						<CardContent>
-							<CardDescription className="text-xs">
-								{currentScope === "PRIVATE" &&
-									"This frame is completely private. Only you can access it."}
-								{currentScope === "EMAILS_ONLY" &&
-									"Only the people you invite by email will be able to access this frame."}
-								{currentScope === "WORKSPACE_AND_EMAILS" &&
-									"All organization members and invited emails can access this frame."}
-								{currentScope === "PROJECT" &&
-									"Accepted members of this frame's project can access it. Same-organization users who are not project members cannot."}
-								{currentScope === "PUBLIC" &&
-									"Anyone with the link can view this frame without signing in."}
-							</CardDescription>
-						</CardContent>
-					</Card>
-				</div>
+								{/* Grant List */}
+								{grants.length > 0 && (
+									<div className="space-y-2">
+										<Label className="text-sm text-muted-foreground">
+											People with access ({grants.length})
+										</Label>
+										<div className="space-y-2 max-h-60 overflow-y-auto">
+											{grants.map((grant) => (
+												<div
+													key={grant.id}
+													className="flex items-center justify-between p-2 rounded-lg border bg-card"
+												>
+													<div className="min-w-0 flex-1">
+														<p className="font-medium text-sm truncate">
+															{grant.email}
+														</p>
+														<p className="text-xs text-muted-foreground">
+															Invited{" "}
+															{formatDistanceToNow(
+																new Date(
+																	grant.invitedAt,
+																),
+																{
+																	addSuffix: true,
+																},
+															)}
+															{grant.accessCount >
+																0 &&
+																` • Accessed ${grant.accessCount} time${grant.accessCount > 1 ? "s" : ""}`}
+														</p>
+													</div>
+													<Button
+														variant="ghost"
+														size="icon"
+														className="h-8 w-8 shrink-0"
+														onClick={() =>
+															grant.email &&
+															revokeMutation.mutate(
+																grant.email,
+															)
+														}
+														disabled={
+															revokeMutation.isPending
+														}
+													>
+														<X className="h-4 w-4" />
+													</Button>
+												</div>
+											))}
+										</div>
+									</div>
+								)}
+							</div>
+						)}
+
+						{/* Info Card */}
+						<Card className="bg-muted/50">
+							<CardHeader className="pb-2">
+								<CardTitle className="text-sm font-medium">
+									Sharing Information
+								</CardTitle>
+							</CardHeader>
+							<CardContent>
+								<CardDescription className="text-xs">
+									{currentScope === "PRIVATE" &&
+										(isProjectFrame
+											? "No additional sharing is enabled for this frame."
+											: "This frame is completely private. Only you can access it.")}
+									{currentScope === "EMAILS_ONLY" &&
+										"You and the people you invite by email can access this frame."}
+									{currentScope === "WORKSPACE_AND_EMAILS" &&
+										"All organization members and invited emails can access this frame."}
+									{currentScope === "PROJECT" &&
+										"Accepted members of this frame's project can access it. Same-organization users who are not project members cannot."}
+									{currentScope === "PUBLIC" &&
+										"Anyone with the link can view this frame without signing in."}
+								</CardDescription>
+								{isProjectFrame && (
+									<p className="mt-2 text-xs text-muted-foreground">
+										You and accepted project members,
+										including project-scoped guests, retain
+										access regardless of this sharing
+										setting.
+									</p>
+								)}
+							</CardContent>
+						</Card>
+					</div>
+				)}
 			</SheetContent>
 		</Sheet>
 	);

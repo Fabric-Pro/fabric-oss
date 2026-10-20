@@ -16,7 +16,6 @@ import { CapabilityGateBanner } from "@saas/projects/components/capability-gates
 import { CapabilityRestoreControl } from "@saas/projects/components/capability-gates/CapabilityRestoreControl";
 import { useCapabilityGate } from "@saas/projects/components/capability-gates/useCapabilityGates";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
-import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -44,48 +43,19 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, SparklesIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CompanyContextNotice } from "./CompanyContextNotice";
 import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
-import { getOrpcCode } from "./field-mapping/orpc-error";
+import { describeGenerationRefusal } from "./proposal-artifact/generation-feedback";
+import { ProposalPromptField } from "./proposal-artifact/ProposalPromptField";
 
 type DocumentType = (typeof DOCUMENT_TYPE_OPTIONS)[number]["value"];
 
 const DEFAULT_DOCUMENT_TYPE: DocumentType = "GENERAL";
-
-/**
- * The `data.code` of the create call's refusal when nothing is bound to the
- * client proposal (Main) prompt while the Proposal artifact is on (Fizzy
- * #2801) — `PROPOSAL_PROMPT_NOT_BOUND` in
- * `@repo/temporal/proposal-artifact-types`, spelled out because this bundle
- * takes no runtime values from `@repo/temporal`.
- */
-const PROPOSAL_PROMPT_NOT_BOUND = "PROPOSAL_PROMPT_NOT_BOUND";
-
-/**
- * The server's own message when it refused the create because the Proposal's
- * client prompt is not bound: fixed text that tells the person an
- * organization admin has to bind it. Null for every other failure.
- */
-function proposalPromptRefusalMessage(error: unknown): string | null {
-	if (getOrpcCode(error) !== "PRECONDITION_FAILED") {
-		return null;
-	}
-	const { data, message } = error as { data?: unknown; message?: unknown };
-	const code =
-		typeof data === "object" && data !== null
-			? (data as { code?: unknown }).code
-			: undefined;
-	return code === PROPOSAL_PROMPT_NOT_BOUND &&
-		typeof message === "string" &&
-		message.trim() !== ""
-		? message
-		: null;
-}
 
 /**
  * The document types whose generation has a capability gate (Fizzy #1930).
@@ -216,6 +186,12 @@ function resolveAiAvailability({
  *                          client keeps watching rather than offering a retry
  *                          that could race a live run. It is not a new failure
  *                          path, so it keeps the copy it had.
+ *  - `liveRunUnknown`    — only a document whose row already names a live
+ *                          run can earn it (a client-document Proposal's join,
+ *                          Fizzy #2946), and a document created moments ago
+ *                          names none, so this route never returns it. It is
+ *                          left to the default branch rather than given copy
+ *                          no one can see.
  *
  * The document's status is read, never inferred. `alreadyInProgress` is named
  * after the run, not after a state, precisely because the live run may already
@@ -223,7 +199,7 @@ function resolveAiAvailability({
  * generation is waiting while the model is mid-sentence.
  *
  * The discriminant is read as a plain string rather than as the server's union
- * so that a fourth arm — or a response from a deploy this bundle predates —
+ * so that a new arm — or a response from a deploy this bundle predates —
  * reaches the default branch at runtime instead of being a compile error here
  * and a dead toast there.
  */
@@ -368,46 +344,11 @@ async function uploadSourceFile({
 
 const PROMPT_TRIGGER_ID = "create-document-prompt";
 
-/**
- * The prompt field of a Proposal (Fizzy #2801). With the `PROPOSAL_ARTIFACT`
- * rollout gate on, a Proposal's Main document is always written from the
- * client proposal prompt bound in the library, and the run ignores any prompt
- * a request names — so a selector would offer a choice the run never honours.
- * The field says where the prompt comes from instead. With the gate off it is
- * the ordinary selector, handed in as `selector`.
- *
- * Its own component, mounted only while the chosen type is a Proposal, so the
- * flag is read only where it decides something.
- */
-function ProposalPromptField({
-	promptLabel,
-	selector,
-}: {
-	promptLabel: string;
-	selector: ReactNode;
-}) {
-	const t = useTranslations("projects.proposalArtifactEntry");
-	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
-	if (!proposalArtifactEnabled) {
-		return selector;
-	}
-	return (
-		<div data-testid="proposal-library-prompt">
-			<p className="mb-2 font-medium text-sm leading-none">
-				{promptLabel}
-			</p>
-			<p className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm">
-				{t("libraryPrompt")}
-			</p>
-			<p className="mt-1 text-muted-foreground text-xs">
-				{t("libraryPromptHint")}
-			</p>
-		</div>
-	);
-}
-
 export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const t = useTranslations("projects.documents.create");
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
 	const router = useRouter();
 	const queryClient = useQueryClient();
 	const { organizationId, organizationSlug, basePath } =
@@ -855,12 +796,24 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 			// Deliberately generic. The server already replaces internal
 			// failures with a fixed message, and anything that reaches here
 			// from the transport has no business being read by a user. The
-			// one exception is the unbound Proposal prompt refusal: its text
-			// is the server's own and says who can fix it.
-			toast.error(
-				proposalPromptRefusalMessage(error) ?? t("createFailed"),
-				{ id: toastId },
-			);
+			// one exception is the unbound Proposal prompt refusal (Fizzy
+			// #2946): it says, in the reader's locale, who can bind Client
+			// proposal (Main), and links to it in the Prompt Library.
+			const feedback = describeGenerationRefusal(error, {
+				t: tFeedback,
+				basePath,
+			});
+			if (feedback) {
+				toast.error(feedback.message, {
+					id: toastId,
+					action: {
+						label: feedback.catalog.label,
+						onClick: () => router.push(feedback.catalog.href),
+					},
+				});
+			} else {
+				toast.error(t("createFailed"), { id: toastId });
+			}
 		} finally {
 			setIsOrchestrating(false);
 		}

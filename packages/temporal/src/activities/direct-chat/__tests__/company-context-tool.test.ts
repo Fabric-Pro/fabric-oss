@@ -495,3 +495,18 @@ describe("the activity's other callers", () => {
 		expect(source).not.toContain("companyContextAdvisor");
 	});
 });
+
+it.each(["conversation-example", undefined])(
+	"attributes company search only to the caller's conversation (%s)",
+	async (usageConversationId) => {
+		await executeCompanyContextSearch({
+			userId: USER,
+			organizationId: ORG,
+			query: "company work",
+			usageConversationId,
+		});
+		expect(mocks.generateEmbedding.mock.calls[0][1].conversationId).toBe(
+			usageConversationId,
+		);
+	},
+);

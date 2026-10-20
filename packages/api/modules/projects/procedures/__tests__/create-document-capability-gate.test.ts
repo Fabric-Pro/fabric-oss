@@ -31,6 +31,7 @@ const { mocks, state } = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	createDocument: vi.fn(),
 	hasProjectAccess: vi.fn(),
+	isProposalClientDocument: async () => false,
 	db: { project: { findUnique: mocks.projectFindUnique } },
 }));
 

@@ -48,6 +48,7 @@ vi.mock("@saas/organizations/lib/api", () => ({
 	useRestorableOrganizationsQuery: () => ({ data: undefined }),
 	activeOrganizationQueryKey: (slug: string) => ["active-org", slug],
 	useActiveOrganizationQuery: () => ({ data: undefined }),
+	useOrganizationListQuery: () => ({ data: undefined }),
 }));
 
 vi.mock("@shared/hooks/router", () => ({

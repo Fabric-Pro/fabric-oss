@@ -154,7 +154,10 @@ async function removeObject(key: string): Promise<void> {
 		const { deleteFile } = await storage();
 		await deleteFile(key, { bucket: await pageFilesBucket() });
 	} catch (error) {
-		console.warn("[MCP Gateway] page file cleanup failed:", error);
+		console.warn("[MCP Gateway] page file cleanup failed:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 }
 

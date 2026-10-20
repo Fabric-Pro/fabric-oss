@@ -4,6 +4,7 @@
  * Shared type definitions for the search activity modules.
  */
 
+import type { SecondaryUsageInput } from "../../../workflows/orchestrator/usage-attribution";
 import type { TurnScope } from "../turn-dispatch";
 import type { ToolCategory } from "./tool-index";
 
@@ -11,7 +12,7 @@ import type { ToolCategory } from "./tool-index";
 // Tool Search Types
 // =============================================================================
 
-export interface SearchAvailableToolsInput {
+export interface SearchAvailableToolsInput extends SecondaryUsageInput {
 	/** Natural language description of what you need to do */
 	query: string;
 	/** Original user query before the LLM rewrote/search-normalized it */
@@ -97,7 +98,7 @@ export interface SearchAvailableToolsOutput {
 // Agent Search Types
 // =============================================================================
 
-export interface SearchAvailableAgentsInput {
+export interface SearchAvailableAgentsInput extends SecondaryUsageInput {
 	/** Natural language description of what you need to do */
 	query: string;
 	/** Optional category filter */
@@ -148,7 +149,7 @@ export interface SearchAvailableAgentsOutput {
 // Workflow Search Types
 // =============================================================================
 
-export interface SearchAvailableWorkflowsInput {
+export interface SearchAvailableWorkflowsInput extends SecondaryUsageInput {
 	/** Natural language description of what you need to do */
 	query: string;
 	/** Maximum number of workflows to return */
@@ -186,7 +187,7 @@ export interface SearchAvailableWorkflowsOutput {
 // Integration Search Types
 // =============================================================================
 
-export interface SearchAvailableIntegrationsInput {
+export interface SearchAvailableIntegrationsInput extends SecondaryUsageInput {
 	/** Natural language description of what you need to do */
 	query: string;
 	/** Optional provider to filter by */

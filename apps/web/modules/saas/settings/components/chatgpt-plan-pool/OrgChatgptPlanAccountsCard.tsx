@@ -1,5 +1,6 @@
 "use client";
 
+import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -22,12 +23,8 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
-import { InfoIcon } from "lucide-react";
+import { AlertTriangleIcon } from "lucide-react";
+import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -43,6 +40,8 @@ import {
 	useTestChatgptPlanPoolAccount,
 	useUpdateChatgptPlanPoolAccount,
 } from "./chatgpt-plan-pool-queries";
+import { CHATGPT_PLAN_TERMS_ANCHOR } from "./chatgpt-plan-terms-anchor";
+import { InfoTip } from "./InfoTip";
 
 function clock(date: Date | string): string {
 	return new Intl.DateTimeFormat(undefined, {
@@ -104,22 +103,38 @@ const MEMBER_SHARE_OPTIONS = [10, 20, 25, 33, 50, 75];
 /** No cap is stored as null and shown as all of the window. */
 const MEMBER_SHARE_ALL = 100;
 
-/** A focusable info mark whose tooltip explains a setting. */
-function InfoTip({ setting, text }: { setting: string; text: string }) {
+/**
+ * Connected accounts serve nothing until an owner accepts the pooling terms
+ * on AI Models, and nothing else on this card says so: every account still
+ * reads Active.
+ */
+function TermsPendingNotice({
+	organizationSlug,
+	viewerIsOwner,
+}: {
+	organizationSlug: string;
+	viewerIsOwner: boolean;
+}) {
 	const t = useTranslations("settings.chatgptPlanPool");
 	return (
-		<Tooltip>
-			<TooltipTrigger asChild>
-				<button
-					aria-label={t("tooltipLabel", { setting })}
-					className="inline-flex rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-					type="button"
-				>
-					<InfoIcon aria-hidden className="size-3.5" />
-				</button>
-			</TooltipTrigger>
-			<TooltipContent className="max-w-xs">{text}</TooltipContent>
-		</Tooltip>
+		<Alert data-testid="chatgpt-plan-pool-terms-pending" variant="warning">
+			<AlertTriangleIcon className="size-4" />
+			<AlertTitle>{t("termsPendingTitle")}</AlertTitle>
+			<AlertDescription className="space-y-2">
+				<p>{t("termsPendingBody")}</p>
+				{viewerIsOwner ? (
+					<Button asChild size="sm" variant="outline">
+						<Link
+							href={`/app/${organizationSlug}/settings/ai-models#${CHATGPT_PLAN_TERMS_ANCHOR}`}
+						>
+							{t("termsPendingReview")}
+						</Link>
+					</Button>
+				) : (
+					<p className="font-medium">{t("termsPendingOwnerOnly")}</p>
+				)}
+			</AlertDescription>
+		</Alert>
 	);
 }
 
@@ -526,11 +541,17 @@ export function OrgChatgptPlanAccountsCard({
 	accounts,
 	organizationSlug,
 	viewerHasOwnPlan = false,
+	terms = { accepted: true, viewerIsOwner: false },
 }: {
 	accounts: ChatgptPlanPoolAccount[];
 	organizationSlug: string;
 	/** A connector with an own plan must disconnect it first (Fizzy #2770 I1). */
 	viewerHasOwnPlan?: boolean;
+	/**
+	 * The pooling terms, as the pool query reports them. Until an owner
+	 * accepts them the pool serves nothing, however active its accounts look.
+	 */
+	terms?: { accepted: boolean; viewerIsOwner: boolean };
 }) {
 	const t = useTranslations("settings.chatgptPlanPool");
 	const tShare = useTranslations("settings.chatgptPlan.share");
@@ -572,6 +593,13 @@ export function OrgChatgptPlanAccountsCard({
 					{t("accountsDescription")}
 				</p>
 			</div>
+
+			{accounts.length > 0 && !terms.accepted ? (
+				<TermsPendingNotice
+					organizationSlug={organizationSlug}
+					viewerIsOwner={terms.viewerIsOwner}
+				/>
+			) : null}
 
 			{accounts.length === 0 ? (
 				<div className="space-y-3">

@@ -1,4 +1,6 @@
+import { ORPCError } from "@orpc/client";
 import { getFrameById, listSharingGrants } from "@repo/database";
+import { FrameShareScopeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
 	Permissions,
@@ -23,12 +25,7 @@ const outputSchema = z.object({
 			accessCount: z.number(),
 		}),
 	),
-	shareScope: z.enum([
-		"PRIVATE",
-		"EMAILS_ONLY",
-		"WORKSPACE_AND_EMAILS",
-		"PUBLIC",
-	]),
+	shareScope: FrameShareScopeSchema,
 });
 
 /**
@@ -62,7 +59,7 @@ export const listFrameGrantsProcedure = tenantProtectedProcedure
 		});
 
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		// Get sharing grants
@@ -77,10 +74,6 @@ export const listFrameGrantsProcedure = tenantProtectedProcedure
 				lastAccessedAt: g.lastAccessedAt?.toISOString() ?? null,
 				accessCount: g.accessCount,
 			})),
-			shareScope: frame.shareScope as
-				| "PRIVATE"
-				| "EMAILS_ONLY"
-				| "WORKSPACE_AND_EMAILS"
-				| "PUBLIC",
+			shareScope: frame.shareScope,
 		};
 	});

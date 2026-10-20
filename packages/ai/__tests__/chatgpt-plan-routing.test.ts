@@ -166,7 +166,7 @@ beforeEach(() => {
 			override?: string;
 		}) =>
 			override === "gpt-6.1-sol"
-				? { model: "gpt-6.1-sol" }
+				? { model: "gpt-6.1-sol", pick: override }
 				: taskType === "SIMPLE"
 					? { model: "gpt-5.6-luna", reasoningEffort: "low" }
 					: { model: "gpt-6-astra", reasoningEffort: "medium" },
@@ -216,14 +216,17 @@ describe("getAIModelWithMetadata — ChatGPT plan routing", () => {
 		);
 		expect(resolved.metadata.provider).toBe("OPENAI_CHATGPT_PLAN");
 		expect(resolved.metadata.modelString).toBe("gpt-6.1-sol");
+		// The exchange pins a delegated agent's model on this (Fizzy #3122).
+		expect(resolved.metadata.planPick).toBe("gpt-6.1-sol");
 		expect(mocks.resolvePlanModel).toHaveBeenLastCalledWith(
 			expect.objectContaining({ override: "gpt-6.1-sol" }),
 		);
 
-		await getAIModelWithMetadata(
+		const unpicked = await getAIModelWithMetadata(
 			{ taskType: "TOOL_CALLING", modelOverride: "gpt-6-astra" },
 			ELIGIBLE,
 		);
+		expect(unpicked.metadata).not.toHaveProperty("planPick");
 		expect(mocks.resolvePlanModel).toHaveBeenLastCalledWith(
 			expect.objectContaining({ override: undefined }),
 		);

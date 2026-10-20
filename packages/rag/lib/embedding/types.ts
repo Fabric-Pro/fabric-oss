@@ -55,6 +55,9 @@ export interface BatchEmbeddingResult {
  * @see https://sdk.vercel.ai/providers/ai-sdk-providers/ai-gateway#tracking-usage
  */
 export interface TenantContext {
+	/** Conversation served by this embedding call, supplied by its caller. */
+	conversationId?: string;
+	frameId?: string;
 	/** User ID for usage tracking and cost attribution */
 	userId?: string;
 	/** Organization ID for usage tracking and cost attribution */

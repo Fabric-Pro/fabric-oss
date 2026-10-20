@@ -1,8 +1,13 @@
 "use client";
 
-import type { FrameDocumentView } from "@saas/frames/components/FrameRenderer";
 import { FrameVizShell } from "@saas/frames/components/FrameVizShell";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
+import { frameEmbedUrl } from "@saas/frames/lib/frame-tool-types";
+import { isUnattendedFrame } from "@saas/frames/lib/strict-sandbox";
+import {
+	useOrganizationId,
+	useOrganizationSlug,
+} from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -33,6 +38,10 @@ export function InteractiveContentPanel({
 	onClose: () => void;
 	organizationId?: string | null;
 }) {
+	const viewingOrganizationId = useOrganizationId();
+	const organizationSlug = useOrganizationSlug();
+	const requestedOrganizationId =
+		organizationId === undefined ? viewingOrganizationId : organizationId;
 	const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
 	const [isCollapsed, setIsCollapsed] = useState(false);
 	const resizingRef = useRef(false);
@@ -98,42 +107,58 @@ export function InteractiveContentPanel({
 	}, []);
 
 	const frameQuery = useQuery({
-		queryKey: ["interactive-frame", frame.frameId, organizationId ?? null],
+		queryKey: ["interactive-frame", frame.frameId, requestedOrganizationId],
 		queryFn: () =>
 			orpcClient.frames.get({
 				id: frame.frameId,
-				organizationId: organizationId ?? null,
+				organizationId: requestedOrganizationId,
 			}),
-		enabled: Boolean(frame.frameId),
+		enabled: Boolean(
+			frame.frameId &&
+				requestedOrganizationId &&
+				requestedOrganizationId === viewingOrganizationId,
+		),
 	});
 
-	const frameDocument = frameQuery.data?.document as
-		| FrameDocumentView
-		| undefined;
-	const resolvedTitle = frameQuery.data?.title || frame.title || "Frame";
-	const resolvedDescription =
-		frameQuery.data?.description || frame.description || frame.response;
-	const resolvedKind = frameQuery.data?.kind || frame.kind || "frame";
-	const resolvedContentType =
-		frameQuery.data?.contentType || frame.contentType || undefined;
-	const embedUrl = frame.embedUrl ?? frame.frameUrl;
+	const savedFrame =
+		frameQuery.isSuccess &&
+		frameQuery.data.id === frame.frameId &&
+		frameQuery.data.organizationId === requestedOrganizationId &&
+		requestedOrganizationId === viewingOrganizationId
+			? frameQuery.data
+			: undefined;
+	const resolvedTitle = savedFrame?.title ?? frame.title ?? "Frame";
+	const embedUrl =
+		savedFrame && organizationSlug
+			? frameEmbedUrl(savedFrame.id, organizationSlug)
+			: undefined;
 
 	const panelBody = (
 		<div className="h-full overflow-y-auto bg-muted/20 p-2 sm:p-3">
-			{embedUrl ? (
+			{savedFrame && embedUrl ? (
 				<FrameVizShell
+					key={`${savedFrame.id}:${savedFrame.updatedAt}`}
+					frameId={savedFrame.id}
+					surface={savedFrame.surface}
 					title={resolvedTitle}
-					description={resolvedDescription}
-					kind={resolvedKind}
-					contentType={resolvedContentType}
+					description={savedFrame.description}
+					kind={savedFrame.kind}
+					contentType={savedFrame.contentType}
 					embedUrl={embedUrl}
-					frameUrl={frame.frameUrl}
-					shareUrl={frame.shareUrl}
-					frameDocument={frameDocument}
+					isPublic={savedFrame.isPublic}
+					isProjectFrame={Boolean(savedFrame.projectId)}
+					interactive={!isUnattendedFrame(savedFrame)}
+					organizationId={savedFrame.organizationId}
+					runtimeTools={savedFrame.runtimeTools}
+					frameDocument={savedFrame.document}
 					presentation="panel"
 					onClose={onClose}
 					className="pb-4"
 				/>
+			) : frameQuery.isLoading ? (
+				<p role="status" className="p-6 text-sm text-muted-foreground">
+					Loading interactive preview…
+				</p>
 			) : (
 				<div className="flex h-full min-h-[240px] items-center justify-center rounded-2xl border bg-card px-6 text-center text-sm text-muted-foreground">
 					Interactive preview unavailable for this frame.

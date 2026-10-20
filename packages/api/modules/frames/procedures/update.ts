@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { updateFrame } from "@repo/database";
 import { z } from "zod";
 import {
@@ -6,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { publicSharingErrors } from "../lib/public-sharing-errors";
 
 const frameBlockSchema = z.object({
 	id: z.string(),
@@ -31,6 +33,7 @@ const inputSchema = z.object({
 });
 
 export const updateFrameProcedure = tenantProtectedProcedure
+	.use(publicSharingErrors)
 	.use(requirePermission(Permissions.WORKSPACE_UPDATE))
 	.route({
 		method: "POST",
@@ -51,7 +54,7 @@ export const updateFrameProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 		return {
 			...frame,

@@ -7,12 +7,14 @@ const {
 	updateAgentEmbeddingMock,
 	getRegisteredAgentByAgentIdMock,
 	touchAgentCardCacheMock,
+	fetchAgentEndpointMock,
 } = vi.hoisted(() => ({
 	updateMock: vi.fn(),
 	updateAgentCardCacheMock: vi.fn(),
 	updateAgentEmbeddingMock: vi.fn(),
 	getRegisteredAgentByAgentIdMock: vi.fn(),
 	touchAgentCardCacheMock: vi.fn(),
+	fetchAgentEndpointMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -26,6 +28,10 @@ vi.mock("@repo/database", () => ({
 		getRegisteredAgentByAgentIdMock(...args),
 	touchAgentCardCache: (...args: unknown[]) =>
 		touchAgentCardCacheMock(...args),
+}));
+
+vi.mock("@repo/utils/agent-endpoint", () => ({
+	fetchAgentEndpoint: (...args: unknown[]) => fetchAgentEndpointMock(...args),
 }));
 
 const generateEmbeddingMock = vi.fn();
@@ -87,6 +93,10 @@ describe("formatProbeError", () => {
 
 describe("checkAgentHealth", () => {
 	beforeEach(() => {
+		fetchAgentEndpointMock.mockReset();
+		fetchAgentEndpointMock.mockImplementation((url, init) =>
+			fetch(url, init),
+		);
 		updateMock.mockReset();
 		updateAgentCardCacheMock.mockReset();
 		updateAgentEmbeddingMock.mockReset();
@@ -94,7 +104,10 @@ describe("checkAgentHealth", () => {
 		touchAgentCardCacheMock.mockReset();
 		generateEmbeddingMock.mockReset();
 		redisSetMock.mockClear();
-		getRegisteredAgentByAgentIdMock.mockResolvedValue({ metadata: {} });
+		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
+			metadata: {},
+		});
 		process.env.DOCKER_CONTAINER = "false";
 		process.env.DOCUMENT_GENERATOR_URL = "https://doc-gen.prod.svc";
 	});
@@ -103,6 +116,108 @@ describe("checkAgentHealth", () => {
 		vi.useRealTimers();
 		delete process.env.DOCUMENT_GENERATOR_URL;
 		delete process.env.DOCKER_CONTAINER;
+	});
+
+	it.each(["USER", "ORGANIZATION"])(
+		"guards both probes for a %s-scope agent",
+		async (scope) => {
+			getRegisteredAgentByAgentIdMock.mockResolvedValue({
+				scope,
+				metadata: {},
+			});
+			fetchAgentEndpointMock.mockImplementation(fetchSwitch({}));
+			const fetchMock = fetchSwitch({});
+			vi.stubGlobal("fetch", fetchMock);
+
+			const result = await checkAgentHealth({
+				agentId: "agent-1",
+				deploymentUrl: "https://agent.example.com",
+			});
+
+			expect(result.healthy).toBe(true);
+			expect(fetchAgentEndpointMock).toHaveBeenCalledTimes(2);
+			expect(fetchAgentEndpointMock).toHaveBeenNthCalledWith(
+				1,
+				"https://agent.example.com/health",
+				{ signal: expect.any(AbortSignal) },
+			);
+			expect(fetchAgentEndpointMock).toHaveBeenNthCalledWith(
+				2,
+				"https://agent.example.com/.well-known/agent.json",
+				{ signal: expect.any(AbortSignal) },
+			);
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(
+				getRegisteredAgentByAgentIdMock,
+			).toHaveBeenCalledExactlyOnceWith("agent-1");
+			expect(
+				getRegisteredAgentByAgentIdMock.mock.invocationCallOrder[0],
+			).toBeLessThan(fetchAgentEndpointMock.mock.invocationCallOrder[0]);
+		},
+	);
+
+	it("uses plain fetch for both SYSTEM-scope probes", async () => {
+		const fetchMock = fetchSwitch({});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await checkAgentHealth({
+			agentId: "agent-1",
+			deploymentUrl: "http://localhost:8124",
+		});
+
+		expect(result.healthy).toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchAgentEndpointMock).not.toHaveBeenCalled();
+		expect(getRegisteredAgentByAgentIdMock).toHaveBeenCalledTimes(1);
+	});
+
+	it.each(["missing", "rejected"])(
+		"guards both probes when the stored row lookup is %s",
+		async (lookup) => {
+			if (lookup === "missing") {
+				getRegisteredAgentByAgentIdMock.mockResolvedValue(null);
+			} else {
+				getRegisteredAgentByAgentIdMock.mockRejectedValue(
+					new Error("db down"),
+				);
+			}
+			fetchAgentEndpointMock.mockImplementation(fetchSwitch({}));
+			const fetchMock = fetchSwitch({});
+			vi.stubGlobal("fetch", fetchMock);
+
+			const result = await checkAgentHealth({
+				agentId: "agent-1",
+				deploymentUrl: "https://agent.example.com",
+			});
+
+			expect(result.healthy).toBe(true);
+			expect(fetchAgentEndpointMock).toHaveBeenCalledTimes(2);
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(getRegisteredAgentByAgentIdMock).toHaveBeenCalledTimes(1);
+			expect(updateAgentCardCacheMock).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("records an endpoint refusal as unhealthy", async () => {
+		getRegisteredAgentByAgentIdMock.mockResolvedValue({ scope: "USER" });
+		const refusal = "Agent endpoint refused: private address";
+		fetchAgentEndpointMock.mockRejectedValue(new Error(refusal));
+		const fetchMock = fetchSwitch({});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const result = await checkAgentHealth({
+			agentId: "agent-1",
+			deploymentUrl: "https://agent.example.com",
+		});
+
+		expect(result.healthy).toBe(false);
+		expect(updateMock).toHaveBeenCalledWith(
+			"agent-1",
+			false,
+			`${refusal} probing https://agent.example.com/health`,
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(fetchAgentEndpointMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("probes the RESOLVED url and records the failure reason", async () => {
@@ -169,6 +284,10 @@ describe("checkAgentHealth card + embedding refresh", () => {
 	const NOW = new Date("2026-09-08T12:00:00.000Z").getTime();
 
 	beforeEach(() => {
+		fetchAgentEndpointMock.mockReset();
+		fetchAgentEndpointMock.mockImplementation((url, init) =>
+			fetch(url, init),
+		);
 		updateMock.mockReset();
 		updateAgentCardCacheMock.mockReset();
 		updateAgentEmbeddingMock.mockReset();
@@ -192,6 +311,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 	it("skips the card fetch when the stored card is within the refresh TTL", async () => {
 		const cachedAt = new Date(NOW - 10 * 60_000).toISOString(); // 10 min old
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				agentCard: { name: "Stored" },
 				agentCardCachedAt: cachedAt,
@@ -221,6 +341,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const storedCard = { a: 1, b: { x: 1, y: 2 } };
 		const liveCard = { b: { y: 2, x: 1 }, a: 1 }; // same content, different key order
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: { agentCard: storedCard, agentCardCachedAt: cachedAt },
 		});
 		const fetchMock = fetchSwitch({
@@ -248,6 +369,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const storedCard = { name: "Old" };
 		const liveCard = { name: "New" };
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: { agentCard: storedCard, agentCardCachedAt: cachedAt },
 		});
 		const fetchMock = fetchSwitch({
@@ -295,6 +417,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const cachedAt = new Date(NOW + 10 * 60_000).toISOString(); // 10 min in the future
 		const storedCard = { name: "Stored" };
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: { agentCard: storedCard, agentCardCachedAt: cachedAt },
 		});
 		const fetchMock = fetchSwitch({
@@ -324,6 +447,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const cachedAt = new Date(NOW - 10 * 60_000).toISOString(); // 10 min old, within TTL
 		const liveCard = { name: "Fresh" };
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: { agentCardCachedAt: cachedAt }, // no agentCard key
 		});
 		const fetchMock = fetchSwitch({
@@ -345,6 +469,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const hash = createHash("sha256").update(searchText).digest("hex");
 		const generatedAt = new Date(NOW + 60 * 60_000).toISOString(); // 1 hour in the future
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				descriptionEmbedding: [0.1],
 				embeddingSourceHash: hash,
@@ -376,6 +501,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const hash = createHash("sha256").update(searchText).digest("hex");
 		const generatedAt = new Date(NOW - 60 * 60_000).toISOString(); // 1 hour old, within TTL
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				embeddingSourceHash: hash,
 				embeddingGeneratedAt: generatedAt,
@@ -425,6 +551,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const hash = createHash("sha256").update(searchText).digest("hex");
 		const generatedAt = new Date(NOW - 60 * 60_000).toISOString(); // 1 hour old
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				descriptionEmbedding: [0.1, 0.2],
 				embeddingSourceHash: hash,
@@ -452,6 +579,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const hash = createHash("sha256").update(searchText).digest("hex");
 		const generatedAt = new Date(NOW - 25 * 60 * 60_000).toISOString(); // 25 hours old
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				embeddingSourceHash: hash,
 				embeddingGeneratedAt: generatedAt,
@@ -488,6 +616,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		const searchText = "Agent One: new description.";
 		const newHash = createHash("sha256").update(searchText).digest("hex");
 		getRegisteredAgentByAgentIdMock.mockResolvedValue({
+			scope: "SYSTEM",
 			metadata: {
 				embeddingSourceHash: "stale-hash-from-old-text",
 				embeddingGeneratedAt: new Date(NOW - 60_000).toISOString(),
@@ -513,7 +642,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 		expect(updateAgentEmbeddingMock.mock.calls[0][4]).toBe(newHash);
 	});
 
-	it("does nothing beyond the health-check write when the probe is unhealthy", async () => {
+	it("skips card and embedding refresh when the probe is unhealthy", async () => {
 		const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 503 });
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -526,7 +655,7 @@ describe("checkAgentHealth card + embedding refresh", () => {
 
 		expect(result.healthy).toBe(false);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
-		expect(getRegisteredAgentByAgentIdMock).not.toHaveBeenCalled();
+		expect(getRegisteredAgentByAgentIdMock).toHaveBeenCalledTimes(1);
 		expect(updateAgentCardCacheMock).not.toHaveBeenCalled();
 		expect(touchAgentCardCacheMock).not.toHaveBeenCalled();
 		expect(generateEmbeddingMock).not.toHaveBeenCalled();

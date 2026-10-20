@@ -65,7 +65,8 @@ export const StoryBreakdownState = Annotation.Root({
 	 * Error message if any
 	 */
 	error: Annotation<string | undefined>({
-		reducer: (x, y) => y ?? x,
+		// Explicit undefined updates clear a previous attempt's error.
+		reducer: (_previous, next) => next,
 		default: () => undefined,
 	}),
 

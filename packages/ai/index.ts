@@ -164,6 +164,7 @@ export {
 	getModelForTaskDynamic,
 	getProvidersForModel,
 	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 	getSystemEmbeddingRAGProviderConfig,
 	getSystemRAGProviderConfig,
 	isModelAvailableForProvider,

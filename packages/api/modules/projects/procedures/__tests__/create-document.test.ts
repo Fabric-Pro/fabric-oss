@@ -517,6 +517,49 @@ describe("createDocumentProcedure — input validation (R19)", () => {
 
 		expect(mocks.createDocumentWithContent).not.toHaveBeenCalled();
 	});
+
+	// QUEUED and GENERATING are set by generation dispatch with the run's
+	// workflow id and start time. A row a caller puts in either status has
+	// neither, so the run guard would refuse every later write and the
+	// watchdog could never move it on (Fizzy #2946).
+	it.each([
+		["PROPOSAL", "GENERATING", {}],
+		["PROPOSAL", "QUEUED", { generateWithAi: true }],
+		["PRD", "QUEUED", {}],
+		["PRD", "GENERATING", { awaitingSourceFile: true }],
+	] as const)(
+		"refuses a %s created in the generation-owned status %s before anything is written",
+		async (type, status, extra) => {
+			await expect(
+				handler({
+					input: input({ type, status, ...extra }),
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				data: { code: "DOCUMENT_STATUS_GENERATION_OWNED" },
+			});
+
+			expect(mocks.createDocument).not.toHaveBeenCalled();
+			expect(mocks.createDocumentWithContent).not.toHaveBeenCalled();
+			expect(mocks.documentCreate).not.toHaveBeenCalled();
+			expect(mocks.dispatchDocumentGeneration).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["DRAFT", "COMPLETE"] as const)(
+		"still creates a Proposal with status %s",
+		async (status) => {
+			await handler({
+				input: input({ type: "PROPOSAL", status, content: "Body." }),
+				context: ctx,
+			});
+
+			expect(mocks.createDocument).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "PROPOSAL", status }),
+			);
+		},
+	);
 });
 
 describe("createDocumentProcedure — Use As-Is", () => {

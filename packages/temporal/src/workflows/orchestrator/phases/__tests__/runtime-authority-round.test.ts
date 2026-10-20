@@ -131,6 +131,22 @@ describe("resolveRuntimeAuthority", () => {
 		expect(reason).not.toContain("WRITE access");
 	});
 
+	it("says approving a created workflow also covers publishing it and running it once, and nothing else", () => {
+		const reason = runtimeAuthorityApprovalReason({
+			...request,
+			providerKey: "fabric",
+			providerDisplayName: "Fabric",
+			toolName: "fabric_create_workflow",
+			grantScope: "call",
+			callSummary: "preset.name: Weekly digest",
+		});
+
+		expect(reason).toContain("(preset.name: Weekly digest)");
+		expect(reason).toContain("publish that workflow and run it once");
+		expect(reason).toContain("any other change asks again");
+		expect(reason).not.toContain("exactly this call and nothing else");
+	});
+
 	it("leaves the arguments out of a one-call approval that has none to show", () => {
 		const reason = runtimeAuthorityApprovalReason({
 			...request,

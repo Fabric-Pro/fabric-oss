@@ -10,6 +10,7 @@
  * small project, quietly false on a large one.
  */
 
+import { getAIModelWithMetadata } from "@repo/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const execTool = vi.fn();
@@ -304,6 +305,11 @@ describe("fetchMeetingTranscript — oversized imports are summarised on read", 
 			transcript: "## Meeting Summary: Weekly sync\n\n- decided to ship",
 			wasSummarized: true,
 		});
+
+		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "p1" }),
+		);
 		expect(generateTextMock).toHaveBeenCalledTimes(1);
 		expect(execTool).not.toHaveBeenCalled();
 	});

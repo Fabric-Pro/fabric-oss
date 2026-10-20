@@ -107,7 +107,15 @@ export function UnifiedAgentView() {
 
 	const handleDeleteInstance = (id: string) => {
 		if (window.confirm("Are you sure you want to delete this agent?")) {
-			deleteMutation.mutate({ id });
+			const instance = instancesData?.instances.find(
+				(item) => item.id === id,
+			);
+			deleteMutation.mutate({
+				id,
+				organizationId:
+					(instance ? instance.organizationId : organizationId) ??
+					undefined,
+			});
 		}
 	};
 

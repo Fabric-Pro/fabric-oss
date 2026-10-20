@@ -1,6 +1,7 @@
 "use client";
 
 import { buildAgentInstanceChatHref } from "@saas/agents/lib/fabric-agent-links";
+import { useOrganizationId } from "@saas/organizations/hooks/use-organization-context";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { PuzzleIcon } from "@saas/shared/components/icons/PuzzleIcon";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
@@ -129,10 +130,14 @@ export function AgentInstanceDetail({
 }: Props) {
 	const router = useRouter();
 	const queryClient = useQueryClient();
+	const organizationId = useOrganizationId();
 
 	const { data, isLoading, error } = useQuery(
 		orpc.agentTemplates.instances.get.queryOptions({
-			input: { id: instanceId },
+			input: {
+				id: instanceId,
+				organizationId: organizationId ?? undefined,
+			},
 		}),
 	);
 
@@ -849,6 +854,9 @@ export function AgentInstanceDetail({
 															await deleteMutation.mutateAsync(
 																{
 																	id: instanceId,
+																	organizationId:
+																		instance.organizationId ??
+																		undefined,
 																},
 															);
 															await queryClient.invalidateQueries(

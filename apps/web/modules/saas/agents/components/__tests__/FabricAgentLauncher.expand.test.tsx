@@ -266,6 +266,17 @@ function HandoffProbe() {
 				type="button"
 				onClick={() =>
 					openLauncher({
+						launchFrameId: "frame-example",
+						surface: null,
+					})
+				}
+			>
+				open on legacy artifact
+			</button>
+			<button
+				type="button"
+				onClick={() =>
+					openLauncher({
 						projectId: "project_9",
 						projectName: "Atlas",
 					})
@@ -285,6 +296,12 @@ function HandoffProbe() {
 										(file) => file.id,
 									),
 								projectId: pendingExpandHandoff.projectId,
+								...(pendingExpandHandoff.frameLaunchContext
+									? {
+											frameLaunchContext:
+												pendingExpandHandoff.frameLaunchContext,
+										}
+									: {}),
 							}
 						: null,
 				)}
@@ -294,6 +311,31 @@ function HandoffProbe() {
 }
 
 describe("FabricAgentLauncher — Expand hands the composer to the page (#2040)", () => {
+	it("keeps a legacy artifact origin when there is no project, draft or conversation", () => {
+		render(
+			<FabricAgentLauncherProvider>
+				<HandoffProbe />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "open on legacy artifact" }),
+		);
+		fireEvent.click(screen.getByRole("link", { name: "Expand" }));
+		expect(
+			JSON.parse(screen.getByTestId("handoff").textContent ?? "null"),
+		).toEqual({
+			conversationId: null,
+			draft: "",
+			attachments: [],
+			projectId: null,
+			frameLaunchContext: {
+				launchFrameId: "frame-example",
+				workspaceId: null,
+				surface: null,
+			},
+		});
+	});
+
 	it("leaves the draft, transferable files and project for the full page", () => {
 		render(
 			<FabricAgentLauncherProvider>

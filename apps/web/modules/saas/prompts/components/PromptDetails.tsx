@@ -2,6 +2,7 @@
 
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
+import { proposalMainCatalogHref } from "@saas/projects/components/proposal-artifact/generation-feedback";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -33,8 +34,10 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { forkTarget, isProposalCandidate } from "../lib/fork-scope";
 import { isPromptInaccessible } from "../lib/prompt-inaccessible";
 import { savePromptAtomically } from "../lib/save-prompt-atomically";
@@ -119,6 +122,7 @@ export function PromptDetails({
 	// while the save guard fetches the current set at the moment of a content
 	// change so cached or failed data cannot bypass the shared-reach warning.
 	const {
+		data: boundActionsData,
 		isPending: boundActionsPending,
 		error: boundActionsError,
 		refetch: refetchBoundActions,
@@ -130,6 +134,29 @@ export function PromptDetails({
 				organizationId: organizationId ?? null,
 			}),
 	});
+
+	// Fizzy #2946: a prompt whose every Proposal binding is at an action the
+	// Proposal artifact supersedes no longer writes a Proposal here, and says
+	// so where it is opened and edited. Its other bindings do not matter: a
+	// prompt serving the PRD too still runs for the PRD, but not for Proposals.
+	const { isSuperseded } = useOfferedPromptActions();
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const proposalBindings = (
+		(boundActionsData?.actions ?? []) as Array<{
+			targetKey: string;
+			documentType: string;
+		}>
+	).filter((action) => action.documentType === "PROPOSAL");
+	const notUsedForProposals =
+		proposalBindings.length > 0 &&
+		proposalBindings.every((action) =>
+			isSuperseded(action.targetKey, action.documentType),
+		);
 
 	// Variable state - must be before any conditional returns
 	const content = prompt?.versions?.[0]?.content || "";
@@ -801,6 +828,25 @@ export function PromptDetails({
 					{prompt.tags.map((tag: string) => (
 						<PromptTag key={tag}>{tag}</PromptTag>
 					))}
+				</div>
+			)}
+
+			{notUsedForProposals && (
+				<div
+					data-testid="prompt-superseded-note"
+					className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm"
+				>
+					<span>{tSuperseded("promptNote")}</span>
+					<Link
+						href={proposalMainCatalogHref(
+							organizationSlug
+								? `/app/${organizationSlug}`
+								: "/app",
+						)}
+						className="text-xs underline underline-offset-2 hover:text-foreground"
+					>
+						{tFeedback("openCatalog")}
+					</Link>
 				</div>
 			)}
 

@@ -1,5 +1,17 @@
 import { PAGE_DOWNLOAD_MAX_BASE64_LENGTH } from "@repo/utils/page-limits";
 
+export const FRAME_RUNTIME_CALL_TIMEOUT_MS = 300_000;
+
+export function frameRuntimeCallExpiresAt(
+	expiresAt?: number,
+	now = Date.now(),
+) {
+	return Math.min(
+		expiresAt ?? now + FRAME_RUNTIME_CALL_TIMEOUT_MS,
+		now + FRAME_RUNTIME_CALL_TIMEOUT_MS,
+	);
+}
+
 export type FrameHostToEmbedMessage =
 	| {
 			type: "fabric-frame:request-export-png";
@@ -47,7 +59,9 @@ export type FrameRuntimeRequest =
 			requestId: string;
 			name: string;
 			args: Record<string, unknown>;
+			expiresAt?: number;
 	  }
+	| { type: "fabric-frame:cancel-call"; requestId: string }
 	| { type: "fabric-frame:open-agent"; prompt: string }
 	| { type: "fabric-frame:navigate"; path: string }
 	| {
@@ -133,8 +147,13 @@ export function isFrameRuntimeRequest(
 				typeof value.requestId === "string" &&
 				typeof value.name === "string" &&
 				isRecord(value.args) &&
-				!Array.isArray(value.args)
+				!Array.isArray(value.args) &&
+				(value.expiresAt === undefined ||
+					(typeof value.expiresAt === "number" &&
+						Number.isFinite(value.expiresAt)))
 			);
+		case "fabric-frame:cancel-call":
+			return typeof value.requestId === "string";
 		case "fabric-frame:open-agent":
 			return typeof value.prompt === "string";
 		case "fabric-frame:navigate":

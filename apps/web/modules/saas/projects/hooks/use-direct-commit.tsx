@@ -1,6 +1,7 @@
 "use client";
 
 import type { InstructionChangeBase } from "@saas/projects/lib/instruction-change-source";
+import { rereadInstructionCommit } from "@saas/projects/lib/instruction-commit-reread";
 import {
 	type CommitChange,
 	type CommitRefusal,
@@ -27,6 +28,8 @@ import {
 } from "../components/instructions/DirectCommitStatus";
 import { useInstructionActionError } from "./use-instruction-action-error";
 
+export { COMMIT_REREAD_TIMEOUT_MS } from "@saas/projects/lib/instruction-commit-reread";
+
 /** What a commit is made of: the version it was stated against, its words, and its changes. */
 export type DirectCommitRequest = {
 	message: string;
@@ -37,12 +40,6 @@ export type DirectCommitRequest = {
 	 */
 	suggest?: () => void;
 } & InstructionChangeBase;
-
-/**
- * How long a committed change waits for the page to re-read before it is
- * announced anyway. A re-read that hangs must not leave the flow stuck.
- */
-export const COMMIT_REREAD_TIMEOUT_MS = 10_000;
 
 /** A touched file longer than this many 200,000-character pages is not compared. */
 const MAX_IDENTITY_PAGES = 25;
@@ -311,41 +308,22 @@ export function useDirectCommit({
 			// old file would otherwise sit under the toast until the re-read
 			// finishes. The wait is bounded and every outcome of it ends the
 			// flow.
-			let timer: ReturnType<typeof setTimeout> | undefined;
-			let rereadFailed = false;
-			try {
-				const rereads = Promise.allSettled([
-					Promise.resolve().then(onChanged),
-					Promise.resolve().then(() =>
-						onCommitted?.({ sha: result.sha, ref: result.ref }),
-					),
-				]).then((outcomes) => {
-					rereadFailed = outcomes.some(
-						(outcome) => outcome.status === "rejected",
-					);
-				});
-				const timeout = new Promise<void>((resolve) => {
-					timer = setTimeout(() => {
-						rereadFailed = true;
-						resolve();
-					}, COMMIT_REREAD_TIMEOUT_MS);
-				});
-				await Promise.race([rereads, timeout]);
-			} finally {
-				clearTimeout(timer);
-				toast.success(
-					t("committed", {
-						sha7: shortCommit(result.sha) ?? "",
-						ref: result.ref,
-					}),
-				);
-				if (rereadFailed) {
-					toast.error(t("rereadFailed"));
-				}
-				if (mounted.current) {
-					setFlow({ phase: "idle" });
-					onFinished?.(result);
-				}
+			const reread = await rereadInstructionCommit([
+				onChanged,
+				() => onCommitted?.({ sha: result.sha, ref: result.ref }),
+			]);
+			toast.success(
+				t("committed", {
+					sha7: shortCommit(result.sha) ?? "",
+					ref: result.ref,
+				}),
+			);
+			if (reread !== "success") {
+				toast.error(t("rereadFailed"));
+			}
+			if (mounted.current) {
+				setFlow({ phase: "idle" });
+				onFinished?.(result);
 			}
 		},
 		[onChanged, onCommitted, onFinished, t],

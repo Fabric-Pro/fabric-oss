@@ -79,6 +79,7 @@ export async function summarizeSpecChanges({
 		{
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
+			projectId,
 			featureKey: "maturation",
 		},
 	);

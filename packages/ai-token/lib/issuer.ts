@@ -86,6 +86,7 @@ export async function issueAIToken(
 	const jwt = new SignJWT({
 		org: organizationId || undefined,
 		src: source,
+		...(options.modelOverride && { mo: options.modelOverride }),
 		...(impersonated
 			? { imp: true }
 			: planEligible === true && { pe: true }),

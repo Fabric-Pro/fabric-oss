@@ -126,7 +126,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			projectStoryStatus: { findMany: findManyStatuses },
 			project: { findUnique: projectFindUnique },
 			// The §4.5 base stamp (Fizzy #2304) — a compare-and-set.
-			userStory: { updateMany: userStoryUpdateMany },
+			userStory: { updateMany: userStoryUpdateMany, findFirst: vi.fn() },
+			mCPServer: { findUnique: vi.fn() },
 		},
 	};
 });
@@ -237,11 +238,24 @@ describe("syncGitLabStoryViaRest", () => {
 			externalUrl: "https://gitlab.com/group/proj/-/issues/42",
 			title: "My Feature",
 		});
-		updateStory.mockRejectedValueOnce(new Error("database unavailable"));
+		updateStory.mockRejectedValueOnce(
+			Object.assign(
+				new Error(
+					"Invalid `prisma.userStory.update()` invocation in\n/app/packages/database/x.ts:12:3\nquery text",
+				),
+				{ name: "PrismaClientKnownRequestError", code: "P2002" },
+			),
+		);
 
 		const result = await syncGitLabStoryViaRest(
 			baseInput({ pmSyncAttemptId: "attempt-A" }),
 		);
+
+		expect(result.error).toContain(
+			"another story in this project is already linked to that item",
+		);
+		expect(result.error).not.toContain("/app/packages/database/x.ts");
+		expect(result.error).not.toContain("prisma.");
 
 		expect(result).toMatchObject({
 			success: false,
@@ -347,6 +361,8 @@ describe("syncGitLabStoryViaRest", () => {
 				externalId: "42",
 				externalUrl: "https://gitlab.com/group/proj/-/issues/42",
 				externalMcpServerId: "server-1",
+				externalPmTarget:
+					'pmt1:["server-1","https://gitlab.com","100"]',
 			},
 			{ lastEditedSource: "PM_PULL", settlesPmCreateClaim: "claim-test" },
 		);
@@ -560,7 +576,22 @@ describe("syncGitLabStoryViaRest", () => {
 				externalMcpServerId: null,
 			});
 
-		it.each(["push", "bidirectional"] as const)(
+		it("a REST legacy pull refusal records pull direction and wording", async () => {
+			getStoryById.mockResolvedValue(legacyAdoRow());
+			const result = await syncGitLabStoryViaRest(
+				baseInput({ direction: "pull" }),
+			);
+			expect(result.error).toContain("did not pull");
+			expect(result.error).toMatch(
+				/linked to a ticket in a different PM tool/i,
+			);
+			expect(result.error).toContain("Unlink & re-create");
+			expect(recordPmSyncFailure).toHaveBeenCalledWith(
+				expect.objectContaining({ direction: "pull" }),
+			);
+		});
+
+		it.each(["push", "bidirectional", "pull"] as const)(
 			"%s: sends nothing to GitLab, keeps the link, and stamps FAILED asking for Unlink & re-create",
 			async (direction) => {
 				// GitLab issue 77 is unrelated to Azure DevOps work item 77.
@@ -881,6 +912,7 @@ describe("syncGitLabStoryViaRest", () => {
 				externalId: null,
 				externalUrl: null,
 				externalMcpServerId: null,
+				externalPmTarget: null,
 			},
 			{ lastEditedSource: "PM_PULL" },
 		);
@@ -1935,7 +1967,18 @@ describe("syncGitLabStoryViaRest", () => {
 			expect(result.success).toBe(true);
 			expect(updateStory).toHaveBeenCalled(); // the pull landed
 			expect(tools()).toEqual(["fetchItem"]);
-			expect(userStoryUpdateMany).not.toHaveBeenCalled();
+			expect(userStoryUpdateMany).toHaveBeenCalledWith({
+				where: {
+					id: "story-1",
+					projectId: "proj-1",
+					externalId: "42",
+					externalPmTarget: null,
+				},
+				data: {
+					externalPmTarget:
+						'pmt1:["server-1","https://gitlab.com","100"]',
+				},
+			});
 		});
 
 		it("stamp race: a base changed since this push's read is kept (CAS count 0)", async () => {
@@ -3078,4 +3121,63 @@ describe("syncGitLabStoryViaRest create claim (Fizzy #3045)", () => {
 		expect(result).toMatchObject({ errorCode: "PM_CREATE_ORPHAN" });
 		expect(claimModule.releasePmCreateClaim).not.toHaveBeenCalled();
 	});
+});
+
+it("REST writer target consistency uses the recorded self-hosted GitLab instance", async () => {
+	getStoryById.mockResolvedValue(baseStory());
+	resolvePmSource.mockResolvedValue({
+		kind: "rest-gitlab",
+		baseUrl: "https://gitlab.example.com",
+		credential: { token: "example-token" },
+	});
+	callPmToolWithFallback.mockResolvedValue({
+		externalId: "42",
+		externalUrl: "https://gitlab.example.com/example/project/-/issues/42",
+		title: "Example",
+	});
+	const result = await syncGitLabStoryViaRest(
+		baseInput({
+			additionalContext: {
+				gitlabOrigin: "https://gitlab.example.com",
+				fieldMapping: { title: "name" },
+			},
+		}),
+	);
+	expect(result.success).toBe(true);
+	const written = updateStory.mock.calls.find(
+		([, , data]) => data.externalMcpServerId,
+	)?.[2];
+	expect(written).toBeDefined();
+	vi.mocked(db.userStory.findFirst).mockResolvedValue({
+		...baseStory(),
+		...written,
+	} as never);
+	vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+		key: "gitlab-official",
+		defaultUrl: "https://gitlab.com",
+	} as never);
+	const { checkStoryPmLink } = await import(
+		"../pm-integration/create-story-in-pm-with-claim"
+	);
+	await expect(
+		checkStoryPmLink({
+			...baseInput(),
+			mcpServerId: "server-1",
+			mcpConfigId: null,
+			pmTool: "gitlab",
+			toolLabel: "GitLab",
+			externalId: "42",
+			externalUrl: written.externalUrl,
+			externalMcpServerId: "server-1",
+			pmTarget: {
+				containerId: "100",
+				additionalContext: {
+					gitlabOrigin: "https://gitlab.example.com",
+				},
+			},
+		}),
+	).resolves.toMatchObject({ success: true });
+	expect(written.externalPmTarget).toBe(
+		'pmt1:["server-1","https://gitlab.example.com","100"]',
+	);
 });

@@ -135,12 +135,12 @@ const MOVE_MESSAGES: Record<
 	personal_exists: {
 		code: "CONFLICT",
 		message:
-			"You already have a ChatGPT plan of your own. Disconnect it in Account settings → AI Providers, then take this account back.",
+			"You already have a ChatGPT plan of your own. Disconnect it in Settings → AI Providers → Personal, then take this account back.",
 	},
 	already_shared: {
 		code: "CONFLICT",
 		message:
-			"This ChatGPT account is already shared by an organization. If you connected it there, take it back from that organization first.",
+			"This ChatGPT account is already shared by an organization. If you connected it there, choose Stop sharing on it in that organization's Settings → AI Providers first; otherwise an admin there has to disconnect it.",
 	},
 };
 

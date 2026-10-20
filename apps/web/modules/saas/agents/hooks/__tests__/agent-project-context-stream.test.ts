@@ -103,7 +103,10 @@ describe("agent Project Context propagation", () => {
 			sending = result.current.sendMessage("Describe this project");
 		});
 		await waitFor(() =>
-			expect(h.get).toHaveBeenCalledWith({ id: "example-agent" }),
+			expect(h.get).toHaveBeenCalledWith({
+				id: "example-agent",
+				organizationId: "example-org",
+			}),
 		);
 		expect(bodies).toEqual([]);
 		await act(async () => {

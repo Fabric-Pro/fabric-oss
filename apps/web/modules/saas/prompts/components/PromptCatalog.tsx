@@ -17,7 +17,9 @@ import { Input } from "@ui/components/input";
 import { ChevronRightIcon, SearchIcon } from "lucide-react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { ActionPromptList } from "./ActionPromptList";
 import { LoadFailure } from "./LoadFailure";
 import { PromptDefaultBadge } from "./PromptDefaultBadge";
@@ -33,6 +35,11 @@ import { PromptDefaultBadge } from "./PromptDefaultBadge";
  * from what can actually be BOUND, so an action here is never a dead end. What
  * the server supplies is only which prompts are attached and which tier is in
  * force, since that is the part that varies per tenant.
+ *
+ * The grid is the actions this organization is offered: with the Proposal
+ * artifact on, the legacy Proposal actions leave it (Fizzy #2946), and an
+ * override saved at one is listed under "No longer listed" so it can still be
+ * cleared.
  */
 
 type CatalogEntry = {
@@ -55,12 +62,14 @@ type CatalogEntry = {
 };
 
 const ALL_ACTIONS = listPromptActions();
-const LISTED_ACTION_IDS = new Set(ALL_ACTIONS.map((a) => a.id));
 
 type RowAction = Pick<
 	PromptAction,
 	"id" | "label" | "targetKey" | "documentType" | "storyKind"
->;
+> & {
+	/** Unlisted because the Proposal artifact supersedes it, not retired. */
+	superseded?: boolean;
+};
 
 /**
  * Overrides saved against an action the catalog no longer lists.
@@ -70,12 +79,20 @@ type RowAction = Pick<
  * DRAFT before it moved to CLEAN_SPEC, where the runtime reads it — has no row
  * to clear it from. Only a tier's live override qualifies: a SYSTEM binding is
  * Fabric's own, and a cleared one is already nobody's default.
+ *
+ * The listed set is per render: an action the Proposal artifact supersedes is
+ * listed while the gate is off and lands here while it is on, labelled from
+ * the full catalog and marked so its row can say why.
  */
-function unlistedOverrides(entries: Iterable<[string, CatalogEntry]>) {
+function unlistedOverrides(
+	entries: Iterable<[string, CatalogEntry]>,
+	listedIds: ReadonlySet<string>,
+	isSuperseded: (targetKey: string, documentType: string) => boolean,
+) {
 	const rows: RowAction[] = [];
 	for (const [id, entry] of entries) {
 		if (
-			LISTED_ACTION_IDS.has(id) ||
+			listedIds.has(id) ||
 			!entry.prompts.some((p) => p.scope !== "SYSTEM" && p.isDefault)
 		) {
 			continue;
@@ -89,7 +106,10 @@ function unlistedOverrides(entries: Iterable<[string, CatalogEntry]>) {
 			targetKey: entry.targetKey,
 			documentType: entry.documentType,
 			storyKind: entry.storyKind,
-			label: `${findPromptAgentTarget(entry.targetKey)?.label ?? entry.targetKey} — ${promptDocumentTypeLabel(entry.documentType)}${kind}`,
+			label:
+				ALL_ACTIONS.find((a) => a.id === id)?.label ??
+				`${findPromptAgentTarget(entry.targetKey)?.label ?? entry.targetKey} — ${promptDocumentTypeLabel(entry.documentType)}${kind}`,
+			superseded: isSuperseded(entry.targetKey, entry.documentType),
 		});
 	}
 	return rows;
@@ -97,6 +117,10 @@ function unlistedOverrides(entries: Iterable<[string, CatalogEntry]>) {
 
 export function PromptCatalog() {
 	const { organizationId, basePath } = useOrganizationContext();
+	const offered = useOfferedPromptActions();
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
 	const searchParams = useSearchParams();
 	// FR14: arriving from a prompt selector. `prompt` highlights every action
 	// that prompt serves — a prompt bound to several actions has no single
@@ -163,22 +187,24 @@ export function PromptCatalog() {
 	const matching = useMemo(
 		() =>
 			query
-				? ALL_ACTIONS.filter(
+				? offered.actions.filter(
 						(a) =>
 							a.label.toLowerCase().includes(query) ||
 							a.agentLabel.toLowerCase().includes(query) ||
 							a.targetKey.toLowerCase().includes(query),
 					)
-				: ALL_ACTIONS,
-		[query],
+				: offered.actions,
+		[query, offered.actions],
 	);
 
 	const unlisted = useMemo(
 		() =>
-			unlistedOverrides(bindingsByAction).filter(
-				(a) => !query || a.label.toLowerCase().includes(query),
-			),
-		[bindingsByAction, query],
+			unlistedOverrides(
+				bindingsByAction,
+				offered.actionIds,
+				offered.isSuperseded,
+			).filter((a) => !query || a.label.toLowerCase().includes(query)),
+		[bindingsByAction, query, offered],
 	);
 
 	const byFeatureType = useMemo(() => {
@@ -336,6 +362,11 @@ export function PromptCatalog() {
 										void refetch();
 									}}
 									allowSwitching={false}
+									note={
+										action.superseded
+											? tSuperseded("actionNote")
+											: undefined
+									}
 								/>
 							</li>
 						))}
@@ -355,6 +386,7 @@ function ActionRow({
 	actionsByPrompt,
 	onChanged,
 	allowSwitching = true,
+	note,
 }: {
 	action: RowAction;
 	entry?: CatalogEntry;
@@ -364,6 +396,8 @@ function ActionRow({
 	actionsByPrompt: Map<string, string[]>;
 	onChanged: () => void;
 	allowSwitching?: boolean;
+	/** Why an unlisted row is unlisted, when it is not simply retired. */
+	note?: string;
 }) {
 	const effective = entry?.prompts.find((p) => p.isEffective);
 	const others = (entry?.prompts.length ?? 0) - (effective ? 1 : 0);
@@ -418,6 +452,14 @@ function ActionRow({
 					<p className="truncate font-medium text-sm">
 						{action.label}
 					</p>
+					{note && (
+						<p
+							data-testid="catalog-superseded-note"
+							className="text-muted-foreground text-xs"
+						>
+							{note}
+						</p>
+					)}
 					{isPending ? (
 						<p className="text-muted-foreground text-xs">
 							Loading…

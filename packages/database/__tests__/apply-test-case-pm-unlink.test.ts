@@ -73,6 +73,7 @@ describe("applyTestCasePmUnlink", () => {
 				externalId: null,
 				externalUrl: null,
 				externalMcpServerId: null,
+				externalPmTarget: null,
 				lastSyncedPmHash: null,
 				lastSyncedAt: null,
 				lastPmSyncStatus: null,

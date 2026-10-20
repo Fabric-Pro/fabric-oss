@@ -1,12 +1,14 @@
 import {
 	CHATGPT_PLAN_API_BILLING_HEADER,
 	CHATGPT_PLAN_EXHAUSTED_CODE,
+	CHATGPT_PLAN_PERSONAL_KEY_HEADER,
 	SubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
 import { getAiProviderApiKey } from "@repo/database";
 import {
 	type ChatGptPlanSourcesExhausted,
 	chatGptPlanInteractiveApiFallback,
+	chatGptPlanPersonalKeyFallback,
 	chatGptPlanPoolExhaustedMessage,
 	pickChatGptPlanSource,
 } from "./pool";
@@ -46,7 +48,11 @@ export function chatGptPlanSpentError(
  *   through to the organization's provider or starting a run that can only
  *   fail;
  * - `apiBilling` — the organization's "Use API billing" policy runs the turn
- *   on its provider (Fizzy #3048), and the member is told until when.
+ *   on its provider (Fizzy #3048), and the member is told until when;
+ * - `personalKey` — the organization would stop the turn, and the member's
+ *   own key they opted in runs it instead (Fizzy #3085); they are told which
+ *   provider and until when. The refusal otherwise carries
+ *   `personalKeyOption`, so the stop message can link to that opt-in.
  *
  * Null when a plan or no plan serves the turn; a fault reads as null, leaving
  * the route's own resolution to decide.
@@ -54,6 +60,7 @@ export function chatGptPlanSpentError(
 export type ChatGptPlanChatPreflight =
 	| { refusal: Response }
 	| { apiBilling: { resetAt: Date | null } }
+	| { personalKey: { provider: string; resetAt: Date | null } }
 	| null;
 
 export async function chatGptPlanChatPreflight(context: {
@@ -79,6 +86,15 @@ export async function chatGptPlanChatPreflight(context: {
 	if (await chatGptPlanInteractiveApiFallback(plan, context.organizationId)) {
 		return { apiBilling: { resetAt: plan.resetAt } };
 	}
+	const personal = await chatGptPlanPersonalKeyFallback(plan, context);
+	if (personal?.config?.provider) {
+		return {
+			personalKey: {
+				provider: personal.config.provider,
+				resetAt: plan.resetAt,
+			},
+		};
+	}
 	const error = chatGptPlanSpentError(plan);
 	const hasLlmProvider =
 		plan.ownPlanSpent !== undefined &&
@@ -98,6 +114,7 @@ export async function chatGptPlanChatPreflight(context: {
 					plan,
 					hasLlmProvider,
 				),
+				personalKeyOption: personal !== null,
 			}),
 			{ status: 429, headers: { "Content-Type": "application/json" } },
 		),
@@ -107,16 +124,28 @@ export async function chatGptPlanChatPreflight(context: {
 /**
  * Marks a chat route's stream whose turn runs on the organization's API
  * billing (Fizzy #3048) with the plans' reset time, or empty when it is
- * unknown, so the chat can say so under the reply. Otherwise unchanged.
+ * unknown, so the chat can say so under the reply. A turn on the member's
+ * own key (Fizzy #3086) also names that key's provider. Otherwise unchanged.
  */
 export function withChatGptPlanApiBilling(
 	response: Response,
 	preflight: ChatGptPlanChatPreflight,
 ): Response {
-	if (response.ok && preflight && "apiBilling" in preflight) {
+	if (!response.ok || !preflight || "refusal" in preflight) {
+		return response;
+	}
+	const marker =
+		"apiBilling" in preflight
+			? preflight.apiBilling
+			: preflight.personalKey;
+	response.headers.set(
+		CHATGPT_PLAN_API_BILLING_HEADER,
+		marker.resetAt?.toISOString() ?? "",
+	);
+	if ("personalKey" in preflight) {
 		response.headers.set(
-			CHATGPT_PLAN_API_BILLING_HEADER,
-			preflight.apiBilling.resetAt?.toISOString() ?? "",
+			CHATGPT_PLAN_PERSONAL_KEY_HEADER,
+			preflight.personalKey.provider,
 		);
 	}
 	return response;

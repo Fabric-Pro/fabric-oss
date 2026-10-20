@@ -65,6 +65,23 @@ describe("synthesizeToolSpeech", () => {
 		}
 	});
 
+	it.each(["conversation-example", undefined])(
+		"records the supplied speech conversation (%s)",
+		async (usageConversationId) => {
+			h.getAiProviderApiKeyByProvider.mockResolvedValue({
+				...EMPTY_PROVIDER_CONFIG,
+				provider: "OPENAI_DIRECT",
+				apiKey: "key-example",
+				source: "organization",
+			});
+			fetchMock.mockResolvedValue(new Response(new Uint8Array([1])));
+			await synthesizeToolSpeech({ ...REQUEST, usageConversationId });
+			expect(h.logAiUsageAsync.mock.calls[0][0].conversationId).toBe(
+				usageConversationId,
+			);
+		},
+	);
+
 	it("refuses without calling OpenAI when the organization has no OpenAI key", async () => {
 		h.getAiProviderApiKeyByProvider.mockResolvedValue({
 			...EMPTY_PROVIDER_CONFIG,

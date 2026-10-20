@@ -105,6 +105,65 @@ const MAX_FRAME_RUNTIME_TOOL_NAME_LENGTH = 128;
 
 type ParsedOption<T> = { ok: true; value?: T } | { ok: false; error: string };
 
+export interface FrameSourceWindow {
+	blockId?: string;
+	offset: number;
+	limit: number;
+}
+
+export function parseFrameSourceWindow(
+	args: Record<string, unknown> | undefined,
+): ParsedOption<FrameSourceWindow> {
+	if (
+		!args ||
+		(args.blockId === undefined &&
+			args.offset === undefined &&
+			args.limit === undefined)
+	) {
+		return { ok: true };
+	}
+	if (
+		args.blockId !== undefined &&
+		(typeof args.blockId !== "string" || !args.blockId.trim())
+	) {
+		return {
+			ok: false,
+			error: "`blockId` must be a non-empty saved block id.",
+		};
+	}
+	const offset = args.offset === undefined ? 0 : args.offset;
+	const limit = args.limit === undefined ? 6_000 : args.limit;
+	if (
+		typeof offset !== "number" ||
+		!Number.isSafeInteger(offset) ||
+		offset < 0
+	) {
+		return { ok: false, error: "`offset` must be a non-negative integer." };
+	}
+	if (
+		typeof limit !== "number" ||
+		!Number.isSafeInteger(limit) ||
+		limit < 1 ||
+		limit > 6_000
+	) {
+		return {
+			ok: false,
+			error: "`limit` must be an integer from 1 to 6000.",
+		};
+	}
+	return {
+		ok: true,
+		value: {
+			blockId:
+				typeof args.blockId === "string"
+					? args.blockId.trim()
+					: undefined,
+			offset,
+			limit,
+		},
+	};
+}
+
 function parseSurface(
 	args: Record<string, unknown> | undefined,
 ): ParsedOption<FrameSurface> {
@@ -220,9 +279,9 @@ function normalizeComponents(
 function normalizeInputBlocks(
 	value: unknown,
 	defaultFormat: FrameOutputFormat,
-): FrameBlock[] | undefined {
+): ParsedOption<FrameBlock[]> {
 	if (!Array.isArray(value) || value.length === 0) {
-		return undefined;
+		return { ok: true };
 	}
 	const normalized: FrameBlock[] = [];
 	for (let i = 0; i < value.length; i++) {
@@ -235,6 +294,16 @@ function normalizeInputBlocks(
 			typeof record.content === "string" ? record.content : undefined;
 		if (!content || content.trim().length === 0) {
 			continue;
+		}
+		if (
+			/^\[content omitted: \d+ chars - rendered to frame\]$/.test(
+				content.trim(),
+			)
+		) {
+			return {
+				ok: false,
+				error: "A block contains an internal history placeholder instead of page content. Provide actual block content; read the saved frame with `fabric_get_frame` or regenerate the page.",
+			};
 		}
 		const declaredType =
 			typeof record.type === "string" ? record.type : undefined;
@@ -262,7 +331,7 @@ function normalizeInputBlocks(
 		};
 		normalized.push(block);
 	}
-	return normalized.length > 0 ? normalized : undefined;
+	return { ok: true, value: normalized.length > 0 ? normalized : undefined };
 }
 
 export function validateCreateFrameArgs(
@@ -288,9 +357,16 @@ export function validateCreateFrameArgs(
 	]);
 	const title = explicitTitle || deriveFrameTitle({ args, kind });
 	const format = normalizeFormat(getNonEmptyString(args, ["format"]));
-	const blocks =
-		normalizeInputBlocks(args?.blocks, format) ??
-		normalizeInputBlocks(args?.components, format);
+	let blocks = normalizeInputBlocks(args?.blocks, format);
+	if (!blocks.ok) {
+		return blocks;
+	}
+	if (!blocks.value) {
+		blocks = normalizeInputBlocks(args?.components, format);
+		if (!blocks.ok) {
+			return blocks;
+		}
+	}
 	const surface = parseSurface(args);
 	if (!surface.ok) {
 		return surface;
@@ -309,7 +385,7 @@ export function validateCreateFrameArgs(
 			components: normalizeComponents(args?.components),
 			kind,
 			shareOnCreate: Boolean(args?.shareOnCreate),
-			...(blocks ? { blocks } : {}),
+			...(blocks.value ? { blocks: blocks.value } : {}),
 			...(surface.value ? { surface: surface.value } : {}),
 			...(runtimeTools.value ? { runtimeTools: runtimeTools.value } : {}),
 		},
@@ -342,6 +418,9 @@ export function validateUpdateFrameArgs(
 	const title = getNonEmptyString(args, ["title"]);
 	const description = getRawString(args, ["description"]);
 	const blocks = normalizeInputBlocks(args?.blocks, "html");
+	if (!blocks.ok) {
+		return blocks;
+	}
 	const surface = parseSurface(args);
 	if (!surface.ok) {
 		return surface;
@@ -354,7 +433,7 @@ export function validateUpdateFrameArgs(
 	if (
 		!title &&
 		description === undefined &&
-		!blocks &&
+		!blocks.value &&
 		!surface.value &&
 		!runtimeTools.value
 	) {
@@ -370,7 +449,7 @@ export function validateUpdateFrameArgs(
 			frameId,
 			title,
 			description,
-			blocks,
+			blocks: blocks.value,
 			...(surface.value ? { surface: surface.value } : {}),
 			...(runtimeTools.value ? { runtimeTools: runtimeTools.value } : {}),
 		},

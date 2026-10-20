@@ -800,7 +800,7 @@ describe("a page that keeps data", () => {
 		expect(mocks.callFabricTool).toHaveBeenCalledTimes(3);
 	});
 
-	it("starts clean again when the page is edited", async () => {
+	it("retains what the page has read when it is edited inside the same shell", async () => {
 		const first = renderShell({
 			frameId: "frame-edited-data",
 			runtimeTools: KEEPING,
@@ -834,13 +834,10 @@ describe("a page that keeps data", () => {
 		);
 		for (const id of ["r2", "r3"]) {
 			send(embed, call("fabric_page_data_set", id, VOTE));
-			if (id === "r2") {
-				const dialog = await screen.findByRole("alertdialog");
-				expect(dialog).not.toHaveTextContent(
-					/read information from outside/,
-				);
-				fireEvent.click(screen.getByRole("button", { name: "Allow" }));
-			}
+			const dialog = await screen.findByRole("alertdialog");
+			expect(dialog).toHaveTextContent(/read information from outside/);
+			expect(dialog).toHaveTextContent(/records\[0\]\.value\.pick\s*a/);
+			fireEvent.click(screen.getByRole("button", { name: "Allow" }));
 			await waitFor(() =>
 				expect(
 					replies.filter((reply) => reply.requestId === id),

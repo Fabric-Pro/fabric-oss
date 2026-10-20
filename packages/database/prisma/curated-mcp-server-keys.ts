@@ -1,5 +1,4 @@
 const CURATED_SYSTEM_MCP_SERVER_KEYS = [
-	"github",
 	"gitlab",
 	// Wizard-default PM tool (DEFAULT_PROJECT_MANAGEMENT_KEYS). Tenants on
 	// GitLab's REST fallback have no MCPConfig referencing this row, so
@@ -9,15 +8,8 @@ const CURATED_SYSTEM_MCP_SERVER_KEYS = [
 	"gitlab-official",
 	"playwright",
 	"filesystem",
-	"postgres",
-	"sqlite",
 	"memory",
-	"fetch",
-	"puppeteer",
-	"slack",
 	"google-drive",
-	"google-maps",
-	"notion",
 	"brave-search",
 	"context7",
 	"supabase",
@@ -26,24 +18,14 @@ const CURATED_SYSTEM_MCP_SERVER_KEYS = [
 	"exa-search",
 	"cloudflare",
 	"stripe",
-	"resend",
-	"vercel",
 	"sentry",
 	"neon",
-	"turso",
-	"upstash",
 	"twilio",
 	"airtable",
-	"asana",
 	"todoist",
-	"raycast",
 	"axiom",
-	"browserbase",
-	"e2b",
-	"obsidian",
 	"sequential-thinking",
 	"everything",
-	"time",
 	"fabric",
 	"fizzy",
 	"azure-devops",
@@ -59,3 +41,28 @@ const CURATED_SYSTEM_MCP_SERVER_KEYS = [
 export const CURATED_SYSTEM_MCP_SERVER_KEY_SET: ReadonlySet<string> = new Set(
 	CURATED_SYSTEM_MCP_SERVER_KEYS,
 );
+
+// Registry cleanup deletes retired system rows only when they have no configs.
+// Referenced rows stay system-provided: the curated filter excludes them from
+// listings, and the hidden-key union refuses new configs. Existing configs keep
+// loading, running, and accepting edits through the system-server access path.
+export const RETIRED_SYSTEM_MCP_SERVER_KEYS = [
+	"sqlite",
+	"fetch",
+	"time",
+	"notion",
+	"vercel",
+	"turso",
+	"raycast",
+	"github",
+	"slack",
+	"postgres",
+	"puppeteer",
+	"google-maps",
+	"e2b",
+	"obsidian",
+	"asana",
+	"resend",
+	"upstash",
+	"browserbase",
+] as const;

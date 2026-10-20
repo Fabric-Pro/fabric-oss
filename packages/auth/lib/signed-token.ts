@@ -39,11 +39,7 @@ function getSecret(): string {
 }
 
 function b64urlEncode(buf: Buffer): string {
-	return buf
-		.toString("base64")
-		.replace(/\+/g, "-")
-		.replace(/\//g, "_")
-		.replace(/=+$/, "");
+	return buf.toString("base64url");
 }
 function b64urlDecode(s: string): Buffer {
 	const pad = s.length % 4 === 0 ? 0 : 4 - (s.length % 4);

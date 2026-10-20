@@ -11,11 +11,17 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { FABRIC_PROJECT_READ_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-read-tool-definitions";
 import { describe, expect, it } from "vitest";
 import {
 	discoveryDocumentFor,
 	parseCliManifest,
 } from "../../modules/saas/cli-distribution/lib/cli-discovery";
+import {
+	buildPluginInitLine,
+	claudePluginInstallCommand,
+	codexPluginAddCommand,
+} from "../../modules/saas/projects/components/cli-connection/lib/agent-sign-in";
 
 const WEB_ROOT = path.resolve(__dirname, "../..");
 
@@ -29,7 +35,11 @@ const PLATFORM_TOOLS = read("modules/saas/mcp/lib/gateway/platform-tools.ts");
 
 /** Every instruction tool the gateway defines, read from its own source. */
 function instructionToolNames(): string[] {
-	const names = new Set<string>();
+	const names = new Set<string>(
+		FABRIC_PROJECT_READ_TOOL_DEFINITIONS.map((tool) => tool.name).filter(
+			(name) => name.includes("instruction"),
+		),
+	);
 	for (const match of PLATFORM_TOOLS.matchAll(
 		/^\t\tname: "(fabric_[a-z_]*instruction[a-z_]*)"/gm,
 	)) {
@@ -39,6 +49,12 @@ function instructionToolNames(): string[] {
 }
 
 describe("the MCP gateway docs", () => {
+	it("registers the canonical extracted project reads in the platform table", () => {
+		expect(PLATFORM_TOOLS).toMatch(
+			/toolFamily\(\s*FABRIC_PROJECT_READ_TOOL_DEFINITIONS,/,
+		);
+		expect(PLATFORM_TOOLS).toContain("...PROJECT_READ_TOOLS.definitions");
+	});
 	it("finds the instruction tools the gateway serves", () => {
 		expect(instructionToolNames()).toEqual([
 			"fabric_add_instruction_lesson",
@@ -389,5 +405,306 @@ describe("the MCP gateway docs", () => {
 
 	it("does not state a count of platform tools that has gone stale", () => {
 		expect(REFERENCE).not.toMatch(/always present, 21 tools/);
+	});
+
+	// The plugin setup and the memory mirror are described from what ships: the
+	// dialog's own choices and lines, the CLI's own commands, and the rules the
+	// server applies. A change to any of them fails here until the guide follows.
+	describe("the plugin and Living Memory sections", () => {
+		const REPOSITORY_CHOICE = read(
+			"modules/saas/projects/components/cli-connection/RepositoryChoice.tsx",
+		);
+		const MEMORY_COMMANDS = read(
+			"../../packages/cli/src/commands/memory/index.ts",
+		);
+		const CONTEXT_RULES = read(
+			"../../packages/instructions/src/context-sync-rules.ts",
+		);
+		const CLI_CLASSIFY = read(
+			"../../packages/cli/src/lib/context-sync/classify.ts",
+		);
+		const OAUTH_SCOPES = read("../../packages/auth/lib/oauth-scopes.ts");
+		const PLUGIN_LAYOUT = read(
+			"../../packages/cli/src/lib/plugin/layout.ts",
+		);
+		const MEMORY_TOOLS = read(
+			"modules/saas/mcp/lib/gateway/memory-write-tools.ts",
+		);
+		const PROJECTS = read("content/docs/features/projects.mdx");
+
+		it("names the dialog's repository question and every answer to it", () => {
+			const title = /REPOSITORY_STEP_TITLE = "([^"]+)"/.exec(
+				REPOSITORY_CHOICE,
+			)?.[1];
+			expect(title).toBeDefined();
+			expect(GUIDE).toContain(`**${title}**`);
+			const labels = [
+				...REPOSITORY_CHOICE.matchAll(
+					/\{ value: "[a-z]+", label: "([^"]+)" \}/g,
+				),
+			].map((match) => match[1]);
+			expect(labels.length).toBeGreaterThanOrEqual(3);
+			for (const label of labels) {
+				expect(GUIDE, label).toContain(`**${label}`);
+			}
+		});
+
+		it("shows the plugin setup line and the approval command exactly as the dialog builds them", () => {
+			const tarball =
+				"https://fabric.example.com/cli/fabric-0.4.0-abc.tgz";
+			const project = "cmexample0000000012345678";
+			const line = buildPluginInitLine({
+				tarballUrl: tarball,
+				baseUrl: null,
+				tool: "codex",
+				projectId: project,
+			});
+			expect(GUIDE).toContain(
+				line
+					.replace(tarball, "<tgz>")
+					.replace(project, "<id>")
+					.replace("codex", "<tool>"),
+			);
+			expect(GUIDE).toContain(
+				claudePluginInstallCommand(project).replaceAll(
+					"12345678",
+					"<id>",
+				),
+			);
+		});
+
+		it("names the dialog's plugin step for each tool and shows the Codex command as the dialog builds it", () => {
+			const steps = read(
+				"modules/saas/projects/components/cli-connection/TerminalToolSteps.tsx",
+			);
+			const titles = [
+				...steps.matchAll(
+					/const (?:CLAUDE|CODEX)_PLUGIN_STEP_TITLE =\s*"([^"]+)"/g,
+				),
+			].map((match) => match[1]);
+			expect(titles).toEqual([
+				"Turn on the plugin in Claude Code",
+				"Turn on the plugin in Codex",
+			]);
+			for (const title of titles) {
+				expect(GUIDE, title).toContain(title);
+			}
+			const project = "cmexample0000000012345678";
+			expect(GUIDE).toContain(
+				codexPluginAddCommand(project).replaceAll("12345678", "<id>"),
+			);
+		});
+
+		it("says a plugin belongs to one project on one deployment, as the CLI enforces", () => {
+			const binding = read(
+				"../../packages/cli/src/lib/plugin/binding.ts",
+			);
+			expect(binding).toContain("already taken by project");
+			expect(PLUGIN_LAYOUT).toContain(
+				"Coding instructions for Fabric project",
+			);
+			expect(GUIDE).toContain(
+				"A plugin belongs to one project on one deployment",
+			);
+			expect(GUIDE).toContain("the setup refuses");
+		});
+
+		// The worked example quotes the UI as a person sees it, so every label it
+		// puts in bold is checked against the string that ships, and every path it
+		// uses sits in the write folder it sets up.
+		describe("the worked example", () => {
+			const heading =
+				"#### Example: a password reset feature, end to end";
+			const start = GUIDE.indexOf(heading);
+			const example = GUIDE.slice(
+				start,
+				GUIDE.indexOf("\n#### ", start + 1),
+			);
+			const en = JSON.parse(
+				read("../../packages/i18n/translations/en.json"),
+			) as {
+				projects: {
+					contexts: {
+						livingMemory: {
+							writeFolders: {
+								title: string;
+								add: string;
+								mode: {
+									PULL_REQUEST: string;
+									DIRECT_PUSH: string;
+								};
+							};
+						};
+					};
+				};
+			};
+
+			it("is in the guide, after the section it walks through", () => {
+				expect(start).toBeGreaterThan(
+					GUIDE.indexOf(
+						"#### Save specs and notes to the repository",
+					),
+				);
+				expect(example).toContain(
+					"docs/ai/specs/password-reset/spec.md",
+				);
+			});
+
+			it("names each control by the label that ships", () => {
+				const writeFolders =
+					en.projects.contexts.livingMemory.writeFolders;
+				const steps = read(
+					"modules/saas/projects/components/cli-connection/TerminalToolSteps.tsx",
+				);
+				const shipped: Array<[string, string]> = [
+					[writeFolders.title, "the write-folder menu item"],
+					[writeFolders.add, "the add button"],
+					[writeFolders.mode.PULL_REQUEST, "a mode"],
+					[writeFolders.mode.DIRECT_PUSH, "a mode"],
+				];
+				for (const [label, what] of shipped) {
+					expect(example, what).toContain(`**${label}**`);
+				}
+				expect(
+					read("../../packages/i18n/translations/en.json"),
+				).toContain('"connectButton": "Connect your agent"');
+				expect(example).toContain("**Connect your agent**");
+				expect(
+					read(
+						"modules/saas/projects/components/cli-connection/lib/agent-tools.ts",
+					),
+				).toContain('label: "Claude Code"');
+				expect(example).toContain("**Claude Code**");
+				expect(REPOSITORY_CHOICE).toContain(
+					'label: "No clone (recommended)"',
+				);
+				expect(example).toContain("**No clone (recommended)**");
+				for (const title of [
+					"Turn on the plugin in Claude Code",
+					"Turn on the plugin in Codex",
+				]) {
+					expect(steps, title).toContain(`"${title}"`);
+					expect(example, title).toContain(`**${title}**`);
+				}
+			});
+
+			it("uses a CLI flag that exists, on a path inside the folder it sets up", () => {
+				expect(MEMORY_COMMANDS).toContain('"--accept-remote');
+				expect(example).toContain(
+					"fabric memory pull --accept-remote docs/ai/specs/password-reset/spec.md",
+				);
+				expect(example).toContain("**Add a write folder**: `docs/ai`");
+			});
+		});
+
+		it("names every memory command and the flags it tells people to use", () => {
+			const subcommands = [
+				...MEMORY_COMMANDS.matchAll(/\.command\("([a-z]+)"\)/g),
+			].map((match) => match[1]);
+			expect(subcommands).toEqual(["pull", "push", "status"]);
+			for (const subcommand of subcommands) {
+				expect(GUIDE, subcommand).toContain(`memory ${subcommand}`);
+			}
+			for (const flag of ["--accept-remote", "--clear"]) {
+				expect(MEMORY_COMMANDS, flag).toContain(`"${flag}`);
+				expect(GUIDE, flag).toContain(flag);
+			}
+		});
+
+		it("lists exactly the file types and size a write folder takes", () => {
+			const list =
+				/CONTEXT_TEXT_EXTENSIONS: readonly string\[\] = \[([^\]]+)\]/.exec(
+					CONTEXT_RULES,
+				)?.[1];
+			const extensions = [...(list ?? "").matchAll(/"(\.[a-z]+)"/g)].map(
+				(match) => match[1],
+			);
+			expect(extensions.length).toBeGreaterThan(0);
+			for (const extension of extensions) {
+				expect(GUIDE, extension).toContain(`\`${extension}\``);
+			}
+			expect(CLI_CLASSIFY).toContain(
+				"MAX_CONTEXT_FILE_BYTES = 2 * 1024 * 1024",
+			);
+			expect(GUIDE).toContain("up to 2 MiB each");
+		});
+
+		it("says an agent's sign-in cannot write, for as long as memory:write stays out of the default grant", () => {
+			const defaults = /OAUTH_DEFAULT_SCOPES = \[([^\]]+)\]/.exec(
+				OAUTH_SCOPES,
+			)?.[1];
+			expect(defaults).toBeDefined();
+			expect(defaults).not.toMatch(/MEMORY_WRITE/);
+			expect(GUIDE).toContain(
+				"`memory:write`, a scope that a coding tool's sign-in never carries",
+			);
+			expect(PLUGIN_LAYOUT).not.toContain(
+				"call the `fabric_memory_write` tool",
+			);
+			// The reads are kind "read", which a plain mcp:read satisfies.
+			expect(
+				read("modules/saas/mcp/lib/gateway/tool-scope.ts"),
+			).toContain(
+				'required.kind === "read" && granted.includes("mcp:read")',
+			);
+			expect(REFERENCE).toContain(
+				"The three reads also accept `mcp:read`",
+			);
+		});
+
+		it("tells people where a hook-sent write id is, as the plugin's skill tells agents", () => {
+			expect(PLUGIN_LAYOUT).toContain(".fabric/memory.lock");
+			expect(GUIDE).toContain(".fabric/memory.lock");
+		});
+
+		it("quotes the two indexing choices of a write folder exactly as the dialog labels them", () => {
+			const labels = JSON.parse(
+				read("../../packages/i18n/translations/en.json"),
+			).projects.contexts.livingMemory.writeFolders.indexMode as Record<
+				string,
+				string
+			>;
+
+			expect(labels.INDEXED).toBe("Index for AI search");
+			expect(labels.STORE_ONLY).toBe("Store only");
+			for (const doc of [PROJECTS, GUIDE]) {
+				expect(doc).toContain(`**${labels.INDEXED}**`);
+				expect(doc).toContain(`**${labels.STORE_ONLY}**`);
+			}
+		});
+
+		it("tells agents which folders are stored only in the API reference of fabric_memory_targets", () => {
+			expect(REFERENCE).toContain("indexMode");
+			expect(REFERENCE).toContain("STORE_ONLY");
+		});
+
+		it("lists every memory tool in both guides and links write folders to a heading that exists", () => {
+			const tools = [
+				...MEMORY_TOOLS.matchAll(
+					/^\t\tname: "(fabric_memory_[a-z_]+)"/gm,
+				),
+			].map((match) => match[1]);
+			expect(tools).toEqual([
+				"fabric_memory_targets",
+				"fabric_memory_read",
+				"fabric_memory_write",
+				"fabric_memory_write_status",
+			]);
+			const cliGuide = read(
+				"../../docs/guides/coding-instructions-cli.md",
+			);
+			for (const tool of tools) {
+				expect(GUIDE, tool).toContain(`\`${tool}\``);
+				expect(REFERENCE, tool).toContain(`\`${tool}\``);
+			}
+			expect(cliGuide).toContain("`fabric_memory_read`");
+			expect(GUIDE).toContain("docs/ai/specs/<work-item-id>/");
+			expect(GUIDE).toContain("(/docs/features/projects#write-folders)");
+			expect(PROJECTS).toContain("### Write Folders");
+			expect(GUIDE).toContain(
+				"(/docs/api/mcp-gateway#living-memory-writes)",
+			);
+			expect(REFERENCE).toContain("### Living Memory writes");
+		});
 	});
 });

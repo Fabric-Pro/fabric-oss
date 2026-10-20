@@ -121,7 +121,10 @@ describe("analyseQaFindingProcedure", () => {
 	});
 
 	it("stores the analysis and hands it straight back to the caller", async () => {
-		const result = await callAnalyse();
+		const result = await callAnalyse({ projectId: "example-project" });
+		expect(mockAnalyse).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: "example-project" }),
+		);
 
 		expect(result).toMatchObject({
 			analysed: true,
@@ -130,7 +133,7 @@ describe("analyseQaFindingProcedure", () => {
 		});
 		expect(mockSetAnalysis).toHaveBeenCalledWith(
 			expect.objectContaining({
-				projectId: "p1",
+				projectId: "example-project",
 				findingId: "f1",
 				suspectedKind: "PRODUCT_BUG",
 			}),

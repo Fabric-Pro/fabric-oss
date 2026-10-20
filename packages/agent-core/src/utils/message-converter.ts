@@ -6,7 +6,7 @@
  *
  * WHY THIS EXISTS:
  * LangGraph uses BaseMessage[] internally, but the unified server and A2A protocol
- * expect a simpler { role: string; content: string }[] format. This converter
+ * expect a simpler { role, content } message format (see SimpleMessage). This converter
  * provides type-safe conversion to prevent the type errors we've seen when
  * directly passing BaseMessage[] to interfaces expecting simple message arrays.
  */
@@ -17,14 +17,18 @@
 export interface SimpleMessage {
 	role: string;
 	content: string;
+	id?: string;
+	tool_call_id?: string;
+	tool_calls?: unknown[];
 }
 
 /**
  * Convert LangGraph BaseMessage[] or similar message arrays to simple format.
  *
  * This handles various message formats:
- * - LangGraph BaseMessage objects (with _getType(), role, content)
- * - Simple objects with role/content properties
+ * - LangGraph BaseMessage objects: the role comes from _getType()/getType(),
+ *   and id, tool_call_id and tool_calls are carried over
+ * - Simple objects with role/content properties (used when there is no type method)
  * - String messages (converted to assistant role)
  *
  * @param messages - Array of messages in any supported format
@@ -57,20 +61,26 @@ export function convertToSimpleMessages(messages: unknown[]): SimpleMessage[] {
 		if (typeof msg === "object") {
 			const msgObj = msg as Record<string, unknown>;
 
-			// Extract role - check multiple possible locations
-			let role = "assistant";
-			if (typeof msgObj.role === "string") {
-				role = msgObj.role;
-			} else if (typeof msgObj._getType === "function") {
-				// LangGraph BaseMessage - infer role from type
-				const type = (msgObj._getType as () => string)();
+			// LangChain type methods take precedence over a wire-format role.
+			const getType =
+				typeof msgObj._getType === "function"
+					? msgObj._getType
+					: msgObj.getType;
+			let role =
+				typeof msgObj.role === "string" ? msgObj.role : "assistant";
+			if (typeof getType === "function") {
+				const type = getType.call(msg);
 				if (type === "human") {
 					role = "user";
 				} else if (type === "ai") {
 					role = "assistant";
-				} else if (type === "system") {
-					role = "system";
-				} else {
+				} else if (
+					type === "generic" &&
+					typeof msgObj.role === "string"
+				) {
+					// ChatMessage carries its custom role on the instance.
+					role = msgObj.role;
+				} else if (typeof type === "string") {
 					role = type;
 				}
 			}
@@ -96,7 +106,21 @@ export function convertToSimpleMessages(messages: unknown[]): SimpleMessage[] {
 				content = String(msgObj.content);
 			}
 
-			return { role, content };
+			const result: SimpleMessage = { role, content };
+			if (typeof msgObj.id === "string") {
+				result.id = msgObj.id;
+			}
+			if (role === "tool" && typeof msgObj.tool_call_id === "string") {
+				result.tool_call_id = msgObj.tool_call_id;
+			}
+			if (
+				role === "assistant" &&
+				Array.isArray(msgObj.tool_calls) &&
+				msgObj.tool_calls.length > 0
+			) {
+				result.tool_calls = msgObj.tool_calls;
+			}
+			return result;
 		}
 
 		// Fallback for any other type

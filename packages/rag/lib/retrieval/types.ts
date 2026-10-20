@@ -8,6 +8,8 @@ import type { EmbeddingProviderConfig } from "../embedding";
  * Options for retrieving context
  */
 export interface RetrievalOptions {
+	/** Usage attribution, independent of the document search scope. */
+	conversationId?: string;
 	/** Chat ID to search within */
 	chatId: string;
 	/** User ID (for multi-tenancy) */

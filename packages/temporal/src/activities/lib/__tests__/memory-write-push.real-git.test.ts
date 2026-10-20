@@ -118,8 +118,12 @@ function remoteMessage(rev: string): string {
 	);
 }
 
-/** A teammate's commit on the remote's `main`, from a clone of its own. */
-async function teammatePush(file: string, content: string): Promise<string> {
+/** A teammate's commit on top of the remote's `main`, pushed to `ref` (`main` unless told otherwise). */
+async function teammatePush(
+	file: string,
+	content: string,
+	ref = "main",
+): Promise<string> {
 	git(competitor, ["fetch", "-q", "origin"]);
 	git(competitor, ["reset", "-q", "--hard", "origin/main"]);
 	const full = path.join(competitor, ...file.split("/"));
@@ -136,7 +140,7 @@ async function teammatePush(file: string, content: string): Promise<string> {
 		"-m",
 		`teammate ${file}`,
 	]);
-	git(competitor, ["push", "-q", "origin", "HEAD:main"]);
+	git(competitor, ["push", "-q", "origin", `HEAD:${ref}`]);
 	return git(competitor, ["rev-parse", "HEAD"]);
 }
 
@@ -363,11 +367,30 @@ describe.skipIf(!hasGit)(
 			git(remote, ["config", "uploadpack.allowAnySHA1InWant", "true"]);
 			base = git(remote, ["rev-parse", "refs/heads/main"]);
 			// A remote that refuses `main` the way a hosting provider refuses a
-			// protected branch, while the marker file exists.
+			// protected branch, while the marker file exists. While `race-main`
+			// exists, the hook instead moves `main` to the commit it names once,
+			// as a writer whose push lands while ours is in flight: receive-pack
+			// then fails to lock the ref. The quarantine forbids ref updates from
+			// the hook itself, so the move runs outside it.
 			const hook = path.join(remote, "hooks", "pre-receive");
 			await writeFile(
 				hook,
-				'#!/bin/sh\nwhile read old new ref; do\n  if [ "$ref" = "refs/heads/main" ] && [ -f "$GIT_DIR/protect-main" ]; then\n    echo "protected branch" >&2\n    exit 1\n  fi\ndone\nexit 0\n',
+				[
+					"#!/bin/sh",
+					"while read old new ref; do",
+					'  if [ "$ref" = "refs/heads/main" ] && [ -f "$GIT_DIR/protect-main" ]; then',
+					'    echo "protected branch" >&2',
+					"    exit 1",
+					"  fi",
+					'  if [ "$ref" = "refs/heads/main" ] && [ -f "$GIT_DIR/race-main" ]; then',
+					'    sha=$(cat "$GIT_DIR/race-main")',
+					'    rm -f "$GIT_DIR/race-main"',
+					'    (unset GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES; git update-ref refs/heads/main "$sha")',
+					"  fi",
+					"done",
+					"exit 0",
+					"",
+				].join("\n"),
 			);
 			await chmod(hook, 0o755);
 			competitor = path.join(work, "competitor");
@@ -380,9 +403,10 @@ describe.skipIf(!hasGit)(
 
 		beforeEach(async () => {
 			await rm(path.join(remote, "protect-main"), { force: true });
+			await rm(path.join(remote, "race-main"), { force: true });
 			git(remote, ["update-ref", "refs/heads/main", base]);
 			for (const branch of remoteBranches()) {
-				if (branch.startsWith("fabric/")) {
+				if (branch.startsWith("fabric/") || branch === "race-side") {
 					git(remote, ["update-ref", "-d", `refs/heads/${branch}`]);
 				}
 			}
@@ -714,6 +738,37 @@ describe.skipIf(!hasGit)(
 						`${base}..${outcome.sha}`,
 					]),
 				).toBe("2");
+			});
+
+			it("redoes the pass when the server loses the race mid-push, instead of opening a pull request", async () => {
+				const theirs = await teammatePush(
+					"docs/ai/theirs.md",
+					"theirs\n",
+					"race-side",
+				);
+				await writeFile(path.join(remote, "race-main"), theirs);
+				const ws = await workspace("server-race");
+				const outcome = committed(
+					await pushMemoryWrite(
+						context(ws, {
+							id: nextId(),
+							mode: "DIRECT_PUSH",
+							entries: [
+								await put(ws, "docs/ai/mine.md", "mine\n"),
+							],
+						}),
+					),
+				);
+
+				expect(ws.adapter.open).not.toHaveBeenCalled();
+				expect(remoteTip()).toBe(outcome.sha);
+				expect(git(remote, ["rev-parse", `${outcome.sha}^`])).toBe(
+					theirs,
+				);
+				expect(remoteFile(outcome.sha, "docs/ai/mine.md")).toBe("mine");
+				expect(remoteFile(outcome.sha, "docs/ai/theirs.md")).toBe(
+					"theirs",
+				);
 			});
 
 			it("reports a conflict that the new tip brings, instead of overwriting the teammate", async () => {

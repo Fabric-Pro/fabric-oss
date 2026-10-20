@@ -80,7 +80,7 @@ export const deleteFrameProcedure = tenantProtectedProcedure
 			organizationId,
 		});
 		if (!frame) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		await deleteStoredFiles({
@@ -96,7 +96,7 @@ export const deleteFrameProcedure = tenantProtectedProcedure
 		});
 
 		if (!result.success) {
-			throw new Error(result.error || "Failed to delete frame");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		return { success: true };

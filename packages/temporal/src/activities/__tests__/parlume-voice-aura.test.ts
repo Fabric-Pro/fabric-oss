@@ -88,7 +88,7 @@ function stubBridge(handlers: {
 			if (String(url).includes("action=say")) {
 				return handlers.say({ url: String(url), init });
 			}
-			if (String(url).includes("api.openai.com")) {
+			if (new URL(String(url)).origin === "https://api.openai.com") {
 				return (
 					handlers.openai?.() ?? new Response(new Uint8Array([1, 0]))
 				);
@@ -126,7 +126,6 @@ describe("Parlume speech through Deepgram Aura in the bridge", () => {
 			...speaker,
 			sentences: spoken("The plan is ready."),
 			voiceGeneration: 4,
-			confirmationSpeakerId: "speaker-1",
 		});
 
 		expect(result).toMatchObject({ played: true, interrupted: false });
@@ -138,8 +137,10 @@ describe("Parlume speech through Deepgram Aura in the bridge", () => {
 			Authorization: "Bearer service-secret",
 			"content-type": "application/x-ndjson",
 			"x-parlume-voice-generation": "4",
-			"x-parlume-confirmation-speaker": "speaker-1",
 		});
+		expect(calls[0]?.init?.headers).not.toHaveProperty(
+			"x-parlume-confirmation-speaker",
+		);
 		expect(generateSpeech).not.toHaveBeenCalled();
 		expect(resolveOpenAiApiKey).not.toHaveBeenCalled();
 	});
@@ -354,7 +355,7 @@ describe("when Aura cannot speak", () => {
 				if (String(url).includes("action=say")) {
 					throw new Error("network down");
 				}
-				if (String(url).includes("api.openai.com")) {
+				if (new URL(String(url)).origin === "https://api.openai.com") {
 					return new Response(new Uint8Array([1, 0]));
 				}
 				await drain(init?.body);
@@ -421,7 +422,10 @@ describe("when Aura cannot speak", () => {
 		const result = await speakParlumeResponse({ ...speaker, sentences });
 
 		synthesized = openaiFetch.mock.calls
-			.filter(([url]) => String(url).includes("api.openai.com"))
+			.filter(
+				([url]) =>
+					new URL(String(url)).origin === "https://api.openai.com",
+			)
 			.map(([, init]) => JSON.parse(String(init?.body)).input);
 		expect(synthesized).toEqual(["Second sentence is not."]);
 		expect(result.firstAudioAt).toBe(first);

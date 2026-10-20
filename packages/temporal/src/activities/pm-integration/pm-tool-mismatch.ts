@@ -9,6 +9,8 @@
  * because the ADO MCP server runs `z.coerce.number()` on the id.
  */
 
+import { pmTargetsConflict } from "@repo/utils/pm-target";
+
 /**
  * Host-suffix patterns per known PM-tool detectedType. Used to detect when a
  * work item's stored externalUrl was produced by a *different* PM tool than
@@ -120,6 +122,8 @@ export function detectExternalLinkMismatch(input: {
 	externalUrl: string | null | undefined;
 	externalMcpServerId: string | null | undefined;
 	activeServerId: string | null | undefined;
+	externalPmTarget?: string | null;
+	activePmTarget?: string | null;
 	currentDetectedType: string | undefined;
 	currentBaseUrl: string | null | undefined;
 	/**
@@ -148,6 +152,13 @@ export function detectExternalLinkMismatch(input: {
 
 	if (!externalId) {
 		return { resolution: "ok" };
+	}
+
+	if (pmTargetsConflict(input.externalPmTarget, input.activePmTarget)) {
+		return {
+			resolution: "block",
+			reason: "The link belongs to a different PM instance or container.",
+		};
 	}
 
 	// Hard signal: the row remembers which MCP server it was synced with and
@@ -240,6 +251,12 @@ export function detectExternalLinkMismatch(input: {
  * failure panel keys on the phrase "linked to a ticket in a different PM
  * tool" to offer Unlink & re-create, and the message names that action.
  */
-export function legacyLinkOtherToolMessage(toolLabel: string): string {
+export function legacyLinkOtherToolMessage(
+	toolLabel: string,
+	direction: "push" | "pull" = "push",
+): string {
+	if (direction === "pull") {
+		return `This item is linked to a ticket in a different PM tool, so Fabric did not pull it from ${toolLabel}. To replace the link with a new ticket in ${toolLabel}, use Unlink & re-create (the old ticket is not deleted).`;
+	}
 	return `This item is linked to a ticket in a different PM tool, so Fabric did not create a new one in ${toolLabel}. To make a new ticket in ${toolLabel}, use Unlink & re-create (the old ticket is not deleted).`;
 }

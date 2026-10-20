@@ -49,15 +49,22 @@ export interface GatewayToolListing {
 	_meta?: Record<string, unknown>;
 }
 
-let definitionsCache: {
-	fetchedAt: number;
-	definitions: GatewayToolListing[];
-} | null = null;
+/**
+ * Which tools a connection's listing holds: the base set every turn has, or
+ * also the portal tools of a meeting's project grant. The two differ, so each
+ * is remembered apart; within one kind the list is the same for every user.
+ */
+export type GatewayListingKind = "base" | "portal";
+
+const definitionsCaches = new Map<
+	GatewayListingKind,
+	{ fetchedAt: number; definitions: GatewayToolListing[] }
+>();
 let lastFailureAt = 0;
 
 /** Test seam: forget what the gateway listed and any recent failure. */
 export function resetFabricGatewayCache(): void {
-	definitionsCache = null;
+	definitionsCaches.clear();
 	lastFailureAt = 0;
 }
 
@@ -103,6 +110,19 @@ export function unwrapGatewayResult(raw: unknown): unknown {
 	return { error: text ?? "The tool failed" };
 }
 
+/**
+ * Whether a call's result says it did nothing: the tool refused it. A result
+ * whose outcome is unknown (it timed out and may have run) is not a refusal.
+ */
+export function isDefiniteRefusal(result: unknown): boolean {
+	return (
+		typeof result === "object" &&
+		result !== null &&
+		"error" in result &&
+		!("outcomeUnknown" in result && result.outcomeUnknown === true)
+	);
+}
+
 function isUnauthorized(error: unknown): boolean {
 	return (
 		error instanceof Error && /\b401\b|unauthori[sz]ed/i.test(error.message)
@@ -141,6 +161,7 @@ const GRANT_EXPIRED_RESULT = {
  */
 export function openFabricGateway(
 	actor: FabricServiceActor,
+	kind: GatewayListingKind = "base",
 ): FabricGateway | null {
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret) {
@@ -170,9 +191,9 @@ export function openFabricGateway(
 	};
 
 	const readOnlyRefusal = (name: string) => {
-		const listing = definitionsCache?.definitions.find(
-			(definition) => definition.name === name,
-		);
+		const listing = definitionsCaches
+			.get(kind)
+			?.definitions.find((definition) => definition.name === name);
 		return listing && toolAccess(listing) === "READ"
 			? Promise.resolve(null)
 			: guardToolWriteForReadOnly(actor.projectId, name, {
@@ -183,11 +204,9 @@ export function openFabricGateway(
 	return {
 		readOnlyRefusal,
 		async listTools() {
-			if (
-				definitionsCache &&
-				Date.now() - definitionsCache.fetchedAt < DEFINITIONS_TTL_MS
-			) {
-				return definitionsCache.definitions;
+			const cached = definitionsCaches.get(kind);
+			if (cached && Date.now() - cached.fetchedAt < DEFINITIONS_TTL_MS) {
+				return cached.definitions;
 			}
 			try {
 				const listed = await runWithTimeout(
@@ -197,10 +216,10 @@ export function openFabricGateway(
 						throw new Error("Timed out listing Fabric tools");
 					},
 				);
-				definitionsCache = {
+				definitionsCaches.set(kind, {
 					fetchedAt: Date.now(),
 					definitions: listed.tools,
-				};
+				});
 				return listed.tools;
 			} catch (error) {
 				lastFailureAt = Date.now();
@@ -243,6 +262,8 @@ export function openFabricGateway(
 					FIRST_PARTY_MCP_TOOL_TIMEOUT_MS,
 					() => ({
 						error: `${name} did not respond in time. Check before trying again.`,
+						// It may still have run.
+						outcomeUnknown: true,
 					}),
 				);
 			} catch (error) {

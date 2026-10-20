@@ -3,7 +3,7 @@
 	"license": "Apache-2.0",
 	"private": true,
 	"scripts": {
-		"build": "dotenv -c -- turbo build",
+		"build": "dotenv -c -v NEXT_TYPECHECK_SPLIT=true -- turbo type-check --filter=@repo/web && dotenv -c -v NEXT_TYPECHECK_SPLIT=true -- turbo build",
 		"dev": "dotenv -c -- turbo dev --concurrency 25",
 		"type-check": "dotenv -c -v NEXT_TYPECHECK_SPLIT=true -- node scripts/run-type-check.mjs",
 		"type-check:changed": "dotenv -c -- node scripts/run-type-check.mjs --changed",
@@ -32,7 +32,7 @@
 	"engines": {
 		"node": ">=22.19.0"
 	},
-	"packageManager": "pnpm@11.28.2",
+	"packageManager": "pnpm@11.28.6",
 	"devDependencies": {
 		"@biomejs/biome": "2.3.3",
 		"@changesets/cli": "^3.0.1",

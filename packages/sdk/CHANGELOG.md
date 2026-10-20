@@ -1,5 +1,12 @@
 # @fabricorg/sdk
 
+## 0.6.1
+
+### Patch Changes
+
+- 53db49a: Load repository instruction plugins in bounded batches, verify their Git blobs, and respect server rate-limit waits during cold installs.
+- 53db49a: The Coding Instructions tab lists the published files a coding-tool plugin leaves out, with the reason for each; the standard layout is documented.
+
 ## 0.6.0
 
 ### Minor Changes

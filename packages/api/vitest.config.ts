@@ -82,6 +82,12 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: [
+			// The plugin mapping is the published SDK's: read its source, so a clean
+			// checkout needs no prebuilt dist before these tests can load.
+			{
+				find: /^@fabricorg\/sdk$/,
+				replacement: path.resolve(__dirname, "../sdk/src/index.ts"),
+			},
 			// The `@fabricorg/integrations-*` packages export only a built
 			// `dist`, and `turbo run test` depends on `generate`, not `build`,
 			// so CI never has one: importing `modules/v1/integrations.ts` failed

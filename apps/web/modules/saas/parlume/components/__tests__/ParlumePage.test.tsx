@@ -93,15 +93,12 @@ function showPage(canEdit = true) {
 }
 
 const linkField = () => screen.getByLabelText("Teams meeting link");
-const consentBox = () =>
-	screen.getByRole("checkbox", { name: /told participants/ });
 const inviteButton = () =>
 	screen.getByRole("button", { name: "Invite Parlume" });
 
 async function readyToInvite() {
 	await screen.findByRole("combobox", { name: "Agent" });
 	fireEvent.change(linkField(), { target: { value: `  ${meetingUrl}  ` } });
-	fireEvent.click(consentBox());
 }
 
 describe("ParlumePage header", () => {
@@ -136,26 +133,24 @@ describe("ParlumePage invitation", () => {
 		);
 	});
 
-	it("keeps Invite disabled until the participants have been told", async () => {
+	it("enables Invite as soon as there is a meeting link, with no acknowledgement to tick", async () => {
 		showPage();
 		await screen.findByRole("combobox", { name: "Agent" });
-		fireEvent.change(linkField(), { target: { value: meetingUrl } });
-
 		expect(inviteButton()).toBeDisabled();
 		expect(inviteButton()).toHaveAccessibleDescription(
-			"Confirm you have told participants",
+			"Paste a Teams meeting link first",
 		);
 
-		fireEvent.click(consentBox());
-		expect(consentBox()).toBeChecked();
-		expect(inviteButton()).toBeEnabled();
+		fireEvent.change(linkField(), { target: { value: meetingUrl } });
 
-		fireEvent.click(consentBox());
-		expect(inviteButton()).toBeDisabled();
-		expect(mocks.start).not.toHaveBeenCalled();
+		expect(inviteButton()).toBeEnabled();
+		expect(screen.queryByRole("checkbox")).toBeNull();
+		expect(
+			screen.getByText(/Parlume records and transcribes the meeting/),
+		).toBeInTheDocument();
 	});
 
-	it("links the consent line to the in-the-meeting card", async () => {
+	it("links the recording notice to the in-the-meeting card", async () => {
 		showPage();
 		const link = await screen.findByRole("link", {
 			name: "What Parlume does in a meeting",
@@ -213,14 +208,15 @@ describe("ParlumePage invitation", () => {
 		showPage();
 		await readyToInvite();
 		const readOnly = screen.getByRole("radio", { name: "Read-only" });
-		const actions = screen.getByRole("radio", {
-			name: "Actions with confirmation",
-		});
+		const actions = screen.getByRole("radio", { name: "Actions" });
 		expect(readOnly).toBeChecked();
 		expect(actions).not.toBeChecked();
 		expect(
-			screen.getByText(/Makes changes with your permissions after the/),
+			screen.getByText(
+				/Makes the changes attendees ask for, with your permissions, as soon as they ask/,
+			),
 		).toBeInTheDocument();
+		expect(screen.queryByText(/confirm/i)).toBeNull();
 
 		fireEvent.click(actions);
 		expect(actions).toBeChecked();
@@ -252,7 +248,6 @@ describe("ParlumePage invitation", () => {
 		expect(picker).toHaveTextContent("Example release assistant");
 		expect(picker).toHaveTextContent("v3");
 		fireEvent.change(linkField(), { target: { value: meetingUrl } });
-		fireEvent.click(consentBox());
 		fireEvent.click(inviteButton());
 		await waitFor(() =>
 			expect(mocks.start).toHaveBeenCalledWith({
@@ -277,7 +272,6 @@ describe("ParlumePage invitation", () => {
 			),
 		).toHaveAttribute("role", "alert");
 		fireEvent.change(linkField(), { target: { value: meetingUrl } });
-		fireEvent.click(consentBox());
 		expect(inviteButton()).toBeDisabled();
 	});
 
@@ -288,7 +282,6 @@ describe("ParlumePage invitation", () => {
 			await screen.findByText("Could not load project agents."),
 		).toHaveAttribute("role", "alert");
 		fireEvent.change(linkField(), { target: { value: meetingUrl } });
-		fireEvent.click(consentBox());
 		expect(inviteButton()).toBeDisabled();
 
 		fireEvent.click(screen.getByRole("button", { name: "Retry agents" }));

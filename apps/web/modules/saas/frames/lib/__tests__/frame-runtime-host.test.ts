@@ -1,5 +1,6 @@
 import { FabricToolError } from "@saas/mcp/lib/fabric-tool-client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FRAME_RUNTIME_CALL_TIMEOUT_MS } from "../frame-embed-protocol";
 import {
 	createFrameRuntimeHost,
 	FRAME_RUNTIME_MAX_PROMPT_LENGTH,
@@ -20,6 +21,8 @@ const mocks = {
 };
 
 let clock = 0;
+
+afterEach(() => vi.useRealTimers());
 
 function host(overrides: Partial<FrameRuntimeHostOptions> = {}) {
 	return createFrameRuntimeHost({
@@ -56,6 +59,134 @@ beforeEach(() => {
 });
 
 describe("a call from the page", () => {
+	it("settles cancellation while metadata is unresolved and never dispatches when it later arrives", async () => {
+		let resolveMetadata!: (
+			value: ReadonlyMap<string, { readOnlyHint: boolean }>,
+		) => void;
+		mocks.loadToolInfo.mockReturnValue(
+			new Promise((resolve) => {
+				resolveMetadata = resolve;
+			}),
+		);
+		const controller = new AbortController();
+		const result = host().handleCall(call("fabric_list_workflows"), {
+			signal: controller.signal,
+		});
+		controller.abort();
+		await expect(result).resolves.toMatchObject({
+			ok: false,
+			error: expect.stringContaining("cancelled"),
+		});
+		resolveMetadata(
+			new Map([["fabric_list_workflows", { readOnlyHint: true }]]),
+		);
+		await Promise.resolve();
+		expect(mocks.confirmTool).not.toHaveBeenCalled();
+		expect(mocks.callTool).not.toHaveBeenCalled();
+	});
+
+	it.each([undefined, 10_000_000])(
+		"caps metadata waits at five minutes for expiry %s",
+		async (expiresAt) => {
+			vi.useFakeTimers();
+			mocks.loadToolInfo.mockReturnValue(new Promise(() => {}));
+			const result = host().handleCall({
+				...call("fabric_list_workflows"),
+				expiresAt,
+			});
+			await vi.advanceTimersByTimeAsync(FRAME_RUNTIME_CALL_TIMEOUT_MS);
+			await expect(result).resolves.toMatchObject({
+				ok: false,
+				error: expect.stringContaining("expired"),
+			});
+			expect(mocks.callTool).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		},
+	);
+
+	it("checks the wall clock after metadata even if the timer is delayed", async () => {
+		mocks.loadToolInfo.mockImplementation(async () => {
+			clock += FRAME_RUNTIME_CALL_TIMEOUT_MS;
+			return new Map([["fabric_list_workflows", { readOnlyHint: true }]]);
+		});
+		await expect(
+			host().handleCall(call("fabric_list_workflows")),
+		).resolves.toMatchObject({
+			ok: false,
+			error: expect.stringContaining("expired"),
+		});
+		expect(mocks.confirmTool).not.toHaveBeenCalled();
+		expect(mocks.callTool).not.toHaveBeenCalled();
+	});
+
+	it("checks the wall clock after consent before dispatch", async () => {
+		mocks.confirmTool.mockImplementation(async () => {
+			clock += FRAME_RUNTIME_CALL_TIMEOUT_MS;
+			return true;
+		});
+		await expect(
+			host().handleCall(call("fabric_execute_workflow")),
+		).resolves.toMatchObject({
+			ok: false,
+			error: expect.stringContaining("expired"),
+		});
+		expect(mocks.callTool).not.toHaveBeenCalled();
+	});
+
+	it("does not describe cancellation after dispatch as a rollback", async () => {
+		let finish!: (value: unknown) => void;
+		mocks.callTool.mockReturnValue(
+			new Promise((resolve) => {
+				finish = resolve;
+			}),
+		);
+		const controller = new AbortController();
+		const result = host().handleCall(call("fabric_list_workflows"), {
+			signal: controller.signal,
+		});
+		await Promise.resolve();
+		expect(mocks.callTool).toHaveBeenCalledTimes(1);
+		controller.abort();
+		await expect(result).resolves.toMatchObject({
+			ok: false,
+			error: "This Fabric call expired or was cancelled.",
+		});
+		finish({ alreadyDispatched: true });
+		await Promise.resolve();
+		expect(mocks.callTool).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([
+		"fabric_page_configure_story_review",
+		"fabric_page_run_story_review",
+	])(
+		"asks on every %s call and derives its own Workspace ID",
+		async (name) => {
+			mocks.loadToolInfo.mockResolvedValue(
+				new Map([
+					[name, { readOnlyHint: false, confirm: "always" as const }],
+				]),
+			);
+			const page = host({ runtimeTools: [name] });
+			const input = {
+				workflowId: "workflow-1",
+				frameId: "foreign-frame",
+			};
+			await page.handleCall(call(name, input));
+			await page.handleCall(call(name, input, "r2"));
+			expect(
+				mocks.confirmTool.mock.calls.map((entry) => entry[2]),
+			).toEqual([
+				{ every: true, because: "confirm" },
+				{ every: true, because: "tainted" },
+			]);
+			expect(mocks.callTool).toHaveBeenCalledWith(name, {
+				workflowId: "workflow-1",
+				frameId: "frame-1",
+			});
+		},
+	);
+
 	it("runs a declared read-only tool at once, as the viewer, and answers with its result", async () => {
 		const answer = await host().handleCall(
 			call("fabric_list_workflows", { limit: 3 }),
@@ -134,6 +265,10 @@ describe("a call from the page", () => {
 			"fabric_execute_workflow",
 			{ workflowId: "w1" },
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 		expect(mocks.callTool).toHaveBeenCalledWith("fabric_execute_workflow", {
 			workflowId: "w1",
@@ -162,6 +297,10 @@ describe("a call from the page", () => {
 			"fabric_list_workflows",
 			{},
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -190,7 +329,11 @@ describe("a call from the page", () => {
 		expect(mocks.confirmTool).toHaveBeenCalledWith(
 			"fabric_list_workflows",
 			{ limit: 1 },
-			{ every: true, because: "confirm" },
+			{ every: true, because: "confirm", readOnly: true },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 		expect(mocks.callTool).toHaveBeenCalledTimes(1);
 	});
@@ -615,7 +758,11 @@ describe("a read from the viewer's own connected server", () => {
 		expect(mocks.confirmTool).toHaveBeenCalledWith(
 			"fabric_page_read_connected",
 			READ,
-			{ every: false },
+			{ every: false, readOnly: true },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 		expect(mocks.callTool).toHaveBeenCalledWith(
 			"fabric_page_read_connected",
@@ -680,6 +827,27 @@ describe("a read from the viewer's own connected server", () => {
 
 		expect(answer.ok).toBe(false);
 		expect(mocks.callTool).not.toHaveBeenCalled();
+	});
+});
+
+describe("trusted metadata for sensitive project reads", () => {
+	it("passes read-only metadata to consent without reducing per-call approval after taint", async () => {
+		const name = "fabric_list_project_pm_members";
+		mocks.loadToolInfo.mockResolvedValue(
+			new Map([[name, { readOnlyHint: true }]]),
+		);
+		mocks.confirmTool
+			.mockResolvedValueOnce(true)
+			.mockResolvedValueOnce(false);
+		const page = host({ runtimeTools: [name] });
+		const args = { projectId: "project-1", readOnlyHint: false };
+		expect((await page.handleCall(call(name, args, "r1"))).ok).toBe(true);
+		expect((await page.handleCall(call(name, args, "r2"))).ok).toBe(false);
+		expect(mocks.confirmTool.mock.calls.map((entry) => entry[2])).toEqual([
+			{ every: false, readOnly: true },
+			{ every: true, because: "tainted", readOnly: true },
+		]);
+		expect(mocks.callTool).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -789,6 +957,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_page_data_set",
 			VOTE,
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -801,6 +973,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_execute_workflow",
 			{ workflowId: "w1" },
 			{ every: true, because: "keeps-data" },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -813,6 +989,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_execute_workflow",
 			{ workflowId: "w1" },
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -835,6 +1015,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 				"fabric_page_data_set",
 				VOTE,
 				{ every: true, because: "tainted" },
+				expect.objectContaining({
+					signal: expect.any(AbortSignal),
+					expiresAt: expect.any(Number),
+				}),
 			);
 		},
 	);
@@ -852,6 +1036,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_page_data_set",
 			VOTE,
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -885,6 +1073,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_page_data_set",
 			VOTE,
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -901,6 +1093,10 @@ describe("when the viewer is asked about a page that keeps data", () => {
 			"fabric_page_data_set",
 			VOTE,
 			{ every: false },
+			expect.objectContaining({
+				signal: expect.any(AbortSignal),
+				expiresAt: expect.any(Number),
+			}),
 		);
 	});
 
@@ -946,8 +1142,8 @@ describe("when the viewer is asked about a page that keeps data", () => {
 		);
 
 		expect(mocks.confirmTool.mock.calls.map((entry) => entry[2])).toEqual([
-			{ every: false },
-			{ every: true, because: "tainted" },
+			{ every: false, readOnly: true },
+			{ every: true, because: "tainted", readOnly: true },
 		]);
 	});
 });

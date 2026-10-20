@@ -33,6 +33,7 @@ const { mocks } = vi.hoisted(() => ({
 		getDirectRepositoryState: vi.fn(),
 		listDirectRepositoryFilesForApi: vi.fn(),
 		getDirectRepositoryFileForApi: vi.fn(),
+		readDirectRepositoryFilesForApi: vi.fn(),
 		directRepositoryAvailability: vi.fn(),
 		/** The real service behind the route, for the cases that run it whole. */
 		realProposalPullRequestStatus: null as
@@ -128,6 +129,7 @@ vi.mock("../instruction-direct-repository", () => ({
 	getDirectRepositoryState: mocks.getDirectRepositoryState,
 	listDirectRepositoryFilesForApi: mocks.listDirectRepositoryFilesForApi,
 	getDirectRepositoryFileForApi: mocks.getDirectRepositoryFileForApi,
+	readDirectRepositoryFilesForApi: mocks.readDirectRepositoryFilesForApi,
 	directRepositoryAvailability: mocks.directRepositoryAvailability,
 }));
 
@@ -263,6 +265,7 @@ function post(path: string) {
 
 const CHANGES_PATH = `/projects/${PROJECT}/instructions/changes`;
 const VERSIONS_PATH = `/projects/${PROJECT}/instructions/versions`;
+const READ_FILES_PATH = `/projects/${PROJECT}/instructions/repository/files/read`;
 /** The published snapshot every change set here is stated against. */
 const BASE = "snap-2";
 
@@ -1875,6 +1878,107 @@ describe("POST /projects/:projectId/instructions/published/files", () => {
 
 		expect(response.status).toBe(403);
 		expect(mocks.getSignedUrl).not.toHaveBeenCalled();
+	});
+});
+
+describe("bounded direct repository file batches", () => {
+	const body = {
+		generation: 3,
+		commitSha: "a".repeat(40),
+		paths: ["AGENTS.md"],
+	};
+
+	it("returns the exact pin and continuation through the project gate", async () => {
+		const result = {
+			...body,
+			files: [
+				{
+					path: "AGENTS.md",
+					read: { state: "found", text: "example", size: 7 },
+				},
+			],
+			nextIndex: null,
+		};
+		mocks.readDirectRepositoryFilesForApi.mockResolvedValue(result);
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, body),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ data: result });
+		expect(mocks.readDirectRepositoryFilesForApi).toHaveBeenCalledWith(
+			expect.objectContaining({
+				...body,
+				startIndex: 0,
+				projectId: PROJECT,
+				userId: "user-1",
+			}),
+		);
+	});
+
+	it("requires instructions:read even if the caller can read the project", async () => {
+		mocks.scopes = ["projects:read"];
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, body),
+		);
+		expect(response.status).toBe(403);
+		expect(mocks.readDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+
+	it("hides projects in another organization", async () => {
+		apiContext = organizationKey("org-2");
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, body),
+		);
+		expect(response.status).toBe(404);
+		expect(mocks.readDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+
+	it("rechecks the creator's live permission for wildcard keys", async () => {
+		mocks.scopes = ["*"];
+		mocks.resolveEffectiveProjectPermissions.mockResolvedValue({
+			permissions: [],
+			source: "org",
+			organizationId: ORG,
+		});
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, body),
+		);
+		expect(response.status).toBe(403);
+		expect(mocks.readDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+
+	it("refuses duplicate paths and missing pins", async () => {
+		for (const invalid of [
+			{ ...body, paths: ["AGENTS.md", "AGENTS.md"] },
+			{ paths: ["AGENTS.md"] },
+		]) {
+			const response = await buildApp().request(
+				postJson(READ_FILES_PATH, invalid),
+			);
+			expect(response.status).toBe(400);
+		}
+		expect(mocks.readDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+
+	it("rejects a request over one MiB before parsing or reading", async () => {
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, {
+				...body,
+				padding: "x".repeat(1024 * 1024),
+			}),
+		);
+		expect(response.status).toBe(413);
+		expect(mocks.readDirectRepositoryFilesForApi).not.toHaveBeenCalled();
+	});
+
+	it("maps a stale source pin to a conflict", async () => {
+		mocks.readDirectRepositoryFilesForApi.mockRejectedValue(
+			new ORPCError("CONFLICT", { message: "Changed" }),
+		);
+		const response = await buildApp().request(
+			postJson(READ_FILES_PATH, body),
+		);
+		expect(response.status).toBe(409);
 	});
 });
 

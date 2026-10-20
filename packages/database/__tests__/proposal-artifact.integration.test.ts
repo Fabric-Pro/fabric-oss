@@ -6,15 +6,16 @@
  *  1. The guarded writers, on the superuser connection the API and worker
  *     use: the live-section run and attempt guards, analysis run creation and
  *     completion (including two completions racing on one run under the real
- *     row lock), newest-run reads, the style upsert, the run shown for the
- *     current content, the re-run claim (two claims racing on the document
- *     lock), and members' answers (two writers racing on one key).
+ *     row lock, and the analysis report the winner stores), newest-run reads,
+ *     the style upsert, the run shown for the current content, the re-run
+ *     claim (two claims racing on the document lock), and members' answers
+ *     (two writers racing on one key).
  *  2. Row-level security, under the NOSUPERUSER/NOBYPASSRLS test role
  *     (`_helpers/rls-role.ts`): the organization reads its own analysis,
  *     finding, answer and style rows; another organization and a project
  *     guest — an accepted project member with no organization membership —
- *     read none (no manifest either), even on the project the guest was
- *     invited to, and cannot write any.
+ *     read none (no manifest or report either), even on the project the
+ *     guest was invited to, and cannot write any.
  *
  * Requires the Proposal artifact migrations and `apply:rls` on the target
  * database. Self-skips without a reachable DATABASE_URL.
@@ -40,14 +41,18 @@ import {
 	createAnalysisRun,
 	failAnalysisRun,
 	getAnalysisForCurrentContent,
+	getAnalysisReport,
 	getAnalysisRunInput,
 	getDocumentStyle,
 	getLatestAnalysisForDocument,
 	listResponsesForDocument,
 	markAnalysisRunning,
+	normalizeAnalysisReport,
 	PROPOSAL_ANALYSIS_MATCH_WINDOW,
 	PROPOSAL_ANALYSIS_TIMED_OUT_FAILURE,
 	PROPOSAL_EVIDENCE_TEXT_HEAD_LENGTH,
+	PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS,
+	type ProposalAnalysisReportInput,
 	readProposalEvidenceSources,
 	resetLiveSections,
 	type UpsertFindingResponseInput,
@@ -164,6 +169,49 @@ const findings = [
 		sectionHeading: "Scope",
 	},
 ];
+
+/** An analysis report as the worker hands it to the completion. */
+function analysisReport(
+	label: string,
+	overrides: Partial<ProposalAnalysisReportInput> = {},
+): ProposalAnalysisReportInput {
+	return {
+		assessment: `${label} assessment`,
+		summary: `${label} summary.`,
+		scope: [
+			{
+				item: `${label} discovery`,
+				priority: "MUST",
+				inProposal: "Yes",
+				note: "Two days.",
+			},
+		],
+		beforeSending: [`${label}: state the fixed fee.`],
+		duringDiscovery: [`${label}: confirm the hosting target.`],
+		sources: [1],
+		text: `## ${label}\n\nThe ${label} report. [S1]`,
+		textTruncated: false,
+		...overrides,
+	};
+}
+
+/** Every string anywhere in `value`. */
+function allStrings(value: unknown): string[] {
+	if (typeof value === "string") {
+		return [value];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap(allStrings);
+	}
+	if (value !== null && typeof value === "object") {
+		return Object.values(value).flatMap(allStrings);
+	}
+	return [];
+}
+
+/** The runtime's own check for unpaired surrogates. */
+const isWellFormed = (text: string) =>
+	(text as unknown as { isWellFormed(): boolean }).isWellFormed();
 
 describe.skipIf(!hasReachableDatabaseUrl())(
 	"Proposal artifact (real Postgres)",
@@ -576,6 +624,150 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						})
 					).status,
 				).toBe("COMPLETE");
+			});
+
+			it("a report holding NUL, lone surrogates and 60,000 astral characters stores well formed beside its findings (Fizzy #2946)", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const { analysisId } = await recordRun({
+					documentId,
+					runKey: id("analysis-report-hostile"),
+					sourceContext: "",
+					contextCount: 0,
+				});
+				await markAnalysisRunning(analysisId);
+
+				const hostile = `Nul\u0000 high\uD83D low\uDE00 ${"😀".repeat(60_000)}`;
+				const input = analysisReport("Hostile", {
+					assessment: "Ready\u0000\uD83D",
+					summary: hostile,
+					scope: [
+						{
+							item: hostile,
+							priority: "SHOULD",
+							inProposal: "\uDE00",
+							note: hostile,
+						},
+					],
+					beforeSending: [hostile],
+					duringDiscovery: [hostile],
+					text: hostile,
+				});
+				expect(
+					await completeAnalysisRun({
+						analysisId,
+						findings,
+						report: input,
+					}),
+				).toBe("written");
+
+				expect(
+					await db.projectDocumentFinding.count({
+						where: { analysisId },
+					}),
+				).toBe(findings.length);
+				const row = await db.projectDocumentAnalysis.findUniqueOrThrow({
+					where: { id: analysisId },
+					select: { status: true, report: true, reportText: true },
+				});
+				expect(row.status).toBe("COMPLETE");
+				for (const text of [
+					...allStrings(row.report),
+					row.reportText ?? "",
+				]) {
+					expect(text).not.toContain("\u0000");
+					expect(isWellFormed(text)).toBe(true);
+				}
+				// Stored exactly as normalised: Postgres changed nothing.
+				const expected = normalizeAnalysisReport(input);
+				expect(row.report).toEqual(expected?.report);
+				expect(row.reportText).toBe(expected?.reportText);
+				expect(row.reportText?.length).toBeLessThanOrEqual(
+					PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS,
+				);
+				expect(
+					row.reportText?.startsWith("Nul high\uFFFD low\uFFFD "),
+				).toBe(true);
+
+				const read = await getAnalysisReport({
+					organizationId: ORG_A,
+					documentId,
+					analysisId,
+				});
+				expect(read).toMatchObject({
+					assessment: "Ready\uFFFD",
+					textTruncated: true,
+					text: row.reportText,
+				});
+				expect(read?.scope[0]?.inProposal).toBe("\uFFFD");
+				expect(
+					await getAnalysisReport({
+						organizationId: ORG_B,
+						documentId,
+						analysisId,
+					}),
+				).toBeNull();
+			});
+
+			it("a refused completion leaves the first writer's report byte-identical (Fizzy #2946)", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const { analysisId } = await recordRun({
+					documentId,
+					runKey: id("analysis-report-race"),
+					sourceContext: "",
+					contextCount: 0,
+				});
+				expect(await markAnalysisRunning(analysisId)).toBe("written");
+
+				const laterAttempt = [
+					{ ...findings[0], title: "A later attempt's finding" },
+				];
+				const outcomes = await Promise.all([
+					completeAnalysisRun({
+						analysisId,
+						findings,
+						report: analysisReport("First"),
+					}),
+					completeAnalysisRun({
+						analysisId,
+						findings: laterAttempt,
+						report: analysisReport("Second"),
+					}),
+				]);
+				expect([...outcomes].sort()).toEqual(["superseded", "written"]);
+				const winner = outcomes[0] === "written" ? "First" : "Second";
+
+				const stored = () =>
+					db.$queryRaw<
+						{ report: string | null; reportText: string | null }[]
+					>`
+						SELECT "report"::text AS "report", "reportText"
+						FROM "project_document_analysis"
+						WHERE "id" = ${analysisId}`;
+				const [before] = await stored();
+				expect(before?.reportText).toBe(
+					`## ${winner}\n\nThe ${winner} report. [S1]`,
+				);
+				expect(before?.report).toContain(`${winner} assessment`);
+
+				expect(
+					await completeAnalysisRun({
+						analysisId,
+						findings: [],
+						report: analysisReport("Late"),
+					}),
+				).toBe("superseded");
+				expect(await stored()).toEqual([before]);
+				expect(
+					await db.projectDocumentFinding.count({
+						where: { analysisId },
+					}),
+				).toBe(
+					winner === "First" ? findings.length : laterAttempt.length,
+				);
 			});
 
 			it("the newest run wins even when an older one completes later", async () => {
@@ -1568,7 +1760,11 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 						],
 					})
 				).analysisId;
-				await completeAnalysisRun({ analysisId, findings });
+				await completeAnalysisRun({
+					analysisId,
+					findings,
+					report: analysisReport("Internal"),
+				});
 				await upsertFindingResponse(answer(documentId, analysisId));
 				await upsertDocumentStyle({
 					documentId,
@@ -1681,6 +1877,33 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				expect(await manifests(orgA)).toBeGreaterThan(0);
 				expect(await manifests(guest)).toBe(0);
 				expect(await manifests(orgB)).toBe(0);
+			});
+
+			it("another organization and a project guest read no analysis report, even on the invited project (Fizzy #2946)", async () => {
+				const reports = (ctx: TenantCtx) =>
+					asRlsRole(ctx, async (tx) => {
+						const [row] = await tx.$queryRaw<{ n: number }[]>`
+							SELECT count(*)::int AS n FROM "project_document_analysis"
+							WHERE "organizationId" = ${ORG_A}
+							AND ("report" IS NOT NULL OR "reportText" IS NOT NULL)`;
+						return row?.n ?? 0;
+					});
+				expect(await reports(orgA)).toBeGreaterThan(0);
+				expect(await reports(orgB)).toBe(0);
+				expect(await reports(guest)).toBe(0);
+
+				const run = (ctx: TenantCtx) =>
+					asRlsRole(ctx, (tx) =>
+						tx.projectDocumentAnalysis.findFirst({
+							where: { id: analysisId },
+							select: { report: true, reportText: true },
+						}),
+					);
+				expect((await run(orgA))?.reportText).toContain(
+					"Internal report",
+				);
+				expect(await run(orgB)).toBeNull();
+				expect(await run(guest)).toBeNull();
 			});
 
 			it("a project guest cannot write an answer on the invited project, or change one", async () => {

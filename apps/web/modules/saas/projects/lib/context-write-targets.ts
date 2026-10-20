@@ -14,10 +14,14 @@ import { contextSyncPathSpellingProblem } from "@repo/instructions/context-sync-
 
 export type WriteTargetMode = "PULL_REQUEST" | "DIRECT_PUSH";
 
+/** Whether a folder's files are embedded for AI search, or only stored. */
+export type WriteTargetIndexMode = "INDEXED" | "STORE_ONLY";
+
 export type WriteTargetView = {
 	id: string;
 	folder: string;
 	mode: WriteTargetMode;
+	indexMode: WriteTargetIndexMode;
 	version: number;
 	directPushEnabledById: string | null;
 	directPushEnabledAt: string | Date | null;

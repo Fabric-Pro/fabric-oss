@@ -7,6 +7,7 @@ type TurnResult = Pick<
 	| "executionId"
 	| "generation"
 	| "status"
+	| "questionText"
 	| "responseText"
 	| "terminalAt"
 	| "terminalReason"
@@ -31,9 +32,10 @@ function executionId(message: unknown): unknown {
  * the primary response, while a matching longer browser answer survives the
  * turn's storage cap. Other distinct saved text responses are carried alongside
  * it. These records cannot reliably identify generated text or transport notices.
- * Questions are recovered only from messages that name this execution, or
- * from the seed of generation one. Later unsaved questions are not durable,
- * so those results deliberately carry no invented question.
+ * Questions come from messages that name this execution, the seed of
+ * generation one, or else the question the turn was admitted with. A turn
+ * still running gets a record of its question only (`inProgress`), so a reload
+ * mid-turn keeps it; turns admitted before the question was kept have none.
  */
 export function hydrateConversationTurnResults(
 	conversation: { messages: Prisma.JsonValue; metadata: Prisma.JsonValue },
@@ -58,14 +60,20 @@ export function hydrateConversationTurnResults(
 			.filter((turn) => !isTerminalConversationTurnStatus(turn.status))
 			.map((turn) => turn.executionId),
 	);
+	const laterThan =
+		(turn: TurnResult) =>
+		(candidate: unknown): boolean => {
+			const generation = generations.get(candidate as string);
+			return (
+				turn.generation !== null &&
+				generation != null &&
+				generation > turn.generation
+			);
+		};
 	let changed = false;
 	for (const turn of turns) {
 		const id = turn.executionId;
-		if (
-			!id ||
-			!turn.terminalAt ||
-			!isTerminalConversationTurnStatus(turn.status)
-		) {
+		if (!id) {
 			continue;
 		}
 		const savedIndex = executions.findIndex(
@@ -90,7 +98,51 @@ export function hydrateConversationTurnResults(
 			)
 				? messages[0]
 				: undefined;
-		const question = object(storedQuestion ?? seed).content;
+		const asked = object(storedQuestion ?? seed);
+		const storedContent = object(storedQuestion).content;
+		const seedContent = object(seed).content;
+		// The turn's own record wins over an unstamped seed, which is only
+		// assumed to be generation one's question.
+		const question =
+			typeof storedContent === "string" && storedContent.length > 0
+				? storedContent
+				: (turn.questionText ??
+					(typeof seedContent === "string" && seedContent.length > 0
+						? seedContent
+						: null));
+		const isLater = laterThan(turn);
+		if (
+			!turn.terminalAt ||
+			!isTerminalConversationTurnStatus(turn.status)
+		) {
+			if (savedIndex === -1 && question) {
+				questionIds.add(asked.id);
+				if (asked.id !== undefined) {
+					anchors.set(id, asked.id);
+				}
+				const later = executions.findIndex((execution) =>
+					isLater(object(execution).id),
+				);
+				executions.splice(later !== -1 ? later : executions.length, 0, {
+					id,
+					userMessage: question,
+					finalResponse: "",
+					status: "running",
+					startedAt: turn.createdAt.toISOString(),
+					recoveredFromTurn: true,
+					inProgress: true,
+					// The stored message the question came from, if any: a
+					// browser that attaches to this turn saves its question
+					// under this id, so the turn adopts it rather than adds a
+					// second copy.
+					...(typeof asked.id === "string"
+						? { questionMessageId: asked.id }
+						: {}),
+				});
+				changed = true;
+			}
+			continue;
+		}
 		const baseMessageId = `turn-result-${turn.id}`;
 		let resultMessageId = baseMessageId;
 		let suffix = 1;
@@ -99,13 +151,8 @@ export function hydrateConversationTurnResults(
 		) {
 			resultMessageId = `${baseMessageId}-${suffix++}`;
 		}
-		questionIds.add(object(storedQuestion ?? seed).id);
-		anchors.set(
-			id,
-			object(storedQuestion ?? seed).id ??
-				object(storedAnswer).id ??
-				resultMessageId,
-		);
+		questionIds.add(asked.id);
+		anchors.set(id, asked.id ?? object(storedAnswer).id ?? resultMessageId);
 		const status =
 			turn.status === "FAILED"
 				? "error"
@@ -149,6 +196,9 @@ export function hydrateConversationTurnResults(
 		);
 		const savedDetails = { ...saved };
 		delete savedDetails.additionalResponses;
+		// A browser save can carry back the record shown while the turn ran.
+		delete savedDetails.inProgress;
+		delete savedDetails.questionMessageId;
 		if (turn.status !== "FAILED") {
 			delete savedDetails.error;
 		} else if (turn.terminalReason) {
@@ -178,11 +228,10 @@ export function hydrateConversationTurnResults(
 			...savedDetails,
 			id,
 			userMessage:
-				typeof saved.userMessage === "string"
+				typeof saved.userMessage === "string" &&
+				saved.userMessage.length > 0
 					? saved.userMessage
-					: typeof question === "string"
-						? question
-						: "",
+					: (question ?? ""),
 			finalResponse: response,
 			...(additionalResponses.length > 0 ? { additionalResponses } : {}),
 			status,
@@ -198,14 +247,6 @@ export function hydrateConversationTurnResults(
 				!hasDurableResponse ||
 				!keptBrowserResponse ||
 				(saved.status !== undefined && saved.status !== status),
-		};
-		const isLater = (candidate: unknown) => {
-			const generation = generations.get(candidate as string);
-			return (
-				turn.generation !== null &&
-				generation != null &&
-				generation > turn.generation
-			);
 		};
 		if (!storedAnswer && !(savedIndex !== -1 && keptBrowserResponse)) {
 			let lastOwned = -1;

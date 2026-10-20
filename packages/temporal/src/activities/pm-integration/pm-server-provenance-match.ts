@@ -95,52 +95,7 @@ export function extractEntityOrgKey(
 	}
 }
 
-/**
- * Extract the project's CURRENT org/tenant key from its resolved PM config.
- * Returns null when the tool is proxied/unknown (caller falls back to
- * within-project link-set consistency).
- */
-export function extractConfigOrgKey(
-	toolType: PmPatternType,
-	config: {
-		commandArgs?: string[] | null;
-		baseUrl?: string | null;
-		defaultUrl?: string | null;
-		atlassianCloudSiteUrl?: string | null;
-	},
-): string | null {
-	switch (toolType) {
-		case "azure-devops": {
-			const arg = Array.isArray(config.commandArgs)
-				? config.commandArgs[0]
-				: null;
-			if (typeof arg === "string" && arg.trim()) {
-				return arg.trim().toLowerCase();
-			}
-			const url = config.baseUrl ?? config.defaultUrl ?? null;
-			if (url) {
-				const m = url.match(/dev\.azure\.com\/([^/?#]+)/i);
-				if (m?.[1]) {
-					return decodeURIComponent(m[1]).toLowerCase();
-				}
-				const host = safeHost(url);
-				// Leading dot required, matching extractEntityOrgKey above:
-				// a bare suffix test also accepts `evilvisualstudio.com`.
-				// Guards js/incomplete-url-substring-sanitization.
-				if (host?.endsWith(".visualstudio.com")) {
-					return host.split(".")[0]?.toLowerCase() ?? null;
-				}
-			}
-			return null;
-		}
-		case "jira":
-			return config.atlassianCloudSiteUrl
-				? safeHost(config.atlassianCloudSiteUrl) || null
-				: null;
-		default:
-			return null; // fizzy / github / gitlab / linear → within-project fallback
-	}
-}
+export { extractConfigOrgKey } from "@repo/utils/pm-target";
 
 export type TrustedKey =
 	| { kind: "trusted"; key: string }

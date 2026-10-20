@@ -12,10 +12,19 @@
  *   pnpm --filter web test __tests__/modules/saas/projects/ProjectPromptDefaultsSettings.test.tsx
  */
 
+import { listPromptActions } from "@repo/utils/prompt-action-catalog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { catalogList, bindSet, bindClear, useActiveOrganization } = vi.hoisted(
 	() => ({
@@ -462,5 +471,102 @@ describe("the client proposal prompt (Fizzy #2801)", () => {
 		expect(bindSet).not.toHaveBeenCalledWith(
 			expect.objectContaining({ scope: "USER" }),
 		);
+	});
+});
+
+describe("a project default at a legacy Proposal action (Fizzy #2946)", () => {
+	// With the Proposal artifact on, Client proposal (Main) writes Proposals,
+	// so a project default saved at the Draft flow's Proposal action never
+	// runs. It is listed apart, uncounted, and can still be cleared: dropping
+	// it from the page would leave no way to remove it.
+	const ALL = listPromptActions().length;
+	const LEGACY_KEY = "project_document_generator";
+	const legacyLabel = listPromptActions().find(
+		(a) => a.id === `${LEGACY_KEY}:PROPOSAL:ANY`,
+	)?.label as string;
+	const legacyProjectDefault = () =>
+		entry({
+			targetKey: LEGACY_KEY,
+			documentType: "PROPOSAL",
+			effectiveScope: "PROJECT",
+			prompts: [
+				{
+					promptId: "p-proj-proposal",
+					promptName: "Project Proposal Prompt",
+					promptVersionId: "pv-proj-proposal",
+					scope: "ORG",
+					projectId: PROJECT,
+					isDefault: true,
+					isEffective: true,
+				},
+			],
+		});
+
+	beforeEach(() => {
+		flags.proposalArtifact = true;
+		catalogList.mockResolvedValue({ entries: [legacyProjectDefault()] });
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("lists it as no longer used, not counted among the project's choices", async () => {
+		wrap();
+
+		const group = await screen.findByRole("region", {
+			name: "projectGroupTitle",
+		});
+		expect(within(group).getByText(legacyLabel)).toBeInTheDocument();
+		expect(within(group).getByText("actionNote")).toBeInTheDocument();
+		expect(
+			screen.getByText(
+				new RegExp(`^0 of ${ALL - 2} actions use a prompt chosen`),
+			),
+		).toBeInTheDocument();
+		// Not in either of the usual groups.
+		expect(
+			screen.getByRole("button", { name: /Chosen for this project/i }),
+		).toHaveTextContent("0");
+	});
+
+	it("clears it as the project's own binding", async () => {
+		const user = userEvent.setup();
+		wrap();
+
+		const group = await screen.findByRole("region", {
+			name: "projectGroupTitle",
+		});
+		await user.click(
+			within(group).getByRole("button", {
+				name: `Clear the project override for ${legacyLabel}`,
+			}),
+		);
+
+		await waitFor(() =>
+			expect(bindClear).toHaveBeenCalledWith(
+				expect.objectContaining({
+					targetKey: LEGACY_KEY,
+					documentType: "PROPOSAL",
+					scope: "ORG",
+					organizationId: "org-a",
+					projectId: PROJECT,
+				}),
+			),
+		);
+	});
+
+	it("counts it as the project's choice, with no separate group, with the gate off", async () => {
+		flags.proposalArtifact = false;
+		wrap();
+
+		expect(
+			await screen.findByText(
+				new RegExp(`^1 of ${ALL} actions use a prompt chosen`),
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: "projectGroupTitle" }),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText("actionNote")).not.toBeInTheDocument();
 	});
 });

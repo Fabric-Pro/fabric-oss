@@ -265,6 +265,35 @@ describe("describeAiError — spent ChatGPT plan", () => {
 		expect(without.description).not.toMatch(/API billing/);
 	});
 
+	// Fizzy #3086: the stop links to opting a personal key in, when it would help.
+	it("adds the personal-key way out only when the server offers it", () => {
+		const copy = describeAiError(429, {
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: RESET_AT,
+			personalKeyOption: true,
+		});
+		expect(copy.planPersonalKeyActionable).toBe(true);
+		expect(copy.description).toMatch(/Use your own key meanwhile/);
+
+		const agent = describeAiError(429, {
+			code: "CHATGPT_PLAN_EXHAUSTED",
+			error: "Every plan is spent.",
+			personalKeyOption: true,
+		});
+		expect(agent.planPersonalKeyActionable).toBe(true);
+		expect(agent.description).toMatch(
+			/^Every plan is spent\. Use your own key meanwhile/,
+		);
+
+		const without = describeAiError(429, {
+			code: "subscription_sharing_usage_limit_exceeded",
+			resetAt: RESET_AT,
+			personalKeyOption: false,
+		});
+		expect(without.planPersonalKeyActionable).toBeUndefined();
+		expect(without.description).not.toMatch(/own key/);
+	});
+
 	it("names the weekday when the reset is not today", () => {
 		const reset = new Date(Date.now() + 3 * 24 * 60 * 60_000);
 		const expected = new Intl.DateTimeFormat(undefined, {

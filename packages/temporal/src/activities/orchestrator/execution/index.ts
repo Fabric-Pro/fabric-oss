@@ -9,6 +9,12 @@
  * - context/ - Execution context building and tool loading
  */
 
+// Unbacked completion claims (a zero-tool-call reply that says it acted)
+export {
+	type CheckCompletionClaimInput,
+	type CheckCompletionClaimResult,
+	checkCompletionClaimActivity,
+} from "./check-completion-claim";
 // Conversation Compaction (mid-execution history summarization)
 export {
 	type CompactConversationInput,

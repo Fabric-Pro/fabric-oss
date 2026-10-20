@@ -7,6 +7,8 @@
  * - Knowledge source mapping
  */
 
+import { getCurrentDateContext } from "@repo/ai";
+import { buildAgentInstructions } from "../../lib/agent-instructions";
 import type {
 	AgentExecutionContext,
 	KnowledgeSourceConfig,
@@ -50,8 +52,6 @@ export interface ConnectionMappings {
 	toolConnections: Record<string, Record<string, unknown>>;
 	workspaceIds: string[];
 }
-
-import { getCurrentDateContext } from "@repo/ai";
 
 /**
  * Build execution context from template and instance configuration
@@ -97,45 +97,11 @@ export function buildAgentExecutionContext(
 	};
 }
 
-/**
- * Build system prompt from template and custom instructions
- */
 export function buildSystemPrompt(
 	template: TemplateConfig,
 	instance: InstanceConfig,
 ): string {
-	const parts: string[] = [];
-
-	// Start with agent identity
-	parts.push(`# ${template.displayName}`);
-	parts.push(template.description);
-
-	// Add reusable template instructions
-	if (template.instructions?.trim()) {
-		parts.push(template.instructions.trim());
-	}
-
-	// Apply custom instructions (user overrides)
-	if (instance.customInstructions) {
-		const custom = instance.customInstructions;
-
-		if (custom.role) {
-			parts.push(`## Custom Role Instructions\n${custom.role}`);
-		}
-
-		if (custom.additionalContext) {
-			parts.push(`## Additional Context\n${custom.additionalContext}`);
-		}
-
-		if (custom.constraints) {
-			parts.push(`## Constraints\n${custom.constraints}`);
-		}
-	}
-
-	// Add instance-specific description if provided
-	if (instance.description) {
-		parts.push(`## Instance Notes\n${instance.description}`);
-	}
+	const parts = [buildAgentInstructions(template, instance)];
 
 	const enabledCapabilities = new Set(
 		template.tools.map((tool) => tool.toLowerCase()),

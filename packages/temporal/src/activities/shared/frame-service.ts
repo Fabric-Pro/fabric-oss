@@ -13,6 +13,7 @@ import {
 	listWorkspaceFrames,
 	type ProjectPlacementRefusal,
 	projectPlacementRefusal,
+	publicSharingRefusal,
 	revertFrameToVersion,
 	shareFrame,
 	updateFrame,
@@ -25,12 +26,14 @@ import {
 import { agentToolProjectScope } from "./agent-tool-runtime";
 import {
 	getNonEmptyString,
+	parseFrameSourceWindow,
 	parseRuntimeTools,
 	validateCreateFrameArgs,
 	validateUpdateFrameArgs,
 	withTrustedRuntimeTools,
 } from "./frame-args";
 import { generateFrameBlocks } from "./frame-generation";
+import { readFrameSource } from "./frame-source-read";
 
 const NO_ORGANIZATION_CONTEXT =
 	"No organization context for this frame operation.";
@@ -157,6 +160,16 @@ export async function createFirstClassFrame(input: {
 		return { error: refusal };
 	}
 
+	// A frame is private when it is made. A public link from the start is only
+	// for a caller that asked for one, and only where the organization allows
+	// public links: the rule `fabric_share_frame` follows.
+	if (validated.value.shareOnCreate) {
+		const publicRefusal = await publicSharingRefusal(input.organizationId);
+		if (publicRefusal) {
+			return { error: publicRefusal };
+		}
+	}
+
 	if (input.projectId) {
 		const placementError = await placementRefusal(
 			input.userId,
@@ -213,12 +226,14 @@ export async function createFirstClassFrame(input: {
 		runtimeTools,
 		shareScope:
 			input.shareScope ??
-			(surface === "workspace" ? "WORKSPACE_AND_EMAILS" : undefined),
-		// A frame in a project, or on a surface, is private to its readers until
-		// someone shares it; only a loose frame is public from the start.
-		isPublic: projectId || surface ? validated.value.shareOnCreate : true,
+			(surface === "workspace"
+				? "WORKSPACE_AND_EMAILS"
+				: validated.value.shareOnCreate && !projectId && !surface
+					? "PUBLIC"
+					: undefined),
+		isPublic: validated.value.shareOnCreate,
 	});
-	const shareToken = frame.shareToken;
+	const shareToken = liveShareToken(frame);
 	return {
 		frameId: frame.id,
 		title: frame.title,
@@ -289,7 +304,7 @@ export async function updateFirstClassFrame(input: {
 	if (!frame) {
 		return { error: "Frame not found." };
 	}
-	const shareToken = frame.shareToken;
+	const shareToken = liveShareToken(frame);
 	return {
 		frameId: frame.id,
 		title: frame.title,
@@ -305,6 +320,11 @@ export async function updateFirstClassFrame(input: {
 	};
 }
 
+/** The token of a link that opens the frame now: only a public frame has one. */
+function liveShareToken(frame: FrameRecord) {
+	return frame.isPublic ? frame.shareToken : null;
+}
+
 /** The share link is the owner's to hand out; a reader sees it once it is public. */
 function visibleShareToken(frame: FrameRecord, userId: string) {
 	return frame.userId === userId || frame.isPublic ? frame.shareToken : null;
@@ -315,10 +335,15 @@ export async function getFirstClassFrame(input: {
 	userId: string;
 	userEmail?: string;
 	organizationId?: string;
+	projectRestrictionId?: string;
 }) {
 	const frameId = getNonEmptyString(input.args, ["frameId", "id"]);
 	if (!frameId) {
 		return { error: "Frame ID is required. Provide `frameId`." };
+	}
+	const sourceWindow = parseFrameSourceWindow(input.args);
+	if (!sourceWindow.ok) {
+		return { error: sourceWindow.error };
 	}
 	const frame = input.organizationId
 		? await getAccessibleFrameById({
@@ -331,8 +356,15 @@ export async function getFirstClassFrame(input: {
 				id: frameId,
 				userId: input.userId,
 			});
-	if (!frame) {
+	if (
+		!frame ||
+		(input.projectRestrictionId !== undefined &&
+			frame.projectId !== input.projectRestrictionId)
+	) {
 		return { error: "Frame not found." };
+	}
+	if (sourceWindow.value) {
+		return readFrameSource(frame, sourceWindow.value);
 	}
 	const shareToken = visibleShareToken(frame, input.userId);
 	return {
@@ -396,8 +428,19 @@ export async function listFirstClassFrames(input: {
 	conversationId?: string;
 	surface?: FrameSurface;
 	projectId?: string;
+	projectRestrictionId?: string;
 }) {
-	const frames = await readFramesForList(input);
+	if (
+		input.projectRestrictionId !== undefined &&
+		input.projectId !== undefined &&
+		input.projectId !== input.projectRestrictionId
+	) {
+		return { frames: [] };
+	}
+	const frames = await readFramesForList({
+		...input,
+		projectId: input.projectRestrictionId ?? input.projectId,
+	});
 	return {
 		frames: frames.map((frame) => {
 			const shareToken = visibleShareToken(frame, input.userId);
@@ -428,7 +471,10 @@ function parseShareScope(
 ): { ok: true; value: FrameShareScopeName } | { ok: false; error: string } {
 	const raw = args?.scope;
 	if (raw === undefined || raw === null) {
-		return { ok: true, value: "PUBLIC" };
+		return {
+			ok: false,
+			error: `\`scope\` is required, and must be one of: ${FRAME_SHARE_SCOPES.join(", ")}. A frame is never made public unless you name PUBLIC.`,
+		};
 	}
 	const scope = FRAME_SHARE_SCOPES.find((value) => value === raw);
 	return scope

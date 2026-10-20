@@ -72,6 +72,7 @@ export function toWriteTargetView(target: ContextWriteTargetView) {
 		id: target.id,
 		folder: target.folder,
 		mode: target.mode,
+		indexMode: target.indexMode,
 		version: target.version,
 		directPushEnabledById: target.directPushEnabledById,
 		directPushEnabledAt: target.directPushEnabledAt,

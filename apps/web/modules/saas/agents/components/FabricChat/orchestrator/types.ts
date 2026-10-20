@@ -15,6 +15,7 @@ import type {
 import type { ChatTurnTruncation } from "../../../lib/chat-turn-truncation";
 import type { ChatGptPlanApiBilling } from "../../../lib/chatgpt-plan-api-billing";
 import type { ClarificationTurn } from "../../../lib/clarification-turns";
+import type { FrameLaunchContext } from "../../../lib/expand-handoff";
 
 interface ConversationDetail {
 	id: string;
@@ -72,6 +73,8 @@ interface TemporalOrchestratorTokenUsage {
 
 export interface FabricTemporalOrchestratorChatProps {
 	organizationId?: string;
+	/** Undefined uses the drawer context; null explicitly clears a full-page origin. */
+	frameLaunchContext?: FrameLaunchContext | null;
 	reasoningMode: "lite" | "balanced" | "deep" | "planner";
 	/**
 	 * Runs every turn on this execution mode instead of the one
@@ -248,6 +251,10 @@ export interface CompletedExecution {
 	terminalStatus?: "COMPLETED" | "FAILED" | "LIMITED" | "CANCELLED";
 	terminalReason?: string;
 	limitSignals?: Array<{ kind: string; provider?: string; message: string }>;
+	/** The turn was still running when the conversation was read: its question only. */
+	inProgress?: boolean;
+	/** Of an `inProgress` turn: the stored message its question came from. */
+	questionMessageId?: string;
 	completedAt: Date;
 	/**
 	 * Clarifying questions answered during this execution, oldest first. Kept

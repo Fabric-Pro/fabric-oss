@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	INSTRUCTION_ACCESS_SKILL,
+	INSTRUCTION_CATALOG,
+} from "../src/lib/plugin/instruction-access.js";
+import {
 	alwaysOnFile,
 	buildPlugin,
+	CLAUDE_PLUGIN_MCP_SERVER,
 	type InstructionFile,
 	isFabricAgentsOverride,
 	LIVING_MEMORY_SKILL,
@@ -9,6 +14,7 @@ import {
 	mergedAgentsOverride,
 	pluginNameFor,
 	pluginPathFor,
+	RENDER_VERSION,
 	SESSION_CONTEXT_LIMIT,
 	sessionContext,
 } from "../src/lib/plugin/layout.js";
@@ -44,6 +50,17 @@ function build(
 		memory: options.memory ?? FOLDERS,
 		gatewayUrl: GATEWAY,
 		pin: "abc123def456",
+		instructionAccess: {
+			source: {
+				kind: "repository",
+				generation: 3,
+				commitSha: "a".repeat(40),
+			},
+			listed: files.map((entry) => ({
+				path: entry.path,
+				size: entry.bytes.byteLength,
+			})),
+		},
 	});
 }
 
@@ -120,8 +137,11 @@ describe("the Claude Code plugin", () => {
 			"hooks/hooks.json",
 			"hooks/session-context.json",
 			"instructions/CLAUDE.md",
+			"instructions/source/.claude/rules/ignored.md",
 			"skills/deploy/SKILL.md",
 			"skills/deploy/run.sh",
+			`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
+			INSTRUCTION_CATALOG,
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		]);
 	});
@@ -137,7 +157,7 @@ describe("the Claude Code plugin", () => {
 		).toBe(0o644);
 	});
 
-	it("names the plugin and points its MCP server at the project gateway", () => {
+	it("names the plugin for the project and its MCP server just fabric, pointed at the project gateway", () => {
 		const tree = build(files);
 
 		expect(
@@ -145,11 +165,13 @@ describe("the Claude Code plugin", () => {
 		).toMatchObject({
 			name: "fabric-23456789",
 		});
+		// Claude Code lists it as plugin:fabric-23456789:fabric.
 		expect(JSON.parse(textOf(tree, ".mcp.json"))).toEqual({
 			mcpServers: {
-				"fabric-23456789": { type: "http", url: GATEWAY },
+				[CLAUDE_PLUGIN_MCP_SERVER]: { type: "http", url: GATEWAY },
 			},
 		});
+		expect(CLAUDE_PLUGIN_MCP_SERVER).toBe("fabric");
 	});
 
 	it("hands CLAUDE.md to the session as SessionStart context", () => {
@@ -178,13 +200,16 @@ describe("the Claude Code plugin", () => {
 		expect(textOf(tree, "instructions/AGENTS.md")).toBe("agents text\n");
 	});
 
-	it("writes no hook when there is no memory file", () => {
+	it("supplies instruction discovery when there is no memory file", () => {
 		const paths = build([file(".claude/agents/a.md", "a")]).map(
 			(entry) => entry.path,
 		);
 
-		expect(paths).not.toContain("hooks/hooks.json");
-		expect(paths).not.toContain("hooks/session-context.json");
+		expect(paths).toContain("hooks/hooks.json");
+		expect(paths).toContain("hooks/session-context.json");
+		expect(textOf(build([]), "hooks/session-context.json")).toContain(
+			INSTRUCTION_ACCESS_SKILL,
+		);
 	});
 
 	it("is the same bytes however the input is ordered, every time", () => {
@@ -291,16 +316,47 @@ describe("the Living Memory skill", () => {
 		expect(skill).toContain("straight to the project's synced branch");
 		expect(skill).toContain("Never save memory files anywhere else");
 		expect(skill).toContain("a hook sends new and changed files");
+		// A write the hook made has no id in the conversation: the lock holds it.
+		expect(skill).toContain(".fabric/memory.lock");
+		expect(skill).toContain("fabric_memory_write_status");
 	});
 
-	it("tells Codex that the next session delivers the files, and names the tool", () => {
+	it("names the work-item folder convention and how to resume one: the read tool, or the local mirror", () => {
+		const skill = textOf(
+			build([]),
+			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
+		);
+
+		expect(skill).toContain("docs/ai/specs/<work-item-id>/");
+		expect(skill).toContain("fabric_memory_read");
+		expect(skill).toContain("local mirror");
+		// A coding tool's sign-in carries mcp:read, which the read tool accepts.
+		expect(skill).not.toContain("memory:write");
+	});
+
+	it("keeps the resume guidance for a project with no folders out of the skill", () => {
+		const skill = textOf(
+			build([], { memory: { state: "known", ref: "main", folders: [] } }),
+			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
+		);
+
+		expect(skill).not.toContain("<work-item-id>");
+	});
+
+	it("is a new render version, so installed plugins pick up the server name", () => {
+		expect(RENDER_VERSION).toBeGreaterThanOrEqual(5);
+	});
+
+	it("tells Codex that the next session delivers the files, and sends it to no tool a sign-in cannot use", () => {
 		const skill = textOf(
 			build([], { tool: "codex" }),
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		);
 
 		expect(skill).toContain("next session starts");
-		expect(skill).toContain("fabric_memory_write");
+		// A coding tool's MCP sign-in carries the default scopes, and
+		// fabric_memory_write needs memory:write, which is never one of them.
+		expect(skill).not.toContain("call the `fabric_memory_write` tool");
 	});
 
 	it("says there is nowhere to write when the project has no folders", () => {
@@ -319,7 +375,9 @@ describe("the Living Memory skill", () => {
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		);
 
-		expect(skill).toContain("fabric memory status");
+		// The plugin's CLI is not on PATH; the MCP tool is always there.
+		expect(skill).toContain("fabric_memory_targets");
+		expect(skill).not.toContain("fabric memory status");
 	});
 
 	it("is short", () => {
@@ -329,6 +387,43 @@ describe("the Living Memory skill", () => {
 		);
 
 		expect(skill.length).toBeLessThan(1_500);
+	});
+});
+
+describe("the plugin description", () => {
+	const DESCRIPTION = `Coding instructions for Fabric project ${PROJECT} on example.com, rendered from its published instructions.`;
+
+	it.each([
+		["claude-code", ".claude-plugin/plugin.json"],
+		["codex", ".codex-plugin/plugin.json"],
+	] as const)(
+		"names the project and the deployment for %s",
+		(tool, manifest) => {
+			const tree = build([], { tool });
+
+			expect(JSON.parse(textOf(tree, manifest)).description).toBe(
+				DESCRIPTION,
+			);
+		},
+	);
+
+	it("names the port when the deployment has one", () => {
+		const tree = buildPlugin({
+			tool: "codex",
+			projectId: PROJECT,
+			files: [],
+			memory: FOLDERS,
+			gatewayUrl: `https://example.com:8443/api/mcp-gateway/projects/${PROJECT}`,
+			pin: "abc123def456",
+			instructionAccess: {
+				source: { kind: "upload", digest: null },
+				listed: [],
+			},
+		});
+
+		expect(
+			JSON.parse(textOf(tree, ".codex-plugin/plugin.json")).description,
+		).toContain("on example.com:8443,");
 	});
 });
 
@@ -344,19 +439,28 @@ describe("the Codex plugin", () => {
 		);
 
 		expect(tree.map((entry) => entry.path)).toEqual([
+			".codex-plugin/plugin.json",
+			".mcp.json",
 			"agents/reviewer.md",
-			"mcp.json",
-			"plugin.json",
+			"instructions/AGENTS.md",
 			"skills/deploy/SKILL.md",
+			`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
+			INSTRUCTION_CATALOG,
 			`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		]);
-		expect(JSON.parse(textOf(tree, "plugin.json"))).toMatchObject({
+		// Codex reads the manifest only from .codex-plugin/, and loads the MCP
+		// file only when the manifest points at it.
+		expect(
+			JSON.parse(textOf(tree, ".codex-plugin/plugin.json")),
+		).toMatchObject({
 			name: "fabric-23456789",
 			version: "0.0.0-abc123def456",
+			skills: "./skills/",
+			mcpServers: "./.mcp.json",
 		});
-		expect(JSON.parse(textOf(tree, "mcp.json"))).toEqual({
+		expect(JSON.parse(textOf(tree, ".mcp.json"))).toEqual({
 			mcpServers: {
-				"fabric-23456789": { type: "streamable-http", url: GATEWAY },
+				"fabric-23456789": { type: "http", url: GATEWAY },
 			},
 		});
 	});

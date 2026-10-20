@@ -510,8 +510,7 @@ function isPhrasing(node: Nodes): node is PhrasingContent {
  * `%% fabric-visual` line otherwise.
  */
 function codeText(node: Code): string {
-	const language = (node.lang ?? "").toLowerCase();
-	if (language !== STAT_TILES_LANGUAGE && isDiagram(language, node.value)) {
+	if (isDiagramFence(node.lang, node.value)) {
 		return "";
 	}
 	return plainText(
@@ -522,8 +521,19 @@ function codeText(node: Code): string {
 	);
 }
 
-/** The editor's own test for a diagram fence, so a save cannot flip it. */
-function isDiagram(language: string, body: string): boolean {
+/**
+ * The editor's own test for a diagram fence, so a save cannot flip it and
+ * an export draws exactly the fences the page draws. A stat tiles fence is
+ * never a diagram, whatever its first line holds.
+ */
+export function isDiagramFence(
+	lang: string | null | undefined,
+	body: string,
+): boolean {
+	const language = (lang ?? "").toLowerCase();
+	if (language === STAT_TILES_LANGUAGE) {
+		return false;
+	}
 	if (DIAGRAM_LANGUAGES.has(language)) {
 		return true;
 	}

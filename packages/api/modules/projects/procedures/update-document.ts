@@ -2,10 +2,12 @@ import { ORPCError } from "@orpc/client";
 import {
 	buildDocumentLink,
 	completeDraftDocument,
+	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	db,
 	hasProjectAccess,
 	IntegrationContractStatusManagedError,
+	isProposalClientDocument,
 	updateDocument,
 } from "@repo/database";
 import { ProjectDocumentStatusSchema } from "@repo/database/prisma/zod";
@@ -14,6 +16,9 @@ import {
 	FUNCTION_TAG_ORDER,
 } from "@repo/database/src/function-tags";
 import { logger } from "@repo/logs";
+import { contentIdentity } from "@repo/utils/content-identity";
+import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../lib/document-side-effects";
 import { fanOut } from "../../../lib/notification-service";
@@ -30,10 +35,12 @@ import {
 	extractDocumentMentionIds,
 	extractMentionContextSnippet,
 } from "../lib/document-mentions";
+import { assertNotGenerationOwnedStatus } from "../lib/generation-owned-status";
 import {
 	expandGroupMentionsByTag,
 	narrowToCurrentProjectRoster,
 } from "../lib/group-mention";
+import { isRoomConvergenceOn } from "../lib/room-convergence-enabled";
 import { filterAuthorizedMentionRecipients } from "../lib/user-mention";
 
 // All document types are re-embedded when content changes.
@@ -66,10 +73,22 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			 * accepted body carries the editor's slots, which are right only for
 			 * the version the editor last synced with. When present, a document
 			 * no longer at this version is left untouched and the save fails
-			 * with CONFLICT. Every other save omits it and stays
-			 * last-write-wins.
+			 * with CONFLICT. A save from a collaborative editor room sends it
+			 * with `expectedContentHash`, both from the room's stamp. Saves
+			 * without a base stay last-write-wins, except where the base is
+			 * required (below).
 			 */
 			expectedVersion: z.number().int().nonnegative().optional(),
+			/**
+			 * The body half of the base (Fizzy #2946): the `contentHash` this
+			 * procedure or `projects.documents.get` returned for the body the
+			 * save's content descends from. When present, a document whose
+			 * body no longer has this identity is left untouched and the save
+			 * fails with CONFLICT, even at the same version: a Proposal run's
+			 * final save writes its body at the old version, and a rejected
+			 * regeneration rewinds the version.
+			 */
+			expectedContentHash: z.string().min(1).max(128).optional(),
 			/**
 			 * The author is finishing the document: complete it if it is still
 			 * a draft and has content. The editor sends it with an explicit
@@ -84,6 +103,9 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
+		// QUEUED and GENERATING belong to generation runs: a status write may
+		// never start a hold no run backs.
+		assertNotGenerationOwnedStatus(input.status);
 		const organizationId = resolveOrganizationId(
 			input.organizationId,
 			context.session,
@@ -116,6 +138,9 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 				status: true,
 				type: true,
 				version: true,
+				// The owning organization, for the base requirement below:
+				// never the session's.
+				project: { select: { organizationId: true } },
 			},
 		});
 
@@ -147,6 +172,90 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A Proposal's status belongs to its generation run while the run is
+		// queued or writing (Fizzy #2946): moving it on would
+		// end the run's hold on the body, so a later write from any surface
+		// would pass, and the run's own final save would land on a status it
+		// did not expect. No editor save sends a status (an explicit Save and
+		// Mark as complete send `completeDraft`, which touches only a draft),
+		// so a status change under a run is refused, here and again by the
+		// write itself. Content saves keep their own rules below: a run the
+		// server still lists as generating but that stopped writing must not
+		// block the editor's save. The one content save that is refused is the
+		// Reject fallback (`skipVersionBump`): it rewinds the body to the one
+		// from before the last run, which a newer run queued since owns.
+		// Decided by type, not by the rollout gate: a run keeps writing when
+		// the gate is turned off mid-run.
+		const refuseUnderRun =
+			(input.status !== undefined ||
+				(input.skipVersionBump === true &&
+					input.content !== undefined)) &&
+			isRunGuardedDocumentType(prior.type);
+		const generationInProgress = () =>
+			new ORPCError("CONFLICT", {
+				message:
+					"A generation run is writing this document; try again when it finishes.",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			});
+		if (
+			refuseUnderRun &&
+			(prior.status === "QUEUED" || prior.status === "GENERATING")
+		) {
+			throw generationInProgress();
+		}
+
+		// A content-bearing save names the body it was based on, so a save
+		// based on an older body than the last server write is refused
+		// rather than written over it (Fizzy #2946). Title-only and
+		// status-only saves carry no body and never need one.
+		const contentBearing = input.content !== undefined;
+		const hasBase =
+			input.expectedVersion !== undefined &&
+			input.expectedContentHash !== undefined;
+		if (contentBearing && !hasBase) {
+			const owningOrganizationId = prior.project?.organizationId ?? null;
+			const roomSavesNameBase =
+				await isRoomConvergenceOn(owningOrganizationId);
+			if (
+				roomSavesNameBase &&
+				(await isProposalClientDocument({
+					organizationId: owningOrganizationId,
+					documentType: prior.type,
+				}))
+			) {
+				// An editor bundle from before saves named their base: it would
+				// write last-wins over a run's body. The web maps the code to
+				// "reload to keep editing".
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This editor is out of date, so your changes were not saved. Reload the page to keep editing.",
+					data: { code: DOCUMENT_SAVE_BASE_REQUIRED },
+				});
+			}
+			// Accepted as before. While the room flag is on, editor saves name
+			// their base, so a save without one is logged, split by what it
+			// carried, to tell when the base can be required for other types.
+			// Ids only, never content. With the flag off nothing sends a base,
+			// so nothing is logged.
+			if (roomSavesNameBase) {
+				logger.info(
+					{
+						documentId: input.id,
+						projectId: input.projectId,
+						organizationId: owningOrganizationId,
+						documentType: prior.type,
+						surface: "projects.documents.update",
+						hasExpectedVersion: input.expectedVersion !== undefined,
+						hasExpectedContentHash:
+							input.expectedContentHash !== undefined,
+						skipVersionBump: input.skipVersionBump === true,
+						completeDraft: input.completeDraft === true,
+					},
+					"[update-document] content-bearing save without a base",
+				);
+			}
+		}
+
 		// Update document
 		// TENANT ISOLATION: Pass userId and organizationId for DocumentVersion tenant filtering
 		const saved = await updateDocument(input.id, {
@@ -163,6 +272,10 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			...(input.expectedVersion !== undefined
 				? { expectedVersion: input.expectedVersion }
 				: {}),
+			...(input.expectedContentHash !== undefined
+				? { expectedContentHash: input.expectedContentHash }
+				: {}),
+			...(refuseUnderRun ? { refuseWhileGenerating: true } : {}),
 		}).catch((error: unknown) => {
 			// The query layer is the last line of defence for contract status
 			// (a completion may land between the pre-read above and its own
@@ -173,8 +286,13 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 					data: { code: error.code },
 				});
 			}
-			// Reachable only with `expectedVersion`: someone saved between the
-			// caller's read and this write, and nothing was written.
+			// A run queued between the read above and this write.
+			if (error instanceof DocumentGenerationInProgressError) {
+				throw generationInProgress();
+			}
+			// Reachable only with a base, or for a status write guarded
+			// against a run: someone saved between the caller's read and this
+			// write, and nothing was written.
 			if (error instanceof DocumentVersionConflictError) {
 				throw new ORPCError("CONFLICT", {
 					message:
@@ -303,7 +421,18 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			);
 		}
 
-		return { document, contentUnchanged, draftCompleted };
+		return {
+			document: {
+				...document,
+				// The saved body's identity, beside its `version`: together the
+				// base the next save from this body names. It shadows the
+				// embed-owned `contentHash` column, which no reader of this
+				// response uses and which can lag the body.
+				contentHash: contentIdentity(document.content),
+			},
+			contentUnchanged,
+			draftCompleted,
+		};
 	});
 
 export async function dispatchDocumentMentions(args: {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTestCaseContextContent } from "../test-case-context";
+import { buildTestCaseContextContent } from "../test-case-context-content";
 
 describe("buildTestCaseContextContent", () => {
 	it("leads with the identifier + title, then state and priority", () => {

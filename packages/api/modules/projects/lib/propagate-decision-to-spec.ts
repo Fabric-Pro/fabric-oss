@@ -99,6 +99,7 @@ const EMPTY = Object.freeze<
  * through the configured provider (usage limits are enforced at resolution).
  */
 async function generateCleanSpecPatches(params: {
+	projectId: string;
 	spec: string;
 	decisionText: string;
 	tenantFilter: MaturationTenantFilter;
@@ -108,6 +109,7 @@ async function generateCleanSpecPatches(params: {
 		{
 			userId: params.tenantFilter.userId,
 			organizationId: params.tenantFilter.organizationId ?? undefined,
+			projectId: params.projectId,
 			featureKey: "maturation",
 		},
 	);
@@ -191,6 +193,7 @@ export async function propagateDecisionToCleanSpec(
 	}
 
 	const patches = await generateCleanSpecPatches({
+		projectId,
 		spec,
 		decisionText,
 		tenantFilter,

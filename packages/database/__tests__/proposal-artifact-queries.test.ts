@@ -38,11 +38,13 @@ const fake = vi.hoisted(() => {
 		projectDocumentStyle: delegate(),
 		$transaction: vi.fn(),
 		$queryRaw: vi.fn(),
+		$executeRaw: vi.fn(),
 	};
 });
 
 vi.mock("../prisma/client", () => ({ db: fake, Prisma: {} }));
 
+import { reportTextNeedsPlainText } from "@repo/utils/proposal-artifact/report-text";
 import {
 	computeDocumentContentHash,
 	getDocumentById,
@@ -62,6 +64,7 @@ import {
 	FindingResponseValidationError,
 	failAnalysisRun,
 	getAnalysisForCurrentContent,
+	getAnalysisReport,
 	getAnalysisRunInput,
 	getDocumentStyle,
 	getLatestAnalysisForDocument,
@@ -69,6 +72,8 @@ import {
 	isAnalysisRunTimedOut,
 	listResponsesForDocument,
 	markAnalysisRunning,
+	markLivePreviewStopped,
+	normalizeAnalysisReport,
 	normalizeDocumentStyleFields,
 	normalizeSourceManifest,
 	PROPOSAL_ANALYSIS_ERROR_MESSAGE_MAX_LENGTH,
@@ -83,9 +88,22 @@ import {
 	PROPOSAL_FINDING_RESPONSE_TEXT_MAX_LENGTH,
 	PROPOSAL_FINDING_SEVERITIES,
 	PROPOSAL_FINDING_TYPES,
+	PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH,
+	PROPOSAL_REPORT_LIST_ENTRY_MAX_LENGTH,
+	PROPOSAL_REPORT_LIST_MAX_ENTRIES,
+	PROPOSAL_REPORT_MAX_SOURCES,
+	PROPOSAL_REPORT_PRIORITIES,
+	PROPOSAL_REPORT_SCOPE_IN_PROPOSAL_MAX_LENGTH,
+	PROPOSAL_REPORT_SCOPE_ITEM_MAX_LENGTH,
+	PROPOSAL_REPORT_SCOPE_MAX_ITEMS,
+	PROPOSAL_REPORT_SCOPE_NOTE_MAX_LENGTH,
+	PROPOSAL_REPORT_SUMMARY_MAX_LENGTH,
+	PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS,
 	PROPOSAL_SOURCE_MANIFEST_LABEL_MAX_LENGTH,
 	PROPOSAL_SOURCE_MANIFEST_MAX_ENTRIES,
+	type ProposalAnalysisReportInput,
 	ProposalArtifactTenantError,
+	parseStoredAnalysisReport,
 	parseStoredSourceManifest,
 	readProposalEvidenceSources,
 	resetLiveSections,
@@ -93,6 +111,7 @@ import {
 	type UpsertFindingResponseResult,
 	upsertDocumentStyle,
 	upsertFindingResponse,
+	withLiveRunDispatchLock,
 	writeLiveSections,
 } from "../prisma/queries/projects/proposal-artifact";
 import {
@@ -133,7 +152,11 @@ function matches(row: Row, where: Row | undefined): boolean {
 			typeof condition === "object" &&
 			!(condition instanceof Date)
 		) {
-			const operator = condition as { in?: unknown[]; lte?: number };
+			const operator = condition as {
+				in?: unknown[];
+				lte?: number;
+				lt?: number;
+			};
 			if (operator.in) {
 				return operator.in.includes(row[key]);
 			}
@@ -141,6 +164,12 @@ function matches(row: Row, where: Row | undefined): boolean {
 				return (
 					typeof row[key] === "number" &&
 					(row[key] as number) <= operator.lte
+				);
+			}
+			if (operator.lt !== undefined) {
+				return (
+					typeof row[key] === "number" &&
+					(row[key] as number) < operator.lt
 				);
 			}
 			throw new Error(`fake: unsupported operator on ${key}`);
@@ -731,6 +760,83 @@ describe("live sections", () => {
 		expect(documentRow().liveAttempt).toBeNull();
 	});
 
+	describe("the claim records the running workflow (Fizzy #2946)", () => {
+		// A wizard, batch or setup run never passes through the dispatch that
+		// writes the document's workflow, so the row still names an earlier,
+		// finished one until the run's own claim replaces it.
+		const EARLIER_WORKFLOW = "wf-earlier-dispatch";
+		const RUNNING_WORKFLOW = "wf-batch-example-child-doc";
+
+		it("a current claim writes the workflow with the attempt", async () => {
+			seedDocument({ workflowId: EARLIER_WORKFLOW });
+
+			expect(
+				await claimLiveAttempt({
+					documentId: DOC,
+					runId: RUN,
+					attempt: 1,
+					workflowId: RUNNING_WORKFLOW,
+				}),
+			).toBe("written");
+
+			expect(documentRow()).toMatchObject({
+				liveAttempt: 1,
+				workflowId: RUNNING_WORKFLOW,
+			});
+		});
+
+		it("a retried attempt's claim writes the same workflow again", async () => {
+			seedDocument({ liveAttempt: 1, workflowId: RUNNING_WORKFLOW });
+
+			expect(
+				await claimLiveAttempt({
+					documentId: DOC,
+					runId: RUN,
+					attempt: 2,
+					workflowId: RUNNING_WORKFLOW,
+				}),
+			).toBe("written");
+
+			expect(documentRow()).toMatchObject({
+				liveAttempt: 2,
+				workflowId: RUNNING_WORKFLOW,
+			});
+		});
+
+		it.each([
+			["another run owns the document", { liveRunId: "run-newer" }],
+			["a later attempt claimed the run", { liveAttempt: 2 }],
+		])(
+			"a superseded claim writes nothing when %s",
+			async (_case, overrides) => {
+				seedDocument({ workflowId: EARLIER_WORKFLOW, ...overrides });
+				const before = structuredClone(documentRow());
+
+				expect(
+					await claimLiveAttempt({
+						documentId: DOC,
+						runId: RUN,
+						attempt: 1,
+						workflowId: RUNNING_WORKFLOW,
+					}),
+				).toBe("superseded");
+
+				expect(documentRow()).toEqual(before);
+			},
+		);
+
+		it("a claim without a workflow keeps the one the row has", async () => {
+			seedDocument({ workflowId: EARLIER_WORKFLOW });
+
+			await claimLiveAttempt({ documentId: DOC, runId: RUN, attempt: 1 });
+
+			expect(documentRow()).toMatchObject({
+				liveAttempt: 1,
+				workflowId: EARLIER_WORKFLOW,
+			});
+		});
+	});
+
 	it.each(["QUEUED", "COMPLETE", "FAILED"])(
 		"a write when the document is %s (no longer GENERATING) is superseded",
 		async (status) => {
@@ -882,6 +988,257 @@ describe("live sections", () => {
 			}),
 		).toBe("superseded");
 		expect(documentRow()).toEqual(before);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The stopped preview (Fizzy #2946)
+// ---------------------------------------------------------------------------
+
+const DRAFTING = 35;
+const PREVIEW_STOPPED = 50;
+const FINISHING = 80;
+const LATER = new Date("2026-10-07T09:31:00.000Z");
+
+describe("the stopped preview", () => {
+	it("keeps the run's sections, gives the progress the milestone and moves updatedAt", async () => {
+		seedDocument({
+			liveAttempt: 1,
+			liveContent: "## Scope\n\nDone.",
+			generationProgress: DRAFTING,
+		});
+
+		expect(
+			await markLivePreviewStopped({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 1,
+				now: NOW,
+			}),
+		).toBe("written");
+
+		expect(documentRow()).toMatchObject({
+			generationProgress: PREVIEW_STOPPED,
+			liveContent: "## Scope\n\nDone.",
+			updatedAt: NOW,
+			status: "GENERATING",
+			content: MAIN,
+		});
+	});
+
+	it("writes it again as the fallback's sign of life, moving updatedAt each time", async () => {
+		seedDocument({ liveAttempt: 1, generationProgress: DRAFTING });
+
+		await markLivePreviewStopped({
+			documentId: DOC,
+			runId: RUN,
+			attempt: 1,
+			now: NOW,
+		});
+		expect(
+			await markLivePreviewStopped({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 1,
+				now: LATER,
+			}),
+		).toBe("written");
+
+		expect(documentRow().generationProgress).toBe(PREVIEW_STOPPED);
+		expect(documentRow().updatedAt).toEqual(LATER);
+	});
+
+	it.each([
+		["another run owns the document", { liveRunId: "run-newer" }],
+		["a later attempt claimed the run", { liveAttempt: 2 }],
+		["the document is QUEUED", { status: "QUEUED" }],
+		["the document is COMPLETE", { status: "COMPLETE" }],
+		["the document is FAILED", { status: "FAILED" }],
+		[
+			"the workflow already reported the stream's end",
+			{ generationProgress: FINISHING },
+		],
+	])("writes nothing when %s", async (_case, overrides) => {
+		seedDocument({
+			liveAttempt: 1,
+			liveContent: "## Scope",
+			generationProgress: DRAFTING,
+			...overrides,
+		});
+		const before = structuredClone(documentRow());
+
+		expect(
+			await markLivePreviewStopped({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 1,
+				now: NOW,
+			}),
+		).toBe("superseded");
+		expect(documentRow()).toEqual(before);
+	});
+
+	it("attempt 2's claim after attempt 1 marked the preview stopped puts the drafting progress back", async () => {
+		seedDocument({
+			liveAttempt: 1,
+			liveContent: "## From attempt 1",
+			generationProgress: DRAFTING,
+		});
+		await markLivePreviewStopped({
+			documentId: DOC,
+			runId: RUN,
+			attempt: 1,
+			now: NOW,
+		});
+		expect(documentRow().generationProgress).toBe(PREVIEW_STOPPED);
+
+		expect(
+			await claimLiveAttempt({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 2,
+				now: LATER,
+			}),
+		).toBe("written");
+
+		expect(documentRow()).toMatchObject({
+			liveAttempt: 2,
+			generationProgress: DRAFTING,
+			updatedAt: LATER,
+			// Attempt 2's own sections replace these as they are written.
+			liveContent: "## From attempt 1",
+		});
+		// Attempt 1 can no longer mark the preview attempt 2 is writing.
+		expect(
+			await markLivePreviewStopped({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 1,
+				now: LATER,
+			}),
+		).toBe("superseded");
+		expect(documentRow().generationProgress).toBe(DRAFTING);
+	});
+
+	it.each([DRAFTING, FINISHING])(
+		"a claim leaves progress %i as it is",
+		async (generationProgress) => {
+			seedDocument({ liveAttempt: 1, generationProgress });
+
+			await claimLiveAttempt({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 2,
+				now: NOW,
+			});
+
+			expect(documentRow()).toMatchObject({
+				liveAttempt: 2,
+				generationProgress,
+				updatedAt: EARLIER,
+			});
+		},
+	);
+
+	it("a refused claim puts nothing back", async () => {
+		seedDocument({
+			liveRunId: "run-newer",
+			liveAttempt: 1,
+			generationProgress: PREVIEW_STOPPED,
+		});
+		const before = structuredClone(documentRow());
+
+		expect(
+			await claimLiveAttempt({
+				documentId: DOC,
+				runId: RUN,
+				attempt: 2,
+				now: NOW,
+			}),
+		).toBe("superseded");
+		expect(documentRow()).toEqual(before);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The dispatch lock (Fizzy #2946)
+// ---------------------------------------------------------------------------
+
+describe("withLiveRunDispatchLock", () => {
+	/** The SQL and values of every raw statement, in order. */
+	function executedRaw(): Array<{ sql: string; values: unknown[] }> {
+		return fake.$executeRaw.mock.calls.map(([strings, ...values]) => ({
+			sql: rawSql(strings as TemplateStringsArray),
+			values,
+		}));
+	}
+
+	beforeEach(() => {
+		fake.$executeRaw.mockResolvedValue(0);
+	});
+
+	it("takes the document's advisory lock, reads the run state under it, then dispatches", async () => {
+		seedDocument({ status: "GENERATING", workflowId: "wf-live" });
+		const dispatch = vi.fn(async () => "dispatched");
+
+		const result = await withLiveRunDispatchLock(DOC, dispatch);
+
+		expect(result).toBe("dispatched");
+		expect(dispatch).toHaveBeenCalledWith({
+			status: "GENERATING",
+			workflowId: "wf-live",
+		});
+		const [lock] = executedRaw();
+		expect(lock?.sql).toContain("pg_advisory_xact_lock");
+		const [lockOrder] = fake.$executeRaw.mock.invocationCallOrder;
+		const [readOrder] =
+			fake.projectDocument.findUnique.mock.invocationCallOrder;
+		const [dispatchOrder] = dispatch.mock.invocationCallOrder;
+		expect(lockOrder).toBeLessThan(readOrder ?? 0);
+		expect(readOrder).toBeLessThan(dispatchOrder ?? 0);
+		// The lock holds across a Temporal question and a workflow start, so
+		// the transaction allows more than either takes on its own.
+		const [, options] = fake.$transaction.mock.calls[0] ?? [];
+		expect(options).toEqual({
+			timeout: expect.any(Number),
+			maxWait: expect.any(Number),
+		});
+		expect((options as { timeout: number }).timeout).toBeGreaterThan(
+			10_000,
+		);
+	});
+
+	it("serializes the same document and leaves another one alone", async () => {
+		seedDocument();
+		seedDocument({ id: "doc-other" });
+
+		await withLiveRunDispatchLock(DOC, async () => undefined);
+		await withLiveRunDispatchLock(DOC, async () => undefined);
+		await withLiveRunDispatchLock("doc-other", async () => undefined);
+
+		const [first, again, other] = executedRaw();
+		expect(again?.values).toEqual(first?.values);
+		expect(other?.values[0]).toBe(first?.values[0]);
+		expect(other?.values[1]).not.toBe(first?.values[1]);
+	});
+
+	it("hands null to the dispatch for a document that no longer exists", async () => {
+		const dispatch = vi.fn(async () => "dispatched");
+
+		await withLiveRunDispatchLock("doc-missing", dispatch);
+
+		expect(dispatch).toHaveBeenCalledWith(null);
+	});
+
+	it("throws, without dispatching, when the lock cannot be taken", async () => {
+		seedDocument();
+		fake.$executeRaw.mockRejectedValue(new Error("lock timeout"));
+		const dispatch = vi.fn(async () => "dispatched");
+
+		await expect(withLiveRunDispatchLock(DOC, dispatch)).rejects.toThrow(
+			"lock timeout",
+		);
+		expect(dispatch).not.toHaveBeenCalled();
 	});
 });
 
@@ -3176,5 +3533,1082 @@ describe("the tenant client never hands analysis, answer or style rows to a proj
 			},
 		);
 		expect(JSON.stringify(filter)).toContain(PROJECT);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Analysis report (Fizzy #2946): bounded on write, parsed on read, written
+// only by the completion and read only by getAnalysisReport
+// ---------------------------------------------------------------------------
+
+/** The runtime's own check, independent of the module's replacement. */
+const isWellFormed = (text: string) =>
+	(text as unknown as { isWellFormed(): boolean }).isWellFormed();
+
+/** Every string anywhere in `value`. */
+function allStrings(value: unknown): string[] {
+	if (typeof value === "string") {
+		return [value];
+	}
+	if (Array.isArray(value)) {
+		return value.flatMap(allStrings);
+	}
+	if (value !== null && typeof value === "object") {
+		return Object.values(value).flatMap(allStrings);
+	}
+	return [];
+}
+
+/** Every key anywhere in a Prisma argument, nested selects included. */
+function allKeys(value: unknown): string[] {
+	if (value === null || typeof value !== "object") {
+		return [];
+	}
+	return Object.entries(value).flatMap(([key, nested]) => [
+		key,
+		...allKeys(nested),
+	]);
+}
+
+function reportInput(
+	overrides: Partial<ProposalAnalysisReportInput> = {},
+): ProposalAnalysisReportInput {
+	return {
+		assessment: "Ready with changes",
+		summary: "The proposal covers the discovery phase and one build phase.",
+		scope: [
+			{
+				item: "Discovery workshop",
+				priority: "MUST",
+				inProposal: "Yes",
+				note: "Two days on site.",
+			},
+		],
+		beforeSending: ["State the fixed fee."],
+		duringDiscovery: ["Confirm the hosting target."],
+		sources: [2, 1],
+		text: "## Overall\n\nThe proposal is close to ready. [S1]",
+		textTruncated: false,
+		...overrides,
+	};
+}
+
+function normalized(input: ProposalAnalysisReportInput) {
+	const result = normalizeAnalysisReport(input);
+	if (!result) {
+		throw new Error("expected a report");
+	}
+	return result;
+}
+
+const LONE_HIGH = "\uD83D";
+const LONE_LOW = "\uDE00";
+const ASTRAL = "😀";
+
+describe("normalizeAnalysisReport bounds a report before it is stored", () => {
+	it("builds the version-1 object field by field and keeps the text beside it", () => {
+		const result = normalized(
+			reportInput({ extra: "not stored", plainText: false } as never),
+		);
+		expect(result.report).toEqual({
+			v: 1,
+			assessment: "Ready with changes",
+			summary:
+				"The proposal covers the discovery phase and one build phase.",
+			scope: [
+				{
+					item: "Discovery workshop",
+					priority: "MUST",
+					inProposal: "Yes",
+					note: "Two days on site.",
+				},
+			],
+			beforeSending: ["State the fixed fee."],
+			duringDiscovery: ["Confirm the hosting target."],
+			sources: [1, 2],
+			textTruncated: false,
+			plainText: false,
+		});
+		expect(result.reportText).toBe(
+			"## Overall\n\nThe proposal is close to ready. [S1]",
+		);
+	});
+
+	it("removes NUL from every string", () => {
+		const nul = (text: string) => `${text}\u0000`;
+		const result = normalized(
+			reportInput({
+				assessment: nul("Ready"),
+				summary: "Sum\u0000mary",
+				scope: [
+					{
+						item: nul("Item"),
+						priority: "SHOULD",
+						inProposal: nul("No"),
+						note: nul("Note"),
+					},
+				],
+				beforeSending: [nul("Before")],
+				duringDiscovery: [nul("During")],
+				text: "Report\u0000 text",
+			}),
+		);
+		for (const text of [
+			...allStrings(result.report),
+			result.reportText ?? "",
+		]) {
+			expect(text).not.toContain("\u0000");
+		}
+		expect(result.report.summary).toBe("Summary");
+		expect(result.reportText).toBe("Report text");
+	});
+
+	it("replaces a lone high and a lone low surrogate with U+FFFD and keeps a valid pair", () => {
+		const mixed = `a${LONE_HIGH}b${LONE_LOW}c${ASTRAL}`;
+		const result = normalized(
+			reportInput({
+				assessment: mixed,
+				summary: mixed,
+				scope: [
+					{
+						item: mixed,
+						priority: null,
+						inProposal: `${LONE_LOW}`,
+						note: mixed,
+					},
+				],
+				beforeSending: [mixed],
+				duringDiscovery: [mixed],
+				text: mixed,
+			}),
+		);
+		const expected = `a�b�c${ASTRAL}`;
+		expect(result.report.assessment).toBe(expected);
+		expect(result.report.summary).toBe(expected);
+		expect(result.report.scope[0]).toEqual({
+			item: expected,
+			priority: null,
+			inProposal: "�",
+			note: expected,
+		});
+		expect(result.report.beforeSending).toEqual([expected]);
+		expect(result.report.duringDiscovery).toEqual([expected]);
+		expect(result.reportText).toBe(expected);
+		// A high surrogate at the very end, and two lows in a row.
+		expect(
+			normalized(reportInput({ summary: `x${LONE_HIGH}` })).report
+				.summary,
+		).toBe("x�");
+		expect(
+			normalized(reportInput({ summary: `${LONE_LOW}${LONE_LOW}` }))
+				.report.summary,
+		).toBe("��");
+	});
+
+	it("trims every string", () => {
+		const result = normalized(
+			reportInput({
+				assessment: "  Ready \n",
+				beforeSending: ["\tState the fee.  "],
+				text: "\n\n  Report  \n\n",
+			}),
+		);
+		expect(result.report.assessment).toBe("Ready");
+		expect(result.report.beforeSending).toEqual(["State the fee."]);
+		expect(result.reportText).toBe("Report");
+	});
+
+	it("cuts every field to its cap", () => {
+		const scopeItem = {
+			item: "i".repeat(PROPOSAL_REPORT_SCOPE_ITEM_MAX_LENGTH + 10),
+			priority: "COULD" as const,
+			inProposal: "p".repeat(
+				PROPOSAL_REPORT_SCOPE_IN_PROPOSAL_MAX_LENGTH + 10,
+			),
+			note: "n".repeat(PROPOSAL_REPORT_SCOPE_NOTE_MAX_LENGTH + 10),
+		};
+		const entry = "e".repeat(PROPOSAL_REPORT_LIST_ENTRY_MAX_LENGTH + 10);
+		const result = normalized(
+			reportInput({
+				assessment: "a".repeat(
+					PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH + 10,
+				),
+				summary: "s".repeat(PROPOSAL_REPORT_SUMMARY_MAX_LENGTH + 10),
+				scope: Array.from(
+					{ length: PROPOSAL_REPORT_SCOPE_MAX_ITEMS + 5 },
+					() => scopeItem,
+				),
+				beforeSending: Array.from(
+					{ length: PROPOSAL_REPORT_LIST_MAX_ENTRIES + 5 },
+					() => entry,
+				),
+				duringDiscovery: Array.from(
+					{ length: PROPOSAL_REPORT_LIST_MAX_ENTRIES + 5 },
+					() => entry,
+				),
+				sources: Array.from(
+					{ length: PROPOSAL_REPORT_MAX_SOURCES + 20 },
+					(_, index) => 200 - index,
+				),
+			}),
+		);
+		const { report } = result;
+		expect(report.assessment).toHaveLength(
+			PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH,
+		);
+		expect(report.summary).toHaveLength(PROPOSAL_REPORT_SUMMARY_MAX_LENGTH);
+		expect(report.scope).toHaveLength(PROPOSAL_REPORT_SCOPE_MAX_ITEMS);
+		expect(report.scope[0]?.item).toHaveLength(
+			PROPOSAL_REPORT_SCOPE_ITEM_MAX_LENGTH,
+		);
+		expect(report.scope[0]?.inProposal).toHaveLength(
+			PROPOSAL_REPORT_SCOPE_IN_PROPOSAL_MAX_LENGTH,
+		);
+		expect(report.scope[0]?.note).toHaveLength(
+			PROPOSAL_REPORT_SCOPE_NOTE_MAX_LENGTH,
+		);
+		for (const list of [report.beforeSending, report.duringDiscovery]) {
+			expect(list).toHaveLength(PROPOSAL_REPORT_LIST_MAX_ENTRIES);
+			expect(list[0]).toHaveLength(PROPOSAL_REPORT_LIST_ENTRY_MAX_LENGTH);
+		}
+		// The lowest numbers are kept, in ascending order.
+		expect(report.sources).toEqual(
+			Array.from(
+				{ length: PROPOSAL_REPORT_MAX_SOURCES },
+				(_, index) => 131 + index,
+			),
+		);
+	});
+
+	it("never splits a surrogate pair when it cuts a field", () => {
+		const result = normalized(
+			reportInput({
+				assessment: `${"a".repeat(PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH - 1)}${ASTRAL}`,
+			}),
+		);
+		expect(result.report.assessment).toBe(
+			"a".repeat(PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH - 1),
+		);
+	});
+
+	it("cuts long text to the cap, records the cut, and leaves no lone surrogate at an odd offset", () => {
+		const result = normalized(
+			reportInput({ text: `a${ASTRAL.repeat(40_000)}` }),
+		);
+		expect(result.reportText).not.toBeNull();
+		expect(result.reportText?.length).toBeLessThanOrEqual(
+			PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS,
+		);
+		expect(result.reportText?.length).toBeGreaterThan(
+			PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS - 2,
+		);
+		expect(isWellFormed(result.reportText ?? "")).toBe(true);
+		expect(result.report.textTruncated).toBe(true);
+	});
+
+	it("records truncation from either the caller or the cut, and only a literal true counts", () => {
+		expect(
+			normalized(reportInput({ textTruncated: true })).report
+				.textTruncated,
+		).toBe(true);
+		expect(
+			normalized(
+				reportInput({
+					text: "Paragraph.\n\n".repeat(
+						PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS / 6,
+					),
+				}),
+			).report.textTruncated,
+		).toBe(true);
+		expect(
+			normalized(reportInput({ textTruncated: false })).report
+				.textTruncated,
+		).toBe(false);
+		expect(
+			normalized(reportInput({ textTruncated: "yes" as never })).report
+				.textTruncated,
+		).toBe(false);
+	});
+
+	it("stores plainText when the caller sets it or the stored text needs it", () => {
+		const plainText = (overrides: Partial<ProposalAnalysisReportInput>) =>
+			normalized(reportInput(overrides)).report.plainText;
+		// The guard flags this text, whatever the caller says.
+		expect(plainText({ text: ">".repeat(10_000), plainText: false })).toBe(
+			true,
+		);
+		expect(plainText({ text: ">".repeat(10_000) })).toBe(true);
+		// The worker's citation scan failed: plain text, even for benign text.
+		expect(plainText({ plainText: true })).toBe(true);
+		expect(plainText({ text: "", plainText: true })).toBe(true);
+		// Benign text, and anything but `true` from the caller, leaves it off.
+		expect(plainText({})).toBe(false);
+		expect(plainText({ plainText: false })).toBe(false);
+		for (const value of ["true", 1, {}, null]) {
+			expect(plainText({ plainText: value as never })).toBe(false);
+		}
+	});
+
+	it("keeps only the three priorities", () => {
+		const result = normalized(
+			reportInput({
+				scope: [
+					...PROPOSAL_REPORT_PRIORITIES,
+					"must",
+					"Must — foundational",
+					"maybe",
+					"",
+					1,
+					null,
+					undefined,
+				].map((priority, index) => ({
+					item: `Item ${index}`,
+					priority: priority as never,
+					inProposal: "",
+					note: "",
+				})),
+			}),
+		);
+		expect(result.report.scope.map((item) => item.priority)).toEqual([
+			"MUST",
+			"SHOULD",
+			"COULD",
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+		]);
+	});
+
+	it("drops empty list entries and scope items without text", () => {
+		const result = normalized(
+			reportInput({
+				scope: [
+					{
+						item: "",
+						priority: "MUST",
+						inProposal: "Yes",
+						note: "n",
+					},
+					{
+						item: "  \u0000 ",
+						priority: null,
+						inProposal: "",
+						note: "",
+					},
+					null,
+					"Item as a string",
+					42,
+					{ item: 7, priority: null, inProposal: "", note: "" },
+					{ item: "Kept", priority: null, inProposal: 3, note: null },
+				] as never,
+				beforeSending: [
+					"",
+					"   ",
+					"\u0000",
+					42,
+					null,
+					{},
+					"Kept",
+				] as never,
+				duringDiscovery: [undefined, "\n", "Also kept"] as never,
+			}),
+		);
+		expect(result.report.scope).toEqual([
+			{ item: "Kept", priority: null, inProposal: "", note: "" },
+		]);
+		expect(result.report.beforeSending).toEqual(["Kept"]);
+		expect(result.report.duringDiscovery).toEqual(["Also kept"]);
+	});
+
+	it("keeps only integer source numbers in range, once each, in order", () => {
+		const result = normalized(
+			reportInput({
+				sources: [
+					0,
+					-1,
+					2.5,
+					Number.NaN,
+					2 ** 31,
+					Number.POSITIVE_INFINITY,
+					"3",
+					null,
+					4,
+					1,
+					4,
+					2_147_483_647,
+				] as never,
+			}),
+		);
+		expect(result.report.sources).toEqual([1, 4, 2_147_483_647]);
+	});
+
+	it("stores no report unless the text, the assessment, the summary or the before-sending list has content", () => {
+		const empty = {
+			assessment: "",
+			summary: "",
+			scope: [],
+			beforeSending: [],
+			duringDiscovery: [],
+			sources: [],
+			text: "",
+			textTruncated: false,
+		};
+		expect(normalizeAnalysisReport(empty)).toBeNull();
+		expect(
+			normalizeAnalysisReport({
+				...empty,
+				scope: [
+					{
+						item: "Only scope",
+						priority: "MUST",
+						inProposal: "",
+						note: "",
+					},
+				],
+			}),
+		).toBeNull();
+		expect(
+			normalizeAnalysisReport({
+				...empty,
+				duringDiscovery: ["Only this"],
+			}),
+		).toBeNull();
+		expect(normalizeAnalysisReport({ ...empty, sources: [1] })).toBeNull();
+		expect(
+			normalizeAnalysisReport({ ...empty, textTruncated: true }),
+		).toBeNull();
+		expect(
+			normalizeAnalysisReport({
+				...empty,
+				text: " \u0000\n",
+				assessment: "\u0000",
+				beforeSending: [" "],
+			}),
+		).toBeNull();
+
+		expect(
+			normalizeAnalysisReport({ ...empty, text: "Text" }),
+		).toMatchObject({ reportText: "Text" });
+		for (const field of [
+			{ assessment: "Ready" },
+			{ summary: "Summary" },
+			{ beforeSending: ["Before"] },
+		]) {
+			const result = normalizeAnalysisReport({ ...empty, ...field });
+			expect(result).not.toBeNull();
+			// No text: the text column stays null, never an empty string.
+			expect(result?.reportText).toBeNull();
+		}
+	});
+
+	it("never throws, whatever shape it is handed", () => {
+		const shapes: unknown[] = [
+			null,
+			undefined,
+			"report",
+			42,
+			true,
+			[],
+			[reportInput()],
+			{},
+			{ text: 42, assessment: {}, summary: [], scope: "x" },
+			{
+				text: "Text",
+				scope: [[], { item: {} }, Object.create(null)],
+				beforeSending: { length: 3 },
+				duringDiscovery: "a,b",
+				sources: "1,2",
+			},
+			// biome-ignore lint/suspicious/noSparseArray: a sparse list must not throw
+			{ text: "Text", beforeSending: [, "Kept", ,] },
+			Object.freeze(reportInput()),
+		];
+		for (const shape of shapes) {
+			expect(() => normalizeAnalysisReport(shape as never)).not.toThrow();
+		}
+		expect(normalizeAnalysisReport("report" as never)).toBeNull();
+		expect(normalizeAnalysisReport([reportInput()] as never)).toBeNull();
+		expect(
+			normalizeAnalysisReport({
+				text: "Text",
+				// biome-ignore lint/suspicious/noSparseArray: a sparse list must not throw
+				beforeSending: [, "Kept", ,],
+			} as never)?.report.beforeSending,
+		).toEqual(["Kept"]);
+	});
+});
+
+describe("parseStoredAnalysisReport reads version 1 only", () => {
+	const stored = () => normalized(reportInput());
+
+	it("reads a version-1 object and its text", () => {
+		const { report, reportText } = stored();
+		expect(parseStoredAnalysisReport(report, reportText)).toEqual({
+			assessment: report.assessment,
+			summary: report.summary,
+			scope: report.scope,
+			beforeSending: report.beforeSending,
+			duringDiscovery: report.duringDiscovery,
+			sources: report.sources,
+			textTruncated: false,
+			plainText: false,
+			text: reportText,
+		});
+	});
+
+	it("strips unknown keys instead of refusing them", () => {
+		const { report, reportText } = stored();
+		const parsed = parseStoredAnalysisReport(
+			{
+				...report,
+				future: "field",
+				scope: report.scope.map((item) => ({ ...item, extra: 1 })),
+			},
+			reportText,
+		);
+		expect(parsed).not.toBeNull();
+		expect(parsed).not.toHaveProperty("future");
+		expect(parsed).not.toHaveProperty("v");
+		expect(parsed?.scope[0]).not.toHaveProperty("extra");
+	});
+
+	it("reads any other version, or none, as no report", () => {
+		const { report, reportText } = stored();
+		expect(parseStoredAnalysisReport({ ...report, v: 2 }, reportText)).toBe(
+			null,
+		);
+		expect(
+			parseStoredAnalysisReport({ ...report, v: "1" }, reportText),
+		).toBeNull();
+		const { v: _version, ...unversioned } = report;
+		expect(parseStoredAnalysisReport(unversioned, reportText)).toBeNull();
+	});
+
+	it("checks the text again, so a row stored before a stricter guard reads as plain text", () => {
+		// Stored with the flag off, as a guard that did not yet flag this text
+		// would have written it.
+		const { report } = stored();
+		const hostile = ">".repeat(10_000);
+		expect(reportTextNeedsPlainText(hostile)).toBe(true);
+		expect(
+			parseStoredAnalysisReport({ ...report, plainText: false }, hostile)
+				?.plainText,
+		).toBe(true);
+		// Benign text keeps the stored flag either way, and no text runs no check.
+		expect(
+			parseStoredAnalysisReport({ ...report, plainText: false }, "Text")
+				?.plainText,
+		).toBe(false);
+		expect(
+			parseStoredAnalysisReport({ ...report, plainText: true }, "Text")
+				?.plainText,
+		).toBe(true);
+		expect(
+			parseStoredAnalysisReport({ ...report, plainText: false }, null)
+				?.plainText,
+		).toBe(false);
+		expect(
+			parseStoredAnalysisReport({ ...report, plainText: true }, null)
+				?.plainText,
+		).toBe(true);
+	});
+
+	it("reads text stored without an object as no report", () => {
+		expect(parseStoredAnalysisReport(null, "Text")).toBeNull();
+		expect(parseStoredAnalysisReport(undefined, "Text")).toBeNull();
+		expect(parseStoredAnalysisReport(null, null)).toBeNull();
+	});
+
+	it("reads an object without text as its fields with the text null", () => {
+		const { report } = stored();
+		for (const text of [null, undefined, ""]) {
+			expect(parseStoredAnalysisReport(report, text)).toMatchObject({
+				assessment: report.assessment,
+				text: null,
+			});
+		}
+	});
+
+	it("reads garbage, or a value past the caps, as no report", () => {
+		const { report, reportText } = stored();
+		const garbage: unknown[] = [
+			"report",
+			42,
+			[],
+			[report],
+			{ v: 1 },
+			{ ...report, sources: [0] },
+			{ ...report, sources: [1.5] },
+			{ ...report, scope: [{ ...report.scope[0], priority: "MAYBE" }] },
+			{ ...report, scope: [{ ...report.scope[0], item: "" }] },
+			{ ...report, beforeSending: [""] },
+			{
+				...report,
+				assessment: "a".repeat(
+					PROPOSAL_REPORT_ASSESSMENT_MAX_LENGTH + 1,
+				),
+			},
+			{ ...report, plainText: "false" },
+		];
+		for (const value of garbage) {
+			expect(parseStoredAnalysisReport(value, reportText)).toBeNull();
+		}
+		expect(parseStoredAnalysisReport(report, 42 as never)).toBeNull();
+		expect(
+			parseStoredAnalysisReport(
+				report,
+				"t".repeat(PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS + 1),
+			),
+		).toBeNull();
+	});
+
+	it("what the normaliser stores, the reader parses back unchanged", () => {
+		// A small deterministic generator (mulberry32), so a failure replays.
+		let seed = 2946;
+		const random = () => {
+			seed = (seed + 0x6d2b79f5) | 0;
+			let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+			t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+			return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+		};
+		const pick = <T>(values: readonly T[]): T =>
+			values[Math.floor(random() * values.length)] as T;
+		const PIECES = [
+			"a",
+			"Z",
+			" ",
+			"\n",
+			"\n\n",
+			"\t",
+			"\u0000",
+			LONE_HIGH,
+			LONE_LOW,
+			ASTRAL,
+			"é",
+			"```",
+			"> ",
+			"- ",
+			"[S1]",
+			"| a |",
+			"**",
+		];
+		const text = (maxPieces: number) => {
+			if (random() < 0.08) {
+				return pick(PIECES).repeat(maxPieces * 4);
+			}
+			const count = Math.floor(random() * maxPieces);
+			return Array.from({ length: count }, () => pick(PIECES)).join("");
+		};
+		const list = (maxEntries: number, maxPieces: number) =>
+			Array.from({ length: Math.floor(random() * maxEntries) }, () =>
+				text(maxPieces),
+			);
+
+		let storedCount = 0;
+		for (let index = 0; index < 250; index += 1) {
+			const longText = random() < 0.04;
+			const input: ProposalAnalysisReportInput = {
+				assessment: text(40),
+				summary: text(600),
+				scope: Array.from(
+					{ length: Math.floor(random() * 50) },
+					() => ({
+						item: text(120),
+						priority: pick([
+							...PROPOSAL_REPORT_PRIORITIES,
+							"Must",
+							null,
+						]) as never,
+						inProposal: text(20),
+						note: text(250),
+					}),
+				),
+				beforeSending: list(40, 200),
+				duringDiscovery: list(40, 200),
+				sources: Array.from({ length: Math.floor(random() * 70) }, () =>
+					pick([
+						Math.floor(random() * 300),
+						-3,
+						0,
+						1.5,
+						Number.NaN,
+						2 ** 31,
+					]),
+				),
+				text: longText
+					? `${text(30)}\n\n`.repeat(
+							PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS / 20,
+						)
+					: text(400),
+				textTruncated: random() < 0.2,
+				plainText: random() < 0.1,
+			};
+			const result = normalizeAnalysisReport(input);
+			if (!result) {
+				continue;
+			}
+			storedCount += 1;
+			for (const value of [
+				...allStrings(result.report),
+				result.reportText ?? "",
+			]) {
+				expect(value).not.toContain("\u0000");
+				expect(isWellFormed(value)).toBe(true);
+			}
+			expect(result.reportText?.length ?? 0).toBeLessThanOrEqual(
+				PROPOSAL_REPORT_TEXT_MAX_CODE_UNITS,
+			);
+
+			// Through JSON, as the jsonb column stores it.
+			const { v, ...fields } = result.report;
+			expect(v).toBe(1);
+			const parsed = parseStoredAnalysisReport(
+				JSON.parse(JSON.stringify(result.report)),
+				result.reportText,
+			);
+			expect(parsed).toEqual({ ...fields, text: result.reportText });
+			// The read checks the text again; on what the same guard stored,
+			// that agrees with the stored flag.
+			expect(fields.plainText).toBe(
+				input.plainText === true ||
+					reportTextNeedsPlainText(result.reportText ?? ""),
+			);
+			expect(parsed?.plainText).toBe(
+				fields.plainText ||
+					(result.reportText !== null &&
+						reportTextNeedsPlainText(result.reportText)),
+			);
+
+			// And what was stored normalises to itself.
+			if (parsed) {
+				expect(
+					normalizeAnalysisReport({
+						...parsed,
+						text: parsed.text ?? "",
+					}),
+				).toEqual(result);
+			}
+		}
+		expect(storedCount).toBeGreaterThan(150);
+	});
+});
+
+describe("the report is written only by the completion that wins", () => {
+	function runningRun(): string {
+		if (!store.documents.some((d) => d.id === DOC)) {
+			seedDocument({ status: "COMPLETE" });
+		}
+		return seedRun({
+			status: "RUNNING",
+			completedAt: null,
+		}).id as string;
+	}
+
+	const finding = {
+		severity: "IMPORTANT" as const,
+		type: "SCOPE" as const,
+		title: "Hosting is not named",
+		detail: "The proposal names no hosting target.",
+	};
+
+	/** The data of the status update that completes the run. */
+	function completionData(analysisId: string): Row {
+		const call = fake.projectDocumentAnalysis.updateMany.mock.calls.find(
+			([args]) =>
+				args.where.id === analysisId && args.data.status === "COMPLETE",
+		);
+		if (!call) {
+			throw new Error("no completing update");
+		}
+		const [args] = call;
+		expect(args.where.status).toEqual({ in: ["PENDING", "RUNNING"] });
+		return args.data;
+	}
+
+	it("writes the normalised report and text in the guarded status update, with the findings", async () => {
+		const id = runningRun();
+		const input = reportInput({
+			text: "Report\u0000 text",
+			sources: [3, 3],
+		});
+		expect(
+			await completeAnalysisRun({
+				analysisId: id,
+				findings: [finding],
+				report: input,
+				now: NOW,
+			}),
+		).toBe("written");
+
+		const expected = normalized(input);
+		expect(completionData(id)).toMatchObject({
+			status: "COMPLETE",
+			report: expected.report,
+			reportText: "Report text",
+		});
+		expect(analysisRow(id)).toMatchObject({
+			status: "COMPLETE",
+			report: expected.report,
+			reportText: "Report text",
+		});
+		expect(findingsOf(id)).toHaveLength(1);
+		// One status update: the report never needs a second write.
+		expect(fake.projectDocumentAnalysis.updateMany).toHaveBeenCalledTimes(
+			1,
+		);
+	});
+
+	it("a report with fields but no text writes the object and a null text", async () => {
+		const id = runningRun();
+		await completeAnalysisRun({
+			analysisId: id,
+			findings: [],
+			report: reportInput({ text: "" }),
+			now: NOW,
+		});
+		const data = completionData(id);
+		expect(data.report).toMatchObject({
+			v: 1,
+			assessment: "Ready with changes",
+		});
+		expect(data).toHaveProperty("reportText", null);
+	});
+
+	it.each([
+		["no report", undefined],
+		["a null report", null],
+		[
+			"a report with only scope items",
+			reportInput({
+				assessment: "",
+				summary: "",
+				beforeSending: [],
+				text: "",
+			}),
+		],
+	])("%s leaves both report keys out of the write", async (_name, report) => {
+		const id = runningRun();
+		expect(
+			await completeAnalysisRun({
+				analysisId: id,
+				findings: [finding],
+				report,
+				now: NOW,
+			}),
+		).toBe("written");
+		const data = completionData(id);
+		expect(data).not.toHaveProperty("report");
+		expect(data).not.toHaveProperty("reportText");
+		expect(analysisRow(id).report).toBeUndefined();
+		expect(analysisRow(id).reportText).toBeUndefined();
+		expect(findingsOf(id)).toHaveLength(1);
+	});
+
+	it("a refused completion writes nothing: the first writer's report stays byte-identical", async () => {
+		const id = runningRun();
+		await completeAnalysisRun({
+			analysisId: id,
+			findings: [finding],
+			report: reportInput({ text: "The first writer's report." }),
+			now: NOW,
+		});
+		const before = JSON.stringify({
+			report: analysisRow(id).report,
+			reportText: analysisRow(id).reportText,
+		});
+
+		expect(
+			await completeAnalysisRun({
+				analysisId: id,
+				findings: [{ ...finding, title: "A later attempt's finding" }],
+				report: reportInput({
+					assessment: "Not ready",
+					text: "A later attempt's report.",
+				}),
+				now: NOW,
+			}),
+		).toBe("superseded");
+		expect(
+			JSON.stringify({
+				report: analysisRow(id).report,
+				reportText: analysisRow(id).reportText,
+			}),
+		).toBe(before);
+		expect(findingsOf(id).map((f) => f.title)).toEqual([finding.title]);
+	});
+
+	it("a FAILED run gains no report from a late completion", async () => {
+		const id = runningRun();
+		await failAnalysisRun({
+			analysisId: id,
+			errorCode: "ANALYSIS_FAILED",
+			errorMessage: "The analysis could not be completed.",
+			now: NOW,
+		});
+		expect(
+			await completeAnalysisRun({
+				analysisId: id,
+				findings: [finding],
+				report: reportInput(),
+				now: NOW,
+			}),
+		).toBe("superseded");
+		expect(analysisRow(id)).toMatchObject({ status: "FAILED" });
+		expect(analysisRow(id).report).toBeUndefined();
+		expect(analysisRow(id).reportText).toBeUndefined();
+	});
+});
+
+describe("getAnalysisReport is the one reader of the report", () => {
+	const MARKER = "report-marker-2946";
+	let stored: ReturnType<typeof normalized>;
+
+	beforeEach(() => {
+		seedDocument({ status: "COMPLETE" });
+		stored = normalized(reportInput({ text: `## Report\n\n${MARKER}` }));
+	});
+
+	function read(
+		analysisId: string,
+		overrides: { organizationId?: string; documentId?: string } = {},
+	) {
+		return getAnalysisReport({
+			organizationId: ORG,
+			documentId: DOC,
+			analysisId,
+			...overrides,
+		});
+	}
+
+	it("reads a COMPLETE run of the document in the organization, and asks for nothing else", async () => {
+		const run = seedRun({
+			report: stored.report,
+			reportText: stored.reportText,
+		});
+		expect(await read(run.id as string)).toEqual(
+			parseStoredAnalysisReport(stored.report, stored.reportText),
+		);
+		expect(fake.projectDocumentAnalysis.findFirst).toHaveBeenCalledWith({
+			where: {
+				id: run.id,
+				documentId: DOC,
+				organizationId: ORG,
+				status: "COMPLETE",
+			},
+			select: { report: true, reportText: true },
+		});
+	});
+
+	it("returns null for another organization, another document, or no such run", async () => {
+		const run = seedRun({
+			report: stored.report,
+			reportText: stored.reportText,
+		});
+		expect(
+			await read(run.id as string, { organizationId: OTHER_ORG }),
+		).toBeNull();
+		expect(
+			await read(run.id as string, { documentId: "doc-other" }),
+		).toBeNull();
+		expect(await read("analysis-missing")).toBeNull();
+	});
+
+	it.each(["PENDING", "RUNNING", "FAILED"])(
+		"returns null for a %s run",
+		async (status) => {
+			const run = seedRun({
+				status,
+				report: stored.report,
+				reportText: stored.reportText,
+			});
+			expect(await read(run.id as string)).toBeNull();
+		},
+	);
+
+	it("returns null for a run without a report, an unknown version, an invalid value, or text alone", async () => {
+		const runs = [
+			seedRun(),
+			seedRun({ report: null, reportText: null }),
+			seedRun({ report: { ...stored.report, v: 2 }, reportText: "Text" }),
+			seedRun({ report: { v: 1, assessment: 5 }, reportText: "Text" }),
+			seedRun({ report: null, reportText: "Text without an object" }),
+		];
+		for (const run of runs) {
+			expect(await read(run.id as string)).toBeNull();
+		}
+	});
+
+	it("an object without text gives its fields with the text null", async () => {
+		const run = seedRun({ report: stored.report, reportText: null });
+		expect(await read(run.id as string)).toMatchObject({
+			assessment: "Ready with changes",
+			text: null,
+		});
+	});
+
+	it("no other read selects the report columns or returns the report", async () => {
+		const withReport = seedRun({
+			report: stored.report,
+			reportText: stored.reportText,
+		});
+		const rerun = seedRun({
+			kind: "RERUN",
+			status: "PENDING",
+			sourceRunId: withReport.id,
+			sourceContext: "",
+		});
+
+		const results = [
+			await getLatestAnalysisForDocument({
+				documentId: DOC,
+				organizationId: ORG,
+			}),
+			await getAnalysisForCurrentContent({
+				organizationId: ORG,
+				documentId: DOC,
+				currentProseHash: proseHashOf(MAIN),
+				computeProseHash: proseHashOf,
+				now: NOW,
+			}),
+			await getRunSourceContext(withReport.id as string),
+			await getRunSourceContext(rerun.id as string),
+			await getAnalysisRunInput(withReport.id as string),
+			await getAnalysisRunInput(rerun.id as string),
+		];
+		expect(JSON.stringify(results)).not.toContain(MARKER);
+		expect(JSON.stringify(results)).not.toContain(stored.report.assessment);
+
+		const delegate = fake.projectDocumentAnalysis;
+		const selects = [
+			...delegate.findFirst.mock.calls,
+			...delegate.findUnique.mock.calls,
+			...delegate.findUniqueOrThrow.mock.calls,
+			...delegate.findMany.mock.calls,
+		].map(([args]) => args.select);
+		expect(selects.length).toBeGreaterThan(0);
+		for (const select of selects) {
+			expect(select).toBeDefined();
+			expect(allKeys(select)).not.toContain("report");
+			expect(allKeys(select)).not.toContain("reportText");
+		}
+
+		// The run view's select (getLatestAnalysisForDocument) and the run
+		// source select (getRunSourceContext) by name, as the first calls each
+		// made.
+		const [[viewArgs]] = delegate.findFirst.mock.calls;
+		expect(Object.keys(viewArgs.select)).toContain("findings");
+		expect(Object.keys(viewArgs.select)).not.toContain("report");
+		expect(Object.keys(viewArgs.select)).not.toContain("reportText");
+		const [[sourceArgs]] = delegate.findUnique.mock.calls;
+		expect(Object.keys(sourceArgs.select)).toContain("sourceContext");
+		expect(Object.keys(sourceArgs.select)).not.toContain("report");
+		expect(Object.keys(sourceArgs.select)).not.toContain("reportText");
+
+		// The seeded run really does hold the report.
+		expect((await read(withReport.id as string))?.text).toContain(MARKER);
 	});
 });

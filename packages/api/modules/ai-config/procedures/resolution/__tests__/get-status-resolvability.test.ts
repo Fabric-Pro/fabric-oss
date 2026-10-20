@@ -31,6 +31,7 @@ const {
 	mockResolveOrganizationId,
 	mockGetEmbeddingProviderConfig,
 	mockGetAiProviderApiKey,
+	mockGetPlanSpentPersonalProviderConfig,
 } = vi.hoisted(() => ({
 	mockDb: {
 		cloudProviderConfig: { findMany: vi.fn() },
@@ -50,6 +51,7 @@ const {
 	// carries the reasoning under "ONE RUNG SHORT".
 	mockGetEmbeddingProviderConfig: vi.fn(),
 	mockGetAiProviderApiKey: vi.fn(),
+	mockGetPlanSpentPersonalProviderConfig: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -62,6 +64,8 @@ vi.mock("@repo/database", () => ({
 		mockGetEmbeddingProviderConfig(...args),
 	getAiProviderApiKey: (...args: unknown[]) =>
 		mockGetAiProviderApiKey(...args),
+	getPlanSpentPersonalProviderConfig: (...args: unknown[]) =>
+		mockGetPlanSpentPersonalProviderConfig(...args),
 	// The real reader — it is half of what is under test here. Restated rather
 	// than imported because the rest of this mock exists to keep Prisma out of
 	// the test. Both halves of the rule it mirrors are pinned at the source, so
@@ -199,6 +203,7 @@ beforeEach(() => {
 	// Default: nothing resolves anywhere. Each test opts into a rung.
 	mockGetEmbeddingProviderConfig.mockResolvedValue(providerConfig());
 	mockGetAiProviderApiKey.mockResolvedValue(providerConfig());
+	mockGetPlanSpentPersonalProviderConfig.mockResolvedValue(null);
 });
 
 describe("canResolveProvider — the credential gap", () => {
@@ -687,6 +692,7 @@ describe("resolvedEmbeddingProvider — a failing rung does not fail the call", 
 				displayName: null,
 				isDefault: true,
 				isEmbeddingProvider: false,
+				useWhenPlanSpent: false,
 				source: "org_config",
 			},
 		]);
@@ -721,6 +727,7 @@ describe("resolvedEmbeddingProvider — a failing rung does not fail the call", 
 				displayName: null,
 				isDefault: true,
 				isEmbeddingProvider: false,
+				useWhenPlanSpent: false,
 				source: "org_config",
 			},
 		]);
@@ -948,5 +955,64 @@ describe("resolvedProvider / resolvedProviderSource — the chat path", () => {
 		expect(result.canResolveProvider).toBe(true);
 		expect(consoleErrorSpy).toHaveBeenCalled();
 		consoleErrorSpy.mockRestore();
+	});
+});
+
+// Fizzy #3085: the Models page shows the viewer's own plan-spent key, and
+// the Personal tab each key's opt-in.
+describe("the caller's plan-spent personal key", () => {
+	it("names the provider of the caller's own opted-in key, looked up by their id alone", async () => {
+		mockGetPlanSpentPersonalProviderConfig.mockResolvedValue(
+			resolvedConfig("ANTHROPIC_DIRECT", "user"),
+		);
+
+		const result = (await callInOrg()) as StatusResult & {
+			planSpentPersonalProvider: string | null;
+		};
+
+		expect(result.planSpentPersonalProvider).toBe("ANTHROPIC_DIRECT");
+		expect(mockGetPlanSpentPersonalProviderConfig).toHaveBeenCalledWith({
+			userId: "user-1",
+		});
+		expect(JSON.stringify(result)).not.toContain(
+			"sk-decrypted-placeholder",
+		);
+	});
+
+	it("is null when none is opted in, or the lookup fails", async () => {
+		const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
+		expect(
+			((await callInOrg()) as { planSpentPersonalProvider: unknown })
+				.planSpentPersonalProvider,
+		).toBeNull();
+		mockGetPlanSpentPersonalProviderConfig.mockRejectedValue(
+			new Error("database down"),
+		);
+		expect(
+			((await callInOrg()) as { planSpentPersonalProvider: unknown })
+				.planSpentPersonalProvider,
+		).toBeNull();
+		quiet.mockRestore();
+	});
+
+	it("reports each personal key's opt-in, and never one on an organization key", async () => {
+		mockDb.userCloudProviderConfig.findMany.mockResolvedValue([
+			row({ provider: "OPENAI", purpose: "ALL", useWhenPlanSpent: true }),
+		]);
+		const personal = (await getStatus._handler({
+			input: { organizationId: null },
+			context,
+		})) as unknown as {
+			configuredProviders: { useWhenPlanSpent: boolean }[];
+		};
+		expect(personal.configuredProviders[0].useWhenPlanSpent).toBe(true);
+
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			row({ provider: "OPENAI", purpose: "ALL", useWhenPlanSpent: true }),
+		]);
+		const org = (await callInOrg()) as unknown as {
+			configuredProviders: { useWhenPlanSpent: boolean }[];
+		};
+		expect(org.configuredProviders[0].useWhenPlanSpent).toBe(false);
 	});
 });

@@ -1,8 +1,10 @@
 import { ORPCError } from "@orpc/client";
 import {
+	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
+	isProposalClientDocument,
 	updateDocument,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -12,6 +14,8 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "@repo/temporal";
+import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
@@ -22,6 +26,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { isRoomConvergenceOn } from "../../lib/room-convergence-enabled";
 
 /**
  * AUTHORIZATION: Uses hasProjectAccess() — matches the existing update-document
@@ -69,14 +74,24 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			 */
 			confirmedContent: z.string().optional(),
 			/**
-			 * Document version at the time the preview was generated. Advisory:
-			 * the apply guards its write with the version it reads itself (the
-			 * body the visual slots are lifted from), not this one, so an edit
-			 * saved between preview and confirm is still overwritten. Threaded
-			 * through so preview-time enforcement can be added without a client
-			 * API break.
+			 * Document version at the time the preview was generated. Advisory
+			 * only; the base below is what guards the confirm.
 			 */
 			documentVersion: z.number().optional(),
+			/**
+			 * The base of the body the preview was drafted from (Fizzy #2946),
+			 * sent with the confirm: the version and `contentHash` of the saved
+			 * body the editor's content descended from when the preview
+			 * started, both or neither. A confirm that names it is refused with
+			 * CONFLICT, and writes nothing, when the document no longer holds
+			 * that body, so an edit or a generated body saved between preview
+			 * and confirm is never overwritten. Without it the confirm is
+			 * guarded by the version it reads itself, except where the base is
+			 * required (a client-document Proposal while the collaborative room
+			 * flag is on), as for `projects.documents.update`.
+			 */
+			expectedVersion: z.number().int().nonnegative().optional(),
+			expectedContentHash: z.string().min(1).max(128).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -113,14 +128,57 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			}
 			const confirmedContent = input.confirmedContent;
 
+			// Half a base cannot name a body: a version alone misses a body
+			// saved at the same version.
+			if (
+				(input.expectedVersion === undefined) !==
+				(input.expectedContentHash === undefined)
+			) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Send both expectedVersion and expectedContentHash, or neither",
+				});
+			}
+			const hasBase =
+				input.expectedVersion !== undefined &&
+				input.expectedContentHash !== undefined;
+
+			// A Proposal's body is written by generation runs as well as by
+			// people (Fizzy #2946). A client document's confirm names the body
+			// its preview was drafted from (judged by the project's OWNING
+			// organization). Any Proposal's confirm is refused while a run is
+			// queued or writing, decided by type, not by the rollout gate: a
+			// run keeps writing when the gate is turned off mid-run.
+			const owningOrganizationId =
+				document.project?.organizationId ?? null;
+			const clientProposal = await isProposalClientDocument({
+				organizationId: owningOrganizationId,
+				documentType: document.type,
+			});
+			if (
+				clientProposal &&
+				!hasBase &&
+				(await isRoomConvergenceOn(owningOrganizationId))
+			) {
+				// A client from before the confirm named its base: it would
+				// write over a run's body at the same version.
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This editor is out of date, so your changes were not saved. Reload the page to keep editing.",
+					data: { code: DOCUMENT_SAVE_BASE_REQUIRED },
+				});
+			}
+
 			// Visual slots (KTD17) come from the CURRENT stored body, not from the
 			// confirmed text: the preview was drafted minutes earlier, so a slot a
 			// person deleted in between must not come back, and one the confirmed
 			// text lost must. With no slot on either side the confirmed text is
 			// saved unchanged.
-			// Guard the write with the version just read: the slots were lifted
-			// from that body, so a slot saved between this read and the write
-			// would otherwise be lost. A conflict writes nothing.
+			// Guard the write with the caller's base, or else with the version
+			// just read: the slots were lifted from that body, so a slot saved
+			// between this read and the write would otherwise be lost. With a
+			// base, the read body is the base's body or the write is refused. A
+			// conflict writes nothing.
 			let updated: Awaited<ReturnType<typeof updateDocument>>;
 			try {
 				updated = await updateDocument(input.id, {
@@ -131,9 +189,24 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 					changeDescription: "Updated with latest context",
 					userId: user.id,
 					organizationId,
-					expectedVersion: document.version,
+					...(hasBase
+						? {
+								expectedVersion: input.expectedVersion,
+								expectedContentHash: input.expectedContentHash,
+							}
+						: { expectedVersion: document.version }),
+					...(isRunGuardedDocumentType(document.type)
+						? { refuseWhileGenerating: true }
+						: {}),
 				});
 			} catch (error) {
+				if (error instanceof DocumentGenerationInProgressError) {
+					throw new ORPCError("CONFLICT", {
+						message:
+							"A generation run is writing this document; try again when it finishes.",
+						data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+					});
+				}
 				if (error instanceof DocumentVersionConflictError) {
 					throw new ORPCError("CONFLICT", {
 						message:

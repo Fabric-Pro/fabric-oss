@@ -72,6 +72,64 @@ export interface RequestOptions {
 	 * before this option existed.
 	 */
 	signal?: AbortSignal;
+	/** Only for bounded, read-only JSON operations that can safely be retried. */
+	boundedRead?: { maxResponseBytes: number };
+}
+
+class RateLimitDelayError extends FabricError {
+	constructor(
+		message: string,
+		readonly delayMs: number,
+	) {
+		super(message, 429);
+	}
+}
+
+function retryAfterMs(value: string | null): number | undefined {
+	if (value === null) {
+		return undefined;
+	}
+	if (/^\d+$/.test(value)) {
+		return Number(value) * 1000;
+	}
+	const date = Date.parse(value);
+	return Number.isFinite(date) ? Math.max(0, date - Date.now()) : undefined;
+}
+
+async function boundedJson(res: Response, maxBytes: number): Promise<unknown> {
+	const reader = res.body?.getReader();
+	if (!reader) {
+		throw new FabricError("Empty repository response", res.status);
+	}
+	const chunks: Uint8Array[] = [];
+	let length = 0;
+	try {
+		for (;;) {
+			const next = await reader.read();
+			if (next.done) {
+				break;
+			}
+			length += next.value.byteLength;
+			if (length > maxBytes) {
+				await reader.cancel();
+				throw new FabricError(
+					"Repository response is too large",
+					res.status,
+					"RESPONSE_TOO_LARGE",
+				);
+			}
+			chunks.push(next.value);
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	const bytes = new Uint8Array(length);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 /** Read an env var safely across Node / edge / browser. */
@@ -244,7 +302,9 @@ export class FabricHttpClient {
 		// configured with more retries: the resource method that sets it knows
 		// its route is not idempotent, and no client configuration can make it
 		// safe to send twice.
-		const maxAttempts = (options.retry ?? this.retry).maxRetries + 1;
+		const retries = (options.retry ?? this.retry).maxRetries;
+		const maxAttempts =
+			(options.boundedRead ? Math.min(retries, 2) : retries) + 1;
 
 		let lastError: unknown;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -277,7 +337,12 @@ export class FabricHttpClient {
 				const status =
 					err instanceof FabricError ? err.status : undefined;
 				const retriable =
-					attempt < maxAttempts && this.shouldRetry(method, err);
+					attempt < maxAttempts &&
+					this.shouldRetry(method, err) &&
+					!(
+						err instanceof RateLimitDelayError &&
+						err.delayMs > 60_000
+					);
 				this.emit({
 					kind: retriable ? "retry" : "error",
 					method,
@@ -296,11 +361,14 @@ export class FabricHttpClient {
 				if (!retriable) {
 					throw err;
 				}
-				const delay = Math.min(
-					this.retry.initialDelayMs *
-						this.retry.multiplier ** (attempt - 1),
-					this.retry.maxDelayMs,
-				);
+				const delay =
+					err instanceof RateLimitDelayError
+						? err.delayMs
+						: Math.min(
+								this.retry.initialDelayMs *
+									this.retry.multiplier ** (attempt - 1),
+								this.retry.maxDelayMs,
+							);
 				await sleep(delay, options.signal);
 			}
 		}
@@ -372,24 +440,55 @@ export class FabricHttpClient {
 				"NETWORK_ERROR",
 			);
 		}
-		clearTimeout(timeoutHandle);
+		if (!options.boundedRead) {
+			clearTimeout(timeoutHandle);
+		}
 
 		const upgradeNotice = res.headers?.get("X-Fabric-Cli-Upgrade");
 		if (upgradeNotice) {
 			this.notifyUpgrade(upgradeNotice);
 		}
+		if (options.boundedRead && res.status === 429) {
+			try {
+				await res.body?.cancel();
+			} finally {
+				clearTimeout(timeoutHandle);
+			}
+			options.signal?.throwIfAborted();
+			throw new RateLimitDelayError(
+				"Too many requests. Wait a minute and try again.",
+				Math.max(
+					1000,
+					retryAfterMs(res.headers.get("Retry-After")) ?? 60_000,
+				),
+			);
+		}
 
 		let json: unknown;
 		try {
-			json = await res.json();
-		} catch {
+			json = options.boundedRead
+				? await boundedJson(res, options.boundedRead.maxResponseBytes)
+				: await res.json();
+		} catch (error) {
 			if (options.signal?.aborted) {
 				throw options.signal.reason;
+			}
+			if (options.boundedRead && controller.signal.aborted) {
+				throw new FabricError(
+					`Request timed out after ${this.timeoutMs}ms`,
+					0,
+					"TIMEOUT",
+				);
+			}
+			if (options.boundedRead && error instanceof FabricError) {
+				throw error;
 			}
 			throw new FabricError(
 				`Unexpected response from server (status ${res.status})`,
 				res.status,
 			);
+		} finally {
+			clearTimeout(timeoutHandle);
 		}
 
 		if (!res.ok) {

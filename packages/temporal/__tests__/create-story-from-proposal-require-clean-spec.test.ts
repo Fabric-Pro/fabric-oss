@@ -172,6 +172,10 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 			bodyAlreadyDrafted: true,
 		});
 
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "proj-1" }),
+		);
 		expect(result.aiDrafted).toBe(true);
 		expect(mocks.generateObject).toHaveBeenCalled();
 		const call = mocks.createStory.mock.calls[0]?.[0] as Record<

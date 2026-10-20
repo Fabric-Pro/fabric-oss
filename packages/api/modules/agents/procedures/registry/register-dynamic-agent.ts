@@ -27,6 +27,7 @@ import {
 	assertAgentEndpointAllowed,
 	fetchAgentEndpoint,
 } from "../../lib/agent-endpoint-guard";
+import { checkRegisteredAgentManageAccess } from "../../lib/registered-agent-access";
 
 // =============================================================================
 // Input Schema
@@ -94,7 +95,11 @@ const DynamicAgentOutputSchema = z.object({
 // =============================================================================
 
 export const registerDynamicAgent = protectedProcedure
-	.use(requireInputOrgPermission(Permissions.AGENT_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/registry/dynamic",
@@ -119,8 +124,9 @@ export const registerDynamicAgent = protectedProcedure
 
 		// SECURITY (SOC 2 CC6.1/CC6.3): SYSTEM-scoped agents are global (every
 		// tenant) with an attacker-controlled deploymentUrl. Restrict SYSTEM
-		// registration to platform admins. requireInputOrgPermission verifies
-		// org membership for ORGANIZATION scope; SYSTEM has no org.
+		// registration to platform admins. requireInputOrgPermission refuses a
+		// request that resolves no organization and checks membership and
+		// AGENT_CREATE there. SYSTEM scope additionally requires this gate.
 		if (input.scope === "SYSTEM" && context.user.role !== "admin") {
 			throw new ORPCError("FORBIDDEN", {
 				message:
@@ -344,7 +350,11 @@ export const registerDynamicAgent = protectedProcedure
 // =============================================================================
 
 export const refreshDynamicAgent = protectedProcedure
-	.use(requireInputOrgPermission(Permissions.AGENT_CREATE))
+	.use(
+		requireInputOrgPermission(Permissions.AGENT_CREATE, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/agents/registry/dynamic/refresh",
@@ -365,25 +375,27 @@ export const refreshDynamicAgent = protectedProcedure
 			context.session,
 		);
 
-		const orConditions: Array<Record<string, unknown>> = [
-			{ userId: context.user.id },
-			{ scope: "SYSTEM" },
-		];
-		if (organizationId) {
-			orConditions.push({ organizationId });
-		}
-
-		const agent = await db.registeredAgent.findFirst({
-			where: {
-				agentId: input.agentId,
-				OR: orConditions,
-			},
+		const agent = await db.registeredAgent.findUnique({
+			where: { agentId: input.agentId },
 		});
 
 		if (!agent) {
 			throw new ORPCError("NOT_FOUND", {
 				message: `Agent '${input.agentId}' not found`,
 			});
+		}
+
+		// A refresh probes the stored address and rewrites config and status,
+		// so it checks the row's scope like update and delete do rather than
+		// matching on tenant: USER-scoped rows also carry the creator's
+		// organizationId.
+		const access = await checkRegisteredAgentManageAccess(
+			agent,
+			context.user.id,
+			organizationId,
+		);
+		if (!access.allowed) {
+			throw new ORPCError("FORBIDDEN", { message: access.reason });
 		}
 
 		// Re-validate and extract capabilities

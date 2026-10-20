@@ -310,6 +310,7 @@ export const evaluateAiReadinessProcedure = tenantProtectedProcedure
 				{
 					userId: context.user.id,
 					organizationId: aiOrgId,
+					projectId: input.projectId,
 					featureKey: "maturation",
 				},
 			);

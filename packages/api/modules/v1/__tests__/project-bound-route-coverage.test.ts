@@ -51,6 +51,8 @@ const TOKEN = "fat_example-access-token";
  *   - the instruction routes go through `resolveInstructionProject`, the
  *     context routes through `credentialMayReachProject`, and the feature
  *     routes through `resolveV1Context` with the path's project;
+ *   - the repository batch POST is read-only and uses the same instruction
+ *     project gate before reading pinned file content;
  *   - the memory routes go through `resolveContextProject`, which asks
  *     `credentialMayReachProject` first;
  *   - the project's document routes call `resolveV1Context` without a project
@@ -81,6 +83,7 @@ const REACHABLE = [
 	"POST /projects/:projectId/instructions/changes",
 	"POST /projects/:projectId/instructions/published/download",
 	"POST /projects/:projectId/instructions/published/files",
+	"POST /projects/:projectId/instructions/repository/files/read",
 	"POST /projects/:projectId/instructions/repository/git/:generation/git-upload-pack",
 	"POST /projects/:projectId/instructions/versions",
 	"POST /projects/:projectId/memory/upload-urls",
@@ -150,6 +153,16 @@ beforeEach(() => {
 });
 
 describe("the public v1 API, for an agent that signed in for one project", () => {
+	it("admits repository batch reads only under the credential's project", async () => {
+		const route =
+			"POST /projects/:projectId/instructions/repository/files/read";
+		expect((await ask(route, BOUND)).status).toBe(204);
+
+		const response = await ask(route, OTHER);
+		expect(response.status).toBe(403);
+		expect(await response.json()).toEqual(REFUSAL);
+	});
+
 	it("registers routes, and every one is known to this test", () => {
 		expect(registered.length).toBeGreaterThan(60);
 		expect(registered).toEqual(expect.arrayContaining(REACHABLE));

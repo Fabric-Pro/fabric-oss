@@ -39,7 +39,13 @@ import { useUpdateDocumentWithContext } from "@saas/projects/components/document
 
 type EditorLike = ReturnType<typeof useEditor>;
 
-function setup() {
+function setup(
+	resolveBase?: () =>
+		| { version: number; contentHash: string }
+		| null
+		| undefined
+		| "unavailable",
+) {
 	const setEditable = vi.fn();
 	const setContent = vi.fn();
 	const editor = {
@@ -63,6 +69,7 @@ function setup() {
 			fromMarkdown,
 			diffPartialText,
 			onSaved,
+			resolveBase,
 		}),
 	);
 
@@ -216,5 +223,84 @@ describe("useUpdateDocumentWithContext.confirm()", () => {
 		expect(mockUpdateWithContext).toHaveBeenCalledTimes(1);
 		// Review remains recoverable.
 		expect(result.current.showingDiff).toBe(true);
+	});
+});
+
+describe("useUpdateDocumentWithContext — the confirm names the preview's base (Fizzy #2946)", () => {
+	const PREVIEW = {
+		hasRelevantContext: true,
+		summary: "",
+		needsHumanResolution: false,
+		proposedContent: "# Doc — with a real added sentence.",
+		documentVersion: 4,
+	};
+
+	it("sends the base read when the preview started, not one read at confirm", async () => {
+		let current = { version: 4, contentHash: "hash-at-preview" };
+		const { result, getEditorMarkdownForSave } = setup(() => current);
+		getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
+		await act(async () => {
+			await result.current.start();
+		});
+		// Someone saved while the review was open: the confirm must still
+		// name the body its preview was drafted from.
+		current = { version: 5, contentHash: "hash-of-a-later-save" };
+
+		getEditorMarkdownForSave.mockReturnValueOnce("# Doc — changed");
+		mockUpdateWithContext.mockResolvedValueOnce({
+			applied: true,
+			summary: "",
+			documentVersion: 5,
+		});
+		await act(async () => {
+			await result.current.confirm();
+		});
+
+		expect(mockUpdateWithContext).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				preview: false,
+				expectedVersion: 4,
+				expectedContentHash: "hash-at-preview",
+			}),
+		);
+	});
+
+	it("sends no base when saves name none", async () => {
+		const { result, getEditorMarkdownForSave } = setup(() => undefined);
+		getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
+		await act(async () => {
+			await result.current.start();
+		});
+		getEditorMarkdownForSave.mockReturnValueOnce("# Doc — changed");
+		mockUpdateWithContext.mockResolvedValueOnce({
+			applied: true,
+			summary: "",
+			documentVersion: 5,
+		});
+		await act(async () => {
+			await result.current.confirm();
+		});
+
+		const confirmInput = mockUpdateWithContext.mock.calls[1][0];
+		expect(confirmInput).not.toHaveProperty("expectedVersion");
+		expect(confirmInput).not.toHaveProperty("expectedContentHash");
+	});
+
+	it("does not start a preview while the room has no base yet", async () => {
+		const { result, setEditable, getEditorMarkdownForSave } = setup(
+			() => "unavailable",
+		);
+		getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+
+		await act(async () => {
+			await result.current.start();
+		});
+
+		expect(mockUpdateWithContext).not.toHaveBeenCalled();
+		expect(mockToast.info).toHaveBeenCalledTimes(1);
+		expect(setEditable).not.toHaveBeenCalled();
+		expect(result.current.isActive).toBe(false);
 	});
 });

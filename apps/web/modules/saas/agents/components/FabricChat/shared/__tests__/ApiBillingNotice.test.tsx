@@ -72,3 +72,63 @@ describe("ApiBillingNotice", () => {
 		);
 	});
 });
+
+// Fizzy #3086: a reply served by the member's own key says so, by provider.
+describe("a reply on the member's personal key", () => {
+	const PERSONAL = "x-fabric-chatgpt-plan-personal-key";
+
+	it("reads the provider the stream names, alongside the reset", () => {
+		expect(
+			readChatGptPlanApiBilling(
+				new Response("", {
+					headers: {
+						[HEADER]: RESET,
+						[PERSONAL]: "ANTHROPIC_DIRECT",
+					},
+				}),
+			),
+		).toEqual({ resetAt: RESET, personalKeyProvider: "ANTHROPIC_DIRECT" });
+	});
+
+	it("keeps the provider with the saved message", () => {
+		expect(
+			parseChatGptPlanApiBilling({
+				resetAt: RESET,
+				personalKeyProvider: "OPENAI_DIRECT",
+			}),
+		).toEqual({ resetAt: RESET, personalKeyProvider: "OPENAI_DIRECT" });
+		expect(
+			parseChatGptPlanApiBilling({
+				resetAt: RESET,
+				personalKeyProvider: 7,
+			}),
+		).toEqual({ resetAt: RESET });
+	});
+
+	it("says the reply used the personal key, naming its provider and the reset", () => {
+		render(
+			<ApiBillingNotice
+				apiBilling={{
+					resetAt: RESET,
+					personalKeyProvider: "ANTHROPIC_DIRECT",
+				}}
+			/>,
+		);
+		const notice = screen.getByTestId("chatgpt-plan-api-billing-notice");
+		expect(notice).toHaveTextContent(
+			/^This reply used your personal Anthropic key because the ChatGPT plan is spent\. Plans reset at .+\.$/,
+		);
+		expect(notice).not.toHaveTextContent(/API billing/);
+	});
+
+	it("drops the reset when it is unknown", () => {
+		expect(
+			chatGptPlanApiBillingNote({
+				resetAt: null,
+				personalKeyProvider: "OPENAI_DIRECT",
+			}),
+		).toBe(
+			"This reply used your personal OpenAI key because the ChatGPT plan is spent.",
+		);
+	});
+});

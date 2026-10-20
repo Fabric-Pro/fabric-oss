@@ -131,7 +131,10 @@ async function buildRagContext(
 	} catch (error) {
 		console.warn(
 			"[DeepResearcher] RAG retrieval failed, proceeding without:",
-			error instanceof Error ? error.message : String(error),
+			{
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return { context: "", chunkCount: 0, sources: [] };
 	}
@@ -228,7 +231,10 @@ async function buildWebSearchTools(
 	} catch (e) {
 		console.warn(
 			"[DeepResearcher] Failed to discover web search tools, proceeding without:",
-			e instanceof Error ? e.message : String(e),
+			{
+				error: e instanceof Error ? e.message : e,
+				stack: e instanceof Error ? e.stack : undefined,
+			},
 		);
 	}
 

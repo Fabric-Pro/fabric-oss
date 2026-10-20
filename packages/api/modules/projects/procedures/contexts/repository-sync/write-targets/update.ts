@@ -23,9 +23,15 @@
  * can therefore always be made PULL_REQUEST, or deleted, but never turned on
  * for direct push.
  *
- * Refusals are `create`'s, plus `NOTHING_TO_UPDATE` when neither a folder nor
- * a mode was sent and `NOT_FOUND` for a target that is not this project's.
- * Audited as `project.context.write_target_updated`.
+ * `indexMode` (Index for AI search, or Store only) needs only CONTEXT_CREATE
+ * too: it changes what is embedded, not what reaches the repository. The
+ * transaction recomputes the rows under the folder; once it has committed,
+ * the vectors of files that became store-only are deleted and the files that
+ * became indexable are embedded (`settleIndexingChange`).
+ *
+ * Refusals are `create`'s, plus `NOTHING_TO_UPDATE` when neither a folder, a
+ * mode nor an indexing choice was sent and `NOT_FOUND` for a target that is
+ * not this project's. Audited as `project.context.write_target_updated`.
  */
 import { updateContextWriteTarget } from "@repo/database";
 import { validateWriteTargetFolder } from "@repo/temporal/memory-write/target-rules";
@@ -39,6 +45,7 @@ import {
 } from "../../../../../../orpc/procedures";
 import { resolveContextSyncAccess } from "../access";
 import { MAX_CONTEXT_SYNC_PATH_LENGTH } from "../paths";
+import { settleIndexingChange } from "./indexing-effects";
 import {
 	toWriteTargetView,
 	type WriteTargetRefusal,
@@ -63,6 +70,7 @@ export const updateContextWriteTargetProcedure = tenantProtectedProcedure
 			targetId: z.string().min(1).max(128),
 			folder: z.string().max(MAX_CONTEXT_SYNC_PATH_LENGTH).optional(),
 			mode: z.enum(["PULL_REQUEST", "DIRECT_PUSH"]).optional(),
+			indexMode: z.enum(["INDEXED", "STORE_ONLY"]).optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -72,7 +80,11 @@ export const updateContextWriteTargetProcedure = tenantProtectedProcedure
 				context.user.id,
 				Permissions.CONTEXT_CREATE,
 			);
-		if (input.folder === undefined && input.mode === undefined) {
+		if (
+			input.folder === undefined &&
+			input.mode === undefined &&
+			input.indexMode === undefined
+		) {
 			throw writeTargetRefusalError({ kind: "nothing-to-update" });
 		}
 
@@ -108,7 +120,12 @@ export const updateContextWriteTargetProcedure = tenantProtectedProcedure
 						};
 					}
 				}
-				return { accept: true, folder, mode };
+				return {
+					accept: true,
+					folder,
+					mode,
+					indexMode: input.indexMode ?? current.indexMode,
+				};
 			},
 		);
 		if (result.status === "not-configured") {
@@ -121,7 +138,7 @@ export const updateContextWriteTargetProcedure = tenantProtectedProcedure
 			throw writeTargetRefusalError(result.refusal);
 		}
 
-		const { target, previous } = result;
+		const { target, previous, reindex } = result;
 		recordAuditFromRequest(context, {
 			action: "project.context.write_target_updated",
 			category: "project",
@@ -135,10 +152,19 @@ export const updateContextWriteTargetProcedure = tenantProtectedProcedure
 			metadata: {
 				folder: target.folder,
 				mode: target.mode,
+				indexMode: target.indexMode,
 				previousFolder: previous.folder,
 				previousMode: previous.mode,
+				previousIndexMode: previous.indexMode,
 				version: target.version,
 			},
+		});
+		await settleIndexingChange({
+			reindex,
+			projectId: input.projectId,
+			organizationId,
+			syncId: target.syncId,
+			userId: context.user.id,
 		});
 		return toWriteTargetView(target);
 	});

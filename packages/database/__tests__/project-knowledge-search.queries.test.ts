@@ -37,6 +37,17 @@ it("parameterizes the project, host organization, literal needle and continuatio
 	expect(sql.text).toContain('COLLATE "C"');
 	expect(sql.values).toContain(11);
 });
+it("leaves Store only rows out of the context source", async () => {
+	raw.mockClear();
+	await searchProjectKnowledge({
+		projectId: "example-project",
+		organizationId: "example-org",
+		query: "needle",
+		limit: 10,
+	});
+	const sql = raw.mock.calls[0][0];
+	expect(sql.text).toContain('NOT c."indexingExcluded"');
+});
 describe("query rejects a tenant-resolution failure", () => {
 	it("never reaches SQL with an empty host organization", async () => {
 		raw.mockClear();

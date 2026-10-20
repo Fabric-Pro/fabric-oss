@@ -313,3 +313,6 @@ stale.
 - Keep generated files generated: never hand-edit Prisma Zod output or other
   generated artifacts.
 - Add dependencies with `pnpm add`/`pnpm remove`, not manual manifest edits.
+  A project-scoped `pnpm add` can churn unrelated lockfile entries; rebuild the
+  lockfile workspace-wide as
+  [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-dependency) describes.

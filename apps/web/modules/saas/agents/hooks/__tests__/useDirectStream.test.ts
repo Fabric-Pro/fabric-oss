@@ -482,13 +482,29 @@ describe("useDirectStream — where the agent was opened, and an approved call",
 	it("forwards the workspace and surface the agent was opened on", async () => {
 		const body = await sentBody({
 			launchWorkspaceId: "frame-workspace-1",
+			launchFrameId: "frame-workspace-1",
 			launchSurface: "workspace",
 		});
 
 		expect(body).toMatchObject({
 			workspaceId: "frame-workspace-1",
+			launchFrameId: "frame-workspace-1",
 			surface: "workspace",
 		});
+	});
+
+	it("forwards an Artifact origin independently of placement", async () => {
+		const body = await sentBody({
+			launchFrameId: "frame-artifact-1",
+			launchSurface: "artifact",
+			workspaceIds: ["retrieval-workspace"],
+		});
+		expect(body).toMatchObject({
+			launchFrameId: "frame-artifact-1",
+			surface: "artifact",
+			workspaceIds: ["retrieval-workspace"],
+		});
+		expect(body).not.toHaveProperty("workspaceId");
 	});
 
 	it("sends the exact call the person approved", async () => {

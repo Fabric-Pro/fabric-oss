@@ -85,20 +85,13 @@ const a2aExecutor = createLangGraphA2AExecutor(
 			{
 				configurable: {
 					fabric_api_url: FABRIC_API_URL,
-					user_id: input.userId,
-					organization_id: input.organizationId,
 					openapi_tools: input.openapi_tools,
-					// Tenant + AI provider config so nodes can resolve the
-					// tenant's model via getAgentModelAsync (createProviderModel).
-					tenant_user_id: input.tenant_user_id ?? input.userId,
-					tenant_organization_id:
-						input.tenant_organization_id ?? input.organizationId,
+					// This legacy development server has no authenticated tenant transport.
+					// Keep tenant and endpoint selection out of body metadata.
 					ai_token: input.ai_token,
 					ai_api_key: input.ai_api_key,
 					ai_model: input.ai_model,
 					ai_provider: input.ai_provider,
-					ai_gateway_url: input.ai_gateway_url ?? input.ai_base_url,
-					ai_deployment_name: input.ai_deployment_name,
 				},
 			},
 		);

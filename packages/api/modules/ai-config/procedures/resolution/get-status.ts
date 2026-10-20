@@ -4,6 +4,7 @@ import {
 	getAiProviderApiKey,
 	getEmbeddingProviderConfig,
 	getModelForTask,
+	getPlanSpentPersonalProviderConfig,
 	getProviderDisplayName,
 	isGatewayProvider,
 	LLM_PROVIDER_PURPOSE_FILTER,
@@ -50,6 +51,8 @@ interface ConfiguredProvider {
 	isDefault: boolean;
 	isEmbeddingProvider: boolean;
 	purpose: AiProviderPurpose;
+	/** A personal key's opt-in for a spent ChatGPT plan; false for org rows. */
+	useWhenPlanSpent: boolean;
 	source: "user_config" | "org_config";
 }
 
@@ -330,9 +333,23 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 					isDefault: z.boolean(),
 					isEmbeddingProvider: z.boolean(),
 					purpose: AiProviderPurposeSchema,
+					/**
+					 * The caller's own key stands in for a spent ChatGPT plan
+					 * (Fizzy #3085). Always false for an organization's key.
+					 */
+					useWhenPlanSpent: z.boolean(),
 					source: z.string(),
 				}),
 			),
+			/**
+			 * The provider of the CALLER'S OWN key that serves their work
+			 * while every ChatGPT plan is spent (Fizzy #3085), whichever
+			 * context they ask from; null when they opted none in or the
+			 * lookup failed. Filtered by `userId`, like `resolvedProvider`:
+			 * it never describes another member, and never enters the
+			 * tenant fields above.
+			 */
+			planSpentPersonalProvider: z.string().nullable(),
 			defaultProvider: z.string().nullable(),
 			embeddingProvider: z.string().nullable(),
 			// Embedding model details
@@ -376,6 +393,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 						isDefault: p.isDefault,
 						isEmbeddingProvider: p.isEmbeddingProvider,
 						purpose: p.purpose,
+						useWhenPlanSpent: false,
 						source: "org_config",
 					});
 					if (p.isDefault && !defaultProvider) {
@@ -412,6 +430,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 						isDefault: p.isDefault,
 						isEmbeddingProvider: p.isEmbeddingProvider,
 						purpose: p.purpose,
+						useWhenPlanSpent: p.useWhenPlanSpent,
 						source: "user_config",
 					});
 					if (p.isDefault && !defaultProvider) {
@@ -573,9 +592,23 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// Caught like the reads above: a status payload must not fail on it.
+		let planSpentPersonalProvider: string | null = null;
+		try {
+			planSpentPersonalProvider =
+				(await getPlanSpentPersonalProviderConfig({ userId: user.id }))
+					?.provider ?? null;
+		} catch (error) {
+			console.error(
+				"[AI Config] Failed to read the plan-spent personal key:",
+				error,
+			);
+		}
+
 		return {
 			isConfigured,
 			canResolveProvider,
+			planSpentPersonalProvider,
 			resolvedEmbeddingProvider,
 			resolvedEmbeddingSource,
 			resolvedProvider: tenantResolution?.provider ?? null,

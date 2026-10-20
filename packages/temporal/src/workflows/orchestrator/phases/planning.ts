@@ -29,7 +29,7 @@ import type {
 	Trajectory,
 	WorkflowState,
 } from "../types";
-import { conversationIdField } from "../usage-attribution";
+import { usageOriginFields } from "../workflow-usage-attribution";
 
 const {
 	analyzeAndRoute,
@@ -271,7 +271,7 @@ export async function executePlanningPhase(
 			history: input.history,
 			userId: input.userId,
 			organizationId: input.organizationId,
-			...conversationIdField(input),
+			...usageOriginFields(input),
 			enabledMcpConfigIds: input.enabledMcpConfigIds,
 			enabledAgentIds: input.enabledAgentIds,
 			enabledFabricToolIds: input.enabledFabricToolIds,
@@ -361,7 +361,7 @@ export async function executePlanningPhase(
 				routingDecision,
 				userId: input.userId,
 				organizationId: input.organizationId,
-				...conversationIdField(input),
+				...usageOriginFields(input),
 				enabledMcpConfigIds: input.enabledMcpConfigIds,
 				enabledAgentIds: input.enabledAgentIds,
 				executionMode: input.executionMode,

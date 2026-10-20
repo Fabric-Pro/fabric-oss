@@ -412,6 +412,67 @@ describe("set default / set embedding", () => {
 		expect(orgRow("ANTHROPIC")?.isDefault).toBe(true);
 	});
 
+	// Fizzy #3085: an embeddings-only key never stands in for a spent plan.
+	it("clears a personal key's plan-spent opt-in when it becomes embeddings-only", async () => {
+		tables.userCloudProviderConfig.push({
+			id: "ucpc_OPENAI_DIRECT",
+			userId: USER,
+			provider: "OPENAI_DIRECT",
+			enabled: true,
+			isDefault: false,
+			isEmbeddingProvider: true,
+			purpose: "ALL",
+			useWhenPlanSpent: true,
+			encryptedApiKey: "encrypted:key",
+			clientId: null,
+			encryptedClientSecret: null,
+			config: {},
+		});
+
+		await call(
+			setEmbeddingProviderProcedure,
+			{ provider: "OPENAI_DIRECT", purpose: "EMBEDDINGS_ONLY" },
+			personalContext,
+		);
+
+		expect(tables.userCloudProviderConfig[0]).toMatchObject({
+			purpose: "EMBEDDINGS_ONLY",
+			useWhenPlanSpent: false,
+		});
+	});
+
+	it("clears the opt-in when a personal key is re-saved embeddings-only", async () => {
+		tables.userCloudProviderConfig.push({
+			id: "ucpc_OPENAI_DIRECT",
+			userId: USER,
+			provider: "OPENAI_DIRECT",
+			enabled: true,
+			isDefault: false,
+			isEmbeddingProvider: false,
+			purpose: "ALL",
+			useWhenPlanSpent: true,
+			encryptedApiKey: "encrypted:key",
+			clientId: null,
+			encryptedClientSecret: null,
+			config: {},
+		});
+
+		await call(
+			upsertUserProviderProcedure,
+			{
+				provider: "OPENAI_DIRECT",
+				apiKey: "sk-test",
+				purpose: "EMBEDDINGS_ONLY",
+			},
+			personalContext,
+		);
+
+		expect(tables.userCloudProviderConfig[0]).toMatchObject({
+			purpose: "EMBEDDINGS_ONLY",
+			useWhenPlanSpent: false,
+		});
+	});
+
 	it("lifts the restriction without touching the default", async () => {
 		seedOrgRow({ provider: "ANTHROPIC", isDefault: true });
 		seedOrgRow({

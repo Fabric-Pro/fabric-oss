@@ -122,23 +122,48 @@ export async function getAgentConversationById({
 			...orgFilter,
 		},
 	});
+	if (!conversation || !organizationId) {
+		return conversation;
+	}
+	return withConversationTurnResults(conversation);
+}
+
+/**
+ * Adds what the conversation's chat turns kept durably (answers, and the
+ * question of a turn the browser never saved) to a conversation as it is read:
+ * `hydrateConversationTurnResults`. A read projection only: the turn is
+ * already durable, and browser saves still merge onto the actual row under
+ * their existing lock, never this snapshot. The turns are the conversation
+ * owner's, in its organization, whoever is allowed to read it.
+ */
+export async function withConversationTurnResults<
+	T extends {
+		id: string;
+		userId: string;
+		organizationId: string | null;
+		messages: Prisma.JsonValue;
+		metadata: Prisma.JsonValue;
+	},
+>(conversation: T): Promise<T> {
 	if (
-		!conversation ||
-		!organizationId ||
+		!conversation.organizationId ||
 		asMetadataObject(conversation.metadata).mode !== "orchestrator"
 	) {
 		return conversation;
 	}
-	// Read projection only: the turn is already durable. Browser saves still
-	// merge onto the actual row under their existing lock, never this snapshot.
 	const turns = await db.conversationTurn.findMany({
-		where: { conversationId: id, userId, organizationId },
+		where: {
+			conversationId: conversation.id,
+			userId: conversation.userId,
+			organizationId: conversation.organizationId,
+		},
 		orderBy: [{ generation: "asc" }, { createdAt: "asc" }],
 		select: {
 			id: true,
 			executionId: true,
 			generation: true,
 			status: true,
+			questionText: true,
 			responseText: true,
 			terminalAt: true,
 			terminalReason: true,

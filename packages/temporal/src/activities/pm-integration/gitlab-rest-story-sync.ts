@@ -49,9 +49,11 @@ import {
 	isDispatchDeadlinePassedError,
 } from "@repo/utils/dispatch-deadline";
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { ApplicationFailure } from "@temporalio/activity";
 import { type PMSource, PMSourceNotFound, resolvePmSource } from "../pm-source";
 import { callPmToolWithFallback } from "../pm-tool-fallback";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import { createGitLabAttachmentAdapter } from "./gitlab-attachment-adapter";
 import {
 	appendAttachmentBlock,
@@ -73,11 +75,16 @@ import {
 	startPmCreateSendDeadline,
 } from "./pm-create-claim";
 import {
+	describeLinkWriteCause,
 	describeOrphanCause,
 	recordCreateOrphan,
 	recordCreateUnconfirmed,
 } from "./pm-create-orphan";
 import { computePmHash } from "./pm-sync-hash";
+import {
+	describeSyncErrorForUser,
+	isDatabaseError,
+} from "./pm-sync-user-error";
 import {
 	detectExternalLinkMismatch,
 	legacyLinkOtherToolMessage,
@@ -550,6 +557,18 @@ export async function syncGitLabStoryViaRest(
 
 	const orgIdOrNull = organizationId ?? null;
 	const activeServerId = mcpServerId;
+	const activePmTarget = await resolveExternalPmTarget({
+		...input,
+		mcpServerId,
+		pmTool: "gitlab",
+		instanceOrigin: safeOrigin(source.baseUrl),
+		containerId,
+		additionalContext,
+	});
+	const targetMismatch = pmTargetsConflict(
+		story.externalPmTarget,
+		activePmTarget,
+	);
 
 	let externalId = story.externalId ?? undefined;
 	let externalUrl = story.externalUrl ?? undefined;
@@ -583,8 +602,9 @@ export async function syncGitLabStoryViaRest(
 
 	// 3. Tool-mismatch handling: the story is linked to a different server.
 	if (
-		story.externalMcpServerId &&
-		story.externalMcpServerId !== activeServerId
+		(story.externalMcpServerId &&
+			story.externalMcpServerId !== activeServerId) ||
+		targetMismatch
 	) {
 		const canMigrate =
 			(direction === "push" || direction === "bidirectional") &&
@@ -609,11 +629,13 @@ export async function syncGitLabStoryViaRest(
 						externalId: null,
 						externalUrl: null,
 						externalMcpServerId: null,
+						externalPmTarget: null,
 					},
 					{
 						onlyIfPmLink: {
 							externalId: story.externalId,
 							externalMcpServerId: story.externalMcpServerId,
+							externalPmTarget: story.externalPmTarget,
 						},
 					},
 				);
@@ -638,6 +660,7 @@ export async function syncGitLabStoryViaRest(
 				}
 				throw clearError;
 			}
+			story.externalPmTarget = null;
 			externalId = undefined;
 			externalUrl = undefined;
 		} else {
@@ -660,7 +683,7 @@ export async function syncGitLabStoryViaRest(
 	//     instance: a link to another PM tool, to another GitLab instance
 	//     (gitlab.com vs self-hosted), or with no URL to place it. Its id
 	//     names an item elsewhere, so this instance's issue with the same
-	//     number is unrelated: the push neither updates it nor replaces the
+	//     number is unrelated: syncing neither updates it nor replaces the
 	//     link (the same rule as `syncStoryToPM`/`syncWorkItemToPM`, judged by
 	//     this instance's origin, `source.baseUrl`). Nothing is sent to
 	//     GitLab. The row is stamped FAILED with the message the sync failure
@@ -668,12 +691,16 @@ export async function syncGitLabStoryViaRest(
 	//     failure itself (`syncWorkItemToPM`'s workflows).
 	if (
 		!story.externalMcpServerId &&
-		(direction === "push" || direction === "bidirectional")
+		(direction === "push" ||
+			direction === "bidirectional" ||
+			direction === "pull")
 	) {
 		const legacyMismatch = detectExternalLinkMismatch({
 			externalId,
 			externalUrl,
 			externalMcpServerId: story.externalMcpServerId,
+			externalPmTarget: story.externalPmTarget,
+			activePmTarget,
 			activeServerId,
 			currentDetectedType: "gitlab",
 			currentBaseUrl: source.baseUrl,
@@ -684,12 +711,16 @@ export async function syncGitLabStoryViaRest(
 				"[GitLab REST Sync] Legacy external link is not on this GitLab instance; not syncing",
 				{ storyId, reason: legacyMismatch.reason },
 			);
-			const legacyMessage = legacyLinkOtherToolMessage("GitLab");
+			const legacyMessage = legacyLinkOtherToolMessage(
+				"GitLab",
+				direction === "pull" ? "pull" : "push",
+			);
 			if (!input.failureRecordedByCaller) {
 				// Writes the FAILURE audit row too. Without an attempt id,
 				// only while the row still has the link and attempt read
 				// above: a relink or a newer run since keeps its state.
 				await recordPmSyncFailure({
+					direction: direction === "pull" ? "pull" : "push",
 					itemId: storyId,
 					itemType: "story",
 					errorMessage: legacyMessage,
@@ -701,6 +732,9 @@ export async function syncGitLabStoryViaRest(
 					onlyIfRowUnchanged: {
 						externalId: story.externalId ?? null,
 						externalMcpServerId: null,
+						...(story.externalPmTarget !== undefined
+							? { externalPmTarget: story.externalPmTarget }
+							: {}),
 						lastPmSyncAttemptId: story.lastPmSyncAttemptId ?? null,
 					},
 				});
@@ -1254,6 +1288,9 @@ export async function syncGitLabStoryViaRest(
 					),
 				})) as WriteResult;
 			} catch (createError) {
+				logger.warn("[PM Sync] Create request threw", {
+					error: createError,
+				});
 				// Refused by the POST's send-deadline check, which runs before
 				// the request is handed to `fetch` (on the first send, and on
 				// the resend after a 401 that refused the first): not sent.
@@ -1279,7 +1316,7 @@ export async function syncGitLabStoryViaRest(
 				return createUnconfirmed(
 					createIndeterminateMessage(
 						"GitLab",
-						describeOrphanCause(createError),
+						describeSyncErrorForUser(createError),
 					),
 					"create-indeterminate",
 				);
@@ -1323,6 +1360,7 @@ export async function syncGitLabStoryViaRest(
 						externalId: created.externalId,
 						externalUrl: created.externalUrl ?? null,
 						externalMcpServerId: activeServerId,
+						externalPmTarget: activePmTarget,
 					},
 					{ settlesPmCreateClaim: pmCreateClaimId },
 				);
@@ -1334,12 +1372,14 @@ export async function syncGitLabStoryViaRest(
 				// creating a second issue. Best effort (`recordCreateOrphan`
 				// never throws), so this result is returned whatever the
 				// recording does.
-				const errorMessage = `Issue ${created.externalId} was created in GitLab but Fabric could not save its link (${describeOrphanCause(
+				const errorMessage = `Issue ${created.externalId} was created in GitLab but Fabric could not save its link (${describeLinkWriteCause(
 					linkError,
+					"story",
 				)}), so this story is not linked to it. Check GitLab: use Unlink & re-create only if issue ${created.externalId} was deleted or a second issue is wanted.`;
 				logger.warn("[GitLab REST Sync] created issue not linked", {
 					storyId,
 					externalId: created.externalId,
+					error: describeOrphanCause(linkError),
 				});
 				await recordCreateOrphan({
 					itemId: storyId,
@@ -1520,8 +1560,9 @@ export async function syncGitLabStoryViaRest(
 			//    unlink. The poll's `reconcileMissingTickets` skips null
 			//    provenance, so preserving it would strand the user forever.
 			// Transient/auth/rate-limit errors (the non-not-found `else` below)
-			// already PRESERVE the link regardless of provenance.
-			if (isNotFoundError(errorMessage)) {
+			// already PRESERVE the link regardless of provenance, and so does a
+			// database error whose text reads as not-found (Fizzy #3133).
+			if (!isDatabaseError(error) && isNotFoundError(errorMessage)) {
 				if (story.externalMcpServerId) {
 					logger.warn(
 						"[GitLab REST Sync] Pull not-found on stamped link — preserving (deletion owned by poll)",
@@ -1534,7 +1575,7 @@ export async function syncGitLabStoryViaRest(
 					);
 					await logOutcome("FAILURE", {
 						errorCode: "EXTERNAL_ID_NOT_FOUND",
-						errorMessage,
+						errorMessage: describeSyncErrorForUser(error),
 					});
 					return {
 						success: false,
@@ -1560,6 +1601,7 @@ export async function syncGitLabStoryViaRest(
 					externalId: null,
 					externalUrl: null,
 					externalMcpServerId: null,
+					externalPmTarget: null,
 				});
 				await logOutcome("FAILURE", {
 					errorCode: "EXTERNAL_ID_NOT_FOUND",
@@ -1581,10 +1623,12 @@ export async function syncGitLabStoryViaRest(
 				externalId,
 				error: errorMessage,
 			});
-			await logOutcome("FAILURE", { errorMessage });
+			await logOutcome("FAILURE", {
+				errorMessage: describeSyncErrorForUser(error),
+			});
 			return {
 				success: false,
-				error: errorMessage,
+				error: describeSyncErrorForUser(error),
 				syncedAt: new Date(),
 				direction,
 			};
@@ -1661,13 +1705,36 @@ export async function syncGitLabStoryViaRest(
 			}
 		}
 
-		await updateStory(storyId, projectId, {
-			title: fetched.title,
-			description: pulledDescription,
-			externalUrl: fetched.externalUrl ?? undefined,
-			labels: pull.remainingLabels,
-			...(pull.kind === "matched" ? { statusId: pull.statusId } : {}),
-		});
+		await updateStory(
+			storyId,
+			projectId,
+			{
+				title: fetched.title,
+				description: pulledDescription,
+				externalUrl: fetched.externalUrl ?? undefined,
+				labels: pull.remainingLabels,
+				...(pull.kind === "matched" ? { statusId: pull.statusId } : {}),
+			},
+			{
+				onlyIfPmLink: {
+					externalId: story.externalId,
+					externalMcpServerId: story.externalMcpServerId,
+					externalPmTarget: story.externalPmTarget,
+				},
+			},
+		);
+		if (story.externalPmTarget == null && activePmTarget != null) {
+			await db.userStory.updateMany({
+				where: {
+					id: storyId,
+					projectId,
+					externalId: story.externalId,
+					externalPmTarget: null,
+				},
+				data: { externalPmTarget: activePmTarget },
+			});
+		}
+
 		// Stamp the post-pull baseline against the content we just received.
 		// Without this, the next push would see a stale baseline (from before
 		// the pull) and falsely report a conflict even though Fabric now

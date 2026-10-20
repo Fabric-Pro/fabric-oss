@@ -219,7 +219,20 @@ describe("Glossy Version Export gate — await guard", () => {
 	// PROPOSAL_ARTIFACT (Fizzy #2801). The Proposal artifact procedures keep
 	// PROPOSAL_ARTIFACT alone, the guest-readable theme tokens included
 	// (Fizzy #2946).
-	it.each([
+	//
+	// The one exception is the export pair (Fizzy #2946): a document the gate
+	// does not cover must keep exporting the way it does today, so instead of
+	// the middleware's NOT_FOUND they decide in the handler, through the
+	// client-document loader, which checks the same gate after access.
+	// `exempt` names each such file and the call that replaces the
+	// middleware in it.
+	it.each<{
+		dir: string;
+		gate: string;
+		forbidden: string[];
+		atLeast: number;
+		exempt?: Record<string, string>;
+	}>([
 		{
 			dir: "packages/api/modules/projects/procedures/glossy",
 			gate: ".use(requireGlossyEnabled())",
@@ -249,10 +262,16 @@ describe("Glossy Version Export gate — await guard", () => {
 			],
 			// Four Proposal artifact procedures today.
 			atLeast: 4,
+			exempt: {
+				"packages/api/modules/projects/procedures/proposal-artifact/export.ts":
+					"await loadProposalExportDocument(",
+				"packages/api/modules/projects/procedures/proposal-artifact/export-status.ts":
+					"await loadProposalClientDocument(",
+			},
 		},
 	])(
 		"every procedure under $dir runs $gate before the permission middleware",
-		({ dir, gate, forbidden, atLeast }) => {
+		({ dir, gate, forbidden, atLeast, exempt = {} }) => {
 			const problems: string[] = [];
 			let procedures = 0;
 			for (const absFile of walkTsFiles(resolve(repoRoot, dir))) {
@@ -262,6 +281,18 @@ describe("Glossy Version Export gate — await guard", () => {
 				}
 				procedures++;
 				const file = relative(repoRoot, absFile).split(sep).join("/");
+				for (const name of forbidden) {
+					if (source.includes(name)) {
+						problems.push(`${file}: uses ${name}`);
+					}
+				}
+				const replacement = exempt[file];
+				if (replacement !== undefined) {
+					if (!source.includes(replacement)) {
+						problems.push(`${file}: no ${replacement}`);
+					}
+					continue;
+				}
 				const gateAt = source.indexOf(gate);
 				const permissionAt = source.indexOf(
 					".use(requireProjectPermission(",
@@ -272,11 +303,6 @@ describe("Glossy Version Export gate — await guard", () => {
 					problems.push(
 						`${file}: requireProjectPermission runs before the gate`,
 					);
-				}
-				for (const name of forbidden) {
-					if (source.includes(name)) {
-						problems.push(`${file}: uses ${name}`);
-					}
 				}
 			}
 			expect(problems).toEqual([]);

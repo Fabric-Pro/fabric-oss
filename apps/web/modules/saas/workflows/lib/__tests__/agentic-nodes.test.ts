@@ -15,11 +15,14 @@ import {
 	PublishFrameNodeConfigSchema,
 } from "@repo/temporal/agentic-workflow-preset";
 import { isValidScheduleTimeZone } from "@repo/temporal/workflow-builder-schedule";
+import { adoStoryReviewConfigFieldsSchema } from "@repo/temporal/ado-story-review-config";
+import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import { describe, expect, it } from "vitest";
 
 import "../plugins";
 import { getNodeDefinition, nodeCategories } from "../node-definitions";
 import { listTimeZoneOptions } from "../time-zones";
+import { findActionById } from "../plugins";
 
 describe("Agent Task node", () => {
 	const definition = getNodeDefinition(AGENT_TASK_NODE_TYPE);
@@ -59,6 +62,56 @@ describe("Agent Task node", () => {
 			definition?.configFields?.find((f) => f.name === "mcpConfigIds")
 				?.type,
 		).toBe("mcp-selector");
+	});
+
+	it("offers the worker's optional model choice through the canonical picker", () => {
+		expect(
+			definition?.configFields?.find((field) => field.name === "modelId")
+				?.type,
+		).toBe("ai-model-selector");
+	});
+
+	it("lets the author grant the agent Fabric data and tools, which it has none of by default", () => {
+		const field = definition?.configFields?.find(
+			(f) => f.name === "builtInToolNames",
+		);
+
+		expect(field?.type).toBe("capability-selector");
+		expect(field?.label).toBe("Fabric data and tools the agent may use");
+		expect(definition?.defaultData.config).toMatchObject({
+			builtInToolNames: [],
+		});
+	});
+});
+
+describe("ADO story review plugin action", () => {
+	it("derives its node name from the MCP plugin and binds the matching executor", () => {
+		const action = findActionById(ADO_STORY_REVIEW_NODE_TYPE);
+		expect(action).toMatchObject({
+			slug: "review-ado-stories",
+			nodeType: ADO_STORY_REVIEW_NODE_TYPE,
+			stepImportPath: ADO_STORY_REVIEW_NODE_TYPE,
+			stepFunction: "executeAdoStoryReviewStep",
+		});
+		expect(action?.configComponent).toBeDefined();
+		expect(getNodeDefinition(ADO_STORY_REVIEW_NODE_TYPE)?.category).toBe(
+			"AI",
+		);
+	});
+
+	it("exposes exactly the canonical configurable review fields", () => {
+		const action = findActionById(ADO_STORY_REVIEW_NODE_TYPE);
+		expect(action?.configFields.map((field) => field.key).sort()).toEqual(
+			Object.keys(adoStoryReviewConfigFieldsSchema.shape).sort(),
+		);
+		expect(
+			action?.configFields.find((field) => field.key === "model")?.type,
+		).toBe("ai-model-selector");
+		expect(
+			action?.configFields.find(
+				(field) => field.key === "agentInstructionsInstanceId",
+			)?.label,
+		).toContain("instructions and model only");
 	});
 });
 

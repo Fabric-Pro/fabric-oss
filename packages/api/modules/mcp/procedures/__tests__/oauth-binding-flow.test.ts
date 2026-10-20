@@ -867,7 +867,9 @@ describe("oauth.start — an unbound client is never sent to a discovered AS", (
 				binding: { tokenEndpoint: `${AS_A}/token`, source: "catalog" },
 			},
 		});
-		expect(fetchedUrls().some((u) => u.startsWith(AS_B))).toBe(false);
+		expect(fetchedUrls().some((u) => new URL(u).origin === AS_B)).toBe(
+			false,
+		);
 	});
 
 	it("recognises Fabric's pre-registered client on the server's default URL", async () => {

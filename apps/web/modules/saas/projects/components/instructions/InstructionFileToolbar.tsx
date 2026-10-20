@@ -57,6 +57,7 @@ export function InstructionFileToolbar({
 	size,
 	onCopyPath,
 	edit,
+	history,
 	menu,
 }: {
 	path: string;
@@ -70,6 +71,7 @@ export function InstructionFileToolbar({
 	/** Resolves true when the path reached the clipboard. */
 	onCopyPath: () => Promise<boolean>;
 	edit: ReactNode;
+	history?: ReactNode;
 	menu: {
 		/** Absent where rename is not offered. */
 		rename?: FileMenuAction;
@@ -105,6 +107,7 @@ export function InstructionFileToolbar({
 				</span>
 			</div>
 			<div className="flex items-center gap-1.5">
+				{history}
 				<Tooltip
 					open={tooltipOpen}
 					onOpenChange={(next) => {

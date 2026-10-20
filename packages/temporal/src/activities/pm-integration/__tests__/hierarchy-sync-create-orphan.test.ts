@@ -382,15 +382,31 @@ describe("syncWorkItemToPM — CREATE branch externalId extraction & atomicity",
 			},
 		} as never);
 		// The link write retries three times before giving up.
-		vi.mocked(updateStory)
-			.mockRejectedValueOnce(new Error("database unavailable"))
-			.mockRejectedValueOnce(new Error("database unavailable"))
-			.mockRejectedValueOnce(new Error("database unavailable"));
+		for (let i = 0; i < 3; i++) {
+			vi.mocked(updateStory).mockRejectedValueOnce(
+				Object.assign(
+					new Error(
+						"Invalid `prisma.userStory.update()` invocation in\n/app/packages/database/x.ts:12:3\nquery text",
+					),
+					{ name: "PrismaClientKnownRequestError", code: "P2002" },
+				),
+			);
+		}
 
 		const result = await syncWorkItemToPM({
 			...baseInput,
 			pmSyncAttemptId: "attempt-A",
 		});
+
+		expect(result.status === "FAILED" && result.error).toContain(
+			"another item in this project is already linked to that item",
+		);
+		expect(result.status === "FAILED" && result.error).not.toContain(
+			"/app/packages/database/x.ts",
+		);
+		expect(result.status === "FAILED" && result.error).not.toContain(
+			"prisma.",
+		);
 
 		expect(result.status).toBe("FAILED");
 		expect(recordPmSyncFailureMock).toHaveBeenCalledTimes(1);

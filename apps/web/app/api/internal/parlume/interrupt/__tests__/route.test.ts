@@ -60,33 +60,15 @@ beforeEach(() => {
 	mocks.claim.mockResolvedValue({ count: 1 });
 });
 describe("Parlume generation interruption", () => {
-	it.each([null, "confirmation-turn"])(
-		"cancels a presented proposal when interrupted with active turn %s",
-		async (activeTurnId) => {
-			mocks.session.mockResolvedValue({
-				id: "session",
-				activeTurnId,
-				voiceGeneration: 3,
-			});
-			let actionStatus = "AWAITING_CONFIRMATION";
-			mocks.actions.mockImplementation(async ({ where, data }) => {
-				const statuses =
-					typeof where.status === "string"
-						? [where.status]
-						: where.status.in;
-				if (
-					statuses.includes(actionStatus) &&
-					!where.turnId &&
-					!where.confirmationTurnId
-				) {
-					actionStatus = data.status;
-				}
-				return { count: 1 };
-			});
-			expect((await POST(request())).status).toBe(200);
-			expect(actionStatus).toBe("CANCELLED");
-		},
-	);
+	it("does not touch actions when no turn was running", async () => {
+		mocks.session.mockResolvedValue({
+			id: "session",
+			activeTurnId: null,
+			voiceGeneration: 3,
+		});
+		expect((await POST(request())).status).toBe(200);
+		expect(mocks.actions).not.toHaveBeenCalled();
+	});
 	it("authenticates before changing state", async () => {
 		expect((await POST(request("wrong"))).status).toBe(401);
 		expect(mocks.session).not.toHaveBeenCalled();
@@ -100,14 +82,9 @@ describe("Parlume generation interruption", () => {
 		expect(mocks.actions).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: expect.objectContaining({
-					status: { in: ["PROPOSED", "AWAITING_CONFIRMATION"] },
+					status: "EXECUTING",
+					turnId: "turn",
 				}),
-				data: expect.objectContaining({ status: "CANCELLED" }),
-			}),
-		);
-		expect(mocks.actions).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: expect.objectContaining({ status: "EXECUTING" }),
 				data: expect.objectContaining({ status: "OUTCOME_UNKNOWN" }),
 			}),
 		);

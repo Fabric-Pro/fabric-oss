@@ -3,10 +3,7 @@ import {
 	type FrameDocumentView,
 	FrameRenderer,
 } from "@saas/frames/components/FrameRenderer";
-import {
-	isUnattendedFrame,
-	usesStrictSandbox,
-} from "@saas/frames/lib/strict-sandbox";
+import { isUnattendedFrame } from "@saas/frames/lib/strict-sandbox";
 import { notFound } from "next/navigation";
 
 export default async function SharedFrameEmbedPage({
@@ -33,7 +30,7 @@ export default async function SharedFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
-			strictSandbox={usesStrictSandbox(frame)}
+			strictSandbox
 			allowScripts={!isUnattendedFrame(frame)}
 		/>
 	);

@@ -84,7 +84,11 @@ vi.mock("../../../../../orpc/procedures", () => {
 			return makeChainable();
 		},
 		Permissions: { AGENT_TEMPLATE_MANAGE: "AGENT_TEMPLATE_MANAGE" },
-		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
+		resolveOrganizationId: (
+			input: string | null | undefined,
+			session: { activeOrganizationId?: string },
+		) => (input === undefined ? session.activeOrganizationId : input),
 	};
 });
 
@@ -131,7 +135,10 @@ function editAsEditor(knowledgeConnections: Record<string, string>) {
 			knowledgeConnections,
 			createNewVersion: false,
 		},
-		context: { user: { id: "user-2" }, session: {} },
+		context: {
+			user: { id: "user-2" },
+			session: { activeOrganizationId: "org-example" },
+		},
 	});
 }
 

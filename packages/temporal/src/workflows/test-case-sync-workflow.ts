@@ -15,7 +15,8 @@
  * behind `patched()`: the drift-guard sequence behind
  * `patched("test-case-sync-v1")`, the execution-result push (step 3b) behind
  * its own `patched("test-case-execution-sync-v1")`, and the create under the
- * PM create claim behind `patched("test-case-sync-create-claim-v1")`.
+ * PM create claim behind `patched("test-case-sync-create-claim-v1")`, and
+ * link validation behind `patched("test-case-sync-link-guard-v1")`.
  */
 
 import {
@@ -28,10 +29,13 @@ import {
 	proxyActivities,
 	setHandler,
 } from "@temporalio/workflow";
-
 import type { executeMcpTool as ExecuteMcpToolFn } from "../activities/orchestrator/execution/execute-mcp-tool";
-import type { createTestCaseInPmWithClaim as CreateTestCaseInPmWithClaimFn } from "../activities/pm-integration/create-test-case-in-pm-with-claim";
+import type {
+	checkTestCasePmLink as CheckTestCasePmLinkFn,
+	createTestCaseInPmWithClaim as CreateTestCaseInPmWithClaimFn,
+} from "../activities/pm-integration/create-test-case-in-pm-with-claim";
 import type { detectAndStampPmPushConflict as DetectAndStampPmPushConflictFn } from "../activities/pm-integration/detect-pm-push-conflict";
+import { redactDatabaseErrorText } from "../activities/pm-integration/pm-sync-user-error";
 import type { recordPmSyncFailure as RecordPmSyncFailureFn } from "../activities/pm-integration/record-pm-sync-state";
 import type {
 	discoverPMToolCapabilities as DiscoverPMToolCapabilitiesFn,
@@ -53,6 +57,7 @@ import type {
 import type { TestResultValue } from "../activities/pm-integration/test-execution-serializer";
 import type { pushTestCaseExecutionToPM as PushTestCaseExecutionToPMFn } from "../activities/pm-integration/test-execution-sync";
 import { TEST_CASE_SYNC_CREATE_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
+import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 // =============================================================================
 // Types
@@ -150,6 +155,7 @@ const {
 	listWorkItemsFromPM,
 	fetchPMItemsByIds,
 	recordPmSyncFailure,
+	checkTestCasePmLink,
 } = proxyActivities<{
 	getTestCasesToSync: typeof GetTestCasesToSyncFn;
 	createOrUpdateTestCaseFromPMItem: typeof CreateOrUpdateTestCaseFromPMItemFn;
@@ -157,6 +163,7 @@ const {
 	listWorkItemsFromPM: typeof ListWorkItemsFromPMFn;
 	fetchPMItemsByIds: typeof FetchPMItemsByIdsFn;
 	recordPmSyncFailure: typeof RecordPmSyncFailureFn;
+	checkTestCasePmLink: typeof CheckTestCasePmLinkFn;
 }>({
 	startToCloseTimeout: "60 seconds",
 	heartbeatTimeout: "30 seconds",
@@ -379,6 +386,8 @@ export async function testCaseSyncWorkflow(
 			state?: string;
 			priority?: string;
 			tags?: string[];
+			externalMcpServerId?: string | null;
+			externalPmTarget?: string | null;
 			externalId?: string | null;
 			externalUrl?: string | null;
 			steps?: Array<{ action: string; expected: string }>;
@@ -505,6 +514,7 @@ export async function testCaseSyncWorkflow(
 				tags: c.tags,
 				externalId: c.externalId,
 				externalUrl: c.externalUrl,
+				externalMcpServerId: c.externalMcpServerId,
 				currentResult: c.currentResult,
 				steps: c.steps.map((s) => ({
 					action: s.action,
@@ -544,7 +554,10 @@ export async function testCaseSyncWorkflow(
 						title: row.title,
 						description: row.description ?? null,
 						externalUrl: row.externalUrl ?? undefined,
+						mcpConfigId,
 						externalMcpServerId: mcpServerId,
+						containerId,
+						additionalContext,
 						userId,
 						organizationId,
 						toolKey: capabilities.detectedType,
@@ -561,7 +574,37 @@ export async function testCaseSyncWorkflow(
 					continue;
 				}
 
-				// Push.
+				// The guard settles returned refusals itself. Thrown errors use
+				// the catch below to settle this run's attempt like sibling steps.
+				if (row.externalId && patched("test-case-sync-link-guard-v1")) {
+					const checked = await checkTestCasePmLink({
+						pmTarget: { additionalContext, containerId },
+						testCaseId: row.id,
+						projectId,
+						organizationId,
+						userId,
+						mcpConfigId,
+						mcpServerId,
+						pmTool: capabilities.detectedType,
+						toolLabel: capabilities.detectedType ?? "the PM tool",
+						externalId: row.externalId,
+						externalUrl: row.externalUrl ?? null,
+						externalMcpServerId: row.externalMcpServerId ?? null,
+						externalPmTarget: row.externalPmTarget,
+						pmSyncAttemptId: attemptFor(row.id),
+					});
+					if (!checked.success) {
+						progress.results.push({
+							testCaseId: row.id,
+							identifier: row.identifier,
+							success: false,
+							outcome: "failed",
+							error: checked.error,
+						});
+						progress.failedCount++;
+						continue;
+					}
+				}
 				const title = row.title;
 				const description = buildTestCaseDescription(row);
 				const stepsField = formatTestCaseStepsForProvider(
@@ -637,6 +680,14 @@ export async function testCaseSyncWorkflow(
 						externalId: row.externalId,
 						externalUrl: row.externalUrl ?? undefined,
 						externalMcpServerId: mcpServerId,
+						externalPmTarget: row.externalPmTarget,
+						target: {
+							mcpConfigId,
+							userId,
+							organizationId,
+							containerId,
+							additionalContext,
+						},
 						pmSyncAttemptId: attemptFor(row.id),
 						// Stamp a post-push drift baseline so the NEXT push can
 						// detect a PM-side edit (was a v1 gap → PM edits silently
@@ -693,7 +744,7 @@ export async function testCaseSyncWorkflow(
 							mcpConfigId,
 							mcpServerId,
 							// Bound to the PM container's GitLab instance at dispatch.
-							pmTarget: { additionalContext },
+							pmTarget: { additionalContext, containerId },
 							pmTool: capabilities.detectedType,
 							toolLabel:
 								capabilities.detectedType ?? "the PM tool",
@@ -811,7 +862,10 @@ export async function testCaseSyncWorkflow(
 						await recordPmSyncFailure({
 							itemId: row.id,
 							itemType: "testCase",
-							errorMessage,
+							errorMessage: redactDatabaseErrorText(
+								errorMessage,
+								unwrapPmSyncError(error).errorClass,
+							),
 							errorClass: "push_failed",
 							triggerSource: "manual-edit",
 							onlyIfAttempt: attemptFor(row.id),
@@ -828,7 +882,10 @@ export async function testCaseSyncWorkflow(
 					identifier: row.identifier,
 					success: false,
 					outcome: "failed",
-					error: errorMessage,
+					error: redactDatabaseErrorText(
+						errorMessage,
+						unwrapPmSyncError(error).errorClass,
+					),
 				});
 				progress.failedCount++;
 			}
@@ -937,9 +994,15 @@ export async function testCaseSyncWorkflow(
 		const errorMessage = extractActivityError(error);
 		log.error("Test case sync workflow failed", { error: errorMessage });
 		progress.status = "failed";
-		progress.message = errorMessage;
-		throw ApplicationFailure.nonRetryable(
+		progress.message = redactDatabaseErrorText(
 			errorMessage,
+			unwrapPmSyncError(error).errorClass,
+		);
+		throw ApplicationFailure.nonRetryable(
+			redactDatabaseErrorText(
+				errorMessage,
+				unwrapPmSyncError(error).errorClass,
+			),
 			"TEST_CASE_SYNC_FAILED",
 		);
 	}

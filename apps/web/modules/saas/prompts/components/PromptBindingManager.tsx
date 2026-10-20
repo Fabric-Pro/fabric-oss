@@ -5,12 +5,13 @@ import {
 	bindableDocumentTypes,
 	findPromptAgentTarget,
 	isNonStageAgent,
-	listPromptActions,
 	PROMPT_AGENT_TARGETS,
 	promptActionId,
 	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { useSession } from "@saas/auth/hooks/use-session";
+import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { describeGenerationRefusal } from "@saas/projects/components/proposal-artifact/generation-feedback";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -36,8 +37,11 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { Link2Icon, Loader2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { ActionMultiSelect } from "./ActionMultiSelect";
 import { PromptFormatBadge } from "./PromptFormatBadge";
 import { PromptScopeBadge } from "./PromptScopeBadge";
@@ -93,7 +97,18 @@ export function PromptBindingManager({
 	organizationId,
 }: PromptBindingManagerProps) {
 	const queryClient = useQueryClient();
+	const router = useRouter();
 	const { user } = useSession();
+	const { basePath } = useOrganizationContext();
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
+	// Fizzy #2946: with the Proposal artifact on, the legacy Proposal actions
+	// are not offered, as a document type here or under "Also apply to".
+	const offered = useOfferedPromptActions();
 	// Platform admin (User.role), not an organization admin — the two are
 	// unrelated fields, and only this one may set the default every tenant
 	// without an override falls back to. The API enforces the same rule; this
@@ -117,11 +132,19 @@ export function PromptBindingManager({
 	// so users can't pick a feature-only stage for a BUG binding.
 	const selectedAgentTarget = findPromptAgentTarget(selectedAgent);
 	const availableDocumentTypes = selectedAgentTarget
-		? bindableDocumentTypes(
+		? offered.documentTypesFor(
 				selectedAgentTarget,
 				toStoryKind(selectedStoryKind),
 			)
 		: [];
+	// Said in one line rather than leaving Proposal silently missing from
+	// this agent's list.
+	const agentLostProposal =
+		selectedAgentTarget !== undefined &&
+		bindableDocumentTypes(
+			selectedAgentTarget,
+			toStoryKind(selectedStoryKind),
+		).length !== availableDocumentTypes.length;
 
 	// FR19: one prompt can serve several actions. The action chosen above is
 	// always included and is not listed here — unticking the thing you came to
@@ -134,8 +157,8 @@ export function PromptBindingManager({
 			)
 		: null;
 	const additionalActions = useMemo(
-		() => listPromptActions().filter((a) => a.id !== primaryActionId),
-		[primaryActionId],
+		() => offered.actions.filter((a) => a.id !== primaryActionId),
+		[offered.actions, primaryActionId],
 	);
 	const [alsoApplyTo, setAlsoApplyTo] = useState<string[]>([]);
 
@@ -261,6 +284,23 @@ export function PromptBindingManager({
 			});
 		},
 		onError: (error) => {
+			// A default refused at an action the Proposal artifact supersedes
+			// is said in the reader's locale, with the way to the action that
+			// does write Proposals.
+			const refusal = describeGenerationRefusal(error, {
+				t: tFeedback,
+				basePath,
+			});
+			if (refusal) {
+				toast.error("Failed to bind prompt", {
+					description: refusal.message,
+					action: {
+						label: refusal.catalog.label,
+						onClick: () => router.push(refusal.catalog.href),
+					},
+				});
+				return;
+			}
 			toast.error("Failed to bind prompt", {
 				description:
 					error instanceof Error ? error.message : String(error),
@@ -459,6 +499,14 @@ export function PromptBindingManager({
 									? `This prompt will be used for ${getDocTypeLabel(selectedDocumentType)} documents`
 									: "Each document type requires its own prompt binding"}
 							</p>
+							{agentLostProposal && (
+								<p
+									data-testid="prompt-binding-superseded-note"
+									className="text-xs text-muted-foreground"
+								>
+									{tSuperseded("dialogNote")}
+								</p>
+							)}
 						</div>
 
 						{/* Scope Selection */}

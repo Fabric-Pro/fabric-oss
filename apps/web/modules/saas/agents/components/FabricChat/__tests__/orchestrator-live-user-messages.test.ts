@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+	selectLiveStoppedAssistantMessages,
 	selectLiveUserMessages,
+	stoppedAnswerText,
 	turnQuestionMessageId,
 } from "../orchestrator/live-user-messages";
 import type { CompletedExecution } from "../orchestrator/types";
@@ -79,5 +81,104 @@ describe("turnQuestionMessageId", () => {
 			),
 		).toBe("u1");
 		expect(turnQuestionMessageId([], "anything")).toBeUndefined();
+	});
+});
+
+describe("selectLiveStoppedAssistantMessages", () => {
+	const stoppedFirstTurn = [
+		{ id: "u1", role: "user", content: "q1" },
+		{
+			id: "a1",
+			role: "assistant",
+			content: "partial",
+			streamStatus: "cancelled",
+		},
+	];
+
+	it("shows the stopped answer while its turn is live", () => {
+		expect(
+			selectLiveStoppedAssistantMessages(stoppedFirstTurn, []).map(
+				(m) => m.id,
+			),
+		).toEqual(["a1"]);
+	});
+
+	it("leaves the stopped answer to its completed entry once a later question runs", () => {
+		const messages = [
+			...stoppedFirstTurn,
+			{ id: "u2", role: "user", content: "q2" },
+			{
+				id: "a2",
+				role: "assistant",
+				content: "",
+				streamStatus: "streaming",
+			},
+		];
+		expect(
+			selectLiveStoppedAssistantMessages(messages, [
+				completed("exec_1", "q1", "u1"),
+			]),
+		).toEqual([]);
+	});
+
+	it("keeps the live turn's stopped answer when a clarification answer follows it", () => {
+		const messages = [
+			{ id: "u2", role: "user", content: "q2" },
+			{
+				id: "a2",
+				role: "assistant",
+				content: "partial",
+				streamStatus: "cancelled",
+			},
+			{ id: "c2", role: "user", content: "Clarification — which?: this" },
+		];
+		expect(
+			selectLiveStoppedAssistantMessages(messages, [
+				completed("exec_1", "q1", "u1"),
+			]).map((m) => m.id),
+		).toEqual(["a2"]);
+	});
+});
+
+describe("stoppedAnswerText", () => {
+	it("returns the latest assistant message's text when it was stopped", () => {
+		expect(
+			stoppedAnswerText([
+				{ role: "user", content: "q" },
+				{
+					role: "assistant",
+					content: "partial",
+					streamStatus: "cancelled",
+				},
+			]),
+		).toBe("partial");
+	});
+
+	it("ignores an earlier turn's stopped answer and an empty stop", () => {
+		expect(
+			stoppedAnswerText([
+				{
+					role: "assistant",
+					content: "old",
+					streamStatus: "cancelled",
+				},
+				{ role: "user", content: "q" },
+				{ role: "assistant", content: "  ", streamStatus: "cancelled" },
+			]),
+		).toBeUndefined();
+		expect(
+			stoppedAnswerText([
+				{
+					role: "assistant",
+					content: "old",
+					streamStatus: "cancelled",
+				},
+				{
+					role: "assistant",
+					content: "done",
+					streamStatus: "completed",
+				},
+			]),
+		).toBeUndefined();
 	});
 });

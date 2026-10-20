@@ -42,4 +42,7 @@ describe("testCaseSyncWorkflow determinism", () => {
 	it("gates the claimed create behind patched('test-case-sync-create-claim-v1')", () => {
 		expect(code).toContain('patched("test-case-sync-create-claim-v1")');
 	});
+	it("gates link validation behind patched('test-case-sync-link-guard-v1')", () => {
+		expect(code).toContain('patched("test-case-sync-link-guard-v1")');
+	});
 });

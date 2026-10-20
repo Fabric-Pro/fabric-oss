@@ -74,8 +74,8 @@ describe("AgentVersionIdentity", () => {
 		await screen.findByText(/Example agent · v1/);
 		await screen.findByText(/Newer version available/);
 		expect(get.mock.calls).toEqual([
-			[{ id: "instance-one" }],
-			[{ sId: "stable-one" }],
+			[{ id: "instance-one", organizationId: "example-org" }],
+			[{ sId: "stable-one", organizationId: "example-org" }],
 		]);
 	});
 	it.each([

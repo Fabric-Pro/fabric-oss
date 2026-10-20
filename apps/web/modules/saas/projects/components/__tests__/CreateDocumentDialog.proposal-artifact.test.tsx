@@ -8,8 +8,9 @@
  * the gate on the selector gives way to a read-only "from the library" field,
  * and the create call carries no prompt. Every other type, and a Proposal
  * with the gate off, keep the selector. When the server refuses the create
- * because nothing is bound to that prompt, the dialog shows the server's
- * message, which says an administrator has to bind one.
+ * because nothing is bound to that prompt, the dialog says so in the reader's
+ * locale (Fizzy #2946), names who can bind one, and links to Client proposal
+ * (Main) in the Prompt Library.
  *
  * `next-intl` echoes keys, so copy is asserted by key.
  */
@@ -22,12 +23,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import de from "../../../../../../../packages/i18n/translations/de.json";
 import en from "../../../../../../../packages/i18n/translations/en.json";
 
-const { getAiConfigStatus, createDocument, availablePrompts, flags } =
+const { getAiConfigStatus, createDocument, availablePrompts, flags, push } =
 	vi.hoisted(() => ({
 		getAiConfigStatus: vi.fn(),
 		createDocument: vi.fn(),
 		availablePrompts: vi.fn(),
 		flags: { proposalArtifact: false },
+		push: vi.fn(),
 	}));
 
 vi.mock("next-intl", () => ({
@@ -40,7 +42,7 @@ vi.mock("next-intl", () => ({
 
 vi.mock("next/navigation", () => ({
 	useRouter: () => ({
-		push: vi.fn(),
+		push,
 		replace: vi.fn(),
 		prefetch: vi.fn(),
 		back: vi.fn(),
@@ -303,9 +305,10 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		expect(libraryField()).not.toBeInTheDocument();
 	});
 
-	it("says why when the server refuses a Proposal whose client prompt is not bound", async () => {
-		// The refusal is server-authored fixed text that names what an
-		// administrator has to do; the generic failure would hide it.
+	it("says why, in the reader's locale, when the server refuses a Proposal whose client prompt is not bound", async () => {
+		// The refusal names who can bind Client proposal (Main) and links
+		// there; the generic failure would hide it, and the server's English
+		// would not follow the reader's locale.
 		flags.proposalArtifact = true;
 		const refusal =
 			'No prompt is bound to the "Client proposal (Main)" action, so this Proposal cannot be generated. An organization admin can bind one in the Prompt Library under Project Documents.';
@@ -323,13 +326,32 @@ describe("CreateDocumentDialog — Proposal prompt behind the Proposal artifact 
 		await user.click(screen.getByRole("button", { name: /submitWithAi/i }));
 
 		await waitFor(() =>
-			expect(toast.error).toHaveBeenCalledWith(refusal, {
-				id: "toast-id-1",
-			}),
+			expect(toast.error).toHaveBeenCalledWith(
+				"promptNotBound",
+				expect.objectContaining({
+					id: "toast-id-1",
+					action: expect.objectContaining({ label: "openCatalog" }),
+				}),
+			),
 		);
 		expect(toast.error).not.toHaveBeenCalledWith(
 			"createFailed",
 			expect.anything(),
+		);
+		expect(toast.error).not.toHaveBeenCalledWith(
+			refusal,
+			expect.anything(),
+		);
+
+		// The action opens Client proposal (Main) in the Prompt Library.
+		const options = vi
+			.mocked(toast.error)
+			.mock.calls.find(
+				([message]) => message === "promptNotBound",
+			)?.[1] as { action?: { onClick?: () => void } } | undefined;
+		options?.action?.onClick?.();
+		expect(push).toHaveBeenCalledWith(
+			"/app/example-org/prompts/catalog?action=proposal_client_main%3APROPOSAL%3AANY",
 		);
 	});
 

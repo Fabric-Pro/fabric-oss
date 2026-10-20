@@ -1,24 +1,29 @@
 import { upsertOrchestratorPreferences } from "@repo/database";
 import { z } from "zod";
-import { getOrganizationIdFromContext } from "../../../../orpc/middleware/tenant-context-middleware";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
 export const updateOrchestratorPreferencesProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.USER_UPDATE_SELF))
+	.use(
+		requireInputOrgPermission(Permissions.USER_UPDATE_SELF, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "POST",
 		path: "/users/orchestrator-preferences",
 		tags: ["Users"],
 		summary: "Update user orchestrator preferences",
 		description:
-			"Update the current user's orchestrator preferences for the active (user × organization) context.",
+			"Update the current user's orchestrator preferences for the requested organization, or the session's active organization when omitted.",
 	})
 	.input(
 		z.object({
+			organizationId: z.string().min(1).optional(),
 			enabledMcpConfigIds: z.array(z.string()).optional(),
 			enabledAgentIds: z.array(z.string()).optional(),
 			enabledWorkspaceIds: z.array(z.string()).optional(),
@@ -45,10 +50,10 @@ export const updateOrchestratorPreferencesProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		// XOR isolation: write the row keyed on (user × org). See get.ts
-		// for the full rationale and the migration note (PR #822).
-		const organizationId = getOrganizationIdFromContext(
-			context.tenantContext,
+		// Resolve the same organization authorized by requireInputOrgPermission.
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
 		);
 		const prefs = await upsertOrchestratorPreferences(
 			context.user.id,

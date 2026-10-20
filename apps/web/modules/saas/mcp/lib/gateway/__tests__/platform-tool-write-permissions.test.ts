@@ -64,6 +64,7 @@ vi.mock("@repo/database", () => ({
 	getDocumentById: mocks.getDocumentById,
 	IntegrationContractStatusManagedError: class extends Error {},
 	DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
+	DocumentGenerationInProgressError: class DocumentGenerationInProgressError extends Error {},
 	updateContextMetadata: mocks.updateContextMetadata,
 	normalizeContextMetadataValue: (value: string | null | undefined) =>
 		value?.trim() ? value.trim() : null,

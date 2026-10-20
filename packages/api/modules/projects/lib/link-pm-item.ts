@@ -6,6 +6,7 @@ import {
 	pmCreateClaimRecoverableAt,
 	pmCreateClaimRecoveryCutoff,
 } from "@repo/database";
+import { mcpRowOrigin } from "@repo/integrations/gitlab";
 import {
 	extractCreatedWorkItemRefs,
 	getTemporalClient,
@@ -19,6 +20,7 @@ import {
 	describePmSyncWorkflow,
 	testCaseSyncWorkflowId,
 } from "@repo/temporal/pm-sync-start";
+import { buildExternalPmTarget } from "@repo/utils/pm-target";
 import { pmRecoveryTooRecentMessage } from "./pm-recovery-messages";
 import { type PMTarget, resolvePmTarget } from "./resolve-pm-target";
 
@@ -289,6 +291,8 @@ export async function linkPmItem(
 	// cannot tell Azure DevOps apart, so it refuses rather than skip the
 	// project check.
 	let ado = false;
+	let pmTool: string | undefined =
+		target.kind === "rest-gitlab" ? "gitlab" : undefined;
 	let idParamHint: string | undefined;
 	let containerValue = project.projectManagementContainerId;
 	if (target.kind === "mcp") {
@@ -325,6 +329,7 @@ export async function linkPmItem(
 			);
 		}
 		const capabilities = discovery.capabilities;
+		pmTool = capabilities.detectedType;
 		ado = isAzureDevOps(capabilities);
 		// The story create reads the new item's id with the update tool's id
 		// parameter as its first hint (`syncWorkItemToPM`).
@@ -473,6 +478,18 @@ export async function linkPmItem(
 		externalId,
 		externalUrl,
 		externalMcpServerId,
+		externalPmTarget: buildExternalPmTarget({
+			mcpServerId: externalMcpServerId,
+			config: target.kind === "mcp" ? target.mcpConfig : null,
+			pmTool,
+			containerId: project.projectManagementContainerId,
+			additionalContext: project.projectManagementAdditionalContext,
+			instanceOrigin:
+				target.kind === "mcp" &&
+				/gitlab/.test(target.mcpConfig.mcpServer?.key ?? "")
+					? mcpRowOrigin(target.mcpConfig)
+					: undefined,
+		}),
 	});
 	if (result.status === "taken") {
 		const named =

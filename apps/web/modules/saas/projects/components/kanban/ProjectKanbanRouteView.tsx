@@ -100,7 +100,6 @@ export function ProjectKanbanRouteView({
 		() => ({
 			projectId,
 			storyId: storyId ?? null,
-			prompt: "Answer using the current project roadmap and project context when relevant.",
 		}),
 		[projectId, storyId],
 	);

@@ -14,6 +14,7 @@ import {
 	getWorkflowById,
 	isWorkflowLive,
 	type Prisma,
+	writeWorkflowRunState,
 } from "@repo/database";
 import { getScheduleClient } from "../client";
 import { findPublishedFrameId } from "../lib/workflow-run-output";
@@ -71,15 +72,11 @@ async function pauseAfterOwnerAccessLost(
 			OWNER_ACCESS_LOST_REASON,
 			new Date().toISOString(),
 		);
-		await tx.workflow.update({
-			where: { id: workflowId },
-			data: {
-				status: "PAUSED",
-				settings: writeScheduledRunState(
-					settings,
-					state,
-				) as Prisma.InputJsonValue,
-			},
+		await writeWorkflowRunState(tx, {
+			workflowId,
+			organizationId,
+			status: "PAUSED",
+			settings: writeScheduledRunState(settings, state),
 		});
 	});
 	await deleteWorkflowSchedule(workflowId, await getScheduleClient());
@@ -307,15 +304,11 @@ export async function recordScheduledRunOutcome(
 			});
 		}
 
-		await tx.workflow.update({
-			where: { id: input.workflowId },
-			data: {
-				...(decision.pause ? { status: "PAUSED" as const } : {}),
-				settings: writeScheduledRunState(
-					settings,
-					decision.state,
-				) as Prisma.InputJsonValue,
-			},
+		await writeWorkflowRunState(tx, {
+			workflowId: input.workflowId,
+			organizationId,
+			...(decision.pause ? { status: "PAUSED" as const } : {}),
+			settings: writeScheduledRunState(settings, decision.state),
 		});
 		return {
 			recorded: true,

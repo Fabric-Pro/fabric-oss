@@ -303,7 +303,7 @@ async function draftFeatureWithAI({
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId, featureKey: "clean-spec" },
+			{ userId, organizationId, projectId, featureKey: "clean-spec" },
 		);
 
 		const hasAnyContext = Boolean(

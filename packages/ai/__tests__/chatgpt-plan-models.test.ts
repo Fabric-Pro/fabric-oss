@@ -329,7 +329,7 @@ describe("a chat's own model choice on the plan", () => {
 		served("gpt-6.1-sol", "gpt-6-astra");
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "gpt-6-astra" }),
-		).resolves.toMatchObject({ model: "gpt-6-astra" });
+		).resolves.toMatchObject({ model: "gpt-6-astra", pick: "gpt-6-astra" });
 	});
 
 	it("maps a catalog name to the plan's slug", async () => {
@@ -340,7 +340,10 @@ describe("a chat's own model choice on the plan", () => {
 				...params,
 				override: "gpt-7-nova-chatgpt-plan",
 			}),
-		).resolves.toMatchObject({ model: "gpt-7-nova" });
+		).resolves.toMatchObject({
+			model: "gpt-7-nova",
+			pick: "gpt-7-nova-chatgpt-plan",
+		});
 		expect(mocks.planSlugFor).toHaveBeenCalledWith(
 			"gpt-7-nova-chatgpt-plan",
 			"OPENAI_CHATGPT_PLAN",
@@ -349,9 +352,12 @@ describe("a chat's own model choice on the plan", () => {
 
 	it("ignores a choice the plan does not serve, an unknown one, or one never checked", async () => {
 		served("gpt-6.1-sol");
-		await expect(
-			resolveChatGptPlanModel({ ...params, override: "gpt-6-astra" }),
-		).resolves.toMatchObject({ model: "gpt-6.1-sol" });
+		const ignored = await resolveChatGptPlanModel({
+			...params,
+			override: "gpt-6-astra",
+		});
+		expect(ignored).toMatchObject({ model: "gpt-6.1-sol" });
+		expect(ignored).not.toHaveProperty("pick");
 		await expect(
 			resolveChatGptPlanModel({ ...params, override: "claude-sonnet-5" }),
 		).resolves.toMatchObject({ model: "gpt-6.1-sol" });

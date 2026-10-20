@@ -17,6 +17,9 @@ vi.mock("@repo/auth", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	getActiveSystemRegisteredAgent: vi
+		.fn()
+		.mockResolvedValue({ deploymentUrl: "https://agent.example.com" }),
 	isOrganizationMember: vi.fn().mockResolvedValue(true),
 }));
 
@@ -33,7 +36,7 @@ vi.mock("@repo/ai", () => ({
 		custom ?? "https://provider.example.com",
 	getAIModelWithMetadata: (...args: unknown[]) =>
 		getAIModelWithMetadata(...args),
-	getRAGProviderConfig: vi
+	getRAGProviderConfigForModel: vi
 		.fn()
 		.mockResolvedValue({ baseUrl: "https://org-gateway.example.com" }),
 }));
@@ -55,7 +58,7 @@ function send() {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
-				agentUrl: "https://agent.example.com",
+				agentId: "system-agent",
 				message: { role: "user", content: "hello" },
 				organizationId: "org-1",
 			}),

@@ -29,6 +29,7 @@ import {
 	generateEmbeddings,
 } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
 import { cosineSimilarity } from "./capability-embeddings";
 import { calculateKeywordMatchScore } from "./capability-keywords";
@@ -535,6 +536,7 @@ async function runIntegrationSearch(
 	let queryEmbedding: number[] | null = null;
 	try {
 		const tenantContext: TenantContext = {
+			...secondaryUsageFields(input),
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};
@@ -568,6 +570,7 @@ async function runIntegrationSearch(
 	if (queryEmbedding) {
 		try {
 			const tenantContext: TenantContext = {
+				...secondaryUsageFields(input),
 				userId: input.userId,
 				organizationId: input.organizationId,
 			};

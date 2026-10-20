@@ -27,6 +27,7 @@ import {
 	classifyGitFailure,
 	type GitCallBase,
 	GitCommandError,
+	isLostRefRace,
 	isPushWriteRefusal,
 	MAX_CLONE_BYTES,
 	porcelainFlag,
@@ -451,7 +452,8 @@ export async function revListOutside(
  * does not refuse a non-fast-forward, so this assertion is what makes the
  * push safe (spec Decision 5). `+` refspecs are never used on a push, only
  * the lease syntax above. Classified with the same porcelain parser
- * `pushCreateOnly` uses: `stale` on a lease mismatch, `refused` on a hook,
+ * `pushCreateOnly` uses: `stale` on a lease mismatch or a race the server
+ * lost for us (`isLostRefRace`), `refused` on a hook,
  * protection or write-permission refusal, `pushed` only on git's own
  * fast-forward flag for exactly this ref.
  */
@@ -533,7 +535,7 @@ async function pushLeased(
 	if (line !== null && line.flag === "" && error === null) {
 		return { kind: "pushed" };
 	}
-	if (line?.flag === "!" && /stale info|fetch first/.test(line.summary)) {
+	if (line?.flag === "!" && isLostRefRace(line.summary, error)) {
 		return { kind: "stale" };
 	}
 	if (line?.flag === "!") {

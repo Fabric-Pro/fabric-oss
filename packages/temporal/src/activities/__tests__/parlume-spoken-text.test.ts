@@ -9,6 +9,58 @@ async function collect(queue: ParlumeSentenceQueue): Promise<string[]> {
 	return sentences;
 }
 
+describe("flushing a sentence before a tool runs", () => {
+	it("releases a short sentence that has no text after it yet", async () => {
+		const queue = new ParlumeSentenceQueue(800);
+		const iterator = queue[Symbol.asyncIterator]();
+		const first = iterator.next();
+
+		queue.push("Let me check.");
+		queue.flush();
+
+		await expect(first).resolves.toEqual({
+			done: false,
+			value: "Let me check.",
+		});
+	});
+
+	it("holds the same short sentence without a flush", async () => {
+		const queue = new ParlumeSentenceQueue(800);
+		queue.push("Let me check.");
+
+		expect(queue.received).toBe(true);
+		queue.end();
+		await expect(collect(queue)).resolves.toEqual(["Let me check."]);
+		const held = new ParlumeSentenceQueue(800);
+		const pending = held[Symbol.asyncIterator]().next();
+		held.push("Let me check.");
+		const raced = await Promise.race([
+			pending.then(() => "released"),
+			new Promise((resolve) => setTimeout(() => resolve("held"), 20)),
+		]);
+		expect(raced).toBe("held");
+	});
+
+	it("does nothing when nothing is pending, and after the queue ended", async () => {
+		const queue = new ParlumeSentenceQueue(800);
+		queue.flush();
+		queue.push("Done for now. ");
+		queue.end();
+		queue.flush();
+
+		await expect(collect(queue)).resolves.toEqual(["Done for now."]);
+	});
+
+	it("still honors the spoken-length cap", async () => {
+		const queue = new ParlumeSentenceQueue(5);
+		queue.push("Creating that now.");
+		queue.flush();
+		queue.end();
+
+		await expect(collect(queue)).resolves.toEqual(["Creat"]);
+	});
+});
+
 describe("Parlume spoken sentences", () => {
 	it("releases each sentence as soon as streamed text completes it", async () => {
 		const queue = new ParlumeSentenceQueue(800);

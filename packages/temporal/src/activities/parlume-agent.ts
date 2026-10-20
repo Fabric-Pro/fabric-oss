@@ -6,6 +6,7 @@ import {
 	getBuiltInToolConfig,
 	getOrchestratorPreferences,
 } from "@repo/database";
+import { BUILT_IN_TO_FABRIC_TOOLS } from "@repo/database/prisma/queries/lib/built-in-tool-map";
 import { z } from "zod";
 import {
 	buildKnowledgeContextPrompt,
@@ -122,9 +123,12 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 			),
 		]);
 		const selected = preferences?.enabledMcpConfigIds ?? [];
-		const enabledMcpConfigIds = !selected.length
-			? selected
-			: [...new Set([...selected, ...defaultMcpIds])];
+		// No saved selection reaches no external server, as in the chat. An
+		// empty list is passed on as "none" rather than "unset", which
+		// `collectMcpToolsActivity` would read back from the same preference.
+		const enabledMcpConfigIds = selected.length
+			? [...new Set([...selected, ...defaultMcpIds])]
+			: [];
 		const reasoningMode: "lite" | "pro" | "balanced" =
 			preferences?.reasoningMode === "deep" ||
 			preferences?.reasoningMode === "planner"
@@ -235,7 +239,8 @@ export async function executeParlumeAgent(input: {
 	voiceInstructions: string;
 	knowledgeContext: string;
 	history: Array<{ role: "user" | "assistant"; content: string }>;
-	confirmation: boolean;
+	/** Minted for this turn by the web route; the worker only carries it. */
+	actingGrant?: string;
 }): Promise<{ success: boolean; response: string; error?: string }> {
 	const { agent, session } = input;
 	if (agent.kind === "FABRIC_AGENT") {
@@ -250,25 +255,21 @@ export async function executeParlumeAgent(input: {
 							agent.enabledMcpConfigIds,
 						),
 					),
-					input.confirmation
-						? null
-						: timeTurnStep("agent.memoryMs", () =>
-								generateMemoryContextActivity(
-									input.message,
-									session.userId,
-									session.organizationId,
-								),
-							),
-					input.confirmation
-						? null
-						: timeTurnStep("agent.workspaceMs", () =>
-								retrieveWorkspaceDocumentsActivity(
-									input.message,
-									session.userId,
-									session.organizationId,
-									agent.workspaceIds,
-								),
-							),
+					timeTurnStep("agent.memoryMs", () =>
+						generateMemoryContextActivity(
+							input.message,
+							session.userId,
+							session.organizationId,
+						),
+					),
+					timeTurnStep("agent.workspaceMs", () =>
+						retrieveWorkspaceDocumentsActivity(
+							input.message,
+							session.userId,
+							session.organizationId,
+							agent.workspaceIds,
+						),
+					),
 				]),
 		);
 		const result = await executeDirectChatActivity(
@@ -282,6 +283,15 @@ export async function executeParlumeAgent(input: {
 				organizationId: session.organizationId,
 				projectId: session.projectId,
 				enabledMcpConfigIds: agent.enabledMcpConfigIds,
+				// What the interactive Fabric Agent has: Fabric's own tools from
+				// Fabric MCP as the inviter, and the story capability on top of
+				// the default tool set. Parlume's action gate decides what any
+				// of them may do in a meeting.
+				fabricPlatformTools: true,
+				fabricPortalTools: true,
+				actingGrant: input.actingGrant,
+				additionalFabricToolIds:
+					BUILT_IN_TO_FABRIC_TOOLS["create-story"],
 				reasoningMode: agent.reasoningMode,
 				workspaceIds: agent.workspaceIds,
 				systemPrompt: `${FABRIC_AGENT_IDENTITY}\n\n${input.voiceInstructions}`,
@@ -290,7 +300,7 @@ export async function executeParlumeAgent(input: {
 					.join("\n\n"),
 			},
 			mcpToolInfo,
-			memory?.context ?? "",
+			memory.context ?? "",
 			"",
 		);
 		return {
@@ -310,17 +320,15 @@ export async function executeParlumeAgent(input: {
 	if (context.projectId !== session.projectId) {
 		throw new Error("The selected agent is not bound to this project.");
 	}
-	const knowledge = input.confirmation
-		? null
-		: await timeTurnStep("agent.knowledgeMs", () =>
-				fetchKnowledge({
-					executionId: `parlume-${input.turnId}`,
-					context,
-					query: input.message,
-					userId: session.userId,
-					organizationId: session.organizationId,
-				}),
-			);
+	const knowledge = await timeTurnStep("agent.knowledgeMs", () =>
+		fetchKnowledge({
+			executionId: `parlume-${input.turnId}`,
+			context,
+			query: input.message,
+			userId: session.userId,
+			organizationId: session.organizationId,
+		}),
+	);
 	return executeAgentTurn({
 		systemPrompt: `${context.systemPrompt}\n\n${input.voiceInstructions}`,
 		userMessage: input.message,

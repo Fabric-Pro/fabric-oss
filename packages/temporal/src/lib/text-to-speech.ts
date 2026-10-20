@@ -16,6 +16,7 @@ const TTS_USD_PER_CHAR = 15 / 1_000_000;
 const TTS_FEATURE_KEY = "text-to-speech" satisfies AiFeatureKey;
 
 export interface TextToSpeechRequest {
+	usageConversationId?: string;
 	userId: string;
 	organizationId?: string | null;
 	text: string;
@@ -94,6 +95,7 @@ function recordSpeechUsage(
 	logAiUsageAsync({
 		userId: request.userId,
 		organizationId: request.organizationId ?? undefined,
+		conversationId: request.usageConversationId,
 		provider: "OPENAI_DIRECT",
 		providerModelId: TTS_MODEL,
 		taskType: "AUDIO",

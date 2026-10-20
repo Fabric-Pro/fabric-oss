@@ -7,7 +7,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 
 type Row = {
 	targetKey: string;
@@ -28,10 +30,19 @@ type Row = {
  * same whatever context it is opened in. Clearing is the catalog's own
  * soft-clear: the binding stays available and can be put back from the
  * action's entry, so the confirm says "hand back", not "delete".
+ *
+ * A personal default at an action the Proposal artifact supersedes does not
+ * run for a Proposal in this organization (Fizzy #2946). It is still listed,
+ * says so, and can still be handed back: it follows its owner, and runs again
+ * in any organization with the gate off.
  */
 export function MyOverridesList({ basePath }: { basePath: string }) {
 	const { confirm } = useConfirmationAlert();
 	const queryClient = useQueryClient();
+	const { isSuperseded } = useOfferedPromptActions();
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
 
 	const query = useQuery(
 		orpc.prompts.bindings.listMine.queryOptions({ input: {} }),
@@ -131,6 +142,14 @@ export function MyOverridesList({ basePath }: { basePath: string }) {
 								{row.promptName}
 							</Link>
 						</p>
+						{isSuperseded(row.targetKey, row.documentType) && (
+							<p
+								data-testid="my-override-superseded-note"
+								className="text-muted-foreground text-xs"
+							>
+								{tSuperseded("actionNote")}
+							</p>
+						)}
 					</div>
 					<Button
 						variant="ghost"

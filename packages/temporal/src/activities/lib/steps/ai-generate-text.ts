@@ -58,6 +58,8 @@ export async function executeAiGenerateTextStep(
 				organizationId: params.organizationId,
 				projectId: params.projectId,
 				jobType: params.jobType,
+				featureKey: "workflow",
+				workflowExecutionId: params.executionId,
 			},
 		);
 

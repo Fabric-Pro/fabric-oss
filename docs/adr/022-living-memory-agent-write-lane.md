@@ -54,6 +54,20 @@ Living Memory could never read it back.
 - `DIRECT_PUSH` commits to the sync's `ref` itself. The next sync run, or the
   push webhook for an automatic sync, brings the files into Living Memory.
 
+**Whether Fabric indexes them.** Each target also has an `indexMode`, per folder:
+`INDEXED` (the default) embeds its files for AI search and feeds them to context
+summaries, as every synced file is. `STORE_ONLY` keeps them as repository-managed
+rows, readable through the context APIs, the MCP file tools and the memory mirror,
+but never embedded, never returned by semantic or keyword search (`fabric_search_project_knowledge` filters on the same flag) and never summarized. The Context tab inventory still lists them. It
+exists for folders that will hold thousands of task or spec files, which would
+otherwise crowd search and summaries with noise. The target's column is the source
+of truth; the rows carry a derived copy (`project_context.indexingExcluded`) that
+`reconcileContextIndexing` recomputes under the sync's lock after every target
+change and every apply batch, because the awaiting-index scans and the
+summarization reads are plain predicates on the row. A row that becomes store-only
+has its index marks cleared and its vectors queued for deletion in the same
+transaction; one that stops being store-only is found by the next index pass.
+
 **Who may turn on direct push.** Creating or editing a target needs
 `CONTEXT_CREATE`, like configuring the sync. Setting a target to `DIRECT_PUSH`
 additionally needs `PROJECT_SETTINGS_EDIT` (project administrator and up), checked
@@ -300,7 +314,7 @@ it. A credential bound to one project reaches that project alone.
 **REST routes**, under `/api/v1/projects/:projectId/memory`, each requiring
 the scope:
 
-- `GET targets`: the write folders with mode and version, the branch, the
+- `GET targets`: the write folders with mode, `indexMode` and version, the branch, the
   repository (provider, owner, name) and the commit the sync last applied.
 - `GET files?targetId=&after=&limit=`: what Living Memory holds under one
   folder, from the rows the sync manages (`sourcePath`, `sourceBlobOid`,

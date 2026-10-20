@@ -4,7 +4,9 @@
  * offered under the CopilotKit rule only: the policy asks, the organization
  * has an LLM provider, and the member's own plan is in play. Under the
  * interactive "Use API billing" policy the turn runs instead, and its stream
- * says so (Fizzy #3048).
+ * says so (Fizzy #3048). Where the organization would stop it, a personal key
+ * the member opted in runs it, and says so; without one the refusal links to
+ * that opt-in (Fizzy #3085, #3086).
  */
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	pick: vi.fn(),
 	provider: vi.fn(),
 	apiFallback: vi.fn(),
+	personalKey: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -22,6 +25,7 @@ vi.mock("@repo/database", () => ({
 vi.mock("../lib/chatgpt-plan/pool", () => ({
 	pickChatGptPlanSource: mocks.pick,
 	chatGptPlanInteractiveApiFallback: mocks.apiFallback,
+	chatGptPlanPersonalKeyFallback: mocks.personalKey,
 	chatGptPlanPoolExhaustedMessage: (resetAt: Date | null) =>
 		`pool spent until ${resetAt?.toISOString() ?? "reset"}`,
 }));
@@ -50,6 +54,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.provider.mockResolvedValue({ provider: "OPENAI_DIRECT" });
 	mocks.apiFallback.mockResolvedValue(false);
+	mocks.personalKey.mockResolvedValue(null);
 });
 
 describe("chatGptPlanChatPreflight", () => {
@@ -79,8 +84,40 @@ describe("chatGptPlanChatPreflight", () => {
 			code: "subscription_sharing_usage_limit_exceeded",
 			resetAt: RESET.toISOString(),
 			apiBillingOption: false,
+			personalKeyOption: false,
 		});
 		expect(mocks.provider).not.toHaveBeenCalled();
+	});
+
+	it("runs the turn on the member's own opted-in key where the organization would stop it", async () => {
+		const spent = {
+			exhausted: true,
+			audience: "interactive",
+			policy: ASK,
+			resetAt: RESET,
+		};
+		mocks.pick.mockResolvedValue(spent);
+		mocks.personalKey.mockResolvedValue({
+			config: { provider: "ANTHROPIC_DIRECT", apiKey: "encrypted:x" },
+		});
+		await expect(chatGptPlanChatPreflight(context)).resolves.toEqual({
+			personalKey: { provider: "ANTHROPIC_DIRECT", resetAt: RESET },
+		});
+		expect(mocks.personalKey).toHaveBeenCalledWith(spent, context);
+	});
+
+	it("offers to set up a personal key when the stop would allow one but none is opted in", async () => {
+		mocks.pick.mockResolvedValue({
+			exhausted: true,
+			audience: "interactive",
+			policy: ASK,
+			resetAt: RESET,
+		});
+		mocks.personalKey.mockResolvedValue({ config: null });
+		expect(
+			(await body(await chatGptPlanChatPreflight(context)))
+				.personalKeyOption,
+		).toBe(true);
 	});
 
 	it("offers API billing when the policy asks, a provider exists and the own plan is in play", async () => {
@@ -164,6 +201,23 @@ describe("withChatGptPlanApiBilling", () => {
 				apiBilling: { resetAt: null },
 			}).headers.get("x-fabric-chatgpt-plan-api-billing"),
 		).toBe("");
+	});
+
+	it("names the provider of a turn on the member's own key, never the key", () => {
+		const response = withChatGptPlanApiBilling(stream(), {
+			personalKey: { provider: "ANTHROPIC_DIRECT", resetAt: RESET },
+		});
+		expect(response.headers.get("x-fabric-chatgpt-plan-personal-key")).toBe(
+			"ANTHROPIC_DIRECT",
+		);
+		expect(response.headers.get("x-fabric-chatgpt-plan-api-billing")).toBe(
+			RESET.toISOString(),
+		);
+		expect(
+			withChatGptPlanApiBilling(stream(), {
+				apiBilling: { resetAt: RESET },
+			}).headers.has("x-fabric-chatgpt-plan-personal-key"),
+		).toBe(false);
 	});
 
 	it("leaves every other response unmarked", () => {

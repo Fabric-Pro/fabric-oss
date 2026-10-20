@@ -245,11 +245,12 @@ export async function POST(req: NextRequest) {
 			headers: { "Content-Type": "application/json" },
 		});
 	} catch (err) {
-		console.error(
-			"[/api/mcp-app/invoke] Tool execution failed:",
-			{ configId: body.configId, toolName: body.toolName },
-			err,
-		);
+		console.error("[/api/mcp-app/invoke] Tool execution failed:", {
+			configId: body.configId,
+			toolName: body.toolName,
+			error: err instanceof Error ? err.message : err,
+			stack: err instanceof Error ? err.stack : undefined,
+		});
 		return new Response(
 			JSON.stringify({
 				error: err instanceof Error ? err.message : String(err),

@@ -10,9 +10,6 @@ import {
 	sessionOutcome,
 } from "../parlume-view";
 
-const AFTER_EXPIRY = new Date("2026-09-30T11:00:00Z").getTime();
-const BEFORE_EXPIRY = new Date("2026-09-30T10:06:00Z").getTime();
-
 describe("formatElapsed", () => {
 	it("pads minutes and seconds", () => {
 		expect(formatElapsed(0)).toBe("00:00");
@@ -99,78 +96,31 @@ describe("action status", () => {
 		["COMPLETED", "Completed", "good"],
 		["FAILED", "Failed", "bad"],
 		["OUTCOME_UNKNOWN", "Outcome unknown", "warn"],
-		["AWAITING_CONFIRMATION", "Awaiting confirmation", "warn"],
 		["EXECUTING", "Executing", "warn"],
 		["CANCELLED", "Cancelled", "neutral"],
-		["INVALIDATED", "Invalidated", "neutral"],
-		["EXPIRED", "Expired", "neutral"],
 	] as const)("labels %s as %s", (status, label, tone) => {
-		expect(actionStatus(action({ status }), BEFORE_EXPIRY)).toEqual({
-			label,
-			tone,
-		});
-	});
-
-	it("reads an unconfirmed proposal past its deadline as expired", () => {
-		const proposal = action({ status: "AWAITING_CONFIRMATION" });
-		expect(actionStatus(proposal, BEFORE_EXPIRY).label).toBe(
-			"Awaiting confirmation",
-		);
-		expect(actionStatus(proposal, AFTER_EXPIRY)).toEqual({
-			label: "Expired",
-			tone: "neutral",
-		});
-	});
-
-	it("leaves a completed action completed after its deadline", () => {
-		expect(
-			actionStatus(action({ status: "COMPLETED" }), AFTER_EXPIRY).label,
-		).toBe("Completed");
+		expect(actionStatus(action({ status }))).toEqual({ label, tone });
 	});
 });
 
 describe("actionSteps", () => {
-	it("lists requested, confirmed and finished from the action's own times", () => {
+	it("lists requested and finished from the action's own times", () => {
 		expect(
-			actionSteps(action(), BEFORE_EXPIRY).map((step) => [
-				step.label,
-				step.tone,
-			]),
+			actionSteps(action()).map((step) => [step.label, step.tone]),
 		).toEqual([
 			["Requested", "neutral"],
-			["Confirmed", "neutral"],
 			["Finished", "good"],
 		]);
 	});
 
-	it("stops at expired for a proposal nobody confirmed", () => {
-		const steps = actionSteps(
-			action({
-				status: "AWAITING_CONFIRMATION",
-				confirmedAt: null,
-				completedAt: null,
-			}),
-			AFTER_EXPIRY,
-		);
-		expect(steps.map((step) => step.label)).toEqual([
-			"Requested",
-			"Expired",
-		]);
-	});
-
 	it("calls a failed run failed, not finished", () => {
-		const steps = actionSteps(action({ status: "FAILED" }), BEFORE_EXPIRY);
+		const steps = actionSteps(action({ status: "FAILED" }));
 		expect(steps.at(-1)).toMatchObject({ label: "Failed", tone: "bad" });
 	});
 
-	it("shows only the request while it waits to be confirmed", () => {
+	it("shows only the request while the change is running", () => {
 		const steps = actionSteps(
-			action({
-				status: "AWAITING_CONFIRMATION",
-				confirmedAt: null,
-				completedAt: null,
-			}),
-			BEFORE_EXPIRY,
+			action({ status: "EXECUTING", completedAt: null }),
 		);
 		expect(steps.map((step) => step.label)).toEqual(["Requested"]);
 	});

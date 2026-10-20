@@ -33,6 +33,8 @@ const startWorkflowMock = vi.fn();
 const memberFindFirstMock = vi.fn();
 const projectFindUniqueMock = vi.fn();
 const conversationFindFirstMock = vi.fn();
+const getAccessibleFrameByIdMock = vi.fn();
+const hasProjectAccessMock = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -79,7 +81,9 @@ vi.mock("@repo/database", async () => ({
 	},
 	getConversationWorkspaces: vi.fn(async () => []),
 	getConversationProject: vi.fn(async () => null),
-	hasProjectAccess: vi.fn(async () => true),
+	hasProjectAccess: (...args: unknown[]) => hasProjectAccessMock(...args),
+	getAccessibleFrameById: (...args: unknown[]) =>
+		getAccessibleFrameByIdMock(...args),
 	filterAccessibleWorkspaceIds: vi.fn(async () => ({
 		allowed: [],
 		dropped: [],
@@ -89,6 +93,9 @@ vi.mock("@repo/database", async () => ({
 const SESSION_USER_ID = "user-1";
 const ORGANIZATION_ID = "example-org";
 const CONVERSATION_ID = "conversation-1";
+const SESSION_EMAIL = "member@example.com";
+const PROJECT_ID = "project-1";
+const FRAME_ID = "frame-1";
 
 function postBody(b: Record<string, unknown>) {
 	return { json: async () => b } as never;
@@ -134,7 +141,7 @@ describe("POST orchestrator-temporal/stream — the acting grant and the launch 
 		delete process.env.REDIS_URL;
 
 		getSessionMock.mockResolvedValue({
-			user: { id: SESSION_USER_ID },
+			user: { id: SESSION_USER_ID, email: SESSION_EMAIL },
 			session: {},
 		});
 		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
@@ -143,6 +150,8 @@ describe("POST orchestrator-temporal/stream — the acting grant and the launch 
 		projectFindUniqueMock.mockResolvedValue({
 			organizationId: ORGANIZATION_ID,
 		});
+		hasProjectAccessMock.mockResolvedValue(true);
+		getAccessibleFrameByIdMock.mockResolvedValue(null);
 		startWorkflowMock.mockResolvedValue({
 			workflowId: "wf-acting-grant",
 			describe: async () => ({
@@ -228,33 +237,177 @@ describe("POST orchestrator-temporal/stream — the acting grant and the launch 
 	});
 
 	it("carries the page the chat was opened on into the workflow", async () => {
-		await post({
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: "workspace-frame-1",
+			projectId: null,
+		});
+		const response = await post({
 			...CHAT_BODY,
 			launchWorkspaceId: "workspace-frame-1",
 			launchSurface: "workspace",
 		});
 
+		expect(response.status).toBe(200);
 		expect(startedInput()).toMatchObject({
 			launchWorkspaceId: "workspace-frame-1",
 			launchSurface: "workspace",
+			usageFrameId: "workspace-frame-1",
 		});
 	});
+
+	it.each(["workspace", "artifact"] as const)(
+		"authorizes the current %s frame before starting with its usage origin",
+		async (launchSurface) => {
+			getAccessibleFrameByIdMock.mockResolvedValue({
+				id: FRAME_ID,
+				projectId: PROJECT_ID,
+			});
+			const response = await post({
+				...CHAT_BODY,
+				projectId: PROJECT_ID,
+				launchFrameId: FRAME_ID,
+				launchWorkspaceId:
+					launchSurface === "workspace" ? FRAME_ID : undefined,
+				launchSurface,
+				usageFrameId: "client-forged-frame",
+			});
+
+			expect(response.status).toBe(200);
+			expect(hasProjectAccessMock).toHaveBeenCalledWith(
+				PROJECT_ID,
+				SESSION_USER_ID,
+				ORGANIZATION_ID,
+			);
+			expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith({
+				id: FRAME_ID,
+				userId: SESSION_USER_ID,
+				userEmail: SESSION_EMAIL,
+				organizationId: ORGANIZATION_ID,
+			});
+			expect(startWorkflowMock).toHaveBeenCalledTimes(1);
+			expect(startedInput()).toMatchObject({
+				projectId: PROJECT_ID,
+				usageFrameId: FRAME_ID,
+				launchSurface,
+			});
+			expect(startedInput().launchWorkspaceId).toBe(
+				launchSurface === "workspace" ? FRAME_ID : undefined,
+			);
+		},
+	);
 
 	it.each([
 		["an object", { $ne: "x" }],
 		["a number", 7],
 		["an empty string", ""],
 		["a very long string", "x".repeat(201)],
-	])("drops a launch workspace that is %s", async (_, launchWorkspaceId) => {
-		await post({
+	])(
+		"refuses a launch workspace that is %s",
+		async (_, launchWorkspaceId) => {
+			const response = await post({
+				...CHAT_BODY,
+				launchWorkspaceId,
+				launchSurface: "artifact",
+			});
+
+			expect(response.status).toBe(400);
+			expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+			expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([{ not: "" }, 7, "", "x".repeat(201)])(
+		"refuses a malformed explicit launch frame (%j)",
+		async (launchFrameId) => {
+			const response = await post({ ...CHAT_BODY, launchFrameId });
+
+			expect(response.status).toBe(400);
+			expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+			expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses conflicting explicit and legacy launch frames", async () => {
+		const response = await post({
 			...CHAT_BODY,
-			launchWorkspaceId,
-			launchSurface: "artifact",
+			launchFrameId: FRAME_ID,
+			launchWorkspaceId: "another-frame",
 		});
 
-		expect(startedInput().launchWorkspaceId).toBeUndefined();
-		expect(startedInput().launchSurface).toBe("artifact");
+		expect(response.status).toBe(400);
+		expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
 	});
+
+	it.each(["missing-frame", "inaccessible-frame", "foreign-tenant-frame"])(
+		"refuses a canonical access denial for %s before charging or starting",
+		async (launchFrameId) => {
+			const response = await post({ ...CHAT_BODY, launchFrameId });
+
+			expect(response.status).toBe(403);
+			expect(getAccessibleFrameByIdMock).toHaveBeenCalledWith({
+				id: launchFrameId,
+				userId: SESSION_USER_ID,
+				userEmail: SESSION_EMAIL,
+				organizationId: ORGANIZATION_ID,
+			});
+			expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a frame attached to a different authorized project", async () => {
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: FRAME_ID,
+			projectId: "another-project",
+		});
+		const response = await post({
+			...CHAT_BODY,
+			projectId: PROJECT_ID,
+			launchFrameId: FRAME_ID,
+		});
+
+		expect(response.status).toBe(403);
+		expect(hasProjectAccessMock).toHaveBeenCalledWith(
+			PROJECT_ID,
+			SESSION_USER_ID,
+			ORGANIZATION_ID,
+		);
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses an attached frame after current project access is denied", async () => {
+		hasProjectAccessMock.mockResolvedValue(false);
+		getAccessibleFrameByIdMock.mockResolvedValue({
+			id: FRAME_ID,
+			projectId: PROJECT_ID,
+		});
+		const response = await post({
+			...CHAT_BODY,
+			projectId: PROJECT_ID,
+			launchFrameId: FRAME_ID,
+		});
+
+		expect(response.status).toBe(403);
+		expect(getAIModelWithMetadataMock).not.toHaveBeenCalled();
+		expect(startWorkflowMock).not.toHaveBeenCalled();
+	});
+
+	it.each([{}, { usageFrameId: "client-forged-frame" }])(
+		"leaves the usage frame absent without a launch origin (%j)",
+		async (body) => {
+			const response = await post({ ...CHAT_BODY, ...body });
+
+			expect(response.status).toBe(200);
+			expect(getAccessibleFrameByIdMock).not.toHaveBeenCalled();
+			expect(startWorkflowMock).toHaveBeenCalledTimes(1);
+			expect(startedInput()).not.toHaveProperty("usageFrameId");
+		},
+	);
 
 	it.each([
 		["a made-up surface", "dashboard"],

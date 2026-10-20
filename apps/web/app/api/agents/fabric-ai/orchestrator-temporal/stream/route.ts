@@ -45,7 +45,6 @@ import type {
 	OrchestratorStepResult,
 	OrchestratorWorkflowInput,
 	RagContextRetrievalInput,
-	RoutingDecision,
 	TaskPlan,
 } from "@repo/temporal";
 import { getTemporalClient } from "@repo/temporal";
@@ -59,6 +58,7 @@ import {
 	EXECUTION_MODE_NAMES,
 	parseExecutionMode,
 } from "../../orchestrator-execution-mode";
+import { resolveUsageFrame } from "../../resolve-usage-frame";
 import { windowUntypedHistory } from "../../stream/history-window";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
 import {
@@ -217,6 +217,7 @@ export async function POST(request: NextRequest) {
 			organizationSlug,
 			advisorOrigin,
 			launchWorkspaceId: rawLaunchWorkspaceId,
+			launchFrameId,
 			launchSurface: rawLaunchSurface,
 		} = body;
 
@@ -438,15 +439,6 @@ export async function POST(request: NextRequest) {
 			projectId,
 		}));
 
-		// A continued chat starts from the text carried over from its parent,
-		// quoted as data in a user-role message (see `carried-over-context`).
-		const effectiveHistory = await seedCarriedOverHistory({
-			history,
-			conversationId,
-			userId,
-			organizationId,
-		});
-
 		// ✅ Security: Verify project access before forwarding to workflow
 		if (projectId) {
 			try {
@@ -471,6 +463,27 @@ export async function POST(request: NextRequest) {
 				projectId = undefined;
 			}
 		}
+
+		const usageFrame = await resolveUsageFrame({
+			launchFrameId,
+			legacyLaunchFrameId: rawLaunchWorkspaceId,
+			userId,
+			userEmail: session.user.email,
+			organizationId,
+			projectId,
+		});
+		if (usageFrame.error) {
+			return usageFrame.error;
+		}
+
+		// A continued chat starts from the text carried over from its parent,
+		// quoted as data in a user-role message (see `carried-over-context`).
+		const effectiveHistory = await seedCarriedOverHistory({
+			history,
+			conversationId,
+			userId,
+			organizationId,
+		});
 
 		if (!requestedExecutionId && !message) {
 			return new Response(
@@ -524,6 +537,7 @@ export async function POST(request: NextRequest) {
 				conversationId: conversationId ?? null,
 				clientRequestKey: clientRequestKey.key,
 				executionMode,
+				question: typeof message === "string" ? message : "",
 				temporalClient,
 			});
 			if (admission.kind === "refused") {
@@ -844,6 +858,7 @@ export async function POST(request: NextRequest) {
 
 				if (chat) {
 					const workflowInput: RagContextRetrievalInput = {
+						usageConversationId: conversationId,
 						chatId: chat.id,
 						userId,
 						organizationId: chat.organizationId || undefined,
@@ -988,6 +1003,7 @@ export async function POST(request: NextRequest) {
 				conversationId,
 			}),
 			launchWorkspaceId,
+			...usageFrame,
 			launchSurface,
 			// Only the Advisor (the Fabric AI page and the Fabric Agent drawer,
 			// with or without a custom agent chosen there) sends
@@ -1094,6 +1110,7 @@ export async function POST(request: NextRequest) {
 		// them: mark the stream closed and tear down the Redis subscriber when
 		// the client disconnects (issue #2269).
 		let controllerClosed = false;
+		let heartbeat: ReturnType<typeof setInterval> | undefined;
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- ioredis is dynamically imported
 		let redisSubscriber: any = null;
 		const cleanupRedis = () => {
@@ -1218,6 +1235,7 @@ export async function POST(request: NextRequest) {
 				};
 
 				const closeController = () => {
+					clearInterval(heartbeat);
 					if (!controllerClosed) {
 						controllerClosed = true;
 						try {
@@ -1582,7 +1600,22 @@ export async function POST(request: NextRequest) {
 						options?: string[];
 					} | null = null;
 					let isComplete = false;
-					let lastHeartbeatAt = Date.now();
+
+					// The ping keeps its own clock, so a poll waiting on a slow
+					// Temporal call (a worker restarting) never reads to the
+					// client as a dead connection: it reconnects after three
+					// missed pings. Stops once the stream is closed.
+					heartbeat = setInterval(() => {
+						if (controllerClosed) {
+							clearInterval(heartbeat);
+							return;
+						}
+						try {
+							controller.enqueue(encoder.encode(": ping\n\n"));
+						} catch {
+							controllerClosed = true;
+						}
+					}, HEARTBEAT_INTERVAL);
 
 					// Poll for updates
 					while (
@@ -1591,22 +1624,6 @@ export async function POST(request: NextRequest) {
 						Date.now() - requestStartedAt < MAX_STREAM_DURATION
 					) {
 						try {
-							if (
-								Date.now() - lastHeartbeatAt >=
-								HEARTBEAT_INTERVAL
-							) {
-								lastHeartbeatAt = Date.now();
-								if (!controllerClosed) {
-									try {
-										controller.enqueue(
-											encoder.encode(": ping\n\n"),
-										);
-									} catch {
-										controllerClosed = true;
-									}
-								}
-							}
-
 							const description = await handle.describe();
 
 							if (description.status.name === "COMPLETED") {
@@ -1838,17 +1855,8 @@ export async function POST(request: NextRequest) {
 										"pendingClarification",
 									);
 
-									// Try to get routing decision from a separate query
-									let routingDecision: RoutingDecision | null =
-										null;
-									try {
-										routingDecision =
-											await handle.query(
-												"routingDecision",
-											);
-									} catch {
-										// Routing decision query may not be available
-									}
+									const routingDecision =
+										progress?.routingDecision;
 
 									// Check for phase change
 									if (
@@ -2153,6 +2161,7 @@ export async function POST(request: NextRequest) {
 			cancel() {
 				// Called when the client disconnects
 				controllerClosed = true;
+				clearInterval(heartbeat);
 				cleanupRedis();
 				console.log(
 					"[Orchestrator Stream] Client disconnected, stream cancelled",

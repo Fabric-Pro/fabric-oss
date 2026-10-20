@@ -143,6 +143,27 @@ beforeEach(() => {
 });
 
 describe("searchAvailableTools", () => {
+	it("passes accounting origin through server and tool search", async () => {
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			frameId: "turn-frame",
+			projectId: "origin-project",
+			featureKey: "chat-agent" as const,
+		};
+		await searchAvailableTools({
+			query: "create a ticket",
+			...TENANT,
+			usageOrigin,
+		});
+		expect(hoisted.generateEmbeddings.mock.calls[0][1]).toEqual({
+			...TENANT,
+			...usageOrigin,
+		});
+		expect(hoisted.toolIndexSearch.mock.calls[1][1]).toEqual({
+			...TENANT,
+			...usageOrigin,
+		});
+	});
 	it("rethrows a stop from the semantic server search", async () => {
 		const stop = turnStopped();
 		hoisted.generateEmbeddings.mockRejectedValue(stop);
@@ -210,6 +231,46 @@ describe("searchAvailableAgents", () => {
 	beforeEach(() => {
 		hoisted.getAgentsWithEmbeddings.mockResolvedValue([AGENT]);
 	});
+
+	it("attributes both query and uncached candidate embeddings to the turn", async () => {
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			frameId: "turn-frame",
+			projectId: "origin-project",
+			featureKey: "chat-agent" as const,
+		};
+		hoisted.generateEmbedding.mockResolvedValue({
+			embedding: [0.1],
+			model: "model-example",
+		});
+		await searchAvailableAgents({
+			...TENANT,
+			query: "research the launch",
+			usageOrigin,
+		});
+		expect(hoisted.generateEmbedding).toHaveBeenCalledTimes(2);
+		for (const call of hoisted.generateEmbedding.mock.calls) {
+			expect(call[1]).toEqual({ ...TENANT, ...usageOrigin });
+		}
+	});
+
+	it.each(["conversation-example", undefined])(
+		"attributes agent query embeddings to the supplied conversation (%s)",
+		async (usageConversationId) => {
+			hoisted.generateEmbedding.mockResolvedValue({
+				embedding: [0.1],
+				model: "model-example",
+			});
+			await searchAvailableAgents({
+				...TENANT,
+				query: "research the launch",
+				usageConversationId,
+			});
+			expect(
+				hoisted.generateEmbedding.mock.calls[0][1].conversationId,
+			).toBe(usageConversationId);
+		},
+	);
 
 	it("rethrows a stop from the query embedding", async () => {
 		const stop = turnStopped();
@@ -311,6 +372,29 @@ describe("searchAvailableAgents", () => {
 });
 
 describe("searchAvailableIntegrations", () => {
+	it("attributes query and candidate embeddings to the turn origin", async () => {
+		const usageOrigin = {
+			conversationId: "turn-conversation",
+			frameId: "turn-frame",
+			projectId: "origin-project",
+			featureKey: "chat-agent" as const,
+		};
+		hoisted.generateEmbedding.mockResolvedValue({ embedding: [0.1] });
+		hoisted.generateEmbeddings.mockResolvedValue({ embeddings: [[0.1]] });
+		await searchAvailableIntegrations({
+			query: "file a jira issue",
+			...TENANT,
+			usageOrigin,
+		});
+		expect(hoisted.generateEmbedding.mock.calls[0][1]).toEqual({
+			...TENANT,
+			...usageOrigin,
+		});
+		expect(hoisted.generateEmbeddings.mock.calls[0][1]).toEqual({
+			...TENANT,
+			...usageOrigin,
+		});
+	});
 	beforeEach(() => {
 		hoisted.integrationFindMany.mockResolvedValue([
 			{
@@ -482,4 +566,20 @@ describe("the heartbeat ticker of a lookup (searchAvailableAgents)", () => {
 		await expect(run.settled).resolves.toBe("resolved");
 		expect(run.beats()).toBe(0);
 	});
+});
+
+describe("tool-discovery usage", () => {
+	it.each(["conversation-example", undefined])(
+		"attributes query embedding to the supplied conversation (%s)",
+		async (usageConversationId) => {
+			await searchAvailableTools({
+				...TENANT,
+				query: "create a ticket",
+				usageConversationId,
+			});
+			expect(
+				hoisted.generateEmbeddings.mock.calls[0][1].conversationId,
+			).toBe(usageConversationId);
+		},
+	);
 });

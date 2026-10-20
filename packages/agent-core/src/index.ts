@@ -355,6 +355,7 @@ export {
 	resolveStopReason,
 } from "./output-truncation";
 export { PredictiveToolArgsAccumulator } from "./predictive-tool-args";
+export { buildAgentConfigurable } from "./services/agent-configurable";
 // Unified Server (single server for both AG-UI and A2A protocols)
 export type {
 	AgentRuntimeConfig,
@@ -365,7 +366,7 @@ export type {
 	TransformResult,
 	UnifiedServerConfig,
 } from "./unified-server";
-export { createUnifiedServer } from "./unified-server";
+export { createUnifiedServer, getUserFacingError } from "./unified-server";
 // Utilities
 export {
 	convertToSimpleMessages,

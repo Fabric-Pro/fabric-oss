@@ -183,6 +183,7 @@ function readTopicChoice(
 }
 
 export interface ClassifyQuestionTopicsParams {
+	projectId: string;
 	questions: string[];
 	tenantFilter: MaturationTenantFilter;
 }
@@ -195,6 +196,7 @@ export interface ClassifyQuestionTopicsParams {
 export async function classifyQuestionTopics({
 	questions,
 	tenantFilter,
+	projectId,
 }: ClassifyQuestionTopicsParams): Promise<QuestionTopic[]> {
 	if (questions.length === 0) {
 		return [];
@@ -214,6 +216,7 @@ export async function classifyQuestionTopics({
 		decisionModel = await getAIDecisionModelWithMetadata({
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
+			projectId,
 			featureKey: "maturation",
 		});
 	} catch (error) {
@@ -371,6 +374,7 @@ export async function classifyQuestionTopics({
 			{
 				userId: tenantFilter.userId,
 				organizationId: tenantFilter.organizationId ?? undefined,
+				projectId,
 				featureKey: "maturation",
 			},
 		);

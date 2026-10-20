@@ -18,6 +18,7 @@ import { findActionById } from "../lib/plugins/registry";
 import type { ConfigField, WorkflowNodeData } from "../lib/types";
 import { ActionConfigPanel } from "./ActionConfigPanel";
 import { AiModelSelector } from "./config-fields/AiModelSelector";
+import { CapabilitySelector } from "./config-fields/CapabilitySelector";
 import { McpServerSelector } from "./config-fields/McpServerSelector";
 import { McpToolSelector } from "./config-fields/McpToolSelector";
 
@@ -178,6 +179,19 @@ export function NodeConfigEditor({
 								handleFieldChange(field.name, newValue)
 							}
 							placeholder={field.placeholder}
+						/>
+					</div>
+				);
+
+			case "capability-selector":
+				return (
+					<div key={field.name}>
+						<CapabilitySelector
+							label={field.label}
+							value={(value as string[]) || []}
+							onChange={(newValue) =>
+								handleFieldChange(field.name, newValue)
+							}
 						/>
 					</div>
 				);

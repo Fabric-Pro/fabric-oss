@@ -23,6 +23,10 @@ import {
 	supportsDryRun,
 } from "../../lib/fabric-tool-definition";
 import {
+	CREATE_WORKFLOW_FOLLOW_UPS,
+	isCreateFollowUpCall,
+} from "../../lib/fabric-workflow-tool-definitions";
+import {
 	hasExactAgentToolApproval,
 	withApprovedAgentTool,
 } from "./agent-tool-runtime";
@@ -32,13 +36,7 @@ import type {
 } from "./fabric-gateway-client";
 
 /** The `configId` an approval of a Fabric tool is recorded under. */
-const FABRIC_PLATFORM_CONFIG_ID = "fabric-platform";
-
-/** What approving a created workflow also approves, for that workflow only. */
-const CREATE_FOLLOW_UPS: ReadonlySet<string> = new Set([
-	"fabric_publish_workflow",
-	"fabric_execute_workflow",
-]);
+export const FABRIC_PLATFORM_CONFIG_ID = "fabric-platform";
 
 /**
  * The call the gateway receives is the call the person approved, so the key is
@@ -73,7 +71,11 @@ export function listingNeedsConfirmation(
 }
 
 export type ConfirmationCheck =
-	| { kind: "proceed" }
+	/**
+	 * `refund`: the call spends an allowance the person's earlier yes gave;
+	 * call it when the gateway refused the call, so a retry is still covered.
+	 */
+	| { kind: "proceed"; refund?: () => void }
 	| { kind: "answer"; result: unknown };
 
 export interface ConfirmationGate {
@@ -97,7 +99,8 @@ export interface ConfirmationGate {
 	): Promise<T>;
 }
 
-function createdWorkflowId(result: unknown): string | undefined {
+/** The id of the workflow a `fabric_create_workflow` result created, if it created one. */
+export function createdWorkflowId(result: unknown): string | undefined {
 	if (
 		typeof result !== "object" ||
 		result === null ||
@@ -119,12 +122,35 @@ export function createConfirmationGate(
 	gateway: Pick<FabricGateway, "call">,
 	offers: (toolName: string) => boolean,
 ): ConfirmationGate {
-	const createdWorkflowIds = new Set<string>();
+	/**
+	 * Per workflow created in this turn, the follow-ups its approval still
+	 * covers: one publish and one run with no inputs, each spent when its call
+	 * goes through, as the Orchestrator's one-shot grants are.
+	 */
+	const followUpsLeft = new Map<string, Set<string>>();
 
-	const followUpApproved = (name: string, args: Record<string, unknown>) =>
-		CREATE_FOLLOW_UPS.has(name) &&
-		typeof args.workflowId === "string" &&
-		createdWorkflowIds.has(args.workflowId);
+	/**
+	 * Spends the follow-up allowance this call uses, if it is one, and returns
+	 * how to give it back: the call it let through may still be refused (a run
+	 * started before the publish went through), and the retry is covered.
+	 */
+	const spendFollowUp = (
+		name: string,
+		args: Record<string, unknown>,
+	): (() => void) | undefined => {
+		const workflowId =
+			typeof args.workflowId === "string" ? args.workflowId : undefined;
+		const left = workflowId ? followUpsLeft.get(workflowId) : undefined;
+		if (
+			!workflowId ||
+			!left?.has(name) ||
+			!isCreateFollowUpCall(name, args, workflowId)
+		) {
+			return undefined;
+		}
+		left.delete(name);
+		return () => left.add(name);
+	};
 
 	/**
 	 * What the person is shown: the gateway's own dry run when the tool has one,
@@ -179,12 +205,13 @@ export function createConfirmationGate(
 		async check(tool, args, abortSignal) {
 			if (
 				!listingNeedsConfirmation(tool, args) ||
-				hasExactAgentToolApproval(
-					approvalOf(identity, tool.name, args),
-				) ||
-				followUpApproved(tool.name, args)
+				hasExactAgentToolApproval(approvalOf(identity, tool.name, args))
 			) {
 				return { kind: "proceed" };
+			}
+			const refund = spendFollowUp(tool.name, args);
+			if (refund) {
+				return { kind: "proceed", refund };
 			}
 			const prepared = await draftOf(tool, args, abortSignal);
 			if ("error" in prepared) {
@@ -209,7 +236,10 @@ export function createConfirmationGate(
 					? createdWorkflowId(result)
 					: undefined;
 			if (workflowId) {
-				createdWorkflowIds.add(workflowId);
+				followUpsLeft.set(
+					workflowId,
+					new Set(CREATE_WORKFLOW_FOLLOW_UPS),
+				);
 			}
 		},
 		asApproved(toolName, args, run) {

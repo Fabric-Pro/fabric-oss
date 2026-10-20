@@ -81,3 +81,38 @@ describe("usage tags", () => {
 		});
 	});
 });
+
+describe("conversation attribution", () => {
+	it.each(["single", "batch"])(
+		"forwards the explicit conversation for %s embeddings",
+		async (kind) => {
+			const context = {
+				...CODE_INDEX,
+				conversationId: "conversation-example",
+				frameId: "frame-example",
+			};
+			if (kind === "single") {
+				await generateEmbedding("query", context);
+			} else {
+				await generateEmbeddings(["query"], context);
+			}
+			expect(
+				getAIEmbeddingModelWithMetadataMock.mock.calls[0][0]
+					.conversationId,
+			).toBe("conversation-example");
+			expect(
+				getAIEmbeddingModelWithMetadataMock.mock.calls[0][0],
+			).toMatchObject({
+				frameId: "frame-example",
+				projectId: "proj-1",
+				featureKey: "code-index",
+			});
+		},
+	);
+	it("leaves background embeddings unattributed", async () => {
+		await generateEmbedding("background", CODE_INDEX);
+		expect(
+			getAIEmbeddingModelWithMetadataMock.mock.calls[0][0].conversationId,
+		).toBeUndefined();
+	});
+});

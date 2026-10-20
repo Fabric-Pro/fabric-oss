@@ -8,6 +8,20 @@ import {
 	AGENT_TASK_PROMPT_AGENT_KEY,
 } from "@repo/utils/agent-task-prompt";
 import {
+	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+	COMPLETION_CLAIM_CORRECTION_FALLBACK_BODY,
+	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+	COMPLETION_CLAIM_JUDGE_FALLBACK_BODY,
+} from "@repo/utils/completion-claim-prompts";
+import {
+	DIRECT_CHAT_MEMORY_FALLBACK_BODY,
+	DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+} from "@repo/utils/direct-chat-memory-prompt";
+import {
+	ORCHESTRATOR_MEMORY_FALLBACK_BODY,
+	ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+} from "@repo/utils/orchestrator-memory-prompt";
+import {
 	PAGE_ASK_FALLBACK_BODY,
 	PAGE_ASK_PROMPT_AGENT_KEY,
 } from "@repo/utils/page-ask-prompt";
@@ -395,6 +409,37 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PAGE_ASK_PROMPT_AGENT_KEY,
+	},
+	// orchestrator_memory_context / direct_chat_memory_context: how each
+	// assistant engine reads what it recalls from earlier conversations and
+	// runs. Dedicated agent keys so the memory activities resolve prompts
+	// distinct from every document prompt at the same documentType/storyKind.
+	// GENERAL + null: one prompt per tenant covers every conversation. The
+	// recalled data is assembled code-side and passed as HANDLEBARS variables.
+	[ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+	},
+	[DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+	},
+	// advisor_completion_claim_judge / advisor_completion_claim_correction:
+	// the question asked of an Advisor reply whose turn called no tool, and
+	// the instruction the turn gets when that reply claimed an action anyway.
+	// Dedicated agent keys, GENERAL + null: one prompt per tenant. Neither
+	// takes variables; the request and reply are passed to the judge as data.
+	[COMPLETION_CLAIM_JUDGE_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+	},
+	[COMPLETION_CLAIM_CORRECTION_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
 	},
 	// publishing_topic_suggestion: the daily scan that decides which of a
 	// project's recent activity is worth publishing, and writes the summary at
@@ -6453,6 +6498,100 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: PAGE_ASK_FALLBACK_BODY,
+	},
+	{
+		// orchestrator_memory_context: how the Orchestrator assistant reads what
+		// it remembers — preferences, learned patterns and recalled past
+		// conversations, framed as history that must be checked with a tool
+		// before it is reported as current.
+		//
+		// The body lives in @repo/utils (ORCHESTRATOR_MEMORY_FALLBACK_BODY) so
+		// this seed and the memory activity share ONE definition. It takes each
+		// section's pre-formatted lines and a has_* flag per section as
+		// HANDLEBARS variables; which conversations are recalled is code-side.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+		name: "Assistant Memory (Orchestrator)",
+		description:
+			"How the Orchestrator assistant uses what it remembers: the user's preferences and learned patterns, and recalled past conversations, which it treats as history to check with a tool before reporting anything they describe as current.",
+		category: "assistant",
+		tags: ["assistant", "orchestrator", "memory"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: ORCHESTRATOR_MEMORY_FALLBACK_BODY,
+	},
+	{
+		// direct_chat_memory_context: how the Direct assistant reads the past
+		// executions recalled for a turn, framed as history that must be
+		// checked with a tool before it is reported as current.
+		//
+		// The body lives in @repo/utils (DIRECT_CHAT_MEMORY_FALLBACK_BODY) so
+		// this seed and the prompt assembly share ONE definition. It takes no
+		// variables: the executions are fenced as untrusted session memory
+		// code-side, and this body is added after that fence, so it is read as
+		// an instruction rather than as retrieved data.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY,
+		name: "Assistant Memory (Direct)",
+		description:
+			"How the Direct assistant uses past executions recalled for a turn, which it treats as history to check with a tool before reporting anything they describe as current.",
+		category: "assistant",
+		tags: ["assistant", "direct-chat", "memory"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: DIRECT_CHAT_MEMORY_FALLBACK_BODY,
+	},
+	{
+		// advisor_completion_claim_judge: the yes/no question asked of an
+		// Advisor reply when its turn called no tool — does it claim an action
+		// was done? Answered by the organization's decision model, or a
+		// language model when none is available.
+		//
+		// The body lives in @repo/utils (COMPLETION_CLAIM_JUDGE_FALLBACK_BODY)
+		// so this seed and the judge activity share ONE definition. No
+		// variables: the request and the reply are passed to the judge as
+		// data, never interpolated into this text.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+		name: "Assistant Completion Claim Check",
+		description:
+			"The question asked of an assistant reply whose turn called no tool: does the reply tell the user that an action was carried out, or that something set up earlier is in place now?",
+		category: "assistant",
+		tags: ["assistant", "orchestrator", "guardrail"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: COMPLETION_CLAIM_JUDGE_FALLBACK_BODY,
+	},
+	{
+		// advisor_completion_claim_correction: the instruction an Advisor turn
+		// gets when its reply claimed an action no tool call backs; the turn
+		// then runs once more with the same tools.
+		//
+		// The body lives in @repo/utils
+		// (COMPLETION_CLAIM_CORRECTION_FALLBACK_BODY) so this seed and the
+		// judge activity share ONE definition. No variables.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+		name: "Assistant Completion Claim Correction",
+		description:
+			"What the assistant is told when its reply claimed an action without calling any tool: do the work now with tools, check before describing, or say plainly what has not been done.",
+		category: "assistant",
+		tags: ["assistant", "orchestrator", "guardrail"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: COMPLETION_CLAIM_CORRECTION_FALLBACK_BODY,
 	},
 ];
 

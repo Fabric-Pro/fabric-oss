@@ -61,6 +61,14 @@ export async function writePmSyncStatusForAttempt(input: {
 	itemType: PmSyncFencedItemType;
 	itemId: string;
 	attemptId: string;
+	/** Narrow a refusal to the link and attempt that were judged. */
+	onlyIfRowUnchanged?: {
+		externalId: string | null;
+		externalUrl?: string | null;
+		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
+		lastPmSyncAttemptId: string | null;
+	};
 	data: PmSyncStatusFields;
 	/** Optional extra scope (the test-case writes also match the project). */
 	projectId?: string;
@@ -75,9 +83,16 @@ export async function writePmSyncStatusForAttempt(input: {
 	/** The client to write through (a caller's transaction); default `db`. */
 	client?: Prisma.TransactionClient;
 }): Promise<boolean> {
+	if (
+		input.onlyIfRowUnchanged &&
+		input.onlyIfRowUnchanged.lastPmSyncAttemptId !== input.attemptId
+	) {
+		return false;
+	}
 	const client: Prisma.TransactionClient = input.client ?? db;
 	const where = {
 		id: input.itemId,
+		...(input.onlyIfRowUnchanged ?? {}),
 		lastPmSyncAttemptId: input.attemptId,
 		...(input.projectId ? { projectId: input.projectId } : {}),
 		...holdingCreateClaim(input.onlyWhileHoldingCreateClaim),
@@ -150,6 +165,7 @@ export async function writePmSyncStatusUnattempted(input: {
 	onlyIfRowUnchanged?: {
 		externalId: string | null;
 		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
 		lastPmSyncAttemptId: string | null;
 		/** Also required when given (unset: the URL is not checked). */
 		externalUrl?: string | null;
@@ -174,6 +190,9 @@ export async function writePmSyncStatusUnattempted(input: {
 			? {
 					externalId: snapshot.externalId,
 					externalMcpServerId: snapshot.externalMcpServerId,
+					...(snapshot.externalPmTarget !== undefined
+						? { externalPmTarget: snapshot.externalPmTarget }
+						: {}),
 					lastPmSyncAttemptId: snapshot.lastPmSyncAttemptId,
 					...(snapshot.externalUrl !== undefined
 						? { externalUrl: snapshot.externalUrl }

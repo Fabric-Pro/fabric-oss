@@ -10,7 +10,7 @@
  *     does not handle null cleanly)
  *   - composite unique on (userId, organizationId)
  *   - tenant XOR isolation enforced at the procedure layer via
- *     `tenantProtectedProcedure`, not via DB RLS (`user_chat_agent_selection`
+ *     `requireInputOrgPermission`, not via DB RLS (`user_chat_agent_selection`
  *     intentionally tracks `user_orchestrator_preferences` and is excluded
  *     from `apply-rls-direct.ts`'s table list)
  *

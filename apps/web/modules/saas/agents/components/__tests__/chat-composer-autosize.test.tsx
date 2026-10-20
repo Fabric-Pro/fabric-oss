@@ -4,9 +4,9 @@
  * kept their starting height, so a long prompt scrolled inside a sliver.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentBuilderSidekick } from "../../sidekick/AgentBuilderSidekick";
 import { CugaAuthenticatedChat } from "../cuga/CugaAuthenticatedChat";
 import { WorkflowTemplateChat } from "../WorkflowTemplateChat/WorkflowTemplateChat";
@@ -104,3 +104,32 @@ describe.each(composers)("%s chat box auto-size", (_name, ui, maxHeight) => {
 		expect(textarea.style.overflowY).toBe("auto");
 	});
 });
+
+afterEach(() => vi.unstubAllGlobals());
+
+it.each([undefined, "example-system-agent"])(
+	"CUGA sends the registered agent ID (%s)",
+	async (agentId) => {
+		const fetchMock = vi.fn(async () =>
+			Response.json({ response: "hello", status: "completed" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		render(<CugaAuthenticatedChat agentId={agentId} />);
+		fireEvent.change(screen.getByRole("textbox"), {
+			target: { value: "hello" },
+		});
+		fireEvent.keyDown(screen.getByRole("textbox"), {
+			key: "Enter",
+			shiftKey: false,
+		});
+		await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [
+			string,
+			RequestInit,
+		];
+		expect(url).toBe("/api/agents/a2a/send");
+		const body = JSON.parse(String(init.body));
+		expect(body.agentId).toBe(agentId ?? "cuga_generalist");
+		expect(body).not.toHaveProperty("agentUrl");
+	},
+);

@@ -16,7 +16,7 @@
 
 import { getDeliveryPreferences } from "@repo/database";
 import { logger } from "@repo/logs";
-import { getTemporalClient } from "@repo/temporal";
+import { getTemporalClient } from "@repo/temporal/client";
 import { withCorrelationMemo } from "./temporal-correlation";
 
 /** Minimal shape needed to dispatch — satisfied by a `Notification` row. */

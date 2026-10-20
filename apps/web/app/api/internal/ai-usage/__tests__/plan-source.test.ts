@@ -20,7 +20,9 @@ vi.mock("@repo/ai-token", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
-	hasProjectAccess: vi.fn(async () => true),
+	getProjectAccessContext: vi.fn(async () => ({
+		organizationId: "org-1",
+	})),
 	logAiUsage: mocks.logAiUsage,
 	getChatGptPlanOrgAccount: mocks.getAccount,
 }));

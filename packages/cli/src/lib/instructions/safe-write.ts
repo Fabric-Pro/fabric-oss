@@ -275,42 +275,63 @@ export async function readFileSafely(
 				mode: opened.stats.mode,
 			};
 		}
-		if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
-			throw new Error(
-				"A safe file-read limit must be a non-negative integer.",
-			);
-		}
-		if (opened.stats.size > options.maxBytes) {
-			throw new Error(
-				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
-			);
-		}
-
-		// The extra byte catches a file that grew after `fstat` without ever
-		// allocating or reading an unbounded body.
-		const buffer = Buffer.allocUnsafe(options.maxBytes + 1);
-		let total = 0;
-		while (total <= options.maxBytes) {
-			const { bytesRead } = await opened.handle.read(
-				buffer,
-				total,
-				options.maxBytes + 1 - total,
-				total,
-			);
-			if (bytesRead === 0) {
-				break;
-			}
-			total += bytesRead;
-		}
-		if (total > options.maxBytes) {
-			throw new Error(
-				`${relativePath} is too large to read safely (maximum ${options.maxBytes} bytes).`,
-			);
-		}
-		return { bytes: buffer.subarray(0, total), mode: opened.stats.mode };
+		return await readOpenedFileBounded(
+			opened.handle,
+			options.maxBytes,
+			relativePath,
+		);
 	} finally {
 		await opened.handle.close();
 	}
+}
+
+/** Read only a regular file, with a hard limit even if it grows after fstat. */
+export async function readOpenedFileBounded(
+	handle: FileHandle,
+	maxBytes: number,
+	label: string,
+): Promise<{ bytes: Buffer; mode: number }> {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+		throw new Error(
+			"A safe file-read limit must be a non-negative integer.",
+		);
+	}
+	const stats = await handle.stat();
+	if (!stats.isFile()) {
+		throw new Error(`${label} is not a regular file.`);
+	}
+	const tooLarge = () =>
+		new Error(
+			`${label} is too large to read safely (maximum ${maxBytes} bytes).`,
+		);
+	if (stats.size > maxBytes) {
+		throw tooLarge();
+	}
+	const buffer = Buffer.allocUnsafe(maxBytes + 1);
+	let total = 0;
+	while (total <= maxBytes) {
+		const { bytesRead } = await handle.read(
+			buffer,
+			total,
+			maxBytes + 1 - total,
+			total,
+		);
+		if (bytesRead === 0) {
+			break;
+		}
+		total += bytesRead;
+	}
+	if (total > maxBytes) {
+		throw tooLarge();
+	}
+	const after = await handle.stat();
+	if (after.size > maxBytes) {
+		throw tooLarge();
+	}
+	if (!after.isFile() || after.mode !== stats.mode) {
+		throw new Error(`${label} changed while it was being read.`);
+	}
+	return { bytes: buffer.subarray(0, total), mode: stats.mode };
 }
 
 /** The fixed read buffer keeps planning memory bounded by one file chunk. */

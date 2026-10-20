@@ -24,8 +24,9 @@
  *   `docs/solutions/design-patterns/remapping-theme-tokens-on-an-inverted-surface.md`.
  * - **Print**: page size, margins and running header and footer as `@page`
  *   margin boxes, the cover and landscape pages as named pages, the section
- *   opener band and the contents page. Page furniture is CSS, not browser
- *   header and footer templates.
+ *   opener band and the contents page, whose page numbers a second print pass
+ *   writes in. Page furniture is CSS, not browser header and footer
+ *   templates.
  *
  * Pure functions and data only: client components import this module, so it
  * must not pull in anything the browser bundle cannot carry.
@@ -55,7 +56,8 @@ export const PROPOSAL_THEME_CLASSES = {
 
 /**
  * Classes only the print page writes: the parts of the cover, the eyebrow
- * label, the contents page and the landscape wrapper.
+ * label, the contents page, the page markers, diagrams, footnotes and the
+ * landscape wrapper.
  *
  * The cover is laid out as
  *
@@ -65,6 +67,7 @@ export const PROPOSAL_THEME_CLASSES = {
  *     <img class="pa-cover-logo pa-cover-logo-proposer" alt="…">
  *     <img class="pa-cover-logo pa-cover-logo-recipient" alt="…">
  *   </div>
+ *   <img class="pa-cover-hero" alt="">
  *   <div class="pa-cover-body">
  *     <p class="pa-eyebrow">Proposal</p>
  *     <h1 class="pa-cover-title">…</h1>
@@ -80,10 +83,28 @@ export const PROPOSAL_THEME_CLASSES = {
  *
  * A missing logo is left out rather than rendered empty: the proposer logo
  * holds the left edge and the recipient logo the right one on its own, and a
- * brands row with no logo at all is hidden. A section opener is a
+ * brands row with no logo at all (written with nothing inside, not even
+ * whitespace) is hidden. The hero, the lead and the parties are left out
+ * when there is nothing to put in them. A section opener is a
  * `<header class="pa-section-opener">` holding the `h2` and an optional
- * subtitle paragraph; its "Section N" eyebrow is a CSS counter. The contents
- * page is a `<nav class="pa-contents">` around an `ol` of section titles.
+ * subtitle paragraph; its "Section N" eyebrow is a CSS counter.
+ *
+ * The contents page is a `<nav class="pa-contents">` around an eyebrow and
+ * an `ol` of entries, each
+ *
+ * ```html
+ * <li>
+ *   <a href="#pa-section-3">…</a>
+ *   <span class="pa-contents-leader"></span>
+ *   <span class="pa-contents-page">7</span>
+ * </li>
+ * ```
+ *
+ * Chromium has no `target-counter()`, so the page numbers come from a second
+ * print pass. The first prints every opener with a `pa-page-marker` (a text
+ * marker that takes no space) and every number slot empty; the pages the
+ * markers land on fill the slots of the second, which lays out exactly as
+ * the first did because a slot's width never depends on what it holds.
  *
  * Named pages apply only to block-level boxes in normal flow, so the cover
  * and every landscape wrapper must not sit inside a flex or grid container.
@@ -99,7 +120,25 @@ export const PROPOSAL_PRINT_CLASSES = {
 	coverLead: "pa-cover-lead",
 	coverParties: "pa-cover-parties",
 	coverDate: "pa-cover-date",
+	/** An optional full-width picture between the brands and the title. */
+	coverHero: "pa-cover-hero",
 	contents: "pa-contents",
+	/** The dotted rule between a contents entry's title and its page. */
+	contentsLeader: "pa-contents-leader",
+	/** A contents entry's page number, in a box of fixed width. */
+	contentsPage: "pa-contents-page",
+	/**
+	 * The first print pass's marker inside a section opener: text a PDF
+	 * reader extracts, laid out out of flow so it moves nothing. Never
+	 * clipped to a tiny box, which drops the text from the PDF altogether.
+	 */
+	pageMarker: "pa-page-marker",
+	/** A figure holding a rendered diagram's SVG. */
+	diagram: "pa-diagram",
+	/** A figure holding the caption of a diagram that did not render. */
+	diagramPlaceholder: "pa-diagram-placeholder",
+	/** The notes a document's footnote references point at, at its end. */
+	footnotes: "pa-footnotes",
 	landscape: "pa-landscape",
 } as const;
 
@@ -697,6 +736,17 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"border-radius": "0",
 	}),
 	rule(dot(PRINT.recipientLogo), { "margin-inline-start": "auto" }),
+	// A band of fixed height, cropped to fill it, so the cover's one page
+	// always has room for the title, the parties and the date below it.
+	rule(dot(PRINT.coverHero), {
+		display: "block",
+		flex: "0 0 auto",
+		width: "100%",
+		"max-width": "none",
+		height: "3in",
+		"object-fit": "cover",
+		"border-radius": "0",
+	}),
 	rule(dot(PRINT.coverBody), {
 		flex: "1 1 auto",
 		display: "flex",
@@ -757,6 +807,8 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	// A section opener: a rounded primary band with a "Section N" eyebrow,
 	// the heading and an optional subtitle.
 	rule(dot(THEME.sectionOpener), {
+		// The containing block of the first pass's page marker.
+		position: "relative",
 		"counter-increment": "pa-section",
 		"break-after": "avoid",
 		margin: "2em 0 1.4em",
@@ -787,8 +839,24 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		margin: "0.45em 0 0",
 		color: "inherit",
 	}),
-	// The contents page: numbered sections, no page numbers (Chromium has no
-	// `target-counter()` to look them up with).
+	// The marker the first print pass looks a section's page up by: out of
+	// flow at the band's corner, so it moves nothing, and drawn in the band's
+	// own colour at a legible size, so the PDF's text holds it whole. It is
+	// deliberately not made invisible: Chromium's Linux print output leaves
+	// transparent text out of the PDF altogether, and only the first pass,
+	// which nobody sees, carries markers.
+	rule(dot(PRINT.pageMarker), {
+		position: "absolute",
+		top: "0",
+		left: "0",
+		"font-size": "8px",
+		"line-height": "1",
+		"letter-spacing": "0",
+		"white-space": "nowrap",
+	}),
+	// The contents page: numbered sections, each with the page it starts on,
+	// which a second print pass writes in (Chromium has no `target-counter()`
+	// to look them up with).
 	rule(dot(PRINT.contents), { "break-after": "page" }),
 	rule(`${dot(PRINT.contents)} ol`, {
 		"list-style": "none",
@@ -805,12 +873,52 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		padding: "0.55em 0",
 		"border-bottom": "1px solid var(--pa-border)",
 	}),
+	// Fixed-width figures in a fixed-width box, so every title starts at the
+	// same edge whatever its number.
 	rule(`${dot(PRINT.contents)} li::before`, {
 		content: "counter(pa-contents, decimal-leading-zero)",
+		flex: "0 0 2.2em",
 		"font-family": FONT_MONO_ROLE,
 		"font-size": "0.8em",
 		"font-weight": "600",
+		"font-variant-numeric": "tabular-nums",
 		color: "var(--pa-heading)",
+	}),
+	rule(`${dot(PRINT.contents)} a`, {
+		color: "inherit",
+		"text-decoration-line": "none",
+	}),
+	// An empty box has its baseline at its bottom edge, so in the entry's
+	// baseline-aligned row the dots sit on the title's baseline.
+	rule(dot(PRINT.contentsLeader), {
+		flex: "1 1 auto",
+		"min-width": "1.5em",
+		"border-bottom": "1px dotted var(--pa-border)",
+	}),
+	// Fixed width whatever it holds: the second pass fills the slots the
+	// first left empty, and nothing may move when it does.
+	rule(dot(PRINT.contentsPage), {
+		flex: "0 0 3ch",
+		width: "3ch",
+		"text-align": "right",
+		"white-space": "nowrap",
+		"font-variant-numeric": "tabular-nums",
+		"font-weight": "600",
+		color: "var(--pa-heading)",
+	}),
+	// A diagram that did not render keeps its place as a captioned frame.
+	rule(dot(PRINT.diagramPlaceholder), {
+		padding: "1.4em 1.25em",
+		border: "1px dashed var(--pa-border)",
+		"border-radius": "8px",
+	}),
+	rule(`${dot(PRINT.diagramPlaceholder)} ${dot(THEME.caption)}`, {
+		margin: "0",
+	}),
+	rule(dot(PRINT.footnotes), {
+		"margin-top": "2.5em",
+		"font-size": "0.86em",
+		color: "var(--pa-muted)",
 	}),
 	rule(dot(PRINT.landscape), { page: "landscape" }),
 ];

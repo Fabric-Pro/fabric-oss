@@ -30,7 +30,11 @@ import {
 } from "@repo/utils/feature-flag-registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mocks, DocumentVersionConflictError } = vi.hoisted(() => {
+const {
+	mocks,
+	DocumentVersionConflictError,
+	DocumentGenerationInProgressError,
+} = vi.hoisted(() => {
 	// A real class — the handler branches on `instanceof`, so a plain object
 	// stub would sail straight past the stale guard and out as a 500.
 	class DocumentVersionConflictError extends Error {
@@ -45,9 +49,19 @@ const { mocks, DocumentVersionConflictError } = vi.hoisted(() => {
 			this.name = "DocumentVersionConflictError";
 		}
 	}
+	class DocumentGenerationInProgressError extends Error {
+		constructor(readonly documentId: string) {
+			super(
+				`Document ${documentId} is being written by a generation run.`,
+			);
+			this.name = "DocumentGenerationInProgressError";
+		}
+	}
 	return {
 		DocumentVersionConflictError,
+		DocumentGenerationInProgressError,
 		mocks: {
+			isProposalClientDocument: vi.fn(),
 			hasProjectAccess: vi.fn(),
 			getDocumentById: vi.fn(),
 			getAutoRefreshSettings: vi.fn(),
@@ -66,7 +80,9 @@ vi.mock("@repo/database", () => ({
 	clearRefreshProposal: mocks.clearRefreshProposal,
 	updateDocument: mocks.updateDocument,
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	isProposalClientDocument: mocks.isProposalClientDocument,
 	DocumentVersionConflictError,
+	DocumentGenerationInProgressError,
 }));
 
 vi.mock("../../../../../lib/document-side-effects", () => ({
@@ -202,6 +218,7 @@ beforeEach(() => {
 	mocks.clearRefreshProposal.mockResolvedValue(undefined);
 	mocks.updateDocument.mockResolvedValue(makeDocument({ version: 4 }));
 	mocks.applyDocumentUpdateSideEffects.mockResolvedValue(undefined);
+	mocks.isProposalClientDocument.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -308,6 +325,86 @@ describe("applyDocumentAutoRefreshProposalProcedure — the stale proposal", () 
 		).rejects.toThrow("connection reset");
 		// The proposal survives a transient failure — the user can retry.
 		expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
+	});
+});
+
+describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run", () => {
+	const proposal = (status: string) =>
+		makeDocument({
+			type: "PROPOSAL",
+			status,
+			project: { organizationId: "org-owner" },
+		});
+
+	// The gate's state must not matter: a run already in progress keeps
+	// writing after the Proposal gate is turned off.
+	it.each([
+		["QUEUED", true],
+		["GENERATING", true],
+		["QUEUED", false],
+		["GENERATING", false],
+	])(
+		"refuses to apply while the run is %s (Proposal gate on: %s), writing nothing and keeping the proposal",
+		async (status, gateOn) => {
+			mocks.isProposalClientDocument.mockResolvedValue(gateOn);
+			mocks.getDocumentById.mockResolvedValue(proposal(status));
+
+			await expect(
+				applyHandler({ input: input(), context: ctx() }),
+			).rejects.toMatchObject({
+				code: "CONFLICT",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			});
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
+			expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+		},
+	);
+
+	it("applies a finished Proposal through the guarded write, without consulting the Proposal gate", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal("COMPLETE"));
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			DOCUMENT_ID,
+			expect.objectContaining({
+				expectedVersion: 3,
+				refuseWhileGenerating: true,
+			}),
+		);
+		expect(result).toEqual({ applied: true, version: 4 });
+	});
+
+	it("refuses when a run is queued between the read and the write, keeping the proposal", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal("COMPLETE"));
+		mocks.updateDocument.mockRejectedValue(
+			new DocumentGenerationInProgressError(DOCUMENT_ID),
+		);
+
+		await expect(
+			applyHandler({ input: input(), context: ctx() }),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+		});
+		expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
+		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+	});
+
+	it("leaves a document that is not a Proposal free of the run guard", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ status: "GENERATING" }),
+		);
+
+		await applyHandler({ input: input(), context: ctx() });
+
+		const [, payload] = mocks.updateDocument.mock.calls[0] as [
+			string,
+			Record<string, unknown>,
+		];
+		expect(payload.refuseWhileGenerating).toBeUndefined();
 	});
 });
 

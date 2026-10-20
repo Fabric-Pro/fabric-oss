@@ -327,7 +327,7 @@ export async function breakdownNode(
 			}
 		}
 
-		// Create model with provider config (falls back to env var if not provided)
+		// Create model with provider config (required by createModel)
 		const model = getAgentModel(providerConfig, {
 			temperature: 0.3,
 			maxTokens: 8000,
@@ -336,7 +336,7 @@ export async function breakdownNode(
 
 		console.log(
 			"[Story Breakdown] Using model:",
-			providerConfig?.model || "groq/llama-3.3-70b-versatile (env)",
+			providerConfig?.model || "unconfigured (provider config required)",
 		);
 
 		// Use custom system prompt if provided
@@ -420,6 +420,7 @@ export async function breakdownNode(
 		const turnStart = Date.now();
 		const response = await modelWithTools.invoke(messages, runnableConfig);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "story_breakdown",
 			latencyMs: Date.now() - generationStart,

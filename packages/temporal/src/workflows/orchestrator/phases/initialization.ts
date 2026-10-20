@@ -29,6 +29,7 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "../types";
+import { secondaryUsageOriginFields } from "../workflow-usage-attribution";
 import {
 	attachedProjectReferenceLine,
 	buildClarityProjectContext,
@@ -184,6 +185,10 @@ export async function executeInitializationPhase(
 			const workspaceId = input.workspaceIds?.[0] ?? null;
 
 			const memoryResult = await loadOrchestratorMemoryActivity({
+				...secondaryUsageOriginFields(input),
+				...(input.conversationId
+					? { usageConversationId: input.conversationId }
+					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId,
@@ -906,6 +911,10 @@ async function getHybridRoutingSuggestionsAndUpdate(
 	// SECURITY: Credentials are fetched internally by the activity
 	// API keys are NOT passed in workflow inputs to avoid storing them in Temporal history
 	const hybridRouting = await getHybridRoutingSuggestions({
+		...secondaryUsageOriginFields(input),
+		...(input.conversationId
+			? { usageConversationId: input.conversationId }
+			: {}),
 		task: input.message,
 		lettaAgentId,
 		userId: input.userId,

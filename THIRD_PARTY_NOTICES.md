@@ -57,3 +57,28 @@ Kysely- and KEK-bound, which doesn't fit the existing portal connector store).
 ## Other third-party notices
 
 (Add additional sections as new third-party code is incorporated.)
+
+### Inter typeface (https://github.com/rsms/inter)
+
+The Proposal export embeds Inter 4.1 in the PDFs it prints (Fizzy #2946). The
+font files are bundled unmodified, with their licence, in
+`packages/temporal/src/lib/proposal-export/fonts/`:
+`Inter-Regular.woff2`, `Inter-SemiBold.woff2`, `Inter-Bold.woff2` and
+`Inter-ExtraBold.woff2`, from the `web/` folder of the official v4.1 release.
+
+Copyright (c) 2016 The Inter Project Authors. Licensed under the **SIL Open
+Font License, Version 1.1**; the full licence text is
+`packages/temporal/src/lib/proposal-export/fonts/LICENSE.txt`.
+
+### Proposal export runtime dependencies
+
+The Temporal worker's Proposal export (Fizzy #2946) depends on these packages,
+installed from npm and not modified:
+
+| Package | Licence | Use |
+|---|---|---|
+| `beautiful-mermaid` | MIT | Renders Mermaid diagrams to SVG in the worker, as the live page does |
+| `elkjs` (a dependency of `beautiful-mermaid`) | EPL-2.0 | Diagram layout |
+| `docx` | MIT | Writes the Word export |
+| `sharp` | Apache-2.0 | Checks and re-encodes stored images and logos |
+| `libvips` (bundled in `sharp`'s prebuilt `@img/sharp-libvips-*` binaries) | LGPL-3.0-or-later | Image decoding and encoding, dynamically linked and unmodified |

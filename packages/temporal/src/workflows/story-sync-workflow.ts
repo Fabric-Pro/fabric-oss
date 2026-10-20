@@ -25,8 +25,12 @@ import {
 	setHandler,
 } from "@temporalio/workflow";
 import type { executeMcpTool as ExecuteMcpToolFn } from "../activities/orchestrator/execution/execute-mcp-tool";
-import type { createStoryInPmWithClaim as CreateStoryInPmWithClaimFn } from "../activities/pm-integration/create-story-in-pm-with-claim";
+import type {
+	checkStoryPmLink as CheckStoryPmLinkFn,
+	createStoryInPmWithClaim as CreateStoryInPmWithClaimFn,
+} from "../activities/pm-integration/create-story-in-pm-with-claim";
 import type { detectAndStampPmPushConflict as DetectAndStampPmPushConflictFn } from "../activities/pm-integration/detect-pm-push-conflict";
+import { redactDatabaseErrorText } from "../activities/pm-integration/pm-sync-user-error";
 import type {
 	createOrUpdateStoryFromPMItem as CreateOrUpdateStoryFromPMItemFn,
 	deleteStoriesNotInPMList as DeleteStoriesNotInPMListFn,
@@ -43,6 +47,7 @@ import type {
 } from "../activities/pm-integration/story-sync-job";
 import type { PMToolCapabilities } from "../activities/pm-integration/tool-analyzer";
 import { STORY_SYNC_CREATE_ACTIVITY_OPTIONS } from "./pm-create-activity-options";
+import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 // =============================================================================
 // Types
@@ -247,7 +252,9 @@ const {
 	fetchPMItemsByIds,
 	createOrUpdateStoryFromPMItem,
 	deleteStoriesNotInPMList,
+	checkStoryPmLink,
 } = proxyActivities<{
+	checkStoryPmLink: typeof CheckStoryPmLinkFn;
 	getStoriesToSync: typeof GetStoriesToSyncFn;
 	updateStoryExternalRefs: typeof UpdateStoryExternalRefsFn;
 	listAllFizzyCards: typeof ListAllFizzyCardsFn;
@@ -473,7 +480,7 @@ export async function storySyncWorkflow(
 			mcpConfigId,
 			mcpServerId,
 			// Bound to the PM container's GitLab instance at dispatch.
-			pmTarget: { additionalContext },
+			pmTarget: { additionalContext, containerId },
 			pmTool: detectedType,
 			toolLabel: detectedType ?? "the PM tool",
 		};
@@ -1012,6 +1019,8 @@ export async function storySyncWorkflow(
 			labels?: string[];
 			externalId?: string | null;
 			externalUrl?: string | null;
+			externalMcpServerId?: string | null;
+			externalPmTarget?: string | null;
 			statusId?: string | null;
 			kind?: string | null;
 			workItemType?: string | null;
@@ -1190,6 +1199,12 @@ export async function storySyncWorkflow(
 					projectId,
 					organizationId,
 					pmExternalIds: [],
+					containerId,
+					mcpServerId,
+					mcpConfigId,
+					userId,
+					pmTool: capabilities.detectedType,
+					additionalContext,
 				});
 				progress.status = "completed";
 				progress.message =
@@ -1286,6 +1301,7 @@ export async function storySyncWorkflow(
 						mcpConfigId,
 						mcpServerId,
 						containerId: containerValue,
+						stableContainerId: containerId,
 						additionalContext,
 						organizationId,
 						capabilities,
@@ -1332,60 +1348,85 @@ export async function storySyncWorkflow(
 										withProviderBackLink,
 									);
 
-					// If story was previously synced to a different PM tool (e.g.
-					// Fizzy) and the project has since switched (e.g. to ADO), the
-					// stale externalId would route us into the update path against
-					// the wrong tool, which silently fails. Clear the stale link so
-					// we take the create path and assign a fresh external id.
-					const staleLink = existingLinkBelongsToDifferentTool(
-						story.externalUrl,
-						capabilities.detectedType,
-					);
-					// Patched: a story linked to another PM tool is no longer
-					// created again (the new item overwrote the old link). It
-					// fails with the message that offers Unlink & re-create,
-					// recorded on the row as `syncStoryToPM` records it.
+					// Check the linked story before PM calls; older histories keep
+					// the URL-only branch below.
+					let effectiveExternalId: string | null | undefined;
 					if (
-						staleLink &&
 						story.externalId &&
-						patched("bulk-sync-create-claim-v1")
+						patched("bulk-sync-link-guard-v1")
 					) {
-						log.warn(
-							"Existing external link belongs to a different PM tool; not creating",
-							{
-								storyId: story.id,
-								identifier: story.identifier,
-								externalUrl: story.externalUrl,
-								detectedType: capabilities.detectedType,
-							},
-						);
-						const refused = await createStoryInPmWithClaim({
+						const checked = await checkStoryPmLink({
 							...createClaimContext(
 								story.id,
 								capabilities.detectedType,
 							),
-							action: "refuse-legacy-link",
-							// The link as judged: its URL is what was judged.
 							externalId: story.externalId,
 							externalUrl: story.externalUrl ?? null,
+							externalMcpServerId:
+								story.externalMcpServerId ?? null,
+							externalPmTarget: story.externalPmTarget,
 						});
-						recordCreateOutcome(story, refused);
-						continue;
-					}
-					if (staleLink) {
-						log.warn(
-							"Existing external link belongs to a different PM tool; clearing stale reference to force create",
-							{
-								storyId: story.id,
-								identifier: story.identifier,
-								externalUrl: story.externalUrl,
-								detectedType: capabilities.detectedType,
-							},
+						if (!checked.success) {
+							recordCreateOutcome(story, checked);
+							continue;
+						}
+						effectiveExternalId = story.externalId;
+					} else {
+						// If story was previously synced to a different PM tool (e.g.
+						// Fizzy) and the project has since switched (e.g. to ADO), the
+						// stale externalId would route us into the update path against
+						// the wrong tool, which silently fails. Clear the stale link so
+						// we take the create path and assign a fresh external id.
+						const staleLink = existingLinkBelongsToDifferentTool(
+							story.externalUrl,
+							capabilities.detectedType,
 						);
+						// Patched: a story linked to another PM tool is no longer
+						// created again (the new item overwrote the old link). It
+						// fails with the message that offers Unlink & re-create,
+						// recorded on the row as `syncStoryToPM` records it.
+						if (
+							staleLink &&
+							story.externalId &&
+							patched("bulk-sync-create-claim-v1")
+						) {
+							log.warn(
+								"Existing external link belongs to a different PM tool; not creating",
+								{
+									storyId: story.id,
+									identifier: story.identifier,
+									externalUrl: story.externalUrl,
+									detectedType: capabilities.detectedType,
+								},
+							);
+							const refused = await createStoryInPmWithClaim({
+								...createClaimContext(
+									story.id,
+									capabilities.detectedType,
+								),
+								action: "refuse-legacy-link",
+								// The link as judged: its URL is what was judged.
+								externalId: story.externalId,
+								externalUrl: story.externalUrl ?? null,
+							});
+							recordCreateOutcome(story, refused);
+							continue;
+						}
+						if (staleLink) {
+							log.warn(
+								"Existing external link belongs to a different PM tool; clearing stale reference to force create",
+								{
+									storyId: story.id,
+									identifier: story.identifier,
+									externalUrl: story.externalUrl,
+									detectedType: capabilities.detectedType,
+								},
+							);
+						}
+						effectiveExternalId = staleLink
+							? undefined
+							: story.externalId;
 					}
-					const effectiveExternalId = staleLink
-						? undefined
-						: story.externalId;
 
 					if (effectiveExternalId && capabilities.taskUpdate) {
 						// Before overwriting the PM item, check whether it drifted
@@ -1855,7 +1896,10 @@ export async function storySyncWorkflow(
 					storyId: story.id,
 					identifier: story.identifier,
 					success: false,
-					error: errorMessage,
+					error: redactDatabaseErrorText(
+						errorMessage,
+						unwrapPmSyncError(error).errorClass,
+					),
 				});
 				progress.failedCount++;
 			}
@@ -1873,6 +1917,12 @@ export async function storySyncWorkflow(
 				projectId,
 				organizationId,
 				pmExternalIds,
+				containerId,
+				mcpServerId,
+				mcpConfigId,
+				userId,
+				pmTool: capabilities.detectedType,
+				additionalContext,
 			});
 			deletedOrphanedCount = deletedCount;
 			if (deletedCount > 0) {
@@ -1938,10 +1988,16 @@ export async function storySyncWorkflow(
 		log.error("Story sync workflow failed", { error: errorMessage });
 
 		progress.status = "failed";
-		progress.message = errorMessage;
+		progress.message = redactDatabaseErrorText(
+			errorMessage,
+			unwrapPmSyncError(error).errorClass,
+		);
 
 		throw ApplicationFailure.nonRetryable(
-			errorMessage,
+			redactDatabaseErrorText(
+				errorMessage,
+				unwrapPmSyncError(error).errorClass,
+			),
 			"STORY_SYNC_FAILED",
 		);
 	} finally {

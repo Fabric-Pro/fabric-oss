@@ -41,8 +41,10 @@ import {
 	type ChatGptPlanSharedUploadResult,
 	type ChatGptPlanUploadResult,
 	type ChatGptRegistration,
+	type ChatGptSignIn,
 	FABRIC_APPROVAL_CALLBACK_PATH,
 	loadRegistrationStore,
+	notConnectedPage,
 	saveAccountRegistration,
 	selectRegistration,
 	signInWithChatGpt,
@@ -50,7 +52,10 @@ import {
 } from "../../lib/chatgpt-plan/flow.js";
 import { getBaseUrl } from "../../lib/config.js";
 import { openBrowser } from "../../lib/oauth/browser.js";
-import { startLoopbackListener } from "../../lib/oauth/loopback.js";
+import {
+	type BrowserPage,
+	startLoopbackListener,
+} from "../../lib/oauth/loopback.js";
 import { createState } from "../../lib/oauth/pkce.js";
 import {
 	BAD_BASE_URL_LINE,
@@ -172,7 +177,7 @@ export function describeOrganizations(
 ): string {
 	const enabled = result.organizations.filter((org) => org.enabled);
 	if (enabled.length === 0) {
-		return "Choose where to use it in Fabric settings → Account → AI providers.";
+		return "Choose where to use it in Fabric: Settings → AI Providers → Personal.";
 	}
 	return `Your own AI work in ${enabled.map((org) => org.name).join(", ")} now uses your ChatGPT plan.`;
 }
@@ -184,6 +189,40 @@ export function describeSharedAccount(
 	const account = result.email ? ` (${result.email})` : "";
 	const { organization, created } = result.shared;
 	return `${created ? "Connected" : "Reconnected"} the ChatGPT account${account} as a shared account of ${organization.name}. Choose which work it serves in ${organization.name}'s settings → AI providers.`;
+}
+
+/** One line for the terminal and the browser tab once the plan is connected. */
+function describeConnected(
+	result: ChatGptPlanUploadResult | ChatGptPlanSharedUploadResult,
+): string {
+	if ("shared" in result) {
+		return describeSharedAccount(result);
+	}
+	return `Connected your ChatGPT plan${result.email ? ` (${result.email})` : ""} to Fabric.`;
+}
+
+/** The tab's last word when the plan is connected. */
+export function connectedPage(
+	result: ChatGptPlanUploadResult | ChatGptPlanSharedUploadResult,
+): BrowserPage {
+	const where = "shared" in result ? "" : ` ${describeOrganizations(result)}`;
+	return {
+		title: "Connected",
+		body: `${describeConnected(result)}${where} You can close this tab.`,
+	};
+}
+
+/**
+ * The refusal, set apart from the progress lines above it so it is not read
+ * past: a blank line, then "Not connected:" and the reason.
+ */
+export function notConnectedMessage(reason: string): string {
+	return `\n✗ Not connected: ${reason}\n`;
+}
+
+function failConnect(reason: string): never {
+	process.stderr.write(notConnectedMessage(reason));
+	process.exit(1);
 }
 
 async function connect(opts: ConnectOptions): Promise<void> {
@@ -218,13 +257,16 @@ async function connect(opts: ConnectOptions): Promise<void> {
 	try {
 		ticket = await approveInFabric(origin, sharedOrganizationSlug);
 	} catch (err: unknown) {
-		printError((err as Error).message, 1);
+		failConnect((err as Error).message);
 	}
 	process.stdout.write("Approved in Fabric.\n");
 
+	// The ChatGPT tab waits for Fabric's answer and then shows it, so a
+	// refusal is not hidden behind a "Signed in" page.
+	let signIn: ChatGptSignIn | undefined;
 	let result: ChatGptPlanUploadResult | ChatGptPlanSharedUploadResult;
 	try {
-		const signIn = await signInWithChatGpt({
+		signIn = await signInWithChatGpt({
 			registration,
 			open: (url) => open(url, "sign in with ChatGPT"),
 			...(!sharedOrganizationSlug && { save: saveAccountRegistration }),
@@ -232,6 +274,7 @@ async function connect(opts: ConnectOptions): Promise<void> {
 				process.stdout.write(
 					"ChatGPT refused this machine's saved registration; signing in again with a new one.\n",
 				),
+			holdBrowserPage: true,
 		});
 		result = await uploadChatGptPlan({
 			origin,
@@ -242,17 +285,16 @@ async function connect(opts: ConnectOptions): Promise<void> {
 			}),
 		});
 	} catch (err: unknown) {
-		printError((err as Error).message, 1);
+		const reason = (err as Error).message;
+		await signIn?.finishBrowser(notConnectedPage(reason));
+		failConnect(reason);
 	}
 
-	if ("shared" in result) {
-		printSuccess(describeSharedAccount(result));
-		return;
+	await signIn.finishBrowser(connectedPage(result));
+	printSuccess(describeConnected(result));
+	if (!("shared" in result)) {
+		process.stdout.write(`${describeOrganizations(result)}\n`);
 	}
-	printSuccess(
-		`Connected your ChatGPT plan${result.email ? ` (${result.email})` : ""} to Fabric.`,
-	);
-	process.stdout.write(`${describeOrganizations(result)}\n`);
 }
 
 export function buildConnectCommand(): Command {

@@ -101,6 +101,8 @@ vi.mock("@repo/ai/skills", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	ensureSensitiveOperationAuthority: vi.fn(),
+	// Nothing bound: the recalled-executions rule renders its seeded body.
+	getBoundPromptForAgent: async () => null,
 	getDefaultRagSettings: () => ({ similarityThreshold: 0.5 }),
 	getProjectRagSettings: vi.fn(),
 	getWorkflowById: vi.fn(),
@@ -133,7 +135,6 @@ vi.mock("../../shared/agent-tool-runtime", () => ({
 	hasExactAgentToolApproval: vi.fn(),
 	observeAgentText: vi.fn(),
 	prepareAgentTools: async () => undefined,
-	requiredAgentTool: () => undefined,
 }));
 vi.mock("../../shared/confirmed-workflow", () => ({
 	executeApprovedWorkflow: vi.fn(),
@@ -187,7 +188,10 @@ function systemText(): string {
 	].join("\n");
 }
 
-async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
+async function runTurn(
+	overrides: Partial<DirectChatWorkflowInput> = {},
+	memoryContext = "",
+) {
 	state.captured = undefined;
 	await executeDirectChatActivity(
 		{
@@ -200,7 +204,7 @@ async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
 			...overrides,
 		} as DirectChatWorkflowInput,
 		[],
-		"",
+		memoryContext,
 		"",
 	);
 	expect(state.captured).toBeDefined();
@@ -478,6 +482,29 @@ describe("direct chat company context wiring", () => {
 	});
 });
 
+describe("direct chat usage origin", () => {
+	it("supplies the validated frame to the actual aggregate model resolver", async () => {
+		await runTurn({
+			conversationId: "conv-example",
+			usageFrameId: "frame-example",
+		});
+		expect(state.modelContext).toMatchObject({
+			conversationId: "conv-example",
+			frameId: "frame-example",
+		});
+		expect(state.modelContext).not.toHaveProperty("workflowExecutionId");
+	});
+
+	it("leaves old placement-only inputs unattributed", async () => {
+		await runTurn({
+			workspaceId: "unverified-frame",
+			executionId: "chat-execution-example",
+		});
+		expect(state.modelContext).not.toHaveProperty("frameId");
+		expect(state.modelContext).not.toHaveProperty("workflowExecutionId");
+	});
+});
+
 // Fizzy #2939: only a turn its starter marked plan-eligible may resolve the
 // member's own ChatGPT plan. Mention replies, meetings and every other
 // starter leave the field unset, and the activity then leaves it unset too:
@@ -494,5 +521,39 @@ describe("direct chat ChatGPT plan eligibility", () => {
 	it("lets a turn the Advisor stream marked eligible resolve the plan", async () => {
 		await runTurn({ planEligible: true });
 		expect(state.modelContext).toMatchObject({ planEligible: true });
+	});
+});
+
+// A recalled execution is history: a past "success" must not be reported as
+// current, or as done in this turn, without a tool call. The executions are
+// fenced as untrusted session memory, and text inside that fence is never
+// followed as an instruction, so the rule for reading them has to sit outside
+// it.
+describe("direct chat recalled executions", () => {
+	const RECALLED =
+		"[Memory 1] (2026-10-16, 91% similar, success)\nTask: Schedule a weekly status page\nSummary: Created a scheduled workflow and ran it once.";
+	const RULE =
+		"Never report anything as done in this turn because a past execution did it.";
+
+	it("fences the executions as data and states the history rule outside the fence", async () => {
+		const text = await runTurn({}, RECALLED);
+
+		const fenceOpen = text.indexOf(
+			'<retrieved_context source="session_memory" trust="untrusted">',
+		);
+		const fenceClose = text.indexOf("</retrieved_context>", fenceOpen);
+		const rule = text.indexOf(RULE);
+		expect(fenceOpen).toBeGreaterThan(-1);
+		expect(text.slice(fenceOpen, fenceClose)).toContain(RECALLED);
+		expect(rule).toBeGreaterThan(fenceClose);
+		expect(text).toContain("They are history, not current state");
+		expect(text).toContain("check it now with a tool");
+	});
+
+	it("adds no memory rule when nothing was recalled", async () => {
+		const text = await runTurn();
+
+		expect(text).not.toContain("session_memory");
+		expect(text).not.toContain(RULE);
 	});
 });

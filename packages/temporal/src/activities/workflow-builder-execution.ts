@@ -19,6 +19,7 @@ import {
 	getWorkflowById,
 	isProjectReadOnly,
 	type Prisma,
+	recordWorkflowRunStarted,
 	updateExecutionLog,
 	updateWorkflowExecution,
 } from "@repo/database";
@@ -73,6 +74,15 @@ export async function updateWorkflowExecutionStatus(params: {
 		params.executionId,
 		params.status,
 	);
+
+	if (params.status === "RUNNING" && params.startedAt) {
+		await recordWorkflowRunStarted({
+			executionId: params.executionId,
+			// Temporal delivers activity args as JSON, so this Date arrives as an
+			// ISO string; the raw statement needs a real Date to bind a timestamp.
+			startedAt: new Date(params.startedAt),
+		});
+	}
 
 	await updateWorkflowExecution(params.executionId, {
 		status: params.status as Prisma.EnumWorkflowExecutionStatusFieldUpdateOperationsInput["set"],

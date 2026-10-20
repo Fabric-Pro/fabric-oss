@@ -4,6 +4,7 @@
  * resolver. Without one the resolver gets no conversation.
  */
 
+import { generateEmbedding } from "@repo/rag";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ vi.mock("../../letta-memory-activities", () => ({
 import {
 	embedAndStoreTrajectory,
 	generateLLMSummary,
+	getHybridRoutingSuggestions,
 } from "../../orchestrator-memory-activities";
 import { compactConversationHistoryActivity } from "../execution/compact-conversation";
 
@@ -68,12 +70,20 @@ describe("compactConversationHistoryActivity — usage attribution", () => {
 		await compactConversationHistoryActivity({
 			...input,
 			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
 		});
 		await compactConversationHistoryActivity(input);
 
 		const contexts = h.getAIModelWithMetadata.mock.calls.map((c) => c[1]);
-		expect(contexts[0]).toMatchObject({ conversationId: "conv-1" });
+		expect(contexts[0]).toMatchObject({
+			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
+		});
+		expect(contexts[0]).not.toHaveProperty("workflowExecutionId");
 		expect(contexts[1]).not.toHaveProperty("conversationId");
+		expect(contexts[1]).not.toHaveProperty("frameId");
 	});
 });
 
@@ -87,11 +97,18 @@ describe("generateLLMSummary — usage attribution", () => {
 	};
 
 	it("hands the chat's conversation to the resolver, and none without one", async () => {
-		await generateLLMSummary({ ...input, conversationId: "conv-1" });
+		await generateLLMSummary({
+			...input,
+			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
+		});
 		await generateLLMSummary(input);
 
 		expect(h.getAiModel.mock.calls[0][5]).toEqual({
 			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
 		});
 		expect(h.getAiModel.mock.calls[1][5]).toBeUndefined();
 	});
@@ -106,10 +123,40 @@ describe("generateLLMSummary — usage attribution", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
 		});
 
 		expect(h.getAiModel.mock.calls[0][5]).toEqual({
 			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
+		});
+		expect(vi.mocked(generateEmbedding).mock.calls[0][1]).toMatchObject({
+			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
+			featureKey: "chat-agent",
 		});
 	});
+});
+
+it("attributes success and failure memory-query embeddings to the same turn", async () => {
+	const usageOrigin = {
+		conversationId: "conversation-example",
+		frameId: "frame-example",
+		projectId: "project-example",
+		featureKey: "chat-agent" as const,
+	};
+	await getHybridRoutingSuggestions({
+		task: "Plan the launch",
+		lettaAgentId: null,
+		userId: "user-example",
+		organizationId: "org-example",
+		usageOrigin,
+	});
+	expect(generateEmbedding).toHaveBeenCalledTimes(2);
+	for (const call of vi.mocked(generateEmbedding).mock.calls) {
+		expect(call[1]).toMatchObject(usageOrigin);
+	}
 });

@@ -50,7 +50,9 @@ import {
 import { detectDestructiveRewrite } from "../../lib/structure-guards";
 import { triggerDuplicateDetection } from "../../lib/trigger-duplicate-detection";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
+import { describeSyncErrorForUser } from "../pm-integration/pm-sync-user-error";
 import { routeActionItemsToExistingTickets } from "./route-action-items";
+import { addRoutingNoteToSummary } from "./routing-summary";
 
 // =============================================================================
 // Schemas
@@ -900,6 +902,65 @@ export interface ApplyBacklogChangesResult {
 
 const MAX_TOKEN_BUDGET = 80_000;
 const CHARS_PER_TOKEN = 4;
+// Reserve enough work-item identifiers for updates while leaving most of the budget for meeting evidence.
+const MIN_WORK_ITEM_BLOCK_TOKENS = 8_000;
+// Require roughly 500 characters of capacity for a truncated meeting, beyond a heading or fragment.
+const MIN_MEETING_TRANSCRIPT_TOKENS = 128;
+
+/** Keep item boundaries separate from headings, including multiline titles. */
+type WorkItemList = { header: string; lines: string[]; footer?: string };
+type BudgetedAnalysisContext = ContextSections & {
+	backlog: string;
+	pmWorkItems: string;
+	meetingTranscriptBudget: { requestedTokens: number; grantedTokens: number };
+};
+
+function asWorkItemList(value: string | WorkItemList): WorkItemList {
+	if (typeof value !== "string") {
+		return value;
+	}
+	const lines = value ? value.split("\n") : [];
+	return { header: "", lines };
+}
+
+function renderWorkItemList(
+	list: WorkItemList,
+	kept: number,
+	label: string,
+): string {
+	const omitted = list.lines.length - kept;
+	return (
+		list.header +
+		list.lines.slice(0, kept).join("\n") +
+		(omitted
+			? `${kept > 0 ? "\n" : ""}(${omitted} more ${label} work item${omitted === 1 ? "" : "s"} not shown)`
+			: "") +
+		(list.footer ?? "")
+	);
+}
+
+/** Find the longest whole-item prefix whose headings and omission notice also fit. */
+function fitWorkItemList(list: WorkItemList, budget: number, label: string) {
+	const fullText = renderWorkItemList(list, list.lines.length, label);
+	if (estimateTokens(fullText) <= budget) {
+		return { text: fullText, omitted: 0 };
+	}
+	let low = 0;
+	let high = Math.max(0, list.lines.length - 1);
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (estimateTokens(renderWorkItemList(list, mid, label)) <= budget) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	const text = renderWorkItemList(list, low, label);
+	return {
+		text: estimateTokens(text) <= budget ? text : "",
+		omitted: list.lines.length - low,
+	};
+}
 
 /**
  * Estimate token count from a string (rough approximation: 1 token ~ 4 chars).
@@ -917,19 +978,13 @@ function truncateToTokenBudget(text: string, maxTokens: number): string {
 	if (text.length <= maxChars) {
 		return text;
 	}
-	return `${text.slice(0, maxChars)}\n\n[... truncated to fit token budget ...]`;
+	const notice = "\n\n[... truncated to fit token budget ...]";
+	return maxChars > notice.length
+		? `${text.slice(0, maxChars - notice.length)}${notice}`
+		: text.slice(0, maxChars);
 }
 
-/**
- * Apply progressive truncation to context sections to stay within budget.
- * Priority order (last truncated first): ragContext, notionContent, meetingTranscripts, slackMessages, teamsMessages.
- */
-/**
- * The context sections `applyTokenBudget` returns. Both of its exit paths build
- * this by iterating the priority list rather than hand-listing keys: a
- * hand-listed return silently dropped `applicationLogs` on the truncation path
- * only, which is invisible until the budget is actually exceeded.
- */
+/** Context sources; priorityKeys and remainingKeys in applyTokenBudget set allocation order. */
 type ContextSections = {
 	teamsMessages?: string;
 	slackMessages?: string;
@@ -982,8 +1037,8 @@ type SectionBudgetOutcome = {
  * that eviction was invisible unless someone happened to read a warn line. The
  * open question of whether accumulated context is actually hurting analyses
  * (Fizzy #2316, Phase 2) cannot be answered without measuring it, and a
- * measurement that only fires under pressure has no denominator. So this logs on
- * BOTH exit paths, `underPressure` telling the two apart.
+ * measurement that only fires under pressure has no denominator. This logs on
+ * each run; `underPressure` distinguishes requests that exceed the budget.
  */
 function logBudgetOutcome(args: {
 	projectId?: string;
@@ -992,6 +1047,12 @@ function logBudgetOutcome(args: {
 	requestedContextTokens: number;
 	underPressure: boolean;
 	outcomes: SectionBudgetOutcome[];
+	backlogBlock: {
+		requestedTokens: number;
+		grantedTokens: number;
+		omittedBacklogLines: number;
+		omittedPMLines: number;
+	};
 }): void {
 	const { outcomes } = args;
 	logger.info("[Backlog Analysis] context budget outcome", {
@@ -1009,186 +1070,157 @@ function logBudgetOutcome(args: {
 			.filter((o) => o.outcome === "truncated")
 			.map((o) => o.key),
 		sections: outcomes,
+		backlogBlock: args.backlogBlock,
 	});
 }
 
+/**
+ * Reserve the work-item floor, then allocate decisions and meetings, work items,
+ * and the remaining context in that order. PM entries yield to Fabric update ids.
+ */
 export function applyTokenBudget(
 	sections: ContextSections & {
-		backlog: string;
-		pmWorkItems?: string;
+		backlog: string | WorkItemList;
+		pmWorkItems?: string | WorkItemList;
 		systemPrompt: string;
 		userPrompt: string;
-		/** Correlation only — never affects allocation. */
+		/** Correlation only; allocation does not read this field. */
 		projectId?: string;
 	},
-): ContextSections {
-	// Calculate fixed costs (system prompt, user prompt, backlog, PM items)
+): BudgetedAnalysisContext {
 	const fixedTokens =
 		estimateTokens(sections.systemPrompt) +
-		estimateTokens(sections.userPrompt) +
-		estimateTokens(sections.backlog) +
-		estimateTokens(sections.pmWorkItems ?? "");
-
+		estimateTokens(sections.userPrompt);
 	const availableForContext = MAX_TOKEN_BUDGET - fixedTokens;
-
-	if (availableForContext <= 0) {
-		logger.warn(
-			"[Backlog Analysis] Fixed content exceeds token budget, truncating everything",
-		);
-		logBudgetOutcome({
-			projectId: sections.projectId,
-			fixedTokens,
-			availableForContext,
-			requestedContextTokens: 0,
-			underPressure: true,
-			outcomes: [],
-		});
-		return {};
-	}
-
-	// Ordered by truncation priority (first = keep longest, last = truncate first)
-	// Security findings and architecture decisions are always first — they're
-	// small, authoritative, and must not be dropped.
-	const contextSections: Array<{
-		key: keyof ContextSections;
-		text: string;
-	}> = [];
-
-	if (sections.securityFindings) {
-		contextSections.push({
-			key: "securityFindings",
-			text: sections.securityFindings,
-		});
-	}
-
-	if (sections.architectureDecisions) {
-		contextSections.push({
-			key: "architectureDecisions",
-			text: sections.architectureDecisions,
-		});
-	}
-
-	// Application logs sit just behind architecture decisions: they are direct
-	// runtime evidence for a bug, and already hard-capped upstream
-	// (MAX_LOG_CONTEXT_CHARS), so they cannot crowd out the other sources.
-	if (sections.applicationLogs) {
-		contextSections.push({
-			key: "applicationLogs",
-			text: sections.applicationLogs,
-		});
-	}
-
-	if (sections.teamsMessages) {
-		contextSections.push({
-			key: "teamsMessages",
-			text: sections.teamsMessages,
-		});
-	}
-	if (sections.slackMessages) {
-		contextSections.push({
-			key: "slackMessages",
-			text: sections.slackMessages,
-		});
-	}
-	if (sections.meetingTranscripts) {
-		contextSections.push({
-			key: "meetingTranscripts",
-			text: sections.meetingTranscripts,
-		});
-	}
-	if (sections.notionContent) {
-		contextSections.push({
-			key: "notionContent",
-			text: sections.notionContent,
-		});
-	}
-	if (sections.ragContext) {
-		contextSections.push({
-			key: "ragContext",
-			text: sections.ragContext,
-		});
-	}
-
-	const totalContextTokens = contextSections.reduce(
-		(acc, s) => acc + estimateTokens(s.text),
+	const backlog = asWorkItemList(sections.backlog);
+	const pm = asWorkItemList(sections.pmWorkItems ?? "");
+	const fullBacklog = renderWorkItemList(
+		backlog,
+		backlog.lines.length,
+		"existing",
+	);
+	const fullPM = renderWorkItemList(pm, pm.lines.length, "PM");
+	const requestedBlockTokens =
+		estimateTokens(fullBacklog) + estimateTokens(fullPM);
+	const priorityKeys = [
+		"architectureDecisions",
+		"meetingTranscripts",
+	] as const;
+	const remainingKeys = [
+		"securityFindings",
+		"applicationLogs",
+		"teamsMessages",
+		"slackMessages",
+		"notionContent",
+		"ragContext",
+	] as const;
+	const requestedContextTokens = [...priorityKeys, ...remainingKeys].reduce(
+		(sum, key) => sum + estimateTokens(sections[key] ?? ""),
 		0,
 	);
-
-	// If everything fits, return as-is
-	if (totalContextTokens <= availableForContext) {
-		const everything: ContextSections = {};
-		for (const section of contextSections) {
-			everything[section.key] = section.text;
-		}
-		logBudgetOutcome({
-			projectId: sections.projectId,
-			fixedTokens,
-			availableForContext,
-			requestedContextTokens: totalContextTokens,
-			underPressure: false,
-			outcomes: contextSections.map((section) => ({
-				key: section.key,
-				requestedTokens: estimateTokens(section.text),
-				grantedTokens: estimateTokens(section.text),
-				outcome: "kept" as const,
-			})),
-		});
-		return everything;
-	}
-
-	// Progressive truncation: truncate from the back of the priority list
-	let remainingBudget = availableForContext;
-	const result: ContextSections = {};
-
+	const floor = Math.min(
+		MIN_WORK_ITEM_BLOCK_TOKENS,
+		requestedBlockTokens,
+		Math.max(0, availableForContext),
+	);
+	let remainingBudget = Math.max(0, availableForContext) - floor;
+	const result: BudgetedAnalysisContext = {
+		backlog: "",
+		pmWorkItems: "",
+		meetingTranscriptBudget: {
+			requestedTokens: estimateTokens(sections.meetingTranscripts ?? ""),
+			grantedTokens: 0,
+		},
+	};
 	const outcomes: SectionBudgetOutcome[] = [];
-
-	for (const section of contextSections) {
-		const sectionTokens = estimateTokens(section.text);
-		if (remainingBudget <= 0) {
-			logger.warn(
-				`[Backlog Analysis] Dropping context section: ${section.key} (no budget remaining)`,
-			);
-			outcomes.push({
-				key: section.key,
-				requestedTokens: sectionTokens,
-				grantedTokens: 0,
-				outcome: "dropped",
-			});
-			continue;
+	const allocate = (key: keyof ContextSections) => {
+		const text = sections[key];
+		if (!text) {
+			return;
 		}
-		if (sectionTokens <= remainingBudget) {
-			result[section.key] = section.text;
-			remainingBudget -= sectionTokens;
-			outcomes.push({
-				key: section.key,
-				requestedTokens: sectionTokens,
-				grantedTokens: sectionTokens,
-				outcome: "kept",
-			});
+		const requestedTokens = estimateTokens(text);
+		const grantedTokens = Math.min(requestedTokens, remainingBudget);
+		if (key === "meetingTranscripts") {
+			result.meetingTranscriptBudget = { requestedTokens, grantedTokens };
+		}
+		if (grantedTokens > 0) {
+			result[key] =
+				grantedTokens === requestedTokens
+					? text
+					: truncateToTokenBudget(text, grantedTokens);
+		}
+		remainingBudget -= grantedTokens;
+		outcomes.push({
+			key,
+			requestedTokens,
+			grantedTokens,
+			outcome:
+				grantedTokens === requestedTokens
+					? "kept"
+					: grantedTokens > 0
+						? "truncated"
+						: "dropped",
+		});
+	};
+	for (const key of priorityKeys) {
+		allocate(key);
+	}
+	remainingBudget += floor;
+
+	let omittedBacklogLines = 0;
+	let omittedPMLines = 0;
+	if (requestedBlockTokens <= remainingBudget) {
+		result.backlog = fullBacklog;
+		result.pmWorkItems = fullPM;
+	} else {
+		// Account for the PM omission notice before fitting the Fabric list.
+		const pmNotice = renderWorkItemList(pm, 0, "PM");
+		const pmNoticeTokens = estimateTokens(pmNotice);
+		const fittedBacklog = fitWorkItemList(
+			backlog,
+			Math.max(0, remainingBudget - pmNoticeTokens),
+			"existing",
+		);
+		result.backlog = fittedBacklog.text;
+		omittedBacklogLines = fittedBacklog.omitted;
+		if (omittedBacklogLines > 0) {
+			result.pmWorkItems =
+				pmNoticeTokens <=
+				remainingBudget - estimateTokens(result.backlog)
+					? pmNotice
+					: "";
+			omittedPMLines = pm.lines.length;
 		} else {
-			result[section.key] = truncateToTokenBudget(
-				section.text,
-				remainingBudget,
+			const fittedPM = fitWorkItemList(
+				pm,
+				Math.max(0, remainingBudget - estimateTokens(result.backlog)),
+				"PM",
 			);
-			outcomes.push({
-				key: section.key,
-				requestedTokens: sectionTokens,
-				grantedTokens: remainingBudget,
-				outcome: "truncated",
-			});
-			remainingBudget = 0;
+			result.pmWorkItems = fittedPM.text;
+			omittedPMLines = fittedPM.omitted;
 		}
 	}
-
+	const grantedBlockTokens =
+		estimateTokens(result.backlog) + estimateTokens(result.pmWorkItems);
+	remainingBudget -= grantedBlockTokens;
+	for (const key of remainingKeys) {
+		allocate(key);
+	}
 	logBudgetOutcome({
 		projectId: sections.projectId,
 		fixedTokens,
 		availableForContext,
-		requestedContextTokens: totalContextTokens,
-		underPressure: true,
+		requestedContextTokens,
+		underPressure:
+			requestedContextTokens + requestedBlockTokens > availableForContext,
 		outcomes,
+		backlogBlock: {
+			requestedTokens: requestedBlockTokens,
+			grantedTokens: grantedBlockTokens,
+			omittedBacklogLines,
+			omittedPMLines,
+		},
 	});
-
 	return result;
 }
 
@@ -1440,8 +1472,8 @@ export function buildRecommendSystemPrompt(): string {
 7. Leave \`visionSuggestions\` empty.`;
 }
 
-export function buildAnalysisPrompt(input: {
-	/** Correlation only, for the budget-outcome log. Never affects the prompt. */
+type AnalysisPromptInput = {
+	/** Correlation for logBudgetOutcome; not interpolated into the prompt. */
 	projectId?: string;
 	fetchedContext: ContextSections;
 	existingBacklog: AnalyzeContextInput["existingBacklog"];
@@ -1475,7 +1507,16 @@ export function buildAnalysisPrompt(input: {
 	bugBodyTemplate?: string;
 	/** Prompt variant (plan Slice 6). Omitted = "standard". */
 	intakeMode?: BacklogIntakeMode;
-}): string {
+};
+
+export function buildAnalysisPrompt(input: AnalysisPromptInput): string {
+	return buildAnalysisPromptWithBudget(input).prompt;
+}
+
+function buildAnalysisPromptWithBudget(input: AnalysisPromptInput): {
+	prompt: string;
+	meetingTranscriptBudget: BudgetedAnalysisContext["meetingTranscriptBudget"];
+} {
 	const {
 		projectId,
 		fetchedContext,
@@ -1506,40 +1547,42 @@ export function buildAnalysisPrompt(input: {
 		backlogLines.push("(Empty backlog — all items will be new creates)\n");
 	}
 
-	const backlogSection = backlogLines.join("\n");
+	const backlogSection: string | WorkItemList =
+		existingBacklog.stories.length > 0
+			? {
+					header: `${backlogLines.slice(0, 2).join("\n")}\n`,
+					lines: backlogLines.slice(2, -1),
+					footer: "\n",
+				}
+			: { header: backlogLines.join("\n"), lines: [] };
 
-	// Build PM work items section
-	let pmSection = "";
+	// Sync and list discovery can use different id formats; deduplicate exact ids only.
+	const syncedExternalIds = new Set(
+		existingBacklog.stories.map((s) => s.externalId).filter(Boolean),
+	);
+	let pmSection: string | WorkItemList = "";
 	if (pmWorkItems) {
 		const pmLines: string[] = [];
-		pmLines.push(
-			"## Current PM Tool Backlog (Source of Truth)\n\nThese items exist in the external PM tool. This is the authoritative list of what currently exists. Do NOT propose creating items that match these.\n",
-		);
-		if (pmWorkItems.epics.length > 0) {
-			pmLines.push("### PM Epics");
-			for (const e of pmWorkItems.epics) {
+		for (const [key, heading] of [
+			["epics", "PM Epics"],
+			["features", "PM Features"],
+			["stories", "PM Stories"],
+		] as const) {
+			const items = pmWorkItems[key].filter(
+				(item) => !syncedExternalIds.has(item.id),
+			);
+			for (const [index, item] of items.entries()) {
 				pmLines.push(
-					`- [${e.id}] ${e.title ?? "Untitled"}${e.description ? ` — ${e.description.slice(0, 150)}` : ""}${e.url ? ` (${e.url})` : ""}`,
+					`${index === 0 ? `### ${heading}\n` : ""}- [${item.id}] ${item.title ?? "Untitled"}${item.description ? ` — ${item.description.slice(0, 150)}` : ""}${item.url ? ` (${item.url})` : ""}`,
 				);
 			}
 		}
-		if (pmWorkItems.features.length > 0) {
-			pmLines.push("### PM Features");
-			for (const f of pmWorkItems.features) {
-				pmLines.push(
-					`- [${f.id}] ${f.title ?? "Untitled"}${f.description ? ` — ${f.description.slice(0, 150)}` : ""}${f.url ? ` (${f.url})` : ""}`,
-				);
-			}
-		}
-		if (pmWorkItems.stories.length > 0) {
-			pmLines.push("### PM Stories");
-			for (const s of pmWorkItems.stories) {
-				pmLines.push(
-					`- [${s.id}] ${s.title ?? "Untitled"}${s.description ? ` — ${s.description.slice(0, 150)}` : ""}${s.url ? ` (${s.url})` : ""}`,
-				);
-			}
-		}
-		pmSection = pmLines.join("\n");
+		pmSection = {
+			header:
+				"## Current PM Tool Backlog (Source of Truth)\n\nThese items exist in the external PM tool and are not linked in the existing backlog by an exact external ID match. Synced items appear in the Existing Backlog with [extId:...].\n" +
+				(pmLines.length ? "\n" : ""),
+			lines: pmLines,
+		};
 	}
 
 	// Build context sections
@@ -1616,14 +1659,16 @@ export function buildAnalysisPrompt(input: {
 		: `1. **Capture new work items only** — this flow records the discussion as new backlog items. Do NOT modify, merge, or update any existing backlog item. Every change you propose MUST use \`action: "create"\` (never \`action: "update"\`).`;
 
 	const rule9 = allowUpdates
-		? "9. **No duplicates**: If the context describes something that already exists in the backlog (same meaning or matching an external PM item), you MUST propose an `update` instead of a `create`. Compare titles and descriptions between the existing backlog, PM tool items, and context to detect matches. Items with [extId:...] are already synced to the PM tool — always update those, never recreate them."
+		? pmWorkItems
+			? "9. **No duplicates**: Compare context against both lists. Synced items appear in the Existing Backlog with [extId:...] and their Fabric [id:...]; update those records instead of recreating them. For a match shown only in the PM list, follow rule 10 to import it with existingExternalId. Omission notices mean the lists are partial; absence from a trimmed list does not establish that an item is new."
+			: "9. **No duplicates**: If the context describes something that already exists in the backlog (same meaning or matching an external PM item), you MUST propose an `update` instead of a `create`. Compare titles and descriptions between the existing backlog, PM tool items, and context to detect matches. Items with [extId:...] are already synced to the PM tool — always update those, never recreate them."
 		: "9. **Do not deduplicate against the existing backlog**: Even if the context closely matches an existing item, capture it as a NEW `create`. The existing backlog is provided ONLY for awareness of what already exists — never to update, merge with, or skip an item.";
 
 	const rule10 = allowUpdates
-		? `10. **PM TOOL IS SOURCE OF TRUTH**: When "Current PM Tool Backlog" items are provided, they represent the AUTHORITATIVE current state of the backlog. Compare new context primarily against PM items to detect duplicates.
-    - If an item exists in BOTH the PM tool and the Fabric DB backlog (matched by [extId:...]), propose an \`update\` using the Fabric DB \`existingId\` from the [id:...] bracket.
+		? `10. **PM TOOL IS SOURCE OF TRUTH**: When "Current PM Tool Backlog" items are provided, they represent the AUTHORITATIVE current state of the backlog. ${pmWorkItems ? "PM items with an exact [extId:...] match appear only in the Existing Backlog; the PM list contains remaining items. Compare new context against both lists to detect duplicates." : "Compare new context primarily against PM items to detect duplicates."}
+    - If an item ${pmWorkItems ? "has [extId:...] in the Fabric DB backlog" : "exists in BOTH the PM tool and the Fabric DB backlog (matched by [extId:...])"}, propose an \`update\` using the Fabric DB \`existingId\` from the [id:...] bracket.
     - If an item exists in the PM tool but NOT in the Fabric DB backlog (no matching [id:...] entry), propose a \`create\` with \`existingExternalId\` set to the PM tool ID. This will import it into Fabric and link it to the PM tool item. Do NOT propose an \`update\` without a valid Fabric DB [id:...] — updates require an existing Fabric record.
-    - If context describes something that semantically matches a PM item, update the existing item rather than creating a duplicate.
+    - ${pmWorkItems ? "For a semantic match, update using a shown Fabric [id:...], or import with a create and existingExternalId if only a PM entry is shown." : "If context describes something that semantically matches a PM item, update the existing item rather than creating a duplicate."}
     - Prioritize semantic matching against PM item titles when detecting duplicates.`
 		: "";
 
@@ -1770,11 +1815,19 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 
 12. **DO NOT PROPOSE EPICS (CRITICAL)**: The \`epic\` work-item type is NOT supported. Do NOT propose \`type: "epic"\` under any circumstance. Map any large or strategic initiative to one or more \`type: "feature"\` items with clear, self-contained titles instead. Allowed types are \`feature\` and \`bug\` ONLY (the \`story\` type is also retired — see above).`;
 
-	// Security findings rule. Fires when the fetched context includes a
-	// "### Security Findings" section. Instructs the model to propose bugs
-	// for untracked findings rather than ignoring them.
+	// Use the fetched transcript signal before budgeting, so truncation cannot
+	// turn a meeting-scoped run into a general background-context analysis.
+	const isMeetingRun = Boolean(fetchedContext.meetingTranscripts);
+
+	// Security findings are background in meeting runs; other runs retain the
+	// untracked-finding requirement when security context is supplied.
 	const securityFindingsConstraint = fetchedContext.securityFindings
-		? `
+		? isMeetingRun
+			? `
+
+13. **Security Findings (CRITICAL)**: Security findings are background. Propose a \`type: "bug"\` item for a finding only when the meeting discussed it or the user's instructions explicitly ask for security work; otherwise a finding may only add detail to a meeting-derived change.
+    - Set \`sourceContext: "security_findings"\` on proposals a finding originated, not on meeting-derived changes a finding merely informed. Do NOT reproduce the full finding text in the description — write a concise, actionable bug report using the finding's title, category, and remediation guidance.`
+			: `
 
 13. **Security Findings (CRITICAL)**: When "### Security Findings" is present in the context, you MUST propose \`type: "bug"\` items for any CRITICAL or HIGH severity finding that does not already have a matching backlog item (check [linked: ...] brackets — a linked identifier means a ticket already exists).
     - For MEDIUM/LOW findings, use judgment based on the user instructions. Set \`sourceContext: "security_findings"\` on every proposal derived from a finding. Do NOT reproduce the full finding text in the description — write a concise, actionable bug report using the finding's title, category, and remediation guidance.`
@@ -1799,7 +1852,18 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 		? ""
 		: `
 
-13. **CREATE-ONLY — CAPTURE AS-IS (CRITICAL)**: This flow captures monitored-channel discussion as brand-new work items. Every change MUST use \`action: "create"\`. Do NOT emit \`action: "update"\` under ANY circumstance, and do NOT merge into, edit, or deduplicate against existing backlog items. If the discussion relates to existing work, still capture it as a NEW item.`;
+13. **CREATE-ONLY — CAPTURE AS-IS (CRITICAL)**: This flow captures monitored-channel discussion as brand-new work items. Every change MUST use \`action: "create"\`. Do NOT emit \`action: "update"\` under ANY circumstance, and do NOT merge into, edit, or deduplicate against existing backlog items. If the discussion relates to existing work, still capture it as a NEW item.
+    - The summary should describe what is being captured, without stating whether existing backlog items are changed; a later step may match items to existing tickets.`;
+
+	const meetingGroundingConstraint = isMeetingRun
+		? `
+
+15. **Meeting grounding (CRITICAL)**: Every proposed change (create or update) must originate from something discussed in the "### Meeting Transcripts" section, from other sources the user selected (Teams messages, Notion pages), or from a specific change the user's instructions explicitly request (a general request to analyze context or suggest updates is not one).
+    - The background sections — Slack Messages, Security Findings, Architecture Decisions, Application Logs and Additional Context (RAG) — may inform the details of such a change but must never be the sole origin of one. For security work, apply the Security Findings rule.
+    - If none of these allowed origins raised anything actionable, return no changes rather than filling from background context.
+    - reasoning should cite what was said in the meeting; for changes originating in another selected source or the user's explicit instructions, cite that source or instruction instead.
+    - This rule does not require updates or deduplication. When the create-only constraint applies, capture work from these allowed origins as new creates only.`
+		: "";
 
 	const fullSystemPrompt =
 		intakeMode === "explore"
@@ -1811,7 +1875,8 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 					epicSuppressionConstraint +
 					securityFindingsConstraint +
 					architectureDecisionsConstraint +
-					createOnlyConstraint;
+					createOnlyConstraint +
+					meetingGroundingConstraint;
 
 	// Apply token budget
 	const budgetedContext = applyTokenBudget({
@@ -1830,6 +1895,10 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 		projectId,
 	});
 
+	const finish = (prompt: string) => ({
+		prompt,
+		meetingTranscriptBudget: budgetedContext.meetingTranscriptBudget,
+	});
 	// Rebuild context section with budgeted content
 	const budgetedContextParts: string[] = [];
 	budgetedContextParts.push("## Fetched Context\n");
@@ -1896,18 +1965,18 @@ ${rule9}${rule10 ? `\n\n${rule10}` : ""}`;
 				budgetedContextSection,
 			].join("\n"),
 		);
-		return `${fullSystemPrompt}
+		return finish(`${fullSystemPrompt}
 
 ---
 
-${backlogSection}
+${budgetedContext.backlog}
 ${UNTRUSTED_INTAKE_BLOCK_START}
 ${untrusted}
 ${UNTRUSTED_INTAKE_BLOCK_END}
 
 ---
 
-Propose the first spikes for this hunch and the vision you inferred. Return a JSON object matching the ChangeProposal schema (2–4 spike creates with deliveryTrack "SPIKE", at most one epic, and visionSuggestions).`;
+Propose the first spikes for this hunch and the vision you inferred. Return a JSON object matching the ChangeProposal schema (2–4 spike creates with deliveryTrack "SPIKE", at most one epic, and visionSuggestions).`);
 	}
 
 	if (intakeMode === "recommend") {
@@ -1915,11 +1984,11 @@ Propose the first spikes for this hunch and the vision you inferred. Return a JS
 		// request sit outside; every fetched context section sits inside ONE
 		// delimited block.
 		const untrusted = sanitizeUntrustedIntake(budgetedContextSection);
-		return `${fullSystemPrompt}
+		return finish(`${fullSystemPrompt}
 
 ---
 
-${backlogSection}
+${budgetedContext.backlog}
 ${UNTRUSTED_INTAKE_BLOCK_START}
 ${untrusted}
 ${UNTRUSTED_INTAKE_BLOCK_END}
@@ -1930,14 +1999,14 @@ ${UNTRUSTED_INTAKE_BLOCK_END}
 
 ${userPrompt}
 
-Return a JSON object matching the ChangeProposal schema.`;
+Return a JSON object matching the ChangeProposal schema.`);
 	}
 
-	return `${fullSystemPrompt}
+	return finish(`${fullSystemPrompt}
 
 ---
 
-${pmSection ? `${pmSection}\n\n` : ""}${backlogSection}
+${budgetedContext.pmWorkItems ? `${budgetedContext.pmWorkItems}\n\n` : ""}${budgetedContext.backlog}
 ${budgetedContextSection}
 
 ---
@@ -1948,7 +2017,7 @@ ${userPrompt}
 
 ---
 
-Analyze the fetched context against the ${pmSection ? "PM tool backlog (source of truth) and " : ""}existing backlog and propose structured changes. Return a JSON object matching the ChangeProposal schema.`;
+Analyze the fetched context against the ${budgetedContext.pmWorkItems ? "PM tool backlog (source of truth) and " : ""}existing backlog and propose structured changes. Return a JSON object matching the ChangeProposal schema.`);
 }
 
 // =============================================================================
@@ -2321,7 +2390,7 @@ export async function analyzeContextAndPropose(
 	});
 
 	// Build the analysis prompt
-	const prompt = buildAnalysisPrompt({
+	const { prompt, meetingTranscriptBudget } = buildAnalysisPromptWithBudget({
 		projectId,
 		fetchedContext: flattenedContext,
 		existingBacklog,
@@ -2352,6 +2421,7 @@ export async function analyzeContextAndPropose(
 			{
 				userId,
 				organizationId,
+				projectId,
 				featureKey: "backlog-update",
 				...(jobType ? { jobType } : {}),
 			},
@@ -2382,6 +2452,21 @@ export async function analyzeContextAndPropose(
 			promptChars: prompt.length,
 		});
 
+		if (
+			meetingTranscriptBudget.requestedTokens > 0 &&
+			meetingTranscriptBudget.grantedTokens <
+				Math.min(
+					meetingTranscriptBudget.requestedTokens,
+					MIN_MEETING_TRANSCRIPT_TOKENS,
+				)
+		) {
+			throw ApplicationFailure.nonRetryable(
+				// Only the instructions and upstream-capped decisions are allocated
+				// ahead of transcripts, so shorter instructions are the remedy.
+				"The meeting could not fit in the analysis. Shorten your instructions, then retry.",
+				"MEETING_TRANSCRIPT_BUDGET_EXHAUSTED",
+			);
+		}
 		result = await generateObject({
 			model,
 			schema: ChangeProposalSchema,
@@ -2411,6 +2496,13 @@ export async function analyzeContextAndPropose(
 			projectId,
 		});
 	} catch (error) {
+		// Preserve the guard's actionable message through the workflow's cause-chain unwrap.
+		if (
+			error instanceof ApplicationFailure &&
+			error.type === "MEETING_TRANSCRIPT_BUDGET_EXHAUSTED"
+		) {
+			throw error;
+		}
 		const classified = classifyBacklogAnalysisError(error);
 		logger.error("[Backlog Analysis] generate failed", {
 			...classified.logFields,
@@ -2553,6 +2645,13 @@ export async function analyzeContextAndPropose(
 			organizationId,
 			connectedContext: fetchedContext.ragContext,
 		});
+	}
+
+	if (allowRouting) {
+		proposal.summary = addRoutingNoteToSummary(
+			proposal.summary,
+			proposal.changes,
+		);
 	}
 
 	// INLINE decision pre-check (non-fatal) — monitored-channel sources only.
@@ -3997,7 +4096,7 @@ export async function applyBacklogChanges(
 			});
 			errors.push({
 				change: change as ChangeProposal["changes"][number],
-				error: errorMessage,
+				error: describeSyncErrorForUser(error),
 			});
 		}
 	}

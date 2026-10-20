@@ -5,6 +5,11 @@
  * that sync data into Fabric for agent knowledge access.
  */
 
+export {
+	type AzureDevOpsAssignedStoriesInput,
+	type AzureDevOpsStoryAssignee,
+	listAzureDevOpsAssignedStories,
+} from "./azure-devops/assigned-stories";
 export type {
 	AzureDevOpsRepo,
 	AzureDevOpsRepoGroup,
@@ -16,6 +21,37 @@ export {
 	listAzureDevOpsProjectsAndRepos,
 	validateAzureDevOpsPat,
 } from "./azure-devops/discovery";
+export type { AzureDevOpsCaptureIncompleteReason } from "./azure-devops/project-read";
+export { listAzureDevOpsWorkItemTypes } from "./azure-devops/work-item-types";
+export {
+	AzureDevOpsProjectReadError,
+	azureDevOpsOrganization,
+	getAzureDevOpsProjectWorkItemCounts,
+	listAzureDevOpsProjectMembers,
+} from "./azure-devops/project-work-items";
+export type {
+	AzureDevOpsStoryComment,
+	AzureDevOpsStoryCommentsCapture,
+} from "./azure-devops/story-comments";
+export {
+	type AzureDevOpsSprintAssignedObservation,
+	type AzureDevOpsSprintCapture,
+	type AzureDevOpsSprintContextEdge,
+	type AzureDevOpsSprintIncompleteReason,
+	type AzureDevOpsSprintStoryCapture,
+	captureAzureDevOpsSprintStories,
+} from "./azure-devops/sprint-capture";
+export type {
+	AzureDevOpsSprintAssignmentField,
+	AzureDevOpsSprintCaptureInput,
+	AzureDevOpsSprintRelationKind,
+	AzureDevOpsSprintSelection,
+} from "./azure-devops/sprint-selection";
+export {
+	type AzureDevOpsStorySnapshot,
+	type AzureDevOpsStorySnapshotsInput,
+	getAzureDevOpsStorySnapshots,
+} from "./azure-devops/story-snapshots";
 // Base connector
 export {
 	BaseConnector,

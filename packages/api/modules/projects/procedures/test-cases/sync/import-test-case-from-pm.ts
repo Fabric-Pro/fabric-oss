@@ -5,7 +5,9 @@ import {
 	discoverPMToolCapabilities,
 	fetchPMItemsByIds,
 } from "@repo/temporal/activities";
+import { ApplicationFailure } from "@temporalio/client";
 import { z } from "zod";
+import { withCorrelationMemo } from "../../../../../lib/temporal-correlation";
 import {
 	Permissions,
 	requireProjectPermission,
@@ -14,7 +16,6 @@ import {
 import { assertTestCaseSyncSupported } from "../../../lib/pm-test-case-sync-capability";
 import { resolvePmTarget } from "../../../lib/resolve-pm-target";
 import { assertTestCasesFeatureEnabled } from "../../../lib/test-cases-feature";
-import { mirrorTestCaseToContext } from "../sync-context";
 
 /**
  * Import a single PM item into a Fabric test case (the synchronous pull
@@ -22,8 +23,8 @@ import { mirrorTestCaseToContext } from "../sync-context";
  * entity-agnostic `fetchPMItemsByIds` (MCP or GitLab REST, decided by
  * `resolvePmTarget`), upserts a `TestCase` via the shared
  * `createOrUpdateTestCaseFromPMItem` activity (which records the `pull`
- * `PmSyncLog{entityType:"TEST_CASE"}` and parses steps back from the body), then
- * mirrors the case into the project RAG store.
+ * `PmSyncLog{entityType:"TEST_CASE"}`, parses steps back from the body, and
+ * performs the best-effort mirror into the project RAG store).
  */
 export const importTestCaseFromPmProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.TEST_CASE_UPDATE))
@@ -182,45 +183,32 @@ export const importTestCaseFromPmProcedure = tenantProtectedProcedure
 				});
 			}
 
-			// Resurrect a soft-deleted case IN PLACE before the upsert (only now
-			// that the fetch has succeeded, so a failed import never undeletes).
-			// The partial unique index `(projectId, externalId) WHERE externalId IS
-			// NOT NULL` counts soft-deleted rows, so a fresh create would collide;
-			// undeleting lets `createOrUpdateTestCaseFromPMItem` take its UPDATE
-			// path and refresh the restored case instead.
-			if (existing?.deletedAt) {
-				await db.testCase.update({
-					where: { id: existing.id },
-					data: { deletedAt: null },
-				});
-			}
-
-			// Upsert the case. The activity records the `pull` PmSyncLog row
-			// (entityType "TEST_CASE") and parses steps back from the body.
+			// The activity checks link provenance before restoring a deleted case,
+			// updating content/refs, and recording the pull log.
 			const result = await createOrUpdateTestCaseFromPMItem({
 				projectId: input.projectId,
+				containerId: project.projectManagementContainerId ?? undefined,
+				additionalContext: project.projectManagementAdditionalContext,
+				mcpConfigId: target.kind === "mcp" ? target.mcpConfigId : null,
 				externalId: input.externalId,
 				title: item.title ?? `Imported: ${input.externalId}`,
 				description: item.description ?? null,
 				externalUrl: item.url ?? null,
 				externalMcpServerId:
-					project.projectManagementMcpServerId ?? null,
+					target.kind === "mcp"
+						? target.mcpConfig.mcpServerId
+						: (project.projectManagementMcpServerId ?? null),
 				userId: user.id,
 				organizationId: projectOrgId,
+				...withCorrelationMemo({ memo: undefined }),
 				toolKey,
 			});
 
-			// RAG mirror — load the freshly-upserted detail and embed it.
+			// Load after the activity mirror so the response includes its context link.
 			const detail = await getTestCase({
 				id: result.testCaseId,
 				projectId: input.projectId,
 			});
-			if (detail) {
-				await mirrorTestCaseToContext(detail, {
-					userId: user.id,
-					organizationId: project.organizationId,
-				});
-			}
 
 			return {
 				success: true,
@@ -233,6 +221,12 @@ export const importTestCaseFromPmProcedure = tenantProtectedProcedure
 				},
 			};
 		} catch (error) {
+			if (
+				error instanceof ApplicationFailure &&
+				error.type === "TestCasePullLinkMismatchError"
+			) {
+				throw new ORPCError("CONFLICT", { message: error.message });
+			}
 			if (error instanceof ORPCError) {
 				throw error;
 			}

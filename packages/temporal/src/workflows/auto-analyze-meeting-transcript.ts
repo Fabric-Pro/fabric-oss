@@ -29,6 +29,7 @@ import { patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import { withChatGptPlanWait } from "./lib/chatgpt-plan-wait";
+import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 const { autoAnalyzeMeetingTranscriptActivity } = proxyActivities<
 	typeof activities
@@ -129,7 +130,12 @@ export async function autoAnalyzeMeetingTranscriptWorkflow(
 		// Gated behind patched() so an execution started before this change keeps
 		// its original (single-activity) command sequence on replay.
 		if (patched("meeting-auto-analyze-failed-status-v1")) {
-			const message = err instanceof Error ? err.message : String(err);
+			// Temporal wraps an activity throw in an ActivityFailure whose own
+			// message is the generic "Activity task failed"; the activity's
+			// classified reason lives on its cause (Fizzy #3174). Only the
+			// activity's input string changes, not the command sequence, so no
+			// new patch marker is needed.
+			const { message } = unwrapPmSyncError(err);
 			await markMeetingTranscriptAnalysisFailedActivity({
 				transcriptRecordId: input.transcriptRecordId,
 				projectId: input.projectId,

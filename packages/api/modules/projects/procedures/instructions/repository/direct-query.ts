@@ -63,10 +63,15 @@ async function resolvePin(
 export async function withDirectRead<T>(
 	input: DirectReadInput,
 	read: (context: { source: Source; pin: DirectPin }) => Promise<T>,
+	options: { verifyBeforeRead?: boolean } = {},
 ): Promise<{ pin: DirectPin; value: T }> {
 	const source = await loadDirectRepositorySource(input);
 	try {
 		const { pin, verified } = await resolvePin(source, input);
+		if (options.verifyBeforeRead) {
+			await verified;
+			return { pin, value: await read({ source, pin }) };
+		}
 		const [, value] = await inOrder(verified, read({ source, pin }));
 		return { pin, value };
 	} finally {

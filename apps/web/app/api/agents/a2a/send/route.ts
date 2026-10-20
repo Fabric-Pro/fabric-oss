@@ -1,30 +1,29 @@
 /**
- * A2A Send API Route
- * Proxies messages to external agents via A2A protocol.
- * Provides a unified interface for the frontend to communicate with any A2A-compatible agent.
- * Security:
- * - Authenticates user session
- * - Issues AI token for secure credential exchange
- * - Passes tenant context to agents
+ * Relay chat messages to ACTIVE SYSTEM agents selected by registered ID or name.
+ * The database lookup and endpoint guard precede AI token issuance. Tenant
+ * membership is checked before model resolution and credential exchange.
  */
 
 import { type A2AMessage, SecureA2AClient } from "@repo/agent-core";
 import {
 	buildEffectiveBaseUrl,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 } from "@repo/ai";
 import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import { issueAIToken } from "@repo/ai-token";
 import { auth } from "@repo/auth";
-import { isOrganizationMember } from "@repo/database";
+import {
+	getActiveSystemRegisteredAgent,
+	isOrganizationMember,
+} from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import { agentEndpointRefusal } from "@repo/utils/agent-endpoint";
 import { headers } from "next/headers";
 import { type NextRequest, NextResponse } from "next/server";
 
 interface A2ASendRequest {
-	agentUrl: string;
+	agentId: string;
 	message: {
 		role: "user";
 		content: string;
@@ -59,11 +58,11 @@ export async function POST(req: NextRequest) {
 		});
 
 		const body: A2ASendRequest = await req.json();
-		const { agentUrl, message, contextId, history, organizationId } = body;
+		const { agentId, message, contextId, history, organizationId } = body;
 
-		if (!agentUrl) {
+		if (typeof agentId !== "string" || !agentId.trim()) {
 			return NextResponse.json(
-				{ error: "agentUrl is required" },
+				{ error: "agentId is required" },
 				{ status: 400 },
 			);
 		}
@@ -75,17 +74,23 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		// `agentUrl` is whatever the caller put in the body — there is no
-		// registered-agent lookup here and nothing cross-checks it against a
-		// stored `deploymentUrl`. Unguarded, that made this the sharpest SSRF
-		// in the product: the destination is handed `X-Service-Token` (the
-		// inter-agent shared secret) and `X-AI-Token`, which is exchangeable
-		// for real provider credentials. The registry procedures the guard
-		// first landed on leak a health flag; this one leaks the keys.
-		//
-		// Checked here rather than inside `SecureA2AClient`: the client lives
-		// in `@repo/agent-core`, which five other things import and which does
-		// not depend on `@repo/utils`.
+		// Only platform-admin registrations and operator seeds can create SYSTEM
+		// agents (the registry create procedures enforce this). Ignore caller URLs:
+		// the AI token is exchangeable for provider credentials. Keep service
+		// authentication unset on this relay, as before.
+		const agent = await getActiveSystemRegisteredAgent(agentId);
+		if (!agent?.deploymentUrl) {
+			return NextResponse.json(
+				{ error: "Agent not found" },
+				{ status: 404 },
+			);
+		}
+		const agentUrl = agent.deploymentUrl;
+		// The relay requires an ACTIVE SYSTEM registration in every environment.
+		// No safe fetch here: SYSTEM agents may sit on private hostnames.
+		// Loopback and host.docker.internal are allowlisted by default only
+		// outside production; otherwise endpoint-check exemptions require
+		// AGENT_DISCOVERY_ALLOWED_HOSTS.
 		const endpointRefusal = agentEndpointRefusal(agentUrl);
 		if (endpointRefusal) {
 			return NextResponse.json(
@@ -129,10 +134,10 @@ export async function POST(req: NextRequest) {
 			trackUsage();
 
 			// Get raw provider config for base URL
-			const providerConfig = await getRAGProviderConfig({
-				userId: session.user.id,
-				organizationId,
-			});
+			const providerConfig = await getRAGProviderConfigForModel(
+				{ userId: session.user.id, organizationId },
+				metadata,
+			);
 
 			aiToken = await issueAIToken({
 				userId: session.user.id,
@@ -140,8 +145,9 @@ export async function POST(req: NextRequest) {
 				impersonated: Boolean(session.session.impersonatedBy),
 				source: "a2a-proxy",
 				// The same decision as the resolution above, so the agent's key
-				// exchange lands on the same plan; never while impersonating.
-				planEligible: onPlan,
+				// exchange lands on the same plan, or on the member's own key
+				// while the plans are spent; never while impersonating.
+				planEligible: onPlan || Boolean(metadata.planSpentPersonalKey),
 			});
 
 			aiModel = metadata.modelString;

@@ -17,7 +17,11 @@
  *  - re-run states, refusals and the source line; evidence chips; answers no
  *    longer raised; one polite live region, and every action reachable by
  *    keyboard;
- *  - a refusal of the read shows one neutral line and is never retried.
+ *  - a refusal of the read shows one neutral line and is never retried;
+ *  - the run's report sits after unsaved answers and above the findings;
+ *    "Full report" stays open through polls and the greyed state, closes
+ *    for a newer run, and only the member's own re-run moves focus back to
+ *    it.
  *
  * `@tanstack/react-query` is real, with the hook's own retry policy (only the
  * delay is zeroed), and `next-intl` resolves the real en.json, so a missing
@@ -81,8 +85,34 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	},
 }));
 
+const parse = vi.hoisted(() => ({ fail: false }));
+
+vi.mock(
+	"@saas/projects/components/proposal-artifact/report-citations-remark",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/projects/components/proposal-artifact/report-citations-remark")
+			>();
+		return {
+			...actual,
+			remarkReportCitations: vi.fn(
+				(
+					options: Parameters<typeof actual.remarkReportCitations>[0],
+				) => {
+					if (parse.fail) {
+						throw new Error("The renderer failed");
+					}
+					return actual.remarkReportCitations(options);
+				},
+			),
+		};
+	},
+);
+
 import messages from "@repo/i18n/translations/en.json";
 import { ProposalAnalysisPanel } from "@saas/projects/components/proposal-artifact/ProposalAnalysisPanel";
+import { remarkReportCitations } from "@saas/projects/components/proposal-artifact/report-citations-remark";
 import type { ProposalAnalysis } from "@saas/projects/components/proposal-artifact/use-proposal-analysis";
 import {
 	analysis,
@@ -94,6 +124,7 @@ import {
 	orpcError,
 	PROJECT_ID,
 	RUN_ID,
+	report,
 	response,
 	savedAnswer,
 } from "./proposal-artifact-fixtures";
@@ -148,6 +179,8 @@ beforeEach(() => {
 	for (const fn of Object.values(api)) {
 		fn.mockReset();
 	}
+	parse.fail = false;
+	vi.mocked(remarkReportCitations).mockClear();
 });
 
 afterEach(() => {
@@ -2479,6 +2512,541 @@ describe("ProposalAnalysisPanel — accessibility", () => {
 			expect(liveRegion(container)).toHaveTextContent(
 				copy.announce.runFailed,
 			),
+		);
+	});
+});
+
+describe("ProposalAnalysisPanel — report", () => {
+	const reportCopy = copy.report;
+	const CONTEXT_HREF = "/app/example-org/projects/project-1/contexts/ctx-1";
+	const citations = [
+		{
+			source: 2,
+			evidence: {
+				source: 2,
+				kind: "projectContext" as const,
+				contextType: "LINK",
+				title: "Kickoff notes",
+				excerpt: "The client wants SSO.",
+				link: { contextId: "ctx-1", href: CONTEXT_HREF },
+			},
+		},
+		{
+			source: 3,
+			evidence: {
+				source: 3,
+				kind: "company" as const,
+				title: "Rate card",
+				excerpt: "Senior rate is fixed.",
+			},
+		},
+	];
+	const cited = (overrides: Parameters<typeof report>[0] = {}) =>
+		report({
+			text: "## Detail\n\nThe client wants SSO [S2]. Rates are fixed [S3].",
+			citations,
+			...overrides,
+		});
+
+	function panel({ isGenerating = false } = {}) {
+		return (
+			<QueryClientProvider client={client}>
+				<ProposalAnalysisPanel
+					projectId={PROJECT_ID}
+					documentId={DOCUMENT_ID}
+					isGenerating={isGenerating}
+				/>
+			</QueryClientProvider>
+		);
+	}
+
+	const reportRegion = () =>
+		screen.getByRole("region", { name: reportCopy.title });
+	const fullReport = () =>
+		screen.getByRole("button", { name: reportCopy.fullReport });
+	const linkChip = () =>
+		screen.getByRole("link", {
+			name: `S2: Kickoff notes ${copy.evidence.opensInNewTab}`,
+		});
+
+	/** `a` comes before `b` in the document. */
+	const precedes = (a: Node, b: Node) =>
+		Boolean(
+			a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING,
+		);
+
+	it("shows the run's report after unsaved answers and above the findings", async () => {
+		const open = finding({ stableKey: "key-1", title: "Open finding" });
+		serverSays(analysis({ findings: [open] }));
+		renderPanel();
+		await screen.findByText("Open finding");
+		expect(
+			screen.queryByRole("region", { name: reportCopy.title }),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(
+			within(item("Open finding")).getByRole("button", {
+				name: copy.actions.answer,
+			}),
+		);
+		await userEvent.type(
+			screen.getByLabelText(copy.editor.label),
+			"Unsaved words",
+		);
+		serverSays(
+			analysis({
+				run: { id: "analysis-2" },
+				findings: [
+					finding({ stableKey: "key-2", title: "New finding" }),
+				],
+				report: cited(),
+			}),
+		);
+		await act(() => client.refetchQueries());
+
+		const region = await screen.findByRole("region", {
+			name: reportCopy.title,
+		});
+		const unsaved = screen.getByRole("region", { name: copy.orphan.title });
+		const summary = screen.getByText(
+			"1 of 1 needs a decision",
+		) as HTMLElement;
+		expect(precedes(unsaved, region)).toBe(true);
+		expect(precedes(region, summary)).toBe(true);
+		expect(precedes(region, screen.getByText("New finding"))).toBe(true);
+		expect(
+			within(region).getByText("Ready to send after two fixes"),
+		).toBeInTheDocument();
+		expect(fullReport()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("shows the report with zero findings, and the empty-findings copy", async () => {
+		serverSays(analysis({ findings: [], report: report() }));
+		renderPanel();
+
+		expect(
+			await screen.findByRole("region", { name: reportCopy.title }),
+		).toBeInTheDocument();
+		expect(screen.getByText(copy.empty)).toBeInTheDocument();
+	});
+
+	it("puts the stale and failed-newer banners above the report, saying the analysis below stays", async () => {
+		expect(copy.newerFailedKept).toMatch(/analysis below/);
+		expect(copy.newerRunning).toMatch(/analysis below/);
+		expect(copy.newerRerunRunning).toMatch(/analysis below/);
+
+		serverSays(
+			analysis({
+				isStale: true,
+				report: report(),
+				findings: [finding()],
+				newerRun: newerRun({
+					status: "FAILED",
+					errorCode: "MODEL_ERROR",
+				}),
+			}),
+		);
+		const failed = renderPanel();
+		const kept = await screen.findByText(copy.newerFailedKept);
+		expect(precedes(screen.getByText(copy.stale), reportRegion())).toBe(
+			true,
+		);
+		expect(precedes(kept, reportRegion())).toBe(true);
+		failed.unmount();
+		client.clear();
+
+		serverSays(
+			analysis({
+				report: report(),
+				findings: [finding()],
+				newerRun: newerRun({ kind: "RERUN", status: "RUNNING" }),
+			}),
+		);
+		renderPanel();
+		const running = await screen.findByText(copy.newerRerunRunning);
+		expect(precedes(running, reportRegion())).toBe(true);
+	});
+
+	it("keeps the full report open through a poll and the greyed state, and closes it for a newer run", async () => {
+		serverSays(
+			analysis({
+				isStale: true,
+				findings: [finding()],
+				report: cited(),
+			}),
+		);
+		const view = render(panel());
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+		expect(screen.getByText(/The client wants SSO/)).toBeInTheDocument();
+
+		await act(() => client.refetchQueries());
+		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByText(/The client wants SSO/)).toBeInTheDocument();
+
+		// A generation starts: the same run, greyed and remounted.
+		view.rerender(panel({ isGenerating: true }));
+		expect(
+			await screen.findByText(copy.newRunAfterGeneration),
+		).toBeInTheDocument();
+		expect(reportRegion().closest(".opacity-60")).not.toBeNull();
+		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
+
+		view.rerender(panel());
+		await waitFor(() =>
+			expect(reportRegion().closest(".opacity-60")).toBeNull(),
+		);
+		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByText(/The client wants SSO/)).toBeInTheDocument();
+
+		serverSays(
+			analysis({
+				run: { id: "analysis-2" },
+				findings: [finding()],
+				report: cited({ text: "The newer text." }),
+			}),
+		);
+		await act(() => client.refetchQueries());
+		await waitFor(() =>
+			expect(fullReport()).toHaveAttribute("aria-expanded", "false"),
+		);
+		expect(screen.queryByText("The newer text.")).not.toBeInTheDocument();
+	});
+
+	it("returns focus to Full report after the member's own re-run, when focus was in the report", async () => {
+		serverSays(analysis({ findings: [finding()], report: cited() }));
+		api.rerunAnalysis.mockResolvedValue({ runId: "analysis-2" });
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+
+		serverSays(
+			analysis({
+				findings: [finding()],
+				report: cited(),
+				newerRun: newerRun(),
+			}),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.rerun.button }),
+		);
+		await screen.findByRole("button", { name: copy.rerun.running });
+		linkChip().focus();
+		expect(linkChip()).toHaveFocus();
+
+		serverSays(
+			analysis({
+				run: { id: "analysis-2" },
+				findings: [finding()],
+				report: cited({ text: "The newer text [S2]." }),
+			}),
+		);
+		await act(() => client.refetchQueries());
+
+		await waitFor(() => expect(fullReport()).toHaveFocus());
+		expect(fullReport()).toHaveAttribute("aria-expanded", "false");
+	});
+
+	it("falls back to the report's heading, then the panel's, when the re-run leaves no Full report", async () => {
+		serverSays(analysis({ findings: [finding()], report: cited() }));
+		api.rerunAnalysis.mockResolvedValue({ runId: "analysis-2" });
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.rerun.button }),
+		);
+		await waitFor(() => expect(api.rerunAnalysis).toHaveBeenCalled());
+		linkChip().focus();
+
+		serverSays(
+			analysis({
+				run: { id: "analysis-2" },
+				findings: [finding()],
+				report: report({ text: null }),
+			}),
+		);
+		await act(() => client.refetchQueries());
+		await waitFor(() =>
+			expect(
+				screen.getByRole("heading", {
+					level: 3,
+					name: reportCopy.title,
+				}),
+			).toHaveFocus(),
+		);
+
+		api.rerunAnalysis.mockResolvedValue({ runId: "analysis-3" });
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.rerun.button }),
+		);
+		await waitFor(() => expect(api.rerunAnalysis).toHaveBeenCalledTimes(2));
+		screen
+			.getByRole("heading", { level: 3, name: reportCopy.title })
+			.focus();
+
+		serverSays(
+			analysis({
+				run: { id: "analysis-3" },
+				findings: [finding()],
+				report: null,
+			}),
+		);
+		await act(() => client.refetchQueries());
+		await waitFor(() =>
+			expect(
+				screen.getByRole("heading", { level: 2, name: copy.title }),
+			).toHaveFocus(),
+		);
+		expect(
+			screen.queryByRole("region", { name: reportCopy.title }),
+		).not.toBeInTheDocument();
+	});
+
+	it("moves no focus when a poll brings a newer run, or a run other than the member's re-run", async () => {
+		serverSays(analysis({ findings: [finding()], report: cited() }));
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+		linkChip().focus();
+
+		serverSays(
+			analysis({
+				run: { id: "analysis-2" },
+				findings: [finding()],
+				report: cited(),
+			}),
+		);
+		await act(() => client.refetchQueries());
+		await waitFor(() =>
+			expect(fullReport()).toHaveAttribute("aria-expanded", "false"),
+		);
+		expect(document.body).toHaveFocus();
+
+		// The member's re-run started analysis-3; a generation's analysis-4
+		// is what arrives.
+		api.rerunAnalysis.mockResolvedValue({ runId: "analysis-3" });
+		await userEvent.click(fullReport());
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.rerun.button }),
+		);
+		await waitFor(() => expect(api.rerunAnalysis).toHaveBeenCalled());
+		linkChip().focus();
+		serverSays(
+			analysis({
+				run: { id: "analysis-4" },
+				findings: [finding()],
+				report: cited(),
+			}),
+		);
+		await act(() => client.refetchQueries());
+		await waitFor(() =>
+			expect(fullReport()).toHaveAttribute("aria-expanded", "false"),
+		);
+		expect(document.body).toHaveFocus();
+	});
+
+	it("keeps an open source popover open and focused through an identical poll", async () => {
+		serverSays(analysis({ findings: [finding()], report: cited() }));
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: "S3: Rate card" }),
+		);
+		const popover = await screen.findByRole("dialog");
+		await waitFor(() =>
+			expect(popover.contains(document.activeElement)).toBe(true),
+		);
+
+		await act(() => client.refetchQueries());
+		expect(screen.getByRole("dialog")).toBe(popover);
+		expect(popover.contains(document.activeElement)).toBe(true);
+	});
+
+	it("keeps the report readable while greyed: Full report and chips work, and no answer action shows", async () => {
+		serverSays(
+			analysis({ isStale: true, findings: [finding()], report: cited() }),
+		);
+		renderPanel({ isGenerating: true });
+		await screen.findByText(copy.newRunAfterGeneration);
+		expect(reportRegion().closest(".opacity-60")).not.toBeNull();
+		expect(
+			screen.queryByRole("button", { name: copy.actions.confirm }),
+		).not.toBeInTheDocument();
+
+		await userEvent.click(fullReport());
+		expect(linkChip()).toHaveAttribute("href", CONTEXT_HREF);
+		await userEvent.click(
+			screen.getByRole("button", { name: "S3: Rate card" }),
+		);
+		expect(
+			within(await screen.findByRole("dialog")).getByText(
+				"Senior rate is fixed.",
+			),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the report on screen through an optimistic answer, and typing does not parse it again", async () => {
+		const open = finding({ stableKey: "key-1", title: "Open finding" });
+		serverSays(analysis({ findings: [open], report: cited() }));
+		const write = deferred<unknown>();
+		api.respondToFinding.mockReturnValue(write.promise);
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+		expect(remarkReportCitations).toHaveBeenCalledTimes(1);
+
+		await userEvent.click(
+			within(item("Open finding")).getByRole("button", {
+				name: copy.actions.answer,
+			}),
+		);
+		await userEvent.type(
+			screen.getByLabelText(copy.editor.label),
+			"Phase 2 covers it.",
+		);
+		await userEvent.click(
+			screen.getByRole("button", { name: copy.actions.save }),
+		);
+		await waitFor(() =>
+			expect(
+				within(item("Open finding")).getByText(copy.state.RESPONDED),
+			).toBeInTheDocument(),
+		);
+		expect(linkChip()).toBeInTheDocument();
+		expect(fullReport()).toHaveAttribute("aria-expanded", "true");
+		expect(remarkReportCitations).toHaveBeenCalledTimes(1);
+
+		serverSays(
+			analysis({
+				findings: [
+					{
+						...open,
+						state: "RESPONDED",
+						response: response({ text: "Phase 2 covers it." }),
+					},
+				],
+				report: cited(),
+			}),
+		);
+		await act(async () => {
+			write.settle({
+				outcome: "written",
+				stableKey: "key-1",
+				answeredRunId: RUN_ID,
+				response: savedAnswer({ text: "Phase 2 covers it." }),
+			});
+		});
+		await waitFor(() =>
+			expect(
+				screen.queryByLabelText(copy.editor.label),
+			).not.toBeInTheDocument(),
+		);
+		expect(linkChip()).toBeInTheDocument();
+		expect(remarkReportCitations).toHaveBeenCalledTimes(1);
+	});
+
+	it("shows the text as plain text when its rendering throws, and the findings stay usable", async () => {
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		parse.fail = true;
+		const open = finding({ stableKey: "key-1", title: "Open finding" });
+		serverSays(analysis({ findings: [open], report: cited() }));
+		api.respondToFinding.mockResolvedValue({
+			outcome: "written",
+			stableKey: "key-1",
+			answeredRunId: RUN_ID,
+			response: savedAnswer({ kind: "CONFIRMED", text: null }),
+		});
+		renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", { name: reportCopy.fullReport }),
+		);
+
+		expect(
+			await screen.findByText(reportCopy.plainTextNote),
+		).toBeInTheDocument();
+		expect(screen.getByText(/The client wants SSO \[S2\]/)).toHaveClass(
+			"whitespace-pre-wrap",
+		);
+		await userEvent.click(
+			within(item("Open finding")).getByRole("button", {
+				name: copy.actions.confirm,
+			}),
+		);
+		expect(api.respondToFinding).toHaveBeenCalledWith(
+			expect.objectContaining({ findingId: open.id, kind: "CONFIRMED" }),
+		);
+		vi.mocked(console.error).mockRestore();
+	});
+
+	it("has no axe violations with the full report open, one live region, and every control reachable by Tab", async () => {
+		serverSays(
+			analysis({
+				findings: [finding({ title: "Open finding" })],
+				report: cited({
+					beforeSending: ["Confirm the hosting region"],
+					textTruncated: true,
+					text: [
+						"# Detail",
+						"",
+						"The client wants SSO [S2].",
+						"",
+						"| Item | Source |",
+						"| --- | --- |",
+						"| Rates | [S3] |",
+						"",
+						"```",
+						"code",
+						"```",
+					].join("\n"),
+				}),
+			}),
+		);
+		const { container } = renderPanel();
+		await userEvent.click(
+			await screen.findByRole("button", {
+				name: `${reportCopy.fullReport} ${reportCopy.shortened}`,
+			}),
+		);
+		expect(linkChip()).toBeInTheDocument();
+
+		expect(await axe(container)).toHaveNoViolations();
+		const live = container.querySelectorAll(
+			"[aria-live], [role='status'], [role='alert'], [role='log'], output",
+		);
+		expect(live).toHaveLength(1);
+		expect(live[0]).toHaveAttribute("aria-live", "polite");
+
+		(document.activeElement as HTMLElement | null)?.blur();
+		const reached: HTMLElement[] = [];
+		for (let step = 0; step < 20; step++) {
+			await userEvent.tab();
+			const active = document.activeElement as HTMLElement | null;
+			if (!active || active === document.body) {
+				break;
+			}
+			reached.push(active);
+		}
+		expect(reached).toContain(
+			screen.getByRole("button", {
+				name: `${reportCopy.fullReport} ${reportCopy.shortened}`,
+			}),
+		);
+		expect(reached).toContain(linkChip());
+		expect(reached).toContain(
+			screen.getByRole("button", { name: "S3: Rate card" }),
+		);
+		expect(reached).toContain(
+			within(item("Open finding")).getByRole("button", {
+				name: copy.actions.confirm,
+			}),
 		);
 	});
 });

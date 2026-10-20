@@ -10,6 +10,11 @@
 import { db, type Prisma } from "../../client";
 import { computeDocumentContentHash, sanitizeContent } from "./documents";
 import {
+	normalizeAnalysisReport,
+	type ProposalAnalysisReportInput,
+	reportToJson,
+} from "./proposal-artifact-report";
+import {
 	assertDocumentOrganization,
 	PROPOSAL_ANALYSIS_ERROR_MESSAGE_MAX_LENGTH,
 	PROPOSAL_ANALYSIS_MATCH_WINDOW,
@@ -510,14 +515,22 @@ function storedSourceRefs(refs: readonly number[] | undefined): number[] {
  * Refused (`superseded`, nothing written) when the run is COMPLETE already or
  * FAILED — the workflow gave up on it, and a late activity must not
  * resurrect it.
+ *
+ * The report, when given, is bounded by `normalizeAnalysisReport` here, so no
+ * caller can skip it, and is written by the same status update that completes
+ * the run: a refused completion writes no report either, and the first
+ * writer's stays as it was. A report with no content writes neither report
+ * column, never a JSON null.
  */
 export async function completeAnalysisRun(input: {
 	analysisId: string;
 	findings: AnalysisFindingInput[];
 	model?: string | null;
+	report?: ProposalAnalysisReportInput | null;
 	now?: Date;
 }): Promise<ProposalArtifactGuardedOutcome> {
 	const now = input.now ?? new Date();
+	const report = normalizeAnalysisReport(input.report);
 	return db.$transaction(async (tx) => {
 		const { count } = await tx.projectDocumentAnalysis.updateMany({
 			where: {
@@ -530,6 +543,10 @@ export async function completeAnalysisRun(input: {
 				errorCode: null,
 				errorMessage: null,
 				...(input.model !== undefined && { model: input.model }),
+				...(report && {
+					report: reportToJson(report.report),
+					reportText: report.reportText,
+				}),
 			},
 		});
 		if (count === 0) {

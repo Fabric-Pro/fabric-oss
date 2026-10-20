@@ -1,5 +1,24 @@
 # @fabricorg/cli
 
+## 0.7.1
+
+### Patch Changes
+
+- 53db49a: Load repository instruction plugins in bounded batches, verify their Git blobs, and respect server rate-limit waits during cold installs.
+- 53db49a: AI Providers warns only when nothing serves you, shared ChatGPT accounts flag unaccepted terms, and `fabric connect chatgpt` shows its real result.
+- 53db49a: The Codex plugin that `fabric instructions init --tool codex` renders now loads the project's Fabric MCP server: its manifest is at `.codex-plugin/plugin.json`, where Codex reads it.
+- 53db49a: `fabric memory pull --accept-remote` now clears a conflict on a memory file that was removed on the server since, by removing the local copy.
+- 53db49a: The CLI signs in again after an upgrade that asks for a new scope, registering a fresh OAuth client instead of failing with invalid_scope.
+- 53db49a: Harden filename and response parsing, local configuration reads, and diagnostic logging against malformed inputs.
+- 53db49a: The public docs now describe coding instructions as a plugin and saving agents' specs to the repository through Living Memory write folders, checked against the shipped code in CI.
+- 53db49a: Keep every coding instruction path discoverable through a generated plugin skill and metadata catalog. Sessions receive guidance for reading referenced files on demand, while rules beyond automatic delivery limits remain available as passive plugin files.
+- 53db49a: Project rules from the instructions now reach Claude Code (.claude/rules/fabric-<id>/) and Codex (AGENTS.override.md).
+- 53db49a: The Coding Instructions tab lists the published files a coding-tool plugin leaves out, with the reason for each; the standard layout is documented.
+- 53db49a: Agents can now check a Living Memory write that the session hook sent: the plugin's memory skill and `fabric_memory_write_status` point to the write ids in `.fabric/memory.lock`.
+- 53db49a: Agents can list and read Living Memory files through a new MCP tool, so a work item's specs and tasks can be resumed without a local copy.
+- 53db49a: Plugins are now bound to one project and deployment, Codex's installed copy stays current, and the Connect dialog has a plugin step per tool.
+- @fabricorg/sdk-mcp@0.1.12
+
 ## 0.7.0
 
 ### Minor Changes

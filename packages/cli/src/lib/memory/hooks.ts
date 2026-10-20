@@ -23,12 +23,15 @@ import { isIdentifier } from "../instructions/identifiers.js";
 
 type Event = "SessionStart" | "Stop";
 
-/** What a hook command is for; `instructions render` is Codex's plugin refresh. */
-type Kind = "memory-pull" | "memory-push" | "plugin-render";
+/**
+ * What a hook command is for: `instructions render` is Codex's plugin
+ * refresh, `instructions rules` is Claude Code's delivery of project rules.
+ */
+type Kind = "memory-pull" | "memory-push" | "plugin-render" | "rules-sync";
 
 const HOOK_TIMEOUT_SECONDS = 15;
 
-/** Render may fetch every file on a cold start. */
+/** Render and the rules sync may fetch every file on a cold start. */
 const RENDER_HOOK_TIMEOUT_SECONDS = 60;
 
 interface Entry {
@@ -59,6 +62,9 @@ function kindOf(command: unknown): Kind | null {
 	}
 	if (args[0] === "instructions" && args[1] === "render") {
 		return "plugin-render";
+	}
+	if (args[0] === "instructions" && args[1] === "rules") {
+		return "rules-sync";
 	}
 	return null;
 }
@@ -139,6 +145,18 @@ export function desiredHooks(input: {
 		];
 	}
 	return [
+		{
+			event: "SessionStart",
+			kind: "rules-sync",
+			command: words(
+				input.launcher,
+				"instructions rules",
+				input.projectId,
+				binding,
+				"",
+			),
+			timeout: RENDER_HOOK_TIMEOUT_SECONDS,
+		},
 		{
 			event: "SessionStart",
 			kind: "memory-pull",
@@ -236,7 +254,12 @@ export async function installPluginHooks(input: {
 	org?: string;
 }) {
 	const wanted = desiredHooks(input);
-	const allKinds: Kind[] = ["memory-pull", "memory-push", "plugin-render"];
+	const allKinds: Kind[] = [
+		"memory-pull",
+		"memory-push",
+		"plugin-render",
+		"rules-sync",
+	];
 	return updateHookConfig({
 		root: input.root,
 		tool: input.tool,

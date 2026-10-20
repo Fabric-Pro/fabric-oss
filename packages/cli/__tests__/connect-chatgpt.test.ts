@@ -338,7 +338,7 @@ describe("organization summary", () => {
 			describeOrganizations({
 				organizations: [org("example-org", false)],
 			}),
-		).toContain("settings");
+		).toContain("Settings → AI Providers → Personal");
 	});
 });
 

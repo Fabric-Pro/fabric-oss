@@ -101,6 +101,7 @@ describe("runPatternGeneration — success", () => {
 				},
 			},
 			{ userId: "user-1", organizationId: "org-1" },
+			{ trustedDestination: true },
 		);
 		// Create mode must not tag the message as a revision.
 		const sentMessage = mockSendMessageSecure.mock.calls[0]?.[1];

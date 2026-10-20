@@ -7,6 +7,7 @@
  * Conversation history is persisted to AgentConversation for multi-turn context.
  */
 
+import { ORPCError } from "@orpc/client";
 import {
 	convertToModelMessages,
 	createUIMessageStreamResponse,
@@ -25,6 +26,10 @@ import { makeAppendedStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { createSidekickTools } from "@repo/ai/sidekick";
 import { NEW_AGENT_ID } from "@repo/ai/sidekick/constants";
 import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
+import {
+	authorizeInputOrganization,
+	Permissions,
+} from "@repo/api/orpc/procedures";
 import {
 	db,
 	getOrganizationMembership,
@@ -121,8 +126,8 @@ export async function POST(request: NextRequest) {
 		} = parseResult.data;
 
 		// Resolve tenant from the *entity being edited*, not from the
-		// session's active organization. A user can open a personal instance
-		// or an instance from a different org than their active one; we must
+		// session's active organization. A user can open an instance from a
+		// different org than their active one; we must
 		// run model/tool resolution against that tenant, not the session's.
 		const sessionOrganizationId =
 			session.session?.activeOrganizationId ?? undefined;
@@ -191,12 +196,13 @@ export async function POST(request: NextRequest) {
 				// The registered agent's tenant wins over the session's active org.
 				effectiveOrganizationId = agent.organizationId ?? undefined;
 			} else {
-				// entityType === "instance" — AgentTemplateInstance authz mirrors instances.get
+				// authorizeInputOrganization checks membership, organization liveness,
+				// and AGENT_TEMPLATE_READ in the instance's organization, including for its creator.
 				const instance = await db.agentTemplateInstance.findUnique({
 					where: { id: agentId },
 					select: { userId: true, organizationId: true },
 				});
-				if (!instance) {
+				if (!instance || !instance.organizationId) {
 					return new Response(
 						JSON.stringify({ error: "Agent not found" }),
 						{
@@ -205,16 +211,27 @@ export async function POST(request: NextRequest) {
 						},
 					);
 				}
-				const isOwner = instance.userId === userId;
-				let hasAccess = isOwner;
-				if (!hasAccess && instance.organizationId) {
-					const membership = await getOrganizationMembership(
+				try {
+					await authorizeInputOrganization(
+						Permissions.AGENT_TEMPLATE_READ,
 						instance.organizationId,
-						userId,
+						{
+							user: { id: userId },
+							session: {
+								activeOrganizationId:
+									sessionOrganizationId ?? null,
+							},
+						},
+						{ requireOrganization: true },
 					);
-					hasAccess = !!membership;
-				}
-				if (!hasAccess) {
+				} catch (error) {
+					if (
+						!(error instanceof ORPCError) ||
+						(error.code !== "FORBIDDEN" &&
+							error.code !== "UNAUTHORIZED")
+					) {
+						throw error;
+					}
 					return new Response(
 						JSON.stringify({ error: "Forbidden" }),
 						{
@@ -223,9 +240,7 @@ export async function POST(request: NextRequest) {
 						},
 					);
 				}
-				// Personal instances are null-tenant; org instances bind to
-				// the owning org regardless of which org the session is in.
-				effectiveOrganizationId = instance.organizationId ?? undefined;
+				effectiveOrganizationId = instance.organizationId;
 			}
 		}
 

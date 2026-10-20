@@ -13,6 +13,7 @@ vi.mock("@repo/mcp", () => ({
 		fromCache: true,
 	})),
 	invalidateMcpClientCache: vi.fn(),
+	isClosedClientRefusedBeforeSend: () => false,
 	McpGitLabOriginMismatchError: class extends Error {},
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));

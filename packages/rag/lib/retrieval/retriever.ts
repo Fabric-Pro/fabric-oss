@@ -75,6 +75,7 @@ export async function retrieveContext(
 				userId,
 				organizationId,
 				tags: ["rag-query", "similarity-search"],
+				conversationId: options.conversationId,
 			},
 			embeddingConfig,
 		);

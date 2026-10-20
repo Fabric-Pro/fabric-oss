@@ -116,6 +116,9 @@ describe("answerPageQuestion", () => {
 				userId: "user-1",
 				organizationId: "org-1",
 				projectId: "project-1",
+				frameId: "frame-1",
+				featureKey: "workspace",
+				promptVersionId: undefined,
 			},
 		);
 		expect(mockTrackUsage).toHaveBeenCalledTimes(1);
@@ -126,6 +129,25 @@ describe("answerPageQuestion", () => {
 				taskType: "SIMPLE",
 			}),
 		);
+	});
+
+	it("resolves the page prompt before model selection and attributes its exact version", async () => {
+		mockGetBoundPromptForAgent.mockResolvedValue({
+			format: "HANDLEBARS",
+			version: { id: "prompt-version-1", content: "Answer briefly." },
+		});
+		await answerPageQuestion(base);
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "SIMPLE" },
+			expect.objectContaining({
+				frameId: "frame-1",
+				featureKey: "workspace",
+				promptVersionId: "prompt-version-1",
+			}),
+		);
+		expect(
+			mockGetBoundPromptForAgent.mock.invocationCallOrder[0],
+		).toBeLessThan(mockGetAIModelWithMetadata.mock.invocationCallOrder[0]);
 	});
 
 	it("stops before any model call when the viewer's allowance is spent", async () => {
@@ -195,6 +217,7 @@ describe("answerPageQuestion", () => {
 				storyKind: null,
 				userId: "user-1",
 				organizationId: "org-1",
+				projectId: undefined,
 			});
 		});
 

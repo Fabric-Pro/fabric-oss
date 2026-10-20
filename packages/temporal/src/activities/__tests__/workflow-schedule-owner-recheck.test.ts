@@ -39,26 +39,31 @@ vi.mock("@repo/database", () => {
 						: null;
 				},
 			),
-			update: vi.fn(
-				async ({
-					data,
-				}: {
-					data: { status?: string; settings?: never };
-				}) => {
-					const row = world.workflow as WorkflowRow;
-					if (data.status) {
-						row.status = data.status;
-					}
-					if (data.settings) {
-						row.settings = data.settings;
-					}
-				},
-			),
 		},
 	};
 	return {
 		canRunOrganizationWorkflows,
 		createWorkflowExecution,
+		writeWorkflowRunState: vi.fn(
+			async (
+				_tx: unknown,
+				data: {
+					workflowId: string;
+					organizationId: string | null;
+					settings: Record<string, unknown>;
+					status?: string;
+				},
+			) => {
+				const row = world.workflow as WorkflowRow;
+				expect(data.workflowId).toBe(row.id);
+				expect(data.organizationId).toBe(row.organizationId);
+				row.settings = data.settings;
+				if (data.status) {
+					row.status = data.status;
+				}
+				return 1;
+			},
+		),
 		getWorkflowById: vi.fn(async (id: string, userId: string) => {
 			const row = world.workflow as WorkflowRow | null;
 			return row && row.id === id && row.userId === userId

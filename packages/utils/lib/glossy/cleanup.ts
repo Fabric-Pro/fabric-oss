@@ -58,6 +58,11 @@
  * left in place verbatim — never partially deleted — and reported the same way.
  */
 
+import {
+	CITATION_MARKER,
+	CITATION_MARKER_CORE as MARKER_CORE,
+	CITATION_MARKER_UNIT as MARKER_UNIT,
+} from "../citation-markers";
 import type { GlossyEligibleDocumentType } from "./eligibility";
 import {
 	FENCE_MARKER,
@@ -276,21 +281,6 @@ const PARENTHETICAL_PART_LABEL =
  */
 const STATUS_TAG_LINE =
 	/^\s*(?:[-*+]\s+)?(?:\*\*|__)?(evidence|status|confidence)(?:\*\*|__)?\s*:(?:\*\*|__)?\s*(\S.*)?$/i;
-
-/**
- * `[S1]`, `\[S2\]` (escaped by the editor's serializer), `[S1, S3]`,
- * `[S1–S3]`, `[cite]`, `[cite if derived]`, optionally bolded or linked.
- */
-const MARKER_CORE = String.raw`\\?\[(?:cite\b[^\]\n]{0,80}|S\d{1,4}(?:\s{0,2}[,;–—-]\s{0,2}S?\d{1,4}){0,20})\\?\](?:\([^()\s]{0,200}\))?`;
-const MARKER_UNIT = String.raw`\*\*${MARKER_CORE}\*\*|__${MARKER_CORE}__|${MARKER_CORE}`;
-/**
- * A marker, or a range written as two markers joined by a dash, `[S1]–[S15]`,
- * which goes with its dash (Fizzy #2589 follow-up).
- */
-const CITATION_MARKER = new RegExp(
-	String.raw`(?:${MARKER_UNIT})(?:[ \t]{0,2}[–—-][ \t]{0,2}(?:${MARKER_UNIT}))?`,
-	"gi",
-);
 
 /**
  * `[1]`, `[1, 3]`, `[2–4]`, `[^2]`, `[^vendor]`, and the editor's escaped

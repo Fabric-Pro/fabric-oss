@@ -15,6 +15,7 @@ import {
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { describeGenerationRefusal } from "@saas/projects/components/proposal-artifact/generation-feedback";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -35,8 +36,11 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { Loader2Icon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { ActionMultiSelect } from "./ActionMultiSelect";
 
 const AGENTS = PROMPT_AGENT_TARGETS;
@@ -92,7 +96,17 @@ export function SetAsDefaultDialog({
 	onSuccess,
 }: SetAsDefaultDialogProps) {
 	const queryClient = useQueryClient();
-	const { organizationId, isOrgContext } = useOrganizationContext();
+	const router = useRouter();
+	const { organizationId, isOrgContext, basePath } = useOrganizationContext();
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
+	// Fizzy #2946: with the Proposal artifact on, the legacy Proposal actions
+	// are neither offered nor submitted from here.
+	const offered = useOfferedPromptActions();
 	const { user } = useSession();
 	const { isOrganizationAdmin } = useActiveOrganization();
 	// Platform admin (User.role), not an organization admin — two orthogonal
@@ -110,6 +124,10 @@ export function SetAsDefaultDialog({
 	// Set once per open, so a user who clears a pre-filled action does not have
 	// it reappear when the query refetches underneath them.
 	const prefilled = useRef(false);
+	// Whether the pre-fill held an action the Proposal artifact supersedes,
+	// which is dropped rather than submitted.
+	const [prefillDroppedSuperseded, setPrefillDroppedSuperseded] =
+		useState(false);
 
 	// Sync document type when the parent filter tab changes
 	useEffect(() => {
@@ -130,6 +148,7 @@ export function SetAsDefaultDialog({
 			setSelectedAgent(AGENTS[0].key);
 			setSelectedDocType(initialDocumentType ?? "");
 			setAlsoApplyTo([]);
+			setPrefillDroppedSuperseded(false);
 			prefilled.current = false;
 		}
 	}, [open, initialDocumentType]);
@@ -176,10 +195,22 @@ export function SetAsDefaultDialog({
 		? isGeneralOnlyAgent(selectedAgentTarget)
 		: false;
 
-	const primaryActionId = selectedDocType
+	// A document type carried in from a filter tab is set before the list
+	// below is narrowed, so with the Proposal artifact on it can name an action
+	// the gate supersedes. Such a choice reads as no choice: the dialog asks
+	// for one, and it is never submitted.
+	const primarySuperseded =
+		selectedDocType !== "" &&
+		offered.isSuperseded(
+			selectedAgent,
+			generalOnlyAgent ? "GENERAL" : selectedDocType,
+		);
+	const chosenDocType = primarySuperseded ? "" : selectedDocType;
+
+	const primaryActionId = chosenDocType
 		? promptActionId(
 				selectedAgent,
-				generalOnlyAgent ? "GENERAL" : selectedDocType,
+				generalOnlyAgent ? "GENERAL" : chosenDocType,
 				nonStageAgent ? null : (storyKind ?? null),
 			)
 		: undefined;
@@ -188,8 +219,10 @@ export function SetAsDefaultDialog({
 		if (prefilled.current || !boundActions || !primaryActionId) {
 			return;
 		}
-		const ids = (boundActions.actions ?? [])
-			.map((a: BoundAction) =>
+		const bound: BoundAction[] = boundActions.actions ?? [];
+		const ids = bound
+			.filter((a) => !offered.isSuperseded(a.targetKey, a.documentType))
+			.map((a) =>
 				promptActionId(
 					a.targetKey,
 					a.documentType,
@@ -202,19 +235,33 @@ export function SetAsDefaultDialog({
 				...new Set<string>([...current, ...ids]),
 			]);
 		}
+		setPrefillDroppedSuperseded(
+			bound.some((a) =>
+				offered.isSuperseded(a.targetKey, a.documentType),
+			),
+		);
 		prefilled.current = true;
-	}, [boundActions, primaryActionId]);
+	}, [boundActions, primaryActionId, offered]);
 
 	const handleAlsoApplyToChange = (next: string[]) => {
 		setAlsoApplyTo(next);
 	};
 
 	const documentTypeOptions = selectedAgentTarget
-		? bindableDocumentTypes(
+		? offered.documentTypesFor(
 				selectedAgentTarget,
 				nonStageAgent ? null : (storyKind ?? null),
 			)
 		: [];
+	// Said in one line rather than leaving Proposal silently missing.
+	const showSupersededNote =
+		primarySuperseded ||
+		prefillDroppedSuperseded ||
+		(selectedAgentTarget !== undefined &&
+			bindableDocumentTypes(
+				selectedAgentTarget,
+				nonStageAgent ? null : (storyKind ?? null),
+			).length !== documentTypeOptions.length);
 
 	const handleAgentChange = (agent: string) => {
 		setSelectedAgent(agent);
@@ -256,23 +303,24 @@ export function SetAsDefaultDialog({
 
 	const bindMutation = useMutation({
 		mutationFn: async () => {
-			if (!selectedDocType) {
+			if (!chosenDocType) {
 				throw new Error("Please select a document type");
 			}
 			// Defense in depth: override the payload regardless of in-flight
 			// state. The dropdown is already constrained, but a stale value or
 			// an out-of-band setter shouldn't be able to write a binding shape
 			// the classifier runtime can never resolve.
-			const documentType = generalOnlyAgent ? "GENERAL" : selectedDocType;
+			const documentType = generalOnlyAgent ? "GENERAL" : chosenDocType;
 
 			const primary = {
 				targetKey: selectedAgent,
 				documentType,
 				storyKind: nonStageAgent ? null : (storyKind ?? null),
 			};
-			// FR22: the actions ticked alongside the one above.
+			// FR22: the actions ticked alongside the one above. Only offered
+			// ones: an id the gate supersedes is never submitted.
 			const extras = alsoApplyTo
-				.map((id) => ALL_ACTIONS.find((a) => a.id === id))
+				.map((id) => offered.actions.find((a) => a.id === id))
 				.filter((a): a is NonNullable<typeof a> => Boolean(a))
 				.map((a) => ({
 					targetKey: a.targetKey,
@@ -334,15 +382,30 @@ export function SetAsDefaultDialog({
 			onSuccess?.();
 		},
 		onError: (error) => {
-			toast.error(
-				mustPropose
-					? "Failed to propose as default"
-					: "Failed to set as default",
-				{
-					description:
-						error instanceof Error ? error.message : String(error),
-				},
-			);
+			const title = mustPropose
+				? "Failed to propose as default"
+				: "Failed to set as default";
+			// A default refused at an action the Proposal artifact supersedes
+			// is said in the reader's locale, with the way to the action that
+			// does write Proposals.
+			const refusal = describeGenerationRefusal(error, {
+				t: tFeedback,
+				basePath,
+			});
+			if (refusal) {
+				toast.error(title, {
+					description: refusal.message,
+					action: {
+						label: refusal.catalog.label,
+						onClick: () => router.push(refusal.catalog.href),
+					},
+				});
+				return;
+			}
+			toast.error(title, {
+				description:
+					error instanceof Error ? error.message : String(error),
+			});
 		},
 	});
 
@@ -369,7 +432,7 @@ export function SetAsDefaultDialog({
 							Document Type
 						</Label>
 						<Select
-							value={selectedDocType}
+							value={chosenDocType}
 							onValueChange={setSelectedDocType}
 						>
 							<SelectTrigger id="set-default-document-type">
@@ -383,6 +446,14 @@ export function SetAsDefaultDialog({
 								))}
 							</SelectContent>
 						</Select>
+						{showSupersededNote && (
+							<p
+								data-testid="set-default-superseded-note"
+								className="text-xs text-muted-foreground"
+							>
+								{tSuperseded("dialogNote")}
+							</p>
+						)}
 					</div>
 
 					<div className="space-y-2">
@@ -523,7 +594,7 @@ export function SetAsDefaultDialog({
 							bindMutation.isPending ||
 							boundActionsPending ||
 							boundActionsFetching ||
-							!selectedDocType
+							!chosenDocType
 						}
 					>
 						{bindMutation.isPending && (

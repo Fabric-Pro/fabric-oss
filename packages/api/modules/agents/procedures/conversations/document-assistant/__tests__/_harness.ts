@@ -57,6 +57,14 @@ export const repoDatabaseMock = {
 	archiveDocumentAssistantConversation: vi.fn(),
 	deleteDocumentAssistantConversationByConversationId: vi.fn(),
 	countDocumentAssistantConversationsInLast24h: vi.fn(),
+	// Lazy-create checks the agent against the catalog; default to a SYSTEM
+	// agent so tests that don't exercise that check reach the create.
+	getRegisteredAgentByAgentId: vi.fn().mockResolvedValue({
+		agentId: "doc-agent",
+		scope: "SYSTEM",
+		userId: null,
+		organizationId: null,
+	}),
 	DocumentAssistantVisibilityLockedError: class extends Error {
 		readonly conversationId: string;
 		constructor(conversationId: string) {
@@ -110,6 +118,7 @@ vi.mock("../../../../../../orpc/procedures", () => {
 		resolveOrganizationId: (organizationId: string | null | undefined) =>
 			organizationId ?? undefined,
 		requirePermission: vi.fn(() => ({})),
+		requireInputOrgPermission: vi.fn(() => ({})),
 		requireProjectPermission: vi.fn(() => ({})),
 		Permissions: new Proxy(
 			{},

@@ -486,23 +486,24 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// SSRF guard at the persistence boundary. A stored Databricks base URL is
-		// not merely a request target: for a service principal the server POSTs
-		// the CLIENT SECRET to `<origin>/oidc/v1/token` during model resolution,
-		// so a config naming an internal host (link-local metadata, an intranet
-		// service) would exfiltrate the secret and expose the response status.
-		// `testConnection` already applies these rules — and the UI requires a
-		// passing test before Save — so this only closes the direct-oRPC bypass;
-		// any host reachable through the normal flow stays reachable. Applied to
-		// BOTH auth modes, since a PAT is a bearer credential on the same path.
-		if (provider === "DATABRICKS" && input.baseUrl?.trim()) {
+		// These endpoints receive provider credentials during model resolution.
+		// Apply the connection-test URL rules here as well so direct saves cannot
+		// bypass them, regardless of the provider's authentication mode.
+		if (
+			(provider === "DATABRICKS" || provider === "AZURE_AI_FOUNDRY") &&
+			input.baseUrl?.trim()
+		) {
 			const urlValidation = validateProviderUrl(
 				input.baseUrl.trim(),
 				provider,
 			);
 			if (!urlValidation.valid) {
+				const providerUrlName =
+					provider === "DATABRICKS"
+						? "Databricks workspace"
+						: "Azure AI Foundry";
 				throw new ORPCError("BAD_REQUEST", {
-					message: `Invalid Databricks workspace URL: ${
+					message: `Invalid ${providerUrlName} URL: ${
 						urlValidation.error ?? "not an allowed provider URL"
 					}`,
 				});
@@ -651,9 +652,13 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 						});
 					}
 				}
+				// An embeddings-only key never stands in for a spent ChatGPT plan
+				// (Fizzy #3085), so its opt-in does not survive the restriction.
 				const purposeFields = {
 					purpose,
-					...(embeddingsOnly ? { isEmbeddingProvider: true } : {}),
+					...(embeddingsOnly
+						? { isEmbeddingProvider: true, useWhenPlanSpent: false }
+						: {}),
 				};
 
 				if (existing) {
@@ -1411,7 +1416,10 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 					data: {
 						isEmbeddingProvider: true,
 						...(input.purpose ? { purpose: input.purpose } : {}),
-						...(embeddingsOnly ? { isDefault: false } : {}),
+						// Never the default, nor the key for a spent plan.
+						...(embeddingsOnly
+							? { isDefault: false, useWhenPlanSpent: false }
+							: {}),
 					},
 				});
 				if (embeddingsOnly) {

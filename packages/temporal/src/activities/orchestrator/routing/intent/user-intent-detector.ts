@@ -93,6 +93,40 @@ const AGENT_NAME_PATTERNS = [
 	/(?:with|using)\s+(?:the\s+)?([\w-]+)\s+agent/i,
 ];
 
+// Generic wording does not identify a particular registered agent.
+const AGENT_NAME_STOPLIST = new Set([
+	"a",
+	"an",
+	"the",
+	"this",
+	"that",
+	"these",
+	"those",
+	"another",
+	"any",
+	"some",
+	"each",
+	"every",
+	"my",
+	"our",
+	"your",
+	"their",
+	"other",
+	"same",
+	"new",
+	"right",
+	"best",
+	"appropriate",
+	"relevant",
+	"suitable",
+	"specialized",
+	"specialised",
+	"correct",
+	"proper",
+	"available",
+	"an_agent",
+]);
+
 // External service indicators
 const EXTERNAL_SERVICE_INDICATORS = [
 	"post to",
@@ -323,7 +357,11 @@ function extractAgentName(message: string): string | undefined {
 	for (const pattern of AGENT_NAME_PATTERNS) {
 		const match = message.match(pattern);
 		if (match?.[1]) {
-			return match[1].trim();
+			const name = match[1].trim();
+			if (AGENT_NAME_STOPLIST.has(name.toLowerCase())) {
+				continue;
+			}
+			return name;
 		}
 	}
 	return undefined;

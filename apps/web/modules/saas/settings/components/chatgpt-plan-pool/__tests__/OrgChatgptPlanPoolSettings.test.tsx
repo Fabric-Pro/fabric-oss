@@ -221,6 +221,59 @@ describe("Shared ChatGPT plans settings", () => {
 		).toBeNull();
 	});
 
+	// The pool serves nothing until an owner accepts the terms, while every
+	// account still reads Active; the card says so.
+	it("warns that connected accounts serve nothing until the terms are accepted, linking an owner to them", async () => {
+		poolWith({ isOwner: true });
+		renderSettings();
+		const notice = await screen.findByTestId(
+			"chatgpt-plan-pool-terms-pending",
+		);
+		expect(notice).toHaveTextContent(copy.termsPendingTitle);
+		expect(notice).toHaveTextContent(copy.termsPendingBody);
+		expect(
+			within(notice).getByRole("link", { name: copy.termsPendingReview }),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-models#chatgpt-plan-terms",
+		);
+		expect(notice).not.toHaveTextContent(copy.termsPendingOwnerOnly);
+	});
+
+	it("tells an admin who is not an owner that an owner has to accept the terms", async () => {
+		poolWith({ isOwner: false });
+		renderSettings();
+		const notice = await screen.findByTestId(
+			"chatgpt-plan-pool-terms-pending",
+		);
+		expect(notice).toHaveTextContent(copy.termsPendingOwnerOnly);
+		expect(within(notice).queryByRole("link")).toBeNull();
+	});
+
+	it("shows no terms warning once the terms are accepted", async () => {
+		poolWith({
+			isOwner: true,
+			policy: {
+				termsAcknowledged: true,
+				termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z") as never,
+			},
+		});
+		renderSettings();
+		await screen.findAllByTestId("chatgpt-plan-pool-account");
+		expect(
+			screen.queryByTestId("chatgpt-plan-pool-terms-pending"),
+		).toBeNull();
+	});
+
+	it("shows no terms warning while no account is connected", async () => {
+		poolWith({ isOwner: true, accounts: [] });
+		renderSettings();
+		await screen.findByText(copy.emptyAccounts);
+		expect(
+			screen.queryByTestId("chatgpt-plan-pool-terms-pending"),
+		).toBeNull();
+	});
+
 	it("shows the window ChatGPT reported, and its weekly limit, in place of the estimate", async () => {
 		poolWith({
 			accounts: [

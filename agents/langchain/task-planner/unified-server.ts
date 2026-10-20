@@ -9,9 +9,14 @@
  * - A2A: /.well-known/agent.json, /a2a/send, /health (for orchestrator)
  */
 
-import { type AgentSkill, createUnifiedServer } from "@repo/agent-core";
+import {
+	type AgentSkill,
+	createUnifiedServer,
+	getUserFacingError,
+} from "@repo/agent-core";
 import { v4 as uuidv4 } from "uuid";
 import { taskPlannerGraph } from "./agent.js";
+import { createInvokeAgent } from "./invoke-agent.js";
 
 // Configuration
 const PORT = Number.parseInt(process.env.PORT || "8125", 10);
@@ -91,69 +96,13 @@ const { app, start } = createUnifiedServer(
 		supportsStreaming: false,
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input) => {
-		const messages = input.messages as Array<{
-			role: string;
-			content: string;
-		}>;
-		const lastMessage = messages[messages.length - 1];
-		const userMessage = lastMessage?.content || "";
-		const projectName = (input.projectName as string) || "Unnamed Project";
-		const projectDescription = input.projectDescription as
-			| string
-			| undefined;
-		const techStack = input.techStack as string | undefined;
-		const userStory = (input.userStory as string) || userMessage;
-
-		console.log("[UnifiedServer] Invoking task_planner with:", {
-			projectName,
-			userStoryLength: userStory.length,
-			hasTechStack: !!techStack,
-		});
-
-		// Invoke the LangGraph graph
-		const result = await taskPlannerGraph.invoke({
-			messages: [{ role: "user", content: userMessage }],
-			userStory,
-			projectName,
-			projectDescription,
-			techStack,
-			tools: [],
-		});
-
-		console.log("[UnifiedServer] Graph result:", {
-			hasDocument: !!result.document,
-			documentLength: result.document?.length || 0,
-			taskCount: result.decomposedTasks?.length || 0,
-		});
-
-		// Convert BaseMessage[] to simple message format for the unified server
-		const outputMessages = (result.messages || []).map((msg) => ({
-			role:
-				typeof msg === "object" && "role" in msg
-					? String(msg.role)
-					: "assistant",
-			content:
-				typeof msg === "object" && "content" in msg
-					? String(msg.content)
-					: String(msg),
-		}));
-
-		return {
-			document: result.document || "",
-			messages: outputMessages,
-			decomposedTasks: result.decomposedTasks,
-			riskAnalysis: result.riskAnalysis,
-			dependencyGraph: result.dependencyGraph,
-			executionPlan: result.executionPlan,
-			error: result.error,
-		};
-	},
+	createInvokeAgent(taskPlannerGraph),
 	// Transform output for A2A response
 	(output) => {
 		const document = (output.document as string) || "";
 
 		return {
+			error: !document ? getUserFacingError(output.error) : undefined,
 			response: document,
 			artifacts: document
 				? [

@@ -1,10 +1,12 @@
 import { ORPCError } from "@orpc/client";
 import {
 	clearRefreshProposal,
+	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	getAutoRefreshSettings,
 	updateDocument,
 } from "@repo/database";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
@@ -92,6 +94,30 @@ export const applyDocumentAutoRefreshProposalProcedure =
 				return { applied: false as const, reason: "stale" as const };
 			}
 
+			// A Proposal's body belongs to its generation run while the run is
+			// queued or writing (Fizzy #2946). The baseline
+			// version does not prove no run wrote: a Proposal run's final save
+			// writes its body at the old version. So accepting under a run is
+			// refused, here and again by the write itself, and the proposal is
+			// kept so it can be accepted (or found stale) once the run is done.
+			// Decided by type, not by the rollout gate: a run keeps writing when
+			// the gate is turned off mid-run.
+			const refuseWhileGenerating = isRunGuardedDocumentType(
+				current.type,
+			);
+			const generationInProgress = () =>
+				new ORPCError("CONFLICT", {
+					message:
+						"A generation run is writing this document; try again when it finishes.",
+					data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+				});
+			if (
+				refuseWhileGenerating &&
+				(current.status === "QUEUED" || current.status === "GENERATING")
+			) {
+				throw generationInProgress();
+			}
+
 			let document: Awaited<ReturnType<typeof updateDocument>>;
 			try {
 				// Visual slots (KTD17) come from the CURRENT stored body, not from the
@@ -108,8 +134,16 @@ export const applyDocumentAutoRefreshProposalProcedure =
 					userId: user.id,
 					organizationId,
 					expectedVersion: baselineVersion,
+					...(refuseWhileGenerating
+						? { refuseWhileGenerating: true }
+						: {}),
 				});
 			} catch (error) {
+				// A run queued between the read above and this write. Nothing
+				// was written, and the proposal stays.
+				if (error instanceof DocumentGenerationInProgressError) {
+					throw generationInProgress();
+				}
 				if (error instanceof DocumentVersionConflictError) {
 					// The document moved under the proposal. Nothing was written.
 					// Clear it so the stale draft cannot be accepted later, and let the

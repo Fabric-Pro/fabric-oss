@@ -114,8 +114,27 @@ const share = (args: Record<string, unknown>) =>
 	});
 
 describe("shareFirstClassFrame: who can open the page", () => {
-	it("makes the page public when no scope is named, and answers with the link", async () => {
+	it("refuses a call that names no scope, naming the valid ones, and never makes the page public", async () => {
 		const result = await share({});
+
+		expect(result).toEqual({
+			error: expect.stringContaining(
+				"PUBLIC, WORKSPACE_AND_EMAILS, EMAILS_ONLY, PRIVATE",
+			),
+		});
+		expect((result as { error: string }).error).toContain("is required");
+		expect(mocks.shareFrame).not.toHaveBeenCalled();
+	});
+
+	it("refuses emails with no scope too: it does not fall back to a public link", async () => {
+		const result = await share({ emails: ["a@example.com"] });
+
+		expect(result).toHaveProperty("error");
+		expect(mocks.shareFrame).not.toHaveBeenCalled();
+	});
+
+	it("makes the page public when PUBLIC is named, and answers with the link", async () => {
+		const result = await share({ scope: "PUBLIC" });
 
 		expect(mocks.shareFrame).toHaveBeenCalledWith({
 			frameId: "frame-1",

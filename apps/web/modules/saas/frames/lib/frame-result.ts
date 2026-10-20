@@ -27,6 +27,9 @@ export function extractFrameToolResult(value: unknown): FrameToolResult | null {
 	}
 
 	const obj = parsed as Record<string, unknown>;
+	if (obj.source === true) {
+		return null;
+	}
 	const frameId = typeof obj.frameId === "string" ? obj.frameId : null;
 	if (!frameId) {
 		return null;
