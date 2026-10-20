@@ -22,14 +22,25 @@ import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 const tsc = require.resolve("typescript/lib/tsc.js");
-const GENERATED_TSC_HEAP_MB = 6144;
-const run = (cmd: string) => execSync(cmd, { stdio: "inherit" });
+const GENERATED_HEAP_MB = 6144;
+const run = (cmd: string, env = process.env) =>
+	execSync(cmd, { stdio: "inherit", env });
 
 // 1. Start from a clean generated dir.
 rmSync("prisma/generated", { recursive: true, force: true });
 
 // 2. Generate the Prisma client (.ts) and zod schemas.
-run("prisma generate --no-hints --schema=./prisma/schema.prisma");
+// Prisma passes its full DMMF to child generators. Share the heap ceiling with
+// those processes as well as the CLI that builds the client.
+run("prisma generate --no-hints --schema=./prisma/schema.prisma", {
+	...process.env,
+	NODE_OPTIONS: [
+		process.env.NODE_OPTIONS,
+		`--max-old-space-size=${GENERATED_HEAP_MB}`,
+	]
+		.filter(Boolean)
+		.join(" "),
+});
 
 // 3. Existing zod import fixups.
 run("tsx ./scripts/fix-zod-imports.ts");
@@ -39,7 +50,7 @@ run("tsx ./scripts/fix-zod-imports.ts");
 // and Node's default heap (about 2 GB on CI runners and in the image builds) ran
 // out at 350 models. A ceiling, not a reservation.
 run(
-	`node --max-old-space-size=${GENERATED_TSC_HEAP_MB} "${tsc}" -p prisma/tsconfig.generated.json`,
+	`node --max-old-space-size=${GENERATED_HEAP_MB} "${tsc}" -p prisma/tsconfig.generated.json`,
 );
 
 // 5. Drop the now-redundant .ts source; keep the compiled .js and .d.ts.

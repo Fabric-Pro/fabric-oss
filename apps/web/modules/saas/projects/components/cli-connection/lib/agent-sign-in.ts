@@ -225,10 +225,26 @@ function joinInitLine(
 }
 
 /**
- * The recommended setup line: the instructions arrive as a plugin built from
- * Fabric at each session start, with no clone and no copy, and the project's
- * memory folders are mirrored as plain files.
+ * The plugin's name, as the CLI names it (`pluginNameFor`): `fabric-` and the
+ * last eight letters and digits of the project's id.
  */
+export function pluginNameForProject(projectId: string): string {
+	const tail = projectId
+		.toLowerCase()
+		.replace(/[^a-z0-9]/g, "")
+		.slice(-8);
+	return `fabric-${tail === "" ? "project" : tail}`;
+}
+
+/**
+ * How Claude Code's `/mcp` lists the plugin's MCP server:
+ * `plugin:<plugin>:<server>`, and the CLI names the server `fabric`
+ * (`CLAUDE_PLUGIN_MCP_SERVER`).
+ */
+export function claudePluginMcpServerLabel(projectId: string): string {
+	return `plugin:${pluginNameForProject(projectId)}:fabric`;
+}
+
 /**
  * The line that approves the plugin's command in Claude Code. The plugin and its
  * marketplace are both named `fabric-` and the last eight letters and digits of
@@ -237,14 +253,25 @@ function joinInitLine(
  * terminal.
  */
 export function claudePluginInstallCommand(projectId: string): string {
-	const tail = projectId
-		.toLowerCase()
-		.replace(/[^a-z0-9]/g, "")
-		.slice(-8);
-	const name = `fabric-${tail === "" ? "project" : tail}`;
+	const name = pluginNameForProject(projectId);
 	return `claude plugin install ${name}@${name} --scope local`;
 }
 
+/**
+ * The line that installs the plugin in Codex, for when the setup could not.
+ * Codex lists it in the personal marketplace, which is where the setup puts it
+ * unless the person's own marketplace file has another name; then the setup
+ * prints the line with that name.
+ */
+export function codexPluginAddCommand(projectId: string): string {
+	return `codex plugin add ${pluginNameForProject(projectId)}@personal`;
+}
+
+/**
+ * The recommended setup line: the instructions arrive as a plugin built from
+ * Fabric at each session start, with no clone and no copy, and the project's
+ * memory folders are mirrored as plain files.
+ */
 export function buildPluginInitLine(args: InitLineArgs): string {
 	return joinInitLine(args, { clone: null, plugin: true });
 }

@@ -41,6 +41,12 @@ export interface AiErrorToastCopy {
 	 * (Fizzy #2770) — the server decides, this only carries its answer.
 	 */
 	planApiBillingActionable?: boolean;
+	/**
+	 * True when the member's own work would have run on a personal key of
+	 * theirs had they opted one in (Fizzy #3086): the copy says so and the
+	 * caller links to the Personal tab of AI Providers.
+	 */
+	planPersonalKeyActionable?: boolean;
 }
 
 /**
@@ -175,6 +181,9 @@ const PLAN_EXHAUSTED_DESCRIPTION =
 	"The ChatGPT plan serving your work reached its usage limit. Wait for it to reset and try again. If it is your own plan, ChatGPT Settings → Usage shows when.";
 
 const PLAN_SPENT_WAIT_HINT = "Try again once they reset.";
+/** Said when an opted-in personal key would carry the work meanwhile (Fizzy #3086). */
+const PLAN_SPENT_PERSONAL_KEY_HINT =
+	"Use your own key meanwhile: turn on “Use when the ChatGPT plan is spent” on a key in AI Providers → Personal.";
 const PLAN_SPENT_API_BILLING_HINT =
 	"Try again once they reset, or use the organization's API billing for your work.";
 
@@ -218,6 +227,7 @@ function describeChatGptPlanRefusal(
 		code?: unknown;
 		resetAt?: unknown;
 		apiBillingOption?: unknown;
+		personalKeyOption?: unknown;
 		data?: { code?: unknown; retryAfterMs?: unknown };
 		limitSignal?: { retryAfterMs?: unknown };
 	};
@@ -236,6 +246,9 @@ function describeChatGptPlanRefusal(
 		const billingSwitch = bag.apiBillingOption === true && {
 			planApiBillingActionable: true,
 		};
+		const personalKey = bag.personalKeyOption === true && {
+			planPersonalKeyActionable: true,
+		};
 		if (!Number.isNaN(resetAt)) {
 			return {
 				title: PLAN_EXHAUSTED_TITLE,
@@ -244,8 +257,12 @@ function describeChatGptPlanRefusal(
 					billingSwitch
 						? PLAN_SPENT_API_BILLING_HINT
 						: PLAN_SPENT_WAIT_HINT,
-				].join(" "),
+					personalKey ? PLAN_SPENT_PERSONAL_KEY_HINT : null,
+				]
+					.filter(Boolean)
+					.join(" "),
 				...billingSwitch,
+				...personalKey,
 			};
 		}
 		const retryAfterMs = Number(
@@ -253,12 +270,17 @@ function describeChatGptPlanRefusal(
 		);
 		return {
 			title: PLAN_EXHAUSTED_TITLE,
-			description:
+			description: [
 				providerMessage ??
-				[PLAN_EXHAUSTED_DESCRIPTION, planResetHint(retryAfterMs)]
-					.filter(Boolean)
-					.join(" "),
+					[PLAN_EXHAUSTED_DESCRIPTION, planResetHint(retryAfterMs)]
+						.filter(Boolean)
+						.join(" "),
+				personalKey ? PLAN_SPENT_PERSONAL_KEY_HINT : null,
+			]
+				.filter(Boolean)
+				.join(" "),
 			...billingSwitch,
+			...personalKey,
 		};
 	}
 	if (code === "CHATGPT_PLAN_UNAVAILABLE") {

@@ -167,6 +167,10 @@ describe("addMessageToChat — non-RAG path is unchanged", () => {
 			context: ctx,
 		});
 
+		expect(
+			mocks.getAIModelWithMetadata.mock.calls[0][1].conversationId,
+		).toBe("chat-1");
+
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
 			instructions?: unknown;
@@ -265,6 +269,11 @@ describe("addMessageToChat — pending-documents workflow RAG path", () => {
 			context: ctx,
 		});
 
+		const client = await mocks.getTemporalClient.mock.results[0].value;
+		expect(
+			client.workflow.start.mock.calls[0][1].args[0].usageConversationId,
+		).toBe("chat-1");
+
 		expect(mocks.streamText).toHaveBeenCalledTimes(1);
 		const callArgs = mocks.streamText.mock.calls[0][0] as {
 			instructions?: string;
@@ -277,4 +286,24 @@ describe("addMessageToChat — pending-documents workflow RAG path", () => {
 		// captured original message rather than `messages[0]` post-call.
 		expect(callArgs.messages).toEqual([originalUserMessage]);
 	});
+});
+
+it("uses the verified chat for title generation after the answer ends", async () => {
+	mocks.verifyOrganizationMembership.mockResolvedValue(true);
+	mocks.getAiChatByIdForOwner.mockResolvedValue({
+		id: "chat-1",
+		organizationId: "org-example",
+		title: null,
+	});
+	await handlers.addMessage({
+		input: {
+			chatId: "chat-1",
+			messages: [userMessage("m-example", "hello")],
+		},
+		context: ctx,
+	});
+	await mocks.streamText.mock.calls[0][0].onEnd({ text: "reply", usage: {} });
+	expect(mocks.generateChatTitle.mock.calls[0][1].conversationId).toBe(
+		"chat-1",
+	);
 });

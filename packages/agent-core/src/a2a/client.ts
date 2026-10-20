@@ -14,6 +14,7 @@ import type {
 } from "./types";
 
 export interface A2AClientOptions {
+	fetch?: (url: string, init: RequestInit) => Promise<Response>;
 	timeout?: number;
 	headers?: Record<string, string>;
 	retryAttempts?: number;
@@ -21,6 +22,7 @@ export interface A2AClientOptions {
 }
 
 const DEFAULT_OPTIONS: Required<A2AClientOptions> = {
+	fetch: (url, init) => fetch(url, init),
 	timeout: 60000,
 	headers: {},
 	retryAttempts: 3,
@@ -338,7 +340,7 @@ export class A2AClient {
 			);
 
 			try {
-				const response = await fetch(url, {
+				const response = await (this.options.fetch ?? fetch)(url, {
 					...init,
 					signal: external
 						? AbortSignal.any([controller.signal, external])
@@ -364,14 +366,18 @@ export class A2AClient {
 
 				if (!isRetryable || attempt >= maxAttempts) {
 					// Don't retry non-retryable errors or if we've exhausted attempts
+					const refusalReason = this.guardRefusalReason(lastError);
 					throw new A2AClientError(
-						`Network request to ${url} failed after ${attempt} attempt(s): ${lastError.message}`,
+						refusalReason
+							? `Network request to ${url} refused: ${refusalReason}`
+							: `Network request to ${url} failed after ${attempt} attempt(s): ${lastError.message}`,
 						"NETWORK_ERROR",
 						{
 							url,
 							attempts: attempt,
 							originalError: lastError.message,
-							cause: this.getErrorCause(lastError),
+							cause:
+								refusalReason ?? this.getErrorCause(lastError),
 						},
 					);
 				}
@@ -393,10 +399,36 @@ export class A2AClient {
 		);
 	}
 
+	/** Preserve identifiable guard refusals through fetch's error wrappers. */
+	private guardRefusalReason(error: Error): string | undefined {
+		// Guard refusals can be wrapped in fetch's TypeError. Inspect causes so
+		// the retry decision and final error retain the same refusal reason.
+		const seen = new Set<unknown>();
+		let cause: unknown = error;
+		while (cause instanceof Error && !seen.has(cause)) {
+			seen.add(cause);
+			if (
+				cause.message.startsWith("Agent endpoint rejected:") ||
+				(cause.message.startsWith("Blocked outbound connection to ") &&
+					"code" in cause &&
+					cause.code === "EACCES") ||
+				cause.message === "unexpected redirect"
+			) {
+				return cause.message;
+			}
+			cause = cause.cause;
+		}
+
+		return undefined;
+	}
+
 	/**
 	 * Determine if an error is retryable (network-level failures)
 	 */
 	private isRetryableError(error: Error): boolean {
+		if (this.guardRefusalReason(error)) {
+			return false;
+		}
 		const message = error.message.toLowerCase();
 		const name = error.name.toLowerCase();
 

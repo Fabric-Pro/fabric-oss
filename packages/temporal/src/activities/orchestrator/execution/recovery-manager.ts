@@ -8,7 +8,6 @@
  */
 
 import { logger } from "@repo/logs";
-import { resolveAgentEndpointWithFallbacks } from "../delegation/resolve-endpoint";
 import type { AgentVariable, TaskPlan, TaskStep } from "../types";
 
 // =============================================================================
@@ -360,9 +359,6 @@ function findFallbackExecutors(
 	const fallbacks: string[] = [];
 	const currentExecutor = step.executor || "";
 
-	// Static fallback map kept as a last-resort safety net for contexts where
-	// tenant information is unavailable. The preferred path is
-	// `findFallbackExecutorsDynamic` which discovers fallbacks from the DB.
 	const fallbackMap: Record<string, string[]> = {
 		// Document generators
 		project_document_generator: ["document_generator"],
@@ -395,53 +391,6 @@ function findFallbackExecutors(
 
 	return fallbacks;
 }
-
-/**
- * Dynamically discover fallback executors for a failed agent by querying the
- * database for agents that share capability tags with the failed agent.
- *
- * This replaces the static `fallbackMap` approach and automatically adapts to
- * newly registered agents without code changes.
- *
- * @param failedAgentId  - The `executor` value from the failed TaskStep
- * @param userId         - Required for tenant-scoped DB lookups
- * @param organizationId - Optional; switches to org context when provided
- * @returns Ordered list of fallback executor IDs (primary excluded), freshest first
- */
-export async function findFallbackExecutorsDynamic(
-	failedAgentId: string,
-	userId: string,
-	organizationId?: string,
-): Promise<string[]> {
-	try {
-		const candidates = await resolveAgentEndpointWithFallbacks(
-			failedAgentId,
-			userId,
-			organizationId,
-		);
-
-		// Drop the first entry — that is the primary/failed agent itself (if found).
-		// Return only the fallbacks as their agentId strings.
-		const fallbacks = candidates
-			.slice(1) // skip primary
-			.map((a) => a.agentId);
-
-		logger.info("[RecoveryManager] Dynamic fallback discovery complete", {
-			failedAgentId,
-			fallbackCount: fallbacks.length,
-			fallbacks,
-		});
-
-		return fallbacks;
-	} catch (err) {
-		logger.warn(
-			"[RecoveryManager] Dynamic fallback discovery failed, falling back to static map",
-			{ failedAgentId, error: String(err) },
-		);
-		return [];
-	}
-}
-
 function assessSkipImpact(step: TaskStep, context: RecoveryContext): string {
 	const impacts: string[] = [];
 
@@ -734,49 +683,4 @@ export async function getRetryDelayActivity(
 	attemptNumber: number,
 ): Promise<number> {
 	return getRetryDelay(error, step, attemptNumber);
-}
-
-/**
- * Activity wrapper for findFallbackExecutorsDynamic.
- *
- * Discovers fallback executors from the database using capability tag matching.
- * Falls back to the static map (via `findFallbackExecutors`) when the dynamic
- * lookup returns no results.
- *
- * @param step           - The failed TaskStep (uses `step.executor` as the failed agent ID)
- * @param userId         - Required for tenant-scoped DB lookups
- * @param organizationId - Optional; switches to org context when provided
- * @returns Ordered list of fallback executor IDs, freshest first
- */
-export async function findFallbackExecutorsDynamicActivity(
-	step: TaskStep,
-	availableExecutors: string[],
-	userId: string,
-	organizationId?: string,
-): Promise<string[]> {
-	const failedAgentId = step.executor || "";
-
-	// Attempt dynamic DB-based discovery first
-	const dynamicFallbacks = await findFallbackExecutorsDynamic(
-		failedAgentId,
-		userId,
-		organizationId,
-	);
-
-	if (dynamicFallbacks.length > 0) {
-		// Filter to executors the orchestrator considers available
-		const filtered = dynamicFallbacks.filter(
-			(id) => availableExecutors.includes(id) && id !== failedAgentId,
-		);
-		if (filtered.length > 0) {
-			return filtered;
-		}
-	}
-
-	// Fall back to static map when dynamic discovery yields nothing
-	logger.info(
-		"[RecoveryManager] Dynamic fallbacks empty or unavailable, using static map",
-		{ failedAgentId },
-	);
-	return findFallbackExecutors(step, availableExecutors);
 }

@@ -66,6 +66,7 @@ import {
 	hasCompleteCredentials,
 	isEmbeddingCapableProvider,
 	isProviderEmbeddingsOnly,
+	isProviderPlanSpentFallback,
 	isServicePrincipalMode,
 	type ProviderWithIcon,
 } from "../lib/ai-providers";
@@ -74,15 +75,24 @@ import {
 	EmbeddingsOnlyOption,
 	EmbeddingsOnlyToggle,
 } from "./EmbeddingsOnlyControls";
+import { PlanSpentFallbackToggle } from "./PlanSpentFallbackToggle";
 
 export function AiProvidersSettingsForm({
 	chatgptPlan = null,
+	organizationServesWork = false,
 }: {
 	/**
 	 * Set when the member's own ChatGPT plan serves their own work in the
 	 * organization on screen (Fizzy #2770), so the status banner says so.
 	 */
 	chatgptPlan?: { organizationName: string } | null;
+	/**
+	 * Whether the organization on screen already serves the member's chat and
+	 * generation (Fizzy #3087): true hides "No AI Provider Configured" for a
+	 * member with no keys of their own, null means not known yet and shows
+	 * nothing rather than a warning that may be wrong.
+	 */
+	organizationServesWork?: boolean | null;
 } = {}) {
 	const queryClient = useQueryClient();
 	const { triggerReturn } = useReturnToRedirect();
@@ -904,7 +914,8 @@ export function AiProvidersSettingsForm({
 								</div>
 							</div>
 						</div>
-					) : chatgptPlan ? (
+					) : organizationServesWork !==
+						false ? null : chatgptPlan ? (
 						<ChatgptPlanOnlyNotice
 							organizationName={chatgptPlan.organizationName}
 						/>
@@ -1186,6 +1197,18 @@ export function AiProvidersSettingsForm({
 															}
 														/>
 													)}
+												{isConfigured &&
+													!isEmbeddingsOnly && (
+														<PlanSpentFallbackToggle
+															provider={
+																provider.id
+															}
+															checked={isProviderPlanSpentFallback(
+																provider.id,
+																configStatus,
+															)}
+														/>
+													)}
 												{isConfigured && (
 													<Tooltip>
 														<TooltipTrigger asChild>
@@ -1443,6 +1466,18 @@ export function AiProvidersSettingsForm({
 															}
 														/>
 													)}
+												{isConfigured &&
+													!isEmbeddingsOnly && (
+														<PlanSpentFallbackToggle
+															provider={
+																provider.id
+															}
+															checked={isProviderPlanSpentFallback(
+																provider.id,
+																configStatus,
+															)}
+														/>
+													)}
 												{isConfigured && (
 													<Tooltip>
 														<TooltipTrigger asChild>
@@ -1698,6 +1733,18 @@ export function AiProvidersSettingsForm({
 															checked={
 																isEmbeddingsOnly
 															}
+														/>
+													)}
+												{isConfigured &&
+													!isEmbeddingsOnly && (
+														<PlanSpentFallbackToggle
+															provider={
+																provider.id
+															}
+															checked={isProviderPlanSpentFallback(
+																provider.id,
+																configStatus,
+															)}
 														/>
 													)}
 												{isConfigured && (

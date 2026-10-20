@@ -19,6 +19,7 @@ import {
 	createDocumentAssistantConversation,
 	db,
 	getActiveDocumentAssistantConversation,
+	getRegisteredAgentByAgentId,
 } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../../lib/audit";
@@ -28,6 +29,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { checkRegisteredAgentAccess } from "../../../lib/registered-agent-access";
 import {
 	DocumentAssistantVisibilitySchema,
 	DocumentRefSchema,
@@ -139,7 +141,7 @@ export const appendTurnForDocument = tenantProtectedProcedure
 		DocumentRefSchema.extend({
 			conversationId: z.string().optional(),
 			message: MessageSchema,
-			agentId: z.string().min(1),
+			agentId: z.string().trim().min(1).max(128),
 			requestedVisibility: DocumentAssistantVisibilitySchema.optional(),
 		}),
 	)
@@ -221,6 +223,29 @@ export const appendTurnForDocument = tenantProtectedProcedure
 				if (count >= NEW_CONVERSATIONS_PER_DAY_CAP) {
 					throw new ORPCError("CONFLICT", {
 						message: NEW_CONVERSATIONS_PER_DAY_MESSAGE,
+					});
+				}
+
+				// AgentConversation.agentId is not a foreign key. Apply the same
+				// catalog and scope check as agents.conversations.create, so this
+				// path can't store an agent that create would refuse and that
+				// continue-in-new-chat would then carry into a regular chat.
+				// Missing and inaccessible agents return the same error.
+				const registered = await getRegisteredAgentByAgentId(
+					input.agentId,
+				);
+				if (
+					!registered ||
+					!(
+						await checkRegisteredAgentAccess(
+							registered,
+							user.id,
+							organizationId,
+						)
+					).allowed
+				) {
+					throw new ORPCError("BAD_REQUEST", {
+						message: `Unknown agentId: "${input.agentId}". Agent must be registered in the catalog before a conversation can be created.`,
 					});
 				}
 

@@ -1,3 +1,10 @@
+# Database migration standards
+
+Create and deploy schema changes with reviewed migrations and compatible application code.
+
+- **Audience**: engineers changing database schemas or migration tooling
+- **Owner**: Engineering team
+
 ## Database migration best practices
 
 - **Never use `prisma db push`**: Every schema change must have a reviewed,
@@ -23,6 +30,8 @@ npx dotenv -c -e ../../.env.local -- npx prisma migrate dev --name descriptive_n
 ```
 
 Inspect the generated SQL, then run `pnpm --filter @repo/database generate`.
+The [Prisma generation reference](../../../docs/prisma-generation.md) describes
+the generated artifacts, dependency patches and upgrade checks.
 If tenant-aware tables changed, update and validate
 `packages/database/scripts/apply-rls-direct.ts` as part of the same change.
 

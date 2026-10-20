@@ -24,6 +24,13 @@ import path from "node:path";
 import { CliFailure } from "../command-boundary.js";
 import { objectAt, updateHookConfig } from "../instructions/hook.js";
 import {
+	assertLocationFree,
+	BINDING_FILE,
+	bindingText,
+	originOf,
+} from "./binding.js";
+import {
+	descriptionFor,
 	isFabricAgentsOverride,
 	mergedAgentsOverride,
 	pluginNameFor,
@@ -126,6 +133,7 @@ export function claudeMarketplaceDirectory(
  */
 function claudeMarketplace(input: {
 	projectId: string;
+	origin: string;
 	command: string;
 }): Record<string, unknown> {
 	return {
@@ -134,8 +142,7 @@ function claudeMarketplace(input: {
 		plugins: [
 			{
 				name: pluginNameFor(input.projectId),
-				description:
-					"Coding instructions for a Fabric project, rendered on demand.",
+				description: descriptionFor(input.projectId, input.origin),
 				source: {
 					source: "command",
 					command: input.command,
@@ -149,17 +156,33 @@ function claudeMarketplace(input: {
 
 /**
  * Write the marketplace folder (`.claude-plugin/marketplace.json`) and return
- * it. Rewritten on every `init`, so a moved CLI or a changed deployment
- * updates the command the person is asked to approve.
+ * it. Rewritten on every `init`, so a moved CLI updates the command the person
+ * is asked to approve; a folder that belongs to another project or deployment
+ * is refused, not replaced.
  */
 export async function writeClaudeMarketplace(input: {
 	cacheDirectory: string;
 	projectId: string;
+	/** The deployment, as an origin. */
+	origin: string;
 	command: string;
 }): Promise<string> {
 	const directory = claudeMarketplaceDirectory(
 		input.cacheDirectory,
 		input.projectId,
+	);
+	const binding = {
+		projectId: input.projectId,
+		origin: originOf(input.origin),
+	};
+	await assertLocationFree({
+		directory,
+		location: "claude-marketplace",
+		wanted: binding,
+	});
+	await writeAtomically(
+		path.join(directory, BINDING_FILE),
+		bindingText(binding),
 	);
 	await writeAtomically(
 		path.join(directory, ".claude-plugin", "marketplace.json"),
@@ -360,6 +383,29 @@ export async function registerCodexPlugin(input: {
 		marketplaceName: marketplace.name,
 		changed,
 	};
+}
+
+/**
+ * The name of the personal marketplace that lists the project's plugin, or
+ * `null` when the file is missing, unreadable, or does not list it. Reads only;
+ * a file of another shape is not this function's to complain about.
+ */
+export async function codexMarketplaceListing(input: {
+	home: string;
+	projectId: string;
+}): Promise<string | null> {
+	try {
+		const { marketplace, existed } = await readCodexMarketplace(
+			path.join(input.home, CODEX_MARKETPLACE_RELATIVE),
+		);
+		const name = pluginNameFor(input.projectId);
+		return existed &&
+			marketplace.plugins.some((plugin) => plugin.name === name)
+			? marketplace.name
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 export type AgentsOverrideResult =

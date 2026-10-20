@@ -45,7 +45,6 @@
 					},
 					{
 						"type": "command",
-						"if": "Bash(*gh*)",
 						"command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/pr-quality-gate.mjs",
 						"timeout": 600
 					}

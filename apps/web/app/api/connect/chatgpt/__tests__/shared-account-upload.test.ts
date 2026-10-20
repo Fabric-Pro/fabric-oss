@@ -52,7 +52,7 @@ vi.mock("@repo/database", async () => {
 	class ChatGptPlanSubjectBoundElsewhereError extends Error {
 		constructor() {
 			super(
-				"This ChatGPT account is already connected to another organization",
+				"This ChatGPT account is already shared by another organization. An admin there has to disconnect it in Settings → AI Providers first; then run this command again.",
 			);
 		}
 	}
@@ -241,12 +241,16 @@ describe("POST /api/connect/chatgpt/credentials, shared account", () => {
 		expect((await post(ticket)).status).toBe(401);
 	});
 
-	it("refuses an account another organization already has", async () => {
+	it("refuses an account another organization already has, saying what to do next", async () => {
 		state.upsertAccount.mockRejectedValue(
 			new ChatGptPlanSubjectBoundElsewhereError(),
 		);
 		const response = await post(await orgTicket());
 		expect(response.status).toBe(409);
+		// The CLI prints this as-is: the next step, never the organization.
+		expect((await response.json()).error).toBe(
+			new ChatGptPlanSubjectBoundElsewhereError().message,
+		);
 		expect(state.audit).not.toHaveBeenCalled();
 	});
 

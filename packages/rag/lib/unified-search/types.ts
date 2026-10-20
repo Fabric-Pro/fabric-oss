@@ -64,6 +64,7 @@ export interface UnifiedSearchResult {
 export interface ProjectSearchOptions {
 	/** Project to scope search to */
 	projectId: string;
+	conversationId?: string;
 
 	/** Search query */
 	query: string;

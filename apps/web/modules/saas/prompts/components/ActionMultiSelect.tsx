@@ -1,7 +1,11 @@
 "use client";
 
-import { listPromptActions } from "@repo/utils/prompt-action-catalog";
+import {
+	listPromptActions,
+	type PromptAction,
+} from "@repo/utils/prompt-action-catalog";
 import { useMemo } from "react";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 
 /**
  * Pick the set of actions a prompt applies to.
@@ -16,6 +20,10 @@ import { useMemo } from "react";
  * renders as a fixed row rather than a checked box, because it is not the
  * user's to clear here — clearing it would silently change what they are
  * looking at.
+ *
+ * The checkable rows are the actions this organization is offered, so an
+ * action the Proposal artifact supersedes is not offered here (Fizzy #2946).
+ * The fixed row is named from the full catalog, whatever it is.
  */
 
 export type ActionMultiSelectProps = {
@@ -28,6 +36,11 @@ export type ActionMultiSelectProps = {
 	/** Rendered under the list; the caller knows what the set means. */
 	hint?: string;
 	id: string;
+	/**
+	 * The actions to offer. Defaults to the actions this organization is
+	 * offered; a caller reviewing a tier the gate does not shape passes its own.
+	 */
+	actions?: readonly PromptAction[];
 };
 
 export function ActionMultiSelect({
@@ -37,10 +50,13 @@ export function ActionMultiSelect({
 	label,
 	hint,
 	id,
+	actions,
 }: ActionMultiSelectProps) {
+	const offered = useOfferedPromptActions();
+	const offeredActions = actions ?? offered.actions;
 	const selectable = useMemo(
-		() => listPromptActions().filter((a) => a.id !== alwaysIncluded),
-		[alwaysIncluded],
+		() => offeredActions.filter((a) => a.id !== alwaysIncluded),
+		[offeredActions, alwaysIncluded],
 	);
 
 	const fixed = useMemo(

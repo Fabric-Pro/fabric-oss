@@ -19,11 +19,11 @@ import {
 	CONTEXT_SYNC_TRANSACTION_TIMEOUT_MS,
 	CONTEXT_SYNC_UNFINISHED_RUNS_LIMIT,
 	type ContextRepositorySyncRunLedger,
-	confirmUnchangedRepositoryContext,
 	type ContextSyncError,
 	type ContextSyncPlan,
 	canCreateProjectContexts,
 	completeContextRepositorySyncRun,
+	confirmUnchangedRepositoryContext,
 	db,
 	findContextRepositorySyncRunReceiptByWorkflowRunId,
 	getContextRepositorySync,
@@ -46,6 +46,7 @@ import {
 	pinContextRepositorySyncRunCommit,
 	pruneRepositoryContextBatch,
 	type RepositoryContextFile,
+	reconcileContextIndexing,
 	recordContextRepositorySyncLastApplied,
 	recordContextRepositorySyncPrune,
 	releaseContextRepositorySyncRunKey,
@@ -95,6 +96,7 @@ import {
 } from "./lib/context-sync-inventory";
 import {
 	type AttentionItem,
+	blobOidsForKeys,
 	buildContextSyncPlan,
 	type ContextIgnorePolicy,
 	type ContextSyncCandidate,
@@ -105,7 +107,6 @@ import {
 	MAX_CONTEXT_SYNC_KEPT,
 	MAX_CONTEXT_SYNC_TOTAL_BYTES,
 	planContextTree,
-	blobOidsForKeys,
 	repositoryPathsForKeys,
 	type SelectedPathShape,
 	selectedPathShapes,
@@ -1371,6 +1372,17 @@ async function applyPlannedKeys(
 					decided,
 				})),
 			};
+			// A file that arrived, moved between folders or was adopted is
+			// marked store-only (or not) by the folder it now sits under, and
+			// the vectors of an adopted row that became store-only are queued
+			// for deletion, in this batch's own transaction.
+			await reconcileContextIndexing(tx, {
+				projectId: context.projectId,
+				organizationId: context.organizationId,
+				syncId: context.syncId,
+				actingUserId: context.actingUserId,
+				sourcePaths: files.map((file) => file.storageKey),
+			});
 			const ledger = await mergeContextRepositorySyncRunOutcomes(
 				tx,
 				context.runKey,

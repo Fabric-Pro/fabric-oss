@@ -89,16 +89,15 @@ async function recordKeptFrame(
 	nodeId: string,
 	frameId: string,
 ): Promise<void> {
-	await updateWorkflowSettings(
-		{ workflowId, organizationId },
-		(settings) => ({
-			...settings,
-			[PUBLISH_FRAME_IDS_KEY]: {
-				...readPublishFrameIds(settings),
-				[nodeId]: frameId,
-			},
-		}),
-	);
+	await updateWorkflowSettings({ workflowId, organizationId }, (settings) => {
+		const frameIds = readPublishFrameIds(settings);
+		return frameIds[nodeId] === frameId
+			? null
+			: {
+					...settings,
+					[PUBLISH_FRAME_IDS_KEY]: { ...frameIds, [nodeId]: frameId },
+				};
+	});
 }
 
 async function findKeptFrame(

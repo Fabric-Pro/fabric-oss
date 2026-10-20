@@ -35,6 +35,39 @@ export const STORAGE_KEYS = {
 	META: "fabric-orchestrator-config-meta",
 } as const;
 
+export const ORGANIZATION_STORAGE_KEYS = [
+	STORAGE_KEYS.AGENTS,
+	STORAGE_KEYS.MCP,
+	STORAGE_KEYS.WORKSPACES,
+	STORAGE_KEYS.INTEGRATIONS,
+	STORAGE_KEYS.PRIORITIZED_AGENTS,
+	STORAGE_KEYS.PRIORITIZED_MCP,
+	STORAGE_KEYS.PRIORITIZED_INTEGRATIONS,
+] as const;
+
+export function getOrganizationStorageKey(
+	base: (typeof ORGANIZATION_STORAGE_KEYS)[number],
+	organizationId: string | null | undefined,
+	userId: string | null | undefined,
+): string | null {
+	return organizationId && userId
+		? `${base}:${userId}:${organizationId}`
+		: null;
+}
+
+export function removeLegacyOrganizationStorage(): void {
+	if (typeof window === "undefined") {
+		return;
+	}
+	for (const key of ORGANIZATION_STORAGE_KEYS) {
+		try {
+			localStorage.removeItem(key);
+		} catch {
+			// Storage may be unavailable; scoped reads still ignore legacy entries.
+		}
+	}
+}
+
 // =============================================================================
 // localStorage Utilities
 // =============================================================================
@@ -42,8 +75,8 @@ export const STORAGE_KEYS = {
 /**
  * Safely get a value from localStorage
  */
-export function getFromLocalStorage<T>(key: string, defaultValue: T): T {
-	if (typeof window === "undefined") {
+export function getFromLocalStorage<T>(key: string | null, defaultValue: T): T {
+	if (key === null || typeof window === "undefined") {
 		return defaultValue;
 	}
 
@@ -62,8 +95,8 @@ export function getFromLocalStorage<T>(key: string, defaultValue: T): T {
 /**
  * Safely set a value in localStorage
  */
-export function setToLocalStorage<T>(key: string, value: T): boolean {
-	if (typeof window === "undefined") {
+export function setToLocalStorage<T>(key: string | null, value: T): boolean {
+	if (key === null || typeof window === "undefined") {
 		return false;
 	}
 
@@ -82,11 +115,15 @@ export function setToLocalStorage<T>(key: string, value: T): boolean {
 /**
  * Check if localStorage has a value for a key
  */
-export function hasLocalStorageKey(key: string): boolean {
-	if (typeof window === "undefined") {
+export function hasLocalStorageKey(key: string | null): boolean {
+	if (key === null || typeof window === "undefined") {
 		return false;
 	}
-	return localStorage.getItem(key) !== null;
+	try {
+		return localStorage.getItem(key) !== null;
+	} catch {
+		return false;
+	}
 }
 
 // =============================================================================
@@ -130,40 +167,47 @@ export async function executeWithRetry<T>(
 // Notification Helpers
 // =============================================================================
 
-let syncErrorToastId: string | number | undefined;
+const syncErrorToastIds = new Map<string, string | number>();
 
 /**
  * Show a toast notification for sync errors (deduplicated)
  */
-export function showSyncError(message: string, description?: string): void {
-	// Dismiss any existing sync error toast
-	if (syncErrorToastId) {
-		toast.dismiss(syncErrorToastId);
-	}
-
-	syncErrorToastId = toast.error(message, {
+export function showSyncError(
+	message: string,
+	description?: string,
+	onRetry?: () => void,
+	key = "default",
+): void {
+	dismissSyncError(key);
+	const id = toast.error(message, {
 		description,
-		duration: 5000,
-		action: {
-			label: "Retry",
-			onClick: () => {
-				// The parent component should handle retry via callback
-				toast.dismiss(syncErrorToastId);
-			},
-		},
+		duration: Number.POSITIVE_INFINITY,
+		action: onRetry
+			? {
+					label: "Retry",
+					onClick: (event) => {
+						// Sonner dismisses action toasts unless the event is prevented.
+						event.preventDefault();
+						onRetry?.();
+					},
+				}
+			: undefined,
 	});
+	syncErrorToastIds.set(key, id);
+}
+
+export function dismissSyncError(key = "default"): void {
+	const id = syncErrorToastIds.get(key);
+	if (id !== undefined) {
+		toast.dismiss(id);
+		syncErrorToastIds.delete(key);
+	}
 }
 
 /**
  * Show a toast notification for sync success (subtle)
  */
-export function showSyncSuccess(): void {
-	// Dismiss any existing sync error toast since sync succeeded
-	if (syncErrorToastId) {
-		toast.dismiss(syncErrorToastId);
-		syncErrorToastId = undefined;
-	}
-
-	// Show subtle success only if there was a previous error
-	// This avoids spamming the user with success messages
+export function showSyncSuccess(key = "default"): void {
+	dismissSyncError(key);
+	// Avoid spamming success messages for background saves.
 }

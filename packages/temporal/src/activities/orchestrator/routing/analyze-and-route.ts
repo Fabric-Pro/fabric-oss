@@ -20,8 +20,14 @@ import { generateText } from "@repo/ai";
 import { db } from "@repo/database";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { RoutingDecision } from "../../../workflows/orchestrator/types";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import { getRoutingSystemPrompt } from "../../prompts";
 import { getAgentCapabilities } from "../delegation/agent-capabilities";
+import {
+	compareRegisteredAgentPrecedence,
+	isRegisteredAgentEndpointAvailable,
+	registeredAgentNamesKey,
+} from "../delegation/resolve-endpoint";
 import {
 	detectMissingIntegrations,
 	detectRequiredConnectionsWithRegistrySearch,
@@ -122,8 +128,8 @@ async function routeTask(
 		false,
 		undefined,
 		undefined,
-		input.conversationId
-			? { conversationId: input.conversationId }
+		input.conversationId || input.frameId || input.projectId
+			? usageOriginFields(input)
 			: undefined,
 	);
 
@@ -148,6 +154,7 @@ async function routeTask(
 	// (e.g., "fitness" matching "fizzy", "plan" matching project management tools)
 	// Credentials are fetched internally by the search function
 	const toolSearchResult = await searchAvailableTools({
+		usageOrigin: { ...usageOriginFields(input), featureKey: "chat-agent" },
 		query: input.message,
 		limit: 10,
 		minConfidence: userIntent.requestedMcpTools ? 0.3 : 0.4, // Higher threshold to reduce false positives
@@ -471,6 +478,7 @@ async function routeTask(
 
 	// Search for relevant agents based on the task
 	const agentSearchResult = await searchAvailableAgents({
+		usageOrigin: { ...usageOriginFields(input), featureKey: "chat-agent" },
 		query: input.message,
 		limit: 5,
 		minConfidence: 0.2,
@@ -479,60 +487,6 @@ async function routeTask(
 		enabledAgentIds: input.enabledAgentIds,
 		...lookupTurnScope(input),
 	});
-
-	// ==========================================================================
-	// APPLY AGENT PRIORITIZATION BOOSTS
-	// ==========================================================================
-	let boostedAgentResults = agentSearchResult.results;
-
-	if (input.prioritizedAgentIds?.length) {
-		boostedAgentResults = agentSearchResult.results.map((a) => {
-			if (input.prioritizedAgentIds?.includes(a.agentId)) {
-				return {
-					...a,
-					confidence: Math.min(a.confidence + 0.3, 1.0), // 30% boost
-					matchReason: `${a.matchReason || ""} [PRIORITIZED +30%]`,
-				};
-			}
-			return a;
-		});
-
-		// Re-sort by confidence after boosting
-		boostedAgentResults.sort((a, b) => b.confidence - a.confidence);
-
-		console.log("[Orchestrator] Applied agent prioritization boosts:", {
-			prioritizedAgents: input.prioritizedAgentIds,
-		});
-	}
-
-	console.log("[Orchestrator] Agent search results:", {
-		matchedAgentCount: boostedAgentResults.length,
-		matchedAgents: boostedAgentResults.map((a) => ({
-			id: a.agentId,
-			confidence: a.confidence.toFixed(2),
-		})),
-		totalAgentsSearched: agentSearchResult.totalAgentsSearched,
-		durationMs: agentSearchResult.durationMs,
-	});
-
-	// Build agent descriptions for routing prompt
-	let agentDescriptions = "";
-	if (boostedAgentResults.length > 0) {
-		agentDescriptions = boostedAgentResults
-			.map((a) => {
-				const limitationsNote = a.limitations?.length
-					? `\n  Limitations: ${a.limitations.join(", ")}`
-					: "";
-				const skillsNote = a.skills.length
-					? `\n  Skills: ${a.skills.join(", ")}`
-					: "";
-				return `- **${a.displayName}** (${a.agentId}): ${a.description.slice(0, 150)}${skillsNote}${limitationsNote} [confidence: ${(a.confidence * 100).toFixed(0)}%]`;
-			})
-			.join("\n\n");
-	} else {
-		agentDescriptions =
-			"No high-confidence agent matches found. Prefer direct MCP or workflow execution unless the user explicitly requested an agent.";
-	}
 
 	// ==========================================================================
 	// TOKEN-EFFICIENT WORKFLOW DISCOVERY
@@ -546,6 +500,11 @@ async function routeTask(
 	// Only search workflows if user mentioned workflow or we detect workflow-like patterns
 	if (userIntent.requestedWorkflow || userIntent.requestedWorkflowName) {
 		workflowSearchResult = await searchAvailableWorkflows({
+			usageOrigin: {
+				...usageOriginFields(input),
+				featureKey: "chat-agent",
+			},
+			usageConversationId: input.conversationId,
 			query: input.message,
 			limit: 5,
 			minConfidence: 0.2,
@@ -587,6 +546,10 @@ async function routeTask(
 
 	if (integrationSearchTriggered) {
 		integrationSearchResult = await searchAvailableIntegrations({
+			usageOrigin: {
+				...usageOriginFields(input),
+				featureKey: "chat-agent",
+			},
 			query: input.message,
 			limit: 5,
 			minConfidence: 0.3,
@@ -660,104 +623,201 @@ async function routeTask(
 	// If user explicitly requested an agent by name, find it directly
 	// ==========================================================================
 	let explicitAgentMatch: (typeof agentSearchResult.results)[0] | null = null;
+	const suppressedAgentIds = new Set<string>();
 
 	if (userIntent.requestedAgentName) {
-		const requestedName = userIntent.requestedAgentName.toLowerCase();
+		const requestedName = userIntent.requestedAgentName
+			.trim()
+			.toLowerCase();
 
-		// First check in semantic search results
-		explicitAgentMatch =
-			agentSearchResult.results.find(
-				(a) =>
-					a.agentId.toLowerCase() === requestedName ||
-					a.agentId.toLowerCase().includes(requestedName) ||
-					a.displayName.toLowerCase().includes(requestedName) ||
-					a.name.toLowerCase().includes(requestedName),
-			) || null;
+		// This query is authoritative; its non-org USER arm requires organizationId:null,
+		// while semantic search's USER arm only filters userId (ADR-018 fail-closed context).
+		const dbAgents = await db.registeredAgent.findMany({
+			where: {
+				AND: [
+					{
+						OR: [
+							{ scope: "SYSTEM" },
+							...(input.organizationId
+								? [
+										{
+											scope: "ORGANIZATION",
+											organizationId:
+												input.organizationId,
+										},
+									]
+								: [
+										{
+											scope: "USER",
+											userId: input.userId,
+											organizationId: null,
+										},
+									]),
+						],
+					},
+					{
+						OR: [
+							{
+								agentId: {
+									contains: requestedName,
+									mode: "insensitive" as const,
+								},
+							},
+							{
+								displayName: {
+									contains: requestedName,
+									mode: "insensitive" as const,
+								},
+							},
+							{
+								name: {
+									contains: requestedName,
+									mode: "insensitive" as const,
+								},
+							},
+						],
+					},
+				],
+			},
+			select: {
+				id: true,
+				agentId: true,
+				name: true,
+				displayName: true,
+				description: true,
+				scope: true,
+				status: true,
+				createdAt: true,
+				deploymentUrl: true,
+				metadata: true,
+			},
+		});
 
-		// If not found in semantic results, query database directly
-		if (!explicitAgentMatch) {
-			const dbAgent = await db.registeredAgent.findFirst({
-				where: {
-					status: "ACTIVE",
-					AND: [
-						{
-							OR: [
-								{ scope: "SYSTEM" },
-								...(input.organizationId
-									? [
-											{
-												scope: "ORGANIZATION",
-												organizationId:
-													input.organizationId,
-											},
-										]
-									: [
-											{
-												scope: "USER",
-												userId: input.userId,
-												organizationId: null,
-											},
-										]),
-							],
-						},
-						{
-							OR: [
-								{
-									agentId: {
-										contains: requestedName,
-										mode: "insensitive" as const,
-									},
-								},
-								{
-									displayName: {
-										contains: requestedName,
-										mode: "insensitive" as const,
-									},
-								},
-								{
-									name: {
-										contains: requestedName,
-										mode: "insensitive" as const,
-									},
-								},
-							],
-						},
-					],
-				},
-			});
+		const allowSubstring = requestedName.length >= 3;
+		const matchTier = (agent: (typeof dbAgents)[number]) =>
+			registeredAgentNamesKey(agent, requestedName) ? 0 : 1;
+		const dbAgent = dbAgents
+			.filter((agent) => allowSubstring || matchTier(agent) === 0)
+			.sort((a, b) =>
+				compareRegisteredAgentPrecedence(
+					a,
+					b,
+					matchTier(a),
+					matchTier(b),
+				),
+			)[0];
 
-			if (dbAgent) {
-				const metadata = dbAgent.metadata as Record<
-					string,
-					unknown
-				> | null;
-				const skills =
-					(metadata?.skills as Array<{ name: string }>) || [];
-				explicitAgentMatch = {
-					agentId: dbAgent.agentId,
-					name: dbAgent.name,
-					displayName: dbAgent.displayName,
-					description: dbAgent.description || "",
-					confidence: 0.95, // High confidence for explicit match
-					matchReason: `Explicitly requested by user: "${userIntent.requestedAgentName}"`,
-					skills: skills.map((s) => s.name),
-					limitations: undefined,
-				};
-				console.log(
-					`[Orchestrator] Found explicit agent match from database: ${dbAgent.agentId}`,
-				);
-			}
-		} else {
-			// Boost confidence for explicit match
+		const available =
+			dbAgent &&
+			isRegisteredAgentEndpointAvailable(dbAgent) &&
+			(!input.enabledAgentIds ||
+				input.enabledAgentIds.includes(dbAgent.agentId));
+		if (dbAgent && available) {
+			const semanticMatch = agentSearchResult.results.find(
+				(agent) => agent.agentId === dbAgent.agentId,
+			);
 			explicitAgentMatch = {
-				...explicitAgentMatch,
-				confidence: Math.max(explicitAgentMatch.confidence, 0.9),
-				matchReason: `Explicitly requested by user: "${userIntent.requestedAgentName}". ${explicitAgentMatch.matchReason}`,
+				agentId: dbAgent.agentId,
+				name: dbAgent.name,
+				displayName: dbAgent.displayName,
+				description: dbAgent.description || "",
+				confidence: Math.max(0.95, semanticMatch?.confidence ?? 0),
+				matchReason: `Explicitly requested by user: "${userIntent.requestedAgentName}"${semanticMatch ? `. ${semanticMatch.matchReason}` : ""}`,
+				skills: semanticMatch?.skills ?? [],
+				limitations: undefined,
 			};
 			console.log(
-				`[Orchestrator] Found explicit agent match from search: ${explicitAgentMatch.agentId}`,
+				`[Orchestrator] Found explicit agent match from database: ${dbAgent.agentId}`,
 			);
 		}
+		if (dbAgent?.scope === "SYSTEM") {
+			// Search results omit scope; globally unique agentId ties them to the DB candidates.
+			const systemAgentIds = new Set(
+				dbAgents
+					.filter((agent) => agent.scope === "SYSTEM")
+					.map((agent) => agent.agentId),
+			);
+			agentSearchResult.results = agentSearchResult.results.filter(
+				(agent) => {
+					const suppress =
+						!systemAgentIds.has(agent.agentId) &&
+						(registeredAgentNamesKey(agent, requestedName) ||
+							(allowSubstring &&
+								[
+									agent.agentId,
+									agent.name,
+									agent.displayName,
+								].some((value) =>
+									value.toLowerCase().includes(requestedName),
+								)));
+					if (suppress) {
+						suppressedAgentIds.add(agent.agentId);
+					}
+					return !suppress;
+				},
+			);
+			console.log(
+				"[Orchestrator] Suppressed member look-alikes of the SYSTEM winner",
+				{
+					agentId: dbAgent.agentId,
+					status: dbAgent.status,
+				},
+			);
+		}
+	}
+
+	// ==========================================================================
+	// APPLY AGENT PRIORITIZATION BOOSTS
+	// ==========================================================================
+	let boostedAgentResults = agentSearchResult.results;
+
+	if (input.prioritizedAgentIds?.length) {
+		boostedAgentResults = agentSearchResult.results.map((a) => {
+			if (input.prioritizedAgentIds?.includes(a.agentId)) {
+				return {
+					...a,
+					confidence: Math.min(a.confidence + 0.3, 1.0), // 30% boost
+					matchReason: `${a.matchReason || ""} [PRIORITIZED +30%]`,
+				};
+			}
+			return a;
+		});
+
+		// Re-sort by confidence after boosting
+		boostedAgentResults.sort((a, b) => b.confidence - a.confidence);
+
+		console.log("[Orchestrator] Applied agent prioritization boosts:", {
+			prioritizedAgents: input.prioritizedAgentIds,
+		});
+	}
+
+	console.log("[Orchestrator] Agent search results:", {
+		matchedAgentCount: boostedAgentResults.length,
+		matchedAgents: boostedAgentResults.map((a) => ({
+			id: a.agentId,
+			confidence: a.confidence.toFixed(2),
+		})),
+		totalAgentsSearched: agentSearchResult.totalAgentsSearched,
+		durationMs: agentSearchResult.durationMs,
+	});
+
+	// Build agent descriptions for routing prompt
+	let agentDescriptions = "";
+	if (boostedAgentResults.length > 0) {
+		agentDescriptions = boostedAgentResults
+			.map((a) => {
+				const limitationsNote = a.limitations?.length
+					? `\n  Limitations: ${a.limitations.join(", ")}`
+					: "";
+				const skillsNote = a.skills.length
+					? `\n  Skills: ${a.skills.join(", ")}`
+					: "";
+				return `- **${a.displayName}** (${a.agentId}): ${a.description.slice(0, 150)}${skillsNote}${limitationsNote} [confidence: ${(a.confidence * 100).toFixed(0)}%]`;
+			})
+			.join("\n\n");
+	} else {
+		agentDescriptions =
+			"No high-confidence agent matches found. Prefer direct MCP or workflow execution unless the user explicitly requested an agent.";
 	}
 
 	// ==========================================================================
@@ -832,12 +892,18 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 
 	// Get names of prioritized agents
 	if (input.prioritizedAgentIds?.length) {
-		const prioritizedAgentNames = input.prioritizedAgentIds.map((id) => {
-			const agent = boostedAgentResults.find((a) => a.agentId === id);
-			return agent?.displayName || id;
-		});
-		prioritizationParts.push(`Agents: ${prioritizedAgentNames.join(", ")}`);
-		prioritizedCapabilities.agents = prioritizedAgentNames;
+		const prioritizedAgentNames = input.prioritizedAgentIds
+			.filter((id) => !suppressedAgentIds.has(id))
+			.map((id) => {
+				const agent = boostedAgentResults.find((a) => a.agentId === id);
+				return agent?.displayName || id;
+			});
+		if (prioritizedAgentNames.length > 0) {
+			prioritizationParts.push(
+				`Agents: ${prioritizedAgentNames.join(", ")}`,
+			);
+			prioritizedCapabilities.agents = prioritizedAgentNames;
+		}
 	}
 
 	// Flag to indicate if any prioritization is active
@@ -1237,18 +1303,6 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 				requestedName: userIntent.requestedAgentName,
 			},
 		);
-	} else if (userIntent.requestedAgent && !useMcpDirect) {
-		// Fallback to old behavior for backward compatibility
-		const requestedAgentId = userIntent.requestedAgent;
-		const agentMatch = agentSearchResult.results.find(
-			(a) => a.agentId === requestedAgentId,
-		);
-		if (agentMatch || requestedAgentId === "cuga_generalist") {
-			primaryAgent = requestedAgentId;
-			console.log(
-				`[Orchestrator] Routing to user-requested agent (legacy): ${primaryAgent}`,
-			);
-		}
 	}
 
 	// Override to workflow execution if user explicitly requested a workflow

@@ -1,4 +1,4 @@
-import { BUILT_IN_TO_FABRIC_TOOLS } from "@repo/database";
+import { BUILT_IN_TO_FABRIC_TOOLS } from "@repo/database/prisma/queries/lib/built-in-tool-map";
 
 /**
  * Built-in capabilities an Agent Task may not be given.
@@ -43,6 +43,40 @@ export function unattendedCapabilityRefusal(
 }
 
 /**
+ * The capabilities an Agent Task may be given: every built-in capability the
+ * platform has, less the ones refused above. The keys `builtInToolNames` takes,
+ * read by the workflow tools' input schema so a client is shown them instead of
+ * guessing tool names.
+ */
+export const AGENT_TASK_CAPABILITY_KEYS: readonly string[] = Object.keys(
+	BUILT_IN_TO_FABRIC_TOOLS,
+).filter((capability) => unattendedCapabilityRefusal(capability) === undefined);
+
+/** What each capability in `AGENT_TASK_CAPABILITY_KEYS` gives the agent. */
+const CAPABILITY_GRANTS: Readonly<Record<string, string>> = {
+	"project-context":
+		"read this project's roadmap, documents, sources and meetings",
+	search: "search the organization's workspace content",
+	"create-story": "create a feature or bug in the project's roadmap",
+	"create-images": "generate images",
+	"image-generation": "generate images",
+	"speech-generator": "turn text into spoken audio",
+	"agent-memory":
+		"nothing in a scheduled task, which has no agent to keep a memory for",
+};
+
+/**
+ * The capability keys with what each gives, as the text a tool schema uses to
+ * describe `builtInToolNames`.
+ */
+export function describeAgentTaskCapabilities(): string {
+	return AGENT_TASK_CAPABILITY_KEYS.map((capability) => {
+		const grant = CAPABILITY_GRANTS[capability];
+		return grant ? `${capability} (${grant})` : capability;
+	}).join("; ");
+}
+
+/**
  * What is wrong with giving an Agent Task `capability`, written to follow the
  * node's name or stand alone as a step error, or undefined when it is fine.
  * The one check behind publishing and running.
@@ -51,10 +85,10 @@ export function agentTaskCapabilityProblem(
 	capability: string,
 ): string | undefined {
 	if (!Object.hasOwn(BUILT_IN_TO_FABRIC_TOOLS, capability)) {
-		return `"${capability}" is not a built-in capability an agent can use.`;
+		return `"${capability}" is not a built-in capability an agent can use. Use one of: ${AGENT_TASK_CAPABILITY_KEYS.join(", ")}.`;
 	}
 	const refusal = unattendedCapabilityRefusal(capability);
 	return refusal
-		? `"${capability}" is not allowed in an agent task: ${refusal}.`
+		? `"${capability}" is not allowed in an agent task: ${refusal}. Use one of: ${AGENT_TASK_CAPABILITY_KEYS.join(", ")}.`
 		: undefined;
 }

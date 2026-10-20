@@ -55,9 +55,10 @@ export async function broadcastProgress(
 			data,
 		});
 	} catch (error) {
-		console.warn(
-			`[TaskAgentPartyKit] broadcastProgress failed for ${broadcastType}:`,
-			error instanceof Error ? error.message : "Unknown error",
-		);
+		console.warn("[TaskAgentPartyKit] broadcastProgress failed", {
+			broadcastType,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 	}
 }

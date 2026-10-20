@@ -6,10 +6,13 @@
  */
 
 import { z } from "zod";
+import { needsFabricPortalTools } from "../../lib/fabric-portal-tools";
 import type {
 	DirectChatWorkflowConfirmation,
 	DirectChatWorkflowInput,
 } from "../../types";
+import type { AgentToolSource } from "../shared/agent-tool-runtime";
+import { FABRIC_PLATFORM_CONFIG_ID } from "../shared/fabric-confirmation";
 import {
 	type FabricPlatformTools,
 	loadFabricPlatformTools,
@@ -41,7 +44,7 @@ export async function loadFabricToolsForTurn(
 		);
 		return null;
 	}
-	return loadFabricPlatformTools({
+	const actor = {
 		userId: input.userId,
 		organizationId: input.organizationId,
 		actingGrant: input.actingGrant,
@@ -51,7 +54,56 @@ export async function loadFabricToolsForTurn(
 		conversationId: input.conversationId,
 		sourceRunType: "direct-chat",
 		sourceRunId: input.executionId,
-	});
+	};
+	return input.fabricPortalTools
+		? loadFabricPlatformTools(actor, {
+				portal: { offer: portalToolsRequested(input) },
+			})
+		: loadFabricPlatformTools(actor);
+}
+
+/**
+ * Whether this turn's words ask for something only the portal tools do. The
+ * schemas of those tools are a large part of a turn's input, so a turn that
+ * does not ask carries none, and one that does has them in that same turn: the
+ * decision is made here, before the model is called, from the request and the
+ * speaker's previous one (a "do it" after "which task?" still asks).
+ */
+function portalToolsRequested(input: DirectChatWorkflowInput): boolean {
+	const previous = [...(input.history ?? [])]
+		.reverse()
+		.find((entry) => entry.role === "user");
+	return needsFabricPortalTools(
+		input.message,
+		typeof previous?.content === "string" ? previous.content : undefined,
+	);
+}
+
+/**
+ * Where each Fabric MCP tool of this turn comes from, for a runtime that
+ * decides what a tool may do from its source (Parlume's action gate). The
+ * source is the `configId` Fabric's own approval check records an approval
+ * under, so a runtime that approves a call as this source approves it for the
+ * gate that would otherwise ask the person again.
+ */
+export function fabricToolSources(
+	platform:
+		| (Pick<FabricPlatformTools, "tools"> &
+				Partial<Pick<FabricPlatformTools, "access">>)
+		| null,
+): Record<string, AgentToolSource> {
+	return Object.fromEntries(
+		Object.keys(platform?.tools ?? {}).map((name) => [
+			name,
+			{
+				configId: FABRIC_PLATFORM_CONFIG_ID,
+				originalName: name,
+				...(platform?.access?.[name]
+					? { access: platform.access[name] }
+					: {}),
+			},
+		]),
+	);
 }
 
 const ToolConfirmationOutput = z.object({

@@ -619,6 +619,9 @@ export {
 	type ProposalAnalysisWorkflowResult,
 	proposalAnalysisWorkflow,
 } from "./proposal-analysis";
+// Proposal export to PDF and Word, and its daily cleanup (Fizzy #2946)
+export { proposalExportWorkflow } from "./proposal-export";
+export { proposalExportCleanupWorkflow } from "./proposal-export-cleanup";
 // Publishing Suite 1C-2d-2a — hourly reconciliation sweep (the cycle-level
 // PENDING -> ABANDONED write and the enrolment pass that feeds it).
 export {

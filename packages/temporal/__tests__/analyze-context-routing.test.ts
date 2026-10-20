@@ -15,7 +15,7 @@
  *     reformatting the ticket it lands on.
  *
  * Run with:
- *   pnpm --filter @repo/temporal test __tests__/analyze-context-routing.test.ts
+ *   pnpm --filter @repo/temporal exec vitest run __tests__/analyze-context-routing.test.ts
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -124,7 +124,7 @@ beforeEach(() => {
 	});
 	mocks.generateObject.mockResolvedValue({
 		object: {
-			summary: "",
+			summary: "Capture export improvements.",
 			contextSummary: "",
 			changes: [{ ...CAPTURED_CREATE }],
 		},
@@ -148,11 +148,18 @@ beforeEach(() => {
 });
 
 describe("allowRouting wiring", () => {
-	it("does not run routing by default — every existing caller is unaffected", async () => {
-		await analyzeContextAndPropose({ ...BASE_INPUT });
+	it.each([undefined, false])(
+		"does not run routing when allowRouting is %s",
+		async (allowRouting) => {
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				allowRouting,
+			});
+			expect(proposal.summary).toBe("Capture export improvements.");
 
-		expect(mocks.routeActionItems).not.toHaveBeenCalled();
-	});
+			expect(mocks.routeActionItems).not.toHaveBeenCalled();
+		},
+	);
 
 	it("does not run routing for the AI Update path either", async () => {
 		await analyzeContextAndPropose({
@@ -230,6 +237,9 @@ describe("allowRouting wiring", () => {
 			"Also rate limit the endpoint.",
 		);
 		expect(change.structurePreserved).toBe(true);
+		expect(proposal.summary).toBe(
+			"1 proposed item was matched to existing work item (F-12) and will update it.\n\nCapture export improvements.",
+		);
 	});
 
 	it("reconciles the routing stamp when a routed enrichment is demoted", async () => {
@@ -268,6 +278,7 @@ describe("allowRouting wiring", () => {
 		expect(change.targetResolution?.demotedFromUpdate).toBe(true);
 		expect(change.routing?.decision).toBe("create");
 		expect(change.routing?.matchedIdentifier).toBeNull();
+		expect(proposal.summary).toBe("Capture export improvements.");
 	});
 
 	it("does not invoke the merge when routing produced no enrichment", async () => {
@@ -278,11 +289,12 @@ describe("allowRouting wiring", () => {
 			failed: 0,
 		});
 
-		await analyzeContextAndPropose({
+		const proposal = await analyzeContextAndPropose({
 			...BASE_INPUT,
 			allowRouting: true,
 		});
 
+		expect(proposal.summary).toBe("Capture export improvements.");
 		expect(mocks.reanalyzeBodyByKind).not.toHaveBeenCalled();
 	});
 

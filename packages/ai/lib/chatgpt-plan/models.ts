@@ -185,7 +185,13 @@ export async function resolveChatGptPlanModel(params: {
 	taskType: string;
 	source?: PlanSourceRef;
 	override?: string;
-}): Promise<ChatGptPlanModelChoice & { fallbackModel: string | null }> {
+}): Promise<
+	ChatGptPlanModelChoice & {
+		fallbackModel: string | null;
+		/** The chat's pick, as it was given, when the plan serves it. */
+		pick?: string;
+	}
+> {
 	const source: PlanSourceRef = params.source ?? {
 		kind: "user",
 		userId: params.userId,
@@ -223,6 +229,7 @@ export async function resolveChatGptPlanModel(params: {
 		return {
 			model: chosen,
 			fallbackModel,
+			pick: params.override,
 			...(fallback.reasoningEffort && {
 				reasoningEffort: fallback.reasoningEffort,
 			}),

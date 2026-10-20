@@ -165,7 +165,7 @@ describe("Parlume speech through the organization's AI Gateway", () => {
 	it("falls back to the direct OpenAI key when the gateway cannot speak", async () => {
 		generateSpeech.mockRejectedValue(new Error("model not available"));
 		const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-			if (url.includes("api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				return new Response(new Uint8Array([0, 1]));
 			}
 			await drain(init?.body);
@@ -305,7 +305,7 @@ describe("Parlume spoken responses", () => {
 		const synthesized: string[] = [];
 		let second: Uint8Array | undefined;
 		const fetchMock = vi.fn(async (url: string, request?: RequestInit) => {
-			if (url.includes("api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				const { input } = JSON.parse(String(request?.body));
 				synthesized.push(input);
 				return new Response(
@@ -362,7 +362,7 @@ describe("Parlume spoken responses", () => {
 			},
 		});
 		const fetchMock = vi.fn(async (url: string, request?: RequestInit) => {
-			if (url.includes("api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				return new Response(body);
 			}
 			if (!(request?.body instanceof ReadableStream)) {
@@ -474,7 +474,7 @@ describe("Parlume spoken responses", () => {
 		// count the usage row is priced from becomes final.
 		const pcm = new Uint8Array(48_000);
 		const fetchMock = vi.fn(async (url: string, request?: RequestInit) => {
-			if (url.includes("api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				return new Response(pcm, { status: 200 });
 			}
 			if (!(request?.body instanceof ReadableStream)) {

@@ -1,20 +1,23 @@
 /**
- * The bulk story sync's create (`storySyncWorkflow`, push), under the PM
- * create claim (`pm-create-claim.ts`).
+ * The bulk story sync's link check and claimed create (`storySyncWorkflow`, push).
  *
- * The workflow builds the create arguments; this activity checks the story
- * is in the run's project, takes the row's create claim, sends the create
+ * Linked stories use `checkStoryPmLink` before PM updates. It checks the
+ * server stamp and legacy link origin, sharing the fenced refusal writer
+ * with the create activity's legacy action.
+ *
+ * The workflow builds the create arguments; `createStoryInPmWithClaim`
+ * checks the story is in the run's project, takes its create claim, sends the create
  * once (`sendAtMostOnce`) and links the row in the write that settles the
  * claim, with the SUCCESS status in the same transaction. An outcome Fabric
  * cannot confirm keeps the claim and is recorded on the row
  * (`create_unconfirmed` or `create_orphan`) while the row still holds the
- * claim, and in the sync log only once it does not; a held claim stops
- * every later create for the row until the user's Unlink & re-create clears
- * it. Every outcome after the claim is taken is returned, not thrown: the
- * create and the link write are caught here, and the release and recording
- * helpers catch their own errors.
+ * claim, and in the sync log only once it does not. A held claim blocks
+ * later claimed creates until the user's Unlink & re-create clears it.
+ * The create and link write are caught here, and the release and recording
+ * helpers handle their own errors, so every outcome after the claim is taken
+ * is returned, not thrown.
  *
- * A Temporal retry of this activity sends a create only if it takes the
+ * A Temporal retry of the create activity sends a create only if it takes the
  * claim itself (`acquirePmCreateClaim`'s conditional UPDATE). An earlier
  * attempt that sent a create either linked the row (the retry finds it
  * linked), or kept the claim (the retry records `create_unconfirmed` and
@@ -23,16 +26,18 @@
  * Unlink & re-create clears the claim, a retry still outstanding takes a
  * fresh claim and sends this activity's original create arguments.
  *
- * It also refuses a story whose stored link points at another PM tool
- * (`refuse-legacy-link`): no create, and the row is stamped FAILED with the
- * message that offers Unlink & re-create, as `syncStoryToPM` does.
+ * Histories recorded before `bulk-sync-link-guard-v1` use the create
+ * activity's `refuse-legacy-link` action. Like `checkStoryPmLink`, it uses
+ * the fenced failure writer to offer Unlink & re-create for a mismatched link.
  */
 
-import { db } from "@repo/database";
+import { db, PmSyncStatus } from "@repo/database";
 import { logger } from "@repo/logs";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import type { ExecuteMcpToolOutput } from "../orchestrator/types";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import {
 	acquirePmCreateClaim,
 	claimHeldMessage,
@@ -45,17 +50,23 @@ import {
 	startPmCreateSendDeadline,
 } from "./pm-create-claim";
 import {
+	describeLinkWriteCause,
 	describeOrphanCause,
 	logCreateOrphanBesideOtherLink,
 	recordClaimedCreateOrphan,
 	recordCreateUnconfirmed,
 } from "./pm-create-orphan";
-import { legacyLinkOtherToolMessage } from "./pm-tool-mismatch";
+import { describeSyncErrorForUser } from "./pm-sync-user-error";
+import {
+	detectExternalLinkMismatch,
+	legacyLinkOtherToolMessage,
+} from "./pm-tool-mismatch";
 import { updateStoryFromPm } from "./pm-update-story";
 import {
 	recordPmSyncFailure,
 	writePmSyncSuccessState,
 } from "./record-pm-sync-state";
+import { resolveStoryPmLinkConfig } from "./story-pm-link-config";
 
 interface CreateStoryInPmCommon {
 	storyId: string;
@@ -70,7 +81,7 @@ interface CreateStoryInPmCommon {
 	 */
 	mcpServerId?: string;
 	/** The PM container's instance binding, as the workflow dispatches it. */
-	pmTarget: { additionalContext?: unknown };
+	pmTarget: { additionalContext?: unknown; containerId?: string };
 	/** The PM tool's detected type, for the recorded failures. */
 	pmTool?: string;
 	/** The PM tool's name in messages (e.g. "fizzy", "the PM tool"). */
@@ -86,8 +97,9 @@ export type CreateStoryInPmWithClaimInput = CreateStoryInPmCommon &
 		  }
 		| {
 				/**
-				 * The workflow judged the story's link, as it read it, to
-				 * belong to another PM tool (by its URL). Nothing is created.
+				 * Only histories recorded before `bulk-sync-link-guard-v1`
+				 * reach this action. They judged the link by URL; nothing
+				 * is created.
 				 */
 				action: "refuse-legacy-link";
 				externalId: string;
@@ -107,13 +119,150 @@ export interface CreateStoryInPmWithClaimResult {
 	outcome:
 		| "created"
 		| "already-linked"
+		| "link-ok"
+		| "attempt-superseded"
 		| "not-in-project"
 		| "claim-held"
 		| "create-unconfirmed"
 		| "create-orphan"
 		| "create-rejected"
 		| "legacy-other-tool"
+		| "block"
 		| "link-changed";
+}
+
+/** The link snapshot the bulk workflow would send to the active server. */
+export interface CheckStoryPmLinkInput {
+	pmTarget?: { additionalContext?: unknown; containerId?: string };
+	verb?: "push" | "pull";
+	storyId: string;
+	projectId: string;
+	organizationId?: string;
+	userId: string;
+	mcpConfigId: string | null;
+	mcpServerId: string;
+	pmTool?: string;
+	toolLabel: string;
+	externalId: string;
+	externalUrl: string | null;
+	externalMcpServerId: string | null;
+	externalPmTarget?: string | null;
+}
+
+function readStoryLink(input: {
+	storyId: string;
+	projectId: string;
+	organizationId?: string;
+}) {
+	return db.userStory.findFirst({
+		where: {
+			id: input.storyId,
+			projectId: input.projectId,
+			...(input.organizationId !== undefined
+				? { project: { organizationId: input.organizationId } }
+				: {}),
+		},
+		select: {
+			externalId: true,
+			externalUrl: true,
+			externalMcpServerId: true,
+			externalPmTarget: true,
+			lastPmSyncAttemptId: true,
+			lastPmSyncStatus: true,
+		},
+	});
+}
+
+type StoryLink = NonNullable<Awaited<ReturnType<typeof readStoryLink>>>;
+type JudgedStoryLink = Pick<
+	CheckStoryPmLinkInput,
+	"externalId" | "externalUrl"
+> & {
+	externalMcpServerId?: string | null;
+	externalPmTarget?: string | null;
+	mcpServerId?: string;
+};
+
+function storyLinkChanged(story: StoryLink, input: JudgedStoryLink): boolean {
+	return (
+		story.externalId !== input.externalId ||
+		story.externalUrl !== input.externalUrl ||
+		pmTargetsConflict(story.externalPmTarget, input.externalPmTarget) ||
+		(input.externalMcpServerId !== undefined &&
+			story.externalMcpServerId !== input.externalMcpServerId &&
+			// A concurrent successful push can backfill this same legacy link.
+			!(
+				input.externalMcpServerId === null &&
+				story.externalMcpServerId === input.mcpServerId
+			))
+	);
+}
+
+function changedStoryLink(
+	verb: "push" | "pull" = "push",
+): CreateStoryInPmWithClaimResult {
+	return {
+		success: false,
+		error: `This story's PM link changed while it was syncing, so Fabric did not ${verb} it. Sync again to use the current link.`,
+		outcome: "link-changed",
+	};
+}
+
+/** Config I/O and the fenced refusal stay in activities, before PM dispatch. */
+export async function checkStoryPmLink(
+	input: CheckStoryPmLinkInput,
+): Promise<CreateStoryInPmWithClaimResult> {
+	await jobHeartbeat();
+	const story = await readStoryLink(input);
+	if (!story) {
+		return {
+			success: false,
+			outcome: "not-in-project",
+			error: `This story is no longer in this project, so Fabric did not ${input.verb ?? "push"} it.`,
+		};
+	}
+	if (storyLinkChanged(story, input)) {
+		return changedStoryLink(input.verb);
+	}
+	const { config, instanceOrigin } = await resolveStoryPmLinkConfig({
+		mcpConfigId: input.mcpConfigId,
+		mcpServerId: input.mcpServerId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		additionalContext: input.pmTarget?.additionalContext,
+	});
+
+	const mismatch = detectExternalLinkMismatch({
+		externalId: input.externalId,
+		externalUrl: input.externalUrl,
+		externalMcpServerId: story.externalMcpServerId,
+		...(story.externalPmTarget !== undefined
+			? { externalPmTarget: story.externalPmTarget }
+			: {}),
+		activePmTarget:
+			story.externalPmTarget == null
+				? null
+				: await resolveExternalPmTarget({
+						...input,
+						stableContainerId: input.pmTarget?.containerId,
+						containerId: input.pmTarget?.containerId,
+						additionalContext: input.pmTarget?.additionalContext,
+						config,
+					}),
+		activeServerId: input.mcpServerId,
+		currentDetectedType: input.pmTool,
+		currentBaseUrl: config.baseUrl || config.mcpServer.defaultUrl || null,
+		currentInstanceOrigin: instanceOrigin,
+	});
+	if (mismatch.resolution === "ok") {
+		return {
+			success: true,
+			externalId: input.externalId,
+			externalUrl: input.externalUrl ?? undefined,
+			outcome: "link-ok",
+		};
+	}
+	return refuseLegacyLink(input, story, mismatch.resolution);
 }
 
 /** How many times the link write after a create is tried. */
@@ -123,25 +272,19 @@ export async function createStoryInPmWithClaim(
 	input: CreateStoryInPmWithClaimInput,
 ): Promise<CreateStoryInPmWithClaimResult> {
 	await jobHeartbeat();
+	const externalPmTarget = input.mcpServerId
+		? await resolveExternalPmTarget({
+				...input,
+				stableContainerId: input.pmTarget?.containerId,
+				containerId: input.pmTarget?.containerId,
+				additionalContext: input.pmTarget?.additionalContext,
+			})
+		: null;
 	const { storyId, projectId, organizationId, toolLabel } = input;
 
 	// `acquirePmCreateClaim` matches the row by id only, so the run's
 	// project (and organization) is checked here first.
-	const story = await db.userStory.findFirst({
-		where: {
-			id: storyId,
-			projectId,
-			...(organizationId !== undefined
-				? { project: { organizationId } }
-				: {}),
-		},
-		select: {
-			externalId: true,
-			externalUrl: true,
-			externalMcpServerId: true,
-			lastPmSyncAttemptId: true,
-		},
-	});
+	const story = await readStoryLink(input);
 	if (!story) {
 		logger.warn("pm.sync.bulk_create.not_in_project", {
 			storyId,
@@ -235,6 +378,7 @@ export async function createStoryInPmWithClaim(
 			dispatchDeadline: sendDeadline,
 		});
 	} catch (createError) {
+		logger.warn("[PM Sync] Create request threw", { error: createError });
 		// Refused before anything was sent: the instance check.
 		if (
 			createError instanceof Error &&
@@ -252,7 +396,7 @@ export async function createStoryInPmWithClaim(
 		return recordUnconfirmed(
 			createIndeterminateMessage(
 				toolLabel,
-				describeOrphanCause(createError),
+				describeSyncErrorForUser(createError),
 			),
 			"create-threw",
 		);
@@ -369,7 +513,10 @@ export async function createStoryInPmWithClaim(
 						externalId,
 						externalUrl: externalUrl || undefined,
 						...(input.mcpServerId
-							? { externalMcpServerId: input.mcpServerId }
+							? {
+									externalMcpServerId: input.mcpServerId,
+									externalPmTarget,
+								}
 							: {}),
 					},
 					{ settlesPmCreateClaim: pmCreateClaimId },
@@ -399,7 +546,7 @@ export async function createStoryInPmWithClaim(
 					externalUrl,
 					createdResult,
 					claimLost,
-					cause: describeOrphanCause(linkError),
+					cause: describeLinkWriteCause(linkError, "story"),
 				});
 			}
 			await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
@@ -496,6 +643,7 @@ interface PersistedLink {
 	externalId: string | null;
 	externalUrl: string | null;
 	externalMcpServerId: string | null;
+	externalPmTarget?: string | null;
 }
 
 /** The row's stored link, read again in its project; `null` when unreadable. */
@@ -510,6 +658,7 @@ async function readPersistedLink(
 				externalId: true,
 				externalUrl: true,
 				externalMcpServerId: true,
+				externalPmTarget: true,
 			},
 		});
 	} catch (readError) {
@@ -556,39 +705,34 @@ function alreadyLinked(
 }
 
 /**
- * A link that points at another PM tool is neither pushed to nor replaced,
- * as in `syncStoryToPM`: the row is stamped FAILED with
- * `legacyLinkOtherToolMessage`, which the sync failure panel offers Unlink &
- * re-create for. The failure rests on the link the workflow judged (its id
- * and URL), so it is stamped only while the row still carries exactly that
- * link: a link that differs here is reported, not judged, and the write is
- * scoped to that link and the attempt read here (`onlyIfRowUnchanged`, with
- * the URL), since the bulk run carries no attempt id.
+ * Record the recovery message only while the judged link and read attempt
+ * still match. Old workflow histories omit the judged stamp; new checks
+ * include it and re-read predicate misses before naming their outcome.
  */
 async function refuseLegacyLink(
-	input: CreateStoryInPmCommon & {
-		externalId: string;
-		externalUrl: string | null;
-	},
-	story: {
-		externalId: string | null;
-		externalUrl: string | null;
-		externalMcpServerId: string | null;
-		lastPmSyncAttemptId: string | null;
-	},
+	input: Pick<
+		CreateStoryInPmCommon,
+		| "storyId"
+		| "projectId"
+		| "organizationId"
+		| "userId"
+		| "pmTool"
+		| "toolLabel"
+	> &
+		JudgedStoryLink &
+		Pick<CheckStoryPmLinkInput, "verb">,
+	story: StoryLink,
+	outcome: "block" | "legacy-other-tool" = "legacy-other-tool",
 ): Promise<CreateStoryInPmWithClaimResult> {
-	if (
-		story.externalId !== input.externalId ||
-		story.externalUrl !== input.externalUrl
-	) {
-		return {
-			success: false,
-			error: "This story's PM link changed while it was syncing, so Fabric did not create a new item. Sync again to use the current link.",
-			outcome: "link-changed",
-		};
+	if (storyLinkChanged(story, input)) {
+		return changedStoryLink(input.verb);
 	}
-	const errorMessage = legacyLinkOtherToolMessage(input.toolLabel);
-	await recordPmSyncFailure({
+	const errorMessage = legacyLinkOtherToolMessage(
+		input.toolLabel,
+		input.verb,
+	);
+	const recorded = await recordPmSyncFailure({
+		direction: input.verb,
 		itemId: input.storyId,
 		itemType: "story",
 		errorMessage,
@@ -597,17 +741,69 @@ async function refuseLegacyLink(
 		pmTool: input.pmTool,
 		actorUserId: input.userId,
 		onlyIfRowUnchanged: {
-			externalId: input.externalId,
-			externalUrl: input.externalUrl,
+			externalId: story.externalId,
+			externalUrl: story.externalUrl,
 			externalMcpServerId: story.externalMcpServerId,
+			...(story.externalPmTarget !== undefined
+				? { externalPmTarget: story.externalPmTarget }
+				: {}),
 			lastPmSyncAttemptId: story.lastPmSyncAttemptId,
 		},
 	});
-	return {
+	const refusal: CreateStoryInPmWithClaimResult = {
 		success: false,
 		error: errorMessage,
-		outcome: "legacy-other-tool",
+		outcome,
 	};
+	if (recorded || input.externalMcpServerId === undefined) {
+		return refusal;
+	}
+	// A missed fence or a failed write records nothing. Read again so a
+	// replacement link or active-server backfill keeps its own state.
+	const current = await readStoryLink(input);
+	if (!current) {
+		return {
+			success: false,
+			outcome: "not-in-project",
+			error: `This story is no longer in this project, so Fabric did not ${input.verb ?? "push"} it.`,
+		};
+	}
+	const snapshot = {
+		...input,
+		externalMcpServerId: story.externalMcpServerId,
+		...(story.externalPmTarget !== undefined
+			? { externalPmTarget: story.externalPmTarget }
+			: {}),
+	};
+	if (storyLinkChanged(current, snapshot)) {
+		return changedStoryLink(input.verb);
+	}
+	if (
+		story.externalMcpServerId === null &&
+		current.externalMcpServerId === input.mcpServerId
+	) {
+		return {
+			success: true,
+			externalId: input.externalId,
+			externalUrl: input.externalUrl ?? undefined,
+			outcome: "link-ok",
+		};
+	}
+	// The unattempted bulk run yields status ownership to a concurrent run.
+	if (
+		current.lastPmSyncAttemptId !== story.lastPmSyncAttemptId ||
+		(current.lastPmSyncStatus === PmSyncStatus.PENDING &&
+			current.lastPmSyncAttemptId !== null)
+	) {
+		return {
+			success: false,
+			outcome: "attempt-superseded",
+			error: `Another PM sync attempt now owns this story, so Fabric did not ${input.verb ?? "push"} it.`,
+		};
+	}
+	throw new Error(
+		"Fabric could not record this story's PM link refusal. Sync again.",
+	);
 }
 
 /**

@@ -55,8 +55,17 @@ let taskQueueSeq = 0;
 
 async function flush(failures: Record<string, Error>) {
 	const recorded: { channelId: string; errorMessage: string }[] = [];
+	const analyzed = new Set<string>();
+	let finishAnalysis: () => void = () => undefined;
+	const analyzedQueue = new Promise<void>((resolve) => {
+		finishAnalysis = resolve;
+	});
 	const activities = {
 		analyzeSlackThreadActivity: async (input: { threadRootTs: string }) => {
+			analyzed.add(input.threadRootTs);
+			if (analyzed.size === 2) {
+				finishAnalysis();
+			}
 			const failure = failures[input.threadRootTs];
 			if (failure) {
 				throw failure;
@@ -103,10 +112,14 @@ async function flush(failures: Record<string, Error>) {
 				workflowId: `${taskQueue}-wf`,
 			},
 		);
-		// Cancel drains the queue once, then the run ends.
+		await analyzedQueue;
 		await handle.signal("cancelSlackChannelMonitor");
 		await handle.result();
 	});
+	expect([...analyzed].sort()).toEqual([
+		"1700000100.000000",
+		"1700000200.000000",
+	]);
 	return recorded;
 }
 

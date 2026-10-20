@@ -10,6 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // does not exist — ENOENT on every retry, and the index stuck "indexing".
 // `prepareRepositoryActivity` runs all three in one execution.
 
+// Even fixtures for the old predictable layout live under a private temp root.
+const temporary = vi.hoisted(() => ({ root: "" }));
+vi.mock("node:os", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:os")>();
+	return { ...actual, tmpdir: () => temporary.root || actual.tmpdir() };
+});
+
 const jobCalls = vi.hoisted(() => [] as string[]);
 
 vi.mock("../lib/job-progress", async (importOriginal) => {
@@ -159,6 +166,9 @@ function cloneInput(changedFiles?: string[]) {
 }
 
 beforeEach(() => {
+	temporary.root = fs.mkdtempSync(
+		path.join(os.tmpdir(), "fabric-code-index-test-"),
+	);
 	runId = `prepare-test-${process.pid}-${runSeq++}`;
 	jobCalls.length = 0;
 	gitControl.clonePaths.length = 0;
@@ -171,6 +181,8 @@ afterEach(async () => {
 		await cleanupCloneDirActivity({ clonePath });
 	}
 	removeRunArtifacts(runId);
+	fs.rmSync(temporary.root, { recursive: true, force: true });
+	temporary.root = "";
 });
 
 describe("prepareRepositoryActivity", () => {

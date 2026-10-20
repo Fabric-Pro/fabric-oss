@@ -19,6 +19,8 @@ const docFindUniqueMock = vi.fn();
 const versionFindFirstMock = vi.fn();
 const versionDeleteMock = vi.fn();
 const docUpdateMock = vi.fn();
+const docUpdateManyMock = vi.fn();
+const docFindUniqueOrThrowMock = vi.fn();
 
 // $transaction(callback) — invoke the callback synchronously with a tx
 // shim that proxies to our mocks, mirroring how Prisma exposes the
@@ -27,7 +29,9 @@ const transactionMock = vi.fn(async (callback: (tx: unknown) => unknown) => {
 	const tx = {
 		projectDocument: {
 			findUnique: docFindUniqueMock,
+			findUniqueOrThrow: docFindUniqueOrThrowMock,
 			update: docUpdateMock,
+			updateMany: docUpdateManyMock,
 		},
 		documentVersion: {
 			findFirst: versionFindFirstMock,
@@ -44,7 +48,11 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
-import { rejectDocumentRegeneration } from "../prisma/queries/projects/documents";
+import {
+	DocumentGenerationInProgressError,
+	DocumentVersionConflictError,
+	rejectDocumentRegeneration,
+} from "../prisma/queries/projects/documents";
 
 describe("rejectDocumentRegeneration", () => {
 	beforeEach(() => {
@@ -52,6 +60,8 @@ describe("rejectDocumentRegeneration", () => {
 		versionFindFirstMock.mockReset();
 		versionDeleteMock.mockReset();
 		docUpdateMock.mockReset();
+		docUpdateManyMock.mockReset();
+		docFindUniqueOrThrowMock.mockReset();
 		transactionMock.mockClear();
 	});
 
@@ -221,5 +231,129 @@ describe("rejectDocumentRegeneration", () => {
 		expect(versionFindFirstMock).not.toHaveBeenCalled();
 		expect(versionDeleteMock).not.toHaveBeenCalled();
 		expect(docUpdateMock).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * A client-document Proposal's body belongs to its generation run while
+	 * the run is queued or writing (Fizzy #2946). A Reject from a review
+	 * dialog still open when a newer run starts must not rewind under it.
+	 */
+	describe("refusing to rewind under a generation run", () => {
+		const NEW = "NEW content from regeneration";
+		const OLD = "OLD pre-regen content";
+		const armRegenState = (status: string) => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 2,
+				content: NEW,
+				status,
+			});
+			versionFindFirstMock
+				.mockResolvedValueOnce({
+					id: "ver-2",
+					version: 2,
+					content: NEW,
+				})
+				.mockResolvedValueOnce({
+					id: "ver-1",
+					version: 1,
+					content: OLD,
+				});
+		};
+
+		it.each(["QUEUED", "GENERATING"])(
+			"refuses a document read as %s, deleting and writing nothing",
+			async (status) => {
+				armRegenState(status);
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						refuseWhileGenerating: true,
+					}),
+				).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+				expect(docUpdateMock).not.toHaveBeenCalled();
+				expect(docUpdateManyMock).not.toHaveBeenCalled();
+			},
+		);
+
+		it("rewinds a finished document conditioned on the version, body and no run", async () => {
+			armRegenState("COMPLETE");
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 1,
+				content: OLD,
+			});
+
+			const result = await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				refuseWhileGenerating: true,
+			});
+
+			expect(docUpdateMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: {
+						id: "doc-1",
+						version: 2,
+						content: NEW,
+						status: { notIn: ["QUEUED", "GENERATING"] },
+					},
+					data: expect.objectContaining({ content: OLD, version: 1 }),
+				}),
+			);
+			expect(result).toEqual({ id: "doc-1", version: 1, content: OLD });
+		});
+
+		it("refuses when a run is queued between the read and the rewind", async () => {
+			armRegenState("COMPLETE");
+			docUpdateManyMock.mockResolvedValue({ count: 0 });
+			docFindUniqueMock.mockResolvedValueOnce({
+				version: 2,
+				status: "QUEUED",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					refuseWhileGenerating: true,
+				}),
+			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+			expect(docFindUniqueOrThrowMock).not.toHaveBeenCalled();
+		});
+
+		it("reports a body written in between as a conflict", async () => {
+			armRegenState("COMPLETE");
+			docUpdateManyMock.mockResolvedValue({ count: 0 });
+			docFindUniqueMock.mockResolvedValueOnce({
+				version: 2,
+				status: "COMPLETE",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					refuseWhileGenerating: true,
+				}),
+			).rejects.toBeInstanceOf(DocumentVersionConflictError);
+		});
+
+		it("keeps the unguarded rewind for a caller that does not ask", async () => {
+			armRegenState("GENERATING");
+			docUpdateMock.mockResolvedValue({
+				id: "doc-1",
+				version: 1,
+				content: OLD,
+			});
+
+			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+			expect(docUpdateMock).toHaveBeenCalledWith(
+				expect.objectContaining({ where: { id: "doc-1" } }),
+			);
+		});
 	});
 });

@@ -308,7 +308,7 @@ export async function judgeDecisionContradictions(
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId, jobType },
+			{ userId, organizationId, projectId, jobType },
 		);
 
 		// Abort the model call when the timeout fires so a slow judge stops

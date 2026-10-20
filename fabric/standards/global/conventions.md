@@ -275,6 +275,10 @@ pnpm --filter @repo/database add prisma
 ```
 **Why**: Manual edits can cause version conflicts and lockfile issues.
 
+A `--filter` add can also rewrite unrelated lockfile entries; rebuild the
+lockfile workspace-wide afterwards, as
+[CONTRIBUTING.md](../../../CONTRIBUTING.md#adding-a-dependency) describes.
+
 ## Patterns & Examples
 
 ### Pattern 1: Feature Module Structure

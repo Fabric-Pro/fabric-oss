@@ -15,7 +15,9 @@ import {
 	listWorkflowExecutions,
 	type Prisma,
 	type WorkflowExecution,
+	type WorkspaceWorkflowBindingGuard,
 } from "@repo/database";
+import { workspaceStoryReviewRunBindingSchema } from "@repo/temporal/ado-story-review-config";
 import {
 	concurrencyRefusalMessage,
 	createExecutionWithinConcurrencyCap,
@@ -66,6 +68,11 @@ interface StartWorkflowExecutionInput {
 	confirmedProjectId?: string;
 	/** Recorded on the execution row so the run history says who started it. */
 	source?: string;
+	/** Internal controller binding, never accepted as page arguments. */
+	workspaceReview?: {
+		binding: WorkspaceWorkflowBindingGuard;
+		nodeId: string;
+	};
 }
 
 type StartWorkflowExecutionOutcome =
@@ -151,6 +158,27 @@ export async function startWorkflowExecutionCommand(
 		triggerData: input.triggerData,
 		variables: input.variables,
 		...(input.source ? { source: input.source } : {}),
+		...(input.workspaceReview
+			? {
+					source: "workspace-story-review",
+					workspaceReviewBinding:
+						workspaceStoryReviewRunBindingSchema.parse({
+							kind: "workspace-story-review",
+							version: 1,
+							workflowId: input.workflowId,
+							workspaceFrameId:
+								input.workspaceReview.binding.workspaceFrameId,
+							projectId: input.workspaceReview.binding.projectId,
+							nodeId: input.workspaceReview.nodeId,
+							workflowUpdatedAt:
+								input.workspaceReview.binding.workflowUpdatedAt.toISOString(),
+							frameUpdatedAt:
+								input.workspaceReview.binding.frameUpdatedAt.toISOString(),
+							forceReview:
+								input.triggerData?.forceReview ?? false,
+						}),
+				}
+			: {}),
 	};
 	let execution: WorkflowExecution;
 	if (input.idempotencyKey) {
@@ -167,6 +195,9 @@ export async function startWorkflowExecutionCommand(
 			idempotencyKey: input.idempotencyKey,
 			windowMs: EXECUTION_IDEMPOTENCY_WINDOW_MS,
 			limit: await resolveExecutionConcurrencyLimit(actor.organizationId),
+			...(input.workspaceReview
+				? { workspaceBinding: input.workspaceReview.binding }
+				: {}),
 		});
 		if (result.outcome === "limit-reached") {
 			throw new WorkflowCommandError(
@@ -207,6 +238,9 @@ export async function startWorkflowExecutionCommand(
 		const reservation = await createExecutionWithinConcurrencyCap({
 			userId: actor.userId,
 			organizationId: actor.organizationId,
+			...(input.workspaceReview
+				? { workspaceBinding: input.workspaceReview.binding }
+				: {}),
 			data: {
 				workflowId: input.workflowId,
 				version: workflow.version,

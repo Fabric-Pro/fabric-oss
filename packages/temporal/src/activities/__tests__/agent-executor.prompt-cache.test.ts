@@ -158,6 +158,40 @@ describe.each(Object.entries(runners))("%s prompt cache", (_name, run) => {
 });
 
 describe("executeAgentTurn without tools", () => {
+	it.each([undefined, "example-model"])(
+		"preserves workflow attribution with model %s",
+		async (model) => {
+			mocks.streamText.mockReset();
+			mocks.getAiModelWithSelection.mockReset();
+			mocks.getAIModelWithMetadata.mockReset();
+			mocks.streamText.mockImplementation(() => {
+				throw STOP;
+			});
+			await capture(runners.executeAgentTurn, "OPENAI", "example-model", {
+				model,
+				workflowExecutionId: "execution-1",
+				promptVersionId: "prompt-1",
+				featureKey: "scheduled-agent-task",
+				jobType: "workflow-builder",
+			});
+			const context = model
+				? mocks.getAIModelWithMetadata.mock.calls[0][1]
+				: mocks.getAiModelWithSelection.mock.calls[0][5];
+			expect(context).toMatchObject({
+				workflowExecutionId: "execution-1",
+				promptVersionId: "prompt-1",
+				featureKey: "scheduled-agent-task",
+			});
+			if (model) {
+				expect(context.jobType).toBe("workflow-builder");
+			} else {
+				expect(mocks.getAiModelWithSelection.mock.calls[0][4]).toBe(
+					"workflow-builder",
+				);
+			}
+		},
+	);
+
 	it("passes no tools, so no cache breakpoint is requested", async () => {
 		mocks.streamText.mockReset();
 		mocks.streamText.mockImplementation(() => {

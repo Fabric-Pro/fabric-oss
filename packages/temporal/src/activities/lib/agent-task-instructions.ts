@@ -31,6 +31,7 @@ export interface AgentTaskInstructions {
 	source: AgentTaskInstructionsSource;
 	/** The bound prompt's version, when one was used. */
 	promptVersion: number | null;
+	promptVersionId?: string;
 }
 
 export interface ResolveAgentTaskInstructionsInput {
@@ -68,5 +69,9 @@ export async function resolveAgentTaskInstructions(
 		text: resolved.text.trim(),
 		source: resolved.source,
 		promptVersion: resolved.promptVersion,
+		promptVersionId:
+			resolved.source === "BOUND"
+				? resolved.prompt?.version.id
+				: undefined,
 	};
 }

@@ -71,6 +71,10 @@ function OrgChatgptPlanPoolSection({
 				<OrgChatgptPlanAccountsCard
 					accounts={query.data.accounts}
 					organizationSlug={organizationSlug}
+					terms={{
+						accepted: query.data.policy.termsAcknowledged,
+						viewerIsOwner: query.data.viewer.isOwner,
+					}}
 					viewerHasOwnPlan={query.data.viewer.hasOwnPlan ?? false}
 				/>
 			)}

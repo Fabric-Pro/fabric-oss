@@ -23,12 +23,15 @@ import { verifyOrganizationMembership } from "../../organizations/lib/membership
 export interface WorkflowActor {
 	userId: string;
 	organizationId: string;
+	/** Optional caller restriction; it grants no project permission. */
+	projectRestrictionId?: string;
 }
 
 export type WorkflowCommandErrorCode =
 	| "NOT_FOUND"
 	| "FORBIDDEN"
 	| "BAD_REQUEST"
+	| "CONFLICT"
 	| "TOO_MANY_REQUESTS"
 	| "INTERNAL_SERVER_ERROR";
 
@@ -123,7 +126,11 @@ export async function loadPermittedWorkflow(
 	if (!permitted) {
 		throw new WorkflowCommandError("FORBIDDEN", permission.refusal);
 	}
-	if (!workflow) {
+	if (
+		!workflow ||
+		(actor.projectRestrictionId !== undefined &&
+			workflow.projectId !== actor.projectRestrictionId)
+	) {
 		throw workflowNotFound();
 	}
 	return workflow;

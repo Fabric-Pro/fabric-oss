@@ -209,7 +209,10 @@ export async function POST(request: NextRequest) {
 			await client.close().catch(() => {});
 		}
 	} catch (error) {
-		console.error("[MCP App Call Tool] Error:", error);
+		console.error("[MCP App Call Tool] Error:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return Response.json(
 			{
 				error:

@@ -134,6 +134,7 @@ export function WorkspacePage({
 					{shareScopeSentence(
 						frame.shareScope,
 						frame.ownedByCaller === true,
+						Boolean(frame.projectId),
 					)}
 				</p>
 			) : null}

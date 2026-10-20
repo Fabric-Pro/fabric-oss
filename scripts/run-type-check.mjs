@@ -18,12 +18,19 @@ import {
 const root = process.cwd();
 const installCommand = "pnpm install --frozen-lockfile";
 
-class SetupError extends Error {}
+class SetupError extends Error {
+	/** @param {string} message @param {"setup" | "stale-install"} kind */
+	constructor(message, kind) {
+		super(message);
+		this.kind = kind;
+	}
+}
 
-/** @param {string} reason */
-function failSetup(reason) {
+/** @param {string} reason @param {"setup" | "stale-install"} [kind] */
+function failSetup(reason, kind = "setup") {
 	throw new SetupError(
 		`Type-check setup is stale: ${reason}. Run \`${installCommand}\` and retry.`,
+		kind,
 	);
 }
 
@@ -219,7 +226,10 @@ function validatePnpmInstall() {
 		);
 	}
 	if (!rootLock.equals(installedLock)) {
-		failSetup("pnpm-lock.yaml does not match node_modules/.pnpm/lock.yaml");
+		failSetup(
+			"pnpm-lock.yaml does not match node_modules/.pnpm/lock.yaml",
+			"stale-install",
+		);
 	}
 
 	const patterns = workspacePatterns();
@@ -277,11 +287,13 @@ function validatePnpmInstall() {
 					) {
 						failSetup(
 							`workspace link for ${name} from ${relative(root, directory)} is missing or wrong`,
+							"stale-install",
 						);
 					}
 				} catch {
 					failSetup(
 						`workspace link for ${name} from ${relative(root, directory)} is missing or wrong`,
+						"stale-install",
 					);
 				}
 			}
@@ -341,7 +353,7 @@ try {
 } catch (error) {
 	if (error instanceof SetupError) {
 		writeSync(process.stderr.fd, `${error.message}\n`);
-		process.exitCode = 1;
+		process.exitCode = error.kind === "stale-install" ? 3 : 1;
 	} else if (error instanceof BaseResolutionError) {
 		writeSync(process.stderr.fd, `${error.message}\n`);
 		process.exitCode = 2;

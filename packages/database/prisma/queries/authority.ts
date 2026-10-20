@@ -967,6 +967,67 @@ async function createAuthorityRequestWithin(
 	return { session, grants };
 }
 
+export interface CreateApprovedRequestGrantsInput {
+	userId: string;
+	organizationId?: string;
+	runType: AuthorityRunType;
+	runId: string;
+	providerType: AuthorityProviderType;
+	providerKey: string;
+	providerDisplayName?: string;
+	accessLevel: AuthorityAccessLevel;
+	/** Why no card was shown for these calls; kept on the session as the audit note. */
+	approvalInstructions: string;
+	ttlMinutes?: number;
+	/** The exact calls to allow once each, by tool and `authorityRequestFingerprint`. */
+	calls: Array<{ toolName: string; requestFingerprint: string }>;
+}
+
+/**
+ * Allow specific later calls without asking again, because the person's yes to
+ * an earlier call already covered them: an ACTIVE session bound to the run,
+ * with one already-approved one-shot grant per call. Each grant authorizes only
+ * a call with its fingerprint, for the user and organization named, within the
+ * run, and is spent when it does (`ensureSensitiveOperationAuthority`).
+ */
+export async function createApprovedRequestGrants(
+	input: CreateApprovedRequestGrantsInput,
+) {
+	const now = new Date();
+	const expiresAt = new Date(
+		now.getTime() + (input.ttlMinutes ?? 30) * 60 * 1000,
+	);
+	throwIfDispatchStopped();
+	return db.authoritySession.create({
+		data: {
+			userId: input.userId,
+			organizationId: input.organizationId ?? null,
+			runType: input.runType,
+			runId: input.runId,
+			status: "ACTIVE",
+			approvedAt: now,
+			approvalInstructions: input.approvalInstructions,
+			expiresAt,
+			grants: {
+				create: input.calls.map((call) => ({
+					kind: "REQUEST" as const,
+					providerType: input.providerType,
+					providerKey: input.providerKey,
+					providerDisplayName: input.providerDisplayName,
+					accessLevel: input.accessLevel,
+					toolScope: [call.toolName],
+					requestFingerprint: call.requestFingerprint,
+					status: "APPROVED" as const,
+					approvedBy: input.userId,
+					approvedAt: now,
+					expiresAt,
+				})),
+			},
+		},
+		include: { grants: true },
+	});
+}
+
 // ─── Run-bound session resolution ───────────────────────────────────────────
 
 /**

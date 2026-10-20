@@ -99,22 +99,25 @@ export async function answerPageQuestion(input: {
 	}
 	const format = input.format ?? "text";
 
-	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
-		{ taskType: "SIMPLE" },
-		{
-			userId: input.userId,
-			organizationId: input.organizationId,
-			projectId: input.projectId,
-		},
-	);
-
 	const boundPrompt = await getBoundPromptForAgent({
 		agentName: PAGE_ASK_PROMPT_AGENT_KEY,
 		documentType: "GENERAL",
 		storyKind: null,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		projectId: input.projectId,
 	});
+	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
+		{ taskType: "SIMPLE" },
+		{
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			frameId: input.frameId,
+			featureKey: "workspace",
+			promptVersionId: boundPrompt?.version?.id,
+		},
+	);
 	const rendered = await renderTemplate({
 		format:
 			(boundPrompt?.format as TemplateFormat | undefined) ?? "HANDLEBARS",

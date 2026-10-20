@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@11.28.2
+    && npm install -g pnpm@11.28.6
 
 WORKDIR /app
 
@@ -33,6 +33,7 @@ COPY packages/agent-tools/package.json ./packages/agent-tools/
 COPY packages/agent-types/package.json ./packages/agent-types/
 COPY packages/ai/package.json ./packages/ai/
 COPY packages/ai-token/package.json ./packages/ai-token/
+COPY packages/connectors/package.json ./packages/connectors/
 COPY packages/database/package.json ./packages/database/
 COPY packages/databricks/package.json ./packages/databricks/
 COPY packages/utils/package.json ./packages/utils/
@@ -88,6 +89,7 @@ COPY packages/agent-tools ./packages/agent-tools
 COPY packages/agent-types ./packages/agent-types
 COPY packages/ai ./packages/ai
 COPY packages/ai-token ./packages/ai-token
+COPY packages/connectors ./packages/connectors
 COPY packages/database ./packages/database
 COPY packages/databricks ./packages/databricks
 COPY packages/integrations ./packages/integrations
@@ -116,7 +118,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@11.28.2
+    && npm install -g pnpm@11.28.6
 
 WORKDIR /app
 
@@ -132,6 +134,7 @@ COPY --from=builder /app/packages/agent-tools/package.json ./packages/agent-tool
 COPY --from=builder /app/packages/agent-types/package.json ./packages/agent-types/
 COPY --from=builder /app/packages/ai/package.json ./packages/ai/
 COPY --from=builder /app/packages/ai-token/package.json ./packages/ai-token/
+COPY --from=builder /app/packages/connectors/package.json ./packages/connectors/
 COPY --from=builder /app/packages/database/package.json ./packages/database/
 COPY --from=builder /app/packages/databricks/package.json ./packages/databricks/
 COPY --from=builder /app/packages/utils/package.json ./packages/utils/

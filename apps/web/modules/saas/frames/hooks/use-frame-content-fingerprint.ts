@@ -14,8 +14,12 @@ export function useFrameContentFingerprint(
 		| undefined,
 	runtimeTools: readonly string[],
 ): string | null {
-	const [fingerprint, setFingerprint] = useState<string | null>(null);
 	const toolsKey = runtimeTools.join("\n");
+	const [fingerprint, setFingerprint] = useState<{
+		blocks: typeof blocks;
+		toolsKey: string;
+		value: string | null;
+	} | null>(null);
 
 	useEffect(() => {
 		let current = true;
@@ -29,7 +33,7 @@ export function useFrameContentFingerprint(
 		})
 			.then((value) => {
 				if (current) {
-					setFingerprint(value);
+					setFingerprint({ blocks, toolsKey, value });
 				}
 			})
 			.catch(() => {
@@ -40,5 +44,9 @@ export function useFrameContentFingerprint(
 		};
 	}, [blocks, toolsKey]);
 
-	return fingerprint;
+	return fingerprint &&
+		fingerprint.blocks === blocks &&
+		fingerprint.toolsKey === toolsKey
+		? fingerprint.value
+		: null;
 }

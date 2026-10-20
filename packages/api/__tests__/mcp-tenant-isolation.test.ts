@@ -736,10 +736,16 @@ describe("registryProcedures.list — cache bypass behavior", () => {
 		const nonHiddenSystemServer = {
 			id: "sys-github-1",
 			name: "GitHub",
-			key: "github",
+			key: "github-remote",
 			isSystemProvided: true,
 		};
 		const cachedServers = [
+			{
+				id: "example-retired-server",
+				name: "Legacy GitHub",
+				key: "github",
+				isSystemProvided: true,
+			},
 			{
 				id: "sys-mem-1",
 				name: "Memory",

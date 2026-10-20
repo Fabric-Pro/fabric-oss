@@ -25,6 +25,10 @@ vi.mock("@repo/database", () => ({
 	})),
 	IntegrationContractStatusManagedError: class extends Error {},
 	DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
+	DocumentGenerationInProgressError: class DocumentGenerationInProgressError extends Error {},
+	// The slot splice is the same for every type; the client-document
+	// Proposal rules are covered in documents.test.ts.
+	isProposalClientDocument: vi.fn(async () => false),
 	listDocuments: vi.fn(),
 	getDocumentById: (...args: unknown[]) => mockGetDocumentById(...args),
 	createDocument: vi.fn(),

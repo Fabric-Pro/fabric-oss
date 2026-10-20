@@ -239,7 +239,7 @@ export async function reanalyzeBodyByKind(
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId: orgId },
+			{ userId, organizationId: orgId, projectId },
 		);
 		const startedAt = Date.now();
 

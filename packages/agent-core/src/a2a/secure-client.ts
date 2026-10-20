@@ -2,8 +2,7 @@
  * Secure A2A Protocol Client
  *
  * Extends the base A2A client with multi-tenant security features:
- * - Automatic service token injection
- * - Signed tenant context propagation
+ * - Service token and signed tenant context for explicitly trusted destinations
  * - Request tracing (request ID, source agent)
  *
  * This is the recommended client for orchestrator-to-agent communication.
@@ -27,7 +26,7 @@ export interface SecureTenantContext {
 }
 
 /**
- * AI configuration for system agents
+ * AI configuration for agent requests
  * Passed as headers to enable agents to use the user's configured AI provider
  */
 export interface AIConfig {
@@ -66,7 +65,8 @@ export interface SecureA2AClientOptions extends A2AClientOptions {
  * const task = await client.sendMessageSecure(
  *   "http://task-planner:8126",
  *   { role: "user", parts: [{ type: "text", text: "Plan this task" }] },
- *   { userId: "user_123", organizationId: "org_456" }
+ *   { userId: "user_123", organizationId: "org_456" },
+ *   { trustedDestination: true }
  * );
  * ```
  */
@@ -82,7 +82,7 @@ export class SecureA2AClient extends A2AClient {
 
 		if (!this.serviceToken) {
 			console.warn(
-				"[SecureA2AClient] AGENT_SERVICE_SECRET not set. Secure requests will fail.",
+				"[SecureA2AClient] AGENT_SERVICE_SECRET not set. Trusted destination authentication will fail.",
 			);
 		}
 	}
@@ -103,13 +103,25 @@ export class SecureA2AClient extends A2AClient {
 			contextId?: string;
 			metadata?: Record<string, unknown>;
 			requestId?: string;
-			/** AI config to pass to system agents (not external agents) */
+			/** Send the service credential and signed tenant context only to a
+			 * Fabric-operated service: a SYSTEM-scope agent or a Weave service
+			 * URL from environment configuration. Never opt in for a URL a user
+			 * supplied or registered. Required for a non-empty agentApiKey. */
+			trustedDestination?: boolean;
+			/** Bearer key for Fabric-operated SYSTEM-scope agents,
+			 * which only platform admins and operator seeds can create (see the admin
+			 * gate in the agent registry's create procedures). Never register a
+			 * third-party agent as SYSTEM. */
+			agentApiKey?: string;
+			/** AI config for this request (also used by the agent chat proxy) */
 			aiConfig?: AIConfig;
 		} & A2ARequestControl,
 	): Promise<A2ATask> {
 		const securityHeaders = this.createSecurityHeaders(
 			tenant,
 			options?.requestId,
+			options?.agentApiKey,
+			options?.trustedDestination,
 		);
 		const aiHeaders = options?.aiConfig
 			? this.createAIConfigHeaders(options.aiConfig)
@@ -139,11 +151,23 @@ export class SecureA2AClient extends A2AClient {
 			contextId?: string;
 			metadata?: Record<string, unknown>;
 			requestId?: string;
+			/** Send the service credential and signed tenant context only to a
+			 * Fabric-operated service: a SYSTEM-scope agent or a Weave service
+			 * URL from environment configuration. Never opt in for a URL a user
+			 * supplied or registered. Required for a non-empty agentApiKey. */
+			trustedDestination?: boolean;
+			/** Bearer key for Fabric-operated SYSTEM-scope agents,
+			 * which only platform admins and operator seeds can create (see the admin
+			 * gate in the agent registry's create procedures). Never register a
+			 * third-party agent as SYSTEM. */
+			agentApiKey?: string;
 		},
 	): AsyncGenerator<TaskEvent> {
 		const securityHeaders = this.createSecurityHeaders(
 			tenant,
 			options?.requestId,
+			options?.agentApiKey,
+			options?.trustedDestination,
 		);
 
 		const secureClient = new A2AClient({
@@ -163,33 +187,36 @@ export class SecureA2AClient extends A2AClient {
 	private createSecurityHeaders(
 		tenant: SecureTenantContext,
 		requestId?: string,
+		agentApiKey?: string,
+		trustedDestination = false,
 	): Record<string, string> {
-		const timestamp = Date.now();
-
-		// Create payload
-		const payloadData = {
-			...tenant,
-			_ts: timestamp,
-		};
-		const payload = Buffer.from(JSON.stringify(payloadData)).toString(
-			"base64",
-		);
-
-		// Create HMAC signature
-		const crypto = require("node:crypto");
-		const hmac = crypto.createHmac("sha256", this.serviceToken);
-		hmac.update(payload);
-		const signature = hmac.digest("hex");
-
+		const key = agentApiKey?.trim();
+		if (key && trustedDestination !== true) {
+			throw new Error("agentApiKey requires trustedDestination: true");
+		}
 		const headers: Record<string, string> = {
-			"X-Service-Token": this.serviceToken,
-			"X-Tenant-Payload": payload,
-			"X-Tenant-Signature": signature,
-			"X-Tenant-Timestamp": timestamp.toString(),
 			"X-Source-Agent": this.sourceAgent,
-			// Also pass tenant context as explicit headers for unified-server compatibility
+			// Explicit tenant headers remain available to external agents.
 			"X-Tenant-User-ID": tenant.userId,
 		};
+
+		if (trustedDestination === true) {
+			const timestamp = Date.now();
+			const payload = Buffer.from(
+				JSON.stringify({ ...tenant, _ts: timestamp }),
+			).toString("base64");
+			const crypto = require("node:crypto");
+			const hmac = crypto.createHmac("sha256", this.serviceToken);
+			hmac.update(payload);
+			headers["X-Service-Token"] = this.serviceToken;
+			headers["X-Tenant-Payload"] = payload;
+			headers["X-Tenant-Signature"] = hmac.digest("hex");
+			headers["X-Tenant-Timestamp"] = timestamp.toString();
+		}
+
+		if (key) {
+			headers.Authorization = `Bearer ${key}`;
+		}
 
 		if (tenant.organizationId) {
 			headers["X-Tenant-Organization-ID"] = tenant.organizationId;

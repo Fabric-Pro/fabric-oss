@@ -28,7 +28,24 @@ const orpc = vi.hoisted(() => ({
 
 const streamState = vi.hoisted(() => ({
 	current: {} as Record<string, unknown>,
+	options: vi.fn(),
 }));
+
+vi.mock(
+	"@saas/agents/components/FabricAgentLauncher",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@saas/agents/components/FabricAgentLauncher")
+		>()),
+		useOptionalFabricAgentLauncher: () => ({
+			launchContext: {
+				launchFrameId: "frame-drawer",
+				workspaceId: "frame-drawer",
+				surface: "workspace",
+			},
+		}),
+	}),
+);
 
 function idleStream(overrides: Record<string, unknown> = {}) {
 	return {
@@ -74,7 +91,10 @@ function idleStream(overrides: Record<string, unknown> = {}) {
 }
 
 vi.mock("../../../hooks/useOrchestratorStream", () => ({
-	useOrchestratorStream: () => streamState.current,
+	useOrchestratorStream: (options: unknown) => {
+		streamState.options(options);
+		return streamState.current;
+	},
 }));
 
 vi.mock(
@@ -254,6 +274,48 @@ function pill() {
 }
 
 describe("FabricTemporalOrchestratorChat — project pill after New", () => {
+	it("uses the drawer origin by default, but honors full-page null and restored origins", () => {
+		const view = render(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		expect(streamState.options).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: "frame-drawer",
+				launchWorkspaceId: "frame-drawer",
+				launchSurface: "workspace",
+			}),
+		);
+		view.rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				frameLaunchContext={null}
+			/>,
+		);
+		expect(streamState.options).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: undefined,
+				launchWorkspaceId: undefined,
+				launchSurface: undefined,
+			}),
+		);
+		view.rerender(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				frameLaunchContext={{
+					launchFrameId: "frame-restored",
+					surface: null,
+				}}
+			/>,
+		);
+		expect(streamState.options).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				launchFrameId: "frame-restored",
+				launchWorkspaceId: undefined,
+				launchSurface: null,
+			}),
+		);
+	});
+
 	it("drops the previous conversation's project on a new chat", () => {
 		const view = render(
 			<FabricTemporalOrchestratorChat

@@ -284,6 +284,43 @@ describe("plan and API provider", () => {
 		);
 	});
 
+	// Fizzy #3085: the last step is the viewer's own key, and only theirs.
+	it("shows the viewer's own plan-spent key as the last step, linking to the Personal tab", async () => {
+		api.status.mockResolvedValue({
+			...statusWith([OPENAI]),
+			planSpentPersonalProvider: "ANTHROPIC_DIRECT",
+		});
+		renderPage();
+		const step = await screen.findByTestId("ai-routing-step-personal");
+		expect(step).toHaveTextContent(copy.routing.personalTitle);
+		await waitFor(() => expect(step).toHaveTextContent(/Used: Anthropic/));
+		expect(
+			within(step).getByRole("link", {
+				name: copy.routing.personalManage,
+			}),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-providers?tab=personal",
+		);
+		expect(screen.getByTestId("ai-routing-step-api")).toHaveTextContent(
+			copy.routing.apiTitle,
+		);
+	});
+
+	it("says the viewer's personal key is not set up, with a link to set one up", async () => {
+		renderPage();
+		const step = await screen.findByTestId("ai-routing-step-personal");
+		expect(step).toHaveTextContent(copy.routing.personalNotSet);
+		expect(
+			within(step).getByRole("link", {
+				name: copy.routing.personalSetUp,
+			}),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-providers?tab=personal",
+		);
+	});
+
 	it("sets what background work does when every plan is spent", async () => {
 		renderPage();
 		const spent = await screen.findByTestId("ai-routing-spent");
@@ -404,12 +441,12 @@ describe("plan and API provider", () => {
 		expect(screen.queryByTestId("ai-routing-auto-warning")).toBeNull();
 	});
 
-	it("keeps what is left for people under Advanced, and saves a new share", async () => {
+	it("shows what background work may use under Advanced, saving it as what is left for people", async () => {
 		renderPage();
 		const advanced = await screen.findByTestId("ai-routing-advanced");
 		expect(
 			screen.queryByRole("combobox", {
-				name: copy.routing.headroomLabel,
+				name: copy.routing.backgroundShareLabel,
 			}),
 		).toBeNull();
 		fireEvent.click(
@@ -417,15 +454,23 @@ describe("plan and API provider", () => {
 				name: en.settings.chatgptPlanPool.advanced,
 			}),
 		);
-		expect(advanced).toHaveTextContent(copy.routing.headroomHelp);
-		const headroom = await screen.findByRole("combobox", {
-			name: copy.routing.headroomLabel,
+		expect(advanced).toHaveTextContent(
+			copy.routing.backgroundShareDescription,
+		);
+		expect(
+			within(advanced).getByRole("button", {
+				name: `About ${copy.routing.backgroundShareLabel}`,
+			}),
+		).toBeInTheDocument();
+		// Stored as 40% left for people (Fizzy #3085 FR8): 60% allowed.
+		const share = await screen.findByRole("combobox", {
+			name: copy.routing.backgroundShareLabel,
 		});
-		expect(headroom).toHaveTextContent("40%");
-		fireEvent.click(headroom);
-		fireEvent.click(await screen.findByRole("option", { name: "60%" }));
+		expect(share).toHaveTextContent("60%");
+		fireEvent.click(share);
+		fireEvent.click(await screen.findByRole("option", { name: "100%" }));
 		await waitFor(() =>
-			expect(api.updatePolicy).toHaveBeenCalledWith({ headroomPct: 60 }),
+			expect(api.updatePolicy).toHaveBeenCalledWith({ headroomPct: 0 }),
 		);
 	});
 
@@ -1000,6 +1045,48 @@ describe("sharing and its terms", () => {
 			}),
 		);
 		await waitFor(() => expect(api.acknowledgeTerms).toHaveBeenCalled());
+	});
+
+	// The shared accounts card links here with #chatgpt-plan-terms; the block
+	// renders only after the policy loads, so it scrolls itself into view.
+	it("brings the terms into view when the page is opened at their anchor", async () => {
+		api.pool.mockResolvedValue({
+			...POOL,
+			policy: { ...POOL.policy, termsAcknowledged: false },
+			viewer: { isOwner: true },
+		});
+		const original = Element.prototype.scrollIntoView;
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		window.location.hash = "#chatgpt-plan-terms";
+		try {
+			renderPage();
+			const terms = await screen.findByTestId("ai-routing-terms");
+			expect(terms).toHaveAttribute("id", "chatgpt-plan-terms");
+			expect(scrollIntoView).toHaveBeenCalledTimes(1);
+			expect(scrollIntoView.mock.contexts[0]).toBe(terms);
+		} finally {
+			window.location.hash = "";
+			Element.prototype.scrollIntoView = original;
+		}
+	});
+
+	it("leaves the scroll alone when the page is opened without the anchor", async () => {
+		api.pool.mockResolvedValue({
+			...POOL,
+			policy: { ...POOL.policy, termsAcknowledged: false },
+			viewer: { isOwner: true },
+		});
+		const original = Element.prototype.scrollIntoView;
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		try {
+			renderPage();
+			await screen.findByTestId("ai-routing-terms");
+			expect(scrollIntoView).not.toHaveBeenCalled();
+		} finally {
+			Element.prototype.scrollIntoView = original;
+		}
 	});
 });
 

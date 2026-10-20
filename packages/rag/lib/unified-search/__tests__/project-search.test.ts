@@ -51,3 +51,53 @@ describe("projectSearch project-context results", () => {
 		expect(res.results[0].source.name).toBe("docs/architecture.md");
 	});
 });
+
+describe("workspace and connector usage siblings", () => {
+	it.each(["conversation-example", undefined])(
+		"attributes both embedding branches only from the explicit conversation (%s)",
+		async (conversationId) => {
+			const { getConnectorBackedDocumentsForWorkspaces } = await import(
+				"@repo/database"
+			);
+			const { generateEmbedding } = await import("../../embedding");
+			const { searchMultipleWorkspaces } = await import(
+				"../../workspace-documents"
+			);
+			vi.mocked(
+				getConnectorBackedDocumentsForWorkspaces,
+			).mockResolvedValue([
+				{
+					documentId: "doc-example",
+					workspaceId: "workspace-example",
+					title: "document",
+					externalPath: null,
+					lastSyncedAt: null,
+					connection: {
+						id: "connection-example",
+						name: "Example",
+						provider: "NOTION",
+						externalWorkspaceName: null,
+					},
+				},
+			] as never);
+			vi.mocked(generateEmbedding).mockResolvedValue({
+				embedding: [0.1],
+				model: "model-example",
+				tokens: 1,
+			});
+			vi.mocked(searchMultipleWorkspaces).mockResolvedValue([]);
+			await projectSearch({
+				projectId: "project-example",
+				userId: "user-example",
+				query: "query",
+				workspaceIds: ["workspace-example"],
+				sources: ["workspace", "connector"],
+				conversationId,
+			});
+			expect(generateEmbedding).toHaveBeenCalledTimes(2);
+			for (const call of vi.mocked(generateEmbedding).mock.calls) {
+				expect(call[1]?.conversationId).toBe(conversationId);
+			}
+		},
+	);
+});

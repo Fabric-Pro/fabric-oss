@@ -15,6 +15,7 @@ import type {
 	TaskStep,
 	TrajectoryStep,
 } from "../../workflows/orchestrator/types";
+import type { SecondaryUsageInput } from "../../workflows/orchestrator/usage-attribution";
 import type { TurnScope } from "./turn-dispatch";
 
 // =============================================================================
@@ -31,6 +32,8 @@ export interface AnalyzeAndRouteInput {
 	 * the usage-log row for cost attribution only.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	// SECURITY: Credentials are fetched internally by activities
 	// API keys are NOT passed in workflow inputs to avoid storing them in Temporal history
 	enabledMcpConfigIds?: string[] | null;
@@ -71,6 +74,8 @@ export interface CreateTaskPlanInput {
 	 * the usage-log row for cost attribution only.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	enabledMcpConfigIds?: string[] | null;
 	enabledAgentIds?: string[] | null;
 	executionMode: ExecutionMode;
@@ -104,6 +109,7 @@ export interface ExecuteStepInput {
 	executionId?: string;
 	/** Real conversation ID for linking persisted artifacts to the chat */
 	conversationId?: string;
+	frameId?: string;
 	enabledMcpConfigIds?: string[] | null;
 	enabledAgentIds?: string[] | null;
 	executionMode: ExecutionMode;
@@ -383,6 +389,8 @@ export interface ExecuteMcpToolOutput {
 	authorityRequired?: RuntimeAuthorityRequest;
 	/** Set on some failures; see {@link McpToolFailureKind}. */
 	failureKind?: McpToolFailureKind;
+	/** A Fabric database error occurred while making this call; not ticket-level evidence. */
+	localDatabaseError?: true;
 }
 
 export interface RuntimeAuthorityRequest {
@@ -404,7 +412,9 @@ export interface RuntimeAuthorityRequest {
 	callSummary?: string;
 }
 
-export interface ExecuteAgentAsToolInput {
+export interface ExecuteAgentAsToolInput extends SecondaryUsageInput {
+	/** Model selected for the Advisor delegation. */
+	modelOverride?: string;
 	agentId: string;
 	input: Record<string, unknown>;
 	userId: string;
@@ -677,7 +687,9 @@ export interface AgentCardCapabilities {
 // Delegation Types
 // =============================================================================
 
-export interface DelegateToAgentInput {
+export interface DelegateToAgentInput extends SecondaryUsageInput {
+	/** Model selected for the Advisor delegation. */
+	modelOverride?: string;
 	agentId: string;
 	message: string;
 	/**

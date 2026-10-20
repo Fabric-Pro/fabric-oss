@@ -19,6 +19,10 @@ import { GITHUB_ACCOUNT, MICROSOFT_TEAMS_ACCOUNT } from "@repo/mcp-registry";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { getCapabilitiesByTenant } from "@repo/rag/lib/vector-store/capability-store";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../../../workflows/orchestrator/usage-attribution";
 // Pure, import-free module shared with the workflow side.
 import { canonicalJson } from "../../../workflows/orchestrator/tool-result-progression";
 import { ingestOAuthIntegrationToolsActivity } from "../../oauth-tool-ingestion";
@@ -311,7 +315,7 @@ export async function findRelevantServersBySemantic(
 	query: string,
 	userId: string,
 	organizationId: string | undefined,
-	options: {
+	options: SecondaryUsageInput & {
 		/** Minimum similarity threshold (0-1). Default: 0.7 for high confidence */
 		minScore?: number;
 		/** Maximum number of servers to return. Default: 3 */
@@ -346,7 +350,11 @@ export async function findRelevantServersBySemantic(
 
 		const embeddingResult = await generateEmbeddings(
 			[query],
-			{ userId, organizationId },
+			{
+				userId,
+				organizationId,
+				...secondaryUsageFields(options),
+			},
 			providerConfig,
 		);
 
@@ -1467,6 +1475,8 @@ async function runToolSearch(
 		input.userId,
 		input.organizationId,
 		{
+			usageConversationId: input.usageConversationId,
+			usageOrigin: input.usageOrigin,
 			minScore: 0.7, // High confidence threshold
 			limit: 3,
 		},
@@ -1710,6 +1720,7 @@ async function runToolSearch(
 
 	try {
 		const tenantContext: TenantContext = {
+			...secondaryUsageFields(input),
 			userId: input.userId,
 			organizationId: input.organizationId,
 		};

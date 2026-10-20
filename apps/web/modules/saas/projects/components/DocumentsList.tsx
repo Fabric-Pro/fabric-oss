@@ -65,6 +65,9 @@ import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
 import { DeprecatedDocumentTypeBadge } from "./FeaturesDeprecationNotice";
 import { ProjectSectionHero } from "./ProjectSectionHero";
+import { resolveRegenerateToastKey } from "./proposal-artifact/generation-feedback";
+
+export { resolveRegenerateToastKey };
 
 type Props = {
 	projectId: string;
@@ -403,53 +406,6 @@ export function canBeMadeActive(status: string | null | undefined): boolean {
 	);
 }
 
-/**
- * The sentence a finished regenerate has actually earned.
- *
- * The dispatcher stopped answering "did it start?" with a boolean — it hands
- * back its own discriminated outcome — and the workflow id is now derived from
- * the request instead of salted with the clock, which makes the duplicate arm
- * genuinely reachable from this list: the same document regenerated from two
- * tabs, or one impatient double-click, lands on the id a live run already holds
- * and starts nothing. "Document regeneration started" is then the single
- * sentence that is definitely false, and it is the one that leaves a user
- * waiting for output their click never asked for.
- *
- * `alreadyInProgress` is named after the run rather than after a state, so the
- * state is READ from the document row instead of assumed. The live run may
- * already have cleared its dependency wait, and saying "queued" while the model
- * is mid-sentence is the same lie pointing the other way.
- *
- * The discriminant is taken as a plain string and an unrecognised arm resolves
- * to the start copy rather than throwing: a response from a deploy this bundle
- * predates still has to leave the list saying something, and the row the
- * invalidation is about to refetch is where the truth lives regardless. Mirrors
- * `resolveCreateOutcomeKey` in `CreateDocumentDialog`.
- */
-/**
- * Which message the regenerate toast should carry, as a translation key rather
- * than the copy itself. The distinction the caller cannot make for itself is
- * "already queued" versus "already running": both come back as the same
- * `alreadyInProgress` outcome, and only the document's own status separates a
- * run still waiting on the project's context from one already writing.
- *
- * Returning a key keeps this decision unit-testable without pinning English
- * into the assertion, and keeps the two shipped locales the single place the
- * wording lives.
- */
-export function resolveRegenerateToastKey({
-	outcome,
-	documentStatus,
-}: {
-	outcome: string | null | undefined;
-	documentStatus: string | null | undefined;
-}): "started" | "alreadyQueued" | "alreadyRunning" {
-	if (outcome === "alreadyInProgress") {
-		return documentStatus === "QUEUED" ? "alreadyQueued" : "alreadyRunning";
-	}
-	return "started";
-}
-
 export function DocumentsList({
 	projectId,
 	enableDelete,
@@ -558,13 +514,14 @@ export function DocumentsList({
 				const existing = data?.documents?.find(
 					(doc) => doc.id === variables.id,
 				);
-				toast.success(
-					tRegenerateToast(
-						resolveRegenerateToastKey({
-							outcome: result?.outcome,
-							documentStatus: existing?.status ?? null,
-						}),
-					),
+				const toastKey = resolveRegenerateToastKey({
+					outcome: result?.outcome,
+					documentStatus: existing?.status ?? null,
+				});
+				// A live run that could not be confirmed is a warning, not a
+				// success: nothing started and the person should try again.
+				(toastKey === "liveRunUnknown" ? toast.warning : toast.success)(
+					tRegenerateToast(toastKey),
 				);
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.list.queryKey({

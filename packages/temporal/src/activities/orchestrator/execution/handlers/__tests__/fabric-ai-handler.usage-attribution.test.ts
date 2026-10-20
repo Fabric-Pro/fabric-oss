@@ -13,6 +13,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
+	image: vi.fn(async () => ({
+		success: true,
+		imageUrl: "https://example.com/image.png",
+	})),
+	speech: vi.fn(async () => ({ ok: true, audio: Buffer.from("audio") })),
 	fabricAi: {
 		analyzeYouTubeVideo: vi.fn(),
 		scrapeAndAnalyzeActivity: vi.fn(),
@@ -22,6 +27,12 @@ const h = vi.hoisted(() => ({
 	},
 }));
 
+vi.mock("../../../../image-generation", () => ({
+	generateImageActivity: h.image,
+}));
+vi.mock("../../../../../lib/text-to-speech", () => ({
+	synthesizeToolSpeech: h.speech,
+}));
 vi.mock("@repo/database", () => ({
 	checkConversationTurnDispatchable: vi.fn(),
 	fetchCredentialsByIdAndProviderInTenant: vi.fn(),
@@ -152,4 +163,42 @@ describe("FabricAiHandler — usage attribution", () => {
 			expect(JSON.stringify(request)).not.toContain("exec-1");
 		});
 	}
+});
+
+describe("Fabric step media usage", () => {
+	it.each(["conversation-example", undefined])(
+		"passes only the step conversation to media (%s)",
+		async (conversationId) => {
+			h.image.mockClear();
+			h.speech.mockClear();
+			await run(
+				stepInput(
+					"fabric_generate_image",
+					{ prompt: "boat" },
+					{ conversationId, executionId: "execution-example" },
+				),
+			);
+			expect(
+				(
+					h.image.mock.calls[0] as unknown as [
+						{ usageConversationId?: string },
+					]
+				)[0].usageConversationId,
+			).toBe(conversationId);
+			await run(
+				stepInput(
+					"fabric_text_to_speech",
+					{ text: "hello" },
+					{ conversationId, executionId: "execution-example" },
+				),
+			);
+			expect(
+				(
+					h.speech.mock.calls[0] as unknown as [
+						{ usageConversationId?: string },
+					]
+				)[0].usageConversationId,
+			).toBe(conversationId);
+		},
+	);
 });

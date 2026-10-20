@@ -33,6 +33,7 @@ import {
 	type InstructionSyncLimitDetail,
 	parseInstructionSyncLimitDetail,
 } from "../instruction-sync-limit-detail";
+import { releaseStoreOnlyContexts } from "./context-index-mode";
 import { firstExcludedPathOutsideSelection } from "./context-repository-sync-selection";
 import { createPendingVectorCleanup } from "./pending-vector-cleanup";
 import {
@@ -361,7 +362,8 @@ export function countManagedContexts(
 
 /**
  * Managed rows not yet indexed (`embeddedAt IS NULL`), in the tenant, for
- * the tab (§5.1).
+ * the tab (§5.1). A row under a Store only write folder is never indexed, so
+ * it is not awaiting (`indexingExcluded`, here and in every scan below).
  */
 export function countAwaitingIndexContexts(
 	scope: ManagedContextScope,
@@ -373,6 +375,7 @@ export function countAwaitingIndexContexts(
 			organizationId: scope.organizationId,
 			repositorySyncId: syncId,
 			embeddedAt: null,
+			indexingExcluded: false,
 		},
 	});
 }
@@ -394,6 +397,7 @@ export async function listUnindexedSyncedContexts(
 			projectId: scope.projectId,
 			organizationId: scope.organizationId,
 			embeddedAt: null,
+			indexingExcluded: false,
 			sourcePath: { not: null },
 		},
 		orderBy: { sourcePath: "asc" },
@@ -435,6 +439,7 @@ export async function listContextRepositorySyncAwaitingIndex(
 			organizationId: scope.organizationId,
 			repositorySyncId: syncId,
 			embeddedAt: null,
+			indexingExcluded: false,
 			sourcePath:
 				page.afterKey === undefined || page.afterKey === null
 					? { not: null }
@@ -498,6 +503,7 @@ export function listContextRepositorySyncsAwaitingIndex(input: {
 			contexts: {
 				some: {
 					embeddedAt: null,
+					indexingExcluded: false,
 					OR: contentChangedBetween(input.changedBetween),
 				},
 			},
@@ -536,6 +542,7 @@ export async function listContextRepositorySyncAwaitingIndexSince(
 			organizationId: scope.organizationId,
 			repositorySyncId: syncId,
 			embeddedAt: null,
+			indexingExcluded: false,
 			sourcePath:
 				input.afterKey === undefined || input.afterKey === null
 					? { not: null }
@@ -914,6 +921,11 @@ export function deleteContextRepositorySync(input: {
 				},
 				existing.id,
 			);
+			await releaseStoreOnlyContexts(tx, {
+				projectId: input.projectId,
+				organizationId: input.organizationId,
+				syncId: existing.id,
+			});
 			await tx.projectContextRepositorySync.delete({
 				where: { id: existing.id },
 			});
@@ -2374,6 +2386,11 @@ export async function releaseContextRepositorySyncForIntegration(
 		{ projectId: input.projectId, organizationId: locked.organizationId },
 		locked.id,
 	);
+	await releaseStoreOnlyContexts(tx, {
+		projectId: input.projectId,
+		organizationId: locked.organizationId,
+		syncId: locked.id,
+	});
 	await tx.projectContextRepositorySync.delete({ where: { id: locked.id } });
 	return {
 		syncId: locked.id,

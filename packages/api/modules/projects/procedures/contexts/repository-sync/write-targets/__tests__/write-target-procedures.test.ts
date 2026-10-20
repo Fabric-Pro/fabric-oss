@@ -34,6 +34,7 @@ const m = vi.hoisted(() => ({
 	deleteContextWriteTarget: vi.fn(),
 	listContextWriteTargets: vi.fn(),
 	getMemoryWriteAdmissionState: vi.fn(),
+	settleIndexingChange: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => ({
@@ -51,6 +52,9 @@ vi.mock("@repo/database", async () => ({
 	deleteContextWriteTarget: m.deleteContextWriteTarget,
 	listContextWriteTargets: m.listContextWriteTargets,
 	getMemoryWriteAdmissionState: m.getMemoryWriteAdmissionState,
+}));
+vi.mock("../indexing-effects", () => ({
+	settleIndexingChange: m.settleIndexingChange,
 }));
 vi.mock("../../../../../../../lib/audit", () => ({
 	recordAuditFromRequest: m.recordAuditFromRequest,
@@ -201,6 +205,11 @@ const sync = {
 let siblings: Array<{ id: string; folder: string }> = [];
 let instructionRoots: string[] = [];
 let stored = storedTarget();
+const REINDEX = {
+	excluded: 2,
+	included: 0,
+	cleanups: [{ id: "cleanup-1", contextIds: ["a", "b"] }],
+};
 
 function storedTarget(overrides: Record<string, unknown> = {}) {
 	return {
@@ -211,6 +220,7 @@ function storedTarget(overrides: Record<string, unknown> = {}) {
 		userId: "user-earlier",
 		folder: "docs/memory",
 		mode: "PULL_REQUEST",
+		indexMode: "INDEXED",
 		directPushEnabledById: null,
 		directPushEnabledAt: null,
 		version: 1,
@@ -224,7 +234,7 @@ type Decide = (
 	state: unknown,
 	current?: unknown,
 ) =>
-	| { accept: true; folder: string; mode: string }
+	| { accept: true; folder: string; mode: string; indexMode: string }
 	| { accept: false; refusal: unknown };
 
 beforeEach(() => {
@@ -245,8 +255,10 @@ beforeEach(() => {
 				target: storedTarget({
 					folder: decision.folder,
 					mode: decision.mode,
+					indexMode: decision.indexMode,
 					userId: input.userId,
 				}),
+				reindex: REINDEX,
 			};
 		},
 	);
@@ -264,17 +276,25 @@ beforeEach(() => {
 				target: storedTarget({
 					folder: decision.folder,
 					mode: decision.mode,
+					indexMode: decision.indexMode,
 					userId: input.userId,
 					version: stored.version + 1,
 				}),
-				previous: { folder: stored.folder, mode: stored.mode },
+				previous: {
+					folder: stored.folder,
+					mode: stored.mode,
+					indexMode: stored.indexMode,
+				},
+				reindex: REINDEX,
 			};
 		},
 	);
 	m.deleteContextWriteTarget.mockResolvedValue({
 		status: "deleted",
 		target: storedTarget({ mode: "DIRECT_PUSH" }),
+		reindex: REINDEX,
 	});
+	m.settleIndexingChange.mockResolvedValue(undefined);
 	m.listContextWriteTargets.mockResolvedValue([storedTarget()]);
 });
 
@@ -403,7 +423,11 @@ describe("create", () => {
 					id: "target-1",
 					name: "docs/memory",
 				},
-				metadata: { folder: "docs/memory", mode: "PULL_REQUEST" },
+				metadata: {
+					folder: "docs/memory",
+					mode: "PULL_REQUEST",
+					indexMode: "INDEXED",
+				},
 			},
 		);
 	});
@@ -434,7 +458,11 @@ describe("create", () => {
 			expect.anything(),
 			expect.objectContaining({
 				action: "project.context.write_target_created",
-				metadata: { folder: "docs/memory", mode: "DIRECT_PUSH" },
+				metadata: {
+					folder: "docs/memory",
+					mode: "DIRECT_PUSH",
+					indexMode: "INDEXED",
+				},
 			}),
 		);
 	});
@@ -617,8 +645,10 @@ describe("update", () => {
 				metadata: {
 					folder: "docs/memory",
 					mode: "PULL_REQUEST",
+					indexMode: "INDEXED",
 					previousFolder: "docs/memory",
 					previousMode: "DIRECT_PUSH",
+					previousIndexMode: "INDEXED",
 					version: 2,
 				},
 			}),
@@ -746,6 +776,102 @@ describe("update", () => {
 // delete
 // =============================================================================
 
+describe("indexing choice", () => {
+	it("adds a folder as INDEXED by default", async () => {
+		const created = await call("create", createInput);
+
+		expect(created).toMatchObject({ indexMode: "INDEXED" });
+	});
+
+	it("adds a Store only folder, audits the choice and settles the vectors and embeds it caused", async () => {
+		const created = await call("create", {
+			...createInput,
+			indexMode: "STORE_ONLY",
+		});
+
+		expect(created).toMatchObject({ indexMode: "STORE_ONLY" });
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				metadata: expect.objectContaining({ indexMode: "STORE_ONLY" }),
+			}),
+		);
+		expect(m.settleIndexingChange).toHaveBeenCalledWith({
+			reindex: REINDEX,
+			projectId: "proj-1",
+			organizationId: "org-host",
+			syncId: "sync-1",
+			userId: "user-1",
+		});
+	});
+
+	it("refuses an unknown indexing choice", async () => {
+		await expect(
+			call("create", { ...createInput, indexMode: "SOMETIMES" }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	});
+
+	it("switches a folder to Store only with nothing else sent, recording what it was", async () => {
+		const updated = await call("update", {
+			...updateInput,
+			indexMode: "STORE_ONLY",
+		});
+
+		expect(updated).toMatchObject({
+			folder: "docs/memory",
+			mode: "PULL_REQUEST",
+			indexMode: "STORE_ONLY",
+		});
+		expect(m.recordAuditFromRequest).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				metadata: expect.objectContaining({
+					indexMode: "STORE_ONLY",
+					previousIndexMode: "INDEXED",
+				}),
+			}),
+		);
+		expect(m.settleIndexingChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps a folder's indexing choice when the update names only a folder", async () => {
+		stored = storedTarget({ indexMode: "STORE_ONLY" });
+
+		const updated = await call("update", {
+			...updateInput,
+			folder: "docs/elsewhere",
+		});
+
+		expect(updated).toMatchObject({ indexMode: "STORE_ONLY" });
+	});
+
+	it("settles after removing a folder, so its files are indexed again", async () => {
+		await call("delete", deleteInput);
+
+		expect(m.settleIndexingChange).toHaveBeenCalledWith({
+			reindex: REINDEX,
+			projectId: "proj-1",
+			organizationId: "org-host",
+			syncId: "sync-1",
+			userId: "user-1",
+		});
+	});
+
+	it("settles nothing for a refused change", async () => {
+		grant(EDITOR);
+
+		await expect(
+			call("create", {
+				...createInput,
+				mode: "DIRECT_PUSH",
+				indexMode: "STORE_ONLY",
+			}),
+		).rejects.toBeDefined();
+
+		expect(m.settleIndexingChange).not.toHaveBeenCalled();
+	});
+});
+
 describe("delete", () => {
 	it("removes a folder with only CONTEXT_CREATE, even a DIRECT_PUSH one, and audits it", async () => {
 		grant(EDITOR);
@@ -763,7 +889,11 @@ describe("delete", () => {
 			expect.anything(),
 			expect.objectContaining({
 				action: "project.context.write_target_deleted",
-				metadata: { folder: "docs/memory", mode: "DIRECT_PUSH" },
+				metadata: {
+					folder: "docs/memory",
+					mode: "DIRECT_PUSH",
+					indexMode: "INDEXED",
+				},
 			}),
 		);
 	});

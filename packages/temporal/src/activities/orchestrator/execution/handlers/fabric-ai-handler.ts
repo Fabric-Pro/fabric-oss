@@ -857,6 +857,7 @@ export class FabricAiHandler implements StepHandler {
 				);
 
 				const imageResult = await generateImageActivity({
+					usageConversationId: input.conversationId,
 					prompt,
 					provider,
 					aspectRatio,
@@ -1127,6 +1128,7 @@ export class FabricAiHandler implements StepHandler {
 				);
 
 				const speech = await synthesizeToolSpeech({
+					usageConversationId: input.conversationId,
 					userId: input.userId,
 					organizationId: input.organizationId,
 					text: ttsText,

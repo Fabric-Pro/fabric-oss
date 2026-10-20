@@ -158,6 +158,7 @@ export class CodeSearchHandler implements StepHandler {
 		userId: string,
 		organizationId: string | undefined,
 		language?: string,
+		usageConversationId?: string,
 	): Promise<string[] | { unavailableStatus: string }> {
 		const { getProjectCodeIndexes } = await import("@repo/database");
 		const codeIndexes = await getProjectCodeIndexes(projectId);
@@ -179,6 +180,7 @@ export class CodeSearchHandler implements StepHandler {
 		);
 
 		const tenantContext = {
+			conversationId: usageConversationId,
 			userId,
 			organizationId: organizationId ?? undefined,
 		};
@@ -575,6 +577,7 @@ export class CodeSearchHandler implements StepHandler {
 							input.userId,
 							input.organizationId,
 							stepInputs?.language as string | undefined,
+							input.conversationId,
 						);
 						if (Array.isArray(semanticResults)) {
 							indexedResults = semanticResults;
@@ -672,6 +675,7 @@ export class CodeSearchHandler implements StepHandler {
 						input.userId,
 						input.organizationId,
 						stepInputs?.language as string | undefined,
+						input.conversationId,
 					);
 
 					if (!Array.isArray(semanticResults)) {

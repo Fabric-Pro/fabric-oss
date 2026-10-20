@@ -86,6 +86,37 @@ describe("detectExternalLinkMismatch", () => {
 		currentBaseUrl: null,
 	};
 
+	it("blocks a different target on the same server, preserving null compatibility", () => {
+		const input = {
+			...baseInput,
+			externalId: "123",
+			externalMcpServerId: "mcp-ado",
+		};
+		expect(
+			detectExternalLinkMismatch({
+				...input,
+				externalPmTarget: 'pmt1:["srv-1","a","example-container"]',
+				activePmTarget: 'pmt1:["srv-1","b","example-container"]',
+			}).resolution,
+		).toBe("block");
+		for (const [externalPmTarget, activePmTarget] of [
+			[null, 'pmt1:["srv-1","b","example-container"]'],
+			['pmt1:["srv-1","a","example-container"]', null],
+			[
+				'pmt1:["srv-1","a","example-container"]',
+				'pmt1:["srv-1","a","example-container"]',
+			],
+		]) {
+			expect(
+				detectExternalLinkMismatch({
+					...input,
+					externalPmTarget,
+					activePmTarget,
+				}).resolution,
+			).toBe("ok");
+		}
+	});
+
 	it("returns ok when no externalId is set", () => {
 		expect(detectExternalLinkMismatch(baseInput).resolution).toBe("ok");
 	});

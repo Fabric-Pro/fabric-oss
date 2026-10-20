@@ -223,6 +223,8 @@ describe("Get Started — Glossy edition copy", () => {
 			expect(body).toContain(
 				"Main Document, Internal Analysis and Style tabs",
 			);
+			// And how it leaves the app: its own branded export.
+			expect(body).toContain("PDF or Word file");
 			// No promise of a Glossy edition the Proposal no longer offers.
 			expect(body).not.toContain("Proposal or Business Case");
 		}

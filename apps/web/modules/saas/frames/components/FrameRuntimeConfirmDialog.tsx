@@ -29,7 +29,7 @@ import { formatFileSize } from "../lib/page-download";
  * whatever values it is later called with, except where the page is asked about
  * on every call: a page that has read outside its own store, or one that keeps
  * shared data and asks for another kind of change. A file a page offers is asked
- * about each time. Reads never ask.
+ * about each time. Sensitive reads also ask before reaching the viewer's accounts.
  */
 
 function Row({
@@ -67,6 +67,15 @@ const RISK: Record<string, string | null> = {
 function toolConsequence(call: Extract<PendingCall, { kind: "tool" }>): string {
 	switch (call.because) {
 		case "tainted":
+			if (call.toolName === "fabric_page_ask") {
+				return "This page has read information from outside itself, so it asks before each AI request.";
+			}
+			if (
+				call.readOnly === true ||
+				call.toolName === "fabric_page_read_connected"
+			) {
+				return "This page has read information from outside itself, so it asks before every sensitive read.";
+			}
 			return "This page has read information from outside itself, so it asks before every change to shared data, not only the first.";
 		case "keeps-data":
 			return "This page keeps shared data, so it asks every time before it makes any other change.";
@@ -134,7 +143,9 @@ function ToolQuestion({
 	const risk =
 		call.toolName in RISK
 			? RISK[call.toolName]
-			: "which can change data in Fabric";
+			: call.readOnly === true
+				? "which reads data without changing it"
+				: "which can change data in Fabric";
 	return (
 		<>
 			<AlertDialogHeader>

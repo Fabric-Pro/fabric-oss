@@ -54,11 +54,7 @@ export function action(overrides: Partial<ParlumeAction> = {}): ParlumeAction {
 		summary: "Move EX-1 to Sprint 2.",
 		status: "COMPLETED",
 		createdAt: new Date("2026-09-30T10:05:00Z"),
-		presentedAt: new Date("2026-09-30T10:05:05Z"),
-		expiresAt: new Date("2026-09-30T10:07:00Z"),
-		confirmedAt: new Date("2026-09-30T10:05:40Z"),
 		completedAt: new Date("2026-09-30T10:06:00Z"),
-		confirmationTurnId: "t2",
 		outcome: "Moved EX-1.",
 		...overrides,
 	};

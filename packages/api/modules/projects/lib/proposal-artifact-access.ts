@@ -237,6 +237,31 @@ export async function loadProposalClientDocument(args: {
 	documentId: string;
 	userId: string;
 }): Promise<ProposalClientDocumentAccess> {
+	const access = await loadProposalExportDocument(args);
+	if (!access.isClientDocument) {
+		throw clientDocumentNotFound();
+	}
+	return { document: access.document, organizationId: access.organizationId };
+}
+
+interface ProposalExportDocumentAccess extends ProposalClientDocumentAccess {
+	/** Whether the client-document predicate holds for it. */
+	isClientDocument: boolean;
+}
+
+/**
+ * The loader of the export procedure (Fizzy #2946): the first three checks
+ * of {@link loadProposalClientDocument}, each answered NOT_FOUND exactly as
+ * there, and then the client-document predicate as a value instead of a
+ * refusal. A reader who can open the document but asked to export a Business
+ * Case, or a Proposal whose gate is off, learns only that it exports the way
+ * it always has, which they could see for themselves.
+ */
+export async function loadProposalExportDocument(args: {
+	projectId: string;
+	documentId: string;
+	userId: string;
+}): Promise<ProposalExportDocumentAccess> {
 	const project = await db.project.findUnique({
 		where: { id: args.projectId },
 		select: { organizationId: true, deletedAt: true },
@@ -258,17 +283,12 @@ export async function loadProposalClientDocument(args: {
 		throw clientDocumentNotFound();
 	}
 
-	if (
-		!(await isProposalClientDocument({
-			organizationId,
-			documentType: document.type,
-		}))
-	) {
-		throw clientDocumentNotFound();
-	}
-
 	return {
 		document: { id: document.id, type: document.type },
 		organizationId,
+		isClientDocument: await isProposalClientDocument({
+			organizationId,
+			documentType: document.type,
+		}),
 	};
 }

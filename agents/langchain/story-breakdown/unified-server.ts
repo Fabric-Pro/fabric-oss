@@ -9,10 +9,14 @@
  * - A2A: /.well-known/agent.json, /a2a/send, /health (for orchestrator)
  */
 
-import { type AgentSkill, createUnifiedServer } from "@repo/agent-core";
+import {
+	type AgentSkill,
+	createUnifiedServer,
+	getUserFacingError,
+} from "@repo/agent-core";
 import { v4 as uuidv4 } from "uuid";
 import { storyBreakdownGraph } from "./agent.js";
-import { DEFAULT_RECURSION_LIMIT } from "./utils";
+import { createInvokeAgent } from "./invoke-agent.js";
 
 // Configuration
 const PORT = Number.parseInt(process.env.PORT || "8126", 10);
@@ -76,71 +80,13 @@ const { app, start } = createUnifiedServer(
 		supportsStreaming: false,
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input) => {
-		const messages = input.messages as Array<{
-			role: string;
-			content: string;
-		}>;
-		const lastMessage = messages[messages.length - 1];
-		const userMessage = lastMessage?.content || "";
-		const projectName = (input.projectName as string) || "Unnamed Project";
-		const projectDescription = input.projectDescription as
-			| string
-			| undefined;
-		const prdContent = (input.prdContent as string) || userMessage;
-
-		console.log("[UnifiedServer] Invoking story_breakdown with:", {
-			projectName,
-			prdContentLength: prdContent.length,
-		});
-
-		// Invoke the LangGraph graph
-		const graphResult = await storyBreakdownGraph.invoke(
-			{
-				messages: [{ role: "user", content: userMessage }],
-				prdContent,
-				projectName,
-				projectDescription,
-				tools: [],
-			},
-			{ recursionLimit: DEFAULT_RECURSION_LIMIT },
-		);
-
-		// Cast to access properties
-		const result = graphResult as unknown as {
-			document?: string;
-			messages: unknown[];
-			error?: string;
-		};
-
-		console.log("[UnifiedServer] Graph result:", {
-			hasDocument: !!result.document,
-			documentLength: result.document?.length || 0,
-		});
-
-		// Convert BaseMessage[] to simple message format
-		const outputMessages = (result.messages || []).map((msg) => ({
-			role:
-				typeof msg === "object" && msg !== null && "role" in msg
-					? String((msg as Record<string, unknown>).role)
-					: "assistant",
-			content:
-				typeof msg === "object" && msg !== null && "content" in msg
-					? String((msg as Record<string, unknown>).content)
-					: String(msg),
-		}));
-
-		return {
-			document: result.document || "",
-			messages: outputMessages,
-			error: result.error,
-		};
-	},
+	createInvokeAgent(storyBreakdownGraph),
 	// Transform output for A2A response
 	(output) => {
 		const document = (output.document as string) || "";
 
 		return {
+			error: getUserFacingError(output.error, output.failureText),
 			response: document,
 			artifacts: document
 				? [

@@ -29,6 +29,10 @@ import {
 
 setPendingHandlerKey("appendTurnForDocument");
 await import("../append-turn-for-document");
+// Imported after the harness so this is its mock, not the real module.
+const { verifyOrganizationMembership } = await import(
+	"../../../../../organizations/lib/membership"
+);
 
 const ORG_ID = "org-1";
 const PROJECT_ID = "proj-1";
@@ -128,6 +132,9 @@ describe("appendTurnForDocument — lazy create", () => {
 		});
 
 		expect(
+			repoDatabaseMock.getRegisteredAgentByAgentId,
+		).toHaveBeenCalledWith("doc-agent");
+		expect(
 			repoDatabaseMock.createDocumentAssistantConversation,
 		).toHaveBeenCalledTimes(1);
 		expect(result).toMatchObject({
@@ -176,6 +183,122 @@ describe("appendTurnForDocument — lazy create", () => {
 			message: expect.stringContaining("50 conversations"),
 		});
 		expect(recordAuditMock).not.toHaveBeenCalled();
+		expect(
+			repoDatabaseMock.createDocumentAssistantConversation,
+		).not.toHaveBeenCalled();
+	});
+});
+
+describe("appendTurnForDocument — agent catalog and scope check", () => {
+	const UNKNOWN_AGENT_ERROR = {
+		code: "BAD_REQUEST",
+		message:
+			'Unknown agentId: "doc-agent". Agent must be registered in the catalog before a conversation can be created.',
+	};
+
+	function lazyCreate() {
+		return handlers.appendTurnForDocument({
+			context: makeContext() as unknown as BuiltContext,
+			input: {
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: DOC_ID,
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				message: userMessage,
+				agentId: "doc-agent",
+			},
+		});
+	}
+
+	beforeEach(() => {
+		repoDatabaseMock.getActiveDocumentAssistantConversation.mockResolvedValue(
+			null,
+		);
+		repoDatabaseMock.countDocumentAssistantConversationsInLast24h.mockResolvedValue(
+			0,
+		);
+	});
+
+	function expectNothingCreated(): void {
+		expect(
+			repoDatabaseMock.getRegisteredAgentByAgentId,
+		).toHaveBeenCalledWith("doc-agent");
+		expect(
+			repoDatabaseMock.createDocumentAssistantConversation,
+		).not.toHaveBeenCalled();
+		expect(dbMock.$transaction).not.toHaveBeenCalled();
+		expect(recordAuditMock).not.toHaveBeenCalled();
+	}
+
+	it("rejects an agentId that is not in the catalog", async () => {
+		repoDatabaseMock.getRegisteredAgentByAgentId.mockResolvedValueOnce(
+			null,
+		);
+
+		await expect(lazyCreate()).rejects.toMatchObject(UNKNOWN_AGENT_ERROR);
+		expectNothingCreated();
+	});
+
+	it("rejects another organization's agent with the same error", async () => {
+		repoDatabaseMock.getRegisteredAgentByAgentId.mockResolvedValueOnce({
+			agentId: "doc-agent",
+			scope: "ORGANIZATION",
+			userId: null,
+			organizationId: "org-2",
+		});
+		vi.mocked(verifyOrganizationMembership).mockResolvedValueOnce(null);
+
+		await expect(lazyCreate()).rejects.toMatchObject(UNKNOWN_AGENT_ERROR);
+		expectNothingCreated();
+	});
+
+	it("rejects another organization's agent when the caller is a member of both", async () => {
+		repoDatabaseMock.getRegisteredAgentByAgentId.mockResolvedValueOnce({
+			agentId: "doc-agent",
+			scope: "ORGANIZATION",
+			userId: null,
+			organizationId: "org-2",
+		});
+
+		await expect(lazyCreate()).rejects.toMatchObject(UNKNOWN_AGENT_ERROR);
+		expectNothingCreated();
+	});
+
+	it("rejects another user's personal agent with the same error", async () => {
+		repoDatabaseMock.getRegisteredAgentByAgentId.mockResolvedValueOnce({
+			agentId: "doc-agent",
+			scope: "USER",
+			userId: "user-2",
+			organizationId: ORG_ID,
+		});
+
+		await expect(lazyCreate()).rejects.toMatchObject(UNKNOWN_AGENT_ERROR);
+		expectNothingCreated();
+	});
+
+	it("does not look the agent up when an active conversation is reused", async () => {
+		repoDatabaseMock.getActiveDocumentAssistantConversation.mockResolvedValueOnce(
+			{ id: JOIN_ID, conversationId: CONV_ID },
+		);
+		stubTransaction();
+		dbMock.agentConversation.findFirst.mockResolvedValue({
+			id: CONV_ID,
+			messages: [],
+			agentId: "doc-agent",
+		});
+		dbMock.agentConversation.update.mockResolvedValue({
+			updatedAt: new Date("2026-05-19T10:01:00Z"),
+		});
+		dbMock.documentAssistantConversation.update.mockResolvedValue({
+			id: JOIN_ID,
+		});
+
+		await expect(lazyCreate()).resolves.toMatchObject({
+			conversationId: CONV_ID,
+		});
+		expect(
+			repoDatabaseMock.getRegisteredAgentByAgentId,
+		).not.toHaveBeenCalled();
 		expect(
 			repoDatabaseMock.createDocumentAssistantConversation,
 		).not.toHaveBeenCalled();

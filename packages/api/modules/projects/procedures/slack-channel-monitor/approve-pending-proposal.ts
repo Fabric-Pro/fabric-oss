@@ -22,6 +22,11 @@ import {
 	unwrapPmSyncError,
 } from "@repo/temporal";
 import { mapPriority, mapSize } from "@repo/temporal/activities";
+import {
+	describeSyncErrorForUser,
+	isDatabaseError,
+	redactDatabaseErrorText,
+} from "@repo/temporal/pm-sync-user-error";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
@@ -1085,7 +1090,12 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			} catch (err) {
 				const msg =
 					err instanceof Error
-						? err.message
+						? isDatabaseError(err)
+							? describeSyncErrorForUser(err)
+							: redactDatabaseErrorText(
+									err.message,
+									unwrapPmSyncError(err).errorClass,
+								)
 						: "Failed to create story from proposal";
 				console.error(
 					"[approvePendingProposal:slack] create failed:",
@@ -1133,14 +1143,17 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 
 		if (createErrors.length > 0) {
 			// Classify the first reported error so the inbox + roadmap banner
-			// can show plain-English copy. Raw text retained on `applyError`.
+			// can show plain-English copy. Database details stay in server logs.
 			const joinedErrors = createErrors.join("\n");
 			const classified = unwrapPmSyncError(
 				new Error(createErrors[0] ?? "create failed"),
 			);
 			await markPendingProposalFailed(input.proposalId, {
 				errorClass: classified.errorClass,
-				errorMessage: classified.message,
+				errorMessage: redactDatabaseErrorText(
+					classified.message,
+					classified.errorClass,
+				),
 				rawApplyError: joinedErrors,
 			});
 			return {
@@ -1232,7 +1245,12 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			} catch (err) {
 				const msg =
 					err instanceof Error
-						? err.message
+						? isDatabaseError(err)
+							? describeSyncErrorForUser(err)
+							: redactDatabaseErrorText(
+									err.message,
+									unwrapPmSyncError(err).errorClass,
+								)
 						: "Failed to start backlog apply workflow";
 				console.error(
 					"[approvePendingProposal:slack] apply workflow start failed:",
@@ -1244,7 +1262,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				const classified = unwrapPmSyncError(err);
 				await markPendingProposalFailed(input.proposalId, {
 					errorClass: classified.errorClass,
-					errorMessage: classified.message,
+					errorMessage: redactDatabaseErrorText(
+						classified.message,
+						classified.errorClass,
+					),
 					rawApplyError: msg,
 				});
 				return {

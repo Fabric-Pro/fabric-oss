@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { Response } from "../../../../components/ai-elements/response";
 import { Mermaid } from "../../../marketing/blog/components/Mermaid";
 import {
+	frameRuntimeCallExpiresAt,
 	FRAME_RUNTIME_HOST_READY_TYPE,
 	type FrameEmbedToHostMessage,
 	type FrameRuntimeCallResult,
@@ -460,17 +461,39 @@ function ProjectHtmlBlockFrame({
 	allowScripts: boolean;
 }) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
-	const relayedCalls = useRef(new Map<string, string>());
+	const hostAvailable = useRef(hasHost);
+	hostAvailable.current = hasHost;
 	const srcdoc = useMemo(
 		() => buildProjectFrameSrcdoc(block.content, { scripts: allowScripts }),
 		[block.content, allowScripts],
 	);
 
 	useEffect(() => {
+		const pageWindow = iframeRef.current?.contentWindow;
+		const relayedCalls = new Map<
+			string,
+			{
+				requestId: string;
+				expiresAt: number;
+				timer: ReturnType<typeof setTimeout>;
+			}
+		>();
+		const cancelCall = (relayId: string) => {
+			const pending = relayedCalls.get(relayId);
+			if (!pending) {
+				return;
+			}
+			clearTimeout(pending.timer);
+			relayedCalls.delete(relayId);
+			window.parent.postMessage(
+				{ type: "fabric-frame:cancel-call", requestId: relayId },
+				window.location.origin,
+			);
+		};
 		const answerPage = (
 			message: FrameRuntimeCallResult | FrameRuntimeHostReady,
 		) => {
-			iframeRef.current?.contentWindow?.postMessage(message, "*");
+			pageWindow?.postMessage(message, "*");
 		};
 		const announceReady = () =>
 			answerPage({ type: FRAME_RUNTIME_HOST_READY_TYPE });
@@ -482,7 +505,16 @@ function ProjectHtmlBlockFrame({
 				error,
 			});
 		const relayToHost = (request: FrameRuntimeRequest) => {
-			if (!hasHost) {
+			if (request.type === "fabric-frame:cancel-call") {
+				for (const [relayId, pending] of relayedCalls) {
+					if (pending.requestId === request.requestId) {
+						cancelCall(relayId);
+						break;
+					}
+				}
+				return;
+			}
+			if (!hostAvailable.current) {
 				if (request.type === "fabric-frame:call") {
 					refusePage(request.requestId, RELAY_NO_HOST_ERROR);
 				}
@@ -492,15 +524,35 @@ function ProjectHtmlBlockFrame({
 				window.parent.postMessage(request, window.location.origin);
 				return;
 			}
-			if (relayedCalls.current.size >= MAX_RELAYED_CALLS) {
+			if (relayedCalls.size >= MAX_RELAYED_CALLS) {
 				refusePage(request.requestId, RELAY_BUSY_ERROR);
+				return;
+			}
+			if (
+				[...relayedCalls.values()].some(
+					(pending) => pending.requestId === request.requestId,
+				)
+			) {
+				return;
+			}
+			const expiresAt = frameRuntimeCallExpiresAt(request.expiresAt);
+			if (expiresAt <= Date.now()) {
+				refusePage(request.requestId, "Fabric did not answer");
 				return;
 			}
 			relayedCallCounter += 1;
 			const relayId = `relay-${relayedCallCounter}`;
-			relayedCalls.current.set(relayId, request.requestId);
+			const timer = setTimeout(() => {
+				cancelCall(relayId);
+				refusePage(request.requestId, "Fabric did not answer");
+			}, expiresAt - Date.now());
+			relayedCalls.set(relayId, {
+				requestId: request.requestId,
+				expiresAt,
+				timer,
+			});
 			window.parent.postMessage(
-				{ ...request, requestId: relayId },
+				{ ...request, requestId: relayId, expiresAt },
 				window.location.origin,
 			);
 		};
@@ -510,7 +562,7 @@ function ProjectHtmlBlockFrame({
 			if (!iframe) {
 				return;
 			}
-			if (event.source === iframe.contentWindow) {
+			if (event.source === pageWindow) {
 				if (isProjectFrameHeightMessage(event.data)) {
 					const next = Math.min(
 						Math.max(Math.round(event.data.height), 0),
@@ -527,19 +579,23 @@ function ProjectHtmlBlockFrame({
 				return;
 			}
 			if (
-				hasHost &&
+				hostAvailable.current &&
 				event.source === window.parent &&
 				event.origin === window.location.origin &&
 				isFrameRuntimeCallResult(event.data)
 			) {
-				const pageRequestId = relayedCalls.current.get(
-					event.data.requestId,
-				);
-				if (pageRequestId === undefined) {
+				const pending = relayedCalls.get(event.data.requestId);
+				if (pending === undefined) {
 					return;
 				}
-				relayedCalls.current.delete(event.data.requestId);
-				answerPage({ ...event.data, requestId: pageRequestId });
+				if (Date.now() >= pending.expiresAt) {
+					cancelCall(event.data.requestId);
+					refusePage(pending.requestId, "Fabric did not answer");
+					return;
+				}
+				clearTimeout(pending.timer);
+				relayedCalls.delete(event.data.requestId);
+				answerPage({ ...event.data, requestId: pending.requestId });
 			}
 		};
 		window.addEventListener("message", onMessage);
@@ -547,11 +603,24 @@ function ProjectHtmlBlockFrame({
 		// is told now that they can go. If it is not up yet, its hello is answered
 		// above when it comes.
 		announceReady();
-		return () => window.removeEventListener("message", onMessage);
-	}, [hasHost]);
+		return () => {
+			window.removeEventListener("message", onMessage);
+			for (const [relayId, pending] of relayedCalls) {
+				cancelCall(relayId);
+				refusePage(
+					pending.requestId,
+					hostAvailable.current
+						? "This page changed. Try again from the current version."
+						: RELAY_NO_HOST_ERROR,
+				);
+			}
+			relayedCalls.clear();
+		};
+	}, [srcdoc, hasHost]);
 
 	return (
 		<iframe
+			key={srcdoc}
 			ref={iframeRef}
 			title={block.title || block.id}
 			sandbox={PROJECT_FRAME_SANDBOX}

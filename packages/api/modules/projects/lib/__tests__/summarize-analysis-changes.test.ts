@@ -336,6 +336,7 @@ describe("summarizeAnalysisChanges", () => {
 				userId: "user-1",
 				organizationId: "org-1",
 				featureKey: "publishing-suite",
+				projectId: "project-1",
 			},
 		);
 	});
@@ -356,6 +357,7 @@ describe("summarizeAnalysisChanges", () => {
 			userId: "user-1",
 			organizationId: undefined,
 			featureKey: "publishing-suite",
+			projectId: "project-1",
 		});
 	});
 

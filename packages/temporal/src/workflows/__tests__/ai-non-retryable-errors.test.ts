@@ -73,9 +73,12 @@ const AI_WORKFLOWS: Array<{
 		aiProxies: 3,
 	},
 	{
+		// The execution activity is proxied twice from one options object:
+		// the default cancellation type for histories recorded before the
+		// `direct-chat-cancellation-v1` patch, and WAIT_CANCELLATION_COMPLETED.
 		name: "direct-chat",
 		load: () => import("../direct-chat"),
-		aiProxies: 1,
+		aiProxies: 2,
 	},
 	{
 		// Generation and the Proposal visuals (Fizzy #2801). The visuals proxy

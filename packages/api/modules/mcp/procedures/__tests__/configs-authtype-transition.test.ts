@@ -842,6 +842,101 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 	});
 
 	describe("hidden server config creation guard", () => {
+		it("refuses a new connection to a retired global system row", async () => {
+			const server = {
+				id: "example-retired-server",
+				key: "github",
+				userId: null,
+				organizationId: null,
+				isSystemProvided: true,
+				transport: "STDIO",
+				command: "npx -y example-mcp-server@1.0.0",
+				authMethods: ["API_KEY"],
+			};
+			getMcpServerByIdMock.mockResolvedValue(server);
+			serverFindUniqueMock.mockResolvedValue(server);
+			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
+			upsertMcpConfigMock.mockResolvedValue({
+				id: "example-config",
+				authType: "API_KEY",
+				enabled: true,
+			});
+
+			await expect(
+				handler({
+					input: {
+						mcpServerId: server.id,
+						authType: "API_KEY",
+						apiKey: "example-key",
+					},
+					context: { user: { id: "user_1" } },
+				}),
+			).rejects.toThrow("This MCP server is not available to configure.");
+			expect(createMcpConfigMock).not.toHaveBeenCalled();
+			expect(upsertMcpConfigMock).not.toHaveBeenCalled();
+			expect(updateManyMock).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			[
+				"rename",
+				{ displayName: "Renamed connection" },
+				{ displayName: "Renamed connection" },
+			],
+			[
+				"key rotation",
+				{ apiKey: "example-new-key" },
+				{ encryptedApiKey: "encrypted:example-new-key" },
+			],
+		] as const)(
+			"allows %s on an existing retired global system connection",
+			async (_action, fields, expected) => {
+				const server = {
+					id: "example-retired-server",
+					key: "github",
+					userId: null,
+					organizationId: null,
+					isSystemProvided: true,
+					transport: "STDIO",
+					command: "npx -y example-mcp-server@1.0.0",
+					authMethods: ["API_KEY"],
+				};
+				const stored = {
+					id: "example-existing-config",
+					mcpServerId: server.id,
+					userId: "user_1",
+					organizationId: null,
+					authType: "API_KEY",
+					enabled: true,
+					encryptedApiKey: "encrypted:example-old-key",
+					displayName: "Existing connection",
+				};
+				getMcpServerByIdMock.mockResolvedValue(server);
+				serverFindUniqueMock.mockResolvedValue(server);
+				getMcpConfigByIdMock.mockResolvedValue(stored);
+				updateManyMock.mockImplementation(
+					async ({ data }: { data: Record<string, unknown> }) => {
+						Object.assign(stored, data);
+						return { count: 1 };
+					},
+				);
+				findUniqueOrThrowMock.mockImplementation(async () => ({
+					...stored,
+				}));
+
+				await handler({
+					input: {
+						configId: stored.id,
+						mcpServerId: server.id,
+						authType: "API_KEY",
+						...fields,
+					},
+					context: { user: { id: "user_1" } },
+				});
+				expect(stored).toMatchObject(expected);
+			},
+		);
+
 		it("refuses new config creation when the target MCP server is hidden", async () => {
 			getMcpServerByIdMock.mockResolvedValue({
 				id: "srv_hidden",
@@ -934,18 +1029,18 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 			expect(upsertMcpConfigMock).toHaveBeenCalledOnce();
 		});
 
-		it("allows new config creation for a non-hidden key (e.g. github)", async () => {
+		it("allows new config creation for a non-hidden key (e.g. example-provider)", async () => {
 			getMcpServerByIdMock.mockResolvedValue({
-				id: "srv_github",
-				key: "github",
+				id: "srv_example",
+				key: "example-provider",
 				transport: "STDIO",
-				command: "npx -y @modelcontextprotocol/server-github",
+				command: "npx -y example-mcp-server@1.0.0",
 				authMethods: ["API_KEY"],
 			});
 			getMcpConfigForTenantAndServerMock.mockResolvedValue(null);
 			upsertMcpConfigMock.mockResolvedValue({
-				id: "cfg_github_1",
-				mcpServerId: "srv_github",
+				id: "cfg_example_1",
+				mcpServerId: "srv_example",
 				userId: "user_1",
 				authType: "API_KEY",
 				enabled: true,
@@ -953,7 +1048,7 @@ describe("mcp.configs.upsert — GitLab tool ingestion follows the person's conn
 
 			const result = await handler({
 				input: {
-					mcpServerId: "srv_github",
+					mcpServerId: "srv_example",
 					authType: "API_KEY",
 					apiKey: "example-api-key",
 				},

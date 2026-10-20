@@ -17,6 +17,7 @@
  * names (title/name/summary, description/body/content/details, tags/labels,
  * column/status/column_id).
  */
+
 import {
 	closeMcpClientSafe,
 	getMcpClientResult,
@@ -80,6 +81,7 @@ import {
 	type StoryKindValue,
 	unwrapDataEnvelope,
 } from "@repo/utils";
+import { pmTargetsConflict } from "@repo/utils/pm-target";
 import { ApplicationFailure } from "@temporalio/activity";
 import {
 	ELISION_MARKER,
@@ -93,6 +95,7 @@ import { withHeartbeatTicker } from "../lib/activity-liveness";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { runWithTimeout } from "../orchestrator/execution/mcp-call-timeout";
+import type { ExecuteMcpToolOutput } from "../orchestrator/types";
 import {
 	assertPmMcpTargetOrigin,
 	type PMSource,
@@ -106,7 +109,9 @@ import { descriptionToText } from "./adf";
 import { resolveAdoTool } from "./ado-tool-surface";
 import { refreshAtlassianCloudToken } from "./atlassian-cloud-refresh";
 import { runBoundedWorkerPool } from "./bounded-worker-pool";
+import { checkStoryPmLink } from "./create-story-in-pm-with-claim";
 import { isReadableId } from "./created-item-refs";
+import { resolveExternalPmTarget } from "./external-pm-target";
 import {
 	fillJiraCreateArgs,
 	resolveAdoDefaultTeam,
@@ -126,17 +131,25 @@ import {
 	startPmCreateSendDeadline,
 } from "./pm-create-claim";
 import {
+	describeLinkWriteCause,
 	describeOrphanCause,
 	recordCreateOrphan,
 	recordCreateUnconfirmed,
 } from "./pm-create-orphan";
 import { NOT_ATTEMPTED_MARKER } from "./pm-fetch-complete";
 import { mcpConfigPmInstanceOrigin } from "./pm-link-instance";
+import {
+	describeSyncErrorForUser,
+	isDatabaseError,
+} from "./pm-sync-user-error";
 import { truncateTitleForProvider } from "./pm-title-limits";
 import {
+	belongsToCurrentKnownTool,
 	detectExternalLinkMismatch,
+	hostsShareRegistrableDomain,
 	legacyLinkOtherToolMessage,
 	PM_TOOL_HOST_PATTERNS,
+	safeHost,
 } from "./pm-tool-mismatch";
 import { updateStoryFromPm as updateStory } from "./pm-update-story";
 import { reconcileStoryTerminalStatus } from "./reconcile-story-terminal-status";
@@ -148,6 +161,7 @@ import {
 	recordPmSyncFailure,
 	recordPmSyncSuccessState,
 } from "./record-pm-sync-state";
+import { resolveStoryPmLinkConfig } from "./story-pm-link-config";
 import {
 	type AdoAttachmentTarget,
 	convertEmbeddedHtmlTablesToMarkdown,
@@ -201,6 +215,7 @@ export interface StorySyncInput {
 	mcpConfigId: string | null;
 	mcpServerId?: string;
 	containerId: string;
+	stableContainerId?: string;
 	additionalContext?: Record<string, string>;
 	direction: SyncDirection;
 	userId: string;
@@ -251,7 +266,8 @@ export type StorySyncErrorCode =
 	| "EXTERNAL_ID_NOT_FOUND"
 	| "PM_SYNC_CONFLICT"
 	/**
-	 * The push created the item but could not save its link; the row was
+	 * The push created the item but could not link the row to it (the create
+	 * response carried no readable id, or the link write failed); the row was
 	 * stamped FAILED (`create_orphan`) by id and keeps its create claim.
 	 */
 	| "PM_CREATE_ORPHAN"
@@ -299,6 +315,7 @@ export interface BulkStorySyncInput {
 	projectId: string;
 	mcpConfigId: string;
 	containerId: string;
+	stableContainerId?: string;
 	additionalContext?: Record<string, string>;
 	filter?: {
 		statusIds?: string[];
@@ -2356,8 +2373,7 @@ export async function discoverPMToolCapabilitiesResult(params: {
 				ok: false,
 				error: {
 					code: "DISCOVERY_FAILED",
-					message:
-						error instanceof Error ? error.message : String(error),
+					message: describeSyncErrorForUser(error),
 				},
 			};
 		} finally {
@@ -2581,6 +2597,22 @@ export async function syncStoryToPM(
 			createTool: capabilities.taskCreation?.toolName,
 		});
 
+		const activePmTarget = await resolveExternalPmTarget({
+			projectId,
+			mcpConfigId,
+			mcpServerId: mcpConfig?.mcpServerId,
+			userId,
+			organizationId,
+			containerId,
+			stableContainerId: input.stableContainerId,
+			additionalContext,
+			config: mcpConfig,
+			pmTool: capabilities.detectedType,
+		});
+		const targetMismatch = pmTargetsConflict(
+			story.externalPmTarget,
+			activePmTarget,
+		);
 		let externalId = story.externalId ?? undefined;
 		let externalUrl = story.externalUrl ?? undefined;
 		const activeServerId = mcpConfig?.mcpServerId;
@@ -2631,9 +2663,10 @@ export async function syncStoryToPM(
 		// the user has confirmed ("Push & relink") they want to drop the
 		// previous link and create a fresh item in the active tool.
 		if (
-			story.externalMcpServerId &&
-			activeServerId &&
-			story.externalMcpServerId !== activeServerId
+			(story.externalMcpServerId &&
+				activeServerId &&
+				story.externalMcpServerId !== activeServerId) ||
+			targetMismatch
 		) {
 			const canOverride =
 				overrideMismatch &&
@@ -2684,11 +2717,13 @@ export async function syncStoryToPM(
 						externalId: null,
 						externalUrl: null,
 						externalMcpServerId: null,
+						externalPmTarget: null,
 					},
 					{
 						onlyIfPmLink: {
 							externalId: story.externalId,
 							externalMcpServerId: story.externalMcpServerId,
+							externalPmTarget: story.externalPmTarget,
 						},
 					},
 				);
@@ -2725,12 +2760,13 @@ export async function syncStoryToPM(
 			story.externalId = null;
 			story.externalUrl = null;
 			story.externalMcpServerId = null;
+			story.externalPmTarget = null;
 		}
 
 		// Legacy fallback: the link has no server stamp, so the URL host is
 		// the only signal of which tool it belongs to (the same heuristic as
 		// `syncWorkItemToPM`). A link that points at another tool is neither
-		// pushed to nor replaced: clearing it here and creating could erase a
+		// synced with nor replaced: clearing it here and creating could erase a
 		// link a concurrent sync just wrote (an unstamped link cannot be told
 		// apart from a fresh one with the same id) and create a duplicate.
 		// Nothing is sent and the link is kept; the row is stamped FAILED
@@ -2740,12 +2776,16 @@ export async function syncStoryToPM(
 		// has one, by id otherwise, like the run's other status writes.
 		if (
 			!story.externalMcpServerId &&
-			(direction === "push" || direction === "bidirectional")
+			(direction === "push" ||
+				direction === "bidirectional" ||
+				direction === "pull")
 		) {
 			const legacyMismatch = detectExternalLinkMismatch({
 				externalId,
 				externalUrl,
 				externalMcpServerId: story.externalMcpServerId,
+				externalPmTarget: story.externalPmTarget,
+				activePmTarget,
 				activeServerId,
 				currentDetectedType: capabilities.detectedType,
 				currentBaseUrl: pmToolBaseUrl,
@@ -2765,11 +2805,13 @@ export async function syncStoryToPM(
 				);
 				const legacyMessage = legacyLinkOtherToolMessage(
 					capabilities.detectedType ?? "the PM tool",
+					direction === "pull" ? "pull" : "push",
 				);
 				// Writes the FAILURE audit row too. Without an attempt id, only
 				// while the row still has the link and attempt read above: a
 				// relink or a newer run since keeps its state.
 				await recordPmSyncFailure({
+					direction: direction === "pull" ? "pull" : "push",
 					itemId: storyId,
 					itemType: "story",
 					errorMessage: legacyMessage,
@@ -2781,6 +2823,9 @@ export async function syncStoryToPM(
 					onlyIfRowUnchanged: {
 						externalId: story.externalId ?? null,
 						externalMcpServerId: null,
+						...(story.externalPmTarget !== undefined
+							? { externalPmTarget: story.externalPmTarget }
+							: {}),
 						lastPmSyncAttemptId: story.lastPmSyncAttemptId ?? null,
 					},
 				});
@@ -3781,6 +3826,9 @@ export async function syncStoryToPM(
 						dispatchDeadline: sendDeadline,
 					});
 				} catch (createError) {
+					logger.warn("[PM Sync] Create request threw", {
+						error: createError,
+					});
 					// Refused before anything was sent: the instance check.
 					if (
 						createError instanceof ApplicationFailure &&
@@ -3796,7 +3844,7 @@ export async function syncStoryToPM(
 					return await createUnconfirmed(
 						createIndeterminateMessage(
 							toolLabel,
-							describeOrphanCause(createError),
+							describeSyncErrorForUser(createError),
 						),
 						"create-threw",
 					);
@@ -3851,47 +3899,30 @@ export async function syncStoryToPM(
 						const errorMessage = `${toolLabel} accepted the create request but returned no work item id, so this item is not linked. A ${toolLabel} item may already exist for it (some servers report success for a create they rejected, e.g. an invalid AreaPath/IterationPath). Check ${toolLabel}; if there is none, fix the project's PM settings if needed and use Unlink & re-create. Response: ${
 							responseText?.slice(0, 300) ?? "(no response text)"
 						}`;
-						// Stamp `lastPmSyncStatus = FAILED` on the row BEFORE
-						// throwing. The function-level catch (line 2920+)
-						// writes a FAILURE row to `PmSyncLog` for the audit
-						// trail, but never updates the story's sync-status
-						// field — which means an orphan via this path would
-						// stay in silent "Unsynced" on the roadmap with no
-						// error badge, exactly the user-reported bug ("ticket
-						// pushed but Fabric shows Unsynced"). With this
-						// stamp, the roadmap renders the standard "PM sync
-						// failed" badge linking to a side-panel with the
-						// error message above. Mirrors the equivalent guard
-						// in `syncWorkItemToPM` (hierarchy-sync.ts CREATE
-						// branch). Non-fatal: a failed stamp must not mask
-						// the underlying throw, so swallow + warn-log.
-						try {
-							await recordPmSyncFailure({
-								itemId: storyId,
-								itemType: "story",
-								errorMessage,
-								errorClass: "create_orphan",
-								triggerSource: "manual-edit",
-								pmTool: capabilities.detectedType ?? undefined,
-								actorUserId: userId,
-								// By id whatever the row's attempt or status:
-								// this FAILED records an unlinked ticket and
-								// keeps the watchdog from creating a second one.
-								overridePendingAttempt: true,
-							});
-						} catch (stampError) {
-							logger.warn(
-								"[Story Sync] failed to stamp lastPmSyncStatus=FAILED before throw",
-								{
-									storyId,
-									error:
-										stampError instanceof Error
-											? stampError.message
-											: String(stampError),
-								},
-							);
-						}
-						throw new Error(errorMessage);
+						// Stamp FAILED (`create_orphan`) by id, so the roadmap
+						// shows the "PM sync failed" badge rather than a silent
+						// "Unsynced" ("ticket pushed but Fabric shows
+						// Unsynced"), and the stamp keeps the watchdog from
+						// creating a second ticket. Its audit row is this
+						// attempt's one FAILURE row: return a result, as the
+						// link-write-failed path below does, rather than throw
+						// into the function-level catch, which would log a
+						// second one. By id, best effort (never throws).
+						await recordCreateOrphan({
+							itemId: storyId,
+							itemType: "story",
+							errorMessage,
+							triggerSource: "manual-edit",
+							pmTool: capabilities.detectedType ?? undefined,
+							actorUserId: userId,
+						});
+						return {
+							success: false,
+							error: errorMessage,
+							errorCode: "PM_CREATE_ORPHAN",
+							syncedAt: new Date(),
+							direction,
+						};
 					}
 
 					logger.info("[Story Sync] Created new task", {
@@ -3922,6 +3953,7 @@ export async function syncStoryToPM(
 									externalUrl,
 									externalMcpServerId:
 										activeServerId ?? undefined,
+									externalPmTarget: activePmTarget,
 								},
 								{ settlesPmCreateClaim: pmCreateClaimId },
 							);
@@ -3940,13 +3972,15 @@ export async function syncStoryToPM(
 								},
 							);
 							if (persistAttempt >= 3) {
-								const errorMessage = `Item ${externalId} was created in ${toolLabel} but Fabric could not save its link (${describeOrphanCause(
+								const errorMessage = `Item ${externalId} was created in ${toolLabel} but Fabric could not save its link (${describeLinkWriteCause(
 									persistErr,
+									"story",
 								)}), so this item is not linked to it. Check ${toolLabel}: use Unlink & re-create only if item ${externalId} was deleted or a second one is wanted.`;
 								logger.warn("pm.sync.create_orphan", {
 									storyId,
 									mcpConfigId,
 									externalId,
+									error: describeOrphanCause(persistErr),
 									reason: "link-write-failed",
 								});
 								// By id, best effort (never throws).
@@ -4212,6 +4246,7 @@ export async function syncStoryToPM(
 						externalId: null,
 						externalUrl: null,
 						externalMcpServerId: null,
+						externalPmTarget: null,
 					});
 					await logStoryOutcome("FAILURE", {
 						errorCode: "EXTERNAL_ID_NOT_FOUND",
@@ -4281,7 +4316,10 @@ export async function syncStoryToPM(
 					}
 				}
 
-				let getResult: { success: boolean; output?: unknown };
+				let getResult: Pick<
+					ExecuteMcpToolOutput,
+					"success" | "output" | "failureKind" | "localDatabaseError"
+				>;
 				try {
 					getResult = await executeMcpTool({
 						pmTarget: { additionalContext },
@@ -4301,7 +4339,10 @@ export async function syncStoryToPM(
 						mcpError instanceof Error
 							? mcpError.message
 							: String(mcpError);
-					if (isNotFoundMessage(msg)) {
+					// A database error's text can read as not-found (Prisma
+					// P2025: "...required but not found"); it says nothing
+					// about the PM ticket, so it does not unlink (Fizzy #3133).
+					if (!isDatabaseError(mcpError) && isNotFoundMessage(msg)) {
 						return await resolveNotFoundReturn("pull-fetch-threw");
 					}
 					logger.warn(
@@ -4314,10 +4355,12 @@ export async function syncStoryToPM(
 							error: msg,
 						},
 					);
-					await logStoryOutcome("FAILURE", { errorMessage: msg });
+					await logStoryOutcome("FAILURE", {
+						errorMessage: describeSyncErrorForUser(mcpError),
+					});
 					return {
 						success: false,
-						error: msg,
+						error: describeSyncErrorForUser(mcpError),
 						syncedAt: new Date(),
 						direction,
 					};
@@ -4350,6 +4393,7 @@ export async function syncStoryToPM(
 							externalId: null,
 							externalUrl: null,
 							externalMcpServerId: null,
+							externalPmTarget: null,
 						});
 						await logStoryOutcome("FAILURE", {
 							errorCode: "EXTERNAL_ID_NOT_FOUND",
@@ -4613,7 +4657,28 @@ export async function syncStoryToPM(
 					}
 
 					if (Object.keys(updatePayload).length > 0) {
-						await updateStory(storyId, projectId, updatePayload);
+						await updateStory(storyId, projectId, updatePayload, {
+							onlyIfPmLink: {
+								externalId: story.externalId,
+								externalMcpServerId: story.externalMcpServerId,
+								externalPmTarget: story.externalPmTarget,
+							},
+						});
+					}
+
+					if (
+						story.externalPmTarget == null &&
+						activePmTarget != null
+					) {
+						await db.userStory.updateMany({
+							where: {
+								id: storyId,
+								projectId,
+								externalId,
+								externalPmTarget: null,
+							},
+							data: { externalPmTarget: activePmTarget },
+						});
 					}
 
 					logger.info("[Story Sync] Fetched from PM tool", {
@@ -4753,8 +4818,8 @@ export async function syncStoryToPM(
 				} else {
 					// Pull failed — check if the error indicates the item
 					// no longer exists in the active PM tool. If so, the
-					// stored externalId is stale and should be cleared
-					// (in both legacy and stamped cases). For other errors
+					// stored externalId is stale: a legacy link is cleared and
+					// a stamped one kept for the poll. For other errors
 					// (auth, rate limit, transient), preserve the link so
 					// the user can retry.
 					const errorText =
@@ -4762,6 +4827,7 @@ export async function syncStoryToPM(
 							? getResult.output
 							: JSON.stringify(getResult.output ?? "");
 					const isNotFound =
+						canBeTicketNotFoundEvidence(getResult) &&
 						/not found|does not exist|404|no such|cannot read prop/i.test(
 							errorText,
 						);
@@ -4864,6 +4930,10 @@ export async function syncStoryToPM(
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		const errorStack = error instanceof Error ? error.stack : undefined;
+		const userErrorMessage =
+			error instanceof Error
+				? describeSyncErrorForUser(error)
+				: "Unknown error";
 		logger.error("[Story Sync] Failed", {
 			storyId,
 			error: errorMessage,
@@ -4885,7 +4955,7 @@ export async function syncStoryToPM(
 					pmTool: detectedPmTool,
 					status: "FAILURE",
 					errorPayload: {
-						errorMessage: errorMessage.slice(0, 500),
+						errorMessage: userErrorMessage.slice(0, 500),
 						phase: "sync-threw",
 					},
 					actorUserId: userId,
@@ -4911,9 +4981,12 @@ export async function syncStoryToPM(
 		// stack typically throws "cannot read properties of null" or
 		// similar when handed a stored externalId that doesn't exist on
 		// the active server), clear the stale link and surface a clean
-		// EXTERNAL_ID_NOT_FOUND so the API maps it to BAD_REQUEST.
+		// EXTERNAL_ID_NOT_FOUND so the API maps it to BAD_REQUEST. A recognized
+		// database error is not a stale-link signal, even when its text matches
+		// (Prisma P2025 says "not found") — Fizzy #3133.
 		const isPull = direction === "pull";
 		const looksLikeStaleLink =
+			!isDatabaseError(error) &&
 			/cannot read prop|not found|does not exist|404|no such/i.test(
 				errorMessage,
 			);
@@ -4961,6 +5034,7 @@ export async function syncStoryToPM(
 						externalId: null,
 						externalUrl: null,
 						externalMcpServerId: null,
+						externalPmTarget: null,
 					});
 					return {
 						success: false,
@@ -4983,7 +5057,7 @@ export async function syncStoryToPM(
 
 		return {
 			success: false,
-			error: errorMessage,
+			error: userErrorMessage,
 			syncedAt: new Date(),
 			direction,
 		};
@@ -6952,6 +7026,21 @@ export function isPmNotFoundError(message: string | null | undefined): boolean {
 }
 
 /**
+ * Excludes failures known to carry no ticket-level response: dispatch refusals
+ * and Fabric database errors. Passing this gate does not prove a server answer;
+ * callers must still classify the response for ticket absence.
+ */
+export function canBeTicketNotFoundEvidence(
+	result: Pick<ExecuteMcpToolOutput, "failureKind" | "localDatabaseError">,
+): boolean {
+	return (
+		result.failureKind !== "rejected" &&
+		result.failureKind !== "deadline_passed" &&
+		!result.localDatabaseError
+	);
+}
+
+/**
  * Extract a human-readable error string from an `executeMcpTool` result's
  * `output`, across the shapes it can take:
  *   1. MCP isError content — `{ content: [{ type:"text", text }] }`
@@ -7333,15 +7422,15 @@ async function fetchGitLabRestItemsByIds(args: {
 										},
 									);
 								}
+								logger.warn("[PM Sync] Fetch request threw", {
+									error: err,
+								});
 								// A thrown error is transient/auth/network — NOT
 								// proof of absence. The 429 read itself was
 								// attempted, so it is a genuine failure.
 								record(idx, {
 									kind: "failed",
-									error:
-										err instanceof Error
-											? err.message
-											: String(err),
+									error: describeSyncErrorForUser(err),
 								});
 							},
 						).finally(() => {
@@ -7548,8 +7637,7 @@ export async function fetchPMItemsByIds(input: {
 
 	// Bound discovery via its own internal timeout (Step 3c) so a hung connect/
 	// list can't stall the poll before the pool exists. A DISCOVERY_TIMEOUT is
-	// TRANSIENT → empty partial (complete=false, anchor untouched — DEC-6); any
-	// other failure keeps the existing "does not support fetching" throw.
+	// TRANSIENT → empty partial (complete=false, anchor untouched — DEC-6).
 	const disc = await discoverPMToolCapabilitiesResult({
 		mcpConfigId,
 		userId,
@@ -7581,7 +7669,13 @@ export async function fetchPMItemsByIds(input: {
 			"GitLabPmOriginMismatch",
 		);
 	}
-	const capabilities = disc.ok ? disc.capabilities : null;
+	if (!disc.ok) {
+		throw ApplicationFailure.create({
+			message: disc.error.message,
+			type: disc.error.code,
+		});
+	}
+	const capabilities = disc.capabilities;
 
 	if (!capabilities?.taskGet) {
 		throw ApplicationFailure.nonRetryable(
@@ -7700,7 +7794,9 @@ export async function fetchPMItemsByIds(input: {
 				// streak with it. Logging it at ERROR anyway put ~8,500 lines a
 				// week into production for a condition nobody can act on, and
 				// buried the auth and rate-limit failures that do need someone.
-				const benignNotFound = isPmNotFoundError(errorPreview);
+				const benignNotFound =
+					canBeTicketNotFoundEvidence(getResult) &&
+					isPmNotFoundError(errorPreview);
 				const logFailure = benignNotFound
 					? logger.info.bind(logger)
 					: logger.error.bind(logger);
@@ -7713,10 +7809,11 @@ export async function fetchPMItemsByIds(input: {
 				failedIds.push(externalId);
 				failedIdErrors[externalId] =
 					errorPreview || "Unknown MCP tool error";
-				// Classify (#1360 review Fix A): only a positive not-found message
-				// (404 / "does not exist") is proof of deletion and may feed the
-				// FLAG_MISSING streak. Auth/rate-limit/timeout stay failedIds-only.
-				if (isPmNotFoundError(errorPreview)) {
+				// Only eligible failures with a positive not-found classification
+				// may feed the FLAG_MISSING streak. Fabric database failures and
+				// dispatch refusals stay failedIds-only, as do classified auth or
+				// transient errors.
+				if (benignNotFound) {
 					notFoundIds.push(externalId);
 				}
 				return;
@@ -7811,7 +7908,7 @@ export async function fetchPMItemsByIds(input: {
 				error: errMsg,
 			});
 			failedIds.push(externalId);
-			failedIdErrors[externalId] = errMsg;
+			failedIdErrors[externalId] = describeSyncErrorForUser(err);
 		}
 	};
 
@@ -8503,6 +8600,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	mcpConfigId: string | null;
 	mcpServerId?: string;
 	containerId: string;
+	stableContainerId?: string;
 	additionalContext?: Record<string, string>;
 	organizationId?: string;
 	capabilities?: PMToolCapabilities;
@@ -8595,7 +8693,14 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	// Check if we already have this story
 	const existing = await db.userStory.findFirst({
 		where: { projectId, externalId },
-		select: { id: true, identifier: true, kind: true },
+		select: {
+			id: true,
+			identifier: true,
+			kind: true,
+			externalUrl: true,
+			externalMcpServerId: true,
+			externalPmTarget: true,
+		},
 	});
 
 	if (existing) {
@@ -8608,6 +8713,42 @@ export async function createOrUpdateStoryFromPMItem(input: {
 				organizationId,
 			}));
 
+		if (!mcpServerId) {
+			throw ApplicationFailure.nonRetryable(
+				"Fabric could not confirm which PM tool this project syncs with, so it did not overwrite this story. Select the PM tool in Project Settings → Project Management, then pull again.",
+				"StoryPullLinkMismatchError",
+			);
+		}
+		const linkCheck = await checkStoryPmLink({
+			pmTarget: {
+				additionalContext,
+				containerId:
+					input.stableContainerId ??
+					(capabilities?.detectedType === "azure-devops"
+						? undefined
+						: containerId),
+			},
+			storyId: existing.id,
+			projectId,
+			organizationId,
+			userId,
+			mcpConfigId,
+			mcpServerId,
+			pmTool: capabilities?.detectedType,
+			toolLabel: capabilities?.detectedType ?? "the PM tool",
+			externalId,
+			externalUrl: existing.externalUrl,
+			externalMcpServerId: existing.externalMcpServerId,
+			externalPmTarget: existing.externalPmTarget,
+			verb: "pull",
+		});
+		if (!linkCheck.success) {
+			throw ApplicationFailure.nonRetryable(
+				linkCheck.error,
+				"StoryPullLinkMismatchError",
+			);
+		}
+
 		let freshUrl = externalUrl;
 		// Gate the syncStoryToPM call on mcpConfigId != null: that helper has an
 		// explicit non-retryable guard for REST-GitLab (mcpConfigId === null) and
@@ -8617,6 +8758,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 		// to the lightweight updateStory branch — no need to re-fetch via MCP.
 		if (capabilities?.taskGet && mcpConfigId != null) {
 			const result = await syncStoryToPM({
+				stableContainerId: input.stableContainerId,
 				storyId: existing.id,
 				projectId,
 				mcpConfigId,
@@ -8627,6 +8769,13 @@ export async function createOrUpdateStoryFromPMItem(input: {
 				organizationId,
 				capabilities,
 			});
+			if (!result.success) {
+				throw ApplicationFailure.nonRetryable(
+					result.error,
+					"StoryPullSyncError",
+				);
+			}
+
 			if (result.externalUrl) {
 				freshUrl = result.externalUrl;
 				await updateStory(existing.id, projectId, {
@@ -8658,17 +8807,60 @@ export async function createOrUpdateStoryFromPMItem(input: {
 						capabilities?.detectedType,
 					)
 				: undefined;
-			await updateStory(existing.id, projectId, {
-				title,
-				description: finalDesc ?? undefined,
-				externalUrl: externalUrl ?? undefined,
-			});
+			try {
+				await updateStory(
+					existing.id,
+					projectId,
+					{
+						title,
+						description: finalDesc ?? undefined,
+						externalUrl: externalUrl ?? undefined,
+					},
+					{
+						onlyIfPmLink: {
+							externalId,
+							externalMcpServerId: existing.externalMcpServerId,
+							externalPmTarget: existing.externalPmTarget,
+						},
+					},
+				);
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.name === "StoryLinkChangedError"
+				) {
+					throw ApplicationFailure.nonRetryable(
+						"This story's PM link changed while it was syncing, so Fabric did not pull it. Sync again to use the current link.",
+						"StoryPullLinkMismatchError",
+					);
+				}
+				throw error;
+			}
 			// No-taskGet / REST update path logs nothing on its own — record it.
 			await logImportPull({
 				storyId: existing.id,
 				storyTitle: title,
 				pmTool: capabilities?.detectedType ?? "unknown",
 				pmExternalUrl: externalUrl ?? null,
+			});
+		}
+
+		if (existing.externalPmTarget == null) {
+			const externalPmTarget = await resolveExternalPmTarget({
+				...input,
+				containerId: input.containerId,
+				stableContainerId: input.stableContainerId,
+				mcpServerId,
+			});
+			await db.userStory.updateMany({
+				where: {
+					id: existing.id,
+					projectId,
+					externalId,
+					externalPmTarget: null,
+					externalMcpServerId: existing.externalMcpServerId,
+				},
+				data: { externalPmTarget },
 			});
 		}
 
@@ -8865,6 +9057,12 @@ export async function createOrUpdateStoryFromPMItem(input: {
 			externalId,
 			externalUrl: finalUrl ?? undefined,
 			externalMcpServerId: mcpServerId ?? undefined,
+			externalPmTarget: await resolveExternalPmTarget({
+				...input,
+				containerId: input.containerId,
+				stableContainerId: input.stableContainerId,
+				mcpServerId,
+			}),
 			pmAutoSyncEnabled: true,
 		},
 	});
@@ -8889,7 +9087,8 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	let didContentPull = false;
 	if (caps?.taskGet && mcpConfigId != null) {
 		try {
-			await syncStoryToPM({
+			const result = await syncStoryToPM({
+				stableContainerId: input.stableContainerId,
 				storyId: story.id,
 				projectId,
 				mcpConfigId,
@@ -8900,7 +9099,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 				organizationId,
 				capabilities: caps,
 			});
-			didContentPull = true;
+			didContentPull = result.success;
 
 			// The pull above OVERWRITES the description with the PM-tool body,
 			// which on a first sync has no "View in Fabric" anchor yet — so the
@@ -8952,7 +9151,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 			const { syncGitLabStoryViaRest } = await import(
 				"./gitlab-rest-story-sync"
 			);
-			await syncGitLabStoryViaRest({
+			const result = await syncGitLabStoryViaRest({
 				storyId: story.id,
 				projectId,
 				mcpConfigId: null,
@@ -8963,7 +9162,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 				userId,
 				organizationId,
 			});
-			didContentPull = true;
+			didContentPull = result.success;
 
 			// The pull OVERWRITES the description with the GitLab body (no
 			// "View in Fabric" anchor on a fresh import) — re-stamp it (idempotent),
@@ -9021,6 +9220,7 @@ export async function createOrUpdateStoryFromPMItem(input: {
 	if (caps?.taskUpdate) {
 		try {
 			await syncStoryToPM({
+				stableContainerId: input.stableContainerId,
 				storyId: story.id,
 				projectId,
 				mcpConfigId,
@@ -9128,6 +9328,7 @@ export async function syncBulkStoriesToPM(
 		// Sync each story with pre-discovered capabilities
 		for (const story of stories) {
 			const result = await syncStoryToPM({
+				stableContainerId: input.stableContainerId,
 				storyId: story.id,
 				projectId,
 				mcpConfigId,
@@ -9341,7 +9542,7 @@ export async function syncTaskToPM(params: {
 			// still surfacing the failure honestly. Without this, the task is
 			// orphaned in the PM tool and the next sync would re-enter the
 			// CREATE branch and produce a duplicate. Mirrors the equivalent
-			// guards in `syncStoryToPM` (throws because callers don't loop) and
+			// guards in `syncStoryToPM` (returns `PM_CREATE_ORPHAN`) and
 			// `syncWorkItemToPM` (returns `{status:"FAILED"}`).
 			if (!externalId) {
 				const errorMessage = `PM tool accepted the create but did not return a task id. The task may exist in the PM tool unlinked. Re-save the project's PM settings and try again. (tool=${createTool.toolName})`;
@@ -9409,6 +9610,10 @@ export async function syncTaskToPM(params: {
 		rethrowGitLabPmOriginMismatch(error);
 		const errorMessage =
 			error instanceof Error ? error.message : "Unknown error";
+		const userErrorMessage =
+			error instanceof Error
+				? describeSyncErrorForUser(error)
+				: "Unknown error";
 		logger.error("[Task Sync] Failed", { taskId, error: errorMessage });
 
 		// FAILURE row against the owning STORY. Snapshot the story directly
@@ -9425,7 +9630,7 @@ export async function syncTaskToPM(params: {
 					pmTool: detectedPmTool,
 					status: "FAILURE",
 					errorPayload: {
-						errorMessage: errorMessage.slice(0, 500),
+						errorMessage: userErrorMessage.slice(0, 500),
 						phase: "task-sync-threw",
 						taskId,
 					},
@@ -9446,7 +9651,7 @@ export async function syncTaskToPM(params: {
 			});
 		}
 
-		return { success: false, error: errorMessage };
+		return { success: false, error: userErrorMessage };
 	}
 }
 
@@ -9478,6 +9683,8 @@ export async function getStoriesToSync(input: {
 		labels?: string[];
 		externalId?: string | null;
 		externalUrl?: string | null;
+		externalMcpServerId?: string | null;
+		externalPmTarget?: string | null;
 		kind?: string | null;
 	}>
 > {
@@ -9525,6 +9732,8 @@ export async function getStoriesToSync(input: {
 			labels: true,
 			externalId: true,
 			externalUrl: true,
+			externalMcpServerId: true,
+			externalPmTarget: true,
 			kind: true,
 		},
 	});
@@ -9564,16 +9773,61 @@ export async function updateStoryExternalRefs(input: {
 }
 
 /**
- * Delete Fabric stories that no longer exist in the PM tool.
- * Called after pull sync: removes stories whose externalId is not in the PM item list.
+ * Delete stories absent from a full pull only when their link belongs to the active server.
+ * Stamped links must match the server. Unstamped links must pass the pull link guard
+ * and have positive ownership evidence: a matching instance origin, known tool host,
+ * or base URL host. Missing evidence keeps the story and its attachments.
+ * Unresolved configuration keeps unstamped stories; a missing server skips pruning.
  * Handles ID format variations (e.g. Fizzy "#123" vs "123").
  */
 export async function deleteStoriesNotInPMList(input: {
 	projectId: string;
+	containerId?: string;
 	organizationId?: string;
 	pmExternalIds: string[];
+	mcpServerId?: string;
+	mcpConfigId: string | null;
+	userId: string;
+	pmTool?: string;
+	additionalContext?: unknown;
 }): Promise<{ deletedCount: number; deletedIdentifiers: string[] }> {
-	const { projectId, organizationId, pmExternalIds } = input;
+	const { projectId, organizationId, pmExternalIds, mcpServerId } = input;
+	if (!mcpServerId) {
+		logger.warn(
+			"[Delete Orphaned] Missing active PM server; skipping prune",
+			{
+				projectId,
+			},
+		);
+		return { deletedCount: 0, deletedIdentifiers: [] };
+	}
+
+	let activeLinkConfig:
+		| Awaited<ReturnType<typeof resolveStoryPmLinkConfig>>
+		| undefined;
+	try {
+		activeLinkConfig = await resolveStoryPmLinkConfig({
+			...input,
+			mcpServerId,
+		});
+	} catch (e) {
+		logger.warn(
+			"[Delete Orphaned] Active PM config unavailable; keeping unstamped stories",
+			{
+				projectId,
+				error:
+					e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+			},
+		);
+	}
+
+	const activePmTarget = activeLinkConfig
+		? await resolveExternalPmTarget({
+				...input,
+				config: activeLinkConfig.config,
+				stableContainerId: input.containerId,
+			})
+		: null;
 
 	// Build set of normalized PM IDs for flexible matching
 	// (Fizzy may return "#123" or "123"; we store whichever the create response gave us)
@@ -9596,19 +9850,103 @@ export async function deleteStoriesNotInPMList(input: {
 				? { project: { organizationId } }
 				: {}),
 		},
-		select: { id: true, identifier: true, externalId: true },
+		select: {
+			id: true,
+			identifier: true,
+			externalId: true,
+			externalUrl: true,
+			externalMcpServerId: true,
+			externalPmTarget: true,
+		},
 	});
 
 	const toDelete: { id: string; identifier: string }[] = [];
+	let skippedOtherToolCount = 0;
+	let skippedNoEvidenceCount = 0;
 	for (const story of syncedStories) {
 		const extId = story.externalId?.trim();
 		if (!extId) {
 			continue;
 		}
 		const inPm = pmIdSet.has(extId) || pmIdSet.has(extId.replace(/^#/, ""));
-		if (!inPm) {
-			toDelete.push({ id: story.id, identifier: story.identifier });
+		if (inPm) {
+			continue;
 		}
+		if (
+			story.externalPmTarget != null &&
+			(activePmTarget == null ||
+				pmTargetsConflict(story.externalPmTarget, activePmTarget))
+		) {
+			continue;
+		}
+		if (story.externalMcpServerId) {
+			if (story.externalMcpServerId !== mcpServerId) {
+				skippedOtherToolCount++;
+				continue;
+			}
+		} else {
+			if (!activeLinkConfig) {
+				continue;
+			}
+			const { config: pmConfig, instanceOrigin } = activeLinkConfig;
+			const currentBaseUrl =
+				pmConfig.baseUrl || pmConfig.mcpServer.defaultUrl || null;
+			const mismatch = detectExternalLinkMismatch({
+				externalId: story.externalId,
+				externalUrl: story.externalUrl,
+				externalMcpServerId: story.externalMcpServerId,
+				externalPmTarget: story.externalPmTarget,
+				activePmTarget,
+				activeServerId: mcpServerId,
+				currentDetectedType: input.pmTool,
+				currentBaseUrl,
+				currentInstanceOrigin: instanceOrigin,
+			});
+			if (mismatch.resolution !== "ok") {
+				skippedOtherToolCount++;
+				continue;
+			}
+			// The mismatch guard's permissive fallback is insufficient for deletion.
+			// Its instance branch already requires a matching origin for unstamped links.
+			if (instanceOrigin === undefined) {
+				const linkHost = story.externalUrl
+					? safeHost(story.externalUrl)
+					: null;
+				const baseHost = currentBaseUrl
+					? safeHost(currentBaseUrl)
+					: null;
+				const hasOwnershipEvidence =
+					linkHost &&
+					((input.pmTool &&
+						belongsToCurrentKnownTool(linkHost, input.pmTool)) ||
+						(baseHost &&
+							hostsShareRegistrableDomain(linkHost, baseHost)));
+				if (!hasOwnershipEvidence) {
+					skippedNoEvidenceCount++;
+					continue;
+				}
+			}
+		}
+		toDelete.push({ id: story.id, identifier: story.identifier });
+	}
+	if (skippedOtherToolCount > 0) {
+		logger.info(
+			"[Delete Orphaned] Skipped stories linked to another PM tool",
+			{
+				projectId,
+				skippedCount: skippedOtherToolCount,
+			},
+		);
+	}
+
+	if (skippedNoEvidenceCount > 0) {
+		logger.info(
+			"[Delete Orphaned] Skipped stories without PM link ownership evidence",
+			{
+				projectId,
+				skippedCount: skippedNoEvidenceCount,
+			},
+		);
 	}
 
 	// Capture every attachment key before the delete cascade removes its row.

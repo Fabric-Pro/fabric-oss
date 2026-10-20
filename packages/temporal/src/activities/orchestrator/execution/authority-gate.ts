@@ -16,7 +16,9 @@
  */
 
 import {
+	authorityRequestFingerprint,
 	checkAuthority,
+	createApprovedRequestGrants,
 	ensureSensitiveOperationAuthority,
 	resolveCanonicalProviderKey,
 } from "@repo/database";
@@ -26,6 +28,10 @@ import {
 	toolNameReadCandidates,
 	toSnakeLower,
 } from "@repo/utils";
+import {
+	CREATE_WORKFLOW_FOLLOW_UPS,
+	canonicalFabricCallArgs,
+} from "../../../lib/fabric-workflow-tool-definitions";
 
 // ─── Provider Key Resolution ────────────────────────────────────────────────
 
@@ -417,6 +423,55 @@ export async function ensureMcpToolAuthority(params: {
 		runType: params.runType,
 		runId: params.runId,
 	});
+}
+
+/**
+ * The person's approved `fabric_create_workflow` also covers publishing that
+ * workflow and running it once, as the card they approved says (the same rule
+ * Direct chat applies). Recorded as one already-approved one-shot grant per
+ * follow-up, fingerprinted on the exact call with the id the create returned,
+ * so it opens nothing else: not another workflow, not a second run, not another
+ * user, organization or conversation.
+ */
+export async function approveWorkflowCreateFollowUps(params: {
+	userId: string;
+	organizationId?: string;
+	runId: string;
+	workflowId: string;
+}): Promise<void> {
+	await createApprovedRequestGrants({
+		userId: params.userId,
+		organizationId: params.organizationId,
+		runType: "ORCHESTRATOR",
+		runId: params.runId,
+		providerType: "MCP",
+		providerKey: resolveProviderKey("fabric"),
+		providerDisplayName: "Fabric",
+		accessLevel: "WRITE",
+		approvalInstructions:
+			"Approved with the workflow's creation: publishing it and running it once.",
+		calls: CREATE_WORKFLOW_FOLLOW_UPS.map((toolName) => ({
+			toolName,
+			requestFingerprint: fabricCallFingerprint(toolName, {
+				workflowId: params.workflowId,
+			}),
+		})),
+	});
+}
+
+/**
+ * The fingerprint a per-call approval of a Fabric tool is bound to, on the
+ * call's canonical arguments (`canonicalFabricCallArgs`): any input, another
+ * workflow or another tool is still another call.
+ */
+export function fabricCallFingerprint(
+	toolName: string,
+	args: Record<string, unknown>,
+): string {
+	return authorityRequestFingerprint(
+		toolName,
+		canonicalFabricCallArgs(toolName, args),
+	);
 }
 
 /**

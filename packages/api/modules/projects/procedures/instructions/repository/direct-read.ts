@@ -198,6 +198,8 @@ export async function readDirectRepositoryFile(input: {
 	source: DirectRepositorySource;
 	pin: DirectRepositoryPin;
 	path: string;
+	/** Reuse rules resolved at this pin during a bounded batch. */
+	ignore?: Awaited<ReturnType<typeof resolveDirectRepositoryIgnore>>;
 }): Promise<DirectRepositoryFileRead> {
 	const checked = validateRelativePath(input.path);
 	if (!checked.ok || isSecretFileName(checked.path)) {
@@ -206,7 +208,9 @@ export async function readDirectRepositoryFile(input: {
 	// The ignore rules and the file are read together. A file the rules hide
 	// is never returned, and the ignore failure still wins over the read's.
 	const [ignore, read] = await inOrder(
-		resolveDirectRepositoryIgnore(input.source, input.pin),
+		input.ignore === undefined
+			? resolveDirectRepositoryIgnore(input.source, input.pin)
+			: Promise.resolve(input.ignore),
 		readDirectRepositoryFileAtCommit(
 			input.source,
 			input.pin,
@@ -235,4 +239,59 @@ export async function readDirectRepositoryFile(input: {
 				textLength: Array.from(text).length,
 				size: read.bytes.length,
 			};
+}
+
+export type DirectRepositoryFileVersion =
+	| DirectRepositoryFileRead
+	| { state: "nonRegular" | "unavailable" };
+
+/** A complete pinned tree distinguishes a deletion from an unsupported Git entry. */
+export async function readDirectRepositoryFileVersion(input: {
+	source: DirectRepositorySource;
+	pin: DirectRepositoryPin;
+	path: string;
+}): Promise<DirectRepositoryFileVersion> {
+	const checked = validateRelativePath(input.path);
+	if (
+		!checked.ok ||
+		checked.path !== input.path ||
+		isSecretFileName(input.path)
+	) {
+		throw notFound();
+	}
+	const ignore = await resolveDirectRepositoryIgnore(input.source, input.pin);
+	if (buildIgnoreMatcher(ignore)(input.path)) {
+		throw notFound();
+	}
+	const tree = await listTree(input.source, input.pin);
+	if (!tree.ok) {
+		throw directRepositoryReadError(
+			input.source,
+			tree.outcome === "unsupported" ? "unreachable" : tree.outcome,
+		);
+	}
+	if (tree.truncated) {
+		return { state: "unavailable" };
+	}
+	const path = directRepositoryPath(input.source, input.path);
+	const entry = tree.entries.find((entry) => entry.path === path);
+	if (entry === undefined) {
+		const unsupported = tree.entries.some(
+			(entry) =>
+				(entry.regular === false &&
+					path.startsWith(`${entry.path}/`)) ||
+				entry.path.startsWith(`${path}/`),
+		);
+		return unsupported ? { state: "nonRegular" } : { state: "absent" };
+	}
+	if (
+		entry.type !== "file" ||
+		entry.regular === false ||
+		(entry.mode !== "100644" && entry.mode !== "100755")
+	) {
+		return { state: "nonRegular" };
+	}
+	const read = await readDirectRepositoryFile({ ...input, ignore });
+	// A tree entry without its immutable bytes is a provider inconsistency, not a deletion.
+	return read.state === "absent" ? { state: "unavailable" } : read;
 }

@@ -150,7 +150,9 @@ jobs:
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (true)
     needs: [promotion_policy]
     name: Plan shards
-    runs-on: ubuntu-latest
+    # arm64: architecture-neutral (JS actions, pnpm/node; turbo ships
+    # @turbo/linux-arm64). The plan matrix is package names only.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -441,7 +443,9 @@ jobs:
     # per push adds no useful verdict. Private PRs execute this aggregate.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && (always() && github.event_name != 'push')
-    runs-on: ubuntu-latest
+    # arm64: this aggregate only runs bash and `gh api` — no checkout, no
+    # compiled binaries.
+    runs-on: ubuntu-24.04-arm
     env:
       PLAN_RESULT: ${{ needs.plan.result }}
       HAS_SHARDS: ${{ needs.plan.outputs.has_shards }}

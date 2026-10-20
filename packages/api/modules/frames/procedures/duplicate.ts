@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import {
 	duplicateFrame,
 	FramePlacementRefusedError,
@@ -48,7 +49,7 @@ export const duplicateFrameProcedure = tenantProtectedProcedure
 		});
 
 		if (!original) {
-			throw new Error("Frame not found");
+			throw new ORPCError("NOT_FOUND", { message: "Frame not found" });
 		}
 
 		// The caller's own copy of their page: it says it came from the same run
@@ -66,7 +67,9 @@ export const duplicateFrameProcedure = tenantProtectedProcedure
 			providerKeys: original.providerKeys ?? [],
 		}).catch((error: unknown) => {
 			if (error instanceof FramePlacementRefusedError) {
-				throw new Error("Frame not found");
+				throw new ORPCError("NOT_FOUND", {
+					message: "Frame not found",
+				});
 			}
 			throw error;
 		});

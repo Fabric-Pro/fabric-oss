@@ -1,5 +1,134 @@
 # fabric-app
 
+## 1.16.25
+
+### Patch Changes
+
+- 57e3bdc: The agent chat relay now sends messages only to Fabric-operated agents, and delegation to agents that members register refuses addresses that resolve to private networks or redirect elsewhere.
+- 57e3bdc: Agent tasks no longer echo the AI provider key or AI token they were sent with: the task returned by an agent, and the copy it keeps for status lookups, now redact credential fields while the agent itself still receives them.
+- 57e3bdc: Agents registered by users, and agents reached through the agent chat proxy, no longer receive Fabric's internal service credential.
+- 57e3bdc: Capture Azure DevOps work-item comments when the provider omits the deletion flag, while continuing to reject malformed or incomplete comment data.
+- 57e3bdc: Fabric Agent and project connections can read bounded pages of directly assigned Azure DevOps items and inspect their requirement fields and versioned comments.
+- 57e3bdc: Keep scheduled story-review comparisons anchored to the prior scheduled capture while reusing compatible AI judgments from completed manual or scheduled runs.
+- 57e3bdc: Advisor delegation to Fabric's built-in agents now authenticates, so delegated tasks are no longer rejected.
+- 57e3bdc: The Advisor now keeps the agent, MCP server, workspace and integration selections it caches in the browser separately for each user and organization, so a new organization's default agents are enabled instead of choices carried over from another organization.
+- 57e3bdc: Built-in agents the Advisor delegates to now run on the model selected for the conversation instead of the organization's task model.
+- 57e3bdc: The Advisor no longer turns off delegation to every agent when your saved settings contain an empty agent list, which earlier settings changes could create without you choosing it. Turning off all agents now lasts until you reload or leave the Advisor page.
+- 57e3bdc: When Advisor settings fail to save, the error notice now stays open with a working Retry, and the unsaved changes are sent with your next Advisor edit, or when the connection returns while Advisor is open, instead of being dropped.
+- 57e3bdc: Advisor no longer reports work from an earlier conversation as done now; it checks a recalled workflow or change with a tool before saying it exists.
+- 57e3bdc: A delegated Advisor agent running on a ChatGPT plan model that the plan added to the catalog itself now gets that model's context window and output limits, as other picked models already did.
+- 57e3bdc: Advisor keeps a stopped answer under its own question instead of moving it below later messages, and saves the partial answer that was shown.
+- 57e3bdc: Advisor now catches a reply that says it did something when it called no tool, and gets one more round to really do it or say plainly it did not.
+- 57e3bdc: Agent capability lookups now cache each agent's card under the agent registration visible to the requesting user and organization, so organizations whose agents share a name no longer see each other's skills and capabilities.
+- 57e3bdc: Creating an agent conversation now requires an organization and checks that the user's role there allows creating agent conversations, so a request without an organization can no longer skip that check.
+- 57e3bdc: Creating an agent conversation now rejects agents that belong to another organization or user, returning the same error as an unknown agent.
+- 57e3bdc: The background agent health check now applies the same network protections as delegation to agents that members register: it refuses addresses that resolve to private networks and does not follow redirects.
+- 57e3bdc: Editing, creating, archiving, restoring or deleting an agent instance, and modifying an agent conversation, now check your role in the target organization. Restoring an archived agent version now requires permission to manage agents, as editing one does, so members who previously restored versions through the API can no longer do so. Agent instances without an organization can no longer be read or changed.
+- 57e3bdc: Agent API run responses now label each returned message with its real role (user, assistant, system or tool), keep tool call links, and return the text of multi-part messages instead of "[object Object]".
+- 57e3bdc: The agent list's conversation count for each agent, including Fabric's built-in agents, now covers only conversations in your organization rather than every organization on the platform.
+- 57e3bdc: Creating or dynamically registering an agent and restoring an agent instance version now require an organization and check that the user's role there permits the operation, so requests without an organization cannot skip those permission checks.
+- 57e3bdc: AI usage records for built-in agents now name the model that actually ran when a task-specific model replaced the default.
+- 57e3bdc: Refreshing a dynamically registered agent now requires an organization context and checks who owns the agent: only its owner can refresh a personal agent, organization agents need an organization owner or admin, and system agents cannot be refreshed through the API.
+- 57e3bdc: AI Update runs on selected meetings alone no longer pull in Slack messages, security findings, application logs or project search results, so suggestions stay focused on those meetings.
+- 57e3bdc: Keep project-attached Workspace page reads within their attached project and refuse page tools whose results or effects cannot be scoped to that project.
+- 57e3bdc: Validate Azure AI Foundry endpoint URLs when saving provider settings so direct saves reject unsafe destinations while accepting supported Azure endpoints.
+- 57e3bdc: Roadmap AI Updates now use the meetings and channels you confirmed, the document assistant uses the meetings you confirmed, and a failed analysis stops instead of retrying repeatedly.
+- 57e3bdc: Backlog analysis now keeps the meeting transcript intact for projects with large backlogs, trimming the list of existing work items instead and no longer listing synced project-management items twice.
+- 57e3bdc: When applying an approved backlog proposal fails on a database error, the proposal inbox and approval responses now show a short database error instead of raw database error text.
+- 57e3bdc: Load repository instruction plugins in bounded batches, verify their Git blobs, and respect server rate-limit waits during cold installs.
+- 57e3bdc: Prepare bounded Azure DevOps story and comment reads for scheduled requirements reviews, with explicit incomplete results and project isolation.
+- 57e3bdc: Show the approval-expired notice without an additional AI failure alert when answering an approval that is no longer pending.
+- 57e3bdc: Prevent bulk story pushes from updating tickets linked to a different project management server or GitLab instance, and offer Unlink & re-create to replace the link.
+- 57e3bdc: Prevent test-case pushes from updating tickets linked to a different project management tool, and offer Unlink & re-create to replace the stale link.
+- 57e3bdc: AI Providers warns only when nothing serves you, shared ChatGPT accounts flag unaccepted terms, and `fabric connect chatgpt` shows its real result.
+- 57e3bdc: The Codex plugin that `fabric instructions init --tool codex` renders now loads the project's Fabric MCP server: its manifest is at `.codex-plugin/plugin.json`, where Codex reads it.
+- 57e3bdc: `fabric memory pull --accept-remote` now clears a conflict on a memory file that was removed on the server since, by removing the local copy.
+- 57e3bdc: The CLI signs in again after an upgrade that asks for a new scope, registering a fresh OAuth client instead of failing with invalid_scope.
+- 57e3bdc: Render saved Workspace and project artifact links in chat as clickable links while preserving unsafe URL blocking.
+- 57e3bdc: Harden filename and response parsing, local configuration reads, and diagnostic logging against malformed inputs.
+- 57e3bdc: The public docs now describe coding instructions as a plugin and saving agents' specs to the repository through Living Memory write folders, checked against the shipped code in CI.
+- 57e3bdc: Attribute chat model calls and supporting memory and discovery embeddings to the validated project, conversation, and frame in AI Usage.
+- 57e3bdc: Question and answer text is now also cleared from turn records of conversations deleted before the clearing trigger existed.
+- 57e3bdc: Deleting a conversation now also deletes the question and answer its chat turns kept, instead of leaving them on the turn records.
+- 57e3bdc: Typed decision calls through Vercel AI Gateway now record their cost in AI usage reports and count toward AI spending limits, instead of being logged as free.
+- 57e3bdc: When a built-in agent the Advisor delegates to fails partway through its run, the Advisor now sees the failure and its reason instead of an empty or echoed answer reported as a success.
+- 57e3bdc: Fix delegated agents losing model credentials, tenant context, and usage attribution, and prevent request metadata from overriding the tenant or model endpoint resolved by the server.
+- 57e3bdc: Delegating to a built-in agent by name now reaches that built-in agent even when an organization agent shares the name, and no longer falls back to a different agent when the built-in one is unavailable.
+- 57e3bdc: Stopping a direct chat reply, or closing the page while it streams, now stops the model call instead of letting it run to completion.
+- 57e3bdc: Stopping a Direct chat answer from an Anthropic model, or losing it to a provider error mid-stream, now records the input tokens the provider already counted for the step that was streaming.
+- 57e3bdc: In Direct chat, approving a new workflow now covers exactly one publish and one run with no inputs, as in Simple mode; anything more asks again.
+- 57e3bdc: Starting a document assistant conversation now applies the same agent access check as other agent conversations, rejecting an unregistered agent or one the user cannot use with the same error.
+- 57e3bdc: Document quality evaluations now record the project they ran in, so their AI usage is attributed to that project and project usage limits apply to them.
+- 57e3bdc: The unused legacy organization-level Firecrawl columns are removed from the database; organization search providers are configured only through search provider settings.
+- 57e3bdc: A new frame is private until its creator shares it, and a new API key starts read-only with MCP Write labelled as the every-write-tool scope it is.
+- 57e3bdc: Frame procedures answer 404 Not Found, not a 500, when the frame is missing or belongs to another organization.
+- 57e3bdc: Make Workspaces safer to share and run, improve project tool discovery, and stabilize agent connections, memory and audit diagnostics.
+- 57e3bdc: The Google Drive MCP server now runs a pinned version installed in the server image, instead of downloading the latest release from npm each time a connection starts.
+- 57e3bdc: Add on-demand Git file history and guarded single-file restore APIs for Coding Instructions.
+- 57e3bdc: AI Update now keeps its suggestions grounded in the meeting you selected, instead of proposing unrelated items from security findings, logs or other project context.
+- 57e3bdc: The Hono web framework behind the API and agent servers is updated to 4.13.13, picking up upstream fixes to content negotiation, routing and response typing.
+- 57e3bdc: Project rules from the instructions now reach Claude Code (.claude/rules/fabric-<id>/) and Codex (AGENTS.override.md).
+- 57e3bdc: The Coding Instructions tab lists the published files a coding-tool plugin leaves out, with the reason for each; the standard layout is documented.
+- 57e3bdc: Agents can now check a Living Memory write that the session hook sent: the plugin's memory skill and `fabric_memory_write_status` point to the write ids in `.fabric/memory.lock`.
+- 57e3bdc: Agents can list and read Living Memory files through a new MCP tool, so a work item's specs and tasks can be resumed without a local copy.
+- 57e3bdc: Living Memory write folders can be set to Store only: files stay readable but are left out of AI search, keyword search and summaries.
+- 57e3bdc: When an MCP server connection closes while a tool call is in flight, Fabric no longer sends the call a second time unless the tool declares itself read-only, so a ticket create or message post cannot run twice, and a connection that keeps closing is retried at most once.
+- 57e3bdc: When meeting analysis fails on the automatic scan or the meeting digest's "Create feature proposals" button, the meeting now shows the actual reason, such as a transcript that is too long for the model or a spent ChatGPT plan, instead of the generic "Activity task failed".
+- 57e3bdc: Retry a Living Memory or instructions direct push that loses a race with another writer instead of turning it into a "protected branch" pull request.
+- 57e3bdc: Simple-mode chat no longer hangs on "Approval needed" without an Approve card: a silent stream reconnects and shows the pending approval, or the turn fails visibly.
+- 57e3bdc: A repeated or late Approve click can no longer approve a chat's next request: the run now takes an answer only for the approval card it was given for.
+- 57e3bdc: Reopening a Simple-mode chat mid-turn reconnects to the running turn, so its progress and any pending Approve card show again and can be answered.
+- 57e3bdc: Approve-all no longer answers an approval that needs an explicit click, and a stale Approve click now says the approval was already answered instead of reporting success.
+- 57e3bdc: Reopening a Simple-mode conversation now shows the question of a turn that is still running or was never saved, instead of dropping it.
+- 57e3bdc: Approving a new workflow in Simple mode now also covers its first run when the agent starts it with empty inputs, instead of asking a second time.
+- 57e3bdc: Parlume now makes the changes attendees ask for straight away, creates work items within seconds, and no longer asks inviters to tick a recording box.
+- 57e3bdc: Parlume's Fabric Agent gets the chat's tools in meetings: Fabric MCP, your MCP servers and work item creation, with changes held for confirmation.
+- 57e3bdc: Parlume's Fabric Agent can use 38 Fabric portal tools in a meeting, held to the inviter, their organization and the meeting's project.
+- 57e3bdc: Members can opt a personal key in to carry their own work while the ChatGPT plans are spent and the organization would stop it.
+- 57e3bdc: The Add MCP Server dialog now explains that searching finds more MCP servers than the ones listed.
+- 57e3bdc: The plugin binding check's internal reader is no longer exported, which clears the Knip unused-export failure on `staging`.
+- 57e3bdc: Name the Claude Code plugin's MCP server `fabric`, so `/mcp` lists it as `plugin:fabric-<id>:fabric` instead of repeating the plugin name; refresh the coding-instructions docs with a flow diagram.
+- 57e3bdc: Plugins are now bound to one project and deployment, Codex's installed copy stays current, and the Connect dialog has a plugin step per tool.
+- 57e3bdc: When a ticket is created in a project management tool but Fabric cannot save its link, the error shown on the story or work item now gives a short reason instead of raw database error text.
+- 57e3bdc: A full story pull no longer deletes stories, or their attachments, that are linked to a different organisation, site, instance, board or project of the same PM tool, and pushes and pulls refuse to update a story linked to one of them from an item in another.
+- 57e3bdc: PM sync no longer removes a story's link to its PM ticket when a Fabric database error, or a call that never reached the PM tool, looks like a missing ticket.
+- 57e3bdc: A full story pull no longer deletes stories, or their attachments, that are still linked to a PM tool the project used before.
+- 57e3bdc: When a PM sync fails because of an internal database error, the story, test case and Sync Log now show a short "database error" message instead of the raw database error text.
+- 57e3bdc: Pushing a story or bug that is already linked to a PM tool item now fails with a clear error when the connected PM tool cannot update items, instead of reporting a successful sync that changed nothing.
+- 57e3bdc: Pulling test cases from a PM tool now restores a deleted Fabric test case that is still linked to the pulled work item, instead of failing that item with a database error on every pull.
+- 57e3bdc: Bump the pinned pnpm from 11.28.2 to 11.28.6.
+- 57e3bdc: AI usage from backlog analysis, story maturation, specification drafting, publishing summaries, decision tagging, test-failure analysis and document updates from context is now recorded against its project, so project usage limits apply to those calls.
+- 57e3bdc: A Proposal's Internal Analysis now keeps the overall review report its analysis prompt asks for beside the findings, and shows organization members the assessment, the summary and what to resolve before sending above the findings, with the full report and its cited sources on demand.
+- 57e3bdc: Proposal PDF downloads now number their contents page when printed on the server; the page lookup behind those numbers had been finding no sections there.
+- 57e3bdc: Proposal PDF downloads now show each section's page number on the contents page; the server-made PDF had been listing its sections without them.
+- 57e3bdc: Client-ready Proposals now download as a branded PDF or Word file made from the same theme as their page, with a cover, a contents page, running headers and page numbers, styled tables, stat tiles and diagrams. Citation markers and source indexes are left out of every download, and project guests can download the Proposal too.
+- 57e3bdc: A regenerated client Proposal no longer flashes back to, or is saved over with, the previous version in the shared editor: the editor keeps the run's state through a lost connection, brings an out-of-date shared room up to the saved body, and refuses agent edits, status changes, version restores, rejected regenerations and accepted refresh proposals that would overwrite a body a run is still writing.
+- 57e3bdc: Meeting and channel proposals now say in their summary when suggested items were matched to existing work items and will update them.
+- 57e3bdc: Update the HTTP redirect dependency to fix sensitive-header handling during cross-origin redirects.
+- 57e3bdc: The MCP server catalog no longer offers servers whose packages are unpublished, deprecated or unsupported, connects Cloudflare through its hosted server with OAuth, and pins exact versions for the remaining local servers.
+- 57e3bdc: Pages that were made public by an old default, while shown to their owners as private, are private again; an owner can share one publicly again in one click.
+- 57e3bdc: Agents that hand work to another agent can no longer load a different member's personal agent from the same organization; only system agents, the organization's shared agents and your own personal agents can be run.
+- 57e3bdc: Scheduled agent workflows work end to end from chat: the result link opens, the agent can be given project data, and the page shows the right time.
+- 57e3bdc: Allow Azure DevOps story reviews to select sprint tasks, follow parent stories, and include immediate child and Related requirements and comments while reusing unchanged judgments and preserving scheduled comparisons.
+- 57e3bdc: Sentry and Stripe connections now pass the saved key under the environment variable each server reads, so they start instead of exiting for a missing credential, and the hidden Upstash and Browserbase entries, which need more than one secret, are retired.
+- 57e3bdc: Show files in a Store only Living Memory folder as Ready with a "Store only" label instead of leaving them "Pending" and counted as sources still processing.
+- 57e3bdc: Pulling or importing stories from a PM tool now refuses to overwrite a story linked to a different PM tool and reports failed story pulls as failures.
+- 57e3bdc: When a PM tool accepts a story's create but returns no item id, the story's sync history now records one failure for the attempt instead of two.
+- 57e3bdc: Pulling or importing test cases from a PM tool no longer overwrites a test case that is linked to an item in a different PM tool; the pull reports that case instead, and an import restores a deleted test case only when its link belongs to the current PM tool.
+- 57e3bdc: Test cases pulled in bulk from a project-management tool are now indexed for AI search as soon as they are created, updated or restored.
+- 57e3bdc: ClickUp workflow steps now use the API token saved on the ClickUp connection, so creating and searching ClickUp tasks works.
+- 57e3bdc: Load saved Workspace and artifact declarations and version metadata into their viewers from the authorized frame read. Refuse runtime access for unavailable, replaced or unattended content, and describe sensitive read approvals without claiming they change data. Clarify that project members retain access to project-linked PRIVATE pages.
+- 57e3bdc: AI usage records now carry the chat or conversation they belong to for chat answers and titles, public API chats, embeddings, image generation, text-to-speech and agents the Advisor delegates to that record their own usage.
+- 57e3bdc: Supabase MCP connections now find Supabase's OAuth login server, so connecting Supabase with OAuth works.
+- 57e3bdc: Web app pages now ship roughly half as much server code, because shared layouts no longer pull in the AI, Temporal and integration packages, the document editor no longer bundles a server-side DOM, and unused syntax-highlighting grammars are left out of page functions.
+- 57e3bdc: Workflow cards give the title the full width and show when the workflow last ran, which is now recorded on every run.
+- 57e3bdc: A workflow card's status badge sits beside the title instead of over it, so a long workflow name wraps cleanly in the grid.
+- 57e3bdc: Stack workflow list summaries above their metadata on narrow screens so scheduled badges and action controls cannot squeeze the title out of view.
+- 57e3bdc: Keep workflow edit times unchanged when runs publish pages or update schedule state. Restore missing last-run times from accepted executions so older runs appear correctly on workflow cards.
+- 57e3bdc: Opening a workspace link right after signing in no longer shows "Project not found" until a reload.
+- 57e3bdc: Advisor and chat agent settings now load and save for the workspace on screen, and pending Advisor settings changes are saved when leaving the page.
+- 57e3bdc: Attribute Workspace questions and workflow model calls to their saved page or execution in AI Usage, including prompt versions and source links in activity details and exports.
+
 ## 1.16.24
 
 ### Patch Changes

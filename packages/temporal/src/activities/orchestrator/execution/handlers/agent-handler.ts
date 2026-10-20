@@ -229,6 +229,7 @@ export class AgentHandler implements StepHandler {
 					: undefined;
 
 			const result = await delegateToAgent({
+				usageConversationId: input.conversationId,
 				agentId: agentToDelegate,
 				message: finalMessage,
 				context,

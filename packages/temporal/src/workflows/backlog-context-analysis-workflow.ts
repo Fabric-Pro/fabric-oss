@@ -300,6 +300,18 @@ export function planTeamsFetch(input: {
 	return { kind: "skip" };
 }
 
+export function isMeetingOnlyAnalysis(
+	contextSources: BacklogContextAnalysisInput["contextSources"],
+): boolean {
+	return (
+		(contextSources.selectedMeetings?.length ?? 0) > 0 &&
+		!contextSources.fetchTeamsMessages &&
+		!contextSources.selectedChannelContextIds?.length &&
+		!contextSources.fetchSlackMessages &&
+		!contextSources.notionPageIds?.length
+	);
+}
+
 // =============================================================================
 // Workflow Implementation
 // =============================================================================
@@ -348,6 +360,7 @@ export async function backlogContextAnalysisWorkflow(
 			selectedTeamsChannels:
 				contextSources.selectedChannelContextIds?.length ?? 0,
 			fetchSlack: contextSources.fetchSlackMessages ?? false,
+			meetingOnly: isMeetingOnlyAnalysis(contextSources),
 			meetingCount: contextSources.selectedMeetings?.length ?? 0,
 			notionCount: contextSources.notionPageIds?.length ?? 0,
 			daysBack: contextSources.daysBack,
@@ -606,25 +619,35 @@ export async function backlogContextAnalysisWorkflow(
 			);
 		}
 
-		// 1d. Fetch RAG context (always)
-		progress.status = "fetching_rag";
-		progress.message = "Retrieving project knowledge base...";
+		// Meeting-only scoping removes activities from the command sequence. Keep
+		// this permanent marker so histories recorded before the change replay
+		// the legacy RAG, security and application-log fetches deterministically.
+		const skipBackgroundContext =
+			patched("backlog-meeting-only-context-v1") &&
+			isMeetingOnlyAnalysis(contextSources);
 
-		try {
-			const ragResult = await retrieveProjectRagContext({
-				projectId,
-				query: userPrompt,
-				userId,
-				organizationId,
-				topK: 5,
-			});
-			if (ragResult.success) {
-				fetchedContext.ragContext = ragResult.formattedContext;
+		if (!skipBackgroundContext) {
+			// 1d. Fetch RAG context
+			progress.status = "fetching_rag";
+			progress.message = "Retrieving project knowledge base...";
+
+			try {
+				const ragResult = await retrieveProjectRagContext({
+					projectId,
+					query: userPrompt,
+					userId,
+					organizationId,
+					topK: 5,
+				});
+				if (ragResult.success) {
+					fetchedContext.ragContext = ragResult.formattedContext;
+				}
+			} catch (error) {
+				log.warn("Failed to retrieve RAG context, continuing", {
+					error:
+						error instanceof Error ? error.message : String(error),
+				});
 			}
-		} catch (error) {
-			log.warn("Failed to retrieve RAG context, continuing", {
-				error: error instanceof Error ? error.message : String(error),
-			});
 		}
 
 		if (cancelled) {
@@ -671,7 +694,7 @@ export async function backlogContextAnalysisWorkflow(
 		// This activity was added after the workflow entered production. Keep it
 		// behind its own permanent patch marker so older histories replay the
 		// legacy sequence deterministically.
-		if (patched("backlog-security-context-v1")) {
+		if (patched("backlog-security-context-v1") && !skipBackgroundContext) {
 			// 1f. Fetch security findings
 			progress.status = "fetching_security";
 			progress.message = "Checking project security findings...";
@@ -709,7 +732,7 @@ export async function backlogContextAnalysisWorkflow(
 		// The activity itself is flag-gated and never throws: with the flag off
 		// it returns an empty clause and an empty note, so the only cost on the
 		// default path is one short activity round-trip.
-		if (patched("backlog-application-logs-v1")) {
+		if (patched("backlog-application-logs-v1") && !skipBackgroundContext) {
 			// 1g. Fetch application logs as root-cause evidence
 			progress.status = "fetching_logs";
 			progress.message = "Checking application logs...";
@@ -894,7 +917,9 @@ export async function backlogContextAnalysisWorkflow(
 		 * The guard is deliberately narrow: it fires only when meetings were the
 		 * request AND nothing else was gathered either. A run that also pulled
 		 * Teams messages, Slack, Notion, logs or RAG still has something real to
-		 * work from and proceeds, with the missing meetings noted.
+		 * work from and proceeds, with the missing meetings noted. A meeting-only
+		 * run does not fetch logs or RAG (`skipBackgroundContext` above), so only
+		 * architecture decisions can carry it past this guard.
 		 */
 		const gatheredAnythingElse = Object.entries(fetchedContext).some(
 			([key, value]) =>

@@ -8,6 +8,7 @@ import {
 } from "@repo/utils/prompt-action-catalog";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { describeGenerationRefusal } from "@saas/projects/components/proposal-artifact/generation-feedback";
 import { Spinner } from "@shared/components/Spinner";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,8 +16,11 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Tabs, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { AlertTriangleIcon, SparklesIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useOfferedPromptActions } from "../hooks/use-offered-prompt-actions";
 import { ActionMultiSelect } from "./ActionMultiSelect";
 
 /**
@@ -30,6 +34,13 @@ import { ActionMultiSelect } from "./ActionMultiSelect";
  *
  * Approving one closes the others in that group; that happens server-side, and
  * the copy here says it will so the reviewer is not surprised by it.
+ *
+ * With the Proposal artifact on, an organization default at a legacy Proposal
+ * action is refused (Fizzy #2946), so the organization queue never approves
+ * one: such an action is dropped from what an approval sends, and a
+ * nomination naming nothing else can be declined, not approved. The System
+ * queue is not shaped by the gate — a System default still serves every
+ * organization that has it off.
  */
 
 type NominationTarget = {
@@ -53,6 +64,9 @@ type Nomination = {
 };
 
 const ALL_ACTIONS = listPromptActions();
+const ALL_ACTION_IDS: ReadonlySet<string> = new Set(
+	ALL_ACTIONS.map((a) => a.id),
+);
 
 /** Every action this nomination was proposed for. */
 function proposedActionIds(nomination: Nomination): string[] {
@@ -71,9 +85,17 @@ function actionLabel(target: NominationTarget): string {
 }
 
 export function NominationQueue() {
-	const { organizationId, isOrgContext } = useOrganizationContext();
+	const { organizationId, isOrgContext, basePath } = useOrganizationContext();
 	const { user } = useSession();
 	const queryClient = useQueryClient();
+	const router = useRouter();
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const tSuperseded = useTranslations(
+		"projects.proposalArtifact.supersededAction",
+	);
+	const offered = useOfferedPromptActions();
 	const [pendingId, setPendingId] = useState<string | null>(null);
 	// FR23, per nomination id: the COMPLETE set of action ids the reviewer has
 	// settled on. A missing entry means they have not touched it.
@@ -99,6 +121,12 @@ export function NominationQueue() {
 	const showScopeTabs = isOrgContext && canReviewSystem;
 
 	const queryKey = ["prompt-nominations", targetScope, organizationId];
+
+	// Only the organization queue is shaped by the gate; see the header.
+	const gateShapesQueue = targetScope === "ORG";
+	const isSupersededId = (id: string) =>
+		gateShapesQueue && ALL_ACTION_IDS.has(id) && !offered.actionIds.has(id);
+	const reviewableActions = gateShapesQueue ? offered.actions : ALL_ACTIONS;
 
 	const {
 		data,
@@ -198,6 +226,20 @@ export function NominationQueue() {
 			queryClient.invalidateQueries({ queryKey });
 		},
 		onError: (err) => {
+			const refusal = describeGenerationRefusal(err, {
+				t: tFeedback,
+				basePath,
+			});
+			if (refusal) {
+				toast.error("Could not complete that", {
+					description: refusal.message,
+					action: {
+						label: refusal.catalog.label,
+						onClick: () => router.push(refusal.catalog.href),
+					},
+				});
+				return;
+			}
 			toast.error("Could not complete that", {
 				description: err instanceof Error ? err.message : String(err),
 			});
@@ -227,16 +269,23 @@ export function NominationQueue() {
 	 * `primaryActionId` is the action whose row the reviewer pressed Approve
 	 * from. It is always included: the multi-select shows it as fixed, so that
 	 * is what the reviewer was told would happen.
+	 *
+	 * An action the Proposal artifact supersedes is never sent (Fizzy #2946):
+	 * the server refuses an approval that names one, so a nomination holding
+	 * one always sends its set explicitly, without it. An empty result means
+	 * there is nothing left to approve.
 	 */
 	const editedTargets = (
 		nomination: Nomination,
 		primaryActionId: string,
 	): NominationTarget[] | undefined => {
 		const edited = editedActions[nomination.id];
-		if (!edited) {
+		const proposed = proposedActionIds(nomination);
+		if (!edited && !proposed.some(isSupersededId)) {
 			return undefined;
 		}
-		return [...new Set([primaryActionId, ...edited])]
+		return [...new Set([primaryActionId, ...(edited ?? proposed)])]
+			.filter((id) => !isSupersededId(id))
 			.map((id) => ALL_ACTIONS.find((a) => a.id === id))
 			.filter((a): a is NonNullable<typeof a> => Boolean(a))
 			.map((a) => ({
@@ -323,6 +372,15 @@ export function NominationQueue() {
 						)}
 					</div>
 
+					{isSupersededId(group.id) && (
+						<p
+							data-testid="nomination-superseded-note"
+							className="text-muted-foreground text-xs"
+						>
+							{tSuperseded("actionNote")}
+						</p>
+					)}
+
 					{group.nominations.length > 1 && (
 						<p className="text-muted-foreground text-xs">
 							Approving one of these closes the others for this
@@ -336,6 +394,14 @@ export function NominationQueue() {
 								nomination.nominatedBy?.id === user?.id;
 							const busy =
 								pendingId === nomination.id && decide.isPending;
+							const approvalTargets = editedTargets(
+								nomination,
+								group.id,
+							);
+							// Only actions the gate supersedes: decline, not approve.
+							const nothingToApprove =
+								approvalTargets !== undefined &&
+								approvalTargets.length === 0;
 							return (
 								<li
 									key={`${group.id}:${nomination.id}`}
@@ -394,10 +460,19 @@ export function NominationQueue() {
 										<ActionMultiSelect
 											id={`nomination-actions-${nomination.id}-${group.id}`}
 											label="Applies to"
-											alwaysIncluded={group.id}
+											actions={reviewableActions}
+											alwaysIncluded={
+												isSupersededId(group.id)
+													? undefined
+													: group.id
+											}
 											value={coveredActionIds(
 												nomination,
-											).filter((id) => id !== group.id)}
+											).filter(
+												(id) =>
+													id !== group.id &&
+													!isSupersededId(id),
+											)}
 											onChange={(next) =>
 												setEditedActions((prev) => ({
 													...prev,
@@ -437,6 +512,17 @@ export function NominationQueue() {
 										</p>
 									)}
 
+									{!isOwn && nothingToApprove && (
+										<p
+											data-testid="nomination-decline-only"
+											className="text-muted-foreground text-xs"
+										>
+											{tSuperseded(
+												"nominationDeclineOnly",
+											)}
+										</p>
+									)}
+
 									<div className="flex flex-wrap gap-2">
 										{isOwn ? (
 											<Button
@@ -456,15 +542,14 @@ export function NominationQueue() {
 											<>
 												<Button
 													size="sm"
-													disabled={busy}
+													disabled={
+														busy || nothingToApprove
+													}
 													onClick={() =>
 														run(
 															nomination.id,
 															"approve",
-															editedTargets(
-																nomination,
-																group.id,
-															),
+															approvalTargets,
 														)
 													}
 												>

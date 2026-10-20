@@ -16,6 +16,11 @@
  */
 
 import {
+	PROPOSAL_DRAFTING_PROGRESS,
+	PROPOSAL_FINISHING_PROGRESS,
+	PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+} from "@repo/utils/proposal-artifact/live-progress";
+import {
 	ActivityFailure,
 	ApplicationFailure,
 	ParentClosePolicy,
@@ -687,6 +692,59 @@ describe("gate on — the run token and the attempt's identity", () => {
 		expect(h.calls).toEqual(["planProposalArtifact"]);
 		expect(h.activities.clearProposalLiveContent).not.toHaveBeenCalled();
 		expect(h.activities.updateProjectDocumentStatus).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The page and the live query module compare the run's progress with the
+ * shared milestones by equality, while this workflow writes its own literals
+ * around the generation activity. Driving the real workflow body pins the
+ * two together: a change on either side fails here.
+ */
+describe("gate on — the progress milestones the page reads (Fizzy #2946)", () => {
+	/** The run's guarded progress writes, each with its place in the call order. */
+	function runProgressWrites(): Array<{ progress: unknown; order: number }> {
+		const { calls, invocationCallOrder } =
+			h.activities.updateProjectDocumentStatus.mock;
+		return calls.flatMap(([input], index) => {
+			const write = input as Record<string, unknown>;
+			return write.status === "GENERATING" &&
+				write.liveRunId === "live-run-1"
+				? [
+						{
+							progress: write.progress,
+							order: invocationCallOrder[index] ?? 0,
+						},
+					]
+				: [];
+		});
+	}
+
+	it("writes the drafting milestone last before generating and the finishing milestone first after it", async () => {
+		await documentGenerationChildWorkflow(INPUT);
+
+		const generatedAt =
+			h.activities.generateDocumentWithAgent.mock.invocationCallOrder[0];
+		expect(generatedAt).toBeDefined();
+		const writes = runProgressWrites();
+		const lastBefore = writes
+			.filter((write) => write.order < (generatedAt ?? 0))
+			.at(-1);
+		const firstAfter = writes.find(
+			(write) => write.order > (generatedAt ?? 0),
+		);
+		expect(lastBefore?.progress).toBe(PROPOSAL_DRAFTING_PROGRESS);
+		expect(firstAfter?.progress).toBe(PROPOSAL_FINISHING_PROGRESS);
+	});
+
+	it("never writes the preview-stopped value, which only the generation activity writes", async () => {
+		await documentGenerationChildWorkflow(INPUT);
+
+		const progressValues = runProgressWrites().map(
+			(write) => write.progress,
+		);
+		expect(progressValues).toContain(PROPOSAL_DRAFTING_PROGRESS);
+		expect(progressValues).not.toContain(PROPOSAL_PREVIEW_STOPPED_PROGRESS);
 	});
 });
 

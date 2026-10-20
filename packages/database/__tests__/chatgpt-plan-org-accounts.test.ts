@@ -130,6 +130,24 @@ describe("upsertChatGptPlanOrgAccount", () => {
 		expect(mocks.accountUpdateMany).not.toHaveBeenCalled();
 	});
 
+	it("tells the CLI what to do next without naming the other organization", async () => {
+		mocks.accountFindFirst.mockResolvedValue({
+			id: "acc_9",
+			organizationId: "org_b",
+		});
+
+		const error: unknown = await upsertChatGptPlanOrgAccount(write).catch(
+			(caught: unknown) => caught,
+		);
+		if (!(error instanceof ChatGptPlanSubjectBoundElsewhereError)) {
+			throw new Error("expected the bound-elsewhere refusal");
+		}
+		expect(error.message).toMatch(
+			/already shared by another organization\. An admin there has to disconnect it in Settings → AI Providers first; then run this command again\./,
+		);
+		expect(error.message).not.toMatch(/org_b/);
+	});
+
 	it("maps a lost race on the unique subject to the same refusal", async () => {
 		mocks.accountFindFirst.mockResolvedValue(null);
 		mocks.accountCreate.mockRejectedValue(
@@ -276,6 +294,12 @@ describe("getChatGptPlanOrgPolicy", () => {
 			apiFallbackBackground: "NEVER",
 			termsAcknowledgedAt: null,
 		});
+	});
+
+	// Fizzy #3085 FR8: "Allow Fabric to use" is 100% until an admin limits it,
+	// matching the column's database default for new rows.
+	it("leaves nothing back from background work by default", () => {
+		expect(DEFAULT_CHATGPT_PLAN_ORG_POLICY.headroomPct).toBe(0);
 	});
 });
 

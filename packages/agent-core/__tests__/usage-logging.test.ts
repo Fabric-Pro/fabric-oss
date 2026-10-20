@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildAgentConfigurable } from "../src/services/agent-configurable";
 import {
+	__resetChatGptPlanExchanges,
+	rememberChatGptPlanExchange,
+} from "../src/services/chatgpt-plan-reexchange";
+import { recordServedModel } from "../src/services/served-model";
+import {
+	agentUsageConfigFromInput,
 	extractUsageFromLangChainResponse,
 	logAgentUsageFromRunnableConfig,
 } from "../src/services/usage-logging";
@@ -319,4 +326,310 @@ describe("logAgentUsageFromRunnableConfig — plan source", () => {
 			planSource: "org:acc-1",
 		});
 	});
+});
+
+describe("delegated conversation attribution", () => {
+	afterEach(() => vi.unstubAllGlobals());
+	it.each(["conversation-example", undefined])(
+		"uses only usage_conversation_id (%s)",
+		async (conversationId) => {
+			const send = vi.fn(
+				async (_url: string, _init: RequestInit) => new Response("{}"),
+			);
+			vi.stubGlobal("fetch", send);
+			await logAgentUsageFromRunnableConfig(
+				{
+					configurable: {
+						ai_token: "token-example",
+						ai_provider: "CUSTOM",
+						ai_model: "model-example",
+						usage_conversation_id: conversationId,
+						thread_id: "thread-example",
+						executionId: "execution-example",
+					},
+				},
+				{ usage_metadata: { input_tokens: 1, output_tokens: 2 } },
+				{ taskType: "CHAT" },
+			);
+			const body = JSON.parse(send.mock.calls[0][1].body as string);
+			expect(body.conversationId).toBe(conversationId);
+		},
+	);
+});
+
+it("writes the complete delegated origin without changing the graph retrieval project", async () => {
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) => new Response("{}"),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		const configurable = buildAgentConfigurable({
+			ai_token: "token-example",
+			ai_provider: "CUSTOM",
+			ai_model: "model-example",
+			project_id: "retrieval-project",
+			usage_project_id: "origin-project",
+			usage_conversation_id: "origin-conversation",
+			usage_frame_id: "origin-frame",
+			usage_feature_key: "chat-agent",
+			thread_id: "execution-only",
+		});
+		await logAgentUsageFromRunnableConfig(
+			{ configurable },
+			{ usage_metadata: { input_tokens: 1, output_tokens: 2 } },
+			{
+				model: undefined,
+				taskType: "CHAT",
+				projectId: "retrieval-project",
+			},
+		);
+		expect(JSON.parse(String(send.mock.calls[0][1].body))).toMatchObject({
+			projectId: "origin-project",
+			conversationId: "origin-conversation",
+			frameId: "origin-frame",
+			featureKey: "chat-agent",
+		});
+		expect(configurable.fabric_usage).toMatchObject({
+			project_id: "retrieval-project",
+		});
+		expect(configurable).not.toHaveProperty("ai_token");
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it("does not infer frame or feature origin from a thread, context or execution", async () => {
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) => new Response("{}"),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: agentUsageConfigFromInput({
+					ai_token: "token-example",
+					ai_provider: "CUSTOM",
+					ai_model: "model-example",
+					thread_id: "thread-only",
+					contextId: "context-only",
+					frameId: "unverified-frame",
+				}),
+			},
+			{ usage_metadata: { input_tokens: 1 } },
+			{ model: undefined, taskType: "CHAT" },
+		);
+		const body = JSON.parse(String(send.mock.calls[0][1].body));
+		expect(body).not.toHaveProperty("frameId");
+		expect(body).not.toHaveProperty("featureKey");
+		expect(body).not.toHaveProperty("conversationId");
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it("carries A2A usage configuration into the logger without thread or execution fallbacks", async () => {
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) => new Response("{}"),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		const configurable = agentUsageConfigFromInput({
+			ai_token: "token-example",
+			ai_provider: "CUSTOM",
+			ai_model: "model-example",
+			usage_conversation_id: "conversation-example",
+			contextId: "a2a-example",
+			thread_id: "thread-example",
+		});
+		await logAgentUsageFromRunnableConfig(
+			{ configurable },
+			{ usage_metadata: { input_tokens: 1 } },
+			{ taskType: "CHAT" },
+		);
+		expect(
+			JSON.parse(send.mock.calls[0][1].body as string).conversationId,
+		).toBe("conversation-example");
+		expect(configurable).not.toHaveProperty("thread_id");
+		expect(configurable).not.toHaveProperty("contextId");
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it("keeps copied credentials out of graph consumers while preserving usage auth and plan source", async () => {
+	const copied = agentUsageConfigFromInput({
+		ai_token: "usage-token-example",
+		ai_provider: "OPENAI_CHATGPT_PLAN",
+		ai_model: "usage-model-example",
+		ai_plan_source: "org:account-example",
+		usage_conversation_id: "conversation-example",
+	});
+	expect(copied).not.toHaveProperty("ai_token");
+	expect(copied).not.toHaveProperty("ai_model");
+	expect(copied).not.toHaveProperty("ai_provider");
+	expect(copied).not.toHaveProperty("tenant_user_id");
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) => new Response("{}"),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		await logAgentUsageFromRunnableConfig(
+			{ configurable: copied },
+			{ usage_metadata: { input_tokens: 1 } },
+			{ taskType: "CHAT" },
+		);
+		expect(
+			(send.mock.calls[0][1].headers as Record<string, string>)[
+				"X-AI-Token"
+			],
+		).toBe("usage-token-example");
+		expect(JSON.parse(send.mock.calls[0][1].body as string)).toMatchObject({
+			planSource: "org:account-example",
+			conversationId: "conversation-example",
+		});
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+it("prefers updated serving-model fields over initial A2A usage metadata", async () => {
+	const copied = agentUsageConfigFromInput({
+		ai_token: "old-token-example",
+		ai_provider: "CUSTOM",
+		ai_model: "old-model-example",
+	});
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) => new Response("{}"),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					...copied,
+					ai_token: "current-token-example",
+					ai_provider: "CUSTOM",
+					ai_model: "current-model-example",
+				},
+			},
+			{ usage_metadata: { input_tokens: 1 } },
+			{ taskType: "CHAT" },
+		);
+		expect(JSON.parse(send.mock.calls[0][1].body as string).model).toBe(
+			"current-model-example",
+		);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it("does not enable model resolution through the usage-only record", async () => {
+	const { extractProviderConfig, getAgentModelAsync } = await import(
+		"../src/services/langchain-models"
+	);
+	const configurable = agentUsageConfigFromInput({
+		ai_token: "token-example",
+		ai_model: "model-example",
+		ai_provider: "CUSTOM",
+		tenant_user_id: "user-example",
+		ai_api_key: "key-example",
+	});
+	const send = vi.fn();
+	vi.stubGlobal("fetch", send);
+	try {
+		expect(extractProviderConfig({ configurable })).toBeUndefined();
+		await expect(getAgentModelAsync({ configurable })).rejects.toThrow(
+			"No AI provider configured",
+		);
+		expect(send).not.toHaveBeenCalled();
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+describe("served model attribution", () => {
+	afterEach(() => vi.unstubAllGlobals());
+	it.each(["recorded", "no instance", "unrecorded", "undefined provider"])(
+		"uses the served identity with fallback: %s",
+		async (scenario) => {
+			const model = scenario === "no instance" ? undefined : {};
+			if (model && scenario !== "unrecorded") {
+				recordServedModel(model, {
+					model: "served-model",
+					provider:
+						scenario === "undefined provider"
+							? undefined
+							: "ANTHROPIC_DIRECT",
+				});
+			}
+			const send = vi.fn(
+				async (_url: string, _init: RequestInit) =>
+					new Response(null, { status: 204 }),
+			);
+			vi.stubGlobal("fetch", send);
+			await logAgentUsageFromRunnableConfig(
+				{
+					configurable: {
+						ai_token: "example-token",
+						ai_provider: "GROQ",
+						ai_model: "exchanged-model",
+					},
+				},
+				{ usage_metadata: { input_tokens: 10, output_tokens: 2 } },
+				{ taskType: "COMPLEX", model },
+			);
+			expect(send).toHaveBeenCalledTimes(1);
+			expect(
+				JSON.parse(send.mock.calls[0][1].body as string),
+			).toMatchObject({
+				provider: scenario === "recorded" ? "ANTHROPIC_DIRECT" : "GROQ",
+				model:
+					scenario === "recorded" || scenario === "undefined provider"
+						? "served-model"
+						: "exchanged-model",
+			});
+		},
+	);
+});
+
+it("resolves planSource using the effective recorded provider", async () => {
+	const model = {};
+	recordServedModel(model, {
+		provider: "OPENAI_CHATGPT_PLAN",
+		model: "served-plan-model",
+	});
+	rememberChatGptPlanExchange({
+		accessToken: "example-access-token",
+		aiToken: "example-token",
+		fabricBaseUrl: "https://fabric.example.com",
+		planSource: "org:example-serving-account",
+		expiresInSeconds: 60,
+	});
+	const send = vi.fn(
+		async (_url: string, _init: RequestInit) =>
+			new Response(null, { status: 204 }),
+	);
+	vi.stubGlobal("fetch", send);
+	try {
+		await logAgentUsageFromRunnableConfig(
+			{
+				configurable: {
+					ai_token: "example-token",
+					ai_api_key: "example-access-token",
+					ai_provider: "GROQ",
+					ai_model: "exchanged-model",
+					ai_plan_source: "org:example-initial-account",
+				},
+			},
+			{ usage_metadata: { input_tokens: 10 } },
+			{ taskType: "COMPLEX", model },
+		);
+		expect(JSON.parse(send.mock.calls[0][1].body as string)).toMatchObject({
+			provider: "OPENAI_CHATGPT_PLAN",
+			model: "served-plan-model",
+			planSource: "org:example-serving-account",
+		});
+	} finally {
+		vi.unstubAllGlobals();
+		__resetChatGptPlanExchanges();
+	}
 });

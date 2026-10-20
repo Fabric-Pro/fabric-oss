@@ -45,12 +45,22 @@ interface ActingGrantPayload {
 	userId: string;
 	organizationId: string;
 	conversationId: string | null;
+	/**
+	 * Gateway scopes beyond the base set the runtime always holds, and the one
+	 * project they are limited to. Both or neither: a grant minted for a chat
+	 * carries neither and keeps the base set, and the gateway ignores scopes
+	 * that name no project.
+	 */
+	scopes?: string[];
+	projectId?: string;
 }
 
 export function mintActingGrant(subject: {
 	userId: string;
 	organizationId: string;
 	conversationId?: string | null;
+	scopes?: readonly string[];
+	projectId?: string;
 }): string {
 	return signToken<ActingGrantPayload>(
 		{
@@ -58,9 +68,76 @@ export function mintActingGrant(subject: {
 			userId: subject.userId,
 			organizationId: subject.organizationId,
 			conversationId: subject.conversationId ?? null,
+			...(subject.scopes && subject.projectId
+				? { scopes: [...subject.scopes], projectId: subject.projectId }
+				: {}),
 		},
 		{ ttlSec: ACTING_GRANT_TTL_SECONDS },
 	);
+}
+
+/**
+ * What a Parlume meeting turn is granted beyond the base set: the project,
+ * document, feature, instruction and workspace-read scopes of the Fabric portal
+ * tools. The gateway keeps only what its own ceiling
+ * (`SERVICE_GRANT_MAX_SCOPES`) allows, and only for the project named.
+ */
+export const PARLUME_GRANT_SCOPES: readonly string[] = [
+	"orgs:read",
+	"projects:read",
+	"projects:write",
+	"features:read",
+	"features:write",
+	"instructions:read",
+	"instructions:write",
+	"workspaces:read",
+	"chats:read",
+	"mcp:read",
+	"workflows:read",
+	"workflows:write",
+	"workflows:run",
+	"frames:read",
+	"frames:write",
+];
+
+/**
+ * A read-only meeting's grant: the portal scopes without their writes, so a
+ * leaked grant from such a meeting cannot change the project either. The
+ * workflow and frame writes stay, because the gateway's base set holds them
+ * for every service session anyway.
+ */
+export const PARLUME_READ_ONLY_GRANT_SCOPES: readonly string[] =
+	PARLUME_GRANT_SCOPES.filter((scope) => !scope.endsWith(":write"));
+
+/**
+ * The grant for one Parlume meeting turn: the inviter, the organization and the
+ * meeting's project, with the portal scopes (reads only for a read-only
+ * meeting). Minted for each turn, like the chat grant, so a meeting longer than
+ * the grant's hour keeps working, and undefined when there is no secret to
+ * sign with.
+ */
+export function mintParlumeActingGrantForTurn(subject: {
+	userId: string;
+	organizationId: string;
+	projectId: string;
+	readOnly: boolean;
+}): string | undefined {
+	try {
+		return mintActingGrant({
+			userId: subject.userId,
+			organizationId: subject.organizationId,
+			scopes: subject.readOnly
+				? PARLUME_READ_ONLY_GRANT_SCOPES
+				: PARLUME_GRANT_SCOPES,
+			projectId: subject.projectId,
+		});
+	} catch (error) {
+		console.error(
+			"[Agent] Could not mint an acting grant; this meeting turn has no Fabric tools",
+			error instanceof Error ? error.message : error,
+		);
+		return undefined;
+	}
 }
 
 /**
@@ -95,7 +172,7 @@ export function mintActingGrantForTurn(subject: {
 export type ActingGrantFailure = "missing" | "invalid" | "expired" | "mismatch";
 
 export type ActingGrantCheck =
-	| { ok: true }
+	| { ok: true; scopes?: string[]; projectId?: string }
 	| { ok: false; reason: ActingGrantFailure };
 
 function isActingGrantPayload(value: unknown): value is ActingGrantPayload {
@@ -108,7 +185,22 @@ function isActingGrantPayload(value: unknown): value is ActingGrantPayload {
 		typeof payload.userId === "string" &&
 		typeof payload.organizationId === "string" &&
 		(payload.conversationId === null ||
-			typeof payload.conversationId === "string")
+			typeof payload.conversationId === "string") &&
+		hasValidProjectScopes(payload)
+	);
+}
+
+/** Scopes and a project come together, as strings, or not at all. */
+function hasValidProjectScopes(payload: Record<string, unknown>): boolean {
+	const { scopes, projectId } = payload;
+	if (scopes === undefined && projectId === undefined) {
+		return true;
+	}
+	return (
+		Array.isArray(scopes) &&
+		scopes.every((scope) => typeof scope === "string") &&
+		typeof projectId === "string" &&
+		projectId.length > 0
 	);
 }
 
@@ -157,5 +249,6 @@ export function checkActingGrant(
 	) {
 		return { ok: false, reason: "mismatch" };
 	}
-	return { ok: true };
+	const { scopes, projectId } = verified.payload;
+	return scopes && projectId ? { ok: true, scopes, projectId } : { ok: true };
 }

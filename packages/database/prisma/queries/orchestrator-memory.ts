@@ -778,158 +778,97 @@ export async function buildOrchestratorMemoryContext(params: {
 }
 
 /**
- * Format memory context as a system prompt addition
+ * The facts the `orchestrator_memory_context` prompt is rendered against.
+ *
+ * Only data: the lines that go in each section and whether a section has any.
+ * The wording around them — the headings, and the rule that a recalled
+ * conversation is history to check with a tool before reporting it as current —
+ * is the prompt's (`ORCHESTRATOR_MEMORY_FALLBACK_BODY` in `@repo/utils`).
  */
-export function formatMemoryContextPrompt(context: {
+export type MemoryContextPromptVariables = {
+	has_memory: boolean;
+	has_preferences: boolean;
+	preferences: string;
+	has_learned_patterns: boolean;
+	learned_patterns: string;
+	has_recalled_conversations: boolean;
+	has_recent_conversations: boolean;
+	recent_conversations: string;
+	has_project_discussions: boolean;
+	project_discussions: string;
+	has_workspace_discussions: boolean;
+	workspace_discussions: string;
+	has_relevant_conversations: boolean;
+	relevant_conversations: string;
+};
+
+export function buildMemoryContextPromptVariables(context: {
 	preferences: OrchestratorMemoryPreferencesData;
 	recentEpisodes: EpisodeSummary[];
 	projectEpisodes: EpisodeSummary[];
 	workspaceEpisodes: EpisodeSummary[];
 	relevantEpisodes: EpisodeSummary[];
-}): string {
-	const sections: string[] = [];
+}): MemoryContextPromptVariables {
+	const { responseStyle, verbosity, codeLanguage, timezone } =
+		context.preferences;
+	const preferenceLines = [
+		responseStyle && `- Response style: ${responseStyle}`,
+		verbosity && `- Verbosity: ${verbosity}`,
+		codeLanguage && `- Preferred code language: ${codeLanguage}`,
+		timezone && `- Timezone: ${timezone}`,
+	].filter((line): line is string => Boolean(line));
 
-	// User preferences section
-	if (
-		context.preferences.responseStyle ||
-		context.preferences.verbosity ||
-		context.preferences.codeLanguage ||
-		Object.keys(context.preferences.preferences).length > 0
-	) {
-		const prefLines: string[] = ["## User Preferences"];
-		if (context.preferences.responseStyle) {
-			prefLines.push(
-				`- Response style: ${context.preferences.responseStyle}`,
-			);
-		}
-		if (context.preferences.verbosity) {
-			prefLines.push(`- Verbosity: ${context.preferences.verbosity}`);
-		}
-		if (context.preferences.codeLanguage) {
-			prefLines.push(
-				`- Preferred code language: ${context.preferences.codeLanguage}`,
-			);
-		}
-		if (context.preferences.timezone) {
-			prefLines.push(`- Timezone: ${context.preferences.timezone}`);
-		}
+	const learnedPatterns = context.preferences.preferences.learnedPatterns;
+	const patternLines = (Array.isArray(learnedPatterns) ? learnedPatterns : [])
+		.filter((pattern): pattern is string => typeof pattern === "string")
+		.slice(-10)
+		.map((pattern) => `- ${pattern}`);
 
-		sections.push(prefLines.join("\n"));
-	}
+	const relevantLines = context.relevantEpisodes.map((episode) =>
+		episode.keyTopics.length > 0
+			? `${episodeLine(episode)}\n  Topics: ${episode.keyTopics.join(", ")}`
+			: episodeLine(episode),
+	);
 
-	// Learned patterns section - separate and prominent
-	const learnedPatterns = context.preferences.preferences
-		.learnedPatterns as string[];
-	if (learnedPatterns && learnedPatterns.length > 0) {
-		const patternLines: string[] = [
-			"## MANDATORY User Learned Patterns",
-			"**These are explicit user preferences that MUST be followed:**",
-		];
-		for (const pattern of learnedPatterns.slice(-10)) {
-			patternLines.push(`- ${pattern}`);
-		}
-		patternLines.push("");
-		patternLines.push(
-			"Apply these patterns to your response format and behavior.",
-		);
-		sections.push(patternLines.join("\n"));
-	}
+	const hasRecalledConversations =
+		context.recentEpisodes.length > 0 ||
+		context.projectEpisodes.length > 0 ||
+		context.workspaceEpisodes.length > 0 ||
+		context.relevantEpisodes.length > 0;
 
-	// Recent conversations section
-	if (context.recentEpisodes.length > 0) {
-		const recentLines: string[] = ["## Recent Conversations"];
-		for (const episode of context.recentEpisodes) {
-			const date = episode.conversationEndedAt
-				? new Date(episode.conversationEndedAt).toLocaleDateString()
-				: "ongoing";
-			recentLines.push(
-				`- [${date}] ${episode.title}: ${episode.summary}`,
-			);
-		}
-		sections.push(recentLines.join("\n"));
-	}
-
-	// Project context section
-	if (context.projectEpisodes.length > 0) {
-		const projectLines: string[] = ["## Related Project Discussions"];
-		for (const episode of context.projectEpisodes) {
-			projectLines.push(`- ${episode.title}: ${episode.summary}`);
-		}
-		sections.push(projectLines.join("\n"));
-	}
-
-	// Workspace context section
-	if (context.workspaceEpisodes.length > 0) {
-		const workspaceLines: string[] = ["## Related Workspace Discussions"];
-		for (const episode of context.workspaceEpisodes) {
-			workspaceLines.push(`- ${episode.title}: ${episode.summary}`);
-		}
-		sections.push(workspaceLines.join("\n"));
-	}
-
-	// Semantically relevant episodes
-	if (context.relevantEpisodes.length > 0) {
-		const relevantLines: string[] = ["## Relevant Past Conversations"];
-		relevantLines.push(
-			"(These may be relevant to the current request based on semantic similarity)",
-		);
-		for (const episode of context.relevantEpisodes) {
-			relevantLines.push(`- ${episode.title}: ${episode.summary}`);
-			if (episode.keyTopics.length > 0) {
-				relevantLines.push(`  Topics: ${episode.keyTopics.join(", ")}`);
-			}
-		}
-		sections.push(relevantLines.join("\n"));
-	}
-
-	if (sections.length === 0) {
-		return getLibrarianAndPushbackPrompt();
-	}
-
-	return `
-# Orchestrator Memory Context
-
-${sections.join("\n\n")}
-
-${getLibrarianAndPushbackPrompt()}
-`;
+	return {
+		has_memory:
+			preferenceLines.length > 0 ||
+			patternLines.length > 0 ||
+			hasRecalledConversations,
+		has_preferences: preferenceLines.length > 0,
+		preferences: preferenceLines.join("\n"),
+		has_learned_patterns: patternLines.length > 0,
+		learned_patterns: patternLines.join("\n"),
+		has_recalled_conversations: hasRecalledConversations,
+		has_recent_conversations: context.recentEpisodes.length > 0,
+		recent_conversations: context.recentEpisodes
+			.map(episodeLine)
+			.join("\n"),
+		has_project_discussions: context.projectEpisodes.length > 0,
+		project_discussions: context.projectEpisodes
+			.map(episodeLine)
+			.join("\n"),
+		has_workspace_discussions: context.workspaceEpisodes.length > 0,
+		workspace_discussions: context.workspaceEpisodes
+			.map(episodeLine)
+			.join("\n"),
+		has_relevant_conversations: relevantLines.length > 0,
+		relevant_conversations: relevantLines.join("\n"),
+	};
 }
 
-/**
- * Get the Librarian and Pushback capability prompts
- * These instruct the Orchestrator to proactively cross-reference sources
- * and challenge incomplete requirements
- */
-function getLibrarianAndPushbackPrompt(): string {
-	return `
----
-## Memory-Enhanced Capabilities
-
-### Librarian Capability
-You have access to the user's conversation history, workspace documents, and project context.
-When responding:
-- **Proactively cross-reference** related discussions from memory
-- If you find relevant past conversations, mention them: "By the way, we discussed something related to this on [date]..."
-- Connect dots between different sources: "In your workspace documents, I found X which relates to what you're asking about Y"
-- If team members discussed implementation details that affect the current task, surface them: "I noticed the team made a decision about X that may affect this..."
-- When you find conflicting information across sources, highlight it
-
-### Pushback Capability  
-You should challenge incomplete or ambiguous requirements:
-- If critical details are missing, ask clarifying questions BEFORE proceeding
-- Reference past patterns: "In previous projects, you typically wanted X. Should I include that here?"
-- If the request conflicts with past decisions, point it out: "This seems to conflict with the decision made in [past conversation]. Should I proceed anyway?"
-- Validate completeness: "Before I create this, let me confirm: [list key assumptions]. Is this correct?"
-
-### Learning Capability
-When the user expresses a preference or correction:
-- Acknowledge it: "Got it, I'll remember that you prefer X"
-- Apply it immediately in the current response
-- The system will save this preference for future conversations
-
-Use this context to provide personalized, context-aware assistance that demonstrates
-understanding of the user's history, preferences, and ongoing work.
-`;
+/** "- [2026-10-16] title: summary", dated by when the conversation ended. */
+function episodeLine(episode: EpisodeSummary): string {
+	const date = episode.conversationEndedAt
+		? new Date(episode.conversationEndedAt).toISOString().slice(0, 10)
+		: "ongoing";
+	return `- [${date}] ${episode.title}: ${episode.summary}`;
 }
 
 // =============================================================================

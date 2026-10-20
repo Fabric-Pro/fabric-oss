@@ -18,6 +18,7 @@
 		"@ai-sdk/mcp": "^2.0.69",
 		"@modelcontextprotocol/sdk": "^1.32.1",
 		"@repo/ai": "workspace:*",
+		"@repo/connectors": "workspace:*",
 		"@repo/database": "workspace:*",
 		"@repo/integrations": "workspace:*",
 		"@repo/utils": "workspace:*",

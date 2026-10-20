@@ -3,6 +3,7 @@ import { heartbeat } from "@temporalio/activity";
 import { generateText } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import {
 	activityAbortSignal,
 	guardTurnModel,
@@ -36,6 +37,8 @@ export interface CompactConversationInput {
 	 * the usage-log row for cost attribution only.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	/**
 	 * The chat turn this compaction belongs to; when set, the turn record is
 	 * consulted before the model request (see turn-dispatch.ts).
@@ -136,9 +139,7 @@ export async function compactConversationHistoryActivity(
 			userId,
 			organizationId,
 			featureKey: "chat-agent",
-			...(input.conversationId
-				? { conversationId: input.conversationId }
-				: {}),
+			...usageOriginFields(input),
 		},
 	);
 

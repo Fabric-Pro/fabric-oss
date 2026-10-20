@@ -1,5 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GitLabApiError, gitlabRequest } from "../rest-client";
+import {
+	GitLabApiError,
+	gitlabApiBaseForOrigin,
+	gitlabRequest,
+} from "../rest-client";
+
+describe("gitlabApiBaseForOrigin", () => {
+	it.each([
+		["https://gitlab.example.com", "https://gitlab.example.com/api/v4"],
+		[
+			"https://gitlab.example.com:8443///",
+			"https://gitlab.example.com:8443/api/v4",
+		],
+		[
+			"https://gitlab.example.com/a//b?x=/#y",
+			"https://gitlab.example.com/a//b?x=/#y/api/v4",
+		],
+		["", "/api/v4"],
+		["///", "/api/v4"],
+	])("removes only trailing slashes from %j", (origin, expected) => {
+		expect(gitlabApiBaseForOrigin(origin)).toBe(expected);
+	});
+
+	it("handles long slash runs with and without a nonmatching suffix", () => {
+		const origin = "https://gitlab.example.com";
+		expect(gitlabApiBaseForOrigin(`${origin}${"/".repeat(8_192)}`)).toBe(
+			`${origin}/api/v4`,
+		);
+		const withSuffix = `${origin}${"/".repeat(8_192)}tail`;
+		expect(gitlabApiBaseForOrigin(withSuffix)).toBe(`${withSuffix}/api/v4`);
+	});
+});
 
 describe("gitlabRequest", () => {
 	const originalFetch = global.fetch;

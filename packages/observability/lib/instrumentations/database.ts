@@ -26,9 +26,7 @@ import {
 
 // Semantic conventions for database operations
 const DB_SYSTEM = "db.system";
-const _DB_NAME = "db.name";
 const DB_OPERATION = "db.operation";
-const _DB_STATEMENT = "db.statement";
 
 // Get tracer and meter
 const tracer = trace.getTracer("fabric-database");

@@ -20,6 +20,7 @@ import {
 	getEmbeddingProviderConfig,
 	getModelForTask,
 	getOrganizationSystemAiProviderApiKey,
+	getPlanSpentPersonalProviderConfig,
 	getProviderModelIdForCanonical,
 	getSystemAiProviderApiKey,
 	getTaskDefaultModel,
@@ -623,6 +624,13 @@ export async function resolveModelWithProvider(
 	options?: {
 		complexity?: DynamicTaskComplexity;
 		requiresToolCalling?: boolean;
+		/**
+		 * The provider to run on instead of the tenant's default: only the
+		 * member's own key, while their ChatGPT plans are spent (Fizzy #3085).
+		 * A model that needs another provider then resolves no credential at
+		 * all, never another key of the organization's.
+		 */
+		providerConfig?: Awaited<ReturnType<typeof getAiProviderApiKey>>;
 	},
 ): Promise<ResolvedModelConfig> {
 	const dbTaskType = mapTaskTypeToDb(taskType as string);
@@ -675,10 +683,12 @@ export async function resolveModelWithProvider(
 		// this is the user-facing generation path, and it must resolve on a
 		// provider the tenant configured or not at all — the platform gateway
 		// key is structurally out of reach here (Fizzy #1875).
-		providerConfig = await getAiProviderApiKey({
-			userId: context.userId,
-			organizationId: context.organizationId || undefined,
-		});
+		providerConfig =
+			options?.providerConfig ??
+			(await getAiProviderApiKey({
+				userId: context.userId,
+				organizationId: context.organizationId || undefined,
+			}));
 	}
 
 	// Step 2: Determine the preferred provider
@@ -797,7 +807,17 @@ export async function resolveModelWithProvider(
 	// Track base URL for providers that need it (e.g., Azure AI Foundry)
 	let finalBaseUrl = providerConfig.baseUrl ?? null;
 
-	if (needsFallbackKey) {
+	if (needsFallbackKey && options?.providerConfig) {
+		// The member's own key was chosen to run this call: a model it cannot
+		// serve resolves nothing, rather than a key of the organization's that
+		// its policy said not to bill.
+		finalApiKey = null;
+		finalClientId = null;
+		finalEncryptedClientSecret = null;
+		finalConfigId = null;
+		finalConfigSource = null;
+		finalBaseUrl = null;
+	} else if (needsFallbackKey) {
 		// Model selection requires a different provider than user's default
 		// Try to get the API key for the actual provider needed
 		console.log(
@@ -1013,6 +1033,7 @@ import { resolveChatGptPlanModel } from "./chatgpt-plan/models";
 import { ChatGptPlanAuthError } from "./chatgpt-plan/oauth";
 import {
 	bulkRunsNeedSharedPlanMessage,
+	type ChatGptPlanPersonalKeyPick,
 	chatGptPlanSourceForCall,
 	sharedPlansSkipMembersMessage,
 } from "./chatgpt-plan/pool";
@@ -1074,6 +1095,11 @@ export interface AIOperationContext {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	/** Authorized Workspace/page and persisted workflow run, when known. */
+	frameId?: string;
+	workflowExecutionId?: string;
+	/** Registered agent identity supplied by its server-side executor. */
+	agentId?: string;
 	/**
 	 * Embedding only: resolve from the organization's configuration, never
 	 * the user's personal provider (`ModelResolutionContext.organizationOnly`).
@@ -1105,7 +1131,7 @@ export interface AIOperationContext {
 	apiFallbackApproved?: boolean;
 	/**
 	 * Groups the rows of one conversation or meeting (an AgentConversation id,
-	 * a Parlume session id). Recorded verbatim on `AiUsageLog.conversationId`.
+	 * a Parlume session id, or a chats-table chat id). Recorded verbatim on `AiUsageLog.conversationId`.
 	 */
 	conversationId?: string;
 	/**
@@ -1212,6 +1238,18 @@ export interface AIModelMetadata {
 	 * the agent exchange hands out that plan's token and its opaque key.
 	 */
 	planSource?: PlanSourceRef;
+	/**
+	 * The catalog model a chat's plan pick named, set only when the plan
+	 * serves that pick (Fizzy #3122). `canonicalName` is then the plan's own
+	 * model ID, which a model added from the plan's list does not share.
+	 */
+	planPick?: string;
+	/**
+	 * Set when the call runs on the member's own personal key because every
+	 * ChatGPT plan serving it is spent (Fizzy #3085): that key's provider and
+	 * when the plans reset. Never the key itself.
+	 */
+	planSpentPersonalKey?: { provider: string; resetAt: Date | null };
 }
 
 /**
@@ -1452,6 +1490,10 @@ export async function getAIDecisionModelWithMetadata(
 						userId: context.userId,
 						organizationId,
 						projectId: context.projectId,
+						conversationId: context.conversationId,
+						frameId: context.frameId,
+						workflowExecutionId: context.workflowExecutionId,
+						agentId: context.agentId,
 						provider: metadata.provider,
 						providerModelId: metadata.modelString,
 						modelCanonicalName: metadata.canonicalName ?? undefined,
@@ -1657,6 +1699,8 @@ export async function getAIModelWithMetadata(
 	// organization shares. Embeddings also stay on the organization's provider
 	// because vectors from different models would not be comparable.
 	const routingContext = planRoutingContext(context);
+	// Every plan is spent and the member's own key stands in (Fizzy #3085).
+	let personalKey: ChatGptPlanPersonalKeyPick | null = null;
 	if (
 		!NON_TEXT_TASK_TYPES.has(String(taskType).toUpperCase()) &&
 		context.excludeChatGptPlan !== true
@@ -1664,13 +1708,14 @@ export async function getAIModelWithMetadata(
 		const plan = await chatGptPlanSourceForCall(routingContext, {
 			exclude: context.excludePlanSources,
 		});
-		if (plan) {
+		if (plan && "source" in plan) {
 			return getChatGptPlanModelWithMetadata(
 				options,
 				routingContext,
 				plan.source,
 			);
 		}
+		personalKey = plan;
 	}
 
 	// No credit/payment pre-check: whether this tenant may use AI is decided
@@ -1681,7 +1726,11 @@ export async function getAIModelWithMetadata(
 	const config = await resolveModelWithProvider(
 		taskType,
 		{ userId: context.userId, organizationId: context.organizationId },
-		{ complexity, requiresToolCalling },
+		{
+			complexity,
+			requiresToolCalling,
+			...(personalKey && { providerConfig: personalKey.personalKey }),
+		},
 	);
 
 	// Step 2: Validate configuration. A Databricks service-principal config has
@@ -1805,6 +1854,12 @@ export async function getAIModelWithMetadata(
 		// Always null: the Stripe-metered mode is unreachable now that the
 		// allowance and the saved-card path are gone.
 		billingCustomerId: null,
+		...(personalKey && {
+			planSpentPersonalKey: {
+				provider: config.provider,
+				resetAt: personalKey.resetAt,
+			},
+		}),
 	};
 
 	// Step 7: Create trackUsage helper
@@ -1839,6 +1894,9 @@ export async function getAIModelWithMetadata(
 		promptVersionId: context.promptVersionId,
 		jobType: context.jobType,
 		conversationId: context.conversationId,
+		frameId: context.frameId,
+		workflowExecutionId: context.workflowExecutionId,
+		agentId: context.agentId,
 	};
 	// Dispatch guard (outermost, so a refused request never reaches the usage
 	// logger): every model this resolves, in both usage modes, checks the
@@ -1904,6 +1962,7 @@ async function getChatGptPlanModelWithMetadata(
 		model: modelId,
 		reasoningEffort,
 		fallbackModel,
+		pick,
 	} = await resolveChatGptPlanModel({
 		userId: context.userId,
 		organizationId: context.organizationId,
@@ -1932,6 +1991,7 @@ async function getChatGptPlanModelWithMetadata(
 		billingMode: "external_provider",
 		billingCustomerId: null,
 		planSource: source,
+		...(pick && { planPick: pick }),
 	};
 	const trackUsage = () => {
 		const touched =
@@ -1960,6 +2020,9 @@ async function getChatGptPlanModelWithMetadata(
 		promptVersionId: context.promptVersionId,
 		jobType: context.jobType,
 		conversationId: context.conversationId,
+		frameId: context.frameId,
+		workflowExecutionId: context.workflowExecutionId,
+		agentId: context.agentId,
 		costUsd: 0,
 	};
 	type PlanUsageContext = typeof usageLoggingContext;
@@ -2019,15 +2082,17 @@ async function getChatGptPlanModelWithMetadata(
 			middleware: createChatGptPlanRotationMiddleware({
 				source,
 				build: (next) => build(next, served, requestedOutputTokens),
-				repick: async (exclude) =>
-					(
-						await chatGptPlanSourceForCall(context, {
-							exclude: [
-								...(context.excludePlanSources ?? []),
-								...exclude,
-							],
-						})
-					)?.source ?? null,
+				repick: async (exclude) => {
+					const next = await chatGptPlanSourceForCall(context, {
+						exclude: [
+							...(context.excludePlanSources ?? []),
+							...exclude,
+						],
+					});
+					// A personal key cannot take over a request already sent
+					// on a plan; the next call resolves it (Fizzy #3085).
+					return next && "source" in next ? next.source : null;
+				},
 				// The account's own token limits apply to the call it takes over.
 				beforeRotate: (next) =>
 					assertWithinAiUsageLimits({
@@ -2239,6 +2304,10 @@ export async function getAIEmbeddingModelWithMetadata(
 				userId: context.userId,
 				organizationId: context.organizationId,
 				projectId: context.projectId,
+				conversationId: context.conversationId,
+				frameId: context.frameId,
+				workflowExecutionId: context.workflowExecutionId,
+				agentId: context.agentId,
 				provider: metadata.provider,
 				providerModelId: metadata.modelString,
 				modelCanonicalName: metadata.canonicalName ?? undefined,
@@ -2356,6 +2425,37 @@ export async function getRAGProviderConfig(
 			organizationId: context.organizationId || undefined,
 		}),
 	);
+}
+
+/**
+ * {@link getRAGProviderConfig} for the model {@link getAIModelWithMetadata}
+ * just resolved: the raw key behind THAT model. For a caller that hands the
+ * key to a client of its own (the AI key exchange, the agent config routes).
+ *
+ * The two only differ while the member's ChatGPT plans are spent and their
+ * own key serves the call (Fizzy #3085): re-resolving the tenant's default
+ * would pair that model with the organization's key, billing it under a
+ * policy that said stop. The pinned row is the caller's own, by `userId`.
+ */
+export async function getRAGProviderConfigForModel(
+	context: AIOperationContext,
+	metadata: Pick<AIModelMetadata, "configId" | "planSpentPersonalKey">,
+): Promise<RAGProviderConfig> {
+	if (!metadata.planSpentPersonalKey) {
+		return getRAGProviderConfig(context);
+	}
+	const personal = metadata.configId
+		? await getPlanSpentPersonalProviderConfig({
+				userId: context.userId,
+				configId: metadata.configId,
+			})
+		: null;
+	if (!personal) {
+		throw new AIProviderNotConfiguredError(
+			"Your personal key for when the ChatGPT plan is spent is no longer available. Check Settings → AI Providers → Personal.",
+		);
+	}
+	return toRAGProviderConfig(personal);
 }
 
 /**

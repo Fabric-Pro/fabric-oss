@@ -7,6 +7,7 @@ import {
 	type StorySource,
 	updateStory,
 } from "@repo/database";
+import { mcpRowOrigin } from "@repo/integrations/gitlab";
 import {
 	applyLabelStatusMapOnPull,
 	readLabelStatusMap,
@@ -21,12 +22,14 @@ import {
 import { createStoryMediaPullStore } from "@repo/integrations/pm/pull-image-store";
 import { logger } from "@repo/logs";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
+import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
 import {
 	COMMON_URL_FIELDS,
 	normalizeUrl,
 	parseWorkItemTypeMapping,
 	resolveKindFromPmType,
 } from "@repo/utils";
+import { buildExternalPmTarget } from "@repo/utils/pm-target";
 import { z } from "zod";
 import { getOrganizationIdFromContext } from "../../../../../orpc/middleware/tenant-context-middleware";
 import {
@@ -495,6 +498,38 @@ function isExternalIdUniqueViolation(error: unknown): boolean {
 	return haystack.includes("projectId") && haystack.includes("externalId");
 }
 
+function rethrowStoryPullLinkChanged(error: unknown): never {
+	if (error instanceof Error && error.name === "StoryLinkChangedError") {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"This story's PM link changed while it was syncing, so Fabric did not pull it. Sync again to use the current link.",
+		});
+	}
+	throw error;
+}
+
+async function assertStoryPullLink(
+	input: Omit<
+		Parameters<typeof import("@repo/temporal").checkStoryPmLink>[0],
+		"mcpServerId"
+	> & { mcpServerId: string | null },
+) {
+	if (!input.mcpServerId) {
+		throw new ORPCError("CONFLICT", {
+			message:
+				"Fabric could not confirm which PM tool this project syncs with. Select the PM tool in Project Settings → Project Management, then pull again.",
+		});
+	}
+	const { checkStoryPmLink } = await import("@repo/temporal");
+	const result = await checkStoryPmLink({
+		...input,
+		mcpServerId: input.mcpServerId,
+	});
+	if (!result.success) {
+		throw new ORPCError("CONFLICT", { message: result.error });
+	}
+}
+
 /**
  * Import a single GitLab issue for projects whose PM tool is the official
  * GitLab MCP server. Routes through `resolveGitLabSource` so REST-only
@@ -507,6 +542,7 @@ function isExternalIdUniqueViolation(error: unknown): boolean {
  * layered in later if needed.
  */
 async function handleGitLabImport(args: {
+	mcpServerId: string | null;
 	projectId: string;
 	gitlabProjectId: string;
 	organizationId: string | null;
@@ -562,10 +598,11 @@ async function handleGitLabImport(args: {
 			organizationId,
 		});
 	} catch (error) {
+		logger.warn("[Import-from-PM] GitLab fetch failed", { error });
 		throw new ORPCError("INTERNAL_SERVER_ERROR", {
 			message:
 				error instanceof Error
-					? error.message
+					? describeSyncErrorForUser(error)
 					: "Failed to fetch GitLab issue",
 		});
 	}
@@ -607,11 +644,37 @@ async function handleGitLabImport(args: {
 			? pullResult.conflictingLabels
 			: undefined;
 
+	const externalPmTarget = buildExternalPmTarget({
+		mcpServerId: args.mcpServerId,
+		pmTool: "gitlab",
+		containerId: gitlabProjectId,
+		additionalContext: args.pmAdditionalContext,
+	});
+
 	// Shared overwrite/update routine — used both for an explicit overwrite of
 	// a pre-existing story and to reconcile with the row that won a create race.
-	const updateExisting = (id: string) =>
-		updateStory(
-			id,
+	const updateExisting = async (story: NonNullable<typeof existingStory>) => {
+		await assertStoryPullLink({
+			storyId: story.id,
+			projectId,
+			organizationId: organizationId ?? undefined,
+			userId,
+			mcpConfigId: null,
+			mcpServerId: args.mcpServerId,
+			pmTarget: {
+				additionalContext: args.pmAdditionalContext,
+				containerId: gitlabProjectId,
+			},
+			pmTool: "gitlab",
+			toolLabel: "GitLab",
+			externalId,
+			externalUrl: story.externalUrl,
+			externalMcpServerId: story.externalMcpServerId,
+			externalPmTarget: story.externalPmTarget,
+			verb: "pull",
+		});
+		const updated = await updateStory(
+			story.id,
 			projectId,
 			{
 				title,
@@ -623,11 +686,29 @@ async function handleGitLabImport(args: {
 			{
 				lastEditedByName: userName,
 				lastEditedSource: "PM_PULL",
+				onlyIfPmLink: {
+					externalId,
+					externalMcpServerId: story.externalMcpServerId,
+					externalPmTarget: story.externalPmTarget,
+				},
 			},
-		);
+		).catch(rethrowStoryPullLinkChanged);
+		if (story.externalPmTarget == null && externalPmTarget != null) {
+			await db.userStory.updateMany({
+				where: {
+					id: story.id,
+					projectId,
+					externalId,
+					externalPmTarget: null,
+				},
+				data: { externalPmTarget },
+			});
+		}
+		return updated;
+	};
 
 	if (existingStory) {
-		const updatedStory = await updateExisting(existingStory.id);
+		const updatedStory = await updateExisting(existingStory);
 
 		return {
 			success: true,
@@ -647,6 +728,8 @@ async function handleGitLabImport(args: {
 			description: description ?? undefined,
 			createdById: userId,
 			source: "GITLAB",
+			externalMcpServerId: args.mcpServerId,
+			externalPmTarget,
 			externalId,
 			externalUrl: externalUrl ?? undefined,
 			labels: remainingLabels,
@@ -692,7 +775,7 @@ async function handleGitLabImport(args: {
 			throw error;
 		}
 
-		const updatedStory = await updateExisting(winner.id);
+		const updatedStory = await updateExisting(winner);
 
 		return {
 			success: true,
@@ -824,6 +907,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 			}
 			await assertPmImportAvailable(project, user.id);
 			const gitlabResult = await handleGitLabImport({
+				mcpServerId: project.projectManagementMcpServerId,
 				projectId: input.projectId,
 				gitlabProjectId: project.projectManagementContainerId,
 				organizationId: project.organizationId,
@@ -906,7 +990,45 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				organizationId: projectOrgIdForPM,
 			});
 
+			const externalPmTarget = buildExternalPmTarget({
+				mcpServerId:
+					userMcpConfig.mcpServerId ??
+					project.projectManagementMcpServerId,
+				config: userMcpConfig,
+				instanceOrigin: /gitlab/.test(
+					userMcpConfig.mcpServer?.key ?? "",
+				)
+					? mcpRowOrigin(userMcpConfig)
+					: undefined,
+				pmTool: capabilities.detectedType,
+				containerId: project.projectManagementContainerId,
+				additionalContext: project.projectManagementAdditionalContext,
+			});
+
 			if (existingStory) {
+				await assertStoryPullLink({
+					storyId: existingStory.id,
+					pmTarget: {
+						containerId:
+							project.projectManagementContainerId ?? undefined,
+						additionalContext:
+							project.projectManagementAdditionalContext,
+					},
+					projectId: input.projectId,
+					organizationId: projectOrgIdForPM,
+					userId: user.id,
+					mcpConfigId: userMcpConfig.id,
+					mcpServerId:
+						userMcpConfig.mcpServerId ??
+						project.projectManagementMcpServerId,
+					pmTool: capabilities.detectedType,
+					toolLabel: capabilities.detectedType ?? "the PM tool",
+					externalId: input.externalId,
+					externalUrl: existingStory.externalUrl,
+					externalMcpServerId: existingStory.externalMcpServerId,
+					externalPmTarget: existingStory.externalPmTarget,
+					verb: "pull",
+				});
 				if (
 					process.env.FEATURE_PM_TYPE_MAPPING === "true" &&
 					pmWorkItemType
@@ -958,8 +1080,29 @@ export const importFromPMProcedure = tenantProtectedProcedure
 					{
 						lastEditedByName: user.name ?? null,
 						lastEditedSource: "PM_PULL",
+						onlyIfPmLink: {
+							externalId: input.externalId,
+							externalMcpServerId:
+								existingStory.externalMcpServerId,
+							externalPmTarget: existingStory.externalPmTarget,
+						},
 					},
-				);
+				).catch(rethrowStoryPullLinkChanged);
+
+				if (
+					existingStory.externalPmTarget == null &&
+					externalPmTarget != null
+				) {
+					await db.userStory.updateMany({
+						where: {
+							id: existingStory.id,
+							projectId: input.projectId,
+							externalId: input.externalId,
+							externalPmTarget: null,
+						},
+						data: { externalPmTarget },
+					});
+				}
 
 				await logImportPull({
 					storyId: updatedStory.id,
@@ -1061,6 +1204,10 @@ export const importFromPMProcedure = tenantProtectedProcedure
 				where: { id: story.id },
 				data: {
 					externalId: input.externalId,
+					externalMcpServerId:
+						userMcpConfig.mcpServerId ??
+						project.projectManagementMcpServerId,
+					externalPmTarget,
 					externalUrl,
 					labels: remainingLabels,
 					pmAutoSyncEnabled: true,
@@ -1105,6 +1252,7 @@ export const importFromPMProcedure = tenantProtectedProcedure
 						projectId: input.projectId,
 						mcpConfigId: userMcpConfig.id,
 						containerId: project.projectManagementContainerId,
+						stableContainerId: project.projectManagementContainerId,
 						additionalContext:
 							(project.projectManagementAdditionalContext as
 								| Record<string, string>
@@ -1139,10 +1287,11 @@ export const importFromPMProcedure = tenantProtectedProcedure
 			if (error instanceof ORPCError) {
 				throw error;
 			}
+			logger.warn("[Import-from-PM] Import failed", { error });
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					error instanceof Error
-						? error.message
+						? describeSyncErrorForUser(error)
 						: "Failed to import from PM tool",
 			});
 		}

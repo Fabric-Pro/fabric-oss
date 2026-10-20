@@ -275,7 +275,7 @@ export async function runContextUpdate({
 
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId },
+			{ userId, organizationId, projectId },
 		);
 		const { model, trackUsage } = resolved;
 		metadata = resolved.metadata;

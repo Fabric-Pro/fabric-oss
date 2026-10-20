@@ -24,6 +24,10 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
+vi.mock("../ado-story-review-publish-validation", () => ({
+	adoStoryReviewPublishProblems: vi.fn().mockResolvedValue([]),
+}));
+
 import { findAgenticPublishProblems } from "../agentic-publish-validation";
 
 function server(
@@ -402,9 +406,11 @@ describe("built-in capabilities", () => {
 			}),
 		]);
 
-		expect(problems).toEqual([
-			'Agent Task: "shell-access" is not a built-in capability an agent can use.',
-		]);
+		expect(problems).toHaveLength(1);
+		expect(problems[0]).toContain(
+			'Agent Task: "shell-access" is not a built-in capability an agent can use. Use one of: ',
+		);
+		expect(problems[0]).toContain("project-context");
 	});
 });
 

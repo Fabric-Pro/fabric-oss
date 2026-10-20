@@ -4,6 +4,7 @@ import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks";
+import { useOfferedPromptActions } from "@saas/prompts/hooks/use-offered-prompt-actions";
 import { useSettingsReturnUrl } from "@saas/settings/hooks/use-settings-return-url";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -36,11 +37,17 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { startTransition, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PromptSelector } from "../../../prompts/components/PromptSelector";
 import { DocumentsList } from "../DocumentsList";
 import { PausedBatchNotice } from "../PausedBatchNotice";
+import {
+	describeBatchSkip,
+	type GenerationRefusalFeedback,
+} from "../proposal-artifact/generation-feedback";
+import { ProposalPromptField } from "../proposal-artifact/ProposalPromptField";
 import {
 	alignBatchDocuments,
 	type DocumentSelection,
@@ -97,6 +104,49 @@ function triggerConfetti() {
 			colors,
 		});
 	}, 250);
+}
+
+/** One `skipped` entry of `projects.documents.batchGenerate`. */
+type SkippedDocument = {
+	type: string;
+	reasonKey: string | null;
+	message: string;
+};
+
+/**
+ * The `skipped` entries a `batchGenerate` refusal carries when every document
+ * was skipped: a `PRECONDITION_FAILED` with `data.skipped` and no `data.code`.
+ * Read defensively, since the thrown error does not declare it; `null` when
+ * the error carries none.
+ */
+function skippedFromError(error: unknown): SkippedDocument[] | null {
+	if (typeof error !== "object" || error === null || !("data" in error)) {
+		return null;
+	}
+	const data = (error as { data?: unknown }).data;
+	if (typeof data !== "object" || data === null) {
+		return null;
+	}
+	const skipped = (data as { skipped?: unknown }).skipped;
+	if (!Array.isArray(skipped)) {
+		return null;
+	}
+	return skipped.flatMap((entry: unknown) => {
+		if (typeof entry !== "object" || entry === null) {
+			return [];
+		}
+		const { type, reasonKey, message } = entry as Record<string, unknown>;
+		return typeof type === "string"
+			? [
+					{
+						type,
+						reasonKey:
+							typeof reasonKey === "string" ? reasonKey : null,
+						message: typeof message === "string" ? message : "",
+					},
+				]
+			: [];
+	});
 }
 
 interface DocumentGenerationStepProps {
@@ -187,8 +237,21 @@ export function DocumentGenerationStep({
 			}
 		>
 	>({});
-	const _router = useRouter();
+	const router = useRouter();
+	const tFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
 	const { basePath: orgBasePath, organizationId } = useOrganizationContext();
+	/*
+	 * Where the Proposal artifact is on, a Proposal is written from the
+	 * library's Client proposal (Main) prompt (Fizzy #2946): its row offers no
+	 * prompt choice, "Apply First Prompt to All" skips it as source and
+	 * target, and the batch names no prompt for it. With the gate off every
+	 * row chooses its own prompt, as before.
+	 */
+	const { isSuperseded } = useOfferedPromptActions();
+	const choosesPrompt = (doc: DocumentSelection) =>
+		!isSuperseded("project_document_generator", doc.type);
 	const _basePath = `${orgBasePath}/projects`;
 	const _settingsPathRaw = useContextPath("settings/ai-providers");
 	const buildReturnUrl = useSettingsReturnUrl();
@@ -298,6 +361,33 @@ export function DocumentGenerationStep({
 		}),
 	);
 
+	/*
+	 * A skipped Proposal whose Client proposal (Main) prompt is unbound says so
+	 * in the reader's locale, with a link to bind it (Fizzy #2946). `null` for
+	 * any other skip reason, which keeps the server's own message.
+	 */
+	const skipFeedback = (
+		skipped: SkippedDocument,
+	): GenerationRefusalFeedback | null =>
+		describeBatchSkip(skipped.reasonKey, {
+			t: tFeedback,
+			basePath: orgBasePath,
+		});
+
+	const skipToastOptions = (
+		skipped: SkippedDocument,
+		feedback: GenerationRefusalFeedback | null,
+	) =>
+		feedback
+			? {
+					description: feedback.message,
+					action: {
+						label: feedback.catalog.label,
+						onClick: () => router.push(feedback.catalog.href),
+					},
+				}
+			: { description: skipped.message };
+
 	// Batch generate mutation
 	const batchGenerateMutation = useMutation(
 		orpc.projects.documents.batchGenerate.mutationOptions({
@@ -307,9 +397,10 @@ export function DocumentGenerationStep({
 				// (Fizzy #1930): say which, and why, rather than letting them
 				// silently not appear.
 				for (const skipped of data.skipped) {
-					toast.warning(`${skipped.type} was not generated`, {
-						description: skipped.message,
-					});
+					toast.warning(
+						`${skipped.type} was not generated`,
+						skipToastOptions(skipped, skipFeedback(skipped)),
+					);
 				}
 				setIsGenerating(true);
 				setDocMetaById(
@@ -324,7 +415,24 @@ export function DocumentGenerationStep({
 				startProgressPolling(documentIds);
 			},
 			onError: (error) => {
-				toast.error(`Failed to start generation: ${error.message}`);
+				// A batch whose every document was skipped is refused with the
+				// skips in `data.skipped`. Where one of them is a Proposal with
+				// no Client proposal (Main) prompt, each skip is named the way
+				// a partial batch names it, so the localized reason and its
+				// link are not lost behind the server's first message. Any
+				// other failure keeps the generic toast.
+				const skipped = skippedFromError(error) ?? [];
+				const feedback = skipped.map(skipFeedback);
+				if (feedback.some((entry) => entry !== null)) {
+					skipped.forEach((entry, index) => {
+						toast.error(
+							`${entry.type} was not generated`,
+							skipToastOptions(entry, feedback[index]),
+						);
+					});
+				} else {
+					toast.error(`Failed to start generation: ${error.message}`);
+				}
 				setIsGenerating(false);
 			},
 		}),
@@ -350,16 +458,21 @@ export function DocumentGenerationStep({
 		);
 	};
 
-	// Bulk action: Apply first document's prompt to all documents
+	// Bulk action: apply the first prompt-choosing document's prompt to every
+	// document that chooses one.
+	const firstPromptDoc = documents.find(choosesPrompt);
 	const applyPromptToAll = () => {
-		const firstDoc = documents[0];
-		if (!firstDoc?.promptId) {
+		if (!firstPromptDoc?.promptId) {
 			toast.error("Please select a prompt for the first document first");
 			return;
 		}
 
 		setDocuments((prev) =>
-			prev.map((doc) => ({ ...doc, promptId: firstDoc.promptId })),
+			prev.map((doc) =>
+				choosesPrompt(doc)
+					? { ...doc, promptId: firstPromptDoc.promptId }
+					: doc,
+			),
 		);
 		toast.success("Prompt applied to all documents");
 	};
@@ -534,7 +647,9 @@ export function DocumentGenerationStep({
 						| "GENERAL",
 					title: doc.title,
 					prompt: doc.prompt,
-					promptId: doc.promptId, // NEW: Pass custom prompt ID
+					// A superseded Proposal names no prompt: the run writes it
+					// from Client proposal (Main), whatever this row held.
+					...(choosesPrompt(doc) ? { promptId: doc.promptId } : {}),
 				})),
 			});
 		} catch (error) {
@@ -724,7 +839,7 @@ export function DocumentGenerationStep({
 									variant="outline"
 									size="sm"
 									onClick={applyPromptToAll}
-									disabled={!documents[0]?.promptId}
+									disabled={!firstPromptDoc?.promptId}
 								>
 									Apply First Prompt to All
 								</Button>
@@ -737,6 +852,24 @@ export function DocumentGenerationStep({
 						const colors =
 							DOCUMENT_TYPE_COLORS[doc.type] ||
 							DOCUMENT_TYPE_COLORS.GENERAL;
+						const promptSelectorField = (
+							<div>
+								<Label className="text-sm font-medium mb-2 block">
+									AI Prompt Template
+								</Label>
+								<PromptSelector
+									agentName="project_document_generator"
+									documentType={doc.type}
+									value={doc.promptId}
+									onValueChange={(promptId) =>
+										updatePromptId(index, promptId)
+									}
+									disabled={isGenerating}
+									placeholder="Use default prompt"
+									showBindAction={true}
+								/>
+							</div>
+						);
 
 						return (
 							<Card
@@ -777,25 +910,14 @@ export function DocumentGenerationStep({
 								{doc.selected && (
 									<CardContent className="space-y-4">
 										{/* Prompt Selector */}
-										<div>
-											<Label className="text-sm font-medium mb-2 block">
-												AI Prompt Template
-											</Label>
-											<PromptSelector
-												agentName="project_document_generator"
-												documentType={doc.type}
-												value={doc.promptId}
-												onValueChange={(promptId) =>
-													updatePromptId(
-														index,
-														promptId,
-													)
-												}
-												disabled={isGenerating}
-												placeholder="Use default prompt"
-												showBindAction={true}
+										{doc.type === "PROPOSAL" ? (
+											<ProposalPromptField
+												promptLabel="AI Prompt Template"
+												selector={promptSelectorField}
 											/>
-										</div>
+										) : (
+											promptSelectorField
+										)}
 
 										{/* Custom Instructions */}
 										<div>

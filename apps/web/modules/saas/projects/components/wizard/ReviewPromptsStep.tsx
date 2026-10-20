@@ -11,6 +11,7 @@
  * (TG5) and is reused as-is — no reinvention.
  */
 
+import { useOfferedPromptActions } from "@saas/prompts/hooks/use-offered-prompt-actions";
 import { Button } from "@ui/components/button";
 import {
 	Card,
@@ -31,6 +32,7 @@ import {
 	UsersIcon,
 } from "lucide-react";
 import { PromptSelector } from "../../../prompts/components/PromptSelector";
+import { ProposalPromptField } from "../proposal-artifact/ProposalPromptField";
 
 type DocumentPrompts = Record<
 	string,
@@ -79,14 +81,28 @@ export function ReviewPromptsStep({
 		});
 	};
 
+	/*
+	 * Rows whose prompt is chosen here. Where the Proposal artifact is on, a
+	 * Proposal is written from the library's Client proposal (Main) prompt
+	 * (Fizzy #2946), so its row offers no choice: "Apply First Prompt to All"
+	 * neither takes its prompt from that row nor writes one onto it. With the
+	 * gate off this is every row.
+	 */
+	const { isSuperseded } = useOfferedPromptActions();
+	const choosesPrompt = (docType: string) =>
+		!isSuperseded("project_document_generator", docType);
+	const firstPromptDoc = documents.find(choosesPrompt);
+	const firstPromptId =
+		firstPromptDoc === undefined
+			? undefined
+			: documentPrompts[firstPromptDoc]?.promptId;
+
 	const applyFirstPromptToAll = () => {
-		const firstDoc = documents[0];
-		const firstPromptId = documentPrompts[firstDoc]?.promptId;
 		if (!firstPromptId) {
 			return;
 		}
 		const updated = { ...documentPrompts };
-		for (const docType of documents) {
+		for (const docType of documents.filter(choosesPrompt)) {
 			updated[docType] = { ...updated[docType], promptId: firstPromptId };
 		}
 		onDocumentPromptsChange(updated);
@@ -121,7 +137,7 @@ export function ReviewPromptsStep({
 							variant="outline"
 							size="sm"
 							onClick={applyFirstPromptToAll}
-							disabled={!documentPrompts[documents[0]]?.promptId}
+							disabled={!firstPromptId}
 						>
 							Apply First Prompt to All
 						</Button>
@@ -135,6 +151,23 @@ export function ReviewPromptsStep({
 					};
 					const Icon = meta.icon;
 					const prompts = documentPrompts[docType] ?? {};
+					const promptSelectorField = (
+						<div>
+							<Label className="mb-2 block text-sm font-medium">
+								AI Prompt Template
+							</Label>
+							<PromptSelector
+								agentName="project_document_generator"
+								documentType={docType}
+								value={prompts.promptId}
+								onValueChange={(promptId) =>
+									updatePromptId(docType, promptId)
+								}
+								placeholder="Use default prompt"
+								showBindAction
+							/>
+						</div>
+					);
 
 					return (
 						<Card
@@ -154,21 +187,14 @@ export function ReviewPromptsStep({
 								</div>
 							</CardHeader>
 							<CardContent className="space-y-4">
-								<div>
-									<Label className="mb-2 block text-sm font-medium">
-										AI Prompt Template
-									</Label>
-									<PromptSelector
-										agentName="project_document_generator"
-										documentType={docType}
-										value={prompts.promptId}
-										onValueChange={(promptId) =>
-											updatePromptId(docType, promptId)
-										}
-										placeholder="Use default prompt"
-										showBindAction
+								{docType === "PROPOSAL" ? (
+									<ProposalPromptField
+										promptLabel="AI Prompt Template"
+										selector={promptSelectorField}
 									/>
-								</div>
+								) : (
+									promptSelectorField
+								)}
 								<div>
 									<Label className="text-sm font-medium">
 										Custom Instructions (Optional)

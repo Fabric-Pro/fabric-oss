@@ -295,6 +295,12 @@ describe("storySyncWorkflow — pull orchestration", () => {
 			projectId: "proj-1",
 			organizationId: "org-1",
 			pmExternalIds: ["1", "2"],
+			containerId: "100",
+			mcpServerId: "srv-gl",
+			mcpConfigId: null,
+			userId: "user-1",
+			pmTool: "gitlab",
+			additionalContext: undefined,
 		});
 	});
 
@@ -417,7 +423,9 @@ describe("storySyncWorkflow — pull orchestration", () => {
  * covered here (see `__tests__/replay-validation.test.ts`).
  */
 function recordedBefore(patchId: string) {
-	patchedMock.mockImplementation((id: string) => id !== patchId);
+	patchedMock.mockImplementation(
+		(id: string) => id !== patchId && id !== "bulk-sync-link-guard-v1",
+	);
 }
 
 describe("storySyncWorkflow — push orchestration", () => {
@@ -552,7 +560,10 @@ describe("storySyncWorkflow — push orchestration", () => {
 			userId: "user-2",
 			mcpConfigId: "cfg-1",
 			mcpServerId: "srv-fizzy",
-			pmTarget: { additionalContext: { account_slug: "example-org" } },
+			pmTarget: {
+				additionalContext: { account_slug: "example-org" },
+				containerId: "board-xyz",
+			},
 			pmTool: "fizzy",
 			toolLabel: "fizzy",
 			toolName: "create_card",
@@ -635,6 +646,7 @@ describe("storySyncWorkflow — push orchestration", () => {
 		};
 
 		beforeEach(() => {
+			recordedBefore("bulk-sync-link-guard-v1");
 			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
 				ADO_CAPABILITIES,
 			);

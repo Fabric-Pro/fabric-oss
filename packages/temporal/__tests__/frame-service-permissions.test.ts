@@ -176,7 +176,7 @@ describe("shareFirstClassFrame", () => {
 		mocks.canUpdateOrganizationFrames.mockResolvedValue(false);
 
 		const result = await shareFirstClassFrame({
-			args: { frameId: "frame-1" },
+			args: { frameId: "frame-1", scope: "PUBLIC" },
 			userId: USER,
 			organizationId: ORG,
 		});
@@ -191,7 +191,7 @@ describe("shareFirstClassFrame", () => {
 		mocks.canUpdateOrganizationFrames.mockResolvedValue(true);
 
 		await shareFirstClassFrame({
-			args: { frameId: "frame-1" },
+			args: { frameId: "frame-1", scope: "PUBLIC" },
 			userId: USER,
 			organizationId: ORG,
 		});

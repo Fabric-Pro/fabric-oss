@@ -169,7 +169,8 @@ async function main() {
 			// from recorded change events. Hash-gated like every other entry, so
 			// it runs once per environment; also idempotent on its own.
 			//
-			// LAST on purpose. The runner aborts on the first failure, so
+			// Historical backfills follow catalog seeds. The runner aborts on
+			// the first failure, so
 			// whatever runs early can take everything after it down — and this
 			// entry did exactly that: it timed out against a production-sized
 			// backlog and blocked every catalog seed behind it. The catalog
@@ -182,6 +183,13 @@ async function main() {
 			dependencies: ["../scripts/backfill-last-edited-at.ts"],
 			description:
 				"Backfill UserStory.lastEditedAt from recorded changes",
+		},
+		{
+			// Keep historical backfills last so they cannot block catalog seeds.
+			name: "workflow-last-run-at-backfill",
+			file: "seed-workflow-last-run-at-backfill.ts",
+			dependencies: ["../scripts/backfill-workflow-last-run-at.ts"],
+			description: "Backfill Workflow.lastRunAt from accepted executions",
 		},
 	];
 

@@ -1,6 +1,7 @@
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
-import { runLLMMetrics } from "../mastra-llm-metrics";
+import * as evalConfig from "../mastra-config";
+import { runLLMMetrics, runLLMMetricsActivity } from "../mastra-llm-metrics";
 
 function modelResult(output: Record<string, unknown>) {
 	return {
@@ -176,5 +177,30 @@ describe("runLLMMetrics", () => {
 		expect(prompts).not.toContain("MUST_NOT_BE_PROMPTED");
 		expect(clearIntervalSpy).toHaveBeenCalled();
 		clearIntervalSpy.mockRestore();
+	});
+});
+
+describe("runLLMMetricsActivity", () => {
+	it("forwards the document identity to model resolution", async () => {
+		const resolveModel = vi
+			.spyOn(evalConfig, "resolveEvalModel")
+			.mockResolvedValue(null);
+		try {
+			await runLLMMetricsActivity({
+				documentContent: "# Overview",
+				documentType: "general",
+				expectedSections: ["Overview"],
+				userId: "user-example-1",
+				organizationId: "org-example-1",
+				projectDocumentId: "document-example-1",
+			});
+			expect(resolveModel).toHaveBeenCalledWith({
+				userId: "user-example-1",
+				organizationId: "org-example-1",
+				projectDocumentId: "document-example-1",
+			});
+		} finally {
+			resolveModel.mockRestore();
+		}
 	});
 });

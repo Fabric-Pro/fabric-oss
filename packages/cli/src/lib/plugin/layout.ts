@@ -11,9 +11,11 @@
  * `CLAUDE.md` or `AGENTS.md`, and so on. A plugin carries the parts a coding
  * tool loads from a plugin, and says where they went:
  *
- *   .claude/skills/<name>/**   ->  skills/<name>/**
+ *   .claude/skills/<name>/**   ->  skills/<name>/**   (or skills/<name>/** at the root)
  *   .claude/agents/<file>.md   ->  agents/<file>.md
  *   .claude/commands/**        ->  commands/**
+ *   rules/**\/*.md             ->  passive copies under instructions/source/;
+ *                                  automatic rules delivered separately
  *   CLAUDE.md (else AGENTS.md) ->  a SessionStart hook that hands it to the
  *                                  session as context, and instructions/<file>
  *
@@ -23,6 +25,21 @@
  * notice that says where the whole file is, rather than by the tool in the
  * middle of a sentence.
  */
+
+import { pluginPathFor, projectRulePathFor } from "@fabricorg/sdk";
+import {
+	INSTRUCTION_ACCESS_SKILL,
+	INSTRUCTION_CATALOG,
+	type InstructionCatalogEntry,
+	type InstructionSourceIdentity,
+	instructionAccessBootstrap,
+	instructionAccessSkill,
+	instructionCatalog,
+} from "./instruction-access.js";
+
+// The mapping is shared with the server, which reports what a plugin leaves
+// out in the Coding Instructions tab; the CLI's own tests keep pinning it here.
+export { pluginPathFor };
 
 export interface InstructionFile {
 	/** Relative POSIX path inside the instructions tree. */
@@ -56,7 +73,17 @@ export type MemoryFolders =
 export const SESSION_CONTEXT_LIMIT = 10_000;
 
 /** Bumped when the layout changes, so the same pin renders to a new folder. */
-export const RENDER_VERSION = 1;
+export const RENDER_VERSION = 6;
+
+/**
+ * The name of the MCP server in a Claude Code plugin. Claude Code lists a
+ * plugin's server as `plugin:<plugin>:<server>`, so the plugin's name already
+ * says which project it is, and repeating it read as
+ * `plugin:fabric-<id>:fabric-<id>`. Codex keeps the plugin's name for its
+ * server, which stays unique across the projects whose plugins share the
+ * personal marketplace.
+ */
+export const CLAUDE_PLUGIN_MCP_SERVER = "fabric";
 
 /**
  * The hook's command: print the pre-rendered context. `CLAUDE_PLUGIN_ROOT` is a
@@ -78,6 +105,14 @@ type AlwaysOnFile = (typeof ALWAYS_ON_FILES)[number];
  * A stable plugin name for a project. A project id is a long opaque string; the
  * tail is the part that differs between projects.
  */
+/**
+ * A Codex plugin's version: Codex installs each version into a folder of that
+ * name, which is how the session hook tells whether its copy is current.
+ */
+export function codexPluginVersion(pin: string): string {
+	return `0.0.0-${pin}`;
+}
+
 export function pluginNameFor(projectId: string): string {
 	const tail = projectId
 		.toLowerCase()
@@ -100,35 +135,6 @@ function isExecutable(mode: number | null | undefined): boolean {
 
 function fileModeOf(mode: number | null | undefined): number {
 	return isExecutable(mode) ? 0o755 : 0o644;
-}
-
-/**
- * Where an instruction file goes in the plugin, or `null` when a plugin has no
- * place for it. Folder names are matched without regard to case, because
- * guild-shaped trees keep `Skills/` and `Agents/` at the root; the names under
- * them keep their case.
- */
-export function pluginPathFor(instructionPath: string): string | null {
-	const segments = instructionPath.split("/");
-	const first = segments[0]?.toLowerCase();
-	const rest = first === ".claude" ? segments.slice(1) : segments;
-	const folder = rest[0]?.toLowerCase();
-	if (rest.length < 2) {
-		return null;
-	}
-	const below = rest.slice(1);
-	switch (folder) {
-		case "skills":
-			return below.length >= 2 ? `skills/${below.join("/")}` : null;
-		case "agents":
-			return below.length === 1 && below[0]?.toLowerCase().endsWith(".md")
-				? `agents/${below[0]}`
-				: null;
-		case "commands":
-			return `commands/${below.join("/")}`;
-		default:
-			return null;
-	}
 }
 
 /**
@@ -171,8 +177,9 @@ export function sessionContext(
 	file: AlwaysOnFile,
 	text: string,
 	pluginName: string,
+	guidance = "",
 ): string {
-	const heading = `Coding instructions for this project (${file}, from Fabric):\n\n`;
+	const heading = `${guidance}${guidance === "" ? "" : "\n"}Coding instructions for this project (${file}, from Fabric):\n\n`;
 	const whole = heading + text;
 	if (whole.length <= SESSION_CONTEXT_LIMIT) {
 		return whole;
@@ -212,7 +219,7 @@ function livingMemorySkill(memory: MemoryFolders, tool: PluginTool): string {
 	const delivery =
 		tool === "claude-code"
 			? "Fabric delivers them: a hook sends new and changed files when your turn ends, and brings other people's changes in when a session starts. Do not run git for these files."
-			: "Fabric delivers them when the next session starts (this tool has no end-of-turn hook). To deliver sooner, call the `fabric_memory_write` tool of the Fabric MCP server. Do not run git for these files.";
+			: "Fabric delivers them when the next session starts (this tool has no end-of-turn hook). Do not run git for these files.";
 	const header = [
 		"---",
 		`name: ${LIVING_MEMORY_SKILL}`,
@@ -225,7 +232,7 @@ function livingMemorySkill(memory: MemoryFolders, tool: PluginTool): string {
 	let body: string[];
 	if (memory.state === "unavailable") {
 		body = [
-			"The list of this project's memory folders could not be read when this plugin was built. Run `fabric memory status` to see them, and do not save memory files until you know the folder.",
+			"The list of this project's memory folders could not be read when this plugin was built. Call the `fabric_memory_targets` tool of the Fabric MCP server to see them, and do not save memory files until you know the folder.",
 		];
 	} else if (memory.folders.length === 0) {
 		body = [
@@ -240,29 +247,29 @@ function livingMemorySkill(memory: MemoryFolders, tool: PluginTool): string {
 			delivery,
 			"",
 			"Never save memory files anywhere else. A file in a pull-request folder is not part of the project's Living Memory until the pull request is merged.",
+			"",
+			"Keep one work item's specs and tasks together in `docs/ai/specs/<work-item-id>/`, inside one of the folders above. To resume a work item, list that folder with the `fabric_memory_read` tool (pass `prefix`, then a file's `path` to read it), or read the local mirror: the same files, at the same paths, in the project folder.",
+			"",
+			"To check a delivery, read the `writeId` of each entry in the `outbox` of `.fabric/memory.lock` and pass it to the `fabric_memory_write_status` tool.",
 		];
 	}
 	return `${[...header, ...body].join("\n")}\n`;
 }
 
-function descriptionFor(): string {
-	return "Coding instructions for a Fabric project, rendered from the project's published instructions.";
+/** Names the project and the deployment, so two plugins that share a short name can be told apart. */
+export function descriptionFor(projectId: string, gatewayUrl: string): string {
+	let host = gatewayUrl;
+	try {
+		host = new URL(gatewayUrl).host;
+	} catch {
+		// A gateway URL that does not parse is named as it was given.
+	}
+	return `Coding instructions for Fabric project ${projectId} on ${host}, rendered from its published instructions.`;
 }
 
 /** The project's MCP gateway as a plugin's MCP configuration. */
-function mcpConfiguration(
-	tool: PluginTool,
-	serverName: string,
-	url: string,
-): Uint8Array {
-	return json({
-		mcpServers: {
-			[serverName]: {
-				type: tool === "codex" ? "streamable-http" : "http",
-				url,
-			},
-		},
-	});
+function mcpConfiguration(serverName: string, url: string): Uint8Array {
+	return json({ mcpServers: { [serverName]: { type: "http", url } } });
 }
 
 export interface PluginInputs {
@@ -274,12 +281,16 @@ export interface PluginInputs {
 	gatewayUrl: string;
 	/** Distinguishes one render from another in the manifest of a Codex plugin. */
 	pin: string;
+	/** Complete source metadata and identity, independent of the render hash. */
+	instructionAccess: {
+		listed: readonly InstructionCatalogEntry[];
+		source: InstructionSourceIdentity;
+	};
 }
 
 /**
- * The plugin, as sorted files. Instruction files a plugin has no place for are
- * left out; the memory file is both the hook's source and, whole, a file of the
- * plugin.
+ * The plugin, as sorted files. The catalog retains every source path; root
+ * files and rules keep whole passive copies alongside native plugin files.
  */
 export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 	const name = pluginNameFor(inputs.projectId);
@@ -287,87 +298,126 @@ export function buildPlugin(inputs: PluginInputs): PluginFile[] {
 	const put = (path: string, bytes: Uint8Array, mode = 0o644) => {
 		out.set(path, { path, bytes, mode });
 	};
+	const sourceAtTarget = new Map<string, string>();
 
 	for (const file of [...inputs.files].sort((a, b) =>
 		a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
 	)) {
-		const target = pluginPathFor(file.path);
-		if (target !== null) {
-			put(target, file.bytes, fileModeOf(file.mode));
+		const nativeTarget = pluginPathFor(file.path);
+		const target =
+			file.path === "CLAUDE.md" || file.path === "AGENTS.md"
+				? `instructions/${file.path}`
+				: projectRulePathFor(file.path) !== null
+					? `instructions/source/${file.path}`
+					: nativeTarget;
+		if (
+			target === null ||
+			[LIVING_MEMORY_SKILL, INSTRUCTION_ACCESS_SKILL].some((reserved) =>
+				target.toLowerCase().startsWith(`skills/${reserved}/`),
+			)
+		) {
+			continue;
 		}
+		put(
+			target,
+			file.bytes,
+			nativeTarget === null ? 0o644 : fileModeOf(file.mode),
+		);
+		sourceAtTarget.set(target, file.path);
 	}
+	const localPaths = new Map<string, string>(
+		[...sourceAtTarget].map(([target, source]) => [source, target]),
+	);
 
-	// The generated skill wins a name clash: an agent must be told one thing.
 	put(
 		`skills/${LIVING_MEMORY_SKILL}/SKILL.md`,
 		bytesOf(livingMemorySkill(inputs.memory, inputs.tool)),
 	);
-	for (const path of [...out.keys()]) {
-		if (
-			path.startsWith(`skills/${LIVING_MEMORY_SKILL}/`) &&
-			path !== `skills/${LIVING_MEMORY_SKILL}/SKILL.md`
-		) {
-			out.delete(path);
-		}
-	}
+	put(
+		`skills/${INSTRUCTION_ACCESS_SKILL}/SKILL.md`,
+		bytesOf(instructionAccessSkill()),
+	);
+	put(
+		INSTRUCTION_CATALOG,
+		bytesOf(
+			instructionCatalog({
+				projectId: inputs.projectId,
+				source: inputs.instructionAccess.source,
+				listed: inputs.instructionAccess.listed,
+				localPaths,
+			}),
+		),
+	);
 
 	if (inputs.tool === "claude-code") {
 		put(
 			".claude-plugin/plugin.json",
 			json({
 				name,
-				description: descriptionFor(),
+				description: descriptionFor(
+					inputs.projectId,
+					inputs.gatewayUrl,
+				),
 				author: { name: "Fabric" },
 			}),
 		);
 		put(
 			".mcp.json",
-			mcpConfiguration("claude-code", name, inputs.gatewayUrl),
+			mcpConfiguration(CLAUDE_PLUGIN_MCP_SERVER, inputs.gatewayUrl),
 		);
 		const always = alwaysOnFile(inputs.files);
-		if (always !== null) {
-			put(`instructions/${always.file}`, bytesOf(always.text));
-			put(
-				"hooks/session-context.json",
-				json({
-					hookSpecificOutput: {
-						hookEventName: "SessionStart",
-						additionalContext: sessionContext(
-							always.file,
-							always.text,
-							name,
-						),
-					},
-				}),
-			);
-			put(
-				"hooks/hooks.json",
-				json({
-					hooks: {
-						SessionStart: [
-							{
-								hooks: [
-									{
-										type: "command",
-										command: SESSION_CONTEXT_COMMAND,
-									},
-								],
-							},
-						],
-					},
-				}),
-			);
-		}
-	} else {
+		const guidance = instructionAccessBootstrap(name, inputs.tool);
 		put(
-			"plugin.json",
+			"hooks/session-context.json",
 			json({
-				name,
-				version: `0.0.0-${inputs.pin}`,
-				description: descriptionFor(),
+				hookSpecificOutput: {
+					hookEventName: "SessionStart",
+					additionalContext:
+						always === null
+							? guidance
+							: sessionContext(
+									always.file,
+									always.text,
+									name,
+									guidance,
+								),
+				},
 			}),
 		);
-		put("mcp.json", mcpConfiguration("codex", name, inputs.gatewayUrl));
+		put(
+			"hooks/hooks.json",
+			json({
+				hooks: {
+					SessionStart: [
+						{
+							hooks: [
+								{
+									type: "command",
+									command: SESSION_CONTEXT_COMMAND,
+								},
+							],
+						},
+					],
+				},
+			}),
+		);
+	} else {
+		// Codex reads the manifest only from .codex-plugin/, and loads the MCP
+		// file only when the manifest points at it.
+		put(
+			".codex-plugin/plugin.json",
+			json({
+				name,
+				version: codexPluginVersion(inputs.pin),
+				description: descriptionFor(
+					inputs.projectId,
+					inputs.gatewayUrl,
+				),
+				skills: "./skills/",
+				mcpServers: "./.mcp.json",
+			}),
+		);
+		put(".mcp.json", mcpConfiguration(name, inputs.gatewayUrl));
 	}
 
 	return [...out.values()].sort((a, b) =>

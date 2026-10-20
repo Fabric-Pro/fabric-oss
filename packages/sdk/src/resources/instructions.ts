@@ -8,6 +8,11 @@
  * list, and only when something did move is `createDownloadUrl` worth making.
  */
 import type { FabricHttpClient } from "../client.js";
+import {
+	type DirectInstructionRepositoryFilesRead,
+	type ReadDirectInstructionRepositoryFilesInput,
+	readPinnedRepositoryFiles,
+} from "./instruction-repository-files.js";
 
 /**
  * Where a project's instructions are authored. `REPOSITORY` means they are
@@ -683,9 +688,25 @@ export class InstructionsResource {
 	listRepositoryFiles(
 		projectId: string,
 		options: GetDirectInstructionRepositoryFilesOptions = {},
+		request: { signal?: AbortSignal } = {},
 	): Promise<DirectInstructionRepositoryFiles> {
 		return this.http.get<DirectInstructionRepositoryFiles>(
 			`/projects/${encodeURIComponent(projectId)}/instructions/repository/files${buildQuery(options)}`,
+			request,
+		);
+	}
+
+	/** Read-only POST, with at most two retries and a two-minute total budget. */
+	readRepositoryFiles(
+		projectId: string,
+		input: ReadDirectInstructionRepositoryFilesInput,
+		options: { org?: string; signal?: AbortSignal } = {},
+	): Promise<DirectInstructionRepositoryFilesRead> {
+		return readPinnedRepositoryFiles(
+			this.http,
+			`/projects/${encodeURIComponent(projectId)}/instructions/repository/files/read${buildQuery({ org: options.org })}`,
+			input,
+			options.signal,
 		);
 	}
 

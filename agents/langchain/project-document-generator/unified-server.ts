@@ -19,9 +19,11 @@ import {
 } from "@langchain/core/messages";
 import type { AgentSkill } from "@repo/agent-core";
 import { PredictiveToolArgsAccumulator } from "@repo/agent-core/predictive-tool-args";
+import { buildAgentConfigurable } from "@repo/agent-core/services/agent-configurable";
 import {
 	type AgentRuntimeConfig,
 	createUnifiedServer,
+	getUserFacingError,
 	type LangGraphStreamEvent,
 } from "@repo/agent-core/unified-server";
 import type { DocumentType, ProjectContext } from "@repo/agent-types";
@@ -590,7 +592,6 @@ const { app, start } = createUnifiedServer(
 		const aiApiKey = input.ai_api_key as string | undefined;
 		const aiModel = input.ai_model as string | undefined;
 		const aiProvider = input.ai_provider as string | undefined;
-		const aiBaseUrl = input.ai_base_url as string | undefined;
 		const tenantUserId = input.tenant_user_id as string | undefined;
 		const tenantOrgId = input.tenant_organization_id as string | undefined;
 
@@ -640,25 +641,10 @@ const { app, start } = createUnifiedServer(
 
 		// Build configurable for graph invocation
 		// This passes AI config to the graph so nodes can access it via config.configurable
-		const configurable: Record<string, unknown> = {};
-		if (aiApiKey) {
-			configurable.ai_api_key = aiApiKey;
-		}
-		if (aiModel) {
-			configurable.ai_model = aiModel;
-		}
-		if (aiProvider) {
-			configurable.ai_provider = aiProvider;
-		}
-		if (aiBaseUrl) {
-			configurable.ai_gateway_url = aiBaseUrl;
-		}
-		if (tenantUserId) {
-			configurable.tenant_user_id = tenantUserId;
-		}
-		if (tenantOrgId) {
-			configurable.tenant_organization_id = tenantOrgId;
-		}
+		const configurable = {
+			...buildAgentConfigurable(input),
+			...(input.ai_base_url ? { ai_gateway_url: input.ai_base_url } : {}),
+		};
 
 		// Invoke the LangGraph graph with FULL message history
 		// This is critical for maintaining conversation context across tool calls
@@ -717,9 +703,9 @@ const { app, start } = createUnifiedServer(
 			documentLength: result.document?.length || 0,
 		});
 
-		// If no document was generated (model didn't call the tool),
-		// extract text response from the last assistant message as fallback
-		let responseText = result.document || "";
+		// On failure, prefer the assistant explanation even if the input document survives.
+		// Otherwise, use assistant text when no document was generated.
+		let responseText = result.error ? "" : result.document || "";
 		if (!responseText && result.messages && result.messages.length > 0) {
 			// Find the last AI/assistant message
 			for (let i = result.messages.length - 1; i >= 0; i--) {
@@ -758,6 +744,7 @@ const { app, start } = createUnifiedServer(
 		const response = document || textResponse;
 
 		return {
+			error: getUserFacingError(output.error, output.textResponse),
 			response, // Use combined response (document OR text fallback)
 			artifacts: document
 				? [

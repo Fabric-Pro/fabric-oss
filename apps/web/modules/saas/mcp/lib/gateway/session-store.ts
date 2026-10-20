@@ -45,6 +45,8 @@ export async function createGatewaySession(params: {
 	userId: string;
 	organizationId: string | null;
 	projectId?: string | null;
+	/** See `GatewaySession.pinnedProjectId`; only the service credential sets it. */
+	pinnedProjectId?: string | null;
 	userName: string;
 	email: string;
 	role: "user" | "admin";
@@ -73,6 +75,9 @@ export async function createGatewaySession(params: {
 		userId: params.userId,
 		organizationId: params.organizationId,
 		projectId: params.projectId ?? null,
+		...(params.pinnedProjectId
+			? { pinnedProjectId: params.pinnedProjectId }
+			: {}),
 		userName: params.userName,
 		email: params.email,
 		role: params.role,

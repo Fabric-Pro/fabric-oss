@@ -253,6 +253,12 @@ vi.mock("./documents/useUpdateDocumentWithContext", () => ({
 	}),
 }));
 
+// The editor reads the collaborative room flag (Fizzy #2946); off here,
+// so it behaves as it did before that flag.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
 import { orpc } from "@shared/lib/orpc-query-utils";
 

@@ -92,6 +92,24 @@ Enterprise cloud AI services:
 
 A personal key is a fallback. Fabric uses it only when the organization has no usable key of its own, and the work it serves is billed to you. While that is the case, Fabric shows a notice saying your work in that organization runs on your personal key. A ChatGPT plan you connect on the Personal tab serves your own work and takes precedence over any key.
 
+### When the ChatGPT plan is spent
+
+Where your organization uses ChatGPT plans, your own work tries these in order, as **Settings → AI Models** shows:
+
+1. your own ChatGPT plan;
+2. the organization's shared ChatGPT accounts;
+3. organization API billing, the organization's own key;
+4. your personal key, if you opted one in.
+
+The fourth step is opt-in, per key. On the **Personal** tab, turn on **Use when the ChatGPT plan is spent** on one of your keys. Once every plan serving your work is spent, your chats, the Advisor and the generation you start run on that key instead of stopping, billed to you. It applies only where the organization would otherwise stop your work: its setting for people's own work is **Stop and show the reset time**, or it has no key for chat and generation. Under **Use API billing** with a key of its own, the organization's key is used as before.
+
+- Background, scheduled and bulk work never runs on a personal key.
+- An **Embeddings only** key cannot be opted in.
+- With several keys opted in, the Default key is used, otherwise the most recently updated one.
+- A reply that used your key says so under it, with the plans' reset time. When your work stops because the plan is spent and no key is opted in, the message links to the Personal tab.
+
+AI Models shows only your own key for this step, never another member's.
+
 ## Model Preferences
 
 ### How Model Resolution Works

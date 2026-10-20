@@ -177,6 +177,193 @@ describe("markDocumentGenerationQueued", () => {
 	});
 });
 
+/**
+ * A write that owns no run (a title edit, an embed stamp, a save) landing
+ * between the dispatcher minting the attempt and marking the row declines the
+ * freshness mark, and the run, which takes its row by this attempt's identity
+ * and waits only seconds for the mark, would then stop as superseded
+ * (Fizzy #2946). `reclaim` takes the row back by identity. The WHEREs are
+ * EVALUATED against a row, so these test what the queries select, not their
+ * shape.
+ */
+describe("markDocumentGenerationQueued — reclaim after an unrelated write", () => {
+	type Row = {
+		status: string;
+		generationStartedAt: Date | null;
+		updatedAt: Date;
+	};
+	type Where = {
+		updatedAt?: { lt: Date };
+		OR?: Array<{ generationStartedAt: null | { lte: Date } }>;
+		status?: { notIn: string[] };
+	};
+	let row: Row | null;
+
+	const matches = (where: Where, current: Row) => {
+		if (where.updatedAt && !(current.updatedAt < where.updatedAt.lt)) {
+			return false;
+		}
+		if (
+			where.OR &&
+			!where.OR.some((arm) =>
+				arm.generationStartedAt === null
+					? current.generationStartedAt === null
+					: current.generationStartedAt !== null &&
+						current.generationStartedAt <=
+							arm.generationStartedAt.lte,
+			)
+		) {
+			return false;
+		}
+		if (where.status?.notIn.includes(current.status)) {
+			return false;
+		}
+		return true;
+	};
+
+	beforeEach(() => {
+		updateMany.mockImplementation(
+			({ where, data }: { where: Where; data: Partial<Row> }) => {
+				if (!row || !matches(where, row)) {
+					return { count: 0 };
+				}
+				row = { ...row, ...data, updatedAt: new Date() };
+				return { count: 1 };
+			},
+		);
+		findUnique.mockImplementation(() => row);
+	});
+
+	const titleEditedAfterStart = new Date(STARTED_AT.getTime() + 1_000);
+
+	it("leaves a regeneration QUEUED for this attempt when a title edit landed during the start", async () => {
+		row = {
+			status: "COMPLETE",
+			generationStartedAt: new Date(STARTED_AT.getTime() - 604_800_000),
+			updatedAt: titleEditedAfterStart,
+		};
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+			reclaim: { liveRowJudged: false },
+		});
+
+		expect(result.applied).toBe(true);
+		expect(row).toMatchObject({
+			status: "QUEUED",
+			generationStartedAt: STARTED_AT,
+		});
+		expect(updateMany).toHaveBeenCalledTimes(2);
+		expect(updateMany.mock.calls[1][0].where.updatedAt).toBeUndefined();
+	});
+
+	it("lets a genuinely newer attempt keep the row, with one write tried", async () => {
+		const newer = new Date(STARTED_AT.getTime() + 500);
+		row = {
+			status: "QUEUED",
+			generationStartedAt: newer,
+			updatedAt: titleEditedAfterStart,
+		};
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+			reclaim: { liveRowJudged: true },
+		});
+
+		expect(result).toMatchObject({
+			applied: false,
+			declinedFor: "newer-run",
+		});
+		expect(updateMany).toHaveBeenCalledTimes(1);
+		expect(row?.generationStartedAt).toBe(newer);
+	});
+
+	it("refuses the retry when a newer attempt stamps the row after the read", async () => {
+		const newer = new Date(STARTED_AT.getTime() + 500);
+		row = {
+			status: "COMPLETE",
+			generationStartedAt: null,
+			updatedAt: titleEditedAfterStart,
+		};
+		// The read sees the old row; a newer dispatch lands before the retry.
+		findUnique.mockImplementationOnce(() => {
+			const seen = row;
+			row = {
+				status: "QUEUED",
+				generationStartedAt: newer,
+				updatedAt: new Date(),
+			};
+			return seen;
+		});
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+			reclaim: { liveRowJudged: true },
+		});
+
+		expect(result).toMatchObject({
+			applied: false,
+			declinedFor: "unowned",
+		});
+		expect(row?.generationStartedAt).toBe(newer);
+	});
+
+	it("keeps an older attempt's live row unless the caller ruled on it", async () => {
+		row = {
+			status: "GENERATING",
+			generationStartedAt: new Date(STARTED_AT.getTime() - 60_000),
+			updatedAt: titleEditedAfterStart,
+		};
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+			reclaim: { liveRowJudged: false },
+		});
+
+		expect(result).toMatchObject({
+			applied: false,
+			declinedFor: "live-row",
+		});
+		expect(updateMany).toHaveBeenCalledTimes(1);
+		expect(row?.status).toBe("GENERATING");
+	});
+
+	it("takes back an older attempt's live row once the caller found its workflow gone", async () => {
+		row = {
+			status: "GENERATING",
+			generationStartedAt: new Date(STARTED_AT.getTime() - 60_000),
+			updatedAt: titleEditedAfterStart,
+		};
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+			reclaim: { liveRowJudged: true },
+		});
+
+		expect(result.applied).toBe(true);
+		expect(row).toMatchObject({
+			status: "QUEUED",
+			generationStartedAt: STARTED_AT,
+		});
+	});
+
+	it("does not retry without reclaim", async () => {
+		row = {
+			status: "COMPLETE",
+			generationStartedAt: null,
+			updatedAt: titleEditedAfterStart,
+		};
+
+		const result = await markDocumentGenerationQueued(DOCUMENT_ID, {
+			generationStartedAt: STARTED_AT,
+		});
+
+		expect(result.applied).toBe(false);
+		expect(updateMany).toHaveBeenCalledTimes(1);
+		expect(row?.status).toBe("COMPLETE");
+	});
+});
+
 describe("markDocumentGenerationRunning", () => {
 	it("flips QUEUED to GENERATING and clears the queue reason", async () => {
 		const outcome = await markDocumentGenerationRunning(

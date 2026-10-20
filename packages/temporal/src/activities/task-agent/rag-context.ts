@@ -150,7 +150,10 @@ export async function retrieveProjectContexts(
 		});
 	} catch (error) {
 		// RAG retrieval is optional - don't fail the workflow if it fails
-		console.warn("Failed to retrieve project contexts:", error);
+		console.warn("Failed to retrieve project contexts:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return [];
 	}
 }
@@ -321,7 +324,11 @@ export async function gatherLiveUrlSources(
 	} catch (error) {
 		console.warn(
 			"[gatherLiveUrlSources] Failed to resolve Firecrawl key — skipping live URL gather",
-			{ projectId, error },
+			{
+				projectId,
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return [];
 	}
@@ -429,7 +436,17 @@ async function scrapeOneRow({
 				// from reaching the LLM — log and move on.
 				console.warn(
 					"[gatherLiveUrlSources] Failed to stamp lastFallbackAt",
-					{ contextId: row.id, error: metaError },
+					{
+						contextId: row.id,
+						error:
+							metaError instanceof Error
+								? metaError.message
+								: metaError,
+						stack:
+							metaError instanceof Error
+								? metaError.stack
+								: undefined,
+					},
 				);
 			}
 		}
@@ -474,7 +491,8 @@ async function scrapeOneRow({
 			contextId: row.id,
 			sourceUrl: row.sourceUrl,
 			mode,
-			error,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
 		});
 		return null;
 	}

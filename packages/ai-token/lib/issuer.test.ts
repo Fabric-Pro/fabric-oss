@@ -27,6 +27,28 @@ describe("AI Token Issuer", () => {
 		}
 	});
 
+	it.each(["claude-haiku-4-5", "chatgpt-plan:gpt-6", undefined])(
+		"round-trips the optional model override (%s)",
+		async (modelOverride) => {
+			const token = await issueAIToken({
+				userId: "example-user",
+				organizationId: "example-org",
+				source: "example-agent",
+				impersonated: false,
+				modelOverride,
+			});
+			const result = await verifyAIToken(token);
+			expect(result.valid).toBe(true);
+			if (result.valid) {
+				if (modelOverride) {
+					expect(result.claims).toHaveProperty("mo", modelOverride);
+				} else {
+					expect(result.claims).not.toHaveProperty("mo");
+				}
+			}
+		},
+	);
+
 	// Fizzy #2939: the exchange reads these to decide whether a token may
 	// hand over the member's own ChatGPT plan.
 	describe("plan claims", () => {

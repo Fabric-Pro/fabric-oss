@@ -77,27 +77,43 @@ export function useConversationList({
 
 	const rename = useMutation({
 		mutationFn: (input: { id: string; title: string }) =>
-			orpcClient.agents.conversations.update(input),
+			orpcClient.agents.conversations.update({
+				...input,
+				organizationId: organizationId ?? undefined,
+			}),
 		onSuccess: refreshLists,
 	});
 	const archive = useMutation({
 		mutationFn: (id: string) =>
-			orpcClient.agents.conversations.archive({ id }),
+			orpcClient.agents.conversations.archive({
+				id,
+				organizationId: organizationId ?? undefined,
+			}),
 		onSuccess: refreshLists,
 	});
 	const restore = useMutation({
 		mutationFn: (id: string) =>
-			orpcClient.agents.conversations.update({ id, status: "ACTIVE" }),
+			orpcClient.agents.conversations.update({
+				id,
+				status: "ACTIVE",
+				organizationId: organizationId ?? undefined,
+			}),
 		onSuccess: refreshLists,
 	});
 	const togglePin = useMutation({
 		mutationFn: (id: string) =>
-			orpcClient.agents.conversations.togglePin({ id }),
+			orpcClient.agents.conversations.togglePin({
+				id,
+				organizationId: organizationId ?? undefined,
+			}),
 		onSuccess: refreshLists,
 	});
 	const remove = useMutation({
 		mutationFn: (id: string) =>
-			orpcClient.agents.conversations.delete({ id }),
+			orpcClient.agents.conversations.delete({
+				id,
+				organizationId: organizationId ?? undefined,
+			}),
 		onSuccess: refreshLists,
 	});
 	const setVisibility = useMutation({

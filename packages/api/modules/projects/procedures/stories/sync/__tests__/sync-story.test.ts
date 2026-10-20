@@ -680,3 +680,52 @@ describe("syncStoryProcedure capability gate", () => {
 		expect(mockSyncStoryToPM).not.toHaveBeenCalled();
 	});
 });
+
+describe("stable PM container identity", () => {
+	it("forwards the ADO project GUID into a direct story sync", async () => {
+		vi.clearAllMocks();
+		vi.resetModules();
+		const containerId = "11111111-1111-4111-8111-111111111111";
+		vi.mocked(hasProjectAccess).mockResolvedValue(true as never);
+		vi.mocked(db.project.findUnique).mockResolvedValue({
+			id: "example-project",
+			organizationId: null,
+			projectManagementMcpServerId: "example-server",
+			projectManagementMcpConfigId: "example-config",
+			projectManagementContainerId: containerId,
+			projectManagementContainerName: "Example Project",
+			projectManagementAdditionalContext: {},
+		} as never);
+		vi.mocked(resolvePMConfigForUser).mockResolvedValue({
+			id: "example-config",
+			enabled: true,
+			mcpServerId: "example-server",
+			commandArgs: ["example-org"],
+			mcpServer: { key: "azure-devops" },
+		} as never);
+		vi.mocked(getStoryById).mockResolvedValue({
+			id: "example-story",
+			title: "Example",
+			tasks: [],
+		} as never);
+		mockSyncStoryToPM.mockResolvedValue({
+			success: true,
+			externalId: "42",
+		});
+		const handler = await loadProcedureHandler();
+		await handler({
+			input: {
+				projectId: "example-project",
+				storyId: "example-story",
+				direction: "push",
+			},
+			context: baseCtx,
+		});
+		expect(mockSyncStoryToPM).toHaveBeenCalledWith(
+			expect.objectContaining({
+				containerId,
+				stableContainerId: containerId,
+			}),
+		);
+	});
+});

@@ -47,13 +47,17 @@ interface RunOptions {
 	transcriptAvailable?: boolean;
 	/** Simulates a second source that DID return something. */
 	logClause?: string;
+	/** Teams channels selected alongside the meetings. */
+	selectedChannelContextIds?: string[];
 }
 
 async function runWorkflow(options: RunOptions): Promise<{
 	analyzerCalled: boolean;
+	logsFetched: boolean;
 	result: { success: boolean; skippedReason?: string };
 }> {
 	let analyzerCalled = false;
+	let logsFetched = false;
 
 	const activities = {
 		fetchTeamsMessagesForBacklog: async () => ({
@@ -86,12 +90,15 @@ async function runWorkflow(options: RunOptions): Promise<{
 			success: false,
 			formattedDecisions: "",
 		}),
-		fetchApplicationLogsForBacklog: async () => ({
-			clause: options.logClause ?? "",
-			note: "",
-			status: options.logClause ? "included" : "not-configured",
-			entryCount: options.logClause ? 1 : 0,
-		}),
+		fetchApplicationLogsForBacklog: async () => {
+			logsFetched = true;
+			return {
+				clause: options.logClause ?? "",
+				note: "",
+				status: options.logClause ? "included" : "not-configured",
+				entryCount: options.logClause ? 1 : 0,
+			};
+		},
 		fetchBacklogSnapshot: async () => ({
 			epics: [],
 			orphanFeatures: [],
@@ -115,6 +122,12 @@ async function runWorkflow(options: RunOptions): Promise<{
 			...(options.selectedMeetings
 				? { selectedMeetings: options.selectedMeetings }
 				: {}),
+			...(options.selectedChannelContextIds
+				? {
+						selectedChannelContextIds:
+							options.selectedChannelContextIds,
+					}
+				: {}),
 		},
 		userPrompt: "Update the backlog from today's standup",
 	};
@@ -135,7 +148,7 @@ async function runWorkflow(options: RunOptions): Promise<{
 		}),
 	)) as { success: boolean; skippedReason?: string };
 
-	return { analyzerCalled, result };
+	return { analyzerCalled, logsFetched, result };
 }
 
 describe("backlogContextAnalysisWorkflow — no meeting content", () => {
@@ -156,14 +169,31 @@ describe("backlogContextAnalysisWorkflow — no meeting content", () => {
 	});
 
 	it("still analyses when the meetings failed but something else was gathered", async () => {
+		// Teams channels make this more than a meeting-only run, so the
+		// background sources (here, application logs) are still fetched.
 		const { analyzerCalled, result } = await runWorkflow({
 			selectedMeetings: [{ joinUrl: "https://teams.example.com/meet/1" }],
+			selectedChannelContextIds: ["example-channel"],
 			transcriptAvailable: false,
 			logClause: "- 2026-08-19T10:00:00Z [ERROR] checkout timed out",
 		});
 
 		expect(analyzerCalled).toBe(true);
 		expect(result.skippedReason).toBeUndefined();
+	});
+
+	it("does not let background logs rescue a meeting-only run with no transcript", async () => {
+		// A meeting-only run skips application logs and project search, so the
+		// logs that produced the invented items above never reach the analyzer.
+		const { analyzerCalled, logsFetched, result } = await runWorkflow({
+			selectedMeetings: [{ joinUrl: "https://teams.example.com/meet/1" }],
+			transcriptAvailable: false,
+			logClause: "- 2026-08-19T10:00:00Z [ERROR] checkout timed out",
+		});
+
+		expect(logsFetched).toBe(false);
+		expect(analyzerCalled).toBe(false);
+		expect(result.skippedReason).toMatch(/no.*transcript|transcript.*yet/i);
 	});
 
 	it("is inert on a run that never asked for a meeting", async () => {

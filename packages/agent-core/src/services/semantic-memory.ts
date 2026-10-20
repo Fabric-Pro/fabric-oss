@@ -40,8 +40,12 @@ export interface SemanticMemoryResult {
 }
 
 export interface MemoryContext {
-	/** Formatted context string for AI prompt injection */
-	contextString: string;
+	/**
+	 * The recalled executions, one dated entry each. Data only: the caller
+	 * renders the instructions around it from the Prompt Library
+	 * (`direct_chat_memory_context`).
+	 */
+	formattedMemories: string;
 	/** Number of relevant memories found */
 	memoryCount: number;
 	/** Whether any high-similarity matches were found */
@@ -100,8 +104,8 @@ export async function searchSemanticMemory(
 }
 
 /**
- * Generate a memory context string suitable for injecting into AI prompts.
- * This provides the AI with relevant past execution context.
+ * Recall the past executions most similar to `query`, formatted as dated
+ * entries for a prompt. The instructions that frame them are the caller's.
  */
 export async function generateMemoryContext(
 	query: string,
@@ -115,7 +119,7 @@ export async function generateMemoryContext(
 
 	if (memories.length === 0) {
 		return {
-			contextString: "",
+			formattedMemories: "",
 			memoryCount: 0,
 			hasHighSimilarityMatches: false,
 		};
@@ -123,12 +127,12 @@ export async function generateMemoryContext(
 
 	const hasHighSimilarityMatches = memories.some((m) => m.similarity >= 0.8);
 
-	// Format memories for prompt injection
 	const formattedMemories = memories
 		.map((m, i) => {
 			const similarity = Math.round(m.similarity * 100);
 			const outcome = m.execution.outcome;
-			return `[Memory ${i + 1}] (${similarity}% similar, ${outcome})
+			const date = m.execution.timestamp?.slice(0, 10) || "undated";
+			return `[Memory ${i + 1}] (${date}, ${similarity}% similar, ${outcome})
 Task: ${m.execution.taskDescription}
 Summary: ${m.execution.summary}
 Tools: ${m.execution.toolsUsed.join(", ") || "none"}
@@ -136,18 +140,8 @@ Agents: ${m.execution.agentsUsed.join(", ") || "none"}`;
 		})
 		.join("\n\n");
 
-	const contextString = `## Relevant Past Executions
-The following are semantically similar past tasks that may inform your approach:
-
-${formattedMemories}
-
-Use this context to:
-- Apply successful patterns from past tasks
-- Avoid mistakes from failed attempts
-- Choose appropriate tools and agents based on what worked before`;
-
 	return {
-		contextString,
+		formattedMemories,
 		memoryCount: memories.length,
 		hasHighSimilarityMatches,
 	};

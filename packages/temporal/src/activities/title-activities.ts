@@ -10,6 +10,7 @@ import { updateAiChat } from "@repo/database/prisma/queries/ai-chats";
  * Context for title generation in Temporal activities
  */
 export interface TitleGenerationActivityContext {
+	conversationId?: string;
 	userId: string;
 	organizationId?: string;
 	projectId?: string;

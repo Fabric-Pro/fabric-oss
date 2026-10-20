@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { planTeamsFetch } from "../src/workflows/backlog-context-analysis-workflow";
+import {
+	type BacklogContextAnalysisInput,
+	isMeetingOnlyAnalysis,
+	planTeamsFetch,
+} from "../src/workflows/backlog-context-analysis-workflow";
 
 describe("planTeamsFetch", () => {
 	it("returns scoped plan when selectedChannelContextIds is non-empty", () => {
@@ -50,5 +54,77 @@ describe("planTeamsFetch", () => {
 				fetchTeamsMessages: false,
 			}),
 		).toEqual({ kind: "skip" });
+	});
+});
+
+describe("isMeetingOnlyAnalysis", () => {
+	const meetings = [{ joinUrl: "https://example.com/meeting" }];
+	it.each<[string, BacklogContextAnalysisInput["contextSources"], boolean]>([
+		[
+			"meetings only",
+			{ fetchTeamsMessages: false, selectedMeetings: meetings },
+			true,
+		],
+		[
+			"empty optional selections",
+			{
+				fetchTeamsMessages: false,
+				selectedMeetings: meetings,
+				selectedChannelContextIds: [],
+				notionPageIds: [],
+				fetchSlackMessages: false,
+			},
+			true,
+		],
+		[
+			"Teams flag",
+			{ fetchTeamsMessages: true, selectedMeetings: meetings },
+			false,
+		],
+		[
+			"selected channels",
+			{
+				fetchTeamsMessages: false,
+				selectedMeetings: meetings,
+				selectedChannelContextIds: ["example-channel"],
+			},
+			false,
+		],
+		[
+			"explicit Slack",
+			{
+				fetchTeamsMessages: false,
+				selectedMeetings: meetings,
+				fetchSlackMessages: true,
+			},
+			false,
+		],
+		[
+			"Notion pages without config",
+			{
+				fetchTeamsMessages: false,
+				selectedMeetings: meetings,
+				notionPageIds: ["example-page"],
+			},
+			false,
+		],
+		[
+			"Notion pages with config",
+			{
+				fetchTeamsMessages: false,
+				selectedMeetings: meetings,
+				notionPageIds: ["example-page"],
+				notionMcpConfigId: "example-config",
+			},
+			false,
+		],
+		["no meetings", { fetchTeamsMessages: false }, false],
+		[
+			"empty meetings",
+			{ fetchTeamsMessages: false, selectedMeetings: [] },
+			false,
+		],
+	])("%s", (_label, sources, expected) => {
+		expect(isMeetingOnlyAnalysis(sources)).toBe(expected);
 	});
 });

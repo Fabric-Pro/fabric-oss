@@ -104,7 +104,7 @@ function simulate(
 				usageBodies.push(JSON.parse(String(init?.body)));
 				return new Response(null, { status: 200 });
 			}
-			if (url.startsWith(FABRIC)) {
+			if (new URL(url).origin === FABRIC) {
 				exchangeBodies.push(JSON.parse(String(init?.body)));
 				return nextPlan();
 			}

@@ -36,7 +36,11 @@ vi.mock("../prisma/queries/frame-sharing", () => ({
 	createMultipleSharingGrants: mocks.createGrants,
 }));
 
-import { shareFrame } from "../prisma/queries/frame-share";
+import {
+	PUBLIC_SHARING_DISABLED_MESSAGE,
+	publicSharingRefusal,
+	shareFrame,
+} from "../prisma/queries/frame-share";
 
 const NOW = new Date("2026-10-15T10:00:00Z");
 
@@ -343,5 +347,40 @@ describe("shareFrame", () => {
 			});
 			expect(mocks.updateScope).not.toHaveBeenCalled();
 		});
+	});
+});
+
+describe("publicSharingRefusal: the same rule, for a frame made public when created", () => {
+	it("refuses where the organization does not allow public links, in the sentence shareFrame uses", async () => {
+		mocks.findOrganization.mockResolvedValue(
+			policy({ canShareFramesPublicly: false }),
+		);
+
+		const message = await publicSharingRefusal("org-1");
+		const outcome = await share({ scope: "PUBLIC" });
+
+		expect(message).toBe(PUBLIC_SHARING_DISABLED_MESSAGE);
+		expect(outcome).toMatchObject({ ok: false, message });
+	});
+
+	it("allows it where the organization does", async () => {
+		mocks.findOrganization.mockResolvedValue(
+			policy({ canShareFramesPublicly: true }),
+		);
+
+		expect(await publicSharingRefusal("org-1")).toBeNull();
+	});
+
+	it("refuses an organization it cannot find, as shareFrame does", async () => {
+		mocks.findOrganization.mockResolvedValue(null);
+
+		expect(await publicSharingRefusal("org-1")).toBe(
+			PUBLIC_SHARING_DISABLED_MESSAGE,
+		);
+	});
+
+	it("has no policy to apply without an organization", async () => {
+		expect(await publicSharingRefusal(undefined)).toBeNull();
+		expect(mocks.findOrganization).not.toHaveBeenCalled();
 	});
 });

@@ -825,6 +825,7 @@
 		},
 		"organizationSelect": {
 			"createNewOrganization": "Neue Organisation erstellen",
+			"opening": "Arbeitsbereich wird geöffnet…",
 			"organizations": "Organisationen",
 			"switchError": "Arbeitsbereich konnte nicht gewechselt werden. Bitte versuche es erneut.",
 			"switching": "Arbeitsbereich wird gewechselt…",
@@ -1414,7 +1415,7 @@
 						"sync_stopped": "Meeting-Synchronisierung gestoppt oder fortgesetzt"
 					},
 					"parlume": {
-						"action_confirmed": "Parlume-Aktion bestätigt",
+						"action_confirmed": "Parlume-Aktion ausgeführt",
 						"session_started": "Parlume-Meeting-Sitzung gestartet",
 						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert"
 					},
@@ -1448,6 +1449,9 @@
 						"responded": "Analysebefund beantwortet",
 						"cleared": "Antwort auf Analysebefund entfernt",
 						"rerun_started": "Erneute interne Analyse gestartet"
+					},
+					"proposal_artifact": {
+						"export_started": "Angebotsexport gestartet"
 					},
 					"context_source": {
 						"scan_stopped": "Kanal- oder Chat-Scan gestoppt oder fortgesetzt",
@@ -2296,6 +2300,7 @@
 			"openSettings": "ChatGPT-Plan-Einstellungen öffnen",
 			"useOrganizationBilling": "Abrechnung der Organisation nutzen",
 			"usingOrganizationBilling": "Diese Organisation nutzt jetzt ihre eigene API-Abrechnung für deine KI-Arbeit.",
+			"configurePersonalFallback": "Ausweichlösung einrichten",
 			"cli": {
 				"helpLabel": "So installierst du die Fabric CLI",
 				"helpTitle": "So installierst du die Fabric CLI",
@@ -2357,6 +2362,10 @@
 			}
 		},
 		"chatgptPlanPool": {
+			"termsPendingTitle": "Diese Konten bedienen noch keine Arbeit",
+			"termsPendingBody": "Ein Organisationsinhaber muss unter AI Models → Routing den Bedingungen für gemeinsame ChatGPT-Pläne zustimmen. Bis dahin nutzt Fabric stattdessen die eigenen ChatGPT-Pläne der Mitglieder oder deinen API-Anbieter, und Arbeit ohne beides läuft nicht.",
+			"termsPendingReview": "Bedingungen ansehen",
+			"termsPendingOwnerOnly": "Nur ein Organisationsinhaber kann zustimmen. Bitte einen Inhaber, AI Models zu öffnen.",
 			"title": "Gemeinsame ChatGPT-Pläne",
 			"description": "ChatGPT-Konten, die deine Organisation teilt. Fabric führt darauf Hintergrundarbeit aus und die Arbeit von Mitgliedern, die keinen eigenen Plan verbunden haben, statt deinem API-Anbieter zu berechnen.",
 			"loadFailed": "Die gemeinsamen ChatGPT-Pläne konnten nicht geladen werden. Lade die Seite neu, um es erneut zu versuchen.",
@@ -2444,6 +2453,13 @@
 				"disabledToast": "Schlüssel darf nun alle KI-Aufgaben übernehmen",
 				"failedToast": "Zweck des Schlüssels konnte nicht geändert werden",
 				"takenHint": "{provider} ist bereits der Schlüssel nur für Embeddings. Ändere zuerst seinen Zweck oder entferne ihn."
+			},
+			"planSpentFallback": {
+				"toggleLabel": "Verwenden, wenn der ChatGPT-Plan aufgebraucht ist",
+				"toggleHint": "Wenn jeder ChatGPT-Plan für deine eigene Arbeit aufgebraucht ist und die Organisation sie stoppen würde, laufen deine Chats und die von dir gestartete Generierung über diesen Schlüssel, abgerechnet über dich. Nie Hintergrundarbeit.",
+				"enabledToast": "Dieser Schlüssel springt jetzt ein, wenn der ChatGPT-Plan aufgebraucht ist",
+				"disabledToast": "Dieser Schlüssel springt nicht mehr für einen aufgebrauchten ChatGPT-Plan ein",
+				"failedToast": "Schlüssel konnte nicht aktualisiert werden"
 			}
 		},
 		"chatgptPlanWindow": {
@@ -2484,8 +2500,14 @@
 				"sharedActive": "{count} aktiv · {percent}% des Fensters genutzt",
 				"sharedNone": "Keine Konten verbunden",
 				"manageShared": "Geteilte Konten verwalten",
-				"apiTitle": "API-Abrechnung",
+				"apiTitle": "API-Abrechnung der Organisation",
 				"apiBody": "Wird genutzt, wenn kein Plan die Anfrage bedienen kann.",
+				"personalTitle": "Dein persönlicher Schlüssel",
+				"personalBody": "Deine eigene Arbeit läuft über einen dafür freigegebenen Schlüssel von dir, wenn jeder Plan aufgebraucht ist und die Organisation sie stoppen würde. Abgerechnet über dich. Nur du siehst das.",
+				"personalUsed": "Genutzt: {provider}",
+				"personalNotSet": "Nicht eingerichtet",
+				"personalSetUp": "Persönlichen Schlüssel einrichten",
+				"personalManage": "Deine Schlüssel verwalten",
 				"apiBodyNone": "Nicht verfügbar. Anfragen, die kein Plan bedienen kann, schlagen fehl.",
 				"apiNone": "Kein API-Anbieter für LLM-Aufgaben",
 				"manageProviders": "Anbieter verwalten",
@@ -2506,7 +2528,8 @@
 				"peopleApi": "API-Abrechnung nutzen",
 				"apiNeedsLlmProvider": "Braucht einen API-Anbieter für Chat und Generierung. Der einzige Schlüssel deiner Organisation ist auf „Nur Embeddings“ gesetzt – ändere das oder füge unter AI Providers einen Anbieter hinzu.",
 				"apiNeedsProvider": "Braucht einen API-Anbieter. Füge unter AI Providers einen hinzu.",
-				"headroomLabel": "Für Menschen freihalten",
+				"backgroundShareLabel": "Fabric darf nutzen",
+				"backgroundShareTooltip": "Hintergrundarbeit wie Scans und Stapelgenerierung bevorzugt geteilte Konten, die unter diesem Anteil ihres Fensters liegen, und geht nur darüber hinaus, wenn alle geteilten Konten darüber liegen. Die eigene Arbeit von Menschen wird dadurch nie gebremst.",
 				"fallbackQuestion": "Wenn der Plan ein gewähltes Modell nicht mehr anbietet",
 				"fallbackHelpRecommended": "Fabric versucht es einmal mit diesem Modell. GPT-6 Astra ist das stärkste und verbraucht am meisten vom Planfenster.",
 				"fallbackHelpOther": "Fabric versucht es einmal mit diesem Modell. Wird auch es nicht angeboten, stoppt die Arbeit mit einem Fehler.",
@@ -2519,7 +2542,7 @@
 				"saveFailed": "Die Änderung konnte nicht gespeichert werden",
 				"loadFailed": "Wie KI-Arbeit hier läuft, konnte nicht geladen werden",
 				"sharedNeedsTerms": "Wartet darauf, dass ein Owner die Bedingungen akzeptiert",
-				"headroomHelp": "Wie viel vom Fenster jedes geteilten Kontos die Hintergrundarbeit für die eigene Arbeit von Menschen freilässt."
+				"backgroundShareDescription": "Wie viel vom 5-Stunden-Fenster jedes geteilten Kontos die Hintergrundarbeit nutzen darf. 100 % bedeutet keine Grenze; alles darunter bleibt für die eigene Arbeit von Menschen frei."
 			},
 			"models": {
 				"label": "Modelle",
@@ -2747,6 +2770,70 @@
 		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
 	},
 	"projects": {
+		"codingInstructions": {
+			"fileHistory": {
+				"button": "Verlauf",
+				"title": "Git-Verlauf: {path}",
+				"description": "Der Verlauf wird beim Öffnen aus Git gelesen. Er folgt genau diesem Pfad; frühere Dateinamen sind nicht enthalten.",
+				"refresh": "Aus Git aktualisieren",
+				"loadError": "Der Git-Verlauf konnte nicht gelesen werden.",
+				"previewError": "Diese Version konnte nicht verglichen werden. Vor der Wiederherstellung aus Git aktualisieren.",
+				"empty": "Git hat keine Commits für diesen Pfad geliefert.",
+				"versions": "Dateiversionen",
+				"select": "Einen Commit auswählen, um seine Datei mit dem aktuellen Branch zu vergleichen.",
+				"currentRevision": "Aktueller Branch-Stand: {sha}",
+				"selectedRevision": "Ausgewählter Stand: {sha}",
+				"messageWithheld": "Commit-Nachricht durch die Geheimnisprüfung ausgeblendet",
+				"source": "Commit in Git öffnen",
+				"loadMore": "Weitere laden",
+				"partial": "Weiterer Verlauf ist verfügbar. Nur geladene Commits werden angezeigt.",
+				"limit": "Die Grenze des Anbieters wurde erreicht. Es kann ältere Commits geben.",
+				"current": "Aktuelle Datei",
+				"selected": "Ausgewählte Datei",
+				"restore": "Diese Datei wiederherstellen",
+				"restoreDescription": "Die Wiederherstellung erstellt einen neuen Commit nur für diese Datei. Andere Dateien und der Git-Verlauf bleiben erhalten. Frühere Ausführungsrechte werden nicht wiederhergestellt.",
+				"permission": "Du kannst den Verlauf lesen, hast aber keine Berechtigung für einen Wiederherstellungs-Commit.",
+				"stale": "Dieser Vergleich ist nicht mehr verwendbar. Aus Git aktualisieren und die Version erneut auswählen.",
+				"pending": "Eine Dateiwiederherstellung wartet auf ihr Git-Ergebnis.",
+				"committed": "Datei mit Commit {sha} wiederhergestellt",
+				"rereadFailed": "Die Wiederherstellung wurde committet, aber die Dateiansicht konnte nicht aktualisiert werden. Aus Git aktualisieren, um die aktuelle Datei zu sehen.",
+				"unchanged": "Die Datei entspricht dieser Version bereits. Es wurde kein Commit erstellt.",
+				"branch-moved": "Der Branch hat sich vor der Wiederherstellung geändert. Es wurde nichts committet. Den Vergleich aus Git aktualisieren.",
+				"failed": "Wiederherstellung nicht abgeschlossen ({code}). Vor einem neuen Versuch den Vorgang prüfen.",
+				"rejected": "Die Geheimnisprüfung hat die Wiederherstellung abgelehnt. Es wurde nichts committet.",
+				"deleteTitle": "{path} löschen, um dieser Version zu entsprechen?",
+				"deleteMessage": "Im ausgewählten Commit existiert keine Datei an diesem Pfad. Ein neuer Commit löscht nur diese Datei aus dem aktuellen Branch.",
+				"deleteAction": "Dateilöschung committen",
+				"availability": {
+					"UPLOAD": "Dieses Projekt nutzt hochgeladene Anweisungen. Git-Verlauf ist nicht verfügbar.",
+					"MIGRATING": "Anweisungen werden nach Git verschoben. Der Verlauf ist danach verfügbar.",
+					"DISCONNECTED": "Das Git-Repository ist getrennt. Zum Lesen des Verlaufs erneut verbinden.",
+					"CREDENTIALS_EXPIRED": "Die Git-Zugangsdaten sind abgelaufen. Das Repository erneut verbinden.",
+					"NOT_FOUND": "Der konfigurierte Git-Branch oder Commit wurde nicht gefunden.",
+					"UNAVAILABLE": "Der Git-Anbieter ist nicht verfügbar. Später erneut aktualisieren."
+				},
+				"versionState": {
+					"found": "{side}: vollständiger Text geladen",
+					"absent": "{side}: keine Datei an diesem Pfad",
+					"binary": "{side}: Binärinhalt; kein Textvergleich verfügbar",
+					"tooLarge": "{side}: überschreitet die Grenze für Inline-Text",
+					"nonRegular": "{side}: Verzeichnis, Link oder nicht unterstützter Git-Eintrag",
+					"unavailable": "{side}: vollständiger Inhalt konnte nicht bestätigt werden"
+				},
+				"unsupported": {
+					"ignoreFile": ".fabricignore über Git wiederherstellen, damit die Sichtbarkeitsregeln geprüft werden können.",
+					"incomplete": "Der Anbieter hat keine vollständige Dateiversion geliefert. Wiederherstellung nicht verfügbar.",
+					"nonRegular": "Hier können nur reguläre Git-Dateien wiederhergestellt werden.",
+					"binary": "Binärdateien über Git wiederherstellen.",
+					"tooLarge": "Dateien über 256 KiB über Git wiederherstellen.",
+					"unchanged": "Die Datei entspricht dieser Version bereits."
+				}
+			},
+			"fileView": {
+				"historyDraftBlocked": "Den Editorentwurf vor dem Wiederherstellen einer Git-Version speichern oder verwerfen.",
+				"historyChangePending": "Vor dem Wiederherstellen einer Git-Version die aktuelle Dateiänderung abwarten."
+			}
+		},
 		"documents": {
 			"create": {
 				"createdQueued": "Dokument erstellt und in die Warteschlange gestellt. Die Generierung startet von selbst, sobald die Kontextarbeit des Projekts abgeschlossen ist; ein erneuter Versuch ist nicht nötig.",
@@ -2772,7 +2859,8 @@
 			"regenerateToast": {
 				"started": "Regenerierung des Dokuments gestartet",
 				"alreadyQueued": "Für dieses Dokument steht bereits eine Generierung in der Warteschlange — es wurde keine zweite gestartet",
-				"alreadyRunning": "Für dieses Dokument läuft bereits eine Generierung — es wurde keine zweite gestartet",
+				"alreadyRunning": "Für dieses Dokument läuft bereits eine Generierung — es wurde keine zweite gestartet und neue Anweisungen wurden nicht übernommen",
+				"liveRunUnknown": "Es konnte nicht bestätigt werden, ob für dieses Dokument bereits eine Generierung läuft — versuchen Sie es gleich noch einmal",
 				"failed": "Regenerierung fehlgeschlagen: {message}"
 			},
 			"markComplete": {
@@ -5205,7 +5293,26 @@
 			"originalFileNoExtension": "Originaldatei",
 			"originalFileTitle": "{filename} genau so herunterladen, wie sie hochgeladen wurde",
 			"originalUnavailable": "Die Originaldatei ist nicht mehr verfügbar",
-			"originalFailed": "Die Originaldatei konnte nicht heruntergeladen werden"
+			"originalFailed": "Die Originaldatei konnte nicht heruntergeladen werden",
+			"formatPdf": "PDF",
+			"formatDocx": "Word-Datei",
+			"exportReady": "{format} ist bereit",
+			"exportDownload": "Herunterladen",
+			"exportRetry": "Erneut versuchen",
+			"exportFailed": "{format} konnte nicht erstellt werden",
+			"exportStillRunning": "{format} dauert länger als erwartet",
+			"exportRateLimited": "Zu viele Exporte. Versuchen Sie es in {seconds} Sekunden erneut.",
+			"exportRateLimitedSoon": "Zu viele Exporte. Versuchen Sie es in einigen Minuten erneut.",
+			"exportLeftOut": "Einige Inhalte fehlen ({format})",
+			"exportWarningDiagramPlaceholder": "{count, plural, one {# Diagramm wird} other {# Diagramme werden}} als Platzhalter angezeigt.",
+			"exportWarningDiagramLimit": "{count, plural, one {# Diagramm über dem Limit wird} other {# Diagramme über dem Limit werden}} als Platzhalter angezeigt.",
+			"exportWarningImageDropped": "{count, plural, one {# Bild konnte} other {# Bilder konnten}} nicht übernommen werden.",
+			"exportWarningImageLimit": "{count, plural, one {# Bild über dem Limit wurde} other {# Bilder über dem Limit wurden}} weggelassen.",
+			"exportWarningExternalImageDropped": "{count, plural, one {# verlinktes Bild wurde} other {# verlinkte Bilder wurden}} weggelassen.",
+			"exportWarningLogoUnavailable": "{count, plural, one {Ein Markenlogo konnte} other {# Markenlogos konnten}} nicht übernommen werden.",
+			"exportWarningContentsWithoutPageNumbers": "Das Inhaltsverzeichnis führt die Abschnitte ohne Seitenzahlen auf.",
+			"exportFailureTooLarge": "Das Dokument ist zu groß für den Export als {format}.",
+			"exportFailureTooManyPages": "Das Dokument ist zu lang für den Export als {format}."
 		},
 		"proposalArtifactEntry": {
 			"libraryPrompt": "Kundenangebots-Prompt aus der Bibliothek",
@@ -5293,10 +5400,10 @@
 				"recommendation": "Empfehlung:",
 				"section": "Abschnitt: {heading}",
 				"rerunRunning": "Die interne Analyse wird erneut ausgeführt…",
-				"newerRunning": "Eine neue interne Analyse wird erstellt. Die Befunde unten bleiben sichtbar, bis sie fertig ist.",
-				"newerRerunRunning": "Die interne Analyse wird erneut ausgeführt. Die Befunde unten bleiben sichtbar, bis sie fertig ist.",
+				"newerRunning": "Eine neue interne Analyse wird erstellt. Die Analyse unten bleibt sichtbar, bis sie fertig ist.",
+				"newerRerunRunning": "Die interne Analyse wird erneut ausgeführt. Die Analyse unten bleibt sichtbar, bis sie fertig ist.",
 				"newerFailedTitle": "Die neueste interne Analyse wurde nicht abgeschlossen.",
-				"newerFailedKept": "Die Befunde unten stammen aus der letzten abgeschlossenen Analyse.",
+				"newerFailedKept": "Die Analyse unten ist die zuletzt abgeschlossene.",
 				"foldedTitles": "Auch erhoben als: {titles}",
 				"notKeyed": "Führen Sie die Analyse erneut aus, um diesen Befund zu beantworten.",
 				"authorRights": "Nicht angewendet: Die Person, die geantwortet hat, hat keine Bearbeitungsrechte mehr.",
@@ -5400,6 +5507,16 @@
 						"summary": "Projektzusammenfassung",
 						"other": "Andere Quelle"
 					}
+				},
+				"report": {
+					"title": "Bericht",
+					"beforeSending": "Vor dem Versand",
+					"fullReport": "Vollständiger Bericht",
+					"shortened": "(gekürzt)",
+					"plainTextNote": "Als reiner Text angezeigt, weil dieser Bericht nicht formatiert werden konnte.",
+					"citationLabel": "S{source}",
+					"citationName": "{label}: {title}",
+					"sourceRemoved": "{label} · Quelle entfernt"
 				}
 			},
 			"style": {
@@ -5447,6 +5564,19 @@
 				},
 				"styleFailed": "Der Stil konnte nicht gespeichert werden. Versuchen Sie es erneut.",
 				"recipientFailed": "Die Empfängermarke konnte nicht gespeichert werden. Versuchen Sie es erneut."
+			},
+			"generationFeedback": {
+				"promptNotBound": "Ein Angebot kann erst generiert werden, wenn der Aktion „Client proposal (Main)“ ein Prompt zugeordnet ist. Ein Administrator der Organisation ordnet ihn in der Prompt-Bibliothek zu, ein Projektadministrator in den Prompt-Standards des Projekts.",
+				"actionSuperseded": "Diese Aktion wird nicht verwendet, solange das Proposal-Artefakt aktiviert ist: Angebote werden von „Client proposal (Main)“ geschrieben. Ordnen Sie den Prompt stattdessen dort zu.",
+				"openCatalog": "„Client proposal (Main)“ in der Prompt-Bibliothek öffnen"
+			},
+			"supersededAction": {
+				"actionNote": "Wird nicht verwendet, solange das Proposal-Artefakt aktiviert ist: Angebote werden von „Client proposal (Main)“ geschrieben.",
+				"promptNote": "Dieser Prompt wird für Angebote nicht verwendet, solange das Proposal-Artefakt aktiviert ist. Angebote werden von „Client proposal (Main)“ geschrieben.",
+				"dialogNote": "Solange das Proposal-Artefakt aktiviert ist, werden Angebote von „Client proposal (Main)“ geschrieben. Die bisherigen Angebotsaktionen werden hier daher nicht angeboten.",
+				"nominationDeclineOnly": "Ein Vorschlag nur für diese Aktion kann abgelehnt, aber nicht angenommen werden.",
+				"projectGroupTitle": "Nicht mehr verwendet",
+				"projectGroupDescription": "Projektstandards für Aktionen, die das Proposal-Artefakt ersetzt. Solange es aktiviert ist, schreibt „Client proposal (Main)“ die Angebote, daher werden diese nicht verwendet. Entfernen Sie sie, um aufzuräumen."
 			}
 		},
 		"proposalArtifactPage": {
@@ -5465,6 +5595,7 @@
 			"live": {
 				"sectionsReady": "{count, plural, one {# Abschnitt fertig} other {# Abschnitte fertig}}",
 				"writingNext": "Der nächste Abschnitt wird geschrieben…",
+				"previewStopped": "Live-Vorschau angehalten — das Angebot wird noch geschrieben und kann davon abweichen",
 				"finishing": "Visualisierungen werden ergänzt und das Angebot wird fertiggestellt…",
 				"previousVersion": "Vorherige Version, angezeigt bis der erste neue Abschnitt fertig ist",
 				"newDocument": "Der erste Abschnitt erscheint hier, sobald er geschrieben ist.",
@@ -5747,6 +5878,43 @@
 				"editionChanged": "Die Glossy-Edition hat sich geändert, seit Sie sie geöffnet haben. Prüfen Sie die aktualisierte Edition und laden Sie sie dann erneut herunter.",
 				"omittedVisuals": "{count, plural, one {# Visual konnte nicht dargestellt werden und fehlt im Download.} other {# Visuals konnten nicht dargestellt werden und fehlen im Download.}}",
 				"omittedImages": "{count, plural, one {# Bild aus dem Dokument konnte nicht geladen werden und fehlt.} other {# Bilder aus dem Dokument konnten nicht geladen werden und fehlen.}}"
+			}
+		},
+		"documentEditorRun": {
+			"saveBlocked": {
+				"regenerating": "Speichern ist pausiert, während dieses Dokument neu generiert wird.",
+				"review": "Übernehmen oder verwerfen Sie die neu generierte Version, bevor Sie speichern.",
+				"runLive": "Speichern ist pausiert, während ein Generierungslauf dieses Dokument schreibt. Es ist wieder möglich, sobald der Lauf abgeschlossen ist.",
+				"reconnecting": "Speichern ist pausiert, bis der Editor wieder mit dem Kollaborationsserver verbunden ist.",
+				"updatingToLatest": "Speichern ist pausiert, während der Editor auf die zuletzt gespeicherte Version aktualisiert wird.",
+				"staleBase": "Dieses Dokument wurde an anderer Stelle geändert, seit Sie es geöffnet haben. Kopieren Sie Ihren Text und laden Sie die Seite neu, um weiterzuarbeiten."
+			},
+			"reconnecting": {
+				"title": "Verbindung zum Kollaborationsserver wird wiederhergestellt …",
+				"hint": "Sie können weiter bearbeiten, sobald die Verbindung wieder steht."
+			},
+			"away": {
+				"title": "Der Kollaborationsserver ist nicht erreichbar",
+				"hint": "Angezeigt wird die zuletzt gespeicherte Version, schreibgeschützt; das Speichern ist pausiert. Sie können weiter bearbeiten, sobald die Verbindung wieder steht."
+			},
+			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
+			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
+			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert."
+		},
+		"documentEditorRoom": {
+			"updating": "Wird auf die neueste Version aktualisiert …",
+			"updateFailed": "Der Editor konnte nicht auf die neueste Version aktualisiert werden.",
+			"reloadLatest": "Neueste Version laden",
+			"reload": "Neu laden",
+			"baseRequired": "Dieser Editor ist veraltet, deshalb wurden Ihre Änderungen nicht gespeichert. Laden Sie die Seite neu, um weiterzuarbeiten.",
+			"saveConflictRoom": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Der Editor wird auf die neueste Version aktualisiert.",
+			"saveConflictSolo": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Kopieren Sie Ihren Text und laden Sie die Seite neu, um die neueste Version zu sehen.",
+			"leaveSaveFailed": "Ihre letzten Änderungen an diesem Dokument wurden nach dem Verlassen nicht gespeichert. Kopieren Sie sie, um sie zu behalten.",
+			"offerBack": {
+				"message": "Der Editor wurde auf die zuletzt gespeicherte Version aktualisiert. Dabei wurde Text ersetzt, der seit dem letzten Speichern eingegeben wurde. Kopieren Sie ihn, um ihn zu behalten.",
+				"copy": "Meinen ungespeicherten Text kopieren",
+				"copied": "Ihr ungespeicherter Text wurde in die Zwischenablage kopiert.",
+				"copyFailed": "Ihr Text konnte nicht in die Zwischenablage kopiert werden."
 			}
 		},
 		"planPause": {

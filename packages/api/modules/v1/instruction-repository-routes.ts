@@ -2,8 +2,10 @@ import { ORPCError } from "@orpc/client";
 import { resolveCurrentInstructionSource } from "@repo/database";
 import { instructionTextPage } from "@repo/instructions";
 import type { Context, Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
+import { repositoryFilesReadSchema } from "../projects/procedures/instructions/repository/direct-batch-schema";
 import { badRequest, ok } from "./helpers";
 import { instructionRepositoryDirectUpgradeNotice } from "./instruction-cli-compatibility";
 import {
@@ -11,6 +13,7 @@ import {
 	getDirectRepositoryFileForApi,
 	getDirectRepositoryState,
 	listDirectRepositoryFilesForApi,
+	readDirectRepositoryFilesForApi,
 } from "./instruction-direct-repository";
 import { resolveInstructionProject } from "./instruction-project-gate";
 
@@ -365,6 +368,51 @@ export function registerDirectInstructionRepositoryRoutes(
 							userId: resolved.userId,
 							signal: c.req.raw.signal,
 							...parsedPin,
+						}),
+					),
+				);
+			} catch (error) {
+				const failure = directReadFailure(error);
+				return c.json(failure.body, failure.status);
+			}
+		},
+	);
+
+	app.post(
+		"/projects/:projectId/instructions/repository/files/read",
+		requireScope("instructions:read"),
+		bodyLimit({ maxSize: 1024 * 1024 }),
+		async (c) => {
+			let body: unknown;
+			try {
+				body = await c.req.json();
+			} catch {
+				return c.json(badRequest("Expected a repository batch"), 400);
+			}
+			const parsed = repositoryFilesReadSchema.safeParse(body);
+			if (!parsed.success) {
+				return c.json(badRequest("Invalid repository batch"), 400);
+			}
+			const projectId = c.req.param("projectId")!;
+			const resolved = await resolveInstructionProject(
+				projectId,
+				c.get("externalApiContext"),
+				{
+					org: c.req.query("org"),
+					personal: c.req.query("personal") === "1",
+				},
+			);
+			if ("error" in resolved) {
+				return c.json({ error: resolved.error }, resolved.status);
+			}
+			try {
+				return c.json(
+					ok(
+						await readDirectRepositoryFilesForApi({
+							...parsed.data,
+							projectId,
+							userId: resolved.userId,
+							signal: c.req.raw.signal,
 						}),
 					),
 				);

@@ -90,16 +90,23 @@ export function shareScopeLabel(scope: FrameShareScopeName): string {
 export function shareScopeSentence(
 	scope: FrameShareScopeName,
 	ownedByCaller: boolean,
+	isProjectFrame = false,
 ): string {
+	const projectAccess = isProjectFrame
+		? " Accepted project members also retain access."
+		: "";
 	switch (scope) {
 		case "PRIVATE":
+			if (isProjectFrame) {
+				return "Open to its owner and accepted project members. No additional sharing is enabled.";
+			}
 			return ownedByCaller
 				? "Private: only you can open it. Share it to open it to your organization."
-				: "Opened with you through its project.";
+				: "Private to its owner.";
 		case "EMAILS_ONLY":
-			return "Shared with the people invited by email.";
+			return `Shared with its owner and the people invited by email.${projectAccess}`;
 		case "WORKSPACE_AND_EMAILS":
-			return "Shared with everyone in your organization.";
+			return `Shared with everyone in your organization.${projectAccess}`;
 		case "PUBLIC":
 			return "Anyone with the link can open it.";
 		case "PROJECT":
@@ -112,8 +119,8 @@ export function shareScopeSentence(
 }
 
 /**
- * Where Fabric Agent is opened from when a frame is on screen: its surface, its
- * project, and - for a Workspace, which is its own frame - its id.
+ * Every frame carries its launch origin, including frames predating surfaces.
+ * Only an explicit Workspace supplies the tool placement default as well.
  */
 export function agentContextOfFrame(frame: {
 	frameId: string;
@@ -122,6 +129,7 @@ export function agentContextOfFrame(frame: {
 }) {
 	return {
 		surface: frame.surface ?? null,
+		launchFrameId: frame.frameId,
 		workspaceId: frame.surface === "workspace" ? frame.frameId : null,
 		projectId: frame.projectId ?? null,
 	};

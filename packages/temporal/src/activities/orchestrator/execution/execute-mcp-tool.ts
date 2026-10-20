@@ -27,6 +27,8 @@ import { executeSlackTool } from "@repo/integrations/slack";
 import {
 	getCachedMcpClientForConfig,
 	invalidateMcpClientCache,
+	isClosedClientRefusedBeforeSend,
+	type McpClientType,
 	McpGitLabOriginMismatchError,
 	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
@@ -43,8 +45,10 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { splitIntegrationToolRef } from "@repo/utils/integration-tool-ref";
+import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
+import { isDatabaseError } from "../../../lib/database-error";
 import {
 	MCP_TOOL_RESULT_MAX_BYTES,
 	truncateMcpTextOutput,
@@ -54,6 +58,7 @@ import {
 	cacheToolResult,
 	getCachedToolResult,
 } from "../../letta-memory-activities";
+import { createdWorkflowId } from "../../shared/fabric-confirmation";
 import { executeMicrosoftTeamsTool } from "../../shared/oauth-tool-executors";
 import { guardToolWriteForReadOnly } from "../../shared/read-only-gate";
 import { HEARTBEAT_INTERVALS } from "../config";
@@ -815,9 +820,11 @@ function deadlinePassedResult(
 	};
 }
 
+const GITLAB_PM_ORIGIN_MISMATCH = "GitLabPmOriginMismatch";
+
 /** The non-retryable refusal for a PM call bound to another GitLab instance. */
 function gitlabPmOriginMismatchFailure(message: string): ApplicationFailure {
-	return ApplicationFailure.nonRetryable(message, "GitLabPmOriginMismatch");
+	return ApplicationFailure.nonRetryable(message, GITLAB_PM_ORIGIN_MISMATCH);
 }
 
 /** See `ExecuteMcpToolInput.pmTarget`. */
@@ -867,37 +874,44 @@ function authorityRunId(input: ExecuteMcpToolInput): string | undefined {
  * A tool that did not run for lack of runtime authority. The `error` text is
  * what the model sees if the caller does not handle `authorityRequired`.
  */
-const CALL_SUMMARY_ROWS = 4;
+const CALL_SUMMARY_SCALAR_ROWS = 4;
+const CALL_SUMMARY_LIST_ROWS = 6;
 const CALL_SUMMARY_VALUE_CHARS = 80;
+const CALL_SUMMARY_LIST_CHARS = 300;
 
 /**
  * The plain arguments of a call the person is asked to allow once, so the
  * question names the workflow or the page tools and not only the tool: a few
- * scalars and lists of names, each clipped, reaching one object deep (a
- * workflow's `preset`).
+ * clipped scalars, and every list of names (a page's `runtimeTools`, a
+ * workflow's servers and tools) in a row of its own that the scalars cannot
+ * crowd out, since a list is what a call reaches with. Reaches one object deep
+ * (a workflow's `preset`). Lists of objects, such as a page's blocks, are left
+ * out.
  */
 function summarizeCall(args: Record<string, unknown> | undefined): string {
-	const rows: string[] = [];
+	const scalars: string[] = [];
+	const lists: string[] = [];
 	const add = (name: string, value: unknown, depth: number) => {
-		if (rows.length >= CALL_SUMMARY_ROWS) {
-			return;
-		}
 		if (
 			typeof value === "string" ||
 			typeof value === "number" ||
 			typeof value === "boolean"
 		) {
-			rows.push(
-				`${name}: ${String(value).slice(0, CALL_SUMMARY_VALUE_CHARS)}`,
-			);
+			if (scalars.length < CALL_SUMMARY_SCALAR_ROWS) {
+				scalars.push(
+					`${name}: ${String(value).slice(0, CALL_SUMMARY_VALUE_CHARS)}`,
+				);
+			}
 		} else if (
 			Array.isArray(value) &&
 			value.length > 0 &&
 			value.every((entry) => typeof entry === "string")
 		) {
-			rows.push(
-				`${name}: ${value.join(", ").slice(0, CALL_SUMMARY_VALUE_CHARS)}`,
-			);
+			if (lists.length < CALL_SUMMARY_LIST_ROWS) {
+				lists.push(
+					`${name}: ${value.join(", ").slice(0, CALL_SUMMARY_LIST_CHARS)}`,
+				);
+			}
 		} else if (
 			depth === 0 &&
 			typeof value === "object" &&
@@ -912,7 +926,7 @@ function summarizeCall(args: Record<string, unknown> | undefined): string {
 	for (const [name, value] of Object.entries(args ?? {})) {
 		add(name, value, 0);
 	}
-	return rows.join("; ");
+	return [...scalars, ...lists].join("; ");
 }
 
 function authorityRequiredResult(
@@ -984,6 +998,9 @@ async function gateOAuthExecutorTool(
 				);
 	} catch (error) {
 		return {
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
 			success: false,
 			output: {
 				error: `Authority check failed: ${describeError(error)}`,
@@ -1073,7 +1090,12 @@ async function executeIntegrationTool(
 			operation,
 		);
 	} catch (error) {
-		return fail(describeError(error));
+		return {
+			...fail(describeError(error)),
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
+		};
 	}
 	if (!operationDefinition.chatEnabled) {
 		return fail(
@@ -1142,7 +1164,12 @@ async function executeIntegrationTool(
 		}
 	} catch (error) {
 		// Fail closed — an authority check that errors must not admit the call.
-		return fail(`Authority check failed: ${describeError(error)}`);
+		return {
+			...fail(`Authority check failed: ${describeError(error)}`),
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
+		};
 	}
 
 	// ── 4. Credentials for the EXACT discovered integration ──────────────────
@@ -1187,6 +1214,9 @@ async function executeIntegrationTool(
 			error,
 		);
 		return {
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
 			success: false,
 			output: {
 				error: describeError(error),
@@ -1248,6 +1278,9 @@ async function gateMcpServerTool(
 				);
 	} catch (error) {
 		return {
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
 			success: false,
 			output: {
 				error: `Authority check failed: ${describeError(error)}`,
@@ -1282,13 +1315,12 @@ async function gateFabricWriteTool(
 	approval: Exclude<CatalogApproval, "none">,
 ): Promise<ExecuteMcpToolOutput | null> {
 	try {
-		const { ensureMcpToolAuthority } = await import("./authority-gate");
+		const { ensureMcpToolAuthority, fabricCallFingerprint } = await import(
+			"./authority-gate"
+		);
 		const requestFingerprint =
 			approval === "every-call"
-				? (await import("@repo/database")).authorityRequestFingerprint(
-						input.toolName,
-						input.args ?? {},
-					)
+				? fabricCallFingerprint(input.toolName, input.args ?? {})
 				: undefined;
 		const gate = await ensureMcpToolAuthority({
 			userId: input.userId,
@@ -1313,6 +1345,9 @@ async function gateFabricWriteTool(
 				);
 	} catch (error) {
 		return {
+			...(isDatabaseError(error)
+				? { localDatabaseError: true as const }
+				: {}),
 			success: false,
 			output: {
 				error: `Authority check failed: ${describeError(error)}`,
@@ -1320,6 +1355,38 @@ async function gateFabricWriteTool(
 			durationMs: Date.now() - startTime,
 			cached: false,
 		};
+	}
+}
+
+/**
+ * The person approved creating a workflow, and the card said that also covers
+ * publishing it and running it once. Records that for the workflow the create
+ * returned, in this run, so the two follow-ups do not ask again. A failure to
+ * record it only means they ask for themselves (fails closed).
+ */
+async function approveCreatedWorkflowFollowUps(
+	input: ExecuteMcpToolInput,
+	created: unknown,
+): Promise<void> {
+	const workflowId = createdWorkflowId(created);
+	const runId = authorityRunId(input);
+	if (!workflowId || !runId) {
+		return;
+	}
+	try {
+		const { approveWorkflowCreateFollowUps } = await import(
+			"./authority-gate"
+		);
+		await approveWorkflowCreateFollowUps({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			runId,
+			workflowId,
+		});
+	} catch (error) {
+		console.warn(
+			`[Orchestrator] Could not record the follow-up approvals for workflow ${workflowId}: ${describeError(error)}`,
+		);
 	}
 }
 
@@ -1392,6 +1459,11 @@ async function executeFabricCatalogTool(
 		console.warn(
 			`[Orchestrator] Fabric tool "${input.toolName}" failed: ${result.error}`,
 		);
+	} else if (
+		approval === "every-call" &&
+		input.toolName === "fabric_create_workflow"
+	) {
+		await approveCreatedWorkflowFollowUps(input, result.output);
 	}
 	return {
 		output: result.success ? result.output : { error: result.error },
@@ -1615,6 +1687,9 @@ async function executeMcpToolImpl(
 			// This allows the LLM to see the error and correct its tool call
 			// instead of Temporal retrying the same failing request
 			return {
+				...(isDatabaseError(error)
+					? { localDatabaseError: true as const }
+					: {}),
 				output: { error: errorMessage },
 				durationMs,
 				success: false,
@@ -1727,6 +1802,9 @@ async function executeMcpToolImpl(
 			}
 
 			return {
+				...(isDatabaseError(error)
+					? { localDatabaseError: true as const }
+					: {}),
 				output: { error: errorMessage },
 				durationMs,
 				success: false,
@@ -1839,6 +1917,9 @@ async function executeMcpToolImpl(
 			}
 
 			return {
+				...(isDatabaseError(error)
+					? { localDatabaseError: true as const }
+					: {}),
 				output: { error: errorMessage },
 				durationMs,
 				success: false,
@@ -1962,6 +2043,7 @@ async function executeMcpToolImpl(
 					}
 
 					const imageResult = await generateImageActivity({
+						usageConversationId: input.conversationId,
 						prompt,
 						provider,
 						aspectRatio: (args.aspectRatio as string) || "1:1",
@@ -2078,6 +2160,9 @@ async function executeMcpToolImpl(
 				errorMessage,
 			);
 			return {
+				...(isDatabaseError(error)
+					? { localDatabaseError: true as const }
+					: {}),
 				output: { error: errorMessage },
 				durationMs: Date.now() - startTime,
 				success: false,
@@ -2102,7 +2187,7 @@ async function executeMcpToolImpl(
 		: undefined;
 
 	// Helper function to execute tool on a specific config
-	// isRetry=true skips closed-client retry to prevent infinite recursion
+	// isRetry=true prevents a second resend after a closed connection.
 	const executeOnConfig = async (
 		configId: string,
 		serverName?: string,
@@ -2111,6 +2196,9 @@ async function executeMcpToolImpl(
 		// Set immediately before `tool.execute`: a failure before it never
 		// reached the server, one after it may have.
 		let dispatched = false;
+		let readOnly = false;
+		// The client this attempt used, so invalidation evicts only it.
+		let usedClient: McpClientType | undefined;
 		try {
 			safeHeartbeat({
 				phase: "mcp-connect",
@@ -2130,6 +2218,7 @@ async function executeMcpToolImpl(
 				redirectUri, // Enable OAuth2 token refresh
 				expectedGitLabOrigin,
 			});
+			usedClient = client;
 
 			if (!fromCache) {
 				console.log(
@@ -2150,6 +2239,13 @@ async function executeMcpToolImpl(
 				// Tool not found on this server
 				return null;
 			}
+
+			// The SDK keeps the server's hints in tool metadata.
+			readOnly =
+				readMcpToolAnnotations(
+					(toolDef as { metadata?: { annotations?: unknown } })
+						.metadata?.annotations,
+				)?.readOnlyHint === true;
 
 			// Extract MCP App resource URI from tool definition (_meta.ui.resourceUri)
 			// This is set by MCP App servers (e.g. Excalidraw) to indicate the tool
@@ -2330,7 +2426,12 @@ async function executeMcpToolImpl(
 			// (A transport's check also guards its one resend after a 401, an
 			// answer that refused the first request; `retryOnceAfterUnauthorized`.)
 			if (isDispatchDeadlinePassedError(execError)) {
-				return deadlinePassedResult(input, startTime);
+				return {
+					...deadlinePassedResult(input, startTime),
+					...(isDatabaseError(execError)
+						? { localDatabaseError: true as const }
+						: {}),
+				};
 			}
 			// Handle OAuth authorization required errors specially
 			// Return authRequired result so workflow can pause and signal UI
@@ -2340,6 +2441,9 @@ async function executeMcpToolImpl(
 					message: execError.message,
 				});
 				return {
+					...(isDatabaseError(execError)
+						? { localDatabaseError: true as const }
+						: {}),
 					output: {
 						error: `OAuth authorization required for "${execError.serverName}". Please connect in Settings.`,
 					},
@@ -2355,60 +2459,117 @@ async function executeMcpToolImpl(
 
 			const errorMessage = describeError(execError);
 
-			// Detect "closed client" errors (stale cached connection).
-			// Invalidate the cache and retry once with a fresh connection.
-			// Skip if already a retry to prevent infinite recursion.
+			// Only the SDK client's own closed-connection refusal is known to
+			// precede the send; see `isClosedClientRefusedBeforeSend`.
+			const lowerErrorMessage = errorMessage.toLowerCase();
+			const preSendClosedClient =
+				isClosedClientRefusedBeforeSend(execError);
 			const isClosedClientError =
-				(!isRetry &&
-					errorMessage.toLowerCase().includes("closed client")) ||
-				errorMessage.toLowerCase().includes("client is closed") ||
-				errorMessage.toLowerCase().includes("connection closed") ||
-				errorMessage.toLowerCase().includes("transport closed");
-			// A call that was sent and must not be sent twice is not resent
-			// on a fresh connection: the closed one may have delivered it.
-			if (isClosedClientError && dispatched && input.sendAtMostOnce) {
+				preSendClosedClient ||
+				lowerErrorMessage.includes("closed client") ||
+				lowerErrorMessage.includes("client is closed") ||
+				lowerErrorMessage.includes("connection closed") ||
+				lowerErrorMessage.includes("transport closed");
+			const canResend =
+				!isRetry &&
+				isClosedClientError &&
+				(!dispatched ||
+					(!input.sendAtMostOnce &&
+						(preSendClosedClient || readOnly)));
+			if (isClosedClientError && !canResend) {
+				// Drop the unusable client without hiding the original failure.
+				// With no client acquired there is nothing of this call's to
+				// drop: acquisition evicts its own stale entries.
+				if (usedClient) {
+					try {
+						await invalidateMcpClientCache(
+							configId,
+							input.userId,
+							input.organizationId,
+							usedClient,
+						);
+					} catch (invalidateError) {
+						rethrowIfDispatchStopped(invalidateError);
+					}
+				}
 				console.warn(
-					`[Orchestrator] Connection closed during "${input.toolName}" after it was sent; not resending a call that must run at most once`,
+					`[Orchestrator] Connection closed during "${input.toolName}"; not resending because the call may have been sent or the resend limit was reached`,
 				);
 				return {
+					...(isDatabaseError(execError)
+						? { localDatabaseError: true as const }
+						: {}),
 					output: { error: errorMessage },
 					durationMs: Date.now() - startTime,
 					success: false,
 					cached: false,
-					failureKind: "indeterminate",
+					// Only a resend's connection can close before it sends; the
+					// caller relabels that if its own first send went out.
+					failureKind: dispatched ? "indeterminate" : "rejected",
 				};
 			}
-			if (isClosedClientError) {
+			if (canResend) {
 				console.warn(
 					`[Orchestrator] Detected stale MCP connection for "${input.toolName}", reconnecting...`,
 				);
 				try {
-					await invalidateMcpClientCache(
-						configId,
-						input.userId,
-						input.organizationId,
-					);
-					// Retry the entire executeOnConfig with a fresh client
-					// Pass a flag so we don't recurse infinitely
+					if (usedClient) {
+						await invalidateMcpClientCache(
+							configId,
+							input.userId,
+							input.organizationId,
+							usedClient,
+						);
+					}
+					// Reacquire the client and tools, with the resend limit set.
 					const resent = await executeOnConfig(
 						configId,
 						serverName,
 						true,
 					);
-					// The first send may have landed, so a failed resend says
-					// nothing definite about the call. (A caller that must not
-					// repeat the call sets `sendAtMostOnce` and never gets here
-					// after a send.)
+					// The first call went out but the fresh connection no longer
+					// lists the tool: report the first call's outcome as unknown
+					// rather than letting the caller read "not found" as unsent.
+					if (dispatched && !resent) {
+						return {
+							...(isDatabaseError(execError)
+								? { localDatabaseError: true as const }
+								: {}),
+							output: { error: errorMessage },
+							durationMs: Date.now() - startTime,
+							success: false,
+							cached: false,
+							failureKind: "indeterminate",
+						};
+					}
+					// A failed resend cannot establish that the first call had no effect.
 					return dispatched && resent && !resent.success
-						? { ...resent, failureKind: "indeterminate" }
+						? {
+								...resent,
+								...(isDatabaseError(execError)
+									? { localDatabaseError: true as const }
+									: {}),
+								failureKind: "indeterminate",
+							}
 						: resent;
 				} catch (retryError) {
+					rethrowIfDispatchStopped(retryError);
+					if (
+						retryError instanceof ApplicationFailure &&
+						retryError.type === GITLAB_PM_ORIGIN_MISMATCH
+					) {
+						throw retryError;
+					}
 					const retryMsg = describeError(retryError);
 					console.error(
 						`[Orchestrator] Retry after reconnect also failed for "${input.toolName}":`,
 						retryMsg,
 					);
 					return {
+						...(isDatabaseError(execError) ||
+						isDatabaseError(retryError)
+							? { localDatabaseError: true as const }
+							: {}),
 						output: { error: retryMsg },
 						durationMs: Date.now() - startTime,
 						success: false,
@@ -2458,6 +2619,9 @@ async function executeMcpToolImpl(
 			// This allows the LLM to see the error and correct its tool call
 			// instead of Temporal retrying the same failing request
 			return {
+				...(isDatabaseError(execError)
+					? { localDatabaseError: true as const }
+					: {}),
 				output: { error: errorMessage },
 				durationMs: Date.now() - startTime,
 				success: false,

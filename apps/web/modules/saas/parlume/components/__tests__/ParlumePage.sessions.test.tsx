@@ -139,9 +139,7 @@ describe("ParlumePage sessions table", () => {
 			table.getAllByRole("columnheader").map((cell) => cell.textContent),
 		).toEqual(["Session", "Mode", "Length", "Outcome", "Cost", "Details"]);
 		const first = within(rowOf("Assistant A"));
-		expect(
-			first.getByText("Actions with confirmation"),
-		).toBeInTheDocument();
+		expect(first.getByText("Actions")).toBeInTheDocument();
 		expect(first.getByText("30 min")).toBeInTheDocument();
 		expect(first.getByText("Stopped by admin")).toBeInTheDocument();
 		expect(await first.findByText("$0.01")).toBeInTheDocument();

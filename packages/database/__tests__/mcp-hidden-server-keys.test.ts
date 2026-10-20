@@ -14,8 +14,10 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
+import { RETIRED_SYSTEM_MCP_SERVER_KEYS } from "../prisma/curated-mcp-server-keys";
 import {
 	HIDDEN_SYSTEM_MCP_SERVER_KEYS,
+	isHiddenSystemMcpServerKey,
 	withoutHiddenSystemMcpServers,
 } from "../prisma/hidden-mcp-server-keys";
 import {
@@ -28,6 +30,45 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 	beforeEach(() => {
 		mCPServerFindManyMock.mockReset();
 		mCPConfigFindManyMock.mockReset();
+	});
+
+	it("includes retired keys in both the exported hidden list and its predicate", () => {
+		expect(HIDDEN_SYSTEM_MCP_SERVER_KEYS).toContain("github");
+		expect(isHiddenSystemMcpServerKey("github")).toBe(true);
+		for (const key of RETIRED_SYSTEM_MCP_SERVER_KEYS) {
+			expect(HIDDEN_SYSTEM_MCP_SERVER_KEYS).toContain(key);
+			expect(isHiddenSystemMcpServerKey(key)).toBe(true);
+		}
+	});
+
+	it.each(["upstash", "browserbase"])(
+		"retires %s while keeping it hidden",
+		(key) => {
+			expect(RETIRED_SYSTEM_MCP_SERVER_KEYS).toContain(key);
+			expect(isHiddenSystemMcpServerKey(key)).toBe(true);
+		},
+	);
+
+	it("lists each hidden key once", () => {
+		expect(new Set(HIDDEN_SYSTEM_MCP_SERVER_KEYS).size).toBe(
+			HIDDEN_SYSTEM_MCP_SERVER_KEYS.length,
+		);
+	});
+
+	it("keeps rebuilt entries hidden while Cloudflare remains available", () => {
+		for (const key of [
+			"neon",
+			"axiom",
+			"airtable",
+			"todoist",
+			"brave-search",
+			"memory",
+			"sequential-thinking",
+			"everything",
+		]) {
+			expect(isHiddenSystemMcpServerKey(key)).toBe(true);
+		}
+		expect(isHiddenSystemMcpServerKey("cloudflare")).toBe(false);
 	});
 
 	it("existing configurations for hidden servers still resolve in getAvailableMcpConfigsForKeys", async () => {
@@ -126,6 +167,16 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 	});
 
 	describe("withoutHiddenSystemMcpServers", () => {
+		it("filters retired system rows from cached listings but preserves tenant-owned rows", () => {
+			const custom = { key: "github", isSystemProvided: false };
+			expect(
+				withoutHiddenSystemMcpServers([
+					{ key: "github", isSystemProvided: true },
+					custom,
+				]),
+			).toEqual([custom]);
+		});
+
 		it("drops a system server whose key is memory", () => {
 			const servers = [
 				{ key: "memory", isSystemProvided: true, name: "Memory" },
@@ -153,9 +204,13 @@ describe("MCP Hidden Server Keys & Config Resolution", () => {
 			expect(withoutHiddenSystemMcpServers(servers)).toEqual(servers);
 		});
 
-		it("keeps a system server with any other key", () => {
+		it("keeps system servers with non-hidden keys", () => {
 			const servers = [
-				{ key: "github", isSystemProvided: true, name: "GitHub" },
+				{
+					key: "github-remote",
+					isSystemProvided: true,
+					name: "GitHub",
+				},
 				{ key: "linear", isSystemProvided: true, name: "Linear" },
 			];
 			expect(withoutHiddenSystemMcpServers(servers)).toEqual(servers);

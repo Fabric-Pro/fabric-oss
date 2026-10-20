@@ -56,6 +56,9 @@ const db = vi.hoisted(() => ({
 	failPool: false,
 	/** The organization has an LLM provider of its own to bill. */
 	orgHasLlm: true,
+	/** Each member's personal key opted in for a spent plan (Fizzy #3085). */
+	personalKeys: new Map<string, Record<string, unknown>>(),
+	personalKeyLookups: [] as string[],
 	audit: vi.fn(),
 }));
 
@@ -141,6 +144,14 @@ vi.mock("@repo/database", () => ({
 	markChatGptPlanSourceAnswered: async () => true,
 	recordAudit: db.audit,
 	organizationHasLlmApiProvider: async () => db.orgHasLlm,
+	getPlanSpentPersonalProviderConfig: async ({
+		userId,
+	}: {
+		userId: string;
+	}) => {
+		db.personalKeyLookups.push(userId);
+		return db.personalKeys.get(userId) ?? null;
+	},
 }));
 
 import { __resetChatGptPlanBreaker } from "../lib/chatgpt-plan/exhaustion-breaker";
@@ -150,6 +161,7 @@ import {
 	BULK_PERSON_JOB_TYPES,
 	BULK_RUNS_NEED_SHARED_PLAN_MESSAGE,
 	bulkRunsNeedSharedPlanMessage,
+	chatGptPlanPersonalKeyFallback,
 	chatGptPlanSourceForCall,
 	interactivePlanModel,
 	PLAN_POOL_BACKGROUND_JOB_TYPES,
@@ -214,6 +226,8 @@ beforeEach(() => {
 	db.reported = new Map();
 	db.open = new Map();
 	db.failPool = false;
+	db.personalKeys = new Map();
+	db.personalKeyLookups = [];
 });
 
 describe("the member's own plan", () => {
@@ -1087,6 +1101,161 @@ describe("bulkRunsNeedSharedPlanMessage", () => {
 		db.flags = { CHATGPT_PLAN: false };
 		await expect(
 			bulkRunsNeedSharedPlanMessage(failure),
+		).resolves.toBeNull();
+	});
+});
+
+describe("a personal key opted in for when the plan is spent (Fizzy #3085)", () => {
+	const PERSONAL_KEY = {
+		apiKey: "encrypted:example-personal-key",
+		configId: "cfg_personal",
+		provider: "ANTHROPIC_DIRECT",
+		source: "user",
+	};
+
+	beforeEach(() => {
+		db.accounts = [account("acc_1")];
+		db.open.set("ORG:acc_1", IN_AN_HOUR);
+		db.personalKeys.set("user_1", PERSONAL_KEY);
+	});
+
+	it("serves the member's own work where the organization would stop it", async () => {
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toEqual({
+			personalKey: PERSONAL_KEY,
+			resetAt: IN_AN_HOUR,
+		});
+		expect(db.personalKeyLookups).toEqual(["user_1"]);
+	});
+
+	it("serves under Use API billing when the organization has no LLM key to bill", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		db.orgHasLlm = false;
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toEqual({
+			personalKey: PERSONAL_KEY,
+			resetAt: IN_AN_HOUR,
+		});
+	});
+
+	it("leaves the organization's key to serve under Use API billing when it has one", async () => {
+		db.policy.apiFallbackInteractive = "AUTO";
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toBeNull();
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("stands in for the member's own spent plan with nothing else serving", async () => {
+		db.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		db.open.set("USER:user_1", IN_AN_HOUR);
+		db.accounts = [];
+		await expect(
+			chatGptPlanSourceForCall(interactive),
+		).resolves.toMatchObject({ personalKey: PERSONAL_KEY });
+	});
+
+	it("never serves background work, which would bill the individual", async () => {
+		const error = await chatGptPlanSourceForCall(background).catch(
+			(caught: unknown) => caught,
+		);
+		expect(error).toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(
+			(error as SubscriptionPlanExhaustedError).personalKeyOption,
+		).toBe(false);
+		expect(db.personalKeyLookups).toEqual([]);
+		// Nor background work on the member's own spent plan.
+		db.ownUse = { includeBackgroundJobs: true, credentialStatus: "ACTIVE" };
+		db.open.set("USER:user_1", IN_AN_HOUR);
+		await expect(chatGptPlanSourceForCall(background)).resolves.toEqual({
+			source: { kind: "user", userId: "user_1" },
+		});
+		// Work done on the member's behalf with no job type is background too.
+		await expect(
+			chatGptPlanSourceForCall({
+				userId: "user_1",
+				organizationId: "org_a",
+			}),
+		).resolves.toEqual({ source: { kind: "user", userId: "user_1" } });
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("never serves a background job type, even one marked plan-eligible", async () => {
+		await expect(
+			chatGptPlanSourceForCall({
+				...interactive,
+				jobType: "security-scan",
+			}),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("never serves one member's work on another member's key", async () => {
+		const error = await chatGptPlanSourceForCall({
+			...interactive,
+			userId: "user_2",
+		}).catch((caught: unknown) => caught);
+		expect(error).toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(db.personalKeyLookups).toEqual(["user_2"]);
+	});
+
+	it("never serves an impersonated request", async () => {
+		await expect(
+			runWithAiInteractiveContext(
+				{ userId: "user_1", impersonated: true },
+				() => chatGptPlanSourceForCall(interactive),
+			),
+		).resolves.toBeNull();
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("changes nothing with CHATGPT_PLAN off", async () => {
+		db.flags = {};
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toBeNull();
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("is not consulted while a plan still serves the call", async () => {
+		db.open.delete("ORG:acc_1");
+		await expect(chatGptPlanSourceForCall(interactive)).resolves.toEqual(
+			orgSource("acc_1"),
+		);
+		expect(db.personalKeyLookups).toEqual([]);
+	});
+
+	it("without a key opted in, the refusal offers to set one up", async () => {
+		db.personalKeys.clear();
+		const error = await chatGptPlanSourceForCall(interactive).catch(
+			(caught: unknown) => caught,
+		);
+		expect(error).toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(
+			(error as SubscriptionPlanExhaustedError).personalKeyOption,
+		).toBe(true);
+	});
+
+	it("says whether it applies, for a member with no key opted in", async () => {
+		db.personalKeys.clear();
+		const plan = await pickChatGptPlanSource(interactive);
+		if (!plan || !("exhausted" in plan)) {
+			throw new Error("expected every plan spent");
+		}
+		await expect(
+			chatGptPlanPersonalKeyFallback(plan, interactive),
+		).resolves.toEqual({ config: null });
+		// Under Use API billing with a key of its own, the organization pays.
+		db.policy.apiFallbackInteractive = "AUTO";
+		await expect(
+			chatGptPlanPersonalKeyFallback(plan, interactive),
+		).resolves.toBeNull();
+	});
+
+	it("names no spent plan model while the personal key serves, so its models are offered", async () => {
+		await expect(
+			interactivePlanModel({
+				userId: "user_1",
+				organizationId: "org_a",
+				taskType: "TOOL_CALLING",
+			}),
 		).resolves.toBeNull();
 	});
 });

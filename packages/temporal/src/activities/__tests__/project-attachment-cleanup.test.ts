@@ -68,9 +68,10 @@ beforeEach(() => {
 	mocks.detachFramesFromProject.mockResolvedValue(0);
 	mocks.deleteFrameOfDeletedProject.mockResolvedValue(1);
 	mocks.deleteFramePageFiles.mockResolvedValue({ deleted: 0 });
-	// Default: an empty prefix. The activity sweeps two prefixes (attachments,
-	// then Glossy recipient logos), so a test that stubs only the first page
-	// still sees the second listing come back empty.
+	// Default: an empty prefix. The activity sweeps three prefixes
+	// (attachments, Glossy recipient logos, then Proposal exports), so a test
+	// that stubs only the first pages still sees the later listings come back
+	// empty.
 	mocks.listObjects.mockResolvedValue({
 		objects: [],
 		nextContinuationToken: undefined,
@@ -123,8 +124,9 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			["story-attachments/p/s/a.png", "story-attachments/p/s/b.png"],
 			{ bucket: "project-contexts" },
 		);
-		// One page per prefix: the attachments, then the empty brand prefix.
-		expect(res).toEqual({ deleted: 2, pages: 2 });
+		// One page per prefix: the attachments, then the empty brand and
+		// export prefixes.
+		expect(res).toEqual({ deleted: 2, pages: 3 });
 	});
 
 	it("paginates across pages via nextContinuationToken until exhausted", async () => {
@@ -143,12 +145,13 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			projectId: "p",
 		});
 
-		// Two attachment pages, then one (empty) brand page.
-		expect(mocks.listObjects).toHaveBeenCalledTimes(3);
+		// Two attachment pages, then one (empty) brand page and one (empty)
+		// export page.
+		expect(mocks.listObjects).toHaveBeenCalledTimes(4);
 		expect(mocks.listObjects.mock.calls[1][0]).toMatchObject({
 			continuationToken: "t",
 		});
-		expect(res).toEqual({ deleted: 2, pages: 3 });
+		expect(res).toEqual({ deleted: 2, pages: 4 });
 	});
 
 	it("is a no-op (no delete) on empty prefixes", async () => {
@@ -156,7 +159,7 @@ describe("deleteProjectAttachmentsFromStorageActivity", () => {
 			projectId: "p",
 		});
 		expect(mocks.deleteObjects).not.toHaveBeenCalled();
-		expect(res).toEqual({ deleted: 0, pages: 2 });
+		expect(res).toEqual({ deleted: 0, pages: 3 });
 	});
 
 	it("propagates a listObjects failure (so Temporal retries)", async () => {
@@ -209,6 +212,7 @@ describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix
 		expect(mocks.listObjects.mock.calls.map((c) => c[0].prefix)).toEqual([
 			"story-attachments/p/",
 			"project-brand/p/",
+			"proposal-exports/p/",
 		]);
 		expect(mocks.deleteObjects).toHaveBeenLastCalledWith(
 			[
@@ -217,7 +221,7 @@ describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix
 			],
 			{ bucket: "project-contexts" },
 		);
-		expect(res).toEqual({ deleted: 3, pages: 2 });
+		expect(res).toEqual({ deleted: 3, pages: 3 });
 	});
 
 	it("paginates the brand prefix like the attachment prefix", async () => {
@@ -244,7 +248,7 @@ describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix
 			prefix: "project-brand/p/",
 			continuationToken: "b1",
 		});
-		expect(res).toEqual({ deleted: 2, pages: 3 });
+		expect(res).toEqual({ deleted: 2, pages: 4 });
 	});
 
 	it("keeps a restored project's brand objects", async () => {
@@ -281,6 +285,48 @@ describe("deleteProjectAttachmentsFromStorageActivity — recipient brand prefix
 		await expect(
 			deleteProjectAttachmentsFromStorageActivity({ projectId: "p" }),
 		).rejects.toThrow(/1 object/);
+	});
+});
+
+// Exported Proposal files (Fizzy #2946) live under
+// `proposal-exports/{projectId}/` in the same bucket; deleting the project
+// deletes them with it, whatever their age.
+describe("deleteProjectAttachmentsFromStorageActivity — Proposal export prefix", () => {
+	it("also lists and deletes everything under proposal-exports/{projectId}/", async () => {
+		mocks.listObjects
+			.mockResolvedValueOnce({
+				objects: [],
+				nextContinuationToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				objects: [],
+				nextContinuationToken: undefined,
+			})
+			.mockResolvedValueOnce({
+				objects: [
+					obj("proposal-exports/p/proposal-export-0123.pdf"),
+					obj("proposal-exports/p/proposal-export-4567.docx"),
+				],
+				nextContinuationToken: undefined,
+			});
+		mocks.deleteObjects.mockResolvedValueOnce({ deleted: 2, errors: [] });
+
+		const res = await deleteProjectAttachmentsFromStorageActivity({
+			projectId: "p",
+		});
+
+		expect(mocks.listObjects.mock.calls[2][0]).toMatchObject({
+			bucket: "project-contexts",
+			prefix: "proposal-exports/p/",
+		});
+		expect(mocks.deleteObjects).toHaveBeenCalledWith(
+			[
+				"proposal-exports/p/proposal-export-0123.pdf",
+				"proposal-exports/p/proposal-export-4567.docx",
+			],
+			{ bucket: "project-contexts" },
+		);
+		expect(res).toEqual({ deleted: 2, pages: 3 });
 	});
 });
 
@@ -324,7 +370,7 @@ describe("deleteProjectAttachmentsFromStorageActivity — pages", () => {
 			frameId: "f1",
 		});
 		expect(order).toEqual(["files", "row"]);
-		expect(res).toEqual({ deleted: 3, pages: 2 });
+		expect(res).toEqual({ deleted: 3, pages: 3 });
 	});
 
 	it("unlinks Workspace pages and keeps them and their files", async () => {

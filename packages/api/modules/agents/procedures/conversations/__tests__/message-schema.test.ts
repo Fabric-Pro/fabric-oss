@@ -34,7 +34,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 	return {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
-		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(),
 	};
 });

@@ -17,6 +17,7 @@
  * @see https://a2a-protocol.org/latest/specification/
  */
 
+import { redactSensitiveKeys } from "@repo/utils/sensitive-keys";
 import { v4 as uuidv4 } from "uuid";
 import type {
 	A2AError,
@@ -125,6 +126,15 @@ export interface A2AServerConfig {
 	multiTenancyAware?: boolean;
 	/** Maximum autonomy level: 'step' | 'subtask' | 'task' | 'session' */
 	maxAutonomyLevel?: "step" | "subtask" | "task" | "session";
+}
+
+/** Copy execution metadata for task storage and protocol output. */
+function redactMetadata(metadata?: Record<string, unknown>) {
+	return redactSensitiveKeys(metadata) as Record<string, unknown> | undefined;
+}
+
+function redactMessage(message: A2AMessage): A2AMessage {
+	return { ...message, metadata: redactMetadata(message.metadata) };
 }
 
 /**
@@ -241,9 +251,9 @@ export class A2AServer {
 			id: taskId,
 			contextId,
 			status: "submitted",
-			messages: [message],
+			messages: [redactMessage(message)],
 			artifacts: [],
-			metadata,
+			metadata: redactMetadata(metadata),
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -264,13 +274,13 @@ export class A2AServer {
 			const responseMessage: A2AMessage = {
 				role: "agent",
 				parts: [{ type: "text", text: result.response }],
-				metadata: result.metadata,
+				metadata: redactMetadata(result.metadata),
 			};
 
 			// Update task with result
 			const completedTask = this.taskStore.update(taskId, {
 				status: "completed",
-				messages: [message, responseMessage],
+				messages: [redactMessage(message), responseMessage],
 				artifacts: result.artifacts || [],
 			});
 
@@ -279,13 +289,13 @@ export class A2AServer {
 			// Update task with error
 			const failedTask = this.taskStore.update(taskId, {
 				status: "failed",
-				metadata: {
+				metadata: redactMetadata({
 					...metadata,
 					error:
 						error instanceof Error
 							? error.message
 							: "Unknown error",
-				},
+				}),
 			});
 			return failedTask || task;
 		}
@@ -308,9 +318,9 @@ export class A2AServer {
 			id: taskId,
 			contextId,
 			status: "submitted",
-			messages: [message],
+			messages: [redactMessage(message)],
 			artifacts: [],
-			metadata,
+			metadata: redactMetadata(metadata),
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -382,7 +392,7 @@ export class A2AServer {
 				};
 				this.taskStore.update(taskId, {
 					status: "completed",
-					messages: [message, responseMessage],
+					messages: [redactMessage(message), responseMessage],
 					artifacts,
 				});
 			} else {
@@ -400,7 +410,7 @@ export class A2AServer {
 					message: {
 						role: "agent",
 						parts: [{ type: "text", text: result.response }],
-						metadata: result.metadata,
+						metadata: redactMetadata(result.metadata),
 					},
 					timestamp: new Date().toISOString(),
 				};
@@ -419,11 +429,11 @@ export class A2AServer {
 				this.taskStore.update(taskId, {
 					status: "completed",
 					messages: [
-						message,
+						redactMessage(message),
 						{
 							role: "agent",
 							parts: [{ type: "text", text: result.response }],
-							metadata: result.metadata,
+							metadata: redactMetadata(result.metadata),
 						},
 					],
 					artifacts: result.artifacts || [],
@@ -444,7 +454,7 @@ export class A2AServer {
 			// Update task with error
 			this.taskStore.update(taskId, {
 				status: "failed",
-				metadata: { ...metadata, error: errorMessage },
+				metadata: redactMetadata({ ...metadata, error: errorMessage }),
 			});
 
 			// Emit error event

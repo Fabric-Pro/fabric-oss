@@ -81,7 +81,10 @@ const handleAskPage = pageTool(
 					manageLimitsUrl: error.manageLimitsUrl,
 				});
 			}
-			console.error("[MCP Gateway] page ask failed:", error);
+			console.error("[MCP Gateway] page ask failed:", {
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			return errorResult("The model could not answer right now.", {
 				reason: "unavailable",
 			});

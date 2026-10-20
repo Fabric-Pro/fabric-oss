@@ -17,19 +17,25 @@
  */
 
 import { isDispatchGuardedModel } from "@repo/utils/dispatch-guard";
-import { generateText, streamText } from "ai";
-import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
+import { embed, generateText, streamText } from "ai";
+import {
+	MockEmbeddingModelV4,
+	MockLanguageModelV4,
+	simulateReadableStream,
+} from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	getAiProviderApiKeyMock,
 	getModelForTaskMock,
 	getModelMock,
+	getEmbeddingModelMock,
 	logAiUsageAsyncMock,
 } = vi.hoisted(() => ({
 	getAiProviderApiKeyMock: vi.fn(),
 	getModelForTaskMock: vi.fn(),
 	getModelMock: vi.fn(),
+	getEmbeddingModelMock: vi.fn(),
 	logAiUsageAsyncMock: vi.fn(),
 }));
 
@@ -38,7 +44,7 @@ vi.mock("@repo/database", () => ({
 	getActiveModels: vi.fn(),
 	getAiProviderApiKey: getAiProviderApiKeyMock,
 	getAiProviderApiKeyByProvider: vi.fn(),
-	getEmbeddingProviderConfig: vi.fn(),
+	getEmbeddingProviderConfig: vi.fn(async () => ORGANIZATION_GATEWAY),
 	getModelForTask: getModelForTaskMock,
 	getProviderModelIdForCanonical: vi.fn(),
 	getSystemAiProviderApiKey: vi.fn(),
@@ -69,12 +75,15 @@ vi.mock("@repo/logs", () => ({
 // The provider factory is the one seam replaced: everything between it and
 // the database boundary is the production code path.
 vi.mock("../model-factory", () => ({
-	getEmbeddingModel: vi.fn(),
+	getEmbeddingModel: getEmbeddingModelMock,
 	getEvaluationModel: vi.fn(),
 	getModel: getModelMock,
 }));
 
-import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
+import {
+	getAIEmbeddingModelWithMetadata,
+	getAIModelWithMetadata,
+} from "../lib/dynamic-model-selector";
 
 const CONTEXT = {
 	userId: "user-1",
@@ -217,6 +226,36 @@ beforeEach(() => {
 });
 
 describe("getAIModelWithMetadata — per-call usage logging (default)", () => {
+	it("preserves Workspace and workflow origins on exactly one canonical usage row", async () => {
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			{
+				...CONTEXT,
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+				agentId: "agent-example",
+				featureKey: "workspace",
+				promptVersionId: "prompt-example",
+			},
+		);
+		await generateText({
+			model: resolved.model,
+			prompt: "Summarise this story.",
+		});
+		expect(logAiUsageAsyncMock).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsyncMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+				agentId: "agent-example",
+				featureKey: "workspace",
+				promptVersionId: "prompt-example",
+				inputTokens: 10,
+				outputTokens: 4,
+			}),
+		);
+	});
+
 	it("records one row with the resolved tenant and billing fields for a generateText call", async () => {
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },
@@ -337,4 +376,29 @@ describe("getAIModelWithMetadata — aggregate usage logging", () => {
 		expect(model.doGenerateCalls).toHaveLength(1);
 		expect(logAiUsageAsyncMock).not.toHaveBeenCalled();
 	});
+});
+
+describe("embedding conversation sink", () => {
+	it.each(["conversation-example", undefined])(
+		"records the resolver's explicit conversation (%s)",
+		async (conversationId) => {
+			getEmbeddingModelMock.mockReturnValue(
+				new MockEmbeddingModelV4({
+					doEmbed: async () => ({
+						embeddings: [[0.1]],
+						usage: { tokens: 1 },
+						warnings: [],
+					}),
+				}),
+			);
+			const { model } = await getAIEmbeddingModelWithMetadata({
+				...CONTEXT,
+				conversationId,
+			});
+			await embed({ model, value: "query" });
+			expect(logAiUsageAsyncMock.mock.calls[0][0].conversationId).toBe(
+				conversationId,
+			);
+		},
+	);
 });

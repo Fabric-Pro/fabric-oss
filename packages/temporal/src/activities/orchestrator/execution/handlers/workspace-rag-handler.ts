@@ -133,6 +133,7 @@ export class WorkspaceRagHandler implements StepHandler {
 				undefined,
 				topK,
 				minSimilarity,
+				{ usageConversationId: input.conversationId },
 			);
 
 			const ragDurationMs = Date.now() - ragStartTime;

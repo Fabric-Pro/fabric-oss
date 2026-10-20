@@ -4,7 +4,7 @@
  * Shared type definitions for agent execution across workflows.
  */
 
-import type { AiFeatureKey } from "@repo/ai";
+import type { AiFeatureKey, AiJobKey } from "@repo/ai";
 
 /**
  * Knowledge source configuration
@@ -169,6 +169,11 @@ export interface ExecuteAgentTurnInput {
 	featureKey?: AiFeatureKey;
 	/** Groups this turn's usage rows with the rest of its conversation or meeting. */
 	conversationId?: string;
+	/** Persisted builder execution; executionId also serves non-builder turns. */
+	workflowExecutionId?: string;
+	frameId?: string;
+	promptVersionId?: string;
+	jobType?: AiJobKey;
 	/** Max tool iterations */
 	maxIterations?: number;
 	/** Conversation history */

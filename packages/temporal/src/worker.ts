@@ -45,6 +45,7 @@ import {
 	PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE,
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
+	PROPOSAL_EXPORT_TASK_QUEUE,
 } from "./task-queues";
 import {
 	getTelemetryInterceptors,
@@ -153,6 +154,14 @@ export const ACTIVITY_SLOTS = {
 	// so three slots drain a batch of uploads steadily. Through the
 	// half-the-slots rule this adds two connections.
 	companyContext: 3,
+	// Proposal export to PDF and Word (Fizzy #2946). Each export holds one
+	// headless Chromium for its whole run (about 180 MiB for a 40-page
+	// document, measured), so the slots are the number of browsers this
+	// process may hold at once, not throughput: two keeps a second reader's
+	// export from queueing behind the first without letting a burst of them
+	// fill the container's memory. Through the half-the-slots rule this adds
+	// one connection.
+	proposalExport: 2,
 	// Coding-instructions snapshot validation. Deliberately tiny, and for a
 	// different reason than most: these activities are the most I/O-bound
 	// tenant of any queue here. One upload downloads and hashes every byte
@@ -260,6 +269,14 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		taskQueue: GLOSSY_EDITION_TASK_QUEUE,
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.glossyEdition,
 		maxConcurrentWorkflowTaskExecutions: 5,
+	},
+	// Proposal exports get their OWN queue (Fizzy #2946): the workflow and
+	// its one render activity run here, so a print never takes a generation
+	// slot, and the slot count caps how many Chromiums this process runs.
+	{
+		taskQueue: PROPOSAL_EXPORT_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.proposalExport,
+		maxConcurrentWorkflowTaskExecutions: 4,
 	},
 	// Company context ingestion gets its OWN queue (Fizzy #2719). The
 	// workflows and activities are the shared ingestion ones, told apart by

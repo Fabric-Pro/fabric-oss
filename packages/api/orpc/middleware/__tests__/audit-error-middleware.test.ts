@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
 	recordAuditMock: vi.fn(),
 	getTrustedClientIpMock: vi.fn().mockReturnValue("203.0.113.42"),
 	flushSpansOnFailureMock: vi.fn().mockResolvedValue(undefined),
+	hasOrganizationTieMock: vi.fn(),
 }));
 
 vi.mock("../../../lib/request-span", () => ({
@@ -31,6 +32,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 	return {
 		...actual,
 		recordAudit: mocks.recordAuditMock,
+		hasOrganizationTie: mocks.hasOrganizationTieMock,
 	};
 });
 
@@ -56,6 +58,10 @@ vi.mock("@repo/observability", () => ({
 
 import { runWithCorrelationId } from "@repo/utils/correlation-id";
 import {
+	recordAuthorizedProject,
+	runWithProjectBindingHolder,
+} from "../../../lib/authorized-project-binding";
+import {
 	__captureErrorForTest,
 	__isCaptureDisabledForTest,
 	__readSkipPatternsForTest,
@@ -67,6 +73,7 @@ import {
 beforeEach(() => {
 	mocks.recordAuditMock.mockReset();
 	mocks.flushSpansOnFailureMock.mockClear();
+	mocks.hasOrganizationTieMock.mockReset().mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -246,7 +253,7 @@ describe("captureError", () => {
 		expect(arg.resource.type).toBe("procedure");
 	});
 
-	it("reads projectId from input when available", async () => {
+	it("keeps an unverified project input out of the audit FK", async () => {
 		const ctx = buildContext();
 		await __captureErrorForTest(
 			new Error("x"),
@@ -257,7 +264,79 @@ describe("captureError", () => {
 		const arg = mocks.recordAuditMock.mock.calls[0]?.[0] as {
 			projectId: string | null;
 		};
-		expect(arg.projectId).toBe("proj-42");
+		expect(arg.projectId).toBeNull();
+	});
+
+	it("attributes a failure to the authorized project despite a different attempted input", async () => {
+		await runWithProjectBindingHolder(async () => {
+			recordAuthorizedProject({
+				projectId: "authorized-project",
+				organizationId: "authorized-org",
+			});
+			await __captureErrorForTest(
+				new Error("denied"),
+				buildContext(),
+				{ projectId: "missing-project", organizationId: "foreign-org" },
+				["projects", "update"],
+			);
+		});
+		expect(mocks.hasOrganizationTieMock).not.toHaveBeenCalled();
+		expect(mocks.recordAuditMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "authorized-project",
+				organizationId: "authorized-org",
+			}),
+		);
+	});
+
+	it("retains denied target IDs in metadata without attributing a foreign tenant", async () => {
+		mocks.hasOrganizationTieMock.mockResolvedValueOnce(false);
+		await __captureErrorForTest(
+			new Error("denied"),
+			buildContext(),
+			{ projectId: "missing-project", organizationId: "foreign-org" },
+			["projects", "update"],
+		);
+		expect(mocks.recordAuditMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: null,
+				organizationId: null,
+				metadata: expect.objectContaining({
+					input: {
+						projectId: "missing-project",
+						organizationId: "foreign-org",
+					},
+				}),
+			}),
+		);
+	});
+
+	it("does not attribute anonymous attempts to claimed organizations", async () => {
+		await __captureErrorForTest(
+			new Error("denied"),
+			{ headers: new Headers(), user: null, session: null },
+			{ projectId: "missing-project", organizationId: "foreign-org" },
+			["projects", "update"],
+		);
+		expect(mocks.hasOrganizationTieMock).not.toHaveBeenCalled();
+		expect(mocks.recordAuditMock).toHaveBeenCalledWith(
+			expect.objectContaining({ projectId: null, organizationId: null }),
+		);
+	});
+
+	it("still captures a tenantless failure if tenant verification is unavailable", async () => {
+		mocks.hasOrganizationTieMock.mockRejectedValueOnce(
+			new Error("unavailable"),
+		);
+		await __captureErrorForTest(
+			new Error("denied"),
+			buildContext(),
+			undefined,
+			["projects", "update"],
+		);
+		expect(mocks.recordAuditMock).toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: null }),
+		);
 	});
 
 	it("falls back to null projectId when input has none", async () => {

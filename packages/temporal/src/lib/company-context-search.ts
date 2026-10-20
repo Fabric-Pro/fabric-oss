@@ -119,6 +119,7 @@ interface CompanyContextSearchResult {
 }
 
 interface CompanyContextSearchInput {
+	usageConversationId?: string;
 	/** The organization whose company context is searched. */
 	organizationId: string;
 	/** Who searches: must be a member of `organizationId`. */
@@ -348,6 +349,7 @@ async function findCompanyContextEntries(
 			query,
 			{
 				userId,
+				conversationId: input.usageConversationId,
 				organizationId,
 				projectId,
 				tags: ["company-context-retrieval"],

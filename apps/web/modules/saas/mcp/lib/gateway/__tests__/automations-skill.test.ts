@@ -19,6 +19,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 vi.mock("@repo/database", () => ({ db: {} }));
 
 import { PLATFORM_TOOL_DEFINITIONS, TOOL_SCOPES } from "../platform-tools";
+import { serviceSessionHasTool } from "../project-binding";
 import { SERVICE_CREDENTIAL_SCOPES } from "../tool-scope";
 
 const SKILL = readFileSync(
@@ -50,7 +51,9 @@ describe("the Automations & pages skill", () => {
 		const callable = NAMED_TOOLS.filter((name) => {
 			const required = TOOL_SCOPES[name];
 			return (
-				required && SERVICE_CREDENTIAL_SCOPES.includes(required.scope)
+				required &&
+				SERVICE_CREDENTIAL_SCOPES.includes(required.scope) &&
+				serviceSessionHasTool({}, name)
 			);
 		});
 
@@ -70,6 +73,36 @@ describe("the Automations & pages skill", () => {
 		expect(SKILL).toContain("window.fabric.openAgent(prompt)");
 		expect(SKILL).toContain("window.fabric.navigate(path)");
 		expect(SKILL).toContain("runtimeTools");
+	});
+
+	it("has the agent make the real call in chat and treats the approval card as the question", () => {
+		const section = SKILL.match(/### 2\. [^\n]*\n([\s\S]*?)\n### 3\./)?.[1];
+
+		expect(section).toBeDefined();
+		expect(section).toContain(
+			"In Fabric's chat the tool takes no `dryRun`",
+		);
+		expect(section).toContain("Make the real call");
+		expect(section).toContain("That card is the question");
+		const forChat = section?.split("Only where")[0];
+		expect(forChat).not.toMatch(/dryRun: true/);
+	});
+
+	it("keeps the dryRun route only for a client whose schema shows it", () => {
+		expect(SKILL).toContain(
+			"Only where the tool's schema shows `dryRun` (an external client",
+		);
+	});
+
+	it("tells the agent to give a scheduled task project-context by its capability key", () => {
+		expect(SKILL).toContain("`builtInToolNames` takes the capability keys");
+		expect(SKILL).toContain("`project-context`");
+	});
+
+	it("is a newer version than the one that asked for a dryRun draft first", () => {
+		const version = Number(SKILL.match(/^version: (\d+)$/m)?.[1]);
+
+		expect(version).toBeGreaterThanOrEqual(4);
 	});
 
 	it("names no real organization, person or hostname", () => {

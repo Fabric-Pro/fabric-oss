@@ -44,7 +44,9 @@ describe("Direct chat MCP tool execution", () => {
 		);
 		expect(closure).toMatch(/guardToolWriteForReadOnly/);
 		expect(closure).toMatch(/ensureSensitiveOperationAuthority/);
-		expect(closure).toMatch(/return toolDef\.execute\(args\);/);
+		// With the SDK's call options, so the call's abort signal reaches
+		// the MCP request.
+		expect(closure).toMatch(/return toolDef\.execute\(args, options\);/);
 	});
 
 	it("binds a WRITE grant to the conversation, not the turn", () => {
@@ -84,7 +86,7 @@ describe("explicitly attached MCP servers", () => {
 	 */
 	it("are loaded regardless of the keyword heuristic", () => {
 		expect(aiExecutionSource).toMatch(
-			/const shouldForceLoadAttachedMcpTools =\s*\n?\s*Boolean\(requiredAgentTool\(\)\) \|\|\s*\n?\s*Boolean\(instanceId\) \|\|\s*\n?\s*\(Array\.isArray\(enabledMcpConfigIds\) &&\s*\n?\s*enabledMcpConfigIds\.length > 0\)/,
+			/const shouldForceLoadAttachedMcpTools =\s*\n?\s*Boolean\(instanceId\) \|\|\s*\n?\s*\(Array\.isArray\(enabledMcpConfigIds\) &&\s*\n?\s*enabledMcpConfigIds\.length > 0\)/,
 		);
 	});
 

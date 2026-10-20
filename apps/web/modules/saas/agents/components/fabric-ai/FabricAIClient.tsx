@@ -31,6 +31,8 @@ import type { MentionableTemplate } from "@saas/agents/hooks/useTemplateMention"
 import { restoreFromConversationMetadata } from "@saas/agents/lib/conversation-restore";
 import {
 	type ExpandHandoff,
+	expandedFrameContextFor,
+	expandedFrameOriginReducer,
 	isExpandHandoffFor,
 } from "@saas/agents/lib/expand-handoff";
 import { getInterfaceModeChrome } from "@saas/agents/lib/interface-mode-chrome";
@@ -121,6 +123,7 @@ import { useConversationHistory } from "@saas/agents/hooks/useConversationHistor
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
 import { useWorkflowTemplateStream } from "@saas/agents/hooks/useWorkflowTemplateStream";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
+import { useSession } from "@saas/auth/hooks/use-session";
 import {
 	useContextPath,
 	useEffectiveOrganizationId,
@@ -174,7 +177,14 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+} from "react";
 import { toast } from "sonner";
 import type { ModelId } from "tokenlens";
 import {
@@ -321,6 +331,7 @@ interface FabricAIClientProps {
 export default function FabricAIPage({
 	initialPreferences,
 }: FabricAIClientProps) {
+	const { user } = useSession();
 	const { isCollapsed: sidebarCollapsed } = useSidebarCollapse();
 	// Full-screen chat: the rail folds to its icon strip, the breadcrumb bar
 	// goes, and the chat takes the viewport. Esc or the same button brings
@@ -388,13 +399,20 @@ export default function FabricAIPage({
 
 	// Fetch agent template instance when instanceId is provided (from URL or restored from conversation)
 	const { data: instanceData } = useQuery({
-		queryKey: ["agentTemplates", "instances", "get", effectiveInstanceId],
+		queryKey: [
+			"agentTemplates",
+			"instances",
+			"get",
+			effectiveInstanceId,
+			organizationId,
+		],
 		queryFn: async () => {
 			if (!effectiveInstanceId) {
 				return null;
 			}
 			return await orpcClient.agentTemplates.instances.get({
 				id: effectiveInstanceId,
+				organizationId: organizationId ?? undefined,
 			});
 		},
 		enabled: !!effectiveInstanceId,
@@ -582,7 +600,11 @@ export default function FabricAIPage({
 		// cache entry within an org, while a workspace switch (org changes) no
 		// longer serves the previous org's settings.
 		queryKey: orchestratorPreferencesQueryKey(organizationId),
-		queryFn: async () => orpcClient.users.orchestratorPreferences.get(),
+		enabled: Boolean(organizationId),
+		queryFn: async () =>
+			orpcClient.users.orchestratorPreferences.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		// SSR `initialData` short-circuits the client-side fetch on first
 		// mount. With `staleTime: Infinity` and `refetchOnMount: false`,
 		// the query treats the SSR-provided value as fresh and never
@@ -736,7 +758,15 @@ export default function FabricAIPage({
 		mutationFn: async (input: {
 			chatMode?: "direct" | "orchestrator" | "research";
 			reasoningMode?: "lite" | "balanced" | "deep" | "planner";
-		}) => orpcClient.users.orchestratorPreferences.update(input),
+		}) => {
+			if (!organizationId) {
+				return;
+			}
+			return orpcClient.users.orchestratorPreferences.update({
+				...input,
+				organizationId,
+			});
+		},
 		// Fire-and-forget — write failures must NEVER surface to the user
 		// (matches Nexus chat-agent-selection persistence in CopilotPage and
 		// the existing `OrchestratorConfigPanel` sync behavior). The user's
@@ -757,8 +787,15 @@ export default function FabricAIPage({
 	// reverts on next load with no explanation. So the write failure is
 	// surfaced, non-blockingly: the local switch still stands for this session.
 	const persistUiModeMutation = useMutation({
-		mutationFn: async (next: "simple" | "advanced") =>
-			orpcClient.users.orchestratorPreferences.update({ uiMode: next }),
+		mutationFn: async (next: "simple" | "advanced") => {
+			if (!organizationId) {
+				return;
+			}
+			return orpcClient.users.orchestratorPreferences.update({
+				uiMode: next,
+				organizationId,
+			});
+		},
 		onError: (err) => {
 			// eslint-disable-next-line no-console -- intentional dev signal
 			console.warn("[FabricAI] Interface mode persist failed", err);
@@ -771,6 +808,9 @@ export default function FabricAIPage({
 
 	const handleUiModeChange = useCallback(
 		(next: "simple" | "advanced") => {
+			if (!organizationId) {
+				return;
+			}
 			userTouchedLoomPrefsRef.current = true;
 			setUiMode(next);
 			if (lastPersistedUiModeRef.current === next) {
@@ -1000,7 +1040,12 @@ export default function FabricAIPage({
 			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-65px)]"}>
 				<AgentErrorBoundary>
 					<FabricChatContent
+						key={JSON.stringify([
+							user?.id ?? null,
+							organizationId ?? null,
+						])}
 						organizationId={organizationId ?? undefined}
+						userId={user?.id}
 						basePath={basePath}
 						reasoningMode={reasoningMode}
 						setReasoningMode={setReasoningMode}
@@ -1054,6 +1099,7 @@ export default function FabricAIPage({
 }
 
 interface FabricChatContentProps {
+	userId?: string;
 	organizationId?: string;
 	basePath: string;
 	reasoningMode: ReasoningMode;
@@ -1143,6 +1189,7 @@ interface FabricChatContentProps {
 }
 
 function FabricChatContent({
+	userId,
 	organizationId,
 	basePath,
 	reasoningMode,
@@ -1180,6 +1227,10 @@ function FabricChatContent({
 	// Key to force remount of chat component when starting new chat
 	// This ensures all state is completely reset
 	const [chatInstanceKey, setChatInstanceKey] = useState(0);
+	const [expandedFrameOrigin, dispatchFrameOrigin] = useReducer(
+		expandedFrameOriginReducer,
+		null,
+	);
 	const isAgentInstanceMode = Boolean(instanceId);
 	// The engine the open conversation was created on — `null` for a new chat.
 	// Recorded by the restore effect below and cleared with the conversation.
@@ -1576,6 +1627,7 @@ function FabricChatContent({
 	// Wrapper that also updates URL
 	const selectConversation = useCallback(
 		(convId: string | null) => {
+			dispatchFrameOrigin({ type: "clear" });
 			selectConversationInternal(convId);
 			onConversationChange(convId);
 		},
@@ -1702,7 +1754,7 @@ function FabricChatContent({
 		handleEnableAllIntegrations,
 		handleDisableAllIntegrations,
 		handleClearAllPrioritized,
-	} = useOrchestratorConfig(organizationId);
+	} = useOrchestratorConfig(organizationId, userId);
 
 	// When an agent template instance has toolConnections with MCP configs,
 	// override the orchestrator's MCP config IDs with the instance's configured MCP servers.
@@ -1772,7 +1824,11 @@ function FabricChatContent({
 		}
 		clearExpandHandoff?.();
 		setExpandHandoff(pendingExpandHandoff);
-		if (pendingExpandHandoff.projectId) {
+		dispatchFrameOrigin({ type: "handoff", handoff: pendingExpandHandoff });
+		if (
+			pendingExpandHandoff.projectId ||
+			pendingExpandHandoff.frameLaunchContext
+		) {
 			setPendingProjectId(pendingExpandHandoff.projectId);
 		}
 		setChatInstanceKey((prev) => prev + 1);
@@ -1792,6 +1848,20 @@ function FabricChatContent({
 			setExpandHandoff(null);
 		}
 	}, [expandHandoff, conversationIdFromUrl]);
+	const frameLaunchContext = expandedFrameContextFor(
+		expandedFrameOrigin,
+		conversationIdFromUrl,
+		pendingProjectId,
+	);
+	useEffect(() => {
+		if (expandedFrameOrigin) {
+			dispatchFrameOrigin({
+				type: "location",
+				conversationId: conversationIdFromUrl,
+				projectId: pendingProjectId,
+			});
+		}
+	}, [expandedFrameOrigin, conversationIdFromUrl, pendingProjectId]);
 
 	// The pill reads `pendingProjectId`, which a Direct thread never fills
 	// from its stored attachment. Restore it from the open conversation's
@@ -1809,6 +1879,7 @@ function FabricChatContent({
 		enabled: Boolean(activeConversationId),
 	});
 	const handleProjectRemove = useCallback(() => {
+		dispatchFrameOrigin({ type: "clear" });
 		setPendingProjectId(null);
 	}, []);
 	const pendingProjectIdRef = useRef(pendingProjectId);
@@ -1909,6 +1980,7 @@ function FabricChatContent({
 			"instances",
 			"get",
 			instanceIdForWorkspaceContext,
+			organizationId,
 			"workspace-context",
 		],
 		queryFn: async () => {
@@ -1917,6 +1989,7 @@ function FabricChatContent({
 			}
 			return await orpcClient.agentTemplates.instances.get({
 				id: instanceIdForWorkspaceContext,
+				organizationId: organizationId ?? undefined,
 			});
 		},
 		enabled: !!instanceIdForWorkspaceContext,
@@ -2241,6 +2314,7 @@ function FabricChatContent({
 		resetLoomModeToUserDefault();
 		setConversationEngine(null);
 		setExpandHandoff(null);
+		dispatchFrameOrigin({ type: "clear" });
 		resetDeepResearch();
 		setActiveTab("history");
 		handleClearAllPrioritized();
@@ -3090,6 +3164,7 @@ function FabricChatContent({
 						*/
 						<FabricDirectChat
 							key={`agent-direct-${instanceId}-${chatInstanceKey}`}
+							frameLaunchContext={frameLaunchContext}
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
 							activeConversation={activeConversation}
@@ -3100,6 +3175,10 @@ function FabricChatContent({
 								// conversation arrives: a mode switch in
 								// between would otherwise remount (#2040).
 								setConversationEngine("direct");
+								dispatchFrameOrigin({
+									type: "created",
+									conversationId: convId,
+								});
 								onConversationChange(convId);
 								refetchList();
 							}}
@@ -3143,6 +3222,7 @@ function FabricChatContent({
 						*/
 						<FabricTemporalOrchestratorChat
 							key={`orchestrator-${chatInstanceKey}`}
+							frameLaunchContext={frameLaunchContext}
 							advisorOrigin
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
@@ -3157,6 +3237,10 @@ function FabricChatContent({
 							onConversationSaved={refetchList}
 							onConversationCreated={(convId) => {
 								setConversationEngine("orchestrator");
+								dispatchFrameOrigin({
+									type: "created",
+									conversationId: convId,
+								});
 								onConversationChange(convId);
 								refetchList();
 							}}
@@ -3226,6 +3310,7 @@ function FabricChatContent({
 						*/
 						<FabricDirectChat
 							key={`direct-${chatInstanceKey}`}
+							frameLaunchContext={frameLaunchContext}
 							organizationId={organizationId}
 							reasoningMode={reasoningMode}
 							activeConversation={activeConversation}
@@ -3236,6 +3321,10 @@ function FabricChatContent({
 								// conversation arrives: a mode switch in
 								// between would otherwise remount (#2040).
 								setConversationEngine("direct");
+								dispatchFrameOrigin({
+									type: "created",
+									conversationId: convId,
+								});
 								onConversationChange(convId);
 								refetchList();
 							}}

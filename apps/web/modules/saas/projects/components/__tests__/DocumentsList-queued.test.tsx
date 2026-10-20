@@ -607,9 +607,23 @@ describe("resolveRegenerateToastKey", () => {
 		).toBe("alreadyRunning");
 	});
 
+	it("says a live run's state could not be confirmed when the server could not tell", () => {
+		// A client-document Proposal's live run Temporal could not answer
+		// about: nothing started, so neither "started" nor "already running"
+		// is known to be true (Fizzy #2946).
+		expect(
+			resolveRegenerateToastKey({
+				outcome: "liveRunUnknown",
+				documentStatus: "GENERATING",
+			}),
+		).toBe("liveRunUnknown");
+	});
+
 	it("resolves an unknown or absent outcome rather than throwing", () => {
 		// A response from a deploy this bundle predates still has to leave the
 		// list saying something — the invalidated row is the source of truth.
+		// `statusUnknown` is this request's own ambiguous start, queued for
+		// it, so it reads as started too.
 		for (const outcome of [
 			"statusUnknown",
 			"somethingNewer",
@@ -641,6 +655,7 @@ describe("resolveRegenerateToastKey", () => {
 				"started",
 				"alreadyQueued",
 				"alreadyRunning",
+				"liveRunUnknown",
 				"failed",
 			]) {
 				expect(group[key]).toBeTruthy();

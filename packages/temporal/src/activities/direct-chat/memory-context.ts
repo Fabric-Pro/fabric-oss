@@ -39,8 +39,11 @@ export async function generateMemoryContextActivity(
 			logger.info("Found relevant memories", {
 				count: memory.memoryCount,
 			});
+			// Data only: the prompt assembly fences it as untrusted session
+			// memory and adds the trusted rules for reading it
+			// (`direct_chat_memory_context`) outside that fence.
 			return {
-				context: `\n\n## Relevant Context from Previous Sessions:\n${memory.contextString}`,
+				context: memory.formattedMemories,
 				memoryCount: memory.memoryCount,
 			};
 		}

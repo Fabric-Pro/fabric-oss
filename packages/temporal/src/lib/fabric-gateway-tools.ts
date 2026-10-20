@@ -17,9 +17,21 @@ import {
 	type FabricFrameVersionToolName,
 } from "./fabric-frame-version-tool-definitions";
 import {
+	FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
+	type FabricPageDiscoveryToolName,
+} from "./fabric-page-discovery-tool-definitions";
+import {
 	FABRIC_PAGE_TOOL_DEFINITIONS,
 	type FabricPageToolName,
 } from "./fabric-page-tool-definitions";
+import {
+	FABRIC_PROJECT_PM_TOOL_DEFINITIONS,
+	type FabricProjectPmToolName,
+} from "./fabric-project-pm-tool-definitions";
+import {
+	FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
+	type FabricProjectReadToolName,
+} from "./fabric-project-read-tool-definitions";
 import {
 	callNeedsConfirmation,
 	type FabricToolDefinition,
@@ -34,9 +46,15 @@ export type FabricGatewayToolName =
 	| FabricWorkflowToolName
 	| FabricFrameToolName
 	| FabricPageToolName
-	| FabricFrameVersionToolName;
+	| FabricFrameVersionToolName
+	| FabricProjectReadToolName
+	| FabricProjectPmToolName
+	| FabricPageDiscoveryToolName;
 
 export const FABRIC_GATEWAY_TOOL_DEFINITIONS = [
+	...FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
+	...FABRIC_PROJECT_PM_TOOL_DEFINITIONS,
+	...FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
 	...FABRIC_WORKFLOW_TOOL_DEFINITIONS,
 	...FABRIC_FRAME_TOOL_DEFINITIONS,
 	...FABRIC_PAGE_TOOL_DEFINITIONS,

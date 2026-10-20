@@ -20,6 +20,7 @@ import {
 } from "../src/lib/plugin/register.js";
 
 const PROJECT = "cmexampleproject0123456789";
+const ORIGIN = "https://example.com";
 
 let directory: string;
 let root: string;
@@ -140,6 +141,7 @@ describe("Claude Code's marketplace folder", () => {
 		const folder = await writeClaudeMarketplace({
 			cacheDirectory: cache,
 			projectId: PROJECT,
+			origin: ORIGIN,
 			command,
 		});
 
@@ -155,8 +157,7 @@ describe("Claude Code's marketplace folder", () => {
 			plugins: [
 				{
 					name: "fabric-23456789",
-					description:
-						"Coding instructions for a Fabric project, rendered on demand.",
+					description: `Coding instructions for Fabric project ${PROJECT} on example.com, rendered from its published instructions.`,
 					source: {
 						source: "command",
 						command,
@@ -174,12 +175,14 @@ describe("Claude Code's marketplace folder", () => {
 		await writeClaudeMarketplace({
 			cacheDirectory: cache,
 			projectId: PROJECT,
+			origin: ORIGIN,
 			command,
 		});
 
 		const folder = await writeClaudeMarketplace({
 			cacheDirectory: cache,
 			projectId: PROJECT,
+			origin: ORIGIN,
 			command: `node /new/fabric.mjs instructions render --project ${PROJECT}`,
 		});
 
@@ -189,6 +192,162 @@ describe("Claude Code's marketplace folder", () => {
 		);
 		expect(text).toContain("/new/fabric.mjs");
 		expect(text).not.toContain(`"command": "${command}"`);
+	});
+
+	describe("binding to one project on one deployment", () => {
+		const cache = () => path.join(directory, "cache");
+		const OTHER_PROJECT = "cmotherproject0123456789";
+
+		function write(overrides: { projectId?: string; origin?: string }) {
+			return writeClaudeMarketplace({
+				cacheDirectory: cache(),
+				projectId: PROJECT,
+				origin: ORIGIN,
+				command,
+				...overrides,
+			});
+		}
+
+		it("records the project and deployment next to the marketplace file", async () => {
+			const folder = await write({});
+
+			expect(
+				await json(path.join(folder, ".fabric-binding.json")),
+			).toEqual({
+				projectId: PROJECT,
+				origin: ORIGIN,
+			});
+		});
+
+		it("accepts the same project on the same deployment", async () => {
+			await write({});
+
+			await expect(write({})).resolves.toBeTypeOf("string");
+		});
+
+		it("refuses another project that has the same short name, and leaves the folder as it was", async () => {
+			const folder = await write({});
+			const before = await readFile(
+				path.join(folder, ".claude-plugin", "marketplace.json"),
+				"utf8",
+			);
+
+			const refused = expect(write({ projectId: `x${PROJECT}` })).rejects;
+
+			await refused.toBeInstanceOf(CliFailure);
+			await refused.toMatchObject({ exitCode: 7 });
+			await refused.toThrow(
+				new RegExp(
+					`fabric-23456789 is already taken by project ${PROJECT} on ${ORIGIN}`,
+				),
+			);
+			await refused.toThrow(
+				"claude plugin uninstall fabric-23456789@fabric-23456789",
+			);
+			expect(
+				await readFile(
+					path.join(folder, ".claude-plugin", "marketplace.json"),
+					"utf8",
+				),
+			).toBe(before);
+		});
+
+		it("refuses the same project on another deployment", async () => {
+			await write({});
+
+			await expect(
+				write({ origin: "https://other.example.org" }),
+			).rejects.toThrow(
+				/already taken by project .* on https:\/\/example.com/,
+			);
+		});
+
+		it("reads the owner of a folder written before the binding file existed, and refuses a different project", async () => {
+			const folder = claudeMarketplaceDirectory(cache(), PROJECT);
+			await mkdir(path.join(folder, ".claude-plugin"), {
+				recursive: true,
+			});
+			await writeFile(
+				path.join(folder, ".claude-plugin", "marketplace.json"),
+				JSON.stringify({
+					plugins: [
+						{
+							source: {
+								command: `fabric instructions render --project ${OTHER_PROJECT} --base-url ${ORIGIN}`,
+							},
+						},
+					],
+				}),
+			);
+
+			await expect(write({})).rejects.toThrow(
+				new RegExp(`already taken by project ${OTHER_PROJECT}`),
+			);
+		});
+
+		it("refuses a legacy folder that names another deployment", async () => {
+			const folder = claudeMarketplaceDirectory(cache(), PROJECT);
+			await mkdir(path.join(folder, ".claude-plugin"), {
+				recursive: true,
+			});
+			await writeFile(
+				path.join(folder, ".claude-plugin", "marketplace.json"),
+				JSON.stringify({
+					plugins: [
+						{
+							source: {
+								command: `fabric instructions render --project ${PROJECT} --base-url https://other.example.org`,
+							},
+						},
+					],
+				}),
+			);
+
+			await expect(write({})).rejects.toThrow(
+				/on https:\/\/other.example.org/,
+			);
+		});
+
+		it("takes over a legacy folder it cannot identify, and records the binding", async () => {
+			const folder = claudeMarketplaceDirectory(cache(), PROJECT);
+			await mkdir(path.join(folder, ".claude-plugin"), {
+				recursive: true,
+			});
+			await writeFile(
+				path.join(folder, ".claude-plugin", "marketplace.json"),
+				"not json",
+			);
+
+			await write({});
+
+			expect(
+				await json(path.join(folder, ".fabric-binding.json")),
+			).toEqual({
+				projectId: PROJECT,
+				origin: ORIGIN,
+			});
+		});
+
+		it("accepts a legacy folder of the same project that names no deployment", async () => {
+			const folder = claudeMarketplaceDirectory(cache(), PROJECT);
+			await mkdir(path.join(folder, ".claude-plugin"), {
+				recursive: true,
+			});
+			await writeFile(
+				path.join(folder, ".claude-plugin", "marketplace.json"),
+				JSON.stringify({
+					plugins: [
+						{
+							source: {
+								command: `fabric instructions render --project ${PROJECT}`,
+							},
+						},
+					],
+				}),
+			);
+
+			await expect(write({})).resolves.toBe(folder);
+		});
 	});
 
 	it("names the two lines a person runs to register it and approve its command", () => {

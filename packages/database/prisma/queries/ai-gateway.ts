@@ -285,6 +285,51 @@ async function resolveTenantProviderConfig({
 }
 
 /**
+ * The member's own key they chose to use while every ChatGPT plan serving
+ * their work is spent (Fizzy #3085): enabled, opted in, never an
+ * EMBEDDINGS_ONLY key. Several qualify: the Default one, else the most
+ * recently updated. A row without a usable credential is skipped. Null when
+ * none.
+ *
+ * Filtered by `userId` alone: a member's personal key never serves anyone
+ * else. Whether the plan-spent fallback applies at all is decided by the
+ * caller (`chatGptPlanPersonalKeyFallback` in `@repo/ai`). `configId` pins
+ * the row a model was already resolved on, for a caller that needs its raw
+ * key afterwards; the same rules still apply to it.
+ */
+export async function getPlanSpentPersonalProviderConfig({
+	userId,
+	configId,
+}: {
+	userId: string;
+	configId?: string;
+}): Promise<AiProviderConfig | null> {
+	const rows = await db.userCloudProviderConfig.findMany({
+		where: {
+			userId,
+			...(configId !== undefined && { id: configId }),
+			enabled: true,
+			useWhenPlanSpent: true,
+			...LLM_PROVIDER_PURPOSE_FILTER,
+		},
+		orderBy: [{ isDefault: "desc" }, { updatedAt: "desc" }],
+		select: {
+			id: true,
+			provider: true,
+			...PROVIDER_CREDENTIAL_SELECT,
+			config: true,
+		},
+	});
+	for (const row of rows) {
+		const resolved = toAiProviderConfig(row, "user");
+		if (resolved) {
+			return resolved;
+		}
+	}
+	return null;
+}
+
+/**
  * Get AI provider configuration for a user/organization — TENANT-FACING.
  *
  * **This entry point cannot reach the platform gateway credential at all.** A

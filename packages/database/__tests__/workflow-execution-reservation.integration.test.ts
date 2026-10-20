@@ -30,9 +30,16 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PrismaClient } from "../prisma/generated/client";
 import {
+	createWorkflowExecutionIdempotent,
 	markExecutionRunningIfPending,
 	reserveWorkflowExecution,
 } from "../prisma/queries/workflows/executions";
+import { listWorkspaceReviewHistory } from "../prisma/queries/workflows/workspace-review-history";
+import {
+	assertWorkspaceWorkflowBindingWithin,
+	WorkspaceWorkflowBindingConflictError,
+	type WorkspaceWorkflowBindingGuard,
+} from "../prisma/queries/workflows/workspace-workflow-binding";
 
 const IDS = {
 	owner: "wfres-owner",
@@ -41,6 +48,8 @@ const IDS = {
 	org: "wfres-org",
 	personalWorkflow: "wfres-wf-personal",
 	orgWorkflow: "wfres-wf-org",
+	project: "wfres-project",
+	frame: "wfres-workspace",
 };
 
 function client(): PrismaClient {
@@ -314,6 +323,381 @@ describe.skipIf(!process.env.DATABASE_URL)(
 			expect(byId.get(finished.execution.id)).toMatchObject({
 				status: "COMPLETED",
 				temporalRunId: `workflow-execution-${finished.execution.id}`,
+			});
+		});
+		describe("bound Workspace reservations", () => {
+			beforeAll(async () => {
+				await fixtures.project.create({
+					data: {
+						id: IDS.project,
+						name: "Example review project",
+						userId: IDS.member,
+						organizationId: IDS.org,
+					},
+				});
+				await fixtures.agentWorkspaceFile.create({
+					data: {
+						id: IDS.frame,
+						userId: IDS.member,
+						organizationId: IDS.org,
+						projectId: IDS.project,
+						name: "Example Workspace",
+						path: "/example.frame.json",
+						content: "{}",
+						size: 2,
+						fileType: "FRAME",
+						metadata: { surface: "workspace" },
+					},
+				});
+			});
+			beforeEach(async () => {
+				await fixtures.project.update({
+					where: { id: IDS.project },
+					data: { deletedAt: null },
+				});
+				await fixtures.agentWorkspaceFile.update({
+					where: { id: IDS.frame },
+					data: {
+						userId: IDS.member,
+						projectId: IDS.project,
+						metadata: { surface: "workspace" },
+					},
+				});
+				await fixtures.workflow.update({
+					where: { id: IDS.orgWorkflow },
+					data: {
+						userId: IDS.member,
+						projectId: IDS.project,
+						status: "PUBLISHED",
+					},
+				});
+			});
+			afterAll(async () => {
+				await fixtures.workflow.update({
+					where: { id: IDS.orgWorkflow },
+					data: { projectId: null },
+				});
+				await fixtures.agentWorkspaceFile.delete({
+					where: { id: IDS.frame },
+				});
+				await fixtures.project.delete({ where: { id: IDS.project } });
+			});
+			async function binding(): Promise<WorkspaceWorkflowBindingGuard> {
+				const workflow = await fixtures.workflow.findUniqueOrThrow({
+					where: { id: IDS.orgWorkflow },
+				});
+				const frame =
+					await fixtures.agentWorkspaceFile.findUniqueOrThrow({
+						where: { id: IDS.frame },
+					});
+				return {
+					workflowId: workflow.id,
+					userId: IDS.member,
+					organizationId: IDS.org,
+					projectId: IDS.project,
+					workspaceFrameId: frame.id,
+					workflowUpdatedAt: workflow.updatedAt,
+					frameUpdatedAt: frame.updatedAt,
+					status: workflow.status,
+				};
+			}
+			function start(
+				guard: WorkspaceWorkflowBindingGuard,
+				key = "example-click",
+				limit = 1,
+			) {
+				return createWorkflowExecutionIdempotent({
+					workflowId: IDS.orgWorkflow,
+					version: 1,
+					triggerType: "MANUAL",
+					triggerInput: {},
+					userId: IDS.member,
+					organizationId: IDS.org,
+					idempotencyKey: key,
+					windowMs: 300_000,
+					limit,
+					workspaceBinding: guard,
+				});
+			}
+			it("checks the binding even when an existing key fills the tenant cap", async () => {
+				const guard = await binding();
+				expect((await start(guard)).outcome).toBe("created");
+				expect((await start(guard)).outcome).toBe("existing");
+				await fixtures.agentWorkspaceFile.update({
+					where: { id: IDS.frame },
+					data: { projectId: null, updatedAt: guard.frameUpdatedAt },
+				});
+				await expect(start(guard)).rejects.toBeInstanceOf(
+					WorkspaceWorkflowBindingConflictError,
+				);
+				expect(
+					await fixtures.workflowExecution.count({
+						where: { workflowId: IDS.orgWorkflow },
+					}),
+				).toBe(1);
+			});
+			it.each([
+				"workflow-project",
+				"workflow-owner",
+				"workflow-stamp",
+				"status",
+				"frame-project",
+				"frame-owner",
+				"frame-stamp",
+				"frame-surface",
+				"deleted-project",
+			])("refuses changed %s before reserving", async (change) => {
+				const guard = await binding();
+				if (change === "workflow-project")
+					await fixtures.workflow.update({
+						where: { id: IDS.orgWorkflow },
+						data: {
+							projectId: null,
+							updatedAt: guard.workflowUpdatedAt,
+						},
+					});
+				if (change === "workflow-owner")
+					await fixtures.workflow.update({
+						where: { id: IDS.orgWorkflow },
+						data: {
+							userId: IDS.owner,
+							updatedAt: guard.workflowUpdatedAt,
+						},
+					});
+				if (change === "workflow-stamp")
+					await fixtures.workflow.update({
+						where: { id: IDS.orgWorkflow },
+						data: {
+							updatedAt: new Date(
+								guard.workflowUpdatedAt.getTime() + 1000,
+							),
+						},
+					});
+				if (change === "status")
+					await fixtures.workflow.update({
+						where: { id: IDS.orgWorkflow },
+						data: {
+							status: "PAUSED",
+							updatedAt: guard.workflowUpdatedAt,
+						},
+					});
+				if (change === "frame-project")
+					await fixtures.agentWorkspaceFile.update({
+						where: { id: IDS.frame },
+						data: {
+							projectId: null,
+							updatedAt: guard.frameUpdatedAt,
+						},
+					});
+				if (change === "frame-owner")
+					await fixtures.agentWorkspaceFile.update({
+						where: { id: IDS.frame },
+						data: {
+							userId: IDS.owner,
+							updatedAt: guard.frameUpdatedAt,
+						},
+					});
+				if (change === "frame-stamp")
+					await fixtures.agentWorkspaceFile.update({
+						where: { id: IDS.frame },
+						data: {
+							updatedAt: new Date(
+								guard.frameUpdatedAt.getTime() + 1000,
+							),
+						},
+					});
+				if (change === "frame-surface")
+					await fixtures.agentWorkspaceFile.update({
+						where: { id: IDS.frame },
+						data: {
+							metadata: { surface: "artifact" },
+							updatedAt: guard.frameUpdatedAt,
+						},
+					});
+				if (change === "deleted-project")
+					await fixtures.project.update({
+						where: { id: IDS.project },
+						data: { deletedAt: new Date() },
+					});
+				await expect(start(guard)).rejects.toBeInstanceOf(
+					WorkspaceWorkflowBindingConflictError,
+				);
+				expect(
+					await fixtures.workflowExecution.count({
+						where: { workflowId: IDS.orgWorkflow },
+					}),
+				).toBe(0);
+			});
+			it("keeps the cap atomic for concurrent bound callers", async () => {
+				const guard = await binding();
+				const results = await Promise.all(
+					Array.from({ length: RACERS }, (_, index) =>
+						start(guard, `click-${index}`),
+					),
+				);
+				expect(
+					results.filter((result) => result.outcome === "created"),
+				).toHaveLength(1);
+				expect(
+					results.filter(
+						(result) => result.outcome === "limit-reached",
+					),
+				).toHaveLength(RACERS - 1);
+			});
+			it("holds the frame against a concurrent rebind only until the guarded transaction ends", async () => {
+				const guard = await binding();
+				await fixtures.$transaction(async (tx) => {
+					await assertWorkspaceWorkflowBindingWithin(tx, guard);
+					await expect(
+						fixtures.$transaction(async (other) => {
+							await other.$executeRaw`SET LOCAL lock_timeout = '100ms'`;
+							await other.agentWorkspaceFile.update({
+								where: { id: IDS.frame },
+								data: { projectId: null },
+							});
+						}),
+					).rejects.toThrow(/lock timeout/);
+				});
+				await fixtures.agentWorkspaceFile.update({
+					where: { id: IDS.frame },
+					data: { projectId: null },
+				});
+				await expect(
+					listWorkspaceReviewHistory({
+						binding: guard,
+						nodeId: "review",
+						limit: 2,
+						offset: 0,
+					}),
+				).rejects.toBeInstanceOf(WorkspaceWorkflowBindingConflictError);
+			});
+			it("fetches only bounded review metadata, with no source bodies, error or trigger input", async () => {
+				const guard = await binding();
+				const created = await start(guard);
+				if (created.outcome !== "created")
+					throw new Error("Expected a reserved execution");
+				const review = {
+					counts: { total: 2, reviewed: 1, reused: 1, removed: 0 },
+					forced: true,
+					capture: {
+						requirementsAsOf: "2026-01-01T12:00:00Z",
+						privateBody: "private-source",
+					},
+					selection: {
+						assignee: {
+							mode: "selected",
+							uniqueName: "past@example.com",
+						},
+						workItemTypes: ["Bug"],
+						privateBody: "private-source",
+					},
+				};
+				await fixtures.workflowExecution.update({
+					where: { id: created.execution.id },
+					data: {
+						status: "COMPLETED",
+						error: "private-error",
+						triggerInput: { secret: "private-trigger" },
+						output: {
+							review: {
+								...review,
+								html: "private-html".repeat(50_000),
+								cache: "private-cache".repeat(50_000),
+							},
+							other: {
+								frameId: "example-artifact",
+								privateBody: "private-output",
+							},
+						},
+					},
+				});
+				const result = await listWorkspaceReviewHistory({
+					binding: guard,
+					nodeId: "review",
+					limit: 1,
+					offset: 0,
+				});
+				expect(result).toMatchObject({
+					hasMore: false,
+					executions: [
+						{
+							id: created.execution.id,
+							hasError: true,
+							frameId: "example-artifact",
+							review: {
+								counts: review.counts,
+								forced: true,
+								capture: {
+									requirementsAsOf:
+										review.capture.requirementsAsOf,
+								},
+								selection: {
+									assignee: review.selection.assignee,
+									workItemTypes: ["Bug"],
+								},
+							},
+						},
+					],
+				});
+				expect(JSON.stringify(result)).not.toContain("private-");
+				expect(JSON.stringify(result).length).toBeLessThan(16_384);
+				const multibyteSelection = {
+					assignee: {
+						mode: "selected",
+						uniqueName: "選".repeat(512),
+					},
+					workItemTypes: Array.from({ length: 20 }, (_, index) =>
+						`${index}`.padEnd(128, "類"),
+					),
+				};
+				await fixtures.workflowExecution.update({
+					where: { id: created.execution.id },
+					data: {
+						output: {
+							review: {
+								...review,
+								selection: multibyteSelection,
+							},
+						},
+					},
+				});
+				expect(
+					await listWorkspaceReviewHistory({
+						binding: guard,
+						nodeId: "review",
+						limit: 1,
+						offset: 0,
+					}),
+				).toMatchObject({
+					executions: [{ review: { selection: multibyteSelection } }],
+				});
+				await fixtures.workflowExecution.update({
+					where: { id: created.execution.id },
+					data: {
+						output: {
+							review: {
+								...review,
+								selection: {
+									assignee: {
+										mode: "selected",
+										uniqueName: "x".repeat(17_000),
+									},
+								},
+							},
+							other: { frameId: "x".repeat(129) },
+						},
+					},
+				});
+				expect(
+					await listWorkspaceReviewHistory({
+						binding: guard,
+						nodeId: "review",
+						limit: 1,
+						offset: 0,
+					}),
+				).toMatchObject({
+					executions: [{ review: null, frameId: null }],
+				});
 			});
 		});
 	},

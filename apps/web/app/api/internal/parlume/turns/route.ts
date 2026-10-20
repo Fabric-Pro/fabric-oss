@@ -1,3 +1,4 @@
+import { mintParlumeActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { type NextRequest, NextResponse } from "next/server";
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest) {
 			userId: true,
 			activeTurnId: true,
 			voiceGeneration: true,
+			toolsReadOnly: true,
 		},
 	});
 	if (!session) {
@@ -134,7 +136,22 @@ export async function POST(request: NextRequest) {
 			// Every model call of the turn runs as this background job, on the
 			// organization's shared ChatGPT plans when they serve it, without
 			// waiting for a reset: a late voice reply is useless (Fizzy #2770).
-			args: [{ turnId: turn.id, jobType: "parlume-live-turn" }],
+			// The acting grant is how Fabric MCP knows this turn acts for the
+			// inviter. It is minted for each turn because a meeting outlives
+			// a grant's hour, and it travels only in this workflow's input:
+			// it is never stored on the turn or the session.
+			args: [
+				{
+					turnId: turn.id,
+					jobType: "parlume-live-turn",
+					actingGrant: mintParlumeActingGrantForTurn({
+						userId: session.userId,
+						organizationId: session.organizationId,
+						projectId: session.projectId,
+						readOnly: session.toolsReadOnly,
+					}),
+				},
+			],
 		});
 		return NextResponse.json({ accepted: true });
 	} catch {

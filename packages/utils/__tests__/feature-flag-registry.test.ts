@@ -1148,3 +1148,73 @@ describe("PROPOSAL_ARTIFACT (#2801)", () => {
 		expect(owners.map(([key]) => key)).toEqual(["PROPOSAL_ARTIFACT"]);
 	});
 });
+
+describe("DOCUMENT_ROOM_CONVERGENCE (#2946)", () => {
+	// Default ON: it is a rollback lever for stale-room convergence and
+	// guarded room saves, not a phased rollout, so merging this entry turns
+	// them on everywhere and the switch exists to take them off without a
+	// redeploy.
+	it("is registered ON by default, on its own env var, and org-scopable", () => {
+		expect(isFeatureFlagKey("DOCUMENT_ROOM_CONVERGENCE")).toBe(true);
+		expect(FEATURE_FLAG_REGISTRY.DOCUMENT_ROOM_CONVERGENCE).toMatchObject({
+			envVar: "FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE",
+			default: true,
+			orgScopable: true,
+		});
+	});
+
+	it("is listed among the org-scopable flags, after every one that preceded it", () => {
+		expect(ORG_SCOPABLE_FLAG_KEYS[0]).toBe("PUBLISHING_SUITE");
+		expect(
+			ORG_SCOPABLE_FLAG_KEYS.indexOf("DOCUMENT_ROOM_CONVERGENCE"),
+		).toBeGreaterThan(ORG_SCOPABLE_FLAG_KEYS.indexOf("PROPOSAL_ARTIFACT"));
+	});
+
+	it("resolves ON when neither an override nor the env var is set", () => {
+		expect(resolveFlag("DOCUMENT_ROOM_CONVERGENCE", {}, {})).toEqual({
+			enabled: true,
+			source: "default",
+		});
+	});
+
+	it("rolls back from the env var, so a deploy can disable it with no database write", () => {
+		expect(
+			resolveFlag(
+				"DOCUMENT_ROOM_CONVERGENCE",
+				{},
+				{ FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE: "false" },
+			),
+		).toEqual({ enabled: false, source: "env" });
+	});
+
+	it("lets an admin off-override beat a truthy env var", () => {
+		expect(
+			resolveFlag(
+				"DOCUMENT_ROOM_CONVERGENCE",
+				{ global: false },
+				{ FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE: "true" },
+			),
+		).toEqual({ enabled: false, source: "override" });
+	});
+
+	it("lets one organization be switched off while the deployment stays on", () => {
+		expect(
+			resolveFlag(
+				"DOCUMENT_ROOM_CONVERGENCE",
+				{ org: false, global: true },
+				{},
+			),
+		).toEqual({ enabled: false, source: "org-override" });
+	});
+
+	it("does not share its env var with any other entry", () => {
+		const owners = Object.entries(FEATURE_FLAG_REGISTRY).filter(
+			([, definition]) =>
+				definition.envVar ===
+				"FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE",
+		);
+		expect(owners.map(([key]) => key)).toEqual([
+			"DOCUMENT_ROOM_CONVERGENCE",
+		]);
+	});
+});

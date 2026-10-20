@@ -226,6 +226,7 @@ import { deriveSnapshotProcedure } from "./procedures/instructions/derive-snapsh
 import { finalizeSnapshotProcedure } from "./procedures/instructions/finalize-snapshot";
 import { getFileProcedure } from "./procedures/instructions/get-file";
 import { getGitInstructionOperationProcedure } from "./procedures/instructions/get-git-operation";
+import { getPluginReportProcedure } from "./procedures/instructions/get-plugin-report";
 import { getPublishedSnapshotProcedure } from "./procedures/instructions/get-published";
 import { getSettingsProcedure as getInstructionSettingsProcedure } from "./procedures/instructions/get-settings";
 import { getSnapshotProcedure } from "./procedures/instructions/get-snapshot";
@@ -257,8 +258,13 @@ import { publishSnapshotProcedure } from "./procedures/instructions/publish-snap
 import { getDirectInstructionRepositoryCommitParentProcedure } from "./procedures/instructions/repository/get-commit-parent";
 import { getDirectInstructionRepositoryFileProcedure } from "./procedures/instructions/repository/get-file";
 import { getDirectInstructionRepositoryStateProcedure } from "./procedures/instructions/repository/get-state";
+import {
+	previewInstructionFileRestoreProcedure,
+	restoreInstructionFileProcedure,
+} from "./procedures/instructions/repository/file-history-procedures";
 import { listDirectInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository/list-commits";
 import { listDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/list-files";
+import { readDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/read-files";
 import { listDirectInstructionRepositoryPullRequestsProcedure } from "./procedures/instructions/repository/list-pull-requests";
 import { compareInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/compare-commits";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
@@ -414,6 +420,8 @@ import {
 } from "./procedures/project-tabs";
 // Proposal artifact: Internal Analysis and Style (Fizzy #2801)
 import { clearFindingResponseProcedure } from "./procedures/proposal-artifact/clear-finding-response";
+import { exportProposalProcedure } from "./procedures/proposal-artifact/export";
+import { getProposalExportStatusProcedure } from "./procedures/proposal-artifact/export-status";
 import { getProposalAnalysisProcedure } from "./procedures/proposal-artifact/get-analysis";
 import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
 import { getProposalThemeTokensProcedure } from "./procedures/proposal-artifact/get-theme-tokens";
@@ -2106,6 +2114,8 @@ export const projectsRouter = {
 		list: listSnapshotsProcedure,
 		get: getSnapshotProcedure,
 		getPublished: getPublishedSnapshotProcedure,
+		// What a coding-tool plugin leaves out of the published files.
+		getPluginReport: getPluginReportProcedure,
 		listFiles: listFilesProcedure,
 		getFile: getFileProcedure,
 		// Path-level diff of two versions. Bodies stay behind `getFile`, which
@@ -2146,7 +2156,10 @@ export const projectsRouter = {
 		repository: {
 			getState: getDirectInstructionRepositoryStateProcedure,
 			listFiles: listDirectInstructionRepositoryFilesProcedure,
+			readFiles: readDirectInstructionRepositoryFilesProcedure,
 			getFile: getDirectInstructionRepositoryFileProcedure,
+			previewFileRestore: previewInstructionFileRestoreProcedure,
+			restoreFile: restoreInstructionFileProcedure,
 			listCommits: listDirectInstructionRepositoryCommitsProcedure,
 			getCommitParent:
 				getDirectInstructionRepositoryCommitParentProcedure,
@@ -2256,9 +2269,13 @@ export const projectsRouter = {
 	// organization (NOT_FOUND when off), and organization members only: a
 	// project guest is refused whatever their project role. Answering a
 	// finding, clearing an answer and re-running the analysis also need edit
-	// rights. The one exception is `getThemeTokens`, which a project guest
-	// may read: it carries the client document's look, never the Style's
-	// direction or the Brand kit's guidance (Fizzy #2946).
+	// rights. The exceptions are the client document's own surfaces, which a
+	// project guest may use (Fizzy #2946): `getThemeTokens` carries its look,
+	// never the Style's direction or the Brand kit's guidance, and `export`
+	// and `exportStatus` print it to PDF or Word through the same guest-safe
+	// brand. They are not behind the gate middleware: a document the gate
+	// does not cover answers a code that sends the download menu to the
+	// export every other document uses.
 	proposalArtifact: {
 		getAnalysis: getProposalAnalysisProcedure,
 		respondToFinding: respondToFindingProcedure,
@@ -2267,6 +2284,8 @@ export const projectsRouter = {
 		getStyle: getProposalStyleProcedure,
 		updateStyle: updateProposalStyleProcedure,
 		getThemeTokens: getProposalThemeTokensProcedure,
+		export: exportProposalProcedure,
+		exportStatus: getProposalExportStatusProcedure,
 	},
 
 	// @mentions autocomplete search

@@ -17,7 +17,16 @@ import { SetAsDefaultDialog } from "@saas/prompts/components/SetAsDefaultDialog"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { bindSet, bindSetMany, listForPrompt, nominate, orgAdmin } = vi.hoisted(
 	() => ({
@@ -54,6 +63,7 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
 		organizationId: "org-1",
 		isOrgContext: true,
+		basePath: "/app/example-org",
 	}),
 }));
 
@@ -66,7 +76,7 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 const PERSONAL = /my prompts \(just for me\)/i;
 const CLIENT_PROPOSAL = /^client proposal \(main\)$/i;
 
-function openDialog() {
+function openDialog(initialDocumentType?: string) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -81,6 +91,7 @@ function openDialog() {
 				promptName="Example proposal prompt"
 				promptVersionId="pv-1"
 				promptId="p-1"
+				initialDocumentType={initialDocumentType}
 			/>
 		</QueryClientProvider>,
 	);
@@ -266,5 +277,180 @@ describe("SetAsDefaultDialog — client proposal prompt (Fizzy #2801)", () => {
 		expect(
 			screen.queryByTestId("set-default-personal-refused"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("SetAsDefaultDialog — the Proposal artifact gate (Fizzy #2946)", () => {
+	// With the gate on, Client proposal (Main) writes Proposals, so the legacy
+	// Proposal actions are neither offered nor submitted from this dialog.
+	const LEGACY = {
+		targetKey: "project_document_generator",
+		documentType: "PROPOSAL",
+		storyKind: null,
+	};
+	const DRAFTER = {
+		targetKey: "test_case_drafter",
+		documentType: "GENERAL",
+		storyKind: null,
+	};
+	const note = () => screen.queryByTestId("set-default-superseded-note");
+
+	async function documentTypeOptions(
+		user: ReturnType<typeof userEvent.setup>,
+	) {
+		await user.click(
+			await screen.findByRole("combobox", { name: /document type/i }),
+		);
+		const names = (await screen.findAllByRole("option")).map(
+			(option) => option.textContent ?? "",
+		);
+		await user.keyboard("{Escape}");
+		return names;
+	}
+
+	beforeEach(() => {
+		bindSet.mockReset();
+		bindSet.mockResolvedValue({ id: "binding-1" });
+		bindSetMany.mockReset();
+		bindSetMany.mockResolvedValue({ count: 2 });
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
+		nominate.mockReset();
+		orgAdmin.current = true;
+		vi.mocked(toast.error).mockClear();
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("does not offer Proposal for the legacy agent, and says why", async () => {
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+
+		const options = await documentTypeOptions(user);
+		expect(options).not.toContain("Proposal");
+		expect(options).toContain("PRD");
+		expect(note()).toHaveTextContent("dialogNote");
+	});
+
+	it("does not offer the legacy Proposal actions under Also apply to", async () => {
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /document type/i, /^prd$/i);
+
+		expect(
+			await screen.findByRole("group", { name: /also apply to/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Project Document Generator — Proposal",
+			}),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("checkbox", {
+				name: "Document Generator — Proposal",
+			}),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("checkbox", {
+				name: "Client proposal (Main) — Proposal",
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("drops a pre-filled legacy Proposal action instead of submitting it", async () => {
+		listForPrompt.mockResolvedValue({ actions: [LEGACY, DRAFTER] });
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /document type/i, /^prd$/i);
+
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await waitFor(() => expect(bindSetMany).toHaveBeenCalledTimes(1));
+		const { targets } = bindSetMany.mock.calls[0][0];
+		expect(targets).toEqual([
+			expect.objectContaining({
+				targetKey: "project_document_generator",
+				documentType: "PRD",
+			}),
+			expect.objectContaining({ targetKey: "test_case_drafter" }),
+		]);
+		expect(targets).not.toContainEqual(
+			expect.objectContaining({
+				targetKey: "project_document_generator",
+				documentType: "PROPOSAL",
+			}),
+		);
+		expect(note()).toHaveTextContent("dialogNote");
+	});
+
+	it("treats a Proposal carried in from a filter tab as no choice", async () => {
+		openDialog("PROPOSAL");
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+
+		expect(note()).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		).toBeDisabled();
+		expect(bindSet).not.toHaveBeenCalled();
+	});
+
+	it("shows the server's superseded-action refusal in the reader's locale, with the catalog link", async () => {
+		bindSet.mockRejectedValue(
+			Object.assign(new Error("server english"), {
+				code: "BAD_REQUEST",
+				data: { code: "PROPOSAL_ACTION_SUPERSEDED" },
+			}),
+		);
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /document type/i, /^prd$/i);
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith(
+				"Failed to set as default",
+				expect.objectContaining({
+					description: "actionSuperseded",
+					action: expect.objectContaining({ label: "openCatalog" }),
+				}),
+			),
+		);
+		expect(toast.error).not.toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ description: "server english" }),
+		);
+	});
+
+	it("offers and pre-fills the legacy Proposal action as today with the gate off", async () => {
+		flags.proposalArtifact = false;
+		listForPrompt.mockResolvedValue({ actions: [LEGACY] });
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+
+		expect(await documentTypeOptions(user)).toContain("Proposal");
+		await pick(user, /document type/i, /^prd$/i);
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await waitFor(() => expect(bindSetMany).toHaveBeenCalledTimes(1));
+		expect(bindSetMany.mock.calls[0][0].targets).toContainEqual(
+			expect.objectContaining({
+				targetKey: "project_document_generator",
+				documentType: "PROPOSAL",
+			}),
+		);
+		expect(note()).not.toBeInTheDocument();
 	});
 });

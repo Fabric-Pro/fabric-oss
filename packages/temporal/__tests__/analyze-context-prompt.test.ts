@@ -18,6 +18,7 @@ const { mocks } = vi.hoisted(() => ({
 		setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
 		clearInterval: vi.fn(),
 		getBoundPromptForAgent: vi.fn(),
+		info: vi.fn(),
 	},
 }));
 
@@ -27,7 +28,8 @@ vi.mock("@repo/ai", () => ({
 	logModelUsageAsync: mocks.logModelUsageAsync,
 }));
 
-vi.mock("@temporalio/activity", () => ({
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
 	heartbeat: mocks.heartbeat,
 }));
 
@@ -44,7 +46,7 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/logs", () => ({
 	logger: {
-		info: vi.fn(),
+		info: mocks.info,
 		warn: vi.fn(),
 		error: vi.fn(),
 	},
@@ -53,6 +55,7 @@ vi.mock("@repo/logs", () => ({
 import {
 	analyzeContextAndPropose,
 	backlogChangeItemSchema,
+	buildAnalysisPrompt,
 	ChangeProposalSchema,
 	extractWorkItemBodyStructure,
 } from "../src/activities/backlog-context/analyze-context";
@@ -101,6 +104,10 @@ describe("analyzer prompt — Story removal (DSU 2026-05-23)", () => {
 			userPrompt: "Analyze",
 		});
 
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		expect(mocks.generateObject).toHaveBeenCalledOnce();
 		const callArgs = mocks.generateObject.mock.calls[0]?.[0];
 		const prompt: string = callArgs.prompt;
@@ -321,6 +328,9 @@ describe("analyzer prompt — capture-as-is (create-only) for monitored-channel 
 
 		// The critical create-only constraint must be present.
 		expect(prompt).toMatch(/CREATE-ONLY/);
+		expect(prompt).toContain(
+			"The summary should describe what is being captured, without stating whether existing backlog items are changed; a later step may match items to existing tickets.",
+		);
 		// And it must steer the model to create actions only.
 		expect(prompt).toMatch(/action:\s*"create"/);
 		expect(prompt.toLowerCase()).toMatch(/capture/);
@@ -1123,5 +1133,160 @@ describe("analyzer prompt — application-log context (Fizzy #1234)", () => {
 
 		expect(prompt).toContain("### Application Logs");
 		expect(prompt).toContain("checkout reservation timed out");
+	});
+});
+
+describe("meeting transcript budget guard", () => {
+	it("fails without calling the model when fetched meeting evidence gets zero tokens", async () => {
+		await expect(
+			analyzeContextAndPropose({
+				projectId: "example-project",
+				userId: "example-user",
+				organizationId: "example-org",
+				userPrompt: "x".repeat(320_000),
+				fetchedContext: {
+					meetingTranscripts: ["Meeting: improve exports."],
+				},
+				existingBacklog: EMPTY_BACKLOG,
+			}),
+		).rejects.toMatchObject({
+			nonRetryable: true,
+			type: "MEETING_TRANSCRIPT_BUDGET_EXHAUSTED",
+			message: expect.stringContaining(
+				"meeting could not fit in the analysis",
+			),
+		});
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+});
+
+it("sends the complete meeting with a trimmed backlog through the real activity", async () => {
+	const transcript = "Meeting: improve exports. ".repeat(2_000);
+	await analyzeContextAndPropose({
+		projectId: "example-project",
+		userId: "example-user",
+		organizationId: "example-org",
+		userPrompt: "Analyze context",
+		fetchedContext: { meetingTranscripts: [transcript] },
+		existingBacklog: {
+			stories: Array.from({ length: 1_300 }, (_, i) => ({
+				id: `example-item-${i}`,
+				identifier: `WI-${i}`,
+				title: "x".repeat(250),
+			})),
+		},
+	});
+	const prompt = mocks.generateObject.mock.calls[0]?.[0].prompt;
+	expect(prompt).toContain(transcript);
+	expect(prompt).toContain("[id:example-item-0]");
+	expect(prompt).not.toContain("[id:example-item-1299]");
+	expect(prompt).toMatch(/\(\d+ more existing work items not shown\)/);
+});
+
+describe("minimum useful meeting evidence", () => {
+	const longMeeting =
+		"Meeting: improve exports and document retries. ".repeat(50);
+
+	function budgetLog() {
+		return mocks.info.mock.calls
+			.slice()
+			.reverse()
+			.find(
+				(call) => call[1]?.event === "backlog.context_budget",
+			)?.[1] as {
+			fixedTokens: number;
+			backlogBlock: { requestedTokens: number };
+			sections: Array<{
+				key: string;
+				requestedTokens: number;
+				grantedTokens: number;
+			}>;
+		};
+	}
+
+	function inputWithGrant(grant: number, meetings = [longMeeting]) {
+		const input = {
+			projectId: "example-project",
+			userId: "example-user",
+			organizationId: "example-org",
+			userPrompt: "",
+			existingBacklog: EMPTY_BACKLOG,
+			fetchedContext: { meetingTranscripts: meetings },
+		};
+		buildAnalysisPrompt({
+			...input,
+			fetchedContext: {
+				meetingTranscripts: meetings.join("\n\n---\n\n"),
+			},
+		});
+		const budget = budgetLog();
+		const reserved = Math.min(8_000, budget.backlogBlock.requestedTokens);
+		return {
+			...input,
+			userPrompt: "x".repeat(
+				(80_000 - budget.fixedTokens - reserved - grant) * 4,
+			),
+		};
+	}
+
+	it.each([3, 127])(
+		"rejects a truncated meeting granted only %i tokens without calling the model",
+		async (grant) => {
+			await expect(
+				analyzeContextAndPropose(inputWithGrant(grant)),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "MEETING_TRANSCRIPT_BUDGET_EXHAUSTED",
+				message:
+					"The meeting could not fit in the analysis. Shorten your instructions, then retry.",
+			});
+			expect(
+				budgetLog().sections.find(
+					(section) => section.key === "meetingTranscripts",
+				)?.grantedTokens,
+			).toBe(grant);
+			expect(mocks.generateObject).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([128, 129])(
+		"calls the model for a truncated meeting granted %i tokens",
+		async (grant) => {
+			await analyzeContextAndPropose(inputWithGrant(grant));
+			expect(
+				budgetLog().sections.find(
+					(section) => section.key === "meetingTranscripts",
+				)?.grantedTokens,
+			).toBe(grant);
+			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+				"Meeting: improve exports and document retries.",
+			);
+		},
+	);
+
+	it("accepts a complete meeting shorter than the minimum", async () => {
+		const transcript = "Work: export CSV.";
+		await analyzeContextAndPropose(inputWithGrant(5, [transcript]));
+		expect(
+			budgetLog().sections.find(
+				(section) => section.key === "meetingTranscripts",
+			),
+		).toMatchObject({ requestedTokens: 5, grantedTokens: 5 });
+		expect(mocks.generateObject).toHaveBeenCalledOnce();
+		expect(mocks.generateObject.mock.calls[0]?.[0].prompt).toContain(
+			transcript,
+		);
+	});
+
+	it("with several meetings, the guard only advises shorter instructions", async () => {
+		const meeting = "Meeting: improve exports. ".repeat(8);
+		const input = inputWithGrant(80, [meeting, meeting]);
+		await expect(analyzeContextAndPropose(input)).rejects.toMatchObject({
+			type: "MEETING_TRANSCRIPT_BUDGET_EXHAUSTED",
+			message:
+				"The meeting could not fit in the analysis. Shorten your instructions, then retry.",
+		});
+		expect(mocks.generateObject).not.toHaveBeenCalled();
 	});
 });

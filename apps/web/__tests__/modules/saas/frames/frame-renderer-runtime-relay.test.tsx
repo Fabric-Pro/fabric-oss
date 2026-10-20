@@ -29,7 +29,10 @@ import {
 	type FrameDocumentView,
 	FrameRenderer,
 } from "@saas/frames/components/FrameRenderer";
-import { FABRIC_RUNTIME_SCRIPT } from "@saas/frames/lib/fabric-runtime-script";
+import {
+	FABRIC_RUNTIME_CALL_TIMEOUT_MS,
+	FABRIC_RUNTIME_SCRIPT,
+} from "@saas/frames/lib/fabric-runtime-script";
 import {
 	FRAME_RUNTIME_HELLO_TYPE,
 	FRAME_RUNTIME_HOST_READY_TYPE,
@@ -60,6 +63,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
@@ -457,6 +461,367 @@ describe("relaying the host's answer down to the page", () => {
 	});
 });
 
+describe("relay request lifetime", () => {
+	it("rejects expired admission and late host replies without waiting for a delayed timer", () => {
+		vi.useFakeTimers();
+		const view = setup();
+		const transportTimers = vi.getTimerCount();
+		messageFrom(view.iframe.contentWindow, {
+			...pageCall("already-expired"),
+			expiresAt: Date.now() - 1,
+		});
+		expect(toHost).toEqual([]);
+		expect(vi.getTimerCount()).toBe(transportTimers);
+		const relayId = view.relay();
+		expect(vi.getTimerCount()).toBe(transportTimers + 1);
+		vi.setSystemTime(Date.now() + FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: true,
+			result: "late",
+		});
+		expect(view.toPage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				ok: false,
+				error: "Fabric did not answer",
+			}),
+			"*",
+		);
+		expect(toHost.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: relayId,
+		});
+		expect(vi.getTimerCount()).toBe(transportTimers);
+		view.unmount();
+	});
+
+	it("translates only its own page's cancellation and preserves the absolute deadline", () => {
+		vi.useFakeTimers();
+		const { container, unmount } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const page = pageIframe(container).contentWindow;
+		const transportTimers = vi.getTimerCount();
+		const deadline = Date.now() + 1000;
+		messageFrom(page, { ...pageCall(), expiresAt: deadline });
+		expect(vi.getTimerCount()).toBe(transportTimers + 1);
+		const call = toHost.find(
+			(entry) =>
+				(entry.message as { type?: string }).type ===
+				"fabric-frame:call",
+		)?.message as { requestId: string; expiresAt: number };
+		expect(call.expiresAt).toBe(deadline);
+		const cancelled = () =>
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:cancel-call",
+			);
+		messageFrom(window, {
+			type: "fabric-frame:cancel-call",
+			requestId: "call-1",
+		});
+		messageFrom(page, {
+			type: "fabric-frame:cancel-call",
+			requestId: call.requestId,
+		});
+		expect(cancelled()).toEqual([]);
+		messageFrom(page, {
+			type: "fabric-frame:cancel-call",
+			requestId: "call-1",
+		});
+		expect(cancelled()).toEqual([
+			{
+				message: {
+					type: "fabric-frame:cancel-call",
+					requestId: call.requestId,
+				},
+				targetOrigin: window.location.origin,
+			},
+		]);
+		expect(vi.getTimerCount()).toBe(transportTimers);
+		unmount();
+	});
+
+	it("cannot cancel a sibling iframe's matching page ID or relay ID", () => {
+		const { container, unmount } = render(
+			<FrameRenderer
+				frame={{
+					...frame,
+					blocks: [
+						frame.blocks[0],
+						{ ...frame.blocks[0], id: "second" },
+					],
+				}}
+				embedded
+				strictSandbox
+			/>,
+		);
+		const pages = container.querySelectorAll<HTMLIFrameElement>(
+			'iframe[data-frame-scope="project"]',
+		);
+		messageFrom(pages[0].contentWindow!, pageCall());
+		messageFrom(pages[1].contentWindow!, pageCall());
+		const calls = toHost
+			.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:call",
+			)
+			.map((entry) => entry.message as { requestId: string });
+		messageFrom(pages[1].contentWindow!, {
+			type: "fabric-frame:cancel-call",
+			requestId: calls[0].requestId,
+		});
+		expect(
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:cancel-call",
+			),
+		).toEqual([]);
+		messageFrom(pages[1].contentWindow!, {
+			type: "fabric-frame:cancel-call",
+			requestId: "call-1",
+		});
+		expect(toHost.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: calls[1].requestId,
+		});
+		unmount();
+	});
+
+	function setup() {
+		const view = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const iframe = pageIframe(view.container);
+		const toPage = vi
+			.spyOn(iframe.contentWindow, "postMessage")
+			.mockImplementation(() => {});
+		const relay = (requestId = "call-1") => {
+			messageFrom(
+				pageIframe(view.container).contentWindow,
+				pageCall(requestId),
+			);
+			const entry = toHost
+				.filter(
+					(item) =>
+						(item.message as { type?: string }).type ===
+						"fabric-frame:call",
+				)
+				.at(-1);
+			return (entry?.message as { requestId: string }).requestId;
+		};
+		return { ...view, iframe, toPage, relay };
+	}
+
+	it("expires lost replies and frees the relay budget for subsequent calls", async () => {
+		vi.useFakeTimers();
+		const view = setup();
+		const first = view.relay();
+		for (let index = 1; index < 100; index++) {
+			view.relay(`call-${index + 1}`);
+		}
+		view.relay("overflow");
+		expect(view.toPage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				ok: false,
+				error: "Too many Fabric calls are waiting for an answer.",
+			}),
+			"*",
+		);
+
+		await vi.advanceTimersByTimeAsync(FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		expect(
+			toHost.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:cancel-call",
+			),
+		).toHaveLength(100);
+		expect(view.toPage).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				requestId: "call-100",
+				ok: false,
+				error: "Fabric did not answer",
+			}),
+			"*",
+		);
+		view.toPage.mockClear();
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: first,
+			ok: true,
+			result: "late",
+		});
+		expect(view.toPage).not.toHaveBeenCalled();
+
+		const next = view.relay();
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: next,
+			ok: true,
+			result: "fresh",
+		});
+		expect(view.toPage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestId: "call-1",
+				ok: true,
+				result: "fresh",
+			}),
+			"*",
+		);
+		view.unmount();
+	});
+
+	it("cancels old timers and cannot resolve a replacement page's reused request id", async () => {
+		vi.useFakeTimers();
+		const view = setup();
+		const stale = view.relay();
+		view.rerender(
+			<FrameRenderer
+				frame={{
+					...frame,
+					blocks: [
+						{ ...frame.blocks[0], content: "<p>Edited page</p>" },
+					],
+				}}
+				embedded
+				strictSandbox
+			/>,
+		);
+		const replacement = pageIframe(view.container);
+		expect(toHost.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: stale,
+		});
+		expect(replacement).not.toBe(view.iframe);
+		expect(view.toPage).toHaveBeenCalledWith(
+			{
+				type: "fabric-frame:call-result",
+				requestId: "call-1",
+				ok: false,
+				error: "This page changed. Try again from the current version.",
+			},
+			"*",
+		);
+		const toReplacement = vi
+			.spyOn(replacement.contentWindow, "postMessage")
+			.mockImplementation(() => {});
+		const fresh = view.relay();
+
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: stale,
+			ok: true,
+			result: "old",
+		});
+		expect(toReplacement).not.toHaveBeenCalled();
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: fresh,
+			ok: true,
+			result: "new",
+		});
+		expect(toReplacement).toHaveBeenCalledWith(
+			expect.objectContaining({ requestId: "call-1", result: "new" }),
+			"*",
+		);
+		view.toPage.mockClear();
+		toReplacement.mockClear();
+		await vi.advanceTimersByTimeAsync(FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		expect(view.toPage).not.toHaveBeenCalled();
+		expect(toReplacement).not.toHaveBeenCalled();
+		view.unmount();
+	});
+
+	it("answers teardown only to the originating page and leaves a sibling call live", () => {
+		const sibling = { ...frame.blocks[0], id: "sibling" };
+		const view = render(
+			<FrameRenderer
+				frame={{ ...frame, blocks: [frame.blocks[0], sibling] }}
+				embedded
+				strictSandbox
+			/>,
+		);
+		const pages = view.container.querySelectorAll<HTMLIFrameElement>(
+			'iframe[data-frame-scope="project"]',
+		);
+		const toFirst = vi
+			.spyOn(pages[0].contentWindow!, "postMessage")
+			.mockImplementation(() => {});
+		const toSibling = vi
+			.spyOn(pages[1].contentWindow!, "postMessage")
+			.mockImplementation(() => {});
+		messageFrom(pages[0].contentWindow!, pageCall());
+		messageFrom(pages[1].contentWindow!, pageCall());
+		const calls = toHost
+			.filter(
+				(entry) =>
+					(entry.message as { type?: string }).type ===
+					"fabric-frame:call",
+			)
+			.map((entry) => entry.message as { requestId: string });
+		view.rerender(
+			<FrameRenderer
+				frame={{ ...frame, blocks: [sibling] }}
+				embedded
+				strictSandbox
+			/>,
+		);
+		expect(toFirst).toHaveBeenCalledWith(
+			expect.objectContaining({ requestId: "call-1", ok: false }),
+			"*",
+		);
+		expect(toSibling).not.toHaveBeenCalled();
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: calls[0].requestId,
+			ok: true,
+			result: "old",
+		});
+		expect(toSibling).not.toHaveBeenCalled();
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: calls[1].requestId,
+			ok: true,
+			result: "sibling",
+		});
+		expect(toSibling).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestId: "call-1",
+				ok: true,
+				result: "sibling",
+			}),
+			"*",
+		);
+		view.unmount();
+	});
+
+	it("clears pending relay timers on unmount", async () => {
+		vi.useFakeTimers();
+		const view = setup();
+		const relayId = view.relay();
+		view.unmount();
+		expect(toHost.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: relayId,
+		});
+		view.toPage.mockClear();
+
+		await vi.advanceTimersByTimeAsync(FABRIC_RUNTIME_CALL_TIMEOUT_MS);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: relayId,
+			ok: true,
+			result: "late",
+		});
+		expect(view.toPage).not.toHaveBeenCalled();
+	});
+});
+
 describe("a page whose frame is not embedded in a Fabric view", () => {
 	it("is told at once that nothing can run, and nothing is sent anywhere", () => {
 		const { container } = render(
@@ -646,7 +1011,6 @@ describe("the handshake between the page and the embed", () => {
 
 		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
 		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
-		rerender(<FrameRenderer frame={frame} strictSandbox />);
 		rerender(<FrameRenderer frame={frame} embedded strictSandbox />);
 
 		expect(page.toPage.filter(isHostReady).length).toBeGreaterThan(2);
@@ -659,6 +1023,46 @@ describe("the handshake between the page and the embed", () => {
 			result: "once",
 		});
 		await expect(result).resolves.toBe("once");
+	});
+
+	it("rejects a held call when its host disappears and keeps a replacement call separate", async () => {
+		const page = standInPage();
+		const fabric = page.start();
+		const result = fabric.call("fabric_list_workflows");
+		const rejected = expect(result).rejects.toThrow(
+			"not open in a Fabric view",
+		);
+		const { rerender } = render(
+			<FrameRenderer frame={frame} embedded strictSandbox />,
+		);
+		const oldRelay = (relayedCalls()[0].message as { requestId: string })
+			.requestId;
+		rerender(<FrameRenderer frame={frame} strictSandbox />);
+		await rejected;
+		expect(toHost.at(-1)?.message).toEqual({
+			type: "fabric-frame:cancel-call",
+			requestId: oldRelay,
+		});
+		rerender(<FrameRenderer frame={frame} embedded strictSandbox />);
+		const fresh = fabric.call("fabric_list_workflows");
+		const freshRelay = (relayedCalls()[1].message as { requestId: string })
+			.requestId;
+		expect(freshRelay).not.toBe(oldRelay);
+		const repliesBefore = page.toPage.length;
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: oldRelay,
+			ok: true,
+			result: "old",
+		});
+		expect(page.toPage).toHaveLength(repliesBefore);
+		hostAnswers({
+			type: "fabric-frame:call-result",
+			requestId: freshRelay,
+			ok: true,
+			result: "fresh",
+		});
+		await expect(fresh).resolves.toBe("fresh");
 	});
 
 	it("does not answer a hello that is not from the page's own iframe", () => {

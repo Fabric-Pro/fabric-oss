@@ -30,6 +30,7 @@ vi.mock("@repo/database", async (importOriginal) => {
 	return {
 		...actual,
 		recordAudit: mocks.recordAuditMock,
+		hasOrganizationTie: vi.fn().mockResolvedValue(true),
 	};
 });
 

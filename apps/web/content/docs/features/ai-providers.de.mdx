@@ -92,6 +92,24 @@ Enterprise-Cloud-KI-Dienste:
 
 Ein persönlicher Schlüssel ist ein Fallback. Fabric verwendet ihn nur, wenn die Organisation keinen eigenen nutzbaren Schlüssel hat, und die damit erledigte Arbeit wird Ihnen berechnet. Solange das so ist, zeigt Fabric einen Hinweis, dass Ihre Arbeit in dieser Organisation über Ihren persönlichen Schlüssel läuft. Ein ChatGPT-Plan, den Sie auf dem Tab Persönlich verbinden, dient Ihrer eigenen Arbeit und hat Vorrang vor jedem Schlüssel.
 
+### Wenn der ChatGPT-Plan aufgebraucht ist
+
+Wo Ihre Organisation ChatGPT-Pläne nutzt, versucht Ihre eigene Arbeit diese Quellen der Reihe nach, wie **Einstellungen → KI-Modelle** zeigt:
+
+1. Ihren eigenen ChatGPT-Plan;
+2. die geteilten ChatGPT-Konten der Organisation;
+3. die API-Abrechnung der Organisation, also deren eigenen Schlüssel;
+4. Ihren persönlichen Schlüssel, falls Sie einen freigegeben haben.
+
+Der vierte Schritt ist pro Schlüssel freiwillig. Aktivieren Sie auf dem Tab **Persönlich** bei einem Ihrer Schlüssel **Verwenden, wenn der ChatGPT-Plan aufgebraucht ist**. Sobald jeder Plan für Ihre Arbeit aufgebraucht ist, laufen Ihre Chats, der Advisor und die von Ihnen gestartete Generierung über diesen Schlüssel, statt anzuhalten, und werden Ihnen berechnet. Das gilt nur dort, wo die Organisation Ihre Arbeit sonst anhalten würde: Ihre Einstellung für die eigene Arbeit von Personen ist **Anhalten und Rücksetzzeit zeigen**, oder sie hat keinen Schlüssel für Chat und Generierung. Bei **API-Abrechnung nutzen** mit eigenem Schlüssel wird wie bisher der Schlüssel der Organisation verwendet.
+
+- Hintergrund-, geplante und Massenarbeit läuft nie über einen persönlichen Schlüssel.
+- Ein Schlüssel **Nur Embeddings** kann nicht freigegeben werden.
+- Sind mehrere Schlüssel freigegeben, wird der Standardschlüssel verwendet, sonst der zuletzt aktualisierte.
+- Eine Antwort, die Ihren Schlüssel verwendet hat, sagt das darunter, mit der Rücksetzzeit der Pläne. Hält Ihre Arbeit an, weil der Plan aufgebraucht ist, und ist kein Schlüssel freigegeben, verlinkt die Meldung auf den Tab Persönlich.
+
+KI-Modelle zeigt für diesen Schritt nur Ihren eigenen Schlüssel, nie den eines anderen Mitglieds.
+
 ## Modellpräferenzen
 
 ### Wie die Modellauflösung funktioniert

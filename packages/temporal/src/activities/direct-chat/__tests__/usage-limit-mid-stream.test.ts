@@ -120,7 +120,6 @@ vi.mock("../../shared/agent-tool-runtime", () => ({
 	hasExactAgentToolApproval: vi.fn(),
 	observeAgentText: vi.fn(),
 	prepareAgentTools: async () => undefined,
-	requiredAgentTool: () => undefined,
 }));
 vi.mock("../../shared/confirmed-workflow", () => ({
 	executeApprovedWorkflow: vi.fn(),
@@ -339,4 +338,85 @@ describe("direct chat — a usage limit reached during the turn", () => {
 
 		await expect(runTurn()).rejects.toBe(refusal);
 	});
+});
+
+describe("direct chat — provider error after Anthropic message_start", () => {
+	it.each([false, true])(
+		"retains measured spend with an earlier completed step: %s",
+		async (completedFirstStep) => {
+			let call = 0;
+			const provider = new MockLanguageModelV4({
+				doStream: async () => {
+					if (completedFirstStep && call++ === 0) {
+						return firstStep("First step.");
+					}
+					return {
+						stream: simulateReadableStream({
+							chunks: [
+								{ type: "stream-start" as const, warnings: [] },
+								{
+									type: "custom" as const,
+									kind: "anthropic.message_start",
+									providerMetadata: {
+										anthropic: {
+											usage: {
+												input_tokens: 100,
+												cache_read_input_tokens: 70,
+												cache_creation_input_tokens: 20,
+												output_tokens: 2,
+											},
+										},
+									},
+								},
+								{
+									type: "text-start" as const,
+									id: "example-text",
+								},
+								{
+									type: "text-delta" as const,
+									id: "example-text",
+									delta: "Partial answer.",
+								},
+								{
+									type: "error" as const,
+									error: new Error("Provider stream failed"),
+								},
+							],
+						}),
+					};
+				},
+			});
+			state.model = provider;
+			const result = await runTurn();
+			expect(provider.doStreamCalls).toHaveLength(
+				completedFirstStep ? 2 : 1,
+			);
+			expect(result).toMatchObject({
+				partialError: "Provider stream failed",
+			});
+			expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
+			const row = state.recordAggregateUsage.mock.calls[0][0];
+			expect(row).toMatchObject({
+				success: false,
+				usage: {
+					inputTokens: completedFirstStep ? 200 : 190,
+					outputTokens: completedFirstStep ? 7 : 2,
+					totalTokens: completedFirstStep ? 207 : 192,
+					inputTokenDetails: {
+						cacheReadTokens: 70,
+						cacheWriteTokens: 20,
+					},
+				},
+				errorDetails: { usageReportedAt: "stream_start" },
+			});
+			expect(result.usage).toMatchObject({
+				inputTokens: row.usage.inputTokens,
+				outputTokens: row.usage.outputTokens,
+				totalTokens: row.usage.totalTokens,
+				cachedInputTokens: 70,
+				cacheCreationInputTokens: 20,
+			});
+			expect(row.steps).toHaveLength(completedFirstStep ? 2 : 1);
+		},
+	);
 });

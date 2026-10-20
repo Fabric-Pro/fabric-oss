@@ -33,6 +33,7 @@ import {
 } from "@repo/storage";
 import { heartbeat } from "@temporalio/activity";
 import { Resend } from "resend";
+import { proposalExportProjectPrefix } from "../lib/proposal-export/types";
 
 const qdrant = new QdrantClient({
 	url: process.env.QDRANT_URL || "http://localhost:6333",
@@ -483,11 +484,12 @@ function safeAttachmentHeartbeat(): void {
  * Removes what a permanently-deleted project left outside its own cascade: its
  * attachment objects and its pages.
  *
- * Attachments: lists everything under `story-attachments/{projectId}/` and
- * `project-brand/{projectId}/` and batch-deletes it, paging until each prefix
+ * Attachments: lists everything under `story-attachments/{projectId}/`,
+ * `project-brand/{projectId}/` and `proposal-exports/{projectId}/` (exported
+ * Proposal files, Fizzy #2946) and batch-deletes it, paging until each prefix
  * is exhausted (NO silent deletion cap — the project row is already gone, so a
  * cap would strand objects with no discoverable retry). `pages` counts the
- * pages of both prefixes.
+ * pages of every prefix.
  *
  * Pages: a page row has no foreign key to the project, so the project's delete
  * leaves its pages, their records and their stored files behind. A Workspace
@@ -528,6 +530,7 @@ export async function deleteProjectAttachmentsFromStorageActivity(
 	const prefixes = [
 		`${ATTACHMENT_FINAL_PREFIX}${projectId}/`,
 		`${PROJECT_BRAND_PREFIX}${projectId}/`,
+		proposalExportProjectPrefix(projectId),
 	];
 
 	let deleted = 0;

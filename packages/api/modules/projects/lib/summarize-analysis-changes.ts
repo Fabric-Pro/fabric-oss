@@ -219,6 +219,7 @@ export async function summarizeAnalysisChanges({
 		{
 			userId: tenantFilter.userId,
 			organizationId: tenantFilter.organizationId ?? undefined,
+			projectId,
 			// One key for the whole suite (see `AI_FEATURE_KEYS`): the question
 			// this feature is measured against is asked of the suite, and
 			// `getAiOutcomeBreakdown` groups by `featureKey` alone.

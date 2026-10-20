@@ -96,7 +96,6 @@ describe("Parlume agent timing", () => {
 			executeParlumeAgent({
 				...input,
 				agent: builtIn,
-				confirmation: false,
 			}),
 		);
 		expect(Object.keys(values).sort()).toEqual([
@@ -114,20 +113,6 @@ describe("Parlume agent timing", () => {
 				values["agent.memoryMs"] +
 				values["agent.workspaceMs"],
 		);
-	});
-
-	it("times only the MCP collection for a confirmation, which reads no memory or knowledge", async () => {
-		const values = await measure(() =>
-			executeParlumeAgent({
-				...input,
-				agent: builtIn,
-				confirmation: true,
-			}),
-		);
-		expect(Object.keys(values).sort()).toEqual([
-			"agent.gatherMs",
-			"agent.mcpCollectMs",
-		]);
 	});
 
 	it("times a custom agent's context and knowledge lookups", async () => {
@@ -150,7 +135,6 @@ describe("Parlume agent timing", () => {
 					revision: "revision",
 					config: { workspaceIds: [] },
 				} as never,
-				confirmation: false,
 			}),
 		);
 		expect(Object.keys(values).sort()).toEqual([
@@ -164,7 +148,6 @@ describe("Parlume agent timing", () => {
 			executeParlumeAgent({
 				...input,
 				agent: builtIn,
-				confirmation: false,
 			}),
 		).resolves.toEqual({
 			success: true,

@@ -40,7 +40,7 @@ vi.mock("@repo/agent-core/backend", () => ({
 	closeMcpClientSafe: vi.fn(),
 	generateMemoryContext: vi
 		.fn()
-		.mockResolvedValue({ contextString: "", memoryCount: 0 }),
+		.mockResolvedValue({ formattedMemories: "", memoryCount: 0 }),
 	getConfiguredAIModel: vi.fn().mockResolvedValue({}),
 }));
 
@@ -113,7 +113,8 @@ describe("Direct Chat Activities", () => {
 			(
 				generateMemoryContext as ReturnType<typeof vi.fn>
 			).mockResolvedValueOnce({
-				contextString: "Previous session context...",
+				formattedMemories:
+					"[Memory 1] (2026-10-16, 91% similar, success)\nTask: Schedule a weekly status page",
 				memoryCount: 2,
 			});
 
@@ -123,9 +124,10 @@ describe("Direct Chat Activities", () => {
 				"org-456",
 			);
 
-			// When memories are found, context should include the header
-			expect(result.context).toContain(
-				"Relevant Context from Previous Sessions",
+			// Data only: the prompt assembly fences it as untrusted session
+			// memory and states the rules for reading it outside that fence.
+			expect(result.context).toBe(
+				"[Memory 1] (2026-10-16, 91% similar, success)\nTask: Schedule a weekly status page",
 			);
 			expect(result.memoryCount).toBe(2);
 		});
@@ -134,7 +136,7 @@ describe("Direct Chat Activities", () => {
 			(
 				generateMemoryContext as ReturnType<typeof vi.fn>
 			).mockResolvedValueOnce({
-				contextString: "",
+				formattedMemories: "",
 				memoryCount: 0,
 			});
 
@@ -234,12 +236,17 @@ describe("Direct Chat Activities", () => {
 				"org-456",
 				"chat-123",
 				["doc-123"], // Attached document
+				undefined,
+				undefined,
+				undefined,
+				"conversation-example",
 			);
 
 			expect(result.chunkCount).toBe(2);
 			expect(result.context).toContain("Context from Attached Documents");
 			expect(retrieveContext).toHaveBeenCalledWith({
 				chatId: "chat-123",
+				conversationId: "conversation-example",
 				query: "What is in my document?",
 				userId: "user-123",
 				organizationId: "org-456",
@@ -251,6 +258,22 @@ describe("Direct Chat Activities", () => {
 				// retrieval as an explicit attachment to drop the similarity floor.
 				explicitAttachment: true,
 			});
+		});
+		it("does not attribute an attachment query to its document-holder chat", async () => {
+			vi.mocked(db.chatDocument.findMany).mockResolvedValue([
+				{ id: "doc-example", status: "READY" },
+			] as never);
+			vi.mocked(retrieveContext).mockResolvedValue([]);
+			await retrieveRagContextForDirectChatActivity(
+				"query",
+				"user-example",
+				"org-example",
+				"document-holder-example",
+				["doc-example"],
+			);
+			expect(
+				vi.mocked(retrieveContext).mock.calls[0][0].conversationId,
+			).toBeUndefined();
 		});
 
 		it("should handle RAG retrieval failure gracefully", async () => {

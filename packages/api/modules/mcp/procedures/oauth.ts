@@ -81,7 +81,7 @@ const OAUTH_ALLOWLIST_SERVERS: Array<{
 		pattern: /^https?:\/\/mcp\.vercel\.com/i,
 		name: "Vercel MCP",
 		alternativeAuth:
-			"Use the Vercel CLI MCP (npx -y @vercel/mcp) with API key authentication instead",
+			"Request OAuth client approval from Vercel before connecting",
 		docsUrl: "https://vercel.com/docs/mcp/vercel-mcp",
 	},
 	{
@@ -615,10 +615,10 @@ export const oauthProcedures = {
 					});
 				} catch (error) {
 					// Log but don't fail - the env fallback may still apply.
-					console.error(
-						"Automatic DCR failed:",
-						error instanceof Error ? error.message : String(error),
-					);
+					console.error("Automatic DCR failed:", {
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					});
 					registered = { ok: false, status: null, message: "" };
 				}
 				if (registered.ok) {
@@ -1224,7 +1224,14 @@ export const oauthProcedures = {
 					// Log but don't fail the OAuth flow
 					console.warn(
 						"[OAuth Callback] Failed to trigger tool ingestion:",
-						error,
+						{
+							error:
+								error instanceof Error ? error.message : error,
+							stack:
+								error instanceof Error
+									? error.stack
+									: undefined,
+						},
 					);
 				}
 			}
@@ -1258,7 +1265,10 @@ export const oauthProcedures = {
 			} catch (err) {
 				console.warn(
 					"[OAuth Callback] Atlassian Cloud auto-chain skipped:",
-					err instanceof Error ? err.message : String(err),
+					{
+						error: err instanceof Error ? err.message : err,
+						stack: err instanceof Error ? err.stack : undefined,
+					},
 				);
 			}
 

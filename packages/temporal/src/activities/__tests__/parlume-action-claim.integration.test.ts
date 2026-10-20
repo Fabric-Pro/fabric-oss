@@ -10,10 +10,7 @@ import {
 } from "vitest";
 import { z } from "zod";
 import { db, Prisma } from "../../../../database/prisma/client";
-import {
-	createParlumeToolRuntime,
-	prepareParlumeDecision,
-} from "../parlume-actions";
+import { createParlumeToolRuntime } from "../parlume-actions";
 
 vi.mock("@repo/database", async () => {
 	const { db } = await import("../../../../database/prisma/client");
@@ -36,8 +33,7 @@ const userId = `${prefix}-user`;
 const organizationId = `${prefix}-org`;
 const projectId = `${prefix}-project`;
 const sessionId = `${prefix}-session`;
-const turnId = `${prefix}-proposal`;
-const confirmationTurnId = `${prefix}-confirmation`;
+const turnId = `${prefix}-turn`;
 const context = {
 	turnId,
 	sessionId,
@@ -53,8 +49,6 @@ const context = {
 const source = { configId: "connection", originalName: "create_ticket" };
 const execute = vi.fn(async () => ({ success: true }));
 const definition = { inputSchema: z.object({ title: z.string() }), execute };
-const tools = { create_ticket: definition };
-const sources = { create_ticket: source };
 
 async function clearFixtureAudit() {
 	await db.$transaction([
@@ -99,17 +93,17 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 					toolsReadOnly: false,
 				},
 			});
-			await db.parlumeMeetingTurn.createMany({
-				data: [turnId, confirmationTurnId].map((id) => ({
-					id,
+			await db.parlumeMeetingTurn.create({
+				data: {
+					id: turnId,
 					sessionId,
 					projectId,
 					organizationId,
 					userId,
-					dedupeKey: id,
-					requestText: id === turnId ? "Create a ticket" : "confirm",
+					dedupeKey: turnId,
+					requestText: "Create a ticket",
 					voiceGeneration: 1,
-				})),
+				},
 			});
 		});
 		beforeEach(async () => {
@@ -118,44 +112,22 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 			await clearFixtureAudit();
 			await db.parlumeMeetingSession.update({
 				where: { id: sessionId },
-				data: { activeTurnId: confirmationTurnId, voiceGeneration: 1 },
+				data: { activeTurnId: turnId, voiceGeneration: 1 },
 			});
-			await createParlumeToolRuntime(context).invoke({
+		});
+		const invoke = () =>
+			createParlumeToolRuntime(context).invoke({
 				name: "create_ticket",
 				...definition,
 				source,
-				args: { title: "Exact approved title" },
+				args: { title: "Exact requested title" },
 				delegates: false,
-				execute,
+				execute: () => execute(),
 			});
-			await db.parlumeAction.updateMany({
-				where: { sessionId },
-				data: {
-					status: "AWAITING_CONFIRMATION",
-					presentedAt: new Date(),
-				},
-			});
-		});
-		const prepare = () =>
-			prepareParlumeDecision(
-				{ ...context, turnId: confirmationTurnId },
-				"confirm",
-			);
 
-		it("dispatches and audits once under concurrent confirmations", async () => {
-			const decisions = await Promise.all(
-				Array.from({ length: 4 }, prepare),
-			);
-			await Promise.all(
-				decisions.map((decision) =>
-					decision.runtime?.prepared?.(tools, sources),
-				),
-			);
+		it("dispatches and audits once under concurrent identical calls", async () => {
+			await Promise.all(Array.from({ length: 4 }, invoke));
 			expect(execute).toHaveBeenCalledTimes(1);
-			expect(execute).toHaveBeenCalledWith(
-				{ title: "Exact approved title" },
-				expect.anything(),
-			);
 			expect(
 				await db.auditLog.count({
 					where: {
@@ -165,19 +137,27 @@ describe.skipIf(process.env.RUN_DB_INTEGRATION !== "1")(
 				}),
 			).toBe(1);
 			expect(
-				await db.parlumeAction.findFirst({ where: { sessionId } }),
-			).toMatchObject({ status: "COMPLETED", confirmationTurnId });
+				await db.parlumeAction.findMany({ where: { sessionId } }),
+			).toMatchObject([
+				{
+					status: "COMPLETED",
+					speakerId: "speaker",
+					arguments: { title: "Exact requested title" },
+				},
+			]);
 		});
 
 		it("cannot dispatch after a committed interruption advances the session", async () => {
-			const decision = await prepare();
 			await db.parlumeMeetingSession.update({
 				where: { id: sessionId },
 				data: { activeTurnId: null, voiceGeneration: 2 },
 			});
-			await decision.runtime?.prepared?.(tools, sources);
+			await invoke();
 			expect(execute).not.toHaveBeenCalled();
 			expect(await db.auditLog.count({ where: { projectId } })).toBe(0);
+			expect(await db.parlumeAction.count({ where: { sessionId } })).toBe(
+				0,
+			);
 		});
 
 		afterAll(async () => {

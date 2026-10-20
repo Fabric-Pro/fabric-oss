@@ -43,6 +43,29 @@ beforeEach(() => {
 });
 
 describe("getAiModelWithSelection usage attribution", () => {
+	it("forwards actual Workspace, workflow run and prompt attribution", async () => {
+		await getAiModelWithSelection(
+			"user-1",
+			"org-1",
+			false,
+			undefined,
+			"workflow-builder",
+			{
+				frameId: "frame-1",
+				workflowExecutionId: "execution-1",
+				promptVersionId: "prompt-1",
+				featureKey: "scheduled-agent-task",
+			},
+		);
+		expect(contextOfCall(0)).toMatchObject({
+			frameId: "frame-1",
+			workflowExecutionId: "execution-1",
+			promptVersionId: "prompt-1",
+			featureKey: "scheduled-agent-task",
+			jobType: "workflow-builder",
+		});
+	});
+
 	it("forwards the conversation into the resolver context", async () => {
 		await getAiModelWithSelection(
 			"user-1",

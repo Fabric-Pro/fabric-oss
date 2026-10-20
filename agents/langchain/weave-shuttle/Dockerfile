@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@11.28.2
+    && npm install -g pnpm@11.28.6
 
 WORKDIR /app
 
@@ -82,7 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && corepack disable \
-    && npm install -g pnpm@11.28.2
+    && npm install -g pnpm@11.28.6
 
 WORKDIR /app
 

@@ -9,8 +9,6 @@ import {
 	HOOK_TIMEOUT_SECONDS,
 } from "../lib/gate-timeouts.mjs";
 
-import { GATED_GH_API_COMMANDS } from "./gate-fixtures.mjs";
-
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SETTINGS = JSON.parse(
 	readFileSync(resolve(HERE, "..", "..", "settings.json"), "utf8"),
@@ -23,24 +21,18 @@ const gateEntries = entries.filter((e) =>
 );
 
 describe("settings.json — pr-quality-gate routing", () => {
-	it("has exactly one gate entry, and its prefilter covers everything the script gates", () => {
+	it("has exactly one gate entry, with no `if` prefilter", () => {
+		// The gate's triggers (`gh …` and the open-pr.sh helper) share no
+		// substring, and an `if` holds one rule, so a prefilter would need two
+		// entries. Claude Code does not promise to run two same-file entries for
+		// one hook once, so a command matching both could run the checks twice.
+		// The script exits in tens of milliseconds for every other command.
 		assert.equal(gateEntries.length, 1);
-		const glob = gateEntries[0].if.match(/^Bash\((.*)\)$/s)?.[1];
-		assert.ok(glob, "entry must use a Bash(<glob>) condition");
-		const re = new RegExp(
-			`^${glob
-				.split("*")
-				.map((p) => p.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
-				.join("[\\s\\S]*")}$`,
+		assert.equal(gateEntries[0].if, undefined);
+		const group = SETTINGS.hooks.PreToolUse.find((g) =>
+			g.hooks.includes(gateEntries[0]),
 		);
-		const commands = [
-			"gh pr create --fill",
-			"gh pr edit 5 --body x",
-			...GATED_GH_API_COMMANDS,
-		];
-		for (const command of commands) {
-			assert.match(command, re, command);
-		}
+		assert.equal(group.matcher, "Bash");
 	});
 
 	it("gives every gate entry the shared hook timeout", () => {

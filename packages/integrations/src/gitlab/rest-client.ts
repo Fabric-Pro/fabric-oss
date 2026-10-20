@@ -21,7 +21,11 @@ export type GitLabAuth = string | GitLabApiCredential;
 
 /** `https://host[:port]` → that instance's REST base (`…/api/v4`). */
 export function gitlabApiBaseForOrigin(origin: string): string {
-	return `${origin.replace(/\/+$/, "")}/api/v4`;
+	let end = origin.length;
+	while (end > 0 && origin[end - 1] === "/") {
+		end--;
+	}
+	return `${origin.slice(0, end)}/api/v4`;
 }
 
 export function toGitLabApiCredential(auth: GitLabAuth): GitLabApiCredential {

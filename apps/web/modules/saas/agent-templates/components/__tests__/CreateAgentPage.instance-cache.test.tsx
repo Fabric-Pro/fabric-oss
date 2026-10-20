@@ -197,8 +197,10 @@ describe("agent builder save refreshes cached chat targets", () => {
 				),
 			);
 			const mutation = mode === "edit" ? h.update : h.create;
+
 			expect(mutation).toHaveBeenCalledWith(
 				expect.objectContaining({
+					organizationId: "example-org",
 					...(mode === "edit"
 						? { id: oldInstance.id, createNewVersion: true }
 						: {}),

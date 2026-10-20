@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	verifyAIToken: vi.fn(),
+	getModelByCanonicalName: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
 	getRAGProviderConfig: vi.fn(),
 	getPlanToken: vi.fn(),
@@ -24,10 +25,13 @@ vi.mock("@repo/ai-token", () => ({
 		claims.exp - Math.floor(Date.now() / 1000),
 }));
 
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	isReasoningModelName: (await import("@repo/agent-types/databricks-compat"))
+		.isReasoningModelName,
 	DEFAULT_BASE_URLS: { OPENROUTER: "https://openrouter.ai/api/v1" },
 	getAIModelWithMetadata: mocks.getAIModelWithMetadata,
-	getRAGProviderConfig: mocks.getRAGProviderConfig,
+	getRAGProviderConfigForModel: (context: unknown) =>
+		mocks.getRAGProviderConfig(context),
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/plan-credentials", () => ({
@@ -42,6 +46,7 @@ vi.mock("@repo/ai/lib/chatgpt-plan/exhaustion-breaker", () => ({
 
 vi.mock("@repo/database", () => ({
 	getSearchProviderConfig: vi.fn(async () => null),
+	getModelByCanonicalName: mocks.getModelByCanonicalName,
 }));
 
 vi.mock("@repo/utils", () => ({ decryptApiKey: (value: string) => value }));
@@ -77,6 +82,7 @@ function resolved(provider: string, modelString: string) {
 		metadata: {
 			provider,
 			modelString,
+			canonicalName: modelString,
 			billingMode: "external_provider",
 			billingCustomerId: null,
 		},
@@ -86,6 +92,7 @@ function resolved(provider: string, modelString: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.getModelByCanonicalName.mockResolvedValue(null);
 	mocks.exhausted.mockReturnValue(null);
 	mocks.getRAGProviderConfig.mockResolvedValue({
 		apiKey: ORG_KEY,
@@ -295,5 +302,197 @@ describe("POST /api/ai/keys/exchange — a token minted for a job", () => {
 		expect((await response.json()).error).toMatch(
 			/Please configure an AI provider in Settings/,
 		);
+	});
+});
+
+describe("signed delegated model override", () => {
+	it.each(["claude-haiku-4-5", undefined])(
+		"resolves the signed selection (%s)",
+		async (mo) => {
+			mocks.verifyAIToken.mockResolvedValue(claims({ mo }));
+			const result = resolved("OPENROUTER", "anthropic/claude-haiku-4-5");
+			Object.assign(result.metadata, {
+				selectionSource: mo ? "override" : "task_preference",
+			});
+			mocks.getAIModelWithMetadata.mockResolvedValue(result);
+			const response = await exchange();
+			expect(response.status).toBe(200);
+			expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+				{ taskType: "COMPLEX", ...(mo ? { modelOverride: mo } : {}) },
+				expect.anything(),
+			);
+			const body = await response.json();
+			expect(body.modelPinned).toBe(mo ? true : undefined);
+		},
+	);
+	it("does not pin a dropped plan override", async () => {
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "chatgpt-plan:gpt-6" }),
+		);
+		mocks.getAIModelWithMetadata.mockResolvedValue(
+			resolved("OPENROUTER", "anthropic/claude-sonnet-5"),
+		);
+		expect((await (await exchange()).json()).modelPinned).toBeUndefined();
+	});
+	it("pins a plan selection actually served", async () => {
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "chatgpt-plan:gpt-6", pe: true }),
+		);
+		const result = resolved("OPENAI_CHATGPT_PLAN", "gpt-6");
+		Object.assign(result.metadata, { planPick: "gpt-6" });
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		expect((await (await exchange()).json()).modelPinned).toBe(true);
+	});
+});
+
+describe("pinned model metadata", () => {
+	it.each(["GROQ", "OPENAI_CHATGPT_PLAN"])(
+		"returns canonical catalog caps for a pinned %s model",
+		async (provider) => {
+			const canonicalName = provider === "GROQ" ? "deepseek-r1" : "gpt-6";
+			mocks.verifyAIToken.mockResolvedValue(
+				claims({
+					mo:
+						provider === "GROQ"
+							? canonicalName
+							: `chatgpt-plan:${canonicalName}`,
+				}),
+			);
+			const result = resolved(
+				provider,
+				provider === "GROQ" ? "opaque-example-alias" : canonicalName,
+			);
+			Object.assign(result.metadata, {
+				canonicalName,
+				selectionSource:
+					provider === "GROQ" ? "override" : "chatgpt_plan",
+				...(provider === "OPENAI_CHATGPT_PLAN" && {
+					planPick: canonicalName,
+				}),
+			});
+			mocks.getAIModelWithMetadata.mockResolvedValue(result);
+			mocks.getModelByCanonicalName.mockResolvedValue({
+				maxOutputTokens: 8192,
+				contextWindow: 32768,
+			});
+			const body = await (await exchange()).json();
+			expect(body).toMatchObject({
+				modelPinned: true,
+				isReasoningModel: provider === "GROQ",
+				maxOutputTokens: 8192,
+				contextWindow: 32768,
+			});
+			expect(mocks.getModelByCanonicalName).toHaveBeenCalledWith(
+				canonicalName,
+			);
+		},
+	);
+	it("uses resolved metadata caps when present", async () => {
+		mocks.verifyAIToken.mockResolvedValue(claims({ mo: "example-model" }));
+		const result = resolved("GROQ", "example-model");
+		Object.assign(result.metadata, {
+			canonicalName: "example-model",
+			selectionSource: "override",
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		expect(await (await exchange()).json()).toMatchObject({
+			isReasoningModel: false,
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		expect(mocks.getModelByCanonicalName).not.toHaveBeenCalled();
+	});
+	it("omits metadata when not pinned", async () => {
+		mocks.verifyAIToken.mockResolvedValue(claims());
+		const result = resolved("GROQ", "example-model");
+		Object.assign(result.metadata, {
+			canonicalName: "example-model",
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		const body = await (await exchange()).json();
+		for (const key of [
+			"isReasoningModel",
+			"maxOutputTokens",
+			"contextWindow",
+		]) {
+			expect(body).not.toHaveProperty(key);
+		}
+		expect(mocks.getModelByCanonicalName).not.toHaveBeenCalled();
+	});
+	it("returns unknown caps as null for an uncatalogued raw model", async () => {
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "raw-example-model" }),
+		);
+		const result = resolved("GROQ", "raw-example-model");
+		Object.assign(result.metadata, {
+			canonicalName: "raw-example-model",
+			selectionSource: "override",
+		});
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		expect(await (await exchange()).json()).toMatchObject({
+			modelPinned: true,
+			isReasoningModel: false,
+			maxOutputTokens: null,
+			contextWindow: null,
+		});
+	});
+	it("pins a plan pick the plan serves under a different model ID", async () => {
+		// A model added from the plan's own list keeps a suffixed catalog name
+		// and is served under the plan's model ID (Fizzy #3122).
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "chatgpt-plan:gpt-7-sol-chatgpt-plan", pe: true }),
+		);
+		const result = resolved("OPENAI_CHATGPT_PLAN", "gpt-7-sol");
+		Object.assign(result.metadata, { planPick: "gpt-7-sol-chatgpt-plan" });
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		mocks.getModelByCanonicalName.mockResolvedValue({
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		expect(await (await exchange()).json()).toMatchObject({
+			model: "gpt-7-sol",
+			modelPinned: true,
+			isReasoningModel: false,
+			maxOutputTokens: 8192,
+			contextWindow: 32768,
+		});
+		expect(mocks.getModelByCanonicalName).toHaveBeenCalledWith(
+			"gpt-7-sol-chatgpt-plan",
+		);
+	});
+	it("does not pin a plan fallback that shares the picked name", async () => {
+		// The pick mapped to a model the plan did not serve; the plan's
+		// fallback ID happens to equal the picked catalog name.
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "chatgpt-plan:gpt-6", pe: true }),
+		);
+		mocks.getAIModelWithMetadata.mockResolvedValue(
+			resolved("OPENAI_CHATGPT_PLAN", "gpt-6"),
+		);
+		const body = await (await exchange()).json();
+		expect(body.modelPinned).toBeUndefined();
+		expect(mocks.getModelByCanonicalName).not.toHaveBeenCalled();
+	});
+	it("does not pin a plan serving a different model", async () => {
+		mocks.verifyAIToken.mockResolvedValue(
+			claims({ mo: "chatgpt-plan:gpt-6", pe: true }),
+		);
+		const result = resolved("OPENAI_CHATGPT_PLAN", "gpt-6-astra");
+		Object.assign(result.metadata, { canonicalName: "gpt-6-astra" });
+		mocks.getAIModelWithMetadata.mockResolvedValue(result);
+		const body = await (await exchange()).json();
+		expect(body.model).toBe("gpt-6-astra");
+		for (const key of [
+			"modelPinned",
+			"isReasoningModel",
+			"maxOutputTokens",
+			"contextWindow",
+		]) {
+			expect(body).not.toHaveProperty(key);
+		}
 	});
 });

@@ -201,7 +201,9 @@ describe("a deployment that serves a newer build", () => {
 
 		expect(outcome.kind).toBe("updated");
 		expect(
-			stub.requests.every((request) => request.url.startsWith(ORIGIN)),
+			stub.requests.every(
+				(request) => new URL(request.url).origin === ORIGIN,
+			),
 		).toBe(true);
 	});
 

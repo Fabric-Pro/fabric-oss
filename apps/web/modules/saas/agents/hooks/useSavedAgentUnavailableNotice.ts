@@ -30,13 +30,16 @@ export function useSavedAgentUnavailableNotice({
 	const { user } = useSession();
 	const agentSelectionQuery = useQuery({
 		queryKey: ["chat-agent-selection", user?.id, organizationId ?? null],
-		queryFn: async () => orpcClient.users.chatAgentSelection.get(),
+		queryFn: async () =>
+			orpcClient.users.chatAgentSelection.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnMount: false,
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
 		retry: 1,
-		enabled: Boolean(user?.id) && enabled,
+		enabled: Boolean(user?.id) && Boolean(organizationId) && enabled,
 	});
 
 	const announcedRef = useRef(false);

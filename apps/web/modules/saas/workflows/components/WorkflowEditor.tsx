@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { workflowExecutionsKey } from "../lib/query-keys";
+import { describeSaveFailure } from "../lib/save-error";
 import type { WorkflowEdge, WorkflowNode } from "../lib/types";
 import { ExecutionPanel } from "./ExecutionPanel";
 import {
@@ -58,8 +59,10 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 			onSuccess: () => {
 				toast.success("Workflow saved");
 			},
-			onError: (_error) => {
-				toast.error("Failed to save workflow");
+			onError: (error) => {
+				toast.error("Failed to save workflow", {
+					description: describeSaveFailure(error),
+				});
 			},
 		}),
 	);

@@ -69,14 +69,20 @@ const MAX_FILE_NAME_CHARS = 100;
  */
 export function cleanPageFileName(raw: string): string {
 	const last = raw.split(/[\\/]/).pop() ?? "";
-	const cleaned = last
+	let cleaned = last
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is being removed
 		.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, "")
 		.replace(/[؜​-‏‪-‮⁠-⁩﻿]/g, "")
 		.replace(/\s+/g, " ")
 		.trim()
-		.replace(/^\.+/, "")
-		.replace(/[. ]+$/, "");
+		.replace(/^\.+/, "");
+	// A backward scan visits only the suffix; an unanchored suffix regex can
+	// retry the same interior dot/space run at every position before the cap.
+	let end = cleaned.length;
+	while (end > 0 && (cleaned[end - 1] === "." || cleaned[end - 1] === " ")) {
+		end--;
+	}
+	cleaned = cleaned.slice(0, end);
 	if (cleaned.length <= MAX_FILE_NAME_CHARS) {
 		return cleaned;
 	}

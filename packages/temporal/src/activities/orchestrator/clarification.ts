@@ -12,6 +12,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { usageOriginFields } from "../../workflows/orchestrator/usage-attribution";
 import {
 	activityAbortSignal,
 	guardTurnModel,
@@ -45,6 +46,8 @@ export interface AnalyzeIntentClarityInput {
 	 * the usage-log row for cost attribution only.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 	/**
 	 * The chat turn this check belongs to. When set, the turn record is
 	 * consulted before the model request, and a refusal (the user stopped
@@ -123,9 +126,7 @@ export async function analyzeIntentClarityActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				featureKey: "chat-agent",
-				...(input.conversationId
-					? { conversationId: input.conversationId }
-					: {}),
+				...usageOriginFields(input),
 			},
 		);
 

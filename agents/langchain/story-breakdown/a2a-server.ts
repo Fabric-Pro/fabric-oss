@@ -8,6 +8,7 @@
 import { serve } from "@hono/node-server";
 import type { AgentSkill } from "@repo/agent-core";
 import { A2AServer, createLangGraphA2AExecutor } from "@repo/agent-core";
+import { convertToSimpleMessages } from "@repo/agent-core/utils/message-converter";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { v4 as uuidv4 } from "uuid";
@@ -105,16 +106,7 @@ const a2aExecutor = createLangGraphA2AExecutor(
 		});
 
 		// Convert BaseMessage[] to simple message format
-		const outputMessages = (result.messages || []).map((msg) => ({
-			role:
-				typeof msg === "object" && msg !== null && "role" in msg
-					? String((msg as Record<string, unknown>).role)
-					: "assistant",
-			content:
-				typeof msg === "object" && msg !== null && "content" in msg
-					? String((msg as Record<string, unknown>).content)
-					: String(msg),
-		}));
+		const outputMessages = convertToSimpleMessages(result.messages || []);
 
 		return {
 			response: result.document || "",

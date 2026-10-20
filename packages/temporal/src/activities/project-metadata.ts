@@ -19,6 +19,10 @@ import {
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { log } from "@temporalio/activity";
 import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../workflows/orchestrator/usage-attribution";
+import {
 	runWithTurnDispatch,
 	startTurnHeartbeat,
 	type TurnScope,
@@ -185,7 +189,7 @@ export async function retrieveProjectContextsActivity(
 	userId: string,
 	organizationId: string | undefined,
 	topK?: number,
-	options?: { turnScope?: TurnScope },
+	options?: SecondaryUsageInput & { turnScope?: TurnScope },
 ): Promise<{ context: string; chunkCount: number }> {
 	const turnScope = options?.turnScope;
 	const stopHeartbeat = startTurnHeartbeat(turnScope);
@@ -197,6 +201,7 @@ export async function retrieveProjectContextsActivity(
 				userId,
 				organizationId,
 				topK,
+				options,
 			),
 		);
 	} finally {
@@ -210,6 +215,7 @@ async function retrieveProjectContextsForTool(
 	userId: string,
 	organizationId: string | undefined,
 	topK: number | undefined,
+	usage?: SecondaryUsageInput,
 ): Promise<{ context: string; chunkCount: number }> {
 	try {
 		const { retrieveProjectContexts, contextMetaHeader } = await import(
@@ -217,6 +223,10 @@ async function retrieveProjectContextsForTool(
 		);
 
 		const results = await retrieveProjectContexts({
+			conversationId: usage?.usageConversationId,
+			...(usage?.usageOrigin
+				? { usageOrigin: secondaryUsageFields(usage) }
+				: {}),
 			projectId,
 			query,
 			userId,

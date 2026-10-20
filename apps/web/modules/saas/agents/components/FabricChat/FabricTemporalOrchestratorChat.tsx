@@ -130,6 +130,7 @@ import {
 } from "../../hooks/useOrchestratorConversation";
 import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
+import { APPROVAL_STALE_MESSAGE } from "../../lib/approval-response";
 import {
 	describeImageUploadFailure,
 	ImageUploadError,
@@ -173,7 +174,9 @@ import {
 	type TemporalOrchestratorActivityState,
 } from "./orchestrator";
 import {
+	selectLiveStoppedAssistantMessages,
 	selectLiveUserMessages,
+	stoppedAnswerText,
 	turnQuestionMessageId,
 } from "./orchestrator/live-user-messages";
 import {
@@ -270,6 +273,7 @@ function orchestratorToolInputSummary(args: unknown): string | undefined {
 
 export function FabricTemporalOrchestratorChat({
 	organizationId,
+	frameLaunchContext,
 	reasoningMode,
 	executionModeOverride,
 	welcomeMode = "default",
@@ -513,6 +517,13 @@ export function FabricTemporalOrchestratorChat({
 	const approvalHistoryRef = useRef<OrchestratorExecution["approvalHistory"]>(
 		[],
 	);
+	// The running turn this chat attached to when the conversation was
+	// opened, and the stored message its question came from: its save reuses
+	// that message rather than adding the question again.
+	const attachedTurnRef = useRef<{
+		executionId: string;
+		questionMessageId?: string;
+	} | null>(null);
 
 	// Use ref for onActivityChange to avoid infinite loops when parent doesn't memoize the callback
 	const onActivityChangeRef = useRef(onActivityChange);
@@ -621,18 +632,26 @@ export function FabricTemporalOrchestratorChat({
 
 	const agentSelectionQuery = useQuery({
 		queryKey: ["chat-agent-selection", user?.id, organizationId ?? null],
-		queryFn: async () => orpcClient.users.chatAgentSelection.get(),
+		queryFn: async () =>
+			orpcClient.users.chatAgentSelection.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnMount: false,
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
 		retry: 1,
-		enabled: Boolean(user?.id) && showAgentPicker,
+		enabled:
+			Boolean(user?.id) && Boolean(organizationId) && showAgentPicker,
 	});
 
 	const persistAgentSelection = useMutation({
-		mutationFn: async (agents: SelectedAgent[]) =>
-			orpcClient.users.chatAgentSelection.set({
+		mutationFn: async (agents: SelectedAgent[]) => {
+			if (!organizationId) {
+				return;
+			}
+			return orpcClient.users.chatAgentSelection.set({
+				organizationId,
 				selectedAgents: agents.map((agent) => ({
 					agentId: agent.agentId,
 					name: agent.name,
@@ -644,7 +663,8 @@ export function FabricTemporalOrchestratorChat({
 					enabledMcpConfigIds: agent.enabledMcpConfigIds,
 					enabledIntegrationIds: agent.enabledIntegrationIds,
 				})),
-			}),
+			});
+		},
 		onError: () => {
 			toast.message("Couldn't save your model choice.", {
 				description:
@@ -691,8 +711,10 @@ export function FabricTemporalOrchestratorChat({
 	// picker existed.
 	const activeModelOverride = selectedAgent?.modelOverride;
 
-	// The page the agent was opened from; none outside the drawer.
+	// Expanded chats supply their own origin; drawer chats use the launcher.
 	const launchContext = useOptionalFabricAgentLauncher()?.launchContext;
+	const effectiveFrameLaunchContext =
+		frameLaunchContext === undefined ? launchContext : frameLaunchContext;
 
 	// Use the streaming orchestrator hook
 	const {
@@ -700,6 +722,7 @@ export function FabricTemporalOrchestratorChat({
 		isLoading,
 		state,
 		sendMessage,
+		attach,
 		sendApproval,
 		sendClarification,
 		sendFollowUp,
@@ -746,8 +769,9 @@ export function FabricTemporalOrchestratorChat({
 		advisorOrigin,
 		// Where the agent was opened, for the tools that place what they
 		// create: the Workspace the user has open, or the kind of page.
-		launchWorkspaceId: launchContext?.workspaceId,
-		launchSurface: launchContext?.surface,
+		launchWorkspaceId: effectiveFrameLaunchContext?.workspaceId,
+		launchFrameId: effectiveFrameLaunchContext?.launchFrameId,
+		launchSurface: effectiveFrameLaunchContext?.surface,
 		// Surface tag for the cancel telemetry event (spec § 10.1 /
 		// task 3.3). Only consumer of `useOrchestratorStream` is the
 		// standalone Loom Orchestrator chat, so the default applies.
@@ -856,6 +880,29 @@ export function FabricTemporalOrchestratorChat({
 	const liveUserMessages = useMemo(
 		() => selectLiveUserMessages(messages, completedExecutions),
 		[messages, completedExecutions],
+	);
+
+	// The live turn's stopped answer, rendered by the Stopped block. When it
+	// has text, that block owns the answer and the direct-response branch
+	// stays hidden: a cancellation reported by the stream sets both the
+	// message text and `state.result.response`.
+	const liveStoppedMessages = useMemo(
+		() =>
+			completedExecutions.some(
+				(e) =>
+					e != null &&
+					e.userMessage != null &&
+					e.id === state.executionId,
+			)
+				? []
+				: selectLiveStoppedAssistantMessages(
+						messages,
+						completedExecutions,
+					),
+		[messages, completedExecutions, state.executionId],
+	);
+	const liveStoppedHasText = liveStoppedMessages.some(
+		(m) => m.content.trim() !== "",
 	);
 
 	// Fetch attached project when conversationId changes
@@ -1229,6 +1276,11 @@ export function FabricTemporalOrchestratorChat({
 								]
 							: [],
 						recoveredFromTurn: exec.recoveredFromTurn === true,
+						inProgress: exec.inProgress === true,
+						questionMessageId:
+							typeof exec.questionMessageId === "string"
+								? exec.questionMessageId
+								: undefined,
 						terminalReason:
 							typeof exec.terminalReason === "string"
 								? exec.terminalReason
@@ -1656,9 +1708,15 @@ export function FabricTemporalOrchestratorChat({
 				// Build messages for this execution. The question always gets
 				// a fresh id and the seeded copy is removed by id in the same
 				// save: a late removal request for the seed's id can then never
-				// delete the saved question.
+				// delete the saved question. A turn attached to after a reload
+				// has no seed to remove: its question keeps the stored id, so
+				// the save takes that message over in place.
+				const attachedTurn =
+					attachedTurnRef.current?.executionId === state.executionId
+						? attachedTurnRef.current
+						: null;
 				const userMsg = {
-					id: generateMessageId(),
+					id: attachedTurn?.questionMessageId ?? generateMessageId(),
 					role: "user" as const,
 					content: userContent,
 					timestamp: execution.startedAt,
@@ -1794,6 +1852,9 @@ export function FabricTemporalOrchestratorChat({
 				// Reset tracking for next execution
 				currentExecutionRef.current = null;
 				approvalHistoryRef.current = [];
+				if (attachedTurn && attachedTurnRef.current === attachedTurn) {
+					attachedTurnRef.current = null;
+				}
 
 				onConversationSaved?.();
 			} catch (error) {
@@ -1849,7 +1910,12 @@ export function FabricTemporalOrchestratorChat({
 			const hasFailed = state.status === "failed";
 
 			// Build response message - use state response, or create one for rejections/cancellations
-			let responseMessage = state.result?.response || "";
+			// A stopped turn keeps the text it had streamed: that is what the
+			// user saw, so the completed entry and the save show it too.
+			let responseMessage =
+				state.result?.response ||
+				(wasCancelled ? stoppedAnswerText(messages) : undefined) ||
+				"";
 			if (!responseMessage) {
 				if (wasCancelled) {
 					responseMessage = "Workflow was cancelled by user.";
@@ -1892,6 +1958,8 @@ export function FabricTemporalOrchestratorChat({
 						: undefined,
 				truncated: state.result?.truncated,
 				apiBilling: state.apiBilling,
+				// The completed entry shows the Stopped mark the live turn had.
+				terminalStatus: wasCancelled ? "CANCELLED" : undefined,
 				plan: state.plan
 					? {
 							id: state.plan.id,
@@ -1935,6 +2003,54 @@ export function FabricTemporalOrchestratorChat({
 		state.answeredClarifications,
 		messages,
 		persistConversation,
+	]);
+
+	// A turn still running when the conversation was opened becomes the live
+	// turn: its progress and any pending approval stream in again, Stop and
+	// approvals reach it, and it is saved from here when it ends, like a turn
+	// sent here. Never while this tab is sending or streaming one itself.
+	const runningTurn = completedExecutions.find(
+		(execution) => execution.inProgress,
+	);
+	useEffect(() => {
+		if (
+			!runningTurn ||
+			isLoading ||
+			isPreparingSend ||
+			runningTurn.id === state.executionId
+		) {
+			return;
+		}
+		const { id, userMessage, questionMessageId } = runningTurn;
+		attachedTurnRef.current = { executionId: id, questionMessageId };
+		lastUserMessageRef.current = userMessage;
+		lastUserImageUrlsRef.current = undefined;
+		currentExecutionRef.current = {
+			...createExecutionRecord(id, userMessage, reasoningMode),
+			// A running record's `completedAt` is when the turn started.
+			startedAt: runningTurn.completedAt.toISOString(),
+		};
+		approvalHistoryRef.current = [];
+		// The live view takes the turn over from its restored record, and a
+		// turn that finished here before it moves into the list, as a send
+		// would move it.
+		const finished = lastCompletedExecutionRef.current;
+		lastCompletedExecutionRef.current = null;
+		setCompletedExecutions((prev) => {
+			const rest = prev.filter((execution) => execution.id !== id);
+			return finished && !rest.some((e) => e.id === finished.id)
+				? [...rest, finished]
+				: rest;
+		});
+		void attach(id, userMessage, activeConversationId ?? undefined);
+	}, [
+		runningTurn,
+		isLoading,
+		isPreparingSend,
+		state.executionId,
+		attach,
+		activeConversationId,
+		reasoningMode,
 	]);
 
 	// Report activity changes to parent
@@ -2581,6 +2697,13 @@ export function FabricTemporalOrchestratorChat({
 							content: string;
 						}> = [];
 
+						// A turn still running when the conversation was read
+						// has no answer here yet: sent as a bare question, the
+						// model would take it as one still to answer.
+						if (execution.inProgress) {
+							return threadMessages;
+						}
+
 						if (execution.userMessage?.trim()) {
 							threadMessages.push({
 								role: "user",
@@ -2803,9 +2926,11 @@ export function FabricTemporalOrchestratorChat({
 				});
 			}
 
-			const success = await sendApproval(true);
-			if (success) {
+			const result = await sendApproval(true);
+			if (result === "sent") {
 				toast.success("Approved - execution continuing");
+			} else if (result === "stale") {
+				toast.info(APPROVAL_STALE_MESSAGE);
 			} else {
 				toast.error("Failed to send approval");
 			}
@@ -2831,9 +2956,11 @@ export function FabricTemporalOrchestratorChat({
 				});
 			}
 
-			const success = await sendApproval(false, "Rejected by user");
-			if (success) {
+			const result = await sendApproval(false, "Rejected by user");
+			if (result === "sent") {
 				toast.info("Rejected - execution stopped");
+			} else if (result === "stale") {
+				toast.info(APPROVAL_STALE_MESSAGE);
 			} else {
 				toast.error("Failed to send rejection");
 			}
@@ -2872,10 +2999,12 @@ export function FabricTemporalOrchestratorChat({
 			});
 		}
 
-		const success = await sendApproval(false, feedback.trim());
+		const result = await sendApproval(false, feedback.trim());
 		setIsSubmittingApproval(false);
-		if (success) {
+		if (result === "sent") {
 			toast.info("Feedback sent - execution will adjust");
+		} else if (result === "stale") {
+			toast.info(APPROVAL_STALE_MESSAGE);
 		} else {
 			toast.error("Failed to send feedback");
 		}
@@ -3522,6 +3651,15 @@ export function FabricTemporalOrchestratorChat({
 												{execution.terminalStatus ===
 													"CANCELLED" && (
 													<StoppedIndicator />
+												)}
+												{execution.inProgress && (
+													<output
+														className="block text-sm text-muted-foreground"
+														aria-live="polite"
+													>
+														Still running when this
+														conversation was opened
+													</output>
 												)}
 												{(execution.terminalStatus ===
 													"FAILED" ||
@@ -4425,6 +4563,7 @@ export function FabricTemporalOrchestratorChat({
 							{isComplete &&
 								stepResults.length === 0 &&
 								state.result?.response &&
+								!liveStoppedHasText &&
 								!completedExecutions.some(
 									(e) =>
 										e != null && e.id === state.executionId,
@@ -4453,49 +4592,38 @@ export function FabricTemporalOrchestratorChat({
 							 * The streaming-text branch above hides once
 							 * `isRunning` flips to false, so the cancelled
 							 * partial would otherwise vanish. We re-surface
-							 * any assistant message with
-							 * `streamStatus === "cancelled"` that hasn't
-							 * been moved into `completedExecutions` yet. */}
-							{messages
-								.filter(
-									(m) =>
-										m.role === "assistant" &&
-										m.streamStatus === "cancelled" &&
-										!completedExecutions.some(
-											(e) =>
-												e != null &&
-												e.userMessage != null &&
-												e.id === state.executionId,
-										),
-								)
-								.map((cancelledMessage) => (
-									<div
-										key={`cancelled-${cancelledMessage.id}`}
-										className="flex gap-3"
-									>
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
-										<div className="flex-1 min-w-0">
-											{cancelledMessage.content && (
-												<Response
-													className={
-														ASSISTANT_RESPONSE_SHELL_CLASSNAME
-													}
-												>
-													{cancelledMessage.content}
-												</Response>
-											)}
-											{/* Editorial "Stopped" chip — rendered at
-											 * the end of the cancelled turn
-											 * (spec § 4.2 / 8.9). */}
-											<StoppedIndicator />
-										</div>
+							 * the stopped assistant message of a turn that
+							 * hasn't been moved into `completedExecutions`
+							 * yet; a moved turn's entry shows it, under its
+							 * own question. */}
+							{liveStoppedMessages.map((cancelledMessage) => (
+								<div
+									key={`cancelled-${cancelledMessage.id}`}
+									className="flex gap-3"
+								>
+									<div className="shrink-0">
+										<FabricLogo
+											className="h-8 w-8"
+											size={32}
+										/>
 									</div>
-								))}
+									<div className="flex-1 min-w-0">
+										{cancelledMessage.content && (
+											<Response
+												className={
+													ASSISTANT_RESPONSE_SHELL_CLASSNAME
+												}
+											>
+												{cancelledMessage.content}
+											</Response>
+										)}
+										{/* Editorial "Stopped" chip — rendered at
+										 * the end of the cancelled turn
+										 * (spec § 4.2 / 8.9). */}
+										<StoppedIndicator />
+									</div>
+								</div>
+							))}
 
 							{/* Failed turn — the run ended with an error. The
 							 * streaming branch hides once `isRunning` flips to

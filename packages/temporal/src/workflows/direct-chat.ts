@@ -17,8 +17,11 @@
  */
 
 import {
+	ActivityCancellationType,
+	type ActivityOptions,
 	ApplicationFailure,
 	defineQuery,
+	isCancellation,
 	log,
 	ParentClosePolicy,
 	patched,
@@ -45,7 +48,7 @@ import {
 export const directChatProgressQuery =
 	defineQuery<DirectChatProgressUpdate>("directChatProgress");
 export const directChatStatusQuery = defineQuery<
-	"running" | "completed" | "failed"
+	"running" | "completed" | "failed" | "cancelled"
 >("directChatStatus");
 
 // =============================================================================
@@ -85,9 +88,7 @@ const { generateToolSuggestionsActivity } = proxyActivities<
 // Main AI execution - longer timeout for complex tool chains
 // Note: Model is created INSIDE the activity to avoid Temporal serialization issues
 // Heartbeat timeout enables real-time progress updates via activity heartbeats
-const { executeDirectChatActivity } = proxyActivities<
-	typeof directChatActivities
->({
+const DIRECT_CHAT_EXECUTION_OPTIONS: ActivityOptions = {
 	startToCloseTimeout: "5m",
 	heartbeatTimeout: "30s", // Activity must heartbeat at least every 30s
 	retry: {
@@ -108,7 +109,22 @@ const { executeDirectChatActivity } = proxyActivities<
 		// ActivityFailure).
 		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
-});
+};
+
+// Default cancellation type: a cancelled workflow abandons the attempt.
+const { executeDirectChatActivity: executeDirectChatAbandonedOnCancel } =
+	proxyActivities<typeof directChatActivities>(DIRECT_CHAT_EXECUTION_OPTIONS);
+
+// The same activity, but a cancelled workflow waits until the activity has
+// stopped its model call (it reads Temporal's cancellation signal and reports
+// itself cancelled) instead of abandoning it to run on. Runs recorded before
+// the `direct-chat-cancellation-v1` marker keep the proxy above, because the
+// default cancellation type ended them as failed in the same workflow task.
+const { executeDirectChatActivity: executeDirectChatStoppedOnCancel } =
+	proxyActivities<typeof directChatActivities>({
+		...DIRECT_CHAT_EXECUTION_OPTIONS,
+		cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+	});
 
 // The `postOperationResultActivity`
 // proxy now lives ONLY inside the fire-and-forget child workflow
@@ -172,7 +188,8 @@ export async function directChatWorkflow(
 	// ==========================================================================
 	// Workflow state for progress tracking (queryable)
 	// ==========================================================================
-	let workflowStatus: "running" | "completed" | "failed" = "running";
+	let workflowStatus: "running" | "completed" | "failed" | "cancelled" =
+		"running";
 	let progress: DirectChatProgressUpdate = {
 		phase: "initializing",
 		message: "Starting workflow...",
@@ -208,6 +225,14 @@ export async function directChatWorkflow(
 		reasoningMode,
 		messageLength: message.length,
 	});
+
+	// A cancel (Stop, or the client going away) ends the run as cancelled
+	// after the model call has stopped, rather than as a failure. Histories
+	// recorded before this marker failed the run instead, and replay that.
+	const endsAsCancelled = patched("direct-chat-cancellation-v1");
+	const executeDirectChatActivity = endsAsCancelled
+		? executeDirectChatStoppedOnCancel
+		: executeDirectChatAbandonedOnCancel;
 
 	try {
 		// Step 1: Collect MCP tools, generate memory, and retrieve RAG context in parallel
@@ -251,6 +276,7 @@ export async function directChatWorkflow(
 					5, // topK
 					0.1, // minSimilarity
 					input.projectId, // enrichment mode when project attached
+					input.usageConversationId ?? conversationId,
 				),
 			);
 		}
@@ -272,6 +298,12 @@ export async function directChatWorkflow(
 					organizationId,
 					workspaceIds,
 					input.workspaceDocumentIds,
+					undefined,
+					undefined,
+					{
+						usageConversationId:
+							input.usageConversationId ?? conversationId,
+					},
 				),
 			);
 		}
@@ -605,6 +637,19 @@ export async function directChatWorkflow(
 			sources: ragSources.length > 0 ? ragSources : undefined,
 		};
 	} catch (error) {
+		// Cancelled, not failed: a turn the person stopped gets no failure
+		// status and no failure row in the conversation. Rethrowing the
+		// cancellation of a cancelled workflow ends the run as CANCELED.
+		if (endsAsCancelled && isCancellation(error)) {
+			progress = {
+				...progress,
+				message: "Workflow cancelled",
+			};
+			workflowStatus = "cancelled";
+			log.info("Direct chat workflow cancelled", { executionId });
+			throw error;
+		}
+
 		// We delay the `ApplicationFailure` early-return so the failure
 		// path's Step 6 call below sees BOTH error shapes uniformly. The
 		// activity layer is the canonical source of `ApplicationFailure`

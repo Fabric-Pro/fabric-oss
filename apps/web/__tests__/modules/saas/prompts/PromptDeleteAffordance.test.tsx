@@ -25,6 +25,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
+
 const state = vi.hoisted(() => ({
 	globalRole: null as string | null,
 	organizationId: "org-1" as string | null,

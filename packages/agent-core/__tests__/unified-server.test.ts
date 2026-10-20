@@ -1,3 +1,4 @@
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	createUnifiedServer,
@@ -6,6 +7,7 @@ import {
 	sanitizeStateForCopilotKit,
 	stripEmptyResponseFallbacks,
 } from "../src/unified-server";
+import { convertToSimpleMessages } from "../src/utils/message-converter";
 
 function createTestApp(events: LangGraphStreamEvent[]) {
 	return createUnifiedServer(
@@ -820,5 +822,674 @@ describe("stripEmptyResponseFallbacks", () => {
 		const messages = [null, "raw", 42];
 
 		expect(stripEmptyResponseFallbacks(messages)).toEqual(messages);
+	});
+});
+
+describe("usage conversation runtime config", () => {
+	it.each(["conversation-example", undefined])(
+		"passes explicit usage metadata without a thread fallback (%s)",
+		async (usageConversationId) => {
+			vi.stubEnv("AGENT_API_KEY", "");
+			vi.stubEnv("AGENT_API_KEYS", "");
+			vi.stubEnv("AGENT_HMAC_SECRET", "");
+			let received: Record<string, unknown> | undefined;
+			try {
+				const { app } = createUnifiedServer(
+					{
+						name: "example-agent",
+						description: "Example",
+						baseUrl: "http://localhost:3000",
+						port: 3000,
+						skills: [],
+					},
+					async () => ({}),
+					() => ({ response: "done" }),
+					undefined,
+					async function* (_input, config) {
+						received = config?.configurable;
+						yield {
+							nodeName: "end",
+							state: {
+								messages: [
+									{ role: "assistant", content: "done" },
+								],
+							},
+						};
+					},
+				);
+				const response = await app.request("/runs/stream", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						thread_id: "thread-example",
+						input: {
+							messages: [{ role: "user", content: "hello" }],
+							usage_conversation_id: usageConversationId,
+							usage_project_id: "origin-project",
+							usage_frame_id: "origin-frame",
+							usage_feature_key: "chat-agent",
+						},
+					}),
+				});
+				await response.text();
+				expect(response.status).toBe(200);
+				expect(received?.usage_conversation_id).toBe(
+					usageConversationId,
+				);
+				expect(received).toMatchObject({
+					usage_project_id: "origin-project",
+					usage_frame_id: "origin-frame",
+					usage_feature_key: "chat-agent",
+				});
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+});
+
+describe("invoke model and tenant propagation", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+
+	it.each(["/runs/stream", "/"])(
+		"passes exchanged config through %s without a stream executor",
+		async (path) => {
+			const exchange = await import("../src/services/token-exchange");
+			vi.spyOn(exchange, "getAICredentialsFromHeaders").mockResolvedValue(
+				{
+					apiKey: "test-key",
+					model: "example-model",
+					provider: "openai",
+					baseUrl: "https://example.com",
+					deploymentName: "example-deployment",
+					expiresIn: 300,
+				},
+			);
+			const invoke = vi.fn().mockResolvedValue({ response: "done" });
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+				},
+				invoke,
+				() => ({ response: "done" }),
+			);
+			const response = await app.request(path, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "test-token",
+					"X-Tenant-User-Id": "example-user",
+					"X-Tenant-Organization-Id": "example-org",
+				},
+				body: JSON.stringify(
+					path === "/a2a/send"
+						? {
+								message: {
+									role: "user",
+									parts: [{ type: "text", text: "hello" }],
+								},
+							}
+						: path === "/runs/stream"
+							? {
+									input: {
+										messages: [
+											{ role: "user", content: "hello" },
+										],
+									},
+								}
+							: {
+									messages: [
+										{ role: "user", content: "hello" },
+									],
+								},
+				),
+			});
+			await response.text();
+			expect(response.status).toBe(200);
+			expect(invoke).toHaveBeenCalledTimes(1);
+			const expected = {
+				ai_api_key: "test-key",
+				ai_model: "example-model",
+				ai_provider: "openai",
+				tenant_user_id: "example-user",
+				tenant_organization_id: "example-org",
+				ai_token: "test-token",
+			};
+			expect(invoke.mock.calls[0][1]).toMatchObject({
+				configurable: {
+					...expected,
+					ai_gateway_url: "https://example.com",
+				},
+			});
+		},
+	);
+});
+
+describe("server-resolved graph configuration", () => {
+	const untrusted = {
+		tenant_user_id: "other-user",
+		tenant_organization_id: "other-org",
+		ai_gateway_url: "https://untrusted.example.com",
+		ai_base_url: "https://untrusted.example.com",
+		ai_deployment_name: "untrusted-deployment",
+		ai_billing_mode: "untrusted-mode",
+		ai_billing_customer_id: "untrusted-customer",
+		ai_plan_source: "untrusted-plan",
+		ai_model_pinned: true,
+		ai_max_output_tokens: 99999,
+		ai_context_window: 99999,
+	};
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+	async function request(
+		path: string,
+		source: "exchange" | "headers" | "absent" | "key-only",
+		platform = false,
+		legacyBodyConfig = true,
+	) {
+		const legacy = [
+			"/runs",
+			"/threads/example-thread/runs",
+			"/run",
+			"/invoke",
+			"/stream",
+		].includes(path);
+		const exchange = await import("../src/services/token-exchange");
+		const exchangeSpy = vi
+			.spyOn(exchange, "getAICredentialsFromHeaders")
+			.mockResolvedValue(
+				source === "exchange"
+					? {
+							apiKey: "test-key",
+							model: "example-model",
+							provider: "openai",
+							expiresIn: 300,
+							baseUrl: "https://resolved.example.com",
+							deploymentName: "resolved-deployment",
+							billingMode: "resolved-mode",
+							billingCustomerId: "resolved-customer",
+							planSource: "resolved-plan",
+							modelPinned: true,
+							isReasoningModel: false,
+							maxOutputTokens: 8192,
+							contextWindow: 32768,
+						}
+					: source === "key-only"
+						? {
+								apiKey: "test-key",
+								model: "example-model",
+								provider: "openai",
+								expiresIn: 300,
+							}
+						: null,
+			);
+		if (legacy) {
+			exchangeSpy.mockRejectedValue(new Error("Example expired token"));
+		}
+		const invoke = vi.fn().mockResolvedValue({ response: "done" });
+		let runtime: Record<string, unknown> | undefined;
+		const { app } = createUnifiedServer(
+			{
+				name: "example-agent",
+				description: "Example",
+				baseUrl: "http://localhost:3000",
+				port: 3000,
+				skills: [],
+			},
+			invoke,
+			() => ({ response: "done" }),
+			undefined,
+			platform
+				? async function* (_input, config) {
+						runtime = config?.configurable;
+						yield {
+							nodeName: "end",
+							state: {
+								messages: [
+									{ role: "assistant", content: "done" },
+								],
+							},
+						};
+					}
+				: undefined,
+		);
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (source === "exchange" || source === "key-only") {
+			headers["X-AI-Token"] = "test-token";
+		}
+		if (source === "exchange" || source === "headers") {
+			headers["X-Tenant-User-ID"] = "example-user";
+			headers["X-Tenant-Organization-ID"] = "example-org";
+			headers["X-AI-Base-URL"] = "https://header.example.com";
+			headers["X-AI-Deployment-Name"] = "header-deployment";
+		}
+		if (legacy) {
+			headers["X-AI-Model"] = "header-model";
+			headers["X-AI-Provider"] = "header-provider";
+		}
+		const poison = {
+			...(legacy && legacyBodyConfig
+				? {
+						ai_api_key: "body-key",
+						ai_model: "body-model",
+						ai_provider: "body-provider",
+						ai_token: "body-token",
+					}
+				: {}),
+			...untrusted,
+			...(source === "exchange" && !legacy
+				? {
+						ai_is_reasoning: true,
+						ai_model: "body-model",
+						ai_provider: "body-provider",
+					}
+				: {}),
+			fabric_usage: { ...untrusted, ai_token: "untrusted-token" },
+			userId: "other-user",
+			organizationId: "other-org",
+		};
+		const messages = [{ role: "user", content: "hello" }];
+		const body = path.startsWith("/a2a/")
+			? {
+					message: {
+						role: "user",
+						parts: [{ type: "text", text: "hello" }],
+						metadata: poison,
+					},
+					metadata: poison,
+				}
+			: {
+					...poison,
+					messages,
+					input: { ...poison, messages },
+					config: { configurable: poison },
+					configurable: poison,
+					context: poison,
+					forwardedProps: poison,
+					properties: poison,
+				};
+		const response = await app.request(path, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+		});
+		await response.text();
+		if (legacy) {
+			expect(exchangeSpy).not.toHaveBeenCalled();
+		}
+		expect(response.status).toBe(200);
+		if (!platform) {
+			expect(invoke).toHaveBeenCalledTimes(1);
+		}
+		const input = invoke.mock.calls[0]?.[0];
+		const received = platform
+			? runtime
+			: path.includes("runs/stream") || path === "/"
+				? invoke.mock.calls[0][1]?.configurable
+				: input;
+		expect(received).toBeDefined();
+		const effectiveSource =
+			legacy && source === "exchange" ? "headers" : source;
+		const resolved =
+			effectiveSource === "exchange"
+				? "https://resolved.example.com"
+				: effectiveSource === "headers"
+					? "https://header.example.com"
+					: undefined;
+		const expected = {
+			ai_model_pinned: effectiveSource === "exchange" ? true : undefined,
+			ai_max_output_tokens:
+				effectiveSource === "exchange" ? 8192 : undefined,
+			ai_context_window:
+				effectiveSource === "exchange" ? 32768 : undefined,
+			tenant_user_id:
+				effectiveSource === "exchange" || effectiveSource === "headers"
+					? "example-user"
+					: undefined,
+			tenant_organization_id:
+				effectiveSource === "exchange" || effectiveSource === "headers"
+					? "example-org"
+					: undefined,
+			ai_gateway_url: resolved,
+			ai_base_url: resolved,
+			ai_deployment_name:
+				effectiveSource === "exchange"
+					? "resolved-deployment"
+					: effectiveSource === "headers"
+						? "header-deployment"
+						: undefined,
+			ai_billing_mode:
+				effectiveSource === "exchange" ? "resolved-mode" : undefined,
+			ai_billing_customer_id:
+				effectiveSource === "exchange"
+					? "resolved-customer"
+					: undefined,
+			ai_plan_source:
+				effectiveSource === "exchange" ? "resolved-plan" : undefined,
+		};
+		for (const [key, value] of Object.entries(expected)) {
+			expect(received?.[key], key).toBe(value);
+		}
+		expect(received?.fabric_usage).toBeUndefined();
+		if (effectiveSource === "exchange") {
+			expect(received?.ai_is_reasoning).toBe(false);
+			expect(received?.ai_model).toBe("example-model");
+			expect(received?.ai_provider).toBe("openai");
+		}
+		if (legacy) {
+			for (const [key, value] of Object.entries({
+				ai_api_key: "body-key",
+				ai_model: "body-model",
+				ai_provider: "body-provider",
+				ai_token: "body-token",
+			})) {
+				expect(input?.[key], key).toBe(
+					legacyBodyConfig ? value : undefined,
+				);
+			}
+		}
+		// Synchronous callbacks may ignore the optional runtime argument.
+		if (input) {
+			for (const key of Object.keys(untrusted)) {
+				if (key === "ai_model_pinned") {
+					continue;
+				}
+				expect(input[key], key).not.toBe(
+					untrusted[key as keyof typeof untrusted],
+				);
+			}
+		}
+	}
+	it.each(
+		["/a2a/send", "/a2a/send/stream"].flatMap((path) =>
+			(["exchange", "headers", "absent", "key-only"] as const).map(
+				(source) => ({ path, source }),
+			),
+		),
+	)("ignores body metadata on $path ($source)", async ({ path, source }) => {
+		await request(path, source);
+	});
+	it.each(
+		["/runs/stream", "/threads/example-thread/runs/stream", "/"].flatMap(
+			(path) =>
+				(["exchange", "absent", "key-only"] as const).flatMap(
+					(source) =>
+						[false, true].map((platform) => ({
+							path,
+							source,
+							platform,
+						})),
+				),
+		),
+	)(
+		"protects runtime config on $path ($source, platform=$platform)",
+		async ({ path, source, platform }) => {
+			await request(path, source, platform);
+		},
+	);
+	it.each(
+		[
+			"/runs",
+			"/threads/example-thread/runs",
+			"/run",
+			"/invoke",
+			"/stream",
+		].flatMap((path) =>
+			(["exchange", "absent"] as const).flatMap((source) =>
+				[true, false].map((withBody) => ({ path, source, withBody })),
+			),
+		),
+	)(
+		"protects legacy invoke without exchange on $path ($source, body=$withBody)",
+		async ({ path, source, withBody }) => {
+			await request(path, source, false, withBody);
+		},
+	);
+});
+
+describe("A2A graph failures", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => vi.unstubAllEnvs());
+	it.each(["/a2a/send", "/a2a/send/stream"])(
+		"fails a transformed graph error on %s",
+		async (path) => {
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "https://example.com",
+					port: 3000,
+					skills: [],
+				},
+				async () => ({}),
+				() => ({
+					response: "unusable",
+					error: "Unable to generate an answer",
+				}),
+			);
+			const response = await app.request(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					message: {
+						role: "user",
+						parts: [{ type: "text", text: "hello" }],
+					},
+				}),
+			});
+			expect(response.status).toBe(200);
+			const task = path.endsWith("stream")
+				? await (async () => {
+						const events = await readAgUiEvents(
+							new Response(
+								(await response.text()).replace(
+									"data: [DONE]",
+									"",
+								),
+							),
+						);
+						expect(events).toContainEqual(
+							expect.objectContaining({
+								type: "status",
+								status: "failed",
+							}),
+						);
+						const taskId = events.find(
+							(e) => typeof e.taskId === "string",
+						)?.taskId;
+						return (
+							await app.request(`/a2a/tasks/${taskId}`)
+						).json();
+					})()
+				: (await response.json()).task;
+			expect(task.status).toBe("failed");
+			expect(task.metadata.error).toBe("Unable to generate an answer");
+		},
+	);
+	it.each(["/a2a/send", "/a2a/send/stream"])(
+		"completes usable output on %s",
+		async (path) => {
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "https://example.com",
+					port: 3000,
+					skills: [],
+				},
+				async () => ({}),
+				() => ({ response: "usable" }),
+			);
+			const response = await app.request(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					message: {
+						role: "user",
+						parts: [{ type: "text", text: "hello" }],
+					},
+				}),
+			});
+			if (path.endsWith("stream")) {
+				expect(
+					await readAgUiEvents(
+						new Response(
+							(await response.text()).replace("data: [DONE]", ""),
+						),
+					),
+				).toContainEqual(
+					expect.objectContaining({
+						type: "status",
+						status: "completed",
+					}),
+				);
+			} else {
+				expect((await response.json()).task.status).toBe("completed");
+			}
+		},
+	);
+});
+
+it.each(
+	["/a2a/send", "/a2a/send/stream"].flatMap((path) => [
+		{
+			path,
+			message: "Provider failed: api_key=example-secret",
+			secret: "example-secret",
+			expected: "Provider failed: <redacted>",
+		},
+		{
+			path,
+			message:
+				"Provider failed: Authorization: Bearer example-session-token",
+			secret: "example-session-token",
+			expected: "Provider failed: <redacted>",
+		},
+		{
+			path,
+			message:
+				"Provider failed: 401 Incorrect API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+			secret: "sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+			expected: "Provider failed: 401 Incorrect API key <redacted>",
+		},
+	]),
+)(
+	"sanitizes transformed failure text on $path ($message)",
+	async ({ path, message, secret, expected }) => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+		try {
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "https://example.com",
+					port: 3000,
+					skills: [],
+				},
+				async () => ({}),
+				() => ({
+					response: "",
+					error: message,
+				}),
+			);
+			const response = await app.request(path, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					message: {
+						role: "user",
+						parts: [{ type: "text", text: "hello" }],
+					},
+				}),
+			});
+			let task: { status: string; metadata: { error?: string } };
+			if (path.endsWith("stream")) {
+				const events = await readAgUiEvents(
+					new Response(
+						(await response.text()).replace("data: [DONE]", ""),
+					),
+				);
+				expect(JSON.stringify(events)).not.toContain(secret);
+				const taskId = events.find(
+					(e) => typeof e.taskId === "string",
+				)?.taskId;
+				task = await (await app.request(`/a2a/tasks/${taskId}`)).json();
+			} else {
+				task = (await response.json()).task;
+			}
+			expect(task.status).toBe("failed");
+			expect(task.metadata.error).toBe(expected);
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	},
+);
+
+describe("converted graph messages for CopilotKit", () => {
+	it("converter output keeps the human turn and tool-call links through sanitizeStateForCopilotKit", () => {
+		const toolCalls = [
+			{ id: "call-example", name: "example_tool", args: {} },
+		];
+		const messages = [
+			new HumanMessage({ content: "Plan this.", id: "human-example" }),
+			new AIMessage({
+				content: "",
+				id: "ai-example",
+				tool_calls: toolCalls,
+			}),
+			new ToolMessage({
+				content: "Done.",
+				id: "tool-example",
+				tool_call_id: "call-example",
+			}),
+		];
+		expect(
+			sanitizeStateForCopilotKit({
+				messages: convertToSimpleMessages(messages),
+			}),
+		).toEqual({
+			messages: [
+				{ type: "human", content: "Plan this.", id: "human-example" },
+				{
+					type: "ai",
+					content: "",
+					id: "ai-example",
+					tool_calls: toolCalls,
+				},
+				{
+					type: "tool",
+					content: "Done.",
+					id: "tool-example",
+					tool_call_id: "call-example",
+				},
+			],
+		});
 	});
 });

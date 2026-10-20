@@ -1,22 +1,29 @@
 import { getOrchestratorPreferences } from "@repo/database";
 import { z } from "zod";
-import { getOrganizationIdFromContext } from "../../../../orpc/middleware/tenant-context-middleware";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
 export const getOrchestratorPreferencesProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.USER_READ_SELF))
+	.use(
+		requireInputOrgPermission(Permissions.USER_READ_SELF, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/users/orchestrator-preferences",
 		tags: ["Users"],
 		summary: "Get user orchestrator preferences",
 		description:
-			"Get the current user's orchestrator preferences (enabled MCP servers, agents, workspaces, modes) for the active (user × organization) context.",
+			"Get the current user's orchestrator preferences (enabled MCP servers, agents, workspaces, modes) for the requested organization, or the session's active organization when omitted.",
 	})
+	.input(
+		z.object({ organizationId: z.string().min(1).optional() }).default({}),
+	)
 	.output(
 		z.object({
 			exists: z.boolean(),
@@ -29,17 +36,11 @@ export const getOrchestratorPreferencesProcedure = tenantProtectedProcedure
 			uiMode: z.enum(["simple", "advanced"]),
 		}),
 	)
-	.handler(async ({ context }) => {
-		// XOR isolation: per (user × organization). Personal context maps
-		// to the org-id="" row; each org keeps its own row per user. Mirrors
-		// the chat-agent-selection isolation model so the same user can have
-		// different Loom mode / reasoning preferences across orgs they're
-		// in. Earlier behavior was per-user-only (the `organizationId` arg
-		// was never passed) and silently shared one row across all
-		// (user × org) pairs — diverging from `UserChatAgentSelection`'s
-		// stated invariant.
-		const organizationId = getOrganizationIdFromContext(
-			context.tenantContext,
+	.handler(async ({ input, context }) => {
+		// Resolve the same organization authorized by requireInputOrgPermission.
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
 		);
 		const prefs = await getOrchestratorPreferences(
 			context.user.id,

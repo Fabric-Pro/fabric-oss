@@ -1,4 +1,4 @@
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -22,6 +22,7 @@ vi.mock("../utils", async (importOriginal) => {
 	>()) as Record<string, unknown>;
 	return {
 		...actual,
+		sleep: vi.fn().mockResolvedValue(undefined),
 		// Stub returns a model whose `bindTools` produces another model with
 		// the SAME `invoke`. That way both branches in chatNode (tools[]
 		// empty → direct invoke; tools[] non-empty → bindTools → invoke)
@@ -262,5 +263,108 @@ describe("backlog-updater chatNode — reasoning emission", () => {
 		expect(reasoningByTurn?.[1].text).toBe(
 			"Considering which backlog items match the user's intent…",
 		);
+	});
+});
+
+it("clears the graph error after a backlog retry succeeds", async () => {
+	const { START, StateGraph } = await import("@langchain/langgraph");
+	const { BacklogUpdaterStateAnnotation } = await import("../state");
+	invokeMock.mockReset();
+	invokeMock.mockRejectedValueOnce(
+		Object.assign(new Error("Unavailable"), { status: 503 }),
+	);
+	invokeMock.mockResolvedValueOnce(
+		new AIMessage("Backlog analysis completed."),
+	);
+	const graph = new StateGraph(BacklogUpdaterStateAnnotation)
+		.addNode("chat_node", chatNode)
+		.addEdge(START, "chat_node")
+		.compile();
+	const result = await graph.invoke({
+		...baseState,
+		messages: [new HumanMessage("Analyze the backlog")],
+	});
+	expect(result.error).toBeUndefined();
+	expect(result.messages.at(-1)?.content).toBe("Backlog analysis completed.");
+});
+
+describe("backlog-updater chatNode analysis failure tool binding", () => {
+	beforeEach(() => {
+		invokeMock
+			.mockReset()
+			.mockResolvedValue(new AIMessage("The analysis could not start."));
+		bindToolsMock.mockClear();
+	});
+	async function run(messages: unknown[]) {
+		return chatNode({
+			...baseState,
+			tools: [
+				{
+					name: "analyze_backlog",
+					description: "Analyze",
+					parameters: { type: "object", properties: {} },
+				},
+			],
+			messages: messages as never,
+		});
+	}
+	it.each(["analyze_backlog", undefined])(
+		"does not bind tools after an analysis error with tool name %s and no assistant tool calls",
+		async (name) => {
+			await run([
+				new HumanMessage("Analyze"),
+				new AIMessage("Starting analysis"),
+				new ToolMessage({
+					name,
+					content: "Analysis error: Input validation failed",
+					tool_call_id: "example-call",
+				}),
+			]);
+			expect(invokeMock).toHaveBeenCalledOnce();
+			expect(bindToolsMock).not.toHaveBeenCalled();
+			expect(invokeMock.mock.calls[0][0].at(-1).content).toContain(
+				"Analysis error: Input validation failed",
+			);
+		},
+	);
+	it.each([
+		{
+			role: "tool",
+			name: "analyze_backlog",
+			content: "Analysis error: unavailable",
+		},
+		{ type: "tool", content: "Analysis error: unavailable" },
+	])("handles plain tool message formats: %j", async (message) => {
+		await run([new HumanMessage("Analyze"), message]);
+		expect(invokeMock).toHaveBeenCalledOnce();
+		expect(bindToolsMock).not.toHaveBeenCalled();
+	});
+	it.each([
+		new ToolMessage({
+			name: "analyze_backlog",
+			content: "Analysis complete.",
+			tool_call_id: "example-call",
+		}),
+		new ToolMessage({
+			name: "another_tool",
+			content: "Analysis error: unavailable",
+			tool_call_id: "example-call",
+		}),
+		new HumanMessage("Analysis error: unavailable"),
+	])("binds tools for other messages: %j", async (message) => {
+		await run([new HumanMessage("Analyze"), message]);
+		expect(bindToolsMock).toHaveBeenCalledOnce();
+		expect(invokeMock).toHaveBeenCalledOnce();
+	});
+	it("binds tools again when a new user turn follows an analysis error", async () => {
+		await run([
+			new ToolMessage({
+				name: "analyze_backlog",
+				content: "Analysis error: unavailable",
+				tool_call_id: "example-call",
+			}),
+			new HumanMessage("Try a different selection"),
+		]);
+		expect(bindToolsMock).toHaveBeenCalledOnce();
 	});
 });

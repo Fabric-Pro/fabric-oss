@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { getOrganizationIdFromContext } from "../../../../orpc/middleware/tenant-context-middleware";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
+	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { ApiPersistedSelectedAgentSchema } from "./schema";
@@ -12,9 +12,8 @@ import { fetchChatAgentSelectionForUser } from "./server-fetch";
  * Read the persisted Nexus agent selection for the current
  * (user × organization) context.
  *
- * `tenantProtectedProcedure` + `getOrganizationIdFromContext` resolves the
- * tenant — the handler MUST NOT hand-roll its own organizationId filter
- * (CLAUDE.md "Multi-Tenant XOR Pattern").
+ * The input organization is resolved with the session fallback for older clients.
+ * requireInputOrgPermission verifies membership and permission for that organization.
  *
  * The actual read + validate + empty-cleanup logic lives in
  * `fetchChatAgentSelectionForUser` so that SSR `initialData` hydration in the
@@ -23,15 +22,22 @@ import { fetchChatAgentSelectionForUser } from "./server-fetch";
  * the orpc context.
  */
 export const getChatAgentSelectionProcedure = tenantProtectedProcedure
-	.use(requirePermission(Permissions.USER_READ_SELF))
+	.use(
+		requireInputOrgPermission(Permissions.USER_READ_SELF, {
+			requireOrganization: true,
+		}),
+	)
 	.route({
 		method: "GET",
 		path: "/users/chat-agent-selection",
 		tags: ["Users"],
 		summary: "Get persisted Nexus agent selection",
 		description:
-			"Returns the user's last-sent agent array for the current (user, organization) context, after dropping entries whose targets no longer resolve.",
+			"Returns the user's last-sent agent array for the requested organization, or the session's active organization when omitted, after dropping entries whose targets no longer resolve.",
 	})
+	.input(
+		z.object({ organizationId: z.string().min(1).optional() }).default({}),
+	)
 	.output(
 		z.object({
 			exists: z.boolean(),
@@ -41,9 +47,13 @@ export const getChatAgentSelectionProcedure = tenantProtectedProcedure
 			defaultAgent: ApiPersistedSelectedAgentSchema.nullable(),
 		}),
 	)
-	.handler(async ({ context }) => {
-		const organizationId = getOrganizationIdFromContext(
-			context.tenantContext,
+	.handler(async ({ input, context }) => {
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
 		);
-		return fetchChatAgentSelectionForUser(context.user.id, organizationId);
+		return fetchChatAgentSelectionForUser(
+			context.user.id,
+			organizationId ?? null,
+		);
 	});

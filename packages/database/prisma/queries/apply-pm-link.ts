@@ -37,6 +37,7 @@ export type ApplyPmLinkParams = ApplyPmLinkRow & {
 	externalUrl: string | null;
 	/** The server stamp the create path writes for this project and entity. */
 	externalMcpServerId: string | null;
+	externalPmTarget?: string | null;
 };
 
 /**
@@ -131,6 +132,7 @@ export async function applyPmLink(
 		externalId: params.externalId,
 		externalUrl: params.externalUrl,
 		externalMcpServerId: params.externalMcpServerId,
+		externalPmTarget: params.externalPmTarget ?? null,
 		pmCreateClaimId: null,
 		pmCreateClaimedAt: null,
 		lastSyncedPmHash: null,

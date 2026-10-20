@@ -367,6 +367,7 @@ export async function executeAgentTurn(
 				currentDepth,
 				projectId,
 				input.workspaceIds,
+				conversationId,
 			);
 			for (const [name, def] of Object.entries(builtInTools)) {
 				tools[name] = def;
@@ -412,6 +413,10 @@ export async function executeAgentTurn(
 			projectId,
 			featureKey,
 			conversationId,
+			frameId: input.frameId,
+			workflowExecutionId: input.workflowExecutionId,
+			promptVersionId: input.promptVersionId,
+			jobType: input.jobType,
 		};
 		const modelResolveStartedAt = Date.now();
 		recordTurnValue("agent.preModelMs", modelResolveStartedAt - startTime);
@@ -426,11 +431,14 @@ export async function executeAgentTurn(
 					organizationId,
 					hasTools,
 					undefined,
-					undefined,
+					input.jobType,
 					{
 						projectId,
 						featureKey,
 						conversationId,
+						frameId: input.frameId,
+						workflowExecutionId: input.workflowExecutionId,
+						promptVersionId: input.promptVersionId,
 					},
 				);
 		recordTurnValue(
@@ -775,11 +783,13 @@ async function loadBuiltInToolsForAgent(
 	currentDepth = 0,
 	projectId?: string,
 	workspaceIds?: string[],
+	usageConversationId?: string,
 ): Promise<Record<string, unknown>> {
 	const fabricToolIds = new Set(
 		mapBuiltInKeysToFabricToolIds(builtInToolNames),
 	);
 	const tools = await createBuiltInTools({
+		usageConversationId,
 		userId,
 		organizationId,
 		projectId,
@@ -799,6 +809,7 @@ async function loadBuiltInToolsForAgent(
 				userId,
 				organizationId,
 				[],
+				usageConversationId,
 			);
 		}
 
@@ -959,6 +970,7 @@ async function loadBuiltInToolsForAgent(
 
 					const { uploadFile } = await import("@repo/storage");
 					const speech = await synthesizeToolSpeech({
+						usageConversationId,
 						userId,
 						organizationId,
 						text: ttsText,
@@ -1090,6 +1102,7 @@ async function loadBuiltInToolsForAgent(
 					}
 
 					const imageResult = await generateImageActivity({
+						usageConversationId,
 						prompt,
 						provider,
 						aspectRatio: (args.aspectRatio as string) || "1:1",
@@ -1279,7 +1292,15 @@ function isErrorResult(result: unknown): boolean {
  */
 type AgentUsageContext = Pick<
 	AIOperationContext,
-	"userId" | "organizationId" | "projectId" | "featureKey" | "conversationId"
+	| "userId"
+	| "organizationId"
+	| "projectId"
+	| "featureKey"
+	| "conversationId"
+	| "frameId"
+	| "workflowExecutionId"
+	| "promptVersionId"
+	| "jobType"
 >;
 
 async function getModelWithOverride(

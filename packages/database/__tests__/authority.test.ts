@@ -22,6 +22,7 @@ import {
 	checkAuthority,
 	completeAuthoritySession,
 	consumeRequestGrant,
+	createApprovedRequestGrants,
 	createAuthorityRequest,
 	createAuthoritySession,
 	denyAuthoritySession,
@@ -1710,5 +1711,101 @@ describe("ensureSensitiveOperationAuthority: a request for one tool", () => {
 		});
 
 		expect(other.authorized).toBe(true);
+	});
+});
+
+describe("createApprovedRequestGrants: the follow-ups of an approved call", () => {
+	const followUp = (
+		toolName: string,
+		workflowId: string,
+		overrides: Partial<{
+			userId: string;
+			organizationId: string;
+			runId: string;
+		}> = {},
+	) => ({
+		userId: USER_A,
+		providerKey: "fabric",
+		providerType: "MCP" as const,
+		accessLevel: "WRITE" as const,
+		runType: "ORCHESTRATOR" as const,
+		runId: "conversation-1",
+		toolName,
+		toolScope: [toolName],
+		requestFingerprint: authorityRequestFingerprint(toolName, {
+			workflowId,
+		}),
+		...overrides,
+	});
+
+	beforeEach(async () => {
+		await createApprovedRequestGrants({
+			userId: USER_A,
+			organizationId: ORG_A,
+			runType: "ORCHESTRATOR",
+			runId: "conversation-1",
+			providerType: "MCP",
+			providerKey: "fabric",
+			accessLevel: "WRITE",
+			approvalInstructions: "Approved with the workflow's creation",
+			calls: ["fabric_publish_workflow", "fabric_execute_workflow"].map(
+				(toolName) => ({
+					toolName,
+					requestFingerprint: authorityRequestFingerprint(toolName, {
+						workflowId: "wf-new",
+					}),
+				}),
+			),
+		});
+	});
+
+	it("authorizes publishing and running the created workflow, once each, without a card", async () => {
+		const organizationId = ORG_A;
+		for (const toolName of [
+			"fabric_publish_workflow",
+			"fabric_execute_workflow",
+		]) {
+			const call = followUp(toolName, "wf-new", { organizationId });
+			const first = await ensureSensitiveOperationAuthority(call);
+			const again = await ensureSensitiveOperationAuthority(call);
+
+			expect(first.authorized).toBe(true);
+			expect(again.authorized).toBe(false);
+		}
+	});
+
+	it("does not authorize another workflow, another conversation or another user", async () => {
+		const other = [
+			followUp("fabric_publish_workflow", "wf-other", {
+				organizationId: ORG_A,
+			}),
+			followUp("fabric_publish_workflow", "wf-new", {
+				organizationId: ORG_A,
+				runId: "conversation-2",
+			}),
+			followUp("fabric_publish_workflow", "wf-new", {
+				organizationId: ORG_A,
+				userId: USER_B,
+			}),
+			followUp("fabric_publish_workflow", "wf-new", {
+				organizationId: ORG_B,
+			}),
+		];
+
+		for (const call of other) {
+			expect(
+				(await ensureSensitiveOperationAuthority(call)).authorized,
+			).toBe(false);
+		}
+	});
+
+	it("does not authorize any other tool for the created workflow", async () => {
+		const unpublish = followUp("fabric_unpublish_workflow", "wf-new", {
+			organizationId: ORG_A,
+		});
+
+		expect(
+			(await ensureSensitiveOperationAuthority(unpublish)).authorized,
+		).toBe(false);
 	});
 });

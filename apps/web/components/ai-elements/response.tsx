@@ -5,6 +5,7 @@ import { Streamdown, type StreamdownProps } from "streamdown";
 import {
 	chatMarkdownComponents,
 	getChatMarkdownClassName,
+	getChatMarkdownRehypePlugins,
 } from "./chat-markdown";
 import { normalizeTextToMarkdown } from "./text-normalizer";
 
@@ -31,6 +32,7 @@ export const Response = memo(
 		streaming = false,
 		normalizeMarkdown = true,
 	}: ResponseProps) => {
+		const rehypePlugins = useMemo(getChatMarkdownRehypePlugins, []);
 		// Normalize text to convert Unicode formatting to markdown
 		const normalizedText = useMemo(() => {
 			if (!children) {
@@ -39,25 +41,14 @@ export const Response = memo(
 			if (!normalizeMarkdown || typeof children !== "string") {
 				return children;
 			}
-			let text = normalizeTextToMarkdown(children);
-			// Convert relative image proxy URLs to absolute so rehype-harden can resolve them
-			// (rehype-harden blocks relative URLs when defaultOrigin is not set)
-			if (
-				typeof window !== "undefined" &&
-				text.includes("/api/storage/image")
-			) {
-				text = text.replace(
-					/!\[([^\]]*)\]\(\/api\/storage\/image\?/g,
-					`![$1](${window.location.origin}/api/storage/image?`,
-				);
-			}
-			return text;
+			return normalizeTextToMarkdown(children);
 		}, [children, normalizeMarkdown]);
 
 		return (
 			<Streamdown
 				className={getChatMarkdownClassName(className)}
 				components={{ ...chatMarkdownComponents, ...components }}
+				rehypePlugins={rehypePlugins}
 				remarkPlugins={remarkPlugins}
 				parseIncompleteMarkdown={streaming}
 			>

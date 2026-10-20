@@ -40,6 +40,7 @@ export async function executeAgentAsTool(
 	// Delegate to the agent via A2A protocol
 	const result = await delegateToAgent({
 		agentId: input.agentId,
+		...(input.modelOverride ? { modelOverride: input.modelOverride } : {}),
 		message:
 			typeof input.input === "string"
 				? input.input
@@ -51,6 +52,10 @@ export async function executeAgentAsTool(
 		userId: input.userId,
 		organizationId: input.organizationId,
 		projectId: input.projectId,
+		...(input.usageConversationId
+			? { usageConversationId: input.usageConversationId }
+			: {}),
+		...(input.usageOrigin ? { usageOrigin: input.usageOrigin } : {}),
 		...(input.turnScope ? { turnScope: input.turnScope } : {}),
 	});
 

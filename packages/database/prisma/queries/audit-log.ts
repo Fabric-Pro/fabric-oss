@@ -28,7 +28,7 @@ import {
 	logger,
 } from "@repo/logs";
 import { getCorrelationIdFromContext } from "@repo/utils/correlation-id";
-import { keyIsSensitive, REDACTED } from "@repo/utils/sensitive-keys";
+import { redactSensitiveKeys } from "@repo/utils/sensitive-keys";
 import { db, type Prisma } from "../client";
 
 // ============================================================================
@@ -613,6 +613,11 @@ export const AUDIT_ACTIONS = [
 	"project.document_analysis.responded",
 	"project.document_analysis.cleared",
 	"project.document_analysis.rerun_started",
+	// Proposal export (Fizzy #2946): a member or a project guest started a
+	// PDF or Word export of a client-document Proposal. The row carries the
+	// format, the export id and whether the starter is a guest; never any
+	// content.
+	"project.proposal_artifact.export_started",
 	// Company context (Fizzy #2719): a company source's type label or
 	// AI instructions changed. Those two fields steer every Proposal and
 	// Business Case the organization generates, so the edit records both
@@ -784,41 +789,7 @@ export interface RecordAuditInput {
 // Sensitive-key redactor (D15)
 // ============================================================================
 
-/**
- * Recursively redact values whose KEY matches the sensitive-key denylist.
- * Walks nested objects and arrays; primitives and `null` pass through.
- *
- * Behaviour matrix (see unit tests for full coverage):
- * - `{ password: "x" }` -> `{ password: "[REDACTED]" }`
- * - `{ Password: "x", ACCESSTOKEN: "y" }` -> both redacted (case-insensitive)
- * - `{ user_password_hash: "x" }` -> redacted (substring match)
- * - `{ note: "my password is x" }` -> preserved (value not inspected)
- * - `{ tokens: [{ accessToken: "x" }] }` -> array walked element-wise
- * - `redactSensitiveKeys("hello")` -> `"hello"` (primitive at top level)
- * - `redactSensitiveKeys(null)` -> `null`
- */
-export function redactSensitiveKeys(input: unknown): unknown {
-	if (input === null || input === undefined) {
-		return input;
-	}
-	if (Array.isArray(input)) {
-		return input.map((entry) => redactSensitiveKeys(entry));
-	}
-	if (typeof input !== "object") {
-		return input;
-	}
-
-	const source = input as Record<string, unknown>;
-	const output: Record<string, unknown> = {};
-	for (const key of Object.keys(source)) {
-		if (keyIsSensitive(key)) {
-			output[key] = REDACTED;
-			continue;
-		}
-		output[key] = redactSensitiveKeys(source[key]);
-	}
-	return output;
-}
+export { redactSensitiveKeys } from "@repo/utils/sensitive-keys";
 
 // ============================================================================
 // Row builder
@@ -1083,8 +1054,24 @@ export function onAuditWriteFailure(
 	const category =
 		input.category ?? deriveCategoryFromAction(input.action) ?? "audit";
 
-	const errorMessage = err instanceof Error ? err.message : String(err);
-	const errorName = err instanceof Error ? err.name : "UnknownError";
+	const errorName =
+		err instanceof Error && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(err.name)
+			? err.name
+			: "UnknownError";
+	const errorCode =
+		err &&
+		typeof err === "object" &&
+		"code" in err &&
+		typeof err.code === "string" &&
+		/^[A-Z0-9_]{1,64}$/.test(err.code)
+			? err.code
+			: "UNKNOWN";
+	// Prisma messages can contain query text, credentials and arbitrary values.
+	// A bounded classification preserves the diagnostic without echoing the DB.
+	const errorMessage =
+		errorCode === "P2003"
+			? "Audit foreign key constraint failed"
+			: "Audit persistence failed";
 	// Surface correlationId on every failure so operators can trace which
 	// request the write attempt belongs to. Prefer the explicit input
 	// (set by `recordAuditFromRequest`) over the AsyncLocalStorage fallback;
@@ -1099,7 +1086,9 @@ export function onAuditWriteFailure(
 			category,
 			actorType: input.actor.type,
 			correlationId,
-			err: { message: errorMessage, name: errorName },
+			errorName,
+			errorCode,
+			errorMessage,
 		},
 		"Audit write failed",
 	);

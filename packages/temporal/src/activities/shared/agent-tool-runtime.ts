@@ -4,6 +4,12 @@ import { isDeepStrictEqual } from "node:util";
 export interface AgentToolSource {
 	configId: string;
 	originalName: string;
+	/**
+	 * Whether the tool reads or changes things, when its source says so itself
+	 * (Fabric MCP's listing does). A runtime that gates changes uses it ahead
+	 * of a guess from the tool's name.
+	 */
+	access?: "READ" | "WRITE";
 }
 
 export interface AgentToolInvocation {
@@ -23,7 +29,12 @@ export interface AgentToolRuntime {
 		tools: Record<string, unknown>,
 		sources: Record<string, AgentToolSource>,
 	) => Promise<string>;
-	requiredTool?: AgentToolSource;
+	/**
+	 * The run answers the person while it works (a voice meeting), so a tool
+	 * that drafts a work item with a model creates it at once and leaves the
+	 * drafting to run afterwards.
+	 */
+	deferStoryDrafting?: boolean;
 	projectScope?: {
 		projectId: string;
 		userId: string;
@@ -31,6 +42,11 @@ export interface AgentToolRuntime {
 	};
 	abortSignal?: AbortSignal;
 	onText?: (text: string) => void;
+	/**
+	 * Called as a tool call begins, before `invoke`, so a run that speaks can
+	 * say what it is doing while the tool runs. It must not wait for speech.
+	 */
+	onToolStart?: (invocation: AgentToolInvocation) => void | Promise<void>;
 	/**
 	 * Tools this run adds to the agent's own, under the `parlume` source. They
 	 * run through `invoke` like any other, so the runtime decides what each may
@@ -69,8 +85,8 @@ export function hasExactAgentToolApproval(invocation: ApprovedTool): boolean {
 	return Boolean(approval && isDeepStrictEqual(approval, invocation));
 }
 
-export function requiredAgentTool(): AgentToolSource | undefined {
-	return runtimeStorage.getStore()?.requiredTool;
+export function agentToolDefersStoryDrafting(): boolean {
+	return runtimeStorage.getStore()?.deferStoryDrafting === true;
 }
 
 export function agentToolProjectScope() {
@@ -144,8 +160,8 @@ export async function prepareAgentTools(
 		}
 		tools[name] = {
 			...definition,
-			execute: (...args: unknown[]) =>
-				runtime.invoke({
+			execute: async (...args: unknown[]) => {
+				const invocation: AgentToolInvocation = {
 					name,
 					description: definition.description,
 					inputSchema: definition.inputSchema,
@@ -157,7 +173,10 @@ export async function prepareAgentTools(
 						originalName: name,
 					},
 					execute: async () => definition.execute(...args),
-				}),
+				};
+				await runtime.onToolStart?.(invocation);
+				return runtime.invoke(invocation);
+			},
 		};
 	}
 }

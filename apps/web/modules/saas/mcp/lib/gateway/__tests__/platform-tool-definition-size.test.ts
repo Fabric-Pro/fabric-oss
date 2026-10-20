@@ -20,9 +20,15 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // Raised for the page tools (viewer, data, files, comments, ask, connected reads) and the
 // version tools (list, restore, duplicate): 13 + 3 tools that a page or the agent reads
 // before it calls, about 5,200 characters. Measured 42,149, plus ~10% headroom.
-const TOTAL_BUDGET = 46_400;
-// Measured after the Fizzy #2991 cut: the largest tool (fabric_instruction_checks) was 1,994 characters, plus ~10% headroom.
+// The assigned-item and snapshot readers add 1,137 and 1,053 characters of
+// required pre-call contracts; exact sprint selection adds 872 to review config.
+// CI measured 53,042 before the document-base contract (Fizzy #2946), which
+// adds 21 for the read and 181 for the write. Keep only that combined allowance.
+const TOTAL_BUDGET = 53_244;
+// The complete bounded sprint config makes configure-story-review the largest
+// pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;
+const SPRINT_CONFIG_BUDGET = 2_334;
 
 /**
  * Name, description and input schema: the same measure the budgets were set
@@ -54,7 +60,13 @@ describe("platform tool definition size", () => {
 			name: tool.name,
 			size: serializedSize(tool),
 		}))
-			.filter(({ size }) => size > PER_TOOL_BUDGET)
+			.filter(
+				({ name, size }) =>
+					size >
+					(name === "fabric_page_configure_story_review"
+						? SPRINT_CONFIG_BUDGET
+						: PER_TOOL_BUDGET),
+			)
 			.map(({ name, size }) => `${name}: ${size}`);
 		expect(over).toEqual([]);
 	});

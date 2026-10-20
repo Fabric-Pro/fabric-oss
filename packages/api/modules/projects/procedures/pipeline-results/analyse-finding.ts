@@ -79,6 +79,7 @@ export const analyseQaFindingProcedure = tenantProtectedProcedure
 		let analysis: Awaited<ReturnType<typeof analyseTestFailure>>;
 		try {
 			analysis = await analyseTestFailure({
+				projectId: input.projectId,
 				failure: {
 					...finding,
 					commitRange: diff?.commitRange ?? null,

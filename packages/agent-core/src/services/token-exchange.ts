@@ -18,6 +18,12 @@ import { rememberChatGptPlanExchange } from "./chatgpt-plan-reexchange";
  * AI credentials resolved from token exchange
  */
 export interface AICredentials {
+	/** Catalog metadata for the pinned model; null caps mean unknown. */
+	isReasoningModel?: boolean;
+	maxOutputTokens?: number | null;
+	contextWindow?: number | null;
+	/** Set by the exchange when it applied the signed model selection. */
+	modelPinned?: boolean;
 	/** The decrypted API key */
 	apiKey: string;
 	/** The AI provider type */
@@ -150,6 +156,10 @@ async function exchangeTokenForCredentials(
 	}
 
 	return {
+		modelPinned: result.modelPinned === true,
+		isReasoningModel: result.isReasoningModel,
+		maxOutputTokens: result.maxOutputTokens,
+		contextWindow: result.contextWindow,
 		apiKey: result.apiKey,
 		provider: result.provider,
 		model: result.model,

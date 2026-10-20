@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { CHECK_TIMEOUTS_MS, effectiveTimeoutMs } from "./lib/gate-timeouts.mjs";
 import { leadingCdTarget } from "./lib/git-helpers.mjs";
 import { readToolInput } from "./lib/parse-input.mjs";
-import { writeAskDecision } from "./lib/permission-decision.mjs";
+import {
+	writeAskDecision,
+	writeDenyDecision,
+} from "./lib/permission-decision.mjs";
 
 /**
  * Quality-gate commands run sequentially with fail-fast. Order is
@@ -51,26 +54,10 @@ const CLOSE_WAIT_MS = 2000;
 const MAX_OUTPUT_LINES = 8;
 
 /**
- * `gh pr edit` is only gated when the call mutates the body via
- * `--body` or `--body-file`. Other flag combinations (labels, title,
- * reviewers, milestones) don't change the PR description, so they pass
- * through untouched.
- *
- * @param {string} command
- */
-function isGatedGhPrEdit(command) {
-	if (!/\bgh\s+pr\s+edit\b/.test(command)) {
-		return false;
-	}
-	return (
-		/(^|\s)--body(\s|=)/.test(command) ||
-		/(^|\s)--body-file(\s|=)/.test(command)
-	);
-}
-
-/**
  * `gh pr create` always triggers the gate (the act of creation
- * implies a body, even via `--fill`).
+ * implies a body, even via `--fill`). Editing an open PR, its description
+ * included, changes no code, so `gh pr edit` is never gated (Fizzy #3097):
+ * CI's required checks run on every commit pushed to the PR.
  *
  * @param {string} command
  */
@@ -654,15 +641,13 @@ const GH_API_FIELD_FLAGS = new Set(["f", "F", "raw-field", "field"]);
  * Parses the args after `gh api` into method, endpoint and fields.
  *
  * @param {string[]} args
- * @returns {{method: string, endpoint: string, fieldKeys: string[], hasInput: boolean, hasFileField: boolean}}
+ * @returns {{method: string, endpoint: string, hasInput: boolean, hasFileField: boolean}}
  */
 function parseGhApiArgs(args) {
 	let explicitMethod = "";
 	let endpoint = "";
 	let hasInput = false;
 	let hasField = false;
-	/** @type {string[]} */
-	const fieldKeys = [];
 	let hasFileField = false;
 	/** @param {string} flag @param {string} value */
 	const record = (flag, value) => {
@@ -680,7 +665,6 @@ function parseGhApiArgs(args) {
 			) {
 				hasFileField = true;
 			}
-			fieldKeys.push(value.split(/[=@]/, 1)[0]);
 		}
 	};
 	for (let i = 0; i < args.length; i++) {
@@ -722,17 +706,18 @@ function parseGhApiArgs(args) {
 		}
 	}
 	const method = explicitMethod || (hasField || hasInput ? "POST" : "GET");
-	return { method, endpoint, fieldKeys, hasInput, hasFileField };
+	return { method, endpoint, hasInput, hasFileField };
 }
 
 /**
- * Decides whether one `gh api` invocation creates a PR or edits a PR body.
+ * Decides whether one `gh api` invocation creates a PR. PATCHes to a PR and
+ * GraphQL `updatePullRequest` edit it without changing code, so they pass
+ * like `gh pr edit`.
  *
  * @param {string[]} args  words after `gh api`
  */
 function isGatedGhApiCall(args) {
-	const { method, endpoint, fieldKeys, hasInput, hasFileField } =
-		parseGhApiArgs(args);
+	const { method, endpoint, hasInput, hasFileField } = parseGhApiArgs(args);
 	const path = endpoint
 		.replace(/^https?:\/\/[^/]+\//, "")
 		.replace(/^\/+/, "")
@@ -744,23 +729,9 @@ function isGatedGhApiCall(args) {
 		if (hasInput || hasFileField) {
 			return true;
 		}
-		return args.some(
-			(a) =>
-				a.includes("createPullRequest") ||
-				a.includes("updatePullRequest"),
-		);
+		return args.some((a) => a.includes("createPullRequest"));
 	}
-	if (method === "POST" && /^repos\/[^/]+\/[^/]+\/pulls$/.test(path)) {
-		return true;
-	}
-	if (
-		method === "PATCH" &&
-		/^repos\/[^/]+\/[^/]+\/pulls\/[^/]+$/.test(path)
-	) {
-		// --input contents are unknown, so gate conservatively.
-		return hasInput || fieldKeys.includes("body");
-	}
-	return false;
+	return method === "POST" && /^repos\/[^/]+\/[^/]+\/pulls$/.test(path);
 }
 
 /** Strips shell grouping prefixes (`(`, `$(`, `{`, backtick) from a word. */
@@ -769,9 +740,9 @@ function bareWord(word) {
 }
 
 /**
- * True when the command contains a `gh api` call that creates a PR or edits a
- * PR body. Tolerates prefixes (`GH_TOKEN=x`, `timeout 60`, `env`, `command`)
- * by matching `gh` followed by `api` anywhere in a segment, and looks inside
+ * True when the command contains a `gh api` call that creates a PR. Tolerates
+ * prefixes (`GH_TOKEN=x`, `timeout 60`, `env`, `command`) by matching `gh`
+ * followed by `api` anywhere in a segment, and looks inside
  * `bash -c '<script>'` strings. Over-matching only costs a check run.
  *
  * @param {string} command
@@ -803,6 +774,28 @@ function isGatedGhApi(command, depth = 0) {
 	return false;
 }
 
+/**
+ * A run of the PR-opening helper agent sessions use instead of `gh pr create`.
+ * It makes its `gh api -X POST repos/<o>/<r>/pulls` call internally, where the
+ * gate cannot see it (Fizzy #3110). The helper exits with a usage error unless
+ * given `--title` and `--body-file`, so the gate takes a command that names
+ * the helper file and contains either flag anywhere as a PR create. This
+ * deliberately skips shell parsing: launch forms (`bash -lc`, `"$(…)"`,
+ * groups, launchers) and flags built in an array or split across lines are
+ * still caught. It misses a run whose flags come from outside the command
+ * text (a file, an environment variable), and it over-matches any command
+ * that mentions both, such as an `echo`, a heredoc, or a `grep` for the flag.
+ * Reading the helper without either flag (`cat`, `bash -n`) and `--selftest`
+ * are not gated.
+ */
+const OPEN_PR_HELPER = /(?<![\w.-])open-pr\.sh(?![\w.-])/;
+const OPEN_PR_CREATE_FLAG = /(?<![\w/-])--(?:title|body-file)(?![\w-])/;
+
+/** @param {string} command */
+function isOpenPrHelper(command) {
+	return OPEN_PR_HELPER.test(command) && OPEN_PR_CREATE_FLAG.test(command);
+}
+
 async function main() {
 	let toolCall;
 	try {
@@ -826,8 +819,8 @@ async function main() {
 	const gateCommand = stripQuotedSpans(command);
 	if (
 		!isGatedGhPrCreate(gateCommand) &&
-		!isGatedGhPrEdit(gateCommand) &&
-		!isGatedGhApi(command)
+		!isGatedGhApi(command) &&
+		!isOpenPrHelper(command)
 	) {
 		process.exit(0);
 	}
@@ -848,6 +841,30 @@ async function main() {
 		const failure = await runCheck(argv, repoRoot, limitMs);
 		if (!failure) {
 			continue;
+		}
+		// run-type-check.mjs exits 3 for a stale install, but it also passes
+		// Turbo's status through, so the stale line must be present as well.
+		const staleLine =
+			argv[0] === "type-check:changed" &&
+			failure.exitCode === 3 &&
+			!failure.timedOut &&
+			!failure.streamError &&
+			!failure.spawnError
+				? failure.output
+						.split(/\r?\n/)
+						.find((line) =>
+							line.startsWith("Type-check setup is stale:"),
+						)
+				: undefined;
+		if (staleLine) {
+			writeDenyDecision(
+				[
+					`PR refused: stale pnpm install in ${repoRoot}.`,
+					staleLine,
+					"Run `pnpm install --frozen-lockfile` in that worktree, then run the same PR command again.",
+				].join("\n"),
+			);
+			process.exit(0);
 		}
 		const tail = tailLines(failure.output, MAX_OUTPUT_LINES);
 		// Kept short on purpose: the user reads this in a permission prompt and

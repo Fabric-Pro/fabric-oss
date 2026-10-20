@@ -27,6 +27,7 @@ import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
+import type { FrameLaunchContext } from "@saas/agents/lib/expand-handoff";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
@@ -371,6 +372,8 @@ const ADVISOR_PLACEHOLDERS = [
 
 interface FabricDirectChatProps {
 	organizationId?: string;
+	/** Undefined uses the drawer context; null explicitly clears a full-page origin. */
+	frameLaunchContext?: FrameLaunchContext | null;
 	reasoningMode: "lite" | "balanced" | "deep" | "planner";
 	activeConversation?: ConversationDetail | null;
 	activeConversationId?: string | null;
@@ -678,6 +681,7 @@ export const FabricDirectChat = forwardRef<
 >(function FabricDirectChat(
 	{
 		organizationId,
+		frameLaunchContext,
 		reasoningMode,
 		activeConversation,
 		activeConversationId: externalConversationId,
@@ -722,6 +726,8 @@ export const FabricDirectChat = forwardRef<
 
 	// Document editor bridge — available when StoryWorkspace has registered its editor
 	const { applyToDocument, launchContext } = useFabricAgentLauncher();
+	const effectiveFrameLaunchContext =
+		frameLaunchContext === undefined ? launchContext : frameLaunchContext;
 
 	// Excalidraw chat -> editor auto-insert (spec § 8.1 wiring F3).
 	// The in-feature AI Assistant is the canonical happy path — the
@@ -1007,18 +1013,29 @@ export const FabricDirectChat = forwardRef<
 	// stored selection on their behalf.
 	const agentSelectionQuery = useQuery({
 		queryKey: ["chat-agent-selection", user?.id, organizationId ?? null],
-		queryFn: async () => orpcClient.users.chatAgentSelection.get(),
+		queryFn: async () =>
+			orpcClient.users.chatAgentSelection.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnMount: false,
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
 		retry: 1,
-		enabled: Boolean(user?.id) && showAgentPicker && !instanceId,
+		enabled:
+			Boolean(user?.id) &&
+			Boolean(organizationId) &&
+			showAgentPicker &&
+			!instanceId,
 	});
 
 	const persistAgentSelection = useMutation({
-		mutationFn: async (agents: SelectedAgent[]) =>
-			orpcClient.users.chatAgentSelection.set({
+		mutationFn: async (agents: SelectedAgent[]) => {
+			if (!organizationId) {
+				return;
+			}
+			return orpcClient.users.chatAgentSelection.set({
+				organizationId,
 				// The persisted schema is a strict subset of SelectedAgent —
 				// instance configuration is resolved from its current authorized
 				// record when restored and before dispatch.
@@ -1033,7 +1050,8 @@ export const FabricDirectChat = forwardRef<
 					enabledMcpConfigIds: agent.enabledMcpConfigIds,
 					enabledIntegrationIds: agent.enabledIntegrationIds,
 				})),
-			}),
+			});
+		},
 		onError: (err) => {
 			// eslint-disable-next-line no-console -- intentional dev signal
 			console.warn(
@@ -1205,8 +1223,9 @@ export const FabricDirectChat = forwardRef<
 		documentId: launchContext?.documentId,
 		taskId: launchContext?.taskId,
 		// Where the agent was opened, for the tools that place what they create.
-		launchWorkspaceId: launchContext?.workspaceId,
-		launchSurface: launchContext?.surface,
+		launchWorkspaceId: effectiveFrameLaunchContext?.workspaceId,
+		launchFrameId: effectiveFrameLaunchContext?.launchFrameId,
+		launchSurface: effectiveFrameLaunchContext?.surface,
 		// Pass conversation ID so backend can fetch attached workspaces if frontend didn't load them yet
 		conversationId: externalConversationId,
 		systemPrompt: activeSystemPrompt,
@@ -1910,11 +1929,13 @@ export const FabricDirectChat = forwardRef<
 				if (eagerUserMessageIdRef.current !== userMsg.id) {
 					await orpcClient.agents.conversations.addMessage({
 						conversationId: targetConversationId,
+						organizationId: organizationId ?? undefined,
 						message: userPayload,
 					});
 				}
 				await orpcClient.agents.conversations.addMessage({
 					conversationId: targetConversationId,
+					organizationId: organizationId ?? undefined,
 					message: assistantPayload,
 				});
 				onConversationSaved?.();
@@ -1927,6 +1948,7 @@ export const FabricDirectChat = forwardRef<
 		},
 		[
 			conversationId,
+			organizationId,
 			ensureConversation,
 			onConversationSaved,
 			enabledFabricToolIds,
@@ -2122,7 +2144,7 @@ export const FabricDirectChat = forwardRef<
 
 		const updateInput = {
 			id: conversationId,
-			organizationId,
+			organizationId: organizationId ?? undefined,
 			metadata: mergeDirectConversationMetadata({
 				existing: activeConversation?.metadata ?? undefined,
 				documentChatId: currentDocumentChatId,

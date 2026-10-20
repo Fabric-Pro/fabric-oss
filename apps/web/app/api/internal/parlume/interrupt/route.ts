@@ -49,24 +49,12 @@ export async function POST(request: NextRequest) {
 				activeTurnId: null,
 			},
 		});
-		if (result.count) {
-			await tx.parlumeAction.updateMany({
-				where: {
-					sessionId: session.id,
-					status: { in: ["PROPOSED", "AWAITING_CONFIRMATION"] },
-				},
-				data: {
-					status: "CANCELLED",
-					outcome: "The proposal was interrupted.",
-				},
-			});
-		}
 		if (result.count && session.activeTurnId) {
 			await tx.parlumeAction.updateMany({
 				where: {
 					sessionId: session.id,
 					status: "EXECUTING",
-					confirmationTurnId: session.activeTurnId,
+					turnId: session.activeTurnId,
 				},
 				data: {
 					status: "OUTCOME_UNKNOWN",

@@ -994,6 +994,69 @@ describe("proposalThemeCss: print", () => {
 		).toBe("landscape");
 	});
 
+	it("gives the contents page fixed-width page slots the second print pass fills", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} .${selector}`);
+
+		const slot = rule(PROPOSAL_PRINT_CLASSES.contentsPage);
+		expect(slot.get("flex")).toBe("0 0 3ch");
+		expect(slot.get("width")).toBe("3ch");
+		expect(slot.get("text-align")).toBe("right");
+		expect(slot.get("font-variant-numeric")).toBe("tabular-nums");
+		expect(slot.get("white-space")).toBe("nowrap");
+
+		const leader = rule(PROPOSAL_PRINT_CLASSES.contentsLeader);
+		expect(leader.get("flex")).toBe("1 1 auto");
+		expect(leader.get("border-bottom")).toBe("1px dotted var(--pa-border)");
+	});
+
+	it("lays the first pass's page marker out of flow and draws it, as only that unseen pass carries it", () => {
+		expect(
+			declarationsFor(print, `${PRINT_ROOT} .pa-section-opener`).get(
+				"position",
+			),
+		).toBe("relative");
+		const marker = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.pageMarker}`,
+		);
+		expect(marker.get("position")).toBe("absolute");
+		// Not tiny: Linux print output splits a tiny marker glyph by glyph.
+		expect(marker.get("font-size")).toBe("8px");
+		expect(marker.get("white-space")).toBe("nowrap");
+		// Chromium leaves text out of the PDF entirely when it is clipped to a
+		// tiny box, and on Linux when it is transparent, so the marker is
+		// never clipped, hidden or made see-through.
+		for (const property of [
+			"overflow",
+			"clip",
+			"clip-path",
+			"visibility",
+			"color",
+			"opacity",
+		]) {
+			expect(marker.has(property)).toBe(false);
+		}
+		expect(marker.get("display")).not.toBe("none");
+	});
+
+	it("frames a diagram placeholder and bounds the cover hero", () => {
+		expect(
+			declarationsFor(
+				print,
+				`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.diagramPlaceholder}`,
+			).get("border"),
+		).toBe("1px dashed var(--pa-border)");
+
+		const hero = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverHero}`,
+		);
+		expect(hero.get("height")).toBe("3in");
+		expect(hero.get("object-fit")).toBe("cover");
+		expect(hero.get("flex")).toBe("0 0 auto");
+	});
+
 	it("numbers section openers with a counter", () => {
 		expect(declarationsFor(print, PRINT_ROOT).get("counter-reset")).toBe(
 			"pa-section",

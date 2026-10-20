@@ -126,7 +126,9 @@ export const ApiAgentState = Annotation.Root({
 	 * Error message if any
 	 */
 	error: Annotation<string | undefined>({
-		reducer: (x: string | undefined, y: string | undefined) => y ?? x,
+		// Explicit undefined updates clear a previous attempt's error.
+		reducer: (_previous: string | undefined, next: string | undefined) =>
+			next,
 		default: () => undefined,
 	}),
 });

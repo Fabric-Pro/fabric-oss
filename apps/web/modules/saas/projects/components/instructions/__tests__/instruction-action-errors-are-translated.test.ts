@@ -75,6 +75,7 @@ describe("Coding Instructions action errors", () => {
 
 		expect(users.map((file) => file.name).sort()).toEqual([
 			"AddInstructionFileDialog.tsx",
+			"InstructionFileHistory.tsx",
 			"InstructionFileView.tsx",
 			"InstructionProposalBranchPanel.tsx",
 			"InstructionProposals.tsx",

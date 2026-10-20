@@ -106,7 +106,7 @@ export type RepositoryTreeEntry = {
 	mode?: string;
 	/**
 	 * Present, and `false`, only on a file that is not a regular file (a
-	 * symbolic link), which no sync reads. Absent on every other entry.
+	 * symbolic link or pinned gitlink), which no sync reads.
 	 */
 	regular?: false;
 };
@@ -282,9 +282,10 @@ async function listGitHubTree(
 		sha?: unknown;
 		size?: unknown;
 	}>) {
-		// `commit` is a submodule: neither a folder nor a file the sync reads.
+		// Pinned reads retain gitlinks as unsupported entries so absence is unambiguous.
 		const type =
-			item?.type === "blob"
+			item?.type === "blob" ||
+			(input.refType === "commit" && item?.type === "commit")
 				? "file"
 				: item?.type === "tree"
 					? "dir"
@@ -299,9 +300,10 @@ async function listGitHubTree(
 		// A blob's mode says what it is: `120000` is a symbolic link. A blob
 		// with no mode at all is taken as a file, as it always was.
 		const regular =
-			type !== "file" ||
-			typeof item.mode !== "string" ||
-			REGULAR_FILE_MODES.has(item.mode);
+			item.type !== "commit" &&
+			(type !== "file" ||
+				typeof item.mode !== "string" ||
+				REGULAR_FILE_MODES.has(item.mode));
 		const metadata = input.refType === "commit" ? blobMetadata(item) : {};
 		entries.push(
 			regular
@@ -478,7 +480,7 @@ async function listAzureDevOpsCommitTree(
 		mode?: unknown;
 	}>) {
 		const type =
-			item.gitObjectType === "blob"
+			item.gitObjectType === "blob" || item.gitObjectType === "commit"
 				? "file"
 				: item.gitObjectType === "tree"
 					? "dir"
@@ -492,9 +494,10 @@ async function listAzureDevOpsCommitTree(
 		}
 		const metadata = type === "file" ? blobMetadata(item) : {};
 		const regular =
-			type !== "file" ||
-			(typeof item.mode === "string" &&
-				REGULAR_FILE_MODES.has(item.mode));
+			item.gitObjectType !== "commit" &&
+			(type !== "file" ||
+				(typeof item.mode === "string" &&
+					REGULAR_FILE_MODES.has(item.mode)));
 		entries.push(
 			regular
 				? { path, type, ...(type === "file" ? metadata : {}) }
@@ -576,7 +579,7 @@ async function listGitLabCommitTree(
 			size?: unknown;
 		}>) {
 			const type =
-				item.type === "blob"
+				item.type === "blob" || item.type === "commit"
 					? "file"
 					: item.type === "tree"
 						? "dir"
@@ -589,9 +592,10 @@ async function listGitLabCommitTree(
 				continue;
 			}
 			const regular =
-				type !== "file" ||
-				typeof item.mode !== "string" ||
-				REGULAR_FILE_MODES.has(item.mode);
+				item.type !== "commit" &&
+				(type !== "file" ||
+					typeof item.mode !== "string" ||
+					REGULAR_FILE_MODES.has(item.mode));
 			const metadata =
 				type === "file"
 					? blobMetadata({

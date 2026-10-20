@@ -771,14 +771,6 @@ model Organization {
   // IANA TZ name (e.g., "America/Los_Angeles"). NULL falls back to "UTC" at read
   // time (see packages/payments/src/lib/ai-usage-limits.ts:getTenantTimezone).
   timezone                         String?
-  // Legacy organization Firecrawl columns, unused since search provider rows
-  // replaced them. @ignore keeps them out of Prisma Client so no query selects
-  // them; the columns are dropped in a later release once this one is fully
-  // rolled out (Fizzy #3084).
-  firecrawlApiKey                  String?                       @ignore
-  firecrawlEnabled                 Boolean                       @default(false) @ignore
-  firecrawlConfiguredAt            DateTime?                     @ignore
-  firecrawlLastUsedAt              DateTime?                     @ignore
   azureAiApiKey                    String?
   azureAiConfiguredAt              DateTime?
   azureAiEnabled                   Boolean                       @default(false)
@@ -2047,6 +2039,10 @@ model ConversationTurn {
 
   terminalAt         DateTime?
   terminalReason     String?
+  /// The message the person sent, written at admission. The browser saves
+  /// the conversation only after the stream ends, so this is the one record
+  /// of the question of a turn that is still running or never got that save.
+  questionText       String?
   /// The final answer, or the partial text a cancelled turn had produced.
   responseText       String?
   /// Limit signals the turn ended with (kind/provider/message), if any.
@@ -2850,6 +2846,17 @@ model ProjectDocumentAnalysis {
   promptVersionId String?
   model           String?
 
+  /// The analysis report the bound prompt asked for, beside the findings
+  /// (Fizzy #2946): a versioned object of the structured fields and the source
+  /// numbers its text cites, normalised and capped by the query module and
+  /// parsed with zod on read. It decides whether the run has a report; null on
+  /// runs written before it existed and on runs without one. Read only through
+  /// `getAnalysisReport`, never through the shared run selects.
+  report     Json?
+  /// The full report text as the model wrote it, capped by the query module.
+  /// Never set without `report`.
+  reportText String? @db.Text
+
   /// A fixed failure code and a fixed, length-capped message mapped from it;
   /// never model output or context text.
   errorCode    String?
@@ -3135,6 +3142,13 @@ model ProjectContext {
   // any embed of the row that enriches every chunk clears it. NULL otherwise.
   // No index: the due-row scan runs every 15 minutes over one table.
   contextEnrichmentRetryAt DateTime?
+
+  // A Living Memory row under a "Store only" write folder: kept and readable,
+  // but never embedded, retrieved by semantic search or summarized. Derived
+  // from the sync's write folders by `reconcileContextIndexing` (their
+  // `indexMode` is the source of truth) and only ever true while
+  // `repositorySyncId` is set; releasing the rows clears it.
+  indexingExcluded Boolean @default(false)
 
   // Tenant isolation (copied from parent Project)
   userId         String?
@@ -3794,6 +3808,15 @@ enum ProjectContextWriteMode {
   DIRECT_PUSH
 }
 
+/// Whether the files of a Living Memory write folder are embedded for AI
+/// search (ADR-022). INDEXED is today's behaviour. STORE_ONLY keeps the files
+/// as repository-managed rows, readable through the context APIs and tools,
+/// but never embedded, retrieved by semantic search or summarized.
+enum ProjectContextIndexMode {
+  INDEXED
+  STORE_ONLY
+}
+
 /// Where a write stands. PENDING until the write workflow settles it;
 /// COMMITTED is a direct push, PULL_REQUEST a pull request opened, CONFLICT a
 /// path that changed under the caller, REFUSED a write the tip rules out, and
@@ -3838,6 +3861,10 @@ model ProjectContextWriteTarget {
   /// Canonical repository-relative POSIX folder.
   folder                String
   mode                  ProjectContextWriteMode @default(PULL_REQUEST)
+  /// Whether the folder's files are embedded for AI search. The rows' own
+  /// `ProjectContext.indexingExcluded` is derived from this by
+  /// `reconcileContextIndexing`; this column is the source of truth.
+  indexMode             ProjectContextIndexMode @default(INDEXED)
   /// Who turned DIRECT_PUSH on, and when. Both null in PULL_REQUEST mode. A
   /// plain column: the record outlives the member's account.
   directPushEnabledById String?
@@ -8213,6 +8240,7 @@ model UserStory {
   externalId                String? // PM tool ID (Fizzy/Linear)
   externalUrl               String?
   externalMcpServerId       String? // MCP server that last synced this story
+  externalPmTarget          String? // Canonical server, instance and stable container; null preserves legacy link behavior.
   // Per-feature opt-in for auto-pushing edits to the linked PM tool. False
   // by default so new Fabric-originated features stay local until the PM
   // explicitly enables sync (junior-PM review workflow). Imported / linked-
@@ -10687,6 +10715,7 @@ model TestCase {
   externalId          String?
   externalUrl         String?
   externalMcpServerId String?
+  externalPmTarget    String? // Canonical server, instance and stable container; null preserves legacy link behavior.
   pmAutoSyncEnabled   Boolean       @default(false)
   lastSyncedPmHash    String?
   lastSyncedAt        DateTime?
@@ -13314,6 +13343,11 @@ model UserCloudProviderConfig {
   isDefault             Boolean           @default(false)
   isEmbeddingProvider   Boolean           @default(false) // Dedicated provider for embeddings (independent of default)
   purpose               AiProviderPurpose @default(ALL)
+  /// The owner's opt-in (Fizzy #3085): their own work in an organization runs
+  /// on this key when every ChatGPT plan serving it is spent and the
+  /// organization would otherwise stop it. Never background work, never
+  /// another member's, never an EMBEDDINGS_ONLY key.
+  useWhenPlanSpent      Boolean           @default(false)
   priority              Int               @default(0)
   config                Json
   encryptedApiKey       String?           @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
@@ -13526,8 +13560,9 @@ model ChatGptPlanOrgPolicy {
   apiFallbackBackground  ChatGptPlanApiFallbackBackground  @default(NEVER)
   /// Background work prefers accounts whose estimated window use is below
   /// `100 - headroomPct` percent, leaving the rest for people; it uses an
-  /// account past that only when every account serving it is.
-  headroomPct            Int                               @default(40)
+  /// account past that only when every account serving it is. 0 by default:
+  /// no limit until an admin sets one (Fizzy #3085 FR8).
+  headroomPct            Int                               @default(0)
   /// The plan model a call retries on, once, when the plan does not serve the
   /// chosen one; null means no fallback, and the call fails naming the model.
   fallbackModel          String?                           @default("gpt-6-astra")
@@ -14249,6 +14284,7 @@ model WorkflowExecution {
   // Relations
   workflow Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   logs     WorkflowExecutionLog[]
+  aiUsageLogs AiUsageLog[]
 
   @@index([workflowId])
   @@index([status])
@@ -14706,6 +14742,7 @@ model AgentWorkspaceFile {
   sharingGrants      FrameSharingGrant[]
   editHistory        FrameEditHistory[]
   pageRecords        FramePageRecord[]
+  aiUsageLogs        AiUsageLog[]
   sourceRunType      String?
   sourceRunId        String?
   authoritySessionId String?
@@ -15753,6 +15790,8 @@ model AiUsageLog {
   taskType        AiTaskType?
   agentId         String?
   conversationId  String?
+  frameId         String?
+  workflowExecutionId String?
   // Product-feature attribution (Fizzy #2230, Phase 1): which user-facing AI
   // feature made this call, and the resolved prompt version it ran with.
   // Nullable by design — untagged call sites write null and tag coverage
@@ -15810,6 +15849,8 @@ model AiUsageLog {
   createdAt DateTime @default(now())
 
   project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  frame AgentWorkspaceFile? @relation(fields: [frameId], references: [id], onDelete: SetNull)
+  workflowExecution WorkflowExecution? @relation(fields: [workflowExecutionId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([organizationId, createdAt])
@@ -15829,6 +15870,8 @@ model AiUsageLog {
   // Background-job attribution (Fizzy #1894): per-pipeline volume/cost and
   // "system vs user" filtered views.
   @@index([jobType, createdAt])
+  @@index([frameId, createdAt])
+  @@index([workflowExecutionId, createdAt])
   @@map("ai_usage_log")
 }
 

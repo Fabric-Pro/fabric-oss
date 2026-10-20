@@ -1,5 +1,6 @@
 "use client";
 
+import { useAiServesMemberHere } from "@saas/shared/lib/use-ai-serves-member-here";
 import { AiProvidersSettingsForm } from "../AiProvidersSettingsForm";
 import { useChatgptPlanStatus } from "./chatgpt-plan-status";
 
@@ -18,13 +19,22 @@ function useChatgptPlanServesOwnWorkIn(): string | null {
 
 /**
  * The account AI Providers form, told whether the member's ChatGPT plan
- * serves their own work here, so its status banner counts the plan too.
+ * serves their own work here, so its status banner counts the plan too, and
+ * whether the organization already serves it, so a member without keys of
+ * their own is not told that nothing is configured.
  */
 export function AccountAiProvidersSettings() {
 	const organizationName = useChatgptPlanServesOwnWorkIn();
+	// Read only when the member has no personal key, so a key that serves
+	// them is the organization's. Their own plan is told apart: the form
+	// has its own notice for it.
+	const serving = useAiServesMemberHere();
+	const organizationServesWork =
+		serving === null ? null : serving.providerKey || serving.sharedPlan;
 	return (
 		<AiProvidersSettingsForm
 			chatgptPlan={organizationName ? { organizationName } : null}
+			organizationServesWork={organizationServesWork}
 		/>
 	);
 }

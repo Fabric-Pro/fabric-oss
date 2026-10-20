@@ -60,7 +60,8 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		const { executionId, approved, feedback } = await request.json();
+		const { executionId, approved, feedback, approvalId } =
+			await request.json();
 
 		if (!executionId) {
 			return new Response(
@@ -87,6 +88,23 @@ export async function POST(request: NextRequest) {
 		if (typeof approved !== "boolean") {
 			return new Response(
 				JSON.stringify({ error: "approved (boolean) is required" }),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		// The approval the person answered; the workflow takes the answer only
+		// while that approval is the one pending.
+		if (
+			approvalId !== undefined &&
+			(typeof approvalId !== "string" ||
+				approvalId.length === 0 ||
+				approvalId.length > 500)
+		) {
+			return new Response(
+				JSON.stringify({ error: "Invalid approvalId" }),
 				{
 					status: 400,
 					headers: { "Content-Type": "application/json" },
@@ -169,10 +187,32 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// The workflow drops an answer to no pending approval, or to an
+		// earlier one; say so instead of reporting a decision it never took.
+		const pendingApproval: { approvalId: string } | null =
+			await handle.query("pendingApproval");
+		if (
+			!pendingApproval ||
+			(approvalId !== undefined &&
+				approvalId !== pendingApproval.approvalId)
+		) {
+			return new Response(
+				JSON.stringify({
+					error: "This approval is no longer pending.",
+					code: "APPROVAL_NOT_PENDING",
+				}),
+				{
+					status: 409,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
 		await handle.signal("approval", {
 			approved,
 			feedback,
 			decidedBy: userId,
+			...(approvalId === undefined ? {} : { approvalId }),
 		});
 
 		// ✅ Security: Audit log the approval decision

@@ -113,6 +113,11 @@ describe("reanalyzeBodyByKind — BUG", () => {
 			usage: {},
 		});
 		const res = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "p1" }),
+		);
 		expect(res.fallbackUsed).toBe(false);
 		expect(res.description).toContain("Null form ref on first render.");
 		expect(res.needsMoreInfo).toBe(false);

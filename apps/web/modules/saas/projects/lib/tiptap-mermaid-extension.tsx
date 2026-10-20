@@ -8,7 +8,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import DOMPurify from "isomorphic-dompurify";
+import DOMPurify from "dompurify";
 import {
 	AlertCircle,
 	Check,

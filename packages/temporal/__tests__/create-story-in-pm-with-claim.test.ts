@@ -13,6 +13,12 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	fixtureTarget,
+	mutablePmSettings,
+	pmTargetFixtures,
+} from "../../utils/test-fixtures/pm-target";
+import { checkTestCasePmLink } from "../src/activities/pm-integration/create-test-case-in-pm-with-claim";
 
 type Row = Record<string, unknown> & { id: string };
 
@@ -184,7 +190,9 @@ vi.mock("@repo/database", () => {
 		readDatabaseClock: vi.fn(async () => new Date()),
 		db: {
 			userStory: userStoryTable(committedView()),
+			testCase: userStoryTable(committedView()),
 			mCPServer: { findUnique: vi.fn(async () => null) },
+			mCPConfig: { findFirst: vi.fn() },
 			$transaction: vi.fn(
 				async (fn: (tx: object) => Promise<unknown>) => {
 					const staged = new Map<string, Record<string, unknown>>();
@@ -251,10 +259,11 @@ vi.mock("../src/activities/pm-integration/record-pm-sync-log", () => ({
 	recordPmSyncLog: h.recordPmSyncLog,
 }));
 
-const { createStoryInPmWithClaim } = await import(
+const { createStoryInPmWithClaim, checkStoryPmLink } = await import(
 	"../src/activities/pm-integration/create-story-in-pm-with-claim"
 );
 const { db, updateStory } = await import("@repo/database");
+const { logger } = await import("@repo/logs");
 const { executeMcpTool } = await import(
 	"../src/activities/orchestrator/execution/execute-mcp-tool"
 );
@@ -330,6 +339,7 @@ function successWrites(): StoreWrite[] {
 
 beforeEach(() => {
 	h.stories.clear();
+	vi.mocked(logger.info).mockClear();
 	h.recordPmSyncLog.mockReset();
 	h.writes.length = 0;
 	h.afterLinkCommit = null;
@@ -338,6 +348,13 @@ beforeEach(() => {
 	vi.mocked(executeMcpTool).mockReset();
 	vi.mocked(updateStory).mockClear();
 	vi.mocked(db.$transaction).mockClear();
+	vi.mocked(db.mCPConfig.findFirst).mockReset();
+	vi.mocked(db.mCPConfig.findFirst).mockResolvedValue({
+		baseUrl: "https://pm.example.com",
+		mcpServer: { key: "fizzy", defaultUrl: null },
+	} as never);
+	vi.mocked(db.mCPServer.findUnique).mockReset();
+	vi.mocked(db.mCPServer.findUnique).mockResolvedValue(null);
 });
 
 describe("createStoryInPmWithClaim: create", () => {
@@ -724,6 +741,32 @@ describe("createStoryInPmWithClaim: create", () => {
 		expect(h.recordPmSyncLog).toHaveBeenCalledWith(
 			failureLoggedWith("create_orphan"),
 		);
+	});
+
+	it("keeps Prisma link-write details out of the returned and stored story error", async () => {
+		h.stories.set("s1", unlinkedRow());
+		vi.mocked(executeMcpTool).mockResolvedValue(created as never);
+		for (let i = 0; i < 3; i++) {
+			vi.mocked(updateStory).mockRejectedValueOnce(
+				Object.assign(
+					new Error(
+						"Invalid `prisma.userStory.update()` invocation in\n/app/packages/database/x.ts:12:3\nquery text",
+					),
+					{ name: "PrismaClientKnownRequestError", code: "P2002" },
+				),
+			);
+		}
+
+		const result = await createStoryInPmWithClaim(createInput);
+
+		expect(updateStory).toHaveBeenCalledTimes(3);
+		for (const message of [result.error, row().lastPmSyncError]) {
+			expect(message).toContain(
+				"another story in this project is already linked to that item",
+			);
+			expect(message).not.toContain("/app/packages/database/x.ts");
+			expect(message).not.toContain("prisma.");
+		}
 	});
 
 	describe("another push links the row after Unlink & re-create cleared this create's claim", () => {
@@ -1273,4 +1316,508 @@ describe("createStoryInPmWithClaim: refuse-legacy-link", () => {
 		expect(row()).toMatchObject({ lastPmSyncStatus: "SUCCESS" });
 		expect(h.recordPmSyncLog).not.toHaveBeenCalled();
 	});
+});
+
+const judgedLink = {
+	externalId: "42",
+	externalUrl: "https://pm.example.com/cards/42",
+	externalMcpServerId: "server-old",
+};
+const checkInput = { ...common, mcpServerId: "server-active", ...judgedLink };
+
+describe("checkStoryPmLink", () => {
+	it.each(["push", "pull"] as const)(
+		"blocks the same server's different target for %s",
+		async (verb) => {
+			h.stories.set(
+				"s1",
+				unlinkedRow({
+					...judgedLink,
+					externalMcpServerId: checkInput.mcpServerId,
+					externalPmTarget:
+						'pmt1:["server-active","example-org","example-other-board"]',
+				}),
+			);
+			const result = await checkStoryPmLink({
+				...checkInput,
+				externalMcpServerId: checkInput.mcpServerId,
+				verb,
+				pmTarget: {
+					additionalContext: { account_slug: "example-org" },
+					containerId: "example-board",
+				},
+			});
+			expect(result).toMatchObject({ success: false, outcome: "block" });
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["push", "pull"] as const)(
+		"accepts the recorded self-hosted REST GitLab instance for %s",
+		async (verb) => {
+			const link = {
+				...judgedLink,
+				externalMcpServerId: null,
+				externalUrl:
+					"https://gitlab.example.com/example/project/-/issues/42",
+			};
+			h.stories.set("s1", unlinkedRow(link));
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+				key: "gitlab-official",
+				defaultUrl: "https://gitlab.com",
+			} as never);
+			const result = await checkStoryPmLink({
+				...checkInput,
+				...link,
+				mcpConfigId: null,
+				pmTool: "gitlab",
+				verb,
+				pmTarget: {
+					additionalContext: {
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				},
+			});
+			expect(result).toMatchObject({ success: true, outcome: "link-ok" });
+			expect(h.writes).toHaveLength(0);
+			expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a gitlab.com link when REST targets the recorded self-hosted instance", async () => {
+		const link = {
+			...judgedLink,
+			externalMcpServerId: null,
+			externalUrl: "https://gitlab.com/example/project/-/issues/42",
+		};
+		h.stories.set("s1", unlinkedRow(link));
+		vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+			key: "gitlab-official",
+			defaultUrl: "https://gitlab.com",
+		} as never);
+		expect(
+			await checkStoryPmLink({
+				...checkInput,
+				...link,
+				mcpConfigId: null,
+				pmTool: "gitlab",
+				verb: "pull",
+				pmTarget: {
+					additionalContext: {
+						gitlabOrigin: "https://gitlab.example.com",
+					},
+				},
+			}),
+		).toMatchObject({ success: false, outcome: "legacy-other-tool" });
+	});
+
+	it("records a refused pull as a pull with recovery wording", async () => {
+		h.stories.set("s1", unlinkedRow(judgedLink));
+		const result = await checkStoryPmLink({ ...checkInput, verb: "pull" });
+		expect(result.error).toContain("did not pull");
+		expect(result.error).toMatch(
+			/linked to a ticket in a different PM tool/i,
+		);
+		expect(result.error).toContain("Unlink & re-create");
+		expect(result.error).not.toContain("did not create");
+		expect(h.recordPmSyncLog).toHaveBeenCalledWith(
+			expect.objectContaining({ direction: "pull", status: "FAILURE" }),
+		);
+	});
+
+	it.each(["missing", "changed", "superseded"] as const)(
+		"uses pull wording when the story is %s",
+		async (reason) => {
+			if (reason !== "missing") {
+				h.stories.set(
+					"s1",
+					unlinkedRow({
+						...judgedLink,
+						...(reason === "changed"
+							? { externalId: "example-new-id" }
+							: {
+									lastPmSyncAttemptId: "example-attempt",
+									lastPmSyncStatus: "PENDING",
+								}),
+					}),
+				);
+			}
+			const result = await checkStoryPmLink({
+				...checkInput,
+				verb: "pull",
+			});
+			expect(result.success).toBe(false);
+			expect(result.error).toContain("did not pull it");
+			expect(result.error).not.toContain("push");
+		},
+	);
+
+	it.each([
+		["another server on the same tool", judgedLink, "block"],
+		[
+			"another known tool",
+			{
+				...judgedLink,
+				externalMcpServerId: null,
+				externalUrl: "https://linear.app/example-org/issue/42",
+			},
+			"legacy-other-tool",
+		],
+		[
+			"another custom host",
+			{
+				...judgedLink,
+				externalMcpServerId: null,
+				externalUrl: "https://old.example.com/cards/42",
+			},
+			"legacy-other-tool",
+		],
+	] as const)(
+		"refuses %s and records FAILED without changing the link",
+		async (_name, link, outcome) => {
+			h.stories.set("s1", unlinkedRow(link));
+			const result = await checkStoryPmLink({ ...checkInput, ...link });
+			expect(result).toMatchObject({
+				success: false,
+				outcome,
+				error: expect.stringContaining("Unlink & re-create"),
+			});
+			expect(row()).toMatchObject({
+				...link,
+				lastPmSyncStatus: "FAILED",
+				lastPmSyncError: result.error,
+			});
+			expect(h.recordPmSyncLog).toHaveBeenCalledWith(
+				failureLoggedWith("PM_TOOL_MISMATCH_LEGACY"),
+			);
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses a personal GitLab link on another instance", async () => {
+		const link = {
+			...judgedLink,
+			externalMcpServerId: null,
+			externalUrl: "https://gitlab.com/example-org/project/-/issues/42",
+		};
+		h.stories.set("s1", unlinkedRow(link));
+		vi.mocked(db.mCPConfig.findFirst).mockResolvedValue({
+			baseUrl: "https://gitlab.example.com",
+			mcpServer: { key: "gitlab", defaultUrl: null },
+		} as never);
+		expect(
+			await checkStoryPmLink({
+				...checkInput,
+				...link,
+				pmTool: "gitlab",
+			}),
+		).toMatchObject({ success: false, outcome: "legacy-other-tool" });
+		expect(row().lastPmSyncStatus).toBe("FAILED");
+	});
+
+	it.each(["server-active", null])(
+		"accepts the active stamp when the snapshot stamp is %s",
+		async (externalMcpServerId) => {
+			h.stories.set(
+				"s1",
+				unlinkedRow({
+					...judgedLink,
+					externalMcpServerId: "server-active",
+					lastPmSyncStatus: "SUCCESS",
+				}),
+			);
+			const result = await checkStoryPmLink({
+				...checkInput,
+				externalMcpServerId,
+			});
+			expect(logger.info).not.toHaveBeenCalledWith(
+				"pm.sync.create_skipped",
+				expect.objectContaining({ reason: "linked" }),
+			);
+			expect(result).toMatchObject({ success: true, outcome: "link-ok" });
+			expect(h.writes).toHaveLength(0);
+			expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["externalId", "externalUrl", "externalMcpServerId"])(
+		"returns link-changed without recording when %s changed before the read",
+		async (field) => {
+			h.stories.set(
+				"s1",
+				unlinkedRow({
+					...judgedLink,
+					[field]: "replacement",
+					lastPmSyncStatus: "SUCCESS",
+				}),
+			);
+			expect(await checkStoryPmLink(checkInput)).toMatchObject({
+				success: false,
+				outcome: "link-changed",
+			});
+			expect(h.writes).toHaveLength(0);
+			expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["externalId", "externalUrl", "externalMcpServerId"])(
+		"fences refusal against a concurrent %s replacement",
+		async (field) => {
+			h.stories.set(
+				"s1",
+				unlinkedRow({ ...judgedLink, lastPmSyncStatus: "SUCCESS" }),
+			);
+			vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce(
+				(async () => {
+					Object.assign(row(), { [field]: "replacement" });
+					return {
+						baseUrl: "https://pm.example.com",
+						mcpServer: { key: "fizzy" },
+					};
+				}) as never,
+			);
+			expect(await checkStoryPmLink(checkInput)).toMatchObject({
+				success: false,
+				outcome: "link-changed",
+			});
+			expect(row().lastPmSyncStatus).toBe("SUCCESS");
+			expect(h.writes).toHaveLength(0);
+			expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+		},
+	);
+
+	it("accepts a legacy link backfilled to the active server during the refusal write", async () => {
+		const link = {
+			...judgedLink,
+			externalMcpServerId: null,
+			externalUrl: "https://linear.app/example-org/issue/42",
+		};
+		h.stories.set("s1", unlinkedRow(link));
+		vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce((async () => {
+			Object.assign(row(), {
+				externalMcpServerId: "server-active",
+				lastPmSyncStatus: "SUCCESS",
+			});
+			return {
+				baseUrl: "https://pm.example.com",
+				mcpServer: { key: "fizzy" },
+			};
+		}) as never);
+		const result = await checkStoryPmLink({ ...checkInput, ...link });
+		expect(logger.info).not.toHaveBeenCalledWith(
+			"pm.sync.create_skipped",
+			expect.objectContaining({ reason: "linked" }),
+		);
+		expect(result).toMatchObject({ success: true, outcome: "link-ok" });
+		expect(row().lastPmSyncStatus).toBe("SUCCESS");
+		expect(h.writes).toHaveLength(0);
+		expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+	});
+
+	it.each([{ projectId: "other-project" }, { organizationId: "other-org" }])(
+		"checks the run's project and organization: %j",
+		async (scope) => {
+			h.stories.set("s1", unlinkedRow(judgedLink));
+			expect(
+				await checkStoryPmLink({ ...checkInput, ...scope }),
+			).toMatchObject({ success: false, outcome: "not-in-project" });
+			expect(h.writes).toHaveLength(0);
+			expect(db.mCPConfig.findFirst).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["config-1", null])(
+		"fails non-retryably for missing config/server (%s)",
+		async (mcpConfigId) => {
+			h.stories.set("s1", unlinkedRow(judgedLink));
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(null);
+			await expect(
+				checkStoryPmLink({ ...checkInput, mcpConfigId }),
+			).rejects.toMatchObject({
+				nonRetryable: true,
+				type: "PmConfigNotFoundError",
+			});
+			expect(h.writes).toHaveLength(0);
+		},
+	);
+
+	it("loads the config scoped to the user, organization and active server", async () => {
+		h.stories.set("s1", unlinkedRow(judgedLink));
+		await checkStoryPmLink(checkInput);
+		expect(db.mCPConfig.findFirst).toHaveBeenCalledWith({
+			where: {
+				id: "config-1",
+				userId: "u-1",
+				organizationId: "org-1",
+				mcpServerId: "server-active",
+			},
+			select: {
+				baseUrl: true,
+				commandArgs: true,
+				atlassianCloudSiteUrl: true,
+				mcpServer: { select: { defaultUrl: true, key: true } },
+			},
+		});
+	});
+
+	it.each(["same", "other"])(
+		"checks the %s GitLab instance without a config row",
+		async (instance) => {
+			const link = {
+				...judgedLink,
+				externalMcpServerId: null,
+				externalUrl: `https://${instance === "same" ? "gitlab" : "old"}.example.com/example-org/project/-/issues/42`,
+			};
+			h.stories.set("s1", unlinkedRow(link));
+			vi.mocked(db.mCPServer.findUnique).mockResolvedValue({
+				key: "gitlab",
+				defaultUrl: "https://gitlab.example.com",
+			} as never);
+			expect(
+				await checkStoryPmLink({
+					...checkInput,
+					...link,
+					mcpConfigId: null,
+					pmTarget: {
+						additionalContext: {
+							gitlabOrigin: "https://gitlab.example.com",
+						},
+					},
+					pmTool: "gitlab",
+				}),
+			).toMatchObject({ success: instance === "same" });
+		},
+	);
+
+	it("yields the refusal status to a PENDING attempt", async () => {
+		h.stories.set(
+			"s1",
+			unlinkedRow({
+				...judgedLink,
+				lastPmSyncAttemptId: "attempt-other",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		expect(await checkStoryPmLink(checkInput)).toMatchObject({
+			success: false,
+			outcome: "attempt-superseded",
+			error: "Another PM sync attempt now owns this story, so Fabric did not push it.",
+		});
+		expect(row().lastPmSyncStatus).toBe("PENDING");
+		expect(h.writes).toHaveLength(0);
+		expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+	});
+});
+
+describe("story refusal attempt ownership", () => {
+	it("reports a changed attempt id after the refusal write misses its fence", async () => {
+		h.stories.set(
+			"s1",
+			unlinkedRow({ ...judgedLink, lastPmSyncStatus: "SUCCESS" }),
+		);
+		vi.mocked(db.mCPConfig.findFirst).mockImplementationOnce((async () => {
+			Object.assign(row(), { lastPmSyncAttemptId: "attempt-other" });
+			return {
+				baseUrl: "https://pm.example.com",
+				mcpServer: { key: "fizzy" },
+			};
+		}) as never);
+		expect(await checkStoryPmLink(checkInput)).toMatchObject({
+			success: false,
+			outcome: "attempt-superseded",
+			error: "Another PM sync attempt now owns this story, so Fabric did not push it.",
+		});
+		expect(row()).toMatchObject({
+			lastPmSyncStatus: "SUCCESS",
+			lastPmSyncAttemptId: "attempt-other",
+		});
+		expect(h.writes).toHaveLength(0);
+		expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+	});
+});
+
+describe("story refusal write boundaries", () => {
+	it("retries an unchanged refusal whose status write failed", async () => {
+		h.stories.set("s1", unlinkedRow(judgedLink));
+		vi.mocked(db.userStory.updateMany).mockRejectedValueOnce(
+			new Error("write unavailable"),
+		);
+		await expect(checkStoryPmLink(checkInput)).rejects.toThrow(
+			"could not record this story's PM link refusal",
+		);
+		expect(h.recordPmSyncLog).not.toHaveBeenCalled();
+	});
+
+	it("does not fail an active-server link because another attempt is PENDING", async () => {
+		h.stories.set(
+			"s1",
+			unlinkedRow({
+				...judgedLink,
+				externalMcpServerId: "server-active",
+				lastPmSyncAttemptId: "attempt-other",
+				lastPmSyncStatus: "PENDING",
+			}),
+		);
+		expect(
+			await checkStoryPmLink({
+				...checkInput,
+				externalMcpServerId: "server-active",
+			}),
+		).toMatchObject({ success: true });
+		expect(row().lastPmSyncStatus).toBe("PENDING");
+		expect(h.writes).toHaveLength(0);
+	});
+});
+
+describe("writer/checker target consistency", () => {
+	it.each(pmTargetFixtures)(
+		"$name: create-with-claim survives settings edits at both guards",
+		async (fixture) => {
+			h.stories.set("s1", unlinkedRow());
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue(
+				fixture.config as never,
+			);
+			vi.mocked(executeMcpTool).mockResolvedValue(created);
+			const pmTarget = {
+				containerId: fixture.containerId,
+				additionalContext: fixture.additionalContext,
+			};
+			const result = await createStoryInPmWithClaim({
+				...createInput,
+				mcpServerId: "example-server",
+				pmTool: fixture.pmTool,
+				pmTarget,
+			});
+			expect(result.success).toBe(true);
+			// Connection-only attachment configuration and content filters change between calls.
+			vi.mocked(db.mCPConfig.findFirst).mockResolvedValue({
+				...fixture.config,
+				atlassianCloudSiteUrl: "https://example.atlassian.net",
+			} as never);
+			const check = {
+				...common,
+				mcpServerId: "example-server",
+				pmTool: fixture.pmTool,
+				externalId: String(row().externalId),
+				externalUrl: row().externalUrl as string,
+				externalMcpServerId: "example-server",
+				pmTarget: {
+					...pmTarget,
+					additionalContext: {
+						...fixture.additionalContext,
+						...mutablePmSettings,
+					},
+				},
+			};
+			await expect(checkStoryPmLink(check)).resolves.toMatchObject({
+				success: true,
+			});
+			await expect(
+				checkTestCasePmLink({ ...check, testCaseId: "s1" }),
+			).resolves.toMatchObject({ success: true });
+			expect(row().externalPmTarget).toBe(
+				fixtureTarget(fixture, "example-server"),
+			);
+		},
+	);
 });

@@ -89,6 +89,10 @@ describe("judgeDecisionContradictions — normalization", () => {
 			items: [{ text: "some output" }],
 		});
 
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "p1" }),
+		);
 		expect(findings).toHaveLength(1);
 		expect(findings[0].decisionId).toBe("real");
 	});

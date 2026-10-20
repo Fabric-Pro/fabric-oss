@@ -175,6 +175,9 @@ beforeEach(() => {
 		reading("back-link project read", { organizationId: null }),
 	);
 	h.storyUpdate.mockResolvedValue(STORY_ROW);
+	h.organizationFindUnique.mockResolvedValue({
+		canShareFramesPublicly: true,
+	});
 	h.frameFindFirst.mockImplementation(() => reading("frame read", FRAME_ROW));
 	h.frameUpdate.mockResolvedValue(FRAME_ROW);
 	h.frameHistoryCreate.mockResolvedValue({});

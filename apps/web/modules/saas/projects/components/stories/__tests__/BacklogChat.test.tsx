@@ -22,6 +22,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const chatMessages = vi.hoisted(() => ({ current: [] as unknown[] }));
 const useCoAgentMock = vi.fn(() => ({ state: {}, setState: vi.fn() }));
 const useCopilotActionMock = vi.fn();
 
@@ -34,7 +35,7 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotAction: (args: unknown) => useCopilotActionMock(args),
 	// BacklogChat reads the live chat (CopilotKit 1.52's supported hook) to
 	// snapshot the conversation into the read-only Session history.
-	useCopilotChatInternal: () => ({ messages: [] }),
+	useCopilotChatInternal: () => ({ messages: chatMessages.current }),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: ({ children }: { children?: React.ReactNode }) => (
@@ -55,6 +56,7 @@ const applyChangesFn = vi.fn();
 const applyProgressFn = vi.fn();
 const startAnalysisFn = vi.fn();
 const analysisProgressFn = vi.fn();
+const createConversationFn = vi.fn();
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
@@ -66,16 +68,13 @@ vi.mock("../../../../../shared/lib/orpc-client", () => ({
 					analysisProgressFn(...args),
 			},
 		},
-		agents: { conversations: { create: vi.fn() } },
+		agents: {
+			conversations: {
+				create: (...args: unknown[]) => createConversationFn(...args),
+			},
+		},
 		mcp: { configs: { list: vi.fn() } },
 	},
-}));
-
-vi.mock("../../lib/teams-fetch-decision", () => ({
-	resolveTeamsFetchDecision: () => ({
-		fetchTeamsMessages: false,
-		selectedChannelContextIds: [],
-	}),
 }));
 
 vi.mock("../BacklogChangeProposal", () => ({
@@ -111,7 +110,7 @@ vi.mock("../ReviewSourcesSelector", () => ({
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { BacklogChat } from "../BacklogChat";
 
-function renderBacklogChat() {
+function renderBacklogChat(hasSlackIntegration = false) {
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { retry: false },
@@ -121,14 +120,14 @@ function renderBacklogChat() {
 	// The real provider, over the mocked `useCopilotChatInternal` above —
 	// `BacklogChatPanel` mounts it in production, and `BacklogChat` reads the
 	// live messages through it.
-	const utils = render(
+	const chatTree = () => (
 		<QueryClientProvider client={client}>
 			<CopilotChatSessionProvider>
 				<BacklogChat
 					projectId="project_1"
 					projectName="Test Project"
 					hasTeamsIntegration={false}
-					hasSlackIntegration={false}
+					hasSlackIntegration={hasSlackIntegration}
 					hasNotionIntegration={false}
 					hasPMTool={false}
 					backlogSummary="0 features"
@@ -136,9 +135,14 @@ function renderBacklogChat() {
 					onChangesApplied={vi.fn()}
 				/>
 			</CopilotChatSessionProvider>
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
-	return { ...utils, client };
+	const utils = render(chatTree());
+	return {
+		...utils,
+		client,
+		refreshMessages: () => utils.rerender(chatTree()),
+	};
 }
 
 describe("BacklogChat — failed-count banner handover", () => {
@@ -619,5 +623,456 @@ describe("BacklogChat — async decision pre-check note (card #1365)", () => {
 			__backlogProposalDecisionPrecheckPending?: boolean;
 		};
 		expect(h.__backlogProposalDecisionPrecheckPending).toBe(false);
+	});
+});
+
+type CapturedAction = {
+	handler: (args: Record<string, unknown>) => Promise<unknown>;
+	render: (input: { status: string }) => React.ReactElement;
+	renderAndWaitForResponse: (input: {
+		respond: ReturnType<typeof vi.fn>;
+	}) => React.ReactElement<{
+		onConfirm: (result: typeof confirmedSources) => void;
+		onCancel: () => void;
+	}>;
+};
+const confirmedSources = {
+	selectedMeetings: [
+		{
+			joinUrl: "https://example.com/meeting",
+			startTime: "2026-10-20T10:00:00Z",
+		},
+	],
+	selectedChannels: [{ projectContextId: "example-channel" }],
+	daysBack: 14 as const,
+};
+function latestAction(name: string): CapturedAction {
+	const registration = [...useCopilotActionMock.mock.calls]
+		.reverse()
+		.find((call) => (call[0] as { name: string }).name === name);
+	if (!registration) {
+		throw new Error(`Missing action: ${name}`);
+	}
+	return registration[0] as CapturedAction;
+}
+function confirmSources(cancel = false) {
+	const respond = vi.fn();
+	const selector = latestAction(
+		"select_review_sources",
+	).renderAndWaitForResponse({ respond });
+	if (cancel) {
+		selector.props.onCancel();
+	} else {
+		selector.props.onConfirm(confirmedSources);
+	}
+	return respond;
+}
+
+describe("BacklogChat confirmed analysis sources", () => {
+	beforeEach(() => {
+		chatMessages.current = [];
+		useCopilotActionMock.mockClear();
+		startAnalysisFn.mockReset();
+		analysisProgressFn.mockReset();
+		startAnalysisFn.mockRejectedValue(new Error("Input validation failed"));
+	});
+
+	it("uses confirmed sources when the model supplies empty meeting objects, including later calls", async () => {
+		renderBacklogChat();
+		confirmSources();
+		for (let call = 0; call < 2; call++) {
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({
+					selectedMeetings: [{}],
+					selectedChannels: [{}],
+					daysBack: 90,
+				});
+			});
+		}
+		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
+		expect(startAnalysisFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				contextSources: expect.objectContaining({
+					selectedMeetings: confirmedSources.selectedMeetings,
+					selectedChannelContextIds: ["example-channel"],
+					fetchTeamsMessages: true,
+					daysBack: 14,
+				}),
+			}),
+		);
+	});
+
+	it.each([
+		{
+			name: "channels only",
+			sources: { selectedChannels: [{}] },
+			meetings: [],
+			channelIds: ["example-channel"],
+			fetchTeamsMessages: true,
+		},
+		{
+			name: "meetings only",
+			sources: { selectedMeetings: [{}] },
+			meetings: confirmedSources.selectedMeetings,
+			channelIds: [],
+			fetchTeamsMessages: false,
+		},
+	])(
+		"substitutes confirmed values per field for $name",
+		async ({ sources, meetings, channelIds, fetchTeamsMessages }) => {
+			renderBacklogChat();
+			confirmSources();
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({
+					...sources,
+					daysBack: 90,
+				});
+			});
+			expect(startAnalysisFn).toHaveBeenCalledTimes(1);
+			expect(startAnalysisFn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					contextSources: expect.objectContaining({
+						selectedMeetings: meetings,
+						selectedChannelContextIds: channelIds,
+						fetchTeamsMessages,
+						daysBack: 14,
+					}),
+				}),
+			);
+		},
+	);
+
+	it.each([
+		{
+			name: "confirmed meetings substituted for malformed ones",
+			confirm: true,
+			meetings: confirmedSources.selectedMeetings,
+			fetchSlackMessages: false,
+		},
+		{
+			name: "malformed meetings with no confirmed selection",
+			confirm: false,
+			meetings: [],
+			fetchSlackMessages: true,
+		},
+	])(
+		"decides Slack from the meetings actually sent: $name",
+		async ({ confirm, meetings, fetchSlackMessages }) => {
+			renderBacklogChat(true);
+			if (confirm) {
+				confirmSources();
+			}
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({
+					selectedMeetings: [{}],
+				});
+			});
+			expect(startAnalysisFn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					contextSources: expect.objectContaining({
+						selectedMeetings: meetings,
+						selectedChannelContextIds: [],
+						fetchSlackMessages,
+					}),
+				}),
+			);
+		},
+	);
+
+	it.each([{}, { selectedMeetings: [], selectedChannels: [] }])(
+		"does not inject a prior confirmed selection when later args omit sources: %j",
+		async (sources) => {
+			renderBacklogChat();
+			confirmSources();
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({
+					selectedMeetings: [{}],
+				});
+			});
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({
+					...sources,
+					fetchSlackMessages: true,
+					daysBack: 7,
+				});
+			});
+			expect(startAnalysisFn).toHaveBeenCalledTimes(2);
+			expect(startAnalysisFn).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					contextSources: expect.objectContaining({
+						selectedMeetings: [],
+						selectedChannelContextIds: [],
+						fetchTeamsMessages: false,
+						fetchSlackMessages: true,
+						daysBack: 7,
+					}),
+				}),
+			);
+		},
+	);
+	it("allows a new user turn after the previous turn reaches the start failure cap", async () => {
+		chatMessages.current = [{ role: "user", content: "Analyze Slack" }];
+		const { refreshMessages } = renderBacklogChat();
+		for (let call = 0; call < 3; call++) {
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({});
+			});
+		}
+		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
+		chatMessages.current = [
+			...chatMessages.current,
+			{ role: "assistant", content: "Could not start" },
+			{ type: "human", content: "Try again" },
+		];
+		refreshMessages();
+		await act(async () => {
+			await latestAction("analyze_backlog").handler({});
+		});
+		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
+	});
+
+	it("validates model options before starting analysis", async () => {
+		renderBacklogChat();
+		await act(async () => {
+			await latestAction("analyze_backlog").handler({
+				userPrompt: "   ",
+				fetchSlackMessages: "false",
+				notionPageIds: [{}, "", "  ", "example-page"],
+				notionMcpConfigId: {},
+			});
+		});
+		expect(startAnalysisFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				userPrompt: "Analyze context and suggest backlog updates",
+				contextSources: expect.objectContaining({
+					fetchSlackMessages: false,
+					notionPageIds: ["example-page"],
+					notionMcpConfigId: undefined,
+				}),
+			}),
+		);
+	});
+
+	it("filters malformed fallback sources without a confirmed selection", async () => {
+		renderBacklogChat();
+		await act(async () => {
+			await latestAction("analyze_backlog").handler({
+				selectedMeetings: [{}],
+				selectedChannels: [{}],
+			});
+		});
+		expect(startAnalysisFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextSources: expect.objectContaining({
+					selectedMeetings: [],
+					selectedChannelContextIds: [],
+					fetchTeamsMessages: false,
+				}),
+			}),
+		);
+	});
+
+	it("stops API calls after two consecutive start failures and resets on a new selection", async () => {
+		renderBacklogChat();
+		for (let call = 0; call < 3; call++) {
+			let result: unknown;
+			await act(async () => {
+				result = await latestAction("analyze_backlog").handler({});
+			});
+			expect(result).toMatch(/do not call analyze_backlog again/i);
+			expect(result).toMatch(/tell the user/i);
+			expect(result).toMatch(/Input validation failed/);
+		}
+		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
+		confirmSources();
+		await act(async () => {
+			await latestAction("analyze_backlog").handler({});
+		});
+		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
+	});
+
+	it.each(["executing", "complete"])(
+		"shows a failed card after a progress rejection while %s",
+		async (status) => {
+			vi.useFakeTimers();
+			try {
+				renderBacklogChat();
+				startAnalysisFn.mockResolvedValue({
+					workflowId: "example-workflow",
+				});
+				analysisProgressFn.mockRejectedValue(
+					new Error("Progress unavailable"),
+				);
+				let run: Promise<unknown> | undefined;
+				await act(async () => {
+					run = latestAction("analyze_backlog").handler({});
+					await Promise.resolve();
+				});
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(2000);
+					await run;
+				});
+				const card = render(
+					latestAction("analyze_backlog").render({ status }),
+				);
+				expect(card.getByText("Analysis Failed")).toBeTruthy();
+				expect(card.getByText("Progress unavailable")).toBeTruthy();
+				expect(card.queryByText("Analyzing Context")).toBeNull();
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it("shows a failed card before the tool render completes", async () => {
+		renderBacklogChat();
+		await act(async () => {
+			await latestAction("analyze_backlog").handler({});
+		});
+		const card = render(
+			latestAction("analyze_backlog").render({ status: "executing" }),
+		);
+		expect(card.getByText("Analysis Failed")).toBeTruthy();
+		expect(card.getByText("Input validation failed")).toBeTruthy();
+	});
+
+	it("resets consecutive failures after a successful start and shows progress on a new run", async () => {
+		vi.useFakeTimers();
+		try {
+			renderBacklogChat();
+			confirmSources();
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({});
+			});
+			startAnalysisFn.mockResolvedValueOnce({
+				workflowId: "example-workflow",
+			});
+			analysisProgressFn.mockResolvedValue({
+				progress: { status: "failed", message: "Workflow failed" },
+			});
+			let run: Promise<unknown> | undefined;
+			await act(async () => {
+				run = latestAction("analyze_backlog").handler({});
+				await Promise.resolve();
+			});
+			const card = render(
+				latestAction("analyze_backlog").render({ status: "executing" }),
+			);
+			expect(card.getByText("Analyzing Context")).toBeTruthy();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(2000);
+				await run;
+			});
+			for (let call = 0; call < 2; call++) {
+				await act(async () => {
+					await latestAction("analyze_backlog").handler({
+						selectedMeetings: [{}],
+					});
+				});
+			}
+			expect(startAnalysisFn).toHaveBeenCalledTimes(4);
+			expect(startAnalysisFn).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					contextSources: expect.objectContaining({
+						selectedMeetings: confirmedSources.selectedMeetings,
+					}),
+				}),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retains an empty confirmed selection on cancel and resets the failure limit", async () => {
+		renderBacklogChat();
+		for (let call = 0; call < 2; call++) {
+			await act(async () => {
+				await latestAction("analyze_backlog").handler({});
+			});
+		}
+		const respond = confirmSources(true);
+		expect(respond).toHaveBeenCalledWith({
+			selectedMeetings: [],
+			selectedChannels: [],
+			daysBack: 30,
+		});
+		await act(async () => {
+			await latestAction("analyze_backlog").handler(confirmedSources);
+		});
+		expect(startAnalysisFn).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				contextSources: expect.objectContaining({
+					selectedMeetings: [],
+					selectedChannelContextIds: [],
+					daysBack: 30,
+				}),
+			}),
+		);
+		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
+	});
+});
+
+describe("BacklogChat — Slack selection defaults", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		createConversationFn.mockResolvedValue({ id: "example-conversation" });
+		startAnalysisFn.mockReset();
+		analysisProgressFn.mockReset();
+		useCopilotActionMock.mockClear();
+	});
+
+	afterEach(() => {
+		createConversationFn.mockReset();
+		vi.clearAllTimers();
+		vi.useRealTimers();
+	});
+
+	it.each([
+		["meetings only", [], false],
+		[
+			"meetings and channels",
+			[{ projectContextId: "example-channel" }],
+			true,
+		],
+	] as const)("%s", async (_label, selectedChannels, expectedSlack) => {
+		startAnalysisFn.mockResolvedValue({ workflowId: "example-workflow" });
+		analysisProgressFn.mockResolvedValue({
+			progress: { status: "complete", message: "Analysis complete." },
+			proposal: {
+				summary: "No changes needed.",
+				contextSummary: "",
+				changes: [],
+				decisionConflicts: {
+					status: "ok",
+					findings: [],
+					checkedAt: "2026-10-20T00:00:00.000Z",
+				},
+			},
+		});
+		const { unmount } = renderBacklogChat(true);
+		const analyzeAction = useCopilotActionMock.mock.calls.find(
+			(call) =>
+				(call[0] as { name?: string })?.name === "analyze_backlog",
+		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
+		if (!analyzeAction) {
+			throw new Error("analyze_backlog action was not registered");
+		}
+		await act(async () => {
+			const done = analyzeAction.handler({
+				userPrompt: "Update the backlog from the selected meeting",
+				selectedMeetings: [{ joinUrl: "https://example.com/meeting" }],
+				selectedChannels,
+			});
+			await vi.advanceTimersByTimeAsync(2500);
+			await done;
+		});
+		expect(startAnalysisFn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				contextSources: expect.objectContaining({
+					fetchSlackMessages: expectedSlack,
+				}),
+			}),
+		);
+		unmount();
 	});
 });

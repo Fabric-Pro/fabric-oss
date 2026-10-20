@@ -965,10 +965,10 @@ export const configProcedures = {
 					);
 				} catch (error) {
 					// Log but don't fail the config creation
-					console.warn(
-						"[MCP Config] Failed to trigger ingestion:",
-						error,
-					);
+					console.warn("[MCP Config] Failed to trigger ingestion:", {
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					});
 				}
 			} else if (record.enabled && isGitLabPersonalServer) {
 				console.log(
@@ -1108,7 +1108,16 @@ export const configProcedures = {
 			} catch (auditErr) {
 				console.error(
 					"[MCP Config] audit write failed (mcp.config.deleted)",
-					auditErr,
+					{
+						error:
+							auditErr instanceof Error
+								? auditErr.message
+								: auditErr,
+						stack:
+							auditErr instanceof Error
+								? auditErr.stack
+								: undefined,
+					},
 				);
 			}
 
@@ -1137,10 +1146,10 @@ export const configProcedures = {
 				);
 			} catch (error) {
 				// Log but don't fail the deletion
-				console.warn(
-					"[MCP Config] Failed to trigger tool deletion:",
-					error,
-				);
+				console.warn("[MCP Config] Failed to trigger tool deletion:", {
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				});
 			}
 
 			return { success: true };
@@ -1272,7 +1281,14 @@ export const configProcedures = {
 				} catch (error) {
 					console.warn(
 						"[MCP Config] Failed to trigger tool ingestion on toggle:",
-						error,
+						{
+							error:
+								error instanceof Error ? error.message : error,
+							stack:
+								error instanceof Error
+									? error.stack
+									: undefined,
+						},
 					);
 				}
 			} else {
@@ -1301,7 +1317,14 @@ export const configProcedures = {
 				} catch (error) {
 					console.warn(
 						"[MCP Config] Failed to trigger tool deletion on toggle:",
-						error,
+						{
+							error:
+								error instanceof Error ? error.message : error,
+							stack:
+								error instanceof Error
+									? error.stack
+									: undefined,
+						},
 					);
 				}
 			}

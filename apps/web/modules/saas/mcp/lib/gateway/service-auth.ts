@@ -15,7 +15,9 @@
  *    "act as anyone". Missing, forged, expired or minted for someone else is a
  *    401 with the reason.
  * 3. Membership of the named organization is read on every request and the
- *    session is held to that one tenant, with only `SERVICE_CREDENTIAL_SCOPES`.
+ *    session is held to that one tenant, with `SERVICE_CREDENTIAL_SCOPES` and,
+ *    only for a grant that names a project the person can open, the scopes of
+ *    that grant within `SERVICE_GRANT_MAX_SCOPES`, on that project alone.
  *
  * Not admitted at a project's URL: the runtime reaches the organization-wide
  * gateway, and a project's URL is for a credential issued for that project.
@@ -26,18 +28,28 @@ import {
 	checkActingGrant,
 	isAgentServiceRequestAuthorized,
 } from "@repo/api/lib/agent-service-auth";
-import { db, isOrganizationMember } from "@repo/database";
+import {
+	db,
+	isOrganizationMember,
+	resolveOAuthProjectGrantTarget,
+} from "@repo/database";
 import {
 	FABRIC_SERVICE_HEADERS,
 	readFabricServiceActor,
 } from "@repo/temporal/fabric-mcp-service-headers";
-import { SERVICE_CREDENTIAL_SCOPES } from "./tool-scope";
+import { serviceSessionScopes } from "./tool-scope";
 import type { GatewayActingContext } from "./types";
 
 interface ServiceAuthResult {
 	userId: string;
 	organizationId: string;
 	projectId: null;
+	/**
+	 * The one project the grant is limited to, or null for a chat grant. Not
+	 * `projectId`: that is a connection made at a project's URL, which hides the
+	 * organization-wide tools the runtime also holds.
+	 */
+	pinnedProjectId: string | null;
 	userName: string;
 	email: string;
 	role: "user" | "admin";
@@ -120,6 +132,21 @@ export async function authenticateServiceRequest(
 	if (!(await isOrganizationMember(actor.userId, actor.organizationId))) {
 		return refusedNotAMember(actor.organizationId);
 	}
+	// A grant that names a project is for that one project, and only if the
+	// person it acts for can open it, in the organization it names.
+	if (grant.projectId) {
+		const target = await resolveOAuthProjectGrantTarget(
+			actor.userId,
+			grant.projectId,
+		);
+		if (!target || target.organizationId !== actor.organizationId) {
+			return {
+				status: "refused",
+				reason: "project_not_accessible",
+				message: "Project not found or access denied",
+			};
+		}
+	}
 	const user = await db.user.findUnique({
 		where: { id: actor.userId },
 		select: {
@@ -147,7 +174,8 @@ export async function authenticateServiceRequest(
 			email: user.email,
 			role: user.role === "admin" ? "admin" : "user",
 			credential: "service",
-			scopes: [...SERVICE_CREDENTIAL_SCOPES],
+			scopes: serviceSessionScopes(grant),
+			pinnedProjectId: grant.projectId ?? null,
 			actingContext: {
 				projectId: actor.projectId,
 				workspaceId: actor.workspaceId,

@@ -20,6 +20,7 @@ import {
 	condition,
 	defineQuery,
 	defineSignal,
+	deprecatePatch,
 	log,
 	patched,
 	proxyActivities,
@@ -38,6 +39,12 @@ import {
 	executeIterativePhase,
 	executePlanningPhase,
 } from "./phases";
+import {
+	APPROVAL_SIGNAL_BOUND_PATCH,
+	AUTHORITY_EXPLICIT_APPROVAL_PATCH,
+	approvalSignalAnswersPending,
+	resolveApprovalWait,
+} from "./phases/approval-signal";
 import { summarizeAccomplishments } from "./phases/iterative-execution";
 import {
 	LEDGER_SIGNAL_MESSAGE,
@@ -74,7 +81,7 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "./types";
-import { conversationIdField } from "./usage-attribution";
+import { usageOriginFields } from "./workflow-usage-attribution";
 
 // =============================================================================
 // Signals
@@ -575,21 +582,27 @@ async function runOrchestratorExecution(
 			approved: data.approved,
 			feedback: data.feedback,
 		});
+		deprecatePatch(APPROVAL_SIGNAL_BOUND_PATCH);
+		if (!approvalSignalAnswersPending(state.pendingApproval, data)) {
+			log.warn(
+				"Ignored an approval signal that answers no pending approval",
+				{
+					approvalId: data.approvalId,
+					pendingApprovalId: state.pendingApproval?.approvalId,
+				},
+			);
+			return;
+		}
 		state.approvalDecision = data;
 	});
 
+	// Only sets the flag: `waitForApproval` decides whether it settles the
+	// pending checkpoint, so it cannot answer one that needs an explicit click.
 	setHandler(autoApproveAllSignal, () => {
 		log.info(
-			"Received auto-approve-all signal — all future checkpoints will be auto-approved",
+			"Received auto-approve-all signal — checkpoints will be auto-approved",
 		);
 		state.autoApproveAll = true;
-		// Also approve the current pending checkpoint if any
-		if (state.pendingApproval && !state.approvalDecision) {
-			state.approvalDecision = {
-				approved: true,
-				feedback: "Auto-approved (approve all)",
-			};
-		}
 	});
 
 	setHandler(revokeAutoApproveSignal, () => {
@@ -683,7 +696,22 @@ async function runOrchestratorExecution(
 	// Query Handlers
 	// ==========================================================================
 
-	setHandler(progressQuery, () => state.currentProgress);
+	setHandler(progressQuery, () => ({
+		...state.currentProgress,
+		routingDecision: state.routingDecision
+			? {
+					primaryAgent: state.routingDecision.primaryAgent,
+					confidence: state.routingDecision.confidence,
+					riskLevel: state.routingDecision.riskLevel,
+					requiredConnections:
+						state.routingDecision.requiredConnections,
+					missingIntegrations:
+						state.routingDecision.missingIntegrations,
+					blockedOnConnections:
+						state.routingDecision.blockedOnConnections,
+				}
+			: undefined,
+	}));
 	setHandler(planQuery, () => state.taskPlan);
 	setHandler(variablesQuery, () => state.variables);
 	setHandler(statusQuery, () => state.status);
@@ -729,36 +757,39 @@ async function runOrchestratorExecution(
 	}): Promise<ApprovalSignalData | null> {
 		// Runtime-authority checkpoints opt out of approve-all: granting a
 		// provider WRITE session is not a plan-step approval and must be an
-		// explicit click. `patched()` is REQUIRED here — on this path the
-		// function now blocks on `condition()` (a timer command) where
-		// pre-patch histories returned immediately, so an unguarded change
-		// would replay non-deterministically for runs that auto-approved an
-		// authority checkpoint.
+		// explicit click.
 		const requireExplicitDecision =
-			options?.requireExplicitDecision === true &&
-			patched("orchestrator-authority-explicit-approval-v1");
-
-		// Skip approval entirely when auto-approve-all is active
-		if (state.autoApproveAll && !requireExplicitDecision) {
-			log.info("Auto-approving checkpoint (approve-all active)");
-			return { approved: true, feedback: "Auto-approved (approve all)" };
+			options?.requireExplicitDecision === true;
+		if (requireExplicitDecision) {
+			deprecatePatch(AUTHORITY_EXPLICIT_APPROVAL_PATCH);
 		}
+		const settled = () =>
+			resolveApprovalWait({
+				decision: state.approvalDecision,
+				autoApproveAll: state.autoApproveAll,
+				requireExplicitDecision,
+			});
+
 		if (state.autoApproveAll && requireExplicitDecision) {
 			log.info(
 				"Authority checkpoint requires an explicit decision; approve-all does not apply",
 			);
 		}
 
-		await condition(
-			() => state.approvalDecision !== null || state.cancelled,
-			modeConfig.workflowTimeoutMs,
-		);
-
+		if (settled() === null) {
+			await condition(
+				() => settled() !== null || state.cancelled,
+				modeConfig.workflowTimeoutMs,
+			);
+		}
 		if (state.cancelled) {
 			return null;
 		}
 
-		const decision = state.approvalDecision;
+		const decision = settled();
+		if (decision !== null && state.approvalDecision === null) {
+			log.info("Auto-approving checkpoint (approve-all active)");
+		}
 		state.approvalDecision = null;
 		return decision;
 	}
@@ -977,7 +1008,7 @@ async function runOrchestratorExecution(
 					: {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
-				...conversationIdField(input),
+				...usageOriginFields(input),
 				...turnScopeField(turnOptions),
 			});
 			if (
@@ -1253,7 +1284,7 @@ async function runOrchestratorExecution(
 								: {}),
 							userId: input.userId,
 							organizationId: input.organizationId,
-							...conversationIdField(input),
+							...usageOriginFields(input),
 							...turnScopeField(turnOptions),
 						});
 					} catch (error) {

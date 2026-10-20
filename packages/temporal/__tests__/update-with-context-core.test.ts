@@ -94,6 +94,10 @@ describe("runContextUpdate — FR-25 locked-attachment rule", () => {
 			projectId: "p1",
 		});
 
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "COMPLEX" },
+			expect.objectContaining({ projectId: "p1" }),
+		);
 		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
 		const system = mocks.generateObject.mock.calls[0][0]
 			.instructions as string;

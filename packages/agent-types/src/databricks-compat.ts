@@ -1074,12 +1074,33 @@ export function stripReasoningFromMessages(payload: unknown): boolean {
 			typeof (message as { content?: unknown }).content === "string"
 		) {
 			const original = (message as { content: string }).content;
-			// Remove complete spans, then drop a trailing unterminated `<think>`
-			// (a truncated R1 response) so non-streaming matches the streaming
-			// stripper, which suppresses everything after an unclosed `<think>`.
-			const stripped = original
-				.replace(/<think>[\s\S]*?<\/think>/g, "")
-				.replace(/<think>[\s\S]*$/, "");
+			// Search forward through complete spans once. A lazy global regex
+			// retries the remaining text for every unmatched opening tag.
+			const visible: string[] = [];
+			let cursor = 0;
+			for (;;) {
+				const open = original.indexOf(THINK_OPEN, cursor);
+				if (open === -1) {
+					break;
+				}
+				const close = original.indexOf(
+					THINK_CLOSE,
+					open + THINK_OPEN.length,
+				);
+				if (close === -1) {
+					break;
+				}
+				visible.push(original.slice(cursor, open));
+				cursor = close + THINK_CLOSE.length;
+			}
+			visible.push(original.slice(cursor));
+			const joined = visible.join("");
+			// Preserve the two-pass behavior: removing spans can itself join a
+			// literal tag's pieces. Drop everything after the first opening tag
+			// left in the result, while keeping incomplete literal tags.
+			const unfinished = joined.indexOf(THINK_OPEN);
+			const stripped =
+				unfinished === -1 ? joined : joined.slice(0, unfinished);
 			if (stripped !== original) {
 				(message as { content: string }).content = stripped;
 				mutated = true;

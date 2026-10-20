@@ -17,10 +17,12 @@
  * - All exchanges are logged for auditing
  */
 
+import { chatGptPlanModelOverride } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	type AIModelMetadata,
 	DEFAULT_BASE_URLS,
 	getAIModelWithMetadata,
+	isReasoningModelName,
 } from "@repo/ai";
 import {
 	chatGptPlanExhaustedRefusal,
@@ -35,13 +37,20 @@ import {
 	getRemainingValidity,
 	verifyAIToken,
 } from "@repo/ai-token";
-import { getSearchProviderConfig } from "@repo/database";
+import {
+	getModelByCanonicalName,
+	getSearchProviderConfig,
+} from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
 interface ExchangeResponse {
+	modelPinned?: true;
+	isReasoningModel?: boolean;
+	maxOutputTokens?: number | null;
+	contextWindow?: number | null;
 	apiKey: string;
 	provider: string;
 	model: string;
@@ -167,7 +176,10 @@ export async function POST(
 		try {
 			const resolve = () =>
 				getAIModelWithMetadata(
-					{ taskType: "COMPLEX" },
+					{
+						taskType: "COMPLEX",
+						...(claims.mo ? { modelOverride: claims.mo } : {}),
+					},
 					// Only a token minted for the member's own interactive work
 					// may resolve their ChatGPT plan (Fizzy #2939).
 					{
@@ -232,12 +244,54 @@ export async function POST(
 		}
 
 		const { metadata, trackUsage } = modelResult;
+		// The plan resolution reports a pick only when it served that pick
+		// (Fizzy #3122); its model ID can differ from the picked catalog name.
+		const planPick =
+			metadata.provider === "OPENAI_CHATGPT_PLAN" &&
+			metadata.planPick !== undefined &&
+			metadata.planPick === chatGptPlanModelOverride(claims.mo)
+				? metadata.planPick
+				: null;
+		// API overrides report their selection source; plan overrides report
+		// the pick they served, because plan selectionSource stays chatgpt_plan.
+		const modelPinned =
+			!!claims.mo &&
+			(metadata.selectionSource === "override" || planPick !== null);
+
+		// Overrides and plan resolutions can omit caps; fill them from the
+		// resolved canonical model, rather than from the organization task model.
+		// A plan resolution's canonical name is the plan's model ID, so a served
+		// plan pick is looked up by the catalog name it was picked by.
+		const catalogModel =
+			modelPinned &&
+			(metadata.maxOutputTokens == null || metadata.contextWindow == null)
+				? await getModelByCanonicalName(
+						planPick ?? metadata.canonicalName,
+					)
+				: null;
+		const pinnedMetadata = modelPinned
+			? {
+					isReasoningModel: isReasoningModelName(
+						metadata.canonicalName,
+					),
+					maxOutputTokens:
+						metadata.maxOutputTokens ??
+						catalogModel?.maxOutputTokens ??
+						null,
+					contextWindow:
+						metadata.contextWindow ??
+						catalogModel?.contextWindow ??
+						null,
+				}
+			: {};
 
 		// Track usage (fire-and-forget)
 		trackUsage();
 
 		if (metadata.provider === "OPENAI_CHATGPT_PLAN") {
 			return exchangeChatGptPlan({
+				...pinnedMetadata,
+				...(modelPinned && { modelPinned: true }),
 				userId,
 				source: metadata.planSource,
 				model: metadata.modelString,
@@ -249,11 +303,13 @@ export async function POST(
 
 		// Get the raw API key for external services
 		// We need to get this separately since getAIModelWithMetadata uses it internally
-		const { getRAGProviderConfig } = await import("@repo/ai");
-		const providerConfig = await getRAGProviderConfig({
-			userId,
-			organizationId,
-		});
+		// The key behind the model just resolved: the member's own while
+		// their ChatGPT plans are spent and they opted it in (Fizzy #3085).
+		const { getRAGProviderConfigForModel } = await import("@repo/ai");
+		const providerConfig = await getRAGProviderConfigForModel(
+			{ userId, organizationId },
+			metadata,
+		);
 
 		// providerConfig.apiKey is already decrypted by getRAGProviderConfig()
 		const decryptedApiKey = providerConfig.apiKey;
@@ -270,6 +326,8 @@ export async function POST(
 		// Use the resolved provider which may differ from the user's default
 		// (e.g., if user has Cerebras but the model requires OpenAI)
 		const response: ExchangeResponse = {
+			...pinnedMetadata,
+			...(modelPinned && { modelPinned: true }),
 			apiKey: decryptedApiKey, // Decrypted API key - ready to use
 			provider: providerToUse || "unknown",
 			model: model, // Full model string compatible with the provider
@@ -359,6 +417,10 @@ const PLAN_TOKEN_EXPIRY_MARGIN_SECONDS = 60;
  * URL, and the agent's cache of it ends before the token does.
  */
 async function exchangeChatGptPlan(params: {
+	isReasoningModel?: boolean;
+	maxOutputTokens?: number | null;
+	contextWindow?: number | null;
+	modelPinned?: true;
 	userId: string;
 	source: AIModelMetadata["planSource"];
 	model: string;
@@ -390,6 +452,12 @@ async function exchangeChatGptPlan(params: {
 		model: plan.config.model,
 	});
 	return NextResponse.json({
+		...(params.modelPinned && {
+			modelPinned: true,
+			isReasoningModel: params.isReasoningModel,
+			maxOutputTokens: params.maxOutputTokens,
+			contextWindow: params.contextWindow,
+		}),
 		apiKey: plan.config.apiKey,
 		provider: plan.config.provider,
 		model: plan.config.model,

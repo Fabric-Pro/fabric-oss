@@ -103,8 +103,15 @@ import {
 	SEARCH_TOOLS_NAME,
 	searchTools,
 } from "@saas/mcp/lib/gateway/discovery-tools";
-import { checkPageCall } from "@saas/mcp/lib/gateway/page-call-guard";
-import { boundProjectId } from "@saas/mcp/lib/gateway/project-binding";
+import {
+	checkPageCall,
+	pageCallSession,
+} from "@saas/mcp/lib/gateway/page-call-guard";
+import { PLATFORM_TOOL_DEFINITIONS } from "@saas/mcp/lib/gateway/platform-tools";
+import {
+	boundProjectId,
+	pinnedProjectId,
+} from "@saas/mcp/lib/gateway/project-binding";
 import {
 	formatServerSelection,
 	type ParsedServerSelection,
@@ -183,6 +190,8 @@ interface AuthResult {
 	organizationId: string | null;
 	/** The one project the session reaches; null for an organization-wide one. */
 	projectId: string | null;
+	/** Set only by the service credential. See `GatewaySession.pinnedProjectId`. */
+	pinnedProjectId?: string | null;
 	userName: string;
 	email: string;
 	role: "user" | "admin";
@@ -934,6 +943,7 @@ async function getOrCreateSession(
 		userId: authResult.userId,
 		organizationId: authResult.organizationId,
 		projectId: authResult.projectId,
+		pinnedProjectId: authResult.pinnedProjectId,
 		userName: authResult.userName,
 		email: authResult.email,
 		role: authResult.role,
@@ -1796,7 +1806,10 @@ async function handleToolsList(
 
 		return jsonRpcSuccess(id, { tools: mcpTools }, sessionId);
 	} catch (error) {
-		console.error("[MCP Gateway] tools/list error:", error);
+		console.error("[MCP Gateway] tools/list error:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return jsonRpcError(id, -32603, "Failed to list tools", sessionId);
 	}
 }
@@ -1817,37 +1830,51 @@ async function handleToolsCall(
 ): Promise<NextResponse> {
 	const toolName = params?.name as string;
 	let toolArgs = (params?.arguments || {}) as Record<string, unknown>;
+	let callSession = session;
 
 	if (!toolName || typeof toolName !== "string") {
 		return jsonRpcError(id, -32602, "Missing tool name", sessionId);
 	}
 
 	if (pageFrameId !== null) {
+		const properties = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === toolName,
+		)?.inputSchema.properties;
 		const checked = await checkPageCall(
 			pageFrameId,
 			toolName,
 			toolArgs,
 			session,
 			isPlatformToolName,
+			typeof properties === "object" &&
+				properties !== null &&
+				Object.hasOwn(properties, "projectId"),
 		);
 		if (!checked.ok) {
 			return jsonRpcSuccess(id, checked.result, sessionId);
 		}
 		toolArgs = checked.args;
+		callSession = pageCallSession(session, checked.pageProjectId);
 	}
 
 	// The meta-tools exist only in discovery mode. In full mode their names
 	// reach the dispatch below and are answered "Unknown tool", as before the
 	// mode existed.
 	const result =
-		session.toolListMode === "discovery" && isDiscoveryToolName(toolName)
+		callSession.toolListMode === "discovery" &&
+		isDiscoveryToolName(toolName)
 			? await handleDiscoveryToolCall(
 					toolName,
 					toolArgs,
-					session,
+					callSession,
 					sessionId,
 				)
-			: await dispatchToolCall(toolName, toolArgs, session, sessionId);
+			: await dispatchToolCall(
+					toolName,
+					toolArgs,
+					callSession,
+					sessionId,
+				);
 	return jsonRpcSuccess(id, result, sessionId);
 }
 
@@ -1878,7 +1905,11 @@ async function handleDiscoveryToolCall(
 			? searchTools(session, tools, toolArgs)
 			: getToolSchema(session, tools, toolArgs);
 	} catch (error) {
-		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
+		console.error("[MCP Gateway] tools/call error:", {
+			toolName,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return {
 			content: [
 				{
@@ -1961,6 +1992,23 @@ export async function dispatchToolCall(
 						type: "text" as const,
 						text: JSON.stringify({
 							error: `${toolName} is not available on a connection to one project.`,
+							hint: "Platform tools start with 'fabric_'.",
+						}),
+					},
+				],
+				isError: true,
+			};
+		} else if (pinnedProjectId(session) !== null) {
+			// A session limited to a meeting's project has the platform tools
+			// its grant names and no connected server's: those are the
+			// person's and the organization's, and `mcp:read`, which it holds
+			// to list them, would otherwise let a read of one through.
+			result = {
+				content: [
+					{
+						type: "text" as const,
+						text: JSON.stringify({
+							error: `${toolName} is not available to the agent runtime on a meeting's project.`,
 							hint: "Platform tools start with 'fabric_'.",
 						}),
 					},
@@ -2103,7 +2151,11 @@ export async function dispatchToolCall(
 
 		return result;
 	} catch (error) {
-		console.error("[MCP Gateway] tools/call error:", { toolName }, error);
+		console.error("[MCP Gateway] tools/call error:", {
+			toolName,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 
 		return {
 			content: [

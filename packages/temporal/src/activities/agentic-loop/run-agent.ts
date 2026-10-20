@@ -39,6 +39,7 @@ import { makeToolLoopPrepareStep } from "./step-cache-breakpoint";
 export type RunAgentMode = "delegate" | "inline";
 
 export interface RunAgentInput {
+	usageConversationId?: string;
 	/** ID of the agent to run */
 	agentId: string;
 	/** Goal/task for the sub-agent */
@@ -138,6 +139,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 		organizationId,
 		mcpConfigIds = [],
 		timeoutMs = DEFAULT_TIMEOUT_MS,
+		usageConversationId,
 	} = input;
 
 	// ==========================================================================
@@ -200,15 +202,18 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 				>,
 			};
 		} else {
-			// Fall back to database
+			// Fall back to database. agentId comes from a model's tool call, so
+			// scope every arm: USER rows carry their creator's organizationId and
+			// would otherwise match for every member of that organization.
 			const dbAgent = await db.registeredAgent.findFirst({
 				where: {
 					id: agentId,
 					OR: [
-						organizationId
-							? { organizationId }
-							: { userId, organizationId: null },
 						{ scope: "SYSTEM", organizationId: null },
+						{ scope: "USER", userId },
+						...(organizationId
+							? [{ scope: "ORGANIZATION", organizationId }]
+							: []),
 					],
 				},
 			});
@@ -264,6 +269,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 				mcpConfigIds,
 				timeoutMs,
 				startTime,
+				usageConversationId,
 			);
 		}
 		return await executeInlineMode(
@@ -277,6 +283,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 			mcpConfigIds,
 			timeoutMs,
 			startTime,
+			usageConversationId,
 		);
 	} catch (error) {
 		return {
@@ -317,6 +324,7 @@ async function executeDelegateMode(
 	mcpConfigIds: string[],
 	timeoutMs: number,
 	startTime: number,
+	usageConversationId?: string,
 ): Promise<RunAgentOutput> {
 	// Build system prompt
 	const systemPrompt = DELEGATE_SYSTEM_PROMPT.replace("{goal}", goal).replace(
@@ -327,7 +335,7 @@ async function executeDelegateMode(
 	// Get AI model
 	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
-		{ userId, organizationId },
+		{ userId, organizationId, conversationId: usageConversationId },
 	);
 
 	// Build tools for sub-agent (excluding run_agent to current agent)
@@ -337,6 +345,7 @@ async function executeDelegateMode(
 		userId,
 		organizationId,
 		mcpConfigIds,
+		usageConversationId,
 	);
 
 	// Execute with timeout
@@ -413,11 +422,12 @@ async function executeInlineMode(
 	mcpConfigIds: string[],
 	timeoutMs: number,
 	startTime: number,
+	usageConversationId?: string,
 ): Promise<RunAgentOutput> {
 	// Get AI model
 	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
-		{ userId, organizationId },
+		{ userId, organizationId, conversationId: usageConversationId },
 	);
 
 	// Build tools
@@ -427,6 +437,7 @@ async function executeInlineMode(
 		userId,
 		organizationId,
 		mcpConfigIds,
+		usageConversationId,
 	);
 
 	// Append the delegation request to parent messages
@@ -498,6 +509,7 @@ async function buildSubAgentTools(
 	userId: string,
 	organizationId: string | undefined,
 	mcpConfigIds: string[],
+	usageConversationId?: string,
 ) {
 	const tools: Record<string, any> = {};
 	let toolSources: Record<
@@ -513,6 +525,7 @@ async function buildSubAgentTools(
 			userId,
 			organizationId,
 			mcpConfigIds,
+			usageConversationId,
 		);
 	}
 
@@ -542,6 +555,7 @@ export function createRunAgentTool(
 	userId: string,
 	organizationId: string | undefined,
 	mcpConfigIds: string[],
+	usageConversationId?: string,
 ) {
 	const inputSchema = z.object({
 		agentId: z.string().describe("ID of the agent to run"),
@@ -570,6 +584,7 @@ Max delegation depth: ${MAX_RECURSION_DEPTH - currentDepth} more levels allowed.
 		execute: async (params: z.infer<typeof inputSchema>) => {
 			const { agentId, goal, context, mode } = params;
 			const result = await runAgent({
+				usageConversationId,
 				agentId,
 				goal,
 				context,
@@ -626,9 +641,11 @@ export async function getAvailableAgents(
 		where: {
 			status: "ACTIVE",
 			OR: [
-				{ userId, organizationId: null },
-				{ organizationId: organizationId ?? undefined },
 				{ scope: "SYSTEM" },
+				{ scope: "USER", userId },
+				...(organizationId
+					? [{ scope: "ORGANIZATION", organizationId }]
+					: []),
 			],
 		},
 		select: {

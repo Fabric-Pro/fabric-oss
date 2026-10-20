@@ -23,22 +23,42 @@ import { findPublishedFrameId } from "@repo/temporal/workflow-run-output";
 import { z } from "zod";
 import { errorResult, jsonResult } from "../tool-results";
 import type { GatewaySession, ToolCallResult } from "../types";
-import { WORKFLOW_STATUSES } from "./workflow-tool-definitions";
+import { clampLimit } from "./frame-context";
+import {
+	WORKFLOW_GRAPH_LIMITS,
+	WORKFLOW_LIST_LIMIT,
+	WORKFLOW_RUNS_LIMIT,
+	WORKFLOW_STATUSES,
+} from "./workflow-tool-definitions";
 
 // ─── Arguments ──────────────────────────────────────────────────────────────
 
 const WorkflowIdArgs = z.object({ workflowId: z.string().trim().min(1) });
 
+/**
+ * A `limit` brought into its bounds rather than refused, the way the frame and
+ * page tools treat theirs: a page's script is written by a model, and a refusal
+ * for asking for too many breaks the page.
+ */
+const boundedLimit = (bounds: { max: number; default: number }) =>
+	z
+		.number()
+		.transform((value) =>
+			clampLimit(value, { fallback: bounds.default, max: bounds.max }),
+		);
+
 const ListArgs = z.object({
 	status: z.enum(WORKFLOW_STATUSES).optional(),
 	scheduled: z.boolean().optional(),
 	search: z.string().optional(),
-	limit: z.number().int().min(1).max(50).default(20),
+	limit: boundedLimit(WORKFLOW_LIST_LIMIT).default(
+		WORKFLOW_LIST_LIMIT.default,
+	),
 	offset: z.number().int().min(0).default(0),
 });
 
 const RunsArgs = WorkflowIdArgs.extend({
-	limit: z.number().int().min(1).max(20).optional(),
+	limit: boundedLimit(WORKFLOW_RUNS_LIMIT).optional(),
 });
 
 const ExecutionArgs = z.object({ executionId: z.string().trim().min(1) });
@@ -47,8 +67,12 @@ const ExecuteArgs = WorkflowIdArgs.extend({
 	inputs: z.record(z.string(), z.unknown()).optional(),
 });
 
-const GraphNodes = z.array(z.record(z.string(), z.unknown())).max(100);
-const GraphEdges = z.array(z.record(z.string(), z.unknown())).max(300);
+const GraphNodes = z
+	.array(z.record(z.string(), z.unknown()))
+	.max(WORKFLOW_GRAPH_LIMITS.nodes);
+const GraphEdges = z
+	.array(z.record(z.string(), z.unknown()))
+	.max(WORKFLOW_GRAPH_LIMITS.edges);
 
 const CreateArgs = z
 	.object({
@@ -166,6 +190,9 @@ async function asActor(
 		return await run({
 			userId: session.userId,
 			organizationId: session.organizationId,
+			...(session.pageProjectId !== undefined
+				? { projectRestrictionId: session.pageProjectId }
+				: {}),
 		});
 	} catch (error) {
 		if (error instanceof WorkflowCommandError) {

@@ -11,9 +11,29 @@
  */
 import { ORPCError } from "@orpc/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	fixtureTarget,
+	mutablePmSettings,
+	pmTargetFixtures,
+} from "../../../../../utils/test-fixtures/pm-target";
+
+vi.mock(
+	"../../../../../temporal/src/activities/pm-integration/record-pm-sync-state",
+	() => ({
+		recordPmSyncFailure: vi.fn(async () => true),
+		writePmSyncSuccessState: vi.fn(),
+	}),
+);
+
+vi.mock(
+	"../../../../../temporal/src/activities/orchestrator/execution/execute-mcp-tool",
+	() => ({ executeMcpTool: vi.fn() }),
+);
 
 const mocks = vi.hoisted(() => ({
 	projectFindUnique: vi.fn(),
+	mcpConfigFindFirst: vi.fn(),
+	mcpServerFindUnique: vi.fn(),
 	userStoryFindFirst: vi.fn(),
 	testCaseFindFirst: vi.fn(),
 	applyPmLink: vi.fn(),
@@ -27,6 +47,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
+		mCPConfig: { findFirst: mocks.mcpConfigFindFirst },
+		mCPServer: { findUnique: mocks.mcpServerFindUnique },
 		userStory: { findFirst: mocks.userStoryFindFirst },
 		testCase: { findFirst: mocks.testCaseFindFirst },
 	},
@@ -592,6 +614,7 @@ describe("the link written", () => {
 			externalId: "10001",
 			externalUrl: "https://pm.example.com/browse/PROJ-12",
 			externalMcpServerId: "srv-config",
+			externalPmTarget: 'pmt1:["srv-config","","container-guid"]',
 		});
 		expect(mocks.fetchPMItemsByIds).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -945,6 +968,101 @@ describe("the link written", () => {
 				errorCode: "PM_RECOVERY_STALE",
 			});
 			expect(r.message).toContain(text);
+		},
+	);
+});
+
+describe("link writer target consistency", () => {
+	it.each(pmTargetFixtures)(
+		"$name: link-pm-item uses the writer/checker identity",
+		async (fixture) => {
+			const rest = fixture.name.startsWith("GitLab REST");
+			mocks.projectFindUnique.mockResolvedValue({
+				...PROJECT,
+				projectManagementContainerId: fixture.containerId,
+				projectManagementAdditionalContext: {
+					...fixture.additionalContext,
+					...mutablePmSettings,
+				},
+			});
+			mocks.resolvePmTarget.mockResolvedValue(
+				rest
+					? REST_TARGET
+					: {
+							...MCP_TARGET,
+							mcpConfig: {
+								...MCP_TARGET.mcpConfig,
+								...fixture.config,
+							},
+						},
+			);
+			mocks.discoverPMToolCapabilities.mockResolvedValue({
+				detectedType: fixture.pmTool,
+				availableTools: [],
+			});
+			mocks.fetchPMItemsByIds.mockResolvedValue(
+				fetched({
+					id: "42",
+					url: "https://pm.example.com/42",
+					raw: {
+						id: 42,
+						iid: 42,
+						title: "Example",
+						fields: { "System.TeamProject": "Example Project" },
+					},
+				}),
+			);
+			await linkPmItem({ ...storyArgs, externalId: "42" });
+			const written = mocks.applyPmLink.mock.calls[0]?.[0];
+			mocks.userStoryFindFirst.mockResolvedValue(written);
+			mocks.testCaseFindFirst.mockResolvedValue(written);
+			mocks.mcpConfigFindFirst.mockResolvedValue(fixture.config);
+			mocks.mcpServerFindUnique.mockResolvedValue(
+				fixture.config.mcpServer,
+			);
+			const { checkStoryPmLink } = await import(
+				"../../../../../temporal/src/activities/pm-integration/create-story-in-pm-with-claim"
+			);
+			const { checkTestCasePmLink } = await import(
+				"../../../../../temporal/src/activities/pm-integration/create-test-case-in-pm-with-claim"
+			);
+			const check = {
+				projectId: storyArgs.projectId,
+				organizationId: "org-1",
+				userId: storyArgs.userId,
+				mcpServerId: written.externalMcpServerId,
+				mcpConfigId: rest ? null : "cfg-1",
+				pmTool: fixture.pmTool,
+				toolLabel: fixture.pmTool,
+				externalId: written.externalId,
+				externalUrl: written.externalUrl,
+				externalMcpServerId: written.externalMcpServerId,
+				pmTarget: {
+					containerId: fixture.containerId,
+					additionalContext: fixture.additionalContext,
+				},
+			};
+			await expect(
+				checkStoryPmLink({ ...check, storyId: "story-1" }),
+			).resolves.toMatchObject({ success: true });
+			await expect(
+				checkTestCasePmLink({ ...check, testCaseId: "tc-1" }),
+			).resolves.toMatchObject({ success: true });
+
+			expect(mocks.applyPmLink).toHaveBeenCalledWith(
+				expect.objectContaining({
+					externalPmTarget:
+						fixture.name === "GitLab REST legacy"
+							? expect.toBeOneOf([
+									null,
+									fixtureTarget(fixture, "srv-project"),
+								])
+							: fixtureTarget(
+									fixture,
+									rest ? "srv-project" : "srv-config",
+								),
+				}),
+			);
 		},
 	);
 });

@@ -49,6 +49,10 @@ import {
 	loadProjectDatabricksKnowledgeBinding,
 } from "@repo/database";
 import type { McpClientType } from "@repo/mcp";
+import {
+	getDispatchGuard,
+	runWithDispatchGuard,
+} from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
 import { NoOutputGeneratedError } from "ai";
 import { z } from "zod";
@@ -64,6 +68,8 @@ import {
 	DIAGRAM_RENDERING_GUIDANCE,
 	isInlineDiagramRequest,
 } from "../../workflows/orchestrator/diagram-rendering";
+import { activityCancellationSignal } from "../lib/activity-liveness";
+import { resolveDirectChatMemoryPrompt } from "../lib/memory-context-prompt";
 import {
 	classifyToolAccessLevel,
 	resolveProviderKey,
@@ -84,7 +90,6 @@ import {
 	hasExactAgentToolApproval,
 	observeAgentText,
 	prepareAgentTools,
-	requiredAgentTool,
 } from "../shared/agent-tool-runtime";
 import { executeApprovedWorkflow } from "../shared/confirmed-workflow";
 import {
@@ -114,12 +119,14 @@ import {
 } from "./build-provider-options";
 import { createBuiltInTools } from "./built-in-tools";
 import { createCompanyContextTools } from "./company-context-tool";
+import { withUnbackedClaimNotice } from "./completion-claim-notice";
 import {
 	decideForcedToolChoice,
 	modelRejectsForcedToolChoice,
 } from "./decide-forced-tool-choice";
 import {
 	confirmationFromToolOutput,
+	fabricToolSources,
 	loadFabricToolsForTurn,
 	runApprovedAction,
 } from "./fabric-turn-tools";
@@ -144,6 +151,12 @@ import {
 	summarizeOmittedTools,
 	validateMcpToolSet,
 } from "./tool-payload-safety";
+import {
+	cancellationError,
+	guardToolsAgainstCancellation,
+	throwIfTurnCancelled,
+	turnCancellationGuard,
+} from "./turn-cancellation";
 import { collectUntrustedContextSections } from "./untrusted-context";
 import { toUsageLimitRefusal } from "./usage-limit-refusal";
 
@@ -217,7 +230,10 @@ function detectRequestedFrameOutput(
 function isExecutableToolDefinition(toolDef: unknown): toolDef is {
 	description?: string;
 	inputSchema: Parameters<typeof tool>[0]["inputSchema"];
-	execute: (args: Record<string, unknown>) => Promise<unknown>;
+	execute: (
+		args: Record<string, unknown>,
+		options?: { abortSignal?: AbortSignal },
+	) => Promise<unknown>;
 } {
 	return !!(
 		toolDef &&
@@ -727,6 +743,10 @@ export async function executeDirectChatActivity(
 	memoryContext: string,
 	toolSuggestionContext: string,
 ): Promise<DirectChatWorkflowOutput> {
+	// Fires when the workflow cancels this attempt (Stop, or the client went
+	// away). Temporal delivers it on a heartbeat, which the ticker below and
+	// the stream loop send. Undefined outside an activity context.
+	const cancellation = activityCancellationSignal();
 	// Started before anything else and stopped in `finally`, so MCP loading,
 	// retrieval, a slow tool and a silent reasoning step are all covered —
 	// and a setup-phase throw never leaks the interval into the worker.
@@ -740,13 +760,36 @@ export async function executeDirectChatActivity(
 		timestamp: Date.now(),
 	});
 	try {
-		return await runDirectChatTurn({
-			input,
-			mcpToolInfo,
-			memoryContext,
-			toolSuggestionContext,
-			backgroundHeartbeat,
-		});
+		const run = () =>
+			runDirectChatTurn({
+				input,
+				mcpToolInfo,
+				memoryContext,
+				toolSuggestionContext,
+				backgroundHeartbeat,
+				cancellation,
+			});
+		// Under the turn's dispatch guard, a cancel also refuses the model
+		// requests, MCP sends and writes made anywhere inside the turn (see
+		// `turn-cancellation.ts`). A guard the caller already installed is
+		// kept, not replaced.
+		return await (cancellation && !getDispatchGuard()
+			? runWithDispatchGuard(
+					turnCancellationGuard(
+						`direct-chat:${input.executionId}`,
+						cancellation,
+					),
+					run,
+				)
+			: run());
+	} catch (error) {
+		// Whatever broke after a cancel broke because of it: report the
+		// cancellation, so Temporal neither retries the turn nor records it as
+		// failed.
+		if (cancellation?.aborted) {
+			throw cancellationError(cancellation);
+		}
+		throw error;
 	} finally {
 		backgroundHeartbeat.stop();
 	}
@@ -758,6 +801,7 @@ interface DirectChatTurnParams {
 	memoryContext: string;
 	toolSuggestionContext: string;
 	backgroundHeartbeat: BackgroundHeartbeat;
+	cancellation: AbortSignal | undefined;
 }
 
 async function runDirectChatTurn({
@@ -766,6 +810,7 @@ async function runDirectChatTurn({
 	memoryContext,
 	toolSuggestionContext,
 	backgroundHeartbeat,
+	cancellation,
 }: DirectChatTurnParams): Promise<DirectChatWorkflowOutput> {
 	const startTime = Date.now();
 	let streamErrorMessage: string | undefined;
@@ -856,7 +901,6 @@ async function runDirectChatTurn({
 	// then told "No tools connected. Suggest the user connect tools in
 	// Settings." — which is exactly what it went on to tell the user.
 	const shouldForceLoadAttachedMcpTools =
-		Boolean(requiredAgentTool()) ||
 		Boolean(instanceId) ||
 		(Array.isArray(enabledMcpConfigIds) && enabledMcpConfigIds.length > 0);
 
@@ -865,13 +909,9 @@ async function runDirectChatTurn({
 		(shouldForceLoadAttachedMcpTools || toolAnalysis.needsTools)
 	) {
 		// Determine which servers to load
-		const requiredTool = requiredAgentTool();
-		const serversToLoad = requiredTool
-			? mcpToolInfo.filter(
-					(server) => server.configId === requiredTool.configId,
-				)
-			: !shouldForceLoadAttachedMcpTools &&
-					toolAnalysis.matchedServers.length > 0
+		const serversToLoad =
+			!shouldForceLoadAttachedMcpTools &&
+			toolAnalysis.matchedServers.length > 0
 				? toolAnalysis.matchedServers
 				: mcpToolInfo; // Fallback to all if keywords matched but no specific server
 
@@ -918,7 +958,10 @@ async function runDirectChatTurn({
 					tool({
 						description: toolDef.description || toolName,
 						inputSchema: toolDef.inputSchema,
-						execute: async (args: Record<string, unknown>) => {
+						execute: async (
+							args: Record<string, unknown>,
+							options?: { abortSignal?: AbortSignal },
+						) => {
 							// The ceiling covers the WHOLE call, not just
 							// `toolDef.execute`: the read-only guard and the
 							// authority check below both await the database,
@@ -988,7 +1031,15 @@ async function runDirectChatTurn({
 									});
 								}
 
-								return toolDef.execute(args);
+								// Immediately before the dispatch: the turn may
+								// have been cancelled while the guards above
+								// were awaited. The SDK's options carry the
+								// call's abort signal on to the MCP request.
+								throwIfTurnCancelled(
+									options?.abortSignal,
+									cancellation,
+								);
+								return toolDef.execute(args, options);
 							})();
 
 							return runWithTimeout<unknown>(
@@ -1041,9 +1092,11 @@ async function runDirectChatTurn({
 
 	// Create built-in tools (web search, etc.)
 	const inProcessBuiltInTools = await createBuiltInTools({
+		usageConversationId: input.usageConversationId ?? conversationId,
 		userId,
 		organizationId,
 		enabledFabricToolIds,
+		additionalFabricToolIds: input.additionalFabricToolIds,
 		workspaceIds,
 		projectId,
 		// The interactive chat: the project is the one the user attached.
@@ -1232,10 +1285,13 @@ async function runDirectChatTurn({
 		...skillTools,
 		...databricksKnowledgeTools,
 	};
-	const preparedResponse = await prepareAgentTools(
-		allTools,
-		toolToServerMap,
-	).catch(async (error) => {
+	// Before the runtime wraps them (Parlume), so its own checks run first and
+	// the cancellation check sits closest to each tool's dispatch.
+	guardToolsAgainstCancellation(allTools, cancellation);
+	const preparedResponse = await prepareAgentTools(allTools, {
+		...toolToServerMap,
+		...fabricToolSources(fabricPlatform),
+	}).catch(async (error) => {
 		await runCleanups();
 		throw error;
 	});
@@ -1293,6 +1349,7 @@ async function runDirectChatTurn({
 			projectId,
 			featureKey: input.featureKey ?? "chat-agent",
 			conversationId: input.usageConversationId ?? conversationId,
+			...(input.usageFrameId ? { frameId: input.usageFrameId } : {}),
 			// Unset, not false: inside a run a person started, the run's own
 			// marker decides (Fizzy #2939).
 			planEligible: input.planEligible === true ? true : undefined,
@@ -1439,6 +1496,17 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		ragContext,
 		memoryContext,
 	});
+	// How to read recalled executions is an instruction, so it sits outside
+	// the untrusted session_memory block it governs.
+	if (memoryContext && memoryContext.length > 0) {
+		contextSections.push(
+			await resolveDirectChatMemoryPrompt({
+				userId,
+				organizationId: organizationId ?? undefined,
+				projectId: projectId ?? undefined,
+			}),
+		);
+	}
 	if (toolSuggestionContext && toolSuggestionContext.length > 0) {
 		contextSections.push(`## Suggested Tools:\n${toolSuggestionContext}`);
 	}
@@ -1836,7 +1904,10 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				? { allowSystemInMessages: true }
 				: {}),
 			...(shouldUseTools ? { tools: allTools as any } : {}),
-			abortSignal: agentToolAbortSignal(),
+			// The activity's cancellation stops the provider call and, through
+			// the SDK's per-call signal, the tool it is running. A runtime the
+			// caller installed (Parlume) adds its own signal to it.
+			abortSignal: agentToolAbortSignal(cancellation),
 			...(forcedToolChoice ? { toolChoice: forcedToolChoice } : {}),
 			...(providerOptions ? { providerOptions } : {}),
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
@@ -2169,6 +2240,8 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				});
 			} else if (part.type === "start-step") {
 				aggregateUsage.startStep();
+			} else if (part.type === "custom") {
+				aggregateUsage.addStreamStartUsage(part);
 			} else if (part.type === "finish-step") {
 				aggregateUsage.addCompletedStep(part);
 			} else if (part.type === "finish") {
@@ -2177,13 +2250,19 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 					finishReason: part.finishReason,
 				});
 			} else {
-				// Every other v7 TextStreamPart (start, start-step,
-				// finish-step, text-start/-end, reasoning-file, custom,
+				// Other v7 TextStreamParts (start, text-start/-end, reasoning-file,
 				// source, file, tool-input-end, tool-output-denied,
 				// tool-approval-request/-response, abort, raw) carries nothing
 				// this SSE bridge forwards. Ignore it explicitly so a new part
 				// type cannot change this loop's behaviour.
 			}
+		}
+
+		// On abort the SDK ends the stream with an `abort` part instead of
+		// throwing, so what streamed so far would otherwise be returned as a
+		// finished answer. The catch below records the partial usage.
+		if (cancellation?.aborted) {
+			throw cancellationError(cancellation);
 		}
 
 		recordTurnValue("llm.totalMs", Date.now() - llmStartedAt);
@@ -2211,23 +2290,18 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// from LanguageModelUsage; they live under inputTokenDetails /
 		// outputTokenDetails now.
 		const reportedUsage = await result.usage;
-		// After a stream error the SDK's turn total can lack the steps that
-		// completed before it: a step refused before its stream opened (a
-		// usage limit, or any failed request) leaves `result.usage` without
-		// token totals. The completed-step tracker holds those steps' actual
-		// provider counts, so use it for both the ledger row and the returned
-		// usage. That applies to every stream error, not only a limit: the
-		// tracker's numbers are the provider's own either way, while the
-		// alternatives are a zero failure row or an estimate.
+		// A stream error can leave SDK totals without completed steps, or with
+		// null usage for an errored step. The tracker retains finished counts
+		// and Anthropic stream-start counts missing from those SDK totals.
 		const completedSteps =
-			(streamErrorRaw !== undefined ||
-				streamErrorMessage !== undefined) &&
-			!reportedUsage?.totalTokens
+			streamErrorRaw !== undefined || streamErrorMessage !== undefined
 				? aggregateUsage.partialAggregate()
 				: undefined;
-		const usage = completedSteps?.usage?.totalTokens
-			? completedSteps.usage
-			: reportedUsage;
+		const usage =
+			completedSteps?.usage?.totalTokens &&
+			(completedSteps.usageReportedAt || !reportedUsage?.totalTokens)
+				? completedSteps.usage
+				: reportedUsage;
 		recordTurnUsage("llm", usage);
 		if (usage?.totalTokens) {
 			tokenUsage = {
@@ -2296,13 +2370,19 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			// A success with no provider usage would otherwise be dropped by the
 			// shared writer. Direct Chat already calculated this fallback for its
 			// response payload, so use it for the same whole-turn ledger row.
-			// Failed turns keep provider/partial usage only; never estimate spend.
-			usage: streamOutcome.error
-				? usage
-				: selectAggregateUsageForLogging(usage, tokenUsage),
+			// Failed turns keep provider/partial usage only.
+			usage:
+				streamOutcome.error || streamOutcome.partialError
+					? usage
+					: selectAggregateUsageForLogging(usage, tokenUsage),
 			latencyMs: durationMs,
 			success: !streamOutcome.error && !streamOutcome.partialError,
 			errorMessage: streamOutcome.error ?? streamOutcome.partialError,
+			errorDetails:
+				usage === completedSteps?.usage &&
+				completedSteps?.usageReportedAt
+					? { usageReportedAt: completedSteps.usageReportedAt }
+					: undefined,
 			// With the tracker's usage, its steps too, so the row's steps
 			// match its usage. They include any step that started and did
 			// not finish; a request refused before its stream opened never
@@ -2372,6 +2452,22 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				responseText =
 					"I received the document context but wasn't able to generate a response. Please try rephrasing your question.";
 			}
+		}
+
+		// A reply that claims an action no tool call backs is corrected
+		// beneath itself; Direct's stream cannot replace what it has shown.
+		if (!streamOutcome.partialError && !pendingConfirmation) {
+			responseText = await withUnbackedClaimNotice({
+				reply: responseText,
+				userRequest: message,
+				toolCallCount: streamOutcome.toolCalls.length,
+				toolsEnabled,
+				voiceTurn: isVoiceTurn(input.featureKey),
+				userId,
+				organizationId: organizationId ?? undefined,
+				projectId: projectId ?? undefined,
+				conversationId: conversationId ?? undefined,
+			});
 		}
 
 		return {
@@ -2458,9 +2554,19 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				latencyMs: Date.now() - startTime,
 				success: false,
 				errorMessage: surfacedError,
+				errorDetails: partialAggregate.usageReportedAt
+					? { usageReportedAt: partialAggregate.usageReportedAt }
+					: undefined,
 				steps: partialAggregate.steps,
 			});
 			aggregateUsageRecorded = true;
+		}
+		// A cancelled turn is not a failed one: rethrow so the activity ends
+		// as cancelled instead of returning `success: false`, which the
+		// workflow would answer with a tools-off rerun.
+		if (cancellation?.aborted) {
+			logger.info("Direct chat turn cancelled", { executionId });
+			throw cancellationError(cancellation);
 		}
 		logger.error("Failed to execute direct chat", {
 			error,

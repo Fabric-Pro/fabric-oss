@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 describe("useConversationHistory — delete (#2040 F40)", () => {
-	function setup() {
+	function setup(organizationId: string | null = "example-org") {
 		conversations.list.mockResolvedValue({
 			conversations: [],
 			hasMore: false,
@@ -44,6 +44,7 @@ describe("useConversationHistory — delete (#2040 F40)", () => {
 			() =>
 				useConversationHistory({
 					agentId: "fabric-workspace-assistant",
+					organizationId,
 				}),
 			{ wrapper },
 		);
@@ -56,7 +57,10 @@ describe("useConversationHistory — delete (#2040 F40)", () => {
 
 		await act(() => result.current.deleteConversation("conv_other"));
 
-		expect(conversations.delete).toHaveBeenCalledWith({ id: "conv_other" });
+		expect(conversations.delete).toHaveBeenCalledWith({
+			id: "conv_other",
+			organizationId: "example-org",
+		});
 		expect(result.current.activeConversationId).toBe("conv_open");
 	});
 
@@ -66,5 +70,20 @@ describe("useConversationHistory — delete (#2040 F40)", () => {
 		await act(() => result.current.deleteConversation("conv_open"));
 
 		expect(result.current.activeConversationId).toBeNull();
+	});
+});
+
+it("omits a missing organization on deletion instead of sending null", async () => {
+	conversations.list.mockResolvedValue({ conversations: [] });
+	conversations.get.mockResolvedValue(null);
+	conversations.delete.mockResolvedValue({ id: "example-conversation" });
+	const { result } = renderHook(
+		() => useConversationHistory({ organizationId: null }),
+		{ wrapper },
+	);
+	await act(() => result.current.deleteConversation("example-conversation"));
+	expect(conversations.delete).toHaveBeenCalledWith({
+		id: "example-conversation",
+		organizationId: undefined,
 	});
 });

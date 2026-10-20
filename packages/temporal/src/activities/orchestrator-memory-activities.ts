@@ -30,6 +30,11 @@ import type {
 	TaskStep,
 } from "../workflows/orchestrator/types";
 import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+	usageOriginFields,
+} from "../workflows/orchestrator/usage-attribution";
+import {
 	getRoutingSuggestions,
 	type RoutingSuggestion,
 } from "./letta-memory-activities";
@@ -58,9 +63,11 @@ export interface EmbedAndStoreTrajectoryInput {
 	 * on the usage-log row for cost attribution only; never the execution ID.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 }
 
-export interface SearchSemanticMemoryInput {
+export interface SearchSemanticMemoryInput extends SecondaryUsageInput {
 	query: string;
 	userId: string;
 	organizationId?: string;
@@ -71,7 +78,7 @@ export interface SearchSemanticMemoryInput {
 	outcomeFilter?: "success" | "partial" | "failure";
 }
 
-export interface GetHybridRoutingSuggestionsInput {
+export interface GetHybridRoutingSuggestionsInput extends SecondaryUsageInput {
 	task: string;
 	lettaAgentId: string | null;
 	userId: string;
@@ -94,6 +101,8 @@ export interface GenerateLLMSummaryInput {
 	 * on the usage-log row for cost attribution only; never the execution ID.
 	 */
 	conversationId?: string;
+	frameId?: string;
+	projectId?: string;
 }
 
 // ============================================================================
@@ -202,7 +211,6 @@ export async function generateLLMSummary(
 		errorMessage,
 		userId,
 		organizationId,
-		conversationId,
 	} = input;
 
 	// Generate basic summary as fallback
@@ -245,7 +253,9 @@ export async function generateLLMSummary(
 			false,
 			undefined,
 			undefined,
-			conversationId ? { conversationId } : undefined,
+			input.conversationId || input.frameId || input.projectId
+				? usageOriginFields(input)
+				: undefined,
 		);
 		const result = await generateText({
 			model,
@@ -293,7 +303,6 @@ export async function embedAndStoreTrajectory(
 		organizationId,
 		errorMessage,
 		useLLMSummary,
-		conversationId,
 	} = input;
 
 	console.log(`[OrchestratorMemory] Embedding execution ${executionId}...`);
@@ -322,7 +331,7 @@ export async function embedAndStoreTrajectory(
 				errorMessage,
 				userId,
 				organizationId,
-				...(conversationId ? { conversationId } : {}),
+				...usageOriginFields(input),
 			});
 		} else {
 			summary = generateExecutionSummary(taskDescription, steps, outcome);
@@ -346,6 +355,8 @@ export async function embedAndStoreTrajectory(
 			{
 				userId,
 				organizationId,
+				...usageOriginFields(input),
+				featureKey: "chat-agent",
 				tags: [
 					"orchestrator-memory",
 					"execution-summary",
@@ -421,6 +432,7 @@ export async function searchSemanticMemory(
 			{
 				userId,
 				organizationId,
+				...secondaryUsageFields(input),
 				tags: ["orchestrator-memory", "semantic-search"],
 			},
 			undefined, // providerConfig is no longer needed
@@ -555,6 +567,8 @@ export async function getHybridRoutingSuggestions(
 				? getRoutingSuggestions({ lettaAgentId, task })
 				: Promise.resolve([] as RoutingSuggestion[]),
 			searchSemanticMemory({
+				usageConversationId: input.usageConversationId,
+				usageOrigin: input.usageOrigin,
 				query: task,
 				userId,
 				organizationId,
@@ -565,6 +579,8 @@ export async function getHybridRoutingSuggestions(
 			// Search for similar failures (negative memory)
 			includeFailureWarnings
 				? searchSemanticMemory({
+						usageConversationId: input.usageConversationId,
+						usageOrigin: input.usageOrigin,
 						query: task,
 						userId,
 						organizationId,

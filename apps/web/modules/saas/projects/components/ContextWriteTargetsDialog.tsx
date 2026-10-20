@@ -215,6 +215,14 @@ export function ContextWriteTargetsDialog({
 															`mode.${target.mode}`,
 														)}
 													</Badge>
+													{target.indexMode ===
+													"STORE_ONLY" ? (
+														<Badge status="info">
+															{t(
+																"indexMode.STORE_ONLY",
+															)}
+														</Badge>
+													) : null}
 												</div>
 												{target.mode ===
 													"DIRECT_PUSH" &&

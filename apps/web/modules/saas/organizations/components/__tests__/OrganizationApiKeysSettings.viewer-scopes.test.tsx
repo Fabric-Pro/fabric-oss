@@ -188,7 +188,9 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 		expect(
 			screen.queryByLabelText("Instructions Publish"),
 		).not.toBeInTheDocument();
-		expect(screen.queryByLabelText("MCP Write")).not.toBeInTheDocument();
+		expect(
+			screen.queryByLabelText("MCP Write (all write tools)"),
+		).not.toBeInTheDocument();
 		expect(
 			screen.queryByLabelText("Projects Write"),
 		).not.toBeInTheDocument();
@@ -212,15 +214,40 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 	});
 
 	/**
-	 * The other half of the fix: nothing changes for anybody else. A member's
-	 * key is not clamped — the procedure clamps the read-only role alone — so
-	 * the default pair must survive for them.
+	 * A key starts read-only for every role: `mcp:write` satisfies every write
+	 * scope, so a key that started with it could create workflows and pages
+	 * whatever narrower scope its creator ticked.
 	 */
-	it("leaves a member's default untouched", async () => {
+	it.each(["member", "admin", "owner"])(
+		"starts a %s's key with mcp:read alone",
+		async (role) => {
+			userRole = role;
+			renderSettings();
+
+			await openCreateDialogAndSubmit("Production Agent");
+
+			await waitFor(() =>
+				expect(createApiKeyMock).toHaveBeenCalledTimes(1),
+			);
+			expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
+				"mcp:read",
+			]);
+		},
+	);
+
+	it("sends the write scope only when the creator ticks it", async () => {
 		userRole = "member";
+		const user = userEvent.setup();
 		renderSettings();
 
-		await openCreateDialogAndSubmit("Production Agent");
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+		await user.click(
+			await screen.findByLabelText("MCP Write (all write tools)"),
+		);
+		await user.type(screen.getByLabelText("Key Name"), "Production Agent");
+		await user.click(screen.getByRole("button", { name: "Create Key" }));
 
 		await waitFor(() => expect(createApiKeyMock).toHaveBeenCalledTimes(1));
 		expect(createApiKeyMock.mock.calls[0][0].scopes).toEqual([
@@ -238,9 +265,32 @@ describe("OrganizationApiKeysSettings — a read-only role's create request", ()
 			screen.getByRole("button", { name: /create api key/i }),
 		);
 
-		expect(await screen.findByLabelText("MCP Write")).toBeInTheDocument();
+		expect(
+			await screen.findByLabelText("MCP Write (all write tools)"),
+		).toBeInTheDocument();
+		expect(screen.getByLabelText("Workflows Write")).toBeInTheDocument();
+		expect(screen.getByLabelText("Frames Write")).toBeInTheDocument();
 		expect(
 			screen.queryByText(/Your role in this organization is read-only/i),
 		).not.toBeInTheDocument();
+	});
+
+	it("says MCP Write grants every write tool and points to the narrower scopes", async () => {
+		userRole = "member";
+		const user = userEvent.setup();
+		renderSettings();
+
+		await user.click(
+			screen.getByRole("button", { name: /create api key/i }),
+		);
+
+		expect(
+			await screen.findByText(
+				/Grants every write tool, including workflows, pages and features/,
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/tick the narrower write scopes below instead/),
+		).toBeInTheDocument();
 	});
 });

@@ -7,7 +7,7 @@
  * CACHING STRATEGY (two-level):
  *
  * L1 — In-memory Map (30s TTL):
- *   Avoids redundant DB reads within the same workflow execution / worker process.
+ *   Avoids redundant card reads after visibility resolution in the worker process.
  *   Lost on worker restart, so it is purely a performance micro-cache.
  *
  * L2 — Database (30-minute TTL, stored in RegisteredAgent.metadata.agentCard):
@@ -20,16 +20,24 @@
  */
 
 import { A2AClient } from "@repo/agent-core";
+import { updateAgentCardCache } from "@repo/database";
 import {
-	getRegisteredAgentByAgentId,
-	updateAgentCardCache,
-} from "@repo/database";
+	agentEndpointRefusal,
+	fetchAgentEndpoint,
+} from "@repo/utils/agent-endpoint";
 import { CacheKeys, CacheTTL, RedisCache } from "../../../lib/redis-cache";
 import type { AgentCardCapabilities, AgentCategory } from "../types";
-import { resolveAgentEndpoint } from "./resolve-endpoint";
+import {
+	endpointFromRegisteredAgent,
+	resolveVisibleRegisteredAgent,
+} from "./resolve-endpoint";
 
 // A2A client instance for inter-agent communication
 const a2aClient = new A2AClient({ timeout: 120000 });
+const externalA2aClient = new A2AClient({
+	timeout: 120000,
+	fetch: fetchAgentEndpoint,
+});
 
 // =============================================================================
 // Cache constants
@@ -174,7 +182,7 @@ function buildCapabilitiesFromCard(
  * Fetches the agent card from the agent's A2A endpoint and extracts capabilities.
  *
  * Uses a two-level cache strategy:
- * - L1 (in-memory, 30 s): avoids redundant DB reads within the same process
+ * - L1 (in-memory, 30 s): avoids redundant card reads after visibility resolution
  * - L2 (database, 30 min): persists across worker restarts
  *
  * The live agent card is only fetched when both caches are cold or stale.
@@ -189,10 +197,23 @@ export async function getAgentCapabilities(
 ): Promise<AgentCardCapabilities | null> {
 	console.log(`[Orchestrator] Fetching agent capabilities for: ${agentId}`);
 
+	const registeredAgent = await resolveVisibleRegisteredAgent(
+		agentId,
+		userId,
+		organizationId,
+	);
+	if (!registeredAgent) {
+		return null;
+	}
+	const resolvedAgentId = registeredAgent.agentId;
+	console.log(
+		`[Orchestrator] Resolved capabilities lookup ${agentId} to ${resolvedAgentId}`,
+	);
+
 	// -----------------------------------------------------------------------
 	// L1: check in-memory micro-cache
 	// -----------------------------------------------------------------------
-	const l1Hit = getFromMemoryCache(agentId);
+	const l1Hit = getFromMemoryCache(resolvedAgentId);
 	if (l1Hit) {
 		console.log(
 			`[Orchestrator] L1 cache hit for agent capabilities: ${agentId}`,
@@ -204,66 +225,65 @@ export async function getAgentCapabilities(
 	// L1.5: check Redis cache (faster than DB, persists across worker restarts)
 	// -----------------------------------------------------------------------
 	const redisCard = await RedisCache.get<Record<string, unknown>>(
-		CacheKeys.agentCard(agentId),
+		CacheKeys.agentCard(resolvedAgentId),
 	);
 	if (redisCard) {
 		console.log(
 			`[Orchestrator] Redis cache hit for agent capabilities: ${agentId}`,
 		);
-		const result = buildCapabilitiesFromCard(agentId, redisCard);
+		const result = buildCapabilitiesFromCard(resolvedAgentId, redisCard);
 		// Populate L1 so subsequent calls within this execution skip Redis
-		setInMemoryCache(agentId, result);
+		setInMemoryCache(resolvedAgentId, result);
 		return result;
 	}
 
 	// -----------------------------------------------------------------------
 	// L2: check DB cache
 	// -----------------------------------------------------------------------
-	const registeredAgent = await getRegisteredAgentByAgentId(agentId);
+	const metadata =
+		(registeredAgent.metadata as Record<string, unknown> | null) ?? {};
 
-	if (registeredAgent) {
-		const metadata =
-			(registeredAgent.metadata as Record<string, unknown> | null) ?? {};
+	const cachedCard = metadata.agentCard as
+		| Record<string, unknown>
+		| undefined;
+	const cachedAtStr = metadata.agentCardCachedAt as string | undefined;
 
-		const cachedCard = metadata.agentCard as
-			| Record<string, unknown>
-			| undefined;
-		const cachedAtStr = metadata.agentCardCachedAt as string | undefined;
+	if (cachedCard && cachedAtStr) {
+		const cachedAt = new Date(cachedAtStr).getTime();
+		const ageMs = Date.now() - cachedAt;
 
-		if (cachedCard && cachedAtStr) {
-			const cachedAt = new Date(cachedAtStr).getTime();
-			const ageMs = Date.now() - cachedAt;
-
-			// A negative age means a future timestamp (clock skew or a
-			// hand-edited row) — that must not count as fresh.
-			if (ageMs >= 0 && ageMs < DB_CACHE_TTL_MS) {
-				console.log(
-					`[Orchestrator] L2 DB cache hit for agent capabilities: ${agentId} ` +
-						`(age: ${Math.round(ageMs / 1000)}s)`,
-				);
-				const result = buildCapabilitiesFromCard(agentId, cachedCard);
-				// Populate L1 so subsequent calls within this execution skip the DB
-				setInMemoryCache(agentId, result);
-				// Backfill Redis so subsequent calls skip the DB read entirely
-				RedisCache.set(
-					CacheKeys.agentCard(agentId),
-					cachedCard,
-					CacheTTL.agentCard,
-				).catch(() => {});
-				return result;
-			}
-
+		// A negative age means a future timestamp (clock skew or a
+		// hand-edited row) — that must not count as fresh.
+		if (ageMs >= 0 && ageMs < DB_CACHE_TTL_MS) {
 			console.log(
-				`[Orchestrator] L2 DB cache stale for agent: ${agentId} ` +
-					`(age: ${Math.round(ageMs / 1000)}s > ${DB_CACHE_TTL_MS / 1000}s TTL), refreshing`,
+				`[Orchestrator] L2 DB cache hit for agent capabilities: ${agentId} ` +
+					`(age: ${Math.round(ageMs / 1000)}s)`,
 			);
+			const result = buildCapabilitiesFromCard(
+				resolvedAgentId,
+				cachedCard,
+			);
+			// Populate L1 for subsequent card reads after visibility resolution
+			setInMemoryCache(resolvedAgentId, result);
+			// Backfill Redis for subsequent card reads
+			RedisCache.set(
+				CacheKeys.agentCard(resolvedAgentId),
+				cachedCard,
+				CacheTTL.agentCard,
+			).catch(() => {});
+			return result;
 		}
+
+		console.log(
+			`[Orchestrator] L2 DB cache stale for agent: ${agentId} ` +
+				`(age: ${Math.round(ageMs / 1000)}s > ${DB_CACHE_TTL_MS / 1000}s TTL), refreshing`,
+		);
 	}
 
 	// -----------------------------------------------------------------------
 	// Cache miss — fetch from live agent
 	// -----------------------------------------------------------------------
-	const agent = await resolveAgentEndpoint(agentId, userId, organizationId);
+	const agent = endpointFromRegisteredAgent(registeredAgent, agentId);
 	if (!agent) {
 		console.warn(
 			`[Orchestrator] Cannot fetch capabilities - agent not found: ${agentId}`,
@@ -273,7 +293,12 @@ export async function getAgentCapabilities(
 
 	try {
 		// Fetch agent card from A2A endpoint
-		const agentCard = await a2aClient.getAgentCard(agent.deploymentUrl);
+		const refusal = agentEndpointRefusal(agent.deploymentUrl);
+		if (refusal) {
+			throw new Error(refusal);
+		}
+		const client = agent.isExternal ? externalA2aClient : a2aClient;
+		const agentCard = await client.getAgentCard(agent.deploymentUrl);
 
 		if (!agentCard) {
 			console.warn(
@@ -287,7 +312,10 @@ export async function getAgentCapabilities(
 		// Cast to Record for flexible property access since A2A AgentCapabilities
 		// type may not include all our extended properties
 		const agentCardRecord = agentCard as unknown as Record<string, unknown>;
-		const result = buildCapabilitiesFromCard(agentId, agentCardRecord);
+		const result = buildCapabilitiesFromCard(
+			resolvedAgentId,
+			agentCardRecord,
+		);
 
 		// Persist to L2 DB cache (fire-and-forget — don't let a DB failure
 		// block capability resolution). Inside a chat turn that stopped while
@@ -295,15 +323,17 @@ export async function getAgentCapabilities(
 		// before its UPDATE; that rejection is logged here and nothing more
 		// is written after it.
 		const now = new Date();
-		updateAgentCardCache(agentId, agentCardRecord, now).catch((err) => {
-			console.warn(
-				`[Orchestrator] Failed to persist agent card cache for ${agentId}:`,
-				err,
-			);
-		});
+		updateAgentCardCache(resolvedAgentId, agentCardRecord, now).catch(
+			(err) => {
+				console.warn(
+					`[Orchestrator] Failed to persist agent card cache for ${agentId}:`,
+					err,
+				);
+			},
+		);
 
 		// Populate L1
-		setInMemoryCache(agentId, result);
+		setInMemoryCache(resolvedAgentId, result);
 
 		const isGeneralist =
 			result.autonomousExecution && result.taskDecomposition;
@@ -737,7 +767,7 @@ export function determineDelegationStrategy(
 }
 
 /**
- * Invalidate cached capabilities for an agent.
+ * Invalidate cached capabilities by the registration's unique agentId.
  * Clears both the L1 in-memory cache and signals that the L2 DB cache
  * should be considered stale on next read (by removing the L1 entry so
  * callers will re-evaluate freshness against the DB).

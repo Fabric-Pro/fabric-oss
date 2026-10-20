@@ -170,9 +170,10 @@ async function listReposViaIntegration(
 			`org:${orgName} sort:updated`,
 		);
 
-		console.log(
-			`[listGitHubRepos:integration] Searched org:${orgName}, found ${orgRepos.length} repos`,
-		);
+		console.log("[listGitHubRepos:integration] Searched organization", {
+			orgName,
+			repoCount: orgRepos.length,
+		});
 
 		return {
 			configured: true,
@@ -223,7 +224,7 @@ async function listReposViaIntegration(
 		"[listGitHubRepos:integration] /user/repos returned",
 		userRepos.length,
 		"repos, discovered orgs:",
-		[...discoveredOrgs].join(", ") || "none",
+		{ details: [...discoveredOrgs].join(", ") || "none" },
 	);
 
 	// For each discovered org, get full repo list via search
@@ -235,7 +236,8 @@ async function listReposViaIntegration(
 			);
 			addRepos(orgRepos as unknown as GitHubRepoRaw[]);
 			console.log(
-				`[listGitHubRepos:integration] org:${orgName} returned ${orgRepos.length} repos`,
+				"[listGitHubRepos:integration] Listed organization repositories",
+				{ orgName, repoCount: orgRepos.length },
 			);
 		} catch {
 			// ignore
@@ -355,7 +357,7 @@ async function listReposViaMcp(
 		// Find GitHub MCP config
 		let configId: string | null = null;
 
-		// Try seeded "github" server key
+		// Try the legacy "github" STDIO server key (no longer seeded; kept for existing connections)
 		const githubServer = await getMcpServerByKey("github", {
 			userId,
 			organizationId: organizationId ?? undefined,
@@ -541,7 +543,10 @@ async function listReposViaMcp(
 
 		return { configured: true, username, groups, error: null };
 	} catch (err) {
-		console.error("[listGitHubRepos:mcp] Error:", err);
+		console.error("[listGitHubRepos:mcp] Error:", {
+			error: err instanceof Error ? err.message : err,
+			stack: err instanceof Error ? err.stack : undefined,
+		});
 		return {
 			configured: true,
 			username: null,
@@ -596,7 +601,11 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 		if (workflowCredential) {
 			console.log(
 				`[listGitHubRepos] Using workflow integration (${workflowCredential.kind}) from`,
-				organizationId ? `org:${organizationId}` : "personal",
+				{
+					details: organizationId
+						? `org:${organizationId}`
+						: "personal",
+				},
 				"context",
 			);
 			try {
@@ -615,10 +624,10 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 					sourceIntegrationId: undefined,
 				};
 			} catch (err) {
-				console.warn(
-					"[listGitHubRepos] Workflow integration failed:",
-					err,
-				);
+				console.warn("[listGitHubRepos] Workflow integration failed:", {
+					error: err instanceof Error ? err.message : err,
+					stack: err instanceof Error ? err.stack : undefined,
+				});
 			}
 		}
 
@@ -656,7 +665,12 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 
 				if (sortedCandidates.length > MAX_CANDIDATE_CREDENTIALS) {
 					console.warn(
-						`[listGitHubRepos] Project ${input.projectId} has ${sortedCandidates.length} candidate credentials; capping evaluation at ${MAX_CANDIDATE_CREDENTIALS}.`,
+						"[listGitHubRepos] Capping candidate credential evaluation",
+						{
+							projectId: input.projectId,
+							candidateCount: sortedCandidates.length,
+							limit: MAX_CANDIDATE_CREDENTIALS,
+						},
 					);
 				}
 				const boundedCandidates = sortedCandidates.slice(
@@ -685,9 +699,9 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 						);
 						console.log(
 							"[listGitHubRepos] Using project-level shared credentials from project:",
-							input.projectId,
+							{ projectId: input.projectId },
 							"integrationId:",
-							projectIntegration.id,
+							{ integrationId: projectIntegration.id },
 						);
 						const source =
 							projectIntegration.authMethod === "PAT"
@@ -701,8 +715,14 @@ export const listGitHubReposProcedure = tenantProtectedProcedure
 					} catch (err) {
 						console.warn(
 							"[listGitHubRepos] Project-level credentials candidate failed for integration:",
-							projectIntegration.id,
-							err,
+							{
+								integrationId: projectIntegration.id,
+								error: err instanceof Error ? err.message : err,
+								stack:
+									err instanceof Error
+										? err.stack
+										: undefined,
+							},
 						);
 					}
 				}

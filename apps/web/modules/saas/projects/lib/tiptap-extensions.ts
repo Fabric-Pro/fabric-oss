@@ -4,6 +4,7 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { StarterKit } from "@tiptap/starter-kit";
 import type YPartyKitProvider from "y-partykit/provider";
 import type * as Y from "yjs";
+import { ROOM_BODY_FRAGMENT } from "./room-body-fragment";
 import {
 	createSharedRichDocumentExtensions,
 	type RichDocumentExtensionOptions,
@@ -93,7 +94,7 @@ export function createCollaborativeExtensions(
 
 	try {
 		// Test that we can actually access the XML fragment - this validates the ydoc is ready
-		const testFragment = ydoc.getXmlFragment("prosemirror");
+		const testFragment = ydoc.getXmlFragment(ROOM_BODY_FRAGMENT);
 		if (!testFragment) {
 			console.error(
 				"[createCollaborativeExtensions] ydoc.getXmlFragment returned null/undefined",
@@ -124,6 +125,7 @@ export function createCollaborativeExtensions(
 			// Yjs document synchronization
 			Collaboration.configure({
 				document: ydoc,
+				field: ROOM_BODY_FRAGMENT,
 			}),
 		];
 

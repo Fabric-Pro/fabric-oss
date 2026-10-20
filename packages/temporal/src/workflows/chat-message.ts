@@ -109,6 +109,7 @@ export async function chatMessageWorkflow(
 				title = await generateTitle(userMessage, {
 					userId,
 					organizationId,
+					conversationId: chatId,
 				});
 				log.info("Title generated successfully", { title });
 

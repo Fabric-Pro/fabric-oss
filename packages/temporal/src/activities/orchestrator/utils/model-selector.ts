@@ -39,7 +39,12 @@ export async function getAiModel(
 	jobType?: AiJobKey,
 	attribution?: Pick<
 		AIOperationContext,
-		"projectId" | "featureKey" | "conversationId"
+		| "projectId"
+		| "featureKey"
+		| "conversationId"
+		| "frameId"
+		| "workflowExecutionId"
+		| "promptVersionId"
 	>,
 ) {
 	// Determine the task type based on whether tools are needed
@@ -95,7 +100,12 @@ export async function getAiModelWithSelection(
 	jobType?: AiJobKey,
 	attribution?: Pick<
 		AIOperationContext,
-		"projectId" | "featureKey" | "conversationId"
+		| "projectId"
+		| "featureKey"
+		| "conversationId"
+		| "frameId"
+		| "workflowExecutionId"
+		| "promptVersionId"
 	>,
 ) {
 	const taskType = hasTools ? "TOOL_CALLING" : "COMPLEX";

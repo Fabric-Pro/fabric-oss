@@ -12,9 +12,9 @@ const MODES = [
 	},
 	{
 		value: "act",
-		title: "Actions with confirmation",
+		title: "Actions",
 		description:
-			"Makes changes with your permissions after the requester confirms. Blocked if the speaker can't be identified.",
+			"Makes the changes attendees ask for, with your permissions, as soon as they ask.",
 	},
 ] as const;
 

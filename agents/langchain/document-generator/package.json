@@ -30,7 +30,7 @@
 		"@repo/agent-types": "workspace:*",
 		"@repo/logs": "workspace:*",
 		"@repo/observability": "workspace:*",
-		"hono": "^4.13.7",
+		"hono": "^4.13.11",
 		"undici": "^8.5.0",
 		"uuid": "^14.0.2"
 	},

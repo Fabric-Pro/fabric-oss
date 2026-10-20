@@ -343,30 +343,8 @@ async function seedMcpServers() {
 
 	const servers = [
 		// =============================================
-		// STDIO-based MCP Servers (run locally via npx)
+		// Curated MCP servers (STDIO and remote HTTP)
 		// =============================================
-		{
-			key: "github",
-			name: "GitHub",
-			description:
-				"Repository management, file operations, and GitHub API integration. Runs locally via npx.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-github",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/github",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any, // Uses GITHUB_PERSONAL_ACCESS_TOKEN env var
-			iconUrl: "https://github.githubassets.com/favicons/favicon.svg",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Developer Tools",
-			tags: [
-				"project-management",
-				"issue-tracking",
-				"code-repository",
-				"version-control",
-			],
-		},
 		// NOTE: this entry is upserted with `isSystemProvided: true` by
 		// the loop below (which hardcodes the field). The newer
 		// `seed-enterprise-mcp.ts` flips it to `false` for this legacy
@@ -425,7 +403,7 @@ async function seedMcpServers() {
 			description:
 				"Secure file operations with configurable access controls. Runs locally via npx.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-filesystem",
+			command: "npx -y @modelcontextprotocol/server-filesystem@1.0.0",
 			docsUrl:
 				"https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
 			transport: "STDIO" as any,
@@ -436,45 +414,12 @@ async function seedMcpServers() {
 			category: "Developer Tools",
 		},
 		{
-			key: "postgres",
-			name: "PostgreSQL",
-			description:
-				"Read-only database access with schema inspection. Runs locally via npx. Requires connection string.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-postgres",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any, // Connection string as "API key"
-			iconUrl:
-				"https://www.postgresql.org/media/img/about/press/elephant.png",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Data & Analytics",
-		},
-		{
-			key: "sqlite",
-			name: "SQLite",
-			description:
-				"Database interaction and business intelligence capabilities. Runs locally via npx.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-sqlite",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: "https://www.sqlite.org/images/sqlite370_banner.gif",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Data & Analytics",
-		},
-		{
 			key: "memory",
 			name: "Memory",
 			description:
 				"Knowledge graph-based persistent memory system. Runs locally via npx.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-memory",
+			command: "npx -y @modelcontextprotocol/server-memory@1.0.0",
 			docsUrl:
 				"https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
 			transport: "STDIO" as any,
@@ -485,62 +430,12 @@ async function seedMcpServers() {
 			category: "AI & ML",
 		},
 		{
-			key: "fetch",
-			name: "Fetch",
-			description:
-				"Web content fetching and conversion for efficient LLM usage. Runs locally via npx.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-fetch",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: "https://cdn-icons-png.flaticon.com/512/2889/2889676.png",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Web & Internet",
-		},
-		{
-			key: "puppeteer",
-			name: "Puppeteer",
-			description:
-				"Browser automation and web scraping. Runs locally via npx.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-puppeteer",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl:
-				"https://www.gstatic.com/devrel-devsite/prod/v0e0f589edd85502a40d78d7d0825db8ea5ef3b99ab4070381ee86977c9168730/puppeteer/images/lockup.svg",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Developer Tools",
-		},
-		{
-			key: "slack",
-			name: "Slack",
-			description:
-				"Channel management and messaging capabilities. Runs locally via npx. Requires SLACK_BOT_TOKEN and SLACK_TEAM_ID.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-slack",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any, // SLACK_BOT_TOKEN env var
-			iconUrl:
-				"https://a.slack-edge.com/80588/marketing/img/icons/icon_slack_hash_colored.png",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Communication",
-		},
-		{
 			key: "google-drive",
 			name: "Google Drive",
 			description:
 				"File access and search capabilities for Google Drive. Runs locally via npx. Requires OAuth setup.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-gdrive",
+			command: "npx -y @modelcontextprotocol/server-gdrive@2025.1.14",
 			docsUrl:
 				"https://github.com/modelcontextprotocol/servers/tree/main/src/gdrive",
 			transport: "STDIO" as any,
@@ -554,46 +449,13 @@ async function seedMcpServers() {
 			category: "Productivity",
 		},
 		{
-			key: "google-maps",
-			name: "Google Maps",
-			description:
-				"Maps, geocoding, directions, and place details. Runs locally via npx. Requires GOOGLE_MAPS_API_KEY.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-google-maps",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/google-maps",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl:
-				"https://www.gstatic.com/images/branding/product/1x/maps_48dp.png",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Location & Maps",
-		},
-		{
-			key: "notion",
-			name: "Notion (API Key)",
-			description:
-				"Workspace and document management. Runs locally via npx. Requires NOTION_API_KEY.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-notion",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/notion",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://www.notion.so/images/favicon.ico",
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Productivity",
-		},
-		{
 			key: "brave-search",
 			name: "Brave Search",
 			description:
-				"Web and local search using Brave's Search API. Runs locally via npx. Requires BRAVE_API_KEY.",
+				"Web and local search through Brave's MCP server. Requires BRAVE_API_KEY.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-brave-search",
-			docsUrl: "https://github.com/brave/brave-search-mcp-server",
+			command: "npx -y @brave/brave-search-mcp-server@2.1.4",
+			docsUrl: "https://github.com/brave/brave-search-mcp-server#readme",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
 			iconUrl:
@@ -626,6 +488,8 @@ async function seedMcpServers() {
 			description:
 				"Database and authentication management for Supabase projects. Remote server with OAuth.",
 			defaultUrl: "https://mcp.supabase.com/mcp",
+			oauthDiscoveryUrl:
+				"https://api.supabase.com/.well-known/oauth-authorization-server",
 			command: null,
 			docsUrl: "https://supabase.com/docs/guides/getting-started/mcp",
 			transport: "HTTP" as any,
@@ -678,26 +542,27 @@ async function seedMcpServers() {
 			key: "cloudflare",
 			name: "Cloudflare",
 			description:
-				"Manage Cloudflare Workers, KV, R2 storage, and DNS. Deploy and manage serverless applications at the edge.",
-			defaultUrl: null,
-			command: "npx -y @cloudflare/mcp-server-cloudflare",
-			docsUrl: "https://developers.cloudflare.com/agents/mcp/",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
+				"Manage Cloudflare Workers bindings, including Workers, KV, R2, and D1, through the remote MCP server with OAuth.",
+			defaultUrl: "https://bindings.mcp.cloudflare.com/mcp",
+			command: null,
+			docsUrl:
+				"https://developers.cloudflare.com/agents/model-context-protocol/mcp-servers-for-cloudflare/",
+			transport: "HTTP" as any,
+			authMethods: ["OAUTH2"] as any,
 			iconUrl: "https://www.cloudflare.com/favicon.ico",
 			author: "Cloudflare",
 			repositoryUrl:
 				"https://github.com/cloudflare/mcp-server-cloudflare",
 			category: "Cloud & Infrastructure",
-			tags: ["cloudflare", "workers", "serverless", "edge", "cdn"],
+			tags: ["cloudflare", "workers", "kv", "r2", "d1", "bindings"],
 		},
 		{
 			key: "stripe",
 			name: "Stripe",
 			description:
-				"Payment processing and billing management. Create charges, manage subscriptions, and handle customer data.",
+				"Access Stripe payment and billing tools through its STDIO proxy to the remote MCP server. Requires STRIPE_SECRET_KEY.",
 			defaultUrl: null,
-			command: "npx -y @stripe/mcp",
+			command: "npx -y @stripe/mcp@0.3.3",
 			docsUrl: "https://docs.stripe.com/agents",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
@@ -708,45 +573,12 @@ async function seedMcpServers() {
 			tags: ["payments", "billing", "subscriptions", "fintech"],
 		},
 		{
-			key: "resend",
-			name: "Resend",
-			description:
-				"Modern email API for developers. Send transactional emails with excellent deliverability.",
-			defaultUrl: null,
-			command: "npx -y mcp-remote https://mcp.resend.com/sse",
-			docsUrl: "https://resend.com/docs/mcp",
-			transport: "SSE" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://resend.com/favicon.ico",
-			author: "Resend",
-			repositoryUrl: null,
-			category: "Communication",
-			tags: ["email", "transactional", "api", "developer-tools"],
-		},
-		{
-			key: "vercel",
-			name: "Vercel",
-			description:
-				"Deploy and manage Vercel projects. Access deployment logs, environment variables, and project settings.",
-			defaultUrl: null,
-			command: "npx -y @vercel/mcp",
-			docsUrl:
-				"https://vercel.com/docs/workflow-collaboration/vercel-mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://vercel.com/favicon.ico",
-			author: "Vercel",
-			repositoryUrl: null,
-			category: "Cloud & Infrastructure",
-			tags: ["deployment", "hosting", "serverless", "frontend"],
-		},
-		{
 			key: "sentry",
 			name: "Sentry",
 			description:
-				"Application monitoring and error tracking. Search issues, view stack traces, and manage error alerts.",
+				"Application monitoring and error tracking through Sentry's MCP server. Requires SENTRY_ACCESS_TOKEN.",
 			defaultUrl: null,
-			command: "npx -y @sentry/mcp-server",
+			command: "npx -y @sentry/mcp-server@0.42.0",
 			docsUrl: "https://docs.sentry.io/platforms/ai/mcp/",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
@@ -765,49 +597,17 @@ async function seedMcpServers() {
 			key: "neon",
 			name: "Neon",
 			description:
-				"Serverless Postgres database management. Create databases, run queries, and manage branches.",
-			defaultUrl: null,
-			command: "npx -y @neondatabase/mcp-server-neon",
+				"Manage serverless Postgres databases, queries, and branches through Neon's remote MCP server with OAuth.",
+			defaultUrl: "https://mcp.neon.tech/mcp",
+			command: null,
 			docsUrl: "https://neon.tech/docs/ai/neon-mcp-server",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
+			transport: "HTTP" as any,
+			authMethods: ["OAUTH2"] as any,
 			iconUrl: "https://neon.tech/favicon.ico",
 			author: "Neon",
 			repositoryUrl: "https://github.com/neondatabase/mcp-server-neon",
 			category: "Data & Analytics",
 			tags: ["database", "postgres", "serverless", "sql"],
-		},
-		{
-			key: "turso",
-			name: "Turso",
-			description:
-				"SQLite at the edge. Manage databases, run queries, and handle schema migrations.",
-			defaultUrl: null,
-			command: "npx -y @turso/mcp-server",
-			docsUrl: "https://docs.turso.tech/features/ai-and-embeddings",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://turso.tech/favicon.ico",
-			author: "Turso",
-			repositoryUrl: "https://github.com/tursodatabase/turso-mcp",
-			category: "Data & Analytics",
-			tags: ["database", "sqlite", "edge", "libsql"],
-		},
-		{
-			key: "upstash",
-			name: "Upstash",
-			description:
-				"Serverless Redis, Kafka, and QStash. Manage caching, messaging, and background jobs.",
-			defaultUrl: null,
-			command: "npx -y @upstash/mcp-server",
-			docsUrl: "https://upstash.com/docs/redis/integrations/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://upstash.com/favicon.ico",
-			author: "Upstash",
-			repositoryUrl: "https://github.com/upstash/mcp",
-			category: "Data & Analytics",
-			tags: ["redis", "kafka", "caching", "serverless", "messaging"],
 		},
 		{
 			key: "twilio",
@@ -829,130 +629,51 @@ async function seedMcpServers() {
 			key: "airtable",
 			name: "Airtable",
 			description:
-				"Spreadsheet-database hybrid. Manage bases, tables, and records with a powerful API.",
+				"Community Airtable server by domdomegg for reading and writing bases, tables, and records. Requires an Airtable personal access token in AIRTABLE_API_KEY.",
 			defaultUrl: null,
-			command: "npx -y @airtable/mcp-server",
-			docsUrl: "https://airtable.com/developers/mcp",
+			command: "npx -y airtable-mcp-server@1.14.0",
+			docsUrl: "https://github.com/domdomegg/airtable-mcp-server#readme",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
 			iconUrl: "https://airtable.com/favicon.ico",
-			author: "Airtable",
-			repositoryUrl: null,
+			author: "domdomegg",
+			repositoryUrl: "https://github.com/domdomegg/airtable-mcp-server",
 			category: "Productivity",
 			tags: ["database", "spreadsheet", "no-code", "collaboration"],
-		},
-		{
-			key: "asana",
-			name: "Asana",
-			description:
-				"Work management platform. Create tasks, manage projects, and track team progress.",
-			defaultUrl: null,
-			command: "npx -y @asana/mcp-server",
-			docsUrl: "https://developers.asana.com/docs/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://asana.com/favicon.ico",
-			author: "Asana",
-			repositoryUrl: null,
-			category: "Project Management",
-			tags: ["project-management", "tasks", "team", "collaboration"],
 		},
 		{
 			key: "todoist",
 			name: "Todoist",
 			description:
-				"Task management for individuals and teams. Create, update, and organize tasks and projects.",
+				"Manage Todoist tasks and projects through Doist's MCP server. Requires TODOIST_API_KEY.",
 			defaultUrl: null,
-			command: "npx -y @doist/todoist-mcp-server",
-			docsUrl: "https://developer.todoist.com/mcp/",
+			command: "npx -y @doist/todoist-mcp@13.6.0",
+			docsUrl: "https://github.com/Doist/todoist-mcp#readme",
 			transport: "STDIO" as any,
 			authMethods: ["API_KEY"] as any,
 			iconUrl: "https://todoist.com/favicon.ico",
 			author: "Doist",
-			repositoryUrl: "https://github.com/Doist/todoist-mcp-server",
+			repositoryUrl: "https://github.com/Doist/todoist-mcp",
 			category: "Productivity",
 			tags: ["tasks", "todo", "productivity", "organization"],
-		},
-		{
-			key: "raycast",
-			name: "Raycast",
-			description:
-				"Productivity launcher and AI assistant. Execute commands, manage clipboard, and automate workflows.",
-			defaultUrl: null,
-			command: "npx -y @raycast/mcp-server",
-			docsUrl: "https://developers.raycast.com/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: "https://raycast.com/favicon.ico",
-			author: "Raycast",
-			repositoryUrl: null,
-			category: "Productivity",
-			tags: ["launcher", "automation", "productivity", "macos"],
 		},
 		{
 			key: "axiom",
 			name: "Axiom",
 			description:
-				"Log management and observability platform. Query logs, create dashboards, and set up alerts.",
-			defaultUrl: null,
-			command: "npx -y @axiomhq/mcp-server-axiom",
-			docsUrl: "https://axiom.co/docs/send-data/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
+				"Query Axiom logs and observability data through its remote MCP server with OAuth.",
+			defaultUrl: "https://mcp.axiom.co/mcp",
+			command: null,
+			docsUrl: "https://axiom.co/docs/console/intelligence/mcp-server",
+			transport: "HTTP" as any,
+			authMethods: ["OAUTH2"] as any,
+			oauthDiscoveryUrl:
+				"https://authorization.axiom.co/.well-known/oauth-authorization-server",
 			iconUrl: "https://axiom.co/favicon.ico",
 			author: "Axiom",
-			repositoryUrl: "https://github.com/axiomhq/mcp-server-axiom",
+			repositoryUrl: "https://github.com/axiomhq/axiom-mcp",
 			category: "Developer Tools",
 			tags: ["logging", "observability", "monitoring", "analytics"],
-		},
-		{
-			key: "browserbase",
-			name: "Browserbase",
-			description:
-				"Headless browser infrastructure. Run browser automation at scale with anti-detection features.",
-			defaultUrl: null,
-			command: "npx -y @browserbase/mcp-server",
-			docsUrl: "https://docs.browserbase.com/integrations/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://browserbase.com/favicon.ico",
-			author: "Browserbase",
-			repositoryUrl:
-				"https://github.com/browserbase/mcp-server-browserbase",
-			category: "Browser Automation",
-			tags: ["browser", "automation", "headless", "scraping"],
-		},
-		{
-			key: "e2b",
-			name: "E2B Code Interpreter",
-			description:
-				"Secure code execution sandbox. Run Python, JavaScript, and other code in isolated environments.",
-			defaultUrl: null,
-			command: "npx -y @e2b/mcp-server",
-			docsUrl: "https://e2b.dev/docs/mcp",
-			transport: "STDIO" as any,
-			authMethods: ["API_KEY"] as any,
-			iconUrl: "https://e2b.dev/favicon.ico",
-			author: "E2B",
-			repositoryUrl: "https://github.com/e2b-dev/mcp-server",
-			category: "Developer Tools",
-			tags: ["code-execution", "sandbox", "python", "javascript"],
-		},
-		{
-			key: "obsidian",
-			name: "Obsidian",
-			description:
-				"Local-first knowledge management. Read, write, and search notes in your Obsidian vault.",
-			defaultUrl: null,
-			command: "npx -y mcp-obsidian",
-			docsUrl: "https://github.com/smithery-ai/mcp-obsidian",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: "https://obsidian.md/favicon.ico",
-			author: "Smithery AI",
-			repositoryUrl: "https://github.com/smithery-ai/mcp-obsidian",
-			category: "Productivity",
-			tags: ["notes", "knowledge-base", "markdown", "local-first"],
 		},
 		{
 			key: "sequential-thinking",
@@ -960,7 +681,8 @@ async function seedMcpServers() {
 			description:
 				"Dynamic problem-solving through thought sequences. Break down complex tasks into manageable steps.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-sequential-thinking",
+			command:
+				"npx -y @modelcontextprotocol/server-sequential-thinking@1.0.0",
 			docsUrl:
 				"https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
 			transport: "STDIO" as any,
@@ -977,7 +699,7 @@ async function seedMcpServers() {
 			description:
 				"Reference MCP server for testing. Demonstrates all MCP features including tools, prompts, and resources.",
 			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-everything",
+			command: "npx -y @modelcontextprotocol/server-everything@1.0.0",
 			docsUrl:
 				"https://github.com/modelcontextprotocol/servers/tree/main/src/everything",
 			transport: "STDIO" as any,
@@ -987,23 +709,6 @@ async function seedMcpServers() {
 			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
 			category: "Developer Tools",
 			tags: ["testing", "reference", "mcp", "demo"],
-		},
-		{
-			key: "time",
-			name: "Time",
-			description:
-				"Get current time and timezone information. Useful for scheduling and time-aware operations.",
-			defaultUrl: null,
-			command: "npx -y @modelcontextprotocol/server-time",
-			docsUrl:
-				"https://github.com/modelcontextprotocol/servers/tree/main/src/time",
-			transport: "STDIO" as any,
-			authMethods: ["NONE"] as any,
-			iconUrl: null,
-			author: "Anthropic",
-			repositoryUrl: "https://github.com/modelcontextprotocol/servers",
-			category: "Utilities",
-			tags: ["time", "timezone", "scheduling", "utilities"],
 		},
 		{
 			key: "azure-devops",

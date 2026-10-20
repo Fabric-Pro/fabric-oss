@@ -85,6 +85,20 @@ export async function getRegisteredAgentByAgentId(
 	});
 }
 
+/** Resolve the operator-managed destination eligible to receive relay AI tokens. */
+export async function getActiveSystemRegisteredAgent(
+	agentId: string,
+): Promise<Pick<RegisteredAgent, "deploymentUrl"> | null> {
+	return db.registeredAgent.findFirst({
+		where: {
+			scope: "SYSTEM",
+			status: "ACTIVE",
+			OR: [{ agentId }, { name: agentId }],
+		},
+		select: { deploymentUrl: true },
+	});
+}
+
 /**
  * Create a new registered agent
  */
@@ -524,95 +538,5 @@ export async function getActiveA2AAgents({
 			],
 		},
 		orderBy: { createdAt: "desc" },
-	});
-}
-
-/**
- * Find active A2A agents that have any of the given capability tags in their metadata.
- *
- * TENANT ISOLATION (XOR Pattern):
- * - ORGANIZATION CONTEXT: SYSTEM + ORGANIZATION agents only
- * - PERSONAL CONTEXT: SYSTEM + USER agents only
- *
- * Tags are matched against `metadata.tags` and `metadata.skills[*].id` fields.
- * Since Prisma JSON path filtering for array membership is limited, we fetch all
- * active A2A agents in scope and filter in-memory (agent count is always small).
- *
- * Results are ordered by lastHealthCheck DESC NULLS LAST so the freshest agents
- * come first, giving callers the most-recently-verified options.
- */
-export async function findAgentsByCapabilityTag({
-	tags,
-	userId,
-	organizationId,
-	excludeAgentId,
-}: {
-	tags: string[];
-	userId: string;
-	organizationId?: string;
-	excludeAgentId?: string;
-}): Promise<RegisteredAgent[]> {
-	if (tags.length === 0) {
-		return [];
-	}
-
-	// XOR PATTERN: Strict context isolation — mirrors getActiveA2AAgents
-	const scopeConditions: Prisma.RegisteredAgentWhereInput[] = [
-		{ scope: "SYSTEM" },
-	];
-
-	if (organizationId) {
-		// ORGANIZATION CONTEXT: SYSTEM + ORG agents only
-		scopeConditions.push({ scope: "ORGANIZATION", organizationId });
-	} else {
-		// PERSONAL CONTEXT: SYSTEM + USER agents only
-		scopeConditions.push({ scope: "USER", userId });
-	}
-
-	const agents = await db.registeredAgent.findMany({
-		where: {
-			status: "ACTIVE",
-			deploymentUrl: { not: null },
-			OR: scopeConditions,
-			...(excludeAgentId && { agentId: { not: excludeAgentId } }),
-		},
-		orderBy: [
-			// Freshest health-checked agents first; agents never checked sort last
-			{ lastHealthCheck: { sort: "desc", nulls: "last" } },
-		],
-	});
-
-	// Filter in-memory: agent must support A2A protocol AND have at least one
-	// matching tag from metadata.tags or metadata.skills[*].id
-	const normalizedTags = tags.map((t) => t.toLowerCase());
-
-	return agents.filter((agent) => {
-		const metadata = agent.metadata as Record<string, unknown> | null;
-		if (!metadata) {
-			return false;
-		}
-
-		// Must support A2A protocol
-		const protocols = (metadata.protocols as string[] | undefined) ?? [];
-		const supportsA2A = protocols.some((p) => p.toLowerCase() === "a2a");
-		if (!supportsA2A) {
-			return false;
-		}
-
-		// Check metadata.tags array
-		const metaTags = (metadata.tags as string[] | undefined) ?? [];
-		const tagMatches = metaTags.some((t) =>
-			normalizedTags.includes(t.toLowerCase()),
-		);
-		if (tagMatches) {
-			return true;
-		}
-
-		// Check metadata.skills[*].id
-		const skills =
-			(metadata.skills as
-				| Array<{ id: string; name?: string; description?: string }>
-				| undefined) ?? [];
-		return skills.some((s) => normalizedTags.includes(s.id.toLowerCase()));
 	});
 }

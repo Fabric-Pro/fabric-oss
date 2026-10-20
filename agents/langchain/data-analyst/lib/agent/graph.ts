@@ -765,6 +765,7 @@ async function agentNode(
 			{ configurable: config?.configurable },
 			response,
 			{
+				model,
 				taskType: "TOOL_CALLING",
 				agentId: "data_analyst",
 				latencyMs: Date.now() - generationStart,

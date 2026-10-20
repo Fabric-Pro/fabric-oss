@@ -99,13 +99,18 @@ export const listRegisteredAgents = protectedProcedure
 			status,
 		});
 
-		// Count conversations per agent (by matching agentId string)
+		// Count conversations per agent (by matching agentId string), in the
+		// caller's tenant only: SYSTEM agents are shared by every organization,
+		// so an unscoped count would show platform-wide usage.
 		const agentIds = agents.map((a) => a.agentId);
+		const scopeWhere = organizationId
+			? { organizationId }
+			: { organizationId: null, userId };
 		const conversationCounts =
 			agentIds.length > 0
 				? await db.agentConversation.groupBy({
 						by: ["agentId"],
-						where: { agentId: { in: agentIds } },
+						where: { agentId: { in: agentIds }, ...scopeWhere },
 						_count: { id: true },
 					})
 				: [];

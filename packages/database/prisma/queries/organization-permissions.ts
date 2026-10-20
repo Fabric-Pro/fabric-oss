@@ -240,6 +240,30 @@ export async function canConnectOrganizationMcpConfigs(
 	);
 }
 
+/** Matches the agent template API's AGENT_TEMPLATE_READ gate for background callers. */
+export async function canReadOrganizationAgentTemplates(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.AGENT_TEMPLATE_READ,
+	);
+}
+
+/** Matches the skill API's SKILL_READ gate for background callers. */
+export async function canReadOrganizationSkills(
+	userId: string,
+	organizationId: string,
+): Promise<boolean> {
+	return organizationPermissionHolds(
+		userId,
+		organizationId,
+		Permissions.SKILL_READ,
+	);
+}
+
 /**
  * Returns `true` if `userId` may create a workflow in `organizationId`,
  * matching `requirePermission(WORKSPACE_CREATE)` on the in-app create.

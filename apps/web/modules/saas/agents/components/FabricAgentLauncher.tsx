@@ -229,6 +229,8 @@ export interface FabricAgentLaunchContext {
 	 */
 	surface?: "artifact" | "workspace" | null;
 	workspaceId?: string | null;
+	/** The frame on either surface; validated server-side for usage attribution. */
+	launchFrameId?: string | null;
 	codeContext?: CodeContext | null;
 	// Repository connection
 	repositoryUrl?: string | null;
@@ -287,6 +289,7 @@ function normalizeContext(
 		testCasesContext: context.testCasesContext?.trim() || null,
 		surface: context.surface ?? null,
 		workspaceId: context.workspaceId ?? null,
+		launchFrameId: context.launchFrameId ?? null,
 		codeContext: context.codeContext
 			? {
 					filePath: context.codeContext.filePath?.trim() || null,
@@ -640,7 +643,11 @@ function FabricAgentLauncherSheet({
 	// so the two observers hit one cache entry rather than each fetching.
 	const interfaceModeQuery = useQuery({
 		queryKey: orchestratorPreferencesQueryKey(organizationId),
-		queryFn: async () => orpcClient.users.orchestratorPreferences.get(),
+		enabled: Boolean(organizationId),
+		queryFn: async () =>
+			orpcClient.users.orchestratorPreferences.get({
+				organizationId: organizationId ?? undefined,
+			}),
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchOnMount: false,
 		refetchOnWindowFocus: false,
@@ -759,12 +766,15 @@ function FabricAgentLauncherSheet({
 	// `drawerConversationEngine`, so a switch never remounts the chat.
 	const handleUiModeChange = useCallback(
 		(next: UiMode) => {
-			if (isDrawerStreaming) {
+			if (isDrawerStreaming || !organizationId) {
 				return;
 			}
 			setCachedUiMode(queryClient, organizationId, next);
 			orpcClient.users.orchestratorPreferences
-				.update({ uiMode: next })
+				.update({
+					uiMode: next,
+					organizationId,
+				})
 				.catch(() => {
 					toast.message("Couldn't save your interface mode.", {
 						description:
@@ -795,11 +805,15 @@ function FabricAgentLauncherSheet({
 				draft: composerDraftRef.current,
 				attachments: composerAttachmentsRef.current,
 				projectId: launchContext?.projectId,
+				launchContext,
 				now: Date.now(),
 			}),
 		);
-	}, [drawerConversationId, launchContext?.projectId, onExpandHandoff]);
-	const initialInput = draftInput ?? launchContext?.prompt ?? undefined;
+	}, [drawerConversationId, launchContext, onExpandHandoff]);
+	// Only a launch that carries a prompt fills the composer (`openLauncher`
+	// sets `draftInput` from it). The page's ambient context never does: the
+	// user's own message would be typed into the middle of it.
+	const initialInput = draftInput;
 	const systemPrompt = buildLauncherSystemPrompt(launchContext);
 	// Reset when the drawer starts a fresh chat, so expand cannot carry the
 	// id of a conversation the user has already left behind.

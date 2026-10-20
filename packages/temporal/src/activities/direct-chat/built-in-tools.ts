@@ -26,6 +26,7 @@ import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/c
 import { resolveSearchProviderForTenant } from "../lib/get-search-provider";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
+import { agentToolDefersStoryDrafting } from "../shared/agent-tool-runtime";
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
 import {
 	createFirstClassFrame,
@@ -79,6 +80,7 @@ export function buildStoryUrl(args: {
 }
 
 interface BuiltInToolContext {
+	usageConversationId?: string;
 	userId: string;
 	organizationId?: string;
 	workspaceIds?: string[];
@@ -93,6 +95,8 @@ interface BuiltInToolContext {
 
 interface CreateBuiltInToolsOptions extends BuiltInToolContext {
 	enabledFabricToolIds?: string[];
+	/** Offered on top of the default set or of an explicit non-empty list. */
+	additionalFabricToolIds?: string[];
 	/**
 	 * Bind the attached project's live roadmap, document and Context-tab
 	 * source reads alongside a non-empty explicit tool list. Set only by the interactive chat, where the project
@@ -418,6 +422,7 @@ export async function createCodeSearchTool(
 
 				const query = args.query;
 				const embeddingResult = await generateEmbedding(query, {
+					conversationId: context.usageConversationId,
 					userId,
 					organizationId,
 				});
@@ -757,6 +762,7 @@ export async function createFabricTool(
 						typeof args.minSimilarity === "number"
 							? args.minSimilarity
 							: undefined,
+						{ usageConversationId: context.usageConversationId },
 					);
 
 					return {
@@ -791,6 +797,8 @@ export async function createFabricTool(
 						workspaceIds,
 						undefined,
 						typeof args.topK === "number" ? args.topK : 20,
+						undefined,
+						{ usageConversationId: context.usageConversationId },
 					);
 
 					return {
@@ -824,6 +832,7 @@ export async function createFabricTool(
 						userId,
 						organizationId,
 						typeof args.topK === "number" ? args.topK : undefined,
+						{ usageConversationId: context.usageConversationId },
 					);
 
 					return {
@@ -930,6 +939,7 @@ export async function createFabricTool(
 			"./company-context-tool"
 		);
 		return createCompanyContextTools({
+			usageConversationId: context.usageConversationId,
 			companyContextAdvisor: context.companyContextAdvisor,
 			userId,
 			organizationId,
@@ -1224,6 +1234,12 @@ export async function createFabricTool(
 						// Kick off slug fetch in parallel with story creation —
 						// the slug doesn't depend on the new story's id.
 						const slugP = getOrgSlug();
+						// A run that answers a person while it works (a voice
+						// meeting) cannot wait about a minute for the drafting
+						// model. It creates the item from the person's own words,
+						// takes the kind the agent named instead of classifying
+						// it, and has the body drafted afterwards.
+						const deferDrafting = agentToolDefersStoryDrafting();
 						const result = await createStoryFromProposal({
 							projectId,
 							createdById: userId,
@@ -1248,6 +1264,11 @@ export async function createFabricTool(
 							// this, every agent-created story would be
 							// Fabric-only forever.
 							enablePmAutoSync: pmConfigured ? true : undefined,
+							...(deferDrafting && {
+								skipClassifier: true,
+								skipDrafting: true,
+								bodyAlreadyDrafted: true,
+							}),
 						});
 						const slug = await slugP;
 
@@ -1377,6 +1398,22 @@ export async function createFabricTool(
 						// "Possible duplicate" chip + Merge/Dismiss dialog.
 						// The helper checks the turn again immediately before
 						// the workflow start, after its availability probe.
+						if (deferDrafting) {
+							const { triggerStoryBodyDraft } = await import(
+								"../../lib/trigger-story-body-draft"
+							);
+							throwIfDispatchStopped();
+							await triggerStoryBodyDraft({
+								storyId: result.story.id,
+								projectId,
+								userId,
+								organizationId,
+								targetKind:
+									result.story.kind === "BUG"
+										? "BUG"
+										: "FEATURE",
+							});
+						}
 						throwIfDispatchStopped();
 						await triggerDuplicateDetection({
 							projectId,
@@ -1398,6 +1435,9 @@ export async function createFabricTool(
 								slug,
 							}),
 							aiDrafted: result.aiDrafted,
+							...(deferDrafting && {
+								draftingInBackground: true,
+							}),
 						};
 					} catch (error) {
 						rethrowIfDispatchStopped(error);
@@ -1505,6 +1545,7 @@ export async function createFabricTool(
 					}
 
 					const imageResult = await generateImageActivity({
+						usageConversationId: context.usageConversationId,
 						prompt,
 						provider:
 							(args.provider as "gateway" | "fal" | "gemini") ||
@@ -1565,6 +1606,7 @@ export async function createFabricTool(
 					}
 
 					const speech = await synthesizeToolSpeech({
+						usageConversationId: context.usageConversationId,
 						userId,
 						organizationId,
 						text,
@@ -1609,6 +1651,7 @@ export async function createBuiltInTools(
 		userId,
 		organizationId,
 		enabledFabricToolIds,
+		additionalFabricToolIds = [],
 		workspaceIds,
 		projectId,
 		includeProjectFeatureReads = false,
@@ -1629,20 +1672,23 @@ export async function createBuiltInTools(
 		// ride along for the same reason: a documents question otherwise
 		// gets a semantic-search sample (Fizzy #2578). Read-only and gated on the
 		// user's project access, so a chosen tool set gains no write path.
-		const toolIds =
-			projectId && includeProjectFeatureReads
-				? [
-						...new Set([
-							...enabledFabricToolIds,
+		const toolIds = [
+			...new Set([
+				...enabledFabricToolIds,
+				...additionalFabricToolIds,
+				...(projectId && includeProjectFeatureReads
+					? [
 							...PROJECT_FEATURE_TOOL_IDS,
 							...PROJECT_DOCUMENT_TOOL_IDS,
-						]),
-					]
-				: enabledFabricToolIds;
+						]
+					: []),
+			]),
+		];
 		for (const toolId of toolIds) {
 			Object.assign(
 				tools,
 				await createFabricTool(toolId, {
+					usageConversationId: options.usageConversationId,
 					userId,
 					organizationId,
 					workspaceIds,
@@ -1662,6 +1708,7 @@ export async function createBuiltInTools(
 		Object.assign(
 			tools,
 			await createFabricTool("project_rag_query", {
+				usageConversationId: options.usageConversationId,
 				userId,
 				organizationId,
 				workspaceIds,
@@ -1725,6 +1772,7 @@ export async function createBuiltInTools(
 				projectId,
 			}),
 			await createCodeSearchTool({
+				usageConversationId: options.usageConversationId,
 				userId,
 				organizationId,
 				workspaceIds,
@@ -1732,6 +1780,18 @@ export async function createBuiltInTools(
 				preferredRepositoryUrl,
 			}),
 			await createSymbolSearchTool({
+				userId,
+				organizationId,
+				workspaceIds,
+				projectId,
+			}),
+		);
+	}
+	for (const toolId of additionalFabricToolIds) {
+		Object.assign(
+			tools,
+			await createFabricTool(toolId, {
+				usageConversationId: options.usageConversationId,
 				userId,
 				organizationId,
 				workspaceIds,

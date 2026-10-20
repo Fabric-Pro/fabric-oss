@@ -22,6 +22,8 @@ const { listMyPromptOverrides } = vi.hoisted(() => ({
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<object>()),
+	// Gate off: the superseded-action refusal (Fizzy #2946) is not this file's subject.
+	isProposalArtifactEnabledForOrganization: vi.fn(async () => false),
 	listMyPromptOverrides,
 }));
 

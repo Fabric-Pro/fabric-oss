@@ -18,6 +18,7 @@ import {
 	CLEAN_SPEC_DOCUMENT_TYPE,
 	cleanSpecAgentForKind,
 } from "@repo/temporal/clean-spec-agent-for-kind";
+import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -468,10 +469,14 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				});
 				proposalId = proposal.id;
 			} catch (error) {
+				console.error(
+					"[backlog] apply-changes failed to persist proposal row:",
+					error,
+				);
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message:
 						error instanceof Error
-							? `Failed to persist proposal row: ${error.message}`
+							? `Failed to persist proposal row: ${describeSyncErrorForUser(error)}`
 							: "Failed to persist proposal row",
 				});
 			}
@@ -610,6 +615,10 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId,
 			};
 		} catch (error) {
+			console.error(
+				"[backlog] apply-changes failed to start workflow:",
+				error,
+			);
 			if (input.proposalId) {
 				// Release the claim (plan §F3) so the proposal is retryable
 				// from the inbox; the failure is recorded on the row.
@@ -619,13 +628,13 @@ export const applyChangesProcedure = tenantProtectedProcedure
 					outcome: "failed",
 					errorMessage:
 						error instanceof Error
-							? error.message
+							? describeSyncErrorForUser(error)
 							: "Failed to start apply changes workflow",
 				}).catch(() => {});
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message:
 						error instanceof Error
-							? error.message
+							? describeSyncErrorForUser(error)
 							: "Failed to start apply changes workflow",
 				});
 			}
@@ -642,7 +651,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 						errorClass: "TemporalScheduleFailed",
 						errorMessage: "Background job couldn't start.",
 						applyError: (error instanceof Error
-							? error.message
+							? describeSyncErrorForUser(error)
 							: "Failed to start apply changes workflow"
 						).slice(0, 4000),
 						failedAt: new Date(),
@@ -665,7 +674,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					error instanceof Error
-						? error.message
+						? describeSyncErrorForUser(error)
 						: "Failed to start apply changes workflow",
 			});
 		}

@@ -57,7 +57,7 @@ vi.mock("@repo/ai", async () => {
 		buildEffectiveBaseUrl: () => "https://gateway.example.com/v1",
 		requiresBaseUrl: () => false,
 		isReasoningModelName: () => false,
-		getRAGProviderConfig: async () => ({
+		getRAGProviderConfigForModel: async () => ({
 			apiKey: ORG_KEY,
 			baseUrl: "https://gateway.example.com/v1",
 			deploymentName: null,

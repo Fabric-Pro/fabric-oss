@@ -7,12 +7,25 @@
  *   GET   /documents/:id                    get full content + metadata
  *   PATCH /documents/:id                    update title/content/status
  *
+ * A document's detail carries `version` and `contentHash`, its base: a PATCH
+ * that sends them back as `expectedVersion` and `expectedContentHash` (both
+ * or neither) is
+ * refused with 409 `DOCUMENT_VERSION_CONFLICT` instead of overwriting a newer
+ * save. A content or status PATCH of a client-document Proposal while a
+ * generation run is queued or writing it is refused with 409
+ * `DOCUMENT_GENERATION_IN_PROGRESS`.
+ *
+ * QUEUED and GENERATING belong to generation runs: a create or PATCH that
+ * sends either status is refused with 400 `DOCUMENT_STATUS_GENERATION_OWNED`.
+ * Both still work as a list filter.
+ *
  * Access model: tenant-scoped via the parent Project. Reads require
  * hasProjectAccess; writes additionally require canEditProject.
  */
 import {
 	canEditProject,
 	createDocument,
+	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
@@ -20,6 +33,13 @@ import {
 	listDocuments,
 	updateDocument,
 } from "@repo/database";
+import { contentIdentity } from "@repo/utils/content-identity";
+import {
+	DOCUMENT_STATUS_GENERATION_OWNED,
+	generationOwnedStatusMessage,
+	isGenerationOwnedStatus,
+	isRunGuardedDocumentType,
+} from "@repo/utils/generation-run-guard";
 import {
 	hasVisualSlots,
 	preserveVisualSlots,
@@ -125,6 +145,13 @@ function mapSummary(d: {
 	};
 }
 
+/**
+ * `userName` of the `document_change` nudge an API-key update sends. The
+ * schema requires one and the key carries no display name; the page only
+ * refetches on the event, so it reads like any other document update.
+ */
+const V1_DOCUMENT_NUDGE_USER_NAME = "Fabric API";
+
 function mapDetail(d: {
 	id: string;
 	projectId: string;
@@ -140,6 +167,25 @@ function mapDetail(d: {
 	return {
 		...mapSummary(d),
 		content: d.content,
+		// The body half of the document's base, as `projects.documents.get`
+		// returns it. It shadows the embed-owned `contentHash` column, which
+		// no reader of this API should see.
+		contentHash: contentIdentity(d.content),
+	};
+}
+
+/** 409 code: the caller's base no longer matches the stored document. */
+const DOCUMENT_VERSION_CONFLICT = "DOCUMENT_VERSION_CONFLICT";
+/** 409 code: a generation run owns a Proposal's body. */
+const DOCUMENT_GENERATION_IN_PROGRESS = "DOCUMENT_GENERATION_IN_PROGRESS";
+
+/** 400 body: a caller sent a status only a generation run may set. */
+function generationOwnedStatus(status: "QUEUED" | "GENERATING") {
+	return {
+		error: {
+			message: generationOwnedStatusMessage(status),
+			code: DOCUMENT_STATUS_GENERATION_OWNED,
+		},
 	};
 }
 
@@ -295,6 +341,12 @@ export function registerDocumentRoutes(
 					400,
 				);
 			}
+			if (
+				body.status !== undefined &&
+				isGenerationOwnedStatus(body.status)
+			) {
+				return c.json(generationOwnedStatus(body.status), 400);
+			}
 
 			const doc = await createDocument({
 				projectId,
@@ -389,12 +441,59 @@ export function registerDocumentRoutes(
 			content?: string;
 			status?: string;
 			changeDescription?: string;
+			expectedVersion?: unknown;
+			expectedContentHash?: unknown;
 		};
 		try {
 			body = await c.req.json();
 		} catch {
 			return c.json(badRequest("Invalid JSON body"), 400);
 		}
+
+		// The base the caller read (`version` and `contentHash` from GET).
+		// `updateDocument` refuses the write when either half no longer
+		// matches the stored document.
+		if (
+			body.expectedVersion !== undefined &&
+			!(
+				typeof body.expectedVersion === "number" &&
+				Number.isInteger(body.expectedVersion) &&
+				body.expectedVersion >= 0
+			)
+		) {
+			return c.json(
+				badRequest("expectedVersion must be a non-negative integer"),
+				400,
+			);
+		}
+		if (
+			body.expectedContentHash !== undefined &&
+			(typeof body.expectedContentHash !== "string" ||
+				body.expectedContentHash === "")
+		) {
+			return c.json(
+				badRequest("expectedContentHash must be a non-empty string"),
+				400,
+			);
+		}
+		// Half a base cannot name a body: a version alone misses a body
+		// saved at the same version, so both halves come together or not at
+		// all.
+		if (
+			(body.expectedVersion === undefined) !==
+			(body.expectedContentHash === undefined)
+		) {
+			return c.json(
+				badRequest(
+					"Send both expectedVersion and expectedContentHash, or neither",
+				),
+				400,
+			);
+		}
+		const expectedVersion = body.expectedVersion as number | undefined;
+		const expectedContentHash = body.expectedContentHash as
+			| string
+			| undefined;
 
 		const updates: {
 			title?: string;
@@ -442,6 +541,9 @@ export function registerDocumentRoutes(
 					400,
 				);
 			}
+			if (isGenerationOwnedStatus(body.status)) {
+				return c.json(generationOwnedStatus(body.status), 400);
+			}
 			// Integration contract status belongs to the Discovery run (plan
 			// Slice 4); the query layer enforces this too, this just gives a
 			// typed 409 instead of a 500.
@@ -481,6 +583,43 @@ export function registerDocumentRoutes(
 			body.content !== undefined &&
 			(hasVisualSlots(existing.content) || hasVisualSlots(body.content));
 
+		// A Proposal's body is written by generation runs as well as by
+		// people (Fizzy #2946). A content write while a run is queued or
+		// writing would be replaced by the run, or replace its body, so it is
+		// refused. A content write is otherwise always guarded: by the
+		// caller's base, or else by the body this request read, so a
+		// generated body that lands between that read and the write is never
+		// overwritten. Decided by type, not by the rollout gate: a run keeps
+		// writing when the gate is turned off mid-run.
+		// A status write is refused under a run as well: moving a queued or
+		// generating Proposal to another status would end the run's hold, so
+		// a content write after it would pass, and the run's own final save
+		// would land on a status it did not expect. A title-only write
+		// touches neither the body nor the status a run owns, so it stays
+		// allowed.
+		const runGuarded =
+			(updates.content !== undefined || updates.status !== undefined) &&
+			isRunGuardedDocumentType(existing.type);
+		const runGuardedContentWrite =
+			runGuarded && updates.content !== undefined;
+		const generationInProgress = () =>
+			c.json(
+				{
+					error: {
+						message:
+							"A generation run is writing this document; try again when it finishes.",
+						code: DOCUMENT_GENERATION_IN_PROGRESS,
+					},
+				},
+				409,
+			);
+		if (
+			runGuarded &&
+			(existing.status === "QUEUED" || existing.status === "GENERATING")
+		) {
+			return generationInProgress();
+		}
+
 		let updated: Awaited<ReturnType<typeof updateDocument>>;
 		try {
 			updated = await updateDocument(c.req.param("id")!, {
@@ -488,7 +627,23 @@ export function registerDocumentRoutes(
 				lastEditedBy: ctx.userId,
 				userId: ctx.userId,
 				organizationId: ctx.organizationId ?? undefined,
-				...(slotsInvolved ? { expectedVersion: existing.version } : {}),
+				...(expectedVersion !== undefined
+					? { expectedVersion }
+					: slotsInvolved || runGuardedContentWrite
+						? { expectedVersion: existing.version }
+						: {}),
+				...(expectedContentHash !== undefined
+					? { expectedContentHash }
+					: runGuardedContentWrite
+						? {
+								expectedContentHash: contentIdentity(
+									existing.content,
+								),
+							}
+						: {}),
+				// A run queued after the read above is refused by the write
+				// itself, not only by the status check on that read.
+				...(runGuarded ? { refuseWhileGenerating: true } : {}),
 			});
 		} catch (error) {
 			// Last line of defence in the query layer (a completion may land
@@ -499,13 +654,16 @@ export function registerDocumentRoutes(
 					409,
 				);
 			}
+			if (error instanceof DocumentGenerationInProgressError) {
+				return generationInProgress();
+			}
 			if (error instanceof DocumentVersionConflictError) {
 				return c.json(
 					{
 						error: {
 							message:
 								"The document changed while it was being updated. Read it again and retry.",
-							code: "DOCUMENT_VERSION_CONFLICT",
+							code: DOCUMENT_VERSION_CONFLICT,
 						},
 					},
 					409,
@@ -513,6 +671,22 @@ export function registerDocumentRoutes(
 			}
 			throw error;
 		}
+
+		// Open editors refetch on `document_change`, so a collaborative room
+		// holding the body this write replaced brings itself to the saved one
+		// instead of saving the older body back (Fizzy #2946). Sent for every
+		// update, as the editor's own save does. Lazy: the realtime client is
+		// needed by no other v1 document route. Never throws.
+		const { emitDocumentChange } = await import("../../lib/realtime");
+		await emitDocumentChange({
+			projectId: updated.projectId,
+			documentId: updated.id,
+			action: "updated",
+			userId: ctx.userId,
+			userName: V1_DOCUMENT_NUDGE_USER_NAME,
+			documentType: updated.type,
+			documentTitle: updated.title,
+		});
 
 		return c.json(ok(mapDetail(updated)));
 	});

@@ -428,7 +428,9 @@ const nextConfig: NextConfig = {
 	// before the expensive build). tsc still sees fresh .next/types route
 	// validations — `next typegen` writes the identical routes.d.ts /
 	// validator.ts / cache-life.d.ts set — so gate fidelity is unchanged.
-	// Plain `next build` (local, Docker) keeps the in-build check.
+	// The root `pnpm build` uses the same split and the same `&&` ordering:
+	// under the 6144 MB cap in apps/web/package.json the in-build check runs
+	// out of heap. Plain `next build` (Docker) keeps the in-build check.
 	typescript: {
 		ignoreBuildErrors: process.env.NEXT_TYPECHECK_SPLIT === "true",
 	},
@@ -516,6 +518,22 @@ const nextConfig: NextConfig = {
 	// covers the plain, `.mjs` and `.wasm-base64` forms, shipped as separate
 	// files.
 	outputFileTracingExcludes: {
+		// Streamdown is currently the only runtime Shiki consumer under /app
+		// (nothing enforces that — a new server-side highlighter there would
+		// fail at run time on a missing @shikijs/langs module). Its
+		// highlighter runs in useEffect; SSR emits the initial, unhighlighted
+		// code block. Shiki's language/theme maps contain lazy import functions,
+		// so importing Streamdown never loads these assets on the server. Keep
+		// them in the browser build (all languages remain available), but omit
+		// them from app-page functions. Do not apply to API or marketing/docs
+		// routes, which may acquire server-side highlighting independently.
+		// streamdown-server-trace.test.ts renders the real dependency in Node
+		// with these imports blocked, so an eager load fails validation.
+		"/app/**": [
+			"../../node_modules/.pnpm/@shikijs+langs@*/node_modules/@shikijs/langs/dist/*.mjs",
+			"../../node_modules/.pnpm/@shikijs+themes@*/node_modules/@shikijs/themes/dist/*.mjs",
+			"../../node_modules/.pnpm/@shikijs+engine-oniguruma@*/node_modules/@shikijs/engine-oniguruma/dist/wasm-inlined.mjs",
+		],
 		"/*": PRISMA_UNUSED_DB_PROVIDERS.flatMap((provider) =>
 			["query_engine_bg", "query_compiler_bg"].map(
 				(family) =>

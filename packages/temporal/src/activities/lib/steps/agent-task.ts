@@ -17,12 +17,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { ownMcpConfigIds } from "@repo/database";
+import { getWorkflowById, ownMcpConfigIds } from "@repo/database";
 import { agentTaskCapabilityProblem } from "../../../lib/agent-task-capabilities";
 import {
 	AGENT_TASK_MAX_ITERATIONS,
 	AgentTaskNodeConfigSchema,
 } from "../../../lib/agentic-workflow-preset";
+import {
+	findScheduleTimezone,
+	isValidScheduleTimeZone,
+} from "../../../schedules/workflow-builder-schedule";
 import { executeAgentTurn } from "../../agent-execution-core/agent-executor";
 import type { NodeExecutionResult, StepParams } from "../../types";
 import { resolveAgentTaskInstructions } from "../agent-task-instructions";
@@ -110,6 +114,45 @@ export function buildUserMessage(
 	upstreamDataBlock: string | null,
 ): string {
 	return upstreamDataBlock ? `${prompt}\n\n${upstreamDataBlock}` : prompt;
+}
+
+/**
+ * The moment of this run, in the schedule's time zone and in UTC, for the
+ * agent to put on a page. A model has no clock of its own and writes a guess
+ * ("Generated at 01:00") that is neither when the run started nor in the zone
+ * the person set the schedule in.
+ */
+export function describeRunTime(now: Date, timeZone: string): string {
+	const local = new Intl.DateTimeFormat("en-GB", {
+		timeZone,
+		weekday: "long",
+		day: "numeric",
+		month: "long",
+		year: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+		timeZoneName: "short",
+	}).format(now);
+	return `Run time: ${local} (time zone ${timeZone}; UTC ${now.toISOString()})`;
+}
+
+/**
+ * The time zone the workflow's schedule is read in: its trigger's
+ * `scheduleTimezone`, UTC when the workflow has none (as the schedule itself
+ * reads it), has no trigger on a schedule, or names a zone that is not valid.
+ */
+async function scheduleTimeZone(params: StepParams): Promise<string> {
+	if (!params.workflowId) {
+		return "UTC";
+	}
+	const workflow = await getWorkflowById(
+		params.workflowId,
+		params.userId,
+		params.organizationId,
+	);
+	const zone = findScheduleTimezone(workflow?.nodes);
+	return zone && isValidScheduleTimeZone(zone) ? zone : "UTC";
 }
 
 function looksLikeHtml(content: string): boolean {
@@ -239,6 +282,10 @@ export async function executeAgentTaskStep(
 			};
 		}
 
+		const runTime = describeRunTime(
+			new Date(),
+			await scheduleTimeZone(params),
+		);
 		const boundary = randomUUID();
 		const upstreamDataBlock = buildUpstreamDataBlock(
 			params.inputs,
@@ -261,7 +308,10 @@ export async function executeAgentTaskStep(
 			systemPrompt: [instructions.text, config.systemPrompt?.trim()]
 				.filter(Boolean)
 				.join("\n\n"),
-			userMessage: buildUserMessage(config.prompt, upstreamDataBlock),
+			userMessage: buildUserMessage(
+				`${config.prompt}\n\n${runTime}`,
+				upstreamDataBlock,
+			),
 			mcpConfigIds: config.mcpConfigIds,
 			builtInToolNames: config.builtInToolNames,
 			model: config.modelId,
@@ -274,6 +324,9 @@ export async function executeAgentTaskStep(
 				AGENT_TASK_MAX_ITERATIONS,
 			),
 			executionId: params.executionId,
+			workflowExecutionId: params.executionId,
+			promptVersionId: instructions.promptVersionId,
+			jobType: params.jobType,
 		});
 
 		const toolCallSummary = result.toolCalls

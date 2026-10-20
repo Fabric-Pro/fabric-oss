@@ -755,15 +755,6 @@ export class Parlume extends Server<Env> {
 			});
 			const played = playback.complete && isCurrent();
 			handedOver = playback.failedAt !== undefined && isCurrent();
-			const confirmationSpeakerId = request.headers.get(
-				"x-parlume-confirmation-speaker",
-			);
-			if (played && confirmationSpeakerId) {
-				await this.ctx.storage.put<WakeArm>(WAKE_ARM_KEY, {
-					speakerKey: confirmationSpeakerId,
-					expiresAt: Date.now() + 120_000,
-				});
-			}
 			log(handedOver ? "warn" : "info", "speech.synthesized", {
 				sessionId: this.name,
 				voiceGeneration: epoch,
@@ -851,15 +842,6 @@ export class Parlume extends Server<Env> {
 			}
 			const played = complete && isCurrent();
 			const result = { played, interrupted: !played, firstAudioAt };
-			const confirmationSpeakerId = request.headers.get(
-				"x-parlume-confirmation-speaker",
-			);
-			if (result.played && confirmationSpeakerId) {
-				await this.ctx.storage.put<WakeArm>(WAKE_ARM_KEY, {
-					speakerKey: confirmationSpeakerId,
-					expiresAt: Date.now() + 120_000,
-				});
-			}
 			log("info", "speech.played", {
 				sessionId: this.name,
 				voiceGeneration: epoch,

@@ -219,3 +219,35 @@ describe("update-story procedure — AI context refresh (Fizzy #2211)", () => {
 		expect(versionContext.aiContextRefresh).toBe(false);
 	});
 });
+
+describe("manual external id edits", () => {
+	it.each(["new-id", null, "old-id", undefined])(
+		"clears the target only when the id changes to %s",
+		async (externalId) => {
+			mocks.userStoryFindFirst.mockResolvedValue({
+				externalId: "old-id",
+			});
+			mocks.updateStory.mockResolvedValue({
+				id: "example-story",
+				title: "Example",
+				externalId,
+				pmAutoSyncEnabled: false,
+			});
+			await handlers.updateStory({
+				input: {
+					projectId: "example-project",
+					storyId: "example-story",
+					organizationId: "example-org",
+					externalId,
+				},
+				context: ctx,
+			});
+			const data = mocks.updateStory.mock.calls[0]?.[2];
+			if (externalId !== undefined && externalId !== "old-id") {
+				expect(data).toHaveProperty("externalPmTarget", null);
+			} else {
+				expect(data).not.toHaveProperty("externalPmTarget");
+			}
+		},
+	);
+});

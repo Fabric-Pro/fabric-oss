@@ -7,7 +7,7 @@ import { verifySignedTenantRequest } from "@repo/agent-runtime";
 import {
 	buildEffectiveBaseUrl,
 	getAIModelWithMetadata,
-	getRAGProviderConfig,
+	getRAGProviderConfigForModel,
 	isReasoningModelName,
 } from "@repo/ai";
 import {
@@ -125,10 +125,10 @@ export async function GET(req: NextRequest) {
 					);
 		}
 
-		const providerConfig = await getRAGProviderConfig({
-			userId,
-			organizationId,
-		});
+		const providerConfig = await getRAGProviderConfigForModel(
+			{ userId, organizationId },
+			metadata,
+		);
 
 		const gatewayUrl = buildEffectiveBaseUrl(
 			metadata.provider,

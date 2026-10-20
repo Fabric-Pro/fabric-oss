@@ -52,8 +52,19 @@ import {
 	type InstructionFileKind,
 	validateRelativePath,
 } from "@repo/instructions";
+import { FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-discovery-tool-definitions";
 import { pageMayDeclareTool } from "@repo/temporal/fabric-page-tool-definitions";
+import { FABRIC_PROJECT_READ_TOOL_DEFINITIONS } from "@repo/temporal/fabric-project-read-tool-definitions";
 import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow-tool-definitions";
+// The body identity a document read returns and a write sends back as half
+// of its base, the same value `projects.documents.get` returns.
+import { contentIdentity } from "@repo/utils/content-identity";
+import {
+	DOCUMENT_STATUS_GENERATION_OWNED,
+	generationOwnedStatusMessage,
+	isGenerationOwnedStatus,
+	isRunGuardedDocumentType,
+} from "@repo/utils/generation-run-guard";
 // A pure leaf (string work only, no Node built-ins): the one helper every
 // body-replacing write path runs so a Glossy visual slot survives it (KTD17).
 import {
@@ -107,6 +118,8 @@ import { createMemoryWriteTools } from "./memory-write-tools";
 import {
 	bindToolCall,
 	boundProjectId,
+	pinnedProjectId,
+	serviceSessionHasTool,
 	sessionMayReachProject,
 } from "./project-binding";
 import {
@@ -122,6 +135,7 @@ import {
 import { createFrameTools } from "./tools/frame-tools";
 import { createFrameVersionTools } from "./tools/frame-version-tools";
 import { createPageTools } from "./tools/page-tools";
+import { createProjectPmTools } from "./tools/project-pm-tools";
 import { type PlatformToolHandler, toolFamily } from "./tools/tool-family";
 import { WORKFLOW_TOOL_HANDLERS } from "./tools/workflow-tools";
 import {
@@ -148,11 +162,46 @@ const FRAME_VERSION_TOOLS = createFrameVersionTools((name) =>
 	pageMayDeclareTool(name, PLATFORM_TOOL_NAMES),
 );
 const PAGE_TOOLS = createPageTools();
+const PROJECT_PM_TOOLS = createProjectPmTools(resolveGatewayProjectReadAccess);
+const PROJECT_READ_TOOLS = toolFamily(
+	FABRIC_PROJECT_READ_TOOL_DEFINITIONS,
+	new Map([
+		["fabric_list_projects", handleListProjects],
+		["fabric_get_project", handleGetProject],
+		["fabric_list_project_instructions", handleListProjectInstructions],
+		["fabric_get_project_instruction", handleGetProjectInstruction],
+		[
+			"fabric_get_project_instruction_bundle",
+			handleGetProjectInstructionBundle,
+		],
+		[
+			"fabric_list_connected_servers",
+			(_args, session) => handleListConnectedServers(session),
+		],
+	]),
+);
+const PAGE_DISCOVERY_TOOLS = toolFamily(
+	FABRIC_PAGE_DISCOVERY_TOOL_DEFINITIONS,
+	new Map([
+		[
+			"fabric_list_page_tools",
+			async (args, session) => {
+				const { listPageTools } = await import(
+					"./tools/page-tool-discovery"
+				);
+				return listPageTools(args, session, PLATFORM_TOOL_DEFINITIONS);
+			},
+		],
+	]),
+);
 const MEMORY_WRITE_TOOLS = createMemoryWriteTools({
 	resolveGatewayProjectWriteAccessWithHost,
 });
 
 export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
+	...PROJECT_READ_TOOLS.definitions,
+	...PROJECT_PM_TOOLS.definitions,
+	...PAGE_DISCOVERY_TOOLS.definitions,
 	// ── Identity ──
 	{
 		name: "fabric_get_identity",
@@ -188,51 +237,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	},
 
 	// ── Projects ──
-	{
-		name: "fabric_list_projects",
-		description:
-			"Lists projects in the active organization with id, name, description and status. Use 'id' as projectId in the project tools.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				status: {
-					type: "string",
-					enum: ["ACTIVE", "ARCHIVED", "COMPLETED"],
-				},
-				search: {
-					type: "string",
-					description: "Match on project name",
-				},
-				limit: {
-					type: "number",
-					description: "Max 50",
-					default: 20,
-				},
-				offset: {
-					type: "number",
-					default: 0,
-				},
-			},
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_project",
-		description:
-			"Gets one project's name, description, status, heroEmojis and timestamps.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				projectId: {
-					type: "string",
-				},
-			},
-			required: ["projectId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
 	{
 		name: "fabric_create_project",
 		description:
@@ -514,10 +518,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_bug",
 		description:
-			"Files a BUG in a project's backlog, drafted through the project's bug template, so a short factual report is enough. Safe to call on every sighting of a failure: it first matches open bugs by 'fingerprint', then by normalized title. " +
-			"A match is a success with created=false and the existing bug's id and identifier: treat it as already filed and never resend with a reworded title. " +
-			"Always send a fingerprint: title matching is best-effort because drafting can rewrite the title. A closed or declined bug does not block a new filing. " +
-			"The project must be in the session's active organization, and you need permission to create work items in it.",
+			"Files a BUG through the project template. Always supply fingerprint: matches open bugs by fingerprint, then normalized title. created=false succeeds with the existing id/identifier; never reword/resend. Closed/declined bugs allow new filing. Requires work-item create permission in the active tenant's project.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -552,10 +553,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_create_feature",
 		description:
-			"Files a FEATURE in a project's backlog as a placeholder the project's drafting prompt expands, so a one-line request plus context is enough; no spec needed. " +
-			"File only what a person asked for or agreed to track, never speculatively. " +
-			"An open feature with the same normalized title is a success with created=false and that item's id: treat it as already tracked and never resend with a reworded title. " +
-			"The project must be in the session's active organization, and you need permission to create work items in it.",
+			"Files an agreed FEATURE placeholder for project drafting; short request/context suffice. Never file speculative work. Open normalized-title matches return created=false and existing id; never reword/resend. Requires work-item create permission in the active tenant's project.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -701,7 +699,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_get_document",
 		description:
-			"Reads a project document's full markdown with its title, type and version. " +
+			"Reads a project document's full markdown with its title, type, status, version and contentHash. " +
 			"A `<visual-slot …></visual-slot>` line is a placeholder marker for a visual, not prose: do not quote, summarize or rewrite it.",
 		inputSchema: {
 			type: "object",
@@ -760,7 +758,8 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_update_document",
 		description:
-			"Updates a document's title, content or status; omitted fields are unchanged. A content change replaces the whole body and saves a version.",
+			"Updates a document's title, content or status; omitted fields are unchanged. A content change replaces the whole body and saves a version. " +
+			"Send the version and contentHash you read as expectedVersion and expectedContentHash (both or neither).",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -782,6 +781,12 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				changeDescription: {
 					type: "string",
 					description: "Short note for the version history",
+				},
+				expectedVersion: {
+					type: "integer",
+				},
+				expectedContentHash: {
+					type: "string",
 				},
 			},
 			required: ["documentId"],
@@ -933,11 +938,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	{
 		name: "fabric_upsert_project_context",
 		description:
-			"Pushes a text file into a project's Context tab, keyed by the file's path ('sourcePath'), so pushing the same path again updates that one source. " +
-			"Answers 'created', 'updated' (re-indexed), 'unchanged', or 'duplicate' when the content is already another source. " +
-			"To replace an existing file, pass its 'contentHash' (from fabric_get_project_context, fabric_list_project_contexts or a 'conflict' result) as 'expectedContentHash'; omitting it never means overwrite. A 'conflict' writes nothing: re-read, merge and retry. " +
-			"For a rename pass the old path as 'movedFromSourcePath' with its hash as 'expectedContentHash': the source is 'moved' only when that version is current and the content is unchanged; otherwise the new path gets the ordinary answer and 'moveNotApplied' says why. A path a repository sync owns is refused with 'REPOSITORY_MANAGED'. " +
-			"Coding-instruction files (CLAUDE.md, AGENTS.md, .claude/, skills, agents, hooks) go to fabric_propose_project_instruction_change instead.",
+			"Upserts Context text keyed by the file's path ('sourcePath'). Returns 'created', 'updated' (re-indexed), 'unchanged', or 'duplicate' for identical content already stored. Replacing needs 'expectedContentHash' from fabric_get_project_context, fabric_list_project_contexts or a 'conflict'; omission never means overwrite. A 'conflict' writes nothing: re-read/merge/retry. Rename uses 'movedFromSourcePath' and its current hash with unchanged content to return 'moved'; otherwise returns the ordinary result and moveNotApplied. 'REPOSITORY_MANAGED' paths are refused. Coding instructions (CLAUDE.md, AGENTS.md, .claude/, skills/agents/hooks) use fabric_propose_project_instruction_change.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -986,144 +987,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	},
 
 	// ── Coding Instructions ──
-	{
-		name: "fabric_list_project_instructions",
-		description:
-			"Lists a project's coding-instruction files (skills, agents, rules, CLAUDE.md/AGENTS.md, settings, scripts, knowledge) with path, kind, name, description and size; read one with fabric_get_project_instruction. " +
-			"Repository-backed projects are read from the configured Git commit and return commitSha and generation; uploaded projects return the published snapshot.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				projectId: { type: "string" },
-				kind: {
-					type: "string",
-					enum: [
-						"SKILL",
-						"AGENT",
-						"RULE",
-						"INSTRUCTIONS",
-						"SETTINGS",
-						"SCRIPT",
-						"KNOWLEDGE",
-						"OTHER",
-					],
-				},
-				query: {
-					type: "string",
-					description:
-						"Case-insensitive match on path, name or description",
-				},
-				prefix: {
-					type: "string",
-					description:
-						"Repository projects: only files under this folder, e.g. '.claude/skills'",
-					maxLength: 512,
-				},
-				limit: {
-					type: "integer",
-					description:
-						"Repository projects: files per page (default 200)",
-					minimum: 1,
-					maximum: 500,
-				},
-				cursor: {
-					type: "string",
-					description:
-						"Repository projects: page.nextCursor, sent with that response's generation and commitSha",
-					maxLength: 2048,
-				},
-				sinceDigest: {
-					type: "string",
-					description:
-						"Uploaded projects: the digest you last saw; unchanged answers without the file list",
-					minLength: 1,
-					maxLength: 128,
-				},
-				generation: {
-					type: "integer",
-					description:
-						"From an earlier repository response; send with commitSha to pin the read",
-					minimum: 0,
-				},
-				commitSha: {
-					type: "string",
-					description:
-						"From an earlier repository response; send with generation",
-					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
-				},
-			},
-			required: ["projectId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_project_instruction",
-		description:
-			"Reads one coding-instruction file by its listed path; for the whole tree use fabric_get_project_instruction_bundle. " +
-			"Text is paged: when 'truncated' is true, call again with offset=nextOffset, plus the returned generation and commitSha on a repository-backed project. " +
-			"Uploaded binaries return a short-lived 'url'; read repository binaries with Git. " +
-			"Scripts and settings are returned as text for reading only; Fabric never runs them.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				projectId: { type: "string" },
-				path: {
-					type: "string",
-					description: "Exactly as listed",
-				},
-				offset: {
-					type: "integer",
-					default: 0,
-					minimum: 0,
-					maximum: 2_147_483_646,
-				},
-				maxLength: {
-					type: "integer",
-					default: 50000,
-					minimum: 1,
-					maximum: 200_000,
-				},
-				generation: {
-					type: "integer",
-					description:
-						"Repository projects: from the first page; required for later pages",
-					minimum: 0,
-				},
-				commitSha: {
-					type: "string",
-					description:
-						"Repository projects: from the first page; required for later pages",
-					pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
-				},
-			},
-			required: ["projectId", "path"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
-	{
-		name: "fabric_get_project_instruction_bundle",
-		description:
-			"Uploaded projects: returns the published instructions' manifest (snapshot id, version, digest, each file's path, sha256 and mode) and a short-lived zip URL; pass sinceDigest to skip an unchanged archive. " +
-			"Repository-backed projects: returns the repository and pinned commit to check out with Git, and no zip.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				projectId: { type: "string" },
-				sinceDigest: {
-					type: "string",
-					description:
-						"The digest you last installed; unchanged answers without a zip URL",
-					minLength: 1,
-					maxLength: 128,
-				},
-			},
-			required: ["projectId"],
-		},
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
 	{
 		name: "fabric_instruction_checks",
 		description:
@@ -1402,14 +1265,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 	...MEMORY_WRITE_TOOLS.definitions,
 
 	// ── Connected MCP Servers ──
-	{
-		name: "fabric_list_connected_servers",
-		description:
-			"Lists the MCP servers connected in the active organization with name, providerKey, status and tool count. Pass a providerKey to fabric_request_authority to use that server's tools.",
-		inputSchema: { type: "object", properties: {} },
-		annotations: { readOnlyHint: true },
-		_gateway_source: "platform",
-	},
 
 	// ── Runtime Authority ──
 	{
@@ -1514,8 +1369,6 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_switch_organization: { scope: "orgs:read", kind: "write" },
 
 	// Projects, documents and context
-	fabric_list_projects: { scope: "projects:read", kind: "read" },
-	fabric_get_project: { scope: "projects:read", kind: "read" },
 	fabric_get_project_statuses: { scope: "projects:read", kind: "read" },
 	fabric_list_documents: { scope: "projects:read", kind: "read" },
 	fabric_search_project_knowledge: { scope: "projects:read", kind: "read" },
@@ -1528,18 +1381,6 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	// Same scope as the edit above; the handler's live CONTEXT_CREATE check
 	// holds the per-call line.
 	fabric_upsert_project_context: { scope: "projects:write", kind: "write" },
-	fabric_list_project_instructions: {
-		scope: "instructions:read",
-		kind: "read",
-	},
-	fabric_get_project_instruction: {
-		scope: "instructions:read",
-		kind: "read",
-	},
-	fabric_get_project_instruction_bundle: {
-		scope: "instructions:read",
-		kind: "read",
-	},
 	// Same gate as the bundle: it reads the published snapshot and one file
 	// of it, and reports on the caller's own credential.
 	fabric_instruction_checks: {
@@ -1584,6 +1425,9 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	fabric_query_workspace: { scope: "workspaces:read", kind: "read" },
 
 	// Workflows and frames: each tool's scope is part of its definition
+	...PROJECT_READ_TOOLS.scopes,
+	...PROJECT_PM_TOOLS.scopes,
+	...PAGE_DISCOVERY_TOOLS.scopes,
 	...WORKFLOW_TOOLS.scopes,
 	...FRAME_TOOLS.scopes,
 	...FRAME_VERSION_TOOLS.scopes,
@@ -1596,7 +1440,6 @@ export const TOOL_SCOPES: Record<string, ToolScope> = {
 	// MCP plumbing and delegated authority. Authority is granted to a specific
 	// gateway session for a bounded time, so requesting or revoking it changes
 	// what this session may reach — a write, whatever it reads afterwards.
-	fabric_list_connected_servers: { scope: "mcp:read", kind: "read" },
 	fabric_check_authority: { scope: "mcp:read", kind: "read" },
 	fabric_request_authority: { scope: "mcp:write", kind: "write" },
 	fabric_revoke_authority: { scope: "mcp:write", kind: "write" },
@@ -1623,6 +1466,9 @@ export function platformToolScope(toolName: string): ToolScope {
 }
 
 const FAMILY_HANDLERS: ReadonlyMap<string, PlatformToolHandler> = new Map([
+	...PROJECT_READ_TOOLS.handlers,
+	...PROJECT_PM_TOOLS.handlers,
+	...PAGE_DISCOVERY_TOOLS.handlers,
 	...WORKFLOW_TOOLS.handlers,
 	...FRAME_TOOLS.handlers,
 	...FRAME_VERSION_TOOLS.handlers,
@@ -1639,6 +1485,14 @@ export async function executePlatformTool(
 	requestedArgs: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
+	if (
+		session.credential === "service" &&
+		!serviceSessionHasTool(session, toolName)
+	) {
+		return errorResult(
+			`${toolName} is not available to this agent runtime.`,
+		);
+	}
 	// A session opened from a project's URL has the project's tools, on the
 	// project: see ./project-binding.
 	const bound = bindToolCall(toolName, requestedArgs, session);
@@ -1668,10 +1522,6 @@ export async function executePlatformTool(
 				return await handleListOrganizations(session);
 			case "fabric_switch_organization":
 				return await handleSwitchOrganization(args, session);
-			case "fabric_list_projects":
-				return await handleListProjects(args, session);
-			case "fabric_get_project":
-				return await handleGetProject(args, session);
 			case "fabric_create_project":
 				return await handleCreateProject(args, session);
 			case "fabric_update_project":
@@ -1716,12 +1566,6 @@ export async function executePlatformTool(
 				return await handleUpdateProjectContext(args, session);
 			case "fabric_upsert_project_context":
 				return await handleUpsertProjectContext(args, session);
-			case "fabric_list_project_instructions":
-				return await handleListProjectInstructions(args, session);
-			case "fabric_get_project_instruction":
-				return await handleGetProjectInstruction(args, session);
-			case "fabric_get_project_instruction_bundle":
-				return await handleGetProjectInstructionBundle(args, session);
 			case "fabric_instruction_checks":
 				return await handleGetInstructionChecks(args, session);
 			case "fabric_propose_project_instruction_change":
@@ -1739,8 +1583,6 @@ export async function executePlatformTool(
 				return await handleQueryWorkspace(args, session);
 			case "fabric_list_chats":
 				return await handleListChats(args, session);
-			case "fabric_list_connected_servers":
-				return await handleListConnectedServers(session);
 			case "fabric_request_authority":
 				return await handleRequestAuthority(args, session);
 			// fabric_approve_authority is not an MCP tool — approval is human-only via Fabric UI/API
@@ -1756,7 +1598,11 @@ export async function executePlatformTool(
 			}
 		}
 	} catch (error) {
-		console.error("[MCP Gateway] Platform tool %s error:", toolName, error);
+		console.error("[MCP Gateway] Platform tool error:", {
+			toolName,
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		// Deliberate refusals carry a message written for a person; anything
 		// else (a database, storage or network failure) names internals that
 		// are not the caller's to see, so it gets one generic sentence and the
@@ -2073,9 +1919,15 @@ async function handleListProjects(
 	args: Record<string, unknown>,
 	session: GatewaySession,
 ): Promise<ToolCallResult> {
-	// A session bound to one project lists that project and no other.
-	const boundId = boundProjectId(session);
-	if (boundId !== null) {
+	// A session bound or pinned to one project lists that project and no other.
+	const boundId = boundProjectId(session) ?? pinnedProjectId(session);
+	if (
+		session.pageProjectId !== undefined &&
+		!sessionMayReachProject(session, session.pageProjectId)
+	) {
+		return errorResult("Project not found or access denied");
+	}
+	if (boundId !== null && session.pageProjectId === undefined) {
 		const { getProjectSummaryById } = await import("@repo/database");
 		const project = await getProjectSummaryById(
 			boundId,
@@ -2095,6 +1947,9 @@ async function handleListProjects(
 	const result = await listProjects({
 		userId: session.userId,
 		organizationId: session.organizationId || undefined,
+		...(session.pageProjectId !== undefined
+			? { projectId: session.pageProjectId }
+			: {}),
 		status: args.status as "ACTIVE" | "ARCHIVED" | "COMPLETED" | undefined,
 		search: args.search as string | undefined,
 		limit: Math.min((args.limit as number) ?? 20, 50),
@@ -3261,6 +3116,37 @@ async function isBacklogCollisionStillLive(storyId: string): Promise<boolean> {
  * whatever else is diagnostic for that tool (the bug tool records whether the
  * caller supplied a fingerprint); both land on the audit row's metadata.
  */
+/**
+ * A session limited to a meeting's project answers a person who is waiting, and
+ * drafting a body through the project's prompt takes the better part of a
+ * minute. Such a session files the item from the words it was given and has
+ * the body drafted afterwards by the existing body-rewrite workflow; every
+ * other session drafts inline, as before.
+ */
+function deferredDraftingOptions(session: GatewaySession) {
+	return pinnedProjectId(session) === null
+		? {}
+		: { skipDrafting: true, bodyAlreadyDrafted: true };
+}
+
+async function startDeferredDraft(
+	session: GatewaySession,
+	projectId: string,
+	story: { id: string; kind: string },
+): Promise<void> {
+	if (pinnedProjectId(session) === null) {
+		return;
+	}
+	const { triggerStoryBodyDraft } = await import("@repo/temporal");
+	await triggerStoryBodyDraft({
+		storyId: story.id,
+		projectId,
+		userId: session.userId,
+		organizationId: session.organizationId,
+		targetKind: story.kind === "BUG" ? "BUG" : "FEATURE",
+	});
+}
+
 function announceStoryCreated(params: {
 	session: GatewaySession;
 	projectId: string;
@@ -3292,7 +3178,10 @@ function announceStoryCreated(params: {
 		.catch((error) => {
 			console.warn(
 				"[MCP Gateway] story.created lifecycle dispatch failed:",
-				error,
+				{
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				},
 			);
 		});
 
@@ -3343,7 +3232,10 @@ function announceStoryCreated(params: {
 			);
 		})
 		.catch((error) => {
-			console.warn("[MCP Gateway] story.created audit failed:", error);
+			console.warn("[MCP Gateway] story.created audit failed:", {
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 		});
 }
 
@@ -3617,6 +3509,7 @@ async function handleCreateBug(
 			draftingStage: "PLACEHOLDER",
 			source: "CUSTOM_AGENT",
 			bugFingerprint: fingerprint ?? null,
+			...deferredDraftingOptions(session),
 		});
 
 	/**
@@ -3659,6 +3552,9 @@ async function handleCreateBug(
 			kind: story.kind,
 			priority: story.priority,
 			draftingStage: story.draftingStage,
+			...(pinnedProjectId(session) !== null && {
+				draftingInBackground: true,
+			}),
 			fingerprint: fingerprint ?? null,
 			message: fingerprint
 				? `Filed bug ${story.identifier}.`
@@ -3667,6 +3563,7 @@ async function handleCreateBug(
 
 	try {
 		const { story, aiDrafted } = await create();
+		await startDeferredDraft(session, projectId, story);
 		announceCreated(story, aiDrafted);
 		return createdResult(story);
 	} catch (error) {
@@ -3685,6 +3582,7 @@ async function handleCreateBug(
 		// caller's report. Re-file EXACTLY ONCE.
 		try {
 			const { story, aiDrafted } = await create();
+			await startDeferredDraft(session, projectId, story);
 			announceCreated(story, aiDrafted);
 			return createdResult(story);
 		} catch (retryError) {
@@ -3831,8 +3729,10 @@ async function handleCreateFeature(
 		size,
 		draftingStage: "PLACEHOLDER",
 		source: "CUSTOM_AGENT",
+		...deferredDraftingOptions(session),
 	});
 
+	await startDeferredDraft(session, projectId, story);
 	announceStoryCreated({
 		session,
 		projectId,
@@ -3852,6 +3752,9 @@ async function handleCreateFeature(
 		priority: story.priority,
 		size: story.size ?? null,
 		draftingStage: story.draftingStage,
+		...(pinnedProjectId(session) !== null && {
+			draftingInBackground: true,
+		}),
 		message: `Filed feature ${story.identifier}.`,
 	});
 }
@@ -4042,6 +3945,12 @@ async function handleGetDocument(
 		title: doc.title,
 		content: doc.content,
 		status: doc.status,
+		// The base a later fabric_update_document sends back. `contentHash`
+		// is the body identity `projects.documents.get` returns; it shadows
+		// the embed-owned `contentHash` column, which no reader of this tool
+		// should see.
+		version: doc.version,
+		contentHash: contentIdentity(doc.content),
 		createdAt: doc.createdAt,
 		updatedAt: doc.updatedAt,
 	});
@@ -4068,6 +3977,9 @@ async function handleCreateDocument(
 	}
 	if (!content && content !== "") {
 		return errorResult("content is required");
+	}
+	if (isGenerationOwnedStatus(args.status)) {
+		return errorResult(generationOwnedStatus(args.status));
 	}
 
 	const access = await resolveGatewayProjectWriteAccess(
@@ -4098,7 +4010,6 @@ async function handleCreateDocument(
 		status:
 			(args.status as
 				| "DRAFT"
-				| "GENERATING"
 				| "IN_PROGRESS"
 				| "REVIEW"
 				| "COMPLETE"
@@ -4119,6 +4030,19 @@ async function handleCreateDocument(
 	});
 }
 
+/** A content or status write refused because a generation run holds the document. */
+const GENERATION_RUN_WRITING =
+	"A generation run is writing this document; try again when it finishes.";
+
+/**
+ * Refusal text for a status only a generation run may set. The tool enums
+ * leave both out, but nothing checks a call against its schema before it
+ * gets here, so the handlers refuse them too.
+ */
+function generationOwnedStatus(status: "QUEUED" | "GENERATING"): string {
+	return `${generationOwnedStatusMessage(status)} (${DOCUMENT_STATUS_GENERATION_OWNED})`;
+}
+
 async function handleUpdateDocument(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -4128,11 +4052,15 @@ async function handleUpdateDocument(
 		getDocumentById,
 		IntegrationContractStatusManagedError,
 		DocumentVersionConflictError,
+		DocumentGenerationInProgressError,
 	} = await import("@repo/database");
 
 	const documentId = args.documentId as string;
 	if (!documentId) {
 		return errorResult("documentId is required");
+	}
+	if (isGenerationOwnedStatus(args.status)) {
+		return errorResult(generationOwnedStatus(args.status));
 	}
 
 	const doc = await getDocumentById(documentId);
@@ -4164,6 +4092,67 @@ async function handleUpdateDocument(
 		);
 	}
 
+	// The base the caller read (`version` and `contentHash` from
+	// fabric_get_document). `updateDocument` refuses the write when either
+	// half no longer matches the stored document. Tool callers often send
+	// `null` for a field they mean to leave out, so `null` is no base.
+	const rawExpectedVersion = args.expectedVersion ?? undefined;
+	const rawExpectedContentHash = args.expectedContentHash ?? undefined;
+	if (
+		rawExpectedVersion !== undefined &&
+		!(
+			typeof rawExpectedVersion === "number" &&
+			Number.isInteger(rawExpectedVersion) &&
+			rawExpectedVersion >= 0
+		)
+	) {
+		return errorResult("expectedVersion must be a non-negative integer");
+	}
+	if (
+		rawExpectedContentHash !== undefined &&
+		(typeof rawExpectedContentHash !== "string" ||
+			rawExpectedContentHash === "")
+	) {
+		return errorResult("expectedContentHash must be a non-empty string");
+	}
+	// Half a base cannot name a body: a version alone misses a body saved at
+	// the same version, so both halves come together or not at all.
+	if (
+		(rawExpectedVersion === undefined) !==
+		(rawExpectedContentHash === undefined)
+	) {
+		return errorResult(
+			"Send both expectedVersion and expectedContentHash, or neither",
+		);
+	}
+	const expectedVersion = rawExpectedVersion as number | undefined;
+	const expectedContentHash = rawExpectedContentHash as string | undefined;
+
+	// A Proposal's body is written by generation runs as well as by people
+	// (Fizzy #2946). A content write while a run is queued or writing would
+	// be replaced by the run, or replace its body, so it is refused. A
+	// content write is otherwise always guarded: by the caller's base, or
+	// else by the body this call read, so a generated body that lands
+	// between that read and the write is never overwritten. Decided by type,
+	// not by the rollout gate: a run keeps writing when the gate is turned
+	// off mid-run.
+	// A status write is refused under a run as well: moving a queued or
+	// generating Proposal to another status would end the run's hold, so a
+	// content write after it would pass, and the run's own final save would
+	// land on a status it did not expect. A title-only write touches neither
+	// the body nor the status a run owns, so it stays allowed.
+	const runGuarded =
+		(typeof args.content === "string" || args.status !== undefined) &&
+		isRunGuardedDocumentType(doc.type);
+	const runGuardedContentWrite =
+		runGuarded && typeof args.content === "string";
+	if (
+		runGuarded &&
+		(doc.status === "QUEUED" || doc.status === "GENERATING")
+	) {
+		return errorResult(GENERATION_RUN_WRITING);
+	}
+
 	// An agent rewriting the body may drop, move, or echo a Glossy visual
 	// slot. Strip whatever slot tags it sent and splice back the ones the
 	// stored body holds — the body read and authorized above, not a second
@@ -4191,7 +4180,6 @@ async function handleUpdateDocument(
 				? {
 						status: args.status as
 							| "DRAFT"
-							| "GENERATING"
 							| "IN_PROGRESS"
 							| "REVIEW"
 							| "COMPLETE"
@@ -4204,13 +4192,28 @@ async function handleUpdateDocument(
 			lastEditedBy: session.userId,
 			userId: session.userId,
 			organizationId: session.organizationId ?? undefined,
-			...(slotsInvolved ? { expectedVersion: doc.version } : {}),
+			...(expectedVersion !== undefined
+				? { expectedVersion }
+				: slotsInvolved || runGuardedContentWrite
+					? { expectedVersion: doc.version }
+					: {}),
+			...(expectedContentHash !== undefined
+				? { expectedContentHash }
+				: runGuardedContentWrite
+					? { expectedContentHash: contentIdentity(doc.content) }
+					: {}),
+			// A run queued after the read above is refused by the write
+			// itself, not only by the status check on that read.
+			...(runGuarded ? { refuseWhileGenerating: true } : {}),
 		});
 	} catch (error) {
 		// Last line of defence in the query layer (a completion may land
 		// between the pre-read above and its own read).
 		if (error instanceof IntegrationContractStatusManagedError) {
 			return errorResult(error.message);
+		}
+		if (error instanceof DocumentGenerationInProgressError) {
+			return errorResult(GENERATION_RUN_WRITING);
 		}
 		if (error instanceof DocumentVersionConflictError) {
 			return errorResult(
@@ -4220,12 +4223,32 @@ async function handleUpdateDocument(
 		throw error;
 	}
 
+	// Open editors refetch on `document_change`, so a collaborative room
+	// holding the body this write replaced brings itself to the saved one
+	// instead of saving the older body back (Fizzy #2946). Sent for every
+	// update, as the editor's own save does. `emitDocumentChange` swallows its
+	// own delivery failures.
+	const { emitDocumentChange } = await import("@repo/api/lib/realtime");
+	await emitDocumentChange({
+		projectId: doc.projectId,
+		documentId,
+		action: "updated",
+		userId: session.userId,
+		userName: session.userName || "Anonymous",
+		documentType: doc.type,
+		documentTitle: updated.title,
+	});
+
 	return jsonResult({
 		success: true,
 		documentId: updated.id,
 		title: updated.title,
 		status: updated.status,
 		version: updated.version,
+		// With `version`, the base for a next guarded update, so a chained
+		// write needs no second read. The same identity fabric_get_document
+		// returns, of the body as stored.
+		contentHash: contentIdentity(updated.content),
 	});
 }
 
@@ -4649,7 +4672,10 @@ async function handleUpdateProjectContext(
 		} catch (error) {
 			console.warn(
 				"[MCP Gateway] project_context metadata audit failed:",
-				error,
+				{
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				},
 			);
 		}
 
@@ -4850,10 +4876,10 @@ async function handleUpsertProjectContext(
 		if (refusal !== null) {
 			return errorResult(refusal);
 		}
-		console.error(
-			"[MCP Gateway] fabric_upsert_project_context failed:",
-			error,
-		);
+		console.error("[MCP Gateway] fabric_upsert_project_context failed:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return errorResult(
 			"Could not save the file to the project's Context. Try again: if this call did land, the retry is answered 'unchanged'.",
 		);
@@ -5818,7 +5844,10 @@ async function loadPublishedEnvironmentDeclaration(
 	} catch (error) {
 		console.error(
 			"[MCP Gateway] fabric_instruction_checks: environment declaration read failed",
-			error,
+			{
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return {
 			state: "unusable",
@@ -5951,7 +5980,10 @@ async function handleGetInstructionChecks(
 	} catch (error) {
 		console.error(
 			"[MCP Gateway] fabric_instruction_checks: access check failed",
-			error,
+			{
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return report([
 			...checks,
@@ -6577,7 +6609,10 @@ async function handleProposeProjectInstructionChange(
 		}
 		console.error(
 			"[MCP Gateway] fabric_propose_project_instruction_change failed:",
-			error,
+			{
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return errorResult(
 			"The proposal could not be created because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
@@ -6787,7 +6822,10 @@ async function handleAddInstructionLesson(
 		} catch (error) {
 			console.error(
 				"[MCP Gateway] fabric_add_instruction_lesson could not place the file:",
-				error,
+				{
+					error: error instanceof Error ? error.message : error,
+					stack: error instanceof Error ? error.stack : undefined,
+				},
 			);
 			return errorResult(
 				"Could not find an unused file name for this lesson today. Try a more specific title.",
@@ -6854,10 +6892,10 @@ async function handleAddInstructionLesson(
 		if (refusal !== null) {
 			return errorResult(refusal);
 		}
-		console.error(
-			"[MCP Gateway] fabric_add_instruction_lesson failed:",
-			error,
-		);
+		console.error("[MCP Gateway] fabric_add_instruction_lesson failed:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 		return errorResult(
 			"The lesson could not be recorded because of an internal error. Nothing was changed. Try again, or use the project's Coding Instructions tab.",
 		);
@@ -6950,7 +6988,10 @@ async function resolveOriginalFileLink(ctx: {
 	} catch (error) {
 		console.error(
 			"[MCP Gateway] Failed to presign original context file:",
-			error,
+			{
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		return null;
 	}

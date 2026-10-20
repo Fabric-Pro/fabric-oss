@@ -57,6 +57,7 @@ interface CompanyContextToolResult {
 }
 
 interface CompanyContextToolOptions {
+	usageConversationId?: string;
 	/**
 	 * The Advisor's opt-in (`DirectChatWorkflowInput.companyContextAdvisor`).
 	 * Anything but `true` builds nothing.
@@ -103,6 +104,7 @@ async function similarityThresholdFor(projectId?: string): Promise<number> {
  * ready sources, no match and a timeout are all an empty result.
  */
 export async function executeCompanyContextSearch(call: {
+	usageConversationId?: string;
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
@@ -145,6 +147,7 @@ export async function executeCompanyContextSearch(call: {
 
 	// The search logs the ids and hit count; never the query or the text.
 	const { entries, timedOut } = await searchCompanyContext({
+		usageConversationId: call.usageConversationId,
 		organizationId: access.organizationId,
 		userId,
 		query,
@@ -187,6 +190,7 @@ export function createCompanyContextTools(
 			inputSchema: jsonSchemaToZod(COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA),
 			execute: async (args: Record<string, unknown>) =>
 				executeCompanyContextSearch({
+					usageConversationId: options.usageConversationId,
 					userId,
 					organizationId,
 					projectId,

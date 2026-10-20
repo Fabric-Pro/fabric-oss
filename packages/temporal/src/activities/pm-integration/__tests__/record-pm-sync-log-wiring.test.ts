@@ -12,6 +12,7 @@
  *   pnpm --filter @repo/temporal test __tests__/record-pm-sync-log-wiring.test.ts
  */
 
+import { logger } from "@repo/logs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // -----------------------------------------------------------------------------
@@ -284,3 +285,54 @@ describe("recordPmSyncFailure → FAILURE log row + entityType mapping", () => {
 // (describe: "fetchAdoWorkItemStates — content drift (moved from reconcile,
 // #1741)"). `reconcileAdoStates` no longer emits pull-drift logs, so there is
 // no reconcile-side wiring left to assert here.
+
+it("redacts database text in row state and sync logs while retaining the raw logger message", async () => {
+	const raw =
+		"Invalid `prisma.userStory.update()` invocation in\n/app/packages/example/file.ts:123:45\nquery failed with argument P1234";
+	mocks.userStoryFindUnique.mockResolvedValue({
+		title: "Example story",
+		projectId: "example-project",
+		externalId: null,
+		externalUrl: null,
+		externalMcpServerId: null,
+		project: { organizationId: "example-org", userId: "example-user" },
+	});
+	for (const [errorMessage, errorClass, expected] of [
+		[raw, "Error", "database error"],
+		[
+			"query contains a server path",
+			"PrismaClientInitializationError",
+			"database error",
+		],
+		[
+			"query contains a server path",
+			"DriverAdapterError",
+			"database error",
+		],
+	]) {
+		await recordPmSyncFailure({
+			itemId: "example-story",
+			itemType: "story",
+			errorMessage,
+			errorClass,
+			triggerSource: "retry",
+			overridePendingAttempt: true,
+		});
+		expect(mocks.userStoryUpdate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ lastPmSyncError: expected }),
+			}),
+		);
+		expect(mocks.recordPmSyncLog).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				errorPayload: expect.objectContaining({
+					errorMessage: expected,
+				}),
+			}),
+		);
+		expect(logger.info).toHaveBeenCalledWith(
+			"pm.sync.failed",
+			expect.objectContaining({ message: errorMessage }),
+		);
+	}
+});

@@ -10,11 +10,20 @@
 
 import { describe, expect, it } from "vitest";
 import { AGENT_TASK_PROMPT_AGENT_KEY } from "../lib/agent-task-prompt";
+import {
+	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
+} from "../lib/completion-claim-prompts";
+import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "../lib/direct-chat-memory-prompt";
+import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "../lib/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "../lib/page-ask-prompt";
 import {
 	bindableDocumentTypes,
 	findPromptAgentTarget,
+	isSupersededPromptAction,
+	listOfferedPromptActions,
 	listPromptActions,
+	offeredDocumentTypes,
 	PROMPT_AGENT_TARGETS,
 	PROMPT_FEATURE_TYPES,
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
@@ -468,5 +477,141 @@ describe("Workspace Page Ask prompt", () => {
 		expect(
 			byId(promptActionId(PAGE_ASK_PROMPT_AGENT_KEY, "GENERAL", null)),
 		).toMatchObject({ featureType: "WORKSPACES" });
+	});
+});
+
+describe("Assistant prompts", () => {
+	// The memory rules and the completion-claim check must be findable and
+	// re-bindable from the UI, at the one slot each activity resolves.
+	for (const [key, label] of [
+		[
+			ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+			"Assistant Memory (Orchestrator)",
+		],
+		[DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY, "Assistant Memory (Direct)"],
+		[COMPLETION_CLAIM_JUDGE_AGENT_KEY, "Assistant Completion Claim Check"],
+		[
+			COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
+			"Assistant Completion Claim Correction",
+		],
+	] as const) {
+		it(`${key} is bindable under Assistant for GENERAL with no story kind`, () => {
+			const target = findPromptAgentTarget(key);
+
+			expect(target?.label).toBe(label);
+			expect(target?.featureType).toBe("ASSISTANT");
+			expect(PROMPT_FEATURE_TYPES.ASSISTANT).toBeDefined();
+			expect(target?.actions).toEqual([
+				{ documentType: "GENERAL", storyKind: null },
+			]);
+		});
+	}
+});
+
+describe("actions the Proposal artifact supersedes (Fizzy #2946)", () => {
+	const LEGACY_DRAFT = promptActionId(
+		"project_document_generator",
+		"PROPOSAL",
+		null,
+	);
+	const LEGACY_GENERATOR = promptActionId(
+		"document_generator",
+		"PROPOSAL",
+		null,
+	);
+	const MAIN = promptActionId(
+		PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+		"PROPOSAL",
+		null,
+	);
+	const ANALYSIS = promptActionId(
+		PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
+		"PROPOSAL",
+		null,
+	);
+	const PRD = promptActionId("project_document_generator", "PRD", null);
+	const agentFor = (key: string) => {
+		const agent = findPromptAgentTarget(key);
+		if (!agent) {
+			throw new Error(`No catalog agent ${key}`);
+		}
+		return agent;
+	};
+
+	it("supersedes exactly the two legacy Proposal actions with the gate on", () => {
+		const offered = listOfferedPromptActions(true).map((a) => a.id);
+		const removed = actions
+			.map((a) => a.id)
+			.filter((id) => !offered.includes(id));
+		expect(removed.sort()).toEqual([LEGACY_GENERATOR, LEGACY_DRAFT].sort());
+	});
+
+	it("keeps Client proposal (Main), the internal analysis and every other document offered", () => {
+		const offered = listOfferedPromptActions(true).map((a) => a.id);
+
+		expect(offered).toContain(MAIN);
+		expect(offered).toContain(ANALYSIS);
+		expect(offered).toContain(PRD);
+		expect(
+			isSupersededPromptAction(
+				PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+				"PROPOSAL",
+				true,
+			),
+		).toBe(false);
+		expect(
+			isSupersededPromptAction("project_document_generator", "PRD", true),
+		).toBe(false);
+	});
+
+	it("labels an offered action exactly as the full list does", () => {
+		for (const action of listOfferedPromptActions(true)) {
+			expect(action).toEqual(byId(action.id));
+		}
+	});
+
+	it("supersedes nothing with the gate off", () => {
+		expect(listOfferedPromptActions(false)).toEqual(listPromptActions());
+		expect(
+			isSupersededPromptAction(
+				"project_document_generator",
+				"PROPOSAL",
+				false,
+			),
+		).toBe(false);
+	});
+
+	it("drops Proposal from the legacy agents' document types only with the gate on", () => {
+		const draftAgent = agentFor("project_document_generator");
+		const generator = agentFor("document_generator");
+		const main = agentFor(PROPOSAL_CLIENT_MAIN_AGENT_KEY);
+
+		expect(offeredDocumentTypes(draftAgent, null, true)).not.toContain(
+			"PROPOSAL",
+		);
+		expect(offeredDocumentTypes(draftAgent, null, true)).toContain("PRD");
+		expect(offeredDocumentTypes(generator, null, true)).toEqual([
+			"GENERAL",
+			"PRD",
+			"ARCHITECTURE",
+		]);
+		expect(offeredDocumentTypes(main, null, true)).toEqual(["PROPOSAL"]);
+		expect(offeredDocumentTypes(draftAgent, null, false)).toEqual(
+			bindableDocumentTypes(draftAgent, null),
+		);
+	});
+
+	it("leaves the complete list and the agent table untouched", () => {
+		// The rule shapes what is offered; the catalog itself, which the seeds
+		// coverage test and the binding readers lean on, keeps every slot.
+		expect(actions.map((a) => a.id)).toContain(LEGACY_DRAFT);
+		expect(actions.map((a) => a.id)).toContain(LEGACY_GENERATOR);
+		expect(
+			bindableDocumentTypes(agentFor("project_document_generator"), null),
+		).toContain("PROPOSAL");
+		expect(
+			PROMPT_AGENT_TARGETS.find((a) => a.key === "document_generator")
+				?.actions,
+		).toContainEqual({ documentType: "PROPOSAL", storyKind: null });
 	});
 });

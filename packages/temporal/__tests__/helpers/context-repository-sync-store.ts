@@ -223,6 +223,11 @@ export const databaseMock = {
 		},
 	),
 
+	reconcileContextIndexing: vi.fn(async (tx: unknown, _input: unknown) => {
+		expectTx(tx);
+		return { excluded: 0, included: 0, cleanups: [] };
+	}),
+
 	applyRepositoryContextBatch: vi.fn(
 		async (
 			tx: unknown,

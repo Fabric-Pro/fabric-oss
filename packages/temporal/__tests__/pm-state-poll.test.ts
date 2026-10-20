@@ -1,3 +1,8 @@
+import {
+	fixtureTarget,
+	mutablePmSettings,
+	pmTargetFixtures,
+} from "../../utils/test-fixtures/pm-target";
 /**
  * Unit Tests for ADO State Poll Activities
  *
@@ -77,6 +82,7 @@ vi.mock("@repo/database", () => ({
 				mockMcpServerFindUnique(...args),
 		},
 		mCPConfig: {
+			findFirst: (...args: unknown[]) => mockMcpConfigFindUnique(...args),
 			findUnique: (...args: unknown[]) =>
 				mockMcpConfigFindUnique(...args),
 		},
@@ -1968,6 +1974,54 @@ describe("reconcileAdoStates — settings-hash gate + divergence", () => {
 // =============================================================================
 
 describe("reconcileMissingTickets — end-to-end", () => {
+	it.each(['pmt1:["srv-1","b","example-container"]', null])(
+		"skips another target while retaining active and legacy links (active %s)",
+		async (activePmTarget) => {
+			mockFindFabricItemsByExternalId.mockResolvedValue([
+				{
+					entityType: "STORY",
+					entityId: "example-other",
+					draftingStage: "DRAFT",
+					externalMcpServerId: "srv-1",
+					externalPmTarget: 'pmt1:["srv-1","a","example-container"]',
+				},
+				{
+					entityType: "STORY",
+					entityId: "example-current",
+					draftingStage: "DRAFT",
+					externalMcpServerId: "srv-1",
+					externalPmTarget: 'pmt1:["srv-1","b","example-container"]',
+				},
+				{
+					entityType: "STORY",
+					entityId: "example-legacy",
+					draftingStage: "DRAFT",
+					externalMcpServerId: "srv-1",
+					externalPmTarget: null,
+				},
+			]);
+			mockIncrementMissingStreak.mockResolvedValue(STREAK_THRESHOLD);
+			await reconcileMissingTickets({
+				projectId: "example-project",
+				activeServerId: "srv-1",
+				activePmTarget,
+				pollRunId: "example-run",
+				seenExternalIds: [],
+				notFoundIds: ["123"],
+				totalLinked: 10,
+			});
+			expect(
+				mockIncrementMissingStreak.mock.calls.map(
+					([input]) => input.entityId,
+				),
+			).toEqual(
+				activePmTarget
+					? ["example-current", "example-legacy"]
+					: ["example-other", "example-current", "example-legacy"],
+			);
+		},
+	);
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 		mockResetMissingStreaks.mockResolvedValue(undefined);
@@ -3394,5 +3448,87 @@ describe("reconcileAdoStates — mapped-status sync (Fizzy #2304)", () => {
 		expect(mockMergePmStatusSyncLastRun.mock.calls).toEqual([
 			[outcomeWrite()],
 		]);
+	});
+});
+
+describe("poll target consistency", () => {
+	it.each(pmTargetFixtures)(
+		"$name: polling retains a writer's link across settings edits",
+		async (fixture) => {
+			vi.clearAllMocks();
+			mockMcpConfigFindUnique.mockResolvedValue(fixture.config);
+			mockMcpServerFindUnique.mockResolvedValue(fixture.config.mcpServer);
+			mockGetLinkedExternalIds.mockResolvedValue([
+				{
+					entityType: "STORY",
+					entityId: "example-story",
+					externalId: "42",
+					externalMcpServerId: "example-server",
+					externalPmTarget: fixtureTarget(fixture, "example-server"),
+				},
+			]);
+			mockFetchPMItemsByIds.mockResolvedValue({
+				items: [],
+				failedIds: [],
+			});
+			mockGetWorkItemsByIdsFromPM.mockResolvedValue({
+				items: [],
+				notFoundIds: [],
+				wrongBoardIds: [],
+				availableStates: [],
+				availableWorkItemTypes: [],
+			});
+			const result = await fetchAdoWorkItemStates({
+				projectId: "example-project",
+				userId: "example-user",
+				organizationId: "example-org",
+				mcpConfigId: "example-config",
+				mcpServerId: "example-server",
+				pmTool: fixture.pmTool,
+				sourceKind: "mcp",
+				containerId: fixture.containerId,
+				containerName: "Example",
+				projectManagementAdditionalContext: {
+					...fixture.additionalContext,
+					...mutablePmSettings,
+				},
+				lastAdoStatePollAt: null,
+			});
+			expect(result.totalLinked).toBe(1);
+			expect(result.activePmTarget).toBe(
+				fixtureTarget(fixture, "example-server"),
+			);
+		},
+	);
+	it("polls a keyed legacy GitLab link when the active instance is unknown", async () => {
+		vi.clearAllMocks();
+		mockMcpServerFindUnique.mockResolvedValue({
+			key: "gitlab-official",
+			defaultUrl: "https://gitlab.com",
+		});
+		mockGetLinkedExternalIds.mockResolvedValue([
+			{
+				entityType: "STORY",
+				entityId: "example-story",
+				externalId: "42",
+				externalMcpServerId: "example-server",
+				externalPmTarget:
+					'pmt1:["example-server","https://gitlab.example.com","42"]',
+			},
+		]);
+		mockFetchPMItemsByIds.mockResolvedValue({ items: [], failedIds: [] });
+		const result = await fetchAdoWorkItemStates({
+			projectId: "example-project",
+			userId: "example-user",
+			mcpConfigId: null,
+			mcpServerId: "example-server",
+			pmTool: "gitlab",
+			sourceKind: "rest-gitlab",
+			containerId: "42",
+			containerName: null,
+			projectManagementAdditionalContext: {},
+			lastAdoStatePollAt: null,
+		});
+		expect(result.totalLinked).toBe(1);
 	});
 });

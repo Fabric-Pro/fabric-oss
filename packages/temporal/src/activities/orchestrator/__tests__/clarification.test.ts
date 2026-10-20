@@ -79,6 +79,7 @@ describe("analyzeIntentClarityActivity", () => {
 			message: "deploy it",
 			userId: "u",
 			conversationId: "conv-1",
+			frameId: "frame-1",
 		});
 		await analyzeIntentClarityActivity({
 			message: "deploy it",
@@ -87,9 +88,14 @@ describe("analyzeIntentClarityActivity", () => {
 
 		expect(getAIModel.mock.calls[0][1]).toMatchObject({
 			conversationId: "conv-1",
+			frameId: "frame-1",
 		});
 		expect(getAIModel.mock.calls[1][1]).not.toHaveProperty(
 			"conversationId",
+		);
+		expect(getAIModel.mock.calls[1][1]).not.toHaveProperty("frameId");
+		expect(getAIModel.mock.calls[0][1]).not.toHaveProperty(
+			"workflowExecutionId",
 		);
 	});
 

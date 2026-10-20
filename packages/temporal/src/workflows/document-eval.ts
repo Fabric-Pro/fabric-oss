@@ -434,6 +434,7 @@ export async function documentEvalWorkflow(
 
 		try {
 			llmResult = await runLLMMetricsActivity({
+				projectDocumentId,
 				documentContent,
 				documentType,
 				expectedSections: goldenRefResult.requiredSections,

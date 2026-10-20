@@ -51,7 +51,8 @@ const REQUIRES_BASE_URL = new Set([
 
 vi.mock("@repo/ai", () => ({
 	getAIModelWithMetadata: getAIModelWithMetadataMock,
-	getRAGProviderConfig: getRAGProviderConfigMock,
+	getRAGProviderConfigForModel: (context: unknown) =>
+		getRAGProviderConfigMock(context),
 	buildEffectiveBaseUrl: (provider: string, customBaseUrl?: string) =>
 		customBaseUrl || DEFAULT_BASE_URLS[provider],
 	requiresBaseUrl: (provider: string) => REQUIRES_BASE_URL.has(provider),

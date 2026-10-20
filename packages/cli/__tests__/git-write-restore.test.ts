@@ -21,8 +21,63 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { fastForwardTo } from "../src/lib/instructions/git.js";
+
+const restoreRace = vi.hoisted(() => ({
+	file: "",
+	afterRead: undefined as (() => Promise<void>) | undefined,
+	afterStat: undefined as (() => Promise<void>) | undefined,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	async function trigger(file: unknown, key: "afterRead" | "afterStat") {
+		if (file === restoreRace.file && restoreRace[key]) {
+			const run = restoreRace[key];
+			restoreRace[key] = undefined;
+			await run();
+		}
+	}
+	return {
+		...actual,
+		async lstat(...args: Parameters<typeof actual.lstat>) {
+			const info = await actual.lstat(...args);
+			await trigger(args[0], "afterStat");
+			return info;
+		},
+		async readFile(...args: Parameters<typeof actual.readFile>) {
+			const bytes = await actual.readFile(...args);
+			await trigger(args[0], "afterRead");
+			return bytes;
+		},
+		async open(...args: Parameters<typeof actual.open>) {
+			const handle = await actual.open(...args);
+			const read = handle.read.bind(handle);
+			handle.read = async (
+				...options: Parameters<typeof handle.read>
+			) => {
+				const answer = await read(...options);
+				if (answer.bytesRead === 0) {
+					await trigger(args[0], "afterRead");
+				}
+				return answer;
+			};
+			return handle;
+		},
+	};
+});
+afterEach(() => {
+	restoreRace.afterRead = undefined;
+	restoreRace.afterStat = undefined;
+});
 
 const hasGit =
 	spawnSync("git", ["--version"], { stdio: "ignore" }).status === 0;
@@ -389,3 +444,99 @@ describe("fastForwardTo restoring files git refuses over", () => {
 		);
 	});
 });
+
+describe("restore descriptor guards", () => {
+	it.skipIf(!hasGit || process.platform === "win32")(
+		"refuses a symlink swapped in after the file check",
+		async () => {
+			const { symlink } = await import("node:fs/promises");
+			const fx = await fixture("f.txt", "a\nb\n", "incoming\n", (wt) =>
+				git(wt, "config", "core.autocrlf", "true"),
+			);
+			const file = path.join(fx.wt, "f.txt");
+			await rm(file);
+			git(fx.wt, "checkout", "-q", "--", "f.txt");
+			await writeFile(file, "a\nb\n");
+			const target = path.join(fx.wt, "outside.txt");
+			await writeFile(target, "a\nb\n");
+			restoreRace.file = file;
+			restoreRace.afterStat = async () => {
+				await rm(file);
+				await symlink(target, file);
+			};
+			expect(await fastForwardTo(fx.wt, fx.tip(), soon())).toMatchObject({
+				kind: "failed",
+				reason: "local-changes",
+			});
+			const { lstat } = await import("node:fs/promises");
+			expect((await lstat(file)).isSymbolicLink()).toBe(true);
+		},
+	);
+	it.skipIf(!hasGit || process.platform === "win32")(
+		"refuses a mode change made after the first content read",
+		async () => {
+			const fx = await fixture("f.txt", "a\nb\n", "incoming\n", (wt) =>
+				git(wt, "config", "core.autocrlf", "true"),
+			);
+			const file = path.join(fx.wt, "f.txt");
+			await rm(file);
+			git(fx.wt, "checkout", "-q", "--", "f.txt");
+			await writeFile(file, "a\nb\n");
+			restoreRace.file = file;
+			restoreRace.afterRead = async () => {
+				await chmod(file, 0o755);
+			};
+			expect(await fastForwardTo(fx.wt, fx.tip(), soon())).toMatchObject({
+				kind: "failed",
+				reason: "local-changes",
+			});
+			expect((await stat(file)).mode & 0o111).not.toBe(0);
+		},
+	);
+});
+
+it.skipIf(!hasGit || process.platform === "win32")(
+	"rechecks file type after judging the first content read",
+	async () => {
+		const { symlink, lstat } = await import("node:fs/promises");
+		const fx = await fixture("f.txt", "a\nb\n", "incoming\n", (wt) =>
+			git(wt, "config", "core.autocrlf", "true"),
+		);
+		const file = path.join(fx.wt, "f.txt");
+		await rm(file);
+		git(fx.wt, "checkout", "-q", "--", "f.txt");
+		await writeFile(file, "a\nb\n");
+		const target = path.join(fx.wt, "outside.txt");
+		await writeFile(target, "a\nb\n");
+		restoreRace.file = file;
+		restoreRace.afterRead = async () => {
+			await rm(file);
+			await symlink(target, file);
+		};
+		expect(await fastForwardTo(fx.wt, fx.tip(), soon())).toMatchObject({
+			kind: "failed",
+			reason: "local-changes",
+		});
+		expect((await lstat(file)).isSymbolicLink()).toBe(true);
+	},
+);
+
+itWithGit(
+	"restores line-ending-only files through a checkout directory alias",
+	async () => {
+		const { symlink } = await import("node:fs/promises");
+		const fx = await fixture("f.txt", "a\nb\n", "a\nb\nc\n", (wt) =>
+			git(wt, "config", "core.autocrlf", "true"),
+		);
+		const file = path.join(fx.wt, "f.txt");
+		await rm(file);
+		git(fx.wt, "checkout", "-q", "--", "f.txt");
+		await writeFile(file, "a\nb\n");
+		const alias = `${fx.wt}-alias`;
+		await symlink(fx.wt, alias, "junction");
+		expect(await fastForwardTo(alias, fx.tip(), soon())).toEqual({
+			kind: "merged",
+			head: fx.tip(),
+		});
+	},
+);

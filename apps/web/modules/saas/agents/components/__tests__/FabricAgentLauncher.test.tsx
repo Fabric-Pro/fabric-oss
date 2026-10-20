@@ -365,7 +365,7 @@ vi.mock("next/dynamic", async () => {
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({
-		organizationId: null,
+		organizationId: "example-org",
 		basePath: "/app",
 	}),
 }));
@@ -720,8 +720,8 @@ describe("FabricAgentLauncher", () => {
 		expect(
 			screen.getByText("TASK-ambient · Open launcher from anywhere"),
 		).toBeInTheDocument();
-		expect(document.body).toHaveTextContent(
-			"initial input: Use the current workspace context.",
+		expect(document.body).not.toHaveTextContent(
+			"Use the current workspace context.",
 		);
 	});
 
@@ -773,6 +773,35 @@ describe("FabricAgentLauncher", () => {
 		expect(prompt).toContain("the organization's Workspaces list");
 		expect(prompt).not.toContain("workspace id");
 		expect(prompt).not.toContain("fabric_update_frame");
+	});
+
+	it("retains the Artifact origin in the launch context", async () => {
+		function Opener() {
+			const { openLauncher, launchContext } = useFabricAgentLauncher();
+			return (
+				<button
+					type="button"
+					onClick={() =>
+						openLauncher({
+							surface: "artifact",
+							launchFrameId: "frame-example",
+							projectId: "project-example",
+						})
+					}
+				>
+					{launchContext?.launchFrameId ?? "open artifact"}
+				</button>
+			);
+		}
+		render(
+			<FabricAgentLauncherProvider>
+				<Opener />
+			</FabricAgentLauncherProvider>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "open artifact" }));
+		expect(
+			await screen.findByRole("button", { name: "frame-example" }),
+		).toBeInTheDocument();
 	});
 
 	it("keeps the surface and Workspace of an explicit launch", async () => {
@@ -1056,10 +1085,13 @@ describe("FabricAgentLauncher — engine selection (#2040)", () => {
 
 			expect(
 				orpcClientMock.users.orchestratorPreferences.update,
-			).toHaveBeenCalledWith({ uiMode: "advanced" });
+			).toHaveBeenCalledWith({
+				uiMode: "advanced",
+				organizationId: "example-org",
+			});
 			const [key, updater] = queryClientMock.setQueryData.mock
 				.calls[0] as [unknown, (previous: unknown) => unknown];
-			expect(key).toEqual(["orchestrator-preferences", null]);
+			expect(key).toEqual(["orchestrator-preferences", "example-org"]);
 			expect(updater(preferences({ uiMode: "simple" }))).toMatchObject({
 				uiMode: "advanced",
 			});

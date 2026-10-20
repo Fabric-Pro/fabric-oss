@@ -58,6 +58,7 @@ export const suggestDecisionMetadataProcedure = tenantProtectedProcedure
 		);
 
 		const suggestion = await suggestDecisionMetadata({
+			projectId: input.projectId,
 			title: input.title,
 			decision: input.decision,
 			contextProblem: input.contextProblem ?? null,

@@ -15,6 +15,7 @@ import {
 	GIT_SAFE_CONFIG,
 	GitCommandError,
 	gitUsernameFor,
+	isLostRefRace,
 	isPushWriteRefusal,
 	MAX_CLONE_BYTES,
 	readBlobCapped,
@@ -337,6 +338,53 @@ describe("isPushWriteRefusal", () => {
 				),
 			).toBe(false);
 		}
+	});
+});
+
+describe("isLostRefRace", () => {
+	const ref = "refs/heads/main";
+	const exit = (stderr: string) =>
+		new GitCommandError("exit", 1, stderr, "push");
+
+	it.each([
+		"[rejected] (stale info)",
+		"[rejected] (fetch first)",
+		// Azure DevOps, captured from two pushes racing on one branch.
+		`[remote rejected] (TF401028: The reference '${ref}' has already been updated by another client, so you cannot update it. Please try again.)`,
+		`[remote rejected] (cannot lock ref '${ref}': is at ${"a".repeat(40)} but expected ${"b".repeat(40)})`,
+		// git 2.55's receive-pack.
+		"[remote rejected] (incorrect old value provided)",
+	])("reads %j as a lost race", (summary) => {
+		expect(isLostRefRace(summary, null)).toBe(true);
+	});
+
+	it("reads git's own receive-pack failure as a lost race only with its lock error", () => {
+		const lock = `remote: error: cannot lock ref '${ref}': is at ${"a".repeat(40)} but expected ${"b".repeat(40)}`;
+		expect(
+			isLostRefRace(
+				"[remote rejected] (failed to update ref)",
+				exit(lock),
+			),
+		).toBe(true);
+		expect(
+			isLostRefRace(
+				"[remote rejected] (failed to update ref)",
+				exit("remote: error: object directory is full"),
+			),
+		).toBe(false);
+		expect(
+			isLostRefRace("[remote rejected] (failed to update ref)", null),
+		).toBe(false);
+	});
+
+	it.each([
+		"[remote rejected] (pre-receive hook declined)",
+		"[remote rejected] (protected branch hook declined)",
+		"[remote rejected] (TF402455: Pushes to this branch are not permitted; you must use a pull request to update this branch.)",
+		"[rejected] (non-fast-forward)",
+		"",
+	])("reads %j as a refusal, not a race", (summary) => {
+		expect(isLostRefRace(summary, null)).toBe(false);
 	});
 });
 

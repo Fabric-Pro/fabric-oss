@@ -230,6 +230,8 @@ export interface OrchestratorWorkflowInput {
 	 * started the run.
 	 */
 	launchWorkspaceId?: string;
+	/** Launch frame authorized by the request boundary; absent in old histories. */
+	usageFrameId?: string;
 	launchSurface?: "artifact" | "workspace";
 	/**
 	 * Set only by the Orchestrator stream route, for a chat started from the
@@ -512,6 +514,16 @@ export interface OrchestratorWorkflowOutput {
 
 export interface OrchestratorProgressUpdate {
 	executionId: string;
+	/** Absent in progress responses from workers predating routing metadata. */
+	routingDecision?: Pick<
+		RoutingDecision,
+		| "primaryAgent"
+		| "confidence"
+		| "riskLevel"
+		| "requiredConnections"
+		| "missingIntegrations"
+		| "blockedOnConnections"
+	>;
 	currentStep?: TaskStep;
 	completedSteps: number;
 	totalSteps: number;
@@ -547,4 +559,9 @@ export interface ApprovalSignalData {
 	approved: boolean;
 	feedback?: string;
 	decidedBy?: string;
+	/**
+	 * The `pendingApproval.approvalId` the person answered. Absent from a
+	 * client that predates it, which answers whatever is pending.
+	 */
+	approvalId?: string;
 }

@@ -11,7 +11,6 @@ import {
 	proxyActivities,
 	workflowInfo,
 } from "@temporalio/workflow";
-
 import type {
 	fetchAdoWorkItemStates as FetchAdoWorkItemStatesFn,
 	reconcileAdoStates as ReconcileAdoStatesFn,
@@ -20,6 +19,8 @@ import type {
 	reportPmScanJobOpened as ReportPmScanJobOpenedFn,
 	updateProjectPollTimestamp as UpdateProjectPollTimestampFn,
 } from "../activities/pm-integration/pm-state-poll";
+import { redactDatabaseErrorText } from "../activities/pm-integration/pm-sync-user-error";
+import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
 
 // =============================================================================
 // Types
@@ -202,6 +203,7 @@ export async function adoStatePollProjectWorkflow(
 			missingFlags = await reconcileMissingTickets({
 				projectId,
 				activeServerId: input.mcpServerId,
+				activePmTarget: fetched.activePmTarget,
 				pollRunId: workflowInfo().runId,
 				seenExternalIds: fetched.seenExternalIds,
 				notFoundIds: fetched.notFoundIds,
@@ -250,13 +252,22 @@ export async function adoStatePollProjectWorkflow(
 			// it would sit RUNNING until the background-job watchdog swept it,
 			// and every generation in the project would wait out that window
 			// for a scan that had already stopped.
-			await reportPmScanJobClosed({ projectId, error: errorMessage });
+			await reportPmScanJobClosed({
+				projectId,
+				error: redactDatabaseErrorText(
+					errorMessage,
+					unwrapPmSyncError(error).errorClass,
+				),
+			});
 		}
 
 		return {
 			projectId,
 			success: false,
-			error: errorMessage,
+			error: redactDatabaseErrorText(
+				errorMessage,
+				unwrapPmSyncError(error).errorClass,
+			),
 		};
 	}
 }

@@ -53,6 +53,61 @@ export type ShareFrameOutcome =
 			emails?: string[];
 	  };
 
+export const PUBLIC_SHARING_DISABLED_MESSAGE =
+	"Public sharing is disabled for this organization.";
+
+/**
+ * Whether a public link may be made in this organization: the one rule, read by
+ * `shareFrame` and by whatever creates a frame that is public from the start.
+ * A caller with no organization has no policy to hold it to.
+ */
+function allowsPublicLinks(
+	organizationId: string | undefined,
+	policy: { canShareFramesPublicly: boolean } | null,
+): boolean {
+	return !organizationId || Boolean(policy?.canShareFramesPublicly);
+}
+
+/**
+ * Why a public link may not be made in this organization, or null when it may.
+ * For a create that asks for a public frame from the start; `shareFrame`
+ * applies the same rule with the policy it has already read.
+ */
+export async function publicSharingRefusal(
+	organizationId: string | undefined,
+): Promise<string | null> {
+	const policy = organizationId
+		? await db.organization.findUnique({
+				where: { id: organizationId },
+				select: { canShareFramesPublicly: true },
+			})
+		: null;
+	return allowsPublicLinks(organizationId, policy)
+		? null
+		: PUBLIC_SHARING_DISABLED_MESSAGE;
+}
+
+/** A write that would make a frame public refused by the organization's policy. */
+export class PublicSharingDisabledError extends Error {
+	constructor() {
+		super(PUBLIC_SHARING_DISABLED_MESSAGE);
+		this.name = "PublicSharingDisabledError";
+	}
+}
+
+/**
+ * Throws `PublicSharingDisabledError` where the organization does not allow
+ * public links. Called by every command that can set a frame public (create,
+ * update, publish) immediately before its write, so a caller cannot forget it.
+ */
+export async function assertPublicSharingAllowed(
+	organizationId: string | undefined,
+): Promise<void> {
+	if (await publicSharingRefusal(organizationId)) {
+		throw new PublicSharingDisabledError();
+	}
+}
+
 function refusal(
 	reason: ShareFrameRefusal,
 	message: string,
@@ -133,14 +188,10 @@ export async function shareFrame(input: {
 			})
 		: null;
 
-	if (
-		scope === "PUBLIC" &&
-		organizationId &&
-		!policy?.canShareFramesPublicly
-	) {
+	if (scope === "PUBLIC" && !allowsPublicLinks(organizationId, policy)) {
 		return refusal(
 			"public_sharing_disabled",
-			"Public sharing is disabled for this organization.",
+			PUBLIC_SHARING_DISABLED_MESSAGE,
 		);
 	}
 

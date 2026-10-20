@@ -1025,3 +1025,41 @@ describe("Twilio STDIO credentials", () => {
 		},
 	);
 });
+
+describe("API key STDIO credentials", () => {
+	it.each([
+		["Sentry", "npx -y @sentry/mcp-server@0.42.0", "SENTRY_ACCESS_TOKEN"],
+		["Stripe", "npx -y @stripe/mcp@0.3.3", "STRIPE_SECRET_KEY"],
+		[
+			"Azure DevOps",
+			"npx -y @azure-devops/mcp@2.8.0",
+			"ADO_MCP_AUTH_TOKEN",
+		],
+		["Figma", "npx -y figma-developer-mcp@0.13.2 --stdio", "FIGMA_API_KEY"],
+		["Unknown", "node example-server.js", "API_KEY"],
+	])(
+		"sends %s (%s) its API key under %s",
+		async (name, command, variable) => {
+			mockGetMcpConfigById.mockResolvedValue({
+				id: "config_gd",
+				enabled: true,
+				needsReauth: false,
+				displayName: name,
+				transport: "STDIO",
+				authType: "API_KEY",
+				encryptedApiKey: "ENC:example-api-key",
+				mcpServer: { name, transport: "STDIO", command },
+			});
+			const client = await buildClient();
+			await client.tools();
+			expect(wrapperBodies[0]?.credentials).toEqual({
+				[variable]: "example-api-key",
+			});
+			if (variable !== "API_KEY") {
+				expect(wrapperBodies[0]?.credentials).not.toHaveProperty(
+					"API_KEY",
+				);
+			}
+		},
+	);
+});

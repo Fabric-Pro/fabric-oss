@@ -134,7 +134,7 @@ describe("Parlume speech timing", () => {
 			},
 		});
 		stubPcmFetch(async (url: string, init?: RequestInit) => {
-			if (url.includes("api.openai.com")) {
+			if (new URL(url).origin === "https://api.openai.com") {
 				return new Response(stream);
 			}
 			await drain(init?.body);

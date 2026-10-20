@@ -18,9 +18,39 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const meetingFetch = vi.hoisted(() =>
+	vi.fn(async (_input: unknown) => ({ notes: [] })),
+);
+const meetingActions = vi.hoisted(
+	() =>
+		new Map<
+			string,
+			{
+				render: (input: {
+					status: string;
+					result?: unknown;
+				}) => React.ReactElement;
+				handler: (args: {
+					selectedMeetings: unknown;
+				}) => Promise<unknown>;
+				renderAndWaitForResponse: (input: {
+					respond: ReturnType<typeof vi.fn>;
+				}) => React.ReactElement<{
+					onConfirm: (
+						meetings: Array<{
+							joinUrl: string;
+							startTime?: string;
+						}>,
+					) => void;
+					onCancel: () => void;
+				}>;
+			}
+		>(),
+);
 
 const extensionBuilds = vi.hoisted(() => ({
 	advanced: [] as { projectId?: string | null; statTiles?: boolean }[],
@@ -98,7 +128,10 @@ function makeOrpcProxy(): any {
 				}
 				return build([...path, prop]);
 			},
-			apply() {
+			apply(_target, _thisArg, args) {
+				if (path.join(".") === "projects.documents.fetchMeetingNotes") {
+					return meetingFetch(args[0]);
+				}
 				return build(path);
 			},
 		};
@@ -136,7 +169,8 @@ vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
 
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
-	useCopilotAction: vi.fn(),
+	useCopilotAction: (action: { name: string }) =>
+		meetingActions.set(action.name, action as never),
 	useCopilotChat: () => ({ isLoading: false, visibleMessages: [] }),
 	useCopilotChatInternal: () => ({ messages: [], setMessages: vi.fn() }),
 	useCopilotReadable: vi.fn(),
@@ -308,7 +342,11 @@ import {
 	resolveThemePaint,
 	themeCustomProperties,
 } from "@repo/utils/proposal-artifact/theme-tokens";
-import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
+import {
+	DocumentEditor,
+	MEETING_NOTES_SKIPPED_NONE_RESULT,
+	MEETING_NOTES_SKIPPED_TOO_MANY_RESULT,
+} from "@saas/projects/components/DocumentEditor";
 import type { ProposalThemeRootProps } from "@saas/projects/components/proposal-artifact/use-proposal-theme";
 import type { CSSProperties } from "react";
 
@@ -499,5 +537,232 @@ describe("DocumentEditor — Proposal theme root", () => {
 		expect(box).not.toHaveAttribute("class");
 		expect(box).not.toHaveAttribute("data-proposal-theme");
 		expect(box).not.toHaveAttribute("style");
+	});
+});
+
+describe("DocumentEditor meeting selections", () => {
+	beforeEach(() => {
+		meetingActions.clear();
+		meetingFetch.mockClear();
+	});
+	const confirmed = [
+		{
+			joinUrl: "https://example.com/meeting",
+			startTime: "2026-10-20T10:00:00Z",
+		},
+	];
+	function selector() {
+		const action = meetingActions.get("select_meetings");
+		if (!action) {
+			throw new Error("Missing select_meetings action");
+		}
+		return action.renderAndWaitForResponse({ respond: vi.fn() }).props;
+	}
+	async function fetch(selectedMeetings: unknown) {
+		const action = meetingActions.get("fetchMeetingNotes");
+		if (!action) {
+			throw new Error("Missing fetchMeetingNotes action");
+		}
+		return action.handler({ selectedMeetings });
+	}
+	it.each([
+		{
+			count: 0,
+			expectedResult: MEETING_NOTES_SKIPPED_NONE_RESULT,
+			message:
+				"No meetings were selected. Meeting notes were not fetched.",
+		},
+		{
+			count: 11,
+			expectedResult: MEETING_NOTES_SKIPPED_TOO_MANY_RESULT,
+			message:
+				"Meeting notes were not fetched. Select at most 10 meetings.",
+		},
+	])(
+		"renders a neutral skipped-fetch card for $count meetings",
+		async ({ count, message, expectedResult }) => {
+			renderEditor({});
+			await waitFor(() =>
+				expect(meetingActions.has("select_meetings")).toBe(true),
+			);
+			selector().onConfirm(
+				Array.from({ length: count }, (_, index) => ({
+					joinUrl: `https://example.com/meeting/${index}`,
+				})),
+			);
+			let result: unknown;
+			await act(async () => {
+				result = await fetch([{}]);
+			});
+			const action = meetingActions.get("fetchMeetingNotes");
+			if (!action) {
+				throw new Error("Missing fetchMeetingNotes action");
+			}
+			expect(result).toBe(expectedResult);
+			const card = render(action.render({ status: "complete", result }));
+			expect(card.getByText(message)).toBeTruthy();
+			expect(
+				card.queryByText("Meeting notes fetched successfully."),
+			).toBeNull();
+			expect(meetingFetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps two meeting-note cards tied to their own results", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("fetchMeetingNotes")).toBe(true),
+		);
+		let success: unknown;
+		let skipped: unknown;
+		await act(async () => {
+			success = await fetch(confirmed);
+			skipped = await fetch([]);
+		});
+		const action = meetingActions.get("fetchMeetingNotes");
+		if (!action) {
+			throw new Error("Missing fetchMeetingNotes action");
+		}
+		const cards = render(
+			<>
+				{action.render({ status: "complete", result: success })}
+				{action.render({ status: "complete", result: skipped })}
+			</>,
+		);
+		expect(
+			cards.getByText("Meeting notes fetched successfully."),
+		).toBeTruthy();
+		expect(
+			cards.getByText(
+				"No meetings were selected. Meeting notes were not fetched.",
+			),
+		).toBeTruthy();
+	});
+
+	it("renders a failed meeting-note card for a completed tool error", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("fetchMeetingNotes")).toBe(true),
+		);
+		const action = meetingActions.get("fetchMeetingNotes");
+		if (!action) {
+			throw new Error("Missing fetchMeetingNotes action");
+		}
+		const card = render(
+			action.render({
+				status: "complete",
+				result: "Error: Meeting service unavailable",
+			}),
+		);
+		expect(card.getByText("Failed to fetch meeting notes.")).toBeTruthy();
+		expect(
+			card.queryByText("Meeting notes fetched successfully."),
+		).toBeNull();
+	});
+
+	it("renders a restored successful meeting-note card without running a handler", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("fetchMeetingNotes")).toBe(true),
+		);
+		const action = meetingActions.get("fetchMeetingNotes");
+		if (!action) {
+			throw new Error("Missing fetchMeetingNotes action");
+		}
+		const card = render(
+			action.render({
+				status: "complete",
+				result: "MEETING TRANSCRIPTS (reference material): example notes",
+			}),
+		);
+		expect(
+			card.getByText("Meeting notes fetched successfully."),
+		).toBeTruthy();
+		expect(meetingFetch).not.toHaveBeenCalled();
+	});
+
+	it("uses confirmed meetings when the model supplies empty objects", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("select_meetings")).toBe(true),
+		);
+		selector().onConfirm(confirmed);
+		await act(async () => {
+			await fetch([{}]);
+		});
+		expect(meetingFetch).toHaveBeenCalledWith(
+			expect.objectContaining({ selectedMeetings: confirmed }),
+		);
+	});
+	it("does not fetch when the user cancels even if the model supplies meetings", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("select_meetings")).toBe(true),
+		);
+		selector().onConfirm(confirmed);
+		selector().onCancel();
+		let result: unknown;
+		await act(async () => {
+			result = await fetch(confirmed);
+		});
+		expect(result).toMatch(/no meetings were selected/i);
+		expect(meetingFetch).not.toHaveBeenCalled();
+	});
+	it.each([undefined, []])(
+		"does not inject confirmed meetings when the model passes no selection: %j",
+		async (meetings) => {
+			renderEditor({});
+			await waitFor(() =>
+				expect(meetingActions.has("select_meetings")).toBe(true),
+			);
+			selector().onConfirm(confirmed);
+			let result: unknown;
+			await act(async () => {
+				result = await fetch(meetings);
+			});
+			expect(result).toMatch(/no meetings were selected/i);
+			expect(meetingFetch).not.toHaveBeenCalled();
+		},
+	);
+	it("asks for fewer meetings when more than ten are selected", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("select_meetings")).toBe(true),
+		);
+		selector().onConfirm(
+			Array.from({ length: 11 }, (_, index) => ({
+				joinUrl: `https://example.com/meeting/${index}`,
+			})),
+		);
+		let result: unknown;
+		await act(async () => {
+			result = await fetch([{}]);
+		});
+		expect(result).toMatch(/at most 10 meetings/i);
+		expect(result).toMatch(/pick fewer/i);
+		expect(meetingFetch).not.toHaveBeenCalled();
+	});
+
+	it("filters invalid fallback meetings and skips the API when none remain", async () => {
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("select_meetings")).toBe(true),
+		);
+		let result: unknown;
+		await act(async () => {
+			result = await fetch([{}]);
+		});
+		expect(result).toMatch(/no meetings were selected/i);
+		expect(meetingFetch).not.toHaveBeenCalled();
+		await act(async () => {
+			await fetch([
+				{ joinUrl: "https://example.com/fallback", startTime: 1 },
+			]);
+		});
+		expect(meetingFetch).toHaveBeenCalledWith(
+			expect.objectContaining({
+				selectedMeetings: [{ joinUrl: "https://example.com/fallback" }],
+			}),
+		);
 	});
 });

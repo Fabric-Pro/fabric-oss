@@ -267,7 +267,7 @@ export async function generateDocumentNode(
 		const model = getAgentModelSync(providerConfig, { temperature: 0.7 });
 		console.log(
 			"[Task Planner] Using model:",
-			providerConfig?.model || "groq/llama-3.3-70b-versatile (env)",
+			providerConfig?.model || "unconfigured (provider config required)",
 		);
 		const systemPrompt = getDocumentGenerationPrompt(state.techStack);
 
@@ -337,6 +337,7 @@ Use write_task_plan tool to output ALL data including the markdown document and 
 			runnableConfig,
 		);
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
+			model,
 			taskType: "TOOL_CALLING",
 			agentId: "task_planner",
 			latencyMs: Date.now() - generationStart,

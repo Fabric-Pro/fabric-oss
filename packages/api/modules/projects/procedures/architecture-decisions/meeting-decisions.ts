@@ -284,6 +284,7 @@ async function applyMeetingDecisionTagging(
 			await loadSuggestionContext(projectId);
 
 		const suggestion = await suggestDecisionMetadata({
+			projectId,
 			title: decision.title,
 			decision: decision.decision,
 			contextProblem: decision.contextProblem,

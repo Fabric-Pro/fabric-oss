@@ -5,7 +5,7 @@
  */
 
 import { SignJWT } from "jose";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { issueAIToken } from "./issuer";
 import {
 	decodeTokenClaims,
@@ -16,6 +16,39 @@ import {
 
 describe("AI Token Verifier", () => {
 	const TEST_SECRET = "test-secret-key-for-ai-tokens-32-chars";
+	it("tolerates an unknown extra signed claim", async () => {
+		const token = await new SignJWT({
+			src: "example-agent",
+			future_claim: "example-value",
+			mo: "claude-haiku-4-5",
+		})
+			.setProtectedHeader({ alg: "HS256" })
+			.setIssuer("fabric-portal")
+			.setSubject("example-user")
+			.setIssuedAt()
+			.setExpirationTime("5m")
+			.setJti("example-nonce")
+			.sign(new TextEncoder().encode(TEST_SECRET));
+		expect((await verifyAIToken(token)).valid).toBe(true);
+	});
+	it.each([123, true, {}, ""])(
+		"ignores a malformed optional model claim (%s)",
+		async (mo) => {
+			const token = await new SignJWT({ src: "example-agent", mo })
+				.setProtectedHeader({ alg: "HS256" })
+				.setIssuer("fabric-portal")
+				.setSubject("example-user")
+				.setIssuedAt()
+				.setExpirationTime("5m")
+				.setJti("example-nonce")
+				.sign(new TextEncoder().encode(TEST_SECRET));
+			const result = await verifyAIToken(token);
+			expect(result.valid).toBe(true);
+			if (result.valid) {
+				expect(result.claims).not.toHaveProperty("mo");
+			}
+		},
+	);
 	const WRONG_SECRET = "wrong-secret-key-do-not-use-this";
 	let originalSecret: string | undefined;
 
@@ -416,4 +449,28 @@ describe("AI Token Verifier", () => {
 			expect(decoded1?.jti).not.toBe(decoded2?.jti);
 		});
 	});
+});
+
+it("extracts a signed model claim independently of the issuer", async () => {
+	vi.stubEnv("AI_TOKEN_SECRET", "example-verifier-secret-0123456789abcdef");
+	try {
+		const token = await new SignJWT({
+			src: "example-agent",
+			mo: "claude-haiku-4-5",
+		})
+			.setProtectedHeader({ alg: "HS256" })
+			.setIssuer("fabric-portal")
+			.setSubject("example-user")
+			.setIssuedAt()
+			.setExpirationTime("5m")
+			.setJti("example-nonce")
+			.sign(new TextEncoder().encode(process.env.AI_TOKEN_SECRET));
+		const result = await verifyAIToken(token);
+		expect(result.valid).toBe(true);
+		if (result.valid) {
+			expect(result.claims.mo).toBe("claude-haiku-4-5");
+		}
+	} finally {
+		vi.unstubAllEnvs();
+	}
 });

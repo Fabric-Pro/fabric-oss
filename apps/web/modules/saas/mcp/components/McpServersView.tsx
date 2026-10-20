@@ -2058,7 +2058,8 @@ export function McpServersView({
 							Add MCP Server from Registry
 						</DialogTitle>
 						<p className="text-sm text-muted-foreground mt-2">
-							Select a server from the registry to configure
+							Select a server below to configure, or search to
+							find more MCP servers
 						</p>
 					</DialogHeader>
 

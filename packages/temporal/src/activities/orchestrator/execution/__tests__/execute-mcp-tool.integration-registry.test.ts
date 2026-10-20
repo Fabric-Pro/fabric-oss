@@ -41,6 +41,7 @@ vi.mock("@repo/mcp", () => ({
 		fromCache: true,
 	})),
 	invalidateMcpClientCache: vi.fn(),
+	isClosedClientRefusedBeforeSend: () => false,
 	OAuthAuthorizationRequiredError: class extends Error {},
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));

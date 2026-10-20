@@ -139,6 +139,30 @@ test("fails before Turbo when node_modules and its pnpm snapshot are missing", (
 	assert.equal(existsSync(invocation), false);
 });
 
+test("keeps exit 1 when node_modules exists without a pnpm snapshot", (t) => {
+	const { root, invocation } = createFixture(t, "missing-snapshot-only");
+	rmSync(join(root, "node_modules/.pnpm/lock.yaml"));
+	const result = run(root);
+	assert.equal(result.code, 1);
+	assert.match(result.stderr, /node_modules\/.pnpm\/lock\.yaml is missing/);
+	assert.equal(existsSync(invocation), false);
+});
+
+for (const file of ["pnpm-workspace.yaml", "package.json", "pnpm-lock.yaml"]) {
+	test(`keeps exit 1 when ${file} cannot be read`, (t) => {
+		const { root, invocation } = createFixture(t, "unreadable-setup");
+		if (file === "package.json") {
+			write(join(root, file), "{invalid json");
+		} else {
+			rmSync(join(root, file));
+		}
+		const result = run(root);
+		assert.equal(result.code, 1);
+		assert.match(result.stderr, /Type-check setup is stale: could not/);
+		assert.equal(existsSync(invocation), false);
+	});
+}
+
 test("fails before Turbo when the pnpm snapshot differs from the root lockfile", (t) => {
 	const { root, invocation } = createFixture(t, "mismatched-lock");
 	write(
@@ -148,7 +172,7 @@ test("fails before Turbo when the pnpm snapshot differs from the root lockfile",
 
 	const result = run(root);
 
-	assert.equal(result.code, 1);
+	assert.equal(result.code, 3);
 	assert.match(result.stderr, /pnpm-lock.yaml does not match/);
 	assert.match(result.stderr, /pnpm install --frozen-lockfile/);
 	assert.equal(existsSync(invocation), false);
@@ -167,7 +191,7 @@ test("fails before Turbo when a workspace dependency link is missing", (t) => {
 
 	const result = run(root);
 
-	assert.equal(result.code, 1);
+	assert.equal(result.code, 3);
 	assert.match(
 		result.stderr,
 		/workspace link .*@repo\/target.*missing or wrong/,
@@ -200,7 +224,7 @@ test("fails before Turbo when a workspace dependency link is wrong", (t) => {
 
 	const result = run(root);
 
-	assert.equal(result.code, 1);
+	assert.equal(result.code, 3);
 	assert.match(result.stderr, /workspace link .*@repo\/target.*wrong/);
 	assert.match(result.stderr, /pnpm install --frozen-lockfile/);
 	assert.equal(existsSync(invocation), false);
@@ -257,7 +281,7 @@ test("treats every workspace specifier form as a link that must be valid", (t) =
 
 		const result = run(root, [], { TYPE_CHECK_INVOCATION: invocation });
 
-		assert.equal(result.code, 1, specifier);
+		assert.equal(result.code, 3, specifier);
 		assert.match(
 			result.stderr,
 			/workspace link .*@repo\/target.*missing or wrong/,

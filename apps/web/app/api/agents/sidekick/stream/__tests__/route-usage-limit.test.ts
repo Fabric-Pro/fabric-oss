@@ -30,6 +30,7 @@ vi.mock("@repo/api/lib/rate-limit", () => ({
 	}),
 	RATE_LIMIT_PRESETS: { ai: { limit: 20, windowMs: 60_000 } },
 }));
+vi.mock("@repo/auth", () => ({ auth: {} }));
 vi.mock("@repo/database", () => ({
 	db: {},
 	getOrganizationMembership: vi.fn(),

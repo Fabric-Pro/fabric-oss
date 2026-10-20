@@ -29,7 +29,7 @@
 
 import { os } from "@orpc/server";
 import { auth } from "@repo/auth";
-import { ERROR_CATEGORY } from "@repo/database";
+import { ERROR_CATEGORY, hasOrganizationTie } from "@repo/database";
 import {
 	type AuditRequestContext,
 	recordAuditFromRequest,
@@ -400,19 +400,23 @@ async function captureError(
 			metadata.correlationId = correlationId;
 		}
 
-		// Resolve organizationId: the project the request was authorized on
-		// wins when there is one (`auditOrganizationId`), else explicit input
-		// (including explicit null for personal context), else
-		// session.activeOrganizationId, else null. This mirrors
-		// `resolveOrganizationId` in procedures.ts but is intentionally simpler
-		// since the middleware can't pull from `getTenantContext()` (no
-		// AsyncLocalStorage frame yet at outermost wrap). It never throws: a
-		// mismatched input organization is what the request was refused FOR,
-		// and the row is still written — to the project's organization.
-		const organizationId = auditOrganizationId(
+		// Refused inputs identify the attempted target, not a proven FK owner.
+		// Keep them in metadata.input; successful activity attribution is separate.
+		const authorizedProject = peekAuthorizedProject();
+		const candidateOrganizationId = auditOrganizationId(
 			readOrganizationIdFromInput(input),
 			context.session?.activeOrganizationId,
 		);
+		let organizationId = authorizedProject?.organizationId ?? null;
+		if (!authorizedProject && context.user && candidateOrganizationId) {
+			const verified = await hasOrganizationTie(
+				context.user.id,
+				candidateOrganizationId,
+			).catch(() => false);
+			if (verified) {
+				organizationId = candidateOrganizationId;
+			}
+		}
 
 		recordAuditFromRequest(context, {
 			action: classification.action,
@@ -425,7 +429,7 @@ async function captureError(
 				id: renderedPath,
 				name: renderedPath,
 			},
-			projectId: readProjectIdFromInput(input) ?? null,
+			projectId: authorizedProject?.projectId ?? null,
 			metadata,
 			// Pass explicitly too so it lands on the row even if
 			// `recordAuditFromRequest`'s own resolution misses (e.g. tests).

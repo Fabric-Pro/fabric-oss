@@ -105,21 +105,14 @@ const ACTION_TONES: Record<ParlumeAction["status"], Tone> = {
 	INVALIDATED: "neutral",
 };
 
-function hasExpired(action: ParlumeAction, now: number): boolean {
-	return (
-		action.status === "EXPIRED" ||
-		(action.status === "AWAITING_CONFIRMATION" &&
-			new Date(action.expiresAt).getTime() <= now)
-	);
-}
-
-/** An unconfirmed proposal past its deadline reads as expired before the server marks it. */
-export function actionStatus(
-	action: ParlumeAction,
-	now: number,
-): { label: string; tone: Tone } {
-	const status = hasExpired(action, now) ? "EXPIRED" : action.status;
-	return { label: statusLabel(status), tone: ACTION_TONES[status] };
+export function actionStatus(action: ParlumeAction): {
+	label: string;
+	tone: Tone;
+} {
+	return {
+		label: statusLabel(action.status),
+		tone: ACTION_TONES[action.status],
+	};
 }
 
 export interface ActionStep {
@@ -128,26 +121,16 @@ export interface ActionStep {
 	tone: Tone;
 }
 
-export function actionSteps(action: ParlumeAction, now: number): ActionStep[] {
+export function actionSteps(action: ParlumeAction): ActionStep[] {
 	const steps: ActionStep[] = [
 		{ label: "Requested", at: action.createdAt, tone: "neutral" },
 	];
-	if (action.confirmedAt) {
-		steps.push({
-			label: "Confirmed",
-			at: action.confirmedAt,
-			tone: "neutral",
-		});
-	}
 	if (action.completedAt) {
 		steps.push({
 			label: action.status === "FAILED" ? "Failed" : "Finished",
 			at: action.completedAt,
 			tone: ACTION_TONES[action.status],
 		});
-	}
-	if (hasExpired(action, now)) {
-		steps.push({ label: "Expired", at: action.expiresAt, tone: "neutral" });
 	}
 	return steps;
 }

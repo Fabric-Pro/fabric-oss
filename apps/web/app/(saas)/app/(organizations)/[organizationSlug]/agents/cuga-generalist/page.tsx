@@ -184,10 +184,6 @@ const FEATURES = [
 	},
 ];
 
-// CUGA AG-UI wrapper URL (port 9999) for authenticated access
-const CUGA_AGUI_URL =
-	process.env.NEXT_PUBLIC_CUGA_AGUI_URL || "http://localhost:9999";
-
 export default function CugaGeneralistPage() {
 	const { organizationName, basePath } = useOrganizationContext();
 	const { setIsFullscreen } = useFullscreen();
@@ -246,10 +242,7 @@ export default function CugaGeneralistPage() {
 						</Button>
 					</DialogHeader>
 					<div className="flex-1 min-h-0">
-						<CugaAuthenticatedChat
-							agentUrl={CUGA_AGUI_URL}
-							className="h-full"
-						/>
+						<CugaAuthenticatedChat className="h-full" />
 					</div>
 				</DialogContent>
 			</Dialog>

@@ -15,6 +15,7 @@ import type {
 	TaskComplexity,
 } from "../generated/client";
 import { estimateAiUsageCostUsd } from "./ai-credits";
+import { writeAiUsageLog } from "./ai-usage-origins";
 import { redactSensitiveKeys } from "./audit-log";
 import { aiModelCatalogCache, aiTaskDefaultsCache } from "./cache";
 
@@ -966,6 +967,8 @@ export interface AiUsageLogData {
 	taskType?: AiTaskType;
 	agentId?: string;
 	conversationId?: string;
+	frameId?: string;
+	workflowExecutionId?: string;
 	/** User-facing AI feature this call belongs to (Fizzy #2230). */
 	featureKey?: string;
 	/** Resolved PromptVersion id the call ran with, when known. */
@@ -1142,7 +1145,7 @@ export async function logAiUsage(data: AiUsageLogData) {
 	// failure, never on a success row that happens to carry stale fields.
 	const resolvedSuccess = data.success ?? true;
 
-	const logEntry = await db.aiUsageLog.create({
+	const logEntry = await writeAiUsageLog({
 		data: {
 			userId: data.userId,
 			organizationId: data.organizationId,
@@ -1154,6 +1157,8 @@ export async function logAiUsage(data: AiUsageLogData) {
 			taskType: data.taskType,
 			agentId: data.agentId,
 			conversationId: data.conversationId,
+			frameId: data.frameId,
+			workflowExecutionId: data.workflowExecutionId,
 			featureKey: data.featureKey,
 			promptVersionId: data.promptVersionId,
 			jobType: data.jobType,

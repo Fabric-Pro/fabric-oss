@@ -180,6 +180,10 @@ Coding agents sign in to the [MCP Gateway](/docs/integrations/mcp-gateway) thems
 
 Fabric API keys (format: `fab_xxxx_xxxxxxxxxx`) also authenticate with the gateway, for CI and headless clients. Create keys in **Settings → API Keys**.
 
+### Key scopes
+
+A new key starts read-only: **MCP Read** (`mcp:read`) is the only scope ticked, so the key can read and cannot change anything until its creator ticks a write scope. **MCP Write** (`mcp:write`) grants every write tool, including workflows and pages. To limit what a key can change, tick the narrower write scopes instead, such as `workflows:write`, `frames:write` or `features:write`; prefer them for an agent that should do only one thing. Keys created earlier keep the scopes they have.
+
 ---
 
 ## Next Steps

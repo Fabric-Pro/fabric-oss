@@ -1,10 +1,12 @@
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
+	type AiProviderConfig,
 	type ChatGptPlanOrgPolicyValues,
 	getActiveChatGptPlanOrgUse,
 	getCachedChatGptPlanOrgPolicy,
 	getChatGptPlanServedModels,
 	getChatGptPlanWindowCalibrations,
+	getPlanSpentPersonalProviderConfig,
 	hasDeclinedChatGptPlanInOrganization,
 	isFeatureEnabled,
 	listChatGptPlanModels,
@@ -93,7 +95,7 @@ export const BULK_PERSON_JOB_TYPES: readonly AiJobKey[] = [
 
 /** Why a bulk run found no provider, for a member who has a plan of their own. */
 export const BULK_RUNS_NEED_SHARED_PLAN_MESSAGE =
-	"Scans, project setup, Atlas and batch generation run on your organization's shared ChatGPT plans. Ask an admin to connect a shared account, or share your own plan: Account settings → AI Providers → Share organization-wide.";
+	"Scans, project setup, Atlas and batch generation run on your organization's shared ChatGPT plans. Ask an admin to connect a shared account, or share your own plan: Settings → AI Providers → Personal → Share organization-wide.";
 
 /**
  * A member whose own plan's window is spent has their interactive work served
@@ -464,8 +466,88 @@ export async function chatGptPlanInteractiveApiFallback(
 	}
 }
 
+/**
+ * The member's own key serving their own work while every plan it may use is
+ * spent (Fizzy #3085), and when the plans reset.
+ */
+export interface ChatGptPlanPersonalKeyPick {
+	personalKey: AiProviderConfig;
+	resetAt: Date | null;
+}
+
+/**
+ * Whether a member's own work that found every plan spent may run on a
+ * personal key they opted in ("Use when the ChatGPT plan is spent"), and
+ * which (Fizzy #3085). It applies only where the organization would
+ * otherwise stop that work: its people policy is "Stop and show the reset
+ * time", or it has no LLM provider of its own to bill. Never background
+ * work, which would bill the individual for work they never asked for;
+ * never an impersonated request; never another member's key.
+ *
+ * Null when it does not apply. Otherwise `config` is the key, or null when
+ * the member has none opted in, which the stop message turns into a
+ * "Configure a fallback" link. A fault reads as "does not apply".
+ */
+export async function chatGptPlanPersonalKeyFallback(
+	plan: ChatGptPlanSourcesExhausted,
+	context: {
+		userId: string;
+		organizationId?: string | null;
+		jobType?: AiJobKey;
+	},
+): Promise<{ config: AiProviderConfig | null } | null> {
+	if (
+		!context.organizationId ||
+		plan.audience !== "interactive" ||
+		isAiImpersonatedRequest() ||
+		(context.jobType !== undefined &&
+			PLAN_POOL_BACKGROUND_JOB_TYPES.includes(context.jobType))
+	) {
+		return null;
+	}
+	try {
+		if (
+			await chatGptPlanInteractiveApiFallback(
+				plan,
+				context.organizationId,
+			)
+		) {
+			return null;
+		}
+		return {
+			config: await getPlanSpentPersonalProviderConfig({
+				userId: context.userId,
+			}),
+		};
+	} catch {
+		return null;
+	}
+}
+
+// Like the audit above: once per member per window, not per model call.
+const lastPersonalKeyLog = new Map<string, number>();
+
+function logPersonalKeyFallback(
+	organizationId: string,
+	userId: string,
+	provider: string | null,
+	now = Date.now(),
+): void {
+	const key = `${organizationId}:${userId}`;
+	const last = lastPersonalKeyLog.get(key);
+	if (last !== undefined && now - last < API_FALLBACK_AUDIT_WINDOW_MS) {
+		return;
+	}
+	lastPersonalKeyLog.set(key, now);
+	logger.info(
+		"[chatgpt-plan] Plans spent; serving the member's own work on their personal key",
+		{ organizationId, userId, provider },
+	);
+}
+
 export function __resetChatGptPlanApiFallbackAudit(): void {
 	lastApiFallbackAudit.clear();
+	lastPersonalKeyLog.clear();
 }
 
 /** The sentence shown when every plan a call may use is spent. */
@@ -484,14 +566,16 @@ export function chatGptPlanPoolExhaustedMessage(resetAt: Date | null): string {
  * background work waiting for a reset — except under an AUTO policy for that
  * kind of work, which runs on the organization's provider and is audited
  * (for a member's own work, only when the organization has a provider of its
- * own; that covers a spent own plan too). Otherwise a spent own plan that
- * nothing could stand in for is still returned, so the call fails exactly as
- * it did before shared plans existed.
+ * own; that covers a spent own plan too). Where the organization would
+ * stop a member's own work, a personal key they opted in serves it instead
+ * (see {@link chatGptPlanPersonalKeyFallback}). Otherwise a spent own plan
+ * that nothing could stand in for is still returned, so the call fails
+ * exactly as it did before shared plans existed.
  */
 export async function chatGptPlanSourceForCall(
 	context: PickChatGptPlanSourceContext,
 	options: { exclude?: Iterable<string> } = {},
-): Promise<ChatGptPlanSourcePick | null> {
+): Promise<ChatGptPlanSourcePick | ChatGptPlanPersonalKeyPick | null> {
 	const plan = await pickChatGptPlanSource(context, options);
 	if (plan === null || "source" in plan) {
 		if (plan?.ownPlanSpent) {
@@ -521,6 +605,15 @@ export async function chatGptPlanSourceForCall(
 		auditApiFallback(context.organizationId, { userId: context.userId });
 		return null;
 	}
+	const personal = await chatGptPlanPersonalKeyFallback(plan, context);
+	if (personal?.config && context.organizationId) {
+		logPersonalKeyFallback(
+			context.organizationId,
+			context.userId,
+			personal.config.provider,
+		);
+		return { personalKey: personal.config, resetAt: plan.resetAt };
+	}
 	// The member's own plan was in play: it still serves the call, and its
 	// spent window fails the call itself, as it always has — the agent
 	// exchange answers 429, a call fails with the plan's own message.
@@ -530,6 +623,7 @@ export async function chatGptPlanSourceForCall(
 	throw new SubscriptionPlanExhaustedError(
 		chatGptPlanPoolExhaustedMessage(plan.resetAt),
 		plan.resetAt,
+		{ personalKeyOption: personal !== null },
 	);
 }
 
@@ -701,12 +795,14 @@ export async function interactivePlanModel(params: {
 			return null;
 		}
 		if (!("source" in pick)) {
-			// Under "Use API billing" the organization's provider runs it.
+			// Under "Use API billing" the organization's provider runs it;
+			// otherwise a personal key the member opted in may (Fizzy #3085).
 			if (
-				await chatGptPlanInteractiveApiFallback(
+				(await chatGptPlanInteractiveApiFallback(
 					pick,
 					params.organizationId,
-				)
+				)) ||
+				(await chatGptPlanPersonalKeyFallback(pick, params))?.config
 			) {
 				return null;
 			}

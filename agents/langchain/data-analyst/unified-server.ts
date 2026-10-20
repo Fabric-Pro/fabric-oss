@@ -10,6 +10,7 @@
  * Uses token exchange for AI provider configuration.
  */
 
+import { buildAgentConfigurable } from "@repo/agent-core/services/agent-configurable";
 import { v4 as uuidv4 } from "uuid";
 import {
 	HumanMessage,
@@ -20,6 +21,7 @@ import {
 } from "@langchain/core/messages";
 import {
 	createUnifiedServer,
+	getUserFacingError,
 	type AgentSkill,
 	type Artifact,
 	type LangGraphStreamEvent,
@@ -355,10 +357,6 @@ const { app, start } = createUnifiedServer(
 		const tenantUserId = input.tenant_user_id as string | undefined;
 		const tenantOrgId = input.tenant_organization_id as string | undefined;
 		const aiToken = input.ai_token as string | undefined;
-		const aiApiKey = input.ai_api_key as string | undefined;
-		const aiModel = input.ai_model as string | undefined;
-		const aiProvider = input.ai_provider as string | undefined;
-		const aiBaseUrl = input.ai_base_url as string | undefined;
 
 		console.log("[DataAnalyst] Invoking with:", {
 			messageCount: messages.length,
@@ -379,13 +377,12 @@ const { app, start } = createUnifiedServer(
 			{
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 				configurable: {
-					tenant_user_id: tenantUserId,
-					tenant_organization_id: tenantOrgId,
+					...buildAgentConfigurable(input),
+					...(input.ai_base_url
+						? { ai_gateway_url: input.ai_base_url }
+						: {}),
+					// Preserve this agent's existing MCP discovery credential.
 					ai_token: aiToken,
-					ai_api_key: aiApiKey,
-					ai_model: aiModel,
-					ai_provider: aiProvider,
-					ai_gateway_url: aiBaseUrl,
 				},
 			},
 		);
@@ -434,6 +431,7 @@ const { app, start } = createUnifiedServer(
 		];
 
 		return {
+			error: getUserFacingError(output.error, output.response),
 			response,
 			artifacts: allArtifacts,
 			metadata: {

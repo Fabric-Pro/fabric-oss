@@ -26,6 +26,16 @@ describe("isFrameToolName", () => {
 });
 
 describe("extractFrameToolResult", () => {
+	it("does not offer a source chunk as a saved frame or live preview", () => {
+		expect(
+			extractFrameToolResult({
+				source: true,
+				frameId: "frame-1",
+				block: { id: "page", content: "<p>" },
+			}),
+		).toBeNull();
+	});
+
 	it("reads the page a copy or a restore answers with", () => {
 		expect(
 			extractFrameToolResult({

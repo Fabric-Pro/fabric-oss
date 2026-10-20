@@ -8,7 +8,10 @@
  * builtins, no `@repo/*` imports, no dynamic `import()`.
  */
 
-import { AGENT_TASK_NODE_TYPE } from "../../lib/workflow-node-types";
+import {
+	ADO_STORY_REVIEW_NODE_TYPE,
+	AGENT_TASK_NODE_TYPE,
+} from "../../lib/workflow-node-types";
 
 /**
  * Node types that WRITE to a connected external source (create/send through
@@ -95,13 +98,15 @@ export function isExternalWriteNodeType(nodeType: string): boolean {
  * connected external server, and the workflow cannot tell a read from a write
  * without the activity-side name classifier. A lost retry on a read is a far
  * smaller harm than a duplicated write. `agent-task` is included for the same
- * reason, and because a retry would spend a second full agent run.
+ * reason, and because a retry would spend a second full agent run. Story
+ * review also disables retries because its model call may already be billed.
  */
 export function isNonRetryableNodeType(nodeType: string): boolean {
 	const resolved = resolveNodeType(nodeType);
 	return (
 		resolved === "mcp-tool" ||
 		resolved === AGENT_TASK_NODE_TYPE ||
+		resolved === ADO_STORY_REVIEW_NODE_TYPE ||
 		EXTERNAL_WRITE_NODE_TYPES.has(resolved)
 	);
 }

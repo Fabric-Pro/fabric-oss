@@ -107,6 +107,10 @@ export const AI_FEATURE_KEYS = [
 	 * spend is not counted as chat.
 	 */
 	"scheduled-agent-task",
+	/** Interactive Workspace/page questions and review calls. */
+	"workspace",
+	/** Model steps in the workflow builder, on manual and scheduled runs. */
+	"workflow",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

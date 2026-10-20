@@ -63,6 +63,16 @@ export interface GatewaySession {
 	 * what keeps every tool call on it.
 	 */
 	projectId?: string | null;
+	/**
+	 * The one project a service session's grant is limited to; absent or null
+	 * for any other session. Unlike `projectId` it does not turn the session
+	 * into a project connection: the runtime keeps its workflow, frame and
+	 * workspace tools, and `./project-binding` keeps every call that names a
+	 * project, or a feature, document or context in one, on this project.
+	 */
+	pinnedProjectId?: string | null;
+	/** Server-resolved page attachment for this call only; never stored in a session. */
+	readonly pageProjectId?: string;
 	userName: string;
 	email: string;
 	role: "user" | "admin";

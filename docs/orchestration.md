@@ -58,6 +58,31 @@ All discovery is dynamic at runtime. No hardcoded agent or tool registries.
 | High | Create new resources | Requires approval |
 | Critical | Delete, bulk operations | Always requires approval |
 
+### Answers to expired or replaced approvals
+
+The Temporal chat sends the pending `approvalId` with Approve, Decline and
+Feedback requests to `POST /api/agents/fabric-ai/orchestrator-temporal/approve`.
+After checking access to the execution, the route compares that ID with the
+workflow's current pending approval. If no approval is pending or the supplied ID
+does not match, it returns HTTP 409 with `code: "APPROVAL_NOT_PENDING"` and sends
+no approval signal.
+
+The hook classifies HTTP 409 as `stale`. It clears the old controls and approval
+progress only if the current pending ID still matches the submitted ID. A newer
+approval that arrived while the request was in flight stays visible. All three
+handlers show `This approval was already answered or has expired.` and omit the
+success notice used for an accepted decision.
+
+The global fetch interceptor leaves HTTP 409 with `APPROVAL_NOT_PENDING` on this
+exact approval pathname to the chat's handler, returning the original Response.
+Other statuses, codes and paths retain their error reporting. This prevents a
+duplicate generic AI failure notice for an expected stale answer.
+
+The response contract is defined in
+[`approval-response.ts`](../apps/web/modules/saas/agents/lib/approval-response.ts).
+The route and workflow also check pending approval identity before accepting an
+answer; clearing a card in the client grants no execution permission.
+
 ## Agent Delegation
 
 The orchestrator adapts delegation based on agent capabilities from A2A cards:

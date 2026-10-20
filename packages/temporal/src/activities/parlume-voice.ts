@@ -458,7 +458,6 @@ type SpeakInput = SpeechContext & {
 	/** The reply as speakable sentences; see ParlumeSentenceQueue. */
 	sentences: AsyncIterable<string>;
 	voiceGeneration?: number;
-	confirmationSpeakerId?: string;
 	signal?: AbortSignal;
 };
 
@@ -556,12 +555,6 @@ async function speakThroughAura(
 				"x-parlume-voice-generation": String(
 					input.voiceGeneration ?? 0,
 				),
-				...(input.confirmationSpeakerId
-					? {
-							"x-parlume-confirmation-speaker":
-								input.confirmationSpeakerId,
-						}
-					: {}),
 			},
 			body: ndjsonSentences(requested),
 			duplex: "half",
@@ -688,12 +681,6 @@ async function speakThroughPcm(
 			Authorization: `Bearer ${secret}`,
 			"content-type": "audio/pcm",
 			"x-parlume-voice-generation": String(input.voiceGeneration ?? 0),
-			...(input.confirmationSpeakerId
-				? {
-						"x-parlume-confirmation-speaker":
-							input.confirmationSpeakerId,
-					}
-				: {}),
 		},
 		body: speech.pcm,
 		duplex: "half",

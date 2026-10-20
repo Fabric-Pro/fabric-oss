@@ -89,6 +89,33 @@ export interface ConversationSummary {
 
 const detailKey = (id: string) => ["agents", "conversations", "detail", id];
 
+/** How often a conversation with a turn still running is read again. */
+const RUNNING_TURN_REFRESH_MS = 5_000;
+
+/**
+ * Whether the read showed a turn that was still running (the server's
+ * `inProgress` record): its answer is not there yet, so it is read again until
+ * the finished turn replaces it.
+ */
+export function hasRunningTurn(
+	detail: Pick<ConversationDetail, "metadata"> | null | undefined,
+): boolean {
+	const metadata = detail?.metadata;
+	if (typeof metadata !== "object" || metadata === null) {
+		return false;
+	}
+	const executions = (metadata as { executions?: unknown }).executions;
+	return (
+		Array.isArray(executions) &&
+		executions.some(
+			(execution) =>
+				typeof execution === "object" &&
+				execution !== null &&
+				(execution as { inProgress?: unknown }).inProgress === true,
+		)
+	);
+}
+
 /**
  * One stored conversation, read when there is an id for it. A conversation that
  * is gone (a stale link, a deleted one) reads as null; any other failure is an
@@ -119,6 +146,8 @@ export function useConversationDetail(
 		enabled: !!id,
 		retry: false,
 		throwOnError: false,
+		refetchInterval: (query) =>
+			hasRunningTurn(query.state.data) ? RUNNING_TURN_REFRESH_MS : false,
 	});
 }
 
@@ -234,7 +263,10 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 			pinned?: boolean;
 			status?: "ACTIVE" | "ARCHIVED";
 		}) => {
-			const result = await orpcClient.agents.conversations.update(input);
+			const result = await orpcClient.agents.conversations.update({
+				...input,
+				organizationId: organizationId ?? undefined,
+			});
 			return result;
 		},
 		onSuccess: (data) => {
@@ -249,8 +281,10 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 			conversationId: string;
 			message: ConversationMessage;
 		}) => {
-			const result =
-				await orpcClient.agents.conversations.addMessage(input);
+			const result = await orpcClient.agents.conversations.addMessage({
+				...input,
+				organizationId: organizationId ?? undefined,
+			});
 			return result;
 		},
 		onSuccess: (data) => {
@@ -266,7 +300,10 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 			trajectory: AgentTrajectory;
 		}) => {
 			const result =
-				await orpcClient.agents.conversations.updateTrajectory(input);
+				await orpcClient.agents.conversations.updateTrajectory({
+					...input,
+					organizationId: organizationId ?? undefined,
+				});
 			return result;
 		},
 		onSuccess: (data) => {
@@ -277,7 +314,10 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 	// Delete conversation mutation
 	const deleteMutation = useMutation({
 		mutationFn: async (id: string) => {
-			const result = await orpcClient.agents.conversations.delete({ id });
+			const result = await orpcClient.agents.conversations.delete({
+				id,
+				organizationId: organizationId ?? undefined,
+			});
 			return result;
 		},
 		onSuccess: (_result, deletedId) => {
@@ -295,6 +335,7 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 		mutationFn: async (id: string) => {
 			const result = await orpcClient.agents.conversations.archive({
 				id,
+				organizationId: organizationId ?? undefined,
 			});
 			return result;
 		},
@@ -308,6 +349,7 @@ export function useConversationHistory(options: UseConversationHistoryOptions) {
 		mutationFn: async (id: string) => {
 			const result = await orpcClient.agents.conversations.togglePin({
 				id,
+				organizationId: organizationId ?? undefined,
 			});
 			return result;
 		},

@@ -6,6 +6,7 @@ import {
 	writePmSyncStatusForAttempt,
 	writePmSyncStatusUnattempted,
 } from "./pm-sync-attempt-fence";
+import { redactDatabaseErrorText } from "./pm-sync-user-error";
 import { recordPmSyncLog } from "./record-pm-sync-log";
 
 const ERROR_FIELD_MAX = 500;
@@ -24,6 +25,7 @@ function truncate(value: string, max: number): string {
 export type PmSyncItemType = "epic" | "feature" | "story" | "bug" | "testCase";
 
 export interface RecordPmSyncFailureInput {
+	direction?: "push" | "pull";
 	itemId: string;
 	itemType: PmSyncItemType;
 	errorMessage: string;
@@ -85,23 +87,20 @@ export interface RecordPmSyncFailureInput {
 	 */
 	onlyIfCreateClaimId?: string;
 	/**
-	 * For a run without an attempt id whose failure rests on the row it
-	 * read (the legacy other-tool link guard): the FAILED write applies only
-	 * while the row still has this link (`externalId` and
-	 * `externalMcpServerId`) and this `lastPmSyncAttemptId`, and, like every
-	 * write without an attempt id, only while the row is not PENDING for an
-	 * attempt (`writePmSyncStatusUnattempted`). So a relink or a newer
-	 * enqueue since the read keeps its state, and so does an attempt that was
-	 * already PENDING when the row was read. No audit row is written when it
-	 * does not apply or the write fails. Ignored when `onlyIfAttempt` or
-	 * `onlyIfPendingAttempt` is set. `externalUrl`, when given, is required
-	 * too: a caller whose failure rests on the link's URL (the bulk sync's
-	 * other-tool judgement) passes it, so a relink to another item with the
-	 * same id is not stamped.
+	 * Narrow a failure to the link and attempt the caller read. With
+	 * `onlyIfAttempt` for a test case, the snapshot also fences that attempt's write.
+	 * Without an attempt id, the row must additionally not be PENDING for
+	 * an attempt (`writePmSyncStatusUnattempted`). A relink or newer enqueue
+	 * keeps its state. No audit row is written when the predicate misses or
+	 * the write fails. Ignored when `onlyIfPendingAttempt` is set, or when
+	 * `onlyIfAttempt` is set for a story or bug.
+	 * `externalUrl`, when given, is required too, so a replacement link with
+	 * the same id cannot receive a failure judged from the previous URL.
 	 */
 	onlyIfRowUnchanged?: {
 		externalId: string | null;
 		externalMcpServerId: string | null;
+		externalPmTarget?: string | null;
 		lastPmSyncAttemptId: string | null;
 		externalUrl?: string | null;
 	};
@@ -268,11 +267,13 @@ export async function recordPmSyncFailure(
 ): Promise<boolean> {
 	const { itemId, itemType, errorMessage, errorClass, triggerSource } = input;
 	const now = new Date();
-	// Translate known-cryptic PM errors (e.g. Atlassian "cloud id isn't
-	// granted") into actionable guidance before persisting, so the
-	// "PM sync failed" panel tells the user how to fix it. Unknown errors
+	// Replace database error text first, then translate cryptic PM errors
+	// (e.g. Atlassian "cloud id isn't granted") into actionable guidance
+	// before persisting to the "PM sync failed" panel. Other messages
 	// pass through unchanged.
-	const humanizedError = humanizePmSyncError(errorMessage);
+	const humanizedError = humanizePmSyncError(
+		redactDatabaseErrorText(errorMessage, errorClass),
+	);
 	const data = {
 		lastPmSyncStatus: PmSyncStatus.FAILED,
 		lastPmSyncError: truncate(humanizedError, ERROR_FIELD_MAX),
@@ -302,6 +303,10 @@ export async function recordPmSyncFailure(
 				itemType,
 				itemId,
 				attemptId: input.onlyIfAttempt,
+				onlyIfRowUnchanged:
+					itemType === "testCase"
+						? input.onlyIfRowUnchanged
+						: undefined,
 				data,
 				onlyWhileHoldingCreateClaim: input.onlyWhileHoldingCreateClaim,
 			});
@@ -393,7 +398,10 @@ export async function recordPmSyncFailure(
 		}
 		// Whether the row still matched is unknown, so no audit row claims a
 		// failure the row may not carry.
-		if (input.onlyIfRowUnchanged && input.onlyIfAttempt === undefined) {
+		if (
+			input.onlyIfRowUnchanged &&
+			(input.onlyIfAttempt === undefined || itemType === "testCase")
+		) {
 			return false;
 		}
 		if (input.overridePendingAttempt && input.onlyIfCreateClaimHeld) {
@@ -430,6 +438,7 @@ export async function recordPmSyncFailureLog(
 		| "triggerSource"
 		| "pmTool"
 		| "actorUserId"
+		| "direction"
 	> & { link?: { externalId: string | null; externalUrl: string | null } },
 ): Promise<void> {
 	const { itemId, itemType, errorClass, triggerSource } = input;
@@ -437,7 +446,7 @@ export async function recordPmSyncFailureLog(
 		const ctx = await loadFailureLogContext(itemId, itemType);
 		if (ctx) {
 			await recordPmSyncLog({
-				direction: "push",
+				direction: input.direction ?? "push",
 				entityType: itemTypeToLogEntityType(itemType),
 				entityId: itemId,
 				title: ctx.title,
@@ -446,7 +455,12 @@ export async function recordPmSyncFailureLog(
 				errorPayload: {
 					errorClass,
 					errorMessage: truncate(
-						humanizePmSyncError(input.errorMessage),
+						humanizePmSyncError(
+							redactDatabaseErrorText(
+								input.errorMessage,
+								errorClass,
+							),
+						),
 						ERROR_FIELD_MAX,
 					),
 					triggerSource,

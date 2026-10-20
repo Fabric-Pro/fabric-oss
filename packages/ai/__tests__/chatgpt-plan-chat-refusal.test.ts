@@ -24,6 +24,19 @@ describe("chatGptPlanExhaustedChatResponse", () => {
 			error: "Every plan is spent.",
 			code: "subscription_sharing_usage_limit_exceeded",
 			resetAt: RESET.toISOString(),
+			personalKeyOption: false,
+		});
+	});
+
+	// Fizzy #3086: the stop message links to opting a personal key in.
+	it("says when the member could opt a personal key in meanwhile", async () => {
+		const response = chatGptPlanExhaustedChatResponse(
+			new SubscriptionPlanExhaustedError("Every plan is spent.", RESET, {
+				personalKeyOption: true,
+			}),
+		);
+		await expect(response?.json()).resolves.toMatchObject({
+			personalKeyOption: true,
 		});
 	});
 

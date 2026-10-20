@@ -119,6 +119,7 @@ export {
 	classifyFailure,
 	// Activity wrappers for Temporal workflow compatibility
 	classifyFailureActivity,
+	checkCompletionClaimActivity,
 	compactConversationHistoryActivity,
 	createCheckpoint,
 	createRetryStep,

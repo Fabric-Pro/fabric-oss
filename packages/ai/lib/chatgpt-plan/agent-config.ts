@@ -145,6 +145,8 @@ export function chatGptPlanExhaustedRefusal(error: unknown): {
 		error: string;
 		code: "CHATGPT_PLAN_EXHAUSTED";
 		resetAt: string | null;
+		/** The member could opt a personal key in meanwhile (Fizzy #3086). */
+		personalKeyOption: boolean;
 	};
 } | null {
 	return error instanceof SubscriptionPlanExhaustedError
@@ -154,6 +156,7 @@ export function chatGptPlanExhaustedRefusal(error: unknown): {
 					error: error.message,
 					code: "CHATGPT_PLAN_EXHAUSTED",
 					resetAt: error.resetAt?.toISOString() ?? null,
+					personalKeyOption: error.personalKeyOption,
 				},
 			}
 		: null;
@@ -177,6 +180,7 @@ export function chatGptPlanExhaustedChatResponse(
 			error: error.message,
 			code: CHATGPT_PLAN_EXHAUSTED_CODE,
 			resetAt: error.resetAt?.toISOString() ?? null,
+			personalKeyOption: error.personalKeyOption,
 		}),
 		{ status: 429, headers: { "Content-Type": "application/json" } },
 	);

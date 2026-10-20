@@ -225,6 +225,180 @@ describe.skipIf(!process.env.DATABASE_URL)(
 			).toBe(1);
 		});
 
+		it("keeps the question a new turn was sent with, and a retry of its key never rewrites it", async () => {
+			const first = await admit({
+				clientRequestKey: "question-key",
+				question: "Make me a weekly status page",
+			});
+			expect(first.outcome).toBe("created");
+
+			const retry = await admit({
+				clientRequestKey: "question-key",
+				question: "Something else",
+			});
+			expect(retry.outcome).toBe("existing");
+
+			const stored = await fixtures.conversationTurn.findMany({
+				where: { userId: IDS.owner },
+				select: { questionText: true },
+			});
+			expect(stored).toEqual([
+				{ questionText: "Make me a weekly status page" },
+			]);
+		});
+
+		describe("when the conversation is deleted", () => {
+			const DELETED = "cturn-conversation-deleted";
+
+			async function turnInDeletedConversation(
+				finishBeforeDelete: boolean,
+			) {
+				await upsertConversation(DELETED, IDS.owner, IDS.org);
+				const admitted = await admit({
+					conversationId: DELETED,
+					question: "Make me a weekly status page",
+				});
+				if (admitted.outcome !== "created") {
+					throw new Error(
+						`expected a new turn, got ${admitted.outcome}`,
+					);
+				}
+				const finish = () =>
+					finalizeConversationTurn({
+						turnId: admitted.turn.id,
+						executionId: admitted.turn.executionId as string,
+						userId: IDS.owner,
+						organizationId: IDS.org,
+						outcome: "COMPLETED",
+						responseText: "Created the weekly workflow.",
+					});
+				if (finishBeforeDelete) {
+					await finish();
+				}
+				await fixtures.agentConversation.delete({
+					where: { id: DELETED },
+				});
+				if (!finishBeforeDelete) {
+					await finish();
+				}
+				return fixtures.conversationTurn.findUniqueOrThrow({
+					where: { id: admitted.turn.id },
+					select: {
+						conversationId: true,
+						scopeConversationId: true,
+						status: true,
+						questionText: true,
+						responseText: true,
+					},
+				});
+			}
+
+			it("keeps the turn for attribution but drops its question and answer", async () => {
+				expect(await turnInDeletedConversation(true)).toEqual({
+					conversationId: null,
+					scopeConversationId: DELETED,
+					status: "COMPLETED",
+					questionText: null,
+					responseText: null,
+				});
+			});
+
+			it("does not take the answer of a run that finishes after the delete", async () => {
+				expect(await turnInDeletedConversation(false)).toMatchObject({
+					conversationId: null,
+					status: "COMPLETED",
+					questionText: null,
+					responseText: null,
+				});
+			});
+
+			it("drops the text of a turn admitted without a conversation and claimed by its first save", async () => {
+				const admitted = await admit({
+					conversationId: null,
+					question: "Make me a weekly status page",
+				});
+				if (admitted.outcome !== "created") {
+					throw new Error(
+						`expected a new turn, got ${admitted.outcome}`,
+					);
+				}
+				await finalizeConversationTurn({
+					turnId: admitted.turn.id,
+					executionId: admitted.turn.executionId as string,
+					userId: IDS.owner,
+					organizationId: IDS.org,
+					outcome: "COMPLETED",
+					responseText: "Created the weekly workflow.",
+				});
+				await upsertConversation(DELETED, IDS.owner, IDS.org);
+				await fixtures.conversationTurn.update({
+					where: { id: admitted.turn.id },
+					data: { conversationId: DELETED },
+				});
+
+				await fixtures.agentConversation.delete({
+					where: { id: DELETED },
+				});
+
+				expect(
+					await fixtures.conversationTurn.findUniqueOrThrow({
+						where: { id: admitted.turn.id },
+						select: {
+							conversationId: true,
+							scopeConversationId: true,
+							questionText: true,
+							responseText: true,
+						},
+					}),
+				).toEqual({
+					conversationId: null,
+					scopeConversationId: null,
+					questionText: null,
+					responseText: null,
+				});
+			});
+
+			it("leaves the text of a turn that never had a conversation", async () => {
+				const admitted = await admit({
+					conversationId: null,
+					question: "A question with no conversation",
+				});
+				if (admitted.outcome !== "created") {
+					throw new Error(
+						`expected a new turn, got ${admitted.outcome}`,
+					);
+				}
+				await finalizeConversationTurn({
+					turnId: admitted.turn.id,
+					executionId: admitted.turn.executionId as string,
+					userId: IDS.owner,
+					organizationId: IDS.org,
+					outcome: "COMPLETED",
+					responseText: "An answer",
+				});
+
+				expect(
+					await fixtures.conversationTurn.findUniqueOrThrow({
+						where: { id: admitted.turn.id },
+						select: { questionText: true, responseText: true },
+					}),
+				).toEqual({
+					questionText: "A question with no conversation",
+					responseText: "An answer",
+				});
+			});
+		});
+
+		it("stores no question for a turn sent without one", async () => {
+			await admit({ question: "" });
+
+			const stored = await fixtures.conversationTurn.findFirst({
+				where: { userId: IDS.owner },
+				select: { questionText: true },
+			});
+			expect(stored).toEqual({ questionText: null });
+		});
+
 		it("admits one turn when many retries of the same key race", async () => {
 			const results = await Promise.all(
 				Array.from({ length: RACERS }, () =>

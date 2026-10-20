@@ -42,11 +42,11 @@
  */
 
 import { log, proxyActivities } from "@temporalio/workflow";
-
 import type {
 	syncWorkItemToPM as SyncWorkItemToPMFn,
 	WorkItemType,
 } from "../activities/pm-integration/hierarchy-sync";
+import { redactDatabaseErrorText } from "../activities/pm-integration/pm-sync-user-error";
 import type {
 	clearPmSyncPendingIfLeaked as ClearPmSyncPendingIfLeakedFn,
 	recordPmSyncFailure as RecordPmSyncFailureFn,
@@ -190,7 +190,7 @@ export async function pmSyncSingleStoryWorkflow(
 			return {
 				status: "FAILED",
 				errorClass,
-				message: errorMessage,
+				message: redactDatabaseErrorText(errorMessage, errorClass),
 			};
 		}
 	} finally {

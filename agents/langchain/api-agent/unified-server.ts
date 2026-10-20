@@ -13,8 +13,11 @@ import {
 	type AgentRuntimeConfig,
 	type AgentSkill,
 	createUnifiedServer,
+	getUserFacingError,
 	type LangGraphStreamEvent,
 } from "@repo/agent-core";
+import { buildAgentConfigurable as buildModelConfigurable } from "@repo/agent-core/services/agent-configurable";
+import { convertToSimpleMessages } from "@repo/agent-core/utils/message-converter";
 import { v4 as uuidv4 } from "uuid";
 import { apiAgentGraph } from "./agent.js";
 
@@ -79,23 +82,25 @@ const AGENT_SKILLS: AgentSkill[] = [
  *    executor MUST forward it explicitly.
  *
  * Merging both lets getAgentModelAsync → createProviderModel resolve the
- * tenant's model for every provider, including Databricks (Unity AI Gateway).
+ * tenant's model for supported providers, including Databricks (Unity AI Gateway).
  */
 function buildAgentConfigurable(
 	input: Record<string, unknown>,
-	runtimeConfigurable: Record<string, unknown> = {},
+	runtimeConfigurable?: Record<string, unknown>,
 ): Record<string, unknown> {
 	const str = (v: unknown): string | undefined =>
 		typeof v === "string" && v.length > 0 ? v : undefined;
 	// Prefer the token-exchanged runtime config (CopilotKit) over raw input (A2A).
 	const pick = (key: string): string | undefined =>
-		str(runtimeConfigurable[key]) ?? str(input[key]);
+		str(runtimeConfigurable?.[key]) ?? str(input[key]);
 
-	const tenantUserId = pick("tenant_user_id") ?? str(input.userId);
-	const tenantOrgId =
-		pick("tenant_organization_id") ?? str(input.organizationId);
+	const modelConfig = buildModelConfigurable(input, runtimeConfigurable);
+	const tenantUserId = str(modelConfig.tenant_user_id);
+	const tenantOrgId = str(modelConfig.tenant_organization_id);
 
 	return {
+		...modelConfig,
+		usage_conversation_id: pick("usage_conversation_id"),
 		// Context the nodes use for OpenAPI tool loading. On the CopilotKit
 		// /runs/stream path the app route supplies this via
 		// runtimeConfigurable.fabric_api_url (snake_case, from forwarded
@@ -103,26 +108,19 @@ function buildAgentConfigurable(
 		// (camelCase). Fall back to env last — docker-compose sets only
 		// RUNTIME_API_URL (same web target), not FABRIC_API_URL, so accept it.
 		fabric_api_url:
-			str(runtimeConfigurable.fabric_api_url) ??
+			str(runtimeConfigurable?.fabric_api_url) ??
 			str(input.fabric_api_url) ??
 			str(input.fabricApiUrl) ??
 			process.env.FABRIC_API_URL ??
 			process.env.RUNTIME_API_URL,
-		user_id: str(input.userId) ?? tenantUserId,
-		organization_id: str(input.organizationId) ?? tenantOrgId,
-		openapi_tools: input.openapi_tools ?? runtimeConfigurable.openapi_tools,
+		user_id: tenantUserId,
+		organization_id: tenantOrgId,
+		openapi_tools:
+			input.openapi_tools ?? runtimeConfigurable?.openapi_tools,
 		// Tenant + AI provider config consumed by getAgentModelAsync.
 		tenant_user_id: tenantUserId,
 		tenant_organization_id: tenantOrgId,
 		ai_token: pick("ai_token"),
-		ai_api_key: pick("ai_api_key"),
-		ai_model: pick("ai_model"),
-		ai_provider: pick("ai_provider"),
-		// A2A sends the workspace host as `ai_base_url`; the platform/CopilotKit
-		// path sends it as `ai_gateway_url`. extractProviderConfig reads
-		// `ai_gateway_url`, so normalize to that.
-		ai_gateway_url: pick("ai_gateway_url") ?? str(input.ai_base_url),
-		ai_deployment_name: pick("ai_deployment_name"),
 	};
 }
 
@@ -197,16 +195,7 @@ const { app, start } = createUnifiedServer(
 		});
 
 		// Convert BaseMessage[] to simple message format
-		const outputMessages = (result.messages || []).map((msg) => ({
-			role:
-				typeof msg === "object" && msg !== null && "role" in msg
-					? String((msg as Record<string, unknown>).role)
-					: "assistant",
-			content:
-				typeof msg === "object" && msg !== null && "content" in msg
-					? String((msg as Record<string, unknown>).content)
-					: String(msg),
-		}));
+		const outputMessages = convertToSimpleMessages(result.messages || []);
 
 		return {
 			response: result.response || "",
@@ -221,6 +210,7 @@ const { app, start } = createUnifiedServer(
 		const response = (output.response as string) || "";
 
 		return {
+			error: getUserFacingError(output.error, output.response),
 			response,
 			artifacts: response
 				? [

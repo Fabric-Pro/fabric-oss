@@ -21,6 +21,7 @@ import { InstructionFileView } from "./InstructionFileView";
 import { InstructionProposals } from "./InstructionProposals";
 import { InstructionsCommits } from "./InstructionsCommits";
 import { InstructionsPageFrame } from "./InstructionsPageFrame";
+import { InstructionsPluginReport } from "./InstructionsPluginReport";
 import { InstructionsSettingsDialog } from "./InstructionsSettingsDialog";
 import {
 	InstructionsAgentFact,
@@ -494,6 +495,7 @@ function ReadyRepositoryInstructions({
 					</InstructionsStatusFact>
 				) : null}
 			</InstructionsStatusFacts>
+			<InstructionsPluginReport projectId={projectId} />
 			{!listing && viewPath === null ? (
 				<output>{t("loading")}</output>
 			) : (files.isError || listing?.refusal) && !draftOwner ? (

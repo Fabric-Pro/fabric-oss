@@ -314,12 +314,32 @@ describe("fabric_page_read_connected", () => {
 		);
 
 		expect(result.isError).toBe(true);
-		expect(payload(result).error).toContain("mcp:read");
+		expect(payload(result).error).toBe(
+			"fabric_page_read_connected is not available to this agent runtime.",
+		);
 		expect(mocks.readConnectedTool).not.toHaveBeenCalled();
 	});
 });
 
 describe("fabric_list_frame_versions", () => {
+	it.each(["project-2", null])(
+		"reads no version metadata for project %s outside the page attachment",
+		async (projectId) => {
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId }),
+			);
+			const result = await executePlatformTool(
+				"fabric_list_frame_versions",
+				{ frameId: "frame-2" },
+				{ ...session, pageProjectId: "project-1" },
+			);
+			expect(result.isError).toBe(true);
+			expect(mocks.getFrameEditHistory).not.toHaveBeenCalled();
+			expect(mocks.editCount).not.toHaveBeenCalled();
+			expect(mocks.userFindMany).not.toHaveBeenCalled();
+		},
+	);
+
 	beforeEach(() => {
 		mocks.getFrameEditHistory.mockResolvedValue([
 			{

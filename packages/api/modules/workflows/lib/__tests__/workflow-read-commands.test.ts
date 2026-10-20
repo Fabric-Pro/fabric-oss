@@ -58,6 +58,28 @@ beforeEach(() => {
 });
 
 describe("listWorkflowsCommand", () => {
+	it("applies the actor's project before listing and counting with pagination", async () => {
+		await listWorkflowsCommand(
+			{ ...actor, projectRestrictionId: "project-1" },
+			{ limit: 1, offset: 2 },
+		);
+		expect(mocks.listWorkflows).toHaveBeenCalledExactlyOnceWith({
+			userId: USER,
+			organizationId: ORG,
+			projectId: "project-1",
+			limit: 1,
+			offset: 2,
+		});
+		await expect(
+			listWorkflowsCommand(
+				{ ...actor, projectRestrictionId: "project-1" },
+				{
+					projectId: "project-2",
+				},
+			),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(mocks.listWorkflows).toHaveBeenCalledOnce();
+	});
 	it("lists the actor's workflows in their organization with the filters given", async () => {
 		await listWorkflowsCommand(actor, { limit: 5, status: "PUBLISHED" });
 
@@ -95,6 +117,19 @@ describe("listWorkflowsCommand", () => {
 });
 
 describe("getWorkflowCommand", () => {
+	it.each(["project-2", null])(
+		"refuses workflow project %s before reading its latest run",
+		async (projectId) => {
+			mocks.getWorkflowById.mockResolvedValue({ id: "wf-1", projectId });
+			await expect(
+				getWorkflowWithLatestRunCommand(
+					{ ...actor, projectRestrictionId: "project-1" },
+					"wf-1",
+				),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(mocks.listExecutions).not.toHaveBeenCalled();
+		},
+	);
 	it("reads the workflow with the owner and the organization in the filter", async () => {
 		const workflow = await getWorkflowCommand(actor, "wf-1");
 
@@ -183,6 +218,62 @@ describe("getWorkflowWithLatestRunCommand", () => {
 });
 
 describe("getWorkflowExecutionCommand", () => {
+	it("refuses an execution with no workflow under a project restriction", async () => {
+		mocks.getExecution.mockResolvedValue({
+			id: "exec-1",
+			workflowId: null,
+		});
+		await expect(
+			getWorkflowExecutionCommand(
+				{ ...actor, projectRestrictionId: "project-1" },
+				"exec-1",
+			),
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "Execution not found",
+		});
+		expect(mocks.getWorkflowById).not.toHaveBeenCalled();
+	});
+	it.each(["project-2", null])(
+		"refuses execution output and logs when its workflow project is %s",
+		async (projectId) => {
+			mocks.getExecution.mockResolvedValue({
+				id: "exec-1",
+				workflowId: "wf-1",
+				output: "private",
+				logs: ["private"],
+			});
+			mocks.getWorkflowById.mockResolvedValue({ id: "wf-1", projectId });
+			await expect(
+				getWorkflowExecutionCommand(
+					{ ...actor, projectRestrictionId: "project-1" },
+					"exec-1",
+				),
+			).rejects.toMatchObject({ code: "NOT_FOUND" });
+			expect(mocks.getWorkflowById).toHaveBeenCalledWith(
+				"wf-1",
+				USER,
+				ORG,
+			);
+		},
+	);
+
+	it("returns an execution after resolving its workflow's matching project", async () => {
+		mocks.getExecution.mockResolvedValue({
+			id: "exec-1",
+			workflowId: "wf-1",
+		});
+		mocks.getWorkflowById.mockResolvedValue({
+			id: "wf-1",
+			projectId: "project-1",
+		});
+		await expect(
+			getWorkflowExecutionCommand(
+				{ ...actor, projectRestrictionId: "project-1" },
+				"exec-1",
+			),
+		).resolves.toMatchObject({ id: "exec-1" });
+	});
 	it("reads the execution scoped to the actor", async () => {
 		const execution = await getWorkflowExecutionCommand(actor, "exec-1");
 

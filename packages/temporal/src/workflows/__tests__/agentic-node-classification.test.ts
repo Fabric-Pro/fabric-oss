@@ -18,6 +18,7 @@ vi.mock("@repo/database/prisma/queries/approvals", () => ({
 import { preflightValidation } from "../../activities/preflight-validation";
 import { stepRegistry } from "../../activities/lib/step-registry";
 import {
+	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
 	PUBLISH_FRAME_NODE_TYPE,
 } from "../../lib/workflow-node-types";
@@ -29,9 +30,12 @@ import {
 } from "../lib/workflow-builder-nodes";
 
 describe("agentic node classification", () => {
-	it("registers an executor for both node types", () => {
+	it("registers executors for agent tasks, story review and publishing", () => {
 		expect(AGENT_TASK_NODE_TYPE in stepRegistry).toBe(true);
 		expect(PUBLISH_FRAME_NODE_TYPE in stepRegistry).toBe(true);
+		expect(stepRegistry[ADO_STORY_REVIEW_NODE_TYPE]?.name).toBe(
+			"Review ADO Stories",
+		);
 	});
 
 	it("recognises the agent node by the type the preset builds", () => {
@@ -57,7 +61,17 @@ describe("agentic node classification", () => {
 		expect(isNonRetryableNodeType(PUBLISH_FRAME_NODE_TYPE)).toBe(false);
 	});
 
-	it.each([AGENT_TASK_NODE_TYPE, PUBLISH_FRAME_NODE_TYPE])(
+	it("does not retry story review inference or classify it as a source write or full agent turn", () => {
+		expect(isNonRetryableNodeType(ADO_STORY_REVIEW_NODE_TYPE)).toBe(true);
+		expect(isExternalWriteNodeType(ADO_STORY_REVIEW_NODE_TYPE)).toBe(false);
+		expect(isAgentTaskNodeType(ADO_STORY_REVIEW_NODE_TYPE)).toBe(false);
+	});
+
+	it.each([
+		AGENT_TASK_NODE_TYPE,
+		PUBLISH_FRAME_NODE_TYPE,
+		ADO_STORY_REVIEW_NODE_TYPE,
+	])(
 		"%s never pauses an unattended run for human approval",
 		async (stepType) => {
 			const result = await preflightValidation({

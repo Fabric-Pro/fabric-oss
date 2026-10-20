@@ -17,6 +17,7 @@ export * from "./comments";
 export * from "./context-body";
 export * from "./context-content-hash";
 export * from "./context-duplicates";
+export * from "./context-index-mode";
 export * from "./context-repository-sync";
 export * from "./context-repository-sync-automatic";
 export * from "./context-repository-sync-selection";

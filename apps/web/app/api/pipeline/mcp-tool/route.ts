@@ -120,10 +120,16 @@ export async function POST(request: NextRequest) {
 			// If it's a McpClientError (auth, config disabled, rate limit), don't retry —
 			// these are business-logic errors, not stale connections.
 			if (clientOrToolsError instanceof McpClientError) {
-				console.error(
-					"[MCP Tool API] MCP client error:",
-					clientOrToolsError.message,
-				);
+				console.error("[MCP Tool API] MCP client error:", {
+					error:
+						clientOrToolsError instanceof Error
+							? clientOrToolsError.message
+							: clientOrToolsError,
+					stack:
+						clientOrToolsError instanceof Error
+							? clientOrToolsError.stack
+							: undefined,
+				});
 				const statusCode = clientOrToolsError.isAuthError
 					? 401
 					: clientOrToolsError.isRateLimitError
@@ -144,9 +150,16 @@ export async function POST(request: NextRequest) {
 			// Likely a stale cached connection. Invalidate and retry once with a fresh client.
 			console.warn(
 				"[MCP Tool API] Stale connection detected, retrying with fresh client:",
-				clientOrToolsError instanceof Error
-					? clientOrToolsError.message
-					: clientOrToolsError,
+				{
+					error:
+						clientOrToolsError instanceof Error
+							? clientOrToolsError.message
+							: clientOrToolsError,
+					stack:
+						clientOrToolsError instanceof Error
+							? clientOrToolsError.stack
+							: undefined,
+				},
 			);
 
 			await invalidateMcpClientCache(
@@ -164,7 +177,16 @@ export async function POST(request: NextRequest) {
 				serverName = retry.serverName;
 				tools = await retry.client.tools();
 			} catch (retryError) {
-				console.error("[MCP Tool API] Retry also failed:", retryError);
+				console.error("[MCP Tool API] Retry also failed:", {
+					error:
+						retryError instanceof Error
+							? retryError.message
+							: retryError,
+					stack:
+						retryError instanceof Error
+							? retryError.stack
+							: undefined,
+				});
 
 				if (retryError instanceof McpClientError) {
 					const statusCode = retryError.isAuthError
@@ -198,10 +220,10 @@ export async function POST(request: NextRequest) {
 
 		// Handle list_tools action - returns available tools without executing
 		if (action === "list_tools") {
-			console.log(
-				`[MCP Tool API] Listing tools for ${serverName}:`,
+			console.log("[MCP Tool API] Listing tools for server", {
+				serverName,
 				availableTools,
-			);
+			});
 			return NextResponse.json({ tools: availableTools, serverName });
 		}
 
@@ -344,19 +366,21 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		console.log(
-			"[MCP Tool API] Raw result:",
-			{ toolName },
-			JSON.stringify(result, null, 2),
-		);
+		console.log("[MCP Tool API] Raw result:", {
+			toolName,
+			details: JSON.stringify(result, null, 2),
+		});
 
 		// Parse MCP content format
 		const parsed = parseMcpResult(result);
-		console.log("[MCP Tool API] Parsed result:", { toolName }, parsed);
+		console.log("[MCP Tool API] Parsed result:", { toolName, parsed });
 
 		return NextResponse.json({ result: parsed, toolName, serverName });
 	} catch (error) {
-		console.error("[MCP Tool API] Error:", error);
+		console.error("[MCP Tool API] Error:", {
+			error: error instanceof Error ? error.message : error,
+			stack: error instanceof Error ? error.stack : undefined,
+		});
 
 		// Invalidate cache so the next request gets a fresh connection.
 		// This handles the case where tool.execute() failed due to a dying connection.
@@ -463,7 +487,10 @@ function parseMcpResult(result: unknown): unknown {
 		return result;
 	} catch (e) {
 		if (e instanceof Error && e.message !== "MCP tool returned an error") {
-			console.error("[MCP Tool API] Parse error:", e);
+			console.error("[MCP Tool API] Parse error:", {
+				error: e instanceof Error ? e.message : e,
+				stack: e instanceof Error ? e.stack : undefined,
+			});
 		}
 		throw e;
 	}

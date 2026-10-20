@@ -157,6 +157,8 @@ export async function generateEmbedding(
 		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
 		// The usage interceptor writes the AiUsageLog row from this context.
 		projectId: tenantContext.projectId,
+		conversationId: tenantContext.conversationId,
+		frameId: tenantContext.frameId,
 		featureKey: tenantContext.featureKey,
 		jobType: tenantContext.jobType,
 	});
@@ -336,6 +338,8 @@ export async function generateEmbeddings(
 		...(tenantContext.organizationOnly ? { organizationOnly: true } : {}),
 		// The usage interceptor writes the AiUsageLog row from this context.
 		projectId: tenantContext.projectId,
+		conversationId: tenantContext.conversationId,
+		frameId: tenantContext.frameId,
 		featureKey: tenantContext.featureKey,
 		jobType: tenantContext.jobType,
 	});

@@ -630,12 +630,29 @@ interface ConfiguredProvider {
 	isEmbeddingProvider: boolean;
 	/** EMBEDDINGS_ONLY: the key serves document search and nothing else. */
 	purpose?: "ALL" | "EMBEDDINGS_ONLY";
+	/** A personal key stands in when the ChatGPT plan is spent (Fizzy #3085). */
+	useWhenPlanSpent?: boolean;
 	source: string;
 }
 
 interface ConfigStatus {
 	configuredProviders: ConfiguredProvider[];
 	embeddingProvider: string | null;
+}
+
+/**
+ * True when the member opted this personal key in to serve their own work
+ * while the ChatGPT plan is spent (Fizzy #3085).
+ */
+export function isProviderPlanSpentFallback(
+	providerId: string,
+	configStatus?: ConfigStatus | null,
+): boolean {
+	return (
+		configStatus?.configuredProviders.some(
+			(p) => p.provider === providerId && p.useWhenPlanSpent === true,
+		) ?? false
+	);
 }
 
 /**

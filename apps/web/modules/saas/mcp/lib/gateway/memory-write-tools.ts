@@ -67,11 +67,36 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_memory_targets",
 		description:
-			"Lists a project's Living Memory write folders: the folders in its repository that agents may write files into, each with its targetId and mode, the repository (provider, owner, name) and branch, and the commit the last sync applied. PULL_REQUEST folders open a pull request; DIRECT_PUSH folders commit to the branch itself. Returns no folders if none are configured.",
+			"Lists a project's Living Memory write folders: targetId, mode, indexMode, repository, branch, last synced commit. ingesting: true means landed files reach Living Memory at the next sync. PULL_REQUEST folders open a pull request; DIRECT_PUSH folders commit to the branch. STORE_ONLY files are readable but left out of all search and summaries; INDEXED ones are embedded.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "The project." },
+				projectId: { type: "string" },
+			},
+			required: ["projectId"],
+		},
+		annotations: TOOL_ANNOTATIONS.read,
+		scope: "memory:write",
+	},
+	{
+		name: "fabric_memory_read",
+		description:
+			"Lists or reads files in a Living Memory folder, Store only ones included. No path: lists under prefix, paged by after/limit (nextCursor). With path: returns its text, paged by offset/maxBytes (default 12000, max 50000; nextOffset). E.g. prefix docs/ai/specs/<work-item-id>.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				projectId: { type: "string" },
+				targetId: {
+					type: "string",
+					description:
+						"Implied by path/prefix, or by a single folder.",
+				},
+				prefix: { type: "string" },
+				after: { type: "string" },
+				limit: { type: "number" },
+				path: { type: "string" },
+				offset: { type: "number" },
+				maxBytes: { type: "number" },
 			},
 			required: ["projectId"],
 		},
@@ -80,20 +105,19 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	},
 	{
 		name: "fabric_memory_write",
-		description: `Writes plain text files into one of a project's Living Memory folders (see fabric_memory_targets) as a single commit; all files land or none do. Give each file a repository-relative path inside the folder and its full content, or delete: true. A file without ifMatchOid is create-only and the write is refused if the path exists; to replace or delete a file pass ifMatchOid, the git blob id now at the path (a refused write reports it as currentOid in fabric_memory_write_status). Paths with a dot-prefixed segment are never writable. At most ${MAX_FILES} files and ${MAX_INLINE_MIB} MiB of text. Answers a receipt at once; the outcome is in fabric_memory_write_status. On a DIRECT_PUSH folder the commit lands on the branch (or, if the branch is protected, in a pull request); on a PULL_REQUEST folder a pull request is opened. A pull request is invisible to Living Memory until a person merges it; a commit reaches Living Memory on the next sync. Coding-instruction files are not written here: use fabric_propose_project_instruction_change.`,
+		description: `Writes plain text files into a Living Memory folder (see fabric_memory_targets) as one commit; all land or none do. Per file: a repository-relative path inside the folder and its full content, or delete: true. A file without ifMatchOid is create-only (refused if the path exists); to replace or delete pass ifMatchOid, the git blob id at the path (fabric_memory_write_status reports it as currentOid when refused). Dot-prefixed path segments are not writable. At most ${MAX_FILES} files and ${MAX_INLINE_MIB} MiB. The outcome is in fabric_memory_write_status. DIRECT_PUSH commits to the branch (or opens a pull request if it is protected); PULL_REQUEST opens one, invisible to Living Memory until merged. Not for instruction files: use fabric_propose_project_instruction_change.`,
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "The project." },
+				projectId: { type: "string" },
 				targetId: {
 					type: "string",
-					description:
-						"The write folder. May be omitted when the project has exactly one.",
+					description: "Omit when the project has one folder.",
 				},
 				message: {
 					type: "string",
 					description:
-						"The commit message (and pull request title: its first line).",
+						"Commit message (pull request title: first line).",
 				},
 				files: {
 					type: "array",
@@ -117,14 +141,15 @@ const MEMORY_WRITE_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_memory_write_status",
 		description:
-			"Reads the receipt of a Living Memory write: PENDING until it settles, then COMMITTED, PULL_REQUEST (with the pull request URL), CONFLICT or REFUSED (with a verdict per path, and currentOid for a path that changed), or FAILED. Poll it after fabric_memory_write.",
+			"Reads a Living Memory write receipt: PENDING, then COMMITTED, PULL_REQUEST (with its URL), CONFLICT or REFUSED (a verdict per path, currentOid for a changed path), or FAILED.",
 		inputSchema: {
 			type: "object",
 			properties: {
-				projectId: { type: "string", description: "The project." },
+				projectId: { type: "string" },
 				writeId: {
 					type: "string",
-					description: "From fabric_memory_write.",
+					description:
+						"From fabric_memory_write, or the outbox of .fabric/memory.lock.",
 				},
 			},
 			required: ["projectId", "writeId"],
@@ -193,6 +218,102 @@ async function handleMemoryTargets(
 			organizationId: resolved.organizationId,
 		}),
 	);
+}
+
+async function handleMemoryRead(
+	access: MemoryWriteToolAccess,
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const projectId = projectIdOf(args);
+	if (projectId === null) {
+		return errorResult("projectId is required");
+	}
+	const { z } = await import("zod");
+	const parsed = z
+		.object({
+			targetId: z.string().min(1).max(128).optional(),
+			prefix: z.string().min(1).max(512).optional(),
+			after: z.string().max(1024).optional(),
+			limit: z.number().int().min(1).optional(),
+			path: z.string().min(1).max(1024).optional(),
+			offset: z.number().int().min(0).optional(),
+			maxBytes: z.number().int().min(1).optional(),
+		})
+		.safeParse(args);
+	if (!parsed.success) {
+		return errorResult(
+			`Invalid arguments: ${parsed.error.issues
+				.map(
+					(issue) =>
+						`${issue.path.join(".") || "arguments"}: ${issue.message}`,
+				)
+				.join("; ")}`,
+		);
+	}
+	const resolved = await access.resolveGatewayProjectWriteAccessWithHost(
+		projectId,
+		session,
+		"CONTEXT_READ",
+	);
+	const denial = projectDenial(resolved, "CONTEXT_READ");
+	if (denial || resolved.status !== "allowed" || !resolved.organizationId) {
+		return denial ?? errorResult(PROJECT_DENIED);
+	}
+	const organizationId = resolved.organizationId;
+	const input = parsed.data;
+
+	const views = await viewsModule();
+	const targets = await views.getMemoryWriteTargetsView({
+		projectId,
+		organizationId,
+	});
+	const within = input.path ?? input.prefix;
+	const holding = targets.targets.filter(
+		(t) => within === t.folder || within?.startsWith(`${t.folder}/`),
+	);
+	const target = input.targetId
+		? targets.targets.find((t) => t.id === input.targetId)
+		: targets.targets.length === 1
+			? targets.targets[0]
+			: holding.length === 1
+				? holding[0]
+				: undefined;
+	if (!target) {
+		return errorResult(
+			input.targetId
+				? "Write folder not found"
+				: targets.targets.length === 0
+					? "This project has no Living Memory write folders. A project admin adds them in the Context tab."
+					: "targetId, or a path or prefix inside one folder, is required: this project has several write folders.",
+			targets.targets.length > 1 ? { targets: targets.targets } : {},
+		);
+	}
+
+	if (input.path !== undefined) {
+		const file = await views.getMemoryFolderTextView({
+			projectId,
+			organizationId,
+			targetId: target.id,
+			path: input.path,
+			offset: input.offset,
+			maxBytes: input.maxBytes,
+		});
+		return file ? jsonResult(file) : errorResult("File not found");
+	}
+	const listing = await views.getMemoryFolderFilesView({
+		projectId,
+		organizationId,
+		targetId: target.id,
+		prefix: input.prefix,
+		after: input.after ?? null,
+		limit: input.limit ?? 500,
+	});
+	return listing
+		? jsonResult(listing)
+		: errorResult(
+				"Folder not found, or the prefix is outside the write folder",
+			);
 }
 
 async function handleMemoryWriteStatus(
@@ -410,6 +531,10 @@ export function createMemoryWriteTools(
 			[
 				"fabric_memory_targets",
 				(args, session) => handleMemoryTargets(access, args, session),
+			],
+			[
+				"fabric_memory_read",
+				(args, session) => handleMemoryRead(access, args, session),
 			],
 			[
 				"fabric_memory_write",

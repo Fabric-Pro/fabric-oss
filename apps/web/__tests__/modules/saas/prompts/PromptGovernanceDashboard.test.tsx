@@ -9,6 +9,7 @@
  * most likely to be "fixed" by someone who has not read this.
  */
 
+import { listPromptActions } from "@repo/utils/prompt-action-catalog";
 import { PromptGovernanceDashboard } from "@saas/prompts/components/PromptGovernanceDashboard";
 import {
 	onlineManager,
@@ -17,7 +18,15 @@ import {
 } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The prompt actions offered depend on the Proposal artifact gate (Fizzy
+// #2946), read through `useFeatureFlag`, which throws without a provider.
+const flags = vi.hoisted(() => ({ proposalArtifact: false }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: (key: string) =>
+		key === "PROPOSAL_ARTIFACT" ? flags.proposalArtifact : false,
+}));
 
 const { catalogList } = vi.hoisted(() => ({ catalogList: vi.fn() }));
 
@@ -225,6 +234,66 @@ describe("PromptGovernanceDashboard (Org Overrides)", () => {
 		);
 		expect(
 			await screen.findByText(/actions have no organization prompt/i),
+		).toBeInTheDocument();
+	});
+});
+
+describe("PromptGovernanceDashboard — the Proposal artifact gate (Fizzy #2946)", () => {
+	const ALL = listPromptActions().length;
+	const LEGACY = "project_document_generator:PROPOSAL:ANY";
+
+	beforeEach(() => {
+		catalogList.mockReset();
+		catalogList.mockResolvedValue({ entries: [] });
+		flags.proposalArtifact = true;
+	});
+	afterEach(() => {
+		flags.proposalArtifact = false;
+	});
+
+	it("does not count the legacy Proposal actions as having no organization prompt", async () => {
+		const { container } = wrap(<PromptGovernanceDashboard />);
+
+		expect(
+			await screen.findByText(
+				`${ALL - 2} of ${ALL - 2} actions have no organization prompt.`,
+			),
+		).toBeInTheDocument();
+		expect(
+			container.querySelector(
+				`a[href*="action=${encodeURIComponent(LEGACY)}"]`,
+			),
+		).toBeNull();
+	});
+
+	it("does not list an organization override at the legacy action as in force", async () => {
+		catalogList.mockResolvedValue({
+			entries: [
+				{
+					targetKey: "project_document_generator",
+					documentType: "PROPOSAL",
+					storyKind: null,
+					effectiveScope: "ORG",
+					prompts: [],
+				},
+			],
+		});
+		wrap(<PromptGovernanceDashboard />);
+
+		const overrides = await screen.findByRole("button", {
+			name: /organization overrides/i,
+		});
+		expect(within(overrides).getByText("0")).toBeInTheDocument();
+	});
+
+	it("counts every action with the gate off", async () => {
+		flags.proposalArtifact = false;
+		wrap(<PromptGovernanceDashboard />);
+
+		expect(
+			await screen.findByText(
+				`${ALL} of ${ALL} actions have no organization prompt.`,
+			),
 		).toBeInTheDocument();
 	});
 });

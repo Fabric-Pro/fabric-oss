@@ -61,6 +61,11 @@ describe("summarizeSpecChanges", () => {
 			"Must Haves — restricted MFA methods to email and SMS",
 			"Use Cases — added admin-only MFA disable",
 		]);
+
+		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ projectId: "project-1" }),
+		);
 		expect(mocks.generateObject).toHaveBeenCalledTimes(1);
 	});
 

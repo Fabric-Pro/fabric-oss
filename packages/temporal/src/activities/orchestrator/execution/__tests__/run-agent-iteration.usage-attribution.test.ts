@@ -94,13 +94,38 @@ beforeEach(() => {
 
 describe("runAgentIteration — usage attribution", () => {
 	it("passes the conversation to the model selector", async () => {
-		await runAgentIteration(buildInput({ conversationId: "conv-1" }));
+		await runAgentIteration(
+			buildInput({
+				conversationId: "conv-1",
+				frameId: "frame-1",
+				projectId: "project-1",
+			}),
+		);
 
 		expect(getAiModelWithSelection).toHaveBeenCalledTimes(1);
 		const args = vi.mocked(getAiModelWithSelection).mock.calls[0];
 		expect(args[0]).toBe("user-1");
 		expect(args[1]).toBe("org-1");
-		expect(args[5]).toEqual({ conversationId: "conv-1" });
+		expect(args[5]).toEqual({
+			conversationId: "conv-1",
+			frameId: "frame-1",
+			projectId: "project-1",
+		});
+		expect(args[5]).not.toHaveProperty("workflowExecutionId");
+	});
+
+	it("attributes a frame even without a conversation", async () => {
+		await runAgentIteration(buildInput({ frameId: "frame-1" }));
+		expect(vi.mocked(getAiModelWithSelection).mock.calls[0][5]).toEqual({
+			frameId: "frame-1",
+		});
+	});
+
+	it("attributes a project even without a conversation or frame", async () => {
+		await runAgentIteration(buildInput({ projectId: "project-1" }));
+		expect(vi.mocked(getAiModelWithSelection).mock.calls[0][5]).toEqual({
+			projectId: "project-1",
+		});
 	});
 
 	it("passes no attribution without a conversation, never the execution ID", async () => {

@@ -186,6 +186,7 @@ describe("evaluateAiReadinessProcedure", () => {
 				userId: "user-1",
 				organizationId: undefined,
 				featureKey: "maturation",
+				projectId: "proj-1",
 			},
 		);
 		expect(mocks.generateObject).toHaveBeenCalledWith(

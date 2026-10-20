@@ -92,11 +92,6 @@ describe("sanitizeMcpErrorMessage", () => {
 		});
 
 		it("strips `bearer:` and `bearer=` token patterns", () => {
-			// The spec pattern is `(...|bearer)\s*[:=]\s*\S+` so a `[:=]`
-			// separator is required. A plain "Authorization: bearer xyz"
-			// header (space-only separator after the keyword) is NOT in
-			// the documented contract — covered by the `password=`/`api_key=`
-			// cases above which are the high-signal exfiltration vectors.
 			expect(
 				sanitizeMcpErrorMessage("auth: bearer=eyJraw.jwt.token denied"),
 			).not.toContain("eyJraw.jwt.token");
@@ -203,4 +198,87 @@ describe("sanitizeMcpErrorMessage", () => {
 			);
 		});
 	});
+});
+
+describe("provider credential formats", () => {
+	it.each([
+		[
+			"Authorization: Bearer sk-proj-abcdefghijklmnopqrstuvwx",
+			"sk-proj-abcdefghijklmnopqrstuvwx",
+		],
+		[
+			"401 Incorrect API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+			"sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
+		],
+		['{"apiKey": "abc12345678"}', "abc12345678"],
+		[
+			"Authorization: Bearer example-session-token",
+			"example-session-token",
+		],
+		["Rejected sk-abcdefghijklmnopqrstuvwx", "sk-abcdefghijklmnopqrstuvwx"],
+		[
+			"Rejected sk-proj-abcdefghijklmnopqrstuvwx",
+			"sk-proj-abcdefghijklmnopqrstuvwx",
+		],
+		[
+			"Authorization: Basic ZXhhbXBsZTpleGFtcGxlLXNlY3JldA==",
+			"ZXhhbXBsZTpleGFtcGxlLXNlY3JldA==",
+		],
+		[
+			"Authorization: eyJhbGciOiJIUzI1NiJ9.e30.example",
+			"eyJhbGciOiJIUzI1NiJ9.e30.example",
+		],
+		[
+			'{"authorization": "Basic ZXhhbXBsZTpzZWNyZXQ="}',
+			"ZXhhbXBsZTpzZWNyZXQ=",
+		],
+		[
+			'Authorization: Digest username="example", nonce="example-nonce", response="example-response"',
+			"example-response",
+		],
+		[
+			'Authorization: Digest username="example", nonce="example-nonce", response="example-response"',
+			"example-nonce",
+		],
+		[
+			JSON.stringify({
+				authorization:
+					'Digest username="example", nonce="example-nonce", response="example-response"',
+			}),
+			"example-response",
+		],
+		['{"token": "example-token"}', "example-token"],
+		['{"key": "example-key-value"}', "example-key-value"],
+		[
+			"{'secret': 'example secret with spaces'}",
+			"example secret with spaces",
+		],
+		[
+			'{"password": "example password with spaces"}',
+			"example password with spaces",
+		],
+	])("redacts %s", (message, credential) => {
+		const result = sanitizeMcpErrorMessage(message);
+		expect(result).not.toContain(credential);
+		expect(result).toContain("<redacted>");
+	});
+	it("fully removes a long quoted credential before applying the output cap", () => {
+		const result = sanitizeMcpErrorMessage(
+			`Provider failed: "password": "${"example-secret ".repeat(2000)}" retry later`,
+		);
+		expect(result).toBe("Provider failed: <redacted> retry later");
+	});
+});
+
+it("removes escaped quotes within a quoted credential", () => {
+	const message = JSON.stringify({ password: 'example "quoted" secret' });
+	expect(sanitizeMcpErrorMessage(message)).toBe("{<redacted>}");
+});
+
+it("ends an Authorization redaction at the line break", () => {
+	expect(
+		sanitizeMcpErrorMessage(
+			"Authorization: Basic ZXhhbXBsZTpzZWNyZXQ=\nRequest rejected with 401",
+		),
+	).toBe("<redacted>\nRequest rejected with 401");
 });

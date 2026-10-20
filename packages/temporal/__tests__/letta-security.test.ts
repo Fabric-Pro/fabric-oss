@@ -10,7 +10,7 @@
  * Run with: pnpm --filter @repo/temporal test
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	LETTA_RATE_LIMITS,
 	MAX_CACHE_ENTRY_SIZE,
@@ -18,15 +18,6 @@ import {
 	sanitizeToolResult,
 	validateMemoryBlockContent,
 } from "../src/activities/letta-security";
-
-// Mock the Letta client
-vi.mock("@repo/letta", () => ({
-	getLettaClient: vi.fn(() => ({
-		getAgent: vi.fn(),
-		listIdentities: vi.fn(),
-		listAgents: vi.fn(),
-	})),
-}));
 
 describe("Letta Security Utilities", () => {
 	describe("validateMemoryBlockContent", () => {

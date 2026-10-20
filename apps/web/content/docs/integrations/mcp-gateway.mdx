@@ -156,6 +156,8 @@ Go to **Settings → API Keys** and create a new key. Copy the key — it starts
 For organization context, create the key from your organization settings page.
 </Callout>
 
+A new organization key starts with **MCP Read** only, so it can read and cannot change anything until you tick a write scope. **MCP Write** (`mcp:write`) grants every write tool, including workflows and pages. For an agent that should do one thing, tick the narrow scope instead, such as `workflows:write`, `frames:write` or `features:write`. Keys you created earlier keep the scopes they have.
+
 #### 2. Configure Your Client
 
 <Tabs items={["Claude Desktop", "Cursor", "VS Code", "Custom"]}>
@@ -241,6 +243,61 @@ and setup files, and serves them to a connected agent over the six tools below. 
 come from one of two places: a folder uploaded in Fabric, or a branch of the project's
 repository that Fabric keeps in sync.
 
+How the instructions and agent memory move between your repository, Fabric and the coding
+tool, and what each project can configure:
+
+```mermaid
+flowchart TD
+    subgraph SETUP ["1. Set up once per project, by a project admin"]
+        A1["Connect the repository and branch"]
+        A2["Choose the instructions folder"]
+        A3["Add write folders for agent memory"]
+        A1 --> A2 --> A3
+    end
+
+    CFG1{{"Per project<br/>repository and branch<br/>instructions folder<br/>automatic sync on or off"}}
+    CFG2{{"Per write folder<br/>path such as docs/ai<br/>pull request or direct commit<br/>indexed for AI search or store only"}}
+    CFG1 -.-> A2
+    CFG2 -.-> A3
+
+    subgraph START ["2. Every session start, on the developer machine"]
+        B1["fabric CLI renders plugin fabric-&lt;id&gt;<br/>skills, agents, commands, memory file<br/>and the MCP server fabric"]
+        B2["Rules land in .claude/rules/fabric-&lt;id&gt;/<br/>or in AGENTS.override.md for Codex"]
+        B3["memory pull brings write-folder files<br/>into the project folder as plain files"]
+        B1 --> B2 --> B3
+    end
+
+    CFG3{{"Per developer<br/>Claude Code or Codex<br/>chosen once at init"}}
+    CFG4{{"Per rule<br/>always on, or only for matching files<br/>through paths frontmatter"}}
+    CFG3 -.-> B1
+    CFG4 -.-> B2
+
+    subgraph WORK ["3. While the agent works"]
+        C1["Agent writes specs, tasks and notes<br/>into a write folder with its normal file tools"]
+        C2["fabric_memory_read lists and reads<br/>memory files through the MCP gateway"]
+        C1 --> C2
+    end
+
+    subgraph DELIVER ["4. When a turn ends, or at the next session start in Codex"]
+        D1["memory push sends new and changed files"]
+        D2(["Fabric commits to the branch or opens a pull request<br/>and retries when another write landed first"])
+        D3[("Living Memory syncs the files<br/>embedded for AI search, or stored only")]
+        D1 --> D2 --> D3
+    end
+
+    A3 --> B1
+    B3 --> C1
+    C2 --> D1
+    D3 -.->|next session| B3
+
+    classDef cfg fill:#fff4e5,stroke:#f59e0b,color:#7c2d12
+    classDef step fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+    classDef store fill:#ecfdf5,stroke:#10b981,color:#064e3b
+    class CFG1,CFG2,CFG3,CFG4 cfg
+    class A1,A2,A3,B1,B2,B3,C1,C2,D1,D2 step
+    class D3 store
+```
+
 #### Connect a tool from the tab
 
 Open the tab and choose **Connect your agent**, beside **Fabric MCP** in the status strip
@@ -250,15 +307,20 @@ connection once in your browser: there is no key to create or paste.
 
 | Tab | What you do | What it sets up |
 |---|---|---|
-| **Claude Code** and **Codex** | Copy the one line shown and run it (see below) | The Fabric CLI your deployment serves, run straight from its URL, so nothing is installed first. It signs in through your browser, finds the project, and adds a session-start hook for that tool |
+| **Claude Code** and **Codex** | Choose where the repository is, copy the one line shown and run it (see below) | The Fabric CLI your deployment serves, run straight from its URL, so nothing is installed first. It signs in through your browser and, by default, installs the project's instructions as a plugin for that tool, with no clone (see [Instructions as a plugin](#instructions-as-a-plugin)) |
 | **VS Code** and **Cursor** | Choose **Add to VS Code** or **Add to Cursor** | The gateway as an MCP server. There is no hook; the agent compares its checkout with the published version at each session start |
 | **Other** | Copy the server entry (it holds no credential) | Any MCP client that supports sign-in asks you to approve it the first time it connects |
 
-**The setup line.** For Claude Code and Codex the dialog shows one line per case, with
-`<tool>` the tab you are on (`claude-code` or `codex`) and `<tgz>` your deployment's
-tarball, `https://your-fabric.com/cli/fabric-<version>-<build>.tgz`. You need Node.js 22 or
-later and nothing else: `npx` comes with it.
+**The setup line.** For Claude Code and Codex the dialog asks **Where's the repository?** and
+shows one line per answer, with `<tool>` the tab you are on (`claude-code` or `codex`) and
+`<tgz>` your deployment's tarball, `https://your-fabric.com/cli/fabric-<version>-<build>.tgz`.
+You need Node.js 22 or later and nothing else: `npx` comes with it.
 
+- **No clone (recommended).** `npx -y <tgz> instructions init --project <id> --tool <tool> --plugin`.
+  Run it in the folder your agent works in, usually your product's own checkout. Nothing is
+  cloned: the instructions arrive as a plugin built from what the project publishes, and the
+  project's memory folders are mirrored as plain files. A plain `init` does the same, unless
+  you pass `--clone` or run it inside a clone of the instructions' repository.
 - **Already cloned.** `npx -y <tgz> instructions init --tool <tool>`. Run it in the top
   folder of your clone of the project's repository, or, when the project's instructions
   live in a folder of that repository, in that folder (`<rootPath>/` inside the clone). Not
@@ -302,8 +364,226 @@ entries. The package on the npm registry is not a way in: its release predates `
 
 For CI and headless machines, the dialog's **CI or headless? Use an API key** section
 mints a key that carries `mcp:read`, `instructions:read` and `instructions:write` and
-expires after 90 days. It can read the instructions and **suggest** a change; it cannot
+expires after 90 days. It can read the instructions and suggest a change, but it cannot
 publish one.
+
+#### Instructions as a plugin
+
+With **No clone**, the project's coding instructions reach your coding tool as a plugin that
+Fabric builds from the published version. No one clones the instructions' repository, and
+the next session picks up whatever the project published last.
+
+| From the instructions | In the plugin |
+|---|---|
+| `skills/<name>/SKILL.md` (and the rest of `skills/<name>/`) | Skills, named `fabric-<id>:<name>` |
+| `agents/<name>.md` | Agents |
+| `commands/**` | Commands |
+| `CLAUDE.md`, else `AGENTS.md` | Handed to every session as context when it starts |
+| (added by Fabric) | The project's MCP server (named `fabric` in Claude Code), `fabric-instruction-access` for finding and reading instruction files, and `fabric-living-memory` for specs and notes |
+
+**Standard layout.** Keep the instructions in these folders, at the root of the instructions
+or under `.claude/` (`.claude/skills/<name>/SKILL.md` works the same as
+`skills/<name>/SKILL.md`; folder names are matched without regard to case):
+
+| Path | What it is |
+|---|---|
+| `skills/<name>/SKILL.md` | A skill: a folder per skill |
+| `agents/<name>.md` | An agent: one markdown file directly in `agents/` |
+| `commands/**` | Commands |
+| `rules/**/*.md` | Project rules. Fabric delivers them automatically into `.claude/rules/fabric-<id>/` for Claude Code and `AGENTS.override.md` for Codex, and keeps passive reference copies in the plugin |
+| `CLAUDE.md` or `AGENTS.md` | The memory file every session starts with |
+
+**Rules.** Claude Code loads the markdown files of `.claude/rules/` in your project. A rule
+without `paths:` frontmatter loads at the start of every session like `CLAUDE.md`; a rule with
+`paths:` loads when Claude works on a matching file. Fabric copies each rule byte for byte,
+frontmatter included, into `.claude/rules/fabric-<id>/` at the start of every session, and when
+you run the setup, so the first session already has them. Rules you add or edit in
+`.claude/rules/` yourself are never touched. A file in that folder that you edit is kept, and
+Fabric stops updating it. Codex has no rules folder, so the rules are added after the memory
+file in `AGENTS.override.md`, each under its own heading; a rule with `paths:` is marked as
+applying when working on those files. Both are limited (64 files and 256 KiB for Claude Code,
+about 24,000 characters for Codex); the setup says when rules were left out of automatic
+delivery. The plugin keeps the rule text as passive reference files, indexed by original
+path in the `fabric-instruction-access` catalog. The skill directs the agent to inspect
+rule scopes and read every unscoped rule and every matching scoped rule before affected
+work, including files beyond automatic delivery limits.
+
+**Read referenced files on demand.** Every session receives a pointer to the generated
+`fabric-instruction-access` skill, even when there is no root `CLAUDE.md` or `AGENTS.md`.
+Its `catalog.json` lists all instruction paths and available local copies. Search relevant
+entries instead of loading the full catalog into context. Files outside plugin folders,
+such as standalone scripts, settings and knowledge files, remain listed. The agent uses
+`fabric_list_project_instructions` to find paths and `fabric_get_project_instruction` to
+read their original text through the project's authorized Fabric MCP connection. For
+example, `@MAIN.md` in the instructions' root `CLAUDE.md` refers to that instruction tree's
+`MAIN.md`, even when the project checkout has a different file with the same name.
+
+The skill explains how to retain the repository generation and commit across list and text
+pages, and how to detect changes to an uploaded publication. It directs the agent to read
+each relevant file until `nextOffset` is null. Access denials, missing files, binary files and size refusals
+remain explicit limits. Reading a script does not execute it or materialize its dependencies;
+a workflow requiring local execution needs an authorized checkout. The **Coding Instructions**
+tab and CLI still report which files lack a native plugin slot.
+
+After the sign-in, the dialog has one more step for the tool you picked.
+
+**Claude Code: Turn on the plugin in Claude Code.** The setup registers the plugin for the
+folder and then asks you to approve the plugin's command once. Claude Code shows the exact
+command and takes the answer only in your own terminal, never from inside a coding session. If
+the setup could not ask you, the dialog shows the command to run in the folder:
+
+```
+claude plugin install fabric-<id>@fabric-<id> --scope local
+```
+
+`<id>` is the last eight letters and digits of the project's id, and `fabric-<id>` is the
+plugin's name. Then start a new session. To let the agent call Fabric's tools too, run `/mcp`
+in Claude Code, pick the server named `plugin:fabric-<id>:fabric` (the plugin's MCP server is
+named `fabric`, and Claude Code lists it with the built-in servers because the plugin brings
+it) and choose **Authenticate**. Your browser opens so you can approve it once. The
+instructions and the memory folders do not need this sign-in, because the setup's own sign-in
+covers them. A plugin set up before the server was named `fabric` listed it as
+`plugin:fabric-<id>:fabric-<id>`; once its CLI copy updates, `/mcp` shows
+`plugin:fabric-<id>:fabric` as **Needs authentication**, so choose **Authenticate** once more.
+
+**Codex: Turn on the plugin in Codex.** The setup renders the plugin into
+`~/.codex/plugins/fabric-<id>`, lists it in your personal marketplace
+(`~/.agents/plugins/marketplace.json`) and installs it in Codex itself. Codex keeps its own
+copy of an installed plugin, so at each session start the hook installs it again whenever
+that copy is older than what the project publishes; Codex loads the new copy from the next
+session. If the install did not work, the dialog shows the command to run:
+
+```
+codex plugin add fabric-<id>@personal
+```
+
+`personal` is the name of the marketplace file; if yours is named differently, the setup
+prints the line with your name. Trust the project hook once with `/hooks`. Codex has no slot
+for an always-on file, so the setup also writes `AGENTS.override.md` in the folder, kept out
+of your commits: your own `AGENTS.md` first, then the project's instructions. In Codex the
+plugin's MCP server keeps the name `fabric-<id>`, because every project's Codex plugin shares
+one personal marketplace.
+
+**One plugin, one project.** A plugin belongs to one project on one deployment. Its name comes
+from the last eight letters and digits of the project's id, and its description names the
+project and the deployment it was built for. If a name is already taken by another project (or
+by the same project on another deployment), the setup refuses and says which one holds it,
+instead of repointing the folders already set up for that one. Remove the other setup's plugin
+and folder first, then run the setup again.
+
+To set a folder up the clone way instead (a checkout of the instructions and a session hook),
+pass `--no-plugin`.
+
+#### Save specs and notes to the repository
+
+While they work, agents write specs, task breakdowns and notes. With **write folders**, those
+files reach the project's repository through Fabric and come back as Living Memory for the
+next agent, without anyone cloning that repository or running git.
+
+1. **A project admin names the folders once.** In the **Context** tab, open the menu beside
+   *Sync now* in the Living Memory section and choose **Write folders** (see
+   [Write folders](/docs/features/projects#write-folders)). Each folder lands its files as a
+   pull request (the default) or, if an admin turns it on, as a direct commit. A folder is
+   also either **Index for AI search** (the default) or **Store only**. **Store only** keeps
+   its files in Living Memory and readable by agents, but out of AI search, keyword search
+   and summaries: pick it for a folder that will hold thousands of task files, so they do not
+   crowd out everything else. In the project's Context tab, a Store only folder's files show
+   as Ready with a "Store only" label and are not counted among the sources still processing.
+   `fabric_memory_targets` reports each folder's `indexMode`.
+2. **Each developer runs the setup line once** (**No clone**). It mirrors the write folders
+   into the folder as plain files at their repository paths, such as `docs/ai/`, kept out of
+   your own commits.
+3. **Agents write ordinary files there.** The `fabric-living-memory` skill tells the agent
+   which folders to use.
+
+From then on it runs by itself:
+
+| When | What happens |
+|---|---|
+| A session starts | The folders' current files are brought in, so the agent sees what others wrote |
+| A Claude Code turn ends | New, changed and deleted files are sent. Fabric commits them, or opens a pull request, with the repository connection's own credential |
+| Codex | Codex has no end-of-turn hook, so files are sent when the next session starts |
+| A few seconds later | The next sync reads committed files into Living Memory. A file in an open pull request joins Living Memory once someone merges it |
+
+On a **Push directly** folder, a write that loses a race with another write that reached the
+branch first is retried on the new branch tip. Only a branch that refuses the push (branch
+protection, a server hook, or missing write permission) turns the write into a pull request,
+with reason `protected`.
+
+**Tell agents where to write in your instructions.** A file lands at the same path in the
+repository that it has in your folder: `docs/ai/specs/login/spec.md` here becomes
+`docs/ai/specs/login/spec.md` there. Skills often hard-code where they save their output:
+make that path a write folder, or add a line to your instructions such as *Save specs to
+`docs/ai/specs/<feature>/spec.md`*. A file outside every write folder stays on your machine.
+
+**What a write folder takes.** Text files ending in `.md`, `.markdown`, `.txt`, `.json`,
+`.yaml` or `.yml`, up to 2 MiB each. Other files, larger ones and links are reported and not
+sent, and nothing whose name starts with a dot (a file such as `.draft.md`, or anything in a
+folder such as `.notes/`) is sent. A path your own repository tracks
+with git is left to git. A change of more than fifty files is sent as several writes.
+
+**Nothing you changed is overwritten.** If someone else changed a file since you last
+received it, your change is not written and the file stays as you left it. The CLI reports
+the conflict, and you choose: `fabric memory pull --accept-remote <path>` takes their version
+(or, if they deleted the file, removes yours), and `fabric memory status --clear` dismisses
+the report. Here `fabric` is the CLI the way the setup line runs it, from the folder you set
+up: `npx -y <tgz> memory status`, plus the setup line's `--base-url` if it had one.
+
+**Check that a file arrived.** `fabric memory status` reports pull requests with their links,
+and conflicts, refusals and changes not sent yet. An agent can ask too: the id of each write
+the session hook sent is in `.fabric/memory.lock` (in its `outbox`), and
+`fabric_memory_write_status` reads its outcome. `fabric_memory_targets` lists the folders,
+their branch and the commit the last sync read.
+
+**Resume a work item.** Keep one work item's specs and tasks together in
+`docs/ai/specs/<work-item-id>/`, inside a write folder. To pick it up, an agent lists that folder
+with `fabric_memory_read` (`prefix`), then reads a file by its `path`, a page at a time for a
+large one. This needs no write scope: a coding tool's default sign-in can do it, and it works
+for Store only folders too. The same files are on disk in your project folder at the same paths
+when the setup line has been run, so the agent can also read them there. The plugin's
+`fabric-living-memory` skill tells the agent so.
+
+The agent cannot write through Fabric's tools on its own. `fabric_memory_write` needs
+`memory:write`, a scope that a coding tool's sign-in never carries, so an agent's files reach
+the repository through the folder and the hooks above. See
+[Living Memory writes](/docs/api/mcp-gateway#living-memory-writes) for the tools and the
+scope.
+
+#### Example: a password reset feature, end to end
+
+A team keeps its coding instructions in Fabric and wants every spec an agent writes to land in
+the repository, where the next agent (and Fabric's own AI features) will read it. The steps
+below follow one feature from start to finish with Claude Code.
+
+1. **An admin chooses where specs go, once.** In the project's **Context** tab, open the menu
+   beside *Sync now* in the Living Memory section, choose **Write folders**, then
+   **Add a write folder**: `docs/ai`, landing as **Pull request** (or **Push directly** to skip
+   review).
+2. **The team says where specs belong, once.** In the project's coding instructions, the
+   `CLAUDE.md` gets a line such as *Save specs to `docs/ai/specs/<feature>/spec.md` and task
+   lists to `docs/ai/specs/<feature>/tasks.md`.* Every session receives it from the plugin.
+3. **Each developer sets up their machine, once.** In the Coding Instructions tab, choose
+   **Connect your agent**, then **Claude Code** and **No clone (recommended)**. Run the line
+   it shows in the product's own checkout, approve the sign-in in the browser, then confirm the
+   plugin in the terminal (step **Turn on the plugin in Claude Code**). Start a new session.
+4. **A developer asks for the spec.** In Claude Code: *Write a spec for password reset.* At
+   session start the team's skills and rules came from the plugin and the specs teammates
+   already wrote were brought into `docs/ai/`. The agent writes
+   `docs/ai/specs/password-reset/spec.md`. When its turn ends, the hook sends the file and
+   Fabric opens a pull request with it (or, with **Push directly**, commits it to the branch).
+5. **The spec becomes team memory.** Once the pull request is merged (or straight after a
+   direct commit), the next sync reads the file into Living Memory. Any agent connected to the
+   project can now find it, and Fabric's AI features use it.
+6. **A teammate picks it up.** On another machine, the next session brings
+   `docs/ai/specs/password-reset/spec.md` in by itself, and an agent without the local files can
+   list `docs/ai/specs/password-reset/` and read the spec with `fabric_memory_read`. If both people edit it before either
+   has the other's change, nothing is overwritten: the CLI reports the conflict, and
+   `fabric memory pull --accept-remote docs/ai/specs/password-reset/spec.md` takes the
+   committed version. To keep your own changes, copy them aside first, take the committed
+   version, then make your changes on top of it: the next turn sends them.
+
+With Codex the steps are the same, except that the setup also installs the plugin in Codex
+(step **Turn on the plugin in Codex**), and files are sent when the next session starts.
 
 #### What an agent can do
 
@@ -417,8 +697,10 @@ instructions, once something is published and a repository is connected to the p
 
 #### Keep a checkout current
 
-The session-start hook asks, every time a Claude Code or Codex session starts, whether the
-published version moved, and tells the agent when it did.
+This applies to **Already cloned** and **Clone it for me**; with **No clone** the plugin
+already follows the published version. The session-start hook asks, every time a Claude Code
+or Codex session starts, whether the published version moved, and tells the agent when it
+did.
 
 - **A project that syncs from a repository.** The hook fast-forwards the branch the project
   follows to its newest commit when your checkout is clean and on that branch. It is a
@@ -434,8 +716,28 @@ once to trust the project hook. VS Code and Cursor have no hook, so the agent ma
 comparison through `fabric_instruction_checks` at the start of a session. An agent connected
 over MCP only reports: it never pulls, and the pull itself stays with you.
 
-**What setup leaves on your machine, and how to check it and undo it.** Two things, and
-neither is in your repository's history:
+**What No clone leaves on your machine.** None of it is in your repository's history:
+
+- In the folder, for Claude Code: `.claude/settings.local.json`, which turns the plugin on,
+  names the marketplace it comes from, and holds `SessionStart` hooks that run
+  `instructions rules` and `memory pull`, and a `Stop` hook that runs `memory push`. Also for
+  Claude Code: the project's rules in `.claude/rules/fabric-<id>/`, with a
+  `.fabric-managed.json` that records what Fabric wrote there. For Codex: `.codex/hooks.json`
+  and `AGENTS.override.md` (the memory file and the rules). For both: `.fabric/`, which records the project and what the
+  mirror last agreed with Fabric, and the mirrored write folders. The setup keeps all of
+  these out of your commits, adding to the repository's own `.git/info/exclude` whatever git
+  does not already ignore.
+- In the CLI's config folder (below): the CLI's own copy, the plugin's marketplace under
+  `cache/marketplaces/`, and the built plugins under `cache/plugins/`. For Codex, the plugin
+  in `~/.codex/plugins/` and its entry in `~/.agents/plugins/marketplace.json`.
+
+To undo it, run `claude plugin uninstall fabric-<id>@fabric-<id> --scope local` in the folder
+(or remove the plugin in Codex), then delete the hook entries, `.fabric/`, the mirrored
+folders and the rules folder `.claude/rules/fabric-<id>/` (keep any file in it you edited and
+want). For Codex, delete `AGENTS.override.md` if you did not write it yourself. Files already sent stay in the repository.
+
+**What Already cloned and Clone it for me leave, and how to check it and undo it.** Two
+things, and neither is in your repository's history:
 
 - A hook entry in the checkout: `.claude/settings.local.json` for Claude Code,
   `.codex/hooks.json` for Codex. `init` adds both files to the repository's own
@@ -472,14 +774,14 @@ entry from the hook file (and its `lesson-prompt` entry, if you set up lesson ca
 delete the deployment's folder under `cli/` if no other checkout uses it. `auth logout`
 removes the saved sign-in.
 
-The tab says the other half. For a repository project, a status block under the summary
+The tab shows the published side. For a repository project, a status block under the summary
 states which version, commit and branch are published, whether Fabric's copy is current or
 was held back because a commit was refused by the secret scan (with a link to the
 findings), and whether automatic sync is on. Your own checkout is not tracked there: the
 hook in your coding tool is what tells you when it is behind.
 
 A connected agent finds them on its own. Every project `fabric_get_project` and
-`fabric_list_projects` return carries a `codingInstructions` field — `{ "published": false }`
+`fabric_list_projects` return carries a `codingInstructions` field: `{ "published": false }`
 when there is nothing to load, and the snapshot's `version`, `fileCount`, `digest` and
 `publishedAt` when there is. The connection handshake tells the agent what to do with it:
 call `fabric_get_project_instruction_bundle` to install the whole approved tree in one step,
@@ -491,15 +793,14 @@ Keeping an installed copy current does not always mean downloading it again. Pas
 `digest` you last installed as `sinceDigest` to either
 `fabric_get_project_instruction_bundle` or `fabric_list_project_instructions`:
 
-- the digest still matches — you get `"unchanged": true` and nothing else: no file list, no
+- If the digest still matches, you get `"unchanged": true` and nothing else: no file list, no
   manifest, and no zip URL, so nothing is built or transferred. This is the only case that
-  short-circuits;
-- it has moved on — you get the response you would have got anyway, in full, plus `changes`
+  short-circuits.
+- If it has moved on, you get the response you would have got anyway, in full, plus `changes`
   (the added, removed and changed paths) and `since`, the snapshot that digest names.
-  `sinceDigest` tells you *what* changed; it does not send you a smaller download;
-- Fabric has never published that digest for this project, or has since pruned it — you get
-  `"changes": null` alongside the same full response, which means treat it as a fresh
-  install.
+  `sinceDigest` tells you *what* changed; it does not send you a smaller download.
+- If Fabric has never published that digest for this project, or has since pruned it, you get
+  `"changes": null` alongside the same full response. Treat it as a fresh install.
 
 You do not need to tell the agent any of this: the connection handshake already carries it.
 To point an agent at one specific project in a chat, name the project and ask it to load
@@ -531,8 +832,8 @@ Pushed files appear in the project's **Context** tab under **Living Memory**, gr
 folder of their path.
 
 Pushing the same path again with the same content answers `unchanged` and writes nothing,
-and content identical to a source already in the project — another pushed file, or a file,
-link or note added in the Context tab — answers `duplicate`. To replace a
+and content identical to a source already in the project (another pushed file, or a file,
+link or note added in the Context tab) answers `duplicate`. To replace a
 file that is already there, the agent passes the `contentHash` it read from
 `fabric_get_project_context` or `fabric_list_project_contexts` as `expectedContentHash`; if
 someone else has changed the file since, the push answers `conflict` with the current hash and
@@ -544,14 +845,14 @@ When a file was renamed or moved without changing, push it at its new path with 
 is renamed in place and answers `moved`, keeping its history, instead of leaving a second copy
 behind.
 
-Coding-instruction files — `CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and skills,
-agents, hooks, rules and scripts — do not go through this flow. The agent proposes those with
+Coding-instruction files (`CLAUDE.md`, `AGENTS.md`, anything under `.claude/`, and skills,
+agents, hooks, rules and scripts) do not go through this flow. The agent proposes those with
 `fabric_propose_project_instruction_change`, which opens a proposal on the Coding Instructions
 tab for a person to review. The agent should also leave out secrets, `.env` files and
 generated output.
 
-Pushing context needs a key with the `projects:write` or `mcp:write` scope — the key
-that **Connect your agent** mints cannot do it — and, as with every key, your own permission to
+Pushing context needs a key with the `projects:write` or `mcp:write` scope (the key
+that **Connect your agent** mints cannot do it) and, as with every key, your own permission to
 add context sources to that project. If those docs already sit together in one folder, the
 Fabric CLI can push the whole folder instead: `fabric context push <dir> --project <id>` sends
 each text file by its path with the same `unchanged`, `duplicate` and `conflict` answers, and
@@ -593,6 +894,7 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_propose_project_instruction_change` | Suggest an edit to the published coding instructions; held for review, never published by the agent |
 | `fabric_add_instruction_lesson` | Record a lesson as a new file under `Lessons/`, through the same review-gated proposal path |
 | `fabric_memory_targets` | List a project's Living Memory write folders and where their files land |
+| `fabric_memory_read` | List the files under a Living Memory write folder, or read one file's text a page at a time; works with a coding tool's default sign-in |
 | `fabric_memory_write` | Write or delete plain files in a Living Memory write folder as one commit or pull request; needs the `memory:write` scope |
 | `fabric_memory_write_status` | Read the receipt of a Living Memory write |
 | `fabric_list_workspaces` | List your document libraries (the Libraries page). The tool keeps its name for existing clients |
@@ -600,7 +902,8 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_query_workspace` | Semantic search (RAG) across a document library's documents |
 | `fabric_list_frames` | List your frames; with `surface: "workspace"` the organization's Workspaces you can open, with `surface: "artifact"` and a `projectId` a project's Artifacts |
 | `fabric_get_frame` | Read a frame's blocks, surface and the Fabric tools its page script may call |
-| `fabric_create_frame` | Create a page. Pass the whole page in `blocks`, a `surface` (`artifact` or `workspace`), and the tools its script calls in `runtimeTools`. A Workspace is shared with the organization unless `sharedWithOrganization` is `false`. Asks the person in chat first when `runtimeTools` is set |
+| `fabric_create_frame` | Create a page. Pass the whole page in `blocks`, a `surface` (`artifact` or `workspace`), and the tools its script calls in `runtimeTools`. A Workspace is shared with the organization unless `sharedWithOrganization` is `false`; any other page is private to its creator. `shareOnCreate: true` also makes a public link, where the organization allows public links. Asks the person in chat first when `runtimeTools` is set |
+| `fabric_share_frame` | Change who can open a page you own. `scope` is required: `PUBLIC` (a link anyone can open, only where the organization allows public links), `WORKSPACE_AND_EMAILS`, `EMAILS_ONLY` or `PRIVATE`. Asks the person in chat first (`frames:write`) |
 | `fabric_update_frame` | Change a page you created; with no `frameId` it changes the Workspace the user has open. Asks the person in chat first when it sets `runtimeTools` |
 | `fabric_list_workflows` | List your automation workflows, optionally only the scheduled ones |
 | `fabric_get_workflow` | Get workflow details: schedule, project, nodes, edges and the latest run |

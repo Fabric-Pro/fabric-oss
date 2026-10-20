@@ -10,7 +10,10 @@
  * many sections are ready and nothing moves focus; before the first section
  * the pane hosts the generation progress (the queued wait, a Retry once a run
  * stalls) above the previous body, dimmed, or a skeleton for a new document —
- * never a blank pane.
+ * never a blank pane. Once this run has written a section the previous body
+ * never returns: when the live preview stops and the fallback writes the Main
+ * (Fizzy #2946), the sections stay with a "preview stopped" line, announced
+ * once.
  *
  * The read-only editor is the real Tiptap one with the editor's extensions,
  * and `next-intl` resolves the real en.json, so a missing string fails.
@@ -51,6 +54,10 @@ vi.mock("next-intl", async () => {
 });
 
 import messages from "@repo/i18n/translations/en.json";
+import {
+	PROPOSAL_FINISHING_PROGRESS,
+	PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+} from "@repo/utils/proposal-artifact/live-progress";
 import {
 	buildProposalThemeTokens,
 	NEUTRAL_THEME,
@@ -453,6 +460,100 @@ describe("ProposalLiveSections — before the first section", () => {
 		const live = renderPane({ liveContent: TWO_SECTIONS });
 		await screen.findByRole("heading", { level: 2, name: "Scope" });
 		expect(await axe(live.container)).toHaveNoViolations();
+	});
+});
+
+describe("ProposalLiveSections — the live preview stopped", () => {
+	const PREVIOUS_BODY = "## Old scope\n\nThe earlier version.";
+
+	it("keeps this run's sections, never the previous body, and says the preview stopped instead of writing next", async () => {
+		renderPane({
+			liveContent: TWO_SECTIONS,
+			savedContent: PREVIOUS_BODY,
+			progress: PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+		});
+
+		expect(
+			await screen.findByRole("heading", { level: 2, name: "Scope" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { level: 2, name: "Timeline" }),
+		).toBeInTheDocument();
+		expect(screen.getByText(copy.previewStopped)).toBeInTheDocument();
+		expect(screen.queryByText(copy.writingNext)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("region", { name: copy.previousVersion }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText("The earlier version."),
+		).not.toBeInTheDocument();
+	});
+
+	it("announces the stop once, through the one polite region", () => {
+		const { container, rerenderPane } = renderPane({
+			liveContent: TWO_SECTIONS,
+			progress: 40,
+		});
+		const region = sectionsRegion(container);
+		expect(region).toHaveTextContent("2 sections ready");
+		expect(region).not.toHaveTextContent(copy.previewStopped);
+
+		rerenderPane({ progress: PROPOSAL_PREVIEW_STOPPED_PROGRESS });
+		expect(sectionsRegion(container)).toBe(region);
+		expect(region.textContent).toBe(
+			`2 sections ready. ${copy.previewStopped}`,
+		);
+
+		// A later poll, the same state: the region's text does not change,
+		// so nothing is announced again.
+		rerenderPane({
+			progress: PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+			updatedAt: new Date(),
+		});
+		expect(region.textContent).toBe(
+			`2 sections ready. ${copy.previewStopped}`,
+		);
+		expect(container.querySelectorAll("[aria-live]")).toHaveLength(1);
+	});
+
+	it("still shows the dimmed previous body before this run's first section", async () => {
+		renderPane({
+			liveContent: null,
+			savedContent: PREVIOUS_BODY,
+			progress: PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+		});
+
+		const previous = screen.getByRole("region", {
+			name: copy.previousVersion,
+		});
+		expect(
+			await within(previous).findByRole("heading", {
+				level: 2,
+				name: "Old scope",
+			}),
+		).toBeInTheDocument();
+		expect(screen.queryByText(copy.previewStopped)).not.toBeInTheDocument();
+	});
+
+	it("says the run is finishing once the workflow reports the end, as before", async () => {
+		renderPane({
+			liveContent: TWO_SECTIONS,
+			progress: PROPOSAL_FINISHING_PROGRESS,
+		});
+
+		await screen.findByRole("heading", { level: 2, name: "Scope" });
+		expect(screen.getByText(copy.finishing)).toBeInTheDocument();
+		expect(screen.queryByText(copy.previewStopped)).not.toBeInTheDocument();
+	});
+
+	it("has no detectable accessibility violations with the preview stopped", async () => {
+		const { container } = renderPane({
+			liveContent: TWO_SECTIONS,
+			progress: PROPOSAL_PREVIEW_STOPPED_PROGRESS,
+		});
+		await screen.findByRole("heading", { level: 2, name: "Scope" });
+
+		expect(await axe(container)).toHaveNoViolations();
 	});
 });
 

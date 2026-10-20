@@ -1,5 +1,9 @@
 "use client";
 
+import {
+	APPROVAL_STALE_MESSAGE,
+	approvalSendResult,
+} from "@saas/agents/lib/approval-response";
 import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
@@ -12,6 +16,7 @@ import {
 	XCircle,
 } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 interface ChatApprovalCardProps {
 	approvalId: string;
@@ -22,6 +27,7 @@ interface ChatApprovalCardProps {
 }
 
 export function ChatApprovalCard({
+	approvalId,
 	reason,
 	executionId,
 }: ChatApprovalCardProps) {
@@ -31,9 +37,9 @@ export function ChatApprovalCard({
 	const [submittingAction, setSubmittingAction] = useState<
 		"approve" | "reject" | null
 	>(null);
-	const [decision, setDecision] = useState<"approved" | "rejected" | null>(
-		null,
-	);
+	const [decision, setDecision] = useState<
+		"approved" | "rejected" | "stale" | null
+	>(null);
 
 	const handleRespond = async (approved: boolean) => {
 		// Set state synchronously BEFORE the async call to prevent icon flash
@@ -50,25 +56,47 @@ export function ChatApprovalCard({
 						executionId,
 						approved,
 						feedback: feedback.trim() || undefined,
+						// The run takes the answer only for this card's approval.
+						approvalId,
 					}),
 				},
 			);
 
-			if (!response.ok) {
+			const result = approvalSendResult(response);
+			if (result === "failed") {
 				const error = await response.json();
 				throw new Error(error.error || "Failed to send approval");
 			}
 
-			setDecision(approved ? "approved" : "rejected");
+			if (result === "stale") {
+				toast.info(APPROVAL_STALE_MESSAGE);
+				setDecision("stale");
+			} else {
+				setDecision(approved ? "approved" : "rejected");
+			}
 			setResponded(true);
 		} catch (error) {
 			console.error("[ChatApprovalCard] Approval error:", error);
+			toast.error(
+				approved
+					? "Failed to send approval"
+					: "Failed to send rejection",
+			);
 		} finally {
 			setSubmittingAction(null);
 		}
 	};
 
 	const isSubmitting = submittingAction !== null;
+
+	if (responded && decision === "stale") {
+		return (
+			<div className="mt-3 flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
+				<ShieldAlert className="h-4 w-4 shrink-0" />
+				<span>{APPROVAL_STALE_MESSAGE}</span>
+			</div>
+		);
+	}
 
 	if (responded) {
 		return (

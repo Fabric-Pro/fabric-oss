@@ -122,7 +122,7 @@ describe("Direct chat activity wiring", () => {
 			/const backgroundHeartbeat = startBackgroundHeartbeat\(/,
 		);
 		expect(entry).toMatch(
-			/try \{\s*return await runDirectChatTurn\([\s\S]*\} finally \{\s*backgroundHeartbeat\.stop\(\);/,
+			/try \{\s*const run = \(\) =>\s*runDirectChatTurn\([\s\S]*return await \([\s\S]*\} finally \{\s*backgroundHeartbeat\.stop\(\);/,
 		);
 	});
 

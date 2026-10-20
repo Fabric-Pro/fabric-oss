@@ -19,9 +19,9 @@ import {
 	TONE_DOT,
 } from "../lib/parlume-view";
 
-function ActionBlock({ action, now }: { action: ParlumeAction; now: number }) {
-	const status = actionStatus(action, now);
-	const steps = actionSteps(action, now);
+function ActionBlock({ action }: { action: ParlumeAction }) {
+	const status = actionStatus(action);
+	const steps = actionSteps(action);
 	return (
 		<div className="ml-[30px] space-y-2.5 rounded-lg border border-border px-3.5 py-3">
 			<div className="flex flex-wrap items-center justify-between gap-2">
@@ -72,15 +72,8 @@ function ActionBlock({ action, now }: { action: ParlumeAction; now: number }) {
 }
 
 /** One question or action request, as the meeting asked it and Parlume answered. */
-export function ParlumeRequestItem({
-	request,
-	now,
-}: {
-	request: ParlumeRequest;
-	now: number;
-}) {
+export function ParlumeRequestItem({ request }: { request: ParlumeRequest }) {
 	const hasSpeaker = request.speakerName !== null;
-	const blocked = !request.speakerId && !request.session.toolsReadOnly;
 	const state = request.status === "COMPLETED" ? null : request.status;
 	return (
 		<li className="flex gap-3.5 border-b border-border px-6 py-[18px]">
@@ -92,15 +85,8 @@ export function ParlumeRequestItem({
 			</span>
 			<div className="min-w-0 flex-1 space-y-2.5">
 				<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-					<span className="flex flex-wrap items-center gap-2">
-						<span className="text-sm font-medium">
-							{request.speakerName ?? "Unidentified attendee"}
-						</span>
-						{blocked && (
-							<Badge variant="warning">
-								Speaker not identified · actions blocked
-							</Badge>
-						)}
+					<span className="text-sm font-medium">
+						{request.speakerName ?? "Unidentified attendee"}
 					</span>
 					<span className="text-xs text-muted-foreground">
 						<time
@@ -132,7 +118,7 @@ export function ParlumeRequestItem({
 					<p className="text-sm text-destructive">{request.error}</p>
 				)}
 				{request.actions.map((action) => (
-					<ActionBlock key={action.id} action={action} now={now} />
+					<ActionBlock key={action.id} action={action} />
 				))}
 			</div>
 		</li>

@@ -11,7 +11,7 @@
  * @see https://spec.modelcontextprotocol.io/specification/basic/transports/
  */
 
-import { createMCPClient } from "@ai-sdk/mcp";
+import { createMCPClient, MCPClientError } from "@ai-sdk/mcp";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -25,6 +25,7 @@ import {
 	parseMcpOAuthBinding,
 	refreshMcpOAuthAccessToken,
 } from "@repo/database";
+import { stdioCredentialEnvVar } from "@repo/database/prisma/stdio-credential-env";
 import {
 	GITLAB_PM_ORIGIN_MISMATCH_MESSAGE,
 	parseGitLabOrigin,
@@ -593,9 +594,11 @@ export async function createMcpClient(
 
 	// Only log in development mode (avoid exposing server details in production)
 	if (process.env.NODE_ENV === "development") {
-		console.log(
-			`[MCP Client] Creating client for ${serverUrl} with transport ${transport}${authProvider ? " (with OAuth)" : ""}`,
-		);
+		console.log("[MCP Client] Creating client", {
+			serverUrl,
+			transport,
+			withOAuth: !!authProvider,
+		});
 	}
 
 	// Build final headers including MCP Session ID if provided
@@ -1046,9 +1049,11 @@ async function buildMcpClientForConfig(
 
 	// Avoid logging auth type in production
 	if (process.env.NODE_ENV === "development") {
-		console.log(
-			`[MCP Client] Server: ${serverName}, Auth type: ${authType}, API Key Method: ${apiKeyMethod}`,
-		);
+		console.log("[MCP Client] Server authentication configuration", {
+			serverName,
+			authType,
+			apiKeyMethod,
+		});
 	}
 
 	// GitLab personal servers: the caller's GitLab connection token as a
@@ -1175,11 +1180,11 @@ async function buildMcpClientForConfig(
 			if (error instanceof McpClientError) {
 				throw error;
 			}
-			console.error(
-				"[MCP Client] Failed to get API key:",
-				{ serverName },
-				error,
-			);
+			console.error("[MCP Client] Failed to get API key:", {
+				serverName,
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			});
 			throw new McpClientError({
 				message: `Authentication error for "${serverName}": ${error instanceof Error ? error.message : "Unknown error"}`,
 				code: "AUTH_ERROR",
@@ -1381,8 +1386,11 @@ export async function getCachedMcpClientForConfig(
 			} catch (error) {
 				console.warn(
 					"[MCP Client Cache] Could not re-check the cached GitLab client; dropping it",
-					{ serverName: cached.serverName },
-					error instanceof Error ? error.message : error,
+					{
+						serverName: cached.serverName,
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					},
 				);
 			}
 			if (!usable) {
@@ -1410,8 +1418,11 @@ export async function getCachedMcpClientForConfig(
 			} catch (error) {
 				console.warn(
 					"[MCP Client Cache] Could not re-check the cached OAuth client; dropping it",
-					{ serverName: cached.serverName },
-					error instanceof Error ? error.message : error,
+					{
+						serverName: cached.serverName,
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					},
 				);
 			}
 			if (current !== cached.oauthGrantGeneration) {
@@ -1438,8 +1449,11 @@ export async function getCachedMcpClientForConfig(
 			} catch (error) {
 				console.warn(
 					"[MCP Client Cache] Could not re-check the cached API key client; dropping it",
-					{ serverName: cached.serverName },
-					error instanceof Error ? error.message : error,
+					{
+						serverName: cached.serverName,
+						error: error instanceof Error ? error.message : error,
+						stack: error instanceof Error ? error.stack : undefined,
+					},
 				);
 			}
 			if (!read || current !== cached.apiKeyCiphertext) {
@@ -1511,7 +1525,8 @@ export async function getCachedMcpClientForConfig(
 				} catch {
 					// Connection is stale - invalidate and create new
 					console.log(
-						`[MCP Client Cache] Cached connection to ${cached.serverName} is stale, creating new connection`,
+						"[MCP Client Cache] Cached connection is stale, creating new connection",
+						{ serverName: cached.serverName },
 					);
 					try {
 						await cached.client.close();
@@ -1594,8 +1609,11 @@ export async function getCachedMcpClientForConfig(
 		// Log but don't crash - let the caller handle the error
 		console.error(
 			"[MCP Client Cache] Failed to create client for config:",
-			{ configId },
-			error,
+			{
+				configId,
+				error: error instanceof Error ? error.message : error,
+				stack: error instanceof Error ? error.stack : undefined,
+			},
 		);
 		throw error;
 	}
@@ -1622,26 +1640,52 @@ export async function clearMcpClientCache(): Promise<void> {
  * @param configId - The MCP configuration ID
  * @param userId - The user ID
  * @param organizationId - The organization ID (optional)
+ * @param failedClient - When given, only this client is evicted: a concurrent
+ *   call may already have replaced it with a healthy one, which must stay.
  */
 export async function invalidateMcpClientCache(
 	configId: string,
 	userId: string,
 	organizationId?: string,
+	failedClient?: McpClientType,
 ): Promise<void> {
 	const cacheKey = getMcpCacheKey(configId, userId, organizationId);
 	const cached = mcpClientCache.get(cacheKey);
-	if (cached) {
+	if (cached && (!failedClient || cached.client === failedClient)) {
 		console.log("[MCP Client Cache] Invalidating cache", {
 			serverName: cached.serverName,
 			configId,
 		});
+		// Evict before awaiting the close: a client cached meanwhile by
+		// another call must not be the one deleted.
+		mcpClientCache.delete(cacheKey);
 		try {
 			await cached.client.close();
 		} catch {
 			// Ignore close errors
 		}
-		mcpClientCache.delete(cacheKey);
 	}
+}
+
+/** `@ai-sdk/mcp`'s message when `request()` finds the client closed. */
+const CLOSED_CLIENT_REFUSAL =
+	"Attempted to send a request from a closed client";
+
+/**
+ * Whether `error` is the AI SDK client's refusal to send on a closed
+ * connection (its `isClosed` guard), raised before the request is written.
+ * The same text from a server comes back as an `MCPClientError` carrying the
+ * JSON-RPC `code`, and from the STDIO wrapper as a `McpClientError`; both
+ * arrive after a send, so neither counts.
+ */
+export function isClosedClientRefusedBeforeSend(error: unknown): boolean {
+	return (
+		MCPClientError.isInstance(error) &&
+		error.code === undefined &&
+		// Exact: the SDK's retry wrapper quotes this text inside its own
+		// message after an earlier attempt was sent.
+		error.message === CLOSED_CLIENT_REFUSAL
+	);
 }
 
 /**
@@ -2030,9 +2074,12 @@ async function createStdioMcpClientForConfig(
 		const { decryptApiKey } = await import("@repo/utils");
 		const decryptedKey = decryptApiKey(mcpConfig.encryptedApiKey);
 
-		// The credential environment variable name depends on the server
-		// For Azure DevOps, it's ADO_MCP_AUTH_TOKEN (per their auth.ts)
-		if (command.includes("azure-devops")) {
+		// Catalog packages name their variable in stdio-credential-env.ts.
+		// The command matches below serve legacy and tenant-defined servers.
+		const credentialEnvVar = stdioCredentialEnvVar(command);
+		if (credentialEnvVar) {
+			credentials = { [credentialEnvVar]: decryptedKey };
+		} else if (command.includes("azure-devops")) {
 			credentials = { ADO_MCP_AUTH_TOKEN: decryptedKey };
 		} else if (command.includes("github")) {
 			credentials = { GITHUB_TOKEN: decryptedKey };
@@ -2073,7 +2120,10 @@ async function createStdioMcpClientForConfig(
 					slackError = authData.error;
 				}
 			} catch (e) {
-				console.warn("[MCP Client] Failed to fetch Slack team_id:", e);
+				console.warn("[MCP Client] Failed to fetch Slack team_id:", {
+					error: e instanceof Error ? e.message : e,
+					stack: e instanceof Error ? e.stack : undefined,
+				});
 			}
 			if (!teamId) {
 				const isAuthError =
@@ -2097,7 +2147,7 @@ async function createStdioMcpClientForConfig(
 		} else if (command.includes("@twilio-alpha/mcp")) {
 			credentials = parseTwilioCredentials(decryptedKey, serverName);
 		} else {
-			// Generic fallback - use API_KEY
+			// API_KEY fallback for unknown, tenant-defined commands.
 			credentials = { API_KEY: decryptedKey };
 		}
 	}
@@ -2127,9 +2177,10 @@ async function createStdioMcpClientForConfig(
 	}
 
 	if (process.env.NODE_ENV === "development") {
-		console.log(
-			`[MCP Client] Creating STDIO client for ${serverName} via wrapper at ${wrapperUrl}`,
-		);
+		console.log("[MCP Client] Creating STDIO client via wrapper", {
+			serverName,
+			wrapperUrl,
+		});
 	}
 
 	// Get command arguments (e.g., organization name for Azure DevOps)

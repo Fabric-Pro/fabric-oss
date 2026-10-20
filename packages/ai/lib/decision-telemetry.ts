@@ -239,6 +239,7 @@ export const DECISION_SITES = [
 	"backlog-routing",
 	"link-action-items",
 	"question-topics",
+	"advisor-completion-claim",
 ] as const;
 
 export type DecisionSite = (typeof DECISION_SITES)[number];

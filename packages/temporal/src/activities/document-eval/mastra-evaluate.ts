@@ -370,7 +370,11 @@ export async function evaluateDocumentWithMastra(
 	});
 
 	console.log("[Mastra Eval] Resolving LLM model for EVAL task...");
-	const llmModel = await resolveEvalModel({ userId, organizationId });
+	const llmModel = await resolveEvalModel({
+		userId,
+		organizationId,
+		projectDocumentId,
+	});
 
 	console.log("[Mastra Eval] LLM Model Resolution:", {
 		hasModel: !!llmModel,

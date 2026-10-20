@@ -51,7 +51,7 @@ export async function planExecutionNode(
 		const model = getAgentModelSync(providerConfig, { temperature: 0.2 });
 		console.log(
 			"[Task Planner] Using model:",
-			providerConfig?.model || "groq/llama-3.3-70b-versatile (env)",
+			providerConfig?.model || "unconfigured (provider config required)",
 		);
 		const systemPrompt = getExecutionPlanPrompt();
 
