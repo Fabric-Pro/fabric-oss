@@ -42,6 +42,7 @@ import {
 	promptActionId,
 } from "@repo/utils/prompt-action-catalog";
 import type { useTranslations } from "next-intl";
+import { getOrpcErrorData } from "../../lib/orpc-error-data";
 import { getOrpcCode } from "../field-mapping/orpc-error";
 
 type Translate = ReturnType<typeof useTranslations>;
@@ -110,19 +111,6 @@ function feedbackFor(
 	};
 }
 
-/** `data.code` off a thrown oRPC error, read without importing its class. */
-function errorDataCode(error: unknown): string | undefined {
-	if (typeof error !== "object" || error === null || !("data" in error)) {
-		return undefined;
-	}
-	const data = (error as { data?: unknown }).data;
-	if (typeof data !== "object" || data === null) {
-		return undefined;
-	}
-	const code = (data as { code?: unknown }).code;
-	return typeof code === "string" ? code : undefined;
-}
-
 /** See the module comment. `null` for every error it does not recognise. */
 export function describeGenerationRefusal(
 	error: unknown,
@@ -132,7 +120,7 @@ export function describeGenerationRefusal(
 	if (code === undefined || !REFUSAL_ORPC_CODES.has(code)) {
 		return null;
 	}
-	switch (errorDataCode(error)) {
+	switch (getOrpcErrorData(error).code) {
 		case PROPOSAL_PROMPT_NOT_BOUND:
 			return feedbackFor("promptNotBound", context);
 		case PROPOSAL_ACTION_SUPERSEDED:

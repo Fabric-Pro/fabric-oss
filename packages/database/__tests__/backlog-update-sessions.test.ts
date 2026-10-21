@@ -74,6 +74,26 @@ describe("createBacklogUpdateSession", () => {
 		});
 	});
 
+	it("creates through the supplied transaction so a per-proposal lock covers the insert", async () => {
+		const txCreate = vi.fn().mockResolvedValue({ id: "example-session" });
+		const tx = { backlogUpdateSession: { create: txCreate } };
+		const result = await createBacklogUpdateSession(
+			{
+				projectId: "example-project",
+				pendingProposalId: "example-proposal",
+				summary: "One change",
+				changes: [],
+				changeCount: 1,
+				createCount: 1,
+				updateCount: 0,
+			},
+			tx as never,
+		);
+		expect(result).toEqual({ id: "example-session" });
+		expect(txCreate).toHaveBeenCalledOnce();
+		expect(dbMock.backlogUpdateSession.create).not.toHaveBeenCalled();
+	});
+
 	it("defaults nullable correlation/tenant fields to null", async () => {
 		await createBacklogUpdateSession({
 			projectId: "p1",

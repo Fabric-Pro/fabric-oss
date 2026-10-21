@@ -26,6 +26,8 @@ import {
 import { READ_ONLY_MODE_MESSAGE } from "@repo/utils/read-only-mode";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { redactSensitiveData } from "./lib/redact-sensitive-data";
+import { resolveExecutionGraph } from "./lib/workflow-execution-definition";
+import { resolveWorkspaceWorkflowUsageOrigin } from "./lib/workspace-workflow-usage-origin";
 import {
 	executeStep,
 	hasStep,
@@ -41,6 +43,8 @@ export async function getWorkflowDefinition(params: {
 	workflowId: string;
 	userId: string;
 	organizationId?: string;
+	executionId?: string;
+	override?: { nodes: unknown[]; edges: unknown[] };
 }) {
 	console.log("[Activity] Getting workflow definition:", params.workflowId);
 
@@ -54,7 +58,25 @@ export async function getWorkflowDefinition(params: {
 		throw new Error("Workflow not found");
 	}
 
-	return workflow;
+	if (!params.executionId) {
+		return { ...workflow, usageFrameId: undefined };
+	}
+	const { graph, execution, published } = await resolveExecutionGraph({
+		...params,
+		executionId: params.executionId,
+		nodes: workflow.nodes,
+		edges: workflow.edges,
+		variables: workflow.variables,
+		projectId: workflow.projectId ?? null,
+	});
+	const usageFrameId = await resolveWorkspaceWorkflowUsageOrigin({
+		userId: params.userId,
+		organizationId: params.organizationId,
+		workflow,
+		execution,
+		publishedNodes: published ? graph.nodes : undefined,
+	});
+	return { ...workflow, ...graph, usageFrameId };
 }
 
 /**
@@ -193,6 +215,8 @@ export async function executeWorkflowNode(params: {
 	organizationId?: string;
 	/** Owning project when the workflow is project-linked — enables the Read-only mode write gate. */
 	projectId?: string;
+	/** Resolved from the owned execution and current Workspace grant. */
+	frameId?: string;
 }): Promise<NodeExecutionResult> {
 	const { withNodeLogging } = await import("./lib/node-logging");
 
@@ -299,6 +323,7 @@ async function runNodeStep(
 		executionId: params.executionId,
 		nodeId: params.nodeId,
 		jobType: "workflow-builder",
+		...(params.frameId ? { frameId: params.frameId } : {}),
 	});
 }
 

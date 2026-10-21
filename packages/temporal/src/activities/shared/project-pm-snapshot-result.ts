@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { getAzureDevOpsStorySnapshots } from "@repo/connectors";
-import { jsonResult } from "../tool-results";
+import { jsonResult } from "@repo/mcp/lib/json-result";
 
 export const PROJECT_PM_SNAPSHOT_MAX_BYTES = 128 * 1024;
 

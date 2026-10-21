@@ -461,6 +461,44 @@ beforeEach(() => {
 // Cases
 // ---------------------------------------------------------------------------
 
+describe("approvePendingProposal (Slack) — drafting fallback body", () => {
+	it("forwards the analyzer body for non-predrafted creates", async () => {
+		const change = {
+			...APPROVAL_INPUT.approvedChanges[0],
+			description: {
+				to: "Restore image uploads after a failed attempt.",
+			},
+			acceptanceCriteria: {
+				to: "A second upload succeeds without reloading.",
+			},
+		};
+		const proposal = makeProposalRow({});
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+			...proposal,
+			source: "SLACK_CHANNEL",
+			proposal: { changes: [change] },
+			sourceMetadata: {
+				...proposal.sourceMetadata,
+				transcript: "Image uploads fail until the page is reloaded.",
+			},
+		});
+
+		await handlers.approve?.({
+			input: { ...APPROVAL_INPUT, approvedChanges: [change] },
+			context: APPROVAL_CTX,
+		});
+
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+		const args = mocks.createStoryFromProposal.mock.calls[0]?.[0];
+		expect(args).toMatchObject({
+			description: "Restore image uploads after a failed attempt.",
+			acceptanceCriteria: "A second upload succeeds without reloading.",
+			additionalContext: "Image uploads fail until the page is reloaded.",
+		});
+		expect(args).not.toHaveProperty("skipDrafting");
+	});
+});
+
 describe("approvePendingProposal (Slack) — chat-thread attachments wiring", () => {
 	it("case 1: happy 2-image approval calls orchestrator + persists empty-warnings ledger", async () => {
 		const attachments = [slackRefFixture("F1"), slackRefFixture("F2")];

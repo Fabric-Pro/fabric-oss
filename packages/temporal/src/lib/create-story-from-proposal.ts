@@ -43,6 +43,7 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { z } from "zod";
+import { findAiConfigurationRefusal } from "./ai-configuration-refusal";
 import { classifyWorkItem } from "./classify-work-item";
 import {
 	CLEAN_SPEC_DOCUMENT_TYPE,
@@ -287,6 +288,7 @@ async function draftFeatureWithAI({
 	userId,
 	organizationId,
 	projectId,
+	refuseOnConfigurationError = true,
 }: {
 	title: string;
 	description: string;
@@ -299,6 +301,7 @@ async function draftFeatureWithAI({
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
+	refuseOnConfigurationError?: boolean;
 }): Promise<DraftedOutput | null> {
 	try {
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
@@ -430,6 +433,12 @@ async function draftFeatureWithAI({
 		rethrowIfDispatchStopped(error);
 		if (error instanceof AIProviderNotConfiguredError) {
 			return null;
+		}
+		if (refuseOnConfigurationError) {
+			const refusal = findAiConfigurationRefusal(error);
+			if (refusal) {
+				throw refusal;
+			}
 		}
 		logger.error("[draftFeatureWithAI] AI feature drafting failed", {
 			error: error instanceof Error ? error.message : String(error),
@@ -1308,6 +1317,7 @@ export async function draftBodyByKind(
 	});
 
 	const drafted = await draftFeatureWithAI({
+		refuseOnConfigurationError: false,
 		title: params.title,
 		description: params.description ?? "",
 		prompt: rendered.rendered,

@@ -67,11 +67,11 @@ export const restoreVersionProcedure = tenantProtectedProcedure
 		// queued or writing (Fizzy #2946): a restore landing
 		// under it would replace the body the run streams into, and the run's
 		// own final save would then overwrite the restore or fail against a
-		// baseline that moved. Refused here, and again by the write itself, so
-		// a run queued between this read and the restore is refused by the
-		// database too. Decided by type, not by the rollout gate: a run keeps
-		// writing when the gate is turned off mid-run.
-		const refuseWhileGenerating = isRunGuardedDocumentType(document.type);
+		// baseline that moved. Refused here, and again by the write itself
+		// (the query's default for a Proposal's content write), so a run
+		// queued between this read and the restore is refused by the database
+		// too. Decided by type, not by the rollout gate: a run keeps writing
+		// when the gate is turned off mid-run.
 		const generationInProgress = () =>
 			new ORPCError("CONFLICT", {
 				message:
@@ -79,7 +79,7 @@ export const restoreVersionProcedure = tenantProtectedProcedure
 				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
 			});
 		if (
-			refuseWhileGenerating &&
+			isRunGuardedDocumentType(document.type) &&
 			(document.status === "QUEUED" || document.status === "GENERATING")
 		) {
 			throw generationInProgress();
@@ -95,7 +95,6 @@ export const restoreVersionProcedure = tenantProtectedProcedure
 				userId: user.id,
 				organizationId,
 			},
-			refuseWhileGenerating ? { refuseWhileGenerating: true } : {},
 		).catch((error: unknown) => {
 			// A run queued between the read above and the restore's write.
 			if (error instanceof DocumentGenerationInProgressError) {

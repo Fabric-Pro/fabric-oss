@@ -24,7 +24,9 @@
  *   refetches the analysis without one; a nudge for another document does
  *   nothing; the echo of this tab's own save refetches no document, and on a
  *   collaborative page other members' nudges are gathered into one refetch
- *   a moment later (Fizzy #2946);
+ *   a moment later (Fizzy #2946); a run started elsewhere on a document the
+ *   tab shows as complete reaches it through that refetch, so the page
+ *   switches to the run from the server's status;
  * - the Analysis tab's indicator, the library prompt label and the Glossy link
  *   rule;
  * - the shared Proposal theme (Fizzy #2946): worn by a member's and a project
@@ -295,9 +297,12 @@ vi.mock("@saas/projects/components/DocumentEditor", async () => {
 				},
 			}),
 		);
-		const content = (
-			data as { document?: { content?: string } } | undefined
-		)?.document?.content;
+		const { content, status } =
+			(
+				data as
+					| { document?: { content?: string; status?: string } }
+					| undefined
+			)?.document ?? {};
 		const [baseline, setBaseline] = useState<string | null>(null);
 		useEffect(() => {
 			fixtures.editor.mounts += 1;
@@ -307,7 +312,8 @@ vi.mock("@saas/projects/components/DocumentEditor", async () => {
 		}, []);
 		const reviewing = baseline !== null && content !== baseline;
 		return (
-			<div>
+			// The status the editor read, which its own run state follows.
+			<div data-testid="editor-stand-in" data-document-status={status}>
 				{props.promptSelectorReplacement ?? (
 					<select aria-label="Prompt">
 						<option>Use default prompt</option>
@@ -1206,6 +1212,64 @@ describe("DocumentEditorPage — document nudges", () => {
 		});
 	});
 
+	// No poll runs on a finished Proposal, so a run someone else starts is
+	// told by the nudge its queue mark or its start sends (Fizzy #2946):
+	// the refetch it causes is what moves the page to the run.
+	it.each([
+		[
+			"GENERATING",
+			{
+				generationStartedAt: new Date().toISOString(),
+				generationProgress: 40,
+				liveContent: "## Scope\n\nFirst finished section.",
+			},
+		],
+		["QUEUED", { generationProgress: 0, liveContent: "" }],
+	] as const)(
+		"moves a page showing a finished document to the run a nudge reveals (%s)",
+		async (status, run) => {
+			renderPage();
+			await pageReady();
+			expect(
+				screen.queryByTestId("proposal-live-sections"),
+			).not.toBeInTheDocument();
+			expect(editorRegion()).not.toHaveAttribute("hidden");
+
+			// The server's row moved; nothing on the page has noticed yet.
+			fixtures.document = proposal({ status, ...run });
+			nudge("fabric-generation-run");
+
+			const live = await screen.findByTestId("proposal-live-sections");
+			expect(live).toBeVisible();
+			expect(editorRegion()).toHaveAttribute("hidden");
+			// The editor follows the run it did not start, from the same read.
+			expect(fixtures.editor.lastProps.attachToServerRun).toBe(true);
+			expect(screen.getByTestId("editor-stand-in")).toHaveAttribute(
+				"data-document-status",
+				status,
+			);
+			expect(fixtures.editor).toMatchObject({ mounts: 1, unmounts: 0 });
+		},
+	);
+
+	it("moves to the run on the queue mark's nudge, which names the member who started it from another tab", async () => {
+		renderPage();
+		await pageReady();
+
+		fixtures.document = proposal({
+			status: "QUEUED",
+			generationProgress: 0,
+			liveContent: "",
+		});
+		// No save of this tab explains it, so it is not taken for an echo.
+		nudge(SESSION_USER_ID);
+
+		expect(
+			await screen.findByTestId("proposal-live-sections"),
+		).toBeVisible();
+		expect(editorRegion()).toHaveAttribute("hidden");
+	});
+
 	describe("outside artifact mode, on a collaborative document (Fizzy #2946)", () => {
 		beforeEach(() => {
 			vi.stubEnv("NEXT_PUBLIC_ENABLE_COLLABORATION", "true");
@@ -1341,6 +1405,34 @@ describe("DocumentEditorPage — document nudges", () => {
 			}
 
 			expect(documentRefetches(invalidate)).toBe(1);
+		});
+
+		it("hands the editor the run a nudge reveals on a document it read as finished", async () => {
+			// No live pane outside artifact mode: the editor's own run state
+			// follows the status it reads, which the gathered refetch brings.
+			// Real timers, so the refetch's answer is delivered as it would be.
+			renderPage();
+			await pageReady();
+			const editor = screen.getByTestId("editor-stand-in");
+			expect(editor).toHaveAttribute("data-document-status", "COMPLETE");
+
+			fixtures.document = proposal({
+				status: "GENERATING",
+				generationStartedAt: new Date().toISOString(),
+				liveContent: "## Scope\n\nFirst finished section.",
+			});
+			nudge("fabric-generation-run");
+
+			await waitFor(
+				() =>
+					expect(
+						screen.getByTestId("editor-stand-in"),
+					).toHaveAttribute("data-document-status", "GENERATING"),
+				{ timeout: 3_000 },
+			);
+			expect(
+				screen.queryByTestId("proposal-live-sections"),
+			).not.toBeInTheDocument();
 		});
 
 		it("drops a gathered refetch still waiting when the page goes away", async () => {

@@ -257,8 +257,11 @@ describe("platform tool authorization coverage", () => {
 			"return toolFamily(FABRIC_PROJECT_PM_TOOL_DEFINITIONS, handlers)",
 		);
 		expect(PM_HANDLER_BODY).toMatch(
-			/const access = await authorize\(\s*parsed\.data\.input\.projectId,\s*session,?\s*\);\s*if \(!access\?\.organizationId\) \{\s*return errorResult\("Project not found or access denied"\);\s*\}\s*const \{ resolveProjectPmRead \}/,
+			/const access = await authorize\(\s*parsed\.data\.input\.projectId,\s*session,?\s*\);\s*if \(!access\?\.organizationId\) \{\s*return errorResult\("Project not found or access denied"\);\s*\}\s*const result = await readProjectPmTool\(/,
 		);
+		expect(
+			PM_HANDLER_BODY.indexOf("await readProjectPmTool("),
+		).toBeGreaterThan(PM_HANDLER_BODY.indexOf("await authorize("));
 	});
 
 	it("every write resolves the caller's permission, not just their sight of the resource", () => {

@@ -90,6 +90,7 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_share_frame",
 		"fabric_create_workflow",
 		"fabric_update_workflow",
+		"fabric_bind_workspace_workflow",
 		"fabric_publish_workflow",
 		"fabric_create_frame",
 		"fabric_update_frame",
@@ -107,6 +108,9 @@ describe("NOT_FOR_PAGES", () => {
 
 	it.each([
 		"fabric_get_page_viewer",
+		"fabric_page_get_workflow",
+		"fabric_page_run_workflow",
+		"fabric_page_list_workflow_runs",
 		"fabric_page_data_set",
 		"fabric_page_ask",
 		"fabric_page_comment_list",
@@ -211,7 +215,9 @@ describe("the page definitions", () => {
 			"fabric_page_file_read",
 			"fabric_page_get_review_options",
 			"fabric_page_get_story_review",
+			"fabric_page_get_workflow",
 			"fabric_page_list_story_review_runs",
+			"fabric_page_list_workflow_runs",
 		]);
 	});
 
@@ -260,9 +266,12 @@ describe("the sets the page host derives from the definitions", () => {
 			"fabric_page_configure_story_review",
 			"fabric_page_get_review_options",
 			"fabric_page_get_story_review",
+			"fabric_page_get_workflow",
 			"fabric_page_list_story_review_runs",
+			"fabric_page_list_workflow_runs",
 			"fabric_page_read_connected",
 			"fabric_page_run_story_review",
+			"fabric_page_run_workflow",
 		]);
 		expect([...ASKS_ONCE].sort()).toEqual([
 			"fabric_get_project_work_item_counts",
@@ -279,6 +288,7 @@ describe("the sets the page host derives from the definitions", () => {
 			"fabric_page_data_delete",
 			"fabric_page_file_delete",
 			"fabric_page_run_story_review",
+			"fabric_page_run_workflow",
 		]);
 		for (const name of [
 			"fabric_page_data_delete",
@@ -290,6 +300,14 @@ describe("the sets the page host derives from the definitions", () => {
 			PAGE_SHARED_WRITES.has("fabric_page_configure_story_review"),
 		).toBe(false);
 		expect(ASKS_EVERY_TIME.has("fabric_page_comment_add")).toBe(false);
+		expect(PAGE_SHARED_WRITES.has("fabric_page_run_workflow")).toBe(false);
+		for (const name of [
+			"fabric_page_get_workflow",
+			"fabric_page_list_workflow_runs",
+		]) {
+			expect(ASKS_EVERY_TIME.has(name), name).toBe(false);
+			expect(ASKS_ONCE.has(name), name).toBe(false);
+		}
 	});
 
 	it("leave out a tool a page can never call", () => {

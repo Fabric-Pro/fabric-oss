@@ -22,6 +22,9 @@ import {
 	type WorkflowTriggerType,
 } from "@repo/database";
 import { findScheduleCron } from "@repo/temporal";
+import { workflowNativePlatformReadProblems } from "@repo/temporal/native-platform-read-config";
+import { workflowWorkspaceDataProblems } from "@repo/temporal/workspace-data-config";
+import { workflowScriptProblems } from "@repo/temporal/workspace-script-config";
 import { decryptApiKeyMaybe, encryptApiKey } from "@repo/utils";
 import { findAgenticPublishProblems } from "./agentic-publish-validation";
 import { syncWorkflowSchedule } from "./sync-workflow-schedule";
@@ -86,6 +89,17 @@ export async function insertWorkflow(
 	actor: WorkflowActor,
 	input: CreateWorkflowInput,
 ) {
+	const configProblems = [
+		...workflowScriptProblems(input.nodes),
+		...workflowWorkspaceDataProblems(input.nodes),
+		...workflowNativePlatformReadProblems(input.nodes),
+	];
+	if (configProblems.length > 0) {
+		throw new WorkflowCommandError(
+			"BAD_REQUEST",
+			configProblems.join("\n"),
+		);
+	}
 	const workflow = await createWorkflow({
 		...input,
 		userId: actor.userId,
@@ -145,6 +159,17 @@ export async function applyWorkflowUpdateWithSchedule(
 	input: UpdateWorkflowInput,
 	options?: { expectedUpdatedAt: Date },
 ) {
+	const configProblems = [
+		...workflowScriptProblems(input.nodes ?? current.nodes),
+		...workflowWorkspaceDataProblems(input.nodes ?? current.nodes),
+		...workflowNativePlatformReadProblems(input.nodes ?? current.nodes),
+	];
+	if (configProblems.length > 0) {
+		throw new WorkflowCommandError(
+			"BAD_REQUEST",
+			configProblems.join("\n"),
+		);
+	}
 	// A live workflow's graph is held to the same agentic checks as publish:
 	// editing nodes in place, or reviving a paused workflow, must not let an
 	// unvalidated agent onto its schedule.

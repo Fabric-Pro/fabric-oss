@@ -9,6 +9,10 @@ import {
 	isAiRefreshAuthor,
 	resolveDocumentVersionAuthor,
 } from "@repo/utils/document-version-author";
+import {
+	isGenerationRunStillWriting,
+	isRunGuardedDocumentType,
+} from "@repo/utils/generation-run-guard";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import {
 	db,
@@ -395,10 +399,13 @@ export class DocumentVersionConflictError extends Error {
 }
 
 /**
- * Thrown when `updateDocument` is called with `refuseWhileGenerating` and a
- * generation run holds the document (status QUEUED or GENERATING), whether
- * that was true at its read or became true before its write landed. The run
- * owns the body until it finishes (Fizzy #2946), so nothing was written.
+ * Thrown when a write to a run-guarded document (a Proposal) carries content
+ * or a status while a generation run holds it (status QUEUED or GENERATING),
+ * whether that was true at the write's read or became true before it landed.
+ * `updateDocument`, `restoreDocumentVersion` and `rejectDocumentRegeneration`
+ * refuse by default; only the editor's plain content save may write over a
+ * run, only one that has stalled, and that save ends the run. The run owns the
+ * body until it finishes (Fizzy #2946), so nothing was written.
  */
 export class DocumentGenerationInProgressError extends Error {
 	constructor(readonly documentId: string) {
@@ -478,17 +485,26 @@ export async function updateDocument(
 		 */
 		expectedContentHash?: string;
 		/**
-		 * Refuse the write with `DocumentGenerationInProgressError` while a
-		 * generation run holds the document (QUEUED or GENERATING). The
-		 * status is checked at the read and again in the update's WHERE, so
-		 * a run queued between a caller's own read and this write is refused
-		 * by the database too. Implies the guarded write: the update is
-		 * conditioned on the version read here even without a base. The MCP
-		 * and v1 document updates set it for a client-document Proposal's
-		 * content and status writes, and `projects.documents.update` for its
-		 * status writes (Fizzy #2946).
+		 * The one exemption from the live-run refusal (below), for the
+		 * editor's plain content save through `projects.documents.update`:
+		 * a run the server still lists as generating but that stopped
+		 * writing must not block the person typing. Honoured only over a
+		 * stalled run, judged here on the row this write reads by the rule
+		 * the editor uses (`isGenerationRunStillWriting`): a QUEUED run, or
+		 * a GENERATING one that wrote within the silence ceiling, refuses
+		 * the write as for any caller, since nothing tells the editor's save
+		 * apart from any other caller's. It exempts only a write of that
+		 * shape. A write that also carries a status, or a `skipVersionBump`
+		 * rewind, is refused under a run all the same.
+		 *
+		 * A save accepted over a stalled run ends that run in the same
+		 * guarded write: the document is completed and the run's token, its
+		 * claimed attempt and its live preview are cleared, so every later
+		 * write the run guards by its token matches nothing. Without that
+		 * the save's own write would make the row look live again, and the
+		 * next autosave would be refused until the watchdog failed the run.
 		 */
-		refuseWhileGenerating?: boolean;
+		allowDuringLiveRun?: "editor-content-save";
 	},
 ) {
 	// Get current document
@@ -500,10 +516,59 @@ export async function updateDocument(
 		throw new Error("Document not found");
 	}
 
-	if (
-		data.refuseWhileGenerating &&
-		GENERATION_RUN_STATUSES.includes(currentDoc.status)
-	) {
+	// A Proposal's body and status belong to its generation run while the
+	// run is queued or writing (Fizzy #2946), and the run saves its body at
+	// the old version, so a version guard alone cannot see it. Any write
+	// carrying content or a status is refused under a run by default, here at
+	// the read and again in the update's WHERE, so a run queued between a
+	// caller's own read and this write is refused by the database too. The
+	// default needs no caller to remember it; the editor's plain content save
+	// is the one exemption, and only over a run that has stalled: the server
+	// cannot tell the editor's save from any other caller's, so the rule the
+	// editor stops treating a run as writing by is judged here on the row
+	// itself. A title-only write touches neither, so it stays allowed and
+	// unconditioned. Decided by the row's type, never by a rollout flag: a
+	// run keeps writing when a flag is turned off mid-run.
+	const runGuarded = isRunGuardedDocumentType(currentDoc.type);
+	const editorSaveExempt =
+		data.allowDuringLiveRun === "editor-content-save" &&
+		data.status === undefined &&
+		data.skipVersionBump !== true &&
+		!isGenerationRunStillWriting(currentDoc);
+	const refuseUnderRun =
+		runGuarded &&
+		(data.content !== undefined || data.status !== undefined) &&
+		!editorSaveExempt;
+	// The editor's save over a run the row still lists, which has stalled. A
+	// run that writes again between this read and the write is live once
+	// more, so the write is conditioned on the row's last write as read here
+	// and loses to it.
+	const overStalledRun =
+		runGuarded &&
+		editorSaveExempt &&
+		GENERATION_RUN_STATUSES.includes(currentDoc.status);
+	// Such a save ends the run, in the same conditioned write (Fizzy #2946).
+	// Left GENERATING, the row this save writes would look live again for
+	// the whole silence ceiling, and the editor's next save would be refused.
+	// The shape is the one a run's own successful finish leaves: COMPLETE at
+	// full progress, no error, no live preview. The run's token and claimed
+	// attempt go as well, so a coordinated run that wakes finds its token
+	// gone and every write it guards by it (live sections, the final save,
+	// its version, its status) matches nothing. The write moves `updatedAt`
+	// whether or not the body changed, so it ends the run either way.
+	const endsStalledRun = overStalledRun
+		? {
+				status: "COMPLETE" as const,
+				generationProgress: 100,
+				generationCompletedAt: new Date(),
+				generationError: null,
+				liveRunId: null,
+				liveAttempt: null,
+				liveContent: null,
+			}
+		: {};
+
+	if (refuseUnderRun && GENERATION_RUN_STATUSES.includes(currentDoc.status)) {
 		throw new DocumentGenerationInProgressError(documentId);
 	}
 
@@ -536,34 +601,37 @@ export async function updateDocument(
 	// read here and, when the caller named a body, the body that was just
 	// checked against its identity. A version-only caller (the auto-refresh,
 	// the visual-slot splices) keeps exactly the condition it had.
-	// A caller refusing to write under a live run gets the same treatment,
-	// with the status in the WHERE as well.
+	// A write refused under a live run gets the same treatment, with the
+	// status in the WHERE as well; the editor's save over a stalled run, with
+	// the row's last write (`updatedAt`) instead.
 	const guarded =
 		data.expectedVersion !== undefined ||
 		data.expectedContentHash !== undefined ||
-		data.refuseWhileGenerating === true;
+		refuseUnderRun ||
+		overStalledRun;
 	const guardedWhere = {
 		id: documentId,
 		version: currentDoc.version,
 		...(data.expectedContentHash !== undefined
 			? { content: currentDoc.content }
 			: {}),
-		...(data.refuseWhileGenerating
+		...(refuseUnderRun
 			? { status: { notIn: GENERATION_RUN_STATUSES } }
 			: {}),
+		...(overStalledRun ? { updatedAt: currentDoc.updatedAt } : {}),
 	};
 	// The guarded UPDATE matched nothing: someone wrote between the read and
 	// this update. Say which half moved, so a log can tell a version step from
 	// a body written at the same version, and say so when a generation run
-	// took the document in between for a caller that refuses to write under
-	// one.
+	// took the document in between for a write refused under one, or a
+	// stalled run wrote again under the editor's save.
 	const conflictAfterLostRace = async (tx: Prisma.TransactionClient) => {
 		const actual = await tx.projectDocument.findUnique({
 			where: { id: documentId },
 			select: { version: true, status: true },
 		});
 		if (
-			data.refuseWhileGenerating &&
+			(refuseUnderRun || overStalledRun) &&
 			actual &&
 			GENERATION_RUN_STATUSES.includes(actual.status)
 		) {
@@ -619,9 +687,10 @@ export async function updateDocument(
 			...(nextStatus ? { status: nextStatus } : {}),
 			...(data.lastEditedBy ? { lastEditedBy: data.lastEditedBy } : {}),
 		};
-		// A revert that named a base writes over the body it read, or over
-		// nothing: the Reject fallback restores the body from before a run,
-		// and a server write that landed since must not be replaced by it.
+		// A revert that named a base, or that is refused under a live run,
+		// writes over the body it read, or over nothing: the Reject fallback
+		// restores the body from before a run, and a server write that landed
+		// since must not be replaced by it.
 		if (guarded) {
 			return await db.$transaction(async (tx) => {
 				const { count } = await tx.projectDocument.updateMany({
@@ -680,11 +749,13 @@ export async function updateDocument(
 			: {}),
 		...(nextStatus ? { status: nextStatus } : {}),
 		...(data.lastEditedBy ? { lastEditedBy: data.lastEditedBy } : {}),
+		...endsStalledRun,
 	};
 
 	// Guarded path — the caller supplied a base (`expectedVersion`,
-	// `expectedContentHash`, or both), so it needs the write to LOSE rather
-	// than clobber if someone else got there first.
+	// `expectedContentHash`, or both), the write is refused under a live run,
+	// or it is the editor's save over a stalled one, so it needs the write to
+	// LOSE rather than clobber if someone else got there first.
 	//
 	// The equality checks above are not enough on their own: they read, and
 	// only then write, leaving a window in between. That window is microseconds
@@ -721,7 +792,8 @@ export async function updateDocument(
 		});
 	}
 
-	// Unguarded path — unchanged. Every caller without a base lands here: a
+	// Unguarded path — unchanged. Every caller without a base lands here
+	// (except a run-guarded document's content or status write, above): a
 	// human is present, the read-to-write window is negligible, and
 	// last-write-wins is the behavior the editor had before saves from a
 	// collaborative room started naming their base.
@@ -924,6 +996,10 @@ export async function getDocumentVersion(documentId: string, version: number) {
 /**
  * Restore document to a previous version
  *
+ * A restore is a content write through `updateDocument`, so a Proposal's is
+ * refused with `DocumentGenerationInProgressError` while a generation run
+ * holds it, at the read and again in the write's WHERE (Fizzy #2946).
+ *
  * TENANT ISOLATION: userId and organizationId are required for proper tenant filtering.
  */
 export async function restoreDocumentVersion(
@@ -934,16 +1010,6 @@ export async function restoreDocumentVersion(
 		userId: string;
 		organizationId?: string;
 	},
-	options: {
-		/**
-		 * Passed through to `updateDocument`: refuse the restore with
-		 * `DocumentGenerationInProgressError` while a generation run holds
-		 * the document, at the read and again in the write's WHERE. The
-		 * restore procedure sets it for a client-document Proposal, whose run
-		 * owns the body until it finishes (Fizzy #2946).
-		 */
-		refuseWhileGenerating?: boolean;
-	} = {},
 ) {
 	const versionData = await getDocumentVersion(documentId, version);
 
@@ -957,9 +1023,6 @@ export async function restoreDocumentVersion(
 		changeDescription: `Restored to version ${version}`,
 		userId: tenantContext.userId,
 		organizationId: tenantContext.organizationId,
-		...(options.refuseWhileGenerating
-			? { refuseWhileGenerating: true }
-			: {}),
 	});
 }
 
@@ -981,37 +1044,37 @@ export async function restoreDocumentVersion(
  * Throws `NO_PRIOR_VERSION` when the document has no version history
  * preceding the latest row (e.g. first-ever generation). Callers should
  * fall back to the old skipVersionBump path in that case.
+ *
+ * A Proposal's rewind is refused with `DocumentGenerationInProgressError`
+ * while a generation run holds the document (QUEUED or GENERATING), the same
+ * default `updateDocument` applies (Fizzy #2946): at the read, and again in
+ * the rewind's WHERE, which also carries the version and body read here, so
+ * a run queued (or any write landing) in between is refused by the database
+ * and the transaction, the version-row delete included, rolls back.
  */
 export async function rejectDocumentRegeneration(
 	documentId: string,
 	options: {
 		userId: string;
 		organizationId?: string | null;
-		/**
-		 * Refuse the rewind with `DocumentGenerationInProgressError` while a
-		 * generation run holds the document (QUEUED or GENERATING): at the
-		 * read, and again in the rewind's WHERE, which also carries the
-		 * version and body read here, so a run queued (or any write landing)
-		 * in between is refused by the database and the transaction, the
-		 * version-row delete included, rolls back. The reject procedure sets
-		 * it for a client-document Proposal, whose run owns the body until it
-		 * finishes (Fizzy #2946).
-		 */
-		refuseWhileGenerating?: boolean;
 	},
 ): Promise<{ id: string; version: number; content: string }> {
 	return await db.$transaction(async (tx) => {
 		const doc = await tx.projectDocument.findUnique({
 			where: { id: documentId },
-			select: { id: true, version: true, content: true, status: true },
+			select: {
+				id: true,
+				version: true,
+				content: true,
+				status: true,
+				type: true,
+			},
 		});
 		if (!doc) {
 			throw new Error("Document not found");
 		}
-		if (
-			options.refuseWhileGenerating &&
-			GENERATION_RUN_STATUSES.includes(doc.status)
-		) {
+		const refuseUnderRun = isRunGuardedDocumentType(doc.type);
+		if (refuseUnderRun && GENERATION_RUN_STATUSES.includes(doc.status)) {
 			throw new DocumentGenerationInProgressError(documentId);
 		}
 
@@ -1055,7 +1118,7 @@ export async function rejectDocumentRegeneration(
 			wordCount: countDocumentWords(previous.content),
 			lastEditedBy: options.userId,
 		};
-		if (options.refuseWhileGenerating) {
+		if (refuseUnderRun) {
 			const { count } = await tx.projectDocument.updateMany({
 				where: {
 					id: documentId,
@@ -1098,30 +1161,6 @@ export async function rejectDocumentRegeneration(
 }
 
 /**
- * Mark a document as actively generating, immediately before the caller
- * starts the Temporal workflow that will produce its content.
- *
- * Ordering is the whole point: writing GENERATING (and clearing any stale
- * `generationError`) BEFORE `workflow.start` means a workflow that fails
- * within seconds — before its own first milestone write — can never have
- * its `FAILED` write clobbered by this one landing after it. Without this,
- * a retry left the row FAILED with the previous run's error until (or
- * unless) the new workflow's first milestone write arrived, and the editor
- * stayed on the "Regenerating…" spinner in the meantime (issue #720).
- */
-export async function markDocumentGenerationStarted(documentId: string) {
-	return await db.projectDocument.update({
-		where: { id: documentId },
-		data: {
-			status: "GENERATING",
-			generationProgress: 0,
-			generationError: null,
-			generationStartedAt: new Date(),
-		},
-	});
-}
-
-/**
  * Accept a generation request that is not allowed to start yet, because the
  * project's own context-building work has to finish first.
  *
@@ -1131,9 +1170,9 @@ export async function markDocumentGenerationStarted(documentId: string) {
  * None can tell a deliberate wait from a run that died, so a deliberate wait
  * does not borrow their state.
  *
- * Guarded, unlike {@link markDocumentGenerationStarted} — but on FRESHNESS, not
- * on status: the write only applies to a row that nothing has touched since
- * this attempt began (`updatedAt < generationStartedAt`).
+ * Guarded — but on FRESHNESS, not on status: the write only applies to a row
+ * that nothing has touched since this attempt began
+ * (`updatedAt < generationStartedAt`).
  *
  * A status guard is the wrong instrument, and the obvious one broke the main
  * path. Regeneration starts from exactly COMPLETE and FAILED — those are the
@@ -1302,20 +1341,7 @@ export async function markDocumentGenerationQueued(
 		: { applied: false, generationStartedAt, declinedFor: "unowned" };
 }
 
-/**
- * Flip a queued document to actively generating, once its dependency wait has
- * cleared and the model call may start.
- *
- * Attempt-scoped exactly like {@link markDocumentGenerationFailed}: `startedAt`
- * must be the timestamp {@link markDocumentGenerationQueued} returned for THIS
- * run. A wait that outlives its own row — the user cancelled and re-ran, the
- * watchdog swept it, the workflow already failed — must not be resurrected as
- * GENERATING by a probe that resolves late, so a write that no longer matches
- * this attempt's identity is silently a no-op.
- *
- * Clears `generationQueueReason` in the same write: the row is no longer
- * waiting on anything, and a stale reason would keep telling the reader it is.
- */
+/** How a run's QUEUED → GENERATING flip went, as the run acts on it. */
 export type GenerationRunStartOutcome =
 	/** The row was this attempt's, and is now GENERATING. */
 	| "started"
@@ -1336,10 +1362,42 @@ export type GenerationRunStartOutcome =
 	 */
 	| "not-yet-visible";
 
+/**
+ * What {@link markDocumentGenerationRunning} found: a
+ * {@link GenerationRunStartOutcome}, or `already-started` when this attempt's
+ * own flip had already landed and nothing was written now.
+ *
+ * A retried start reaches that answer: the flip committed, but the activity's
+ * completion was lost, so the retry finds the row GENERATING at this
+ * attempt's own `generationStartedAt`. The row is this attempt's, so for the
+ * run it means `started`; reported apart so the caller does not announce the
+ * start a second time.
+ */
+export type GenerationRunMarkOutcome =
+	| GenerationRunStartOutcome
+	| "already-started";
+
+/**
+ * Flip a queued document to actively generating, once its dependency wait has
+ * cleared and the model call may start.
+ *
+ * Attempt-scoped exactly like {@link markDocumentGenerationFailed}: `startedAt`
+ * must be the timestamp {@link markDocumentGenerationQueued} returned for THIS
+ * run. A wait that outlives its own row — the user cancelled and re-ran, the
+ * watchdog swept it, the workflow already failed — must not be resurrected as
+ * GENERATING by a probe that resolves late, so a write that no longer matches
+ * this attempt's identity is silently a no-op.
+ *
+ * Clears `generationQueueReason` in the same write: the row is no longer
+ * waiting on anything, and a stale reason would keep telling the reader it is.
+ *
+ * Safe to retry: a retry whose own flip already landed writes nothing again
+ * and answers `already-started`.
+ */
 export async function markDocumentGenerationRunning(
 	documentId: string,
 	startedAt: Date,
-): Promise<GenerationRunStartOutcome> {
+): Promise<GenerationRunMarkOutcome> {
 	const { count } = await db.projectDocument.updateMany({
 		where: {
 			id: documentId,
@@ -1356,18 +1414,37 @@ export async function markDocumentGenerationRunning(
 	}
 
 	// Nothing was written, and WHY decides whether the run may continue. Read
-	// the identity the row actually carries: anything at or after this
-	// attempt's means a later writer owns it, anything before it — or nothing
-	// at all — means this attempt's own mark is still in flight.
+	// the identity the row actually carries: anything after this attempt's
+	// means a later writer owns it, anything before it — or nothing at all —
+	// means this attempt's own mark is still in flight. A row GENERATING at
+	// exactly this attempt's identity was flipped by this attempt itself: a
+	// retry after the flip landed and its answer was lost. Answering
+	// not-yet-visible there would wait out a mark that already happened and
+	// end a healthy run as superseded. Any other status but QUEUED at this
+	// identity is terminal for the attempt (the dispatch, the stale-run
+	// watchdog or the run's own failure wrote it), and nothing puts a row
+	// back to QUEUED at an existing identity, so waiting for the mark would
+	// only delay the same answer.
 	const row = await db.projectDocument.findUnique({
 		where: { id: documentId },
-		select: { generationStartedAt: true },
+		select: { generationStartedAt: true, status: true },
 	});
 	if (!row) {
 		return "superseded";
 	}
 	const current = row.generationStartedAt?.getTime() ?? 0;
-	return current > startedAt.getTime() ? "superseded" : "not-yet-visible";
+	if (current > startedAt.getTime()) {
+		return "superseded";
+	}
+	if (current === startedAt.getTime()) {
+		if (row.status === "GENERATING") {
+			return "already-started";
+		}
+		if (row.status !== "QUEUED") {
+			return "superseded";
+		}
+	}
+	return "not-yet-visible";
 }
 
 /**
@@ -1396,12 +1473,12 @@ export async function setDocumentGenerationQueueReason(
  * the row doesn't stay stuck on GENERATING forever.
  *
  * Attempt-scoped by design: `startedAt` must be the `generationStartedAt`
- * from the SAME `markDocumentGenerationStarted` call this attempt made, and
- * the write only applies `where: { status: "GENERATING", generationStartedAt:
- * startedAt }`. `workflow.start` can throw even though Temporal actually
- * accepted the start (e.g. a lost response), and a delayed failing request
- * can resolve after a second, newer attempt has already re-marked the row
- * (GENERATING with a fresh timestamp, or COMPLETE/FAILED from the workflow
+ * this attempt was queued with ({@link markDocumentGenerationQueued}), and
+ * the write only applies to a row still QUEUED or GENERATING at exactly that
+ * `generationStartedAt`. `workflow.start` can throw even though Temporal
+ * actually accepted the start (e.g. a lost response), and a delayed failing
+ * request can resolve after a second, newer attempt has already re-marked the
+ * row (GENERATING with a fresh timestamp, or COMPLETE/FAILED from the workflow
  * itself). Without the guard, that stale request would blindly overwrite
  * whatever the newer attempt has since written. With it, a write that no
  * longer matches this exact attempt's identity is silently a no-op — we only
@@ -1542,10 +1619,11 @@ const STALE_GENERATION_SELECT = {
  * `cutoff` and still GENERATING, or waiting in the queue with a workflow to ask
  * about.
  *
- * The dispatch path marks a row GENERATING *before* starting the workflow, on
- * purpose — see `markDocumentGenerationStarted`. That ordering is right, but it
- * means a start that never took leaves the row GENERATING with nothing left to
- * write a terminal status: the workflow that would have done so does not exist.
+ * A dispatch marks its row non-terminal on its own (QUEUED, see
+ * {@link markDocumentGenerationQueued}; the upload-extraction flow creates its
+ * row GENERATING), so a start that never took leaves the row mid-generation
+ * with nothing left to write a terminal status: the workflow that would have
+ * done so does not exist.
  * The dispatch helper recovers the cases it can prove, and deliberately does not
  * guess at the one it cannot — an ambiguous `describe()` is left alone rather
  * than risk failing a run that is actually alive. This query feeds the sweep

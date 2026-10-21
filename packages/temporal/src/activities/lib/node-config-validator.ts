@@ -104,6 +104,10 @@ export function validateNodeConfig(
 export function isNodeTypeImplemented(nodeType: string): boolean {
 	const IMPLEMENTED_NODES = [
 		"trigger",
+		"script-transform",
+		"native-platform-read",
+		"workspace-data-read",
+		"workspace-data-write",
 		"ai-generate-text",
 		"ai-generate-image",
 		"http-request",

@@ -24,7 +24,11 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // required pre-call contracts; exact sprint selection adds 872 to review config.
 // CI measured 53,042 before the document-base contract (Fizzy #2946), which
 // adds 21 for the read and 181 for the write. Keep only that combined allowance.
-const TOTAL_BUDGET = 53_244;
+// Four generic Workspace workflow controls add required pre-call schemas:
+// binding action/current timestamps, run inputs/idempotency and bounded history.
+// CI measured 55,621; removing 259 description characters leaves 55,362.
+// Keep that exact combined allowance, with no extra headroom.
+const TOTAL_BUDGET = 53_244 + 2_118;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

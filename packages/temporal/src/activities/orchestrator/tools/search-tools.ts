@@ -19,12 +19,12 @@ import { GITHUB_ACCOUNT, MICROSOFT_TEAMS_ACCOUNT } from "@repo/mcp-registry";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { getCapabilitiesByTenant } from "@repo/rag/lib/vector-store/capability-store";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+// Pure, import-free module shared with the workflow side.
+import { canonicalJson } from "../../../workflows/orchestrator/tool-result-progression";
 import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../../../workflows/orchestrator/usage-attribution";
-// Pure, import-free module shared with the workflow side.
-import { canonicalJson } from "../../../workflows/orchestrator/tool-result-progression";
 import { ingestOAuthIntegrationToolsActivity } from "../../oauth-tool-ingestion";
 import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
 import {
@@ -41,6 +41,7 @@ import {
 	type ToolSearchResult,
 	toolIndex,
 } from "./tool-index";
+import { toolSearchUsage } from "./tool-search-usage";
 import type {
 	SearchAvailableToolsInput,
 	SearchAvailableToolsOutput,
@@ -350,11 +351,11 @@ export async function findRelevantServersBySemantic(
 
 		const embeddingResult = await generateEmbeddings(
 			[query],
-			{
+			toolSearchUsage({
 				userId,
 				organizationId,
 				...secondaryUsageFields(options),
-			},
+			}),
 			providerConfig,
 		);
 

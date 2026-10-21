@@ -94,8 +94,10 @@ import {
 	WorkflowExecutionAlreadyStartedError,
 	WorkflowNotFoundError,
 } from "@temporalio/client";
+import { emitDocumentChange } from "../../../lib/realtime";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
 import { assertCapabilityAvailable } from "../../capabilities/assert";
+import { runInBackground } from "../../weave/lib/run-in-background";
 import {
 	WORKFLOW_RUN_LIVENESS_TIMEOUT_MS,
 	workflowRunLiveness,
@@ -159,6 +161,13 @@ const LIVE_DOCUMENT_STATUSES: ReadonlySet<string> = new Set([
 	"QUEUED",
 	"GENERATING",
 ]);
+
+/**
+ * `userName` of the `document_change` nudge a queue mark sends. The schema
+ * requires one and the dispatch is not handed the requester's name; the page
+ * only refetches on the event, as it does for the run's own nudges.
+ */
+const QUEUED_NUDGE_USER_NAME = "Fabric";
 
 export interface DispatchDocumentGenerationInput {
 	documentId: string;
@@ -528,6 +537,36 @@ async function joinLiveRun(
 	return null;
 }
 
+/**
+ * Tell the project's open pages that the document is now QUEUED, ids only
+ * (Fizzy #2946). Nothing else announces that the row left COMPLETE or FAILED,
+ * so a page already open on the document would otherwise learn of a run
+ * someone else started only from the run's first section, if at all.
+ *
+ * Not awaited. A client-document Proposal's dispatch runs under its
+ * per-document lock, whose transaction is budgeted around bounded Temporal
+ * calls, and a realtime call must not sit under it. The queue mark is
+ * written outside that transaction, so it has committed before this is
+ * scheduled. A nudge that fails is logged by `runInBackground` and never
+ * fails the dispatch.
+ */
+function announceDocumentQueued(input: DispatchDocumentGenerationInput): void {
+	runInBackground(
+		// Async so that even a synchronous throw becomes a rejection the
+		// background wrapper catches, never an error out of the dispatch.
+		(async () => {
+			await emitDocumentChange({
+				projectId: input.projectId,
+				documentId: input.documentId,
+				action: "updated",
+				userId: input.userId,
+				userName: QUEUED_NUDGE_USER_NAME,
+				documentType: input.documentType,
+			});
+		})(),
+	);
+}
+
 /** describe() gave no answer within its bound: an ambiguous outcome. */
 class DescribeTimedOutError extends Error {
 	constructor(workflowId: string) {
@@ -676,7 +715,18 @@ async function startGeneration(
 		}
 	}
 
+	// Only a mark that landed is announced: a declined one leaves the row to
+	// whoever owns it, and that owner's writes are its own to announce. And
+	// only on the returns below, once the start is known not to have failed,
+	// so a start that ends FAILED further down sends nothing.
+	const announceQueued = () => {
+		if (queued.applied) {
+			announceDocumentQueued(input);
+		}
+	};
+
 	if (handle) {
+		announceQueued();
 		return {
 			outcome: "started",
 			workflowId: handle.workflowId,
@@ -735,6 +785,7 @@ async function startGeneration(
 	}
 
 	if (liveDescription) {
+		announceQueued();
 		return {
 			outcome: "started",
 			workflowId,
@@ -778,6 +829,8 @@ async function startGeneration(
 					: String(ambiguousDescribeError)
 			})`,
 		);
+		// Treated as started, and the row is queued for this attempt.
+		announceQueued();
 		return {
 			outcome: "statusUnknown",
 			workflowId,

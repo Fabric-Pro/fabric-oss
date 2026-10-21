@@ -599,14 +599,16 @@ describe("cycle bookkeeping", () => {
 describe("proposals", () => {
 	const when = new Date("2026-07-13T12:00:00Z");
 
-	it("stores the candidate, its summary, and the version it was based on", async () => {
+	it("stores the candidate, its summary, and the version and body it was based on", async () => {
 		// The baseline version is what lets the UI tell an accepting human that the
-		// document has moved on under the proposal.
+		// document has moved on under the proposal. The body's identity covers
+		// what the version cannot see: a body saved at the same version.
 		await storeRefreshProposal("doc_1", {
 			when,
 			content: "# PRD\n\nProposed body.",
 			summary: "Removed SSO from scope.",
 			baselineVersion: 3,
+			baselineContentHash: "hash-of-the-body-read",
 		});
 
 		expect(updateMock.mock.calls[0]?.[0]).toMatchObject({
@@ -616,6 +618,7 @@ describe("proposals", () => {
 				pendingSummary: "Removed SSO from scope.",
 				pendingProposedAt: when,
 				pendingBaselineVersion: 3,
+				pendingBaselineContentHash: "hash-of-the-body-read",
 			},
 		});
 	});
@@ -629,6 +632,7 @@ describe("proposals", () => {
 			content: "body",
 			summary: "Updated scope.",
 			baselineVersion: 3,
+			baselineContentHash: "hash-of-the-body-read",
 		});
 
 		expect(updateMock.mock.calls[0]?.[0].data).toMatchObject({
@@ -648,6 +652,9 @@ describe("proposals", () => {
 				pendingSummary: null,
 				pendingProposedAt: null,
 				pendingBaselineVersion: null,
+				// Cleared with the version, so no later accept is judged against
+				// the body an earlier proposal was drafted from.
+				pendingBaselineContentHash: null,
 			},
 		});
 	});

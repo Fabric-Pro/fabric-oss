@@ -178,7 +178,9 @@ describe("rejectRegenerationProcedure on a Proposal", () => {
 		},
 	);
 
-	it("rewinds a finished Proposal through the guarded rewind, without consulting the Proposal gate", async () => {
+	// The rewind refuses a run queued after this read on its own: the
+	// query's default for a Proposal, with no option to pass.
+	it("rewinds a finished Proposal, without consulting the Proposal gate", async () => {
 		vi.mocked(getDocumentById).mockResolvedValue(
 			proposal("COMPLETE") as never,
 		);
@@ -189,7 +191,6 @@ describe("rejectRegenerationProcedure on a Proposal", () => {
 		expect(rejectDocumentRegeneration).toHaveBeenCalledWith("doc-1", {
 			userId: "u1",
 			organizationId: "org-1",
-			refuseWhileGenerating: true,
 		});
 		expect(result.document).toEqual(REVERTED);
 		expect(mockApplySideEffects).toHaveBeenCalledTimes(1);

@@ -289,13 +289,42 @@ describe("DocumentsList — marking a draft complete", () => {
 
 		await user.click(markComplete() as HTMLElement);
 
+		// In the reader's words, never the server's (Fizzy #2946): one
+		// sentence of its own, with no other sentence nested inside it.
 		await waitFor(() => {
 			expect(toast.error).toHaveBeenCalledWith(
-				expect.stringContaining("Forbidden"),
+				en.projects.documents.markComplete.failed,
 			);
 		});
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(toast.error).not.toHaveBeenCalledWith(
+			expect.stringContaining("Forbidden"),
+		);
+		expect(toast.error).not.toHaveBeenCalledWith(
+			expect.stringContaining(en.projects.documentWriteRefusal.failed),
+		);
 		expect(toast.success).not.toHaveBeenCalled();
 		expect(markComplete()).toBeInTheDocument();
+	});
+
+	it("names a refusal it recognises: a change made meanwhile", async () => {
+		updateDocumentMock.mockRejectedValue(
+			Object.assign(new Error("Document was modified meanwhile"), {
+				code: "CONFLICT",
+			}),
+		);
+		const user = userEvent.setup();
+		await renderWithDocument(makeDocument());
+
+		await user.click(markComplete() as HTMLElement);
+
+		// The refusal's own sentence, alone: it already says what happened.
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith(
+				en.projects.documentWriteRefusal.changedMeanwhile,
+			);
+		});
+		expect(toast.error).toHaveBeenCalledTimes(1);
 	});
 
 	it("offers it on a draft whose content has no countable words", async () => {

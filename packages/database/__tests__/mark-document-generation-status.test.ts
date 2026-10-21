@@ -1,9 +1,8 @@
 /**
- * `markDocumentGenerationStarted` / `markDocumentGenerationFailed` — the
- * GENERATING/FAILED status writes the generate-document procedure makes
- * around a Temporal workflow start (issue #720).
+ * `markDocumentGenerationFailed` — the FAILED status write the dispatch and
+ * the stale-generation watchdog make for one generation attempt (issue #720).
  *
- * `markDocumentGenerationFailed` pins the mechanism, not just the outcome:
+ * It pins the mechanism, not just the outcome:
  * the write is attempt-scoped via a guarded `updateMany` WHERE clause
  * (status + generationStartedAt), not a bare `update` by id. `workflow.start`
  * can throw even though Temporal actually accepted the start (a lost
@@ -25,10 +24,7 @@ vi.mock("../prisma/client", () => ({
 	db: { projectDocument: { update, updateMany } },
 }));
 
-import {
-	markDocumentGenerationFailed,
-	markDocumentGenerationStarted,
-} from "../prisma/queries/projects/documents";
+import { markDocumentGenerationFailed } from "../prisma/queries/projects/documents";
 
 const DOCUMENT_ID = "doc-1";
 const STARTED_AT = new Date("2026-08-16T00:00:00.000Z");
@@ -36,36 +32,7 @@ const STARTED_AT = new Date("2026-08-16T00:00:00.000Z");
 beforeEach(() => {
 	update.mockReset();
 	updateMany.mockReset();
-	update.mockResolvedValue({
-		id: DOCUMENT_ID,
-		status: "GENERATING",
-		generationProgress: 0,
-		generationError: null,
-		generationStartedAt: STARTED_AT,
-	});
 	updateMany.mockResolvedValue({ count: 1 });
-});
-
-describe("markDocumentGenerationStarted", () => {
-	it("writes GENERATING, resets progress, clears the error, and stamps generationStartedAt", async () => {
-		await markDocumentGenerationStarted(DOCUMENT_ID);
-
-		expect(update).toHaveBeenCalledTimes(1);
-		expect(update).toHaveBeenCalledWith({
-			where: { id: DOCUMENT_ID },
-			data: {
-				status: "GENERATING",
-				generationProgress: 0,
-				generationError: null,
-				generationStartedAt: expect.any(Date),
-			},
-		});
-	});
-
-	it("returns the updated row so the caller can capture this attempt's generationStartedAt identity", async () => {
-		const result = await markDocumentGenerationStarted(DOCUMENT_ID);
-		expect(result.generationStartedAt).toEqual(STARTED_AT);
-	});
 });
 
 describe("markDocumentGenerationFailed", () => {

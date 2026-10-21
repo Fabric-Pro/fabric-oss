@@ -727,6 +727,38 @@ export async function updateFrame(input: UpdateFrameInput) {
 	// that never landed would be a version of the page nobody ever saw, and it
 	// would shift the number of every version after it.
 	const updated = await db.$transaction(async (tx) => {
+		let surfaceMetadata: Prisma.InputJsonObject | undefined;
+		if (input.surface) {
+			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
+			const latest = await tx.agentWorkspaceFile.findFirst({
+				where: {
+					id: existing.id,
+					userId: input.userId,
+					organizationId: input.organizationId ?? null,
+					projectId: input.projectId,
+				},
+				select: { metadata: true },
+			});
+			if (!latest) {
+				return null;
+			}
+			const metadata = latest.metadata;
+			const currentMetadata =
+				metadata &&
+				typeof metadata === "object" &&
+				!Array.isArray(metadata)
+					? metadata
+					: {};
+			const { workflowBindings, ...rest } = currentMetadata;
+			surfaceMetadata = {
+				...rest,
+				...(input.surface === "workspace" &&
+				workflowBindings !== undefined
+					? { workflowBindings }
+					: {}),
+				surface: input.surface,
+			};
+		}
 		if (content !== existing.content) {
 			await saveFrameEdit(
 				{
@@ -746,19 +778,12 @@ export async function updateFrame(input: UpdateFrameInput) {
 				size: Buffer.byteLength(content, "utf8"),
 				description: nextDocument.description,
 				isPublic: input.isPublic ?? existing.isPublic,
-				...(input.surface
-					? {
-							metadata: {
-								...readMetadataObject(existing.metadata),
-								surface: input.surface,
-							} as Prisma.InputJsonValue,
-						}
-					: {}),
+				...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
 			},
 		});
 	});
 
-	return mapFrameRecord(updated);
+	return updated ? mapFrameRecord(updated) : null;
 }
 
 export async function publishFrame(input: {

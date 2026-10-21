@@ -25,13 +25,7 @@ const TERMINAL_REFRESH_ERRORS = new Set([
 	"refresh_token_reused",
 ]);
 
-/**
- * What every surface says when a member's plan is turned on but its sign-in
- * no longer works. Fabric never falls back to the organization's API billing
- * on its own; the member reconnects or switches the organization back.
- */
-export const CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE =
-	"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.";
+export { CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE } from "./reconnect-message";
 
 export class ChatGptPlanAuthError extends Error {
 	constructor(

@@ -79,8 +79,3 @@ export function validateBacklogAnalysisOptions(args: {
 				: undefined,
 	};
 }
-
-// Agent consumer: ANALYSIS_FAILURE_PREFIX in agents/langchain/backlog-updater/nodes/chat-node.ts.
-export function analysisFailureMessage(error: string): string {
-	return `Analysis error: ${error.replace(/\.$/, "")}. Do not call analyze_backlog again in this turn. Tell the user the analysis could not start or complete and explain the error.`;
-}

@@ -35,6 +35,7 @@ vi.mock("../fabric-enrichment", () => ({
 
 import {
 	generateImage,
+	generateText,
 	getAIModelWithMetadata,
 	getRAGProviderConfig,
 } from "@repo/ai";
@@ -117,5 +118,26 @@ describe("executeAiGenerateImageStep — a ChatGPT plan refusal during enhanceme
 			executeAiGenerateImageStep(params(false)),
 		).resolves.toMatchObject({ success: true });
 		expect(getAIModelWithMetadata).not.toHaveBeenCalled();
+	});
+
+	it("attributes the enhancement text model to the same Workspace and run", async () => {
+		vi.mocked(getAIModelWithMetadata).mockResolvedValue({
+			model: {},
+		} as never);
+		vi.mocked(generateText).mockResolvedValue({
+			text: "A detailed paper boat",
+		} as never);
+		await executeAiGenerateImageStep({
+			...params(true),
+			executionId: "execution",
+			frameId: "workspace",
+		});
+		expect(getAIModelWithMetadata).toHaveBeenCalledWith(
+			{ taskType: "SIMPLE" },
+			expect.objectContaining({
+				workflowExecutionId: "execution",
+				frameId: "workspace",
+			}),
+		);
 	});
 });

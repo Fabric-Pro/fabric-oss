@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -18,10 +19,12 @@ import { backlogAnalysisWorkflowId } from "./workflow-id";
  * 2. Fetches the existing backlog (Fabric DB + PM tool)
  * 3. Runs LLM analysis to propose changes
  *
- * AUTHORIZATION: Uses canEditProject() - verifies org membership + editor role
+ * AUTHORIZATION: requireProjectPermission(PROJECT_UPDATE) resolves project access.
  */
 export const startAnalysisInputSchema = z.object({
 	projectId: z.string(),
+	/** Stable caller flow id; conflicting inputs for the same project/key are rejected. */
+	operationKey: z.string().min(1).max(200).optional(),
 	organizationId: z.string().nullable().optional(),
 	contextSources: z.object({
 		fetchTeamsMessages: z.boolean().default(false),
@@ -114,30 +117,98 @@ export const startAnalysisProcedure = tenantProtectedProcedure
 		try {
 			const client = await getTemporalClient();
 
-			const workflowId = backlogAnalysisWorkflowId(input.projectId);
-
-			const handle = await client.workflow.start(
-				"backlogContextAnalysisWorkflow",
-				withCorrelationMemo({
-					taskQueue: "ai-chat",
-					workflowId,
-					args: [
-						{
-							projectId: input.projectId,
-							userId: user.id,
-							// A person clicked and waits for this: it may run on their own ChatGPT plan (Fizzy #2770).
-							planEligible: true,
-							organizationId,
-							contextSources: input.contextSources,
-							pmConfig: input.pmConfig,
-							userPrompt: input.userPrompt,
-							// See input-schema comment above.
-							conversationId: input.conversationId,
-							intakeMode: input.intakeMode,
-						},
-					],
-				}),
+			const workflowId = backlogAnalysisWorkflowId(
+				input.projectId,
+				input.operationKey ?? Date.now(),
 			);
+			const workflowInput = {
+				projectId: input.projectId,
+				userId: user.id,
+				planEligible: true,
+				organizationId,
+				contextSources: input.contextSources,
+				pmConfig: input.pmConfig,
+				userPrompt: input.userPrompt,
+				conversationId: input.conversationId,
+				intakeMode: input.intakeMode,
+			};
+			// Sort object keys so wire property order does not change operation identity.
+			const fingerprint = createHash("sha256")
+				.update(
+					JSON.stringify(workflowInput, (_key, value) =>
+						value &&
+						typeof value === "object" &&
+						!Array.isArray(value)
+							? Object.fromEntries(
+									Object.entries(value).sort(([a], [b]) =>
+										a < b ? -1 : a > b ? 1 : 0,
+									),
+								)
+							: value,
+					),
+				)
+				.digest("hex");
+			const existingOperation = async () => {
+				const description = await client.workflow
+					.getHandle(workflowId)
+					.describe();
+				if (description.memo?.backlogInputFingerprint !== fingerprint) {
+					throw new ORPCError("CONFLICT", {
+						message:
+							"This analysis operation key was already used with different inputs.",
+					});
+				}
+				return {
+					workflowId,
+					runId: description.runId,
+					message: "Backlog analysis already started",
+				};
+			};
+			if (input.operationKey) {
+				try {
+					return await existingOperation();
+				} catch (error) {
+					if (
+						!(error instanceof Error) ||
+						error.name !== "WorkflowNotFoundError"
+					) {
+						throw error;
+					}
+				}
+			}
+			let handle: Awaited<ReturnType<typeof client.workflow.start>>;
+			try {
+				handle = await client.workflow.start(
+					"backlogContextAnalysisWorkflow",
+					withCorrelationMemo({
+						taskQueue: "ai-chat",
+						workflowId,
+						args: [workflowInput],
+						...(input.operationKey
+							? {
+									workflowIdReusePolicy:
+										"REJECT_DUPLICATE" as const,
+									memo: {
+										backlogInputFingerprint: fingerprint,
+									},
+								}
+							: {}),
+					}),
+				);
+			} catch (error) {
+				// A racing delivery or an ambiguous transport failure can follow a
+				// successful start. Reconcile the same id rather than minting a replacement.
+				if (input.operationKey) {
+					try {
+						return await existingOperation();
+					} catch (lookupError) {
+						if (lookupError instanceof ORPCError) {
+							throw lookupError;
+						}
+					}
+				}
+				throw error;
+			}
 
 			return {
 				workflowId: handle.workflowId,
@@ -145,6 +216,9 @@ export const startAnalysisProcedure = tenantProtectedProcedure
 				message: "Backlog analysis started",
 			};
 		} catch (error) {
+			if (error instanceof ORPCError) {
+				throw error;
+			}
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					error instanceof Error

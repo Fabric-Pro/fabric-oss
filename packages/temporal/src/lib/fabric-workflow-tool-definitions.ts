@@ -95,6 +95,35 @@ const IDEMPOTENT_WRITE = {
 
 export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 	{
+		name: "fabric_bind_workspace_workflow",
+		description:
+			"Bind a published workflow or revoke its binding to an owned Workspace in the same project. Pass current timestamps.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				frameId: { type: "string", minLength: 1, maxLength: 128 },
+				workflowId: { type: "string", minLength: 1, maxLength: 128 },
+				action: { type: "string", enum: ["bind", "unbind"] },
+				expectedFrameUpdatedAt: { type: "string", format: "date-time" },
+				expectedWorkflowUpdatedAt: {
+					type: "string",
+					format: "date-time",
+				},
+			},
+			required: [
+				"frameId",
+				"workflowId",
+				"action",
+				"expectedFrameUpdatedAt",
+				"expectedWorkflowUpdatedAt",
+			],
+		},
+		annotations: WRITE,
+		scope: "workflows:write",
+		confirm: "always",
+	},
+	{
 		name: "fabric_list_workflows",
 		description: "Lists your workflows.",
 		inputSchema: {

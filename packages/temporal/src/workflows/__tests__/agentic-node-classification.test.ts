@@ -30,6 +30,12 @@ import {
 } from "../lib/workflow-builder-nodes";
 
 describe("agentic node classification", () => {
+	it("keeps Workspace data writes internal while disabling retries", () => {
+		expect(isNonRetryableNodeType("workspace-data-write")).toBe(true);
+		expect(isNonRetryableNodeType("workspace-data-read")).toBe(false);
+		expect(isExternalWriteNodeType("workspace-data-write")).toBe(false);
+	});
+
 	it("registers executors for agent tasks, story review and publishing", () => {
 		expect(AGENT_TASK_NODE_TYPE in stepRegistry).toBe(true);
 		expect(PUBLISH_FRAME_NODE_TYPE in stepRegistry).toBe(true);

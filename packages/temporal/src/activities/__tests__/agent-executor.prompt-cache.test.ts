@@ -14,6 +14,9 @@ const mocks = vi.hoisted(() => ({
 	streamText: vi.fn(),
 	getAiModelWithSelection: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
+	analysis: vi.fn(),
+	image: vi.fn(),
+	speech: vi.fn(),
 }));
 
 vi.mock("@repo/ai", async (original) => ({
@@ -38,6 +41,17 @@ vi.mock("../orchestrator/utils/model-selector", () => ({
 	getAiModel: vi.fn(),
 	getAiModelWithSelection: (...a: unknown[]) =>
 		mocks.getAiModelWithSelection(...a),
+}));
+vi.mock("../lib/get-search-provider", () => ({
+	resolveSearchProviderForTenant: async () => null,
+}));
+vi.mock("../fabric-ai", () => ({
+	searchAndAnalyzeActivity: mocks.analysis,
+	scrapeAndAnalyzeActivity: mocks.analysis,
+}));
+vi.mock("../image-generation", () => ({ generateImageActivity: mocks.image }));
+vi.mock("../../lib/text-to-speech", () => ({
+	synthesizeToolSpeech: mocks.speech,
 }));
 
 import {
@@ -116,6 +130,91 @@ async function capture(
 }
 
 const withTools = { builtInToolNames: ["create-story"] };
+
+describe("executeAgentTurn nested tool attribution", () => {
+	beforeEach(() => {
+		mocks.streamText.mockReset().mockImplementation(() => {
+			throw STOP;
+		});
+		mocks.analysis
+			.mockReset()
+			.mockResolvedValue({ success: true, analysis: "Summary" });
+		mocks.image
+			.mockReset()
+			.mockResolvedValue({ success: false, error: "fixture" });
+		mocks.speech
+			.mockReset()
+			.mockResolvedValue({ ok: false, error: "fixture" });
+	});
+
+	it.each([
+		{
+			key: "create-images",
+			name: "fabric_generate_image",
+			mock: mocks.image,
+			nested: true,
+		},
+		{
+			key: "speech-generator",
+			name: "fabric_text_to_speech",
+			mock: mocks.speech,
+			nested: true,
+		},
+		{
+			key: "web-search",
+			name: "fabric_search_and_analyze",
+			mock: mocks.analysis,
+			nested: false,
+		},
+		{
+			key: "web-search",
+			name: "fabric_scrape_and_analyze",
+			mock: mocks.analysis,
+			nested: false,
+		},
+	])(
+		"attributes overridden $name to its actual parent run",
+		async ({ key, name, mock, nested }) => {
+			const call = await capture(
+				runners.executeAgentTurn,
+				"OPENAI",
+				"example-model",
+				{
+					builtInToolNames: [key],
+					frameId: "frame-example",
+					workflowExecutionId: "execution-example",
+				},
+			);
+			if (!call.tools || typeof call.tools !== "object") {
+				throw new Error("Expected captured tools");
+			}
+			const selected = Object.getOwnPropertyDescriptor(
+				call.tools,
+				name,
+			)?.value;
+			if (!selected || typeof selected.execute !== "function") {
+				throw new Error(`Missing tool executor: ${name}`);
+			}
+			await selected.execute(
+				{
+					prompt: "boat",
+					text: "speech",
+					query: "summary",
+					url: "https://example.com",
+					usageOrigin: { frameId: "spoofed" },
+				},
+				{ toolCallId: "call", messages: [], context: undefined },
+			);
+			expect(mock).toHaveBeenCalledOnce();
+			const request = mock.mock.calls[0][0];
+			expect(nested ? request.usageOrigin : request).toMatchObject({
+				projectId: "project",
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+			});
+		},
+	);
+});
 
 describe.each(Object.entries(runners))("%s prompt cache", (_name, run) => {
 	beforeEach(() => {

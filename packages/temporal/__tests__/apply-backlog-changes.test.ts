@@ -1247,3 +1247,111 @@ describe("applyBacklogChanges failure messages", () => {
 			);
 	});
 });
+
+describe("configuration refusal during apply", () => {
+	it("stops later creates, reports them, and resumes on a later run", async () => {
+		const changes = ["First", "Second", "Third"].map((title) =>
+			makeBugChange({ title: { to: title } }),
+		);
+		const input = {
+			projectId: "project-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			approvedChanges: changes,
+			existingBacklog: EMPTY_BACKLOG,
+		};
+		mocks.createStoryFromProposal.mockRejectedValueOnce(
+			Object.assign(new Error("raw auth detail"), {
+				name: "ChatGptPlanAuthError",
+			}),
+		);
+		const first = await applyBacklogChanges(input);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+		expect(first.appliedCount).toBe(0);
+		expect(first.errors).toHaveLength(3);
+		expect(
+			first.errors.every((entry) => entry.error.includes("Reconnect it")),
+		).toBe(true);
+		mocks.createStoryFromProposal.mockClear();
+		const retry = await applyBacklogChanges(input);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(3);
+		expect(retry.errors).toEqual([]);
+		expect(retry.appliedCount).toBe(3);
+	});
+});
+
+it("continues ordinary updates after a create refusal", async () => {
+	const id = "11111111-1111-4111-8111-111111111111";
+	mocks.createStoryFromProposal.mockRejectedValueOnce(
+		Object.assign(new Error("auth detail"), {
+			name: "ChatGptPlanAuthError",
+		}),
+	);
+	const result = await applyBacklogChanges({
+		projectId: "project-1",
+		userId: "user-1",
+		organizationId: "org-1",
+		approvedChanges: [
+			makeBugChange(),
+			makeBugChange({ title: { to: "Another create" } }),
+			makeBugChange({
+				action: "update",
+				existingId: id,
+				existingIdentifier: "F-200",
+				title: { to: "Updated existing bug" },
+			}),
+		],
+		existingBacklog: {
+			stories: [
+				{
+					id,
+					identifier: "F-200",
+					title: "Existing bug",
+					description: "Original",
+					externalId: null,
+				},
+			],
+		},
+	});
+	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+	expect(mocks.updateStory).toHaveBeenCalledOnce();
+	expect(result.updatedItems).toHaveLength(1);
+	expect(result.errors).toHaveLength(2);
+});
+
+it("deduplicates a later create after a configuration refusal", async () => {
+	const refused = makeBugChange({ title: { to: "New bug" } });
+	const duplicate = makeBugChange({ title: { to: "Existing bug" } });
+	mocks.createStoryFromProposal.mockRejectedValueOnce(
+		Object.assign(new Error("raw auth detail"), {
+			name: "ChatGptPlanAuthError",
+		}),
+	);
+	const result = await applyBacklogChanges({
+		projectId: "project-1",
+		userId: "user-1",
+		organizationId: "org-1",
+		approvedChanges: [refused, duplicate],
+		existingBacklog: {
+			stories: [
+				{
+					id: "existing-story",
+					identifier: "F-100",
+					title: "Existing bug",
+					description: "Original",
+					externalId: null,
+				},
+			],
+		},
+	});
+	expect(result.skippedDuplicates).toEqual([
+		expect.objectContaining({
+			changeIndex: 1,
+			existingId: "existing-story",
+		}),
+	]);
+	expect(result.errors).toEqual([
+		expect.objectContaining({ change: refused }),
+	]);
+	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+});

@@ -48,6 +48,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ---- A fake server: one document with a version counter. A save carrying a
 // stale `expectedVersion` is refused with the oRPC CONFLICT code, as
 // `updateDocumentProcedure` does.
+const meetingNotesFetch = vi.fn();
+let mockChatMessages: unknown[] = [];
 const server = { content: "", version: 7 };
 // The document's status, kept beside `server` so the assertions that compare
 // `server` as a whole still read as "content and version, nothing else".
@@ -165,7 +167,10 @@ function makeOrpcProxy(): any {
 				}
 				return build([...path, prop]);
 			},
-			apply() {
+			apply(_target, _this, args) {
+				if (path.join(".") === "projects.documents.fetchMeetingNotes") {
+					return meetingNotesFetch(...args);
+				}
 				return build(path);
 			},
 		};
@@ -253,7 +258,10 @@ vi.mock("@copilotkit/react-core", () => ({
 		actionConfigs.set(config.name, config);
 	},
 	useCopilotChat: () => ({ isLoading: mockIsLoading, visibleMessages: [] }),
-	useCopilotChatInternal: () => ({ messages: [], setMessages: vi.fn() }),
+	useCopilotChatInternal: () => ({
+		messages: mockChatMessages,
+		setMessages: vi.fn(),
+	}),
 	useCopilotReadable: vi.fn(),
 	useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
 }));
@@ -316,7 +324,20 @@ vi.mock("@saas/projects/components/copilot/CopilotPersistenceHook", () => ({
 	CopilotPersistenceHook: () => null,
 }));
 vi.mock("@saas/projects/components/stories/MeetingSelector", () => ({
-	MeetingSelector: () => null,
+	MeetingSelector: ({
+		onConfirm,
+	}: {
+		onConfirm: (meetings: { joinUrl: string }[]) => void;
+	}) => (
+		<button
+			type="button"
+			onClick={() =>
+				onConfirm([{ joinUrl: "https://example.com/meeting" }])
+			}
+		>
+			Confirm meeting notes
+		</button>
+	),
 }));
 vi.mock("@saas/prompts/components/PromptSelector", () => ({
 	PromptSelector: () => null,
@@ -583,6 +604,12 @@ function saveButton() {
 describe("DocumentEditor — the assistant accept's version guard (KTD17)", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockChatMessages = [];
+		meetingNotesFetch.mockResolvedValue({
+			notes: [
+				{ subject: "Example meeting", content: "Example transcript" },
+			],
+		});
 		capturedUpdateMutationConfig = undefined;
 		saveCalls.length = 0;
 		actionConfigs.clear();
@@ -613,6 +640,58 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		vi.unstubAllEnvs();
 		collab.provider.awareness = null;
 	});
+
+	it.each([
+		[
+			{ type: "text", text: "Use these meeting notes" },
+			{
+				type: "image_url",
+				image_url: { url: "data:image/png;base64,example" },
+			},
+		],
+		[
+			{
+				type: "image_url",
+				image_url: { url: "data:image/png;base64,example" },
+			},
+		],
+	])(
+		"meeting notes wiring admits content parts %j and caches one fetch",
+		async (...parts) => {
+			mockChatMessages = [
+				{ role: "user", id: "example-meeting-request", content: parts },
+			];
+			await mount(SLOT_FREE);
+			const respond = vi.fn();
+			render(
+				actionConfigs.get("select_meetings")?.renderAndWaitForResponse({
+					args: {},
+					respond,
+					status: "executing",
+				}),
+			);
+			fireEvent.click(
+				await screen.findByRole("button", {
+					name: "Confirm meeting notes",
+				}),
+			);
+			await waitFor(() =>
+				expect(respond).toHaveBeenCalledWith(
+					expect.stringContaining("Example transcript"),
+				),
+			);
+			expect(meetingNotesFetch).toHaveBeenCalledTimes(1);
+			const cached = await actionConfigs
+				.get("fetchMeetingNotes")
+				?.handler({
+					selectedMeetings: [
+						{ joinUrl: "https://example.com/meeting" },
+					],
+				});
+			expect(cached).toContain("Example transcript");
+			expect(meetingNotesFetch).toHaveBeenCalledTimes(1);
+		},
+	);
 
 	it("a slotted accept sends expectedVersion equal to the version its slots came from", async () => {
 		const { rerender } = await mount(STORED);
@@ -769,9 +848,9 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 				/^Your accepted changes were not saved: the document changed in the meantime\./,
 			),
 		);
-		expect(toast.error).not.toHaveBeenCalledWith(
-			expect.stringMatching(/^Failed to save document/),
-		);
+		// Not the generic refusal either (translations echo their keys).
+		expect(toast.error).not.toHaveBeenCalledWith("failed");
+		expect(toast.error).not.toHaveBeenCalledWith("changedMeanwhile");
 		expect(toast.success).not.toHaveBeenCalled();
 
 		// The proposal, slot included, is still there to copy or reapply.

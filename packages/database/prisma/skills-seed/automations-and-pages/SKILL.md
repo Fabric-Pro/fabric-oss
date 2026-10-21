@@ -3,7 +3,7 @@ name: Automations & pages
 description: Set up something that runs on a schedule (a weekly report, a daily digest) as a scheduled workflow, change, pause or debug one, and build interactive pages (project artifacts and workspaces) that read live Fabric data. Use when the user asks for a recurring job, a status page, a dashboard or a page with buttons, or asks why one did not run.
 category: automation
 tags: [automation, workflows, schedule, pages, frames, workspace]
-version: 8
+version: 14
 ---
 
 # Automations & pages
@@ -64,6 +64,80 @@ Call `fabric_list_workflow_runs`, read the newest failed run's `error`, and expl
 - Say plainly when something could not be set up, and never claim a run happened that you have not seen.
 
 ## Pages: artifacts and workspaces
+
+### Write server-side transformation code
+
+Use a `script-transform` workflow node when the user needs custom calculations, comparison rules or JSON formatting. Write the code yourself through `fabric_create_workflow` or `fabric_update_workflow` with explicit `nodes` and `edges`:
+
+```json
+{
+  "id": "transform",
+  "type": "script-transform",
+  "position": { "x": 400, "y": 100 },
+  "data": {
+    "label": "Summarize values",
+    "config": {
+      "language": "javascript",
+      "timeout": 5000,
+      "code": "const rows = inputs['$source'].items; return { total: rows.length, active: rows.filter(row => row.active).length };"
+    }
+  }
+}
+```
+
+The code is an async function body receiving `(inputs, execution)`. Its `inputs` object contains previous node outputs under their labels and `$nodeId` keys. Return a JSON value; later nodes read `{{Summarize values.result}}`. Pass data as inputs rather than interpolating it into source. JavaScript and TypeScript are supported; TypeScript is compiled by Fabric's server before isolation.
+
+For workflow scripts, `execution` contains the owned execution row's `executionId`, `workflowId`, `version` and `triggerType` (`MANUAL`, `WEBHOOK`, `SCHEDULE` or `EVENT`). Use `execution.triggerType === "SCHEDULE"` when only a genuine scheduled run should advance a daily comparison baseline; manual analysis can still update a separate analysis cache. Never infer the trigger from `inputs.source` or an editable configuration value. This metadata grants no permissions and cannot be set through script configuration or the public sandbox API. Public sandbox calls have no execution metadata.
+
+To pass fewer inputs, set `inputKeys` to a nonempty array of unique top-level input names, for example `["$source", "$previous"]`. The code then reads exactly those names; aliases are not renamed. The Workspace editor accepts the same array as JSON text. Leave it blank or omit it to pass all inputs. Missing keys fail the step. The 64 KiB input limit applies after selection, so duplicate label and `$nodeId` aliases need not consume the budget twice.
+
+Scripts run without network access, credentials, installed packages or persistent storage. Fetch data through separate configured MCP/connection steps, use AI steps for inference, and publish results through `publish-frame`. Source is limited to 32 KiB, input and output JSON to 64 KiB each, and captured logs to 16 KiB. The loader enforces a one-second CPU budget; `timeout` is a 1–10 second response deadline. A deployment without the script runtime refuses the run explicitly.
+
+Show the draft, save it after approval, then publish the complete graph before running it. A script run uses its immutable published version; unsaved graph changes must be published first. Bind that version with `fabric_bind_workspace_workflow` before giving a Workspace `fabric_page_get_workflow`, `fabric_page_run_workflow` and `fabric_page_list_workflow_runs` controls. After editing and republishing, rebind with current Workspace and workflow timestamps. This approval does not grant scripts direct access to Fabric tools or storage.
+
+Any change to a bound workflow, even one not yet published, revokes the Workspace's grant: scheduled and page runs of the old version are refused until you publish and rebind. Publish and rebind in the same turn as the edit.
+
+In the page, a Run button first calls `fabric_page_get_workflow` and passes its `frameUpdatedAt` and `workflowUpdatedAt` to `fabric_page_run_workflow` as `expectedFrameUpdatedAt` and `expectedWorkflowUpdatedAt`, with a fresh `idempotencyKey`. A call without them is refused. Show the refusal's `error` text in the page instead of returning silently.
+
+### Start an authored graph with its trigger and project
+
+An authored graph starts with one `trigger` node. For a schedule, use exactly these field names. A schedule trigger without `scheduleCron` (for example one using `cron` or `timezone`) is listed in the draft's `problems` and cannot be published, because it would never fire:
+
+```json
+{
+  "id": "trigger",
+  "type": "trigger",
+  "position": { "x": 0, "y": 0 },
+  "data": {
+    "label": "Schedule",
+    "config": { "triggerType": "schedule", "scheduleCron": "0 9 * * *", "scheduleTimezone": "Europe/Berlin" }
+  }
+}
+```
+
+For a workflow that only runs on demand, use `"triggerType": "manual"` with no cron. Pass `projectId` to `fabric_create_workflow` when the graph uses Workspace data or native reads. `fabric_update_workflow` cannot move a graph workflow into a project later, so a workflow created without one has to be created again. Only use node types this skill names or that `fabric_get_workflow` shows on an existing workflow; an unknown type fails the run.
+
+### Read native project data in an authored graph
+
+Use `native-platform-read` for a deterministic call to a registered Fabric reader. This step does not run an agent or use a broad gateway grant. Its literal `toolName` is one of `fabric_get_project_pm_connection`, `fabric_list_project_pm_members`, `fabric_list_project_pm_work_item_types`, `fabric_get_project_work_item_counts`, `fabric_list_project_pm_assigned_items` or `fabric_get_project_pm_item_snapshots`. Discover each tool's exact schema before composing arguments. These are the existing managed readers; their current implementation supports ADO, and adding another provider still requires a registered reader.
+
+Configure `arguments` as JSON text, for example `"{}"`, or a complete object reference such as `"{{Prepare arguments.result}}"`. Omit `projectId`; the server injects the workflow's project and refuses conflicting IDs, authority fields, malformed JSON and unresolved references. Do not interpolate data into script source or supply credentials. Native reads run as the workflow owner using that owner's current project access and connection. Publish the complete graph before executing it.
+
+The step returns raw tool JSON under `result`, including connection `status`, `complete`, cursor, unread IDs and `resultTruncated` where the reader supplies them. A successfully delivered partial result is still incomplete data. Preserve these indicators and branch away from analysis or baseline writes until the capture is complete. Outputs are bounded to 128 KiB; snapshot overflow omits whole items with explicit unread/truncation signals. Use small batches and select Script Transform `inputKeys` to stay within its separate 64 KiB input limit. These readers return own comments, not parent/child traversal.
+
+Compose native reads, authored `script-transform` comparison rules, `condition`, selected AI steps and Workspace data writes or publishing. The script owns selection, baseline and reuse logic; changing those rules or the UI does not require a Fabric deployment.
+
+### Compose persistent state and unchanged reuse
+
+Write the application's comparison and reuse rules yourself. Use the generic `workspace-data-read` and `workspace-data-write` graph nodes to keep JSON between executions in the Workspace's existing page data store. These are graph steps; scripts themselves remain stateless.
+
+Both nodes require `frameId`, `collection`, `key` and `scope`. Keep the Workspace frame ID, collection and scope literal. A key may reference data, for example `{{Selection.key}}`, so different selections have separate baselines. `scope: "shared"` uses the page's shared records; `scope: "mine"` uses the workflow owner's private records, which can differ from the page viewer's private records. Reserved collections beginning with `$` cannot be written. Existing page limits apply: 16 KiB per value, 2,000 records and 5 MiB per page.
+
+Read before comparing: the read step returns `value`, `found` and `version`; an absent record has version `0`. The write step returns only its new `version`. Feed the saved value and fresh connection data to your `script-transform`. Return an explicit comparison result, branch with a `condition` node, and connect AI only to the changed branch. The unchanged branch reuses the saved analysis. Persist the new baseline and analysis only after the changed branch succeeds. A forced analysis is another explicit input to the authored comparison rule. Keep script inputs bounded: the workflow exposes previous outputs under both their labels and `$nodeId` aliases, and both copies count toward the script's 64 KiB input limit alongside other inputs.
+
+The write node requires `value` as JSON text and `expectedVersion` as a number or data reference, such as `{{Read baseline.version}}`. Prefer a complete object or array reference for `value`, such as `{{Prepare baseline.result}}`; the template helper serializes nested JSON, including quoted strings. For a scalar string, have the script return JSON text with `JSON.stringify` and reference that text. Malformed JSON and unresolved references fail the step; do not put unescaped string references inside JSON string literals. No data is substituted into script source. Version `0` creates only an absent record, and a conflicting version refuses the write. There is no delete step.
+
+The workflow and Workspace must belong to the same owner and organization and share a non-null project. Publish the complete graph, then bind its exact version with current workflow and Workspace timestamps. Each data step rechecks the current permissions and server-owned binding. HTML, graph inputs and saved records cannot grant access. Revocation or a workflow edit requires authorization again. Writes do not retry automatically: a lost response leaves the result unknown, so read the current record before reconciling; never report that write as successful from the attempted call alone.
 
 A page is a frame: one self-contained HTML document with its CSS and JavaScript inline. Create one with `fabric_create_frame`, change it with `fabric_update_frame` (every change is a new version the user can go back to), find one with `fabric_list_frames` and `fabric_get_frame`.
 

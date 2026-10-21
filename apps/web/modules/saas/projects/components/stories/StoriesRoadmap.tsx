@@ -127,6 +127,7 @@ import {
 } from "../../hooks/useRoadmapView";
 import { uploadStoryAttachment } from "../../lib/attachment-upload-utils";
 import { shouldAutoOpenBacklogChat } from "../../lib/backlog-chat-intake";
+import { getCreateStoryErrorMessage } from "../../lib/create-story-error-message";
 import { uploadStoryImage } from "../../lib/image-upload-utils";
 import {
 	applyRoadmapFilters,
@@ -4570,8 +4571,10 @@ function CreateStoryDialog({
 			resetFormState();
 			setDuplicateResult(null);
 			duplicateCheckPrefetch.reset();
-		} catch {
-			toast.error(tCreate("titleGenerationFailed"), { id: toastId });
+		} catch (error) {
+			toast.error(getCreateStoryErrorMessage(error, tCreate), {
+				id: toastId,
+			});
 		} finally {
 			setIsOrchestrating(false);
 		}

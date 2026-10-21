@@ -22,6 +22,7 @@
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
 import {
+	type AIOperationContext,
 	AIProviderNotConfiguredError,
 	type AiFeatureKey,
 	AUDIO_PROVIDER_REQUIRED,
@@ -81,7 +82,11 @@ export const ALLOWED_AUDIO_EXTENSIONS = [
 ] as const;
 
 /** User context for API key resolution */
-export interface UserContext {
+export interface UserContext
+	extends Pick<
+		AIOperationContext,
+		"projectId" | "frameId" | "workflowExecutionId"
+	> {
 	userId: string;
 	organizationId?: string;
 	/**
@@ -209,6 +214,13 @@ function logTranscriptionUsage(
 		logAiUsageAsync({
 			userId: userContext?.userId,
 			organizationId: userContext?.organizationId,
+			...(userContext?.projectId
+				? { projectId: userContext.projectId }
+				: {}),
+			...(userContext?.frameId ? { frameId: userContext.frameId } : {}),
+			...(userContext?.workflowExecutionId
+				? { workflowExecutionId: userContext.workflowExecutionId }
+				: {}),
 			...(userContext?.conversationId
 				? { conversationId: userContext.conversationId }
 				: {}),

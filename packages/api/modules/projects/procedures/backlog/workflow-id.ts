@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Temporal workflow ids for the backlog analysis and backlog apply-changes
  * families, and the guards that keep progress reads bound to the authorized
@@ -15,9 +17,13 @@ const BACKLOG_ANALYSIS_WORKFLOW_PREFIX = "backlog-analysis-";
 
 export function backlogAnalysisWorkflowId(
 	projectId: string,
-	now: number = Date.now(),
+	operation: number | string = Date.now(),
 ): string {
-	return `${BACKLOG_ANALYSIS_WORKFLOW_PREFIX}${projectId}-${now}`;
+	const suffix =
+		typeof operation === "number"
+			? String(operation)
+			: `op-${createHash("sha256").update(operation).digest("hex")}`;
+	return `${BACKLOG_ANALYSIS_WORKFLOW_PREFIX}${projectId}-${suffix}`;
 }
 
 /**
@@ -33,11 +39,11 @@ export function isBacklogAnalysisWorkflowIdFor(
 		return false;
 	}
 	const remainder = workflowId.slice(BACKLOG_ANALYSIS_WORKFLOW_PREFIX.length);
-	// `<this project id>-<timestamp>`, timestamp numeric. The separator keeps
+	// Accept legacy numeric timestamps and hashed operation keys. The separator keeps
 	// a longer project id from matching a shorter prefix.
 	return (
 		remainder.startsWith(`${projectId}-`) &&
-		/^\d+$/.test(remainder.slice(projectId.length + 1))
+		/^(?:\d+|op-[a-f0-9]{64})$/.test(remainder.slice(projectId.length + 1))
 	);
 }
 
@@ -46,21 +52,22 @@ const BACKLOG_APPLY_WORKFLOW_PREFIXES = [
 	// matching order decides which remainder gets compared.
 	"backlog-apply-retry-all-", // -<projectId>-<proposalRowId>-<timestamp>
 	"backlog-apply-retry-", // -<projectId>-<timestamp>
-	"backlog-apply-", // -<projectId>-<timestamp>
+	"backlog-apply-", // -<projectId>-<timestamp|op-hash>
 ] as const;
 
 /** The Temporal workflow id for one backlog apply-changes run. */
 export function backlogApplyWorkflowId(
 	projectId: string,
-	now: number = Date.now(),
+	operation: number | string = Date.now(),
 ): string {
-	return `backlog-apply-${projectId}-${now}`;
+	return `backlog-apply-${projectId}-${operation}`;
 }
 
 /**
  * True only when `workflowId` is one of the apply family's three id shapes
  * AND names this project. Same rule as the analysis guard: the project segment
- * directly follows the family prefix, everything after it is safe charset.
+ * directly follows the family prefix. Plain applies require a timestamp or
+ * hashed operation suffix; retry suffixes retain their existing safe charset.
  */
 export function isBacklogApplyWorkflowIdFor(
 	workflowId: string,
@@ -71,9 +78,12 @@ export function isBacklogApplyWorkflowIdFor(
 			continue;
 		}
 		const remainder = workflowId.slice(prefix.length);
+		const suffix = remainder.slice(projectId.length + 1);
 		return (
 			remainder.startsWith(`${projectId}-`) &&
-			/^[A-Za-z0-9-]+$/.test(remainder.slice(projectId.length + 1))
+			(prefix === "backlog-apply-"
+				? /^(?:\d+|op-[a-f0-9]{64})$/.test(suffix)
+				: /^[A-Za-z0-9-]+$/.test(suffix))
 		);
 	}
 	return false;

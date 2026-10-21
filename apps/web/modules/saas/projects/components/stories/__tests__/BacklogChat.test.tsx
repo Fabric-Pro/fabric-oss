@@ -1,1078 +1,1453 @@
-/**
- * BacklogChat — handover from the in-chat apply flow to the
- * failed-proposals count + Review proposals inbox.
- *
- * Sub-task 6.5 of the sync-failure-retry spec asserts that after a
- * polled apply progress reaches a terminal state, the BacklogChat
- * component invalidates the dedicated failed-count React Query so any
- * count consumer refetches without a page reload.
- *
- * BacklogChat is wired through CopilotKit and would normally need a
- * full Copilot harness to render. We mock `useCopilotAction` to capture
- * the registered actions, then invoke the `review_backlog_changes`
- * action's render handler — which exposes the `onApprove` callback we
- * want to exercise — directly. The callback drives the underlying
- * `applyChanges` + `applyProgress` polling against fake responses and
- * we then assert the invalidation key + that no failure toast was
- * rendered (CLAUDE.md "When Tests Fail" — the disappearing toast was
- * removed as part of this spec).
- */
-
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const chatMessages = vi.hoisted(() => ({ current: [] as unknown[] }));
-const useCoAgentMock = vi.fn(() => ({ state: {}, setState: vi.fn() }));
-const useCopilotActionMock = vi.fn();
-
-// Hoisted before imports — vitest evaluates `vi.mock` factories above the
-// rest of the file. The mock factories cannot capture closure refs to
-// outer variables that aren't hoisted, so the spy refs are declared
-// above.
+const h = vi.hoisted(() => ({
+	messages: [] as unknown[],
+	actions: new Map<string, any>(),
+	setState: vi.fn(),
+	start: vi.fn(),
+	poll: vi.fn(),
+	apply: vi.fn(),
+	applyPoll: vi.fn(),
+	conversation: vi.fn(),
+	model: vi.fn(),
+	bind: vi.fn(),
+	proposal: null as any,
+	selector: null as any,
+	sources: null as any,
+}));
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: (args: unknown) => useCoAgentMock(args),
-	useCopilotAction: (args: unknown) => useCopilotActionMock(args),
-	// BacklogChat reads the live chat (CopilotKit 1.52's supported hook) to
-	// snapshot the conversation into the read-only Session history.
-	useCopilotChatInternal: () => ({ messages: chatMessages.current }),
+	useCoAgent: () => ({ state: {}, setState: h.setState }),
+	useCopilotAction: (action: any) => {
+		h.actions.set(action.name, action);
+	},
+	useCopilotChatInternal: () => ({ messages: h.messages }),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
-	CopilotSidebar: ({ children }: { children?: React.ReactNode }) => (
-		<div data-testid="copilot-sidebar">{children}</div>
+	CopilotSidebar: ({ children }: { children?: ReactNode }) => (
+		<div>{children}</div>
 	),
 }));
 vi.mock("@copilotkit/react-ui/styles.css", () => ({}));
-
 vi.mock("@saas/shared/components/copilot/CopilotAssistantMessage", () => ({
 	CopilotAssistantMessageForBacklogUpdater: () => null,
 }));
-
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
-	useOrganizationContext: () => ({ organizationId: null }),
+	useOrganizationContext: () => ({ organizationId: "example-org" }),
 }));
-
-const applyChangesFn = vi.fn();
-const applyProgressFn = vi.fn();
-const startAnalysisFn = vi.fn();
-const analysisProgressFn = vi.fn();
-const createConversationFn = vi.fn();
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
 			backlog: {
-				applyChanges: (...args: unknown[]) => applyChangesFn(...args),
-				applyProgress: (...args: unknown[]) => applyProgressFn(...args),
-				startAnalysis: (...args: unknown[]) => startAnalysisFn(...args),
-				analysisProgress: (...args: unknown[]) =>
-					analysisProgressFn(...args),
+				startAnalysis: (...args: unknown[]) => h.start(...args),
+				analysisProgress: (...args: unknown[]) => h.poll(...args),
+				applyChanges: (...args: unknown[]) => h.apply(...args),
+				applyProgress: (...args: unknown[]) => h.applyPoll(...args),
 			},
 		},
-		agents: {
-			conversations: {
-				create: (...args: unknown[]) => createConversationFn(...args),
+		agents: { conversations: { create: () => h.conversation() } },
+	},
+}));
+vi.mock("../../../../../shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		projects: {
+			backlog: {
+				listMeetings: {
+					queryOptions: () => ({
+						queryKey: ["example-meetings"],
+						queryFn: async () => [],
+					}),
+				},
 			},
 		},
-		mcp: { configs: { list: vi.fn() } },
 	},
 }));
-
-vi.mock("../BacklogChangeProposal", () => ({
-	BacklogChangeProposal: ({
-		onApprove,
-		decisionConflicts,
-		decisionPrecheckPending,
-	}: {
-		onApprove: (...args: unknown[]) => unknown;
-		decisionConflicts?: unknown;
-		decisionPrecheckPending?: boolean;
-	}) => {
-		// Expose the onApprove callback + the decisionConflicts / pending props
-		// on test-only handles so the outer test can trigger the apply flow and
-		// assert what the review card received without staging a full review UI.
-		const handle = globalThis as unknown as {
-			__backlogProposalOnApprove?: (...args: unknown[]) => unknown;
-			__backlogProposalDecisionConflicts?: unknown;
-			__backlogProposalDecisionPrecheckPending?: boolean;
-		};
-		handle.__backlogProposalOnApprove = onApprove;
-		handle.__backlogProposalDecisionConflicts = decisionConflicts;
-		handle.__backlogProposalDecisionPrecheckPending =
-			decisionPrecheckPending;
-		return <div data-testid="backlog-change-proposal" />;
-	},
-}));
-
 vi.mock("../ReviewSourcesSelector", () => ({
-	ReviewSourcesSelector: () => null,
+	ReviewSourcesSelector: (props: any) => {
+		h.selector = props;
+		return (
+			<div data-testid="selector">
+				<button
+					type="button"
+					onClick={() => props.onConfirm(h.sources)}
+				>
+					Confirm sources
+				</button>
+				<button type="button" onClick={props.onCancel}>
+					Skip Teams
+				</button>
+			</div>
+		);
+	},
 }));
+vi.mock("../BacklogChangeProposal", () => ({
+	BacklogChangeProposal: (props: any) => {
+		h.proposal = props;
+		return (
+			<div data-testid="review">
+				<p>{props.summary}</p>
+				<button type="button" onClick={props.onReject}>
+					Reject
+				</button>
+			</div>
+		);
+	},
+}));
+vi.mock(
+	"../../../../../../../../agents/langchain/backlog-updater/utils",
+	async (importOriginal) => ({
+		...(await importOriginal<Record<string, unknown>>()),
+		getAgentModelAsync: async () => ({
+			invoke: h.model,
+			bindTools: h.bind.mockImplementation(() => ({ invoke: h.model })),
+		}),
+	}),
+);
 
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { chatNode } from "../../../../../../../../agents/langchain/backlog-updater/nodes/chat-node";
+import { normalizeMessages } from "../../../../../../../../agents/langchain/backlog-updater/normalize-messages";
 import { BacklogChat } from "../BacklogChat";
+import { BacklogFlowCard } from "../BacklogFlowCard";
+import {
+	BacklogFlowController,
+	REVIEW_UNAVAILABLE_RESULT,
+} from "../backlog-flow-controller";
 
-function renderBacklogChat(hasSlackIntegration = false) {
+const sources = {
+	selectedMeetings: [{ joinUrl: "https://example.com/meeting" }],
+	selectedChannels: [{ projectContextId: "example-channel" }],
+	daysBack: 14,
+};
+const proposal = {
+	summary: "Example proposal",
+	contextSummary: "Context",
+	changes: [
+		{ type: "feature", action: "create", title: { to: "Example feature" } },
+	],
+	decisionConflicts: {
+		status: "ok",
+		findings: [],
+		checkedAt: "2026-10-20T00:00:00Z",
+	},
+};
+function mountChat(
+	options: {
+		teams?: boolean;
+		notion?: boolean;
+		slack?: boolean;
+		hasPMTool?: boolean;
+		pmConfig?: { mcpConfigId: string; containerId: string };
+		onChangesApplied?: () => void;
+	} = {},
+) {
 	const client = new QueryClient({
-		defaultOptions: {
-			queries: { retry: false },
-			mutations: { retry: false },
-		},
+		defaultOptions: { queries: { retry: false } },
 	});
-	// The real provider, over the mocked `useCopilotChatInternal` above —
-	// `BacklogChatPanel` mounts it in production, and `BacklogChat` reads the
-	// live messages through it.
-	const chatTree = () => (
+	const tree = () => (
 		<QueryClientProvider client={client}>
 			<CopilotChatSessionProvider>
 				<BacklogChat
-					projectId="project_1"
-					projectName="Test Project"
-					hasTeamsIntegration={false}
-					hasSlackIntegration={hasSlackIntegration}
-					hasNotionIntegration={false}
-					hasPMTool={false}
-					backlogSummary="0 features"
-					onClose={vi.fn()}
-					onChangesApplied={vi.fn()}
+					projectId="example-project"
+					projectName="Example"
+					hasTeamsIntegration={options.teams ?? true}
+					hasSlackIntegration={options.slack ?? false}
+					hasNotionIntegration={options.notion ?? false}
+					hasPMTool={options.hasPMTool ?? false}
+					pmConfig={options.pmConfig}
+					backlogSummary=""
+					onClose={() => {}}
+					onChangesApplied={options.onChangesApplied ?? (() => {})}
 				/>
 			</CopilotChatSessionProvider>
 		</QueryClientProvider>
 	);
-	const utils = render(chatTree());
-	return {
-		...utils,
-		client,
-		refreshMessages: () => utils.rerender(chatTree()),
-	};
+	const view = render(tree());
+	return { ...view, client, refresh: () => view.rerender(tree()) };
 }
-
-describe("BacklogChat — failed-count banner handover", () => {
-	it("invalidates the failed-count query after a per-item-error apply progress lands", async () => {
-		applyChangesFn.mockResolvedValue({
-			workflowId: "wf_1",
-			proposalId: "prop_1",
-		});
-		// First poll returns a terminal "completed" with errors — the
-		// production code's path that calls `setApplyResult` with
-		// status "failed" (because `appliedTotal === 0` and there are
-		// progressErrors). This branch fires the failed-count
-		// invalidation per spec §3.7c.
-		applyProgressFn.mockResolvedValueOnce({
-			status: "completed",
-			message: "done",
-			createdItems: [],
-			updatedItems: [],
-			errors: ["Item 2: Bearer token expired"],
-		});
-
-		const { client } = renderBacklogChat();
-		const invalidateSpy = vi.spyOn(client, "invalidateQueries");
-
-		// Pull the `review_backlog_changes` action's render callback
-		// out of the mock-recorded calls. The render's
-		// `BacklogChangeProposal` mock captured `onApprove` on the
-		// global handle.
-		const reviewCall = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name ===
-				"review_backlog_changes",
-		);
-		if (!reviewCall) {
-			throw new Error("review_backlog_changes action was not registered");
-		}
-		const reviewAction = reviewCall[0] as {
-			renderAndWaitForResponse: (args: {
-				args: unknown;
-				respond: () => void;
-			}) => React.ReactElement;
-		};
-
-		// Render the action's UI so the mocked BacklogChangeProposal
-		// captures onApprove.
-		const respond = vi.fn();
-		const ui = reviewAction.renderAndWaitForResponse({
-			args: { changes: [] },
-			respond,
-		});
-		render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
-
-		const onApprove = (
-			globalThis as unknown as {
-				__backlogProposalOnApprove?: (
-					...args: unknown[]
-				) => Promise<unknown>;
-			}
-		).__backlogProposalOnApprove;
-		if (!onApprove) {
-			throw new Error(
-				"BacklogChangeProposal mock did not expose onApprove",
-			);
-		}
-
-		// Now run the approve callback — it kicks off applyChanges +
-		// polls applyProgress. We don't await respond's setTimeout —
-		// the invalidation fires before the LLM-respond timer.
-		await onApprove(
-			[{ type: "feature", action: "create", title: { to: "X" } }],
-			false,
-			undefined,
-		);
-
-		// The invalidation MUST include the failed-count queryKey.
-		const calls = invalidateSpy.mock.calls;
-		const hit = calls.some(
-			(c) =>
-				Array.isArray((c[0] as { queryKey?: unknown[] })?.queryKey) &&
-				(c[0] as { queryKey: unknown[] }).queryKey[0] ===
-					"projects.backlog.proposals.failedCount",
-		);
-		expect(hit).toBe(true);
+function entry(name = "select_review_sources", args = {}) {
+	let result: any;
+	act(() => {
+		result = h.actions.get(name).handler(args);
 	});
-
-	it("does NOT import sonner — the disappearing failure toast was removed (regression guard)", async () => {
-		// Spec §3.7c removes the in-chat failure toast in favor of the
-		// in-card applyResult summary + the Review proposals inbox. If a
-		// future change wires `toast.error` back into BacklogChat, this
-		// guard fires.
-		const fs = await import("node:fs");
-		const path = await import("node:path");
-		const here = path.dirname(
-			new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"),
-		);
-		const moduleText = fs.readFileSync(
-			path.join(here, "..", "BacklogChat.tsx"),
-			"utf8",
-		);
-		expect(moduleText).not.toMatch(/from\s+["']sonner["']/);
-		expect(moduleText).not.toMatch(
-			/\btoast\.(error|success|info|warning)\b/,
-		);
+	if (typeof result === "string") {
+		return { result };
+	}
+	const ui = h.actions
+		.get(name)
+		.render({ status: "complete", result }) as ReactElement;
+	const card = render(
+		<QueryClientProvider client={new QueryClient()}>
+			{ui}
+		</QueryClientProvider>,
+	);
+	return { result, card, ui };
+}
+async function tick(ms = 2000) {
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(ms);
 	});
-});
-
-/**
- * Card #1365 regression: the interactive AI-Update decision pre-check is ASYNC.
- * The analysis workflow exposes the proposal at status "complete" and folds the
- * LLM judge's conflict findings into its queryable state a beat LATER. The
- * analyze poll returns on the first "complete" (NFR: never block generation on
- * the judge), so a background poll must keep running to pick up the late fold
- * and surface it on the already-rendered review card. Before the fix the poll
- * stopped on "complete" and the note never appeared (proven live on staging:
- * the workflow query carried the ADR conflict ~1s after the FE had returned).
- */
-describe("BacklogChat — async decision pre-check note (card #1365)", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		startAnalysisFn.mockReset();
-		analysisProgressFn.mockReset();
-		useCopilotActionMock.mockClear();
-		const handle = globalThis as unknown as {
-			__backlogProposalDecisionConflicts?: unknown;
-			__backlogProposalDecisionPrecheckPending?: boolean;
-		};
-		handle.__backlogProposalDecisionConflicts = undefined;
-		handle.__backlogProposalDecisionPrecheckPending = undefined;
+}
+async function wrongModelContinuation(wrongTool: string, result: unknown) {
+	h.model.mockResolvedValue({
+		content: "",
+		tool_calls: [{ name: wrongTool, id: "wrong-call", args: {} }],
+		additional_kwargs: {},
 	});
-	afterEach(() => {
-		vi.runOnlyPendingTimers();
-		vi.useRealTimers();
-	});
-
-	it("keeps polling after 'complete' and folds the async conflicts onto the review card", async () => {
-		const CONFLICTS = {
-			checkedAt: "2026-07-10T13:03:58.184Z",
-			status: "conflicts" as const,
-			findings: [
-				{
-					decisionId: "dec_1",
-					decisionIdentifier: "ADR-002",
-					decisionTitle: "Primary accent color is blue",
-					natureOfConflict:
-						"The change switches the accent to green, violating ADR-002.",
-					conflictType: "violates_accepted" as const,
-					confidence: 0.98,
-					changeRef: {
-						index: 0,
-						title: "Rebrand Primary Accent Color to Green",
-					},
-				},
-			],
-		};
-		const PROPOSAL = {
-			summary: "",
-			contextSummary: "",
-			changes: [
-				{
-					type: "feature",
-					action: "create",
-					title: { to: "Rebrand Primary Accent Color to Green" },
-				},
-			],
-		};
-
-		startAnalysisFn.mockResolvedValue({ workflowId: "wf_1" });
-		// First poll (the analyze loop) exposes the proposal at "complete" with
-		// NO pre-check — the judge hasn't folded it yet. Every later poll (the
-		// background continuation) carries the folded conflicts.
-		analysisProgressFn
-			.mockResolvedValueOnce({
-				progress: { status: "complete", message: "Analysis complete." },
-				proposal: PROPOSAL,
-			})
-			.mockResolvedValue({
-				progress: { status: "complete", message: "Analysis complete" },
-				proposal: { ...PROPOSAL, decisionConflicts: CONFLICTS },
-			});
-
-		renderBacklogChat();
-
-		const analyzeAction = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name === "analyze_backlog",
-		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
-		if (!analyzeAction) {
-			throw new Error("analyze_backlog action was not registered");
-		}
-
-		// Drive the analyze handler: its own poll returns on the first
-		// "complete" (no conflicts) and kicks off the background poll.
-		await act(async () => {
-			const done = analyzeAction.handler({});
-			// analyze poll interval is 2000ms
-			await vi.advanceTimersByTimeAsync(2500);
-			await done;
-		});
-
-		// The old code stopped here (a single progress call). The fix keeps
-		// polling; background interval is 2500ms.
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(3000);
-		});
-
-		// Poll must have continued past the initial "complete".
-		expect(analysisProgressFn.mock.calls.length).toBeGreaterThanOrEqual(2);
-
-		// The latest-registered review action reads the updated state, so its
-		// render hands the folded conflicts to the proposal card.
-		const reviewAction = [...useCopilotActionMock.mock.calls]
-			.reverse()
-			.find(
-				(call) =>
-					(call[0] as { name?: string })?.name ===
-					"review_backlog_changes",
-			)?.[0] as
-			| {
-					renderAndWaitForResponse: (a: {
-						args: unknown;
-						respond: () => void;
-					}) => React.ReactElement;
-			  }
-			| undefined;
-		if (!reviewAction) {
-			throw new Error("review_backlog_changes action was not registered");
-		}
-
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
-		await act(async () => {
-			render(
-				<QueryClientProvider client={client}>
-					{reviewAction.renderAndWaitForResponse({
-						args: { changes: PROPOSAL.changes },
-						respond: vi.fn(),
-					})}
-				</QueryClientProvider>,
-			);
-		});
-
-		const h = globalThis as unknown as {
-			__backlogProposalDecisionConflicts?: unknown;
-			__backlogProposalDecisionPrecheckPending?: boolean;
-		};
-		expect(h.__backlogProposalDecisionConflicts).toEqual(CONFLICTS);
-		// Pending resolved to false once the conflicts folded in.
-		expect(h.__backlogProposalDecisionPrecheckPending).toBe(false);
-	});
-
-	it("stops the poll as soon as a clean 'ok' result folds in — no wasted tail", async () => {
-		const PROPOSAL = {
-			summary: "",
-			contextSummary: "",
-			changes: [
-				{
-					type: "feature",
-					action: "create",
-					title: { to: "Some clean feature" },
-				},
-			],
-		};
-		startAnalysisFn.mockResolvedValue({ workflowId: "wf_ok" });
-		// Analyze exposes the proposal with no pre-check; the background poll then
-		// sees the judge's CLEAN result ({status:"ok"}) — its presence means the
-		// judge finished, so the poll must stop immediately (not run 45s of calls).
-		analysisProgressFn
-			.mockResolvedValueOnce({
-				progress: { status: "complete", message: "done" },
-				proposal: PROPOSAL,
-			})
-			.mockResolvedValue({
-				progress: { status: "complete", message: "done" },
-				proposal: {
-					...PROPOSAL,
-					decisionConflicts: {
-						checkedAt: "2026-07-10T00:00:00.000Z",
-						status: "ok",
-						findings: [],
-					},
-				},
-			});
-
-		renderBacklogChat();
-		const analyzeAction = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name === "analyze_backlog",
-		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
-		if (!analyzeAction) {
-			throw new Error("analyze_backlog action was not registered");
-		}
-
-		await act(async () => {
-			const done = analyzeAction.handler({});
-			await vi.advanceTimersByTimeAsync(2500);
-			await done;
-		});
-		await act(async () => {
-			// One background tick reaches the clean result and stops.
-			await vi.advanceTimersByTimeAsync(3000);
-		});
-		const callsAfterResolve = analysisProgressFn.mock.calls.length;
-		expect(callsAfterResolve).toBeLessThanOrEqual(3);
-
-		// Advance well past the 45s window — a stopped poll makes NO further calls
-		// (the old blind-poll behavior would have fired ~18 times here).
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(50000);
-		});
-		expect(analysisProgressFn.mock.calls.length).toBe(callsAfterResolve);
-
-		const reviewAction = [...useCopilotActionMock.mock.calls]
-			.reverse()
-			.find(
-				(call) =>
-					(call[0] as { name?: string })?.name ===
-					"review_backlog_changes",
-			)?.[0] as
-			| {
-					renderAndWaitForResponse: (a: {
-						args: unknown;
-						respond: () => void;
-					}) => React.ReactElement;
-			  }
-			| undefined;
-		if (!reviewAction) {
-			throw new Error("review_backlog_changes action was not registered");
-		}
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
-		await act(async () => {
-			render(
-				<QueryClientProvider client={client}>
-					{reviewAction.renderAndWaitForResponse({
-						args: { changes: PROPOSAL.changes },
-						respond: vi.fn(),
-					})}
-				</QueryClientProvider>,
-			);
-		});
-		const h = globalThis as unknown as {
-			__backlogProposalDecisionConflicts?: unknown;
-			__backlogProposalDecisionPrecheckPending?: boolean;
-		};
-		// The clean "ok" result is now carried through (so the accept relay can
-		// tell the server the check already ran clean); the render still shows no
-		// note because it gates on `status === "conflicts"`.
-		expect(h.__backlogProposalDecisionConflicts).toEqual({
-			checkedAt: "2026-07-10T00:00:00.000Z",
-			status: "ok",
-			findings: [],
-		});
-		expect(h.__backlogProposalDecisionPrecheckPending).toBe(false);
-	});
-
-	it("retires the background poll on unmount — no further calls, no setState after unmount", async () => {
-		const PROPOSAL = {
-			summary: "",
-			contextSummary: "",
-			changes: [
-				{
-					type: "feature",
-					action: "create",
-					title: { to: "Feature" },
-				},
-			],
-		};
-		startAnalysisFn.mockResolvedValue({ workflowId: "wf_unmount" });
-		// Judge never resolves within the test — the proposal keeps coming back
-		// WITHOUT decisionConflicts, so the poll would keep going until unmount
-		// cancels it.
-		analysisProgressFn.mockResolvedValue({
-			progress: { status: "complete", message: "done" },
-			proposal: PROPOSAL,
-		});
-
-		const { unmount } = renderBacklogChat();
-		const analyzeAction = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name === "analyze_backlog",
-		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
-		if (!analyzeAction) {
-			throw new Error("analyze_backlog action was not registered");
-		}
-
-		await act(async () => {
-			const done = analyzeAction.handler({});
-			await vi.advanceTimersByTimeAsync(2500);
-			await done;
-		});
-		const before = analysisProgressFn.mock.calls.length;
-
-		// Close the panel while the poll is in flight; cleanup must retire it.
-		unmount();
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(20000);
-		});
-		// A retired poll issues no further progress reads (and never setState on
-		// the unmounted component — no act warning / crash).
-		expect(analysisProgressFn.mock.calls.length).toBe(before);
-	});
-
-	it("always clears the 'checking…' indicator when the poll window elapses without a result", async () => {
-		// Regression for the staging bug where the indicator stuck forever: the
-		// judge never folds a result within the poll window, so the poll must
-		// clear "checking…" on timeout (its `finally`) — never leave it pending.
-		const PROPOSAL = {
-			summary: "",
-			contextSummary: "",
-			changes: [
-				{
-					type: "feature",
-					action: "create",
-					title: { to: "Feature" },
-				},
-			],
-		};
-		startAnalysisFn.mockResolvedValue({ workflowId: "wf_timeout" });
-		// Every poll returns the proposal WITHOUT decisionConflicts (judge stuck).
-		analysisProgressFn.mockResolvedValue({
-			progress: { status: "complete", message: "done" },
-			proposal: PROPOSAL,
-		});
-
-		renderBacklogChat();
-		const analyzeAction = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name === "analyze_backlog",
-		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
-		if (!analyzeAction) {
-			throw new Error("analyze_backlog action was not registered");
-		}
-
-		await act(async () => {
-			const done = analyzeAction.handler({});
-			await vi.advanceTimersByTimeAsync(2500);
-			await done;
-		});
-
-		// Advance past the poll's 45s window — the `finally` must clear pending.
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(46000);
-		});
-
-		const reviewAction = [...useCopilotActionMock.mock.calls]
-			.reverse()
-			.find(
-				(call) =>
-					(call[0] as { name?: string })?.name ===
-					"review_backlog_changes",
-			)?.[0] as
-			| {
-					renderAndWaitForResponse: (a: {
-						args: unknown;
-						respond: () => void;
-					}) => React.ReactElement;
-			  }
-			| undefined;
-		if (!reviewAction) {
-			throw new Error("review_backlog_changes action was not registered");
-		}
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
-		});
-		await act(async () => {
-			render(
-				<QueryClientProvider client={client}>
-					{reviewAction.renderAndWaitForResponse({
-						args: { changes: PROPOSAL.changes },
-						respond: vi.fn(),
-					})}
-				</QueryClientProvider>,
-			);
-		});
-		const h = globalThis as unknown as {
-			__backlogProposalDecisionPrecheckPending?: boolean;
-		};
-		expect(h.__backlogProposalDecisionPrecheckPending).toBe(false);
-	});
-});
-
-type CapturedAction = {
-	handler: (args: Record<string, unknown>) => Promise<unknown>;
-	render: (input: { status: string }) => React.ReactElement;
-	renderAndWaitForResponse: (input: {
-		respond: ReturnType<typeof vi.fn>;
-	}) => React.ReactElement<{
-		onConfirm: (result: typeof confirmedSources) => void;
-		onCancel: () => void;
-	}>;
-};
-const confirmedSources = {
-	selectedMeetings: [
+	const messages = normalizeMessages([
+		{ role: "user", id: "example-message", content: "Review Teams" },
+		{ role: "assistant", content: "" },
+		{ role: "tool", toolCallId: "example-call", content: result },
+	]);
+	const command = await chatNode({
+		projectId: "example-project",
+		projectName: "Example",
+		retryCount: 0,
+		messages,
+		tools: [{ name: wrongTool, parameters: {} }],
+		reasoningByTurn: {},
+	} as never);
+	expect(h.bind).not.toHaveBeenCalled();
+	expect((command.update as any).messages.at(-1).tool_calls).toEqual([]);
+	// Also inject the forbidden output at the browser boundary, bypassing the agent filter.
+	expect(
+		h.actions.get(wrongTool).handler({
+			selectedMeetings: [{}],
+			userPrompt: "Wrong model intent",
+		}),
+	).toMatch(/already has a flow/);
+}
+beforeEach(() => {
+	vi.useFakeTimers();
+	h.actions.clear();
+	h.proposal = null;
+	h.sources = sources;
+	for (const mock of [
+		h.start,
+		h.poll,
+		h.apply,
+		h.applyPoll,
+		h.conversation,
+		h.model,
+		h.bind,
+		h.setState,
+	]) {
+		mock.mockReset();
+	}
+	h.messages = [
 		{
-			joinUrl: "https://example.com/meeting",
-			startTime: "2026-10-20T10:00:00Z",
+			role: "user",
+			id: "example-message",
+			content: "Review Teams and meetings",
 		},
-	],
-	selectedChannels: [{ projectContextId: "example-channel" }],
-	daysBack: 14 as const,
-};
-function latestAction(name: string): CapturedAction {
-	const registration = [...useCopilotActionMock.mock.calls]
-		.reverse()
-		.find((call) => (call[0] as { name: string }).name === name);
-	if (!registration) {
-		throw new Error(`Missing action: ${name}`);
-	}
-	return registration[0] as CapturedAction;
-}
-function confirmSources(cancel = false) {
-	const respond = vi.fn();
-	const selector = latestAction(
-		"select_review_sources",
-	).renderAndWaitForResponse({ respond });
-	if (cancel) {
-		selector.props.onCancel();
-	} else {
-		selector.props.onConfirm(confirmedSources);
-	}
-	return respond;
-}
+	];
+	h.start.mockResolvedValue({ workflowId: "example-workflow" });
+	h.conversation.mockResolvedValue({ id: "example-conversation" });
+	h.poll.mockResolvedValue({ progress: { status: "complete" }, proposal });
+});
+afterEach(() => {
+	cleanup();
+	vi.clearAllTimers();
+	vi.useRealTimers();
+});
 
-describe("BacklogChat confirmed analysis sources", () => {
-	beforeEach(() => {
-		chatMessages.current = [];
-		useCopilotActionMock.mockClear();
-		startAnalysisFn.mockReset();
-		analysisProgressFn.mockReset();
-		startAnalysisFn.mockRejectedValue(new Error("Input validation failed"));
-	});
-
-	it("uses confirmed sources when the model supplies empty meeting objects, including later calls", async () => {
-		renderBacklogChat();
-		confirmSources();
-		for (let call = 0; call < 2; call++) {
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({
-					selectedMeetings: [{}],
-					selectedChannels: [{}],
-					daysBack: 90,
-				});
-			});
+describe("BacklogChat application sequencing", () => {
+	// CopilotKit runs the agent again after a tool unless followUp is false
+	// (@copilotkit/core executeSpecificTool); that run only narrated the card.
+	it("registers every flow tool without a follow-up agent run", () => {
+		mountChat();
+		for (const name of [
+			"select_review_sources",
+			"select_notion_pages",
+			"analyze_backlog",
+			"review_backlog_changes",
+		]) {
+			expect(h.actions.get(name)?.followUp).toBe(false);
 		}
-		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
-		expect(startAnalysisFn).toHaveBeenLastCalledWith(
+	});
+	it("shows a refused entry call's reason in its own card", () => {
+		mountChat();
+		entry();
+		const refused = entry("analyze_backlog").result;
+		const ui = h.actions
+			.get("analyze_backlog")
+			.render({ status: "complete", result: refused }) as ReactElement;
+		const card = render(ui);
+		expect(card.getByText(refused)).toBeTruthy();
+	});
+	it("shows why review_backlog_changes did nothing before a proposal exists", () => {
+		mountChat();
+		const review = h.actions.get("review_backlog_changes");
+		let result: unknown;
+		act(() => {
+			result = review.handler({});
+		});
+		const card = render(
+			review.render({ status: "complete", result }) as ReactElement,
+		);
+		expect(card.getByText(/no proposal waiting for review/i)).toBeTruthy();
+	});
+	it("advances under degraded history and wrong model tools, terminates on rejection, then admits a new user message", async () => {
+		const chat = mountChat();
+		entry();
+		expect(screen.getAllByTestId("selector")).toHaveLength(1);
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick(0);
+		expect(h.model).not.toHaveBeenCalled();
+		await wrongModelContinuation("select_review_sources", sources);
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(1);
+		expect(h.start).toHaveBeenCalledWith(
 			expect.objectContaining({
+				userPrompt: "Review Teams and meetings",
+				operationKey: expect.any(String),
 				contextSources: expect.objectContaining({
-					selectedMeetings: confirmedSources.selectedMeetings,
+					selectedMeetings: sources.selectedMeetings,
 					selectedChannelContextIds: ["example-channel"],
-					fetchTeamsMessages: true,
 					daysBack: 14,
 				}),
 			}),
 		);
-	});
-
-	it.each([
-		{
-			name: "channels only",
-			sources: { selectedChannels: [{}] },
-			meetings: [],
-			channelIds: ["example-channel"],
-			fetchTeamsMessages: true,
-		},
-		{
-			name: "meetings only",
-			sources: { selectedMeetings: [{}] },
-			meetings: confirmedSources.selectedMeetings,
-			channelIds: [],
-			fetchTeamsMessages: false,
-		},
-	])(
-		"substitutes confirmed values per field for $name",
-		async ({ sources, meetings, channelIds, fetchTeamsMessages }) => {
-			renderBacklogChat();
-			confirmSources();
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({
-					...sources,
-					daysBack: 90,
-				});
-			});
-			expect(startAnalysisFn).toHaveBeenCalledTimes(1);
-			expect(startAnalysisFn).toHaveBeenCalledWith(
-				expect.objectContaining({
-					contextSources: expect.objectContaining({
-						selectedMeetings: meetings,
-						selectedChannelContextIds: channelIds,
-						fetchTeamsMessages,
-						daysBack: 14,
-					}),
-				}),
-			);
-		},
-	);
-
-	it.each([
-		{
-			name: "confirmed meetings substituted for malformed ones",
-			confirm: true,
-			meetings: confirmedSources.selectedMeetings,
-			fetchSlackMessages: false,
-		},
-		{
-			name: "malformed meetings with no confirmed selection",
-			confirm: false,
-			meetings: [],
-			fetchSlackMessages: true,
-		},
-	])(
-		"decides Slack from the meetings actually sent: $name",
-		async ({ confirm, meetings, fetchSlackMessages }) => {
-			renderBacklogChat(true);
-			if (confirm) {
-				confirmSources();
-			}
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({
-					selectedMeetings: [{}],
-				});
-			});
-			expect(startAnalysisFn).toHaveBeenCalledWith(
-				expect.objectContaining({
-					contextSources: expect.objectContaining({
-						selectedMeetings: meetings,
-						selectedChannelContextIds: [],
-						fetchSlackMessages,
-					}),
-				}),
-			);
-		},
-	);
-
-	it.each([{}, { selectedMeetings: [], selectedChannels: [] }])(
-		"does not inject a prior confirmed selection when later args omit sources: %j",
-		async (sources) => {
-			renderBacklogChat();
-			confirmSources();
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({
-					selectedMeetings: [{}],
-				});
-			});
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({
-					...sources,
-					fetchSlackMessages: true,
-					daysBack: 7,
-				});
-			});
-			expect(startAnalysisFn).toHaveBeenCalledTimes(2);
-			expect(startAnalysisFn).toHaveBeenLastCalledWith(
-				expect.objectContaining({
-					contextSources: expect.objectContaining({
-						selectedMeetings: [],
-						selectedChannelContextIds: [],
-						fetchTeamsMessages: false,
-						fetchSlackMessages: true,
-						daysBack: 7,
-					}),
-				}),
-			);
-		},
-	);
-	it("allows a new user turn after the previous turn reaches the start failure cap", async () => {
-		chatMessages.current = [{ role: "user", content: "Analyze Slack" }];
-		const { refreshMessages } = renderBacklogChat();
-		for (let call = 0; call < 3; call++) {
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({});
-			});
-		}
-		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
-		chatMessages.current = [
-			...chatMessages.current,
-			{ role: "assistant", content: "Could not start" },
-			{ type: "human", content: "Try again" },
+		expect(screen.getAllByTestId("review")).toHaveLength(1);
+		expect(h.model).toHaveBeenCalledTimes(1);
+		await wrongModelContinuation("analyze_backlog", "Analysis complete.");
+		fireEvent.click(screen.getByText("Reject"));
+		expect(screen.getByText("Changes rejected")).toBeInTheDocument();
+		await wrongModelContinuation(
+			"analyze_backlog",
+			"User rejected all changes",
+		);
+		await tick(10000);
+		expect(h.start).toHaveBeenCalledTimes(1);
+		h.messages = [
+			...h.messages,
+			{ role: "assistant", content: "Done" },
+			{
+				role: "user",
+				id: "example-next-message",
+				content: "Analyze a new request",
+			},
 		];
-		refreshMessages();
-		await act(async () => {
-			await latestAction("analyze_backlog").handler({});
-		});
-		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
+		chat.refresh();
+		entry();
+		expect(screen.getAllByTestId("selector")).toHaveLength(1);
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(2);
 	});
-
-	it("validates model options before starting analysis", async () => {
-		renderBacklogChat();
-		await act(async () => {
-			await latestAction("analyze_backlog").handler({
-				userPrompt: "   ",
-				fetchSlackMessages: "false",
-				notionPageIds: [{}, "", "  ", "example-page"],
-				notionMcpConfigId: {},
-			});
+	it("claims double confirmation synchronously and survives the owning card remount", async () => {
+		mountChat();
+		const first = entry();
+		const confirm = h.selector.onConfirm;
+		act(() => {
+			confirm(sources);
+			confirm(sources);
 		});
-		expect(startAnalysisFn).toHaveBeenCalledWith(
-			expect.objectContaining({
-				userPrompt: "Analyze context and suggest backlog updates",
-				contextSources: expect.objectContaining({
-					fetchSlackMessages: false,
-					notionPageIds: ["example-page"],
-					notionMcpConfigId: undefined,
-				}),
-			}),
+		first.card?.unmount();
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				{first.ui}
+			</QueryClientProvider>,
 		);
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(1);
+		expect(screen.getAllByTestId("review")).toHaveLength(1);
+		expect(entry("analyze_backlog").result).toMatch(/already has a flow/);
 	});
-
-	it("filters malformed fallback sources without a confirmed selection", async () => {
-		renderBacklogChat();
-		await act(async () => {
-			await latestAction("analyze_backlog").handler({
-				selectedMeetings: [{}],
-				selectedChannels: [{}],
-			});
-		});
-		expect(startAnalysisFn).toHaveBeenCalledWith(
-			expect.objectContaining({
-				contextSources: expect.objectContaining({
-					selectedMeetings: [],
-					selectedChannelContextIds: [],
-					fetchTeamsMessages: false,
-				}),
-			}),
-		);
-	});
-
-	it("stops API calls after two consecutive start failures and resets on a new selection", async () => {
-		renderBacklogChat();
-		for (let call = 0; call < 3; call++) {
-			let result: unknown;
-			await act(async () => {
-				result = await latestAction("analyze_backlog").handler({});
-			});
-			expect(result).toMatch(/do not call analyze_backlog again/i);
-			expect(result).toMatch(/tell the user/i);
-			expect(result).toMatch(/Input validation failed/);
-		}
-		expect(startAnalysisFn).toHaveBeenCalledTimes(2);
-		confirmSources();
-		await act(async () => {
-			await latestAction("analyze_backlog").handler({});
-		});
-		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
-	});
-
-	it.each(["executing", "complete"])(
-		"shows a failed card after a progress rejection while %s",
-		async (status) => {
-			vi.useFakeTimers();
-			try {
-				renderBacklogChat();
-				startAnalysisFn.mockResolvedValue({
-					workflowId: "example-workflow",
-				});
-				analysisProgressFn.mockRejectedValue(
-					new Error("Progress unavailable"),
-				);
-				let run: Promise<unknown> | undefined;
-				await act(async () => {
-					run = latestAction("analyze_backlog").handler({});
-					await Promise.resolve();
-				});
-				await act(async () => {
-					await vi.advanceTimersByTimeAsync(2000);
-					await run;
-				});
-				const card = render(
-					latestAction("analyze_backlog").render({ status }),
-				);
-				expect(card.getByText("Analysis Failed")).toBeTruthy();
-				expect(card.getByText("Progress unavailable")).toBeTruthy();
-				expect(card.queryByText("Analyzing Context")).toBeNull();
-			} finally {
-				vi.useRealTimers();
-			}
-		},
-	);
-
-	it("shows a failed card before the tool render completes", async () => {
-		renderBacklogChat();
-		await act(async () => {
-			await latestAction("analyze_backlog").handler({});
-		});
-		const card = render(
-			latestAction("analyze_backlog").render({ status: "executing" }),
-		);
-		expect(card.getByText("Analysis Failed")).toBeTruthy();
-		expect(card.getByText("Input validation failed")).toBeTruthy();
-	});
-
-	it("resets consecutive failures after a successful start and shows progress on a new run", async () => {
-		vi.useFakeTimers();
-		try {
-			renderBacklogChat();
-			confirmSources();
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({});
-			});
-			startAnalysisFn.mockResolvedValueOnce({
-				workflowId: "example-workflow",
-			});
-			analysisProgressFn.mockResolvedValue({
-				progress: { status: "failed", message: "Workflow failed" },
-			});
-			let run: Promise<unknown> | undefined;
-			await act(async () => {
-				run = latestAction("analyze_backlog").handler({});
-				await Promise.resolve();
-			});
-			const card = render(
-				latestAction("analyze_backlog").render({ status: "executing" }),
-			);
-			expect(card.getByText("Analyzing Context")).toBeTruthy();
-			await act(async () => {
-				await vi.advanceTimersByTimeAsync(2000);
-				await run;
-			});
-			for (let call = 0; call < 2; call++) {
-				await act(async () => {
-					await latestAction("analyze_backlog").handler({
-						selectedMeetings: [{}],
-					});
-				});
-			}
-			expect(startAnalysisFn).toHaveBeenCalledTimes(4);
-			expect(startAnalysisFn).toHaveBeenLastCalledWith(
-				expect.objectContaining({
-					contextSources: expect.objectContaining({
-						selectedMeetings: confirmedSources.selectedMeetings,
-					}),
-				}),
-			);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("retains an empty confirmed selection on cancel and resets the failure limit", async () => {
-		renderBacklogChat();
-		for (let call = 0; call < 2; call++) {
-			await act(async () => {
-				await latestAction("analyze_backlog").handler({});
-			});
-		}
-		const respond = confirmSources(true);
-		expect(respond).toHaveBeenCalledWith({
+	it("runs mixed Teams and Notion selectors in order; Skip Teams differs from cancellation", async () => {
+		mountChat({ notion: true });
+		entry("select_review_sources", { includeNotion: true });
+		fireEvent.click(screen.getByText("Skip Teams"));
+		expect(screen.getByText("Notion Page Selection")).toBeInTheDocument();
+		expect(h.start).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByText("Skip Notion"));
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(1);
+		expect(h.start.mock.calls[0][0].contextSources).toMatchObject({
 			selectedMeetings: [],
-			selectedChannels: [],
+			selectedChannelContextIds: [],
 			daysBack: 30,
 		});
-		await act(async () => {
-			await latestAction("analyze_backlog").handler(confirmedSources);
-		});
-		expect(startAnalysisFn).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				contextSources: expect.objectContaining({
-					selectedMeetings: [],
-					selectedChannelContextIds: [],
-					daysBack: 30,
-				}),
+	});
+	it("actual cancellation ends selection without starting analysis", async () => {
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Cancel request"));
+		await tick();
+		expect(h.start).not.toHaveBeenCalled();
+		expect(entry("analyze_backlog").result).toMatch(/already has a flow/);
+	});
+	it.each(["zero", "failure", "timeout", "read-error"])(
+		"stops on %s and retains a known workflow for reconciliation",
+		async (variant) => {
+			if (variant === "zero") {
+				h.poll.mockResolvedValue({
+					progress: { status: "complete" },
+					proposal: { ...proposal, changes: [] },
+				});
+			}
+			if (variant === "failure") {
+				h.poll.mockResolvedValue({
+					progress: { status: "failed", message: "Workflow failed" },
+				});
+			}
+			if (variant === "timeout") {
+				h.poll.mockResolvedValue({ progress: { status: "analyzing" } });
+			}
+			if (variant === "read-error") {
+				h.poll.mockRejectedValue(new Error("Progress unavailable"));
+			}
+			mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick(variant === "timeout" ? 302000 : 2000);
+			expect(screen.queryByTestId("review")).toBeNull();
+			expect(
+				screen.getByText(
+					variant === "zero"
+						? "No Backlog Changes Needed"
+						: variant === "timeout"
+							? "Analysis Timed Out"
+							: "Analysis Failed",
+				),
+			).toBeInTheDocument();
+			expect(entry("analyze_backlog").result).toMatch(
+				/already has a flow/,
+			);
+			expect(h.start).toHaveBeenCalledTimes(1);
+			if (variant !== "zero") {
+				h.poll.mockResolvedValue({
+					progress: { status: "complete" },
+					proposal,
+				});
+				fireEvent.click(screen.getByText("Check existing analysis"));
+				await tick(0);
+				expect(h.poll).toHaveBeenLastCalledWith({
+					projectId: "example-project",
+					workflowId: "example-workflow",
+				});
+				expect(screen.getByTestId("review")).toBeInTheDocument();
+				expect(h.start).toHaveBeenCalledTimes(1);
+			}
+		},
+	);
+	it("fences a late result for a superseded flow and stale selector callbacks", async () => {
+		let complete!: (value: unknown) => void;
+		h.poll.mockReturnValueOnce(
+			new Promise((resolve) => {
+				complete = resolve;
 			}),
 		);
-		expect(startAnalysisFn).toHaveBeenCalledTimes(3);
+		const chat = mountChat();
+		entry();
+		const oldSelector = h.selector.onConfirm;
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		fireEvent.click(screen.getByText("Start over"));
+		h.messages = [
+			{ role: "user", id: "example-new", content: "New request" },
+		];
+		chat.refresh();
+		entry();
+		act(() => {
+			oldSelector(sources);
+		});
+		expect(
+			screen.getByText("Superseded by a new request"),
+		).toBeInTheDocument();
+		expect(h.start).toHaveBeenCalledTimes(1);
+		await act(async () => {
+			complete({ progress: { status: "complete" }, proposal });
+		});
+		expect(screen.queryByTestId("review")).toBeNull();
+		expect(screen.getAllByTestId("selector")).toHaveLength(1);
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(2);
+		expect(screen.getAllByTestId("review")).toHaveLength(1);
 	});
+	it("does not admit empty history or a tool result as a new request", () => {
+		h.messages = [{ role: "tool", id: "example-tool", content: "Analyze" }];
+		mountChat();
+		expect(entry("analyze_backlog").result).toMatch(
+			/no new message to start a request/,
+		);
+		expect(h.start).not.toHaveBeenCalled();
+	});
+	it.each([
+		[[], false, undefined],
+		[[{ projectContextId: "example-channel" }], true, undefined],
+		[[], true, true],
+	])(
+		"decides Slack from stored confirmed sources (%j)",
+		async (channels, expected, fetchSlackMessages) => {
+			mountChat({ slack: true });
+			h.sources = { ...sources, selectedChannels: channels };
+			entry("select_review_sources", { fetchSlackMessages });
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			expect(
+				h.start.mock.calls[0][0].contextSources.fetchSlackMessages,
+			).toBe(expected);
+		},
+	);
 });
 
-describe("BacklogChat — Slack selection defaults", () => {
-	beforeEach(() => {
-		vi.useFakeTimers();
-		createConversationFn.mockResolvedValue({ id: "example-conversation" });
-		startAnalysisFn.mockReset();
-		analysisProgressFn.mockReset();
-		useCopilotActionMock.mockClear();
+describe("proposal-bound direct apply and decision precheck", () => {
+	it("claims approval once, invalidates the failed-count query and carries the transcript", async () => {
+		h.apply.mockResolvedValue({
+			workflowId: "example-apply",
+			proposalId: "example-proposal",
+		});
+		h.applyPoll.mockResolvedValue({
+			status: "completed",
+			createdItems: [],
+			updatedItems: [],
+			failedItems: [
+				{ type: "feature", title: "Example", reason: "Unavailable" },
+			],
+		});
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		const displayed = h.proposal;
+		// Review owns its own query client; capture the invalidation at the shared prototype.
+		const invalidation = vi.spyOn(
+			QueryClient.prototype,
+			"invalidateQueries",
+		);
+		await act(async () => {
+			const applied = displayed.onApprove(proposal.changes, false);
+			const duplicate = displayed.onApprove(proposal.changes, false);
+			await vi.advanceTimersByTimeAsync(2000);
+			await Promise.all([applied, duplicate]);
+		});
+		expect(h.apply).toHaveBeenCalledTimes(1);
+		expect(h.apply.mock.calls[0][0].approvedChanges).toEqual(
+			proposal.changes,
+		);
+		expect(h.apply.mock.calls[0][0].messages).toContainEqual({
+			role: "user",
+			content: "Review Teams and meetings",
+		});
+		expect(invalidation).toHaveBeenCalledWith({
+			queryKey: [
+				"projects.backlog.proposals.failedCount",
+				"example-project",
+				"example-org",
+			],
+		});
+		invalidation.mockRestore();
+		expect(entry("analyze_backlog").result).toMatch(/already has a flow/);
 	});
+	it.each(["ok", "conflicts", "timeout", "unmount"])(
+		"folds async decision precheck or clears pending on %s",
+		async (variant) => {
+			const { decisionConflicts: _, ...pending } = proposal;
+			h.poll.mockResolvedValueOnce({
+				progress: { status: "complete" },
+				proposal: pending,
+			});
+			const conflicts = {
+				...proposal.decisionConflicts,
+				status: variant,
+				findings: [],
+			};
+			h.poll.mockResolvedValue({
+				progress: { status: "complete" },
+				proposal:
+					variant === "timeout" || variant === "unmount"
+						? pending
+						: { ...proposal, decisionConflicts: conflicts },
+			});
+			const chat = mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			expect(h.proposal.decisionPrecheckPending).toBe(true);
+			if (variant === "unmount") {
+				const calls = h.poll.mock.calls.length;
+				chat.unmount();
+				await tick(20000);
+				expect(h.poll).toHaveBeenCalledTimes(calls);
+				return;
+			}
+			await tick(variant === "timeout" ? 48000 : 2500);
+			expect(h.proposal.decisionPrecheckPending).toBe(false);
+			if (variant !== "timeout") {
+				expect(h.proposal.decisionConflicts).toEqual(conflicts);
+			}
+			const calls = h.poll.mock.calls.length;
+			await tick(50000);
+			expect(h.poll).toHaveBeenCalledTimes(calls);
+		},
+	);
+});
 
-	afterEach(() => {
-		createConversationFn.mockReset();
-		vi.clearAllTimers();
-		vi.useRealTimers();
+it("rejects an approval from a superseded displayed proposal and ignores model-supplied proposals", async () => {
+	const chat = mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	const oldReview = h.proposal;
+	fireEvent.click(screen.getByText("Start over"));
+	h.messages = [
+		{ role: "user", id: "example-next", content: "New source selection" },
+	];
+	chat.refresh();
+	entry();
+	await act(async () => {
+		await oldReview.onApprove(proposal.changes, false);
+		oldReview.onReject();
+	});
+	expect(h.apply).not.toHaveBeenCalled();
+	expect(screen.getByTestId("selector")).toBeInTheDocument();
+	expect(
+		h.actions
+			.get("review_backlog_changes")
+			.handler({ changes: proposal.changes }),
+	).toBe(REVIEW_UNAVAILABLE_RESULT);
+});
+it("does not start a superseded request after conversation creation resolves", async () => {
+	let created!: (value: unknown) => void;
+	h.conversation.mockReturnValueOnce(
+		new Promise((resolve) => {
+			created = resolve;
+		}),
+	);
+	const chat = mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	fireEvent.click(screen.getByText("Start over"));
+	h.messages = [
+		{ role: "user", id: "example-next", content: "New selection" },
+	];
+	chat.refresh();
+	entry();
+	await act(async () => {
+		created({ id: "example-conversation" });
+	});
+	expect(h.start).not.toHaveBeenCalled();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	expect(h.start).toHaveBeenCalledTimes(1);
+});
+it("renders why log context was unavailable next to the review", async () => {
+	h.poll.mockResolvedValue({
+		progress: {
+			status: "complete",
+			logContextNote: "Log context unavailable for this request.",
+		},
+		proposal,
+	});
+	mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	expect(
+		screen.getByText("Log context unavailable for this request."),
+	).toBeInTheDocument();
+});
+
+it("keeps apply failures in the card instead of importing disappearing toasts", async () => {
+	const { readFileSync } = await import("node:fs");
+	for (const filename of ["BacklogChat.tsx", "BacklogFlowReview.tsx"]) {
+		const source = readFileSync(
+			`${process.cwd()}/modules/saas/projects/components/stories/${filename}`,
+			"utf8",
+		);
+		expect(source).not.toMatch(/from\s+["']sonner["']/);
+		expect(source).not.toMatch(/\btoast\.(error|success|info|warning)\b/);
+	}
+});
+
+it("times out a hung progress read and fences its late result", async () => {
+	let finish!: (value: unknown) => void;
+	h.poll.mockReturnValueOnce(
+		new Promise((resolve) => {
+			finish = resolve;
+		}),
+	);
+	mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick(302000);
+	expect(screen.getByText("Analysis Timed Out")).toBeInTheDocument();
+	await act(async () => {
+		finish({ progress: { status: "complete" }, proposal });
+	});
+	expect(screen.queryByTestId("review")).toBeNull();
+	expect(h.start).toHaveBeenCalledTimes(1);
+	h.poll.mockResolvedValue({ progress: { status: "complete" }, proposal });
+	fireEvent.click(screen.getByText("Check existing analysis"));
+	await tick(0);
+	expect(screen.getByTestId("review")).toBeInTheDocument();
+	expect(h.start).toHaveBeenCalledTimes(1);
+});
+
+it("accepts the displayed proposal while only its async decision note changes", async () => {
+	const { decisionConflicts: _, ...pending } = proposal;
+	h.poll.mockResolvedValueOnce({
+		progress: { status: "complete" },
+		proposal: pending,
+	});
+	h.poll.mockResolvedValue({ progress: { status: "complete" }, proposal });
+	h.apply.mockResolvedValue({ workflowId: null });
+	mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	const displayed = h.proposal;
+	await tick(2500);
+	await act(async () => {
+		await displayed.onApprove(proposal.changes, false);
+	});
+	expect(h.apply).toHaveBeenCalledTimes(1);
+});
+
+describe("round 1 flow lifecycle", () => {
+	it.each([
+		["selecting", "The source selector is open."],
+		["analyzing", "An analysis is running."],
+		["reviewing", "A review is open."],
+		["applying", "Changes are being applied."],
+	])(
+		"refuses a new message while %s with phase-specific guidance",
+		async (phase, wording) => {
+			h.poll.mockResolvedValue({
+				progress: {
+					status: phase === "analyzing" ? "analyzing" : "complete",
+				},
+				proposal,
+			});
+			h.apply.mockResolvedValue({
+				workflowId: "example-apply",
+				proposalId: "example-proposal",
+			});
+			h.applyPoll.mockResolvedValue({ status: "running" });
+			const chat = mountChat();
+			entry();
+			if (phase !== "selecting") {
+				fireEvent.click(screen.getByText("Confirm sources"));
+				await tick();
+			}
+			if (phase === "applying") {
+				act(() => {
+					void h.proposal.onApprove(proposal.changes, false);
+				});
+				await tick(0);
+			}
+			const starts = h.start.mock.calls.length;
+			h.messages = [
+				...h.messages,
+				{
+					role: "user",
+					id: "example-interruption",
+					content: "Also review this",
+				},
+			];
+			chat.refresh();
+			expect(entry("analyze_backlog").result).toContain(wording);
+			await tick(0);
+			expect(h.start).toHaveBeenCalledTimes(starts);
+			if (phase === "applying") {
+				expect(
+					screen.queryByText("Start over"),
+				).not.toBeInTheDocument();
+				return;
+			}
+			expect(screen.getByText("Start over")).toBeInTheDocument();
+			fireEvent.click(screen.getByText("Start over"));
+			h.messages = [
+				...h.messages,
+				{
+					role: "user",
+					id: "example-replacement",
+					content: "New request",
+				},
+			];
+			chat.refresh();
+			entry();
+			expect(screen.getAllByTestId("selector")).toHaveLength(1);
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick(0);
+			expect(h.start).toHaveBeenCalledTimes(starts + 1);
+		},
+	);
+	it("retries an uncertain analysis start using the same operation key and request", async () => {
+		const jobs = new Set<string>();
+		h.start.mockImplementation(async (input) => {
+			const first = !jobs.has(input.operationKey);
+			jobs.add(input.operationKey);
+			if (first) {
+				throw new Error("Response lost");
+			}
+			return { workflowId: "example-existing" };
+		});
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick(0);
+		fireEvent.click(screen.getByText("Retry analysis"));
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(2);
+		expect(h.start.mock.calls[1][0]).toEqual(h.start.mock.calls[0][0]);
+		expect(jobs.size).toBe(1);
+		expect(screen.getByTestId("review")).toBeInTheDocument();
+	});
+	it.each(["CONFLICT", "FORBIDDEN"])(
+		"surfaces %s without an automatic start retry",
+		async (code) => {
+			h.start
+				.mockRejectedValueOnce(new Error("Response unavailable"))
+				.mockRejectedValue(
+					Object.assign(new Error(`Start ${code}`), { code }),
+				);
+			mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick(0);
+			fireEvent.click(screen.getByText("Retry analysis"));
+			await tick(20000);
+			expect(screen.getByText(`Start ${code}`)).toBeInTheDocument();
+			expect(screen.queryByText("Retry analysis")).toBeNull();
+			expect(h.start).toHaveBeenCalledTimes(2);
+		},
+	);
+	it.each(["poll-error", "poll-forbidden", "timeout"])(
+		"keeps apply %s recovery and errors in controller state",
+		async (variant) => {
+			h.apply.mockImplementationOnce(async () => {
+				if (variant === "throw") {
+					throw new Error("Apply unavailable");
+				}
+				return {
+					workflowId: "example-apply",
+					proposalId: "example-proposal",
+				};
+			});
+			if (variant === "poll-error" || variant === "poll-forbidden") {
+				h.applyPoll.mockRejectedValue(
+					Object.assign(new Error("Apply progress unavailable"), {
+						code:
+							variant === "poll-forbidden"
+								? "FORBIDDEN"
+								: undefined,
+					}),
+				);
+			} else {
+				h.applyPoll.mockResolvedValue({ status: "running" });
+			}
+			mountChat();
+			const owner = entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			let done = Promise.resolve<unknown>(undefined);
+			act(() => {
+				done = h.proposal.onApprove(proposal.changes, false);
+			});
+			await tick(variant === "timeout" ? 302000 : 2000);
+			await done;
+			expect(h.proposal.applyResult?.status).toBe("failed");
+			expect(h.proposal.applyProgressMsg).toBeFalsy();
+			expect(owner.card).toBeDefined();
+			owner.card?.unmount();
+			render(
+				<QueryClientProvider client={new QueryClient()}>
+					{owner.ui}
+				</QueryClientProvider>,
+			);
+			expect(h.proposal.applyResult?.status).toBe("failed");
+			h.apply.mockResolvedValue({ workflowId: null });
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
+			});
+			expect(h.apply).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("retries a lost apply response with the frozen approval and one server operation", async () => {
+		const jobs = new Set<string>();
+		h.apply.mockImplementation(async (request) => {
+			expect(request.operationKey).toEqual(expect.any(String));
+			const first = !jobs.has(request.operationKey);
+			jobs.add(request.operationKey);
+			if (first) {
+				throw new Error("Response lost");
+			}
+			return {
+				workflowId: "example-existing-apply",
+				proposalId: "example-proposal",
+			};
+		});
+		h.applyPoll.mockResolvedValue({
+			status: "completed",
+			createdItems: [],
+		});
+		const pmConfig = {
+			mcpConfigId: "example-pm",
+			containerId: "example-container",
+		};
+		const chat = mountChat({ hasPMTool: true, pmConfig });
+		const owner = entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		const changes = structuredClone(proposal.changes);
+		const overrides = { "0": { pushAnyway: true } };
+		await act(async () => {
+			await h.proposal.onApprove(changes, true, overrides);
+		});
+		expect(h.proposal.approval.state).toBe("approved");
+		expect(screen.getByText("Retry apply")).toBeInTheDocument();
+		const frozen = structuredClone(h.apply.mock.calls[0][0]);
+		changes[0].title.to = "Mutated selection";
+		overrides["0"].pushAnyway = false;
+		pmConfig.containerId = "example-other-container";
+		h.messages = [
+			...h.messages,
+			{ role: "user", id: "example-new", content: "New message" },
+		];
+		chat.refresh();
+		owner.card?.unmount();
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				{owner.ui}
+			</QueryClientProvider>,
+		);
+		fireEvent.click(screen.getByText("Retry apply"));
+		await tick();
+		expect(h.apply.mock.calls[1][0]).toEqual(frozen);
+		expect(jobs.size).toBe(1);
+		expect(h.apply).toHaveBeenCalledTimes(2);
+	});
+	it.each([
+		"BAD_REQUEST",
+		"FORBIDDEN",
+		"UNAUTHORIZED",
+		"NOT_FOUND",
+		"PRECONDITION_FAILED",
+		"CONFLICT",
+		"RESOURCE_EXHAUSTED",
+	])(
+		"keeps the original approval after a lost response and retry refusal %s",
+		async (code) => {
+			h.apply
+				.mockRejectedValueOnce(new Error("Response lost"))
+				.mockRejectedValueOnce(
+					Object.assign(new Error("Retry refused"), { code }),
+				)
+				.mockResolvedValue({ workflowId: null });
+			mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
+			});
+			const original = structuredClone(h.apply.mock.calls[0][0]);
+			fireEvent.click(screen.getByText("Retry apply"));
+			await tick(0);
+			expect(h.proposal.approval.state).toBe("approved");
+			expect(screen.getByText("Retry apply")).toBeInTheDocument();
+			expect(h.proposal.applyResult.message).toContain(
+				"Review proposals",
+			);
+			// A stale approval callback cannot replace the frozen operation.
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
+			});
+			expect(h.apply).toHaveBeenCalledTimes(2);
+			fireEvent.click(screen.getByText("Retry apply"));
+			await tick(0);
+			expect(h.apply).toHaveBeenCalledTimes(3);
+			expect(h.apply.mock.calls.map(([request]) => request)).toEqual([
+				original,
+				original,
+				original,
+			]);
+		},
+	);
+	it("returns an oversize first apply to review so approval can be reduced", async () => {
+		h.apply.mockRejectedValueOnce(
+			Object.assign(
+				new Error("Batch too large; approve in smaller chunks"),
+				{ code: "RESOURCE_EXHAUSTED" },
+			),
+		);
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		await act(async () => {
+			await h.proposal.onApprove(proposal.changes, false);
+		});
+		expect(h.proposal.approval.state).toBe("reviewing");
+		expect(screen.queryByText("Retry apply")).toBeNull();
 	});
 
 	it.each([
-		["meetings only", [], false],
-		[
-			"meetings and channels",
-			[{ projectContextId: "example-channel" }],
-			true,
-		],
-	] as const)("%s", async (_label, selectedChannels, expectedSlack) => {
-		startAnalysisFn.mockResolvedValue({ workflowId: "example-workflow" });
-		analysisProgressFn.mockResolvedValue({
-			progress: { status: "complete", message: "Analysis complete." },
-			proposal: {
-				summary: "No changes needed.",
-				contextSummary: "",
-				changes: [],
-				decisionConflicts: {
-					status: "ok",
-					findings: [],
-					checkedAt: "2026-10-20T00:00:00.000Z",
-				},
-			},
-		});
-		const { unmount } = renderBacklogChat(true);
-		const analyzeAction = useCopilotActionMock.mock.calls.find(
-			(call) =>
-				(call[0] as { name?: string })?.name === "analyze_backlog",
-		)?.[0] as { handler: (args: unknown) => Promise<unknown> } | undefined;
-		if (!analyzeAction) {
-			throw new Error("analyze_backlog action was not registered");
-		}
-		await act(async () => {
-			const done = analyzeAction.handler({
-				userPrompt: "Update the backlog from the selected meeting",
-				selectedMeetings: [{ joinUrl: "https://example.com/meeting" }],
-				selectedChannels,
+		"BAD_REQUEST",
+		"FORBIDDEN",
+		"UNAUTHORIZED",
+		"NOT_FOUND",
+		"PRECONDITION_FAILED",
+		"CONFLICT",
+	])(
+		"returns to review only for definite refusal %s and renews approval identity",
+		async (code) => {
+			h.apply
+				.mockRejectedValueOnce(
+					Object.assign(new Error("Refused"), { code }),
+				)
+				.mockResolvedValue({ workflowId: null });
+			mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
 			});
-			await vi.advanceTimersByTimeAsync(2500);
-			await done;
+			expect(h.proposal.approval.state).toBe("reviewing");
+			expect(screen.queryByText("Retry apply")).toBeNull();
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
+			});
+			const keys = h.apply.mock.calls.map(
+				([request]) => request.operationKey,
+			);
+			expect(keys[0]).toEqual(expect.any(String));
+			expect(keys[1]).not.toBe(keys[0]);
+		},
+	);
+	it.each([
+		undefined,
+		"INTERNAL_SERVER_ERROR",
+		"SERVICE_UNAVAILABLE",
+		"TIMEOUT",
+	])(
+		"keeps approval frozen after ambiguous apply failure %s",
+		async (code) => {
+			h.apply.mockRejectedValue(
+				Object.assign(new Error("Unavailable"), { code }),
+			);
+			mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			await act(async () => {
+				await h.proposal.onApprove(proposal.changes, false);
+			});
+			expect(h.proposal.approval.state).toBe("approved");
+			expect(screen.getByText("Retry apply")).toBeInTheDocument();
+		},
+	);
+	it("leaves applying on the deadline even when a progress read hangs", async () => {
+		h.apply.mockResolvedValue({
+			workflowId: "example-apply",
+			proposalId: "example-proposal",
 		});
-		expect(startAnalysisFn).toHaveBeenCalledWith(
-			expect.objectContaining({
-				contextSources: expect.objectContaining({
-					fetchSlackMessages: expectedSlack,
-				}),
-			}),
+		h.applyPoll.mockImplementation(() => new Promise(() => {}));
+		const chat = mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		act(() => {
+			void h.proposal.onApprove(proposal.changes, false);
+		});
+		await tick(302000);
+		expect(h.proposal.applyResult?.message).toContain("Review proposals");
+		h.messages = [
+			...h.messages,
+			{ role: "user", id: "example-next", content: "Next request" },
+		];
+		chat.refresh();
+		expect(entry().result.flowId).toEqual(expect.any(String));
+		expect(h.applyPoll).toHaveBeenCalledTimes(1);
+	});
+	it("times out a hung apply start and retries the frozen operation", async () => {
+		h.apply
+			.mockImplementationOnce(() => new Promise(() => {}))
+			.mockResolvedValue({ workflowId: null });
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		act(() => {
+			void h.proposal.onApprove(proposal.changes, false);
+		});
+		await tick(302000);
+		fireEvent.click(screen.getByText("Retry apply"));
+		await tick(0);
+		expect(h.apply.mock.calls[1][0]).toEqual(h.apply.mock.calls[0][0]);
+	});
+	it("bounds a hung analysis start and retries the same operation key", async () => {
+		h.start
+			.mockImplementationOnce(() => new Promise(() => {}))
+			.mockResolvedValue({ workflowId: "example-workflow" });
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick(302000);
+		fireEvent.click(screen.getByText("Retry analysis"));
+		await tick();
+		expect(h.start.mock.calls[1][0]).toEqual(h.start.mock.calls[0][0]);
+		expect(screen.getByTestId("review")).toBeInTheDocument();
+	});
+	it.each([false, true])(
+		"hides recovery controls on a replaced failed analysis (workflow known=%s)",
+		async (known) => {
+			if (known) {
+				h.poll.mockRejectedValue(new Error("Poll failed"));
+			} else {
+				h.start.mockRejectedValue(new Error("Start failed"));
+			}
+			const chat = mountChat();
+			entry();
+			fireEvent.click(screen.getByText("Confirm sources"));
+			await tick();
+			expect(
+				screen.getByText(
+					known ? "Check existing analysis" : "Retry analysis",
+				),
+			).toBeInTheDocument();
+			h.messages = [
+				...h.messages,
+				{
+					role: "user",
+					id: "example-replacement",
+					content: "New request",
+				},
+			];
+			chat.refresh();
+			entry();
+			expect(screen.queryByText("Retry analysis")).toBeNull();
+			expect(screen.queryByText("Check existing analysis")).toBeNull();
+		},
+	);
+
+	it("preserves applying progress and partial failure/outage results across remount", async () => {
+		h.apply.mockResolvedValue({
+			workflowId: "example-apply",
+			proposalId: "example-proposal",
+		});
+		h.applyPoll
+			.mockResolvedValueOnce({
+				status: "running",
+				message: "Applying item",
+			})
+			.mockResolvedValue({
+				status: "completed",
+				createdItems: [
+					{ identifier: "EX-1", title: "Example", type: "feature" },
+				],
+				failedItems: [
+					{ title: "Other", type: "feature", reason: "Unavailable" },
+				],
+				pmSyncOutage: {
+					tool: "Example PM",
+					errorClass: "unavailable",
+					count: 1,
+					items: [],
+				},
+			});
+		mountChat();
+		const owner = entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		let done = Promise.resolve<unknown>(undefined);
+		act(() => {
+			done = h.proposal.onApprove(proposal.changes, false);
+		});
+		await tick();
+		expect(owner.card).toBeDefined();
+		owner.card?.unmount();
+		const remount = render(
+			<QueryClientProvider client={new QueryClient()}>
+				{owner.ui}
+			</QueryClientProvider>,
 		);
-		unmount();
+		expect(h.proposal.applyProgressMsg).toBe("Applying item");
+		expect(h.proposal.onCancelApply).toBeTypeOf("function");
+		await tick();
+		await done;
+		remount.unmount();
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				{owner.ui}
+			</QueryClientProvider>,
+		);
+		expect(h.proposal.applyResult).toMatchObject({
+			failedCount: 1,
+			pmSyncOutage: { count: 1 },
+		});
+		expect(h.apply).toHaveBeenCalledTimes(1);
+	});
+	it("uses a validated model prompt for a clarifying exchange", async () => {
+		h.messages = [
+			{ role: "user", id: "example-first", content: "Review billing" },
+			{ role: "assistant", content: "Which conversations?" },
+			{ role: "user", id: "example-answer", content: "Teams this week" },
+		];
+		mountChat();
+		entry("analyze_backlog", {
+			userPrompt: "Review billing changes from Teams this week",
+		});
+		await tick();
+		expect(h.start.mock.calls[0][0].userPrompt).toBe(
+			"Review billing changes from Teams this week",
+		);
+	});
+	it.each([undefined, "   "])(
+		"joins genuine messages when model intent is empty (%s)",
+		async (userPrompt) => {
+			h.messages = [
+				{
+					role: "user",
+					id: "example-first",
+					content: "Review billing",
+				},
+				{ role: "assistant", content: "Which conversations?" },
+				{
+					role: "user",
+					id: "example-answer",
+					content: "Teams this week",
+				},
+			];
+			mountChat();
+			entry("analyze_backlog", { userPrompt });
+			await tick();
+			expect(h.start.mock.calls[0][0].userPrompt).toBe(
+				"Review billing\n\nTeams this week",
+			);
+		},
+	);
+	it.each([
+		[
+			{ type: "text", text: "Review billing" },
+			{
+				type: "image_url",
+				image_url: { url: "https://example.com/image.png" },
+			},
+		],
+		[
+			{
+				type: "image_url",
+				image_url: { url: "https://example.com/image.png" },
+			},
+		],
+	])("admits content-part messages: %j", async (...parts) => {
+		h.messages = [{ role: "user", id: "example-image", content: parts }];
+		mountChat();
+		entry("analyze_backlog");
+		await tick();
+		expect(h.start).toHaveBeenCalledTimes(1);
+		expect(h.start.mock.calls[0][0].userPrompt).toBe(
+			parts.some((p) => p.type === "text")
+				? "Review billing"
+				: "Analyze selected context and suggest backlog updates.",
+		);
+	});
+	it("continues reconciling a known workflow and treats missing changes as no changes", async () => {
+		h.poll
+			.mockRejectedValueOnce(new Error("Unavailable"))
+			.mockResolvedValueOnce({ progress: { status: "analyzing" } })
+			.mockResolvedValue({
+				progress: { status: "complete" },
+				proposal: { summary: "None" },
+			});
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		fireEvent.click(screen.getByText("Check existing analysis"));
+		await tick(6000);
+		expect(
+			screen.getByText("No Backlog Changes Needed"),
+		).toBeInTheDocument();
+		expect(h.start).toHaveBeenCalledTimes(1);
+	});
+	it("clears the decision indicator after a hung precheck read", async () => {
+		const { decisionConflicts: _, ...pending } = proposal;
+		h.poll
+			.mockResolvedValueOnce({
+				progress: { status: "complete" },
+				proposal: pending,
+			})
+			.mockReturnValue(new Promise(() => {}));
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		expect(h.proposal.decisionPrecheckPending).toBe(true);
+		await tick(48000);
+		expect(h.proposal.decisionPrecheckPending).toBe(false);
 	});
 });
+
+it("reads current PM configuration and completion callback from a memoised review render", async () => {
+	h.apply.mockResolvedValue({ workflowId: "example-apply" });
+	h.applyPoll.mockResolvedValue({ status: "completed", createdItems: [{}] });
+	const oldCallback = vi.fn();
+	const newCallback = vi.fn();
+	const options = {
+		hasPMTool: false,
+		pmConfig: {
+			mcpConfigId: "example-old",
+			containerId: "example-old-container",
+		},
+		onChangesApplied: oldCallback,
+	};
+	const chat = mountChat(options);
+	const owner = entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	options.hasPMTool = true;
+	options.pmConfig = {
+		mcpConfigId: "example-new",
+		containerId: "example-new-container",
+	};
+	options.onChangesApplied = newCallback;
+	chat.refresh();
+	let done = Promise.resolve<unknown>(undefined);
+	act(() => {
+		done = h.proposal.onApprove(proposal.changes, true);
+	});
+	await tick(3000);
+	await done;
+	expect(h.apply).toHaveBeenCalledWith(
+		expect.objectContaining({ syncToPM: true, pmConfig: options.pmConfig }),
+	);
+	expect(newCallback).toHaveBeenCalledTimes(1);
+	expect(oldCallback).not.toHaveBeenCalled();
+	expect(owner.result.flowId).toBeTruthy();
+});
+
+it("fences an unmounted apply before conversation creation resolves", async () => {
+	let resolveConversation: (value: { id: string }) => void = () => {};
+	h.conversation.mockReturnValue(
+		new Promise((resolve) => {
+			resolveConversation = resolve;
+		}),
+	);
+	// The failed analysis lookup leaves the apply to retry conversation creation.
+	h.conversation.mockRejectedValueOnce(
+		new Error("Conversation temporarily unavailable"),
+	);
+	const chat = mountChat();
+	entry();
+	fireEvent.click(screen.getByText("Confirm sources"));
+	await tick();
+	let done = Promise.resolve<unknown>(undefined);
+	act(() => {
+		done = h.proposal.onApprove(proposal.changes, false);
+	});
+	await tick(0);
+	chat.unmount();
+	await act(async () => {
+		resolveConversation({ id: "example-delayed-conversation" });
+	});
+	await tick(0);
+	await done;
+	expect(h.apply).not.toHaveBeenCalled();
+});
+
+it.each(["applying", "done-approved"])(
+	"preserves %s state and hides Start over",
+	async (phase) => {
+		const controller = new BacklogFlowController();
+		const services = {
+			start: vi
+				.fn()
+				.mockResolvedValue({ workflowId: "example-analysis" }),
+			poll: vi.fn().mockResolvedValue({
+				progress: { status: "complete" },
+				proposal,
+			}),
+		};
+		const admitted = controller.admit(
+			{ id: "example-request", content: "Review context" },
+			"analyze_backlog",
+			[],
+			services,
+			{ intakeMode: "standard" },
+		);
+		if (typeof admitted === "string") {
+			throw new Error(admitted);
+		}
+		await tick();
+		let finish = () => {};
+		const applying = controller.applyProposal(
+			admitted.flowId,
+			proposal,
+			1,
+			() =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+				}),
+		);
+		controller.patchApply(admitted.flowId, {
+			workflowId: "example-apply",
+			progress: "Applying example item",
+			result:
+				phase === "done-approved"
+					? {
+							status: "success",
+							createdCount: 1,
+							updatedCount: 0,
+							failedCount: 0,
+							batchTotal: 1,
+							syncedToPM: false,
+							items: [],
+							message: "Applied example item",
+						}
+					: undefined,
+		});
+		if (phase === "done-approved") {
+			finish();
+			await applying;
+		}
+		render(
+			<BacklogFlowCard
+				controller={controller}
+				flowId={admitted.flowId}
+				projectId="example-project"
+				organizationId="example-org"
+				renderReview={(flow) => (
+					<output>
+						{flow.apply?.result?.message ?? flow.apply?.progress}
+					</output>
+				)}
+			/>,
+		);
+		const before = controller.current();
+		expect.soft(screen.queryByText("Start over")).not.toBeInTheDocument();
+		act(() => {
+			controller.startOver(admitted.flowId);
+		});
+		expect.soft(controller.current()).toBe(before);
+		expect
+			.soft(
+				screen.getByText(
+					phase === "applying"
+						? "Applying example item"
+						: "Applied example item",
+				),
+			)
+			.toBeInTheDocument();
+		if (phase === "applying") {
+			await act(async () => {
+				finish();
+				await applying;
+			});
+		}
+		controller.stop();
+	},
+);

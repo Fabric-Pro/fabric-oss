@@ -2,13 +2,13 @@
  * The "Automations & pages" system skill tells the in-app agent which Fabric
  * tools to call, in what order. It is data (a SKILL.md the seed loads), so
  * nothing else keeps it honest when a tool is renamed or removed: this does.
- * Every `fabric_*` tool the skill names has to be a tool the gateway offers,
- * and the service credential — which is what the in-app agent calls the
- * gateway with — has to be able to call it.
+ * Every named tool must be offered by the gateway. Agent calls require the
+ * service credential; page-only calls must stay unavailable to that credential.
  */
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { FABRIC_PAGE_TOOL_DEFINITIONS } from "@repo/temporal/fabric-page-tool-definitions";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
@@ -33,6 +33,15 @@ const SKILL = readFileSync(
 const NAMED_TOOLS = [
 	...new Set(SKILL.match(/\bfabric_[a-z_]+\b/g) ?? []),
 ].sort();
+const PAGE_ONLY_TOOLS: ReadonlySet<string> = new Set(
+	FABRIC_PAGE_TOOL_DEFINITIONS.filter(
+		(tool) => "pageOnly" in tool && tool.pageOnly,
+	).map((tool) => tool.name),
+);
+// fabric_page_ask is the gateway's sole page-only service exception.
+const AGENT_TOOLS = NAMED_TOOLS.filter(
+	(name) => !PAGE_ONLY_TOOLS.has(name) || name === "fabric_page_ask",
+);
 
 describe("the Automations & pages skill", () => {
 	it("names tools, so the checks below cannot pass on an empty list", () => {
@@ -47,8 +56,9 @@ describe("the Automations & pages skill", () => {
 		expect(NAMED_TOOLS.filter((name) => !offered.has(name))).toEqual([]);
 	});
 
-	it("names only tools the in-app agent's credential can call", () => {
-		const callable = NAMED_TOOLS.filter((name) => {
+	it("names agent tools that the in-app agent's credential can call", () => {
+		expect(AGENT_TOOLS).toContain("fabric_page_ask");
+		const callable = AGENT_TOOLS.filter((name) => {
 			const required = TOOL_SCOPES[name];
 			return (
 				required &&
@@ -57,7 +67,23 @@ describe("the Automations & pages skill", () => {
 			);
 		});
 
-		expect(callable).toEqual(NAMED_TOOLS);
+		expect(callable).toEqual(AGENT_TOOLS);
+	});
+
+	it("keeps other named page-only runtime tools unavailable to the agent credential", () => {
+		const pageTools = NAMED_TOOLS.filter(
+			(name) => PAGE_ONLY_TOOLS.has(name) && name !== "fabric_page_ask",
+		);
+		expect(pageTools).toEqual(
+			expect.arrayContaining([
+				"fabric_page_get_workflow",
+				"fabric_page_run_workflow",
+				"fabric_page_list_workflow_runs",
+			]),
+		);
+		for (const name of pageTools) {
+			expect(serviceSessionHasTool({}, name), name).toBe(false);
+		}
 	});
 
 	it("carries the frontmatter the seed requires", () => {

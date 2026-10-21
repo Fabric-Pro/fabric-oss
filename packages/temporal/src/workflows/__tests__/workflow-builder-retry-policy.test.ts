@@ -12,6 +12,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { providedWorkflowGraph } from "../../../__tests__/test-helpers/workflow-builder-graph";
 
 const { patchedFlag } = vi.hoisted(() => ({
 	patchedFlag: { value: true },
@@ -83,6 +84,7 @@ async function run(nodes: ReturnType<typeof node>[], edges = [] as unknown[]) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	getDefinition.mockImplementation(providedWorkflowGraph);
 	const ok = { success: true, output: {} };
 	retryingNode.mockResolvedValue(ok);
 	nonRetryingNode.mockResolvedValue(ok);
@@ -91,6 +93,21 @@ beforeEach(() => {
 });
 
 describe("workflowBuilderExecutionWorkflow retry routing", () => {
+	it("does not retry Workspace record writes after an ambiguous response", async () => {
+		await run(
+			[
+				node("read", "workspace-data-read"),
+				node("write", "workspace-data-write"),
+			],
+			[edge("read", "write")],
+		);
+		expect(nonRetryingNode).toHaveBeenCalledOnce();
+		expect(nonRetryingNode.mock.calls[0][0]).toMatchObject({
+			nodeType: "workspace-data-write",
+		});
+		expect(retryingNode).toHaveBeenCalledOnce();
+	});
+
 	it("sends external writes through the no-retry proxy", async () => {
 		await run(
 			[node("n1", "trigger"), node("n2", "slack-send")],

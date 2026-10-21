@@ -118,6 +118,33 @@ describe("retrieveWorkspaceDocumentsActivity tenant filter", () => {
 		expect(mocks.getEffectiveRagSettings).not.toHaveBeenCalled();
 	});
 
+	it("attributes the query embedding without widening the workspace tenant filter", async () => {
+		const usageOrigin = {
+			projectId: "origin-project",
+			frameId: "origin-frame",
+			workflowExecutionId: "origin-execution",
+		};
+		await retrieveWorkspaceDocumentsActivity(
+			"query",
+			"user-1",
+			"example-org-a",
+			["ws-a", "ws-b"],
+			undefined,
+			undefined,
+			undefined,
+			{ usageOrigin },
+		);
+		expect(mocks.generateEmbedding.mock.calls[0][1]).toMatchObject(
+			usageOrigin,
+		);
+		expect(mocks.searchMultipleWorkspaces).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workspaceIds: ["ws-a"],
+				organizationId: "example-org-a",
+			}),
+		);
+	});
+
 	it.each(["conversation-example", undefined])(
 		"attributes workspace query embeddings to the supplied conversation (%s)",
 		async (usageConversationId) => {

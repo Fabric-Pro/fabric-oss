@@ -16,7 +16,7 @@
  *     `toast.warning` fires with `create.titleInsufficient`.
  *   - On `titleSource: "ai"` no `toast.warning` fires.
  *   - On mutation rejection the loading toast becomes `toast.error`
- *     (`create.titleGenerationFailed`) with the same id.
+ *     (the server message) with the same id.
  */
 
 import { render, screen, waitFor } from "@testing-library/react";
@@ -224,7 +224,9 @@ describe("CreateStoryDialog (Kanban)", () => {
 
 	it("upgrades the loading toast to `toast.error` on mutation rejection", async () => {
 		const user = userEvent.setup();
-		const onSubmit = vi.fn().mockRejectedValue(new Error("boom"));
+		const onSubmit = vi
+			.fn()
+			.mockRejectedValue(new Error("Reconnect your ChatGPT connection."));
 		render(
 			<CreateStoryDialog
 				{...(makeProps({ onSubmit }) as React.ComponentProps<
@@ -240,11 +242,18 @@ describe("CreateStoryDialog (Kanban)", () => {
 		await user.click(screen.getByRole("button", { name: /^create$/i }));
 
 		await waitFor(() => expect(toastError).toHaveBeenCalledTimes(1));
-		expect(toastError).toHaveBeenCalledWith("titleGenerationFailed", {
-			id: "toast-id-1",
-		});
+		expect(toastError).toHaveBeenCalledWith(
+			"Reconnect your ChatGPT connection.",
+			{
+				id: "toast-id-1",
+			},
+		);
 		expect(toastSuccess).not.toHaveBeenCalled();
 		expect(toastWarning).not.toHaveBeenCalled();
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		expect(screen.getByLabelText("descriptionLabel")).toHaveValue(
+			"Users need SSO support.",
+		);
 	});
 
 	it("renders the Loader2 spinner inside the submit button while submitting", () => {

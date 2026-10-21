@@ -102,6 +102,52 @@ describe("generateImageActivity — usage marker (Fizzy #1894)", () => {
 });
 
 describe("image conversation attribution", () => {
+	it.each([true, false])(
+		"retains the Workspace origin on image success=%s",
+		async (success) => {
+			logAiUsageAsync.mockReset();
+			const { generateText, getRAGProviderConfig } = await import(
+				"@repo/ai"
+			);
+			vi.mocked(getRAGProviderConfig).mockResolvedValue({
+				apiKey: "key-example",
+			} as never);
+			if (success) {
+				vi.mocked(generateText).mockResolvedValue({
+					text: "boat",
+					files: [
+						{
+							uint8Array: new Uint8Array([1]),
+							mediaType: "image/png",
+						},
+					],
+				} as never);
+			} else {
+				vi.mocked(generateText).mockRejectedValue(
+					new Error("provider-example"),
+				);
+			}
+			const usageOrigin = {
+				projectId: "project-example",
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+			};
+			await generateImageActivity({
+				prompt: "boat",
+				provider: "gateway",
+				userId: "user-example",
+				usageOrigin,
+			});
+			expect(logAiUsageAsync).toHaveBeenCalledOnce();
+			expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+				...usageOrigin,
+				success,
+				jobType: "image-generation",
+				taskType: "IMAGE",
+			});
+		},
+	);
+
 	it.each(["conversation-example", undefined])(
 		"records only the supplied conversation (%s)",
 		async (usageConversationId) => {

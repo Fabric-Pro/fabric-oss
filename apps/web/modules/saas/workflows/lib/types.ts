@@ -127,6 +127,8 @@ export interface NodeTypeDefinition {
 	category: string;
 	defaultData: Partial<WorkflowNodeData>;
 	configFields?: ConfigField[];
+	execution?: { stepImportPath: string; stepFunction: string };
+	outputFields?: { field: string; description: string }[];
 }
 
 // Configuration field definition
@@ -146,6 +148,7 @@ export interface ConfigField {
 		| "ai-model-selector";
 	required?: boolean;
 	placeholder?: string;
+	description?: string;
 	options?: { value: string; label: string }[];
 	defaultValue?: unknown;
 }

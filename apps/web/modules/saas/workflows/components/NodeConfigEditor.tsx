@@ -91,7 +91,13 @@ export function NodeConfigEditor({
 						</Label>
 						<Textarea
 							id={field.name}
-							value={(value as string) || ""}
+							value={
+								typeof value === "string"
+									? value
+									: value === undefined
+										? ""
+										: JSON.stringify(value, null, 2)
+							}
 							onChange={(e) =>
 								handleFieldChange(field.name, e.target.value)
 							}
@@ -99,14 +105,21 @@ export function NodeConfigEditor({
 							rows={4}
 						/>
 						<p className="text-xs text-muted-foreground">
-							Use {"{{"}NodeLabel.field{"}}"} to reference
-							workflow variables
+							{field.description ?? (
+								<>
+									Use {"{{"}NodeLabel.field{"}}"} to reference
+									workflow variables
+								</>
+							)}
 						</p>
-						<p className="text-xs text-muted-foreground mt-1">
-							Examples: {"{{"}Generate Text.text{"}}"} {"{{"}MCP
-							Tool.output{"}}"} {"{{"}Firecrawl Search.results
-							{"}}"}
-						</p>
+						{!field.description && (
+							<p className="text-xs text-muted-foreground mt-1">
+								Examples: {"{{"}Generate Text.text{"}}"} {"{{"}
+								MCP Tool.output{"}}"} {"{{"}Firecrawl
+								Search.results
+								{"}}"}
+							</p>
+						)}
 					</div>
 				);
 
@@ -284,6 +297,26 @@ export function NodeConfigEditor({
 						)}
 					</div>
 				)
+			)}
+
+			{definition?.outputFields && (
+				<div className="space-y-2 border-t pt-4">
+					<h4 className="text-sm font-medium">Outputs</h4>
+					<dl className="space-y-2 text-xs">
+						{definition.outputFields.map(
+							({ field, description }) => (
+								<div key={field}>
+									<dt>
+										<code>{`{{${node.data.label || definition.label}.${field}}}`}</code>
+									</dt>
+									<dd className="text-muted-foreground">
+										{description}
+									</dd>
+								</div>
+							),
+						)}
+					</dl>
+				</div>
 			)}
 
 			{/* Delete Button */}

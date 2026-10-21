@@ -1,6 +1,8 @@
 ---
 title: Workspaces
 description: Pages Fabric Agent writes for your organization from a description, shared with everyone in it by default, that can keep what people enter, hold files, ask the model and act through Fabric.
+audience: Organization members creating and using Workspaces
+owner: Platform team
 ---
 
 A Workspace is a page that Fabric Agent writes for your organization: a delivery board, a weekly digest, a list of open decisions, a small tool with a refresh button. You describe what you want to see, the agent writes the whole page, saves it, opens it and explains what it shows. Nothing on the page is a template, so asking for a new section or a different layout simply rewrites the page.
@@ -70,6 +72,44 @@ Ask Fabric Agent:
 The selector lists members of the configured project's teams, including people with no assigned work items. Choose a member to read their counts. **Refresh** reads the latest counts and instruction files. A page that checks its connection can enable Refresh after you finish setup, without being rewritten.
 
 Counts apply to the selected project and the viewer's access. When a read cannot finish, the page should explain that the result is incomplete and leave exact totals unavailable. Coding Instructions counts come from the attached instruction source; repository reads identify the Git commit they used.
+
+## Run a workflow from a Workspace
+
+Ask Fabric Agent to add controls for a workflow you already use:
+
+> Connect this Workspace to my published weekly summary workflow. Add input fields, a Run button, recent run status and a link to its result. Keep the layout editable through this chat.
+
+The Workspace and workflow must belong to you and be attached to the same project. Confirm the connection when the agent asks. The page can then start that workflow with the inputs you enter and show its recent runs. Scheduled runs continue to use the workflow's schedule.
+
+Describe changes to Fabric Agent, or open the workflow in the builder, to change its sources, instructions, model or schedule. Publish workflow changes and ask the agent to confirm the updated connection before running the changed version from the Workspace. Its status and run history remain available when it is paused or needs confirmation again.
+
+Making a copy does not copy permission to run the original workflow. Restoring an earlier page version does not restore a revoked workflow connection. Ask the agent to connect the workflow you want to use with that page.
+
+## Customize the page and its automation
+
+Describe changes in the page's Fabric Agent chat. You can ask for a different layout,
+filters, source links or new calculation rules. The agent can write the page and the
+workflow's scripts, while the [Workflow Builder](/docs/features/workflow-builder) lets you
+inspect and edit the steps yourself.
+
+For example, ask:
+
+> Create a daily review for this project's assigned stories. Let me choose the assignee
+> and review model in the Workspace. Compare requirements and comments with the previous
+> run, reuse unchanged analysis, and add a button that forces a fresh review. Show links
+> to the stories, source instructions, workflow and report. Keep the schedule inactive
+> until I choose its settings.
+
+Tell the agent which connected sources, registered models, agents and skills to use.
+Workflow data nodes can save settings and comparison baselines as JSON records on the
+page. The script decides what a change means for your task. The available workflow nodes
+and your current permissions determine which services it can call. Keep credentials in
+Fabric's connection settings, outside the page and its scripts.
+
+After changing a workflow, save and publish it, then ask the agent to confirm its updated
+connection to the Workspace. Open **Settings → AI Usage** to inspect recorded model calls.
+Use the workflow's run history to investigate failed steps and their available inputs,
+outputs and errors.
 
 ## What a page can keep, ask and read
 

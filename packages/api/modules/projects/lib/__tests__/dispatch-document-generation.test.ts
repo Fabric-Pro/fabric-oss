@@ -19,6 +19,10 @@
  *     describe() and WITHOUT touching the row.
  *   - The row is marked QUEUED (never GENERATING) after the start, carrying
  *     this attempt's identity and the workflow id the watchdog reads.
+ *   - A queue mark that landed nudges the document's open pages once, ids
+ *     only and without being waited for; a declined mark, a duplicate or
+ *     joined run, and a start that never happened send nothing, and a
+ *     failed nudge never fails the dispatch (Fizzy #2946).
  *   - The workflow is told that same identity, without which its
  *     QUEUED → GENERATING flip is skipped entirely.
  *   - `skipDependencyWait` never reaches the workflow from a caller.
@@ -57,6 +61,7 @@ const { mocks } = vi.hoisted(() => ({
 		isProposalClientDocument: vi.fn(),
 		withLiveRunDispatchLock: vi.fn(),
 		withDeadline: vi.fn(),
+		emitDocumentChange: vi.fn(),
 	},
 }));
 
@@ -88,6 +93,10 @@ vi.mock("@repo/logs", () => ({
 
 vi.mock("../../../../lib/temporal-correlation", () => ({
 	withCorrelationMemo: <T>(args: T) => args,
+}));
+
+vi.mock("../../../../lib/realtime", () => ({
+	emitDocumentChange: mocks.emitDocumentChange,
 }));
 
 import {
@@ -149,6 +158,7 @@ beforeEach(() => {
 		}),
 	);
 	mocks.markDocumentGenerationFailed.mockResolvedValue(undefined);
+	mocks.emitDocumentChange.mockResolvedValue(undefined);
 	mocks.workflowStart.mockImplementation(
 		async (_name: string, options: { workflowId: string }) => ({
 			workflowId: options.workflowId,
@@ -581,6 +591,162 @@ describe("dispatchDocumentGeneration — tri-state recovery", () => {
 
 		expect(result.outcome).toBe("statusUnknown");
 		expect(mocks.markDocumentGenerationFailed).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A page already open on the document hears nothing else when the row leaves
+ * COMPLETE or FAILED for QUEUED, so the dispatch nudges it (Fizzy #2946).
+ */
+describe("dispatchDocumentGeneration — an open page is told the document is queued", () => {
+	it("nudges the document's page once, ids only, after the queue mark lands", async () => {
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("started");
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+		const [payload] = mocks.emitDocumentChange.mock.calls[0];
+		expect(payload).toEqual({
+			projectId: PROJECT_ID,
+			documentId: DOCUMENT_ID,
+			action: "updated",
+			userId: USER_ID,
+			userName: expect.any(String),
+			documentType: "PRD",
+		});
+		const [queuedOrder] =
+			mocks.markDocumentGenerationQueued.mock.invocationCallOrder;
+		const [nudgeOrder] = mocks.emitDocumentChange.mock.invocationCallOrder;
+		expect(queuedOrder).toBeLessThan(nudgeOrder);
+	});
+
+	it.each(["newer-run", "live-row"] as const)(
+		"sends nothing when the mark is declined (%s)",
+		async (declinedFor) => {
+			// The row stays with whoever owns it; this request queued nothing.
+			mocks.markDocumentGenerationQueued.mockResolvedValue({
+				applied: false,
+				generationStartedAt: new Date(),
+				declinedFor,
+			});
+
+			const result = await dispatchDocumentGeneration(baseInput());
+
+			expect(result.outcome).toBe("started");
+			expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+		},
+	);
+
+	it("sends nothing when the mark matches nothing and the request fails", async () => {
+		mocks.markDocumentGenerationQueued.mockResolvedValue({
+			applied: false,
+			generationStartedAt: new Date(),
+			declinedFor: "unowned",
+		});
+
+		await expect(dispatchDocumentGeneration(baseInput())).rejects.toThrow(
+			/could not be queued/,
+		);
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("sends nothing for a duplicate start, which marks nothing", async () => {
+		mocks.workflowStart.mockRejectedValue(
+			new WorkflowExecutionAlreadyStartedError(
+				"Workflow execution already started",
+				"unused-placeholder-workflow-id",
+				"projectDocumentGenerationWorkflow",
+			),
+		);
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("alreadyInProgress");
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("sends nothing for a start that never happened, though its mark had landed", async () => {
+		mocks.workflowStart.mockRejectedValue(
+			new Error("temporal connection refused: internal-host:1234"),
+		);
+		mocks.workflowDescribe.mockRejectedValue(
+			new WorkflowNotFoundError(
+				"Workflow execution not found",
+				"unused-placeholder-workflow-id",
+				undefined,
+			),
+		);
+
+		await expect(dispatchDocumentGeneration(baseInput())).rejects.toThrow(
+			"internal-host",
+		);
+		expect(mocks.markDocumentGenerationQueued).toHaveBeenCalledTimes(1);
+		expect(mocks.markDocumentGenerationFailed).toHaveBeenCalledTimes(1);
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("nudges once when a failed start turns out to be running", async () => {
+		mocks.workflowStart.mockRejectedValue(new Error("lost response"));
+		mocks.workflowDescribe.mockResolvedValue({
+			runId: "live-run-id",
+			status: { name: "RUNNING" },
+		});
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("started");
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("nudges once for an ambiguous start, which is queued and treated as started", async () => {
+		mocks.workflowStart.mockRejectedValue(new Error("lost response"));
+		mocks.workflowDescribe.mockRejectedValue(
+			new Error("deadline exceeded"),
+		);
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("statusUnknown");
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not wait for the nudge", async () => {
+		mocks.emitDocumentChange.mockReturnValue(new Promise(() => {}));
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("started");
+	});
+
+	it("still reports the started run when the nudge fails, and logs the failure", async () => {
+		mocks.emitDocumentChange.mockRejectedValue(
+			new Error("realtime unreachable"),
+		);
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("started");
+		await vi.waitFor(() =>
+			expect(mocks.loggerWarn).toHaveBeenCalledWith(
+				"background continuation failed",
+				expect.objectContaining({ message: "realtime unreachable" }),
+			),
+		);
+	});
+
+	it("still reports the started run when the nudge throws before it is sent", async () => {
+		mocks.emitDocumentChange.mockImplementation(() => {
+			throw new Error("realtime misconfigured");
+		});
+
+		const result = await dispatchDocumentGeneration(baseInput());
+
+		expect(result.outcome).toBe("started");
+		await vi.waitFor(() =>
+			expect(mocks.loggerWarn).toHaveBeenCalledWith(
+				"background continuation failed",
+				expect.objectContaining({ message: "realtime misconfigured" }),
+			),
+		);
 	});
 });
 
@@ -1018,6 +1184,41 @@ describe("dispatchDocumentGeneration — a client-document Proposal joins its li
 		expect(mocks.withLiveRunDispatchLock).not.toHaveBeenCalled();
 		expect(mocks.getHandle).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+	});
+
+	it("nudges the page once when a new run is queued under the lock, without holding the lock for it", async () => {
+		running.delete(OTHER_WORKFLOW_ID);
+		mocks.emitDocumentChange.mockReturnValue(new Promise(() => {}));
+
+		const result = await dispatchDocumentGeneration(proposalInput());
+
+		expect(result.outcome).toBe("started");
+		expect(mocks.withLiveRunDispatchLock).toHaveBeenCalledTimes(1);
+		expect(mocks.emitDocumentChange).toHaveBeenCalledTimes(1);
+		expect(mocks.emitDocumentChange.mock.calls[0][0]).toMatchObject({
+			projectId: PROJECT_ID,
+			documentId: DOCUMENT_ID,
+			action: "updated",
+			documentType: "PROPOSAL",
+		});
+	});
+
+	it("sends nothing when the request joins the live run", async () => {
+		const result = await dispatchDocumentGeneration(
+			proposalInput({ userId: "user-2" }),
+		);
+
+		expect(result.outcome).toBe("alreadyInProgress");
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
+	});
+
+	it("sends nothing when Temporal cannot say whether the live run still goes", async () => {
+		mocks.workflowDescribe.mockRejectedValue(new Error("unavailable"));
+
+		const result = await dispatchDocumentGeneration(proposalInput());
+
+		expect(result.outcome).toBe("liveRunUnknown");
+		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
 	});
 
 	it("keeps superseding a Proposal while the Proposal artifact is off", async () => {

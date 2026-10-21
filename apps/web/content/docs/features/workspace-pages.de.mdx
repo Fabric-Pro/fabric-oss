@@ -1,6 +1,8 @@
 ---
 title: Workspaces
 description: Seiten, die Fabric Agent aus einer Beschreibung für Ihre Organisation schreibt, standardmäßig mit allen darin geteilt, die festhalten, was Personen eingeben, Dateien aufbewahren, das Modell fragen und über Fabric handeln können.
+audience: Organisationsmitglieder, die Workspaces erstellen und verwenden
+owner: Platform team
 ---
 
 Ein Workspace ist eine Seite, die Fabric Agent für Ihre Organisation schreibt: ein Lieferstatus-Board, eine wöchentliche Zusammenfassung, eine Liste offener Entscheidungen, ein kleines Werkzeug mit einer Aktualisieren-Schaltfläche. Sie beschreiben, was Sie sehen möchten; der Agent schreibt die ganze Seite, speichert sie, öffnet sie und erklärt, was sie zeigt. Nichts auf der Seite ist eine Vorlage – wer einen neuen Abschnitt oder ein anderes Layout wünscht, lässt die Seite einfach neu schreiben.
@@ -70,6 +72,46 @@ Bitten Sie Fabric Agent:
 Die Auswahl enthält Mitglieder der Teams im eingerichteten Projekt, einschließlich Personen ohne zugewiesene Arbeitselemente. Wählen Sie eine Person aus, um ihre Zahlen abzurufen. **Refresh** liest die aktuellen Zahlen und Anweisungsdateien. Eine Seite, die ihre Verbindung prüft, kann Refresh nach der Einrichtung aktivieren, ohne neu geschrieben zu werden.
 
 Die Zahlen beziehen sich auf das ausgewählte Projekt und den Zugriff der betrachtenden Person. Kann ein Abruf nicht abgeschlossen werden, sollte die Seite das unvollständige Ergebnis erklären und keine exakten Gesamtzahlen anzeigen. Die Anzahl der Coding Instructions stammt aus der verbundenen Anweisungsquelle. Beim Lesen aus einem Repository wird der verwendete Git-Commit angegeben.
+
+## Einen Workflow aus einem Workspace starten
+
+Bitten Sie Fabric Agent, Bedienelemente für einen bestehenden Workflow hinzuzufügen:
+
+> Verbinde diesen Workspace mit meinem veröffentlichten Workflow für die wöchentliche Zusammenfassung. Ergänze Eingabefelder, eine Run-Schaltfläche, den Status der letzten Läufe und einen Link zum Ergebnis. Das Layout möchte ich in diesem Chat weiter ändern können.
+
+Workspace und Workflow müssen Ihnen gehören und mit demselben Projekt verknüpft sein. Bestätigen Sie die Verbindung, wenn der Agent danach fragt. Die Seite kann den Workflow anschließend mit Ihren Eingaben starten und seine letzten Läufe anzeigen. Geplante Läufe verwenden weiterhin den Zeitplan des Workflows.
+
+Beschreiben Sie Änderungen an Quellen, Anweisungen, Modell oder Zeitplan im Chat mit Fabric Agent, oder öffnen Sie den Workflow im Builder. Veröffentlichen Sie Workflow-Änderungen und lassen Sie die aktualisierte Verbindung vom Agenten erneut bestätigen, bevor Sie die geänderte Version aus dem Workspace starten. Status und Verlauf bleiben auch bei einem pausierten Workflow oder einer ausstehenden Bestätigung verfügbar.
+
+Eine Kopie übernimmt nicht die Berechtigung, den ursprünglichen Workflow auszuführen. Die Wiederherstellung einer früheren Seitenversion stellt keine widerrufene Workflow-Verbindung wieder her. Bitten Sie den Agenten, den gewünschten Workflow mit dieser Seite zu verbinden.
+
+## Seite und Automatisierung anpassen
+
+Beschreiben Sie Änderungen im Fabric-Agent-Chat der Seite. Sie können ein anderes Layout,
+Filter, Quellenlinks oder neue Berechnungsregeln anfordern. Der Agent kann die Seite und
+die Skripte des Workflows schreiben. Im [Workflow-Builder](/docs/features/workflow-builder)
+können Sie die Schritte selbst prüfen und bearbeiten.
+
+Bitten Sie zum Beispiel:
+
+> Erstelle einen täglichen Review der zugewiesenen Stories dieses Projekts. Lass mich im
+> Workspace die zuständige Person und das Review-Modell auswählen. Vergleiche Anforderungen
+> und Kommentare mit dem vorherigen Lauf, verwende unveränderte Analysen erneut und füge
+> eine Schaltfläche für einen erzwungenen neuen Review hinzu. Verlinke Stories,
+> Quellanweisungen, Workflow und Bericht. Lass den Zeitplan inaktiv, bis ich die
+> Einstellungen ausgewählt habe.
+
+Nennen Sie dem Agenten die verbundenen Quellen, registrierten Modelle, Agenten und Skills,
+die er verwenden soll. Datenknoten des Workflows können Einstellungen und Vergleichsstände
+als JSON-Datensätze auf der Seite speichern. Das Skript legt fest, was für Ihre Aufgabe als
+Änderung gilt. Die verfügbaren Workflow-Knoten und Ihre aktuellen Berechtigungen bestimmen,
+welche Dienste aufgerufen werden können. Hinterlegen Sie Zugangsdaten in den
+Verbindungseinstellungen von Fabric, außerhalb der Seite und ihrer Skripte.
+
+Speichern und veröffentlichen Sie Workflow-Änderungen. Bitten Sie anschließend den Agenten,
+die aktualisierte Verbindung zum Workspace zu bestätigen. Unter **Settings → AI Usage**
+sehen Sie erfasste Modellaufrufe. Im Verlauf des Workflows finden Sie fehlgeschlagene
+Schritte und deren verfügbare Eingaben, Ausgaben und Fehler.
 
 ## Was eine Seite speichern, fragen und lesen kann
 

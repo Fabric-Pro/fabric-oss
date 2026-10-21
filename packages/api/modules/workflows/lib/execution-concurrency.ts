@@ -18,7 +18,8 @@ import {
 	reserveWorkflowExecution,
 	type WorkflowExecution,
 	type WorkflowTriggerType,
-	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
+	type WorkspaceWorkflowRunGuard,
 } from "@repo/database";
 
 /**
@@ -105,7 +106,7 @@ export type ConcurrencyReservation =
 export async function createExecutionWithinConcurrencyCap(args: {
 	userId: string;
 	organizationId?: string | null;
-	workspaceBinding?: WorkspaceWorkflowBindingGuard;
+	workspaceBinding?: WorkspaceWorkflowRowGuard | WorkspaceWorkflowRunGuard;
 	data: {
 		workflowId: string;
 		version: number;

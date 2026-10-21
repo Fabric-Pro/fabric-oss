@@ -325,6 +325,7 @@ export async function executeAgentTaskStep(
 			),
 			executionId: params.executionId,
 			workflowExecutionId: params.executionId,
+			...(params.frameId ? { frameId: params.frameId } : {}),
 			promptVersionId: instructions.promptVersionId,
 			jobType: params.jobType,
 		});

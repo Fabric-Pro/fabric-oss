@@ -170,13 +170,13 @@ describe("bound review run and safe history", () => {
 				confirmedProjectId: "project-1",
 				requirePublished: true,
 				source: "workspace-story-review",
-				triggerData: { forceReview: true },
 				idempotencyKey: "workspace-review:workspace-1:click-1",
 				nodes: expect.arrayContaining([
 					expect.objectContaining({ id: "review" }),
 				]),
 				edges: workflow().edges,
-				workspaceReview: {
+				workspaceLaunch: {
+					kind: "story-review",
 					binding: {
 						workflowId: "workflow-1",
 						...actor,
@@ -185,8 +185,10 @@ describe("bound review run and safe history", () => {
 						workflowUpdatedAt: updatedAt,
 						frameUpdatedAt: updatedAt,
 						status: "PUBLISHED",
+						requirement: { kind: "row-only" },
 					},
 					nodeId: "review",
+					forceReview: true,
 				},
 			}),
 		);
@@ -208,82 +210,6 @@ describe("bound review run and safe history", () => {
 			runWorkspaceStoryReviewCommand(actor, executionBinding, runInput),
 		).rejects.toMatchObject({ code: "CONFLICT" });
 	});
-
-	it("rejects a changed force flag under the same key", async () => {
-		mocks.start.mockResolvedValueOnce({
-			status: "started",
-			deduplicated: true,
-			execution: {
-				id: "run-1",
-				triggerInput: {
-					source: "workspace-story-review",
-					workspaceReviewBinding: {
-						kind: "workspace-story-review",
-						version: 1,
-						workflowId: "workflow-1",
-						workspaceFrameId: "workspace-1",
-						projectId: "project-1",
-						nodeId: "review",
-						workflowUpdatedAt: updatedAt.toISOString(),
-						frameUpdatedAt: updatedAt.toISOString(),
-						forceReview: false,
-					},
-				},
-			},
-		});
-		await expect(
-			runWorkspaceStoryReviewCommand(actor, executionBinding, {
-				...runInput,
-				forceReview: true,
-			}),
-		).rejects.toMatchObject({ code: "CONFLICT" });
-	});
-
-	it.each(["workflow", "frame"] as const)(
-		"rejects the same key and force after a %s revision changes, without retrying the start",
-		async (changed) => {
-			const revision = new Date("2026-01-01T12:01:00Z");
-			const current = {
-				...workflow(),
-				updatedAt: changed === "workflow" ? revision : updatedAt,
-			};
-			const currentBinding = {
-				...executionBinding,
-				updatedAt: changed === "frame" ? revision : updatedAt,
-			};
-			mocks.load.mockResolvedValueOnce(current);
-			mocks.start.mockResolvedValueOnce({
-				status: "started",
-				deduplicated: true,
-				execution: {
-					id: "previous-run",
-					triggerInput: {
-						source: "workspace-story-review",
-						workspaceReviewBinding: {
-							kind: "workspace-story-review",
-							version: 1,
-							workflowId: "workflow-1",
-							workspaceFrameId: "workspace-1",
-							projectId: "project-1",
-							nodeId: "review",
-							workflowUpdatedAt: updatedAt.toISOString(),
-							frameUpdatedAt: updatedAt.toISOString(),
-							forceReview: false,
-						},
-					},
-				},
-			});
-			await expect(
-				runWorkspaceStoryReviewCommand(actor, currentBinding, {
-					...runInput,
-					expectedUpdatedAt: current.updatedAt.toISOString(),
-					forceReview: false,
-				}),
-			).rejects.toMatchObject({ code: "CONFLICT" });
-			expect(mocks.start).toHaveBeenCalledOnce();
-			expect(mocks.update).not.toHaveBeenCalled();
-		},
-	);
 
 	it.each([
 		{ nodes: [] },

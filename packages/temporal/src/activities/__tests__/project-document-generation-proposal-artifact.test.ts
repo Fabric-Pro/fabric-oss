@@ -3852,3 +3852,104 @@ describe("updateProjectDocumentStatus — guarded by the live run", () => {
 		}
 	});
 });
+
+/**
+ * The editor's save over a run that stalled ends the run in the same write
+ * (Fizzy #2946): the document is COMPLETE with the person's body and no run
+ * token at all. A run that wakes afterwards still carries its token, so each
+ * of its guarded writes finds nothing it may write to.
+ */
+describe("a run woken after an editor save ended it", () => {
+	const EDITOR_BODY = "## Executive Summary\n\nWhat the person wrote.";
+
+	/** Run-2 stalled; the person's save completed the document over it. */
+	function afterEditorEndedRunTwo(): LiveStore {
+		const store = whileRunTwoGenerates();
+		store.document = {
+			...store.document,
+			status: "COMPLETE",
+			content: EDITOR_BODY,
+			version: 4,
+			liveRunId: null,
+			liveAttempt: null,
+			liveContent: null,
+		};
+		store.versions.push({
+			id: "version-row-3",
+			version: 3,
+			content: OLD_MAIN,
+			changeDescription: null,
+			changedBy: "user-1",
+			promptVersionId: null,
+		});
+		return store;
+	}
+
+	it("refuses its final save as stale and keeps the person's body", async () => {
+		const store = installLiveStore(afterEditorEndedRunTwo());
+		const before = structuredClone({
+			document: store.document,
+			versions: store.versions,
+		});
+
+		expectStale(await failureOf(saveForRunTwo()));
+
+		expect(store.document).toEqual(before.document);
+		expect(store.versions).toEqual(before.versions);
+		expect(mocks.tx.projectDocument.updateMany).not.toHaveBeenCalled();
+		expectNoUnguardedWrites();
+	});
+
+	it("refuses its version as stale and writes nothing", async () => {
+		const store = installLiveStore(afterEditorEndedRunTwo());
+		const before = structuredClone({
+			document: store.document,
+			versions: store.versions,
+		});
+
+		expectStale(await failureOf(versionForRunTwo()));
+
+		expect(store.document).toEqual(before.document);
+		expect(store.versions).toEqual(before.versions);
+		expectNoUnguardedWrites();
+	});
+
+	it("neither reopens the document with a progress write nor fails it", async () => {
+		const row = afterEditorEndedRunTwo().document;
+		const before = structuredClone(row);
+		mocks.projectDocument.updateMany.mockImplementation(
+			async ({
+				where,
+				data,
+			}: {
+				where: Record<string, unknown>;
+				data: Partial<LiveDocument>;
+			}) => {
+				if (!documentMatches(row, where)) {
+					return { count: 0 };
+				}
+				Object.assign(row, data);
+				return { count: 1 };
+			},
+		);
+
+		await updateProjectDocumentStatus({
+			documentId: "doc-1",
+			status: "GENERATING",
+			progress: 80,
+			liveRunId: "run-2",
+		});
+		await expect(
+			updateProjectDocumentStatus({
+				documentId: "doc-1",
+				status: "FAILED",
+				progress: 0,
+				error: "The agent could not be reached.",
+				liveRunId: "run-2",
+			}),
+		).resolves.toBeUndefined();
+
+		expect(row).toEqual(before);
+		expect(mocks.projectDocument.update).not.toHaveBeenCalled();
+	});
+});

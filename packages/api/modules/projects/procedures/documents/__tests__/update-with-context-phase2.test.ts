@@ -254,8 +254,11 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 			expect.objectContaining({
 				expectedVersion: 5,
 				expectedContentHash: PREVIEW_HASH,
-				refuseWhileGenerating: true,
 			}),
+		);
+		// A confirm is never exempt from the write's live-run refusal.
+		expect(mocks.updateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 	});
 
@@ -331,10 +334,9 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 		const [, data] = mocks.updateDocument.mock.calls[0];
 		expect(data.expectedVersion).toBe(5);
 		expect(data).not.toHaveProperty("expectedContentHash");
-		expect(data).not.toHaveProperty("refuseWhileGenerating");
 	});
 
-	it("asks a Proposal confirm to refuse a live run with the Proposal gate off, without requiring a base", async () => {
+	it("leaves a Proposal confirm to the write's live-run refusal with the Proposal gate off, without requiring a base", async () => {
 		// The gate rolled back mid-run: the run keeps writing, so the confirm
 		// must still be refused under it. Only the base requirement follows
 		// the gate.
@@ -348,7 +350,7 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 		const [, data] = mocks.updateDocument.mock.calls[0];
 		expect(data.expectedVersion).toBe(5);
 		expect(data).not.toHaveProperty("expectedContentHash");
-		expect(data.refuseWhileGenerating).toBe(true);
+		expect(data).not.toHaveProperty("allowDuringLiveRun");
 	});
 
 	it("rejects half a base before writing", async () => {

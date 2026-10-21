@@ -28,6 +28,32 @@ function discover(query: string, activeSession = session) {
 
 describe("page authoring discovery", () => {
 	it.each([
+		"fabric_page_get_workflow",
+		"fabric_page_run_workflow",
+		"fabric_page_list_workflow_runs",
+	])(
+		"offers provider-neutral %s without graph or authority overrides",
+		(name) => {
+			const tool = discover(name).tools[0];
+			expect(tool.name).toBe(name);
+			expect(tool.inputSchema.additionalProperties).toBe(false);
+			for (const field of [
+				"nodes",
+				"edges",
+				"variables",
+				"projectId",
+				"organizationId",
+				"workspaceWorkflowBinding",
+			]) {
+				expect(tool.inputSchema.properties).not.toHaveProperty(field);
+			}
+		},
+	);
+	it("never offers binding authority to page scripts", () => {
+		expect(NOT_FOR_PAGES.has("fabric_bind_workspace_workflow")).toBe(true);
+		expect(discover("fabric_bind_workspace_workflow").tools).toEqual([]);
+	});
+	it.each([
 		"fabric_page_get_story_review",
 		"fabric_page_configure_story_review",
 		"fabric_page_run_story_review",

@@ -65,6 +65,34 @@ describe("synthesizeToolSpeech", () => {
 		}
 	});
 
+	it.each([200, 503])(
+		"retains the Workspace origin for speech HTTP %s",
+		async (status) => {
+			h.getAiProviderApiKeyByProvider.mockResolvedValue({
+				...EMPTY_PROVIDER_CONFIG,
+				provider: "OPENAI_DIRECT",
+				apiKey: "key-example",
+				source: "organization",
+			});
+			fetchMock.mockResolvedValue(
+				new Response(new Uint8Array([1]), { status }),
+			);
+			const usageOrigin = {
+				projectId: "project-example",
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+			};
+			await synthesizeToolSpeech({ ...REQUEST, usageOrigin });
+			expect(h.logAiUsageAsync).toHaveBeenCalledOnce();
+			expect(h.logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+				...usageOrigin,
+				featureKey: "text-to-speech",
+				taskType: "AUDIO",
+				success: status === 200,
+			});
+		},
+	);
+
 	it.each(["conversation-example", undefined])(
 		"records the supplied speech conversation (%s)",
 		async (usageConversationId) => {

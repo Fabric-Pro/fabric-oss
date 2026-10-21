@@ -429,6 +429,80 @@ describe("markDocumentGenerationRunning", () => {
 			await markDocumentGenerationRunning(DOCUMENT_ID, STARTED_AT),
 		).toBe("superseded");
 	});
+
+	/**
+	 * The flip landed but the activity's answer was lost, so the activity is
+	 * retried and finds the row GENERATING at this attempt's own identity.
+	 * Answering not-yet-visible there made the run wait out a mark that had
+	 * already happened and then fail as superseded.
+	 */
+	it("recognises its own landed flip on a retry, writing nothing again", async () => {
+		updateMany.mockResolvedValue({ count: 0 });
+		findUnique.mockResolvedValue({
+			status: "GENERATING",
+			// An equal instant, not the same object: the row is read back.
+			generationStartedAt: new Date(STARTED_AT.getTime()),
+		});
+
+		expect(
+			await markDocumentGenerationRunning(DOCUMENT_ID, STARTED_AT),
+		).toBe("already-started");
+		expect(updateMany).toHaveBeenCalledTimes(1);
+		expect(findUnique).toHaveBeenCalledWith({
+			where: { id: DOCUMENT_ID },
+			select: { generationStartedAt: true, status: true },
+		});
+	});
+
+	it("still reports supersession when a newer attempt is already generating", async () => {
+		updateMany.mockResolvedValue({ count: 0 });
+		findUnique.mockResolvedValue({
+			status: "GENERATING",
+			generationStartedAt: new Date(STARTED_AT.getTime() + 1),
+		});
+
+		expect(
+			await markDocumentGenerationRunning(DOCUMENT_ID, STARTED_AT),
+		).toBe("superseded");
+	});
+
+	it.each([
+		["an older attempt is generating", "GENERATING", -1_000],
+		// Queued at this identity: the flip raced the read, so it is retried.
+		["this attempt's row is queued", "QUEUED", 0],
+	])("keeps not-yet-visible when %s", async (_label, status, offsetMs) => {
+		updateMany.mockResolvedValue({ count: 0 });
+		findUnique.mockResolvedValue({
+			status,
+			generationStartedAt: new Date(STARTED_AT.getTime() + offsetMs),
+		});
+
+		expect(
+			await markDocumentGenerationRunning(DOCUMENT_ID, STARTED_AT),
+		).toBe("not-yet-visible");
+	});
+
+	/**
+	 * Failed (by the dispatch, the stale-run watchdog or the run itself) or
+	 * otherwise moved on at this attempt's own identity: terminal for the
+	 * attempt, and nothing returns the row to QUEUED there. Answering
+	 * not-yet-visible made the run wait out a mark that could never come
+	 * before failing as superseded all the same.
+	 */
+	it.each(["FAILED", "COMPLETE", "DRAFT"])(
+		"reports supersession at once when this attempt's row is already %s",
+		async (status) => {
+			updateMany.mockResolvedValue({ count: 0 });
+			findUnique.mockResolvedValue({
+				status,
+				generationStartedAt: new Date(STARTED_AT.getTime()),
+			});
+
+			expect(
+				await markDocumentGenerationRunning(DOCUMENT_ID, STARTED_AT),
+			).toBe("superseded");
+		},
+	);
 });
 
 describe("setDocumentGenerationQueueReason", () => {

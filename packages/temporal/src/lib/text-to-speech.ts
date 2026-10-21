@@ -8,6 +8,10 @@ import {
 	guardDispatch,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../workflows/orchestrator/usage-attribution";
 
 const TTS_MODEL = "tts-1";
 const TTS_MAX_CHARS = 4096;
@@ -15,8 +19,7 @@ const TTS_MAX_CHARS = 4096;
 const TTS_USD_PER_CHAR = 15 / 1_000_000;
 const TTS_FEATURE_KEY = "text-to-speech" satisfies AiFeatureKey;
 
-export interface TextToSpeechRequest {
-	usageConversationId?: string;
+export interface TextToSpeechRequest extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string | null;
 	text: string;
@@ -96,6 +99,7 @@ function recordSpeechUsage(
 		userId: request.userId,
 		organizationId: request.organizationId ?? undefined,
 		conversationId: request.usageConversationId,
+		...secondaryUsageFields(request),
 		provider: "OPENAI_DIRECT",
 		providerModelId: TTS_MODEL,
 		taskType: "AUDIO",

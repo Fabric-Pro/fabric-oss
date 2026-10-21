@@ -61,22 +61,25 @@ export type BacklogUpdateSessionDetail = Prisma.BacklogUpdateSessionGetPayload<{
  * from the authenticated request so they are accurate even if the apply
  * workflow never reaches its finalize step.
  */
-export async function createBacklogUpdateSession(params: {
-	projectId: string;
-	pendingProposalId?: string | null;
-	conversationId?: string | null;
-	source?: string;
-	summary: string;
-	changes: Prisma.InputJsonValue;
-	changeCount: number;
-	createCount: number;
-	updateCount: number;
-	/** Snapshot of the AI Update chat transcript captured at apply time. */
-	messages?: Prisma.InputJsonValue | null;
-	userId?: string | null;
-	organizationId?: string | null;
-}) {
-	return await db.backlogUpdateSession.create({
+export async function createBacklogUpdateSession(
+	params: {
+		projectId: string;
+		pendingProposalId?: string | null;
+		conversationId?: string | null;
+		source?: string;
+		summary: string;
+		changes: Prisma.InputJsonValue;
+		changeCount: number;
+		createCount: number;
+		updateCount: number;
+		/** Snapshot of the AI Update chat transcript captured at apply time. */
+		messages?: Prisma.InputJsonValue | null;
+		userId?: string | null;
+		organizationId?: string | null;
+	},
+	client: Prisma.TransactionClient = db,
+) {
+	return await client.backlogUpdateSession.create({
 		data: {
 			projectId: params.projectId,
 			pendingProposalId: params.pendingProposalId ?? null,

@@ -26,6 +26,8 @@ export interface StepParams {
 	workflowId?: string;
 	/** The `WorkflowExecution` row the node runs under. */
 	executionId?: string;
+	/** Server-derived Workspace origin; never read from graph config or trigger data. */
+	frameId?: string;
 	/** The node's id within the workflow graph. */
 	nodeId?: string;
 	/** Background-attribution label set by the executing pipeline (Fizzy #1894). */

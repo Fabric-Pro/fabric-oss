@@ -46,7 +46,10 @@ import {
 	reserveWorkflowExecution,
 } from "../prisma/queries/workflows/executions";
 import { listWorkspaceReviewHistory } from "../prisma/queries/workflows/workspace-review-history";
-import { WorkspaceWorkflowBindingConflictError } from "../prisma/queries/workflows/workspace-workflow-binding";
+import {
+	WorkspaceWorkflowBindingConflictError,
+	type WorkspaceWorkflowRowGuard,
+} from "../prisma/queries/workflows/workspace-workflow-binding";
 
 const BASE = {
 	workflowId: "wf-1",
@@ -79,7 +82,7 @@ beforeEach(() => {
 	}));
 });
 
-const binding = {
+const binding: WorkspaceWorkflowRowGuard = {
 	workflowId: BASE.workflowId,
 	userId: BASE.userId,
 	organizationId: "org-1",
@@ -88,6 +91,7 @@ const binding = {
 	workflowUpdatedAt: new Date("2026-01-01T12:00:00Z"),
 	frameUpdatedAt: new Date("2026-01-01T11:00:00Z"),
 	status: "PUBLISHED" as const,
+	requirement: { kind: "row-only" },
 };
 
 describe("bound controller reservations and history", () => {

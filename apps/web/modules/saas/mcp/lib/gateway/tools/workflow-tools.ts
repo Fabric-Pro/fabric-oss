@@ -24,6 +24,7 @@ import { z } from "zod";
 import { errorResult, jsonResult } from "../tool-results";
 import type { GatewaySession, ToolCallResult } from "../types";
 import { clampLimit } from "./frame-context";
+import { handleBindWorkspaceWorkflow } from "./page-workflows";
 import {
 	WORKFLOW_GRAPH_LIMITS,
 	WORKFLOW_LIST_LIMIT,
@@ -536,6 +537,7 @@ const handleResumeWorkflow: WorkflowToolHandler = async (args, session) => {
 
 export const WORKFLOW_TOOL_HANDLERS: ReadonlyMap<string, WorkflowToolHandler> =
 	new Map([
+		["fabric_bind_workspace_workflow", handleBindWorkspaceWorkflow],
 		["fabric_list_workflows", handleListWorkflows],
 		["fabric_get_workflow", handleGetWorkflow],
 		["fabric_list_workflow_runs", handleListWorkflowRuns],

@@ -234,19 +234,21 @@ describe("rejectDocumentRegeneration", () => {
 	});
 
 	/**
-	 * A client-document Proposal's body belongs to its generation run while
-	 * the run is queued or writing (Fizzy #2946). A Reject from a review
-	 * dialog still open when a newer run starts must not rewind under it.
+	 * A Proposal's body belongs to its generation run while the run is queued
+	 * or writing (Fizzy #2946). A Reject from a review dialog still open when
+	 * a newer run starts must not rewind under it. The refusal is the
+	 * helper's default for a Proposal; no caller has to ask for it.
 	 */
 	describe("refusing to rewind under a generation run", () => {
 		const NEW = "NEW content from regeneration";
 		const OLD = "OLD pre-regen content";
-		const armRegenState = (status: string) => {
+		const armRegenState = (status: string, type = "PROPOSAL") => {
 			docFindUniqueMock.mockResolvedValueOnce({
 				id: "doc-1",
 				version: 2,
 				content: NEW,
 				status,
+				type,
 			});
 			versionFindFirstMock
 				.mockResolvedValueOnce({
@@ -261,16 +263,34 @@ describe("rejectDocumentRegeneration", () => {
 				});
 		};
 
+		it("reads the document's type, which decides the refusal", async () => {
+			armRegenState("COMPLETE");
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 1,
+				content: OLD,
+			});
+
+			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+
+			expect(docFindUniqueMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					select: expect.objectContaining({
+						type: true,
+						status: true,
+					}),
+				}),
+			);
+		});
+
 		it.each(["QUEUED", "GENERATING"])(
-			"refuses a document read as %s, deleting and writing nothing",
+			"refuses a Proposal read as %s with no caller flag, deleting and writing nothing",
 			async (status) => {
 				armRegenState(status);
 
 				await expect(
-					rejectDocumentRegeneration("doc-1", {
-						userId: "user-1",
-						refuseWhileGenerating: true,
-					}),
+					rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
 				).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 				expect(versionDeleteMock).not.toHaveBeenCalled();
 				expect(docUpdateMock).not.toHaveBeenCalled();
@@ -278,7 +298,7 @@ describe("rejectDocumentRegeneration", () => {
 			},
 		);
 
-		it("rewinds a finished document conditioned on the version, body and no run", async () => {
+		it("rewinds a finished Proposal conditioned on the version, body and no run", async () => {
 			armRegenState("COMPLETE");
 			docUpdateManyMock.mockResolvedValue({ count: 1 });
 			docFindUniqueOrThrowMock.mockResolvedValue({
@@ -289,7 +309,6 @@ describe("rejectDocumentRegeneration", () => {
 
 			const result = await rejectDocumentRegeneration("doc-1", {
 				userId: "user-1",
-				refuseWhileGenerating: true,
 			});
 
 			expect(docUpdateMock).not.toHaveBeenCalled();
@@ -316,10 +335,7 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", {
-					userId: "user-1",
-					refuseWhileGenerating: true,
-				}),
+				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
 			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 			expect(docFindUniqueOrThrowMock).not.toHaveBeenCalled();
 		});
@@ -333,15 +349,12 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", {
-					userId: "user-1",
-					refuseWhileGenerating: true,
-				}),
+				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
 			).rejects.toBeInstanceOf(DocumentVersionConflictError);
 		});
 
-		it("keeps the unguarded rewind for a caller that does not ask", async () => {
-			armRegenState("GENERATING");
+		it("keeps the unguarded rewind for a non-Proposal document, even under a run", async () => {
+			armRegenState("GENERATING", "PRD");
 			docUpdateMock.mockResolvedValue({
 				id: "doc-1",
 				version: 1,

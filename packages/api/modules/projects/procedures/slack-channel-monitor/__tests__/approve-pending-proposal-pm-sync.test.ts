@@ -411,6 +411,31 @@ describe("approvePendingProposal (Slack) — ROADMAP_RECOMMENDATION refusal", ()
 describe("approval failure messages", () => {
 	it.each([
 		[
+			Object.assign(new Error("raw provider auth detail"), {
+				name: "ChatGptPlanAuthError",
+			}),
+			"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
+		],
+		[
+			Object.assign(new Error("raw usage detail"), {
+				name: "SubscriptionPlanExhaustedError",
+			}),
+			"Your ChatGPT plan has no usage left. Wait for its limit to reset, then try again.",
+		],
+		[
+			Object.assign(new Error("Choose another model in settings."), {
+				name: "ChatGptPlanModelNotServedError",
+			}),
+			"Choose another model in settings.",
+		],
+		[
+			Object.assign(new Error("Raise the AI usage limit in settings."), {
+				name: "AiUsageLimitExceededError",
+			}),
+			"Raise the AI usage limit in settings.",
+		],
+
+		[
 			Object.assign(
 				new Error(
 					"Invalid `prisma.story.update()` invocation in /app/x.ts: Timed out fetching a new connection from the connection pool",

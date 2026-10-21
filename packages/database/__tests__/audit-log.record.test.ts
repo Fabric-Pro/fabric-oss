@@ -61,6 +61,7 @@ import {
 	onAuditWriteFailure,
 	recordAudit,
 	recordAuditTx,
+	setAuditWriteScheduler,
 } from "../prisma/queries/audit-log";
 
 const incFailureMock = vi.fn();
@@ -189,6 +190,22 @@ describe("recordAudit (fire-and-forget)", () => {
 			"auth",
 			"success",
 		);
+	});
+
+	it("hands the write to the installed scheduler, already guarded against rejection", async () => {
+		const scheduled: Promise<void>[] = [];
+		setAuditWriteScheduler((write) => scheduled.push(write));
+		mocks.auditLogCreateMock.mockRejectedValue(new Error("DB down"));
+
+		try {
+			recordAudit(baseInput);
+
+			expect(scheduled).toHaveLength(1);
+			await expect(scheduled[0]).resolves.toBeUndefined();
+			expect(mocks.loggerErrorMock).toHaveBeenCalledTimes(1);
+		} finally {
+			setAuditWriteScheduler(null);
+		}
 	});
 });
 

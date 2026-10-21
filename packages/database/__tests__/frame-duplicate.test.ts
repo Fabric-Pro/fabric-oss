@@ -146,6 +146,19 @@ describe("duplicateFrame", () => {
 		});
 	});
 
+	it("never copies trusted workflow grants from the original row or content", async () => {
+		const source = original();
+		const forged = {
+			...source,
+			metadata: { workflowBindings: { version: 1, workflows: [] } },
+		};
+		await duplicateFrame({ original: forged, userId: "forker-1" });
+		expect(written().data.metadata).not.toHaveProperty("workflowBindings");
+		expect(writtenDocument().metadata).not.toHaveProperty(
+			"workflowBindings",
+		);
+	});
+
 	it("keeps an Artifact copy in the project and on the surface of the original", async () => {
 		await duplicateFrame({
 			original: original({ projectId: "project-1", surface: "artifact" }),

@@ -40,6 +40,7 @@ const PARAMS = {
 	projectId: "proj-1",
 	jobType: "workflow-builder" as const,
 	executionId: "execution-example",
+	frameId: "workspace",
 };
 
 describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
@@ -68,6 +69,7 @@ describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
 			taskType: "IMAGE",
 			jobType: "workflow-builder",
 			workflowExecutionId: "execution-example",
+			frameId: "workspace",
 			featureKey: "workflow",
 			success: true,
 			totalTokens: 0,

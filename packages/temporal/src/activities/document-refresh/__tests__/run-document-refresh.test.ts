@@ -271,7 +271,35 @@ describe("proposal mode (the default)", () => {
 			// The version the candidate was generated FROM — what lets the accepting
 			// human be told the document has moved on under it.
 			baselineVersion: 3,
+			// And the body it was generated from: the version alone does not
+			// name it.
+			baselineContentHash: contentIdentity(DOCUMENT.content),
 		});
+	});
+
+	it("records the identity of the body the model read, not of its own output", async () => {
+		// A Proposal run's final save writes its body at the old version, so
+		// the accept needs the body's identity to see that save. It must be the
+		// body as stored when the model read it: the accept compares it with
+		// the stored body, which the proposal's content never is.
+		getDocumentMock.mockResolvedValue({
+			...DOCUMENT,
+			content: "# PRD\n\nThe body as stored when the refresh read it.",
+		});
+
+		await runDocumentRefreshActivity(DUE);
+
+		const stored = storeProposalMock.mock.calls[0]?.[1] as {
+			baselineContentHash: string;
+		};
+		expect(stored.baselineContentHash).toBe(
+			contentIdentity(
+				"# PRD\n\nThe body as stored when the refresh read it.",
+			),
+		);
+		expect(stored.baselineContentHash).not.toBe(
+			contentIdentity(UPDATE.updatedDocument),
+		);
 	});
 
 	it("tells the document's watchers it is a proposal, not an edit", async () => {
@@ -952,6 +980,7 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 				content: UPDATE.updatedDocument,
 				summary: UPDATE.summary,
 				baselineVersion: 3,
+				baselineContentHash: contentIdentity(PROPOSAL_DOCUMENT.content),
 			});
 			expect(completeCycleMock).not.toHaveBeenCalled();
 			expect(sideEffectsMock).not.toHaveBeenCalled();
@@ -966,7 +995,10 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 		expect(proposalClientMock).not.toHaveBeenCalled();
 	});
 
-	it("conditions the write on the body the model read and refuses it under a run", async () => {
+	// The write refuses a run queued after this read on its own: the
+	// query's default for a Proposal's content write, which the refresh
+	// never opts out of.
+	it("conditions the write on the body the model read, never exempt from the run refusal", async () => {
 		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
 
 		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
@@ -977,8 +1009,10 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expect.objectContaining({
 				expectedVersion: 3,
 				expectedContentHash: contentIdentity(DOCUMENT.content),
-				refuseWhileGenerating: true,
 			}),
+		);
+		expect(updateDocumentMock.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 	});
 
@@ -1044,6 +1078,7 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expect.objectContaining({
 				content: UPDATE.updatedDocument,
 				baselineVersion: 3,
+				baselineContentHash: contentIdentity(PROPOSAL_DOCUMENT.content),
 			}),
 		);
 		expect(notifyMock).toHaveBeenCalledWith(
@@ -1053,7 +1088,7 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 		expect(sideEffectsMock).not.toHaveBeenCalled();
 	});
 
-	it("guards a finished Proposal's write by the run after the Proposal gate is turned off", async () => {
+	it("writes a finished Proposal on its base after the Proposal gate is turned off", async () => {
 		proposalClientMock.mockResolvedValue(false);
 		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
 
@@ -1065,12 +1100,14 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expect.objectContaining({
 				expectedVersion: 3,
 				expectedContentHash: contentIdentity(DOCUMENT.content),
-				refuseWhileGenerating: true,
 			}),
+		);
+		expect(updateDocumentMock.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 	});
 
-	it("conditions every other document type on the body it read, without the run guard, even mid-generation", async () => {
+	it("applies every other document type on the body it read, even mid-generation", async () => {
 		getDocumentMock.mockResolvedValue({
 			...DOCUMENT,
 			type: "PRD",
@@ -1086,7 +1123,6 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expectedVersion: 3,
 			expectedContentHash: contentIdentity(DOCUMENT.content),
 		});
-		expect(data).not.toHaveProperty("refuseWhileGenerating");
 	});
 });
 

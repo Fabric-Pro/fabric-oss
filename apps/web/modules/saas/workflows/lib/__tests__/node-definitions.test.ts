@@ -43,6 +43,81 @@ const PREVIOUSLY_OFFERED = [
 ];
 
 describe("derived palette", () => {
+	it("offers the native read with a literal read selector, JSON arguments and its real executor", () => {
+		const node = getNodeDefinition("native-platform-read");
+		expect(node?.execution).toEqual({
+			stepImportPath: "native-platform-read",
+			stepFunction: "executeNativePlatformReadStep",
+		});
+		expect(
+			node?.configFields?.map((field) => [field.name, field.type]),
+		).toEqual([
+			["toolName", "select"],
+			["arguments", "textarea"],
+		]);
+		expect(node?.outputFields?.map((field) => field.field)).toEqual([
+			"result",
+		]);
+		expect(node?.defaultData.config).toEqual({
+			toolName: "fabric_get_project_pm_connection",
+			arguments: "{}",
+		});
+	});
+	it.each([
+		["workspace-data-read", "executeWorkspaceDataReadStep"],
+		["workspace-data-write", "executeWorkspaceDataWriteStep"],
+	])(
+		"offers %s with explicit scoped configuration and its executor",
+		(type, stepFunction) => {
+			const node = getNodeDefinition(type);
+			expect(node?.execution).toEqual({
+				stepImportPath: type,
+				stepFunction,
+			});
+			expect(node?.configFields?.map((field) => field.name)).toEqual(
+				type === "workspace-data-write"
+					? [
+							"frameId",
+							"collection",
+							"key",
+							"scope",
+							"value",
+							"expectedVersion",
+						]
+					: ["frameId", "collection", "key", "scope"],
+			);
+			expect(node?.outputFields?.map((field) => field.field)).toEqual(
+				type === "workspace-data-write"
+					? ["version"]
+					: ["value", "version", "found"],
+			);
+		},
+	);
+
+	it("offers an editable Script Transform with its real executor and outputs", () => {
+		const node = getNodeDefinition("script-transform");
+		expect(node?.execution).toEqual({
+			stepImportPath: "script-transform",
+			stepFunction: "executeScriptTransformStep",
+		});
+		expect(node?.defaultData.config).toEqual({
+			code: "return { ...inputs };",
+			language: "javascript",
+			timeout: 5000,
+		});
+		expect(
+			node?.configFields?.map((field) => [field.name, field.type]),
+		).toEqual([
+			["code", "textarea"],
+			["language", "select"],
+			["inputKeys", "textarea"],
+			["timeout", "number"],
+		]);
+		expect(node?.outputFields?.map((field) => field.field)).toEqual([
+			"result",
+			"logs",
+		]);
+	});
 	it("still offers everything the hand-written palette did", () => {
 		const offered = new Set(nodeDefinitions.map((n) => n.type));
 		const lost = PREVIOUSLY_OFFERED.filter((t) => !offered.has(t));

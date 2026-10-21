@@ -36,6 +36,18 @@ export function extractState(input: Record<string, unknown>) {
 			(forwardedProps.hasTeamsIntegration as boolean) ??
 			(input.hasTeamsIntegration as boolean) ??
 			false,
+		hasSlackIntegration:
+			(state.hasSlackIntegration as boolean) ??
+			(forwardedProps.hasSlackIntegration as boolean) ??
+			(input.hasSlackIntegration as boolean) ??
+			false,
+		analysisStatus: (state.analysisStatus ??
+			forwardedProps.analysisStatus ??
+			input.analysisStatus) as string | undefined,
+		lastProposalSummary: (state.lastProposalSummary ??
+			forwardedProps.lastProposalSummary ??
+			input.lastProposalSummary) as string | undefined,
+
 		hasNotionIntegration:
 			(state.hasNotionIntegration as boolean) ??
 			(forwardedProps.hasNotionIntegration as boolean) ??

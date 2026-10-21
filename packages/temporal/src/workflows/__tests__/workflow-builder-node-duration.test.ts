@@ -9,11 +9,13 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { providedWorkflowGraph } from "../../../__tests__/test-helpers/workflow-builder-graph";
 
-const { nodeMock, updateStatus, createLog } = vi.hoisted(() => ({
+const { nodeMock, updateStatus, createLog, getDefinition } = vi.hoisted(() => ({
 	nodeMock: vi.fn(),
 	updateStatus: vi.fn(),
 	createLog: vi.fn(),
+	getDefinition: vi.fn(),
 }));
 
 vi.mock("@temporalio/workflow", () => ({
@@ -28,7 +30,7 @@ vi.mock("@temporalio/workflow", () => ({
 		executeWorkflowNode: nodeMock,
 		updateWorkflowExecutionStatus: updateStatus,
 		createWorkflowExecutionLog: createLog,
-		getWorkflowDefinition: vi.fn(),
+		getWorkflowDefinition: getDefinition,
 		validateWorkflowGraph: vi.fn(),
 		preflightValidation: vi.fn(),
 		createApprovalRequest: vi.fn(),
@@ -76,6 +78,7 @@ function closingCall(nodeId: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	getDefinition.mockImplementation(providedWorkflowGraph);
 	updateStatus.mockResolvedValue(undefined);
 	createLog.mockResolvedValue(undefined);
 });

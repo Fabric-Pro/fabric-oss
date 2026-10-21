@@ -308,13 +308,16 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 
 		// The model's output stored for a human to accept or reject — the same
 		// contract the interactive button has always had. Overwrites any earlier
-		// proposal, so a retried cycle stores it once.
+		// proposal, so a retried cycle stores it once. It keeps both halves of
+		// the body it was drafted from, so the accept can refuse a body saved
+		// at the same version, as the auto-apply write below does.
 		const propose = async (): Promise<RefreshOutcome> => {
 			await storeRefreshProposal(due.documentId, {
 				when: new Date(),
 				content: contentToPersist,
 				summary: result.summary,
 				baselineVersion,
+				baselineContentHash,
 			});
 			await notify(due, result.summary, "proposed");
 			logger.info("[DocumentRefresh] Proposed an update for review", {
@@ -335,10 +338,11 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 		// type, not by the rollout gate: a run keeps writing when the gate is
 		// turned off mid-run. A refused write keeps the output as a proposal,
 		// so nothing is lost and the accept is judged against the document
-		// once the run is done.
-		const guardProposalRun = isRunGuardedDocumentType(document.type);
+		// once the run is done. The write below refuses a run queued after
+		// this read on its own: the query's default for a Proposal's content
+		// write.
 		if (
-			guardProposalRun &&
+			isRunGuardedDocumentType(document.type) &&
 			(document.status === "QUEUED" || document.status === "GENERATING")
 		) {
 			logger.info(
@@ -361,7 +365,6 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 				// type: a body saved at the same version is a collision too.
 				expectedVersion: baselineVersion,
 				expectedContentHash: baselineContentHash,
-				...(guardProposalRun ? { refuseWhileGenerating: true } : {}),
 			});
 		} catch (error) {
 			// A run queued between the read above and this write. Nothing was

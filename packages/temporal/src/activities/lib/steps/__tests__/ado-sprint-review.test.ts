@@ -303,6 +303,7 @@ describe("sprint story review", () => {
 		"edge_limit",
 		"invalid_response",
 		"concurrent_changes",
+		"unavailable",
 	] as const)(
 		"fails before inference on incomplete %s graph",
 		async (incompleteReason) => {
@@ -315,6 +316,9 @@ describe("sprint story review", () => {
 			});
 			const result = await executeAdoStoryReviewStep(params());
 			expect(result.success).toBe(false);
+			expect(result.error).toContain(
+				`Capture reason: ${incompleteReason}.`,
+			);
 			expect(result.output).toBeUndefined();
 			expect(mocks.model).not.toHaveBeenCalled();
 			expect(mocks.generate).not.toHaveBeenCalled();

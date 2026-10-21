@@ -42,3 +42,30 @@ describe("a model the ChatGPT plan does not serve", () => {
 		});
 	});
 });
+
+describe("exhausted plan reset messages", () => {
+	it.each([
+		[null, "Wait for its limit to reset, then try again."],
+		[5, "It resets in about 5 min."],
+		[120, "It resets in about 2 h."],
+		[-1, "It resets in about 1 min."],
+	] as const)(
+		"preserves the reset message for %s minutes",
+		async (minutes, phrase) => {
+			const { SubscriptionPlanExhaustedError } = await import(
+				"@repo/agent-types/chatgpt-plan-fetch"
+			);
+			const now = Date.parse("2030-01-01T00:00:00Z");
+			const resetAt =
+				minutes === null ? null : new Date(now + minutes * 60_000);
+			const mapped = chatGptPlanRefusalToORPCError(
+				new SubscriptionPlanExhaustedError("raw", resetAt),
+				now,
+			);
+			expect(mapped?.code).toBe("TOO_MANY_REQUESTS");
+			expect(mapped?.message).toBe(
+				`Your ChatGPT plan has no usage left. ${phrase}`,
+			);
+		},
+	);
+});

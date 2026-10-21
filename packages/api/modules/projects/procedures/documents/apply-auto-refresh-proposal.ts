@@ -31,13 +31,16 @@ import { assertLivingDocsRefreshEnabled } from "../../lib/living-docs-refresh-fe
  *    so the version ledger names the person — the same reasoning that made
  *    `updateDocument` stop copying the incoming writer onto the snapshot row.
  *
- * 2. THE PROPOSAL IS ONLY VALID AGAINST THE VERSION IT WAS DRAFTED FROM. The
+ * 2. THE PROPOSAL IS ONLY VALID AGAINST THE BODY IT WAS DRAFTED FROM. The
  *    model read version N, spent minutes generating, and the proposal then sat
  *    in the database until someone clicked Accept — which could be days. Anyone
  *    may have edited in that window. Applying blind would silently revert them,
- *    so the write is guarded by `expectedVersion: pendingBaselineVersion` and a
- *    lost race is reported as `stale` rather than thrown as a 500: nothing is
- *    written, the dead proposal is cleared, and the user is told to re-run.
+ *    so the write is guarded by `expectedVersion: pendingBaselineVersion` and
+ *    `expectedContentHash: pendingBaselineContentHash` — a Proposal run's
+ *    final save writes its body at the old version, which the version alone
+ *    cannot see (Fizzy #2946). A proposal missing either half is not applied.
+ *    A lost race is reported as `stale` rather than thrown as a 500: nothing
+ *    is written, the dead proposal is cleared, and the user is told to re-run.
  */
 export const applyDocumentAutoRefreshProposalProcedure =
 	tenantProtectedProcedure
@@ -82,6 +85,8 @@ export const applyDocumentAutoRefreshProposalProcedure =
 			}
 
 			const baselineVersion = settings.pendingBaselineVersion;
+			// The body half of the baseline.
+			const baselineContentHash = settings.pendingBaselineContentHash;
 
 			// A proposal with no baseline cannot be proven safe to apply — there is no
 			// version to guard the write against, so we cannot tell an untouched
@@ -89,7 +94,14 @@ export const applyDocumentAutoRefreshProposalProcedure =
 			// always records a baseline, so this is only reachable for a row that
 			// predates the guard or was written by hand. Fail closed and make the user
 			// re-run: the cost is one refresh, versus silently reverting a human edit.
-			if (baselineVersion === null) {
+			//
+			// The same holds for a proposal with no body hash, stored before the
+			// body half was recorded, for every document type: the version
+			// alone does not name a body. A generation run saves its new body
+			// at the old version and moves the version at a later step, so in
+			// between a version-only check passes and Accept would write the
+			// proposal over the body the run just produced (Fizzy #2946).
+			if (baselineVersion === null || !baselineContentHash) {
 				await clearRefreshProposal(input.id);
 				return { applied: false as const, reason: "stale" as const };
 			}
@@ -100,11 +112,9 @@ export const applyDocumentAutoRefreshProposalProcedure =
 			// writes its body at the old version. So accepting under a run is
 			// refused, here and again by the write itself, and the proposal is
 			// kept so it can be accepted (or found stale) once the run is done.
-			// Decided by type, not by the rollout gate: a run keeps writing when
-			// the gate is turned off mid-run.
-			const refuseWhileGenerating = isRunGuardedDocumentType(
-				current.type,
-			);
+			// The write's own refusal is the query's default for a Proposal's
+			// content write. Decided by type, not by the rollout gate: a run
+			// keeps writing when the gate is turned off mid-run.
 			const generationInProgress = () =>
 				new ORPCError("CONFLICT", {
 					message:
@@ -112,7 +122,7 @@ export const applyDocumentAutoRefreshProposalProcedure =
 					data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
 				});
 			if (
-				refuseWhileGenerating &&
+				isRunGuardedDocumentType(current.type) &&
 				(current.status === "QUEUED" || current.status === "GENERATING")
 			) {
 				throw generationInProgress();
@@ -134,9 +144,7 @@ export const applyDocumentAutoRefreshProposalProcedure =
 					userId: user.id,
 					organizationId,
 					expectedVersion: baselineVersion,
-					...(refuseWhileGenerating
-						? { refuseWhileGenerating: true }
-						: {}),
+					expectedContentHash: baselineContentHash,
 				});
 			} catch (error) {
 				// A run queued between the read above and this write. Nothing
@@ -145,7 +153,8 @@ export const applyDocumentAutoRefreshProposalProcedure =
 					throw generationInProgress();
 				}
 				if (error instanceof DocumentVersionConflictError) {
-					// The document moved under the proposal. Nothing was written.
+					// The document moved under the proposal — its version, or its
+					// body at the same version. Nothing was written.
 					// Clear it so the stale draft cannot be accepted later, and let the
 					// next scheduled refresh regenerate against current content.
 					await clearRefreshProposal(input.id);

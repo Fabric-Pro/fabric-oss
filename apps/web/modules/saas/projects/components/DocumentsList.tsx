@@ -59,13 +59,17 @@ import {
 	getDocumentsPollInterval,
 	isDocumentGenerationRunning,
 } from "../lib/document-pipeline";
+import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { CreateDocumentDialog } from "./CreateDocumentDialog";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
 import { DocumentTitleInlineEdit } from "./DocumentTitleInlineEdit";
 import { DeprecatedDocumentTypeBadge } from "./FeaturesDeprecationNotice";
 import { ProjectSectionHero } from "./ProjectSectionHero";
-import { resolveRegenerateToastKey } from "./proposal-artifact/generation-feedback";
+import {
+	describeGenerationRefusal,
+	resolveRegenerateToastKey,
+} from "./proposal-artifact/generation-feedback";
 
 export { resolveRegenerateToastKey };
 
@@ -418,6 +422,10 @@ export function DocumentsList({
 	const tRegenerateToast = useTranslations(
 		"projects.documents.regenerateToast",
 	);
+	const tGenerationFeedback = useTranslations(
+		"projects.proposalArtifact.generationFeedback",
+	);
+	const tRefusal = useTranslations("projects.documentWriteRefusal");
 	const router = useRouter();
 	const {
 		basePath: orgBasePath,
@@ -530,6 +538,23 @@ export function DocumentsList({
 				});
 			},
 			onError: (error) => {
+				// A coded refusal — nothing bound to the prompt a Proposal is
+				// written from, or an action the Proposal artifact supersedes —
+				// is said in the reader's language with the way to resolve it
+				// (Fizzy #2946); anything else keeps the regenerate failure.
+				const refusal = describeGenerationRefusal(error, {
+					t: tGenerationFeedback,
+					basePath: orgBasePath,
+				});
+				if (refusal) {
+					toast.error(refusal.message, {
+						action: {
+							label: refusal.catalog.label,
+							onClick: () => router.push(refusal.catalog.href),
+						},
+					});
+					return;
+				}
 				toast.error(
 					tRegenerateToast("failed", { message: error.message }),
 				);
@@ -543,17 +568,15 @@ export function DocumentsList({
 	const setActiveMutation = useMutation(
 		orpc.projects.documents.setActive.mutationOptions({
 			onSuccess: () => {
-				toast.success("Active document updated");
+				toast.success(tDocuments("setActive.updated"));
 				queryClient.invalidateQueries({
 					queryKey: orpc.projects.documents.list.queryKey({
 						input: { projectId, organizationId },
 					}),
 				});
 			},
-			onError: (error) => {
-				toast.error(
-					`Failed to update active document: ${error.message}`,
-				);
+			onError: () => {
+				toast.error(tDocuments("setActive.failed"));
 			},
 			onSettled: () => {
 				setTogglingActiveDocId(null);
@@ -591,10 +614,15 @@ export function DocumentsList({
 				});
 			},
 			onError: (error) => {
+				// Why the write was refused, in the reader's words; never the
+				// server's (Fizzy #2946). A refusal it recognises already says
+				// what happened, so it is shown alone; anything else gets this
+				// action's own sentence, never one sentence inside another.
+				const refusal = describeDocumentWriteRefusal(error, tRefusal);
 				toast.error(
-					tDocuments("markComplete.failed", {
-						message: error.message,
-					}),
+					refusal.kind === "failed"
+						? tDocuments("markComplete.failed")
+						: refusal.message,
 				);
 			},
 			onSettled: () => {

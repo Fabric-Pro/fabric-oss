@@ -22,6 +22,7 @@ import { Loader2Icon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
+import { getCreateStoryErrorMessage } from "../../lib/create-story-error-message";
 import {
 	type CreateStoryInput,
 	PRIORITY_OPTIONS,
@@ -156,8 +157,10 @@ export function CreateStoryDialog({
 			setSize("");
 			setPendingFiles([]);
 			setPendingDocs([]);
-		} catch {
-			toast.error(tCreate("titleGenerationFailed"), { id: toastId });
+		} catch (error) {
+			toast.error(getCreateStoryErrorMessage(error, tCreate), {
+				id: toastId,
+			});
 		} finally {
 			setIsOrchestrating(false);
 		}

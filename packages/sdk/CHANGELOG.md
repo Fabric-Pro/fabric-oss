@@ -1,5 +1,11 @@
 # @fabricorg/sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- cf12607: The SDK now returns a document's `contentHash`, lets `updateDocument` send `expectedVersion` and `expectedContentHash` so an update based on an outdated read is refused instead of overwriting newer changes, accepts only the statuses a caller may set when creating or updating a document, and exports the document error codes as `DOCUMENT_ERROR_CODES`.
+
 ## 0.6.1
 
 ### Patch Changes

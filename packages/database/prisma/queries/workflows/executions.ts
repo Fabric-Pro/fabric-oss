@@ -15,6 +15,8 @@ import {
 	assertWorkspaceWorkflowBindingWithin,
 	WorkspaceWorkflowBindingConflictError,
 	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
+	type WorkspaceWorkflowRunGuard,
 } from "./workspace-workflow-binding";
 
 /**
@@ -114,7 +116,7 @@ export async function reserveWorkflowExecution(args: {
 	userId: string;
 	organizationId?: string | null;
 	limit: number;
-	workspaceBinding?: WorkspaceWorkflowBindingGuard;
+	workspaceBinding?: WorkspaceWorkflowRowGuard | WorkspaceWorkflowRunGuard;
 	data: {
 		workflowId: string;
 		version: number;
@@ -145,7 +147,9 @@ export async function reserveWorkflowExecutionWithin(
 		userId: string;
 		organizationId?: string | null;
 		limit: number;
-		workspaceBinding?: WorkspaceWorkflowBindingGuard;
+		workspaceBinding?:
+			| WorkspaceWorkflowRowGuard
+			| WorkspaceWorkflowRunGuard;
 		data: {
 			workflowId: string;
 			version: number;
@@ -262,7 +266,7 @@ export async function createWorkflowExecutionIdempotent(data: {
 	windowMs: number;
 	/** The tenant's in-flight ceiling, applied only when a row is created. */
 	limit: number;
-	workspaceBinding?: WorkspaceWorkflowBindingGuard;
+	workspaceBinding?: WorkspaceWorkflowRowGuard | WorkspaceWorkflowRunGuard;
 }): Promise<IdempotentWorkflowExecutionResult> {
 	const lockKey = `wfexec:${data.userId}:${data.workflowId}:${data.idempotencyKey}`;
 	const since = new Date(Date.now() - data.windowMs);

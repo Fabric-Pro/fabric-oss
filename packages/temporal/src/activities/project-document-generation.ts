@@ -5410,6 +5410,11 @@ export async function recordGenerationQueueReason(params: {
  * a run whose row was cancelled, swept or re-dispatched while it waited cannot
  * resurrect somebody else's attempt as GENERATING. `applied: false` is that
  * outcome, and it is information rather than an error.
+ *
+ * A flip that landed is announced to the project's open pages (Fizzy #2946);
+ * see {@link nudgeRunStarted}. A retry that finds this attempt's own flip
+ * already landed (its first answer was lost) answers `started` too, without
+ * announcing it again.
  */
 export async function startGenerationRun(params: {
 	documentId: string;
@@ -5432,7 +5437,70 @@ export async function startGenerationRun(params: {
 		params.documentId,
 		startedAt,
 	);
+	if (outcome === "already-started") {
+		// This attempt's own flip, landed by an earlier try whose answer was
+		// lost: the row is this run's. Not announced again; the try that
+		// flipped it sent the nudge unless it died first, and then an open
+		// page learns of the run from its first live section.
+		return { outcome: "started" };
+	}
+	if (outcome === "started") {
+		// Nothing after the flip may fail this activity: a retry answers
+		// from the flip already made and does not send the nudge again.
+		await nudgeRunStarted(params.documentId).catch(() => {});
+	}
 	return { outcome };
+}
+
+/**
+ * `userId` of the nudge a run's start sends. The activity is not handed the
+ * requester, and the page reads `userId` only to skip the echo of its own
+ * save; a run starting is nobody's save, so the nudge carries an id no member
+ * has.
+ */
+const RUN_START_NUDGE_USER_ID = "fabric-generation-run";
+
+/**
+ * Tell the project's open pages that the document is now GENERATING, ids
+ * only (Fizzy #2946). Nothing else announces the flip: a page already open
+ * on the document would otherwise learn of the run only from its first live
+ * section, or, for a document that streams none, whenever it next reads the
+ * document on its own.
+ *
+ * The activity is handed no project id, so the row is read for it. Bounded
+ * like the live-section nudge and never throws; a nudge that fails or runs
+ * out of time is logged and the run carries on.
+ */
+async function nudgeRunStarted(documentId: string): Promise<void> {
+	let failure: string | undefined;
+	const nudged = (async () => {
+		const document = await db.projectDocument.findUnique({
+			where: { id: documentId },
+			select: { projectId: true, type: true },
+		});
+		if (!document) {
+			return;
+		}
+		await emitDocumentChange({
+			projectId: document.projectId,
+			documentId,
+			action: "updated",
+			userId: RUN_START_NUDGE_USER_ID,
+			userName: LIVE_SECTIONS_NUDGE_USER_NAME,
+			documentType: document.type,
+		});
+	})().catch((error: unknown) => {
+		failure = errorCode(error);
+	});
+	if (!(await settlesInTime(nudged))) {
+		failure = "TIMEOUT";
+	}
+	if (failure) {
+		activityLogger.warn("Could not nudge the page about the run starting", {
+			documentId,
+			error: failure,
+		});
+	}
 }
 
 /**

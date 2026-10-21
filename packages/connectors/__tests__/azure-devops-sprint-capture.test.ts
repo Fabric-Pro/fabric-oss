@@ -1,143 +1,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listAzureDevOpsAssignedStories } from "../src/azure-devops/assigned-stories";
 import { captureAzureDevOpsSprintStories } from "../src/azure-devops/sprint-capture";
-import {
-	type AzureDevOpsSprintCaptureInput,
-	sprintRelationItemId,
-} from "../src/azure-devops/sprint-selection";
+import { sprintRelationItemId } from "../src/azure-devops/sprint-selection";
 import { getAzureDevOpsStorySnapshots } from "../src/azure-devops/story-snapshots";
+import {
+	asOf,
+	type FixtureItem,
+	item,
+	json,
+	link,
+	member,
+	options,
+	other,
+	project,
+	sprintFixture,
+	target,
+	taskTypes,
+} from "./helpers/azure-devops-sprint-fixture";
 
-const target = { organization: "example-org", projectId: "project-1" };
-const project = { id: "project-1", name: "Example Project" };
-const asOf = "2026-01-01T12:00:00.0001234Z";
-const member = {
-	uniqueName: "engineer@example.com",
-	displayName: "Example Engineer",
-};
-const other = {
-	uniqueName: "other@example.com",
-	displayName: "Other Engineer",
-};
-const taskTypes = [
-	"AA Task",
-	"DevBE Task",
-	"DevFE Task",
-	"QA Task",
-	"UAT Task",
-	"Bug",
-	"ToDo Task",
-	"Task",
-];
 const fetchMock = vi.fn<typeof fetch>();
-const link = (id: number, rel = "System.LinkTypes.Hierarchy-Reverse") => ({
-	rel,
-	url: `https://dev.azure.com/example-org/_apis/wit/workItems/${id}`,
-});
-interface FixtureItem {
-	id: number;
-	rev: number;
-	fields: Record<string, unknown>;
-	relations: { rel: string; url: string }[];
-}
-function item(
-	id: number,
-	type: string,
-	fields: Record<string, unknown> = {},
-	relations: FixtureItem["relations"] = [],
-): FixtureItem {
-	return {
-		id,
-		rev: 7,
-		relations,
-		fields: {
-			"System.TeamProject": project.name,
-			"System.WorkItemType": type,
-			"System.Title": `Item ${id}`,
-			"System.State": "Active",
-			"System.AssignedTo": member,
-			"System.IterationPath": "Example Project\\Sprint 2",
-			"System.ChangedDate": asOf,
-			"System.Description": "TBD",
-			"Custom.BusinessRules": `Full specification ${id}`,
-			...fields,
-		},
-	};
-}
-const options = (): AzureDevOpsSprintCaptureInput => ({
-	assignee: { mode: "selected", uniqueName: member.uniqueName },
-	targetStoryTypes: ["User Story"],
-	requirementFields: ["System.Description", "Custom.BusinessRules"],
-	maxStories: 50,
-	selection: {
-		iterationPaths: [
-			"Example Project\\Sprint 2",
-			"Example Project\\Sprint 1",
-		],
-		assignmentFields: ["System.AssignedTo", "Custom.Engineer"],
-		assignedItemTypes: taskTypes,
-		parentSourceTypes: taskTypes.filter((type) => type !== "ToDo Task"),
-		relationKinds: ["child", "related"],
-		excludedAssignedStates: ["Removed"],
-	},
-});
-const json = (value: unknown) =>
-	new Response(JSON.stringify(value), {
-		headers: { "content-type": "application/json" },
-	});
 let items: Map<number, FixtureItem>;
 let discoveryIds: number[];
 let override: ((url: URL, init?: RequestInit) => unknown) | undefined;
 
 function fixture(url: URL, init?: RequestInit): unknown {
-	if (url.pathname.includes("/_apis/projects/")) {
-		return project;
-	}
-	if (url.pathname.endsWith("/fields/Custom.Engineer")) {
-		return { referenceName: "Custom.Engineer", isIdentity: true };
-	}
-	if (url.pathname.endsWith("/wiql")) {
-		const { query }: { query: string } = JSON.parse(String(init?.body));
-		const after = Number(/\[System.Id\] > (\d+)/.exec(query)?.[1]);
-		return {
-			asOf,
-			workItems: discoveryIds
-				.filter((id) => {
-					const iteration =
-						items.get(id)?.fields["System.IterationPath"];
-					return id > after && query.includes(`'${iteration}'`);
-				})
-				.slice(0, Number(url.searchParams.get("$top")))
-				.map((id) => ({ id })),
-		};
-	}
-	if (url.pathname.endsWith("/comments")) {
-		const id = Number(/workItems\/(\d+)\/comments/.exec(url.pathname)?.[1]);
-		return {
-			totalCount: 1,
-			count: 1,
-			comments: [
-				{
-					id: 1,
-					workItemId: id,
-					version: 3,
-					modifiedDate: asOf,
-					text: `Item ${id} own PO answer`,
-					isDeleted: false,
-					format: "markdown",
-				},
-			],
-		};
-	}
-	if (url.pathname.endsWith("/workitems")) {
-		const ids = (url.searchParams.get("ids") ?? "").split(",").map(Number);
-		return {
-			value: ids.flatMap((id) => {
-				const value = items.get(id);
-				return value ? [value] : [];
-			}),
-		};
-	}
-	throw new Error("Unexpected fixture route");
+	return sprintFixture(url, init, items, discoveryIds);
 }
 const capture = (input = options()) =>
 	captureAzureDevOpsSprintStories(target, "example-pat", input);
@@ -288,12 +175,22 @@ describe("sprint graph capture", () => {
 		expect(
 			calls
 				.filter((url) => url.searchParams.has("asOf"))
-				.every(
-					(url) =>
-						url.searchParams.get("asOf") === asOf &&
-						url.searchParams.get("$expand") === "relations",
-				),
+				.every((url) => url.searchParams.get("asOf") === asOf),
 		).toBe(true);
+		const historical = calls.filter((url) => url.searchParams.has("asOf"));
+		expect(historical).toHaveLength(6);
+		for (let index = 0; index < historical.length; index += 2) {
+			const fields = historical[index];
+			const expanded = historical[index + 1];
+			expect(fields?.searchParams.has("fields")).toBe(true);
+			expect(fields?.searchParams.has("$expand")).toBe(false);
+			expect(expanded?.searchParams.get("$expand")).toBe("relations");
+			expect(expanded?.searchParams.has("fields")).toBe(false);
+			expect(expanded?.searchParams.get("ids")).toBe(
+				fields?.searchParams.get("ids"),
+			);
+		}
+		expect(fetchMock).toHaveBeenCalledTimes(18);
 		expect(
 			calls.some((url) =>
 				url.searchParams
@@ -313,6 +210,113 @@ describe("sprint graph capture", () => {
 		);
 		expect(query).toContain("[System.State] NOT IN ('Removed')");
 		expect(query).not.toContain("WorkItemLinks");
+	});
+
+	it("keeps selected fields authoritative over expanded fields and extra provider data", async () => {
+		discoveryIds = [1];
+		const input = options();
+		input.selection.assignmentFields = ["System.AssignedTo"];
+		override = (url, init) => {
+			if (!url.searchParams.has("asOf")) {
+				return undefined;
+			}
+			const body = fixture(url, init);
+			if (
+				typeof body !== "object" ||
+				body === null ||
+				!("value" in body) ||
+				!Array.isArray(body.value)
+			) {
+				throw new Error("Invalid fixture");
+			}
+			return {
+				value: body.value.map((entry) => ({
+					...entry,
+					fields: {
+						...entry.fields,
+						"Custom.Engineer": "unselected-provider-value",
+						"Custom.Extra": "unselected-provider-value",
+						...(url.searchParams.has("$expand")
+							? { "System.Description": "expanded-field-value" }
+							: {}),
+					},
+				})),
+			};
+		};
+		const result = await capture(input);
+		expect(result.complete).toBe(true);
+		expect(result.assignedItems[0]?.engineer).toBeNull();
+		expect(result.stories[0]?.story.requirements).toEqual({
+			"System.Description": "TBD",
+			"Custom.BusinessRules": "Full specification 100",
+		});
+		expect(result.stories[0]?.edges).toHaveLength(2);
+		expect(JSON.stringify(result)).not.toMatch(
+			/unselected-provider-value|expanded-field-value/,
+		);
+	});
+
+	it.each([1, 100, 200])(
+		"rejects a mismatched expanded revision for item %i",
+		async (id) => {
+			override = (url, init) => {
+				if (!url.searchParams.has("$expand")) {
+					return undefined;
+				}
+				const body = fixture(url, init);
+				if (
+					typeof body !== "object" ||
+					body === null ||
+					!("value" in body) ||
+					!Array.isArray(body.value)
+				) {
+					throw new Error("Invalid fixture");
+				}
+				return {
+					value: body.value.map((entry) =>
+						entry.id === id
+							? { ...entry, rev: entry.rev + 1 }
+							: entry,
+					),
+				};
+			};
+			expect(await capture()).toMatchObject({
+				complete: false,
+				incompleteReason: "invalid_response",
+				stories: [],
+			});
+		},
+	);
+
+	it("preserves provider validation of unknown selected fields before expansion", async () => {
+		const input = options();
+		input.requirementFields = ["Custom.UnknownField"];
+		override = (url) =>
+			url.searchParams.get("fields")?.includes("Custom.UnknownField")
+				? new Response(null, { status: 400 })
+				: undefined;
+		expect(await capture(input)).toMatchObject({
+			complete: false,
+			incompleteReason: "unavailable",
+			stories: [],
+		});
+		expect(
+			fetchMock.mock.calls.some(([url]) =>
+				new URL(String(url)).searchParams.has("$expand"),
+			),
+		).toBe(false);
+	});
+
+	it("counts expanded response bytes against the unchanged shared transport budget", async () => {
+		override = (url) =>
+			url.searchParams.has("$expand")
+				? new Response("x".repeat(2 * 1024 * 1024 + 1))
+				: undefined;
+		expect(await capture()).toMatchObject({
+			complete: false,
+			incompleteReason: "response_limit",
+			stories: [],
+		});
 	});
 
 	it.each(taskTypes.filter((type) => type !== "ToDo Task"))(

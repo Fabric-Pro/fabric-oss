@@ -159,6 +159,9 @@ export async function generateEmbedding(
 		projectId: tenantContext.projectId,
 		conversationId: tenantContext.conversationId,
 		frameId: tenantContext.frameId,
+		...(tenantContext.workflowExecutionId
+			? { workflowExecutionId: tenantContext.workflowExecutionId }
+			: {}),
 		featureKey: tenantContext.featureKey,
 		jobType: tenantContext.jobType,
 	});
@@ -340,6 +343,9 @@ export async function generateEmbeddings(
 		projectId: tenantContext.projectId,
 		conversationId: tenantContext.conversationId,
 		frameId: tenantContext.frameId,
+		...(tenantContext.workflowExecutionId
+			? { workflowExecutionId: tenantContext.workflowExecutionId }
+			: {}),
 		featureKey: tenantContext.featureKey,
 		jobType: tenantContext.jobType,
 	});

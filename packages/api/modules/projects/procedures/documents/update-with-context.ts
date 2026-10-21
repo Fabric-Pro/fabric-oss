@@ -15,7 +15,6 @@ import {
 	runContextUpdate,
 } from "@repo/temporal";
 import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
-import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
@@ -27,6 +26,18 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { isRoomConvergenceOn } from "../../lib/room-convergence-enabled";
+
+/**
+ * `data.code` of the preview failures (Fizzy #2946), so the editor says them
+ * in the reader's language rather than showing this procedure's English: no
+ * AI provider, a response cut off at the model's output limit, and a model
+ * call that failed. The provider one is the code background jobs already
+ * record for the same condition. The web keeps its own copies of the
+ * strings, since its bundle takes no runtime values from this package.
+ */
+const AI_PROVIDER_NOT_CONFIGURED = "AI_PROVIDER_NOT_CONFIGURED";
+const CONTEXT_UPDATE_TRUNCATED = "CONTEXT_UPDATE_TRUNCATED";
+const CONTEXT_UPDATE_FAILED = "CONTEXT_UPDATE_FAILED";
 
 /**
  * AUTHORIZATION: Uses hasProjectAccess() — matches the existing update-document
@@ -147,8 +158,9 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			// people (Fizzy #2946). A client document's confirm names the body
 			// its preview was drafted from (judged by the project's OWNING
 			// organization). Any Proposal's confirm is refused while a run is
-			// queued or writing, decided by type, not by the rollout gate: a
-			// run keeps writing when the gate is turned off mid-run.
+			// queued or writing, by `updateDocument` itself (its default for a
+			// Proposal's content writes), decided by type, not by the rollout
+			// gate: a run keeps writing when the gate is turned off mid-run.
 			const owningOrganizationId =
 				document.project?.organizationId ?? null;
 			const clientProposal = await isProposalClientDocument({
@@ -195,9 +207,6 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 								expectedContentHash: input.expectedContentHash,
 							}
 						: { expectedVersion: document.version }),
-					...(isRunGuardedDocumentType(document.type)
-						? { refuseWhileGenerating: true }
-						: {}),
 				});
 			} catch (error) {
 				if (error instanceof DocumentGenerationInProgressError) {
@@ -297,14 +306,17 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message:
 						"The document is too large for the configured AI model's output limit — the update was truncated before completion. Try a model with a larger output limit or split the document.",
+					data: { code: CONTEXT_UPDATE_TRUNCATED },
 				});
 			}
 			if (error instanceof ContextUpdateFailedError) {
 				// The model call failed. Deliberately NOT the settings message
 				// below — sending someone to a settings page that is already
 				// correct is how a transient provider blip becomes an afternoon.
+				// Coded apart from it, so the editor can say so too.
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message: error.message,
+					data: { code: CONTEXT_UPDATE_FAILED },
 				});
 			}
 			throw error;
@@ -314,6 +326,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
 				message:
 					"No AI provider is configured for this organization. Add one in AI settings, then try again.",
+				data: { code: AI_PROVIDER_NOT_CONFIGURED },
 			});
 		}
 

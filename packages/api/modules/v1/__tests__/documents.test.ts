@@ -794,11 +794,14 @@ describe("v1 documents — update base", () => {
 				data: {
 					content?: string;
 					status?: string;
-					refuseWhileGenerating?: boolean;
+					allowDuringLiveRun?: string;
 				},
 			) => {
+				// The stored row is a Proposal: the query refuses its content
+				// and status writes under a run unless the write is exempt.
 				if (
-					data.refuseWhileGenerating &&
+					(data.content !== undefined || data.status !== undefined) &&
+					data.allowDuringLiveRun === undefined &&
 					(storedStatus === "QUEUED" || storedStatus === "GENERATING")
 				) {
 					throw new DocumentGenerationInProgressErrorMock();
@@ -822,7 +825,7 @@ describe("v1 documents — update base", () => {
 		expect(written).toEqual([]);
 	});
 
-	it("asks a status-only write to refuse a run queued after the read", async () => {
+	it("leaves a status-only write to the write's refusal of a run queued after the read", async () => {
 		mockIsProposalClientDocument.mockResolvedValue(true);
 		mockGetDocumentById.mockResolvedValue(proposalRow());
 		mockUpdateDocument.mockRejectedValue(
@@ -833,10 +836,11 @@ describe("v1 documents — update base", () => {
 
 		expect(mockUpdateDocument).toHaveBeenCalledWith(
 			"doc-1",
-			expect.objectContaining({
-				status: "COMPLETE",
-				refuseWhileGenerating: true,
-			}),
+			expect.objectContaining({ status: "COMPLETE" }),
+		);
+		// Never exempt: the query refuses it under a run by default.
+		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 		// A status-only write carries no body, so it names no body base.
 		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
@@ -855,12 +859,10 @@ describe("v1 documents — update base", () => {
 		const res = await patch({ status: "COMPLETE" });
 
 		expect(res.status).toBe(200);
-		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
-			"refuseWhileGenerating",
-		);
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
 	});
 
-	it("asks the write to refuse a run queued after the read, and answers 409 DOCUMENT_GENERATION_IN_PROGRESS", async () => {
+	it("answers 409 DOCUMENT_GENERATION_IN_PROGRESS when the write refuses a run queued after the read", async () => {
 		mockIsProposalClientDocument.mockResolvedValue(true);
 		mockGetDocumentById.mockResolvedValue(proposalRow());
 		mockUpdateDocument.mockRejectedValue(
@@ -869,9 +871,9 @@ describe("v1 documents — update base", () => {
 
 		const res = await patch({ content: "# agent rewrite" });
 
-		expect(mockUpdateDocument).toHaveBeenCalledWith(
-			"doc-1",
-			expect.objectContaining({ refuseWhileGenerating: true }),
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
+		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 		expect(res.status).toBe(409);
 		const body = (await res.json()) as { error: { code?: string } };
@@ -892,7 +894,6 @@ describe("v1 documents — update base", () => {
 			expect.objectContaining({
 				expectedVersion: 3,
 				expectedContentHash: contentIdentity(READ_BODY),
-				refuseWhileGenerating: true,
 			}),
 		);
 	});
@@ -942,9 +943,6 @@ describe("v1 documents — update base", () => {
 		const res = await patch({ content: "# edited" });
 
 		expect(res.status).toBe(200);
-		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
-			"refuseWhileGenerating",
-		);
 		const options = mockUpdateDocument.mock.calls[0][1];
 		expect(options).not.toHaveProperty("expectedVersion");
 		expect(options).not.toHaveProperty("expectedContentHash");

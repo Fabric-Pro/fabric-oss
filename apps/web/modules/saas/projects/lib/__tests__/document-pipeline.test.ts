@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import {
+	GENERATION_RUN_SILENCE_CEILING_MS,
+	isGenerationRunStillWriting,
+} from "@repo/utils/generation-run-guard";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveGenerationClock } from "../document-generation-timestamp";
 import {
 	DOCUMENT_PIPELINE_LIMIT,
 	getDocumentMeta,
+	getDocumentPollInterval,
 	getDocumentStatusView,
 	getPipelineDocuments,
 	isDocumentGenerationRunning,
@@ -222,5 +228,97 @@ describe("in-flight predicates", () => {
 			expect(isDocumentInFlight(status)).toBe(false);
 			expect(isDocumentGenerationRunning(status)).toBe(false);
 		}
+	});
+});
+
+/**
+ * The editor stops treating a run as writing when its poll stops, and the
+ * server judges the editor's save over a run with the shared rule
+ * (Fizzy #2946). Both must answer alike, or the editor sends saves the server
+ * refuses, or holds back saves the server would take.
+ */
+describe("a run still writing: the poll and the shared rule agree", () => {
+	const NOW = Date.parse("2026-10-20T12:00:00.000Z");
+	const ago = (ms: number) => new Date(NOW - ms);
+	const CEILING = GENERATION_RUN_SILENCE_CEILING_MS;
+
+	// With no stamp at all the poll measures from the wall clock.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(NOW);
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const polled = (
+		status: string,
+		generationStartedAt: Date | string | null,
+		updatedAt: Date | string | null,
+	) =>
+		isDocumentGenerationRunning(status) &&
+		getDocumentPollInterval(
+			status,
+			resolveGenerationClock(status, generationStartedAt, updatedAt),
+			NOW,
+		) !== false;
+
+	const stamps: Array<[string, Date | string | null]> = [
+		["none", null],
+		["empty", ""],
+		["now", ago(0)],
+		["a minute ago", ago(60 * 1000)],
+		["at the ceiling", ago(CEILING)],
+		["just past the ceiling", ago(CEILING + 1)],
+		["just past the ceiling, as a string", ago(CEILING + 1).toISOString()],
+		["an hour ago", ago(60 * 60 * 1000)],
+	];
+	const cases = [
+		"QUEUED",
+		"GENERATING",
+		"COMPLETE",
+		"DRAFT",
+		"FAILED",
+		"IN_PROGRESS",
+		"",
+	].flatMap((status) =>
+		stamps.flatMap(([accepted, generationStartedAt]) =>
+			stamps.map(([written, updatedAt]) => ({
+				status,
+				accepted,
+				written,
+				generationStartedAt,
+				updatedAt,
+			})),
+		),
+	);
+
+	it.each(cases)(
+		"'$status', accepted $accepted, last written $written",
+		({ status, generationStartedAt, updatedAt }) => {
+			expect(
+				isGenerationRunStillWriting(
+					{ status, generationStartedAt, updatedAt },
+					NOW,
+				),
+			).toBe(polled(status, generationStartedAt, updatedAt));
+		},
+	);
+
+	it("stops counting a generating run at the poll's own ceiling", () => {
+		const generating = (silentForMs: number) =>
+			isGenerationRunStillWriting(
+				{ status: "GENERATING", updatedAt: ago(silentForMs) },
+				NOW,
+			);
+
+		expect(generating(CEILING)).toBe(true);
+		expect(generating(CEILING + 1)).toBe(false);
+		expect(
+			getDocumentPollInterval("GENERATING", NOW - CEILING, NOW),
+		).not.toBe(false);
+		expect(
+			getDocumentPollInterval("GENERATING", NOW - CEILING - 1, NOW),
+		).toBe(false);
 	});
 });

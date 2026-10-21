@@ -72,6 +72,7 @@ export const NOT_FOR_PAGES: ReadonlySet<string> = new Set([
 	"fabric_share_frame",
 	"fabric_create_workflow",
 	"fabric_update_workflow",
+	"fabric_bind_workspace_workflow",
 	"fabric_publish_workflow",
 	"fabric_create_frame",
 	"fabric_update_frame",
@@ -253,6 +254,83 @@ function definePageTools<
 }
 
 export const FABRIC_PAGE_TOOL_DEFINITIONS = definePageTools([
+	{
+		name: "fabric_page_get_workflow",
+		page: "taints",
+		description:
+			"Read bound workflow status, schedule, source IDs and whether confirmation is needed.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				...FRAME_ID,
+				workflowId: { type: "string", minLength: 1, maxLength: 128 },
+			},
+			required: ["workflowId"],
+		},
+		annotations: TOOL_ANNOTATIONS.read,
+		scope: "workflows:read",
+		pageOnly: true,
+	},
+	{
+		name: "fabric_page_run_workflow",
+		page: "taints",
+		description:
+			"Run the bound published workflow. Reuse idempotencyKey only for identical inputs; poll history if unconfirmed.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				...FRAME_ID,
+				workflowId: { type: "string", minLength: 1, maxLength: 128 },
+				expectedFrameUpdatedAt: { type: "string", format: "date-time" },
+				expectedWorkflowUpdatedAt: {
+					type: "string",
+					format: "date-time",
+				},
+				idempotencyKey: {
+					type: "string",
+					minLength: 1,
+					maxLength: 128,
+				},
+				inputs: {
+					type: "object",
+					description:
+						"JSON inputs: up to 16 KiB, nested as triggerData.",
+				},
+			},
+			required: [
+				"workflowId",
+				"expectedFrameUpdatedAt",
+				"expectedWorkflowUpdatedAt",
+				"idempotencyKey",
+			],
+		},
+		annotations: TOOL_ANNOTATIONS.write,
+		scope: "workflows:run",
+		confirm: "always",
+		pageOnly: true,
+	},
+	{
+		name: "fabric_page_list_workflow_runs",
+		page: "taints",
+		description:
+			"Read bounded run status, timing and artifact IDs; no raw output or errors.",
+		inputSchema: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				...FRAME_ID,
+				workflowId: { type: "string", minLength: 1, maxLength: 128 },
+				limit: { type: "integer", minimum: 1, maximum: 20 },
+				offset: { type: "integer", minimum: 0, maximum: 1000 },
+			},
+			required: ["workflowId"],
+		},
+		annotations: TOOL_ANNOTATIONS.read,
+		scope: "workflows:read",
+		pageOnly: true,
+	},
 	{
 		name: "fabric_page_run_story_review",
 		page: "taints",

@@ -3,12 +3,11 @@ import {
 	listWorkspaceReviewHistory,
 	type Prisma,
 	WorkspaceWorkflowBindingConflictError,
-	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
 } from "@repo/database";
 import {
 	adoStoryReviewConfigFieldsSchema,
 	adoStoryReviewConfigSchema,
-	workspaceStoryReviewRunBindingSchema,
 } from "@repo/temporal/ado-story-review-config";
 import { ADO_STORY_REVIEW_NODE_TYPE } from "@repo/temporal/workflow-node-types";
 import {
@@ -125,7 +124,7 @@ function executionGuard(
 	workflow: EditableWorkflow,
 	binding: WorkspaceReviewExecutionBinding,
 	expectedUpdatedAt = workflow.updatedAt,
-): WorkspaceWorkflowBindingGuard {
+): WorkspaceWorkflowRowGuard {
 	return {
 		workflowId: workflow.id,
 		userId: binding.userId,
@@ -135,6 +134,7 @@ function executionGuard(
 		workflowUpdatedAt: expectedUpdatedAt,
 		frameUpdatedAt: binding.updatedAt,
 		status: workflow.status,
+		requirement: { kind: "row-only" },
 	};
 }
 
@@ -172,43 +172,19 @@ export async function runWorkspaceStoryReviewCommand(
 	try {
 		const outcome = await startWorkflowExecutionCommand(actor, {
 			workflowId: current.id,
-			triggerData: { forceReview: parsed.data.forceReview },
 			idempotencyKey: `workspace-review:${binding.id}:${parsed.data.idempotencyKey}`,
 			requirePublished: true,
 			confirmedProjectId: binding.projectId,
 			source: "workspace-story-review",
 			nodes: snapshot.nodes.data,
 			edges: snapshot.edges.data,
-			workspaceReview: {
+			workspaceLaunch: {
+				kind: "story-review",
 				binding: executionGuard(current, binding, expectedUpdatedAt),
 				nodeId: graph.reviewId,
+				forceReview: parsed.data.forceReview,
 			},
 		});
-		if (outcome.deduplicated) {
-			const stored = outcome.execution.triggerInput;
-			const marker = workspaceStoryReviewRunBindingSchema.safeParse(
-				jsonObject(stored) ? stored.workspaceReviewBinding : undefined,
-			);
-			if (
-				!jsonObject(stored) ||
-				stored.source !== "workspace-story-review" ||
-				!marker.success ||
-				marker.data.workflowId !== current.id ||
-				marker.data.workspaceFrameId !== binding.id ||
-				marker.data.projectId !== binding.projectId ||
-				marker.data.nodeId !== graph.reviewId ||
-				marker.data.workflowUpdatedAt !==
-					expectedUpdatedAt.toISOString() ||
-				marker.data.frameUpdatedAt !==
-					binding.updatedAt.toISOString() ||
-				marker.data.forceReview !== parsed.data.forceReview
-			) {
-				throw new WorkflowCommandError(
-					"CONFLICT",
-					"This idempotency key belongs to a different review request. Read its run before starting another.",
-				);
-			}
-		}
 		return {
 			workflowId: current.id,
 			executionId: outcome.execution.id,

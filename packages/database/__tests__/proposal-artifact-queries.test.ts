@@ -933,6 +933,26 @@ describe("live sections", () => {
 		expect(documentRow()).toEqual(before);
 	});
 
+	it("resetLiveSections from an attempt whose run a person's save ended is superseded and changes nothing", async () => {
+		// The run stalled before its plan; a save over it finished the document.
+		seedDocument({
+			status: "COMPLETE",
+			generationStartedAt: EARLIER,
+			liveRunId: null,
+			liveContent: null,
+		});
+		const before = structuredClone(documentRow());
+
+		expect(
+			await resetLiveSections({
+				documentId: DOC,
+				runId: RUN,
+				generationStartedAt: EARLIER,
+			}),
+		).toBe("superseded");
+		expect(documentRow()).toEqual(before);
+	});
+
 	it("resetLiveSections with the attempt identity is superseded for a document that no longer exists", async () => {
 		expect(
 			await resetLiveSections({

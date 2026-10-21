@@ -12,6 +12,11 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	ArrowLeftRight,
@@ -20,7 +25,7 @@ import {
 	RotateCcwIcon,
 	XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import {
 	diffPartialText,
@@ -67,6 +72,11 @@ interface VersionDiffViewerProps {
 	currentVersion: number;
 	onRestore: () => void;
 	isRestoring: boolean;
+	/**
+	 * Why Restore is closed off right now, already translated (Fizzy #2946):
+	 * set, the button is disabled and described by it.
+	 */
+	restoreDisabledReason?: string | null;
 }
 
 export function VersionDiffViewer({
@@ -77,8 +87,10 @@ export function VersionDiffViewer({
 	currentVersion,
 	onRestore,
 	isRestoring,
+	restoreDisabledReason = null,
 }: VersionDiffViewerProps) {
 	const [isVisible, setIsVisible] = useState(false);
+	const restoreDisabledId = useId();
 
 	// Smooth mount animation
 	useEffect(() => {
@@ -432,7 +444,39 @@ export function VersionDiffViewer({
 						    is "do not offer to restore something that would
 						    change nothing" rather than "do not offer to
 						    restore the current row". */}
-						{isIdentical ? null : (
+						{isIdentical ? null : restoreDisabledReason ? (
+							// Closed off, it says why on the button itself:
+							// `aria-disabled`, not `disabled`, so it stays
+							// focusable as its own tab stop, opens the
+							// tooltip, and is described by the reason. It
+							// has no press handler, so a click, Enter or
+							// Space restores nothing.
+							<>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											size="sm"
+											aria-disabled
+											aria-describedby={restoreDisabledId}
+											className="cursor-not-allowed opacity-50"
+										>
+											<RotateCcwIcon className="mr-2 h-4 w-4" />
+											Restore Version{" "}
+											{selectedVersion.version}
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent>
+										{restoreDisabledReason}
+									</TooltipContent>
+								</Tooltip>
+								<span
+									id={restoreDisabledId}
+									className="sr-only"
+								>
+									{restoreDisabledReason}
+								</span>
+							</>
+						) : (
 							<Button
 								size="sm"
 								onClick={onRestore}

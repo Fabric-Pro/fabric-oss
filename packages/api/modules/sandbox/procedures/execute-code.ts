@@ -4,19 +4,20 @@
  * Executes code in a Dynamic Worker isolate.
  */
 
-import { z } from "zod";
+import {
+	ExecuteCodePublicRequestSchema,
+	ExecuteCodeResponseSchema,
+} from "@repo/sandbox/dynamic-worker";
 import {
 	Permissions,
 	requirePermission,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { executeDynamicWorkerCode } from "../lib/dynamic-worker-client";
-import { ExecutionResultSchema, LanguageSchema } from "../types";
 
-const ExecuteCodeInputSchema = z.object({
-	code: z.string().min(1, "Code cannot be empty"),
-	language: LanguageSchema.default("javascript"),
-	timeout: z.number().min(1000).max(60000).default(30000), // 1s to 60s
+const ExecuteCodeInputSchema = ExecuteCodePublicRequestSchema.extend({
+	language:
+		ExecuteCodePublicRequestSchema.shape.language.default("javascript"),
 });
 
 /**
@@ -37,13 +38,14 @@ export const executeCode = tenantProtectedProcedure
 			"Execute JavaScript or TypeScript in a Dynamic Worker isolate",
 	})
 	.input(ExecuteCodeInputSchema)
-	.output(ExecutionResultSchema)
+	.output(ExecuteCodeResponseSchema)
 	.handler(async ({ input, context }) => {
 		return executeDynamicWorkerCode({
 			userId: context.user.id,
 			organizationId: context.session.activeOrganizationId ?? undefined,
 			code: input.code,
 			language: input.language,
+			inputs: input.inputs,
 			timeout: input.timeout,
 		});
 	});

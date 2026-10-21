@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	analysisFailureMessage,
 	validateBacklogAnalysisOptions,
 	validateBacklogAnalysisSources,
 } from "../backlog-analysis-sources";
@@ -79,7 +78,7 @@ describe("validateBacklogAnalysisSources", () => {
 	});
 });
 
-describe("analysis date range and failure text", () => {
+describe("analysis date range", () => {
 	it.each([7, 14, 30, 60, 90])(
 		"preserves allowed daysBack %s",
 		(daysBack) => {
@@ -96,13 +95,6 @@ describe("analysis date range and failure text", () => {
 			).toBeUndefined();
 		},
 	);
-	it("pins the browser failure prefix and retains the underlying error", () => {
-		// Agent consumer: ANALYSIS_FAILURE_PREFIX in agents/langchain/backlog-updater/nodes/chat-node.ts.
-		const text = analysisFailureMessage("Example start failure");
-		expect(text.startsWith("Analysis error:")).toBe(true);
-		expect(text).toContain("Example start failure");
-		expect(text).toContain("Do not call analyze_backlog again");
-	});
 });
 
 describe("validateBacklogAnalysisOptions", () => {
@@ -164,9 +156,4 @@ describe("validateBacklogAnalysisOptions", () => {
 			).toBeUndefined();
 		},
 	);
-	it("avoids a double period in failure instructions", () => {
-		expect(
-			analysisFailureMessage("Analysis timed out after 5 minutes."),
-		).toContain("5 minutes. Do not");
-	});
 });

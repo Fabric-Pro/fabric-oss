@@ -55,4 +55,22 @@ describe("workflow text model origin", () => {
 			},
 		);
 	});
+
+	it("carries the server-derived Workspace alongside the execution", async () => {
+		await executeAiGenerateTextStep({
+			nodeConfig: { aiPrompt: "Summarise the stories." },
+			inputs: {},
+			userId: "user-1",
+			organizationId: "org-1",
+			executionId: "execution-1",
+			frameId: "workspace",
+		});
+		expect(mocks.getModel).toHaveBeenCalledWith(
+			{ taskType: "SIMPLE" },
+			expect.objectContaining({
+				workflowExecutionId: "execution-1",
+				frameId: "workspace",
+			}),
+		);
+	});
 });

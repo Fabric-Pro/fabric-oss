@@ -1,12 +1,49 @@
 import type { FabricHttpClient } from "../client.js";
 import type {
 	FabricDocument,
+	FabricDocumentStatus,
 	FabricDocumentSummary,
+	FabricDocumentWriteStatus,
 	FabricFeature,
 	FabricProject,
 	FabricTask,
 	ListOptions,
 } from "../types.js";
+
+export type { FabricDocumentStatus, FabricDocumentWriteStatus };
+
+/**
+ * `FabricError.code` values the document routes answer with. A hand-kept
+ * mirror of the server's codes: the strings are the public contract.
+ */
+export const DOCUMENT_ERROR_CODES = {
+	/**
+	 * 409 from `updateDocument`: the document changed since the read that
+	 * `expectedVersion` and `expectedContentHash` came from. Read it again
+	 * and retry on top of the newer body.
+	 */
+	DOCUMENT_VERSION_CONFLICT: "DOCUMENT_VERSION_CONFLICT",
+	/**
+	 * 409 from `updateDocument`: a generation run is queued for or writing a
+	 * Proposal, so its content and status are refused until the run ends.
+	 * A title-only update is still accepted.
+	 */
+	DOCUMENT_GENERATION_IN_PROGRESS: "DOCUMENT_GENERATION_IN_PROGRESS",
+	/**
+	 * 400 from `createDocument` or `updateDocument`: QUEUED and GENERATING
+	 * are set by generation runs only.
+	 */
+	DOCUMENT_STATUS_GENERATION_OWNED: "DOCUMENT_STATUS_GENERATION_OWNED",
+	/**
+	 * 409 from `updateDocument`: an integration contract's status belongs to
+	 * its discovery run, so a changed status is refused. Its content and
+	 * title can still be updated.
+	 */
+	INTEGRATION_CONTRACT_STATUS_MANAGED: "INTEGRATION_CONTRACT_STATUS_MANAGED",
+} as const;
+
+export type FabricDocumentErrorCode =
+	(typeof DOCUMENT_ERROR_CODES)[keyof typeof DOCUMENT_ERROR_CODES];
 
 export type FabricDocumentType =
 	| "GENERAL"
@@ -18,15 +55,6 @@ export type FabricDocumentType =
 	| "USER_STORY"
 	| "API_SPEC";
 
-export type FabricDocumentStatus =
-	| "DRAFT"
-	| "QUEUED"
-	| "GENERATING"
-	| "IN_PROGRESS"
-	| "REVIEW"
-	| "COMPLETE"
-	| "FAILED";
-
 export interface ListDocumentsOptions extends ListOptions {
 	type?: FabricDocumentType;
 	status?: FabricDocumentStatus;
@@ -36,7 +64,7 @@ export interface CreateDocumentOptions {
 	type: FabricDocumentType;
 	title: string;
 	content: string;
-	status?: FabricDocumentStatus;
+	status?: FabricDocumentWriteStatus;
 	org?: string;
 	personal?: boolean;
 }
@@ -44,8 +72,25 @@ export interface CreateDocumentOptions {
 export interface UpdateDocumentOptions {
 	title?: string;
 	content?: string;
-	status?: FabricDocumentStatus;
+	status?: FabricDocumentWriteStatus;
 	changeDescription?: string;
+	/**
+	 * The `version` of the document this update is based on. Send it with
+	 * `expectedContentHash`, or send neither (the server answers 400 to
+	 * one alone). With both, an update made after a newer save is refused
+	 * with 409 `DOCUMENT_VERSION_CONFLICT` instead of overwriting it.
+	 *
+	 * Take both from `getDocument`, or from the document the previous
+	 * `updateDocument` returned.
+	 */
+	expectedVersion?: number;
+	/**
+	 * The `contentHash` of the document this update is based on; see
+	 * `expectedVersion`. Use the value the server returned rather than
+	 * hashing the body you sent: the saved body can differ from it, for
+	 * example when the document holds a visual slot Fabric manages.
+	 */
+	expectedContentHash?: string;
 	org?: string;
 	personal?: boolean;
 }

@@ -76,10 +76,10 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 
 		// A Proposal's body belongs to its generation run while the run is
 		// queued or writing (Fizzy #2946). Refused here, and again by the
-		// rewind itself, so a run queued between this read and the rewind is
-		// refused by the database too. Decided by type, not by the rollout
-		// gate: a run keeps writing when the gate is turned off mid-run.
-		const refuseWhileGenerating = isRunGuardedDocumentType(document.type);
+		// rewind itself (the query's default for a Proposal), so a run queued
+		// between this read and the rewind is refused by the database too.
+		// Decided by type, not by the rollout gate: a run keeps writing when
+		// the gate is turned off mid-run.
 		const generationInProgress = () =>
 			new ORPCError("CONFLICT", {
 				message:
@@ -87,7 +87,7 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
 			});
 		if (
-			refuseWhileGenerating &&
+			isRunGuardedDocumentType(document.type) &&
 			(document.status === "QUEUED" || document.status === "GENERATING")
 		) {
 			throw generationInProgress();
@@ -97,9 +97,6 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 			const reverted = await rejectDocumentRegeneration(input.id, {
 				userId: user.id,
 				organizationId,
-				...(refuseWhileGenerating
-					? { refuseWhileGenerating: true }
-					: {}),
 			});
 
 			// Re-embed for RAG so the index reflects the reverted content,

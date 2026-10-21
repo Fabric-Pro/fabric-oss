@@ -28,6 +28,7 @@ import { describe, expect, it } from "vitest";
 
 import "../../plugins";
 import { getAllActions, getAllIntegrations } from "../../plugins";
+import { SYSTEM_NODES } from "../../system-nodes";
 
 const STEPS_DIR = join(
 	process.cwd(),
@@ -156,6 +157,17 @@ const actions = getAllActions();
 const wired = actions.filter(
 	(action) => !ACTIONS_WITHOUT_EXECUTORS.has(action.actionId),
 );
+const wiredSystemNodes = SYSTEM_NODES.flatMap((node) =>
+	node.execution
+		? [
+				{
+					...node.execution,
+					type: node.type,
+					outputFields: node.outputFields ?? [],
+				},
+			]
+		: [],
+);
 
 describe("plugin hygiene", () => {
 	const plugins = getAllIntegrations();
@@ -231,7 +243,10 @@ const NON_ACTION_STEPS = new Set([
 describe("every executor is reachable", () => {
 	it("has no step file that no action points at", () => {
 		const claimed = new Set(
-			wired.map((a) => a.stepImportPath).filter(Boolean),
+			[
+				...wired.map((a) => a.stepImportPath),
+				...wiredSystemNodes.map((node) => node.stepImportPath),
+			].filter(Boolean),
 		);
 		const files = readdirSync(STEPS_DIR)
 			.filter((f) => f.endsWith(".ts"))
@@ -246,6 +261,39 @@ describe("every executor is reachable", () => {
 			`these steps exist but no plugin action points at them, so nothing can run them. Either wire an action, or list them in NON_ACTION_STEPS:\n${orphans.join("\n")}`,
 		).toEqual([]);
 	});
+});
+
+describe("system action executor bindings", () => {
+	it("registers Script Transform as a bound system action", () => {
+		expect(
+			wiredSystemNodes.find((node) => node.type === "script-transform"),
+		).toMatchObject({
+			stepImportPath: "script-transform",
+			stepFunction: "executeScriptTransformStep",
+			outputFields: [
+				{ field: "result", description: expect.any(String) },
+				{ field: "logs", description: expect.any(String) },
+			],
+		});
+	});
+
+	it.each(wiredSystemNodes)(
+		"$type resolves its executor and returns declared outputs",
+		(node) => {
+			const source = stepSource(node.stepImportPath);
+			expect(source).not.toBeNull();
+			expect(source).toContain(
+				`export async function ${node.stepFunction}`,
+			);
+			const returned = producedOutputKeys(source ?? "");
+			for (const output of node.outputFields) {
+				expect(
+					returned.has(output.field),
+					`${node.type} must return ${output.field}`,
+				).toBe(true);
+			}
+		},
+	);
 });
 
 describe("node types", () => {

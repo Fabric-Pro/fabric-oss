@@ -1,3 +1,4 @@
+import { GENERATION_RUN_SILENCE_CEILING_MS } from "@repo/utils/generation-run-guard";
 import {
 	BriefcaseIcon,
 	FileIcon,
@@ -12,7 +13,6 @@ import {
 	WrenchIcon,
 	ZapIcon,
 } from "lucide-react";
-
 import { resolveGenerationClock } from "./document-generation-timestamp";
 
 /**
@@ -230,8 +230,13 @@ const DOCUMENT_POLL_MAX_MS = 30_000;
  * index, a crawl, a sibling document — which can legitimately run for an hour,
  * and ageing it out would freeze the card on "Queued" for the rest of the
  * session.
+ *
+ * The same ceiling ends a run's hold on the document's body: the editor stops
+ * treating a run silent for longer as writing, and the server lets the
+ * editor's save write over it (`isGenerationRunStillWriting`), so the number
+ * lives in one place for both.
  */
-const DOCUMENT_POLL_CEILING_MS = 10 * 60 * 1000;
+const DOCUMENT_POLL_CEILING_MS = GENERATION_RUN_SILENCE_CEILING_MS;
 
 export type PollableDocument = {
 	status: string;

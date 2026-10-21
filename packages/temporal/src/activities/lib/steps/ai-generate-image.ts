@@ -106,6 +106,7 @@ export async function executeAiGenerateImageStep(
 				jobType: params.jobType,
 				featureKey: "workflow",
 				workflowExecutionId: params.executionId,
+				...(params.frameId ? { frameId: params.frameId } : {}),
 				inputTokens: 0,
 				outputTokens: 0,
 				totalTokens: 0,
@@ -182,6 +183,7 @@ async function enhanceImagePrompt(
 				jobType: params.jobType,
 				featureKey: "workflow",
 				workflowExecutionId: params.executionId,
+				...(params.frameId ? { frameId: params.frameId } : {}),
 			},
 		);
 		const result = await generateText({

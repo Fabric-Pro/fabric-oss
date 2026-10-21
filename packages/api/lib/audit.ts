@@ -23,9 +23,11 @@ import {
 	type RecordAuditInput,
 	recordAudit,
 	setAuditCounters,
+	setAuditWriteScheduler,
 	setPrismaQueryObserver,
 } from "@repo/database";
 import { auditWriteFailures, auditWritesTotal } from "@repo/observability";
+import { runInBackground } from "../modules/weave/lib/run-in-background";
 import {
 	getAuditTimingDurationMs,
 	markCuratedAuditWritten,
@@ -52,6 +54,10 @@ export function wireAuditObservability(): void {
 		incWrite: (action, category, outcome) =>
 			auditWritesTotal.inc({ action, category, outcome }),
 	});
+	// Most audit rows are written after the response is already on its way (the
+	// error middleware records the 401/403 it is returning). Without this the
+	// serverless host freezes that write mid-query and it fails minutes later.
+	setAuditWriteScheduler(runInBackground);
 	// Install the query observer that buffers a `db` span for every query. It is
 	// a no-op outside a `runWithRequestSpanContext` frame, so background workers
 	// (Temporal, retention) pay only the frame lookup.

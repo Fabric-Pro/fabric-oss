@@ -549,16 +549,27 @@ describe("with a body base (a save from a collaborative room)", () => {
 	});
 });
 
-describe("refusing to write under a live generation run (Fizzy #2946)", () => {
-	const GUARDED_BASE = {
+/**
+ * A Proposal's body and status belong to its generation run while the run is
+ * queued or writing (Fizzy #2946). `updateDocument` refuses any write that
+ * carries content or a status under a run by default, so a new writer that
+ * forgets to ask is refused all the same. Only the editor's plain content save
+ * opts out.
+ */
+describe("refusing to write under a live generation run by default (Fizzy #2946)", () => {
+	const PROPOSAL = { ...CURRENT, type: "PROPOSAL", status: "COMPLETE" };
+	const WITH_BASE = {
 		...BASE,
 		expectedVersion: 3,
 		expectedContentHash: contentIdentity(CURRENT.content),
-		refuseWhileGenerating: true,
 	};
 
+	beforeEach(() => {
+		findUniqueMock.mockResolvedValue(PROPOSAL);
+	});
+
 	it("puts the run statuses in the WHERE clause", async () => {
-		await updateDocument("doc_1", GUARDED_BASE);
+		await updateDocument("doc_1", WITH_BASE);
 
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -573,43 +584,58 @@ describe("refusing to write under a live generation run (Fizzy #2946)", () => {
 	});
 
 	it.each(["QUEUED", "GENERATING"])(
-		"refuses a document read as %s without writing",
+		"refuses a content write from a caller with no flag to a Proposal read as %s, without writing",
 		async (status) => {
-			findUniqueMock.mockResolvedValue({ ...CURRENT, status });
+			findUniqueMock.mockResolvedValue({ ...PROPOSAL, status });
 
-			await expect(
-				updateDocument("doc_1", GUARDED_BASE),
-			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+			await expect(updateDocument("doc_1", BASE)).rejects.toBeInstanceOf(
+				DocumentGenerationInProgressError,
+			);
 			expect(transactionMock).not.toHaveBeenCalled();
 			expect(updateMock).not.toHaveBeenCalled();
 		},
 	);
 
-	it("refuses when a run queued the document between the read and the write", async () => {
-		// The read saw a finished document; the row holds QUEUED by the time
-		// the UPDATE runs. Queueing writes no version or body, so only the
-		// status condition can catch it.
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "COMPLETE" });
-		updateManyMock.mockResolvedValue({ count: 0 });
-		txFindUniqueMock.mockResolvedValue({ version: 3, status: "QUEUED" });
+	it("refuses the status before the base, so a run is not reported as a conflict", async () => {
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "GENERATING",
+			version: 4,
+		});
 
-		await expect(
-			updateDocument("doc_1", GUARDED_BASE),
-		).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+		await expect(updateDocument("doc_1", WITH_BASE)).rejects.toBeInstanceOf(
+			DocumentGenerationInProgressError,
+		);
 	});
 
+	it.each(["QUEUED", "GENERATING"])(
+		"refuses a caller with no flag when a run was %s between the read and the write",
+		async (status) => {
+			// The read saw a finished document; the row holds the run's
+			// status by the time the UPDATE runs. Queueing writes no version
+			// or body, so only the status condition can catch it.
+			updateManyMock.mockResolvedValue({ count: 0 });
+			txFindUniqueMock.mockResolvedValue({ version: 3, status });
+
+			await expect(updateDocument("doc_1", BASE)).rejects.toBeInstanceOf(
+				DocumentGenerationInProgressError,
+			);
+			expect(updateMock).not.toHaveBeenCalled();
+			expect(txFindUniqueOrThrowMock).not.toHaveBeenCalled();
+		},
+	);
+
 	it("still reports a body change as a version conflict when no run holds the row", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "COMPLETE" });
 		updateManyMock.mockResolvedValue({ count: 0 });
 		txFindUniqueMock.mockResolvedValue({ version: 3, status: "COMPLETE" });
 
-		await expect(
-			updateDocument("doc_1", GUARDED_BASE),
-		).rejects.toBeInstanceOf(DocumentVersionConflictError);
+		await expect(updateDocument("doc_1", WITH_BASE)).rejects.toBeInstanceOf(
+			DocumentVersionConflictError,
+		);
 	});
 
-	it("takes the guarded write even without a base", async () => {
-		await updateDocument("doc_1", { ...BASE, refuseWhileGenerating: true });
+	it("conditions a content write on the version read and no run, even without a base", async () => {
+		await updateDocument("doc_1", BASE);
 
 		expect(updateMock).not.toHaveBeenCalled();
 		expect(updateManyMock).toHaveBeenCalledWith(
@@ -624,15 +650,14 @@ describe("refusing to write under a live generation run (Fizzy #2946)", () => {
 	});
 
 	it.each(["QUEUED", "GENERATING"])(
-		"refuses a status-only write to a document read as %s without writing",
+		"refuses a status-only write to a Proposal read as %s without writing",
 		async (status) => {
-			findUniqueMock.mockResolvedValue({ ...CURRENT, status });
+			findUniqueMock.mockResolvedValue({ ...PROPOSAL, status });
 
 			await expect(
 				updateDocument("doc_1", {
 					status: "COMPLETE",
 					userId: "user_1",
-					refuseWhileGenerating: true,
 				}),
 			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 			expect(transactionMock).not.toHaveBeenCalled();
@@ -641,12 +666,11 @@ describe("refusing to write under a live generation run (Fizzy #2946)", () => {
 	);
 
 	it("conditions a status-only write on no run holding the row", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "REVIEW" });
+		findUniqueMock.mockResolvedValue({ ...PROPOSAL, status: "REVIEW" });
 
 		await updateDocument("doc_1", {
 			status: "COMPLETE",
 			userId: "user_1",
-			refuseWhileGenerating: true,
 		});
 
 		expect(updateMock).not.toHaveBeenCalled();
@@ -660,11 +684,399 @@ describe("refusing to write under a live generation run (Fizzy #2946)", () => {
 		});
 	});
 
-	it("leaves a write that does not ask for it free of the status condition", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "GENERATING" });
+	it("refuses a no-bump rewind under a run, and conditions one after it", async () => {
+		const rewind = {
+			...BASE,
+			content: "# PRD\n\nThe body from before the run.",
+			skipVersionBump: true,
+		};
+		findUniqueMock.mockResolvedValueOnce({
+			...PROPOSAL,
+			status: "GENERATING",
+		});
+		await expect(updateDocument("doc_1", rewind)).rejects.toBeInstanceOf(
+			DocumentGenerationInProgressError,
+		);
+
+		await updateDocument("doc_1", rewind);
+
+		expect(updateMock).not.toHaveBeenCalled();
+		expect(updateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "doc_1",
+					version: 3,
+					status: { notIn: ["QUEUED", "GENERATING"] },
+				},
+			}),
+		);
+	});
+
+	// The editor's opt-out cannot be told apart from any other caller's
+	// content save, so the row itself decides: only a run that has gone
+	// silent past the ceiling, by the rule the editor stops treating a run
+	// as writing by, may be written over.
+	const SILENCE_CEILING_MS = 10 * 60 * 1000;
+	const writtenAgo = (ms: number) => new Date(Date.now() - ms);
+
+	it.each([
+		["QUEUED, written just now", "QUEUED", 0],
+		// A queued run waits on the project's context work, which can take
+		// an hour; it is never stalled.
+		["QUEUED, silent for an hour", "QUEUED", 60 * 60 * 1000],
+		["GENERATING, written just now", "GENERATING", 0],
+		["GENERATING, written nine minutes ago", "GENERATING", 9 * 60 * 1000],
+	])(
+		"refuses the editor's plain content save to a Proposal %s, without writing",
+		async (_label, status, silentForMs) => {
+			findUniqueMock.mockResolvedValue({
+				...PROPOSAL,
+				status,
+				updatedAt: writtenAgo(silentForMs as number),
+			});
+
+			await expect(
+				updateDocument("doc_1", {
+					...WITH_BASE,
+					allowDuringLiveRun: "editor-content-save",
+				}),
+			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+			expect(transactionMock).not.toHaveBeenCalled();
+			expect(updateMock).not.toHaveBeenCalled();
+		},
+	);
+
+	it("refuses the editor's opt-out under a generating run with no stamp to judge by", async () => {
+		findUniqueMock.mockResolvedValue({ ...PROPOSAL, status: "GENERATING" });
+
+		await expect(
+			updateDocument("doc_1", {
+				...BASE,
+				allowDuringLiveRun: "editor-content-save",
+			}),
+		).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+		expect(updateMock).not.toHaveBeenCalled();
+	});
+
+	it("lets the editor's plain content save write over a stalled run, conditioned on the row's last write", async () => {
+		const lastWrite = writtenAgo(SILENCE_CEILING_MS + 60 * 1000);
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "GENERATING",
+			updatedAt: lastWrite,
+		});
+
+		await updateDocument("doc_1", {
+			...BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(updateMock).not.toHaveBeenCalled();
+		expect(updateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "doc_1", version: 3, updatedAt: lastWrite },
+				data: expect.objectContaining({ content: BASE.content }),
+			}),
+		);
+	});
+
+	/** A Proposal whose coordinated run went silent past the ceiling. */
+	const stalledRun = (lastWrite: Date) => ({
+		...PROPOSAL,
+		status: "GENERATING",
+		updatedAt: lastWrite,
+		generationProgress: 45,
+		generationError: null,
+		liveRunId: "run_1",
+		liveAttempt: 2,
+		liveContent: "## Overview\n\nThe sections the run streamed.",
+	});
+	/** What ending a run writes, beside the save itself. */
+	const ENDS_RUN = {
+		status: "COMPLETE",
+		generationProgress: 100,
+		generationCompletedAt: expect.any(Date),
+		generationError: null,
+		liveRunId: null,
+		liveAttempt: null,
+		liveContent: null,
+	};
+
+	it("ends the stalled run in the same conditioned write: completed, with the run's token, attempt and preview cleared", async () => {
+		const lastWrite = writtenAgo(SILENCE_CEILING_MS + 60 * 1000);
+		findUniqueMock.mockResolvedValue(stalledRun(lastWrite));
+		txFindUniqueOrThrowMock.mockResolvedValue({
+			...CURRENT,
+			type: "PROPOSAL",
+			content: BASE.content,
+			version: 4,
+			status: "COMPLETE",
+		});
+
+		const saved = await updateDocument("doc_1", {
+			...WITH_BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(updateMock).not.toHaveBeenCalled();
+		expect(updateManyMock).toHaveBeenCalledTimes(1);
+		expect(updateManyMock).toHaveBeenCalledWith({
+			where: {
+				id: "doc_1",
+				version: 3,
+				content: CURRENT.content,
+				updatedAt: lastWrite,
+			},
+			data: {
+				content: BASE.content,
+				wordCount: expect.any(Number),
+				version: 4,
+				lastEditedBy: BASE.lastEditedBy,
+				...ENDS_RUN,
+			},
+		});
+		expect(saved.status).toBe("COMPLETE");
+	});
+
+	it("ends the stalled run when the save carries the body the row already holds", async () => {
+		// The write still moves `updatedAt`, so a row left GENERATING would
+		// look live again.
+		const lastWrite = writtenAgo(SILENCE_CEILING_MS + 60 * 1000);
+		findUniqueMock.mockResolvedValue(stalledRun(lastWrite));
+
+		await updateDocument("doc_1", {
+			...BASE,
+			content: CURRENT.content,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(versionCreateMock).not.toHaveBeenCalled();
+		expect(updateManyMock).toHaveBeenCalledWith({
+			where: { id: "doc_1", version: 3, updatedAt: lastWrite },
+			data: { lastEditedBy: BASE.lastEditedBy, ...ENDS_RUN },
+		});
+	});
+
+	it("leaves a row the editor's next save is not refused on", async () => {
+		const stalled = stalledRun(writtenAgo(SILENCE_CEILING_MS + 60 * 1000));
+		findUniqueMock.mockResolvedValue(stalled);
+		await updateDocument("doc_1", {
+			...WITH_BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+		// The row as that write left it, written a moment ago.
+		const [[endingWrite]] = updateManyMock.mock.calls;
+		const afterEnding = {
+			...stalled,
+			...endingWrite.data,
+			updatedAt: new Date(),
+		};
+		findUniqueMock.mockResolvedValue(afterEnding);
+		updateManyMock.mockClear();
+
+		const typedNext = "# PRD\n\nTyped a moment later.";
+		await expect(
+			updateDocument("doc_1", {
+				...BASE,
+				content: typedNext,
+				expectedVersion: afterEnding.version,
+				expectedContentHash: contentIdentity(afterEnding.content),
+				allowDuringLiveRun: "editor-content-save",
+			}),
+		).resolves.toBeDefined();
+
+		// Conditioned on its base alone, as any save to a finished Proposal.
+		expect(updateManyMock).toHaveBeenCalledWith({
+			where: { id: "doc_1", version: 4, content: afterEnding.content },
+			data: {
+				content: typedNext,
+				wordCount: expect.any(Number),
+				version: 5,
+				lastEditedBy: BASE.lastEditedBy,
+			},
+		});
+	});
+
+	it("keeps the editor's save over a stalled run conditioned on its base as well", async () => {
+		const lastWrite = writtenAgo(SILENCE_CEILING_MS + 60 * 1000);
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "GENERATING",
+			updatedAt: lastWrite,
+		});
+
+		await updateDocument("doc_1", {
+			...WITH_BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(updateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "doc_1",
+					version: 3,
+					content: CURRENT.content,
+					updatedAt: lastWrite,
+				},
+			}),
+		);
+	});
+
+	it("refuses the editor's save over a stalled run that wrote again before it landed", async () => {
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "GENERATING",
+			updatedAt: writtenAgo(SILENCE_CEILING_MS + 60 * 1000),
+		});
+		// The run came back between the read and the write: its write moved
+		// `updatedAt`, so the conditioned UPDATE matched nothing.
+		updateManyMock.mockResolvedValue({ count: 0 });
+		txFindUniqueMock.mockResolvedValue({
+			version: 3,
+			status: "GENERATING",
+		});
+
+		await expect(
+			updateDocument("doc_1", {
+				...BASE,
+				allowDuringLiveRun: "editor-content-save",
+			}),
+		).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+		expect(txFindUniqueOrThrowMock).not.toHaveBeenCalled();
+		// The write that lost was the one that would have ended the run.
+		expect(updateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETE",
+					liveRunId: null,
+				}),
+			}),
+		);
+	});
+
+	it("leaves the editor's save to a finished Proposal as it was: unconditioned without a base", async () => {
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "COMPLETE",
+			updatedAt: writtenAgo(0),
+		});
+
+		await updateDocument("doc_1", {
+			...BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(transactionMock).not.toHaveBeenCalled();
+		expect(updateMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "doc_1" },
+				data: expect.objectContaining({ content: BASE.content }),
+			}),
+		);
+		// No run to end: neither the status nor the run's columns are written.
+		const { data } = updateMock.mock.calls[0][0];
+		expect(data).not.toHaveProperty("status");
+		expect(data).not.toHaveProperty("liveRunId");
+	});
+
+	it("keeps the editor's save to a finished Proposal with a base conditioned on its base only", async () => {
+		await updateDocument("doc_1", {
+			...WITH_BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(updateManyMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { id: "doc_1", version: 3, content: CURRENT.content },
+			}),
+		);
+		const { data } = updateManyMock.mock.calls[0][0];
+		expect(data).not.toHaveProperty("status");
+		expect(data).not.toHaveProperty("liveRunId");
+	});
+
+	it("ends no run on a document type no run guards, however long it has been silent", async () => {
+		findUniqueMock.mockResolvedValue({
+			...CURRENT,
+			type: "PRD",
+			status: "GENERATING",
+			updatedAt: writtenAgo(SILENCE_CEILING_MS + 60 * 1000),
+		});
+
+		await updateDocument("doc_1", {
+			...BASE,
+			allowDuringLiveRun: "editor-content-save",
+		});
+
+		expect(transactionMock).not.toHaveBeenCalled();
+		const { data } = updateMock.mock.calls[0][0];
+		expect(data).toMatchObject({ content: BASE.content });
+		expect(data).not.toHaveProperty("status");
+		expect(data).not.toHaveProperty("liveRunId");
+	});
+
+	it("does not exempt a status write or a no-bump rewind that names the editor's opt-out, even over a stalled run", async () => {
+		findUniqueMock.mockResolvedValue({
+			...PROPOSAL,
+			status: "GENERATING",
+			updatedAt: writtenAgo(SILENCE_CEILING_MS + 60 * 1000),
+		});
+
+		for (const write of [
+			{ ...BASE, status: "REVIEW" as const },
+			{ status: "REVIEW" as const, userId: "user_1" },
+			{ ...BASE, skipVersionBump: true },
+		]) {
+			await expect(
+				updateDocument("doc_1", {
+					...write,
+					allowDuringLiveRun: "editor-content-save",
+				}),
+			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
+		}
+		expect(transactionMock).not.toHaveBeenCalled();
+		expect(updateMock).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["a title-only write", { title: "Renamed", userId: "user_1" }],
+		// What `projects.documents.update` sends ahead of a `completeDraft`
+		// that carries no content: no body, no status.
+		[
+			"a write with neither content nor status",
+			{ lastEditedBy: "user_1", userId: "user_1" },
+		],
+	])(
+		"leaves %s to a generating Proposal allowed and unconditioned",
+		async (_label, write) => {
+			findUniqueMock.mockResolvedValue({
+				...PROPOSAL,
+				status: "GENERATING",
+			});
+
+			await updateDocument("doc_1", write);
+
+			expect(transactionMock).not.toHaveBeenCalled();
+			expect(updateManyMock).not.toHaveBeenCalled();
+			expect(updateMock).toHaveBeenCalledWith(
+				expect.objectContaining({ where: { id: "doc_1" } }),
+			);
+		},
+	);
+
+	it("leaves a non-Proposal document's content and status writes under a run unchanged", async () => {
+		findUniqueMock.mockResolvedValue({
+			...CURRENT,
+			type: "PRD",
+			status: "GENERATING",
+		});
+
+		await updateDocument("doc_1", BASE);
+		await updateDocument("doc_1", { status: "REVIEW", userId: "user_1" });
+		expect(transactionMock).not.toHaveBeenCalled();
+		expect(updateMock).toHaveBeenCalledTimes(2);
 
 		await updateDocument("doc_1", { ...BASE, expectedVersion: 3 });
-
 		expect(updateManyMock).toHaveBeenCalledWith(
 			expect.objectContaining({ where: { id: "doc_1", version: 3 } }),
 		);
@@ -674,6 +1086,7 @@ describe("refusing to write under a live generation run (Fizzy #2946)", () => {
 describe("restoreDocumentVersion", () => {
 	const RESTORED = "# PRD\n\nThe body of version 2.";
 	const TENANT = { userId: "user_1", organizationId: "org_1" };
+	const PROPOSAL = { ...CURRENT, type: "PROPOSAL" };
 
 	beforeEach(() => {
 		// The first lookup is the version being restored; the second is the
@@ -687,8 +1100,12 @@ describe("restoreDocumentVersion", () => {
 			.mockResolvedValue(null);
 	});
 
-	it("restores through the unguarded write when not asked to refuse a run", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "GENERATING" });
+	it("restores a non-Proposal through the unguarded write, even under a run", async () => {
+		findUniqueMock.mockResolvedValue({
+			...CURRENT,
+			type: "PRD",
+			status: "GENERATING",
+		});
 
 		await restoreDocumentVersion("doc_1", 2, "user_1", TENANT);
 
@@ -705,14 +1122,12 @@ describe("restoreDocumentVersion", () => {
 	});
 
 	it.each(["QUEUED", "GENERATING"])(
-		"refuses a restore of a document read as %s without writing",
+		"refuses a restore of a Proposal read as %s without writing",
 		async (status) => {
-			findUniqueMock.mockResolvedValue({ ...CURRENT, status });
+			findUniqueMock.mockResolvedValue({ ...PROPOSAL, status });
 
 			await expect(
-				restoreDocumentVersion("doc_1", 2, "user_1", TENANT, {
-					refuseWhileGenerating: true,
-				}),
+				restoreDocumentVersion("doc_1", 2, "user_1", TENANT),
 			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 			expect(transactionMock).not.toHaveBeenCalled();
 			expect(updateMock).not.toHaveBeenCalled();
@@ -720,12 +1135,10 @@ describe("restoreDocumentVersion", () => {
 		},
 	);
 
-	it("conditions the restore on no run holding the row", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "COMPLETE" });
+	it("conditions a Proposal's restore on no run holding the row", async () => {
+		findUniqueMock.mockResolvedValue({ ...PROPOSAL, status: "COMPLETE" });
 
-		await restoreDocumentVersion("doc_1", 2, "user_1", TENANT, {
-			refuseWhileGenerating: true,
-		});
+		await restoreDocumentVersion("doc_1", 2, "user_1", TENANT);
 
 		expect(updateMock).not.toHaveBeenCalled();
 		expect(updateManyMock).toHaveBeenCalledWith(
@@ -743,15 +1156,13 @@ describe("restoreDocumentVersion", () => {
 		);
 	});
 
-	it("refuses a restore when a run is queued between the read and the write", async () => {
-		findUniqueMock.mockResolvedValue({ ...CURRENT, status: "COMPLETE" });
+	it("refuses a Proposal's restore when a run is queued between the read and the write", async () => {
+		findUniqueMock.mockResolvedValue({ ...PROPOSAL, status: "COMPLETE" });
 		updateManyMock.mockResolvedValue({ count: 0 });
 		txFindUniqueMock.mockResolvedValue({ version: 3, status: "QUEUED" });
 
 		await expect(
-			restoreDocumentVersion("doc_1", 2, "user_1", TENANT, {
-				refuseWhileGenerating: true,
-			}),
+			restoreDocumentVersion("doc_1", 2, "user_1", TENANT),
 		).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 		expect(updateMock).not.toHaveBeenCalled();
 		expect(txFindUniqueOrThrowMock).not.toHaveBeenCalled();
