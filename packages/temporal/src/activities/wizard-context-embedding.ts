@@ -195,7 +195,7 @@ export async function generateWizardContextEmbeddings(params: {
 	// Generate embeddings in batch
 	const result = await generateEmbeddings(
 		allChunks.map((c) => c.content),
-		{ userId, organizationId },
+		{ userId, organizationId, featureKey: "knowledge-index" },
 		providerConfig,
 	);
 

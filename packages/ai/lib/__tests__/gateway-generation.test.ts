@@ -1,3 +1,4 @@
+import { logger } from "@repo/logs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchGatewayGenerationCostUsd } from "../gateway-generation";
 
@@ -14,21 +15,53 @@ function mockFetch(impl: (url: string) => Response | Promise<Response>) {
 }
 
 describe("fetchGatewayGenerationCostUsd", () => {
-	it("returns total_cost (USD) on a 200", async () => {
+	it("returns data.total_cost (USD) on a 200", async () => {
 		mockFetch((url) => {
 			expect(url).toContain("/generation?id=gen_01ABC");
-			return new Response(JSON.stringify({ total_cost: 0.0123 }), {
-				status: 200,
-			});
+			return new Response(
+				JSON.stringify({
+					data: {
+						id: "gen_01ABC",
+						total_cost: 0.0123,
+						gateway_cost: 0.0123,
+						is_byok: false,
+					},
+				}),
+				{ status: 200 },
+			);
 		});
 		expect(await fetchGatewayGenerationCostUsd("gen_01ABC", "key")).toBe(
 			0.0123,
 		);
 	});
 
+	it("does not read a total_cost outside the data envelope", async () => {
+		mockFetch(
+			() =>
+				new Response(JSON.stringify({ total_cost: 0.0123 }), {
+					status: 200,
+				}),
+		);
+		expect(await fetchGatewayGenerationCostUsd("gen_x", "key")).toBeNull();
+	});
+
 	it("returns null on a 404 (cost not yet available)", async () => {
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		mockFetch(() => new Response("", { status: 404 }));
 		expect(await fetchGatewayGenerationCostUsd("gen_x", "key")).toBeNull();
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("logs a refused lookup, without the key", async () => {
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		mockFetch(() => new Response("", { status: 401 }));
+		expect(
+			await fetchGatewayGenerationCostUsd("gen_x", "sekret"),
+		).toBeNull();
+		expect(warn).toHaveBeenCalledWith(
+			"[gateway-generation] Cost lookup refused",
+			{ generationId: "gen_x", status: 401 },
+		);
 	});
 
 	it("returns null when total_cost is missing/non-numeric", async () => {
@@ -50,7 +83,7 @@ describe("fetchGatewayGenerationCostUsd", () => {
 		globalThis.fetch = vi.fn((_url: any, init: any) => {
 			seenAuth = init?.headers?.Authorization ?? null;
 			return Promise.resolve(
-				new Response(JSON.stringify({ total_cost: 1 }), {
+				new Response(JSON.stringify({ data: { total_cost: 1 } }), {
 					status: 200,
 				}),
 			);

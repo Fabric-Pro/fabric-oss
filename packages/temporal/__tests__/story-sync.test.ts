@@ -1091,6 +1091,270 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 		vi.clearAllMocks();
 	});
 
+	it.each(["after", "no-cursor"])(
+		"reads GitHub issues and stops numbered fetches (%s)",
+		async (cursor) => {
+			setupToolsMock({
+				github_list_issues: {
+					description: "List GitHub issues",
+					inputSchema: {
+						type: "object",
+						properties: {
+							repo: { type: "string" },
+							...(cursor === "after"
+								? { after: { type: "string" } }
+								: {}),
+							perPage: { type: "number" },
+						},
+						required: ["repo"],
+					},
+				},
+			});
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: wrapMcpJson({
+					issues: [
+						{
+							number: 42,
+							title: "Example issue",
+							body: "Issue body",
+							state: "OPEN",
+						},
+					],
+					totalCount: 100,
+					pageInfo: {
+						hasNextPage: true,
+						endCursor: "example-cursor",
+					},
+				}),
+				durationMs: 10,
+			});
+			const input = {
+				mcpConfigId: "example-config",
+				containerId: "example-org/example-repo",
+				userId: "example-user",
+			};
+			const result = await listWorkItemsFromPM(input);
+			expect(result.items).toMatchObject([
+				{ id: "42", title: "Example issue", description: "Issue body" },
+			]);
+			expect(result.total).toBe(100);
+			expect(result.hasNextPage).toBe(false);
+			expect(
+				vi.mocked(executeMcpTool).mock.calls[0][0].args,
+			).not.toHaveProperty("page");
+			expect(
+				vi.mocked(executeMcpTool).mock.calls[0][0].args,
+			).not.toHaveProperty("after");
+			const next = await listWorkItemsFromPM({ ...input, page: 2 });
+			expect(next.items).toEqual([]);
+			expect(next.hasNextPage).toBe(false);
+			expect(executeMcpTool).toHaveBeenCalledTimes(1);
+		},
+	);
+	it.each([
+		"Example description",
+		{
+			type: "doc",
+			version: 1,
+			content: [
+				{
+					type: "paragraph",
+					content: [{ type: "text", text: "Example description" }],
+				},
+			],
+		},
+	])("reads Rovo Jira list fields %j", async (description) => {
+		setupToolsMock({
+			jira_search_issues: {
+				description: "List Jira issues",
+				inputSchema: {
+					type: "object",
+					properties: { project_key: { type: "string" } },
+					required: ["project_key"],
+				},
+			},
+		});
+		vi.mocked(executeMcpTool).mockResolvedValue({
+			success: true,
+			output: wrapMcpJson({
+				total: 99,
+				data: {
+					issues: [
+						{
+							id: "10001",
+							key: "EX-1",
+							fields: {
+								summary: "Example Jira issue",
+								description,
+							},
+						},
+					],
+					total: 10,
+				},
+			}),
+			durationMs: 10,
+		});
+		const result = await listWorkItemsFromPM({
+			mcpConfigId: "example-config",
+			containerId: "EX",
+			userId: "example-user",
+		});
+		expect(result.items).toMatchObject([
+			{
+				id: "10001",
+				title: "Example Jira issue",
+				description: "Example description",
+			},
+		]);
+		expect(result.total).toBe(10);
+	});
+
+	it.each(["after", "no-cursor"])(
+		"does not repeat an unpageable tool call for numbered page 2 (%s)",
+		async (cursor) => {
+			setupToolsMock({
+				github_list_issues: {
+					description: "List GitHub issues",
+					inputSchema: {
+						type: "object",
+						properties: {
+							repo: { type: "string" },
+							...(cursor === "after"
+								? { after: { type: "string" } }
+								: {}),
+						},
+						required: ["repo"],
+					},
+				},
+			});
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: wrapMcpJson({
+					items: [{ number: 42, title: "Example issue" }],
+					totalCount: 100,
+				}),
+				durationMs: 10,
+			});
+			const result = await listWorkItemsFromPM({
+				mcpConfigId: "example-config",
+				containerId: "example-org/example-repo",
+				userId: "example-user",
+				page: 2,
+			});
+			expect(result.items).toEqual([]);
+			expect(result.hasNextPage).toBe(false);
+			expect(executeMcpTool).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		{
+			label: "cursor total exceeds page",
+			style: "cursor",
+			envelope: {
+				issues: [{ number: 42, title: "Example issue" }],
+				totalCount: 100,
+			},
+			complete: false,
+		},
+		{
+			label: "cursor has next page without total",
+			style: "cursor",
+			envelope: {
+				issues: [{ number: 42, title: "Example issue" }],
+				pageInfo: { hasNextPage: true },
+			},
+			complete: false,
+		},
+		{
+			label: "unpaged nested has next page",
+			style: "none",
+			envelope: {
+				data: {
+					issues: [{ number: 42, title: "Example issue" }],
+					pageInfo: { hasNextPage: true },
+				},
+			},
+			complete: false,
+		},
+		{
+			label: "complete cursor page",
+			style: "cursor",
+			envelope: {
+				issues: [{ number: 42, title: "Example issue" }],
+				totalCount: 1,
+				pageInfo: { hasNextPage: false },
+			},
+			complete: true,
+		},
+		{
+			label: "unrecognised cursor envelope",
+			style: "cursor",
+			envelope: {
+				entries: [{ number: 42, title: "example-private-value" }],
+			},
+			complete: false,
+		},
+		{
+			label: "unrecognised offset envelope",
+			style: "offset-page",
+			envelope: {
+				entries: [{ number: 42, title: "example-private-value" }],
+			},
+			complete: false,
+		},
+		{
+			label: "ADO numbered page has further pages",
+			style: "offset-page",
+			envelope: {
+				workItems: [
+					{ id: 42, fields: { "System.Title": "Example item" } },
+				],
+				total: 100,
+			},
+			complete: true,
+		},
+	])(
+		"reports listing completeness: $label",
+		async ({ style, envelope, complete }) => {
+			const toolName =
+				style === "offset-page"
+					? "wit_list_work_items"
+					: "github_list_issues";
+			setupToolsMock({
+				[toolName]: {
+					description: "List work items",
+					inputSchema: {
+						type: "object",
+						properties: {
+							project: { type: "string" },
+							...(style === "cursor"
+								? { after: { type: "string" } }
+								: style === "offset-page"
+									? { page: { type: "number" } }
+									: {}),
+						},
+						required: ["project"],
+					},
+				},
+			});
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: wrapMcpJson(envelope),
+				durationMs: 10,
+			});
+			const result = await listWorkItemsFromPM({
+				mcpConfigId: "example-config",
+				containerId: "example-project",
+				userId: "example-user",
+			});
+			expect(result.listingComplete !== false).toBe(complete);
+			if (!complete) {
+				expect(result.listingComplete).toBe(false);
+			}
+		},
+	);
 	it("uses supplied capabilities without rediscovering them", async () => {
 		const capabilities = {
 			hasPMCapabilities: true,

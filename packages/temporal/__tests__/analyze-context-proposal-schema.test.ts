@@ -24,9 +24,23 @@
  *   pnpm --filter @repo/temporal test __tests__/analyze-context-proposal-schema.test.ts
  */
 
-import { describe, expect, it } from "vitest";
+import {
+	countAnthropicSchemaParameters,
+	createAnthropicStructuredOutputLimitsMiddleware,
+} from "@repo/ai/lib/prompt-steered-structured-output-middleware";
+import { logger } from "@repo/logs";
+import { asSchema, zodSchema } from "ai";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { ChangeProposalSchema } from "../src/activities/backlog-context/analyze-context";
+import {
+	annotateProposalResolutions,
+	backlogChangeItemSchema,
+	ChangeProposalSchema,
+	createChangeProposalSchema,
+	fillMissingUpdateTitles,
+} from "../src/activities/backlog-context/analyze-context";
+
+import changeProposalJsonSchema from "./fixtures/change-proposal-json-schema.json";
 
 /** Drop keys without binding an unused name for each one. */
 function omit(source: Record<string, unknown>, ...keys: string[]) {
@@ -49,7 +63,442 @@ function minimalChange(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+type TitleCase = {
+	name: string;
+	input: Record<string, unknown>;
+	changed?: { from?: string | null; to: string };
+	fallback?: { from: string; to: string };
+	invalid?: boolean;
+	noReference?: boolean;
+	snapshotHasOld?: boolean;
+};
+
 describe("ChangeProposalSchema", () => {
+	it.each<TitleCase>([
+		{ name: "missing", input: {}, changed: undefined, fallback: undefined },
+		{
+			name: "undefined",
+			input: { title: undefined },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: "null",
+			input: { title: null },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '""',
+			input: { title: "" },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '"  "',
+			input: { title: "  " },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '"New"',
+			input: { title: "New" },
+			changed: { to: "New" },
+			fallback: undefined,
+		},
+		{
+			name: "{}",
+			input: { title: {} },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: "{to:null}",
+			input: { title: { to: null } },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '{to:""}',
+			input: { title: { to: "" } },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '{to:"  "}',
+			input: { title: { to: "  " } },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '{to:"New"}',
+			input: { title: { to: "New" } },
+			changed: { to: "New" },
+			fallback: undefined,
+		},
+		{
+			name: '{from:"Old"}',
+			input: { title: { from: "Old" } },
+			changed: undefined,
+			fallback: { from: "Old", to: "Old" },
+		},
+		{
+			name: '{from:"Old",to:null}',
+			input: { title: { from: "Old", to: null } },
+			changed: undefined,
+			fallback: { from: "Old", to: "Old" },
+		},
+		{
+			name: '{from:"Old",to:""}',
+			input: { title: { from: "Old", to: "" } },
+			changed: undefined,
+			fallback: { from: "Old", to: "Old" },
+		},
+		{
+			name: '{from:"Old",to:"  "}',
+			input: { title: { from: "Old", to: "  " } },
+			changed: undefined,
+			fallback: { from: "Old", to: "Old" },
+		},
+		{
+			name: '{from:"",to:null}',
+			input: { title: { from: "", to: null } },
+			changed: undefined,
+			fallback: undefined,
+		},
+		{
+			name: '{from:"Old",to:"New"}',
+			input: { title: { from: "Old", to: "New" } },
+			changed: { from: "Old", to: "New" },
+			fallback: undefined,
+		},
+		{ name: "42", input: { title: 42 }, invalid: true },
+		{ name: "true", input: { title: true }, invalid: true },
+		{ name: "[]", input: { title: [] }, invalid: true },
+		{ name: "{to:42}", input: { title: { to: 42 } }, invalid: true },
+		{
+			name: '{from:null,to:"New"}',
+			input: { title: { from: null, to: "New" } },
+			changed: { from: null, to: "New" },
+			fallback: undefined,
+		},
+		{
+			name: '{from:42,to:"New"}',
+			input: { title: { from: 42, to: "New" } },
+			invalid: true,
+		},
+		{
+			name: '{from:"Old",to:42}',
+			input: { title: { from: "Old", to: 42 } },
+			invalid: true,
+		},
+		{
+			name: '{from:"  ",to:null}',
+			input: { title: { from: "  ", to: null } },
+			changed: undefined,
+			fallback: undefined,
+		},
+		...[true, false].flatMap((snapshotHasOld) => [
+			{
+				name: `title-only missing to, match=${snapshotHasOld}`,
+				input: { title: { from: "Old" } },
+				changed: undefined,
+				fallback: { from: "Old", to: "Old" },
+				noReference: true,
+				snapshotHasOld,
+			},
+			{
+				name: `title-only blank to, match=${snapshotHasOld}`,
+				input: { title: { from: "Old", to: "" } },
+				changed: undefined,
+				fallback: { from: "Old", to: "Old" },
+				noReference: true,
+				snapshotHasOld,
+			},
+			{
+				name: `title-only null to, match=${snapshotHasOld}`,
+				input: { title: { from: "Old", to: null } },
+				changed: undefined,
+				fallback: { from: "Old", to: "Old" },
+				noReference: true,
+				snapshotHasOld,
+			},
+		]),
+	])("classifies title $name across validators and actions", (row) => {
+		for (const action of ["create", "update"] as const) {
+			const change = {
+				...omit(minimalChange(), "title"),
+				action,
+				...(row.noReference ? {} : { existingIdentifier: "F-12" }),
+				...row.input,
+			};
+			const input = { changes: [change] };
+			const onDiscarded = vi.fn();
+			const schema = createChangeProposalSchema({ onDiscarded });
+			const parsed = schema["~standard"].validate(input);
+			expect(parsed).toHaveProperty("value");
+			if (!("value" in parsed)) {
+				throw new Error("Expected element-wise salvage");
+			}
+			const deferred =
+				action === "update" && !row.invalid && !row.changed;
+			const expectedTitle =
+				row.changed ?? (action === "create" ? row.fallback : undefined);
+			const kept = deferred || expectedTitle !== undefined;
+			const label = `${row.name} ${action}`;
+			expect
+				.soft(parsed.value.changes.length, `${label} activity kept`)
+				.toBe(kept ? 1 : 0);
+			expect
+				.soft(
+					parsed.value.changes.some(
+						(item) => item.title === undefined,
+					),
+					`${label} deferred`,
+				)
+				.toBe(deferred);
+			const stories = [
+				{
+					id: "example-story",
+					identifier: "F-12",
+					title: row.snapshotHasOld ? "Old" : "Snapshot title",
+				},
+			];
+			const filled = fillMissingUpdateTitles(
+				parsed.value,
+				stories,
+				onDiscarded.mock.calls[0][0],
+			);
+			expect
+				.soft(
+					filled.changes.map((item) => item.title),
+					`${label} final title`,
+				)
+				.toEqual(
+					deferred
+						? row.noReference
+							? [{ from: "Old", to: "Old" }]
+							: [{ from: "Snapshot title", to: "Snapshot title" }]
+						: expectedTitle
+							? [expectedTitle]
+							: [],
+				);
+			if (row.noReference && action === "update") {
+				const annotated = annotateProposalResolutions(
+					filled.changes,
+					stories,
+				);
+				expect
+					.soft(annotated[0]?.action, `${label} annotated action`)
+					.toBe(row.snapshotHasOld ? "update" : "create");
+				expect
+					.soft(annotated[0]?.targetResolution, `${label} resolution`)
+					.toMatchObject(
+						row.snapshotHasOld
+							? { status: "resolved", resolvedBy: "title" }
+							: { status: "unresolved", demotedFromUpdate: true },
+					);
+				expect
+					.soft(annotated[0]?.title, `${label} annotated title`)
+					.toEqual({ from: "Old", to: "Old" });
+			}
+			const shared = ChangeProposalSchema.parse(input);
+			expect
+				.soft(
+					shared.changes.map((item) => item.title),
+					`${label} shared kept and final title`,
+				)
+				.toEqual(row.changed ? [row.changed] : []);
+			expect
+				.soft(
+					shared.changes.some((item) => item.title === undefined),
+					`${label} shared deferred`,
+				)
+				.toBe(false);
+		}
+	});
+
+	it.each(
+		["description", "acceptanceCriteria", "priority", "size"].flatMap(
+			(field) =>
+				[
+					null,
+					{ from: "Existing", to: null },
+					{ from: "Existing" },
+				].map((value) => ({ field, value })),
+		),
+	)(
+		"omits unchanged $field diff $value while keeping the update",
+		({ field, value }) => {
+			const parsed = ChangeProposalSchema.parse({
+				changes: [minimalChange({ action: "update", [field]: value })],
+			});
+			expect(parsed.changes).toHaveLength(1);
+			expect(parsed.changes[0]).not.toHaveProperty(field);
+		},
+	);
+
+	it("preserves string coercion, ordinary diffs and a complete create", () => {
+		const create = minimalChange({
+			title: { to: "New" },
+			description: { to: "Body" },
+			acceptanceCriteria: { to: "Criteria" },
+			priority: { to: "P2_MEDIUM" },
+			size: { to: "M" },
+		});
+		const update = minimalChange({
+			action: "update",
+			title: { from: "Old", to: "New" },
+			description: "Body",
+		});
+		const parsed = ChangeProposalSchema.parse({
+			summary: "Summary",
+			changes: [create, update],
+		});
+		expect(parsed.changes[0]).toEqual(create);
+		expect(parsed.changes[1]).toEqual({
+			...update,
+			description: { to: "Body" },
+		});
+		expect(parsed.summary).toBe("Summary");
+	});
+
+	it.each([{ priority: [] }, { priority: { from: "Existing", to: 42 } }])(
+		"still discards malformed optional diffs $priority",
+		({ priority }) => {
+			const parsed = ChangeProposalSchema.parse({
+				changes: [minimalChange({ action: "update", priority })],
+			});
+			expect(parsed.changes).toEqual([]);
+		},
+	);
+
+	it("logs bounded discard diagnostics without customer text or invalid enum values", () => {
+		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		try {
+			const secret = "DISTINCTIVE_CUSTOMER_CONTENT";
+			ChangeProposalSchema.parse({
+				changes: [
+					minimalChange(),
+					...Array.from({ length: 12 }, () =>
+						minimalChange({
+							action: "update",
+							title: { to: null },
+							reasoning: secret,
+						}),
+					),
+					minimalChange({ action: secret, type: secret }),
+				],
+			});
+			expect(warn).toHaveBeenCalledOnce();
+			const payload = warn.mock.calls[0]?.[1];
+			expect(payload).toMatchObject({
+				discarded: 13,
+				kept: 1,
+				details: [
+					{
+						index: 1,
+						action: "update",
+						type: "feature",
+						issues: "title.to:invalid_type:null",
+					},
+					...Array.from({ length: 9 }, (_, i) =>
+						expect.objectContaining({ index: i + 2 }),
+					),
+				],
+			});
+			expect(JSON.stringify(payload)).not.toContain(secret);
+			warn.mockClear();
+			ChangeProposalSchema.parse({
+				changes: [
+					minimalChange({
+						title: null,
+						description: 42,
+						acceptanceCriteria: 42,
+						priority: 42,
+						size: 42,
+						labels: 42,
+						sourceRef: 42,
+					}),
+				],
+			});
+			expect(warn.mock.calls[0]?.[1]).toMatchObject({
+				details: [{ issues: expect.any(String) }],
+			});
+			const capped = warn.mock.calls[0]?.[1] as {
+				details: { issues: string }[];
+			};
+			expect(capped.details[0]?.issues.split(", ")).toHaveLength(5);
+			warn.mockClear();
+			ChangeProposalSchema.parse({
+				changes: [minimalChange({ action: secret, type: secret })],
+			});
+			expect(warn.mock.calls[0]?.[1]).toMatchObject({
+				details: [
+					{
+						index: 0,
+						action: null,
+						type: null,
+						issues: expect.any(String),
+					},
+				],
+			});
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("logs recovery counts once per response without values", () => {
+		const info = vi.spyOn(logger, "info").mockImplementation(() => {});
+		try {
+			const schema = createChangeProposalSchema({
+				onDiscarded: () => {},
+			});
+			schema["~standard"].validate({
+				changes: [
+					minimalChange({
+						action: "update",
+						title: { from: "Old", to: null },
+						priority: null,
+						size: { from: "M" },
+					}),
+					minimalChange({
+						action: "update",
+						priority: { from: "P2_MEDIUM", to: null },
+					}),
+					minimalChange({
+						action: "update",
+						title: { from: "Old", to: null },
+						priority: 42,
+					}),
+				],
+			});
+			expect(info).toHaveBeenCalledExactlyOnceWith(
+				"[Backlog Analysis] Normalized unchanged diff fields from the model response",
+				{ title: 1, priority: 2, size: 1 },
+			);
+			info.mockClear();
+			schema["~standard"].validate({ changes: [minimalChange()] });
+			expect(info).not.toHaveBeenCalled();
+		} finally {
+			info.mockRestore();
+		}
+	});
+
+	it("leaves summaries unchanged when reusing the shared schema", () => {
+		const discarded = ChangeProposalSchema.parse({
+			summary: "Scope",
+			changes: [null, null],
+		});
+		const clean = ChangeProposalSchema.parse({
+			summary: "Clean",
+			changes: [minimalChange()],
+		});
+		expect(discarded.summary).toBe("Scope");
+		expect(clean.summary).toBe("Clean");
+		expect(ChangeProposalSchema.parse({ changes: [] }).summary).toBe("");
+	});
+
 	it("accepts a change whose reasoning the model omitted", () => {
 		const result = ChangeProposalSchema.safeParse({
 			changes: [omit(minimalChange(), "reasoning")],
@@ -234,13 +683,24 @@ describe("ChangeProposalSchema — a double-encoded changes array", () => {
 });
 
 /**
- * The salvage wraps `changes` in `z.preprocess`, and this schema is not only a
+ * The salvage uses `z.preprocess`, and this schema is not only a
  * validator — the AI SDK converts it to JSON Schema to TELL the model what to
  * produce. A wrapper that flattened the element shape would still pass every
  * test above while quietly degrading generation, which is the failure mode that
  * produced the malformed elements in the first place.
  */
 describe("the JSON Schema the model is handed", () => {
+	it("matches the stored model schema for shared and activity validators", async () => {
+		for (const schema of [
+			ChangeProposalSchema,
+			createChangeProposalSchema({ onDiscarded: () => {} }),
+		]) {
+			expect(await asSchema(schema).jsonSchema).toEqual(
+				changeProposalJsonSchema,
+			);
+		}
+	});
+
 	it("still describes each change's fields through the preprocess wrapper", () => {
 		const json = z.toJSONSchema(ChangeProposalSchema, {
 			io: "input",
@@ -249,6 +709,17 @@ describe("the JSON Schema the model is handed", () => {
 
 		expect(changes?.type).toBe("array");
 		expect(changes?.items?.type).toBe("object");
+		expect(json.required).toEqual(["changes"]);
+		expect(changes?.items?.required).toEqual(["type", "action", "title"]);
+		for (const field of [
+			"title",
+			"description",
+			"acceptanceCriteria",
+			"priority",
+			"size",
+		]) {
+			expect(changes?.items?.properties[field].required).toEqual(["to"]);
+		}
 		expect(Object.keys(changes?.items?.properties ?? {})).toEqual(
 			expect.arrayContaining([
 				"type",
@@ -258,5 +729,91 @@ describe("the JSON Schema the model is handed", () => {
 				"sourceContext",
 			]),
 		);
+	});
+});
+
+describe("generation annotation boundary", () => {
+	it("strips post-generation annotations while retaining usable changes", () => {
+		const parsed = ChangeProposalSchema.parse({
+			changes: [
+				minimalChange({
+					predrafted: true,
+					kindOverride: "example",
+					routing: { action: "create" },
+					targetResolution: { status: "resolved" },
+					bodyMergeFallback: true,
+					bodyMergeDeferred: true,
+					structurePreserved: true,
+					needsMoreInfo: true,
+				}),
+				null,
+			],
+		});
+		expect(parsed.changes).toHaveLength(1);
+		expect(parsed.changes[0]?.title?.to).toBe(minimalChange().title);
+		for (const field of [
+			"predrafted",
+			"kindOverride",
+			"routing",
+			"targetResolution",
+			"bodyMergeFallback",
+			"bodyMergeDeferred",
+			"structurePreserved",
+			"needsMoreInfo",
+		]) {
+			expect(parsed.changes[0]).not.toHaveProperty(field);
+		}
+	});
+
+	it("strips valid model-emitted annotations from the generation schema", () => {
+		const annotated = minimalChange({
+			predrafted: true,
+			kindOverride: "BUG",
+			routing: { decision: "create", confidence: 1 },
+			targetResolution: { status: "resolved" },
+			bodyMergeFallback: true,
+			bodyMergeDeferred: true,
+			structurePreserved: true,
+			needsMoreInfo: true,
+		});
+		const full = backlogChangeItemSchema.parse(annotated);
+		expect(full).toMatchObject(omit(annotated, "title"));
+		const parsed = ChangeProposalSchema.parse({ changes: [annotated] });
+		expect(parsed.changes).toHaveLength(1);
+		for (const field of [
+			"predrafted",
+			"kindOverride",
+			"routing",
+			"targetResolution",
+			"bodyMergeFallback",
+			"bodyMergeDeferred",
+			"structurePreserved",
+			"needsMoreInfo",
+		]) {
+			expect(parsed.changes[0]).not.toHaveProperty(field);
+		}
+	});
+
+	it("prompt-steers the real generation schema even after annotations are omitted", async () => {
+		const schema = await zodSchema(ChangeProposalSchema).jsonSchema;
+		const counts = countAnthropicSchemaParameters(schema);
+		expect(Number.isFinite(counts.optionalParameters)).toBe(true);
+		expect(
+			counts.optionalParameters > 24 || counts.unionParameters > 16,
+		).toBe(true);
+		const params = { prompt: [], responseFormat: { type: "json", schema } };
+		const out =
+			await createAnthropicStructuredOutputLimitsMiddleware().transformParams?.(
+				{
+					type: "generate",
+					params: params as never,
+					model: { modelId: "claude-sonnet-4-5" } as never,
+				},
+			);
+		expect(out).not.toHaveProperty("responseFormat");
+		expect(out?.prompt[0]).toMatchObject({
+			role: "system",
+			content: expect.stringContaining(JSON.stringify(schema)),
+		});
 	});
 });

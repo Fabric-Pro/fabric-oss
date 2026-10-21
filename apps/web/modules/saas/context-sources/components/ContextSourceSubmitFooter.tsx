@@ -60,11 +60,18 @@ export function ContextSourceSubmitFooter({
 	// hint. PATH_PREFIX additionally requires
 	// a crawl-capable provider — we disable submit too
 	// when that's selected and only non-crawl providers
-	// are enabled (matches the server pre-flight).
-	const linkTabUnconfigured = tab === "link" && !link.hasAnyScrapeCapable;
+	// are enabled (matches the server pre-flight). Submit
+	// also waits for the first answer, but a pre-flight
+	// that failed or was refused proves nothing about
+	// configuration and does not block: the server checks
+	// again and the notice renders its typed answer.
+	const linkTabChecking =
+		tab === "link" && link.preflightStatus === "checking";
+	const linkTabUnconfigured =
+		tab === "link" && link.preflightStatus === "missing";
 	const linkTabPathPrefixNeedsCrawl =
 		tab === "link" &&
-		link.hasAnyScrapeCapable &&
+		link.preflightStatus === "ready" &&
 		!link.hasCrawlCapable &&
 		link.values.scope === "PATH_PREFIX";
 
@@ -93,23 +100,33 @@ export function ContextSourceSubmitFooter({
 	const fileTabBlocked = tab === "file" && queueableFileCount === 0;
 
 	const linkTabBlocked =
+		linkTabChecking ||
 		linkTabUnconfigured ||
 		linkTabPathPrefixNeedsCrawl ||
 		linkTabBulkBlocked;
 	const submitDisabled = isLoading || linkTabBlocked || fileTabBlocked;
-	const submitTooltip = linkTabUnconfigured
+	// Only a viewer who can connect a provider is pointed at the settings.
+	const unconfiguredTooltip = link.canManageSearchProviders
 		? "Configure a search provider in Settings → Search Providers to add URL sources."
-		: linkTabPathPrefixNeedsCrawl
-			? "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. Configure one in Settings → Search Providers, or pick Single page."
-			: linkTabBulkBlocked && bulkOverLimit
-				? `Batches are limited to ${URL_BULK_MAX_LINES} URLs at a time.`
-				: linkTabBulkBlocked && bulkInvalidCount > 0
-					? "Fix or remove the invalid lines listed below the textarea."
-					: linkTabBulkBlocked
-						? "Paste at least one valid URL to enable submit."
-						: fileTabBlocked
-							? "Drop or pick at least one file to upload."
-							: t("submitContext");
+		: "Ask an organization admin to connect a search provider to add URL sources.";
+	const pathPrefixNeedsCrawlTooltip = link.canManageSearchProviders
+		? "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. Configure one in Settings → Search Providers, or pick Single page."
+		: "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. Ask an organization admin to connect one, or pick Single page.";
+	const submitTooltip = linkTabChecking
+		? "Checking search providers…"
+		: linkTabUnconfigured
+			? unconfiguredTooltip
+			: linkTabPathPrefixNeedsCrawl
+				? pathPrefixNeedsCrawlTooltip
+				: linkTabBulkBlocked && bulkOverLimit
+					? `Batches are limited to ${URL_BULK_MAX_LINES} URLs at a time.`
+					: linkTabBulkBlocked && bulkInvalidCount > 0
+						? "Fix or remove the invalid lines listed below the textarea."
+						: linkTabBulkBlocked
+							? "Paste at least one valid URL to enable submit."
+							: fileTabBlocked
+								? "Drop or pick at least one file to upload."
+								: t("submitContext");
 
 	// Button copy: in bulk mode + idle state, surface the
 	// live count so users see what they're about to fire.

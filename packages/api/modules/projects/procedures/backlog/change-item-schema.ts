@@ -3,7 +3,7 @@ import { z } from "zod";
 /**
  * Wire shape of one backlog change as sent by the review UI to
  * `projects.backlog.applyChanges` and the pending-proposal approve
- * procedures. Mirrors `ChangeProposalSchema.changes[]` in
+ * procedures. Mirrors `backlogChangeItemSchema` in
  * `packages/temporal/src/activities/backlog-context/analyze-context.ts`
  * minus the LLM-tolerant preprocessing (the UI normalises before sending).
  *
@@ -60,6 +60,7 @@ export const changeItemSchema = z.object({
 	 * unchanged. Passed through so the apply audit records the safe-hold.
 	 */
 	bodyMergeFallback: z.boolean().optional(),
+	bodyMergeDeferred: z.boolean().optional(),
 	/**
 	 * Set when the analysis-time pass already structure-preserved this
 	 * update's body. Passed through so `applyBacklogChanges` skips

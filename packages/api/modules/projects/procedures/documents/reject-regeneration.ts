@@ -1,12 +1,17 @@
 import { ORPCError } from "@orpc/client";
 import {
 	DocumentGenerationInProgressError,
+	DocumentRegenerationReviewStaleError,
 	DocumentVersionConflictError,
 	getDocumentById,
 	hasProjectAccess,
 	rejectDocumentRegeneration,
 } from "@repo/database";
-import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
+import { contentIdentity } from "@repo/utils/content-identity";
+import {
+	isRunGuardedDocumentType,
+	REJECT_REVIEW_STALE,
+} from "@repo/utils/generation-run-guard";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
 import {
@@ -33,7 +38,19 @@ import {
  * (409 with `data.code` `DOCUMENT_GENERATION_IN_PROGRESS`), which the client
  * must not treat as "no prior version": a review dialog can still be open
  * when a newer run starts (Fizzy #2946).
+ *
+ * The caller names the regeneration it reviewed: `expectedVersion`, the
+ * version that run produced, and `expectedContentHash`, the identity of its
+ * body that `projects.documents.get` returned with it. A document that has
+ * moved on since the review opened — a newer run completed, a version was
+ * restored, a colleague saved — is refused with 409 and `data.code`
+ * `REJECT_REVIEW_STALE`, so a stale review can never revert a newer write or
+ * delete its version row (Fizzy #2946). `expectedGenerationStartedAt`, the
+ * document's `generationStartedAt` when the review opened, names the reviewed
+ * run itself: a newer run can produce the very same body. Required: a bundle from before this
+ * check gets a 400, never an unguarded rewind.
  */
+
 export const rejectRegenerationProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.DOCUMENT_UPDATE))
 	.route({
@@ -47,6 +64,18 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 			projectId: z.string(),
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
+			/** The version the reviewed regeneration produced. */
+			expectedVersion: z.number().int().nonnegative(),
+			/** `contentHash` of the reviewed body, as `documents.get` returned it. */
+			expectedContentHash: z.string().min(1).optional(),
+			/**
+			 * The reviewed run's `generationStartedAt` (ISO), as `documents.get`
+			 * returned it when the review opened.
+			 */
+			expectedGenerationStartedAt: z
+				.string()
+				.datetime({ offset: true })
+				.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -97,6 +126,12 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 			const reverted = await rejectDocumentRegeneration(input.id, {
 				userId: user.id,
 				organizationId,
+				expectedVersion: input.expectedVersion,
+				expectedContentHash: input.expectedContentHash,
+				expectedGenerationStartedAt:
+					input.expectedGenerationStartedAt !== undefined
+						? new Date(input.expectedGenerationStartedAt)
+						: undefined,
 			});
 
 			// Re-embed for RAG so the index reflects the reverted content,
@@ -114,18 +149,33 @@ export const rejectRegenerationProcedure = tenantProtectedProcedure
 				logScope: "RejectRegeneration",
 			});
 
-			return { document: reverted };
+			return {
+				document: {
+					...reverted,
+					// The rewound body's identity, beside its `version`: the
+					// editor puts that body into its room under this stamp and
+					// names it as the base of its next save (Fizzy #2946).
+					contentHash: contentIdentity(reverted.content),
+				},
+			};
 		} catch (error) {
 			if (error instanceof DocumentGenerationInProgressError) {
 				throw generationInProgress();
 			}
-			// Reachable only for a guarded rewind: a write landed between its
-			// read and its update, and the transaction rolled back. The client
-			// falls back to its guarded save, which names the body it holds.
-			if (error instanceof DocumentVersionConflictError) {
+			// The document is no longer the reviewed regeneration: it had
+			// moved on when the rewind read it, or a write landed between that
+			// read and the rewind and the transaction rolled back. Nothing was
+			// reverted or deleted either way, and the client's fallback save
+			// must not run: it would write the pre-review body over the newer
+			// one.
+			if (
+				error instanceof DocumentRegenerationReviewStaleError ||
+				error instanceof DocumentVersionConflictError
+			) {
 				throw new ORPCError("CONFLICT", {
 					message:
-						"The document changed while the regeneration was being rejected, so nothing was reverted.",
+						"The document changed after this regeneration was reviewed, so nothing was reverted.",
+					data: { code: REJECT_REVIEW_STALE },
 				});
 			}
 			if (

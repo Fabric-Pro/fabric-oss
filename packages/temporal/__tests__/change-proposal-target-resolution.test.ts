@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { ChangeProposalSchema } from "../src/activities/backlog-context/analyze-context";
+import { z } from "zod";
+import { backlogChangeItemSchema } from "../src/activities/backlog-context/analyze-context";
 
-describe("ChangeProposalSchema.targetResolution", () => {
+const fullProposalSchema = z.object({
+	changes: z.array(backlogChangeItemSchema),
+});
+
+describe("backlogChangeItemSchema.targetResolution", () => {
 	it("accepts a change carrying a resolved targetResolution", () => {
-		const parsed = ChangeProposalSchema.parse({
+		const parsed = fullProposalSchema.parse({
 			changes: [
 				{
 					type: "feature",
@@ -24,7 +29,7 @@ describe("ChangeProposalSchema.targetResolution", () => {
 	});
 
 	it("defaults targetResolution to undefined when omitted", () => {
-		const parsed = ChangeProposalSchema.parse({
+		const parsed = fullProposalSchema.parse({
 			changes: [
 				{
 					type: "bug",

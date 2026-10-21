@@ -48,6 +48,7 @@ import { splitIntegrationToolRef } from "@repo/utils/integration-tool-ref";
 import { readMcpToolAnnotations } from "@repo/utils/mcp-tool-annotations";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
+import { describeWorkflowCall } from "../../../lib/agentic-workflow-preset";
 import { isDatabaseError } from "../../../lib/database-error";
 import {
 	MCP_TOOL_RESULT_MAX_BYTES,
@@ -929,6 +930,12 @@ function summarizeCall(args: Record<string, unknown> | undefined): string {
 	return [...scalars, ...lists].join("; ");
 }
 
+/** The workflow tools whose arguments carry a graph a person should see. */
+const WORKFLOW_GRAPH_TOOLS: ReadonlySet<string> = new Set([
+	"fabric_create_workflow",
+	"fabric_update_workflow",
+]);
+
 function authorityRequiredResult(
 	input: ExecuteMcpToolInput,
 	gate: AuthorityGateResult,
@@ -938,6 +945,10 @@ function authorityRequiredResult(
 ): ExecuteMcpToolOutput {
 	const accessLevel = gate.requiredAccessLevel ?? "WRITE";
 	const callSummary = grantScope === "call" ? summarizeCall(input.args) : "";
+	const callDetails =
+		grantScope === "call" && WORKFLOW_GRAPH_TOOLS.has(input.toolName)
+			? describeWorkflowCall(input.args)
+			: null;
 	console.log(
 		`[Orchestrator] "${input.toolName}" needs ${accessLevel} authority for ${gate.providerKey} (pending session: ${gate.pendingSessionId ?? "none"})`,
 	);
@@ -956,6 +967,7 @@ function authorityRequiredResult(
 			toolName: input.toolName,
 			...(grantScope ? { grantScope } : {}),
 			...(callSummary ? { callSummary } : {}),
+			...(callDetails ? { callDetails } : {}),
 		},
 	};
 }

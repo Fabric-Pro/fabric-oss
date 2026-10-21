@@ -315,6 +315,7 @@ async function embedCompanyChunks(
 		{
 			userId,
 			organizationId,
+			featureKey: "knowledge-index",
 			tags: ["company-context", type.toLowerCase()],
 			...COMPANY_EMBEDDING_RESOLUTION,
 		},
@@ -496,6 +497,7 @@ async function embedContext(
 				userId,
 				organizationId,
 				projectId,
+				featureKey: "knowledge-index",
 				tags: ["project-context", type.toLowerCase()],
 			},
 			providerConfig,
@@ -710,6 +712,7 @@ async function embedWithChunking(
 					userId,
 					organizationId,
 					projectId,
+					featureKey: "knowledge-index",
 					tags: [
 						"project-context",
 						type.toLowerCase(),

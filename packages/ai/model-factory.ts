@@ -34,6 +34,7 @@ import {
 	strictJsonSchemaNamespacesFor,
 } from "./lib/non-strict-json-schema-middleware";
 import {
+	createAnthropicStructuredOutputLimitsMiddleware,
 	createPromptSteeredStructuredOutputMiddleware,
 	databricksModelNeedsPromptSteeredStructuredOutput,
 } from "./lib/prompt-steered-structured-output-middleware";
@@ -303,6 +304,10 @@ function wrapWithProviderMiddleware(
 
 	if (viaGateway && gatewayModelRejectsSampling(modelName)) {
 		middleware.push(createAdaptiveClaudeSamplingMiddleware());
+	}
+
+	if (!viaGateway && resolvedProvider === "ANTHROPIC_DIRECT") {
+		middleware.push(createAnthropicStructuredOutputLimitsMiddleware());
 	}
 
 	if (promptSteerStructuredOutput) {

@@ -13,6 +13,7 @@ import {
 	DOCUMENT_GENERATION_IN_PROGRESS,
 	isGenerationRunStillWriting,
 	isRunGuardedDocumentType,
+	REJECT_REVIEW_STALE,
 } from "@repo/utils/generation-run-guard";
 import {
 	hasVisualSlots,
@@ -130,6 +131,7 @@ import {
 } from "../lib/document-pipeline";
 import {
 	buildDocumentSaveInput,
+	DOCUMENT_AUTOSAVE_TIMINGS,
 	type DocumentSaveBase,
 	isSaveBaseRequiredRefusal,
 } from "../lib/document-save-input";
@@ -959,6 +961,7 @@ function CollaborativeDocumentEditor({
 		content: string | null;
 		status?: string;
 		generationError?: string | null;
+		generationStartedAt?: Date | string | null;
 		// Async decision pre-check result + the content hash it was judged
 		// against, forwarded to the editor's inline contradiction banner.
 		decisionPrecheck?: unknown;
@@ -1169,14 +1172,20 @@ function CollaborativeDocumentEditor({
 
 	// Tell the other editors in the room whether this one started the run in
 	// flight or follows it, so only one of them writes its body (see
-	// `appliesAttachedRunBody`). The role stays published through the review
-	// of a run this editor started.
+	// `appliesAttachedRunBody`), and which run that is. The role stays
+	// published through the review of a run this editor started, named by
+	// that run: a later run started by a colleague, the API or an agent is
+	// not one this review wrote, so an editor following it still writes its
+	// body into the room. An editor whose own run is in flight names no run:
+	// its page may not have read that run's identity yet, and no other run
+	// can be in flight beside it.
 	//
 	// Published here rather than by the editor below (Fizzy #2946): a sync
 	// loss unmounts that editor but not the run, so its role must neither be
 	// withdrawn nor flip while the room reconnects. A new provider gets the
 	// role again; leaving the page withdraws it.
-	const { isConfirming, attachedRunRef } = runState;
+	const { isConfirming, attachedRunRef, reviewedRunStartedAtRef } = runState;
+	const latestRun = runIdentity(document.generationStartedAt);
 	useEffect(() => {
 		publishGenerationRunRole(
 			provider?.awareness,
@@ -1185,8 +1194,20 @@ function CollaborativeDocumentEditor({
 					? "attached"
 					: "started"
 				: null,
+			isRegenerating
+				? attachedRunRef.current
+					? latestRun
+					: null
+				: reviewedRunStartedAtRef.current,
 		);
-	}, [provider, isRegenerating, isConfirming, attachedRunRef]);
+	}, [
+		provider,
+		isRegenerating,
+		isConfirming,
+		latestRun,
+		attachedRunRef,
+		reviewedRunStartedAtRef,
+	]);
 	const providerRef = useRef(provider);
 	providerRef.current = provider;
 	useEffect(() => {
@@ -1568,6 +1589,20 @@ interface DocumentEditorInnerProps {
  */
 type PageLeave = { flush: (() => void) | null; left: boolean };
 
+/**
+ * A run's identity, the document's `generationStartedAt`, as an ISO string,
+ * or `null` when the server named none (Fizzy #2946).
+ */
+function runIdentity(
+	startedAt: Date | string | null | undefined,
+): string | null {
+	if (!startedAt) {
+		return null;
+	}
+	const time = new Date(startedAt).getTime();
+	return Number.isNaN(time) ? null : new Date(time).toISOString();
+}
+
 /** The editor, or `null` once it has been destroyed (it cannot be read). */
 function liveEditorOrNull<T extends { isDestroyed: boolean }>(
 	editor: T | null | undefined,
@@ -1906,6 +1941,14 @@ function DocumentEditorInner({
 	// regeneration, a context update — whose identity is being fetched, so
 	// the saves after it can name it as their base (Fizzy #2946).
 	const [adoptingBase, setAdoptingBase] = useState(false);
+	// A Reject sent and not yet settled — answered, refused, or its fallback
+	// save answered (Fizzy #2946). The review has closed, but its outcome is
+	// still to be applied: the editor takes no input meanwhile, so nothing
+	// typed can be replaced by that outcome. Held with the run's state, so a
+	// sync-loss remount keeps it.
+	const { rejectPending, setRejectPending, typedSinceRejectRef } = runState;
+	const rejectPendingRef = useRef(rejectPending);
+	rejectPendingRef.current = rejectPending;
 	// The regeneration review, held with the run's state (see
 	// `GenerationRunState`) so a remount neither drops nor re-arms it.
 	const {
@@ -2039,12 +2082,18 @@ function DocumentEditorInner({
 	 * base the answer produced; `null` when none waits.
 	 */
 	const pendingDirectSaveRef = useRef<(() => void) | null>(null);
+	/** What the save sent past `handleSave` says once it settles. */
+	const directSaveOnSettledRef = useRef<(() => void) | null>(null);
+	/** The same for the one waiting in `pendingDirectSaveRef`. */
+	const pendingDirectOnSettledRef = useRef<(() => void) | null>(null);
 	/**
 	 * What the save sent past `handleSave` that is in flight says once it
 	 * lands, if anything; set when it is sent, so never by the answer of a
 	 * save it waited for, and dropped when it fails.
 	 */
-	const directSaveOnSavedRef = useRef<(() => void) | null>(null);
+	const directSaveOnSavedRef = useRef<
+		((saved: RoomStamp | null) => boolean | undefined) | null
+	>(null);
 	const sendDirectSaveRef = useRef<
 		(request: {
 			build: (
@@ -2052,7 +2101,22 @@ function DocumentEditorInner({
 			) => ReturnType<typeof buildDocumentSaveInput>;
 			confirm: boolean;
 			onUnavailable: () => void;
-			onSaved?: () => void;
+			/**
+			 * Whether the save still applies over the base it would name,
+			 * resolved when it goes. `false`: nothing is sent, and
+			 * `onDeclined` says why.
+			 */
+			stillApplies?: (
+				base: DocumentSaveBase | null | undefined,
+			) => boolean;
+			onDeclined?: () => void;
+			/** Once it is answered, declined, unavailable or dropped. */
+			onSettled?: () => void;
+			/**
+			 * With the stamp of the body it saved, when the answer names it.
+			 * `false`: the room did not take that body, so it keeps its stamp.
+			 */
+			onSaved?: (saved: RoomStamp | null) => boolean | undefined;
 		}) => void
 	>(() => {});
 	// The single-user editor learned from a CONFLICT that the document moved
@@ -2502,7 +2566,7 @@ function DocumentEditorInner({
 	});
 	const runSaveBlockReason: SaveBlockReason | null = isRegenerating
 		? "regenerating"
-		: showConfirmDialog || isConfirming
+		: showConfirmDialog || isConfirming || rejectPending
 			? "review"
 			: isRunStillWriting
 				? "runLive"
@@ -2604,6 +2668,19 @@ function DocumentEditorInner({
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
 	const [rawContent, setRawContent] = useState(
 		repairMarkdownDocument(document?.content || ""),
+	);
+	// Whether the raw view was edited since it was opened, and what it
+	// holds, read by callbacks that outlive a render (Fizzy #2946).
+	const rawEditedRef = useRef(false);
+	const viewModeRef = useRef(viewMode);
+	viewModeRef.current = viewMode;
+	const rawContentRef = useRef(rawContent);
+	rawContentRef.current = rawContent;
+	// Edits in the raw view that nothing has saved or carried back to the
+	// rich editor yet: they live only in the raw text.
+	const rawEditPending = useCallback(
+		() => viewModeRef.current === "raw" && rawEditedRef.current,
+		[],
 	);
 
 	// Create collaborative extensions when provider and ydoc are available
@@ -2765,6 +2842,7 @@ function DocumentEditorInner({
 				if (transaction?.docChanged && !isChangeOrigin(transaction)) {
 					localEditCountRef.current += 1;
 					noteTypedSinceSave();
+					typedSinceRejectRef.current = true;
 				}
 				// Derive hasUnsavedChanges from a content equality check rather
 				// than flipping it true on every keystroke. This makes the
@@ -2961,6 +3039,28 @@ function DocumentEditorInner({
 		[],
 	);
 
+	// A room behind the saved document, brought back to it (Fizzy #2946).
+	// The counts restart with each mount, and a sync loss remounts this
+	// editor over the same room: the flag lifted into the parent keeps
+	// typing from before the loss that no save has covered yet.
+	const hasLocalTyping = useCallback(
+		() =>
+			localEditCountRef.current > savedEditCountRef.current ||
+			typedSinceSaveRef?.current === true,
+		[typedSinceSaveRef],
+	);
+	// Whether this editor sits in a collaborative room with nothing typed
+	// in it since its last save (Fizzy #2946). Such an editor is never
+	// dirty and never saves: whatever the room holds came from another
+	// editor, whose own saves carry its typing, or from the server. The
+	// typist's editor saves its typing, and on leaving the page sends what
+	// no save covered yet. Edits in the raw view count as typing too. The
+	// single-user editor keeps the content comparison alone.
+	const passiveInRoom = useCallback(
+		() => roomStampsOn && !hasLocalTyping(),
+		[roomStampsOn, hasLocalTyping],
+	);
+
 	// Source of truth for the Save button: compare what the editor currently
 	// holds against what we last persisted to the server. This makes the
 	// "Saved" state self-correcting — typing then deleting back to the original
@@ -2994,9 +3094,15 @@ function DocumentEditorInner({
 			if (isDirty) {
 				autoSaveTimeoutRef.current = setTimeout(() => {
 					triggerAutoSaveRef.current?.();
-				}, 10000);
+				}, DOCUMENT_AUTOSAVE_TIMINGS.delayMs);
 			}
 		};
+
+		if (passiveInRoom()) {
+			scheduleAutoSave(false);
+			setHasUnsavedChanges(false);
+			return;
+		}
 
 		if (viewMode === "raw") {
 			const isDirty =
@@ -3024,30 +3130,26 @@ function DocumentEditorInner({
 			currentMarkdown.trim() !== lastSavedContentRef.current.trim();
 		setHasUnsavedChanges(isDirty);
 		scheduleAutoSave(isDirty);
-	}, [viewMode, rawContent]);
+	}, [viewMode, rawContent, passiveInRoom]);
 
 	// Debounced wrapper — keeps the per-keystroke cost negligible since
 	// getEditorMarkdownForSave runs Turndown across the whole document.
+	// The check that runs is the latest one, never the one of the render
+	// that scheduled it: the editor's update handler keeps an early
+	// closure, whose check would compare the rich editor while the raw view
+	// holds the edits, and clear them as saved (Fizzy #2946).
+	const recomputeDirtyStateRef = useRef(recomputeDirtyState);
+	recomputeDirtyStateRef.current = recomputeDirtyState;
 	const scheduleDirtyCheck = useCallback(() => {
 		if (dirtyCheckTimeoutRef.current) {
 			clearTimeout(dirtyCheckTimeoutRef.current);
 		}
 		dirtyCheckTimeoutRef.current = setTimeout(() => {
 			dirtyCheckTimeoutRef.current = null;
-			recomputeDirtyState();
+			recomputeDirtyStateRef.current();
 		}, 150);
-	}, [recomputeDirtyState]);
+	}, []);
 
-	// A room behind the saved document, brought back to it (Fizzy #2946).
-	// The counts restart with each mount, and a sync loss remounts this
-	// editor over the same room: the flag lifted into the parent keeps
-	// typing from before the loss that no save has covered yet.
-	const hasLocalTyping = useCallback(
-		() =>
-			localEditCountRef.current > savedEditCountRef.current ||
-			typedSinceSaveRef?.current === true,
-		[typedSinceSaveRef],
-	);
 	const refetchSavedDocument = useCallback(() => {
 		void queryClient.invalidateQueries({
 			queryKey: orpc.projects.documents.get.queryKey({
@@ -3075,6 +3177,14 @@ function DocumentEditorInner({
 			}
 			editorBodyVersionRef.current = stamp.version;
 			editorBodyHashRef.current = stamp.contentHash;
+			// Edits in the raw view stay there, unsaved, until they are saved
+			// or discarded: this body is only their new base (Fizzy #2946).
+			// What they replace in the room was offered back.
+			if (rawEditPending()) {
+				updateSavedBaseline(markdown);
+				setHasUnsavedChanges(true);
+				return;
+			}
 			savedEditCountRef.current = localEditCountRef.current;
 			noteTypedSinceSave();
 			baselineRef.current = markdown;
@@ -3088,8 +3198,52 @@ function DocumentEditorInner({
 			editorBodyHashRef,
 			updateSavedBaseline,
 			noteTypedSinceSave,
+			rawEditPending,
 		],
 	);
+	// The single-user editor holds this saved body now (Fizzy #2946): as
+	// `adoptSavedBody`, with the identity the server named for it, if any.
+	const adoptSoloBody = useCallback(
+		(markdown: string, version?: number, contentHash?: string) => {
+			if (autoSaveTimeoutRef.current) {
+				clearTimeout(autoSaveTimeoutRef.current);
+				autoSaveTimeoutRef.current = null;
+			}
+			if (version !== undefined) {
+				editorBodyVersionRef.current = version;
+			}
+			editorBodyHashRef.current = contentHash;
+			if (rawEditPending()) {
+				updateSavedBaseline(markdown);
+				setHasUnsavedChanges(true);
+				return;
+			}
+			savedEditCountRef.current = localEditCountRef.current;
+			noteTypedSinceSave();
+			baselineRef.current = markdown;
+			setCurrentDocument(markdown);
+			setRawContent(markdown);
+			updateSavedBaseline(markdown);
+			setHasUnsavedChanges(false);
+		},
+		[
+			editorBodyVersionRef,
+			editorBodyHashRef,
+			updateSavedBaseline,
+			noteTypedSinceSave,
+			rawEditPending,
+		],
+	);
+	// What this person has typed here, as it would be offered back: the raw
+	// view's text while it holds edits of its own, the editor's otherwise
+	// (Fizzy #2946).
+	const readLocalText = useCallback((): string | null => {
+		if (rawEditPending()) {
+			return rawContentRef.current;
+		}
+		const ed = liveEditorOrNull(editorRef.current);
+		return ed ? getEditorMarkdownForSave(ed) : null;
+	}, [rawEditPending]);
 	// Text a room brought back to the saved document took from this person,
 	// offered back once rather than dropped (Fizzy #2946).
 	const offerBackReplacedText = useCallback(
@@ -3134,6 +3288,7 @@ function DocumentEditorInner({
 		applySavedBody: applySavedBodyToRoom,
 		adoptSavedBody,
 		offerBack: offerBackReplacedText,
+		readLocalText,
 	});
 	const roomStatus: RoomStatus = roomStampsOn
 		? roomConvergenceState.status
@@ -3149,14 +3304,14 @@ function DocumentEditorInner({
 				? "updatingToLatest"
 				: null);
 	// What the editor shows meanwhile: the saved body, read-only, instead of
-	// the room's older one — unless this person is typing into the room.
-	// Typing is read from a ref, so it counts from the next render on; each
-	// change of the room's status is one.
+	// the room's older one, once the room is being replaced (or cannot be).
+	// Not while the stale rule only looks a second time: that look usually
+	// finds the room in step, and hiding the editor for it blanks the page
+	// at the end of every run (Fizzy #2946).
 	const showsSavedBody =
 		roomStatus === "updating" ||
 		roomStatus === "failed" ||
-		roomStatus === "behindReadOnly" ||
-		(roomStatus === "checking" && !hasLocalTyping());
+		roomStatus === "behindReadOnly";
 	// The editor takes no input while the room is replaced, and never from a
 	// client that may not edit it.
 	const roomFreezesEditor =
@@ -3847,11 +4002,16 @@ function DocumentEditorInner({
 	// stands down while saves are blocked (a run, a room behind the saved
 	// document) and goes when they lift; leaving clears it and saves the
 	// typing on the way out instead. Once per mount, for a client that may
-	// edit; a save clears the lifted flag.
+	// edit; a save clears the lifted flag. Only for typing from before this
+	// mount: typing here — an accepted proposal included — already reads as
+	// unsaved, and the saved body read meanwhile may be a save's optimistic
+	// answer, which would mark that typing saved before the save lands.
 	const restoredTypingRef = useRef(false);
+	const typedBeforeMountRef = useRef(typedSinceSaveRef?.current === true);
 	useEffect(() => {
 		if (
 			restoredTypingRef.current ||
+			!typedBeforeMountRef.current ||
 			!roomConvergence ||
 			!enableCollaboration ||
 			canEdit !== true ||
@@ -3879,7 +4039,20 @@ function DocumentEditorInner({
 	// Auto-save pending changes before AI updates begin — unless saves are
 	// refused right now (see `saveBlockReason`).
 	useEffect(() => {
-		if (isLoading && hasUnsavedChanges && saveBlockReason === null) {
+		if (
+			isLoading &&
+			hasUnsavedChanges &&
+			saveBlockReason === null &&
+			// Nothing typed here: nothing of this editor's to save first
+			// (Fizzy #2946).
+			!passiveInRoom() &&
+			// Nor when the save in flight already carries all of it, as an
+			// accepted proposal's save does.
+			!(
+				saveInFlightRef.current &&
+				localEditCountRef.current <= savingEditCountRef.current
+			)
+		) {
 			// Cancel the debounce timer and save immediately
 			if (autoSaveTimeoutRef.current) {
 				clearTimeout(autoSaveTimeoutRef.current);
@@ -3990,6 +4163,12 @@ function DocumentEditorInner({
 			// The same snapshot names the body under review for the room
 			// (Fizzy #2946).
 			runState.reviewStampRef.current = savedStamp;
+			runState.reviewedVersionRef.current = document?.version ?? null;
+			// And the run itself, which a newer run's identical body cannot
+			// stand in for (Fizzy #2946).
+			runState.reviewedRunStartedAtRef.current = runIdentity(
+				document?.generationStartedAt,
+			);
 			setCurrentDocument(polledContent);
 			// NOTE: Don't call setAgentState here - it can trigger CopilotKit to respond
 			// The agent state will be updated when user accepts/rejects
@@ -4003,14 +4182,16 @@ function DocumentEditorInner({
 	}, [document?.content, document?.status, isRegenerating, isConfirming]);
 
 	// The body under review goes into the editor on screen once per review
-	// (Fizzy #2946), on the next frame. When that frame finds no editor —
-	// the room lost sync and the editor is waiting for it — the next editor
-	// mounted while the review is open takes it instead of showing the
-	// room's previous body behind the dialog. Once written, the room keeps
-	// it, together with anything a colleague types after it, so a later
-	// remount does not write it again. A polled body the generation
-	// workflow wrote — it already carried the visual slots over server-side
-	// — so it is applied as is.
+	// (Fizzy #2946), right after this render — never on the next frame,
+	// which a background tab holds back while every editor in the room waits
+	// behind the saved body for it. When no editor is on screen — the room
+	// lost sync and the editor is waiting for it — the next editor mounted
+	// while the review is open takes it instead of showing the room's
+	// previous body behind the dialog. Once written, the room keeps it,
+	// together with anything a colleague types after it, so a later remount
+	// does not write it again, and the editor that wrote it takes it as its
+	// saved body. A polled body the generation workflow wrote — it already
+	// carried the visual slots over server-side — so it is applied as is.
 	const reviewAppliedRef = runState.reviewAppliedRef;
 	useEffect(() => {
 		if (!showConfirmDialog) {
@@ -4022,19 +4203,24 @@ function DocumentEditorInner({
 		}
 		const body = newContent;
 		const stamp = runState.reviewStampRef.current;
-		requestAnimationFrame(() => {
+		// Out of the render's commit (TipTap's node views flush
+		// synchronously), but not a frame later.
+		queueMicrotask(() => {
 			if (reviewAppliedRef.current === body) {
 				return;
 			}
-			// A frame a hidden tab held back lands late: by then the room may
-			// hold this body already, or a later saved one, and colleagues'
-			// typing on it (Fizzy #2946).
+			// The room may hold this body already, written by a colleague's
+			// editor, or a later saved one, and colleagues' typing on it
+			// (Fizzy #2946).
 			if (roomHoldsSavedBody(stamp)) {
 				reviewAppliedRef.current = body;
 				return;
 			}
 			if (applyToLiveEditor(fromMarkdown(body), stamp)) {
 				reviewAppliedRef.current = body;
+				if (roomStampsOn && stamp) {
+					adoptSavedBody(body, stamp);
+				}
 			}
 		});
 	}, [
@@ -4045,6 +4231,183 @@ function DocumentEditorInner({
 		reviewAppliedRef,
 		roomHoldsSavedBody,
 		runState.reviewStampRef,
+		roomStampsOn,
+		adoptSavedBody,
+	]);
+
+	// Whether a write after the run's — another run, a restore, a
+	// colleague's save — has superseded the body under review (Fizzy #2946).
+	// The review then no longer describes the document: its Reject would
+	// revert the newer write and its Accept would put the older body back on
+	// screen. The saved document says so when its body is no longer the
+	// reviewed one; the room says so sooner when it holds a later saved body.
+	// The same body at a higher version is the run's own version step, not a
+	// newer write.
+	//
+	// A newer run supersedes it as soon as the document names that run,
+	// before it writes, where this editor then follows that run or the room
+	// brings it the run's body: an editor holding a review follows no other
+	// run. Anywhere else the review stays until the run's body arrives, which
+	// closes it and puts that body on screen.
+	const latestRunIdentity = runIdentity(document?.generationStartedAt);
+	const newerRunStarted = useCallback((): boolean => {
+		const reviewedRun = runState.reviewedRunStartedAtRef.current;
+		return (
+			(attachToServerRun || roomStampsOn) &&
+			reviewedRun !== null &&
+			latestRunIdentity !== null &&
+			latestRunIdentity !== reviewedRun
+		);
+	}, [
+		attachToServerRun,
+		roomStampsOn,
+		latestRunIdentity,
+		runState.reviewedRunStartedAtRef,
+	]);
+	const reviewSuperseded = useCallback((): boolean => {
+		const savedBody = document?.content;
+		if (typeof savedBody === "string" && savedBody !== newContent) {
+			return true;
+		}
+		if (newerRunStarted()) {
+			return true;
+		}
+		const reviewStamp = runState.reviewStampRef.current;
+		if (roomStampsOn && ydoc && reviewStamp) {
+			const held = readRoomStamp(ydoc);
+			if (
+				held &&
+				held.version > reviewStamp.version &&
+				held.contentHash !== reviewStamp.contentHash
+			) {
+				return true;
+			}
+		}
+		return false;
+	}, [
+		document?.content,
+		newContent,
+		newerRunStarted,
+		roomStampsOn,
+		ydoc,
+		runState.reviewStampRef,
+	]);
+
+	// Only a newer run superseded the review, its body not written yet: the
+	// person is told that, not that the document changed.
+	const supersededByRunOnly = useCallback(
+		(): boolean => document?.content === newContent && newerRunStarted(),
+		[document?.content, newContent, newerRunStarted],
+	);
+
+	// Closes a superseded review without writing anything to the server:
+	// the newer write stays. In a stamped room the stale-base rules bring
+	// the editor to it. Anywhere else nothing would: the review put its body
+	// on screen, so the latest saved body goes in now and becomes the
+	// editor's saved body — no older reviewed body is left there to edit and
+	// save over the newer one (Fizzy #2946).
+	const closeSupersededReview = useCallback(
+		(
+			messageKey:
+				| "reviewSuperseded"
+				| "reviewSupersededByRun"
+				| "rejectReviewStale"
+				| "rejectRunLive",
+			latest?: {
+				content?: string | null;
+				version?: number;
+				contentHash?: string | null;
+			} | null,
+		) => {
+			const latestBody = latest?.content;
+			if (!roomStampsOn && typeof latestBody === "string") {
+				const version =
+					typeof latest?.version === "number"
+						? latest.version
+						: undefined;
+				const contentHash = latest?.contentHash ?? undefined;
+				setCurrentDocument(latestBody);
+				queueMicrotask(() => {
+					if (
+						applyToLiveEditor(
+							latestBody ? fromMarkdown(latestBody) : "",
+						)
+					) {
+						adoptSoloBody(latestBody, version, contentHash);
+					}
+				});
+			}
+			if (regenerationRespondRef.current) {
+				// Nothing was reverted: the run's body stays in the history.
+				regenerationRespondRef.current({ accepted: true });
+				regenerationRespondRef.current = null;
+			}
+			setShowConfirmDialog(false);
+			regenerationTriggeredRef.current = false;
+			setTimeout(() => {
+				isDirectRegenerationRef.current = false;
+			}, 500);
+			setTimeout(() => {
+				setIsConfirming(false);
+			}, 1000);
+			toast.info(tRun(messageKey));
+		},
+		[
+			roomStampsOn,
+			applyToLiveEditor,
+			adoptSoloBody,
+			regenerationRespondRef,
+			regenerationTriggeredRef,
+			isDirectRegenerationRef,
+			setShowConfirmDialog,
+			setIsConfirming,
+			tRun,
+		],
+	);
+
+	// An open review is closed the moment the saved document moves past it,
+	// so a stale dialog does not stay actionable. The run's own version step
+	// re-points the review at the version it landed on. Not once the person
+	// has accepted or rejected it: the document then moves because of that
+	// choice — a rewind's answer can land before the dialog has closed —
+	// and the choice says what happened.
+	const reviewDecidedRef = useRef(false);
+	useEffect(() => {
+		if (!showConfirmDialog) {
+			reviewDecidedRef.current = false;
+			return;
+		}
+		if (reviewDecidedRef.current) {
+			return;
+		}
+		if (reviewSuperseded()) {
+			closeSupersededReview(
+				supersededByRunOnly()
+					? "reviewSupersededByRun"
+					: "reviewSuperseded",
+				document,
+			);
+			return;
+		}
+		if (
+			typeof document?.version === "number" &&
+			document.content === newContent &&
+			runState.reviewedVersionRef.current !== null &&
+			document.version > runState.reviewedVersionRef.current
+		) {
+			runState.reviewedVersionRef.current = document.version;
+			if (savedStamp) {
+				runState.reviewStampRef.current = savedStamp;
+			}
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [
+		showConfirmDialog,
+		document?.content,
+		document?.version,
+		reviewSuperseded,
+		supersededByRunOnly,
+		closeSupersededReview,
 	]);
 
 	// FAILED watcher (issue #720): the effect above only ever looks for NEW
@@ -4222,9 +4585,13 @@ function DocumentEditorInner({
 		if (hasNewContent) {
 			const awareness = enableCollaboration ? provider?.awareness : null;
 			// With its stamp, unless the room holds it, or a later body,
-			// already (Fizzy #2946).
+			// already (Fizzy #2946). A review another editor holds of an
+			// earlier run does not stand in for this run's body.
 			if (
-				appliesAttachedRunBody(awareness) &&
+				appliesAttachedRunBody(
+					awareness,
+					runIdentity(document?.generationStartedAt),
+				) &&
 				!roomHoldsSavedBody(savedStamp)
 			) {
 				applyServerBody(
@@ -4300,8 +4667,13 @@ function DocumentEditorInner({
 			}
 		}
 		wasLoadingRef.current = isLoading;
-		editor.setEditable(!isLoading && !isRegenerating && !roomFreezesEditor);
-	}, [isLoading, isRegenerating, editor, roomFreezesEditor]);
+		editor.setEditable(
+			!isLoading &&
+				!isRegenerating &&
+				!roomFreezesEditor &&
+				!rejectPending,
+		);
+	}, [isLoading, isRegenerating, editor, roomFreezesEditor, rejectPending]);
 
 	// Effect 2: Final diff when nodeName becomes "end"
 	// Uses baselineRef instead of currentDocument state to avoid stale closure
@@ -4447,9 +4819,26 @@ function DocumentEditorInner({
 
 	// Handle switching between raw and rich view
 	const handleViewModeToggle = () => {
+		// Not while a Reject is unanswered: switching back writes the raw
+		// edits into the editor its outcome will replace (Fizzy #2946).
+		if (rejectPendingRef.current) {
+			return;
+		}
 		if (viewMode === "raw") {
+			// Nothing edited in the raw view: the rich editor still holds the
+			// body, with whatever colleagues typed into the room meanwhile,
+			// which writing the raw text back would take from them
+			// (Fizzy #2946).
+			if (!rawEditedRef.current) {
+				setViewMode("rich");
+				return;
+			}
+			rawEditedRef.current = false;
 			// Switching from raw to rich - update editor with raw content
 			const normalized = repairMarkdownDocument(rawContent);
+			// What was edited in the raw view was counted as this person's
+			// typing as it was typed (see `handleRawContentChange`); a round
+			// trip with no edit is none (Fizzy #2946).
 			setRawContent(normalized);
 			setCurrentDocument(normalized);
 			if (editor) {
@@ -4463,7 +4852,15 @@ function DocumentEditorInner({
 			}
 			setViewMode("rich");
 		} else {
-			// Switching from rich to raw - already synced
+			// Switching from rich to raw: what the editor holds now, which a
+			// colleague's typing in the room may have changed without a
+			// render that would have synced it (Fizzy #2946).
+			const ed = liveEditorOrNull(editorRef.current);
+			const markdown = ed ? getEditorMarkdownForSave(ed) : null;
+			if (markdown !== null) {
+				setRawContent(markdown);
+			}
+			rawEditedRef.current = false;
 			setViewMode("raw");
 		}
 	};
@@ -4640,6 +5037,13 @@ function DocumentEditorInner({
 		}
 		setRawContent(result.value);
 		setCurrentDocument(result.value);
+		// An edit in the raw view is this person's typing, like one in the
+		// rich editor (Fizzy #2946): a saved body the room brings in is
+		// never adopted over it, and in a room it is what this editor saves.
+		rawEditedRef.current = true;
+		localEditCountRef.current += 1;
+		noteTypedSinceSave();
+		typedSinceRejectRef.current = true;
 		// Same content-equality model as the rich editor: dirty iff the new
 		// raw value differs from what we last persisted. Compare directly
 		// without debouncing because we already have the new value here.
@@ -4653,7 +5057,7 @@ function DocumentEditorInner({
 		if (isDirty) {
 			autoSaveTimeoutRef.current = setTimeout(() => {
 				triggerAutoSave();
-			}, 10000);
+			}, DOCUMENT_AUTOSAVE_TIMINGS.delayMs);
 		}
 	};
 
@@ -4897,7 +5301,13 @@ function DocumentEditorInner({
 					});
 				} else {
 					// Any other refusal, in the reader's words, never the
-					// server's (Fizzy #2946).
+					// server's (Fizzy #2946). Nothing was written, so typing
+					// here stays unsaved; an editor in a room with none, such
+					// as a rejected regeneration's fallback save, still holds
+					// the saved body.
+					if (!passiveInRoom()) {
+						setHasUnsavedChanges(true);
+					}
 					toast.error(
 						describeDocumentWriteRefusal(error, tWriteRefusal)
 							.message,
@@ -4939,7 +5349,17 @@ function DocumentEditorInner({
 				// a rejected regeneration's revert (Fizzy #2946).
 				const onSaved = directSaveOnSavedRef.current;
 				directSaveOnSavedRef.current = null;
-				onSaved?.();
+				const roomKeepsStamp =
+					onSaved?.(
+						typeof data?.document?.version === "number" &&
+							typeof data.document.contentHash === "string" &&
+							data.document.contentHash
+							? {
+									version: data.document.version,
+									contentHash: data.document.contentHash,
+								}
+							: null,
+					) === false;
 				// The body just saved is the one the editor holds (plus any
 				// typing since, which is local).
 				if (data?.document?.version != null) {
@@ -4959,6 +5379,7 @@ function DocumentEditorInner({
 					if (
 						roomStampsOn &&
 						ydoc &&
+						!roomKeepsStamp &&
 						variables.expectedContentHash !== undefined &&
 						sameRoomStamp(readRoomStamp(ydoc), {
 							version: variables.expectedVersion ?? 0,
@@ -5078,12 +5499,18 @@ function DocumentEditorInner({
 				// first; the save asked for meanwhile then waits for its
 				// answer. After a failure neither goes: the text they would
 				// have saved stays unsaved in the editor.
+				const settled = directSaveOnSettledRef.current;
+				directSaveOnSettledRef.current = null;
+				settled?.();
 				const direct = pendingDirectSaveRef.current;
 				pendingDirectSaveRef.current = null;
+				const directSettled = pendingDirectOnSettledRef.current;
+				pendingDirectOnSettledRef.current = null;
 				if (direct && !error) {
 					setTimeout(direct, 0);
 					return;
 				}
+				directSettled?.();
 				saveInFlightRef.current = false;
 				const again = saveAgainRef.current;
 				saveAgainRef.current = null;
@@ -5144,6 +5571,12 @@ function DocumentEditorInner({
 	// Auto-save function - skip save if content hasn't actually changed
 	const triggerAutoSave = () => {
 		if (!hasUnsavedChanges || !document) {
+			return;
+		}
+		// Nothing typed here since the last save: what the room holds is
+		// another editor's to save, or the server's (Fizzy #2946).
+		if (passiveInRoom()) {
+			setHasUnsavedChanges(false);
 			return;
 		}
 		// Never auto-save while the context-update diff is on screen — the
@@ -5223,6 +5656,25 @@ function DocumentEditorInner({
 	const resolveSaveBaseRef = useRef(resolveSaveBase);
 	resolveSaveBaseRef.current = resolveSaveBase;
 
+	// Whether the base a rejected regeneration's fallback save would name is
+	// still the reviewed body (Fizzy #2946). In a room the reviewed body's
+	// identity must be known and match; the single-user editor compares
+	// when it knows both. Without a base (the room flag off) nothing can
+	// be compared.
+	const fallbackBaseIsReviewed = (
+		base: DocumentSaveBase | null | undefined,
+		reviewStamp: RoomStamp | null,
+	): boolean => {
+		if (!base) {
+			return true;
+		}
+		const reviewedHash = reviewStamp?.contentHash;
+		if (roomStampsOn) {
+			return !!reviewedHash && base.contentHash === reviewedHash;
+		}
+		return !reviewedHash || base.contentHash === reviewedHash;
+	};
+
 	// A save sent past `handleSave` keeps to one save at a time as well: while
 	// one is in flight it waits for that answer (see `pendingDirectSaveRef`),
 	// and its base is resolved when it is sent, so it names the body the
@@ -5231,6 +5683,9 @@ function DocumentEditorInner({
 		build,
 		confirm,
 		onUnavailable,
+		stillApplies,
+		onDeclined,
+		onSettled,
 		onSaved,
 	}) => {
 		const send = () => {
@@ -5242,6 +5697,25 @@ function DocumentEditorInner({
 				saveAgainRef.current = null;
 				setHasUnsavedChanges(true);
 				onUnavailable();
+				onSettled?.();
+				return;
+			}
+			if (stillApplies && !stillApplies(base)) {
+				// The document moved on while this save waited: nothing
+				// goes, and the save asked for meanwhile goes as it would
+				// after an answer.
+				saveInFlightRef.current = false;
+				const again = saveAgainRef.current;
+				saveAgainRef.current = null;
+				if (again && !pageLeft()) {
+					setTimeout(() => {
+						isManualSaveRef.current = again.manual;
+						shouldRedirectAfterSaveRef.current = again.redirect;
+						handleSaveRef.current();
+					}, 0);
+				}
+				onDeclined?.();
+				onSettled?.();
 				return;
 			}
 			saveInFlightRef.current = true;
@@ -5252,11 +5726,13 @@ function DocumentEditorInner({
 			// waited for is never reported as its own.
 			isConfirmSaveRef.current = confirm;
 			directSaveOnSavedRef.current = onSaved ?? null;
+			directSaveOnSettledRef.current = onSettled ?? null;
 			setIsSaving(true);
 			saveMutation.mutate(build(base));
 		};
 		if (saveInFlightRef.current) {
 			pendingDirectSaveRef.current = send;
+			pendingDirectOnSettledRef.current = onSettled ?? null;
 			setHasUnsavedChanges(true);
 			return;
 		}
@@ -5810,28 +6286,245 @@ function DocumentEditorInner({
 	// version history stays consistent with the live document. Used in the
 	// Reject handler below; falls back to the old skipVersionBump path on
 	// CONFLICT (e.g. first-ever generation has no prior version to revert to).
+	// The room's stamp, and the earlier body the single-user editor put on
+	// screen, as a Reject went (Fizzy #2946): its answer writes only over
+	// what it was sent from.
+	const rejectSendStampRef = useRef<RoomStamp | null>(null);
+	const rejectShownBodyRef = useRef<string | null>(null);
+	// Anything typed since the Reject went — in this editor or one mounted
+	// after a sync loss — offered back before the Reject's outcome replaces
+	// it (Fizzy #2946). Read from the editor on screen now.
+	const offerTypedSinceReject = useCallback(() => {
+		if (!typedSinceRejectRef.current) {
+			return;
+		}
+		typedSinceRejectRef.current = false;
+		const ed = liveEditorOrNull(liveEditorRef.current);
+		const typed = rawEditPending()
+			? rawContentRef.current
+			: ed
+				? getEditorMarkdownForSave(ed)
+				: null;
+		if (typed?.trim()) {
+			offerBackReplacedText(typed);
+		}
+	}, [
+		typedSinceRejectRef,
+		liveEditorRef,
+		rawEditPending,
+		offerBackReplacedText,
+	]);
 	const rejectRegenerationMutation = useMutation(
 		orpc.projects.documents.rejectRegeneration.mutationOptions({
 			onSuccess: (data) => {
-				// The editor is back on the prior body, and so is the server.
+				const reverted = data?.document;
+				const version =
+					typeof reverted?.version === "number"
+						? reverted.version
+						: undefined;
+				const body =
+					typeof reverted?.content === "string"
+						? reverted.content
+						: null;
+				const contentHash =
+					typeof reverted?.contentHash === "string" &&
+					reverted.contentHash
+						? reverted.contentHash
+						: undefined;
+				const sendStamp = rejectSendStampRef.current;
+				const shownBody = rejectShownBodyRef.current;
+				rejectSendStampRef.current = null;
+				rejectShownBodyRef.current = null;
+				const refreshCaches = () => {
+					queryClient.invalidateQueries({
+						queryKey: documentGetQueryKey,
+					});
+					queryClient.invalidateQueries({
+						queryKey:
+							orpc.projects.documents.versions.list.queryKey({
+								input: {
+									projectId,
+									documentId,
+									organizationId,
+								},
+							}),
+					});
+				};
+				if (!roomStampsOn) {
+					// The server is back on the prior body. The single-user
+					// editor put the body it remembered from before the run on
+					// screen already; the server's rewind can differ from it,
+					// and then its own body goes in and becomes the saved one
+					// (Fizzy #2946).
+					editorBodyVersionRef.current =
+						version ?? editorBodyVersionRef.current;
+					editorBodyHashRef.current = contentHash;
+					if (
+						body !== null &&
+						shownBody !== null &&
+						body.trim() !== shownBody.trim()
+					) {
+						setCurrentDocument(body);
+						queueMicrotask(() => {
+							offerTypedSinceReject();
+							if (
+								applyToLiveEditor(
+									body ? fromMarkdown(body) : "",
+								)
+							) {
+								adoptSoloBody(body, version, contentHash);
+							}
+						});
+					}
+					void adoptServerBase({ body, version });
+					refreshCaches();
+					setRejectPending(false);
+					return;
+				}
+				// A room hears of the rewind only now, from the server: the
+				// body it rewound to — not the one this editor remembered from
+				// before the run, which can differ — goes in with its stamp,
+				// in one transaction, and this editor takes it as its saved
+				// body (Fizzy #2946). Only over the room the Reject was sent
+				// from, though: a save that moved it meanwhile, or a newer
+				// saved body this editor already heard of, is newer than the
+				// rewind, so the room keeps it and the stale rule decides.
+				const held = ydoc ? readRoomStamp(ydoc) : null;
+				const roomUnmoved =
+					sendStamp === null
+						? held === null
+						: sameRoomStamp(held, sendStamp);
+				const cached = (
+					queryClient.getQueryData(documentGetQueryKey) as
+						| {
+								document?: {
+									version?: number;
+									contentHash?: string | null;
+								};
+						  }
+						| undefined
+				)?.document;
+				const reviewedHash =
+					runState.reviewStampRef.current?.contentHash;
+				const newerSaved =
+					!!cached?.contentHash &&
+					typeof cached.version === "number" &&
+					version !== undefined &&
+					cached.version > version &&
+					cached.contentHash !== contentHash &&
+					cached.contentHash !== reviewedHash &&
+					cached.contentHash !== sendStamp?.contentHash;
+				if (body === null || !roomUnmoved || newerSaved) {
+					publishRoomSaveInFlight(provider?.awareness, null);
+					refreshCaches();
+					setRejectPending(false);
+					return;
+				}
 				editorBodyVersionRef.current =
-					data?.document?.version ?? editorBodyVersionRef.current;
+					version ?? editorBodyVersionRef.current;
 				editorBodyHashRef.current = undefined;
-				void adoptServerBase({
-					body: null,
-					version: data?.document?.version ?? undefined,
-				});
-				queryClient.invalidateQueries({
-					queryKey: documentGetQueryKey,
-				});
-				queryClient.invalidateQueries({
-					queryKey: orpc.projects.documents.versions.list.queryKey({
-						input: { projectId, documentId, organizationId },
-					}),
-				});
+				const stamp: RoomStamp | null =
+					version !== undefined && contentHash
+						? { version, contentHash }
+						: null;
+				setCurrentDocument(body);
+				offerTypedSinceReject();
+				const written = applyToLiveEditor(
+					body ? fromMarkdown(body) : "",
+					stamp,
+				);
+				if (written && stamp) {
+					adoptSavedBody(body, stamp);
+				} else if (written) {
+					updateSavedBaseline(body);
+					setHasUnsavedChanges(false);
+				}
+				if (written) {
+					// A read that no longer holds this body is never stamped
+					// over it.
+					void adoptServerBase({ body, version });
+				} else {
+					// No editor on screen took the body (the room lost sync):
+					// the room keeps the reviewed body under its own stamp,
+					// and the stale rule brings it to the rewind.
+					publishRoomSaveInFlight(provider?.awareness, null);
+				}
+				refreshCaches();
+				setRejectPending(false);
+			},
+			// The editor that sent the Reject was remounted meanwhile (a sync
+			// loss): its own refusal handling no longer runs, so the lock is
+			// released here and the stale rule brings the room up to date
+			// (Fizzy #2946).
+			onError: () => {
+				if (unmountedRef.current) {
+					setRejectPending(false);
+				}
 			},
 		}),
 	);
+
+	// A Reject the server refused as stale wrote nothing (Fizzy #2946). A
+	// room was never changed by it: it hears that no save is in flight, and
+	// the stale rule brings it to the newer saved document — one editor,
+	// under a claim, offering back what it replaces. The single-user editor
+	// put the earlier body on screen already: it goes back to the saved
+	// document, which is newer than the review, and takes it as its base.
+	const restoreLatestSavedBody = useCallback(async () => {
+		const refreshVersions = () => {
+			queryClient.invalidateQueries({
+				queryKey: orpc.projects.documents.versions.list.queryKey({
+					input: { projectId, documentId, organizationId },
+				}),
+			});
+		};
+		if (roomStampsOn) {
+			publishRoomSaveInFlight(provider?.awareness, null);
+			refetchSavedDocument();
+			refreshVersions();
+			return;
+		}
+		try {
+			const fresh = await queryClient.fetchQuery({
+				...orpc.projects.documents.get.queryOptions({
+					input: { id: documentId, projectId, organizationId },
+				}),
+				staleTime: 0,
+			});
+			const saved = fresh?.document;
+			if (saved && typeof saved.content === "string") {
+				const body = saved.content;
+				const version =
+					typeof saved.version === "number"
+						? saved.version
+						: undefined;
+				const contentHash = saved.contentHash ?? undefined;
+				setCurrentDocument(body);
+				queueMicrotask(() => {
+					// Anything typed after the Reject went is offered back
+					// before the saved body replaces it (Fizzy #2946).
+					offerTypedSinceReject();
+					if (applyToLiveEditor(body ? fromMarkdown(body) : "")) {
+						adoptSoloBody(body, version, contentHash);
+					}
+				});
+			}
+		} catch {
+			// The next read brings it.
+		}
+		refreshVersions();
+	}, [
+		roomStampsOn,
+		provider?.awareness,
+		queryClient,
+		documentId,
+		projectId,
+		organizationId,
+		applyToLiveEditor,
+		refetchSavedDocument,
+		adoptSoloBody,
+		offerTypedSinceReject,
+	]);
 
 	// The safety timer is not cancelled when this editor unmounts: a sync
 	// loss unmounts it in the middle of the run the timer watches. The outer
@@ -6899,6 +7592,16 @@ function DocumentEditorInner({
 						hasVisualSlots(acceptedContent)
 							? editorBodyVersionRef.current
 							: undefined;
+					// Accepted here, so it counts as this editor's own edit
+					// (Fizzy #2946): a save of it that fails, or that cannot
+					// go yet, leaves it unsaved — dirty, and sent on leaving
+					// the page — rather than held only by the room. The
+					// save below covers it once it lands. It is put in without
+					// the dirty check a keystroke schedules, so it reads as
+					// unsaved from here.
+					localEditCountRef.current += 1;
+					noteTypedSinceSave();
+					setHasUnsavedChanges(true);
 					// With the room flag every accept names its whole base
 					// (Fizzy #2946), which covers the slots as well.
 					const base = resolveSaveBaseRef.current();
@@ -6906,7 +7609,6 @@ function DocumentEditorInner({
 						// The room has no stamp yet: the accepted body stays in
 						// the editor, unsaved, and the autosave takes it once
 						// the room has one. Never silent.
-						setHasUnsavedChanges(true);
 						toast.info(tRun("saveBlocked.updatingToLatest"));
 						void recordOutcomeRef.current({
 							accepted: true,
@@ -7842,22 +8544,39 @@ function DocumentEditorInner({
 										previousContent={previousContent}
 										newContent={newContent}
 										onAccept={() => {
+											// A newer write superseded the body
+											// under review: keep it, put nothing
+											// older on screen (Fizzy #2946).
+											if (reviewSuperseded()) {
+												closeSupersededReview(
+													supersededByRunOnly()
+														? "reviewSupersededByRun"
+														: "reviewSuperseded",
+													document,
+												);
+												return;
+											}
+											reviewDecidedRef.current = true;
 											// Accept new content
 											startTransition(() => {
 												const html =
 													fromMarkdown(newContent);
 
-												// Use requestAnimationFrame to defer editor update
-												// The stored regenerated body — the workflow
-												// already carried the visual slots over. It
-												// lands in the editor on screen by then.
-												// With its stamp, and not again over a
-												// room that holds it, or a later body,
-												// already (Fizzy #2946).
+												// Deferred out of this handler, not to
+												// the next frame, which a background tab
+												// holds back (Fizzy #2946). The stored
+												// regenerated body — the workflow already
+												// carried the visual slots over. It lands
+												// in the editor on screen by then. With
+												// its stamp, and not again over a room
+												// that holds it, or a later body,
+												// already; the editor that writes it
+												// takes it as its saved body.
 												const reviewStamp =
 													runState.reviewStampRef
 														.current;
-												requestAnimationFrame(() => {
+												const acceptedBody = newContent;
+												queueMicrotask(() => {
 													if (
 														roomHoldsSavedBody(
 															reviewStamp,
@@ -7865,10 +8584,19 @@ function DocumentEditorInner({
 													) {
 														return;
 													}
-													applyToLiveEditor(
-														html,
-														reviewStamp,
-													);
+													if (
+														applyToLiveEditor(
+															html,
+															reviewStamp,
+														) &&
+														roomStampsOn &&
+														reviewStamp
+													) {
+														adoptSavedBody(
+															acceptedBody,
+															reviewStamp,
+														);
+													}
 												});
 
 												// Update local state only - DO NOT call setAgentState for direct regeneration
@@ -7915,6 +8643,27 @@ function DocumentEditorInner({
 											});
 										}}
 										onReject={() => {
+											// A newer write superseded the body
+											// under review: rewinding would
+											// revert that write, so nothing is
+											// sent and nothing changes on screen
+											// (Fizzy #2946).
+											const reviewedVersion =
+												runState.reviewedVersionRef
+													.current;
+											if (
+												reviewedVersion === null ||
+												reviewSuperseded()
+											) {
+												closeSupersededReview(
+													supersededByRunOnly()
+														? "rejectRunLive"
+														: "rejectReviewStale",
+													document,
+												);
+												return;
+											}
+											reviewDecidedRef.current = true;
 											// Revert to previous content
 											startTransition(() => {
 												const markdown =
@@ -7922,17 +8671,61 @@ function DocumentEditorInner({
 														previousContent,
 													);
 
-												// Use requestAnimationFrame to defer editor update,
-												// into the editor on screen by then.
-												requestAnimationFrame(() => {
-													applyToLiveEditor(markdown);
-												});
+												// The single-user editor shows the
+												// earlier body at once. A room is left
+												// alone until the server answers: the
+												// rewind's own body then goes in with
+												// its stamp (see
+												// `rejectRegenerationMutation`), so no
+												// collaborator ever holds this
+												// editor's memory of the earlier body,
+												// unstamped, under the reviewed body's
+												// stamp (Fizzy #2946).
+												if (!roomStampsOn) {
+													// Deferred out of this handler,
+													// not to the next frame, which a
+													// background tab holds back: the
+													// server's answer must find it
+													// there (Fizzy #2946).
+													queueMicrotask(() => {
+														applyToLiveEditor(
+															markdown,
+														);
+													});
+													// Update local state only - DO NOT call setAgentState for direct regeneration
+													setCurrentDocument(
+														previousContent,
+													);
+												}
 												// The rewind is a server write: the
 												// room hears that one is in flight
 												// until its stamp follows (Fizzy #2946).
 												const reviewStamp =
 													runState.reviewStampRef
 														.current;
+												const reviewedRunStartedAt =
+													runState
+														.reviewedRunStartedAtRef
+														.current;
+												// What the room holds as the
+												// Reject goes: its answer writes
+												// the room only if nothing moved
+												// it meanwhile (Fizzy #2946).
+												rejectSendStampRef.current =
+													roomStampsOn && ydoc
+														? readRoomStamp(ydoc)
+														: null;
+												rejectShownBodyRef.current =
+													roomStampsOn
+														? null
+														: previousContent;
+												// Nothing is typed until the
+												// Reject settles (Fizzy #2946).
+												typedSinceRejectRef.current = false;
+												setRejectPending(true);
+												let fallbackDeclined = false;
+												const releaseReject = () =>
+													setRejectPending(false);
 												if (roomStampsOn && ydoc) {
 													publishRoomSaveInFlight(
 														provider?.awareness,
@@ -7940,11 +8733,6 @@ function DocumentEditorInner({
 															readRoomStamp(ydoc),
 													);
 												}
-
-												// Update local state only - DO NOT call setAgentState for direct regeneration
-												setCurrentDocument(
-													previousContent,
-												);
 
 												// True rollback: delete the regen's DocumentVersion row and
 												// rewind projectDocument.{version, content} to the prior
@@ -7956,6 +8744,10 @@ function DocumentEditorInner({
 												// effects (RAG re-embed, realtime) to the current route's
 												// tenant rather than the session's active org, which can
 												// be stale.
+												// It names the reviewed run, so
+												// the server refuses it when a
+												// newer write landed since
+												// (Fizzy #2946).
 												rejectRegenerationMutation.mutate(
 													{
 														projectId,
@@ -7963,12 +8755,27 @@ function DocumentEditorInner({
 														organizationId:
 															organizationId ??
 															null,
+														expectedVersion:
+															reviewedVersion,
+														...(reviewStamp?.contentHash
+															? {
+																	expectedContentHash:
+																		reviewStamp.contentHash,
+																}
+															: {}),
+														...(reviewedRunStartedAt
+															? {
+																	expectedGenerationStartedAt:
+																		reviewedRunStartedAt,
+																}
+															: {}),
 													},
 													{
 														// Said once the server has
 														// rewound the document, never
 														// before it answers (Fizzy #2946).
 														onSuccess: () => {
+															releaseReject();
 															toast.info(
 																tRun(
 																	"regenerationRejected",
@@ -7982,6 +8789,34 @@ function DocumentEditorInner({
 																	null,
 																);
 															}
+															// The document moved past the
+															// reviewed run before the rewind
+															// (Fizzy #2946): nothing was
+															// reverted, and the fallback save
+															// below would write the older body
+															// over the newer one. The editor
+															// goes back to the saved body.
+															if (
+																(
+																	error as {
+																		data?: {
+																			code?: string;
+																		};
+																	}
+																)?.data
+																	?.code ===
+																REJECT_REVIEW_STALE
+															) {
+																toast.error(
+																	tRun(
+																		"rejectReviewStale",
+																	),
+																);
+																void restoreLatestSavedBody().finally(
+																	releaseReject,
+																);
+																return;
+															}
 															const isNoPrior =
 																(
 																	error as {
@@ -7990,6 +8825,7 @@ function DocumentEditorInner({
 																)?.code ===
 																"CONFLICT";
 															if (!isNoPrior) {
+																releaseReject();
 																toast.error(
 																	describeDocumentWriteRefusal(
 																		error,
@@ -8018,14 +8854,16 @@ function DocumentEditorInner({
 															// regenerated one for everyone and leave
 															// nothing to restore. Nothing is written,
 															// and the regenerated body — still the
-															// saved one — goes back into the editor,
-															// on a frame after the one that emptied it.
+															// saved one — goes back into the
+															// single-user editor, which showed the
+															// earlier one; a room was never left.
 															// The same when a run holds the document.
 															if (
 																runLive ||
 																previousContent.trim() ===
 																	""
 															) {
+																releaseReject();
 																toast.error(
 																	tRun(
 																		runLive
@@ -8038,7 +8876,19 @@ function DocumentEditorInner({
 																setCurrentDocument(
 																	kept,
 																);
-																requestAnimationFrame(
+																if (
+																	roomStampsOn
+																) {
+																	setHasUnsavedChanges(
+																		false,
+																	);
+																	return;
+																}
+																// After the
+																// write that put the
+																// earlier body on
+																// screen.
+																queueMicrotask(
 																	() => {
 																		if (
 																			applyToLiveEditor(
@@ -8098,13 +8948,91 @@ function DocumentEditorInner({
 																					"saveBlocked.updatingToLatest",
 																				),
 																			),
-																	onSaved:
-																		() =>
-																			toast.info(
-																				tRun(
-																					"regenerationRejected",
-																				),
+																	// Only over the
+																	// reviewed body
+																	// (Fizzy #2946): a
+																	// save that landed
+																	// since — a
+																	// colleague's, or
+																	// one this one
+																	// waited for — is
+																	// never replaced
+																	// by the earlier
+																	// body.
+																	stillApplies:
+																		(
+																			base,
+																		) =>
+																			fallbackBaseIsReviewed(
+																				base,
+																				reviewStamp,
 																			),
+																	onDeclined:
+																		() => {
+																			toast.error(
+																				tRun(
+																					"rejectReviewStale",
+																				),
+																			);
+																			fallbackDeclined = true;
+																			void restoreLatestSavedBody().finally(
+																				releaseReject,
+																			);
+																		},
+																	onSettled:
+																		() => {
+																			if (
+																				!fallbackDeclined
+																			) {
+																				releaseReject();
+																			}
+																		},
+																	onSaved: (
+																		saved,
+																	) => {
+																		toast.info(
+																			tRun(
+																				"regenerationRejected",
+																			),
+																		);
+																		if (
+																			!roomStampsOn
+																		) {
+																			return undefined;
+																		}
+																		// The room takes the
+																		// earlier body only
+																		// now, with the stamp
+																		// of this save. When
+																		// no editor on screen
+																		// takes it, the room
+																		// keeps its stamp and
+																		// the stale rule
+																		// brings it to the
+																		// saved body
+																		// (Fizzy #2946).
+																		if (
+																			!saved ||
+																			!applyToLiveEditor(
+																				previousContent
+																					? fromMarkdown(
+																							previousContent,
+																						)
+																					: "",
+																				saved,
+																			)
+																		) {
+																			return false;
+																		}
+																		setCurrentDocument(
+																			previousContent,
+																		);
+																		adoptSavedBody(
+																			previousContent,
+																			saved,
+																		);
+																		return undefined;
+																	},
 																},
 															);
 														},
@@ -8415,7 +9343,9 @@ function DocumentEditorInner({
 												}
 												placeholder="Enter your document content in markdown format... Type @fabric followed by your question to ask the AI agent."
 												className="font-mono text-sm resize-none min-h-[calc(100vh-300px)] w-full"
-												disabled={isLoading}
+												disabled={
+													isLoading || rejectPending
+												}
 											/>
 											<div className="mt-4 space-y-2">
 												<p className="text-xs text-muted-foreground">
@@ -8647,6 +9577,7 @@ function DocumentEditorInner({
 													onClick={
 														handleViewModeToggle
 													}
+													disabled={rejectPending}
 													aria-label={
 														viewMode === "rich"
 															? "View raw markdown"
@@ -8934,16 +9865,38 @@ function RegenerationConfirmDialog({
 		}
 	}, [accepted]);
 
+	// The choice lands after a short delay, and only while this dialog is
+	// open (Fizzy #2946): a review closed meanwhile — a newer write
+	// superseded it — unmounts the dialog, and a choice made on it then
+	// must not run against a document that has moved on.
+	const decisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		return () => {
+			if (decisionTimerRef.current) {
+				clearTimeout(decisionTimerRef.current);
+				decisionTimerRef.current = null;
+			}
+		};
+	}, []);
+
 	const handleAccept = () => {
 		setAccepted(true);
-		setTimeout(() => {
+		if (decisionTimerRef.current) {
+			clearTimeout(decisionTimerRef.current);
+		}
+		decisionTimerRef.current = setTimeout(() => {
+			decisionTimerRef.current = null;
 			onAccept();
 		}, 800);
 	};
 
 	const handleReject = () => {
 		setAccepted(false);
-		setTimeout(() => {
+		if (decisionTimerRef.current) {
+			clearTimeout(decisionTimerRef.current);
+		}
+		decisionTimerRef.current = setTimeout(() => {
+			decisionTimerRef.current = null;
 			onReject();
 		}, 800);
 	};

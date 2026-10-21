@@ -83,6 +83,7 @@ const ReanalyzedFeatureSchema = z.object({
 });
 
 export interface ReanalyzeBodyByKindParams {
+	abortSignal?: AbortSignal;
 	kind: StoryKind;
 	title: string;
 	identifier?: string;
@@ -149,98 +150,125 @@ export async function reanalyzeBodyByKind(
 		projectId,
 	} = params;
 	const orgId = organizationId ?? undefined;
-
-	const boundPrompt = await getBoundPromptForAgent({
-		agentName: REANALYZER_AGENT_KEY[kind],
-		documentType: "DRAFT",
-		storyKind: kind,
-		userId,
-		organizationId: orgId,
-	});
-	if (!boundPrompt?.version?.content) {
-		// Prompt not seeded/bound (e.g. local before the prompts seed ran, or a
-		// tenant without the binding). Safe-hold rather than overwrite.
-		// Fizzy #2048 (R13): name the key that was missing. "Safe-holding" without
-		// it says a binding is absent but not WHICH one, so the report that lands
-		// later ("my bug came back feature-shaped") cannot be matched to the
-		// tenant's missing binding without re-deriving the mapping by hand.
+	const aborted = () => {
 		logger.warn(
-			"[reanalyzeBodyByKind] re-analysis prompt not bound; safe-holding existing body",
-			{
-				kind,
-				projectId,
-				agentName: REANALYZER_AGENT_KEY[kind],
-				documentType: "DRAFT",
-				outcome: "miss",
-				promptSource: "bound",
-			},
+			"[reanalyzeBodyByKind] merge aborted; keeping existing body",
+			{ kind, projectId },
 		);
-		return fallback(params, "prompt_not_bound");
+		return fallback(params, "aborted");
+	};
+	if (params.abortSignal?.aborted) {
+		return aborted();
 	}
-
-	const variables =
-		kind === "BUG"
-			? {
-					bug_title: title,
-					bug_id_or_link: identifier ?? "",
-					existing_bug_markdown: existingDescription,
-					new_info_from_user_or_thread: newInfo,
-					connected_context_items: connectedContext ?? "",
-				}
-			: {
-					feature_title: title,
-					feature_id_or_link: identifier ?? "",
-					existing_feature_markdown: existingDescription,
-					existing_acceptance_criteria:
-						existingAcceptanceCriteria ?? "",
-					new_info_from_user_or_thread: newInfo,
-					connected_context_items: connectedContext ?? "",
-				};
-
-	// Unescaped: the bound prompts use double-stache, and HTML-escaping the
-	// ticket body here hands the model `&amp;` / `&lt;` / `&quot;`, which it
-	// copies into the merged body that gets written back to the ticket.
-	const rendered = await renderTemplate({
-		format: boundPrompt.format as TemplateFormat,
-		template: boundPrompt.version.content,
-		variables,
-		escape: false,
-	});
-	if (rendered.error) {
-		logger.warn(
-			"[reanalyzeBodyByKind] prompt render error; using raw body",
-			{
-				kind,
-				projectId,
-				error: rendered.error,
-			},
-		);
-	}
-
-	// Fizzy #1767 Stage 4: append the project's function-tag role-composition
-	// clause (flag-gated, self-authorizing — see getProjectFunctionTagClause)
-	// so the model knows who's on the project and in what capacity. `projectId`
-	// is required here; guard kept for uniformity with the other splice sites.
-	const roleClause = projectId
-		? await getProjectFunctionTagClause({
-				projectId,
-				requesterUserId: userId,
-				surface: "reanalyze-body",
-			})
-		: "";
-
-	// FR-25: append the shared locked-attachment
-	// rule so structure-preserving AI Update (rewrite/extend) never claims to
-	// have analysed an attachment or fabricates its contents. Appended in code
-	// so it holds regardless of the org-editable bound re-analysis prompt.
-	// No-op today (no attachment metadata reaches AI context).
-	const promptWithRules = `${rendered.rendered}\n\n${getLockedAttachmentRulesClause()}${roleClause ? `\n\n${roleClause}` : ""}`;
 
 	try {
+		const boundPrompt = await getBoundPromptForAgent({
+			agentName: REANALYZER_AGENT_KEY[kind],
+			documentType: "DRAFT",
+			storyKind: kind,
+			userId,
+			organizationId: orgId,
+		});
+		if (params.abortSignal?.aborted) {
+			return aborted();
+		}
+		if (!boundPrompt?.version?.content) {
+			// Prompt not seeded/bound (e.g. local before the prompts seed ran, or a
+			// tenant without the binding). Safe-hold rather than overwrite.
+			// Fizzy #2048 (R13): name the key that was missing. "Safe-holding" without
+			// it says a binding is absent but not WHICH one, so the report that lands
+			// later ("my bug came back feature-shaped") cannot be matched to the
+			// tenant's missing binding without re-deriving the mapping by hand.
+			logger.warn(
+				"[reanalyzeBodyByKind] re-analysis prompt not bound; safe-holding existing body",
+				{
+					kind,
+					projectId,
+					agentName: REANALYZER_AGENT_KEY[kind],
+					documentType: "DRAFT",
+					outcome: "miss",
+					promptSource: "bound",
+				},
+			);
+			return fallback(params, "prompt_not_bound");
+		}
+
+		const variables =
+			kind === "BUG"
+				? {
+						bug_title: title,
+						bug_id_or_link: identifier ?? "",
+						existing_bug_markdown: existingDescription,
+						new_info_from_user_or_thread: newInfo,
+						connected_context_items: connectedContext ?? "",
+					}
+				: {
+						feature_title: title,
+						feature_id_or_link: identifier ?? "",
+						existing_feature_markdown: existingDescription,
+						existing_acceptance_criteria:
+							existingAcceptanceCriteria ?? "",
+						new_info_from_user_or_thread: newInfo,
+						connected_context_items: connectedContext ?? "",
+					};
+
+		// Unescaped: the bound prompts use double-stache, and HTML-escaping the
+		// ticket body here hands the model `&amp;` / `&lt;` / `&quot;`, which it
+		// copies into the merged body that gets written back to the ticket.
+		const rendered = await renderTemplate({
+			format: boundPrompt.format as TemplateFormat,
+			template: boundPrompt.version.content,
+			variables,
+			escape: false,
+		});
+		if (params.abortSignal?.aborted) {
+			return aborted();
+		}
+		if (rendered.error) {
+			logger.warn(
+				"[reanalyzeBodyByKind] prompt render error; using raw body",
+				{
+					kind,
+					projectId,
+					error: rendered.error,
+				},
+			);
+		}
+
+		// Fizzy #1767 Stage 4: append the project's function-tag role-composition
+		// clause (flag-gated, self-authorizing — see getProjectFunctionTagClause)
+		// so the model knows who's on the project and in what capacity. `projectId`
+		// is required here; guard kept for uniformity with the other splice sites.
+		const roleClause = projectId
+			? await getProjectFunctionTagClause({
+					projectId,
+					requesterUserId: userId,
+					surface: "reanalyze-body",
+				})
+			: "";
+
+		// FR-25: append the shared locked-attachment
+		// rule so structure-preserving AI Update (rewrite/extend) never claims to
+		// have analysed an attachment or fabricates its contents. Appended in code
+		// so it holds regardless of the org-editable bound re-analysis prompt.
+		// No-op today (no attachment metadata reaches AI context).
+		const promptWithRules = `${rendered.rendered}\n\n${getLockedAttachmentRulesClause()}${roleClause ? `\n\n${roleClause}` : ""}`;
+
+		if (params.abortSignal?.aborted) {
+			return aborted();
+		}
 		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
 			{ taskType: "COMPLEX" },
-			{ userId, organizationId: orgId, projectId },
+			{
+				userId,
+				organizationId: orgId,
+				projectId,
+				featureKey: "backlog-update",
+			},
 		);
+		if (params.abortSignal?.aborted) {
+			return aborted();
+		}
 		const startedAt = Date.now();
 
 		if (kind === "BUG") {
@@ -255,6 +283,7 @@ export async function reanalyzeBodyByKind(
 			const { object, usage } = await generateObject({
 				model,
 				schema: ReanalyzedBugSchema,
+				abortSignal: params.abortSignal,
 				prompt: promptWithRules,
 				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			});
@@ -336,6 +365,7 @@ export async function reanalyzeBodyByKind(
 		const { object, usage } = await generateObject({
 			model,
 			schema: ReanalyzedFeatureSchema,
+			abortSignal: params.abortSignal,
 			prompt: promptWithRules,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
@@ -381,6 +411,9 @@ export async function reanalyzeBodyByKind(
 			fallbackUsed: false,
 		};
 	} catch (error) {
+		if (params.abortSignal?.aborted) {
+			return aborted();
+		}
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.warn(
 				"[reanalyzeBodyByKind] AI provider not configured; safe-holding",

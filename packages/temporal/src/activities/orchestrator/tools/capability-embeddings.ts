@@ -212,6 +212,7 @@ export async function getOrGenerateEmbedding(
 			{
 				userId,
 				organizationId,
+				featureKey: "tool-search",
 			},
 			apiKey,
 		);
@@ -279,6 +280,7 @@ export async function getOrGenerateEmbeddings(
 			{
 				userId,
 				organizationId,
+				featureKey: "tool-search",
 			},
 			apiKey,
 		);

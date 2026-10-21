@@ -24,6 +24,7 @@ vi.mock("sonner", () => ({
 	toast: {
 		error: vi.fn(),
 		success: vi.fn(),
+		info: vi.fn(),
 	},
 }));
 
@@ -42,9 +43,25 @@ function renderWithClient(ui: ReactNode) {
 	);
 }
 
+// jsdom can't navigate, so capture the mailto the dialog assigns.
+let assignedHref: string | null = null;
+Object.defineProperty(window, "location", {
+	configurable: true,
+	value: {
+		...window.location,
+		set href(value: string) {
+			assignedHref = value;
+		},
+		get href() {
+			return assignedHref ?? "http://localhost/";
+		},
+	},
+});
+
 describe("RequestConnectionDialog", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		assignedHref = null;
 	});
 
 	it("renders trigger button and opens dialog", async () => {
@@ -68,7 +85,7 @@ describe("RequestConnectionDialog", () => {
 		).toBeInTheDocument();
 	});
 
-	it("keeps Submit disabled until both a type and a name are set", async () => {
+	it("keeps Open email draft disabled until both a type and a name are set", async () => {
 		const user = userEvent.setup();
 		renderWithClient(<RequestConnectionDialog />);
 
@@ -77,7 +94,7 @@ describe("RequestConnectionDialog", () => {
 		);
 
 		const submitButton = screen.getByRole("button", {
-			name: /submit request/i,
+			name: /open email draft/i,
 		});
 		expect(submitButton).toBeDisabled();
 
@@ -103,7 +120,9 @@ describe("RequestConnectionDialog", () => {
 	});
 
 	it("calls dataConnections.request with trimmed values and organizationId on submission", async () => {
-		requestMock.mockResolvedValueOnce({ success: true });
+		requestMock.mockResolvedValueOnce({
+			mailto: "mailto:support@example.com",
+		});
 		const user = userEvent.setup();
 		renderWithClient(<RequestConnectionDialog />);
 
@@ -130,7 +149,7 @@ describe("RequestConnectionDialog", () => {
 		);
 
 		const submitButton = screen.getByRole("button", {
-			name: /submit request/i,
+			name: /open email draft/i,
 		});
 		await user.click(submitButton);
 
@@ -145,7 +164,8 @@ describe("RequestConnectionDialog", () => {
 	});
 
 	it("closes dialog and shows success toast on successful submission", async () => {
-		requestMock.mockResolvedValueOnce({ success: true });
+		const MAILTO = "mailto:support@example.com?subject=Test";
+		requestMock.mockResolvedValueOnce({ mailto: MAILTO });
 		const user = userEvent.setup();
 		renderWithClient(<RequestConnectionDialog />);
 
@@ -163,7 +183,7 @@ describe("RequestConnectionDialog", () => {
 		);
 
 		await user.click(
-			screen.getByRole("button", { name: /submit request/i }),
+			screen.getByRole("button", { name: /open email draft/i }),
 		);
 
 		await waitFor(() => {
@@ -174,10 +194,46 @@ describe("RequestConnectionDialog", () => {
 			).not.toBeInTheDocument();
 		});
 
-		expect(toast.success).toHaveBeenCalledWith("Request received", {
-			description:
-				"Thank you. Your request has been submitted and will be reviewed by our team.",
+		expect(assignedHref).toBe(MAILTO);
+		expect(toast.success).toHaveBeenCalledWith("Opening your email app", {
+			description: "Your request is ready to send.",
 		});
+	});
+
+	it("closes dialog and shows info toast when mailto is null", async () => {
+		requestMock.mockResolvedValueOnce({ mailto: null });
+		const user = userEvent.setup();
+		renderWithClient(<RequestConnectionDialog />);
+
+		await user.click(
+			screen.getByRole("button", { name: /request connection/i }),
+		);
+
+		await user.click(screen.getByLabelText(/type/i));
+		await user.click(
+			await screen.findByRole("option", { name: "Not sure" }),
+		);
+		await user.type(
+			screen.getByLabelText(/integration or mcp server name/i),
+			"Custom Tool",
+		);
+
+		await user.click(
+			screen.getByRole("button", { name: /open email draft/i }),
+		);
+
+		await waitFor(() => {
+			expect(
+				screen.queryByRole("heading", {
+					name: /request a connection/i,
+				}),
+			).not.toBeInTheDocument();
+		});
+
+		expect(toast.info).toHaveBeenCalledWith(
+			"Connection requests aren't set up on this Fabric deployment.",
+		);
+		expect(assignedHref).toBeNull();
 	});
 
 	it("keeps dialog open with typed values and shows error toast on failure", async () => {
@@ -198,12 +254,12 @@ describe("RequestConnectionDialog", () => {
 		await user.type(screen.getByLabelText(/notes/i), "Bucket browser");
 
 		await user.click(
-			screen.getByRole("button", { name: /submit request/i }),
+			screen.getByRole("button", { name: /open email draft/i }),
 		);
 
 		await waitFor(() => {
 			expect(toast.error).toHaveBeenCalledWith(
-				"We couldn't send your request. Please try again.",
+				"We couldn't prepare your request. Please try again.",
 			);
 		});
 

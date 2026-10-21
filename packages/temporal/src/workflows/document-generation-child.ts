@@ -8,7 +8,7 @@
  *
  * Core steps:
  * 1. Retrieve project contexts from Qdrant (with reranking)
- * 2. Retrieve episodic memories (user-level)
+ * 2. Replay the legacy episodic-memory step for pre-removal histories
  * 2.5. Check if Teams integration is available
  * 2.6. Fetch recent Teams messages (provides Teams context as RAG)
  * 2.7. Check if Slack integration is available
@@ -238,13 +238,18 @@ export interface DocumentGenerationChildInput {
 	 */
 	planEligible?: boolean;
 	/**
-	 * The generation attempt's identity, as the parent received it from the
-	 * dispatch (an ISO-8601 `ProjectDocument.generationStartedAt`). A
-	 * coordinated Proposal's plan takes the document over only while the
-	 * document still carries it (Fizzy #2801), so a plan that arrives after a
-	 * newer request replaced this attempt stops the run without writing.
-	 * Unset for starters with no attempt identity (batch and setup flows),
-	 * whose plan takes the document over unconditionally.
+	 * The generation attempt's identity (an ISO-8601
+	 * `ProjectDocument.generationStartedAt`), as the parent received it from
+	 * the dispatch or from its own GENERATING write (batch generation,
+	 * project setup). A coordinated Proposal's plan takes the document over
+	 * only while the document still carries it (Fizzy #2801), so a plan that
+	 * arrives after a newer request replaced this attempt stops the run
+	 * without writing. Every other run scopes its progress, save, version and
+	 * FAILED writes to it (Fizzy #2946), so a newer generation or the
+	 * watchdog that replaced the attempt keeps the document. Unset for
+	 * starters with no attempt identity (code-based setup, context
+	 * processing), whose plan takes the document over unconditionally and
+	 * whose writes are today's.
 	 */
 	generationStartedAt?: string;
 	/**
@@ -296,11 +301,19 @@ export interface DocumentGenerationChildOutput {
  * lands only while the run still owns the document, so a superseded run can
  * never flip a newer run's finished document back to GENERATING. Unset
  * otherwise, which the payload drops: today's write, unchanged.
+ *
+ * Every other run with an attempt identity passes it (Fizzy #2946), and the
+ * write then lands only while the document is still that attempt's and
+ * still running: a person's save, a newer generation or the watchdog keeps
+ * the row as it left it. A run token takes precedence in the activity.
+ * Replay-safe without `patched()`: the same activity at the same point, and
+ * only its input changes; without an identity the payload drops it.
  */
 async function reportProgress(
 	documentId: string,
 	progress: number,
 	liveRunId: string | undefined,
+	generationStartedAt: string | undefined,
 ): Promise<void> {
 	try {
 		await updateProjectDocumentStatus({
@@ -308,6 +321,7 @@ async function reportProgress(
 			status: "GENERATING",
 			progress,
 			liveRunId,
+			...(generationStartedAt && { generationStartedAt }),
 		});
 	} catch {
 		// Non-fatal — progress reporting should never break generation
@@ -593,7 +607,12 @@ export async function documentGenerationChildWorkflow(
 					),
 				},
 			);
-			await reportProgress(documentId, 30, proposal?.plan.liveRunId);
+			await reportProgress(
+				documentId,
+				30,
+				proposal?.plan.liveRunId,
+				generationStartedAt,
+			);
 		} else {
 			// Step 1: Retrieve project contexts from Qdrant
 			const contextStartTime = Date.now();
@@ -647,7 +666,12 @@ export async function documentGenerationChildWorkflow(
 					durationMs: contextDuration,
 				});
 
-				await reportProgress(documentId, 15, proposal?.plan.liveRunId);
+				await reportProgress(
+					documentId,
+					15,
+					proposal?.plan.liveRunId,
+					generationStartedAt,
+				);
 			} catch (contextError) {
 				const rawMessage =
 					contextError instanceof Error
@@ -691,53 +715,70 @@ export async function documentGenerationChildWorkflow(
 				);
 			}
 
-			// Step 2: Retrieve episodic memories (user-level)
-			const episodicStartTime = Date.now();
-			log.info("Step 2: Retrieving episodic memories", {
-				projectId,
-				documentType,
-			});
-
-			try {
-				const episodicQuery = `${documentType} document: ${prompt || "project documentation"}`;
-
-				const episodicResult = await retrieveAndFormatEpisodicMemory({
+			// `patched()` preserves the activity command for histories recorded
+			// before this removal. New runs skip private recall in shared documents.
+			if (!patched("document-episodic-memory-removed-v1")) {
+				// Step 2: Retrieve episodic memories (user-level)
+				const episodicStartTime = Date.now();
+				log.info("Step 2: Retrieving episodic memories", {
 					projectId,
-					userId,
-					organizationId,
-					query: episodicQuery,
-					limit: 5,
+					documentType,
 				});
 
-				if (episodicResult.episodeCount > 0) {
-					episodeCount = episodicResult.episodeCount;
-					contexts = [episodicResult.formattedContext, ...contexts];
+				try {
+					const episodicQuery = `${documentType} document: ${prompt || "project documentation"}`;
 
-					const episodicDuration = Date.now() - episodicStartTime;
-					log.info("Step 2 complete: Episodic memories retrieved", {
-						episodeCount,
-						contextLength: episodicResult.formattedContext.length,
-						durationMs: episodicDuration,
-					});
-				} else {
-					log.info("Step 2: No episodic memories found", {
-						durationMs: Date.now() - episodicStartTime,
-					});
+					const episodicResult =
+						await retrieveAndFormatEpisodicMemory({
+							projectId,
+							userId,
+							organizationId,
+							query: episodicQuery,
+							limit: 5,
+						});
+
+					if (episodicResult.episodeCount > 0) {
+						episodeCount = episodicResult.episodeCount;
+						contexts = [
+							episodicResult.formattedContext,
+							...contexts,
+						];
+
+						const episodicDuration = Date.now() - episodicStartTime;
+						log.info(
+							"Step 2 complete: Episodic memories retrieved",
+							{
+								episodeCount,
+								contextLength:
+									episodicResult.formattedContext.length,
+								durationMs: episodicDuration,
+							},
+						);
+					} else {
+						log.info("Step 2: No episodic memories found", {
+							durationMs: Date.now() - episodicStartTime,
+						});
+					}
+				} catch (episodicError) {
+					// Non-fatal - continue without episodic memories
+					log.warn(
+						"Failed to retrieve episodic memories, continuing without",
+						{
+							error:
+								episodicError instanceof Error
+									? episodicError.message
+									: "Unknown error",
+						},
+					);
 				}
-			} catch (episodicError) {
-				// Non-fatal - continue without episodic memories
-				log.warn(
-					"Failed to retrieve episodic memories, continuing without",
-					{
-						error:
-							episodicError instanceof Error
-								? episodicError.message
-								: "Unknown error",
-					},
-				);
 			}
 
-			await reportProgress(documentId, 25, proposal?.plan.liveRunId);
+			await reportProgress(
+				documentId,
+				25,
+				proposal?.plan.liveRunId,
+				generationStartedAt,
+			);
 
 			// Step 2.5: Check if Teams integration is available
 			try {
@@ -874,7 +915,12 @@ export async function documentGenerationChildWorkflow(
 				}
 			}
 
-			await reportProgress(documentId, 30, proposal?.plan.liveRunId);
+			await reportProgress(
+				documentId,
+				30,
+				proposal?.plan.liveRunId,
+				generationStartedAt,
+			);
 		} // end of else (non-directContext path)
 
 		// Supplied source content: JOIN, never assign.
@@ -926,7 +972,12 @@ export async function documentGenerationChildWorkflow(
 			contextCount: contexts.length,
 		});
 
-		await reportProgress(documentId, 35, proposal?.plan.liveRunId);
+		await reportProgress(
+			documentId,
+			35,
+			proposal?.plan.liveRunId,
+			generationStartedAt,
+		);
 
 		// A bulk run waits for a shared ChatGPT plan's reset when every one is
 		// spent, and generates once more (Fizzy #2770). The retry re-checks the
@@ -1033,7 +1084,12 @@ export async function documentGenerationChildWorkflow(
 			durationMs: generationDuration,
 		});
 
-		await reportProgress(documentId, 80, proposal?.plan.liveRunId);
+		await reportProgress(
+			documentId,
+			80,
+			proposal?.plan.liveRunId,
+			generationStartedAt,
+		);
 
 		// Step 3.5: A coordinated Proposal's visuals go into Main before the
 		// save (Fizzy #2801). Bounded and fail-open: whatever happens here,
@@ -1079,6 +1135,13 @@ export async function documentGenerationChildWorkflow(
 		// generation's baseline, exactly as that history ran. The save also
 		// requires the body the run was planned against, which catches the
 		// edits that do not move the version.
+		//
+		// Every other run with an attempt identity saves only while the
+		// document is still that attempt's and still running (Fizzy #2946):
+		// a newer generation that restamped the attempt, or the watchdog
+		// that failed the row, keeps it, and the refusal is the same stale
+		// failure. Again one activity at the same point; a run without an
+		// identity keeps exactly the arguments it always had.
 		const baselineVersion =
 			proposal?.plan.baselineVersion ?? generationResult.baselineVersion;
 		if (proposal) {
@@ -1093,6 +1156,11 @@ export async function documentGenerationChildWorkflow(
 		} else if (baselineVersion !== undefined) {
 			await saveProjectDocument(documentId, documentContent, userId, {
 				baselineVersion,
+				...(generationStartedAt && { generationStartedAt }),
+			});
+		} else if (generationStartedAt) {
+			await saveProjectDocument(documentId, documentContent, userId, {
+				generationStartedAt,
 			});
 		} else {
 			await saveProjectDocument(documentId, documentContent, userId);
@@ -1142,6 +1210,12 @@ export async function documentGenerationChildWorkflow(
 			// Step 4 — one activity at the same point either way, and the
 			// slot-free call keeps exactly its four arguments. A coordinated
 			// Proposal's version row is guarded by its run token as well.
+			//
+			// Every other run with an attempt identity versions only while the
+			// document is still that attempt's and still holds the body the
+			// save wrote (Fizzy #2946). Without a baseline a mismatch skips
+			// the version quietly rather than failing, so the catch below
+			// keeps its control flow; with one, the baseline's refusal stands.
 			if (proposal) {
 				await createDocumentVersion(
 					documentId,
@@ -1161,7 +1235,18 @@ export async function documentGenerationChildWorkflow(
 					documentContent,
 					userId,
 					effectivePromptVersionId,
-					{ baselineVersion },
+					{
+						baselineVersion,
+						...(generationStartedAt && { generationStartedAt }),
+					},
+				);
+			} else if (generationStartedAt) {
+				await createDocumentVersion(
+					documentId,
+					documentContent,
+					userId,
+					effectivePromptVersionId,
+					{ generationStartedAt },
 				);
 			} else {
 				await createDocumentVersion(
@@ -1326,7 +1411,12 @@ export async function documentGenerationChildWorkflow(
 			}
 		}
 
-		// Mark document as FAILED so it doesn't stay stuck in GENERATING
+		// Mark document as FAILED so it doesn't stay stuck in GENERATING.
+		// Scoped to the attempt when the run has an identity (Fizzy #2946),
+		// as the progress writes are: a run whose save was refused because a
+		// newer generation took the document leaves that run's status alone.
+		// Only the input of the same activity changes; the run token, when
+		// set, takes precedence in the activity.
 		try {
 			await updateProjectDocumentStatus({
 				documentId,
@@ -1335,6 +1425,7 @@ export async function documentGenerationChildWorkflow(
 				error: errorMessage,
 				// The run guard; unset outside a coordinated Proposal.
 				liveRunId: proposal?.plan.liveRunId,
+				...(generationStartedAt && { generationStartedAt }),
 			});
 		} catch {
 			// Non-fatal — don't mask the original error

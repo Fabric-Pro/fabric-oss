@@ -906,7 +906,7 @@ describe("a page that has read outside its own data", () => {
 		).toHaveLength(2);
 	});
 
-	it("remembers a yes to a connected read by the server and tool it reads, not for every read the page declared", async () => {
+	it("still asks before each further read after a reload, since a reload does not forget what the page read", async () => {
 		const runtimeTools = [
 			"connected:linear/list_issues",
 			"connected:linear/get_issue",
@@ -926,20 +926,35 @@ describe("a page that has read outside its own data", () => {
 			second.embed,
 			call("fabric_page_read_connected", "r2", READ_LINEAR),
 		);
-		await waitFor(() => expect(second.replies).toHaveLength(1));
-		expect(screen.queryByRole("alertdialog")).toBeNull();
-
-		send(
-			second.embed,
-			call("fabric_page_read_connected", "r3", {
-				provider: "linear",
-				tool: "get_issue",
-				args: { id: "ISSUE-1" },
-			}),
-		);
 
 		expect(await screen.findByRole("alertdialog")).toHaveTextContent(
-			"fabric_page_read_connected",
+			"has read information from outside itself",
+		);
+		fireEvent.click(screen.getByRole("button", { name: /don.t allow/i }));
+		await waitFor(() => expect(second.replies).toHaveLength(1));
+		expect(second.replies[0]).toMatchObject({ requestId: "r2", ok: false });
+	});
+
+	it("does not carry one page's read over to another page", async () => {
+		const runtimeTools = ["connected:linear/list_issues"];
+		const first = renderShell({ frameId: "frame-linear", runtimeTools });
+		send(
+			first.embed,
+			call("fabric_page_read_connected", "r1", READ_LINEAR),
+		);
+		await allow();
+		await waitFor(() => expect(first.replies).toHaveLength(1));
+		first.unmount();
+
+		const other = renderShell({ frameId: "frame-other", runtimeTools });
+		send(
+			other.embed,
+			call("fabric_page_read_connected", "r2", READ_LINEAR),
+		);
+
+		const dialog = await screen.findByRole("alertdialog");
+		expect(dialog).not.toHaveTextContent(
+			"has read information from outside itself",
 		);
 		fireEvent.click(screen.getByRole("button", { name: /don.t allow/i }));
 	});

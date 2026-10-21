@@ -12,6 +12,8 @@
  *                content-bearing save of a client-document Proposal while the
  *                room flag is on, which is refused with a reload code;
  *  - the response names the saved body's identity beside its version;
+ *  - a save that ended a stalled Proposal run stops the run's generation
+ *    child in the background;
  *  - authorization and the document-to-project binding still come first.
  */
 
@@ -29,6 +31,8 @@ const {
 	mockIsProposalClientDocument,
 	mockIsFeatureEnabled,
 	mockLoggerInfo,
+	mockRunInBackground,
+	mockCancelStalledGenerationRun,
 	DocumentVersionConflictErrorMock,
 	DocumentGenerationInProgressErrorMock,
 } = vi.hoisted(() => {
@@ -64,6 +68,8 @@ const {
 		mockIsProposalClientDocument: vi.fn(),
 		mockIsFeatureEnabled: vi.fn(),
 		mockLoggerInfo: vi.fn(),
+		mockRunInBackground: vi.fn(),
+		mockCancelStalledGenerationRun: vi.fn(),
 		DocumentVersionConflictErrorMock,
 		DocumentGenerationInProgressErrorMock,
 	};
@@ -115,6 +121,15 @@ vi.mock("../../../../lib/notification-service", () => ({
 		subscriptionUpdate: (...args: unknown[]) =>
 			mockFanOutSubscriptionUpdate(...args),
 	},
+}));
+
+vi.mock("../../../weave/lib/run-in-background", () => ({
+	runInBackground: (...args: unknown[]) => mockRunInBackground(...args),
+}));
+
+vi.mock("../../lib/cancel-stalled-generation-run", () => ({
+	cancelStalledGenerationRun: (...args: unknown[]) =>
+		mockCancelStalledGenerationRun(...args),
 }));
 
 vi.mock("../../../../orpc/procedures", () => {
@@ -171,6 +186,7 @@ beforeEach(() => {
 	mockFanOutSubscriptionUpdate.mockResolvedValue(undefined);
 	mockIsProposalClientDocument.mockResolvedValue(false);
 	mockIsFeatureEnabled.mockResolvedValue(false);
+	mockCancelStalledGenerationRun.mockResolvedValue(undefined);
 	mockProjectDocumentFindUnique.mockResolvedValue({
 		projectId: "proj_1",
 		content: "## Phases\n\nOne.",
@@ -811,6 +827,7 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 					status: true,
 					generationStartedAt: true,
 					updatedAt: true,
+					workflowId: true,
 				}),
 			}),
 		);
@@ -978,5 +995,133 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		expect(mockUpdateDocument.mock.calls[0][1]).toMatchObject({
 			status: "COMPLETE",
 		});
+	});
+
+	// A save that ended a stalled run also stops the run's generation child,
+	// after the response and best effort; no other save schedules anything.
+	describe("stopping the run a save ended", () => {
+		const RUN_WORKFLOW_ID =
+			"project-document-generation-doc_1-0123456789abcdef";
+		const stalledRun = (overrides: Record<string, unknown> = {}) => ({
+			...proposalPrior("GENERATING"),
+			updatedAt: writtenAgo(STALLED_FOR_MS),
+			workflowId: RUN_WORKFLOW_ID,
+			...overrides,
+		});
+		const savedRow = (status: string, type = "PROPOSAL") => ({
+			id: "doc_1",
+			title: "Proposal",
+			type,
+			content: SLOTTED,
+			version: 4,
+			status,
+		});
+		const editorSave = {
+			...input,
+			expectedVersion: 3,
+			expectedContentHash: "c".repeat(64),
+		};
+
+		it("schedules the cancel of the run's child, by the row's workflow id, when the save ended a stalled run", async () => {
+			mockProjectDocumentFindUnique.mockResolvedValue(stalledRun());
+			mockUpdateDocument.mockResolvedValue(savedRow("COMPLETE"));
+			const cancelling = Promise.resolve();
+			mockCancelStalledGenerationRun.mockReturnValue(cancelling);
+
+			await handlers.updateDocument({ input: editorSave, context: ctx });
+			await flushPromises();
+
+			expect(mockCancelStalledGenerationRun).toHaveBeenCalledTimes(1);
+			expect(mockCancelStalledGenerationRun).toHaveBeenCalledWith({
+				documentId: "doc_1",
+				workflowId: RUN_WORKFLOW_ID,
+			});
+			// Handed to the background runner, never awaited by the save.
+			expect(mockRunInBackground).toHaveBeenCalledTimes(1);
+			expect(mockRunInBackground).toHaveBeenCalledWith(cancelling);
+		});
+
+		it.each([
+			[
+				"an ordinary save of a complete Proposal",
+				{ ...proposalPrior("COMPLETE"), workflowId: RUN_WORKFLOW_ID },
+				editorSave,
+				savedRow("COMPLETE"),
+			],
+			[
+				"a save of a non-Proposal document that was generating",
+				stalledRun({ type: "PRD" }),
+				editorSave,
+				savedRow("COMPLETE", "PRD"),
+			],
+			[
+				"a save over a run whose row names no workflow",
+				stalledRun({ workflowId: null }),
+				editorSave,
+				savedRow("COMPLETE"),
+			],
+			[
+				"a title-only save that found the run finished",
+				stalledRun(),
+				{ projectId: "proj_1", id: "doc_1", title: "Renamed" },
+				savedRow("COMPLETE"),
+			],
+			[
+				"a save over a run the watchdog failed in between",
+				stalledRun(),
+				editorSave,
+				savedRow("FAILED"),
+			],
+		])("schedules nothing for %s", async (_label, prior, write, saved) => {
+			mockProjectDocumentFindUnique.mockResolvedValue(prior);
+			mockUpdateDocument.mockResolvedValue(saved);
+
+			await handlers.updateDocument({ input: write, context: ctx });
+			await flushPromises();
+
+			expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
+			expect(mockCancelStalledGenerationRun).not.toHaveBeenCalled();
+			expect(mockRunInBackground).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			[
+				"refused under a live run",
+				{ updatedAt: writtenAgo(0) },
+				undefined,
+			],
+			[
+				"refused by the write, as the run woke in between",
+				{},
+				new DocumentGenerationInProgressErrorMock("doc_1"),
+			],
+			[
+				"refused by the write, as its base moved",
+				{},
+				new DocumentVersionConflictErrorMock("doc_1", 3, 4),
+			],
+		])(
+			"schedules nothing for a save %s",
+			async (_label, priorOverrides, writeError) => {
+				mockProjectDocumentFindUnique.mockResolvedValue(
+					stalledRun(priorOverrides),
+				);
+				if (writeError) {
+					mockUpdateDocument.mockRejectedValue(writeError);
+				}
+
+				const error = await (
+					handlers.updateDocument({
+						input: editorSave,
+						context: ctx,
+					}) as Promise<unknown>
+				).catch((e: unknown) => e);
+				await flushPromises();
+
+				expect(error).toMatchObject({ code: "CONFLICT" });
+				expect(mockCancelStalledGenerationRun).not.toHaveBeenCalled();
+				expect(mockRunInBackground).not.toHaveBeenCalled();
+			},
+		);
 	});
 });

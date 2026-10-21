@@ -7,12 +7,7 @@
 export { AgentHandler } from "./agent-handler";
 export { ArchitectureDecisionsHandler } from "./architecture-decisions-handler";
 // Chart tool for data visualization
-export {
-	clearChartArtifacts,
-	createChartTool,
-	getChartArtifacts,
-	getChartToolRecord,
-} from "./chart-tool";
+export { createChartTool, createStepChartTools } from "./chart-tool";
 export { CodeSearchHandler } from "./code-search-handler";
 export { FabricAiHandler } from "./fabric-ai-handler";
 export { FeatureDecisionsHandler } from "./feature-decisions-handler";

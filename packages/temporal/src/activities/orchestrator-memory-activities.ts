@@ -22,6 +22,7 @@ import {
 	searchSimilarExecutions,
 	storeExecutionSummary,
 } from "@repo/rag";
+import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import type {
 	FailureWarning,
 	HybridRoutingResult,
@@ -429,12 +430,15 @@ export async function searchSemanticMemory(
 		// Generate embedding - credentials are fetched internally by generateEmbedding()
 		const embeddingResult = await generateEmbedding(
 			query,
-			{
-				userId,
-				organizationId,
-				...secondaryUsageFields(input),
-				tags: ["orchestrator-memory", "semantic-search"],
-			},
+			withDefaultFeature(
+				{
+					userId,
+					organizationId,
+					...secondaryUsageFields(input),
+					tags: ["orchestrator-memory", "semantic-search"],
+				},
+				"chat-agent",
+			),
 			undefined, // providerConfig is no longer needed
 		);
 

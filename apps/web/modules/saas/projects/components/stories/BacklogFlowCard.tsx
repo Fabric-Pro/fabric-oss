@@ -71,6 +71,11 @@ export function BacklogFlowCard({
 						{flow.logContextNote}
 					</p>
 				) : null}
+				{flow.pmContextNote ? (
+					<p className="mt-2 border-t pt-2 text-xs text-muted-foreground">
+						{flow.pmContextNote}
+					</p>
+				) : null}
 			</>
 		);
 	}
@@ -162,6 +167,11 @@ export function BacklogFlowCard({
 			{flow.logContextNote ? (
 				<p className="text-xs text-muted-foreground border-t pt-2">
 					{flow.logContextNote}
+				</p>
+			) : null}
+			{flow.pmContextNote ? (
+				<p className="text-xs text-muted-foreground border-t pt-2">
+					{flow.pmContextNote}
 				</p>
 			) : null}
 			{flow.phase === "analyzing" ? (

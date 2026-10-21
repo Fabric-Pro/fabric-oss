@@ -91,24 +91,11 @@ describe("org frame embed page", () => {
 		await expect(renderPage()).rejects.toThrow("NOT_FOUND");
 	});
 
-	it("keeps the viewer's own loose frame on the historical renderer", async () => {
+	it("keeps the scripts of the viewer's own loose frame", async () => {
 		await renderPage();
 
-		expect(rendererProps[0]).toMatchObject({
-			strictSandbox: false,
-			allowScripts: true,
-		});
-	});
-
-	it("renders somebody else's loose frame in the strict sandbox", async () => {
-		getAccessibleFrameByIdMock.mockResolvedValueOnce({
-			userId: "someone-else",
-			document: { slides: [] },
-		});
-
-		await renderPage();
-
-		expect(rendererProps[0]).toMatchObject({ strictSandbox: true });
+		expect(rendererProps[0]).toMatchObject({ allowScripts: true });
+		expect(rendererProps[0]).not.toHaveProperty("strictSandbox");
 	});
 
 	it("draws a page an unattended run wrote without its scripts, even the viewer's own", async () => {
@@ -120,10 +107,7 @@ describe("org frame embed page", () => {
 
 		await renderPage();
 
-		expect(rendererProps[0]).toMatchObject({
-			strictSandbox: true,
-			allowScripts: false,
-		});
+		expect(rendererProps[0]).toMatchObject({ allowScripts: false });
 	});
 
 	it("leaves the scripts of a page written in a chat alone", async () => {
@@ -138,23 +122,4 @@ describe("org frame embed page", () => {
 
 		expect(rendererProps[0]).toMatchObject({ allowScripts: true });
 	});
-
-	it.each([
-		["belongs to a project", { projectId: "p1" }],
-		["lives on the workspace surface", { surface: "workspace" }],
-		["lives on the artifact surface", { surface: "artifact" }],
-	])(
-		"renders a frame that %s in the strict sandbox",
-		async (_label, extra) => {
-			getAccessibleFrameByIdMock.mockResolvedValueOnce({
-				userId: "u1",
-				document: { slides: [] },
-				...extra,
-			});
-
-			await renderPage();
-
-			expect(rendererProps[0]).toMatchObject({ strictSandbox: true });
-		},
-	);
 });

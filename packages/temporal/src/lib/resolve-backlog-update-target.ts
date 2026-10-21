@@ -13,7 +13,7 @@ export interface ResolvableChange {
 	existingId?: string | null;
 	existingIdentifier?: string | null;
 	existingExternalId?: string | null;
-	title: { from?: string | null; to: string };
+	title?: { from?: string | null; to: string };
 }
 
 export type ResolveResult =
@@ -44,6 +44,7 @@ export function isFabricDbId(value: string | null | undefined): boolean {
  * apply-time strategies: valid Fabric id present in the snapshot → identifier →
  * externalId → exact case-insensitive title. Pure and total — returns
  * `{ status: "unresolved" }` rather than throwing when nothing matches.
+ * Pending generation updates can omit title; those skip the title strategy.
  */
 export function resolveBacklogUpdateTarget(
 	items: ResolvableBacklogItem[],
@@ -90,8 +91,8 @@ export function resolveBacklogUpdateTarget(
 
 	// Strategy 4: exact case-insensitive title (prefer the "from" title).
 	const titleToMatch = (
-		change.title.from ||
-		change.title.to ||
+		change.title?.from ||
+		change.title?.to ||
 		""
 	).toLowerCase();
 	if (titleToMatch) {

@@ -115,6 +115,7 @@ export async function POST(request: NextRequest) {
 		} = await getAIEmbeddingModelWithMetadata({
 			userId,
 			organizationId: effectiveOrgId,
+			featureKey: "knowledge-search",
 		});
 
 		// Track embedding usage (fire-and-forget)

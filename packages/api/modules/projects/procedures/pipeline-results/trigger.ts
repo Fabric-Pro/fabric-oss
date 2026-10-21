@@ -1,8 +1,16 @@
 import { ORPCError } from "@orpc/client";
-import { db, listProjectQaTriggerTargets } from "@repo/database";
+import {
+	db,
+	isProjectReadOnly,
+	listProjectQaTriggerTargets,
+} from "@repo/database";
 import { resolveFreshRepoToken } from "@repo/integrations";
 import type { CiTriggerResult } from "@repo/integrations/ci-trigger";
 import { logger } from "@repo/logs";
+import {
+	READ_ONLY_MODE_ERROR_CODE,
+	READ_ONLY_MODE_MESSAGE,
+} from "@repo/utils/read-only-mode";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -246,6 +254,16 @@ export const triggerPipelineProcedure = tenantProtectedProcedure
 				metadata: { failure, detail, ref: input.ref ?? null },
 			});
 		};
+
+		// Queuing a pipeline run is a write to the connected source, so Read-only
+		// mode refuses it before any credential is spent.
+		if (await isProjectReadOnly(input.projectId)) {
+			auditRefusal("READ_ONLY", READ_ONLY_MODE_MESSAGE);
+			throw new ORPCError("CONFLICT", {
+				message: READ_ONLY_MODE_MESSAGE,
+				data: { errorCode: READ_ONLY_MODE_ERROR_CODE },
+			});
+		}
 
 		// Scoped by projectId, so an integration id from another project simply is
 		// not in the result and 404s rather than being triggered.

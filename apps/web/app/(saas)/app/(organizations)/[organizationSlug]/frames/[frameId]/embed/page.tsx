@@ -5,10 +5,7 @@ import {
 	type FrameDocumentView,
 	FrameRenderer,
 } from "@saas/frames/components/FrameRenderer";
-import {
-	isUnattendedFrame,
-	usesStrictSandbox,
-} from "@saas/frames/lib/strict-sandbox";
+import { isUnattendedFrame } from "@saas/frames/lib/strict-sandbox";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
@@ -56,7 +53,6 @@ export default async function OrganizationFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
-			strictSandbox={usesStrictSandbox(frame, session.user.id)}
 			allowScripts={!isUnattendedFrame(frame)}
 		/>
 	);

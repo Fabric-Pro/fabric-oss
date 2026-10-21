@@ -577,7 +577,7 @@ export async function loadRoutingCorpus(
 	const freshRows: CachedStoryEmbedding[] = [];
 	const { embeddings, model } = await generateEmbeddings(
 		[...itemTexts, ...embedCandidates.map((entry) => entry.text)],
-		{ userId, organizationId, projectId },
+		{ userId, organizationId, projectId, featureKey: "backlog-update" },
 		undefined,
 		abortSignal,
 		onEmbedProgress,

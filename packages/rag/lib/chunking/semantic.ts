@@ -9,6 +9,7 @@
 
 import { logger } from "@repo/logs";
 import { generateEmbeddings } from "../embedding";
+import { withDefaultFeature } from "../embedding/usage";
 import { countTokens } from "./tokenizer";
 import type { TextChunk } from "./types";
 
@@ -165,7 +166,7 @@ export async function chunkSemantic(
 	logger.info("[SemanticChunker] Generating embeddings...");
 	const { embeddings } = await generateEmbeddings(
 		units,
-		opts.tenantContext,
+		withDefaultFeature(opts.tenantContext, "knowledge-index"),
 		opts.apiKey,
 	);
 

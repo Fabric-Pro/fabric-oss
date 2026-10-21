@@ -95,13 +95,62 @@ function pausingWorkflowId(): string | undefined {
 }
 
 /**
- * Queues the documents the pausing run still holds under the resume's id and
- * returns those queued there. A document is the run's while its status says a
- * run holds it and its workflow id is none (a first run, which records none),
- * the pausing run's own (a resume's documents carry it) or one of that run's
- * document children. Never another resume's: a Run now resume, or the
- * scheduled one, owns its documents once it moved them, and a newer
+ * The id of the resume a pause schedules: the one after the pause count the
+ * pausing run was started at. The pause stamps it on the documents it queues
+ * and starts the resume under it, and a bulk run failing its documents after
+ * a refused pause derives it the same way to recognise those it queued.
+ */
+export function nextBulkRunResumeWorkflowId(args: {
+	workflowIdBase: string;
+	/** The pause count the pausing run was started at (0 for the first run). */
+	pauseCount: number;
+}): string {
+	return bulkRunResumeWorkflowId(args.workflowIdBase, args.pauseCount + 1);
+}
+
+/**
+ * The documents a bulk run still holds, as a condition on `ProjectDocument`:
+ * the status says a run holds it, and its workflow id is none (a first run,
+ * which records none), the run's own (a resume's documents carry it) or one of
+ * that run's document children. Never another resume's: a Run now resume, or
+ * the scheduled one, owns its documents once it moved them, and a newer
  * generation stamps its own id.
+ *
+ * `queuedFor` also accepts documents queued under that resume id: a run whose
+ * pause was refused at the cap had its documents queued for a resume that
+ * never starts, and fails them by this same condition.
+ *
+ * Shared by the pause, which queues these documents for its resume, and by
+ * the status write that fails them when the pause was refused, so the two
+ * can never disagree about which documents are the run's.
+ */
+export function documentsHeldByBulkRunWhere(args: {
+	kind: BulkRunKind;
+	workflowId: string | undefined;
+	queuedFor?: string;
+}): {
+	status: { in: Array<(typeof HELD_DOCUMENT_STATUSES)[number]> };
+	OR: Array<{ workflowId: string | null | { startsWith: string } }>;
+} {
+	const own = args.workflowId;
+	const childInfix = DOCUMENT_CHILD_INFIX[args.kind];
+	return {
+		status: { in: [...HELD_DOCUMENT_STATUSES] },
+		OR: [
+			{ workflowId: null },
+			...(own ? [{ workflowId: own }] : []),
+			...(own && childInfix
+				? [{ workflowId: { startsWith: `${own}${childInfix}` } }]
+				: []),
+			...(args.queuedFor ? [{ workflowId: args.queuedFor }] : []),
+		],
+	};
+}
+
+/**
+ * Queues the documents the pausing run still holds
+ * ({@link documentsHeldByBulkRunWhere}) under the resume's id and returns
+ * those queued there.
  *
  * A document already queued under this pause's resume is not written again
  * and is read back by that identity, so a retried pause counts the documents
@@ -114,28 +163,16 @@ async function queueHeldDocuments(args: {
 	resumeWorkflowId: string;
 	now: Date;
 }): Promise<Set<string>> {
-	const pausing = args.pausingWorkflowId;
-	const childInfix = DOCUMENT_CHILD_INFIX[args.kind];
 	// QUEUED under the resume's id: the stale-generation sweep leaves a
 	// queued document alone while that run exists — delayed counts — and
 	// fails it once the run is gone, a lost resume included.
 	await db.projectDocument.updateMany({
 		where: {
 			id: { in: args.documentIds },
-			status: { in: [...HELD_DOCUMENT_STATUSES] },
-			OR: [
-				{ workflowId: null },
-				...(pausing ? [{ workflowId: pausing }] : []),
-				...(pausing && childInfix
-					? [
-							{
-								workflowId: {
-									startsWith: `${pausing}${childInfix}`,
-								},
-							},
-						]
-					: []),
-			],
+			...documentsHeldByBulkRunWhere({
+				kind: args.kind,
+				workflowId: args.pausingWorkflowId,
+			}),
 		},
 		data: {
 			status: "QUEUED",
@@ -186,10 +223,10 @@ export async function pauseBulkRunActivity(
 		MIN_PAUSE_MS,
 	);
 	const nextPauseCount = input.pauseCount + 1;
-	const resumeWorkflowId = bulkRunResumeWorkflowId(
-		input.workflowIdBase,
-		nextPauseCount,
-	);
+	const resumeWorkflowId = nextBulkRunResumeWorkflowId({
+		workflowIdBase: input.workflowIdBase,
+		pauseCount: input.pauseCount,
+	});
 	const resumedMeanwhile = (pauseCount: number): PauseBulkRunResult => {
 		logger.info("[BulkRunPause] A resume already took the paused run", {
 			kind: input.kind,

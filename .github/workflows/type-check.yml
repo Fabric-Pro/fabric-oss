@@ -5,26 +5,23 @@ name: Type Check
 # PR runs restore.
 #
 # Private staging and promotion PRs run the same real checks as public PRs.
-# Private heavy shards use the configured larger runner; public shards keep
+# Private shards use the configured larger runner; public shards keep
 # standard runners. Require the stable type-check aggregate on both branches.
 #
-# WHY SHARD. Under tsc 5.9 a standard runner could not host two of the heavy
-# packages at once — apps/web needed a 10 GiB heap and several packages ~8 GB —
-# so the public run has always been one Turbo task at a time, i.e. a serial
-# sweep. That made it the longest step of the relay: 9m24s for a real
-# 21-file change to a core package, with nothing else in the pipeline close.
-# Turbo concurrency cannot fix it (the box holds one heavy package's worth of
-# RAM), so the parallelism moves up a level: the `plan` job resolves the
-# affected package set and buckets it, and the shard matrix runs each bucket
-# on its own free 4-core box.
+# WHY SHARD. The `plan` job resolves the affected package set and buckets it
+# so independent buckets can run in parallel. Heavy packages share one runner:
+# per-job fixed overhead (checkout, setup and install) dominated the short api
+# and temporal checks on paid private runners. Combining them avoids two job
+# setups on a full sweep, with a small expected wall-clock increase. Turbo
+# still runs one task at a time, so peak memory stays one package's worth.
 #
-#   @repo/web       its own shard
-#   @repo/api       its own shard
-#   @repo/temporal  its own shard
+#   heavy           affected @repo/web, @repo/api, @repo/temporal
 #   everything else two fixed buckets, `rest-1` and `rest-2`
 #
+# The heavy list has a fixed order for stable output, not Turbo scheduling.
+#
 # A shard is omitted when the plan contains none of its packages, so a PR
-# touching one leaf package runs one short shard rather than five.
+# touching one leaf package runs one short shard rather than three.
 #
 # BUCKETING IS STABLE PER PACKAGE, NOT PER RUN. A package's bucket is its
 # position (`i % 2`) in the sorted list of ALL packages that have a
@@ -36,7 +33,7 @@ name: Type Check
 # rule is the reason the cache works. Keep it.
 #
 # PER-SHARD CACHE FAMILIES. actions/cache will not overwrite an existing
-# key, so five shards saving under one key would leave the seed holding only
+# key, so three shards saving under one key would leave the seed holding only
 # whichever shard finished first — every other package's entries would be
 # silently missing from every later run. Each shard therefore gets its own
 # key family, `<os>-tc-shard-<shard>-turbo-<sha>` restoring from the prefix
@@ -49,9 +46,10 @@ name: Type Check
 # The shard families used to avoid sharing a prefix with the staging job's
 # `<os>-turbo-typecheck-` / `<os>-tsbuildinfo-` keys, so a prefix restore
 # during a manual staging `workflow_dispatch` could never pick up one
-# shard's partial cache instead of its own. That job is gone (see WHERE THIS
-# RUNS above), so nothing writes those unsuffixed keys any more — the shard
-# families are just what remains, unchanged.
+# shard's partial cache instead of its own. That job has been removed,
+# so nothing writes those unsuffixed keys any more — the shard
+# families remain separate. The new `heavy` family can initially restore the
+# former `web` family, prioritizing the costliest cold check.
 #
 # WHY MASTER PUSHES RUN AT ALL. GitHub only lets a workflow run restore
 # caches saved on its own branch or on the base branch. A PR's first run
@@ -74,16 +72,19 @@ name: Type Check
 #
 # MEMORY. The `type-check` scripts run TypeScript 7's native compiler
 # (`tsgo`, from tooling/tsgo), which is not a Node process, so NODE_OPTIONS
-# does not cap it. apps/web passes `--checkers 2` to hold its peak near 10 GB.
+# does not cap it. apps/web passes `--checkers 2`, which peaked at about 7.6 GB
+# on a full re-check (TypeScript 7.1, ubuntu-8core-arm, October 2026). More
+# checkers were tested and rejected: 4 saved about 7 s for 2 GB more memory, and
+# the script also sets the thread count for local runs.
 # The 12 GB NODE_OPTIONS heap below still covers the Node tasks that run as
 # type-check dependencies (`generate`, `^build`). The shared type-check
 # wrapper defaults to the same heap only when the caller has not already set a
 # max-old-space-size flag; this workflow keeps its explicit setting so the CI
-# resource contract stays visible here. Every shard still runs one heavy
-# package at a time (`TURBO_CONCURRENCY: 1`), which leaves room for the OS and
-# pnpm on the 16 GB standard runner. The staging repo's
-# `workflow_dispatch` path reuses that same ceiling on the bigger
-# `ubuntu-8core-arm` label purely for headroom, not for extra concurrency.
+# resource contract stays visible here. The merged heavy shard still runs one
+# Turbo task at a time (`TURBO_CONCURRENCY: 1`), so sharing its runner does not
+# increase peak memory. This leaves room for the OS and pnpm on the 16 GB
+# standard runner. Private shards reuse that same ceiling on the bigger
+# `ubuntu-8core-arm` label for headroom, not for extra concurrency.
 # The heavy-package memory blow-up is tracked for a compiled-packages
 # migration.
 #
@@ -240,24 +241,23 @@ jobs:
           const allPackages = readPackages("turbo-plan-all.json");
           const affected = new Set(readPackages("turbo-plan-affected.json"));
 
-          // Heavy packages get dedicated runners. `slug` is the cache-key and
-          // display segment; keep this table and the shard list in the header
-          // in step.
+          // Heavy packages share one runner to amortize fixed job setup costs.
+          // Turbo executes serially, preserving peak memory. Keep this list
+          // in a fixed order for stable output and in step with the header;
+          // filter order does not control Turbo's task scheduling.
           const HEAVY = [
-            ["@repo/web", "web"],
-            ["@repo/api", "api"],
-            ["@repo/temporal", "temporal"],
+            "@repo/web",
+            "@repo/api",
+            "@repo/temporal",
           ];
           const REST_BUCKETS = 2;
-
-          const heavyNames = HEAVY.map(([pkg]) => pkg);
 
           // THE STABILITY RULE (see the header). A package's bucket comes
           // from its position in the sorted list of ALL type-checkable
           // packages, so it is the same on a full sweep and on any scoped PR
           // — which is what lets a shard restore the cache family the master
           // sweep seeded for it.
-          const restAll = allPackages.filter((p) => !heavyNames.includes(p));
+          const restAll = allPackages.filter((p) => !HEAVY.includes(p));
           const bucketOf = new Map(
             restAll.map((pkg, i) => [pkg, i % REST_BUCKETS]),
           );
@@ -266,7 +266,7 @@ jobs:
           // affected set is a subset of the full set by construction, so
           // anything unassignable means the two dry runs disagreed.
           const unassigned = [...affected].filter(
-            (p) => !heavyNames.includes(p) && !bucketOf.has(p),
+            (p) => !HEAVY.includes(p) && !bucketOf.has(p),
           );
           if (unassigned.length > 0) {
             console.error(
@@ -276,9 +276,13 @@ jobs:
           }
 
           const shards = [];
-          for (const [pkg, slug] of HEAVY) {
-            if (!affected.has(pkg)) continue;
-            shards.push({ name: pkg, slug, packages: pkg });
+          const heavyAffected = HEAVY.filter((pkg) => affected.has(pkg));
+          if (heavyAffected.length > 0) {
+            shards.push({
+              name: "heavy",
+              slug: "heavy",
+              packages: heavyAffected.join(" "),
+            });
           }
           for (let bucket = 0; bucket < REST_BUCKETS; bucket++) {
             const chunk = restAll.filter(
@@ -313,17 +317,21 @@ jobs:
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.plan.result == 'success' && (needs.plan.outputs.has_shards == 'true')
     strategy:
-      # Every shard reports independently; one red package must not hide the
-      # state of the others, which is the whole point of splitting them up.
+      # One red package must not hide independent packages' verdicts:
+      # fail-fast: false keeps other shards running, and Turbo's
+      # --continue=dependencies-successful keeps tasks within a shard running
+      # when their dependencies succeeded. Failed dependencies still block
+      # their dependents, and any failure leaves the shard non-zero.
       fail-fast: false
-      # No max-parallel: shards are free on a public repo and the wall clock
-      # is the entire reason this job is a matrix.
+      # No max-parallel: let all three buckets run concurrently. Combining
+      # heavy packages reduces paid private job setups while keeping this
+      # parallelism across buckets.
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     # Free and unlimited on public repositories at 4 CPU / 16 GB. A larger
     # label is billed everywhere and a label that does not exist leaves a job
     # queued for 24 hours rather than failing, so this stays `ubuntu-latest`
-    # — except on the manual validation path in the staging repo, whose
-    # standard runner (2 CPU / 7 GB) cannot hold the heap below.
+    # — except in the private repo, which uses `ubuntu-8core-arm` for every
+    # event because its standard runner (2 CPU / 7 GB) cannot hold this heap.
     runs-on: ${{ (github.repository == 'Fabric-Pro/fabric-dev') && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
@@ -373,6 +381,14 @@ jobs:
       # the PR's own scope before it looks at master, so a fallback that
       # broad would hand a PR its own Vitest entry ahead of the master
       # typecheck entry that holds the `^build` outputs this job replays.
+      # For both caches, try the new family first, then seed `heavy` from
+      # `web`, the costliest cold check. Each restore selects ONE entry; it
+      # cannot union the old web/api/temporal families. Other shards keep
+      # their own prefix as the fallback as well.
+      # Temporary web fallback: delete the second restore-key line below once
+      # staging pushes have seeded the `-tc-shard-heavy-` entries (expected
+      # about a week after this layout merges). Until then it only spares the
+      # first heavy runs a cold web check; removing it early costs one cold run.
       - name: Restore Turbo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -380,11 +396,11 @@ jobs:
           key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-turbo-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-tc-shard-${{ matrix.slug }}-turbo-
+            ${{ runner.os }}-tc-shard-${{ matrix.slug == 'heavy' && 'web' || matrix.slug }}-turbo-
 
       # Turbo's cache only replays whole tasks; on a miss the task re-runs
-      # cold. TypeScript's own incremental state is what makes a miss cheap
-      # (deploy-vercel-prod.yml relies on the same thing for apps/web, where
-      # it measured 138s cold vs 23s warm). Paths are enumerated rather than
+      # cold. TypeScript's own incremental state can reuse unchanged files
+      # on a task miss. Paths are enumerated rather than
       # globbed as `**/*.tsbuildinfo` so the cache action never walks
       # node_modules. A .tsbuildinfo restored from a different commit is safe:
       # tsc version-checks every file it recorded and re-checks what moved.
@@ -392,6 +408,10 @@ jobs:
       # `tsbuildinfo7` family holds TypeScript 7 build info only: tsgo
       # discards a 5.x file and re-checks cold, so restoring the old
       # `tsbuildinfo` family would buy nothing.
+      # Temporary web fallback: delete the second restore-key line below once
+      # staging pushes have seeded the `-tc-shard-heavy-` entries (expected
+      # about a week after this layout merges). Until then it only spares the
+      # first heavy runs a cold web check; removing it early costs one cold run.
       - name: Restore TypeScript incremental state
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -408,6 +428,7 @@ jobs:
           key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo7-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo7-
+            ${{ runner.os }}-tc-shard-${{ matrix.slug == 'heavy' && 'web' || matrix.slug }}-tsbuildinfo7-
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -430,7 +451,7 @@ jobs:
           for pkg in "${shard_packages[@]}"; do
             filters+=("--filter=$pkg")
           done
-          pnpm turbo run type-check --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
+          pnpm turbo run type-check --continue=dependencies-successful --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
 
   # Stable status check name reported on every PR to `master` in the public
   # mirror and private staging repository. Configure THIS

@@ -73,7 +73,11 @@ import {
 	needsLegacyGlossyEdition,
 	useLegacyGlossyEdition,
 } from "../hooks/use-legacy-glossy-edition";
-import { isDocumentGenerationRunning } from "../lib/document-pipeline";
+import {
+	getVersionStepPollInterval,
+	isDocumentGenerationRunning,
+	type VersionStepWatch,
+} from "../lib/document-pipeline";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
 import { DocumentAutoRefreshToggle } from "./DocumentAutoRefreshToggle";
 import { DocumentDownloadDropdown } from "./DocumentDownloadDropdown";
@@ -628,11 +632,29 @@ export function DocumentEditorPage({
 	// session active-org. A mentioned user often opens the doc while their
 	// active org differs; without this the fetch fell back to the wrong org
 	// and 404'd. Mirrors the project query below.
+	//
+	// The editor polls this same query while a run is under way; this one
+	// asks again for a short while after the run ends, so the version step
+	// the run sends no nudge for reaches the header (Fizzy #2946). The watch
+	// belongs to one query key: another document starts from none.
+	const versionStepWatchRef = useRef<{
+		queryHash: string;
+		watch: VersionStepWatch;
+	} | null>(null);
 	const { data: documentData, isLoading: isDocumentLoading } = useQuery({
 		...orpc.projects.documents.get.queryOptions({
 			input: { id: documentId, projectId, organizationId },
 		}),
 		enabled: orgContextReady,
+		refetchInterval: (query) => {
+			const held = versionStepWatchRef.current;
+			const { watch, interval } = getVersionStepPollInterval(
+				held?.queryHash === query.queryHash ? held.watch : undefined,
+				query.state.data?.document,
+			);
+			versionStepWatchRef.current = { queryHash: query.queryHash, watch };
+			return interval;
+		},
 	});
 
 	// IMPORTANT: Pass null explicitly for personal context to prevent

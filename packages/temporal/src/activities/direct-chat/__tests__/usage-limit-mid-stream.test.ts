@@ -12,7 +12,7 @@
  *  - a turn refused before any text fails with the limit as its `error` and
  *    the same `usageLimit` (the workflow skips the tools-off rerun for it),
  *    also when the refusal came inside the SDK's `RetryError`;
- *  - a refusal at model resolution is still thrown, unwrapped, as before.
+ *  - a refusal at model resolution returns the same structured failure data.
  *
  * Boundaries mocked as in system-prompt-wiring.test.ts: model resolution,
  * the database, tool factories and the shared agent-tool runtime.
@@ -26,6 +26,8 @@ import type { DirectChatWorkflowInput } from "../../../types";
 const state = vi.hoisted(() => ({
 	model: undefined as unknown,
 	resolutionError: undefined as Error | undefined,
+	conversionError: undefined as Error | undefined,
+	streamErrorAfterStep: undefined as Error | undefined,
 	builtInTools: {} as Record<string, unknown>,
 	recordAggregateUsage: vi.fn(),
 }));
@@ -45,11 +47,15 @@ vi.mock("@repo/ai", async () => {
 				role: string;
 				parts: Array<{ text: string }>;
 			}>,
-		) =>
-			messages.map((m) => ({
+		) => {
+			if (state.conversionError) {
+				throw state.conversionError;
+			}
+			return messages.map((m) => ({
 				role: m.role,
 				content: m.parts.map((p) => p.text).join(""),
-			})),
+			}));
+		},
 		enhancePromptWithFabric: async () => ({ fabricUsed: false }),
 		getAIModelWithMetadata: async () => {
 			if (state.resolutionError) {
@@ -72,7 +78,28 @@ vi.mock("@repo/ai", async () => {
 		isStepCount: ai.isStepCount,
 		selectAggregateUsageForLogging:
 			usageLogging.selectAggregateUsageForLogging,
-		streamText: ai.streamText,
+		streamText: (...args: Parameters<typeof ai.streamText>) => {
+			const error = state.streamErrorAfterStep;
+			if (!error) {
+				return ai.streamText(...args);
+			}
+			// Exercise the iterator-throw catch after the activity has observed
+			// a completed step; the real SDK normally emits an error part.
+			return {
+				stream: (async function* () {
+					yield { type: "start-step" };
+					yield {
+						type: "finish-step",
+						usage: {
+							inputTokens: 10,
+							outputTokens: 5,
+							totalTokens: 15,
+						},
+					};
+					throw error;
+				})(),
+			};
+		},
 		tool: ai.tool,
 	};
 });
@@ -136,7 +163,7 @@ vi.mock("../../shared/read-only-gate", () => ({
 }));
 
 import { wrapModelWithUsageLimits } from "@repo/ai/lib/usage-limit-middleware";
-import { APICallError, tool } from "ai";
+import { APICallError, RetryError, tool } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { executeDirectChatActivity } from "../ai-execution";
@@ -244,6 +271,8 @@ function runTurn() {
 
 beforeEach(() => {
 	state.resolutionError = undefined;
+	state.conversionError = undefined;
+	state.streamErrorAfterStep = undefined;
 	state.recordAggregateUsage.mockReset();
 	state.builtInTools = {
 		lookup: tool({
@@ -307,6 +336,19 @@ describe("direct chat — a usage limit reached during the turn", () => {
 		expectStepOneSpend(result);
 	});
 
+	it("does not record a first-request refusal from the usage-limit chokepoint", async () => {
+		const provider = new MockLanguageModelV4({
+			doStream: async () => firstStep(null),
+		});
+		useModel(provider, 0, limitError());
+		await expect(runTurn()).resolves.toMatchObject({
+			success: false,
+			usageLimit: { limitId: "limit-1" },
+		});
+		expect(provider.doStreamCalls).toHaveLength(0);
+		expect(state.recordAggregateUsage).not.toHaveBeenCalled();
+	});
+
 	it("fails the turn with the limit when it refused an SDK retry of the first step", async () => {
 		const refusal = limitError();
 		const provider = new MockLanguageModelV4({
@@ -332,12 +374,97 @@ describe("direct chat — a usage limit reached during the turn", () => {
 		});
 	});
 
-	it("still throws a refusal at model resolution, unwrapped", async () => {
+	it("records a started provider step even when its refusal has no reported usage", async () => {
 		const refusal = limitError();
-		state.resolutionError = refusal;
-
-		await expect(runTurn()).rejects.toBe(refusal);
+		state.model = new MockLanguageModelV4({
+			doStream: async () => ({
+				stream: simulateReadableStream({
+					chunks: [
+						{ type: "stream-start" as const, warnings: [] },
+						{ type: "error" as const, error: refusal },
+					],
+				}),
+			}),
+		});
+		await expect(runTurn()).resolves.toMatchObject({
+			success: false,
+			usageLimit: { limitId: "limit-1" },
+		});
+		expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
+		expect(state.recordAggregateUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				success: false,
+			}),
+		);
+		expect(state.recordAggregateUsage.mock.calls[0][0].steps).toHaveLength(
+			1,
+		);
 	});
+
+	it("records completed usage once when the stream iterator throws a wrapped refusal", async () => {
+		state.streamErrorAfterStep = new RetryError({
+			message: "Request refused",
+			reason: "errorNotRetryable",
+			errors: [limitError()],
+		});
+		await expect(runTurn()).resolves.toMatchObject({
+			success: false,
+			usageLimit: { limitId: "limit-1" },
+		});
+		expect(state.recordAggregateUsage).toHaveBeenCalledTimes(1);
+		expect(state.recordAggregateUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				success: false,
+				usage: expect.objectContaining(STEP_ONE_SPEND),
+			}),
+		);
+	});
+
+	it("does not record a refusal thrown before any request was dispatched", async () => {
+		const refusal = limitError();
+		state.conversionError = new RetryError({
+			message: "Request refused",
+			reason: "errorNotRetryable",
+			errors: [refusal],
+		});
+		await expect(runTurn()).resolves.toMatchObject({
+			success: false,
+			error: refusal.message,
+			usageLimit: { limitId: "limit-1" },
+		});
+		expect(state.recordAggregateUsage).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])(
+		"returns a refusal at model resolution as data (wrapped: %s)",
+		async (wrapped) => {
+			const refusal = limitError();
+			state.resolutionError = wrapped
+				? new RetryError({
+						message: "Model resolution failed",
+						reason: "errorNotRetryable",
+						errors: [refusal],
+					})
+				: refusal;
+
+			await expect(runTurn()).resolves.toMatchObject({
+				success: false,
+				error: refusal.message,
+				durationMs: expect.any(Number),
+				usageLimit: {
+					message: refusal.message,
+					limitId: "limit-1",
+					dimension: "TOKENS",
+					window: "MONTHLY",
+					used: "100",
+					max: "100",
+					manageLimitsUrl: "https://example.com/limits",
+				},
+			});
+			// Resolution refused before a model/usage recorder was returned.
+			expect(state.recordAggregateUsage).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("direct chat — provider error after Anthropic message_start", () => {

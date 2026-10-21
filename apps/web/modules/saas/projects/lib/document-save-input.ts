@@ -14,6 +14,12 @@ export interface DocumentSaveBase {
 }
 
 /**
+ * How long an editor waits into a pause in typing before it autosaves. An
+ * object read when the timer is set, so a test can shorten it.
+ */
+export const DOCUMENT_AUTOSAVE_TIMINGS = { delayMs: 10_000 };
+
+/**
  * What an editor save sends.
  *
  * An explicit Save is the author's own call on the document, so it also asks

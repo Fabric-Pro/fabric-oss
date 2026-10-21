@@ -271,6 +271,7 @@ export async function runDuplicateScanCore(
 					userId,
 					organizationId: organizationId ?? undefined,
 					projectId,
+					featureKey: "duplicate-scan",
 				},
 			);
 			embeddedModel = model;

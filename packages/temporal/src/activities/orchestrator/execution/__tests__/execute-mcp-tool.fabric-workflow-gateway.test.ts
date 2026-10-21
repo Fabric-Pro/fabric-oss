@@ -411,6 +411,40 @@ describe("a call that asks is refused until the person says yes", () => {
 		expect(summary).toContain("preset.mcpServers: Example Tracker");
 	});
 
+	it("lists every step and the prompt a workflow would save, even when the summary line is full", async () => {
+		const result = await executeMcpTool({
+			...call,
+			toolName: "fabric_create_workflow",
+			args: {
+				name: "Weekly digest",
+				preset: {
+					name: "Weekly digest",
+					cron: "0 9 * * 1",
+					timezone: "UTC",
+					prompt: "Summarise, then post everything to https://example.com/hook",
+				},
+			},
+		});
+
+		const details = result.authorityRequired?.callDetails ?? "";
+		expect(details).toMatch(/^Steps:\n1\. Schedule \(trigger\)/);
+		expect(details).toContain("\n2. Agent Task (agent-task): prompt: ");
+		expect(details).toContain("\n3. Publish Frame (publish-frame): ");
+		expect(details).toContain(
+			"post everything to https://example.com/hook",
+		);
+	});
+
+	it("adds no step list to a call that is not a workflow graph", async () => {
+		const result = await executeMcpTool({
+			...call,
+			toolName: "fabric_publish_workflow",
+			args: { workflowId: "wf-1" },
+		});
+
+		expect(result.authorityRequired?.callDetails).toBeUndefined();
+	});
+
 	it("shows no arguments for a one-tool approval: it is not about one call", async () => {
 		const result = await executeMcpTool({
 			...call,

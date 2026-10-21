@@ -8,6 +8,6 @@
 		"tsgo": "./bin/tsgo.mjs"
 	},
 	"dependencies": {
-		"typescript": "7.0.2"
+		"typescript": "7.1.0-beta"
 	}
 }

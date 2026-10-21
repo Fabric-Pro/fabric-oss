@@ -249,6 +249,7 @@ export async function checkAgentHealth(
 					const tenantContext: TenantContext = {
 						userId: input.userId,
 						organizationId: input.organizationId,
+						featureKey: "tool-search",
 					};
 					const result = await generateEmbedding(
 						input.agentSearchText,

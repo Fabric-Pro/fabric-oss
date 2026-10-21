@@ -51,6 +51,7 @@ export interface BacklogFlow {
 	apply?: FlowApplyState;
 	failureStatus?: "failed" | "timeout";
 	logContextNote?: string;
+	pmContextNote?: string;
 	decisionPrecheckPending?: boolean;
 }
 export interface FlowServices {
@@ -522,6 +523,7 @@ export class BacklogFlowController {
 			this.update(flowId, {
 				progress: progress.progress?.message ?? "Analyzing...",
 				logContextNote: progress.progress?.logContextNote,
+				pmContextNote: progress.progress?.pmContextNote,
 			});
 			if (progress.progress?.status === "failed") {
 				throw new Error(progress.progress.message ?? "Analysis failed");

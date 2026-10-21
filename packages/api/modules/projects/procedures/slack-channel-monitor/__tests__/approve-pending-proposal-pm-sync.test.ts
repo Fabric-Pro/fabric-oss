@@ -9,9 +9,11 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { z } from "zod";
 
-const { handlers, mocks } = vi.hoisted(() => {
+const { handlers, mocks, schemas } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
+	const schemas: Record<string, z.ZodType> = {};
 	const mocks = {
 		workflowStart: vi.fn(),
 		getPendingBacklogProposal: vi.fn(),
@@ -34,7 +36,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		loggerError: vi.fn(),
 		loggerDebug: vi.fn(),
 	};
-	return { handlers, mocks };
+	return { handlers, mocks, schemas };
 });
 
 vi.mock("@repo/database", () => ({
@@ -127,7 +129,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 		Object.assign(chainable, {
 			use: () => chainable,
 			route: () => chainable,
-			input: () => chainable,
+			input: (schema: z.ZodType) => {
+				schemas[handlerSlot] = schema;
+				return chainable;
+			},
 			output: () => chainable,
 			handler: (fn: (...args: unknown[]) => unknown) => {
 				handlers[handlerSlot] = fn;
@@ -235,6 +240,29 @@ beforeEach(() => {
 });
 
 describe("approvePendingProposal (Slack) — PM sync auto-enqueue on CREATE", () => {
+	it("preserves the merge annotations in the actual approval input", () => {
+		// `structurePreserved` tells the apply activity the analysis pass already
+		// merged this body; stripping it makes apply merge the body a second time.
+		const annotations = {
+			bodyMergeDeferred: true,
+			bodyMergeFallback: true,
+			structurePreserved: true,
+		};
+		expect(
+			schemas.approve.parse({
+				projectId: PROJECT_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [
+					{
+						...CHANGE_BUG,
+						action: "update",
+						...annotations,
+					},
+				],
+			}),
+		).toMatchObject({ approvedChanges: [annotations] });
+	});
+
 	it("enqueues PM sync per CREATE when syncToPM=true and PM is configured", async () => {
 		mocks.getPendingBacklogProposal.mockResolvedValueOnce(
 			makeProposalRow({ changes: [CHANGE_BUG] }),

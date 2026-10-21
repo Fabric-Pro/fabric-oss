@@ -50,6 +50,9 @@ import {
 } from "../lib/url-source";
 import { CONTEXT_SOURCE_TYPE_PRESETS } from "./SourceDetailsDialog";
 
+/** "Firecrawl and Jina AI", for the provider names the notice lists. */
+const LIST_FORMAT = new Intl.ListFormat("en", { type: "conjunction" });
+
 // ── URL Source tab content (v2) ──────────────────────────────────────────
 //
 // A sibling component because the form is meaningfully larger than the
@@ -81,13 +84,16 @@ export function UrlSourceTabContent({
 		// True ⇔ a crawl-capable provider (Firecrawl or Cloudflare
 		// Browser Rendering) is enabled.
 		hasCrawlCapable,
-		// True ⇔ at least one scrape-capable provider (FC / Jina / Tavily /
-		// Exa) is enabled.
-		hasAnyScrapeCapable,
 		// The provider that *would* be picked for SINGLE_PAGE / fallback.
 		scrapeProviderName,
 		crawlProviderName,
-		preflightLoading,
+		preflightStatus,
+		preflightRetrying,
+		retryPreflight,
+		preflightFailureCount,
+		disabledScrapeProviders,
+		searchOnlyProviders,
+		canManageSearchProviders,
 		noticeSettingsPath,
 		noticeOverride,
 		linkStatus,
@@ -113,16 +119,55 @@ export function UrlSourceTabContent({
 
 	// Show the warm-neutral notice card whenever the pre-flight (or the most
 	// recent submit) reports "not configured". The override wins so a
-	// post-submit notice persists across re-renders.
-	const showNotice =
-		noticeOverride !== null || (!preflightLoading && !hasAnyScrapeCapable);
+	// post-submit notice persists across re-renders. A pre-flight request
+	// that failed says nothing about configuration and gets its own card.
+	const showNotice = noticeOverride !== null || preflightStatus === "missing";
+	const showPreflightError =
+		noticeOverride === null && preflightStatus === "failed";
 
 	// Code drives copy. PATH_PREFIX-specific notice only triggered on submit
 	// (the radio gate prevents most users from hitting it pre-submit).
-	const noticeKind: "no-scrape" | "no-crawl" =
+	// Otherwise the pre-flight's rows say why nothing can read pages: a
+	// provider switched off is the quickest fix, so it is named first.
+	const noticeKind: "no-crawl" | "turned-off" | "search-only" | "none" =
 		noticeOverride?.code === "CRAWL_PROVIDER_NOT_CONFIGURED"
 			? "no-crawl"
-			: "no-scrape";
+			: disabledScrapeProviders.length > 0
+				? "turned-off"
+				: searchOnlyProviders.length > 0
+					? "search-only"
+					: "none";
+	const turnedOff = disabledScrapeProviders.length === 1 ? "it" : "them";
+	// Why nothing can read pages, then the fix: for an admin the start of a
+	// sentence that ends in the settings link, for anyone else a sentence
+	// naming who can make it.
+	const notice = {
+		"no-crawl": {
+			reason: "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering.",
+			adminFix: "Configure one",
+			memberFix:
+				"Ask an organization admin to connect one, or pick Single page.",
+		},
+		"turned-off": {
+			reason: `${LIST_FORMAT.format(
+				disabledScrapeProviders.map(
+					(name) => PROVIDER_DISPLAY_NAMES[name],
+				),
+			)} ${disabledScrapeProviders.length === 1 ? "is" : "are"} connected but turned off.`,
+			adminFix: `Turn ${turnedOff} on`,
+			memberFix: `Ask an organization admin to turn ${turnedOff} on.`,
+		},
+		"search-only": {
+			reason: `${LIST_FORMAT.format(searchOnlyProviders)} can search the web but can't read pages. URL sources need Firecrawl, Jina, Tavily, Exa, or Cloudflare Browser Rendering.`,
+			adminFix: "Connect one",
+			memberFix: "Ask an organization admin to connect one.",
+		},
+		none: {
+			reason: "URL sources need a search provider with scraping (Firecrawl, Jina, Tavily, Exa, or Cloudflare Browser Rendering).",
+			adminFix: "Configure one",
+			memberFix: "Ask an organization admin to connect one.",
+		},
+	}[noticeKind];
 
 	// Tracks the matched pattern (e.g. "/docs/", "trailing slash") when the
 	// blur auto-detect flips scope from SINGLE_PAGE to PATH_PREFIX. Cleared
@@ -138,8 +183,12 @@ export function UrlSourceTabContent({
 	// When none is enabled we disable the radio entirely AND make the blur
 	// auto-detect fall back to SINGLE_PAGE — picking PATH_PREFIX silently
 	// would produce a submit-time error that's harder to debug than a
-	// disabled-from-the-start radio.
-	const pathPrefixDisabled = !hasCrawlCapable;
+	// disabled-from-the-start radio. A pre-flight that failed or was refused
+	// knows nothing either way, so the radio stays open and the server decides.
+	const pathPrefixDisabled =
+		preflightStatus !== "failed" &&
+		preflightStatus !== "unchecked" &&
+		!hasCrawlCapable;
 
 	const handleUrlBlur = () => {
 		// Auto-detect scope once on blur, unless the user has already
@@ -220,7 +269,8 @@ export function UrlSourceTabContent({
 			{/* Pre-flight notice — warm-neutral card. Renders when no scrape-
 			    capable provider is enabled, or when the submit hit one of
 			    the typed BAD_REQUEST codes (SCRAPE_/CRAWL_PROVIDER_NOT_
-			    CONFIGURED, or the legacy FIRECRAWL_NOT_CONFIGURED). */}
+			    CONFIGURED, or the legacy FIRECRAWL_NOT_CONFIGURED). Only a
+			    viewer who can connect a provider gets the settings link. */}
 			{showNotice && (
 				<div
 					className="space-y-2 rounded-lg border border-border bg-card p-4"
@@ -235,20 +285,57 @@ export function UrlSourceTabContent({
 						</span>
 					</div>
 					<p className="text-sm text-foreground">
-						{noticeKind === "no-crawl"
-							? "Path-prefix crawls require Firecrawl or Cloudflare Browser Rendering. "
-							: "URL sources need a search provider with scraping (Firecrawl, Jina, Tavily, Exa, or Cloudflare Browser Rendering). "}
-						Configure one in{" "}
-						<Link
-							href={noticeSettingsPath}
-							className="font-medium text-primary underline-offset-4 hover:underline"
-						>
-							Settings → Search Providers
-						</Link>
-						{noticeKind === "no-crawl"
-							? ", or pick Single page."
-							: " to start adding URLs."}
+						{notice.reason}{" "}
+						{canManageSearchProviders ? (
+							<>
+								{notice.adminFix} in{" "}
+								<Link
+									href={noticeSettingsPath}
+									className="font-medium text-primary underline-offset-4 hover:underline"
+								>
+									Settings → Search Providers
+								</Link>
+								{noticeKind === "no-crawl"
+									? ", or pick Single page."
+									: " to start adding URLs."}
+							</>
+						) : (
+							notice.memberFix
+						)}
 					</p>
+				</div>
+			)}
+
+			{/* The pre-flight request itself failed. That is not "not
+			    configured", so submit stays open and the server answers. */}
+			{showPreflightError && (
+				<div
+					className="space-y-3 rounded-lg border border-border bg-card p-4"
+					role="alert"
+				>
+					{/* A new node per failure, so a retry that fails again is
+					    announced; the button keeps focus. */}
+					<p
+						key={preflightFailureCount}
+						className="text-sm text-foreground"
+					>
+						Couldn't check the search providers. You can still add
+						URLs; they're checked when you add them.
+					</p>
+					{/* Busy, not disabled: a disabled button would drop
+					    keyboard focus mid-retry. */}
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						onClick={retryPreflight}
+						aria-busy={preflightRetrying}
+					>
+						{preflightRetrying && (
+							<LoaderIcon className="size-4 motion-safe:animate-spin" />
+						)}
+						Try again
+					</Button>
 				</div>
 			)}
 
@@ -529,8 +616,10 @@ export function UrlSourceTabContent({
 							</TooltipTrigger>
 							<TooltipContent>
 								Path-prefix crawls require Firecrawl or
-								Cloudflare Browser Rendering. Configure one in
-								Settings → Search Providers.
+								Cloudflare Browser Rendering.{" "}
+								{canManageSearchProviders
+									? "Configure one in Settings → Search Providers."
+									: "Ask an organization admin to connect one."}
 							</TooltipContent>
 						</Tooltip>
 					) : (

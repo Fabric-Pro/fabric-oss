@@ -82,7 +82,8 @@ vi.mock("@repo/logs", () => ({
 	},
 }));
 
-vi.mock("@temporalio/activity", () => ({
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
 	heartbeat: mocks.heartbeat,
 }));
 

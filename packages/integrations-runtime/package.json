@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/integrations-runtime",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Plugin contract and runtime for Fabric integrations (Apache-2.0 attribution to Corsair)",
 	"keywords": [
 		"fabric",

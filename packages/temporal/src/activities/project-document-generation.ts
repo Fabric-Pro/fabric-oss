@@ -54,6 +54,10 @@ import {
 	type SkillContext,
 } from "@repo/ai/skills";
 import {
+	type BulkRunKind,
+	type BulkRunResumeOf,
+	bulkRunApiResumeWorkflowId,
+	bulkRunResumeWorkflowId,
 	claimLiveAttempt,
 	clearLiveContent,
 	type DocumentGenerationOutcome,
@@ -81,7 +85,6 @@ import {
 	applyContextSummary,
 	buildDocumentRetrievalQuery,
 	deleteStaleDocumentEmbeddingChunks,
-	type EpisodeSearchResult,
 	embedProjectDocument,
 	enrichContextsWithRoleTags,
 	extractBaseContextId,
@@ -91,10 +94,10 @@ import {
 	reembedProjectDocument,
 	rerankContexts,
 	SUMMARY_CONTEXT_TYPE,
-	searchSimilarEpisodes,
 	searchSimilarProjectContexts,
 } from "@repo/rag";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	hasVisualSlots,
 	preserveVisualSlots,
@@ -136,6 +139,10 @@ import {
 	RESPONSE_ECHOED,
 } from "../lib/proposal-artifact/types";
 import { buildRetrievedContextBlock } from "../lib/retrieved-context-block";
+import {
+	documentsHeldByBulkRunWhere,
+	nextBulkRunResumeWorkflowId,
+} from "./bulk-run-pause";
 import { withHeartbeatTicker } from "./lib/activity-liveness";
 import { activityLogger } from "./lib/activity-logger";
 import { findPlanExhausted } from "./lib/chatgpt-plan-refusal";
@@ -466,7 +473,12 @@ async function retrieveProjectContextEntries(
 			model: embeddingModel,
 			metadata,
 			trackUsage,
-		} = await getAIEmbeddingModelWithMetadata({ userId, organizationId });
+		} = await getAIEmbeddingModelWithMetadata({
+			userId,
+			organizationId,
+			projectId,
+			featureKey: "document-generation",
+		});
 
 		activityLogger.info("Resolved embedding model for RAG query", {
 			modelName: metadata.modelString,
@@ -3569,6 +3581,48 @@ function supersededRunFailure(details: {
 }
 
 /**
+ * A legacy (non-artifact) attempt of a batch, setup or single dispatch whose
+ * document no longer belongs to it (Fizzy #2946): a newer run restamped the
+ * attempt's identity, or the row left the running statuses — a person's save
+ * over a stalled Proposal run completed it, or the stale-generation sweep
+ * failed it. The same failure type as a stale regeneration, so the workflow
+ * takes the path it already takes for one; the message the FAILED write would
+ * store is rarely seen, as that write is scoped to the same attempt.
+ */
+function endedAttemptFailure(details: {
+	documentId: string;
+	generationStartedAt: string;
+	phase: "save";
+	actualStartedAt: Date | null | undefined;
+	actualStatus: string | undefined;
+}): ApplicationFailure {
+	activityLogger.warn(
+		"Abandoning a generation attempt that no longer holds its document",
+		details,
+	);
+	const superseded =
+		details.actualStartedAt != null &&
+		details.actualStartedAt.getTime() !==
+			new Date(details.generationStartedAt).getTime();
+	return ApplicationFailure.nonRetryable(
+		superseded ? SUPERSEDED_RUN_MESSAGE : STALE_REGENERATION_MESSAGE,
+		DOCUMENT_GENERATION_STALE,
+	);
+}
+
+/**
+ * The statuses a legacy attempt's writes require: the run is still writing
+ * the document.
+ */
+const ATTEMPT_RUNNING_STATUSES = ["QUEUED", "GENERATING"] as const;
+
+function isAttemptRunning(status: string | undefined): boolean {
+	return (ATTEMPT_RUNNING_STATUSES as readonly string[]).includes(
+		status ?? "",
+	);
+}
+
+/**
  * The version a regeneration's spliced body is right for, when a visual slot
  * is involved (Fizzy #2589, KTD17).
  *
@@ -3648,6 +3702,13 @@ const SAVE_COMPLETES_STATUSES: ReadonlySet<string> = new Set([
  *   and its fallback rewrites the body without moving it, so the version
  *   alone cannot see those edits. The body read here joins the WHERE clause,
  *   so one landing after the read is caught as well.
+ * - `generationStartedAt` (a legacy attempt of a batch, setup or single
+ *   dispatch, Fizzy #2946): the document is still this attempt's and still
+ *   running — QUEUED or GENERATING at exactly that `generationStartedAt`. A
+ *   newer run restamps it, and a person's save over a stalled run or the
+ *   stale-generation sweep moves the status on; either way the run no longer
+ *   owns the body. As under the run guard, a retry after a lost result finds
+ *   the row already completed with exactly this body and writes nothing.
  *
  * The same writes as the unguarded save — the pre-regeneration snapshot, then
  * content, word count and status — but in ONE transaction, and the update is
@@ -3673,6 +3734,7 @@ async function saveWithGuards(params: {
 	baselineVersion?: number;
 	liveRunId?: string;
 	baselineContentHash?: string;
+	generationStartedAt?: string;
 }): Promise<void> {
 	const {
 		documentId,
@@ -3681,10 +3743,13 @@ async function saveWithGuards(params: {
 		baselineVersion,
 		liveRunId,
 		baselineContentHash,
+		generationStartedAt,
 	} = params;
-	const wordCount = content
-		.split(/\s+/)
-		.filter((word) => word.length > 0).length;
+	const attemptStartedAt =
+		generationStartedAt !== undefined
+			? new Date(generationStartedAt)
+			: undefined;
+	const wordCount = countDocumentWords(content);
 
 	await db.$transaction(async (tx) => {
 		const currentDoc = await tx.projectDocument.findUnique({
@@ -3697,10 +3762,41 @@ async function saveWithGuards(params: {
 					liveRunId: true,
 					liveContent: true,
 				}),
+				...(attemptStartedAt !== undefined && {
+					generationStartedAt: true,
+				}),
 			},
 		});
 		if (!currentDoc) {
 			throw new Error(`Document not found: ${documentId}`);
+		}
+		if (generationStartedAt !== undefined) {
+			const sameAttempt =
+				currentDoc.generationStartedAt?.getTime() ===
+				new Date(generationStartedAt).getTime();
+			// An earlier attempt of this activity committed exactly this save:
+			// the attempt's identity, this body, and the status the save moved
+			// it to. Writing again could only overwrite an edit made since.
+			if (
+				sameAttempt &&
+				currentDoc.content === content &&
+				currentDoc.status === "COMPLETE"
+			) {
+				activityLogger.info(
+					"Project document already saved by an earlier attempt of this run",
+					{ documentId, generationStartedAt },
+				);
+				return;
+			}
+			if (!sameAttempt || !isAttemptRunning(currentDoc.status)) {
+				throw endedAttemptFailure({
+					documentId,
+					generationStartedAt,
+					phase: "save",
+					actualStartedAt: currentDoc.generationStartedAt,
+					actualStatus: currentDoc.status,
+				});
+			}
 		}
 		if (liveRunId !== undefined) {
 			if (currentDoc.liveRunId !== liveRunId) {
@@ -3773,6 +3869,10 @@ async function saveWithGuards(params: {
 				...(baselineContentHash !== undefined && {
 					content: currentDoc.content,
 				}),
+				...(attemptStartedAt !== undefined && {
+					generationStartedAt: attemptStartedAt,
+					status: { in: [...ATTEMPT_RUNNING_STATUSES] },
+				}),
 			},
 			data: {
 				content,
@@ -3788,6 +3888,10 @@ async function saveWithGuards(params: {
 				select: {
 					version: true,
 					...(liveRunId !== undefined && { liveRunId: true }),
+					...(attemptStartedAt !== undefined && {
+						generationStartedAt: true,
+						status: true,
+					}),
 				},
 			});
 			if (liveRunId !== undefined && actual?.liveRunId !== liveRunId) {
@@ -3795,6 +3899,20 @@ async function saveWithGuards(params: {
 					documentId,
 					liveRunId,
 					phase: "save",
+				});
+			}
+			if (
+				generationStartedAt !== undefined &&
+				(actual?.generationStartedAt?.getTime() !==
+					new Date(generationStartedAt).getTime() ||
+					!isAttemptRunning(actual?.status))
+			) {
+				throw endedAttemptFailure({
+					documentId,
+					generationStartedAt,
+					phase: "save",
+					actualStartedAt: actual?.generationStartedAt,
+					actualStatus: actual?.status,
 				});
 			}
 			throw staleRegenerationFailure({
@@ -3811,6 +3929,7 @@ async function saveWithGuards(params: {
 			status: newStatus,
 			baselineVersion,
 			liveRunId,
+			generationStartedAt,
 		});
 	});
 }
@@ -3846,10 +3965,14 @@ function contentAsSaved(rawContent: string): string {
  * document still being at that version. `options.liveRunId` is a Proposal
  * artifact run's guard (Fizzy #2801): with it the write is conditional on the
  * document's live run still being this one, clears the live preview, and a
- * superseded run's save is refused as stale. Either or both select
- * {@link saveWithGuards}; without both — every slot-free regeneration outside
- * an artifact run, and any run whose generation finished before the fields
- * existed — the save below is unchanged.
+ * superseded run's save is refused as stale. `options.generationStartedAt`
+ * is a legacy attempt's identity (Fizzy #2946), ignored under the run guard:
+ * with it the write is conditional on the document still being that attempt's
+ * and still running, so a batch, setup or single dispatch reaching it late
+ * cannot overwrite a person's save or a newer run's body. Any of them selects
+ * {@link saveWithGuards}; without all — every slot-free regeneration outside
+ * an artifact run that names no attempt, and any run whose generation
+ * finished before the fields existed — the save below is unchanged.
  */
 export async function saveProjectDocument(
 	documentId: string,
@@ -3858,6 +3981,7 @@ export async function saveProjectDocument(
 	options?: {
 		baselineVersion?: number;
 		baselineContentHash?: string;
+		generationStartedAt?: string;
 	} & Partial<ProposalLiveRunGuard>,
 ): Promise<void> {
 	activityLogger.info("Saving project document", { documentId });
@@ -3867,10 +3991,13 @@ export async function saveProjectDocument(
 	const baselineVersion = options?.baselineVersion;
 	const liveRunId = options?.liveRunId;
 	const baselineContentHash = options?.baselineContentHash;
+	const generationStartedAt =
+		liveRunId === undefined ? options?.generationStartedAt : undefined;
 	if (
 		baselineVersion !== undefined ||
 		liveRunId !== undefined ||
-		baselineContentHash !== undefined
+		baselineContentHash !== undefined ||
+		generationStartedAt !== undefined
 	) {
 		try {
 			await saveWithGuards({
@@ -3880,6 +4007,9 @@ export async function saveProjectDocument(
 				baselineVersion,
 				liveRunId,
 				baselineContentHash,
+				...(generationStartedAt !== undefined && {
+					generationStartedAt,
+				}),
 			});
 		} catch (error) {
 			// A stale refusal was already logged as the warning it is.
@@ -3958,9 +4088,7 @@ export async function saveProjectDocument(
 		}
 
 		// Calculate word count
-		const wordCount = content
-			.split(/\s+/)
-			.filter((word) => word.length > 0).length;
+		const wordCount = countDocumentWords(content);
 
 		// Set to COMPLETE if document was DRAFT or GENERATING (code-based setup)
 		const newStatus =
@@ -4106,6 +4234,18 @@ class ContentChangedSinceSave extends Error {
 }
 
 /**
+ * Rolls back an attempt-guarded version transaction whose document is no
+ * longer the attempt's (Fizzy #2946): a newer run restamped it. Caught like
+ * {@link ContentChangedSinceSave}: the version is skipped, not failed.
+ */
+class AttemptEndedSinceSave extends Error {
+	constructor() {
+		super("The document belongs to a newer attempt than this run's save");
+		this.name = "AttemptEndedSinceSave";
+	}
+}
+
+/**
  * Version a regeneration only while the guards it was given still hold: its
  * body is still the live one at `baselineVersion` (visual slots), and the
  * document's live run is still `liveRunId` with the body that run saved
@@ -4144,8 +4284,22 @@ class ContentChangedSinceSave extends Error {
  * writes (same body, author, prompt version and description), numbered from
  * the baseline up to the live version, can only be that attempt's.
  *
- * Only the run guard's result names the row; under the baseline alone the
- * step resolves with nothing, as `createDocumentVersion` does.
+ * `generationStartedAt` is a legacy attempt's identity (Fizzy #2946): the
+ * document must still carry it and still hold the body this attempt saved,
+ * at the read and in the bump's WHERE. A mismatch skips the version, as under
+ * the run guard: this step runs only once the attempt's save landed, and
+ * history must not call a person's edit, or a newer run's body, this run's
+ * version. A newer attempt is a skip even under a baseline, whatever it has
+ * done to the body since: failing the run would fail a document whose save
+ * already succeeded, and the document is the newer run's to finish. A changed
+ * body or version while the attempt is still this one's is the baseline's
+ * refusal, stale as before. A retry finds its earlier attempt's row as under
+ * the baseline alone, and only among rows created since the attempt started,
+ * so an older row with the same text cannot pass for it.
+ *
+ * Only the run guard's result names the row; under the baseline or the
+ * attempt alone the step resolves with nothing, as `createDocumentVersion`
+ * does.
  */
 async function createVersionWithGuards(params: {
 	documentId: string;
@@ -4154,6 +4308,7 @@ async function createVersionWithGuards(params: {
 	promptVersionId: string | undefined;
 	baselineVersion?: number;
 	liveRunId?: string;
+	generationStartedAt?: string;
 }): Promise<CreatedDocumentVersion | undefined> {
 	const {
 		documentId,
@@ -4162,10 +4317,18 @@ async function createVersionWithGuards(params: {
 		promptVersionId,
 		baselineVersion,
 		liveRunId,
+		generationStartedAt,
 	} = params;
 	const savedContent = contentAsSaved(content);
 	const runRowId =
 		liveRunId !== undefined ? versionRowIdForRun(liveRunId) : undefined;
+	const attemptStartedAt =
+		generationStartedAt !== undefined
+			? new Date(generationStartedAt)
+			: undefined;
+	const attemptMoved = (startedAt: Date | null | undefined): boolean =>
+		attemptStartedAt !== undefined &&
+		startedAt?.getTime() !== attemptStartedAt.getTime();
 
 	try {
 		return await db.$transaction(async (tx) => {
@@ -4175,6 +4338,9 @@ async function createVersionWithGuards(params: {
 					content: true,
 					version: true,
 					...(liveRunId !== undefined && { liveRunId: true }),
+					...(attemptStartedAt !== undefined && {
+						generationStartedAt: true,
+					}),
 				},
 			});
 			if (!liveDoc) {
@@ -4211,6 +4377,9 @@ async function createVersionWithGuards(params: {
 							}),
 							lte: liveDoc.version,
 						},
+						...(attemptStartedAt !== undefined && {
+							createdAt: { gte: attemptStartedAt },
+						}),
 						content: savedContent,
 						changedBy: userId,
 						promptVersionId: promptVersionId ?? null,
@@ -4244,6 +4413,10 @@ async function createVersionWithGuards(params: {
 			if (liveRunId !== undefined && liveDoc.content !== savedContent) {
 				throw new ContentChangedSinceSave();
 			}
+			// Before the baseline: a newer attempt explains whatever moved.
+			if (attemptMoved(liveDoc.generationStartedAt)) {
+				throw new AttemptEndedSinceSave();
+			}
 			if (
 				baselineVersion !== undefined &&
 				(liveDoc.version !== baselineVersion ||
@@ -4255,6 +4428,12 @@ async function createVersionWithGuards(params: {
 					baselineVersion,
 					actualVersion: liveDoc.version,
 				});
+			}
+			if (
+				attemptStartedAt !== undefined &&
+				liveDoc.content !== savedContent
+			) {
+				throw new ContentChangedSinceSave();
 			}
 
 			const maxVersion = await tx.documentVersion.findFirst({
@@ -4293,6 +4472,10 @@ async function createVersionWithGuards(params: {
 						content: savedContent,
 						liveRunId,
 					}),
+					...(attemptStartedAt !== undefined && {
+						content: savedContent,
+						generationStartedAt: attemptStartedAt,
+					}),
 				},
 				data: { version: nextVersion },
 			});
@@ -4301,9 +4484,13 @@ async function createVersionWithGuards(params: {
 					where: { id: documentId },
 					select: {
 						version: true,
-						...(liveRunId !== undefined && {
-							liveRunId: true,
+						...((liveRunId !== undefined ||
+							attemptStartedAt !== undefined) && {
 							content: true,
+						}),
+						...(liveRunId !== undefined && { liveRunId: true }),
+						...(attemptStartedAt !== undefined && {
+							generationStartedAt: true,
 						}),
 					},
 				});
@@ -4323,6 +4510,15 @@ async function createVersionWithGuards(params: {
 				) {
 					throw new ContentChangedSinceSave();
 				}
+				if (attemptMoved(actual?.generationStartedAt)) {
+					throw new AttemptEndedSinceSave();
+				}
+				if (
+					baselineVersion === undefined &&
+					attemptStartedAt !== undefined
+				) {
+					throw new ContentChangedSinceSave();
+				}
 				throw staleRegenerationFailure({
 					documentId,
 					phase: "version",
@@ -4336,6 +4532,7 @@ async function createVersionWithGuards(params: {
 				version: nextVersion,
 				baselineVersion,
 				liveRunId,
+				generationStartedAt,
 			});
 			return { version: nextVersion, versionId: row.id };
 		});
@@ -4346,7 +4543,19 @@ async function createVersionWithGuards(params: {
 				{
 					documentId,
 					liveRunId,
+					generationStartedAt,
 					code: "VERSION_SKIPPED_CONTENT_CHANGED",
+				},
+			);
+			return undefined;
+		}
+		if (error instanceof AttemptEndedSinceSave) {
+			activityLogger.info(
+				"Document version skipped: a newer attempt owns the document",
+				{
+					documentId,
+					generationStartedAt,
+					code: "VERSION_SKIPPED_ATTEMPT_ENDED",
 				},
 			);
 			return undefined;
@@ -4363,10 +4572,12 @@ async function createVersionWithGuards(params: {
  *
  * `options.baselineVersion` is the same baseline the save was given, passed
  * only when a visual slot is involved; `options.liveRunId` is the same run
- * guard, passed by a Proposal artifact run (Fizzy #2801). With either, the row
- * and the version bump happen only while those guards hold (see
- * {@link createVersionWithGuards}); without both — every slot-free run outside
- * an artifact run — the step below is unchanged.
+ * guard, passed by a Proposal artifact run (Fizzy #2801);
+ * `options.generationStartedAt` is the legacy attempt the save was scoped to
+ * (Fizzy #2946), ignored under the run guard. With any of them, the row and
+ * the version bump happen only while those guards hold (see
+ * {@link createVersionWithGuards}); without all — every slot-free run outside
+ * an artifact run that names no attempt — the step below is unchanged.
  *
  * Only the run-guarded step reports the row it wrote (or found, on a retry),
  * and resolves with nothing when it skipped the row because the document
@@ -4378,27 +4589,39 @@ export async function createDocumentVersion(
 	content: string,
 	userId: string,
 	promptVersionId: string | undefined,
-	options: { baselineVersion?: number } & ProposalLiveRunGuard,
+	options: {
+		baselineVersion?: number;
+		generationStartedAt?: string;
+	} & ProposalLiveRunGuard,
 ): Promise<CreatedDocumentVersion | undefined>;
 export async function createDocumentVersion(
 	documentId: string,
 	content: string,
 	userId: string,
 	promptVersionId?: string,
-	options?: { baselineVersion?: number },
+	options?: { baselineVersion?: number; generationStartedAt?: string },
 ): Promise<undefined>;
 export async function createDocumentVersion(
 	documentId: string,
 	content: string,
 	userId: string,
 	promptVersionId?: string,
-	options?: { baselineVersion?: number } & Partial<ProposalLiveRunGuard>,
+	options?: {
+		baselineVersion?: number;
+		generationStartedAt?: string;
+	} & Partial<ProposalLiveRunGuard>,
 ): Promise<CreatedDocumentVersion | undefined> {
 	activityLogger.info("Creating document version", { documentId });
 
 	const baselineVersion = options?.baselineVersion;
 	const liveRunId = options?.liveRunId;
-	if (baselineVersion !== undefined || liveRunId !== undefined) {
+	const generationStartedAt =
+		liveRunId === undefined ? options?.generationStartedAt : undefined;
+	if (
+		baselineVersion !== undefined ||
+		liveRunId !== undefined ||
+		generationStartedAt !== undefined
+	) {
 		try {
 			const created = await createVersionWithGuards({
 				documentId,
@@ -4407,6 +4630,9 @@ export async function createDocumentVersion(
 				promptVersionId,
 				baselineVersion,
 				liveRunId,
+				...(generationStartedAt !== undefined && {
+					generationStartedAt,
+				}),
 			});
 			return liveRunId !== undefined ? created : undefined;
 		} catch (error) {
@@ -4715,6 +4941,119 @@ export async function updateProjectWorkflowStatus(
 }
 
 /**
+ * What {@link updateProjectDocumentStatus} answers: the attempt it started,
+ * `{ held: false }` when a bulk run's start matched no document it holds, or
+ * nothing. Histories recorded before Fizzy #2801 carry `undefined` for a
+ * start, so a caller must branch on `held === false`, never on `undefined`.
+ */
+export type UpdateProjectDocumentStatusResult =
+	| { generationStartedAt: string; held?: undefined }
+	| { held: false; generationStartedAt?: undefined }
+	| undefined;
+
+/**
+ * The workflow that scheduled this activity, or undefined outside an
+ * activity (unit tests): then only the documents no run recorded itself on
+ * count as the run's.
+ */
+function ownWorkflowId(): string | undefined {
+	try {
+		return Context.current().info.workflowExecution?.workflowId;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The documents a batch or setup may start (Fizzy #2946), by id.
+ *
+ * A first run holds a document while it is DRAFT (a batch creates its
+ * documents DRAFT), QUEUED (a setup creates them QUEUED under its own id) or
+ * GENERATING (a setup that created them before that), under no workflow id or
+ * its own. A resume holds only the documents the pause queued for it, under
+ * its scheduled id or the Run now id: Run now starts its resume before it
+ * moves the documents across, so a resume that starts at once can reach one
+ * still queued under the scheduled id.
+ *
+ * And only while the body is still empty. Both create their documents with no
+ * content, and a run writes the body only when it saves at the end (a live
+ * preview goes to `liveContent`), so a document held for a run that has not
+ * reached it yet is always empty; one with a body is a person's, typed into
+ * it while it waited, and the run must not write over it.
+ *
+ * A setup's first run also takes back an empty document the stale-generation
+ * sweep failed with no workflow id on it. A setup that created its documents
+ * before they were queued under its id left them GENERATING with none, and the
+ * sweep fails those by age without asking whether the setup still runs: a
+ * setup row in that state can only be that false positive, since a dispatch
+ * stamps its own workflow id and the row is still empty. Such a setup's own
+ * unguarded start always took these back. A batch, whose documents wait DRAFT
+ * and are never swept, and a resume, whose documents carry its id, never take
+ * a failed one.
+ *
+ * Either way, a document already GENERATING (or QUEUED) under this very child
+ * is this write's own: a retry after a lost result, which must start the same
+ * document again rather than skip it, whatever its body.
+ */
+function heldByStartWhere(args: {
+	documentId: string;
+	kind: BulkRunKind;
+	childWorkflowId: string;
+	resumeOf: BulkRunResumeOf | undefined;
+}): Prisma.ProjectDocumentWhereInput {
+	const ownRetry: Prisma.ProjectDocumentWhereInput = {
+		status: { in: ["QUEUED", "GENERATING"] },
+		workflowId: args.childWorkflowId,
+	};
+	if (args.resumeOf) {
+		const { workflowIdBase, pauseCount } = args.resumeOf;
+		return {
+			id: args.documentId,
+			OR: [
+				{
+					status: "QUEUED",
+					content: "",
+					workflowId: {
+						in: [
+							bulkRunResumeWorkflowId(workflowIdBase, pauseCount),
+							bulkRunApiResumeWorkflowId(
+								workflowIdBase,
+								pauseCount,
+							),
+						],
+					},
+				},
+				ownRetry,
+			],
+		};
+	}
+	const own = ownWorkflowId();
+	return {
+		id: args.documentId,
+		OR: [
+			{
+				status: { in: ["DRAFT", "QUEUED", "GENERATING"] },
+				content: "",
+				OR: [
+					{ workflowId: null },
+					...(own ? [{ workflowId: own }] : []),
+				],
+			},
+			...(args.kind === "PROJECT_SETUP"
+				? [
+						{
+							status: "FAILED" as const,
+							workflowId: null,
+							content: "",
+						},
+					]
+				: []),
+			ownRetry,
+		],
+	};
+}
+
+/**
  * Update project document generation status
  *
  * `liveRunId` is a Proposal artifact run's guard (Fizzy #2801): with it the
@@ -4733,6 +5072,26 @@ export async function updateProjectWorkflowStatus(
  * scope its child's plan to it; and it ends a previous coordinated run's
  * ownership of the document, as the dispatcher's queue mark does, so that
  * run's late guarded writes match nothing.
+ *
+ * A bulk run's writes are scoped to the documents it still holds (Fizzy
+ * #2946): a person's save over a stalled run completes a document, and a
+ * newer generation stamps its own identity, and neither may be overwritten by
+ * a batch or setup that reaches the document late. Each scope is a new
+ * optional field, so a caller that sends none writes exactly as before.
+ * `liveRunId` wins over all of them; then, in this order:
+ *
+ * - `heldBy`: a batch or setup starting a document. The write lands only
+ *   while the run still holds the row (see {@link heldByStartWhere}), starts
+ *   the attempt and records the child's workflow id on the row, so the
+ *   stale-generation sweep asks Temporal about that child before it fails the
+ *   row. It answers `{ held: false }` when it matched nothing, and the run
+ *   skips the document.
+ * - `heldByPause`: a batch or setup failing its pending documents after its
+ *   pause was refused (the cap, or the run was cancelled meanwhile). Only the
+ *   documents it still holds, or queued for the resume that never starts.
+ * - `generationStartedAt`: a legacy (non-artifact) write of the attempt a
+ *   parent started. It lands only while the row is still that attempt, and
+ *   never starts one.
  */
 export async function updateProjectDocumentStatus(params: {
 	documentId: string;
@@ -4748,7 +5107,19 @@ export async function updateProjectDocumentStatus(params: {
 	liveRunId?: ProposalLiveRunGuard["liveRunId"];
 	/** This unguarded GENERATING starts a new attempt at any progress. */
 	startsAttempt?: boolean;
-}): Promise<{ generationStartedAt: string } | undefined> {
+	/** A bulk parent starting a document (status GENERATING). */
+	heldBy?: {
+		kind: BulkRunKind;
+		/** The child the parent is about to start for this document. */
+		childWorkflowId: string;
+		/** Set when the parent is a resume. */
+		resumeOf?: BulkRunResumeOf;
+	};
+	/** A bulk parent failing its pending documents after its pause failed. */
+	heldByPause?: { kind: BulkRunKind; resumeOf?: BulkRunResumeOf };
+	/** The attempt a legacy (non-artifact) write belongs to (ISO). */
+	generationStartedAt?: string;
+}): Promise<UpdateProjectDocumentStatusResult> {
 	const { documentId, status, progress, error, liveRunId } = params;
 
 	activityLogger.info("Updating project document status", {
@@ -4779,6 +5150,118 @@ export async function updateProjectDocumentStatus(params: {
 
 		if (status === "FAILED" && error) {
 			updateData.generationError = error;
+		}
+
+		if (liveRunId === undefined && params.heldBy) {
+			const { count } = await db.projectDocument.updateMany({
+				where: heldByStartWhere({
+					documentId,
+					kind: params.heldBy.kind,
+					childWorkflowId: params.heldBy.childWorkflowId,
+					resumeOf: params.heldBy.resumeOf,
+				}),
+				data: {
+					status,
+					generationProgress: progress,
+					updatedAt: attemptStartedAt,
+					generationStartedAt: attemptStartedAt,
+					workflowId: params.heldBy.childWorkflowId,
+					liveRunId: null,
+					liveAttempt: null,
+					liveContent: null,
+					// The QUEUED → GENERATING flip clears the reason, as the
+					// dispatch's own flip does: the row no longer waits.
+					generationQueueReason: null,
+					// A setup takes back a row the stale-generation sweep
+					// failed: the new attempt starts without that error.
+					generationError: null,
+				},
+			});
+			if (count === 0) {
+				activityLogger.info(
+					"Skipped a document the bulk run no longer holds",
+					{
+						documentId,
+						kind: params.heldBy.kind,
+						childWorkflowId: params.heldBy.childWorkflowId,
+						resumeOf: params.heldBy.resumeOf,
+					},
+				);
+				return { held: false };
+			}
+			activityLogger.info("Project document status updated", {
+				documentId,
+				status,
+			});
+			return { generationStartedAt: attemptStartedAt.toISOString() };
+		}
+
+		if (liveRunId === undefined && params.heldByPause) {
+			const own = ownWorkflowId();
+			const workflowIdBase =
+				params.heldByPause.resumeOf?.workflowIdBase ?? own;
+			const { count } = await db.projectDocument.updateMany({
+				where: {
+					id: documentId,
+					...documentsHeldByBulkRunWhere({
+						kind: params.heldByPause.kind,
+						workflowId: own,
+						// The resume the refused pause queued them for, named
+						// as the pause names it.
+						...(workflowIdBase && {
+							queuedFor: nextBulkRunResumeWorkflowId({
+								workflowIdBase,
+								pauseCount:
+									params.heldByPause.resumeOf?.pauseCount ??
+									0,
+							}),
+						}),
+					}),
+				},
+				data: updateData,
+			});
+			activityLogger.info(
+				count === 0
+					? "Skipped a document the paused bulk run no longer holds"
+					: "Project document status updated",
+				{ documentId, status, kind: params.heldByPause.kind },
+			);
+			return undefined;
+		}
+
+		if (liveRunId === undefined && params.generationStartedAt) {
+			// Never `updateData`'s attempt stamp: this write belongs to an
+			// attempt, it does not start one.
+			const { generationStartedAt: _restamp, ...attemptData } =
+				updateData;
+			const { count } = await db.projectDocument.updateMany({
+				where: {
+					id: documentId,
+					generationStartedAt: new Date(params.generationStartedAt),
+					// The child's legacy save already completed the document,
+					// so the parent's COMPLETE bookkeeping must still land on
+					// it; every other write only while the attempt runs, so a
+					// progress report cannot reopen a finished document.
+					status: {
+						in:
+							status === "COMPLETE"
+								? ["GENERATING", "COMPLETE"]
+								: ["QUEUED", "GENERATING"],
+					},
+				},
+				data: attemptData,
+			});
+			activityLogger.info(
+				count === 0
+					? "Skipped the status write of an attempt that no longer holds the document"
+					: "Project document status updated",
+				{
+					documentId,
+					status,
+					generationStartedAt: params.generationStartedAt,
+				},
+			);
+			return undefined;
 		}
 
 		if (liveRunId !== undefined) {
@@ -4832,155 +5315,17 @@ export async function updateProjectDocumentStatus(params: {
 }
 
 /**
- * Retrieve and format episodic memories for a project (combined activity)
- *
- * This activity combines retrieval and formatting in one call, making it
- * suitable for use in Temporal workflows that can only call async activities.
+ * Kept only so pre-patch histories replay. Shared documents do not recall
+ * private conversation summaries, including when this legacy command retries.
  */
-export async function retrieveAndFormatEpisodicMemory(params: {
+export async function retrieveAndFormatEpisodicMemory(_params: {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
 	query: string;
 	limit?: number;
 }): Promise<{ formattedContext: string; episodeCount: number }> {
-	const episodes = await retrieveEpisodicMemoryForProject(params);
-	const formattedContext = formatEpisodicMemoriesForContext(episodes);
-
-	return {
-		formattedContext,
-		episodeCount: episodes.length,
-	};
-}
-
-/**
- * Retrieve episodic memories for a project from user-level conversations
- *
- * This searches across ALL user conversations (not project-specific) to find
- * relevant past discussions that might inform the current document generation.
- */
-export async function retrieveEpisodicMemoryForProject(params: {
-	projectId: string;
-	userId: string;
-	organizationId?: string;
-	query: string;
-	limit?: number;
-}): Promise<EpisodeSearchResult[]> {
-	const { projectId, userId, organizationId, query, limit = 10 } = params;
-
-	const startTime = Date.now();
-	activityLogger.info("Retrieving user-level episodic memory", {
-		userId,
-		hasOrgContext: !!organizationId,
-		limit,
-	});
-
-	try {
-		// Check if episodic memory is enabled for this project
-		const ragSettings = await getProjectRagSettings(projectId);
-		const enableEpisodicMemory = ragSettings.enableEpisodicMemory ?? true;
-
-		if (!enableEpisodicMemory) {
-			activityLogger.info("Episodic memory disabled for project", {
-				projectId,
-			});
-			return [];
-		}
-
-		// Use centralized single entry point for embedding model access
-		const {
-			model: embeddingModel,
-			metadata,
-			trackUsage,
-		} = await getAIEmbeddingModelWithMetadata({ userId, organizationId });
-
-		activityLogger.debug(
-			"Resolved embedding model for episodic memory query",
-			{
-				modelName: metadata.modelString,
-				modelProvider: metadata.provider,
-			},
-		);
-
-		// Track usage (fire-and-forget)
-		trackUsage();
-
-		// Generate embedding for the query
-		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await embed({
-			model: embeddingModel,
-			value: query,
-		});
-		logEmbeddingUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			usageTokens: usage.tokens,
-			latencyMs: Date.now() - embeddingStart,
-		});
-
-		// Search for relevant past episodes at USER level (no projectId filter)
-		// This retrieves memories from all user conversations, not just project-specific ones
-		const episodes = await searchSimilarEpisodes({
-			queryEmbedding,
-			userId,
-			organizationId,
-			// NOTE: projectId intentionally NOT passed - we want user-level memories
-			topK: limit,
-			minSimilarity: 0.4, // Lower threshold for episodic memory
-		});
-
-		const duration = Date.now() - startTime;
-		activityLogger.info("User-level episodic memory retrieval complete", {
-			userId,
-			episodeCount: episodes.length,
-			durationMs: duration,
-			topSimilarity: episodes[0]?.similarity?.toFixed(3) || "N/A",
-		});
-
-		return episodes;
-	} catch (error) {
-		const duration = Date.now() - startTime;
-		activityLogger.warn("Failed to retrieve episodic memory", {
-			userId,
-			error: error instanceof Error ? error.message : String(error),
-			durationMs: duration,
-		});
-		// Return empty array on error - episodic memory is optional
-		return [];
-	}
-}
-
-/**
- * Format episodic memories for inclusion in document generation context
- *
- * Converts episode search results into a formatted string that provides
- * context about past project discussions and decisions.
- */
-export function formatEpisodicMemoriesForContext(
-	episodes: EpisodeSearchResult[],
-): string {
-	if (episodes.length === 0) {
-		return "";
-	}
-
-	const formattedEpisodes = episodes.map((ep, index) => {
-		const topicsStr =
-			ep.keyTopics.length > 0 ? `Topics: ${ep.keyTopics.join(", ")}` : "";
-
-		return `### Past Discussion ${index + 1}: ${ep.title}
-${topicsStr}
-${ep.summary}
-(Relevance: ${(ep.similarity * 100).toFixed(0)}%)`;
-	});
-
-	return `
-<past_project_discussions>
-The following are summaries of relevant past discussions about this project.
-Use these to maintain consistency with previous decisions and discussions:
-
-${formattedEpisodes.join("\n\n")}
-</past_project_discussions>
-`.trim();
+	return { formattedContext: "", episodeCount: 0 };
 }
 
 // ============================================================================
@@ -5739,9 +6084,7 @@ export async function createImportedDocument(params: {
 		documentType,
 	});
 
-	const wordCount = content
-		.split(/\s+/)
-		.filter((word) => word.length > 0).length;
+	const wordCount = countDocumentWords(content);
 
 	// Validate documentType against known enum values before casting
 	const VALID_DOCUMENT_TYPES: readonly string[] = [

@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	BacklogChangeProposal,
 	type ChangeItem,
+	normalizeChange,
 } from "../BacklogChangeProposal";
 
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
@@ -120,4 +121,20 @@ describe("BacklogChangeProposal — targetResolution badge", () => {
 			screen.queryByText(/New item — no existing match/),
 		).not.toBeInTheDocument();
 	});
+	it.each([true, false, undefined])(
+		"shows the deferred merge note only for a true flag (%s)",
+		(bodyMergeDeferred) => {
+			const raw = buildChange({ action: "update", bodyMergeDeferred });
+			const change = normalizeChange(raw);
+			renderProposal({ changes: [change] });
+			const note = screen.queryByText(
+				"AI ran out of time merging this description; it will be merged into the existing structure when you approve.",
+			);
+			if (bodyMergeDeferred) {
+				expect(note).toBeInTheDocument();
+			} else {
+				expect(note).not.toBeInTheDocument();
+			}
+		},
+	);
 });

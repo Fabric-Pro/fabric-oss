@@ -1,24 +1,13 @@
 import type { ReviewBaseline } from "./data";
 import { reviewFingerprint } from "./fingerprints";
+import { escapeHtml, reviewPage, storyCard, verdictTiles } from "./page";
 import type { SprintReviewCache } from "./sprint-cache";
 
-export function escapeHtml(text: string): string {
-	return text.replace(/[&<>"']/g, (character) => {
-		switch (character) {
-			case "&":
-				return "&amp;";
-			case "<":
-				return "&lt;";
-			case ">":
-				return "&gt;";
-			case '"':
-				return "&quot;";
-			case "'":
-				return "&#39;";
-			default:
-				return character;
-		}
-	});
+/** The name a person field holds: an identity, or a plain string some fields store. */
+function personName(
+	person: SprintReviewCache["assignedItems"][number]["engineer"] | undefined,
+): string | null {
+	return typeof person === "string" ? person : (person?.uniqueName ?? null);
 }
 
 function sourceLink(id: number, sourceUrl: string, title: string) {
@@ -193,10 +182,30 @@ export function renderSprintStoryReview(
 	const workload = cache.assignedItems
 		.map(
 			(item) =>
-				`<li>${sourceLink(item.id, item.sourceUrl, item.workItemType)}: ${escapeHtml(item.state)} · ${escapeHtml(item.iterationPath)} · assigned: ${escapeHtml(item.assignedTo?.uniqueName ?? "unassigned")} · engineer: ${escapeHtml(typeof item.engineer === "string" ? item.engineer : (item.engineer?.uniqueName ?? "unassigned"))} · ${parentResolutionLabels[item.parentResolution]} · stories: ${item.storyIds.join(", ") || "none selected"}</li>`,
+				`<tr><td>${sourceLink(item.id, item.sourceUrl, item.workItemType)}</td><td>${escapeHtml(item.state)}</td><td>${escapeHtml(item.iterationPath)}</td><td>${escapeHtml(item.assignedTo?.uniqueName ?? "unassigned")}</td><td>${escapeHtml(personName(item.engineer) ?? "unassigned")}</td><td>${parentResolutionLabels[item.parentResolution]}</td><td>${item.storyIds.join(", ") || "none selected"}</td></tr>`,
 		)
 		.join("");
-	const rows = cache.stories
+	const assignedItems = new Map(
+		cache.assignedItems.map((item) => [item.id, item]),
+	);
+	// A story is often picked through a person field other than AssignedTo
+	// (an engineer field, say), so the card names whoever selected it.
+	const assigneesOf = (story: (typeof cache.stories)[number]) => {
+		const names = new Set<string>();
+		if (story.observation.assignedTo) {
+			names.add(story.observation.assignedTo);
+		}
+		for (const source of story.observation.discoverySources) {
+			const item = assignedItems.get(source.assignedItemId);
+			const name =
+				personName(item?.engineer) ?? item?.assignedTo?.uniqueName;
+			if (name) {
+				names.add(name);
+			}
+		}
+		return [...names].join(", ") || "unassigned";
+	};
+	const cards = cache.stories
 		.map((story) => {
 			const context = story.observation.contextItems
 				.map((item) => {
@@ -207,10 +216,39 @@ export function renderSprintStoryReview(
 					return `<li>${escapeHtml(roles)}: ${sourceLink(item.id, item.sourceUrl, item.title)} · ${escapeHtml(item.workItemType)} · ${escapeHtml(item.state)}</li>`;
 				})
 				.join("");
-			return `<article><h2>${sourceLink(story.id, story.observation.sourceUrl, story.observation.title)}</h2><p>${escapeHtml(story.observation.state)} · assigned: ${escapeHtml(story.observation.assignedTo ?? "unassigned")} · ${escapeHtml(story.review.verdict)}</p><p>${escapeHtml(story.review.summary)}</p><ul>${story.review.issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul><p>Discovered from ${story.observation.discoverySources.map((source) => `#${source.assignedItemId} (${source.kind})`).join(", ")}</p><h3>Immediate context</h3><ul>${context}</ul></article>`;
+			const discovered = story.observation.discoverySources
+				.map((source) => `#${source.assignedItemId} (${source.kind})`)
+				.join(", ");
+			return storyCard({
+				titleHtml: sourceLink(
+					story.id,
+					story.observation.sourceUrl,
+					story.observation.title,
+				),
+				verdict: story.review.verdict,
+				facts: [
+					story.observation.state,
+					`assigned: ${assigneesOf(story)}`,
+					`from ${discovered}`,
+				],
+				summary: story.review.summary,
+				issues: story.review.issues,
+				moreHtml: `<details><summary>Immediate context (${story.observation.contextItems.length})</summary><ul>${context || "<li>None</li>"}</ul></details>`,
+			});
 		})
 		.join("");
-	const html = `<!doctype html><html><head><meta charset="utf-8"><title>Sprint story review</title></head><body><h1>Sprint story review</h1><p>${escapeHtml(headline)}</p><ul>${dailyChanges.map((change) => `<li>${escapeHtml(change)}</li>`).join("")}</ul><h2>Assigned sprint workload</h2><ul>${workload}</ul>${rows}</body></html>`;
+	const html = reviewPage({
+		title: "Sprint story review",
+		headline,
+		tiles: [
+			{ label: "Stories", value: counts.total },
+			...verdictTiles(cache.stories.map((story) => story.review.verdict)),
+			{ label: "Reviewed now", value: reviewed },
+			{ label: "Reused", value: counts.reused },
+		],
+		changes: previous ? dailyChanges : null,
+		sectionsHtml: `<section><p class="label">Stories</p><div class="cards">${cards || '<p class="empty">No stories in this selection.</p>'}</div></section><section><p class="label">Assigned sprint workload</p><div class="panel scroll"><table><thead><tr><th>Item</th><th>State</th><th>Iteration</th><th>Assigned</th><th>Engineer</th><th>Parent</th><th>Stories</th></tr></thead><tbody>${workload}</tbody></table></div></section>`,
+	});
 	if (html.length > 400_000) {
 		throw new Error("Rendered story review exceeds output limit");
 	}

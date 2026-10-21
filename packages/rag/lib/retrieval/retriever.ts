@@ -74,6 +74,7 @@ export async function retrieveContext(
 			{
 				userId,
 				organizationId,
+				featureKey: "knowledge-search",
 				tags: ["rag-query", "similarity-search"],
 				conversationId: options.conversationId,
 			},

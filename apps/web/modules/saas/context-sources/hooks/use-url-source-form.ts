@@ -1,5 +1,6 @@
 "use client";
 
+import { ORPCError } from "@orpc/client";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
@@ -12,6 +13,7 @@ import type {
 import {
 	type BulkSubmitResult,
 	type BulkUrlsMode,
+	describeUnusableProviders,
 	isProviderNotConfiguredError,
 	knowledgeBaseCategoryErrors,
 	knowledgeBaseCategoryPayload,
@@ -49,6 +51,12 @@ interface UseUrlSourceFormOptions {
 	organizationId: string | null;
 	organizationSlug: string | null;
 	/**
+	 * The viewer can connect search providers here. Saving one takes an
+	 * organization admin or owner, so for anyone else the notice asks for an
+	 * admin instead of linking to settings they cannot change.
+	 */
+	canManageSearchProviders: boolean;
+	/**
 	 * A link must be classified before it is saved. The project readiness
 	 * checklist is the only consumer of that classification, so only a project
 	 * owner running it turns this on; off, the category field is absent and
@@ -69,6 +77,53 @@ interface UseUrlSourceFormOptions {
 }
 
 /**
+ * What the search-provider pre-flight knows, which drives the notice and the
+ * submit gate:
+ *   - `checking`: the first answer is still on its way.
+ *   - `failed`: the request failed, with no earlier answer that lets a link
+ *     through. That says nothing about configuration, so it never blocks
+ *     submit; the server checks again and answers with a typed code.
+ *   - `unchecked`: the viewer may not list the providers (a project guest is
+ *     not an organization member). The server decides on submit.
+ *   - `missing`: no enabled provider with a key can read pages.
+ *   - `ready`: one can.
+ */
+type UrlSourcePreflightStatus =
+	| "checking"
+	| "failed"
+	| "unchecked"
+	| "missing"
+	| "ready";
+
+/**
+ * The status for what the pre-flight query holds. A cached "ready" outlives
+ * a failed refetch: the server re-checks on submit anyway. A cached
+ * "missing" does not, because it would keep blocking submit for a provider
+ * connected since, with nothing to retry. With no answer yet, a refetch
+ * resets the query to pending and clears its error, so a "Try again" the
+ * viewer is waiting on keeps the failure showing; a re-read on reopen or
+ * focus starts over at "checking".
+ */
+function preflightStatusOf(
+	query: {
+		data: { hasAnyScrapeCapable: boolean } | null | undefined;
+		isError: boolean;
+	},
+	retrying: boolean,
+): UrlSourcePreflightStatus {
+	if (query.data === undefined) {
+		return query.isError || retrying ? "failed" : "checking";
+	}
+	if (query.data === null) {
+		return "unchecked";
+	}
+	if (query.data.hasAnyScrapeCapable) {
+		return "ready";
+	}
+	return query.isError ? "failed" : "missing";
+}
+
+/**
  * State and submit for the Link tab — a single URL or a bulk paste — plus
  * the search-provider pre-flight that decides whether a link can be added at
  * all. Rendered by `UrlSourceTabContent`.
@@ -78,6 +133,7 @@ export function useUrlSourceForm({
 	open,
 	organizationId,
 	organizationSlug,
+	canManageSearchProviders,
 	requireKnowledgeBaseCategory,
 	allowLiveRefresh,
 	onSourceAdded,
@@ -102,6 +158,8 @@ export function useUrlSourceForm({
 	>({});
 	const [noticeOverride, setNoticeOverride] =
 		useState<ProviderNotConfiguredData | null>(null);
+	// The viewer pressed "Try again" and that re-read has not settled.
+	const [preflightRetrying, setPreflightRetrying] = useState(false);
 
 	// ── Bulk URL paste mode state (Commit 4) ─────────────────────────────
 	// Mode toggle between Single URL and Multiple URLs. Default to SINGLE so
@@ -129,22 +187,36 @@ export function useUrlSourceForm({
 	//   - `scrapeProvider`: picked provider for SINGLE_PAGE / fallback.
 	//   - `crawlProvider`: picked provider for PATH_PREFIX (Firecrawl or
 	//     Cloudflare Browser Rendering).
-	//   - `hasAnyScrapeCapable`: true ⇔ any enabled scrape-capable row exists (drives the notice gate).
+	//   - `hasAnyScrapeCapable`: true ⇔ any enabled scrape-capable row exists (drives `preflightStatus`).
 	//   - `hasCrawlCapable`: true ⇔ Firecrawl or Cloudflare is enabled (drives the
 	//     PATH_PREFIX radio gate).
-	// Refetch on window focus and re-mount so a user who toggles a key in
-	// another tab sees the notice update without a full reload.
+	//   - `disabledScrapeProviders` / `searchOnlyProviders`: what the notice
+	//     names when keys are saved but none can read pages.
+	// `null` when the server refuses to list the providers (see
+	// `UrlSourcePreflightStatus`).
+	// Re-read on every open (`staleTime: 0`) and on window focus, so a user who
+	// just connected a provider, here or in another tab, is not shown the
+	// notice from a cached answer.
 	const providersConfigQuery = useQuery({
 		queryKey: [
 			"url-source-providers-preflight",
 			organizationId ?? "personal",
 		],
 		queryFn: async () => {
-			const providers = organizationId
-				? await orpcClient.searchProviders.getOrganizationProviders({
+			const providers = await (organizationId
+				? orpcClient.searchProviders.getOrganizationProviders({
 						organizationId,
 					})
-				: await orpcClient.searchProviders.getUserProviders();
+				: orpcClient.searchProviders.getUserProviders()
+			).catch((error: unknown) => {
+				if (error instanceof ORPCError && error.code === "FORBIDDEN") {
+					return null;
+				}
+				throw error;
+			});
+			if (providers === null) {
+				return null;
+			}
 			const scrapeProvider = pickPreferredProvider(providers, false);
 			const crawlProvider = pickPreferredProvider(providers, true);
 			return {
@@ -154,21 +226,26 @@ export function useUrlSourceForm({
 					null) as UrlSourceProviderName | null,
 				crawlProviderName: (crawlProvider?.providerName ??
 					null) as UrlSourceProviderName | null,
+				...describeUnusableProviders(providers),
 			};
 		},
+		staleTime: 0,
 		refetchOnWindowFocus: true,
 		// Only run when the dialog is open so we don't fetch eagerly on every
 		// mount of the parent contexts list.
 		enabled: open,
 	});
 
-	const hasAnyScrapeCapable =
-		providersConfigQuery.data?.hasAnyScrapeCapable ?? false;
-	const hasCrawlCapable = providersConfigQuery.data?.hasCrawlCapable ?? false;
-	const scrapeProviderName =
-		providersConfigQuery.data?.scrapeProviderName ?? null;
-	const crawlProviderName =
-		providersConfigQuery.data?.crawlProviderName ?? null;
+	const preflight = providersConfigQuery.data;
+	const preflightStatus = preflightStatusOf(
+		providersConfigQuery,
+		preflightRetrying,
+	);
+	const hasCrawlCapable = preflight?.hasCrawlCapable ?? false;
+	const scrapeProviderName = preflight?.scrapeProviderName ?? null;
+	const crawlProviderName = preflight?.crawlProviderName ?? null;
+	const disabledScrapeProviders = preflight?.disabledScrapeProviders ?? [];
+	const searchOnlyProviders = preflight?.searchOnlyProviders ?? [];
 
 	// Pre-built settings path for the notice CTA. The org slug determines
 	// the prefix per spec §9.1 — `/app/settings/search-providers` for
@@ -357,6 +434,10 @@ export function useUrlSourceForm({
 						maxPages: link.maxPages ?? null,
 					});
 				} catch (error) {
+					let message =
+						error instanceof Error && error.message
+							? error.message
+							: "Failed";
 					if (isProviderNotConfiguredError(error)) {
 						// Capture once — same provider gate would fire for
 						// every URL. We surface the notice card after settle
@@ -364,11 +445,14 @@ export function useUrlSourceForm({
 						if (notice === null) {
 							notice = error.data;
 						}
+						// The server's message sends the viewer to settings
+						// only an admin can change; the card says who can fix
+						// it, so the row only says what happened.
+						message =
+							error.data.code === "CRAWL_PROVIDER_NOT_CONFIGURED"
+								? "No connected search provider can crawl this path."
+								: "No connected search provider can add this URL.";
 					}
-					const message =
-						error instanceof Error && error.message
-							? error.message
-							: "Failed";
 					results[idx] = { url, ok: false, error: message };
 				} finally {
 					setBulkProgress((prev) =>
@@ -466,12 +550,25 @@ export function useUrlSourceForm({
 		bulkResults,
 		requireKnowledgeBaseCategory,
 		allowLiveRefresh,
-		hasAnyScrapeCapable,
 		hasCrawlCapable,
 		scrapeProviderName,
 		crawlProviderName,
-		preflightLoading:
-			providersConfigQuery.isLoading || providersConfigQuery.isFetching,
+		disabledScrapeProviders,
+		searchOnlyProviders,
+		canManageSearchProviders,
+		preflightStatus,
+		/** A "Try again" on a failed pre-flight is in flight. */
+		preflightRetrying,
+		// Returns nothing: a returned promise would make the Button disable
+		// itself while it runs, and drop keyboard focus.
+		retryPreflight: () => {
+			setPreflightRetrying(true);
+			void providersConfigQuery
+				.refetch()
+				.finally(() => setPreflightRetrying(false));
+		},
+		/** Changes with every failed read, so a repeated failure is announced. */
+		preflightFailureCount: providersConfigQuery.errorUpdateCount,
 		/** Submit whichever mode is showing: the single URL or the pasted list. */
 		submit: () => (bulkMode === "MULTI" ? submitBulk() : submitSingle()),
 		reset,

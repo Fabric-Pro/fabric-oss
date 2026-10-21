@@ -28,6 +28,7 @@ import {
 	calculateKeywordMatchScore,
 	extractKeywordsFromDescription,
 } from "./capability-keywords";
+import { toolSearchUsage } from "./tool-search-usage";
 import type {
 	SearchAvailableAgentsInput,
 	SearchAvailableAgentsOutput,
@@ -264,7 +265,7 @@ async function runAgentSearch(
 			// Credentials are fetched internally by generateEmbedding()
 			const result = await generateEmbedding(
 				input.query,
-				tenantContext,
+				toolSearchUsage(tenantContext),
 				undefined,
 			);
 			queryEmbedding = result.embedding;
@@ -362,7 +363,7 @@ async function runAgentSearch(
 					const text = buildAgentSearchText(agent);
 					const result = await generateEmbedding(
 						text,
-						tenantContext,
+						toolSearchUsage(tenantContext),
 						undefined,
 					);
 					const embedding = result.embedding;

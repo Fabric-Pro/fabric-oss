@@ -32,8 +32,9 @@
  *   • else                              → SINGLE_PAGE
  */
 
+import { ORPCError } from "@orpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -80,11 +81,21 @@ const {
 	trackEventMock: vi.fn(),
 	// Mutable holder so individual tests can flip useOrganizationContext()
 	// between personal (null) and org (non-null) without a second file.
+	// `isOrganizationAdmin` and `userRole` are the viewer's standing in that
+	// organization, as the real hook reports them. They agree except for a
+	// platform admin, whom the real hook reports as `isOrganizationAdmin`
+	// whatever their role in the organization.
 	orgContextRef: {
 		current: {
-			organizationId: null as string | null,
-			organizationSlug: null as string | null,
+			organizationId: null,
+			organizationSlug: null,
 			basePath: "/app",
+		} as {
+			organizationId: string | null;
+			organizationSlug: string | null;
+			basePath: string;
+			isOrganizationAdmin?: boolean;
+			userRole?: string | null;
 		},
 	},
 }));
@@ -455,7 +466,8 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 	it("shows the notice and disables submit when the firecrawl row is enabled=false", async () => {
 		// Saved-then-toggled-off — row exists but `enabled` is false. The
 		// pre-flight treats this as un-configured so a deliberately
-		// disabled key keeps the notice up.
+		// disabled key keeps the notice up, and names the provider that is
+		// switched off rather than claiming none is configured (Fizzy #3068).
 		getUserSearchProvidersMock.mockResolvedValue(NOT_CONFIGURED_DISABLED);
 		const user = userEvent.setup();
 		wrap(
@@ -469,11 +481,18 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 		await user.click(getTabTrigger("link"));
 		await waitFor(() => {
 			expect(
-				screen.getByText(
-					/URL sources need a search provider with scraping/i,
-				),
+				screen.getByText(/Firecrawl is connected but turned off/i),
 			).toBeInTheDocument();
 		});
+		expect(
+			screen.queryByText(
+				/URL sources need a search provider with scraping/i,
+			),
+		).not.toBeInTheDocument();
+		// Personal context: the viewer owns the key, so the card links to it.
+		expect(
+			screen.getByRole("link", { name: /Settings → Search Providers/i }),
+		).toHaveAttribute("href", "/app/settings/search-providers");
 		expect(
 			screen.getByRole("button", { name: /^Add Context$/i }),
 		).toBeDisabled();
@@ -934,6 +953,264 @@ describe("ContextUploaderDialog — URL Context Sources v2 Link tab", () => {
 				),
 			).toBeInTheDocument();
 		});
+	});
+});
+
+// ── Fizzy #3068: who the notice sends to settings, and a failed pre-flight ──
+
+const COULD_NOT = /couldn[’']t|could not/i;
+const SEARCH_PROVIDER = /search provider/i;
+
+function linkTabPanel(): HTMLElement {
+	const panel = document.getElementById("context-tabpanel-link");
+	if (!panel) {
+		throw new Error("Link tab panel #context-tabpanel-link not found");
+	}
+	return panel;
+}
+
+function searchProviderSettingsLinks(): HTMLElement[] {
+	return screen
+		.queryAllByRole("link")
+		.filter((link) =>
+			(link.getAttribute("href") ?? "").includes(
+				"settings/search-providers",
+			),
+		);
+}
+
+/**
+ * The deepest elements whose text says the search providers could not be
+ * loaded, matched on `textContent` so the wording may span inline elements.
+ */
+function preflightErrorElements(): HTMLElement[] {
+	const says = (element: Element | null) => {
+		const text = element?.textContent ?? "";
+		return COULD_NOT.test(text) && SEARCH_PROVIDER.test(text);
+	};
+	return screen.queryAllByText(
+		(_content, element) =>
+			says(element) &&
+			Array.from(element?.children ?? []).every((child) => !says(child)),
+	);
+}
+
+describe("ContextUploaderDialog — Link tab provider notice (Fizzy #3068)", () => {
+	beforeEach(() => {
+		processLinkMock.mockReset();
+		getUserSearchProvidersMock.mockReset();
+		getOrgSearchProvidersMock.mockReset();
+		contextsListMock.mockReset();
+		mcpConfigsListMock.mockReset();
+		trackEventMock.mockReset();
+		contextsListMock.mockResolvedValue({ contexts: [] });
+		mcpConfigsListMock.mockResolvedValue([]);
+		orgContextRef.current = {
+			organizationId: null,
+			organizationSlug: null,
+			basePath: "/app",
+			isOrganizationAdmin: false,
+			userRole: null,
+		};
+	});
+
+	function enterOrganizationAs(role: "member" | "admin" | "owner") {
+		orgContextRef.current = {
+			organizationId: "org_42",
+			organizationSlug: "example-org",
+			basePath: "/app/example-org",
+			isOrganizationAdmin: role !== "member",
+			userRole: role,
+		};
+	}
+
+	function renderDialog() {
+		return wrap(
+			<ContextUploaderDialog
+				projectId="proj_1"
+				open
+				onOpenChange={vi.fn()}
+			/>,
+		);
+	}
+
+	it("tells a member an organization admin has to connect a provider, without a settings link they cannot use", async () => {
+		// A member can add context but holds no ORG_INTEGRATIONS_MANAGE, so
+		// Settings → Search Providers would only show them a read-only page.
+		enterOrganizationAs("member");
+		getOrgSearchProvidersMock.mockResolvedValue(NOT_CONFIGURED_EMPTY);
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(getTabTrigger("link"));
+		await waitFor(() =>
+			expect(getOrgSearchProvidersMock).toHaveBeenCalledWith({
+				organizationId: "org_42",
+			}),
+		);
+
+		expect(
+			await within(linkTabPanel()).findAllByText(/admin/i),
+		).not.toHaveLength(0);
+		expect(searchProviderSettingsLinks()).toHaveLength(0);
+	});
+
+	it("keeps a member away from the settings link when a submit reports the provider is gone", async () => {
+		// The pre-flight saw a provider; it was removed before the submit,
+		// whose refusal carries the server's own settings path.
+		enterOrganizationAs("member");
+		getOrgSearchProvidersMock.mockResolvedValue(CONFIGURED_ROWS);
+		processLinkMock.mockRejectedValueOnce({
+			data: {
+				code: "SCRAPE_PROVIDER_NOT_CONFIGURED",
+				settingsPath: "/app/example-org/settings/search-providers",
+			},
+			message: "URL sources need a search provider with scraping.",
+		});
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(getTabTrigger("link"));
+		await screen.findByTestId("url-source-indexing-with");
+		await user.type(screen.getByLabelText("URL"), "https://example.com/");
+		await user.click(
+			screen.getByRole("button", { name: /^Add Context$/i }),
+		);
+		await waitFor(() => expect(processLinkMock).toHaveBeenCalledTimes(1));
+
+		expect(
+			await within(linkTabPanel()).findAllByText(/admin/i),
+		).not.toHaveLength(0);
+		expect(searchProviderSettingsLinks()).toHaveLength(0);
+	});
+
+	it.each(["admin", "owner"] as const)(
+		"links an organization %s to the organization's search provider settings",
+		async (role) => {
+			enterOrganizationAs(role);
+			getOrgSearchProvidersMock.mockResolvedValue(NOT_CONFIGURED_EMPTY);
+			const user = userEvent.setup();
+			renderDialog();
+
+			await user.click(getTabTrigger("link"));
+
+			await waitFor(() =>
+				expect(
+					searchProviderSettingsLinks().map((link) =>
+						link.getAttribute("href"),
+					),
+				).toEqual(["/app/example-org/settings/search-providers"]),
+			);
+		},
+	);
+
+	it("says the providers could not be loaded instead of asking to configure one when the pre-flight request fails", async () => {
+		enterOrganizationAs("member");
+		getOrgSearchProvidersMock
+			.mockRejectedValueOnce(new Error("Network error"))
+			.mockResolvedValue(CONFIGURED_ROWS);
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(getTabTrigger("link"));
+
+		await waitFor(() =>
+			expect(
+				preflightErrorElements(),
+				"an element saying the search providers could not be loaded",
+			).not.toHaveLength(0),
+		);
+		expect(
+			screen.queryByText(
+				/URL sources need a search provider with scraping/i,
+			),
+		).not.toBeInTheDocument();
+		expect(screen.queryByText(/Configure one in/i)).not.toBeInTheDocument();
+		expect(searchProviderSettingsLinks()).toHaveLength(0);
+
+		await user.click(screen.getByRole("button", { name: /try again/i }));
+
+		await waitFor(() =>
+			expect(getOrgSearchProvidersMock).toHaveBeenCalledTimes(2),
+		);
+		await screen.findByTestId("url-source-indexing-with");
+		expect(preflightErrorElements()).toHaveLength(0);
+		expect(
+			screen.getByRole("button", { name: /^Add Context$/i }),
+		).toBeEnabled();
+	});
+
+	it("treats a platform admin who is only a member of the organization as a member, without a settings link", async () => {
+		// Platform admins count as `isOrganizationAdmin`, but the server saves
+		// a search provider only for the organization's own admins and owners.
+		orgContextRef.current = {
+			organizationId: "org_42",
+			organizationSlug: "example-org",
+			basePath: "/app/example-org",
+			isOrganizationAdmin: true,
+			userRole: "member",
+		};
+		getOrgSearchProvidersMock.mockResolvedValue(NOT_CONFIGURED_EMPTY);
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(getTabTrigger("link"));
+
+		expect(
+			await within(linkTabPanel()).findByText(
+				/Ask an organization admin to connect one/i,
+			),
+		).toBeInTheDocument();
+		expect(
+			within(linkTabPanel()).queryByText(/Configure one in/i),
+		).not.toBeInTheDocument();
+		expect(searchProviderSettingsLinks()).toHaveLength(0);
+	});
+
+	it("lets a project guest, who may not list the organization's providers, add a link without a configuration or error card", async () => {
+		// A project guest has no role in the organization, so the server
+		// refuses to list its search providers, every time.
+		orgContextRef.current = {
+			organizationId: "org_42",
+			organizationSlug: "example-org",
+			basePath: "/app/example-org",
+			isOrganizationAdmin: false,
+			userRole: null,
+		};
+		getOrgSearchProvidersMock.mockRejectedValue(
+			new ORPCError("FORBIDDEN", {
+				message: "Not a member of this organization",
+			}),
+		);
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(getTabTrigger("link"));
+		await waitFor(() =>
+			expect(getOrgSearchProvidersMock).toHaveBeenCalledWith({
+				organizationId: "org_42",
+			}),
+		);
+		await user.type(screen.getByLabelText("URL"), "https://example.com/");
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: /^Add Context$/i }),
+			).toBeEnabled(),
+		);
+		expect(
+			screen.queryByText(
+				/URL sources need a search provider with scraping/i,
+			),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByText(/connected but turned off/i),
+		).not.toBeInTheDocument();
+		expect(preflightErrorElements()).toHaveLength(0);
+		expect(
+			screen.queryByRole("button", { name: /try again/i }),
+		).not.toBeInTheDocument();
+		expect(searchProviderSettingsLinks()).toHaveLength(0);
 	});
 });
 

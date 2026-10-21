@@ -57,6 +57,8 @@ vi.mock("@repo/utils", async () => {
 	return { ...actual, renderTemplate: mocks.renderTemplate };
 });
 
+import { logger } from "@repo/logs";
+
 import { reanalyzeBodyByKind } from "../src/lib/reanalyze-body-by-kind";
 
 const BUG_BODY = `## Bug: Login fails
@@ -116,7 +118,10 @@ describe("reanalyzeBodyByKind — BUG", () => {
 
 		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ projectId: "p1" }),
+			expect.objectContaining({
+				projectId: "p1",
+				featureKey: "backlog-update",
+			}),
 		);
 		expect(res.fallbackUsed).toBe(false);
 		expect(res.description).toContain("Null form ref on first render.");
@@ -448,5 +453,108 @@ describe("reanalyzeBodyByKind — markdown entity cleanup", () => {
 		const result = await reanalyzeBodyByKind({ ...BASE, kind: "BUG" });
 
 		expect(result.description).toContain("Affects R&D and Q&A flows.");
+	});
+});
+
+describe("merge cancellation", () => {
+	it.each(["BUG", "FEATURE"] as const)(
+		"forwards abort to %s generation and safe-holds",
+		async (kind) => {
+			const controller = new AbortController();
+			mocks.generateObject.mockImplementation(async ({ abortSignal }) => {
+				expect(abortSignal).toBe(controller.signal);
+				controller.abort();
+				throw new DOMException("Cancelled", "AbortError");
+			});
+			const result = await reanalyzeBodyByKind({
+				...BASE,
+				kind,
+				abortSignal: controller.signal,
+			});
+			expect(mocks.generateObject).toHaveBeenCalledOnce();
+			expect(mocks.generateObject.mock.calls[0][0].abortSignal).toBe(
+				controller.signal,
+			);
+			expect(logger.warn).toHaveBeenCalled();
+			expect(logger.error).not.toHaveBeenCalled();
+			expect(result).toMatchObject({
+				description: BASE.existingDescription,
+				fallbackUsed: true,
+				fallbackReason: "aborted",
+			});
+		},
+	);
+	it("does no prompt lookup or model work for a pre-aborted signal", async () => {
+		const result = await reanalyzeBodyByKind({
+			...BASE,
+			kind: "BUG",
+			abortSignal: AbortSignal.abort(),
+		});
+		expect(result.fallbackReason).toBe("aborted");
+		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+
+	it("stops before model resolution if cancelled during prompt lookup", async () => {
+		const controller = new AbortController();
+		mocks.getBoundPromptForAgent.mockImplementationOnce(async () => {
+			controller.abort();
+			return { version: { content: "TEMPLATE" }, format: "HANDLEBARS" };
+		});
+		const result = await reanalyzeBodyByKind({
+			...BASE,
+			kind: "BUG",
+			abortSignal: controller.signal,
+		});
+		expect(result.fallbackReason).toBe("aborted");
+		expect(mocks.getAIModelWithMetadata).not.toHaveBeenCalled();
+		expect(mocks.generateObject).not.toHaveBeenCalled();
+	});
+
+	it.each(["BUG", "FEATURE"] as const)(
+		"keeps a completed %s response even if the signal fired before it returned",
+		async (kind) => {
+			const controller = new AbortController();
+			const body =
+				kind === "BUG" ? BUG_BODY : "## Story\nExisting feature body.";
+			mocks.generateObject.mockImplementationOnce(async () => {
+				controller.abort();
+				return {
+					object:
+						kind === "BUG"
+							? { markdown: body, needsMoreInfo: false }
+							: { description: body },
+					usage: {},
+				};
+			});
+			const result = await reanalyzeBodyByKind({
+				...BASE,
+				kind,
+				existingDescription: body,
+				abortSignal: controller.signal,
+			});
+			expect(result).toMatchObject({
+				fallbackUsed: false,
+				description: body,
+			});
+		},
+	);
+
+	it("safe-holds a provider AbortError when our signal did not abort", async () => {
+		mocks.generateObject.mockRejectedValueOnce(
+			new DOMException("Provider timed out", "AbortError"),
+		);
+		const result = await reanalyzeBodyByKind({
+			...BASE,
+			kind: "BUG",
+			abortSignal: new AbortController().signal,
+		});
+		expect(result).toMatchObject({
+			fallbackUsed: true,
+			fallbackReason: "llm_error",
+			description: BUG_BODY,
+		});
+		expect(logger.error).toHaveBeenCalled();
 	});
 });

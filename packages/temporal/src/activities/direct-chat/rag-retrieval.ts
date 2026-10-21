@@ -11,6 +11,7 @@ import {
 	getDefaultRagSettings,
 	getEffectiveRagSettings,
 } from "@repo/database";
+import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	type SecondaryUsageInput,
@@ -452,12 +453,15 @@ async function retrieveWorkspaceDocuments(
 		logger.info("[WorkspaceRAG] Generating query embedding...");
 		const embeddingResult = await generateEmbedding(
 			message,
-			{
-				userId,
-				organizationId,
-				...secondaryUsageFields(usage ?? {}),
-				tags: ["workspace-rag", "query"],
-			},
+			withDefaultFeature(
+				{
+					userId,
+					organizationId,
+					...secondaryUsageFields(usage ?? {}),
+					tags: ["workspace-rag", "query"],
+				},
+				"chat-agent",
+			),
 			providerConfig,
 		);
 		logger.info("[WorkspaceRAG] Query embedding generated", {

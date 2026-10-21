@@ -1,10 +1,12 @@
 import { defineConfig } from "tsdown";
+import { noDeclarationMapComments } from "../../tooling/tsdown/no-declaration-map-comments.mjs";
 
 export default defineConfig({
 	entry: ["src/index.ts"],
 	format: ["esm", "cjs"],
 	// No declaration maps: they would point into src/, which is not published.
 	dts: { sourcemap: false },
+	...noDeclarationMapComments(),
 	sourcemap: true,
 	// tsup took ES6 from the shared tsconfig; keep the published syntax level.
 	target: "es2015",

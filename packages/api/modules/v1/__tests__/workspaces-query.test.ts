@@ -181,6 +181,7 @@ describe("v1 workspaces.query", () => {
 		expect(mockGetAIEmbeddingModel).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-test",
+			featureKey: "knowledge-search",
 		});
 		expect(mockEmbed).toHaveBeenCalledWith(
 			expect.objectContaining({ value: "OAuth flow" }),

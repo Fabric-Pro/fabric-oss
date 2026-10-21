@@ -66,6 +66,8 @@ function enrichedChange(routing = enrichAnnotation()): ChangeItem {
 		},
 		reasoning: "Raised twice",
 		sourceContext: "meeting_transcript",
+		// The analysis pass merged the body into F-12's structure.
+		structurePreserved: true,
 		routing,
 	};
 }
@@ -185,6 +187,7 @@ describe("applyRoutingOverride", () => {
 		expect(result.targetResolution).toBeUndefined();
 		expect(result.routing?.decision).toBe("create");
 		expect(result.routing?.overridden).toBe(true);
+		expect(result.structurePreserved).toBeUndefined();
 	});
 
 	it("re-targets an enrichment WITHOUT carrying the first ticket's merged body", () => {
@@ -206,6 +209,9 @@ describe("applyRoutingOverride", () => {
 		// write F-12's content onto F-20.
 		expect(result.description?.to).toBe(CAPTURED_DESCRIPTION);
 		expect(result.description?.to).not.toContain("Exports need a queue.");
+		// F-12's merge stamp must not travel, or apply would skip merging the
+		// captured body into F-20.
+		expect(result.structurePreserved).toBeUndefined();
 		// The backend re-resolves the target; a stale stamp would name F-12.
 		expect(result.targetResolution).toBeUndefined();
 		expect(result.routing?.matchedIdentifier).toBe("F-20");

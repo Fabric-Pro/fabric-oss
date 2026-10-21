@@ -66,7 +66,7 @@ export default function ProjectFrameSandboxCheckPage() {
 			<p className="editorial-label">Internal fixture</p>
 			<h1 className="font-serif text-3xl">Project frame sandbox check</h1>
 			<div className="mt-6">
-				<FrameRenderer frame={FIXTURE} strictSandbox />
+				<FrameRenderer frame={FIXTURE} />
 			</div>
 		</div>
 	);

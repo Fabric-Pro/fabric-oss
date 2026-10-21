@@ -86,17 +86,17 @@ export class QdrantToolUsageStore {
 	}
 
 	/**
-	 * Tenant conditions every read of the shared collection must carry.
+	 * Tenant conditions for per-call reads of the shared base collection.
 	 *
-	 * `fabric_orchestrator_memory` holds every tenant's tool calls side by
-	 * side, and the payload records `userId` / `organizationId` on each row —
-	 * but a search that filters only on `type` / `toolId` / `success` returns
-	 * whichever tenant's rows score highest. Argument suggestions are then
-	 * built from another organization's past calls: their repository names,
-	 * channel ids, ticket keys. The shape is the repo's XOR tenant filter: in
-	 * an organization match on `organizationId`; otherwise match the user AND
-	 * require no `organizationId` at all, so a user's personal context never
-	 * sees rows they wrote while acting inside an organization.
+	 * `fabric_orchestrator_memory` holds tenants' tool calls side by side,
+	 * so the payload filter provides isolation within this collection. A
+	 * search filtered only on `type` / `toolId` / `success` can return another
+	 * tenant's repository names, channel ids, or ticket keys as suggestions.
+	 * The shape follows the repo's XOR tenant filter: organization rows match
+	 * `organizationId`; personal rows match `userId` AND an empty
+	 * `organizationId`, excluding the user's own organization rows.
+	 * The org arm also requires the requesting user because per-call
+	 * args/context are a member's private data.
 	 */
 	private tenantConditions(): QdrantCondition[] {
 		if (this.organizationId) {
@@ -105,6 +105,7 @@ export class QdrantToolUsageStore {
 					key: "organizationId",
 					match: { value: this.organizationId },
 				},
+				{ key: "userId", match: { value: this.userId } },
 			];
 		}
 		return [
@@ -125,7 +126,10 @@ export class QdrantToolUsageStore {
 		return `tool-pattern-${toolId}-${scope}`;
 	}
 
-	/** Defensive check that a retrieved-by-id row belongs to this tenant. */
+	/**
+	 * Check that a retrieved-by-id payload belongs to this tenant.
+	 * Aggregate patterns are read organization-wide.
+	 */
 	private belongsToTenant(payload: {
 		userId?: string;
 		organizationId?: string;
@@ -152,7 +156,11 @@ export class QdrantToolUsageStore {
 			const embeddingText = `Tool: ${record.toolName}\nContext: ${record.context}\nTask: ${record.taskDescription || ""}`;
 			const embeddingResult = await generateEmbedding(
 				embeddingText,
-				{ userId: record.userId, organizationId: this.organizationId },
+				{
+					userId: record.userId,
+					organizationId: this.organizationId,
+					featureKey: "tool-search",
+				},
 				this.apiKey,
 			);
 			if (!embeddingResult.embedding) {
@@ -264,7 +272,11 @@ export class QdrantToolUsageStore {
 				.join(", ")}`;
 			const embeddingResult = await generateEmbedding(
 				embeddingText,
-				{ userId: record.userId, organizationId: this.organizationId },
+				{
+					userId: record.userId,
+					organizationId: this.organizationId,
+					featureKey: "tool-search",
+				},
 				this.apiKey,
 			);
 			if (!embeddingResult.embedding) {
@@ -442,7 +454,11 @@ export class QdrantToolUsageStore {
 			// Also do semantic search for similar contexts
 			const embeddingResult = await generateEmbedding(
 				`Tool: ${query.toolId}\nContext: ${query.taskContext}`,
-				undefined,
+				{
+					userId: this.userId,
+					organizationId: this.organizationId,
+					featureKey: "tool-search",
+				},
 				this.apiKey,
 			);
 
@@ -527,7 +543,11 @@ export class QdrantToolUsageStore {
 
 			const embeddingResult = await generateEmbedding(
 				context,
-				undefined,
+				{
+					userId: this.userId,
+					organizationId: this.organizationId,
+					featureKey: "tool-search",
+				},
 				this.apiKey,
 			);
 			if (!embeddingResult.embedding) {

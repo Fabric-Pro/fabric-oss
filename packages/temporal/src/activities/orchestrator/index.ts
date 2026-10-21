@@ -321,13 +321,10 @@ export * from "./types";
 // =============================================================================
 export {
 	getAiModel,
-	getToolLearningContext,
 	// Registered as an orchestrator activity so the workflow can fire it
 	// via `proxyActivities` whenever `state.mcpDefaultToolSignals` gains
 	// a new entry (success or failure).
 	publishMcpDefaultToolSignalActivity,
-	recordFailedToolCall,
-	recordSuccessfulToolCall,
 	safeParseJson,
 } from "./utils";
 // =============================================================================

@@ -205,7 +205,7 @@ export function ContextUploaderDialog({
 		useState<string | null>(null);
 
 	// Get organization context
-	const { organizationId, organizationSlug, basePath } =
+	const { organizationId, organizationSlug, basePath, userRole } =
 		useOrganizationContext();
 	const buildReturnUrl = useSettingsReturnUrl();
 
@@ -303,6 +303,10 @@ export function ContextUploaderDialog({
 		open,
 		organizationId,
 		organizationSlug,
+		// The server saves a search provider only for an organization admin or
+		// owner; a member who can add context is told to ask one instead.
+		canManageSearchProviders:
+			!organizationId || userRole === "admin" || userRole === "owner",
 		requireKnowledgeBaseCategory,
 		allowLiveRefresh: true,
 		onSourceAdded: handleSourceAdded,

@@ -34,12 +34,23 @@ const state = vi.hoisted(() => ({
 	loadFabricPlatformTools: undefined as unknown as ReturnType<
 		typeof import("vitest").vi.fn
 	>,
+	modelResolutionError: undefined as Error | undefined,
+	closeMcpClientSafe: undefined as unknown as ReturnType<
+		typeof import("vitest").vi.fn
+	>,
+	getMcpClient: undefined as unknown as ReturnType<
+		typeof import("vitest").vi.fn
+	>,
 }));
 
-vi.mock("@repo/agent-core/backend", () => ({
-	closeMcpClientSafe: vi.fn(),
-	getMcpClient: vi.fn(),
-}));
+vi.mock("@repo/agent-core/backend", () => {
+	state.closeMcpClientSafe = vi.fn();
+	state.getMcpClient = vi.fn();
+	return {
+		closeMcpClientSafe: state.closeMcpClientSafe,
+		getMcpClient: state.getMcpClient,
+	};
+});
 vi.mock("@repo/ai", () => ({
 	convertToModelMessages: async (
 		messages: Array<{ role: string; parts: Array<{ text: string }> }>,
@@ -49,18 +60,23 @@ vi.mock("@repo/ai", () => ({
 			content: m.parts.map((p) => p.text).join(""),
 		})),
 	enhancePromptWithFabric: async () => ({ fabricUsed: false }),
-	getAIModelWithMetadata: async () => ({
-		model: { id: "test-model" },
-		metadata: {
-			provider: "OPENAI",
-			modelString: "gpt-test",
-			canonicalName: "gpt-test",
-			contextWindow: 200_000,
-			selectionSource: "test",
-		},
-		trackUsage: vi.fn(),
-		recordAggregateUsage: vi.fn(),
-	}),
+	getAIModelWithMetadata: async () => {
+		if (state.modelResolutionError) {
+			throw state.modelResolutionError;
+		}
+		return {
+			model: { id: "test-model" },
+			metadata: {
+				provider: "OPENAI",
+				modelString: "gpt-test",
+				canonicalName: "gpt-test",
+				contextWindow: 200_000,
+				selectionSource: "test",
+			},
+			trackUsage: vi.fn(),
+			recordAggregateUsage: vi.fn(),
+		};
+	},
 	getCurrentDateContext: () => "Today is October 2, 2026.",
 	isStepCount: (n: number) => n,
 	selectAggregateUsageForLogging: () => undefined,
@@ -203,6 +219,7 @@ const FABRIC_FRAME_TOOL = { description: "gateway frame tool" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	state.modelResolutionError = undefined;
 	state.builtInTools = { fabric_create_frame: IN_PROCESS_FRAME_TOOL };
 	state.fabric = {
 		tools: {
@@ -328,6 +345,43 @@ describe("the interactive chat takes its workflow tools from Fabric MCP", () => 
 	it("closes the Fabric client when the turn ends", async () => {
 		await runTurn();
 
+		expect(state.fabric?.close).toHaveBeenCalledTimes(1);
+	});
+
+	it("closes the MCP and Fabric clients when model resolution throws", async () => {
+		const mcpClient = { tools: async () => ({}) };
+		state.getMcpClient.mockResolvedValue({ client: mcpClient });
+		state.modelResolutionError = new Error("No provider is configured");
+
+		await expect(
+			executeDirectChatActivity(
+				{
+					executionId: "exec-1",
+					message: "Hello",
+					history: [],
+					userId: "user-1",
+					organizationId: "org-1",
+					reasoningMode: "balanced",
+					fabricPlatformTools: true,
+					actingGrant: "grant-from-the-web-route",
+					enabledMcpConfigIds: ["config-1"],
+				} as DirectChatWorkflowInput,
+				[
+					{
+						configId: "config-1",
+						serverName: "example-server",
+						configName: "Example",
+						tools: [{ name: "search" }],
+					},
+				],
+				"",
+				"",
+			),
+		).rejects.toThrow("No provider is configured");
+
+		expect(state.getMcpClient).toHaveBeenCalledTimes(1);
+		expect(state.closeMcpClientSafe).toHaveBeenCalledTimes(1);
+		expect(state.closeMcpClientSafe).toHaveBeenCalledWith(mcpClient);
 		expect(state.fabric?.close).toHaveBeenCalledTimes(1);
 	});
 });

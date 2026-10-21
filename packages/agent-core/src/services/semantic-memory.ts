@@ -80,6 +80,7 @@ export async function searchSemanticMemory(
 		const embeddingResult = await generateEmbedding(query, {
 			userId,
 			organizationId,
+			featureKey: "chat-agent",
 			tags: ["semantic-search"],
 		});
 

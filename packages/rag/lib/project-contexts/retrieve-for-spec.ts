@@ -636,6 +636,7 @@ export async function retrieveRelevantContextsForSpec(
 				userId,
 				organizationId,
 				projectId,
+				featureKey: "knowledge-search",
 				tags: ["rag-query", "spec-update"],
 			},
 			providerConfig,

@@ -2288,7 +2288,7 @@
 				"title": "Gemeinsames ChatGPT-Plan-Konto verbinden",
 				"description": "Die Fabric CLI möchte ein ChatGPT-Konto verbinden, das {organization} gemeinsam nutzt. Bestätige das hier und melde dich dann im Browserfenster, das die CLI öffnet, bei ChatGPT an – mit dem Konto, das die Organisation teilen soll, nicht mit deinem eigenen. Fabric speichert die Anmeldung verschlüsselt; Admins legen in den KI-Anbieter-Einstellungen der Organisation fest, welche Arbeit es übernimmt.",
 				"notAllowed": "Ein gemeinsames ChatGPT-Plan-Konto kannst du nur mit einer Organisation verbinden, die du verwaltest und in der ChatGPT-Plan-Pooling aktiviert ist.",
-				"invalidLink": "Diesem Link fehlen die CLI-Angaben. Führe `fabric connect chatgpt --org <slug> --shared` erneut aus.",
+				"invalidLink": "Diesem Link fehlen die CLI-Angaben. Führe `fabric connect chatgpt --shared` erneut aus, mit `--org` und dem Slug deiner Organisation.",
 				"returnToTerminal": "Bestätigt. Die Fabric CLI öffnet jetzt ChatGPT in deinem Browser – melde dich mit dem Konto an, das {organization} teilen soll, nicht mit deinem eigenen. Dein Terminal meldet, wenn es verbunden ist."
 			},
 			"sharedFallback": {
@@ -2957,7 +2957,7 @@
 				"source": "Quelle",
 				"manual": "Manuell",
 				"webhook": "Webhook",
-				"webhookHint": "Sie erhalten das Geheimnis einmalig. Senden Sie Beobachtungen mit Authorization: Bearer <secret>.",
+				"webhookHint": "Sie erhalten das Geheimnis einmalig. Senden Sie Beobachtungen mit dem Header Authorization: Bearer, gefolgt vom Geheimnis.",
 				"cancel": "Abbrechen",
 				"save": "Kennzahl speichern",
 				"loading": "Kennzahlen werden geladen…",
@@ -3459,7 +3459,7 @@
 					"featureLabel": "Feature",
 					"repositoryLabel": "Repository",
 					"noRepository": "No repository connected",
-					"branchHint": "Work lands on a fabric-spike/<run> branch; product code paths are not modified.",
+					"branchHint": "Work lands on a new fabric-spike/ branch for this run; product code paths are not modified.",
 					"repositoryRequiredTitle": "Repository required",
 					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
 					"providerHintTitle": "Runs on Background Agents",
@@ -5904,6 +5904,9 @@
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
+			"rejectReviewStale": "Dieses Dokument wurde geändert, nachdem diese Überprüfung geöffnet wurde. Es wurde nichts zurückgesetzt, die neueste Version bleibt erhalten.",
+			"reviewSuperseded": "Dieses Dokument wurde geändert, nachdem die neu generierte Version zur Überprüfung angezeigt wurde. Die Überprüfung wurde daher geschlossen, die neueste Version bleibt erhalten.",
+			"reviewSupersededByRun": "Eine neue Generierung dieses Dokuments hat begonnen. Die Überprüfung der vorherigen wurde daher geschlossen, und nichts wurde geändert.",
 			"regenerationAccepted": "Die neu generierte Version wurde übernommen.",
 			"regenerationRejected": "Die neu generierte Version wurde verworfen. Das Dokument wurde auf die vorherige Version zurückgesetzt."
 		},

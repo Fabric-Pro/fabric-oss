@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // TypeScript 7's native compiler, run as `tsgo` so every package's
 // `type-check` script can use it while the repo-wide `typescript` stays on
-// 5.9. TypeScript 7.0 ships no JavaScript compiler API, and Next.js, tsup,
-// knip and the tests that `import ts from "typescript"` still need one.
+// 5.9. TypeScript 7 ships no classic `ts.*` compiler API (7.1's new
+// `typescript/sync` and `typescript/async` APIs have a different shape), and
+// Next.js, tsup, knip and the tests that `import ts from "typescript"` still
+// need it.
 //
 // Installing 7.x under its own `tsc` bin name would take over
 // node_modules/.bin/tsc, which `next build` and the editors run, so this

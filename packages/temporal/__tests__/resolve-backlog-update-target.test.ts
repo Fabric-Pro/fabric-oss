@@ -17,6 +17,36 @@ const items = [
 ];
 
 describe("resolveBacklogUpdateTarget", () => {
+	it.each([
+		{ reference: { existingId: items[0].id }, resolvedBy: "id" },
+		{
+			reference: { existingIdentifier: items[0].identifier },
+			resolvedBy: "identifier",
+		},
+		{
+			reference: { existingExternalId: items[0].externalId },
+			resolvedBy: "externalId",
+		},
+	])(
+		"resolves an update without a title by $resolvedBy",
+		({ reference, resolvedBy }) => {
+			expect(resolveBacklogUpdateTarget(items, reference)).toMatchObject({
+				status: "resolved",
+				title: items[0].title,
+				resolvedBy,
+			});
+		},
+	);
+
+	it("returns unresolved without attempting a title match when no title or matching reference exists", () => {
+		expect(
+			resolveBacklogUpdateTarget(items, { existingIdentifier: "F-999" }),
+		).toEqual({ status: "unresolved" });
+		expect(resolveBacklogUpdateTarget(items, {})).toEqual({
+			status: "unresolved",
+		});
+	});
+
 	it("resolves by valid Fabric id present in the snapshot", () => {
 		const r = resolveBacklogUpdateTarget(items, {
 			existingId: "ckaaaaaaaaaaaaaaaaaaaaaaa",

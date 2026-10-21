@@ -15,12 +15,24 @@
  *
  * The others take the body through the room's sync. Without an awareness
  * there is no shared document, and every editor writes its own.
+ *
+ * A role names the run it is for (Fizzy #2946): a review stays open after
+ * its run, and a later run started by a colleague, the API or an agent must
+ * not wait on it, or no editor writes that run's body.
  */
 
 import { ROOM_BODY_FRAGMENT } from "../../lib/room-body-fragment";
 
 /** The awareness state field each editor publishes its run role in. */
 export const GENERATION_RUN_AWARENESS_FIELD = "generationRun";
+
+/**
+ * The awareness state field naming the run that role is for: the run's
+ * `generationStartedAt` as an ISO string, or `null` when the editor does not
+ * know it. A separate field, so an editor that does not read it still reads
+ * the role.
+ */
+export const GENERATION_RUN_OF_AWARENESS_FIELD = "generationRunOf";
 
 /**
  * `started`: this editor started the run and reviews its body. `attached`:
@@ -43,32 +55,39 @@ export interface RoomAwareness extends GenerationRunAwareness {
 }
 
 /**
- * Publish this editor's run role, or clear it with `null`. Sends nothing
- * when the published role is already the one asked for, so other editors
- * never see a role flicker off and back on.
+ * Publish this editor's run role and the run it is for, or clear the role
+ * with `null`. Sends nothing when the published role and run are already
+ * the ones asked for, so other editors never see a role flicker off and
+ * back on.
  */
 export function publishGenerationRunRole(
 	awareness: GenerationRunAwareness | null | undefined,
 	role: GenerationRunRole | null,
+	run: string | null = null,
 ): void {
 	if (!awareness) {
 		return;
 	}
-	const published =
-		awareness.getLocalState()?.[GENERATION_RUN_AWARENESS_FIELD] ?? null;
-	if (published === role) {
-		return;
+	const local = awareness.getLocalState();
+	const ofRun = role ? run : null;
+	if ((local?.[GENERATION_RUN_OF_AWARENESS_FIELD] ?? null) !== ofRun) {
+		awareness.setLocalStateField(GENERATION_RUN_OF_AWARENESS_FIELD, ofRun);
 	}
-	awareness.setLocalStateField(GENERATION_RUN_AWARENESS_FIELD, role);
+	if ((local?.[GENERATION_RUN_AWARENESS_FIELD] ?? null) !== role) {
+		awareness.setLocalStateField(GENERATION_RUN_AWARENESS_FIELD, role);
+	}
 }
 
 /**
- * Whether this attached editor is the one that writes the run's body into
- * the shared document. It counts itself as attached whether or not its own
- * state has reached the room yet.
+ * Whether this attached editor is the one that writes the body of `run`
+ * (the run's identity, when this editor knows it) into the shared document.
+ * A role another editor published for a different run does not count. It
+ * counts itself as attached whether or not its own state has reached the
+ * room yet.
  */
 export function appliesAttachedRunBody(
 	awareness: GenerationRunAwareness | null | undefined,
+	run: string | null = null,
 ): boolean {
 	if (!awareness) {
 		return true;
@@ -77,6 +96,10 @@ export function appliesAttachedRunBody(
 	let elected = own;
 	for (const [clientId, state] of awareness.getStates()) {
 		if (clientId === own) {
+			continue;
+		}
+		const ofRun = state?.[GENERATION_RUN_OF_AWARENESS_FIELD];
+		if (run && typeof ofRun === "string" && ofRun !== run) {
 			continue;
 		}
 		const role = state?.[GENERATION_RUN_AWARENESS_FIELD];

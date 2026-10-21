@@ -131,3 +131,36 @@ describe("normalizeChange — epic normalization scoped to forbidEpics (Bug 1429
 		).toBe("bug");
 	});
 });
+
+describe("normalizeChange — merge annotations", () => {
+	it.each([true, false])(
+		"keeps structurePreserved=%s",
+		(structurePreserved) => {
+			// Apply skips its own merge only for a flagged change; dropping the flag
+			// here makes approval merge an already-merged body a second time.
+			expect(
+				normalizeChange({
+					type: "feature",
+					action: "update",
+					title: { to: "Export to CSV" },
+					reasoning: "normal",
+					sourceContext: "slack_messages",
+					structurePreserved,
+				}).structurePreserved,
+			).toBe(structurePreserved);
+		},
+	);
+
+	it("drops a non-boolean structurePreserved", () => {
+		expect(
+			normalizeChange({
+				type: "feature",
+				action: "update",
+				title: { to: "Export to CSV" },
+				reasoning: "normal",
+				sourceContext: "slack_messages",
+				structurePreserved: "yes",
+			}).structurePreserved,
+		).toBeUndefined();
+	});
+});

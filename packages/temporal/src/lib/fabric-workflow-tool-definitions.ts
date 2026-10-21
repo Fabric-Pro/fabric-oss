@@ -225,6 +225,7 @@ export const FABRIC_WORKFLOW_TOOL_DEFINITIONS = defineFabricTools([
 				name: { type: "string" },
 				nodes: GRAPH_NODES,
 				edges: GRAPH_EDGES,
+				projectId: { type: "string" },
 				dryRun: { type: "boolean" },
 			},
 		},

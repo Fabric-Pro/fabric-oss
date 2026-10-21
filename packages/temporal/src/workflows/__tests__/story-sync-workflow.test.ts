@@ -68,6 +68,8 @@ vi.mock("@temporalio/workflow", async () => {
 	};
 });
 
+import { log, setHandler } from "@temporalio/workflow";
+
 import { closeArgsFrom, storySyncWorkflow } from "../story-sync-workflow";
 
 // =============================================================================
@@ -221,6 +223,110 @@ describe("storySyncWorkflow — pull orchestration", () => {
 		activityStubs.listAllFizzyCards.mockResolvedValue(null);
 	});
 
+	it.each([0, 1])(
+		"skips both delete paths for incomplete listings with %i items",
+		async (count) => {
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+				MCP_GITHUB_CAPABILITIES,
+			);
+			activityStubs.listWorkItemsFromPM
+				.mockResolvedValueOnce({
+					items: count ? [{ id: "42", title: "Example issue" }] : [],
+					total: 100,
+					hasNextPage: false,
+					listingComplete: false,
+				})
+				.mockResolvedValue({ items: [], hasNextPage: false });
+			const output = await storySyncWorkflow({
+				projectId: "example-project",
+				mcpServerId: "example-server",
+				mcpConfigId: "example-config",
+				containerId: "example-repo",
+				userId: "example-user",
+				organizationId: "example-org",
+				direction: "pull",
+			});
+			expect(
+				activityStubs.deleteStoriesNotInPMList,
+			).not.toHaveBeenCalled();
+			expect(
+				activityStubs.createOrUpdateStoryFromPMItem,
+			).toHaveBeenCalledTimes(count);
+			expect(output.syncedCount).toBe(count);
+			const progressHandler = vi
+				.mocked(setHandler)
+				.mock.calls.find(
+					([definition]) => definition.name === "progress",
+				)?.[1];
+			expect(progressHandler).toBeDefined();
+			expect(
+				(progressHandler as () => { message: string })().message,
+			).toContain(
+				"Orphan removal skipped because the PM listing was incomplete",
+			);
+			expect(log.warn).toHaveBeenCalledWith(
+				"Orphan removal skipped because the PM listing was incomplete",
+				expect.any(Object),
+			);
+		},
+	);
+	it.each([0, 1])(
+		"retains delete calls for complete and legacy listings with %i items",
+		async (count) => {
+			const run = async (listingComplete?: boolean) => {
+				vi.clearAllMocks();
+				activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+					MCP_GITHUB_CAPABILITIES,
+				);
+				activityStubs.listWorkItemsFromPM.mockResolvedValue({
+					items: count ? [{ id: "42", title: "Example issue" }] : [],
+					total: count,
+					hasNextPage: false,
+					...(listingComplete === undefined
+						? {}
+						: { listingComplete }),
+				});
+				activityStubs.createOrUpdateStoryFromPMItem
+					.mockReset()
+					.mockResolvedValue({
+						created: true,
+						storyId: "example-story",
+						identifier: "EX-1",
+						externalId: "42",
+					});
+				const output = await storySyncWorkflow({
+					projectId: "example-project",
+					mcpServerId: "example-server",
+					mcpConfigId: "example-config",
+					containerId: "example-repo",
+					userId: "example-user",
+					organizationId: "example-org",
+					direction: "pull",
+				});
+				expect(
+					activityStubs.deleteStoriesNotInPMList,
+				).toHaveBeenCalledTimes(1);
+				expect(
+					activityStubs.deleteStoriesNotInPMList,
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						pmExternalIds: count ? ["42"] : [],
+					}),
+				);
+				return {
+					output,
+					calls: Object.fromEntries(
+						Object.entries(activityStubs).map(([name, stub]) => [
+							name,
+							structuredClone(stub.mock.calls),
+						]),
+					),
+				};
+			};
+			const legacy = await run();
+			expect(await run(true)).toEqual(legacy);
+		},
+	);
 	it("REST pull: synthetic GitLab capabilities → workflow imports 2 stories", async () => {
 		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
 			REST_GITLAB_CAPABILITIES,

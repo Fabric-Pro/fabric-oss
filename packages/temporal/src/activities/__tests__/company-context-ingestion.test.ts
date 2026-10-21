@@ -397,6 +397,7 @@ describe("processProjectContext with a company owner", () => {
 		expect(mocks.generateEmbeddings.mock.calls[0][1]).toEqual({
 			userId: USER,
 			organizationId: ORG,
+			featureKey: "knowledge-index",
 			tags: ["company-context", "rag-embedding"],
 			organizationOnly: true,
 		});
@@ -818,6 +819,7 @@ describe("processProjectContext without an owner", () => {
 			userId: USER,
 			organizationId: ORG,
 			projectId: "proj-1",
+			featureKey: "knowledge-index",
 			tags: ["project-context", "rag-embedding"],
 		});
 		expect(mocks.generateEmbeddings.mock.calls[0][1]).not.toHaveProperty(

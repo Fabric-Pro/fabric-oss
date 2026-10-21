@@ -1,8 +1,6 @@
 import { ORPCError } from "@orpc/server";
 import { config } from "@repo/config";
-import { isMailConfigured, sendEmail } from "@repo/mail";
 import { z } from "zod";
-import { checkRateLimit } from "../../../lib/rate-limit";
 import {
 	Permissions,
 	requireInputOrgPermission,
@@ -11,7 +9,7 @@ import {
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
 
-const REQUEST_LIMIT = { limit: 5, windowMs: 60 * 60 * 1000 };
+const MAILTO_MAX_LENGTH = 1800;
 
 const TYPE_LABELS = {
 	mcp: "MCP",
@@ -46,7 +44,8 @@ export const requestConnectionProcedure = tenantProtectedProcedure
 		path: "/data-connections/request",
 		tags: ["DataConnections"],
 		summary: "Request a connection",
-		description: "Send a request for a new integration or MCP server",
+		description:
+			"Prepare an email draft requesting a new integration or MCP server",
 	})
 	.input(requestConnectionInputSchema)
 	.handler(async ({ input, context }) => {
@@ -65,48 +64,45 @@ export const requestConnectionProcedure = tenantProtectedProcedure
 		}
 
 		const supportEmail = config.support.email;
-		if (!supportEmail || !isMailConfigured()) {
-			throw new ORPCError("PRECONDITION_FAILED", {
-				message: "Connection requests are not available",
-			});
+		if (!supportEmail) {
+			return { mailto: null };
 		}
 
-		const rate = await checkRateLimit(
-			`connection-request:${user.id}`,
-			REQUEST_LIMIT.limit,
-			REQUEST_LIMIT.windowMs,
-		);
-		if (!rate.allowed) {
-			const unavailable = rate.statusCode === 503;
-			throw new ORPCError(
-				unavailable ? "SERVICE_UNAVAILABLE" : "TOO_MANY_REQUESTS",
-				{
-					message: unavailable
-						? "Requests are temporarily unavailable. Please try again later."
-						: "Too many requests. Please try again later.",
-				},
-			);
-		}
-
-		const sent = await sendEmail({
-			to: supportEmail,
-			replyTo: user.email,
-			subject: `Connection request: ${input.name}`,
-			text: [
+		const to = encodeURIComponent(supportEmail);
+		const subject = encodeURIComponent(`Connection request: ${input.name}`);
+		const build = (notes: string) => {
+			const body = [
+				"",
+				"",
+				"— — —",
 				`Requested by: ${oneLine(user.name)} <${user.email}>`,
 				`Organization: ${oneLine(membership.organization.name)}`,
 				`Type: ${TYPE_LABELS[input.type]}`,
 				`Name: ${input.name}`,
 				"",
-				"--- Notes (written by the requester) ---",
-				input.notes || "(none)",
-			].join("\n"),
-		});
-		if (!sent) {
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "The request could not be sent",
-			});
+				"Notes:",
+				notes || "(none)",
+			].join("\r\n");
+			return `mailto:${to}?subject=${subject}&body=${encodeURIComponent(body)}`;
+		};
+
+		// Shorten by whole characters: slicing UTF-16 units can split an emoji,
+		// and encodeURIComponent throws on half of one.
+		const fullNotes = input.notes ?? "";
+		const noteChars = Array.from(fullNotes);
+		let kept = noteChars.length;
+		let mailto = build(fullNotes);
+		while (mailto.length > MAILTO_MAX_LENGTH && kept > 0) {
+			kept = Math.floor(kept * 0.8);
+			mailto = build(
+				kept > 0 ? `${noteChars.slice(0, kept).join("")}…` : "",
+			);
 		}
 
-		return { success: true };
+		return {
+			mailto:
+				mailto.length > MAILTO_MAX_LENGTH
+					? `mailto:${to}?subject=${subject}`
+					: mailto,
+		};
 	});

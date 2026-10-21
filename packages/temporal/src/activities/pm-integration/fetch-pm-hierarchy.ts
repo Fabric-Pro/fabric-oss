@@ -7,15 +7,21 @@
 import { logger } from "@repo/logs";
 import {
 	extractAtlassianSiteId,
+	extractPMListArray,
 	findBacklogsListTool,
 	unwrapDataEnvelope,
 } from "@repo/utils";
+import { descriptionToText } from "@repo/utils/adf-text";
+import {
+	type PMBoardReadErrorKind,
+	pmBoardReadError,
+} from "../../lib/pm-board-read-error";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
 import { assertPmMcpTargetOrigin } from "../pm-source";
 import {
 	discoverPMToolCapabilities,
-	listAllFizzyCards,
 	type PMWorkItemSummary,
+	readFizzyBoardCards,
 } from "./story-sync";
 import type { PMToolCapabilities } from "./tool-analyzer";
 
@@ -354,6 +360,8 @@ export interface FetchPMHierarchyInput {
 }
 
 export interface PMHierarchyResult {
+	readStatus?: "ok" | "no-columns" | "failed";
+	readErrorKind?: PMBoardReadErrorKind;
 	epics: PMWorkItemSummary[];
 	features: PMWorkItemSummary[];
 	stories: PMWorkItemSummary[];
@@ -387,6 +395,7 @@ export async function fetchAdoBacklogs(params: {
 	userId: string;
 	organizationId?: string;
 	backlogsListToolName: string;
+	strict?: boolean;
 }): Promise<AdoBacklogEntry[]> {
 	const result = await executeMcpTool({
 		toolName: params.backlogsListToolName,
@@ -397,6 +406,9 @@ export async function fetchAdoBacklogs(params: {
 	});
 
 	if (!result.success) {
+		if (params.strict) {
+			throw new Error("PM board read failed.", { cause: result });
+		}
 		return [];
 	}
 
@@ -405,13 +417,47 @@ export async function fetchAdoBacklogs(params: {
 		const content = output?.content as
 			| Array<{ type?: string; text?: string }>
 			| undefined;
-		const textItem = content?.find((c) => c.type === "text");
+		const textItem = Array.isArray(content)
+			? content.find((c) => c?.type === "text")
+			: undefined;
 		if (textItem?.text) {
 			const parsed = JSON.parse(textItem.text);
-			return Array.isArray(parsed) ? parsed : [];
+			if (Array.isArray(parsed)) {
+				return parsed;
+			}
+			if (params.strict) {
+				logger.warn(
+					"[Fetch PM Hierarchy] Unrecognized backlog categories response",
+					{
+						keys:
+							parsed && typeof parsed === "object"
+								? Object.keys(parsed)
+								: [],
+					},
+				);
+				throw new Error("Unreadable Azure DevOps backlog categories.");
+			}
+			return [];
 		}
 	} catch {
-		/* ignore parse errors */
+		if (params.strict) {
+			throw new Error("Unreadable Azure DevOps backlog categories.");
+		}
+	}
+	// Unlike the shared list parsers, this is one ADO tool whose answer is a
+	// bare array. Without categories no list call runs, so in strict mode any
+	// other answer must fail the read rather than pass as an empty board.
+	if (params.strict) {
+		logger.warn(
+			"[Fetch PM Hierarchy] Unrecognized backlog categories response",
+			{
+				keys:
+					result.output && typeof result.output === "object"
+						? Object.keys(result.output)
+						: [],
+			},
+		);
+		throw new Error("Unreadable Azure DevOps backlog categories.");
 	}
 	return [];
 }
@@ -482,7 +528,10 @@ export function buildAdoTypeMapping(backlogs: AdoBacklogEntry[]): {
 /**
  * Parse a list tool response into PMWorkItemSummary array.
  */
-export function parseListResponse(output: unknown): PMWorkItemSummary[] {
+export function parseListResponse(
+	output: unknown,
+	strict = false,
+): PMWorkItemSummary[] {
 	const items: PMWorkItemSummary[] = [];
 	let data: unknown = output;
 
@@ -496,30 +545,24 @@ export function parseListResponse(output: unknown): PMWorkItemSummary[] {
 				try {
 					data = JSON.parse(textItem.text);
 				} catch {
+					if (strict) {
+						throw new Error("Unreadable PM listing response.");
+					}
 					return items;
 				}
 			}
 		}
 	}
 
-	let arr: unknown[] = [];
-	if (Array.isArray(data)) {
-		arr = data;
-	} else if (data && typeof data === "object") {
-		const d = data as Record<string, unknown>;
-		// `cards` is the fizzy-mcp 1.1.0 page-envelope key ({cards, page, ...}).
-		arr =
-			(Array.isArray(d.workItems) ? d.workItems : null) ??
-			(Array.isArray(d.value) ? d.value : null) ??
-			(Array.isArray(d.workItemRefs) ? d.workItemRefs : null) ??
-			(Array.isArray(d.items) ? d.items : null) ??
-			(Array.isArray(d.cards) ? d.cards : null) ??
-			(Array.isArray(d.data) ? d.data : null) ??
-			(Array.isArray(d.results) ? d.results : null) ??
-			[];
-	}
+	const extracted = extractPMListArray(data);
+	const arr = extracted?.items;
 
-	for (const item of arr) {
+	if (!arr && strict) {
+		logger.warn("[Fetch PM Hierarchy] Unrecognized PM listing response", {
+			keys: data && typeof data === "object" ? Object.keys(data) : [],
+		});
+	}
+	for (const item of arr ?? []) {
 		if (!item || typeof item !== "object") {
 			continue;
 		}
@@ -551,11 +594,13 @@ export function parseListResponse(output: unknown): PMWorkItemSummary[] {
 		);
 		const title = (fields?.["System.Title"] ??
 			fields?.["System.Name"] ??
+			fields?.summary ??
 			rec.title ??
 			rec.name ??
 			rec.summary ??
 			rec.subject) as string | undefined;
 		const description = (fields?.["System.Description"] ??
+			descriptionToText(fields?.description) ??
 			rec.description ??
 			rec.body ??
 			rec.content) as string | null | undefined;
@@ -730,12 +775,12 @@ async function enrichAdoWorkItems(
 // ============================================================================
 
 /**
- * Fetch all cards from a Fizzy board using the per-column strategy.
+ * Fetch workflow-column cards from a Fizzy board using the per-column strategy.
  *
- * Delegates to the shared `listAllFizzyCards` function and maps the result
+ * Delegates to the shared `readFizzyBoardCards` function and maps the result
  * to the `PMHierarchyResult` format expected by the hierarchy fetcher.
  *
- * Returns null if required tools aren't available (caller falls through to generic path).
+ * Keeps unavailable boards distinct from boards with no workflow columns.
  */
 async function fetchFizzyBoardCards(params: {
 	containerId: string;
@@ -744,8 +789,8 @@ async function fetchFizzyBoardCards(params: {
 	userId: string;
 	organizationId?: string;
 	capabilities: PMToolCapabilities;
-}): Promise<PMHierarchyResult | null> {
-	const result = await listAllFizzyCards({
+}): Promise<PMHierarchyResult> {
+	const read = await readFizzyBoardCards({
 		mcpConfigId: params.mcpConfigId,
 		containerId: params.containerId,
 		additionalContext: params.additionalContext,
@@ -754,14 +799,21 @@ async function fetchFizzyBoardCards(params: {
 		capabilities: params.capabilities,
 	});
 
-	if (!result) {
-		return null;
-	}
-
 	return {
+		readStatus:
+			read.kind === "ok"
+				? "ok"
+				: read.kind === "no-columns"
+					? "no-columns"
+					: "failed",
+		...(read.kind === "failed"
+			? { readErrorKind: read.errorKind }
+			: read.kind === "unavailable"
+				? { readErrorKind: "other" as const }
+				: {}),
 		epics: [],
 		features: [],
-		stories: result.items,
+		stories: read.kind === "ok" ? read.result.items : [],
 		detectedType: "fizzy",
 	};
 }
@@ -809,6 +861,8 @@ export async function fetchPMWorkItemsByType(
 			features: [],
 			stories: [],
 			detectedType: capabilities?.detectedType,
+			readStatus: "failed",
+			readErrorKind: "other",
 		});
 	}
 
@@ -845,20 +899,28 @@ export async function fetchPMWorkItemsByType(
 			findBacklogsListTool(capabilities.availableTools) ??
 			"wit_list_backlogs";
 		const result: PMHierarchyResult = {
+			readStatus: "ok",
 			epics: [],
 			features: [],
 			stories: [],
 		};
 
-		// Fetch backlogs list once, reuse for all type lookups
-		const backlogs = await fetchAdoBacklogs({
-			project: containerId,
-			team,
-			mcpConfigId,
-			userId,
-			organizationId,
-			backlogsListToolName,
-		});
+		// Fetch backlogs list once, reuse for all type lookups.
+		let backlogs: AdoBacklogEntry[] = [];
+		try {
+			backlogs = await fetchAdoBacklogs({
+				project: containerId,
+				team,
+				mcpConfigId,
+				userId,
+				organizationId,
+				backlogsListToolName,
+				strict: true,
+			});
+		} catch (error) {
+			result.readStatus = "failed";
+			result.readErrorKind = pmBoardReadError(error);
+		}
 
 		logger.info("[Fetch PM Hierarchy] ADO backlogs", {
 			count: backlogs.length,
@@ -906,13 +968,18 @@ export async function fetchPMWorkItemsByType(
 				});
 
 				if (listResult.success) {
-					result[key] = parseListResponse(listResult.output);
+					result[key] = parseListResponse(listResult.output, true);
 					logger.info("[Fetch PM Hierarchy] Fetched items", {
 						workItemType,
 						count: result[key].length,
 					});
+				} else {
+					result.readStatus = "failed";
+					result.readErrorKind = pmBoardReadError(listResult);
 				}
 			} catch (error) {
+				result.readStatus = "failed";
+				result.readErrorKind = pmBoardReadError(error);
 				logger.warn("[Fetch PM Hierarchy] Failed to fetch items", {
 					workItemType,
 					error:
@@ -981,8 +1048,8 @@ export async function fetchPMWorkItemsByType(
 	// Fizzy: fetch cards per column for complete board coverage.
 	// `fizzy_get_cards` answers with one page per call, so a single call —
 	// board-wide or column-scoped — only ever returns part of the board.
-	// Fetching columns first, then walking every page of each column, gets ALL
-	// cards on the board (see `listAllFizzyCards`).
+	// Fetch columns first, then walk their pages (see `readFizzyBoardCards`).
+	// Cards in triage are not included.
 	if (capabilities.detectedType === "fizzy") {
 		const fizzyResult = await fetchFizzyBoardCards({
 			containerId,
@@ -992,13 +1059,11 @@ export async function fetchPMWorkItemsByType(
 			organizationId,
 			capabilities,
 		});
-		if (fizzyResult) {
-			return truncatePmHierarchyDescriptions(fizzyResult);
-		}
-		// Fall through to generic non-ADO path if Fizzy-specific fetch failed
+		return truncatePmHierarchyDescriptions(fizzyResult);
 	}
 
 	// Non-ADO: fetch all items (can't filter by type)
+	let readErrorKind: PMBoardReadErrorKind | undefined;
 	try {
 		const listArgs: Record<string, unknown> = {
 			[listTool.containerParam]: containerId,
@@ -1020,16 +1085,19 @@ export async function fetchPMWorkItemsByType(
 		});
 
 		if (listResult.success) {
-			const allItems = parseListResponse(listResult.output);
+			const allItems = parseListResponse(listResult.output, true);
 			// Can't differentiate types for non-ADO, put all in stories
 			return truncatePmHierarchyDescriptions({
 				epics: [],
 				features: [],
 				stories: allItems,
+				readStatus: "ok",
 				detectedType: capabilities.detectedType,
 			});
 		}
+		readErrorKind = pmBoardReadError(listResult);
 	} catch (error) {
+		readErrorKind = pmBoardReadError(error);
 		logger.warn("[Fetch PM Hierarchy] Failed to fetch items", {
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -1039,6 +1107,8 @@ export async function fetchPMWorkItemsByType(
 		epics: [],
 		features: [],
 		stories: [],
+		readStatus: "failed",
+		readErrorKind,
 		detectedType: capabilities.detectedType,
 	});
 }

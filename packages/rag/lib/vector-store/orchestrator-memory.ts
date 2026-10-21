@@ -224,11 +224,12 @@ export async function searchSimilarExecutions(
 		// the base collection is also written to directly by the orchestrator
 		// tool-learning store, so the payload filter has to stand on its own.
 		if (organizationId) {
-			// For org users, match on organizationId
+			// Execution memories belong to the requesting user within the org.
 			filter.must.push({
 				key: "organizationId",
 				match: { value: organizationId },
 			});
+			filter.must.push({ key: "userId", match: { value: userId } });
 		} else {
 			// For personal users, match on userId AND require that the row
 			// carries no organizationId — the user's own work inside an

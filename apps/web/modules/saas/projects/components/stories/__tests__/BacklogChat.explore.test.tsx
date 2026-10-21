@@ -51,6 +51,9 @@ vi.mock("@copilotkit/react-core", () => ({
 		],
 	}),
 }));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useAgent: () => ({ agent: { state: {}, setState: vi.fn() } }),
+}));
 
 vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: ({

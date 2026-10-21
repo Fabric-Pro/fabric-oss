@@ -1,5 +1,14 @@
 # @fabricorg/integrations-github
 
+## 0.1.14
+
+### Patch Changes
+
+- 3949a81: The type declaration files of the Fabric SDK, SDK MCP server and integration packages no longer end with a `sourceMappingURL` comment that points at a declaration map the packages do not ship.
+- Updated dependencies [3949a81]
+  - @fabricorg/sdk@0.7.1
+  - @fabricorg/integrations-runtime@0.1.2
+
 ## 0.1.13
 
 ### Patch Changes

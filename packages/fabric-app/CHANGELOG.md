@@ -1,5 +1,36 @@
 # fabric-app
 
+## 1.16.27
+
+### Patch Changes
+
+- 3949a81: AI Updates and other structured AI steps now work with Claude models on a direct Anthropic connection when their output format is too large for Anthropic's structured-output limits.
+- 3949a81: The Review project conversations action in the AI Backlog Update panel now shows the conversation selector on the first click.
+- 3949a81: Batch document generation, project setup and older document generation runs now write a document only while that run still holds it, so a resumed or slow run no longer overwrites a document that someone saved or that a newer generation took over, and saving over a stalled generation run now stops that run.
+- 3949a81: AI Update no longer times out and restarts when merging several updates into existing work items takes a long time; merges that run out of time during analysis now finish when you approve the proposal.
+- 3949a81: A chat turn that fails before the model starts answering, for example because a usage limit refused it or no AI provider is configured, now closes the MCP server and Fabric connections it opened instead of leaving them open on the worker.
+- 3949a81: Direct chat now shows the usage-limit notice when a usage limit refuses a turn, and the underlying error when a turn fails.
+- 3949a81: AI Usage now attributes document-generation retrieval, orchestrator memory, workspace chat and task-agent retrieval embeddings to a feature.
+- 3949a81: AI Usage now attributes document indexing, retrieval, tool-catalogue embeddings, the decision pre-check and AI Update body merges to a feature.
+- 3949a81: AI usage from an organization's or user's own gateway key now records the actual billed cost instead of keeping the estimate.
+- 3949a81: Gateway AI usage now records its actual billed cost: the cost lookup reads `total_cost` from the gateway's `data` envelope.
+- 3949a81: Requesting a connection now opens a pre-filled email in your own mail app, so the support team receives it from you and can reply directly.
+- 3949a81: The Run Spike dialog, the project metrics webhook hint, the shared ChatGPT plan link error and the coding instructions plugin report no longer show a literal angle-bracket placeholder, which broke these messages on a development server.
+- 3949a81: AI memory recall inside an organization now returns only the requesting user's own memories and leaves out conversation memories from projects or workspaces they can no longer access, and generated project documents no longer include conversation memories.
+- 3949a81: Remove the worker-wide tool-learning cache that added earlier runs' tool arguments and error text to the orchestrator model's instructions.
+- 3949a81: Orchestrator steps that run at the same time now each return only the charts they created, instead of sometimes showing a chart from another run or losing their own.
+- 3949a81: Simple-mode approvals for creating or changing a workflow now list every step it would save, and a step-built workflow can name its project.
+- 3949a81: Every page now runs in the strict sandbox, workflow approval cards show every step's settings, story reviews publish a designed page, and sprint reviews can select by any field the process assigns work through.
+- 3949a81: AI Updates now explain when a project-management board could not be read or has no workflow columns, and existing-project setup reports failed board reads instead of saving empty backlog context.
+- 3949a81: GitHub projects connected through MCP now show the first page of their issues in PM imports, pulls and board analysis instead of appearing empty, and a pull no longer removes Fabric stories when the PM listing reported more results than it returned or came back in an unrecognised format.
+- 3949a81: When a Proposal generation started by a colleague, the API or an agent finishes while the document is open, the shared editor now shows the new version straight away instead of showing the previous version for a few seconds, even when a tab still holds the review of an earlier generation, which now closes as soon as the newer generation starts.
+- 3949a81: Rejecting a regenerated Proposal from a review that another run has since replaced is refused instead of reverting the newer run, a shared-editor tab that has not been typed in no longer saves the document on its own, the editor no longer flashes an older or empty version when a generation finishes or is rejected, and switching to the raw view and back without editing no longer writes over a colleague's typing.
+- 3949a81: AI Update and automatic backlog suggestions no longer drop proposed updates to existing work items when the AI leaves out a title or field it is not changing, and the proposal summary now says when any proposed change could not be read.
+- 3949a81: Workflow approval cards show settings one level down, review cards name who a story was picked for, and a first review no longer claims nothing changed.
+- 3949a81: Approving AI-proposed work item updates from the AI Update panel or a Teams, Slack or meeting proposal no longer runs a second AI merge on a description that was already merged into the item's existing structure during analysis, so approvals make one fewer AI call per update.
+- 3949a81: The type declaration files of the Fabric SDK, SDK MCP server and integration packages no longer end with a `sourceMappingURL` comment that points at a declaration map the packages do not ship.
+- 3949a81: Adding a website as context now says why it cannot start and who can fix it: the notice names a search provider that is saved but switched off or that can only search, asks members to contact an organization admin instead of linking to settings they cannot change, and a failed provider check offers a retry without blocking the form.
+
 ## 1.16.26
 
 ### Patch Changes

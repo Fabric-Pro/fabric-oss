@@ -21,6 +21,7 @@ import {
 	appliesAttachedRunBody,
 	convergenceRank,
 	GENERATION_RUN_AWARENESS_FIELD,
+	GENERATION_RUN_OF_AWARENESS_FIELD,
 	type GenerationRunRole,
 	isRoomBodyEmpty,
 	peerRoomSavesInFlight,
@@ -124,6 +125,43 @@ describe("appliesAttachedRunBody", () => {
 			),
 		).toBe(false);
 	});
+
+	// A review left open on an earlier run while a later one, started by a
+	// colleague, the API or an agent, ends (Fizzy #2946).
+	it("does not count a role published for another run", () => {
+		const awareness = fakeAwareness(7, { 3: "started", 5: "attached" });
+		const states = awareness.getStates();
+		states.set(3, {
+			...states.get(3),
+			[GENERATION_RUN_OF_AWARENESS_FIELD]: "2026-10-21T10:00:00.000Z",
+		});
+		states.set(5, {
+			...states.get(5),
+			[GENERATION_RUN_OF_AWARENESS_FIELD]: "2026-10-21T10:00:00.000Z",
+		});
+
+		expect(
+			appliesAttachedRunBody(awareness, "2026-10-21T11:00:00.000Z"),
+		).toBe(true);
+		expect(
+			appliesAttachedRunBody(awareness, "2026-10-21T10:00:00.000Z"),
+		).toBe(false);
+	});
+
+	it("counts a role when either side does not name its run", () => {
+		const unnamed = fakeAwareness(7, { 3: "started" });
+		expect(
+			appliesAttachedRunBody(unnamed, "2026-10-21T11:00:00.000Z"),
+		).toBe(false);
+
+		const named = fakeAwareness(7, { 3: "started" });
+		const states = named.getStates();
+		states.set(3, {
+			...states.get(3),
+			[GENERATION_RUN_OF_AWARENESS_FIELD]: "2026-10-21T10:00:00.000Z",
+		});
+		expect(appliesAttachedRunBody(named)).toBe(false);
+	});
 });
 
 describe("publishGenerationRunRole", () => {
@@ -140,6 +178,33 @@ describe("publishGenerationRunRole", () => {
 			awareness.getLocalState()?.[GENERATION_RUN_AWARENESS_FIELD],
 		).toBeNull();
 		expect(awareness.setLocalStateField).toHaveBeenCalledTimes(2);
+	});
+
+	it("publishes the run the role is for, and clears it with the role", () => {
+		const awareness = fakeAwareness(7, {}, null);
+
+		publishGenerationRunRole(
+			awareness,
+			"started",
+			"2026-10-21T10:00:00.000Z",
+		);
+		expect(awareness.getLocalState()).toMatchObject({
+			[GENERATION_RUN_AWARENESS_FIELD]: "started",
+			[GENERATION_RUN_OF_AWARENESS_FIELD]: "2026-10-21T10:00:00.000Z",
+		});
+
+		publishGenerationRunRole(
+			awareness,
+			"started",
+			"2026-10-21T10:00:00.000Z",
+		);
+		expect(awareness.setLocalStateField).toHaveBeenCalledTimes(2);
+
+		publishGenerationRunRole(awareness, null, "2026-10-21T10:00:00.000Z");
+		expect(awareness.getLocalState()).toMatchObject({
+			[GENERATION_RUN_AWARENESS_FIELD]: null,
+			[GENERATION_RUN_OF_AWARENESS_FIELD]: null,
+		});
 	});
 
 	it("does not send the role again when it has not changed", () => {

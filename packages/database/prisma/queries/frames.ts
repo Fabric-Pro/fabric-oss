@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { throwIfDispatchStopped } from "@repo/utils/dispatch-guard";
-import { FRAME_SURFACES, type FrameSurface } from "@repo/utils/frame-surfaces";
+import {
+	FRAME_SURFACES,
+	type FrameSurface,
+	isUnattendedFrame,
+	UNATTENDED_FRAME_SOURCE_RUN_TYPE,
+} from "@repo/utils/frame-surfaces";
 import { z } from "zod";
 import { db, type Prisma } from "../client";
 import type {
@@ -339,7 +344,11 @@ export async function duplicateFrame(input: {
 			id: `block-${randomUUID()}`,
 		})),
 		theme: original.document.theme,
-		sourceRunType: input.sourceRunType,
+		// A copy of a page an unattended run wrote is still that run's content,
+		// so it stays drawn without scripts (`isUnattendedFrame`).
+		sourceRunType: isUnattendedFrame(original)
+			? UNATTENDED_FRAME_SOURCE_RUN_TYPE
+			: input.sourceRunType,
 		sourceRunId: input.sourceRunId,
 		authoritySessionId: input.authoritySessionId,
 		providerKeys: input.providerKeys,

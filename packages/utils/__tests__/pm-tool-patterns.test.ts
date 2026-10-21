@@ -20,6 +20,7 @@ import {
 	extractContainerType,
 	extractIdFromResponse,
 	extractNameFromResponse,
+	extractPMListArray,
 	extractUrlFromResponse,
 	findBacklogsListTool,
 	// Utility functions
@@ -33,6 +34,7 @@ import {
 	isTestCaseTool,
 	KNOWN_PM_DOMAINS,
 	normalizeUrl,
+	PM_LIST_ARRAY_KEYS,
 	PM_TOOL_TYPES,
 	pmDetectedTypeDisplayName,
 	pmServerKeyToDetectedType,
@@ -1362,5 +1364,57 @@ describe("unwrapDataEnvelope", () => {
 	it("leaves an object without data unchanged", () => {
 		const noData = { foo: "bar", other: 123 };
 		expect(unwrapDataEnvelope(noData, COMMON_ID_FIELDS)).toBe(noData);
+	});
+});
+
+describe("extractPMListArray", () => {
+	it.each([
+		"workItems",
+		"value",
+		"workItemRefs",
+		"items",
+		"cards",
+		"issues",
+		"tasks",
+		"data",
+		"results",
+	])("extracts %s and retains its envelope", (key) => {
+		const items = [{ id: "EX-1" }];
+		const envelope = { [key]: items, totalCount: 10 };
+		expect(extractPMListArray(envelope)).toEqual({ items, envelope });
+	});
+	it("exports the precedence order and chooses the first array", () => {
+		expect(PM_LIST_ARRAY_KEYS).toEqual([
+			"workItems",
+			"value",
+			"workItemRefs",
+			"items",
+			"cards",
+			"issues",
+			"tasks",
+			"data",
+			"results",
+		]);
+		const envelope = { items: [], cards: [{ id: "EX-1" }] };
+		expect(extractPMListArray(envelope)).toEqual({ items: [], envelope });
+	});
+	it("extracts a Rovo data object and retains the inner totals", () => {
+		const envelope = { issues: [{ id: "10001" }], total: 10 };
+		expect(extractPMListArray({ data: envelope, total: 99 })).toEqual({
+			items: envelope.issues,
+			envelope,
+		});
+	});
+	it("accepts a top-level array", () => {
+		const items = [{ id: "EX-1" }];
+		expect(extractPMListArray(items)).toEqual({ items, envelope: null });
+	});
+	it.each([
+		{ entries: [] },
+		{ data: { data: { issues: [] } } },
+		null,
+		"unknown",
+	])("rejects an unrecognised response %j", (data) => {
+		expect(extractPMListArray(data)).toBeUndefined();
 	});
 });

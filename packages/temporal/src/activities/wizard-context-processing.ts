@@ -290,6 +290,7 @@ export async function processWizardTempContext(
 			{
 				userId,
 				organizationId,
+				featureKey: "knowledge-index",
 				tags: ["wizard-context", "rag-embedding"],
 			},
 			{

@@ -40,6 +40,11 @@
 			"import": "./lib/generation-run-guard.ts",
 			"default": "./lib/generation-run-guard.ts"
 		},
+		"./document-word-count": {
+			"types": "./lib/document-word-count.ts",
+			"import": "./lib/document-word-count.ts",
+			"default": "./lib/document-word-count.ts"
+		},
 		"./sensitive-keys": {
 			"types": "./lib/sensitive-keys.ts",
 			"import": "./lib/sensitive-keys.ts",

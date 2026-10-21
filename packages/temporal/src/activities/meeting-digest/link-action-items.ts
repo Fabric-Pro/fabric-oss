@@ -308,7 +308,13 @@ export async function linkMeetingActionItemsActivity(
 	if (staleStories.length > 0) {
 		const { embeddings, model } = await generateEmbeddings(
 			staleStories.map((s) => s.text),
-			{ userId, organizationId: organizationId ?? undefined, projectId },
+			{
+				userId,
+				organizationId: organizationId ?? undefined,
+				projectId,
+				featureKey: "knowledge-search",
+				jobType: "meeting-transcript-sync",
+			},
 		);
 		staleStories.forEach((s, i) => {
 			embeddingByStoryId.set(s.id, embeddings[i]);
@@ -358,7 +364,13 @@ export async function linkMeetingActionItemsActivity(
 	}));
 	const { embeddings: itemEmbeddings } = await generateEmbeddings(
 		items.map((i) => i.text),
-		{ userId, organizationId: organizationId ?? undefined, projectId },
+		{
+			userId,
+			organizationId: organizationId ?? undefined,
+			projectId,
+			featureKey: "knowledge-search",
+			jobType: "meeting-transcript-sync",
+		},
 	);
 
 	// --- Verify ---------------------------------------------------------------

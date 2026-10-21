@@ -1030,6 +1030,8 @@ export async function storySyncWorkflow(
 		const isSelectivePull =
 			!!input.pmExternalIds && input.pmExternalIds.length > 0;
 
+		// Missing completeness metadata preserves the path used by recorded legacy results.
+		let pmListingComplete = true;
 		if (direction === "pull") {
 			// Pull: list work items from PM, then create/update Fabric stories.
 			const FETCH_PAGE_SIZE = 50;
@@ -1120,6 +1122,9 @@ export async function storySyncWorkflow(
 						pageSize: FETCH_PAGE_SIZE,
 						capabilities,
 					});
+					if (pageResult.listingComplete === false) {
+						pmListingComplete = false;
+					}
 					allPmItems.push(...pageResult.items);
 
 					if (pageResult.items.length === 0) {
@@ -1141,6 +1146,12 @@ export async function storySyncWorkflow(
 					}
 					currentPage++;
 				}
+			}
+			if (!pmListingComplete && !isSelectivePull) {
+				log.warn(
+					"Orphan removal skipped because the PM listing was incomplete",
+					{ projectId },
+				);
 			}
 			let pmItems = allPmItems;
 
@@ -1185,6 +1196,18 @@ export async function storySyncWorkflow(
 					progress.status = "completed";
 					progress.message =
 						"No matching tickets found for the selected IDs";
+					return {
+						success: true,
+						totalStories: 0,
+						syncedCount: 0,
+						failedCount: 0,
+						results: [],
+					};
+				}
+				if (!pmListingComplete) {
+					progress.status = "completed";
+					progress.message =
+						"No work items imported. Orphan removal skipped because the PM listing was incomplete.";
 					return {
 						success: true,
 						totalStories: 0,
@@ -1906,11 +1929,15 @@ export async function storySyncWorkflow(
 		}
 
 		// 4b. Pull only: remove Fabric stories that no longer exist in PM.
-		//     Skip this step when the user made a selective pull (pmExternalIds filter),
-		//     because the fetched list is intentionally partial — deleting orphans would
-		//     remove stories that were simply not selected by the user.
+		//     Skip selective pulls and listings reported incomplete: an omitted item
+		//     is not evidence that it was deleted in PM.
 		let deletedOrphanedCount = 0;
-		if (direction === "pull" && !cancelled && !isSelectivePull) {
+		if (
+			direction === "pull" &&
+			!cancelled &&
+			!isSelectivePull &&
+			pmListingComplete
+		) {
 			progress.message = "Removing stories deleted in PM...";
 			const pmExternalIds = stories.map((s) => s.id);
 			const { deletedCount } = await deleteStoriesNotInPMList({
@@ -1962,6 +1989,11 @@ export async function storySyncWorkflow(
 			progress.message = parts.length
 				? `Sync complete. ${parts.join(", ")}.`
 				: "Sync complete.";
+		}
+
+		if (direction === "pull" && !isSelectivePull && !pmListingComplete) {
+			progress.message +=
+				" Orphan removal skipped because the PM listing was incomplete.";
 		}
 
 		log.info("Story sync workflow completed", {

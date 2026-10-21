@@ -111,6 +111,13 @@ export type ChangeItem = {
 	 * safely produce a targeted edit, so the existing body was kept unchanged.
 	 */
 	bodyMergeFallback?: boolean;
+	bodyMergeDeferred?: boolean;
+	/**
+	 * Set by the analysis-time structure-preserving pass when this update's body
+	 * is already merged into the target's existing structure. Apply skips its
+	 * own merge for a flagged change, so dropping the flag merges the body twice.
+	 */
+	structurePreserved?: boolean;
 	/**
 	 * Backend guardrail stamp indicating whether the AI's target reference
 	 * could be resolved to a real Fabric item.
@@ -359,6 +366,14 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 		bodyMergeFallback:
 			typeof raw.bodyMergeFallback === "boolean"
 				? raw.bodyMergeFallback
+				: undefined,
+		bodyMergeDeferred:
+			typeof raw.bodyMergeDeferred === "boolean"
+				? raw.bodyMergeDeferred
+				: undefined,
+		structurePreserved:
+			typeof raw.structurePreserved === "boolean"
+				? raw.structurePreserved
 				: undefined,
 		// Pass targetResolution through unchanged — it is a structured object
 		// stamped by the backend guardrail; no normalization needed on the FE.
@@ -2171,6 +2186,14 @@ export function BacklogChangeProposal({
 											info without losing structure.
 										</p>
 									)}
+									{change.bodyMergeDeferred && (
+										<p className="mt-1 text-[11px] text-amber-700 dark:text-amber-400">
+											AI ran out of time merging this
+											description; it will be merged into
+											the existing structure when you
+											approve.
+										</p>
+									)}
 									<DecisionConflictNote
 										findings={changeConflicts}
 									/>
@@ -2990,6 +3013,9 @@ export function applyRoutingOverride(
 			acceptanceCriteria: captured.acceptanceCriteria
 				? { to: captured.acceptanceCriteria }
 				: undefined,
+			// The captured body is unmerged, so the analysis-time stamp no longer
+			// describes it.
+			structurePreserved: undefined,
 			targetResolution: undefined,
 			routing: {
 				...routing,
@@ -3020,6 +3046,9 @@ export function applyRoutingOverride(
 		acceptanceCriteria: captured.acceptanceCriteria
 			? { to: captured.acceptanceCriteria }
 			: undefined,
+		// The captured body is unmerged: clear the analysis-time stamp so apply
+		// merges it into the new target.
+		structurePreserved: undefined,
 		// The backend re-resolves the target; a stale stamp from the system's
 		// original match would name the wrong ticket in the review trail.
 		targetResolution: undefined,

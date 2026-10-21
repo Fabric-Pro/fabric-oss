@@ -136,7 +136,7 @@ describe("InstructionsPluginReport", () => {
 		expect(rows[0]).toHaveTextContent(
 			/skills\/, agents\/, commands\/ or rules\//,
 		);
-		expect(rows[1]).toHaveTextContent(/skills\/<name>\/SKILL\.md/);
+		expect(rows[1]).toHaveTextContent(/skills\/review\/SKILL\.md/);
 		expect(rows[2]).toHaveTextContent(/not a text file/i);
 	});
 
@@ -147,10 +147,10 @@ describe("InstructionsPluginReport", () => {
 		await user.click(await screen.findByRole("button"));
 
 		expect(
-			screen.getByText(/skills\/<name>\/SKILL\.md/, {
+			screen.getByText(/a SKILL\.md for each skill under skills\//, {
 				selector: "p",
 			}),
-		).toHaveTextContent(/agents\/<name>\.md/);
+		).toHaveTextContent(/markdown files under agents\/ and rules\//);
 	});
 
 	it("uses the singular for one file", async () => {
