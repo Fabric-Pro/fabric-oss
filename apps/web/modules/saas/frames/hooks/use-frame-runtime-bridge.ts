@@ -137,9 +137,8 @@ export function useFrameRuntimeBridge(options: FrameRuntimeBridgeOptions) {
 		null,
 	);
 	const shownQuestion = useRef<PendingCall | null>(null);
-	const taint = useMemo(createPageTaint, []);
-
 	const { enabled, frameKey, frameId, embedUrl, contentVersion } = options;
+	const taint = useMemo(() => createPageTaint(frameKey), [frameKey]);
 	const frameOrganizationId = options.organizationId;
 	const runtimeToolsKey = options.runtimeTools.join("\n");
 	const scope = useMemo(

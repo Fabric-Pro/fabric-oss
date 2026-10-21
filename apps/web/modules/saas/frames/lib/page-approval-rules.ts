@@ -128,25 +128,56 @@ export function declaresStoreTools(declared: ReadonlySet<string>): boolean {
 /**
  * Whether a page has read outside its own store. Kept by whoever owns the page
  * on screen, not by the host that decides, so a host made again for the same
- * page (the viewer switched organization and back) does not forget it. The
- * bridge retains it until its page shell is remounted or reloaded; editing
- * content inside a surviving shell does not erase what that page learned.
+ * page (the viewer switched organization and back) does not forget it.
+ *
+ * Given the page's key, it is also kept for the browser session, as long as a
+ * remembered "allow" lasts (`frame-runtime-approvals`): otherwise a reload
+ * would forget what the page read while its allows stayed, and a page could
+ * read the viewer's data, keep it in a record of its own, reload, and write it
+ * where its author can read it under an allow given for something harmless.
  */
 export interface PageTaint {
 	isTainted: () => boolean;
 	mark: () => void;
-	reset: () => void;
 }
 
-export function createPageTaint(): PageTaint {
+const TAINT_STORAGE_KEY = "fabric-frame-runtime-taint";
+
+function storedTaintedPages(): string[] {
+	try {
+		const parsed: unknown = JSON.parse(
+			window.sessionStorage.getItem(TAINT_STORAGE_KEY) ?? "[]",
+		);
+		return Array.isArray(parsed)
+			? parsed.filter((key): key is string => typeof key === "string")
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+export function createPageTaint(pageKey?: string): PageTaint {
 	let tainted = false;
 	return {
-		isTainted: () => tainted,
+		isTainted: () =>
+			tainted ||
+			(pageKey !== undefined && storedTaintedPages().includes(pageKey)),
 		mark: () => {
 			tainted = true;
-		},
-		reset: () => {
-			tainted = false;
+			if (pageKey === undefined) {
+				return;
+			}
+			try {
+				window.sessionStorage.setItem(
+					TAINT_STORAGE_KEY,
+					JSON.stringify([
+						...new Set([...storedTaintedPages(), pageKey]),
+					]),
+				);
+			} catch {
+				// Without session storage the taint lasts until the page reloads,
+				// and so does every allow (see `frame-runtime-approvals`).
+			}
 		},
 	};
 }

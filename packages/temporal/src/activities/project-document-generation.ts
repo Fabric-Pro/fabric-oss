@@ -81,7 +81,6 @@ import {
 	applyContextSummary,
 	buildDocumentRetrievalQuery,
 	deleteStaleDocumentEmbeddingChunks,
-	type EpisodeSearchResult,
 	embedProjectDocument,
 	enrichContextsWithRoleTags,
 	extractBaseContextId,
@@ -91,7 +90,6 @@ import {
 	reembedProjectDocument,
 	rerankContexts,
 	SUMMARY_CONTEXT_TYPE,
-	searchSimilarEpisodes,
 	searchSimilarProjectContexts,
 } from "@repo/rag";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
@@ -466,7 +464,12 @@ async function retrieveProjectContextEntries(
 			model: embeddingModel,
 			metadata,
 			trackUsage,
-		} = await getAIEmbeddingModelWithMetadata({ userId, organizationId });
+		} = await getAIEmbeddingModelWithMetadata({
+			userId,
+			organizationId,
+			projectId,
+			featureKey: "document-generation",
+		});
 
 		activityLogger.info("Resolved embedding model for RAG query", {
 			modelName: metadata.modelString,
@@ -4832,155 +4835,17 @@ export async function updateProjectDocumentStatus(params: {
 }
 
 /**
- * Retrieve and format episodic memories for a project (combined activity)
- *
- * This activity combines retrieval and formatting in one call, making it
- * suitable for use in Temporal workflows that can only call async activities.
+ * Kept only so pre-patch histories replay. Shared documents do not recall
+ * private conversation summaries, including when this legacy command retries.
  */
-export async function retrieveAndFormatEpisodicMemory(params: {
+export async function retrieveAndFormatEpisodicMemory(_params: {
 	projectId: string;
 	userId: string;
 	organizationId?: string;
 	query: string;
 	limit?: number;
 }): Promise<{ formattedContext: string; episodeCount: number }> {
-	const episodes = await retrieveEpisodicMemoryForProject(params);
-	const formattedContext = formatEpisodicMemoriesForContext(episodes);
-
-	return {
-		formattedContext,
-		episodeCount: episodes.length,
-	};
-}
-
-/**
- * Retrieve episodic memories for a project from user-level conversations
- *
- * This searches across ALL user conversations (not project-specific) to find
- * relevant past discussions that might inform the current document generation.
- */
-export async function retrieveEpisodicMemoryForProject(params: {
-	projectId: string;
-	userId: string;
-	organizationId?: string;
-	query: string;
-	limit?: number;
-}): Promise<EpisodeSearchResult[]> {
-	const { projectId, userId, organizationId, query, limit = 10 } = params;
-
-	const startTime = Date.now();
-	activityLogger.info("Retrieving user-level episodic memory", {
-		userId,
-		hasOrgContext: !!organizationId,
-		limit,
-	});
-
-	try {
-		// Check if episodic memory is enabled for this project
-		const ragSettings = await getProjectRagSettings(projectId);
-		const enableEpisodicMemory = ragSettings.enableEpisodicMemory ?? true;
-
-		if (!enableEpisodicMemory) {
-			activityLogger.info("Episodic memory disabled for project", {
-				projectId,
-			});
-			return [];
-		}
-
-		// Use centralized single entry point for embedding model access
-		const {
-			model: embeddingModel,
-			metadata,
-			trackUsage,
-		} = await getAIEmbeddingModelWithMetadata({ userId, organizationId });
-
-		activityLogger.debug(
-			"Resolved embedding model for episodic memory query",
-			{
-				modelName: metadata.modelString,
-				modelProvider: metadata.provider,
-			},
-		);
-
-		// Track usage (fire-and-forget)
-		trackUsage();
-
-		// Generate embedding for the query
-		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await embed({
-			model: embeddingModel,
-			value: query,
-		});
-		logEmbeddingUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			usageTokens: usage.tokens,
-			latencyMs: Date.now() - embeddingStart,
-		});
-
-		// Search for relevant past episodes at USER level (no projectId filter)
-		// This retrieves memories from all user conversations, not just project-specific ones
-		const episodes = await searchSimilarEpisodes({
-			queryEmbedding,
-			userId,
-			organizationId,
-			// NOTE: projectId intentionally NOT passed - we want user-level memories
-			topK: limit,
-			minSimilarity: 0.4, // Lower threshold for episodic memory
-		});
-
-		const duration = Date.now() - startTime;
-		activityLogger.info("User-level episodic memory retrieval complete", {
-			userId,
-			episodeCount: episodes.length,
-			durationMs: duration,
-			topSimilarity: episodes[0]?.similarity?.toFixed(3) || "N/A",
-		});
-
-		return episodes;
-	} catch (error) {
-		const duration = Date.now() - startTime;
-		activityLogger.warn("Failed to retrieve episodic memory", {
-			userId,
-			error: error instanceof Error ? error.message : String(error),
-			durationMs: duration,
-		});
-		// Return empty array on error - episodic memory is optional
-		return [];
-	}
-}
-
-/**
- * Format episodic memories for inclusion in document generation context
- *
- * Converts episode search results into a formatted string that provides
- * context about past project discussions and decisions.
- */
-export function formatEpisodicMemoriesForContext(
-	episodes: EpisodeSearchResult[],
-): string {
-	if (episodes.length === 0) {
-		return "";
-	}
-
-	const formattedEpisodes = episodes.map((ep, index) => {
-		const topicsStr =
-			ep.keyTopics.length > 0 ? `Topics: ${ep.keyTopics.join(", ")}` : "";
-
-		return `### Past Discussion ${index + 1}: ${ep.title}
-${topicsStr}
-${ep.summary}
-(Relevance: ${(ep.similarity * 100).toFixed(0)}%)`;
-	});
-
-	return `
-<past_project_discussions>
-The following are summaries of relevant past discussions about this project.
-Use these to maintain consistency with previous decisions and discussions:
-
-${formattedEpisodes.join("\n\n")}
-</past_project_discussions>
-`.trim();
+	return { formattedContext: "", episodeCount: 0 };
 }
 
 // ============================================================================

@@ -5904,6 +5904,8 @@
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
+			"rejectReviewStale": "Dieses Dokument wurde geändert, nachdem diese Überprüfung geöffnet wurde. Es wurde nichts zurückgesetzt, die neueste Version bleibt erhalten.",
+			"reviewSuperseded": "Dieses Dokument wurde geändert, nachdem die neu generierte Version zur Überprüfung angezeigt wurde. Die Überprüfung wurde daher geschlossen, die neueste Version bleibt erhalten.",
 			"regenerationAccepted": "Die neu generierte Version wurde übernommen.",
 			"regenerationRejected": "Die neu generierte Version wurde verworfen. Das Dokument wurde auf die vorherige Version zurückgesetzt."
 		},

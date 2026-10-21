@@ -190,6 +190,7 @@ export function registerWorkspaceRoutes(
 				const embeddingModel = await getAIEmbeddingModel({
 					userId: ctx.userId,
 					organizationId: ctx.organizationId ?? undefined,
+					featureKey: "knowledge-search",
 				});
 				const result = await embed({
 					model: embeddingModel,

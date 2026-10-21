@@ -1,5 +1,20 @@
 # fabric-app
 
+## 1.16.27
+
+### Patch Changes
+
+- 64e1431: Direct chat now shows the usage-limit notice when a usage limit refuses a turn, and the underlying error when a turn fails.
+- 64e1431: AI Usage now attributes document-generation retrieval, orchestrator memory, workspace chat and task-agent retrieval embeddings to a feature.
+- 64e1431: AI Usage now attributes document indexing, retrieval, tool-catalogue embeddings, the decision pre-check and AI Update body merges to a feature.
+- 64e1431: AI memory recall inside an organization now returns only the requesting user's own memories and leaves out conversation memories from projects or workspaces they can no longer access, and generated project documents no longer include conversation memories.
+- 64e1431: Remove the worker-wide tool-learning cache that added earlier runs' tool arguments and error text to the orchestrator model's instructions.
+- 64e1431: Orchestrator steps that run at the same time now each return only the charts they created, instead of sometimes showing a chart from another run or losing their own.
+- 64e1431: Simple-mode approvals for creating or changing a workflow now list every step it would save, and a step-built workflow can name its project.
+- 64e1431: Every page now runs in the strict sandbox, workflow approval cards show every step's settings, story reviews publish a designed page, and sprint reviews can select by any field the process assigns work through.
+- 64e1431: Rejecting a regenerated Proposal from a review that another run has since replaced is refused instead of reverting the newer run, a shared-editor tab that has not been typed in no longer saves the document on its own, the editor no longer flashes an older or empty version when a generation finishes or is rejected, and switching to the raw view and back without editing no longer writes over a colleague's typing.
+- 64e1431: The type declaration files of the Fabric SDK, SDK MCP server and integration packages no longer end with a `sourceMappingURL` comment that points at a declaration map the packages do not ship.
+
 ## 1.16.26
 
 ### Patch Changes

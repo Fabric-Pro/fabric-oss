@@ -116,7 +116,10 @@ describe("reanalyzeBodyByKind — BUG", () => {
 
 		expect(mocks.getAIModelWithMetadata).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ projectId: "p1" }),
+			expect.objectContaining({
+				projectId: "p1",
+				featureKey: "backlog-update",
+			}),
 		);
 		expect(res.fallbackUsed).toBe(false);
 		expect(res.description).toContain("Null form ref on first render.");

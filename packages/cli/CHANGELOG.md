@@ -1,5 +1,12 @@
 # @fabricorg/cli
 
+## 0.7.3
+
+### Patch Changes
+
+- Updated dependencies [64e1431]
+  - @fabricorg/sdk-mcp@0.1.14
+
 ## 0.7.2
 
 ### Patch Changes

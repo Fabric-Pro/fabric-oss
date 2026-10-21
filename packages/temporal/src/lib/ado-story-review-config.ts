@@ -8,6 +8,24 @@ const field = z
 	.max(128)
 	.regex(/^[A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+$/);
 
+/**
+ * The field that names who a sprint item belongs to: any field reference name
+ * the process has (`System.AssignedTo`, `Custom.BEEngineer`,
+ * `Microsoft.VSTS.Common.ActivatedBy`, ...), since processes assign work
+ * through fields of their own. The shape is what keeps it safe to name inside
+ * a WIQL query: dotted segments of letters, digits and underscores.
+ */
+export const ADO_ASSIGNMENT_FIELD_PATTERN =
+	/^[A-Za-z][A-Za-z0-9_]{0,63}(?:\.[A-Za-z][A-Za-z0-9_]{0,63}){1,4}$/;
+
+export const adoAssignmentField = z
+	.string()
+	.max(128)
+	.regex(
+		ADO_ASSIGNMENT_FIELD_PATTERN,
+		"Use an Azure DevOps field reference name",
+	);
+
 const literalName = z
 	.string()
 	.refine(
@@ -38,7 +56,7 @@ export const adoSprintContextSchema = z
 			"Select one or two exact iteration paths",
 		),
 		assignmentFields: z
-			.array(z.enum(["System.AssignedTo", "Custom.Engineer"]))
+			.array(adoAssignmentField)
 			.min(1)
 			.max(2)
 			.transform((values) => [...new Set(values)].sort()),

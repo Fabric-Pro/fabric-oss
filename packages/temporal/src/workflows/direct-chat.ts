@@ -40,6 +40,7 @@ import {
 	type DirectChatPostOperationInput,
 	directChatPostOperationWorkflow,
 } from "./direct-chat-post-operation";
+import { extractMeaningfulErrorMessage } from "./meaningful-error-message";
 
 // =============================================================================
 // Queries for real-time progress tracking
@@ -96,17 +97,12 @@ const DIRECT_CHAT_EXECUTION_OPTIONS: ActivityOptions = {
 		maximumInterval: "60s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
-		// When the activity rethrows AiUsageLimitExceededError — or the
-		// AIProviderNotConfiguredError a keyless tenant now gets instead of a
-		// platform-key fallback — Temporal records the failure type as
-		// `error.constructor?.name ?? error.name` (see @temporalio/common
-		// ensureApplicationFailure). Listing them here tells the server to treat
-		// that failure as non-retryable immediately, avoiding the 3-attempt
-		// × ~2 s wasted latency before the workflow sees the error. The error
-		// object itself is NOT altered, so extractAiUsageLimitExceededError in the
-		// route layer still detects it via the message-regex fallback (the
-		// original error is nested as ApplicationFailure.cause inside
-		// ActivityFailure).
+		// The activity returns usage-limit refusals as structured result data.
+		// Keep their type here for failures from older workers and other
+		// throws, alongside provider-configuration failures. Temporal uses
+		// the error constructor name as the failure type; these types stop
+		// activity retries. The workflow catch preserves the cause chain for
+		// the route's failure-message and usage-limit fallback extractors.
 		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 	},
 };
@@ -563,17 +559,10 @@ export async function directChatWorkflow(
 		// Step 6: start the fire-and-forget child
 		// workflow that persists the operation-result system message.
 		//
-		// Copilot review fix #1: branch on `result.success`.
-		// `executeDirectChatActivity` catches its OWN errors internally
-		// and returns `{ success: false, error }` WITHOUT throwing (see
-		// `packages/temporal/src/activities/direct-chat/ai-execution.ts`
-		// catch block, returns the falsy-success shape). When that
-		// happens, control reaches HERE (the success branch of the outer
-		// try/catch) — but the user has actually seen an error response
-		// via the SSE route's `if (!result.success)` arm. Before this fix
-		// we always posted `outcome: "success"`, so the persistent chat
-		// row disagreed with what the user saw on screen. We now mirror
-		// the activity's `success` field into the persisted outcome.
+		// The activity returns `{ success: false, error }` for handled
+		// stream failures and usage-limit refusals; non-limit setup errors
+		// can still throw. Returned failures reach this branch, so mirror
+		// `result.success` into the persisted outcome.
 		//
 		// Copilot review fix #2: `await startChild(...)` resolves on
 		// child START (milliseconds), not on child COMPLETION. With
@@ -650,15 +639,13 @@ export async function directChatWorkflow(
 			throw error;
 		}
 
-		// We delay the `ApplicationFailure` early-return so the failure
-		// path's Step 6 call below sees BOTH error shapes uniformly. The
-		// activity layer is the canonical source of `ApplicationFailure`
-		// (e.g. the executeDirectChatActivity throws ApplicationFailure on
-		// non-retryable AI failures); without firing Step 6 for those
-		// cases the chat thread would silently lose AC-3 coverage for the
-		// most common failure class.
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		// Persist the failure outcome before rethrowing an ApplicationFailure
+		// or wrapping another error (such as an ActivityFailure whose cause
+		// carries the worker's original error).
+		const errorMessage = extractMeaningfulErrorMessage(
+			error,
+			"Direct chat failed",
+		);
 
 		// Update progress with error
 		progress = {
@@ -674,14 +661,11 @@ export async function directChatWorkflow(
 			error: errorMessage,
 		});
 
-		// Step 6: persist the operation-result system
-		// message for the failure path. The pure formatter
-		// (`buildOperationResultMessage`) masks any stack-trace shape and
-		// truncates the body to 2 000 chars, so passing the raw
-		// `errorMessage` here is safe. The activity itself swallows all
-		// errors internally — the outer try/catch here exists only to
-		// guard against the proxy itself failing (e.g. retry-limit
-		// exceeded) and must NEVER swallow the original workflow failure.
+		// Step 6: start the child that posts the failure result. Its
+		// postOperationResultActivity catches posting errors and returns a
+		// non-fatal result. The formatter masks stack-trace shapes and caps
+		// the body at 2 000 chars. The catch below handles a failed child
+		// start while preserving the original workflow failure.
 		//
 		// Codex review fix #1 — `isTerminal` guard.
 		// `appendConversationMessage` dedups on `operationKey`. If we
@@ -765,9 +749,13 @@ export async function directChatWorkflow(
 		if (error instanceof ApplicationFailure) {
 			throw error;
 		}
-		throw ApplicationFailure.nonRetryable(
-			errorMessage,
-			"DIRECT_CHAT_FAILED",
-		);
+		throw ApplicationFailure.create({
+			// Preserve the terminal wrapper message; progress and Step 6 use
+			// the meaningful cause above. The route can traverse the cause too.
+			message: error instanceof Error ? error.message : "Unknown error",
+			type: "DIRECT_CHAT_FAILED",
+			nonRetryable: true,
+			cause: error instanceof Error ? error : undefined,
+		});
 	}
 }

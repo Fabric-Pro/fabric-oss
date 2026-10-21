@@ -503,7 +503,11 @@ export async function ingestMcpToolsActivity(
 		// Generate embeddings for all tools
 		const embeddingResult = await generateEmbeddings(
 			toolDescriptions,
-			{ userId: effectiveUserId, organizationId: effectiveOrgId },
+			{
+				userId: effectiveUserId,
+				organizationId: effectiveOrgId,
+				featureKey: "tool-search",
+			},
 			providerConfig,
 		);
 
@@ -914,7 +918,11 @@ export async function ingestMcpServerActivity(
 		// Generate embedding for server description
 		const embeddingResult = await generateEmbeddings(
 			[serverDescription],
-			{ userId: effectiveUserId, organizationId: effectiveOrgId },
+			{
+				userId: effectiveUserId,
+				organizationId: effectiveOrgId,
+				featureKey: "tool-search",
+			},
 			providerConfig,
 		);
 

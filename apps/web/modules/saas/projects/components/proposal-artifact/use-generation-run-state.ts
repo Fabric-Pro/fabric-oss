@@ -50,6 +50,20 @@ export interface GenerationRunState {
 	 */
 	reviewStampRef: RefObject<RoomStamp | null>;
 	/**
+	 * The saved version of the body under review, taken from the same
+	 * snapshot, also when the server named no identity for it. A Reject names
+	 * it, so the server refuses one whose review a newer write has superseded
+	 * (Fizzy #2946).
+	 */
+	reviewedVersionRef: RefObject<number | null>;
+	/**
+	 * The reviewed run's identity: the document's `generationStartedAt` (ISO)
+	 * from the same snapshot, which dispatch stamps afresh for every run. A
+	 * Reject names it, so the server refuses one when a newer run wrote the
+	 * document, even with the very same body (Fizzy #2946).
+	 */
+	reviewedRunStartedAtRef: RefObject<string | null>;
+	/**
 	 * The editor on screen now, or `null` while none is mounted. A deferred
 	 * write reads it when it lands: the editor of the render that scheduled
 	 * the write may have been destroyed by then, by a remount or because a
@@ -61,6 +75,19 @@ export interface GenerationRunState {
 	 * review is open. The room keeps it from then on, across remounts.
 	 */
 	reviewAppliedRef: RefObject<string | null>;
+	/**
+	 * A Reject sent and not yet settled — answered, refused, or its fallback
+	 * save answered. Held here, not in an editor, so a sync-loss remount
+	 * neither drops it nor lets the new editor take input before the
+	 * outcome is applied (Fizzy #2946).
+	 */
+	rejectPending: boolean;
+	setRejectPending: Dispatch<SetStateAction<boolean>>;
+	/**
+	 * Whether anything was typed, in any editor of this document, since the
+	 * Reject went: offered back before its outcome replaces it.
+	 */
+	typedSinceRejectRef: RefObject<boolean>;
 	isConfirming: boolean;
 	setIsConfirming: Dispatch<SetStateAction<boolean>>;
 	showConfirmDialog: boolean;
@@ -85,9 +112,13 @@ export function useGenerationRunState(): GenerationRunState {
 	const editorBodyVersionRef = useRef<number | undefined>(undefined);
 	const editorBodyHashRef = useRef<string | undefined>(undefined);
 	const reviewStampRef = useRef<RoomStamp | null>(null);
+	const reviewedVersionRef = useRef<number | null>(null);
+	const reviewedRunStartedAtRef = useRef<string | null>(null);
 	const liveEditorRef = useRef<Editor | null>(null);
 	const reviewAppliedRef = useRef<string | null>(null);
 	const [isConfirming, setIsConfirming] = useState(false);
+	const [rejectPending, setRejectPending] = useState(false);
+	const typedSinceRejectRef = useRef(false);
 	const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 	const [previousContent, setPreviousContent] = useState("");
 	const [newContent, setNewContent] = useState("");
@@ -115,8 +146,13 @@ export function useGenerationRunState(): GenerationRunState {
 		editorBodyVersionRef,
 		editorBodyHashRef,
 		reviewStampRef,
+		reviewedVersionRef,
+		reviewedRunStartedAtRef,
 		liveEditorRef,
 		reviewAppliedRef,
+		rejectPending,
+		setRejectPending,
+		typedSinceRejectRef,
 		isConfirming,
 		setIsConfirming,
 		showConfirmDialog,

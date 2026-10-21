@@ -1,5 +1,6 @@
 import type { AzureDevOpsSprintStoryCapture } from "@repo/connectors";
 import { z } from "zod";
+import { adoAssignmentField } from "../../../lib/ado-story-review-config";
 import {
 	observation,
 	observationSchema,
@@ -17,7 +18,7 @@ const identity = z
 		displayName: z.string().max(512),
 	})
 	.strict();
-const assignmentField = z.enum(["System.AssignedTo", "Custom.Engineer"]);
+const assignmentField = adoAssignmentField;
 const edgeSchema = z
 	.object({ sourceId: id, targetId: id, kind: z.enum(["child", "related"]) })
 	.strict();

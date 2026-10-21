@@ -743,6 +743,7 @@ export async function executeDirectChatActivity(
 	memoryContext: string,
 	toolSuggestionContext: string,
 ): Promise<DirectChatWorkflowOutput> {
+	const startTime = Date.now();
 	// Fires when the workflow cancels this attempt (Stop, or the client went
 	// away). Temporal delivers it on a heartbeat, which the ticker below and
 	// the stream loop send. Undefined outside an activity context.
@@ -788,6 +789,18 @@ export async function executeDirectChatActivity(
 		// failed.
 		if (cancellation?.aborted) {
 			throw cancellationError(cancellation);
+		}
+		// Covers setup/model resolution and errors rethrown by the stream
+		// handler. Return the same refusal data as a mid-stream limit so the
+		// workflow can skip its tools-off rerun and the route keeps the URL.
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			return {
+				success: false,
+				error: limitError.message,
+				durationMs: Date.now() - startTime,
+				usageLimit: toUsageLimitRefusal(limitError),
+			};
 		}
 		throw error;
 	} finally {
@@ -2514,29 +2527,14 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			},
 		};
 	} catch (error) {
-		// Rethrow AI usage-limit errors immediately so the workflow does NOT
-		// fire the degraded retry and double-charge quota. Rethrow the
-		// unwrapped error: Temporal matches its class name against the
-		// activity's non-retryable error types.
-		const thrownLimitError = findAiUsageLimitError(error);
-		if (thrownLimitError) {
-			throw thrownLimitError;
-		}
-		// A refusal of the turn's first request ends the stream with an error
-		// part (inside the SDK's RetryError when it refused a retry), and the
-		// SDK then rejects with "No output generated". Fail the turn with the
-		// limit, as when a later step is refused before any answer.
-		const streamLimitError = NoOutputGeneratedError.isInstance(error)
-			? findAiUsageLimitError(streamErrorRaw)
-			: undefined;
-		if (streamLimitError) {
-			return {
-				success: false,
-				error: streamLimitError.message,
-				durationMs: Date.now() - startTime,
-				usageLimit: toUsageLimitRefusal(streamLimitError),
-			};
-		}
+		// Keep thrown refusals and the SDK's "No output generated" envelope
+		// on the failure-accounting path before passing the refusal to the
+		// outer activity catch, which returns structured usageLimit data.
+		const limitError =
+			findAiUsageLimitError(error) ??
+			(NoOutputGeneratedError.isInstance(error)
+				? findAiUsageLimitError(streamErrorRaw)
+				: undefined);
 		const rawMessage =
 			error instanceof Error ? error.message : "Unknown error";
 		// The AI SDK throws a generic "No output generated..." when the stream
@@ -2544,22 +2542,34 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// For any other thrown error, prefer the actual exception over a stale
 		// stream-error captured earlier in the loop.
 		const surfacedError =
-			rawMessage.includes("No output generated") && streamErrorMessage
+			limitError?.message ??
+			(rawMessage.includes("No output generated") && streamErrorMessage
 				? streamErrorMessage
-				: rawMessage;
+				: rawMessage);
 		if (recordAggregateUsage && !aggregateUsageRecorded) {
 			const partialAggregate = aggregateUsage.partialAggregate();
-			recordAggregateUsage({
-				usage: partialAggregate.usage,
-				latencyMs: Date.now() - startTime,
-				success: false,
-				errorMessage: surfacedError,
-				errorDetails: partialAggregate.usageReportedAt
-					? { usageReportedAt: partialAggregate.usageReportedAt }
-					: undefined,
-				steps: partialAggregate.steps,
-			});
-			aggregateUsageRecorded = true;
+			// Do not create an empty usage row for a limit refusal. Keep
+			// measured usage and started-step evidence. Known gap: an attempt
+			// that reached the provider and failed before streaming, followed
+			// by an SDK retry the limit refused, leaves neither, so it is not
+			// recorded (as before this check existed).
+			if (
+				!limitError ||
+				partialAggregate.usage ||
+				partialAggregate.steps.length > 0
+			) {
+				recordAggregateUsage({
+					usage: partialAggregate.usage,
+					latencyMs: Date.now() - startTime,
+					success: false,
+					errorMessage: surfacedError,
+					errorDetails: partialAggregate.usageReportedAt
+						? { usageReportedAt: partialAggregate.usageReportedAt }
+						: undefined,
+					steps: partialAggregate.steps,
+				});
+				aggregateUsageRecorded = true;
+			}
 		}
 		// A cancelled turn is not a failed one: rethrow so the activity ends
 		// as cancelled instead of returning `success: false`, which the
@@ -2567,6 +2577,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		if (cancellation?.aborted) {
 			logger.info("Direct chat turn cancelled", { executionId });
 			throw cancellationError(cancellation);
+		}
+		if (limitError) {
+			throw limitError;
 		}
 		logger.error("Failed to execute direct chat", {
 			error,

@@ -2,17 +2,16 @@
 
 import { cn } from "@ui/lib";
 import html2canvas from "html2canvas";
-import DOMPurify from "isomorphic-dompurify";
 import { useEffect, useMemo, useRef } from "react";
 import { Response } from "../../../../components/ai-elements/response";
 import { Mermaid } from "../../../marketing/blog/components/Mermaid";
 import {
-	frameRuntimeCallExpiresAt,
 	FRAME_RUNTIME_HOST_READY_TYPE,
 	type FrameEmbedToHostMessage,
 	type FrameRuntimeCallResult,
 	type FrameRuntimeHostReady,
 	type FrameRuntimeRequest,
+	frameRuntimeCallExpiresAt,
 	isFrameHostToEmbedMessage,
 	isFrameRuntimeCallResult,
 	isFrameRuntimeHello,
@@ -24,172 +23,6 @@ import {
 	PROJECT_FRAME_MAX_HEIGHT,
 	PROJECT_FRAME_SANDBOX,
 } from "../lib/project-frame-srcdoc";
-
-/**
- * Sanitizes HTML content for safe iframe rendering.
- * Allows styles, scripts (for charts), and common HTML elements.
- */
-function sanitizeHtmlContent(dirty: string): string {
-	return DOMPurify.sanitize(dirty, {
-		ALLOWED_TAGS: [
-			"!doctype",
-			"html",
-			"head",
-			"body",
-			"title",
-			"meta",
-			"link",
-			"style",
-			"script",
-			"div",
-			"span",
-			"p",
-			"h1",
-			"h2",
-			"h3",
-			"h4",
-			"h5",
-			"h6",
-			"br",
-			"hr",
-			"a",
-			"img",
-			"svg",
-			"path",
-			"circle",
-			"rect",
-			"line",
-			"polyline",
-			"polygon",
-			"g",
-			"defs",
-			"use",
-			"text",
-			"tspan",
-			"table",
-			"thead",
-			"tbody",
-			"tr",
-			"th",
-			"td",
-			"ul",
-			"ol",
-			"li",
-			"dl",
-			"dt",
-			"dd",
-			"b",
-			"i",
-			"strong",
-			"em",
-			"small",
-			"big",
-			"sub",
-			"sup",
-			"code",
-			"pre",
-			"kbd",
-			"samp",
-			"var",
-			"mark",
-			"ins",
-			"del",
-			"blockquote",
-			"q",
-			"cite",
-			"abbr",
-			"address",
-			"time",
-			"progress",
-			"meter",
-			"details",
-			"summary",
-			"figure",
-			"figcaption",
-			"canvas",
-			"button",
-			"input",
-			"label",
-			"select",
-			"option",
-			"textarea",
-			"form",
-			"fieldset",
-			"legend",
-			"header",
-			"footer",
-			"main",
-			"section",
-			"article",
-			"aside",
-			"nav",
-			"template",
-		],
-		ALLOWED_ATTR: [
-			"class",
-			"id",
-			"style",
-			"title",
-			"alt",
-			"src",
-			"href",
-			"target",
-			"rel",
-			"width",
-			"height",
-			"viewBox",
-			"fill",
-			"stroke",
-			"stroke-width",
-			"d",
-			"cx",
-			"cy",
-			"r",
-			"x",
-			"y",
-			"x1",
-			"y1",
-			"x2",
-			"y2",
-			"points",
-			"transform",
-			"xmlns",
-			"version",
-			"lang",
-			"charset",
-			"name",
-			"content",
-			"type",
-			"media",
-			"defer",
-			"async",
-			"crossorigin",
-			"integrity",
-			"role",
-			"aria-*",
-			"data-*",
-			"for",
-			"value",
-			"placeholder",
-			"checked",
-			"selected",
-			"disabled",
-			"readonly",
-			"multiple",
-			"min",
-			"max",
-			"step",
-			"pattern",
-			"required",
-			"dir",
-			"lang",
-		],
-		ALLOW_DATA_ATTR: true,
-		SANITIZE_DOM: true,
-		ADD_ATTR: ["target", "rel"],
-		ADD_TAGS: ["iframe"],
-	});
-}
 
 interface FrameBlockView {
 	id: string;
@@ -225,7 +58,6 @@ export function FrameRenderer({
 	embedded = false,
 	className,
 	slideIndex,
-	strictSandbox = false,
 	allowScripts = true,
 }: {
 	frame: FrameDocumentView;
@@ -234,20 +66,14 @@ export function FrameRenderer({
 	slideIndex?: number;
 	/**
 	 * False draws the page of an HTML block without any script of its own, as
-	 * for a page an unattended run wrote (see `isUnattendedFrame`). Only the
-	 * strict sandbox honours it: the historical renderer is for the author's
-	 * own pages.
+	 * for a page an unattended run wrote (see `isUnattendedFrame`). Every HTML
+	 * block runs in the strict sandbox: scripts and forms but never
+	 * same-origin, a deny-all CSP in the srcdoc, nested browsing contexts
+	 * stripped, and the page runtime (`window.fabric`) defined (see
+	 * `lib/project-frame-srcdoc.ts`). Whoever wrote the page, its script never
+	 * runs in this app's own origin.
 	 */
 	allowScripts?: boolean;
-	/**
-	 * True for frames that belong to a project or live on a surface (a
-	 * project's Artifacts tab, an organization Workspace): agent-authored pages
-	 * other people open. HTML blocks are then rendered through the hardened
-	 * path: sandboxed to scripts and forms (never same-origin), a deny-all CSP
-	 * in the srcdoc, nested browsing contexts stripped, and the page runtime (`window.fabric`)
-	 * defined. See `lib/project-frame-srcdoc.ts` and `lib/strict-sandbox.ts`.
-	 */
-	strictSandbox?: boolean;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const visibleBlocks = useMemo(() => {
@@ -413,7 +239,6 @@ export function FrameRenderer({
 						>
 							<FrameBlockRenderer
 								block={block}
-								strictSandbox={strictSandbox}
 								allowScripts={allowScripts}
 								hasHost={embedded}
 							/>
@@ -634,108 +459,23 @@ function ProjectHtmlBlockFrame({
 	);
 }
 
-function HtmlBlockFrame({ block }: { block: FrameBlockView }) {
-	const iframeRef = useRef<HTMLIFrameElement>(null);
-
-	// Sanitize HTML content before rendering
-	const sanitizedContent = useMemo(() => {
-		return sanitizeHtmlContent(block.content);
-	}, [block.content]);
-
-	useEffect(() => {
-		const iframe = iframeRef.current;
-		if (!iframe) {
-			return;
-		}
-
-		const resize = () => {
-			try {
-				const doc = iframe.contentDocument;
-				if (!doc?.body) {
-					return;
-				}
-				const html = doc.documentElement;
-				const body = doc.body;
-
-				// Temporarily remove height/overflow constraints that could clamp scrollHeight
-				const prevHtmlHeight = html.style.height;
-				const prevHtmlOverflow = html.style.overflow;
-				const prevBodyHeight = body.style.height;
-				const prevBodyOverflow = body.style.overflow;
-				const prevBodyMinHeight = body.style.minHeight;
-
-				html.style.height = "auto";
-				html.style.overflow = "visible";
-				body.style.height = "auto";
-				body.style.overflow = "visible";
-				body.style.minHeight = "0";
-
-				const h = Math.max(
-					html.scrollHeight,
-					body.scrollHeight,
-					body.offsetHeight,
-				);
-
-				// Restore
-				html.style.height = prevHtmlHeight;
-				html.style.overflow = prevHtmlOverflow;
-				body.style.height = prevBodyHeight;
-				body.style.overflow = prevBodyOverflow;
-				body.style.minHeight = prevBodyMinHeight;
-
-				if (h > 0) {
-					iframe.style.height = `${h}px`;
-				}
-			} catch {
-				// cross-origin — leave height unchanged
-			}
-		};
-
-		const onLoad = () => {
-			resize();
-			// Retry after dynamic content (charts, fonts, images) finishes rendering
-			setTimeout(resize, 400);
-			setTimeout(resize, 1200);
-		};
-
-		iframe.addEventListener("load", onLoad);
-		return () => iframe.removeEventListener("load", onLoad);
-	}, [sanitizedContent]);
-
-	return (
-		<iframe
-			ref={iframeRef}
-			title={block.title || block.id}
-			sandbox="allow-scripts allow-same-origin"
-			srcDoc={sanitizedContent}
-			scrolling="no"
-			className="w-full"
-			style={{ height: 480, border: "none", overflow: "hidden" }}
-		/>
-	);
-}
-
 function FrameBlockRenderer({
 	block,
-	strictSandbox,
 	allowScripts,
 	hasHost,
 }: {
 	block: FrameBlockView;
-	strictSandbox: boolean;
 	allowScripts: boolean;
 	hasHost: boolean;
 }) {
 	switch (block.type) {
 		case "html":
-			return strictSandbox ? (
+			return (
 				<ProjectHtmlBlockFrame
 					block={block}
 					hasHost={hasHost}
 					allowScripts={allowScripts}
 				/>
-			) : (
-				<HtmlBlockFrame block={block} />
 			);
 		case "mermaid":
 			return <Mermaid chart={block.content} />;

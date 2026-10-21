@@ -33,6 +33,7 @@ import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attr
 import { rethrowIfTurnStopped, startTurnHeartbeat } from "../turn-dispatch";
 import { cosineSimilarity } from "./capability-embeddings";
 import { calculateKeywordMatchScore } from "./capability-keywords";
+import { toolSearchUsage } from "./tool-search-usage";
 import type {
 	IntegrationProviderMetadata,
 	SearchAvailableIntegrationsInput,
@@ -543,7 +544,7 @@ async function runIntegrationSearch(
 		// Credentials are fetched internally by generateEmbedding()
 		const result = await generateEmbedding(
 			input.query,
-			tenantContext,
+			toolSearchUsage(tenantContext),
 			undefined,
 		);
 		queryEmbedding = result.embedding;
@@ -577,7 +578,7 @@ async function runIntegrationSearch(
 			// Credentials are fetched internally by generateEmbeddings()
 			const results = await generateEmbeddings(
 				integrationTexts,
-				tenantContext,
+				toolSearchUsage(tenantContext),
 				undefined,
 			);
 			integrationEmbeddings = results.embeddings;

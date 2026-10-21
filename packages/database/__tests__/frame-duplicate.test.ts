@@ -308,6 +308,20 @@ describe("duplicateFrame", () => {
 		expect(written().data.authoritySessionId).toBeUndefined();
 	});
 
+	it("keeps a copy of a page an unattended run wrote marked as that run's, whoever forks it", async () => {
+		await duplicateFrame({
+			original: original({ sourceRunType: "workflow" }),
+			userId: "forker-1",
+			sourceRunType: "MCP_GATEWAY",
+			sourceRunId: "run-forker",
+		});
+
+		expect(written().data).toMatchObject({
+			sourceRunType: "workflow",
+			sourceRunId: "run-forker",
+		});
+	});
+
 	it("carries the provenance a caller passes on, which the app does for the owner's own copy", async () => {
 		const source = original();
 

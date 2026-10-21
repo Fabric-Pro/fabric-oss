@@ -14,6 +14,8 @@
 
 import { db } from "../client";
 import type { Prisma } from "../generated/client";
+import { hasProjectAccess } from "./projects/projects";
+import { hasWorkspaceAccess } from "./workspaces/workspaces";
 
 // =============================================================================
 // TYPES
@@ -339,19 +341,6 @@ export async function createEpisodicMemory(
 }
 
 /**
- * Get episodic memory by conversation ID
- */
-export async function getEpisodeByConversationId(
-	conversationId: string,
-): Promise<EpisodeSummary | null> {
-	const episode = await db.episodicMemory.findUnique({
-		where: { conversationId },
-	});
-
-	return episode ? episodeToSummary(episode) : null;
-}
-
-/**
  * Delete an episodic memory by ID
  * Enforces tenant isolation - user must own the episode
  */
@@ -448,7 +437,11 @@ export async function searchEpisodicMemories(params: {
 		skip: offset,
 	});
 
-	return episodes.map(episodeToSummary);
+	return filterAccessibleEpisodes(
+		episodes.map(episodeToSummary),
+		userId,
+		organizationId,
+	);
 }
 
 /**
@@ -469,7 +462,11 @@ export async function getRecentEpisodes(
 		take: limit,
 	});
 
-	return episodes.map(episodeToSummary);
+	return filterAccessibleEpisodes(
+		episodes.map(episodeToSummary),
+		userId,
+		organizationId,
+	);
 }
 
 /**
@@ -496,7 +493,11 @@ export async function getProjectEpisodes(
 		take: limit,
 	});
 
-	return episodes.map(episodeToSummary);
+	return filterAccessibleEpisodes(
+		episodes.map(episodeToSummary),
+		userId,
+		organizationId,
+	);
 }
 
 /**
@@ -523,7 +524,11 @@ export async function getWorkspaceEpisodes(
 		take: limit,
 	});
 
-	return episodes.map(episodeToSummary);
+	return filterAccessibleEpisodes(
+		episodes.map(episodeToSummary),
+		userId,
+		organizationId,
+	);
 }
 
 /**
@@ -544,26 +549,32 @@ export async function updateEpisodeQdrantReference(
 }
 
 /**
- * Get episodes by Qdrant point IDs (after semantic search)
+ * Hydrate semantic hits by database episode ID within the requesting tenant.
  */
-export async function getEpisodesByQdrantIds(
-	qdrantPointIds: string[],
+export async function getEpisodesByIds(
+	episodeIds: string[],
+	userId: string,
+	organizationId?: string | null,
 ): Promise<EpisodeSummary[]> {
 	const episodes = await db.episodicMemory.findMany({
 		where: {
-			qdrantPointId: { in: qdrantPointIds },
+			id: { in: episodeIds },
+			...(organizationId
+				? { organizationId, userId }
+				: { organizationId: null, userId }),
 		},
 	});
 
 	// Preserve order from Qdrant results
 	type EpisodeRecord = (typeof episodes)[number];
-	const episodeMap = new Map<string | null, EpisodeRecord>(
-		episodes.map((e) => [e.qdrantPointId, e]),
+	const episodeMap = new Map<string, EpisodeRecord>(
+		episodes.map((e) => [e.id, e]),
 	);
-	return qdrantPointIds
+	const orderedEpisodes = episodeIds
 		.map((id) => episodeMap.get(id))
 		.filter((e): e is EpisodeRecord => e !== undefined)
 		.map((e) => episodeToSummary(e));
+	return filterAccessibleEpisodes(orderedEpisodes, userId, organizationId);
 }
 
 /**
@@ -591,130 +602,48 @@ export async function deleteEpisodeByConversationId(
 // =============================================================================
 
 /**
- * Check if user has access to a project
- * Used for filtering project-scoped episodes
+ * Recheck current resource access once per distinct id in this result set.
+ * Query limits precede this filter, so revoked access can yield fewer results.
  */
-export async function hasProjectAccessForMemory(
-	projectId: string,
+async function filterAccessibleEpisodes(
+	episodes: EpisodeSummary[],
 	userId: string,
 	organizationId?: string | null,
-): Promise<boolean> {
-	const project = await db.project.findFirst({
-		where: {
-			id: projectId,
-			OR: [
-				// Owner
-				{ userId },
-				// Organization member (if org project)
-				...(organizationId
-					? [
-							{
-								organizationId,
-								organization: {
-									members: { some: { userId } },
-								},
-							},
-						]
-					: []),
-				// Project member
-				{
-					members: { some: { userId } },
-				},
-			],
-		},
-	});
-
-	return project !== null;
-}
-
-/**
- * Check if user has access to a workspace
- * Used for filtering workspace-scoped episodes
- */
-export async function hasWorkspaceAccessForMemory(
-	workspaceId: string,
-	userId: string,
-): Promise<boolean> {
-	const workspace = await db.workspace.findFirst({
-		where: {
-			id: workspaceId,
-			OR: [
-				// Creator
-				{ userId },
-				// Administrator
-				{ administrators: { some: { userId } } },
-				// Contributor
-				{ contributors: { some: { userId } } },
-				// Stakeholder
-				{ stakeholders: { some: { userId } } },
-			],
-		},
-	});
-
-	return workspace !== null;
-}
-
-/**
- * Get accessible project IDs for a user
- */
-export async function getAccessibleProjectIds(
-	userId: string,
-	organizationId?: string | null,
-): Promise<string[]> {
-	const projects = await db.project.findMany({
-		where: {
-			OR: [
-				// Owner
-				{ userId, organizationId: organizationId ?? null },
-				// Organization member (if org context)
-				...(organizationId
-					? [
-							{
-								organizationId,
-								organization: {
-									members: { some: { userId } },
-								},
-							},
-						]
-					: []),
-				// Project member
-				{
-					members: { some: { userId } },
-					organizationId: organizationId ?? null,
-				},
-			],
-		},
-		select: { id: true },
-	});
-
-	return projects.map((p: { id: string }) => p.id);
-}
-
-/**
- * Get accessible workspace IDs for a user
- */
-export async function getAccessibleWorkspaceIds(
-	userId: string,
-	organizationId?: string | null,
-): Promise<string[]> {
-	const workspaces = await db.workspace.findMany({
-		where: {
-			organizationId: organizationId ?? null,
-			OR: [
-				// Creator
-				{ userId },
-				// Administrator
-				{ administrators: { some: { userId } } },
-				// Contributor
-				{ contributors: { some: { userId } } },
-				// Stakeholder
-				{ stakeholders: { some: { userId } } },
-			],
-		},
-		select: { id: true },
-	});
-
-	return workspaces.map((w: { id: string }) => w.id);
+): Promise<EpisodeSummary[]> {
+	const projectIds = new Set(
+		episodes.flatMap((e) => (e.projectId ? [e.projectId] : [])),
+	);
+	const workspaceIds = new Set(
+		episodes.flatMap((e) => (e.workspaceId ? [e.workspaceId] : [])),
+	);
+	const check = async (
+		ids: Set<string>,
+		access: (id: string) => Promise<boolean>,
+	) =>
+		new Map(
+			await Promise.all(
+				[...ids].map(async (id) => {
+					try {
+						return [id, await access(id)] as const;
+					} catch {
+						// An unavailable permission check cannot authorize recall.
+						return [id, false] as const;
+					}
+				}),
+			),
+		);
+	const [projects, workspaces] = await Promise.all([
+		check(projectIds, (id) =>
+			hasProjectAccess(id, userId, organizationId ?? undefined),
+		),
+		check(workspaceIds, (id) => hasWorkspaceAccess(id, userId)),
+	]);
+	return episodes.filter(
+		(episode) =>
+			(!episode.projectId || projects.get(episode.projectId) === true) &&
+			(!episode.workspaceId ||
+				workspaces.get(episode.workspaceId) === true),
+	);
 }
 
 // =============================================================================
@@ -764,7 +693,7 @@ export async function buildOrchestratorMemoryContext(params: {
 			? getWorkspaceEpisodes(workspaceId, userId, organizationId, 5)
 			: Promise.resolve([]),
 		relevantEpisodeIds && relevantEpisodeIds.length > 0
-			? getEpisodesByQdrantIds(relevantEpisodeIds)
+			? getEpisodesByIds(relevantEpisodeIds, userId, organizationId)
 			: Promise.resolve([]),
 	]);
 

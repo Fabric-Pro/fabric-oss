@@ -179,12 +179,12 @@ export class CodeSearchHandler implements StepHandler {
 			"@repo/rag/lib/project-contexts/client"
 		);
 
-		const tenantContext = {
+		const embeddingResult = await generateEmbedding(query, {
 			conversationId: usageConversationId,
 			userId,
 			organizationId: organizationId ?? undefined,
-		};
-		const embeddingResult = await generateEmbedding(query, tenantContext);
+			featureKey: "code-index",
+		});
 
 		const collectionName = await ensureCollection(
 			"project-contexts",

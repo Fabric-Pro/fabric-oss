@@ -7,7 +7,8 @@ import {
 	sourceDetailsSchema,
 	storyReviewSchema,
 } from "./fingerprints";
-import { escapeHtml, renderSprintStoryReview } from "./render";
+import { escapeHtml, reviewPage, storyCard, verdictTiles } from "./page";
+import { renderSprintStoryReview } from "./render";
 import { sprintReviewCacheSchema } from "./sprint-cache";
 
 export {
@@ -353,16 +354,29 @@ export function renderStoryReview(
 		...removed.map((id) => `#${id}: removed from assignment`),
 	];
 	const summary = [headline, ...dailyChanges].join("\n");
-	const rows = cache.stories
-		.map(
-			(story) =>
-				`<article><h2>#${story.id} ${escapeHtml(story.observation.title)}</h2><p>${escapeHtml(story.observation.state)} · ${escapeHtml(story.review.verdict)}</p><p>${escapeHtml(story.review.summary)}</p><ul>${story.review.issues.map((issue) => `<li>${escapeHtml(issue)}</li>`).join("")}</ul></article>`,
+	const cards = cache.stories
+		.map((story) =>
+			storyCard({
+				titleHtml: `#${story.id} ${escapeHtml(story.observation.title)}`,
+				verdict: story.review.verdict,
+				facts: [story.observation.state],
+				summary: story.review.summary,
+				issues: story.review.issues,
+			}),
 		)
 		.join("");
-	const transitions = dailyChanges
-		.map((change) => `<li>${escapeHtml(change)}</li>`)
-		.join("");
-	const html = `<!doctype html><html><head><meta charset="utf-8"><title>Story review</title></head><body><h1>Story review</h1><p>${escapeHtml(headline)}</p><ul>${transitions}</ul>${rows}</body></html>`;
+	const html = reviewPage({
+		title: "Story review",
+		headline,
+		tiles: [
+			{ label: "Stories", value: counts.total },
+			...verdictTiles(cache.stories.map((story) => story.review.verdict)),
+			{ label: "Reviewed now", value: reviewed },
+			{ label: "Reused", value: counts.reused },
+		],
+		changes: dailyChanges,
+		sectionsHtml: `<section><p class="label">Stories</p><div class="cards">${cards || '<p class="empty">No stories in this selection.</p>'}</div></section>`,
+	});
 	if (html.length > 400_000) {
 		throw new Error("Rendered story review exceeds output limit");
 	}

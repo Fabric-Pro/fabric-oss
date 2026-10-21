@@ -425,6 +425,24 @@ describe("fabric_create_workflow with a graph", () => {
 		expect(mocks.createFromPreset).not.toHaveBeenCalled();
 	});
 
+	it("offers a graph its project, so a step-built workflow can belong to one", async () => {
+		const create = PLATFORM_TOOL_DEFINITIONS.find(
+			(tool) => tool.name === "fabric_create_workflow",
+		);
+		expect(create?.inputSchema.properties).toHaveProperty("projectId");
+
+		await executePlatformTool(
+			"fabric_create_workflow",
+			{ ...GRAPH, projectId: "project-named" },
+			sessionWith(),
+		);
+
+		expect(mocks.createFromGraph).toHaveBeenCalledWith(
+			ACTOR,
+			expect.objectContaining({ projectId: "project-named" }),
+		);
+	});
+
 	it("refuses a call that sends both a preset and a graph, or neither", async () => {
 		const both = await executePlatformTool(
 			"fabric_create_workflow",

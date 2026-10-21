@@ -106,4 +106,3 @@ The orchestrator adapts delegation based on agent capabilities from A2A cards:
 | `VariableContext` | Cross-step state passing |
 | `OrchestratorWorkspace` | Context preservation across delegations |
 | `Trajectory` | Execution history for learning |
-| `toolCallLearningCache` | Successful tool call patterns |

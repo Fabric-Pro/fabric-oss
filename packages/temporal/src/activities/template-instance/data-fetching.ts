@@ -581,7 +581,12 @@ async function buildRagEnhancedPrompt(
 		// Generate query embedding
 		const queryEmbedding = await generateEmbedding(
 			task,
-			{ userId, organizationId, tags: ["report-analysis"] },
+			{
+				userId,
+				organizationId,
+				featureKey: "knowledge-search",
+				tags: ["report-analysis"],
+			},
 			embeddingConfig,
 		);
 

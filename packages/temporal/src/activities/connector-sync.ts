@@ -1584,6 +1584,7 @@ export async function generateEmbeddings(_input: {
 			{
 				userId: _input.userId,
 				organizationId: _input.organizationId,
+				featureKey: "knowledge-index",
 				tags: ["connector-sync", "rag-embedding"],
 			},
 			providerConfig,

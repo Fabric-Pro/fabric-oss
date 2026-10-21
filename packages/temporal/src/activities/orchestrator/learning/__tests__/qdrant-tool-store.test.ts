@@ -314,3 +314,35 @@ describe("QdrantToolUsageStore.recordCall (write path)", () => {
 		});
 	});
 });
+
+describe("per-call privacy within an organization", () => {
+	it.each(["queryLearnings", "searchSimilarContexts"] as const)(
+		"%s excludes another member's calls",
+		async (method) => {
+			const store = new QdrantToolUsageStore("key", {
+				userId: "user-1",
+				organizationId: "org-a",
+			});
+			if (method === "queryLearnings") {
+				await store.queryLearnings({
+					toolId: "github.create_issue",
+					taskContext: "open an issue",
+				});
+			} else {
+				await store.searchSimilarContexts(
+					"open an issue",
+					"github.create_issue",
+				);
+			}
+			const must = lastSearchMust();
+			expect(must).toContainEqual({
+				key: "userId",
+				match: { value: "user-1" },
+			});
+			expect(rowMatches(orgRow, must)).toBe(true);
+			expect(rowMatches({ ...orgRow, userId: "user-2" }, must)).toBe(
+				false,
+			);
+		},
+	);
+});

@@ -101,7 +101,7 @@ async function sprintCapture(
 			error.code === "unsupported_current_predicate"
 		) {
 			throw new ReviewStepFailure(
-				"Current-account filtering is unavailable for Custom.Engineer. Select an exact ADO member unique name or remove Custom.Engineer from assignment fields.",
+				"Current-account filtering needs every assignment field other than System.AssignedTo to be an identity field. Select an exact ADO member unique name or remove that field from assignment fields.",
 			);
 		}
 		throw error;

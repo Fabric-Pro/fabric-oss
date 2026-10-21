@@ -48,8 +48,10 @@ vi.mock("../prisma/client", () => ({
 	},
 }));
 
+import { contentIdentity } from "@repo/utils/content-identity";
 import {
 	DocumentGenerationInProgressError,
+	DocumentRegenerationReviewStaleError,
 	DocumentVersionConflictError,
 	rejectDocumentRegeneration,
 } from "../prisma/queries/projects/documents";
@@ -99,11 +101,13 @@ describe("rejectDocumentRegeneration", () => {
 			version: previous.version,
 			content: previous.content,
 		};
-		docUpdateMock.mockResolvedValue(updated);
+		docUpdateManyMock.mockResolvedValue({ count: 1 });
+		docFindUniqueOrThrowMock.mockResolvedValue(updated);
 
 		const result = await rejectDocumentRegeneration("doc-1", {
 			userId: "user-1",
 			organizationId: "org-1",
+			expectedVersion: 2,
 		});
 
 		// Phantom row removed.
@@ -117,9 +121,9 @@ describe("rejectDocumentRegeneration", () => {
 		// after split, but the helper uses countDocumentWords which strips
 		// fences/images and then counts whitespace tokens; here that's just
 		// the plain split).
-		expect(docUpdateMock).toHaveBeenCalledTimes(1);
-		const updateArgs = docUpdateMock.mock.calls[0]?.[0] as {
-			where: { id: string };
+		expect(docUpdateManyMock).toHaveBeenCalledTimes(1);
+		const updateArgs = docUpdateManyMock.mock.calls[0]?.[0] as {
+			where: Record<string, unknown>;
 			data: {
 				content: string;
 				version: number;
@@ -127,7 +131,12 @@ describe("rejectDocumentRegeneration", () => {
 				lastEditedBy: string;
 			};
 		};
-		expect(updateArgs.where).toEqual({ id: "doc-1" });
+		// Conditioned on the reviewed version and the body read.
+		expect(updateArgs.where).toEqual({
+			id: "doc-1",
+			version: 2,
+			content: newContent,
+		});
 		expect(updateArgs.data.content).toBe(previous.content);
 		expect(updateArgs.data.version).toBe(1);
 		expect(updateArgs.data.lastEditedBy).toBe("user-1");
@@ -159,7 +168,10 @@ describe("rejectDocumentRegeneration", () => {
 			.mockResolvedValueOnce(null); // no row with version < 1
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 1,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		// Nothing should have been deleted or updated.
@@ -184,7 +196,10 @@ describe("rejectDocumentRegeneration", () => {
 		});
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 5,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		// We bail before looking up the previous row or mutating anything.
@@ -213,7 +228,10 @@ describe("rejectDocumentRegeneration", () => {
 		});
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		expect(versionFindFirstMock).toHaveBeenCalledTimes(1);
@@ -225,7 +243,10 @@ describe("rejectDocumentRegeneration", () => {
 		docFindUniqueMock.mockResolvedValue(null);
 
 		await expect(
-			rejectDocumentRegeneration("missing-doc", { userId: "user-1" }),
+			rejectDocumentRegeneration("missing-doc", {
+				userId: "user-1",
+				expectedVersion: 2,
+			}),
 		).rejects.toThrow("Document not found");
 
 		expect(versionFindFirstMock).not.toHaveBeenCalled();
@@ -272,7 +293,10 @@ describe("rejectDocumentRegeneration", () => {
 				content: OLD,
 			});
 
-			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
 
 			expect(docFindUniqueMock).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -290,7 +314,10 @@ describe("rejectDocumentRegeneration", () => {
 				armRegenState(status);
 
 				await expect(
-					rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+					}),
 				).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 				expect(versionDeleteMock).not.toHaveBeenCalled();
 				expect(docUpdateMock).not.toHaveBeenCalled();
@@ -309,6 +336,7 @@ describe("rejectDocumentRegeneration", () => {
 
 			const result = await rejectDocumentRegeneration("doc-1", {
 				userId: "user-1",
+				expectedVersion: 2,
 			});
 
 			expect(docUpdateMock).not.toHaveBeenCalled();
@@ -335,7 +363,10 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
 			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 			expect(docFindUniqueOrThrowMock).not.toHaveBeenCalled();
 		});
@@ -349,24 +380,313 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
 			).rejects.toBeInstanceOf(DocumentVersionConflictError);
 		});
 
-		it("keeps the unguarded rewind for a non-Proposal document, even under a run", async () => {
+		it("does not refuse a non-Proposal document under a run, but still conditions its rewind on the reviewed version and body", async () => {
 			armRegenState("GENERATING", "PRD");
-			docUpdateMock.mockResolvedValue({
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
 				id: "doc-1",
 				version: 1,
 				content: OLD,
 			});
 
-			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
 
-			expect(docUpdateManyMock).not.toHaveBeenCalled();
-			expect(docUpdateMock).toHaveBeenCalledWith(
-				expect.objectContaining({ where: { id: "doc-1" } }),
+			expect(docUpdateMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { id: "doc-1", version: 2, content: NEW },
+				}),
 			);
+		});
+	});
+
+	/**
+	 * A review dialog can stay open while a newer run (or a save) writes the
+	 * document. A Reject from that stale review must not rewind the newer
+	 * write or delete its version row (Fizzy #2946).
+	 */
+	describe("refusing a Reject from a stale review", () => {
+		const RUN_ONE = "Body from the first run";
+		const RUN_TWO = "Body from the second run";
+		// The first run produced v2; a second run has since written v3.
+		const armNewerRun = () => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 3,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PROPOSAL",
+			});
+			versionFindFirstMock
+				.mockResolvedValueOnce({
+					id: "ver-3",
+					version: 3,
+					content: RUN_TWO,
+				})
+				.mockResolvedValueOnce({
+					id: "ver-2",
+					version: 2,
+					content: RUN_ONE,
+				});
+		};
+
+		it("refuses when the document moved past the reviewed version, deleting and writing nothing", async () => {
+			armNewerRun();
+
+			const attempt = rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
+
+			await expect(attempt).rejects.toBeInstanceOf(
+				DocumentRegenerationReviewStaleError,
+			);
+			await expect(attempt).rejects.toMatchObject({
+				reviewedVersion: 2,
+				actualVersion: 3,
+			});
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("refuses a non-Proposal document the same way", async () => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 3,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PRD",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("refuses when the body changed at the reviewed version", async () => {
+			// A run's final save writes its body before the version moves.
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 2,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PROPOSAL",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("rewinds the reviewed body after its version step landed", async () => {
+			// The review opened between the run's final save (its body at the
+			// old version 2) and the step to version 3.
+			armNewerRun();
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
+
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+				expectedContentHash: contentIdentity(RUN_TWO),
+			});
+
+			expect(versionDeleteMock).toHaveBeenCalledWith({
+				where: { id: "ver-3" },
+			});
+			expect(docUpdateManyMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						version: 3,
+						content: RUN_TWO,
+					}),
+				}),
+			);
+		});
+
+		it("refuses a newer body at a higher version even with the reviewed version's identity", async () => {
+			armNewerRun();
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		describe("binding the Reject to the reviewed run", () => {
+			const REVIEWED_RUN = new Date("2026-10-01T09:00:00.000Z");
+			const NEWER_RUN = new Date("2026-10-01T10:00:00.000Z");
+			const armDocument = (row: {
+				version: number;
+				content: string;
+				generationStartedAt: Date | null;
+			}) => {
+				docFindUniqueMock.mockResolvedValueOnce({
+					id: "doc-1",
+					status: "COMPLETE",
+					type: "PROPOSAL",
+					...row,
+				});
+				versionFindFirstMock
+					.mockResolvedValueOnce({
+						id: `ver-${row.version}`,
+						version: row.version,
+						content: row.content,
+					})
+					.mockResolvedValueOnce({
+						id: "ver-prior",
+						version: row.version - 1,
+						content: "Body before the reviewed run",
+					});
+			};
+
+			it("refuses a newer run that produced the same body, deleting nothing", async () => {
+				// The reviewed run wrote RUN_ONE at v2; a second run produced
+				// the very same body and stepped to v3 under its own identity.
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: NEWER_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedContentHash: contentIdentity(RUN_ONE),
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+				expect(docUpdateManyMock).not.toHaveBeenCalled();
+			});
+
+			it("refuses a save followed by a restore of the reviewed body, deleting nothing", async () => {
+				// Reviewed at v2; a colleague saved X (v3), then restored the
+				// reviewed body (v4). Same body, same run, two steps on.
+				armDocument({
+					version: 4,
+					content: RUN_ONE,
+					generationStartedAt: REVIEWED_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedContentHash: contentIdentity(RUN_ONE),
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+				expect(docUpdateManyMock).not.toHaveBeenCalled();
+			});
+
+			it("refuses a version step without the body's identity", async () => {
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: REVIEWED_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+			});
+
+			it("rewinds after the reviewed run's own version step", async () => {
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: new Date(REVIEWED_RUN.getTime()),
+				});
+				docUpdateManyMock.mockResolvedValue({ count: 1 });
+				docFindUniqueOrThrowMock.mockResolvedValue({
+					id: "doc-1",
+					version: 2,
+					content: "Body before the reviewed run",
+				});
+
+				await rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+					expectedGenerationStartedAt: REVIEWED_RUN,
+				});
+
+				expect(versionDeleteMock).toHaveBeenCalledWith({
+					where: { id: "ver-3" },
+				});
+				expect(docUpdateManyMock).toHaveBeenCalledWith(
+					expect.objectContaining({
+						where: expect.objectContaining({
+							version: 3,
+							content: RUN_ONE,
+						}),
+					}),
+				);
+			});
+		});
+
+		it("rewinds when the document is still the reviewed version and body", async () => {
+			armNewerRun();
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
+
+			const result = await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(RUN_TWO),
+			});
+
+			expect(versionDeleteMock).toHaveBeenCalledWith({
+				where: { id: "ver-3" },
+			});
+			expect(result).toEqual({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
 		});
 	});
 });

@@ -73,6 +73,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsgo --noEmit"
 	},
-	"version": "0.0.18",
+	"version": "0.0.19",
 	"license": "Apache-2.0"
 }

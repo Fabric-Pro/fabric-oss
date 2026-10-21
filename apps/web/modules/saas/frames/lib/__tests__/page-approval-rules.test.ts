@@ -271,4 +271,13 @@ describe("createPageTaint", () => {
 
 		expect(second.isTainted()).toBe(false);
 	});
+
+	it("outlives a reload of the same page for the browser session, as its allows do", () => {
+		window.sessionStorage.clear();
+		createPageTaint("page-a").mark();
+
+		expect(createPageTaint("page-a").isTainted()).toBe(true);
+		expect(createPageTaint("page-b").isTainted()).toBe(false);
+		window.sessionStorage.clear();
+	});
 });

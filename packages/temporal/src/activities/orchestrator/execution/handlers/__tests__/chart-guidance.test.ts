@@ -35,9 +35,6 @@ vi.mock("@repo/mcp", () => ({
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("../../../utils", () => ({
 	getAiModel: vi.fn(async () => ({ id: "test-model" })),
-	getToolLearningContext: vi.fn(),
-	recordFailedToolCall: vi.fn(),
-	recordSuccessfulToolCall: vi.fn(),
 }));
 vi.mock("../../../utils/partykit-publisher", () => ({
 	publishStepProgress: vi.fn(),
@@ -57,7 +54,7 @@ import { createChartTool } from "../chart-tool";
 import { McpToolHandler } from "../mcp-tool-handler";
 
 describe("create_chart description", () => {
-	const description = createChartTool().description as string;
+	const description = createChartTool([]).description as string;
 
 	it("tells the model to call the tool instead of substituting a table or prose", () => {
 		expect(description).toContain(

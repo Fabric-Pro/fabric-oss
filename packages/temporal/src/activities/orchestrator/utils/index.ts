@@ -16,10 +16,3 @@ export {
 } from "./message-parser";
 export { getAiModel, getAiModelWithSelection } from "./model-selector";
 export { jsonSchemaToZod } from "./schema-utils";
-export {
-	clearToolLearningCache,
-	getToolLearningContext,
-	getToolPattern,
-	recordFailedToolCall,
-	recordSuccessfulToolCall,
-} from "./tool-learning";

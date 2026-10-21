@@ -60,6 +60,7 @@ import {
 	PROJECT_EMBEDDING_TASK_QUEUE,
 	PROJECT_OPERATIONS_ACTIVITY_TASK_QUEUE,
 } from "../task-queues";
+import { extractMeaningfulErrorMessage as extractWorkflowErrorMessage } from "./meaningful-error-message";
 
 /**
  * Telemetry contract for `project_context_url_crawl_failed` (
@@ -186,56 +187,15 @@ export function isPermanentScrapeFailure(error: unknown): boolean {
 	);
 }
 
-/**
- * Walk an `ActivityFailure` / `ApplicationFailure` `cause` chain to surface
- * the meaningful Firecrawl message instead of Temporal's generic outer
- * wrapper ("Activity task failed"). Mirrors the helper used by the PM-sync
- * workflow (`unwrapPmSyncError`) — kept local so this file stays
- * workflow-sandbox-safe (no imports outside `@temporalio/workflow`).
- *
- * Without this, the parent `ProjectContext.extractionError` ended up
- * storing "Activity task failed" for every crawl failure — making the
- * failed-card tooltip useless. Now we drill into `cause.message` (typed
- * `ApplicationFailure` from `firecrawl-crawl-activity.ts`) so the user
- * sees the real reason (e.g. "Firecrawl returned 429 (rate limited) —
- * check your Firecrawl plan.").
- *
- * Exported so it's directly unit-testable without spinning up a workflow.
- */
+/** Preserve the crawl helper's existing export and fallback behavior. */
 export function extractMeaningfulErrorMessage(error: unknown): string {
-	const GENERIC = new Set([
-		"Activity task failed",
-		"Workflow execution failed",
-	]);
-
-	let current: unknown = error;
-	let depth = 0;
-	let best = "";
-
-	while (current != null && depth < 8) {
-		const e = current as { message?: unknown; cause?: unknown };
-		const message = typeof e.message === "string" ? e.message : "";
-		if (message && !GENERIC.has(message)) {
-			best = message;
-		}
-		current = e.cause;
-		depth += 1;
-	}
-
-	if (best) {
-		return best.slice(0, 500);
-	}
-
-	if (error instanceof ApplicationFailure) {
-		return (error.message ?? error.type ?? "Url source crawl failed").slice(
-			0,
-			500,
-		);
-	}
-	if (error instanceof Error) {
-		return (error.message || "Unknown error").slice(0, 500);
-	}
-	return "Unknown error";
+	const fallback =
+		error instanceof ApplicationFailure
+			? (error.message ?? error.type ?? "Url source crawl failed")
+			: error instanceof Error
+				? error.message || "Unknown error"
+				: "Unknown error";
+	return extractWorkflowErrorMessage(error, fallback);
 }
 
 /**

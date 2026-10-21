@@ -94,9 +94,7 @@ const pageCall = (requestId = "call-1", name = "fabric_list_workflows") => ({
 
 describe("a strict-sandbox page in an embed", () => {
 	it("is sandboxed to scripts and forms, never same-origin, and carries the page runtime", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const iframe = pageIframe(container);
 
 		expect(iframe.getAttribute("sandbox")).toBe(
@@ -105,23 +103,21 @@ describe("a strict-sandbox page in an embed", () => {
 		expect(iframe.getAttribute("srcdoc")).toContain("fabric-frame:call");
 	});
 
-	it("keeps a frame outside the strict sandbox on the historical renderer", () => {
+	it("never draws a page same-origin, whoever wrote it", () => {
 		const { container } = render(<FrameRenderer frame={frame} embedded />);
 
-		expect(
-			container.querySelector('iframe[data-frame-scope="project"]'),
-		).toBeNull();
-		expect(container.querySelector("iframe")?.getAttribute("sandbox")).toBe(
-			"allow-scripts allow-same-origin",
+		const iframes = container.querySelectorAll("iframe");
+		expect(iframes).toHaveLength(1);
+		expect(iframes[0]?.getAttribute("data-frame-scope")).toBe("project");
+		expect(iframes[0]?.getAttribute("sandbox")).not.toContain(
+			"allow-same-origin",
 		);
 	});
 });
 
 describe("relaying a page's request up to the host", () => {
 	it("forwards a call under the embed's own id, to this app's origin only", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 
 		messageFrom(pageIframe(container).contentWindow, pageCall("call-1"));
 
@@ -140,9 +136,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("forwards the requests to open Fabric Agent and to navigate", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const page = pageIframe(container).contentWindow;
 
 		messageFrom(page, {
@@ -173,9 +167,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("forwards a file the page offers, unchanged, to this app's origin only", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const offer = {
 			type: "fabric-frame:download",
 			filename: "report.csv",
@@ -196,9 +188,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("does not forward an offer that is not a file, or is larger than the host would hold", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const page = pageIframe(container).contentWindow;
 		const offer = {
 			type: "fabric-frame:download",
@@ -222,9 +212,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("ignores a request that does not come from the page's own iframe", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const stranger = document.createElement("iframe");
 		document.body.appendChild(stranger);
 
@@ -243,9 +231,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("ignores a request that is not one of the runtime's", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const page = pageIframe(container).contentWindow;
 
 		messageFrom(page, {
@@ -274,9 +260,7 @@ describe("relaying a page's request up to the host", () => {
 	});
 
 	it("still resizes to the height the page reports", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} embedded />);
 		const iframe = pageIframe(container);
 
 		messageFrom(iframe.contentWindow, {
@@ -290,9 +274,7 @@ describe("relaying a page's request up to the host", () => {
 
 describe("relaying the host's answer down to the page", () => {
 	function setup() {
-		const view = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const view = render(<FrameRenderer frame={frame} embedded />);
 		const iframe = pageIframe(view.container);
 		const toPage = vi
 			.spyOn(iframe.contentWindow, "postMessage")
@@ -499,7 +481,7 @@ describe("relay request lifetime", () => {
 	it("translates only its own page's cancellation and preserves the absolute deadline", () => {
 		vi.useFakeTimers();
 		const { container, unmount } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
+			<FrameRenderer frame={frame} embedded />,
 		);
 		const page = pageIframe(container).contentWindow;
 		const transportTimers = vi.getTimerCount();
@@ -555,7 +537,6 @@ describe("relay request lifetime", () => {
 					],
 				}}
 				embedded
-				strictSandbox
 			/>,
 		);
 		const pages = container.querySelectorAll<HTMLIFrameElement>(
@@ -593,9 +574,7 @@ describe("relay request lifetime", () => {
 	});
 
 	function setup() {
-		const view = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const view = render(<FrameRenderer frame={frame} embedded />);
 		const iframe = pageIframe(view.container);
 		const toPage = vi
 			.spyOn(iframe.contentWindow, "postMessage")
@@ -689,7 +668,6 @@ describe("relay request lifetime", () => {
 					],
 				}}
 				embedded
-				strictSandbox
 			/>,
 		);
 		const replacement = pageIframe(view.container);
@@ -743,7 +721,6 @@ describe("relay request lifetime", () => {
 			<FrameRenderer
 				frame={{ ...frame, blocks: [frame.blocks[0], sibling] }}
 				embedded
-				strictSandbox
 			/>,
 		);
 		const pages = view.container.querySelectorAll<HTMLIFrameElement>(
@@ -765,11 +742,7 @@ describe("relay request lifetime", () => {
 			)
 			.map((entry) => entry.message as { requestId: string });
 		view.rerender(
-			<FrameRenderer
-				frame={{ ...frame, blocks: [sibling] }}
-				embedded
-				strictSandbox
-			/>,
+			<FrameRenderer frame={{ ...frame, blocks: [sibling] }} embedded />,
 		);
 		expect(toFirst).toHaveBeenCalledWith(
 			expect.objectContaining({ requestId: "call-1", ok: false }),
@@ -824,9 +797,7 @@ describe("relay request lifetime", () => {
 
 describe("a page whose frame is not embedded in a Fabric view", () => {
 	it("is told at once that nothing can run, and nothing is sent anywhere", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} />);
 		const iframe = pageIframe(container);
 		const toPage = vi
 			.spyOn(iframe.contentWindow, "postMessage")
@@ -846,9 +817,7 @@ describe("a page whose frame is not embedded in a Fabric view", () => {
 	});
 
 	it("sends nothing of a file the page offers either", () => {
-		const { container } = render(
-			<FrameRenderer frame={frame} strictSandbox />,
-		);
+		const { container } = render(<FrameRenderer frame={frame} />);
 
 		messageFrom(pageIframe(container).contentWindow, {
 			type: "fabric-frame:download",
@@ -953,7 +922,7 @@ describe("the handshake between the page and the embed", () => {
 		const result = fabric.call("fabric_list_workflows", { limit: 2 });
 		expect(relayedCalls()).toEqual([]);
 
-		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		render(<FrameRenderer frame={frame} embedded />);
 
 		expect(relayedCalls()).toHaveLength(1);
 		const [relayed] = relayedCalls();
@@ -975,14 +944,14 @@ describe("the handshake between the page and the embed", () => {
 	it("tells the page the embed is listening as soon as the listener is attached", () => {
 		const page = standInPage();
 
-		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		render(<FrameRenderer frame={frame} embedded />);
 
 		expect(page.toPage).toEqual([{ type: FRAME_RUNTIME_HOST_READY_TYPE }]);
 	});
 
 	it("tells a page that comes up after the embed is listening, when it says hello", async () => {
 		const page = standInPage();
-		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		render(<FrameRenderer frame={frame} embedded />);
 		expect(page.toPage.filter(isHostReady)).toHaveLength(1);
 
 		const fabric = page.start();
@@ -1004,14 +973,12 @@ describe("the handshake between the page and the embed", () => {
 		const page = standInPage();
 		const fabric = page.start();
 		const result = fabric.call("fabric_list_workflows");
-		const { rerender } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { rerender } = render(<FrameRenderer frame={frame} embedded />);
 		expect(relayedCalls()).toHaveLength(1);
 
 		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
 		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
-		rerender(<FrameRenderer frame={frame} embedded strictSandbox />);
+		rerender(<FrameRenderer frame={frame} embedded />);
 
 		expect(page.toPage.filter(isHostReady).length).toBeGreaterThan(2);
 		expect(relayedCalls()).toHaveLength(1);
@@ -1032,18 +999,16 @@ describe("the handshake between the page and the embed", () => {
 		const rejected = expect(result).rejects.toThrow(
 			"not open in a Fabric view",
 		);
-		const { rerender } = render(
-			<FrameRenderer frame={frame} embedded strictSandbox />,
-		);
+		const { rerender } = render(<FrameRenderer frame={frame} embedded />);
 		const oldRelay = (relayedCalls()[0].message as { requestId: string })
 			.requestId;
-		rerender(<FrameRenderer frame={frame} strictSandbox />);
+		rerender(<FrameRenderer frame={frame} />);
 		await rejected;
 		expect(toHost.at(-1)?.message).toEqual({
 			type: "fabric-frame:cancel-call",
 			requestId: oldRelay,
 		});
-		rerender(<FrameRenderer frame={frame} embedded strictSandbox />);
+		rerender(<FrameRenderer frame={frame} embedded />);
 		const fresh = fabric.call("fabric_list_workflows");
 		const freshRelay = (relayedCalls()[1].message as { requestId: string })
 			.requestId;
@@ -1067,7 +1032,7 @@ describe("the handshake between the page and the embed", () => {
 
 	it("does not answer a hello that is not from the page's own iframe", () => {
 		const page = standInPage();
-		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		render(<FrameRenderer frame={frame} embedded />);
 		const before = page.toPage.length;
 
 		pageMessageFrom(
@@ -1083,7 +1048,7 @@ describe("the handshake between the page and the embed", () => {
 
 	it("does not pass a hello on to the host", () => {
 		const page = standInPage();
-		render(<FrameRenderer frame={frame} embedded strictSandbox />);
+		render(<FrameRenderer frame={frame} embedded />);
 
 		pageMessageFrom(page.pageWindow, { type: FRAME_RUNTIME_HELLO_TYPE });
 
@@ -1104,7 +1069,7 @@ describe("the handshake between the page and the embed", () => {
 			"not open in a Fabric view",
 		);
 
-		render(<FrameRenderer frame={frame} strictSandbox />);
+		render(<FrameRenderer frame={frame} />);
 
 		await settled;
 		expect(relayedCalls()).toEqual([]);

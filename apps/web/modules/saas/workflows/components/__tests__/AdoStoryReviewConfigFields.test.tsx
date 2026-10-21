@@ -168,7 +168,7 @@ describe("ADO story review configuration", () => {
 		});
 		fireEvent.change(
 			screen.getByLabelText(
-				"Assignment fields (System.AssignedTo or Custom.Engineer, one per line)",
+				"Assignment fields (any field reference name, e.g. System.AssignedTo or Custom.BEEngineer, one per line)",
 			),
 			{
 				target: { value: "System.AssignedTo\nCustom.Engineer" },

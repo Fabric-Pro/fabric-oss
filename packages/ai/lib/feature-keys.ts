@@ -89,9 +89,10 @@ export const AI_FEATURE_KEYS = [
 	 */
 	"code-index",
 	/**
-	 * Tool search embeddings: the tool catalogue the orchestrator indexes and
-	 * the queries `search_tools` embeds to pick tools for a turn. Tagged so
-	 * the catalogue's re-index is not an untagged embedding row.
+	 * Tool search embeddings: the catalogue of tools, agents, integrations,
+	 * workflows and capabilities the orchestrator indexes, and the queries it
+	 * embeds to search that catalogue or route a turn. Tagged so the
+	 * catalogue's re-index is not an untagged embedding row.
 	 */
 	"tool-search",
 	/**
@@ -117,6 +118,15 @@ export const AI_FEATURE_KEYS = [
 	"workspace",
 	/** Model steps in the workflow builder, on manual and scheduled runs. */
 	"workflow",
+	/** Embedding documents, contexts, synced and report data for later retrieval. */
+	"knowledge-index",
+	/** Query embeddings that retrieve from the knowledge indexes (RAG, search). */
+	"knowledge-search",
+	/**
+	 * The decision pre-check judge: whether a document, backlog proposal or
+	 * channel proposal contradicts a decision the project already logged.
+	 */
+	"decision-precheck",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];

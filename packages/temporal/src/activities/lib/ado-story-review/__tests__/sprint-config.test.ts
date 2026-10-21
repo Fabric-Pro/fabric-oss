@@ -25,6 +25,18 @@ describe("sprint context config", () => {
 		});
 	});
 
+	it.each(["Custom.BEEngineer", "Microsoft.VSTS.Common.ActivatedBy"])(
+		"accepts any field the process assigns through, such as %s",
+		(field) => {
+			expect(
+				adoSprintContextSchema.parse({
+					...selection,
+					assignmentFields: [field],
+				}).assignmentFields,
+			).toEqual([field]);
+		},
+	);
+
 	it.each([
 		{ iterationPaths: [] },
 		{ iterationPaths: ["A", "B", "C"] },
@@ -33,7 +45,9 @@ describe("sprint context config", () => {
 		{ iterationPaths: ["\nExample\\Sprint"] },
 		{ iterationPaths: ["x".repeat(513)] },
 		{ assignmentFields: [] },
-		{ assignmentFields: ["Custom.Owner"] },
+		{ assignmentFields: ["Custom.Bad Field]"] },
+		{ assignmentFields: ["NoDot"] },
+		{ assignmentFields: ["System.AssignedTo] = @Me OR [System.Id"] },
 		{ assignedItemTypes: [] },
 		{
 			assignedItemTypes: Array.from(

@@ -7,9 +7,15 @@ import {
 } from "./project-read";
 import { defaultRequirements, requirementFieldNames } from "./story-items";
 
-export type AzureDevOpsSprintAssignmentField =
-	| "System.AssignedTo"
-	| "Custom.Engineer";
+/**
+ * The reference name of any field the process assigns work through
+ * (`System.AssignedTo`, `Custom.BEEngineer`, ...). Its shape keeps it safe to
+ * name inside a WIQL query.
+ */
+export type AzureDevOpsSprintAssignmentField = string;
+
+const ASSIGNMENT_FIELD_PATTERN =
+	/^[A-Za-z][A-Za-z0-9_]{0,63}(?:\.[A-Za-z][A-Za-z0-9_]{0,63}){1,4}$/;
 export type AzureDevOpsSprintRelationKind = "child" | "related";
 
 export interface AzureDevOpsSprintSelection {
@@ -74,8 +80,7 @@ export function normalizeSprintInput(input: AzureDevOpsSprintCaptureInput) {
 		selection.assignmentFields.length === 0 ||
 		selection.assignmentFields.length > 2 ||
 		selection.assignmentFields.some(
-			(field) =>
-				field !== "System.AssignedTo" && field !== "Custom.Engineer",
+			(field) => !ASSIGNMENT_FIELD_PATTERN.test(field),
 		) ||
 		selection.relationKinds.length > 2 ||
 		selection.relationKinds.some(

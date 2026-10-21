@@ -241,7 +241,6 @@ describe("gate off — today's path", () => {
 		expect(callOrder()).toEqual([
 			"planProposalArtifact",
 			"retrieveProjectContexts",
-			"retrieveAndFormatEpisodicMemory",
 			"checkProjectHasTeamsIntegration",
 			"checkProjectHasSlackIntegration",
 			"generateDocumentWithAgent",
@@ -355,7 +354,6 @@ describe("gate on — the coordinated run", () => {
 		expect(callOrder()).toEqual([
 			"planProposalArtifact",
 			"retrieveProjectContexts",
-			"retrieveAndFormatEpisodicMemory",
 			"checkProjectHasTeamsIntegration",
 			"checkProjectHasSlackIntegration",
 			"generateDocumentWithAgent",
@@ -1084,5 +1082,27 @@ describe("gate on — failures under the run token", () => {
 
 		expect(result.success).toBe(true);
 		expect(h.startChild).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("document episodic memory removal", () => {
+	it("does not schedule private episodic recall on the patched path", async () => {
+		await documentGenerationChildWorkflow(INPUT);
+		expect(
+			h.activities.retrieveAndFormatEpisodicMemory,
+		).not.toHaveBeenCalled();
+	});
+
+	it("keeps the activity command when replaying a pre-removal history", async () => {
+		h.patched.mockImplementation(
+			(id: string) => id !== "document-episodic-memory-removed-v1",
+		);
+		await documentGenerationChildWorkflow(INPUT);
+		expect(
+			h.activities.retrieveAndFormatEpisodicMemory,
+		).toHaveBeenCalledTimes(1);
+		expect(h.patched).toHaveBeenCalledWith(
+			"document-episodic-memory-removed-v1",
+		);
 	});
 });

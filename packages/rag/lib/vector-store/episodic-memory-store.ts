@@ -13,6 +13,7 @@
  * - Graceful degradation if Qdrant unavailable
  */
 
+import type { Schemas } from "@qdrant/js-client-rest";
 import { logger } from "@repo/logs";
 import { ensureCollection } from "../collection-manager";
 import { generatePointId } from "../utils";
@@ -214,39 +215,24 @@ export async function searchSimilarEpisodes(
 		const collectionName =
 			await getEpisodicMemoryCollection(organizationId);
 
-		// Build filter for multi-tenancy and scoping
-		const mustConditions: Array<{ key: string; match: { value: string } }> =
-			[];
-		const shouldConditions: Array<{
-			key: string;
-			match: { value: string | null };
-		}> = [];
+		// Scope recall to the requesting user within the resolved tenant.
+		const mustConditions: NonNullable<Schemas["Filter"]["must"]> = [
+			{ key: "userId", match: { value: userId } },
+			organizationId
+				? { key: "organizationId", match: { value: organizationId } }
+				: { is_empty: { key: "organizationId" } },
+		];
 
-		// User/org isolation
-		if (organizationId) {
-			mustConditions.push({
-				key: "organizationId",
-				match: { value: organizationId },
-			});
-		} else {
-			mustConditions.push({
-				key: "userId",
-				match: { value: userId },
-			});
-		}
-
-		// Optional scoping filters
-		if (projectId) {
-			shouldConditions.push({
-				key: "projectId",
-				match: { value: projectId },
-			});
-		}
-		if (workspaceId) {
-			shouldConditions.push({
-				key: "workspaceId",
-				match: { value: workspaceId },
-			});
+		// Each resource scope accepts that resource or an unscoped episode.
+		for (const [key, value] of [
+			["projectId", projectId],
+			["workspaceId", workspaceId],
+		] as const) {
+			if (value) {
+				mustConditions.push({
+					should: [{ key, match: { value } }, { is_empty: { key } }],
+				});
+			}
 		}
 		if (agentId) {
 			mustConditions.push({
@@ -255,19 +241,7 @@ export async function searchSimilarEpisodes(
 			});
 		}
 
-		// Build the filter object
-		const filter: {
-			must?: Array<{ key: string; match: { value: string } }>;
-			should?: Array<{ key: string; match: { value: string | null } }>;
-			must_not?: Array<{ key: string; match: { any: string[] } }>;
-		} = {};
-
-		if (mustConditions.length > 0) {
-			filter.must = mustConditions;
-		}
-		if (shouldConditions.length > 0) {
-			filter.should = shouldConditions;
-		}
+		const filter: Schemas["Filter"] = { must: mustConditions };
 		if (excludeConversationIds.length > 0) {
 			filter.must_not = [
 				{

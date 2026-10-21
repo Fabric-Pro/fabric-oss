@@ -7105,6 +7105,7 @@ async function handleQueryWorkspace(
 		const { embedding } = await generateEmbedding(query, {
 			userId: session.userId,
 			organizationId: session.organizationId || undefined,
+			featureKey: "knowledge-search",
 		});
 
 		const results = await searchWorkspaceChunks({

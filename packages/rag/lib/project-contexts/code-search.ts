@@ -48,6 +48,7 @@ export async function searchProjectCodeIndex(input: {
 			userId: input.userId,
 			organizationId: input.organizationId,
 			projectId: input.projectId,
+			featureKey: "code-index",
 			tags: ["qa-script-generation", "code-search"],
 		}),
 		ensureCollection("project-contexts", input.organizationId),

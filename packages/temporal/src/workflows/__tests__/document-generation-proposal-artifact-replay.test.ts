@@ -524,11 +524,9 @@ describe("retrieval result shape — replay without a marker", () => {
 		// The mutant reads `retrieval.contexts` off the recorded array and
 		// gets `undefined`; the step's own logging then throws inside the
 		// retrieval `try`, whose catch carries on "without RAG" and skips the
-		// progress write the history recorded next. Replay schedules the
-		// episodic-memory activity where the history holds that write:
-		// "[TMPRL1100] Nondeterminism error: Activity type of scheduled event
-		// 'updateProjectDocumentStatus' does not match activity type of
-		// activity command 'retrieveAndFormatEpisodicMemory'".
+		// progress write the history recorded next. The following activity
+		// command is then out of step with the recorded command stream,
+		// causing a determinism violation. Patched runs skip episodic recall.
 		await expect(
 			Worker.runReplayHistory(
 				{ workflowBundle: objectShapeBundle },

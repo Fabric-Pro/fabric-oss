@@ -49,7 +49,7 @@ export async function generateContextEmbeddings(params: {
 
 	const result = await generateEmbeddings(
 		validContexts.map((c) => c.content),
-		{ userId, organizationId, projectId },
+		{ userId, organizationId, projectId, featureKey: "knowledge-index" },
 		providerConfig,
 	);
 	return result.embeddings;

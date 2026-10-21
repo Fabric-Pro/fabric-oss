@@ -8,7 +8,7 @@
  *
  * Core steps:
  * 1. Retrieve project contexts from Qdrant (with reranking)
- * 2. Retrieve episodic memories (user-level)
+ * 2. Replay the legacy episodic-memory step for pre-removal histories
  * 2.5. Check if Teams integration is available
  * 2.6. Fetch recent Teams messages (provides Teams context as RAG)
  * 2.7. Check if Slack integration is available
@@ -691,50 +691,62 @@ export async function documentGenerationChildWorkflow(
 				);
 			}
 
-			// Step 2: Retrieve episodic memories (user-level)
-			const episodicStartTime = Date.now();
-			log.info("Step 2: Retrieving episodic memories", {
-				projectId,
-				documentType,
-			});
-
-			try {
-				const episodicQuery = `${documentType} document: ${prompt || "project documentation"}`;
-
-				const episodicResult = await retrieveAndFormatEpisodicMemory({
+			// `patched()` preserves the activity command for histories recorded
+			// before this removal. New runs skip private recall in shared documents.
+			if (!patched("document-episodic-memory-removed-v1")) {
+				// Step 2: Retrieve episodic memories (user-level)
+				const episodicStartTime = Date.now();
+				log.info("Step 2: Retrieving episodic memories", {
 					projectId,
-					userId,
-					organizationId,
-					query: episodicQuery,
-					limit: 5,
+					documentType,
 				});
 
-				if (episodicResult.episodeCount > 0) {
-					episodeCount = episodicResult.episodeCount;
-					contexts = [episodicResult.formattedContext, ...contexts];
+				try {
+					const episodicQuery = `${documentType} document: ${prompt || "project documentation"}`;
 
-					const episodicDuration = Date.now() - episodicStartTime;
-					log.info("Step 2 complete: Episodic memories retrieved", {
-						episodeCount,
-						contextLength: episodicResult.formattedContext.length,
-						durationMs: episodicDuration,
-					});
-				} else {
-					log.info("Step 2: No episodic memories found", {
-						durationMs: Date.now() - episodicStartTime,
-					});
+					const episodicResult =
+						await retrieveAndFormatEpisodicMemory({
+							projectId,
+							userId,
+							organizationId,
+							query: episodicQuery,
+							limit: 5,
+						});
+
+					if (episodicResult.episodeCount > 0) {
+						episodeCount = episodicResult.episodeCount;
+						contexts = [
+							episodicResult.formattedContext,
+							...contexts,
+						];
+
+						const episodicDuration = Date.now() - episodicStartTime;
+						log.info(
+							"Step 2 complete: Episodic memories retrieved",
+							{
+								episodeCount,
+								contextLength:
+									episodicResult.formattedContext.length,
+								durationMs: episodicDuration,
+							},
+						);
+					} else {
+						log.info("Step 2: No episodic memories found", {
+							durationMs: Date.now() - episodicStartTime,
+						});
+					}
+				} catch (episodicError) {
+					// Non-fatal - continue without episodic memories
+					log.warn(
+						"Failed to retrieve episodic memories, continuing without",
+						{
+							error:
+								episodicError instanceof Error
+									? episodicError.message
+									: "Unknown error",
+						},
+					);
 				}
-			} catch (episodicError) {
-				// Non-fatal - continue without episodic memories
-				log.warn(
-					"Failed to retrieve episodic memories, continuing without",
-					{
-						error:
-							episodicError instanceof Error
-								? episodicError.message
-								: "Unknown error",
-					},
-				);
 			}
 
 			await reportProgress(documentId, 25, proposal?.plan.liveRunId);

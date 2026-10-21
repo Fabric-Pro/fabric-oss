@@ -28,7 +28,9 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // binding action/current timestamps, run inputs/idempotency and bounded history.
 // CI measured 55,621; removing 259 description characters leaves 55,362.
 // Keep that exact combined allowance, with no extra headroom.
-const TOTAL_BUDGET = 53_244 + 2_118;
+// A step-built workflow's `projectId` on create adds 31: without it a graph
+// workflow could not belong to a project, so no project rule reached its runs.
+const TOTAL_BUDGET = 53_244 + 2_118 + 31;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

@@ -8519,6 +8519,8 @@
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
 			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
+			"rejectReviewStale": "This document changed after this review opened, so nothing was reverted. The latest version is kept.",
+			"reviewSuperseded": "This document changed after the regenerated version was shown for review, so the review was closed. The latest version is kept.",
 			"regenerationAccepted": "The regenerated version was accepted.",
 			"regenerationRejected": "The regenerated version was rejected. The document is back on its previous version."
 		},

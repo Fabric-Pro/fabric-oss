@@ -261,6 +261,7 @@ describe("fabric_query_workspace binds an organization key to the workspace's or
 		expect(mocks.generateEmbedding).toHaveBeenCalledWith("onboarding", {
 			userId: "user-1",
 			organizationId: "org-a",
+			featureKey: "knowledge-search",
 		});
 		expect(mocks.searchWorkspaceChunks).toHaveBeenCalledWith(
 			expect.objectContaining({

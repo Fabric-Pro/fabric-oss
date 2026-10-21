@@ -16,13 +16,13 @@
  * use for is `pageOnly`: the gateway serves it, the chat engines do not offer it.
  */
 
+import { FABRIC_PROJECT_PM_TOOL_DEFINITIONS } from "./fabric-project-pm-tool-definitions";
 import {
 	defineFabricTools,
 	type FabricToolDefinition,
 	type PageEffect,
 	TOOL_ANNOTATIONS,
 } from "./fabric-tool-definition";
-import { FABRIC_PROJECT_PM_TOOL_DEFINITIONS } from "./fabric-project-pm-tool-definitions";
 
 /**
  * The header the page host adds to every gateway call it makes for a page,
@@ -188,10 +188,7 @@ const REVIEW_CONFIG = {
 					type: "array",
 					minItems: 1,
 					maxItems: 2,
-					items: {
-						type: "string",
-						enum: ["System.AssignedTo", "Custom.Engineer"],
-					},
+					items: { type: "string", maxLength: 128 },
 				},
 				assignedItemTypes: {
 					type: "array",

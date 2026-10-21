@@ -26,6 +26,7 @@ import {
 	projectPlacementRefusal,
 	updateFrame,
 } from "@repo/database";
+import { UNATTENDED_FRAME_SOURCE_RUN_TYPE } from "@repo/utils/frame-surfaces";
 import {
 	type PublishFrameNodeConfig,
 	PublishFrameNodeConfigSchema,
@@ -40,7 +41,7 @@ import {
 import { interpolateTemplateWithDiagnostics } from "./utils";
 
 export const PUBLISH_FRAME_MAX_CONTENT_CHARS = 400_000;
-const SOURCE_RUN_TYPE = "workflow";
+const SOURCE_RUN_TYPE = UNATTENDED_FRAME_SOURCE_RUN_TYPE;
 const BLOCK_ID = "content";
 const TITLE_MAX_CHARS = 200;
 

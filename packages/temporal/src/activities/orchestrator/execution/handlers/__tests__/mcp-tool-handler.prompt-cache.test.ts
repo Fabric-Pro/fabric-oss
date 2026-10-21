@@ -33,9 +33,6 @@ vi.mock("../../../utils", () => ({
 	getAiModel: vi.fn(),
 	getAiModelWithSelection: (...a: unknown[]) =>
 		mocks.getAiModelWithSelection(...a),
-	getToolLearningContext: vi.fn(() => ""),
-	recordFailedToolCall: vi.fn(),
-	recordSuccessfulToolCall: vi.fn(),
 }));
 vi.mock("../../../utils/partykit-publisher", () => ({
 	publishStepProgress: vi.fn(),

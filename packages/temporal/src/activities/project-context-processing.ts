@@ -537,6 +537,7 @@ async function runProjectContextPipeline(
 				userId,
 				organizationId,
 				projectId,
+				featureKey: "knowledge-index",
 				tags: ["project-context", "rag-embedding"],
 			},
 			{

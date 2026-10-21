@@ -14,7 +14,7 @@
  *     standing between that and production.
  *
  *  2. **Assignment where a join belongs.** `document-generation-child.ts`
- *     accumulates context from several producers (episodic memory, Teams,
+ *     accumulates context from several producers (project retrieval, Teams,
  *     Slack). `docs/solutions/design-patterns/prompt-context-fan-in-must-join-not-assign.md`
  *     records a shipped bug of exactly this shape — a branch that assigned into
  *     the accumulator instead of joining, discarding an earlier source, and
@@ -28,7 +28,7 @@
  * replay-validation matrix. The source-text assertions at the bottom follow
  * `document-decision-precheck-wiring.test.ts` and pin the structural facts a
  * behavioral test cannot see — chiefly *where* the join sits relative to the
- * branch convergence, and that no new patch gate was introduced.
+ * branch convergence, and that supplied context adds no patch gate.
  */
 
 import { readFileSync } from "node:fs";
@@ -316,10 +316,6 @@ describe("child workflow joins supplied context into the context array", () => {
 		// The fan-in bug's own conditions: several producers writing into one
 		// accumulator. Anything that assigns instead of joining drops whichever
 		// sources ran before it.
-		activityMocks.retrieveAndFormatEpisodicMemory.mockResolvedValue({
-			episodeCount: 2,
-			formattedContext: "episodic memory block",
-		});
 		activityMocks.checkProjectHasTeamsIntegration.mockResolvedValue(true);
 		activityMocks.fetchRecentTeamsMessages.mockResolvedValue({
 			messageCount: 1,
@@ -341,7 +337,6 @@ describe("child workflow joins supplied context into the context array", () => {
 		const contexts = contextsPassedToAgent();
 
 		expect(contexts).toContain(SUPPLIED);
-		expect(contexts).toContain("episodic memory block");
 		expect(contexts).toContain("teams message block");
 		expect(contexts).toContain("slack message block");
 		expect(contexts).toContain("retrieved context A");
@@ -516,7 +511,7 @@ describe("supplied-context wiring (source assertions)", () => {
 		expect(retrievalCall).toContain("excludeContextId,");
 	});
 
-	it("introduces no new patch gate in the child, and exactly one in the parent", () => {
+	it("pins the child and parent gates without adding one for supplied context", () => {
 		// Adding an optional input field consumed by an already-scheduled
 		// activity call adds no command to the workflow's command stream, so it
 		// needs no `patched()` gate.
@@ -527,7 +522,7 @@ describe("supplied-context wiring (source assertions)", () => {
 		// `template-instance-execution.ts`, which does exactly that). Counting
 		// textual occurrences instead would force the answer to be smuggled out
 		// in a boolean and threaded to every later read site, for no replay
-		// benefit. This stays a guard on THIS unit's scope. Both existing gates
+		// benefit. This stays a guard on THIS unit's scope. The existing gates
 		// in the child earned their place: `document-decision-precheck-v1`
 		// added an activity CALL, and
 		// `document-provider-refusal-fatal-v1` widened which context-retrieval
@@ -535,6 +530,8 @@ describe("supplied-context wiring (source assertions)", () => {
 		// carried on without RAG and must keep replaying that way. Neither is
 		// supplied-context's, and a marker appearing here for a change that
 		// adds no command is still the regression this test is looking for.
+		// `document-episodic-memory-removed-v1` removes an activity command,
+		// so new histories skip it while old histories replay.
 		// `proposal-artifact-v1` gates the coordinated Proposal branch (Fizzy
 		// #2801), which adds a plan activity, visuals, the analysis run record
 		// and a child workflow start.
@@ -543,6 +540,7 @@ describe("supplied-context wiring (source assertions)", () => {
 		].sort();
 		expect(markers).toEqual([
 			'patched("document-decision-precheck-v1")',
+			'patched("document-episodic-memory-removed-v1")',
 			'patched("document-provider-refusal-fatal-v1")',
 			'patched("proposal-artifact-v1")',
 		]);

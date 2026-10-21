@@ -20,8 +20,9 @@ import {
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateEmbedding } from "../embedding";
-import type { TenantContext } from "../embedding/types";
 import { generateSparseVector } from "../embedding/sparse";
+import type { TenantContext } from "../embedding/types";
+import { withDefaultFeature } from "../embedding/usage";
 import { rerankContexts } from "../reranking";
 import type { RerankerProviderType } from "../reranking/types";
 import { searchSimilarProjectContexts } from "./store";
@@ -217,14 +218,20 @@ export async function retrieveProjectContexts(
 		);
 
 		// Generate embedding for the query
-		const embeddingResult = await generateEmbedding(query, {
-			conversationId: options.conversationId,
-			userId,
-			organizationId,
-			projectId,
-			tags: ["rag-query", "project-context"],
-			...options.usageOrigin,
-		});
+		const embeddingResult = await generateEmbedding(
+			query,
+			withDefaultFeature(
+				{
+					conversationId: options.conversationId,
+					userId,
+					organizationId,
+					projectId,
+					tags: ["rag-query", "project-context"],
+					...options.usageOrigin,
+				},
+				"knowledge-search",
+			),
+		);
 
 		if (
 			!embeddingResult ||

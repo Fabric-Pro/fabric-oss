@@ -772,6 +772,42 @@ describe("sprint selection and source URL boundaries", () => {
 		);
 	});
 
+	it("selects by a process's own person field such as Custom.BEEngineer", async () => {
+		discoveryIds = [2];
+		const assigned = items.get(2);
+		if (assigned) {
+			delete assigned.fields["Custom.Engineer"];
+			assigned.fields["Custom.BEEngineer"] = member.uniqueName;
+		}
+		const input = options();
+		input.selection.assignmentFields = ["Custom.BEEngineer"];
+		const result = await capture(input);
+		expect(result.complete).toBe(true);
+		expect(result.assignedItems).toEqual([
+			expect.objectContaining({
+				id: 2,
+				engineer: member.uniqueName,
+				discovery: expect.objectContaining({
+					matchedAssignmentFields: ["Custom.BEEngineer"],
+				}),
+			}),
+		]);
+		const query = JSON.parse(
+			String(fetchMock.mock.calls[1]?.[1]?.body),
+		).query;
+		expect(query).toContain(
+			"([Custom.BEEngineer] = 'engineer@example.com')",
+		);
+	});
+
+	it("rejects an assignment field that is not a field reference name", async () => {
+		const input = options();
+		input.selection.assignmentFields = ["Custom.Bad Field]"];
+		await expect(capture(input)).rejects.toMatchObject({
+			code: "invalid_filter",
+		});
+	});
+
 	it("validates malformed context links with the same boundary as parent links", async () => {
 		items.set(
 			100,

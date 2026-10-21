@@ -21,8 +21,11 @@ const mockFindProject = vi.fn();
 const mockDerivePlan = vi.fn();
 const capturedPermissions: unknown[] = [];
 
+const mockIsReadOnly = vi.fn();
+
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: (...a: unknown[]) => mockFindProject(...a) } },
+	isProjectReadOnly: (...a: unknown[]) => mockIsReadOnly(...a),
 	listProjectQaTriggerTargets: (...a: unknown[]) => mockListTargets(...a),
 	recordAudit: (...a: unknown[]) => mockRecordAudit(...a),
 }));
@@ -92,6 +95,7 @@ beforeEach(() => {
 	mockFindProject.mockResolvedValue({ organizationId: "org-1" });
 	mockListTargets.mockResolvedValue([githubTarget]);
 	mockResolveToken.mockResolvedValue({ token: "tok" });
+	mockIsReadOnly.mockResolvedValue(false);
 });
 
 describe("triggerPipelineProcedure", () => {
@@ -172,6 +176,23 @@ describe("triggerPipelineProcedure", () => {
 			ref: "qa",
 			inputs: undefined,
 		});
+	});
+
+	it("refuses a Read-only project before spending any credential, and leaves a trail", async () => {
+		mockIsReadOnly.mockResolvedValue(true);
+
+		await expect(
+			callTrigger({ projectId: "p1", integrationId: "int-1" }),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			data: { errorCode: "PROJECT_READ_ONLY" },
+		});
+		expect(mockIsReadOnly).toHaveBeenCalledWith("p1");
+		expect(mockResolveToken).not.toHaveBeenCalled();
+		expect(mockListTargets).not.toHaveBeenCalled();
+		expect(mockRecordAudit.mock.calls[0][0].metadata.failure).toBe(
+			"READ_ONLY",
+		);
 	});
 
 	it("404s an integration that is not connected to this project", async () => {

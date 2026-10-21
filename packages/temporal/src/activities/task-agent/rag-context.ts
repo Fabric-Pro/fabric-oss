@@ -54,7 +54,11 @@ export async function retrieveProjectContexts(
 			model: embeddingModel,
 			metadata,
 			trackUsage,
-		} = await getAIEmbeddingModelWithMetadata({ userId, organizationId });
+		} = await getAIEmbeddingModelWithMetadata({
+			userId,
+			organizationId,
+			featureKey: "knowledge-search",
+		});
 
 		// Track usage (fire-and-forget)
 		trackUsage();

@@ -410,6 +410,8 @@ export interface RuntimeAuthorityRequest {
 	grantScope?: "call" | "tool";
 	/** For a `call`, its plain arguments in a line, so the person sees what runs. */
 	callSummary?: string;
+	/** For a workflow create or update, every step it would save, one per line. */
+	callDetails?: string;
 }
 
 export interface ExecuteAgentAsToolInput extends SecondaryUsageInput {
@@ -526,25 +528,6 @@ export interface UpdateExecutionProgressInput {
 	currentStep?: TaskStep;
 	completedSteps: number;
 	totalSteps: number;
-}
-
-// =============================================================================
-// Internal Types
-// =============================================================================
-
-export interface ToolCallPattern {
-	toolName: string;
-	successfulArgs: Record<string, unknown>[];
-	errorPatterns: Array<{
-		badArgs: Record<string, unknown>;
-		errorMessage: string;
-		correctedArgs?: Record<string, unknown>;
-		learnedAt: string;
-	}>;
-	lastSuccessfulCall?: {
-		args: Record<string, unknown>;
-		timestamp: string;
-	};
 }
 
 // =============================================================================

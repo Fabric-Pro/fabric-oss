@@ -265,6 +265,7 @@ export async function processWorkspaceDocument(
 				{
 					userId,
 					organizationId,
+					featureKey: "knowledge-index",
 					tags: ["workspace-document", "rag-embedding"],
 				},
 				providerConfig,
