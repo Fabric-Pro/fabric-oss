@@ -30,7 +30,6 @@ export default async function SharedFrameEmbedPage({
 			frame={frame.document as FrameDocumentView}
 			embedded
 			slideIndex={slideIndex}
-			strictSandbox
 			allowScripts={!isUnattendedFrame(frame)}
 		/>
 	);

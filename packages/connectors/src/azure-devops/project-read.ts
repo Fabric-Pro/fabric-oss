@@ -28,7 +28,7 @@ export class AzureDevOpsProjectReadError extends Error {
 				invalid_filter:
 					"An Azure DevOps filter cannot contain control characters or both single and double quotes.",
 				unsupported_current_predicate:
-					"The Azure DevOps engineer field does not support current-user identity filtering. Select an exact member identity instead.",
+					"An Azure DevOps assignment field does not support current-user identity filtering. Select an exact member identity instead.",
 				project_mismatch:
 					"An Azure DevOps work item does not belong to the connected project.",
 			}[code],

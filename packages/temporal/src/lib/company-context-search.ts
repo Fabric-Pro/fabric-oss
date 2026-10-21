@@ -352,6 +352,7 @@ async function findCompanyContextEntries(
 				conversationId: input.usageConversationId,
 				organizationId,
 				projectId,
+				featureKey: "knowledge-search",
 				tags: ["company-context-retrieval"],
 				...COMPANY_EMBEDDING_RESOLUTION,
 			},

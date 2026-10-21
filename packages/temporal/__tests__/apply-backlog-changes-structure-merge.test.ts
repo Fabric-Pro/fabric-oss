@@ -19,7 +19,7 @@
  *    normal, substantial feature rewrite must still go through untouched.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -38,6 +38,13 @@ const { mocks } = vi.hoisted(() => ({
 		logModelUsageAsync: vi.fn(),
 		recordAudit: vi.fn(),
 		heartbeat: vi.fn(),
+		applications: vi.fn(),
+		transaction: vi.fn(),
+		recordProposalApplication: vi.fn(),
+		findAiConfigurationRefusal: vi.fn(),
+		current: vi.fn(() => {
+			throw new Error("outside activity");
+		}),
 		reanalyzeBodyByKind: vi.fn(),
 	},
 }));
@@ -51,6 +58,9 @@ vi.mock("@repo/ai", () => ({
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findFirst: mocks.dbProjectFindFirst },
+		pendingBacklogProposalApplication: { findMany: mocks.applications },
+		pendingBacklogProposal: { findUnique: vi.fn(async () => null) },
+		$transaction: mocks.transaction,
 		userStory: {
 			findMany: mocks.dbUserStoryFindMany,
 			findFirst: mocks.dbUserStoryFindFirst,
@@ -60,6 +70,7 @@ vi.mock("@repo/database", () => ({
 	createStory: mocks.createStory,
 	updateStory: mocks.updateStory,
 	recordAudit: mocks.recordAudit,
+	recordProposalApplication: mocks.recordProposalApplication,
 	normalizeBacklogTitle: (title: string) =>
 		title
 			.toLowerCase()
@@ -79,7 +90,17 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@temporalio/activity", () => ({ heartbeat: mocks.heartbeat }));
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
+	heartbeat: mocks.heartbeat,
+	Context: { current: mocks.current },
+}));
+vi.mock("../src/lib/ai-configuration-refusal", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../src/lib/ai-configuration-refusal")
+	>()),
+	findAiConfigurationRefusal: mocks.findAiConfigurationRefusal,
+}));
 
 vi.mock("../src/lib/create-story-from-proposal", () => ({
 	createStoryFromProposal: mocks.createStoryFromProposal,
@@ -92,6 +113,8 @@ vi.mock("../src/lib/reanalyze-body-by-kind", () => ({
 vi.mock("../src/lib/trigger-duplicate-detection", () => ({
 	triggerDuplicateDetection: vi.fn(async () => ({ workflowId: "dup-test" })),
 }));
+
+import { ApplicationFailure, CancelledFailure } from "@temporalio/activity";
 
 import {
 	applyBacklogChanges,
@@ -129,6 +152,12 @@ function makeUpdate(
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.reanalyzeBodyByKind.mockReset();
+	mocks.current.mockImplementation(() => {
+		throw new Error("outside activity");
+	});
+	mocks.applications.mockResolvedValue([]);
+	mocks.transaction.mockImplementation(async (fn) => fn({}));
 	mocks.dbProjectFindFirst.mockResolvedValue({ id: "project-1" });
 	mocks.dbUserStoryFindMany.mockResolvedValue([]);
 	mocks.dbUserStoryFindFirst.mockResolvedValue({
@@ -158,6 +187,116 @@ function lastUpdateData() {
 }
 
 describe("applyBacklogChanges → apply-time structure-preserving merge", () => {
+	afterEach(() => vi.useRealTimers());
+
+	it.each(["deadline", "cancellation"] as const)(
+		"rejects on %s mid-merge without completing that change",
+		async (stop) => {
+			vi.useFakeTimers();
+			const controller = new AbortController();
+			mocks.current.mockReturnValue({
+				info: {
+					currentAttemptScheduledTimestampMs: Date.now(),
+					startToCloseTimeoutMs: 61_000,
+				},
+				cancellationSignal: controller.signal,
+			} as never);
+			mocks.reanalyzeBodyByKind.mockImplementationOnce(
+				({ abortSignal }) =>
+					new Promise((resolve) => {
+						abortSignal.addEventListener(
+							"abort",
+							() =>
+								resolve({
+									fallbackUsed: true,
+									fallbackReason: "aborted",
+									description: EXISTING_BUG_BODY,
+								}),
+							{ once: true },
+						);
+					}),
+			);
+			const earlier = makeUpdate({
+				description: undefined,
+				title: { from: "Login fails", to: "Earlier title" },
+			});
+			const interrupted = makeUpdate({
+				title: { from: "Login fails", to: "Interrupted title" },
+			});
+			const pending = applyBacklogChanges({
+				projectId: "project-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				proposalId: "proposal-1",
+				approvedChanges: [earlier, interrupted],
+				existingBacklog: { stories: [] },
+			});
+			const failure = pending.then(
+				() => undefined,
+				(error) => error,
+			);
+			await vi.advanceTimersByTimeAsync(30_000);
+			expect(
+				mocks.heartbeat.mock.calls.filter(
+					([arg]) => typeof arg === "object" && arg.keepalive,
+				),
+			).toHaveLength(2);
+			if (stop === "deadline") {
+				await vi.advanceTimersByTimeAsync(1_000);
+			} else {
+				controller.abort();
+			}
+			const error = await failure;
+			if (stop === "deadline") {
+				expect(error).toBeInstanceOf(ApplicationFailure);
+				expect(error).toMatchObject({
+					type: "ApplyMergeDeadline",
+					nonRetryable: false,
+				});
+			} else {
+				expect(error).toBeInstanceOf(CancelledFailure);
+			}
+			expect(mocks.updateStory).toHaveBeenCalledTimes(1);
+			expect(lastUpdateData().title).toBe("Earlier title");
+			expect(mocks.recordProposalApplication).toHaveBeenCalledTimes(1);
+			expect(mocks.recordProposalApplication).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ changeIndex: 0 }),
+			);
+			expect(mocks.recordAudit).toHaveBeenCalledTimes(1);
+			expect(mocks.findAiConfigurationRefusal).not.toHaveBeenCalled();
+			expect(interrupted.bodyMergeFallback).toBeUndefined();
+			expect(vi.getTimerCount()).toBe(0);
+		},
+	);
+
+	it.each(["update", "create"] as const)(
+		"stops before starting a %s when its deadline has already fired",
+		async (action) => {
+			mocks.reanalyzeBodyByKind.mockResolvedValue({
+				fallbackUsed: true,
+				description: EXISTING_BUG_BODY,
+			});
+			mocks.current.mockReturnValue({
+				info: {
+					currentAttemptScheduledTimestampMs: Date.now() - 60_000,
+					startToCloseTimeoutMs: 60_000,
+				},
+				cancellationSignal: new AbortController().signal,
+			} as never);
+			await expect(run(makeUpdate({ action }))).rejects.toMatchObject({
+				type: "ApplyMergeDeadline",
+				nonRetryable: false,
+			});
+			expect(mocks.dbUserStoryFindFirst).not.toHaveBeenCalled();
+			expect(mocks.reanalyzeBodyByKind).not.toHaveBeenCalled();
+			expect(mocks.updateStory).not.toHaveBeenCalled();
+			expect(mocks.recordProposalApplication).not.toHaveBeenCalled();
+			expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+			expect(mocks.findAiConfigurationRefusal).not.toHaveBeenCalled();
+		},
+	);
+
 	it("merges an unflagged update through reanalyzeBodyByKind and persists the merged body", async () => {
 		const merged =
 			"## Steps to Reproduce\n1. Open /login\n2. Click sign in\n## Root Cause\nNull form ref.\n## Actual Result\nNothing.\n## Original Description from User (Do Not Modify)\nlogin broken";

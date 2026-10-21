@@ -377,6 +377,8 @@ describe("existingProjectSetupWorkflow — a document child pauses", () => {
 
 		expect(output.paused).toBeUndefined();
 		for (const id of ["doc-proposal", "doc-architecture"]) {
+			// Only while this first run still holds the document (Fizzy
+			// #2946): one a person saved meanwhile keeps its state.
 			expect(
 				h.activities.updateProjectDocumentStatus,
 			).toHaveBeenCalledWith({
@@ -384,6 +386,7 @@ describe("existingProjectSetupWorkflow — a document child pauses", () => {
 				status: "FAILED",
 				progress: 0,
 				error: "Every ChatGPT plan stayed spent through every pause.",
+				heldByPause: { kind: "PROJECT_SETUP" },
 			});
 		}
 		expect(projectStatuses()).toEqual(["SCANNING", "COMPLETED"]);

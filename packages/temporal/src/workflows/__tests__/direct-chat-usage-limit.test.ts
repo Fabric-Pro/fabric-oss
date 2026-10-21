@@ -30,6 +30,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import { defaultPayloadConverter } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import {
 	bundleWorkflowCode,
@@ -137,6 +138,7 @@ const REFUSED_TURN: DirectChatWorkflowOutput = {
 };
 
 async function runTurn(options: {
+	conversationId?: string;
 	execute: () => Promise<DirectChatWorkflowOutput>;
 	bundle?: WorkflowBundleWithSourceMap;
 	withInterceptor?: boolean;
@@ -186,7 +188,13 @@ async function runTurn(options: {
 		await worker
 			.runUntil(
 				env.client.workflow.execute("directChatWorkflow", {
-					args: [{ ...INPUT, executionId: workflowId }],
+					args: [
+						{
+							...INPUT,
+							executionId: workflowId,
+							conversationId: options.conversationId,
+						},
+					],
 					taskQueue,
 					workflowId,
 				}),
@@ -259,6 +267,58 @@ describe("directChatWorkflow — a usage limit reached during the turn", () => {
 		await expect(
 			Worker.runReplayHistory({ workflowBundle }, history, workflowId),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("directChatWorkflow failure cause", () => {
+	it("posts the inner activity error as the failure summary", async () => {
+		const { error, workflowId } = await runTurn({
+			conversationId: "example-conversation",
+			execute: async () => {
+				throw new Error("Example provider is not configured");
+			},
+		});
+		expect(error).toBeDefined();
+		const history = await env.client.workflow
+			.getHandle(workflowId)
+			.fetchHistory();
+		const child = history.events?.find(
+			(event) =>
+				event.startChildWorkflowExecutionInitiatedEventAttributes
+					?.workflowType?.name === "directChatPostOperationWorkflow",
+		)?.startChildWorkflowExecutionInitiatedEventAttributes;
+		expect(child).toBeDefined();
+		const payload = child?.input?.payloads?.[0];
+		if (!payload) {
+			throw new Error("Failure summary child input is missing");
+		}
+		expect(defaultPayloadConverter.fromPayload(payload)).toMatchObject({
+			conversationId: "example-conversation",
+			outcome: "failure",
+			summary: "Example provider is not configured",
+		});
+	});
+
+	it("preserves the activity failure and its original generic error", async () => {
+		const { error } = await runTurn({
+			execute: async () => {
+				throw new Error("Example provider is not configured");
+			},
+		});
+		expect(error).toMatchObject({
+			cause: {
+				type: "DIRECT_CHAT_FAILED",
+				message: "Activity task failed",
+				nonRetryable: true,
+				cause: {
+					name: "ActivityFailure",
+					cause: {
+						message: "Example provider is not configured",
+						type: "Error",
+					},
+				},
+			},
+		});
 	});
 });
 

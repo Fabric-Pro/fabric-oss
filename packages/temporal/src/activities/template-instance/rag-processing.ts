@@ -153,7 +153,12 @@ export async function processDataForRag(
 			batch.map(async (chunk) => {
 				const result = await generateEmbedding(
 					chunk.content,
-					{ userId, organizationId, tags: ["report-data"] },
+					{
+						userId,
+						organizationId,
+						featureKey: "knowledge-index",
+						tags: ["report-data"],
+					},
 					embeddingConfig,
 				);
 				return result.embedding;

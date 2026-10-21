@@ -3,7 +3,7 @@
  *
  * Activities for the existingProjectSetupWorkflow:
  * 1. ingestBacklogForRAG — Fetch PM work items and embed into Qdrant for RAG context
- * 2. createExistingProjectDocumentRecords — Create document records with GENERATING status
+ * 2. createExistingProjectDocumentRecords — Create document records, QUEUED under the setup
  * 3. updateProjectRagSettings — Set optimal RAG settings for the project
  * 4. embedCodeAnalysisContext — Embed code analysis into Qdrant for RAG
  */
@@ -19,6 +19,7 @@ import { contextContentHashOrNull } from "@repo/database/prisma/queries/projects
 import { logger } from "@repo/logs";
 import { embedProjectContext } from "@repo/rag/lib/project-contexts/auto-embed";
 import { documentTypeLabel } from "@repo/utils/document-type-catalog";
+import { ApplicationFailure, Context } from "@temporalio/activity";
 import { repoForgeFromUrl } from "../lib/repo-forge";
 import type { PMHierarchyResult } from "./pm-integration/fetch-pm-hierarchy";
 import { fetchPMWorkItemsByType } from "./pm-integration/fetch-pm-hierarchy";
@@ -107,6 +108,18 @@ export async function ingestBacklogForRAG(
 		capabilities,
 	});
 
+	if (hierarchy.readStatus === "failed") {
+		if (hierarchy.readErrorKind === "credentials") {
+			throw ApplicationFailure.nonRetryable(
+				"Could not read the PM board. Reconnect it in Connections.",
+				"PM_BOARD_CREDENTIALS_REFUSED",
+			);
+		}
+		throw new Error(
+			"Could not read the PM board. Check the connection in Connections.",
+		);
+	}
+
 	const totalItems =
 		hierarchy.epics.length +
 		hierarchy.features.length +
@@ -126,7 +139,9 @@ export async function ingestBacklogForRAG(
 
 	if (totalItems === 0) {
 		logger.warn(
-			"[ExistingProjectSetup] No backlog items found — the board may be empty or the container/team config may be wrong",
+			hierarchy.readStatus === "no-columns"
+				? "[ExistingProjectSetup] Fizzy board has no workflow columns; triage cards are not included"
+				: "[ExistingProjectSetup] No backlog items found — the board may be empty or the container/team config may be wrong",
 			{
 				containerId,
 				additionalContext,
@@ -261,6 +276,15 @@ function formatBacklogAsMarkdown(hierarchy: PMHierarchyResult): string {
 // 2. createExistingProjectDocumentRecords
 // ============================================================================
 
+/** The workflow that scheduled this activity; undefined outside one. */
+function ownWorkflowId(): string | undefined {
+	try {
+		return Context.current().info.workflowExecution?.workflowId;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface CreateExistingProjectDocumentRecordsInput {
 	projectId: string;
 	userId: string;
@@ -277,38 +301,102 @@ export interface CreateExistingProjectDocumentRecordsOutput {
 }
 
 /**
- * Create ProjectDocument records for all selected document types with GENERATING status.
+ * Create ProjectDocument records for all selected document types, QUEUED
+ * under the setup's own workflow id until the setup reaches each one (Fizzy
+ * #2946).
+ *
+ * The setup generates its documents one at a time, so most wait a long while
+ * before their turn. Created GENERATING with no workflow id, as they were,
+ * the stale-generation sweep failed every one not reached within its cutoff
+ * without asking whether the setup still ran, and only the setup's unguarded
+ * start took it back. QUEUED under the setup's id, the sweep asks Temporal
+ * first and leaves them alone while the setup runs; the setup starts a
+ * document only while it still holds it, and a pause queues them for its
+ * resume by the same id.
+ *
+ * Idempotent under the setup's id: a retry after a lost result reads the
+ * documents this setup already created (the oldest of each type), creates
+ * only the types still missing, and answers with all of them in
+ * `documentTypes` order, so the setup never generates a second set. The read
+ * and the creates run in one transaction, so an attempt creates all of its
+ * documents or none.
+ *
+ * Outside a workflow's activity there is no id to record or to recognise an
+ * earlier attempt by, and the rows are created GENERATING with none, as
+ * before. `generationStartedAt` is set either way: the sweep skips a row
+ * without one.
  */
 export async function createExistingProjectDocumentRecords(
 	input: CreateExistingProjectDocumentRecordsInput,
 ): Promise<CreateExistingProjectDocumentRecordsOutput> {
 	const { projectId, userId, organizationId, documentTypes } = input;
+	const setupWorkflowId = ownWorkflowId();
+	const recordData = (type: string) => ({
+		projectId,
+		type: type as ProjectDocumentType,
+		title: documentTypeLabel(type),
+		content: "",
+		generationProgress: 0,
+		generationStartedAt: new Date(),
+		userId,
+		organizationId: organizationId ?? null,
+	});
+	const recordFields = { id: true, type: true, title: true } as const;
 
-	const documents = await Promise.all(
-		documentTypes.map((type) =>
-			db.projectDocument.create({
-				data: {
-					projectId,
-					type: type as ProjectDocumentType,
-					title: documentTypeLabel(type),
-					content: "",
-					status: "GENERATING",
-					generationProgress: 0,
-					generationStartedAt: new Date(),
-					userId,
-					organizationId: organizationId ?? null,
-				},
-			}),
-		),
-	);
+	if (!setupWorkflowId) {
+		const documents = await Promise.all(
+			documentTypes.map((type) =>
+				db.projectDocument.create({
+					data: { ...recordData(type), status: "GENERATING" },
+					select: recordFields,
+				}),
+			),
+		);
+		return { documents };
+	}
 
-	return {
-		documents: documents.map((d) => ({
-			id: d.id,
-			type: d.type,
-			title: d.title,
-		})),
-	};
+	const documents = await db.$transaction(async (tx) => {
+		const existing = await tx.projectDocument.findMany({
+			where: {
+				projectId,
+				workflowId: setupWorkflowId,
+				type: { in: documentTypes as ProjectDocumentType[] },
+			},
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			select: recordFields,
+		});
+		const byType = new Map<string, (typeof existing)[number]>();
+		for (const doc of existing) {
+			if (!byType.has(doc.type)) {
+				byType.set(doc.type, doc);
+			}
+		}
+		if (byType.size > 0) {
+			logger.info(
+				"[ExistingProjectSetup] Found the document records an earlier attempt created",
+				{ projectId, documentTypes: [...byType.keys()] },
+			);
+		}
+		const records: Array<(typeof existing)[number]> = [];
+		for (const type of documentTypes) {
+			let record = byType.get(type);
+			if (!record) {
+				record = await tx.projectDocument.create({
+					data: {
+						...recordData(type),
+						status: "QUEUED",
+						workflowId: setupWorkflowId,
+					},
+					select: recordFields,
+				});
+				byType.set(type, record);
+			}
+			records.push(record);
+		}
+		return records;
+	});
+
+	return { documents };
 }
 
 // ============================================================================

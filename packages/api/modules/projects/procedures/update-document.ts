@@ -31,6 +31,8 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { runInBackground } from "../../weave/lib/run-in-background";
+import { cancelStalledGenerationRun } from "../lib/cancel-stalled-generation-run";
 import {
 	diffGroupMentions,
 	diffMentionIds,
@@ -144,6 +146,8 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 				// The run's clock, to tell a live run from a stalled one.
 				generationStartedAt: true,
 				updatedAt: true,
+				// The run's workflow, stopped when this save ends a stalled run.
+				workflowId: true,
 				// The owning organization, for the base requirement below:
 				// never the session's.
 				project: { select: { organizationId: true } },
@@ -321,6 +325,33 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			}
 			throw error;
 		});
+
+		// This save ended a stalled Proposal run (Fizzy #2946). The editor's
+		// content save sends no status, so a row that was GENERATING comes
+		// back COMPLETE because the write ended the run, and cleared the run's
+		// token with it: nothing the run guards by that token can land any
+		// more. Stopping the run's generation child as well keeps it from
+		// waking at all. Only the child, never a parent that runs other
+		// documents too, and best effort after the response
+		// (`cancelStalledGenerationRun` says why). The one other way here,
+		// which this cannot tell apart, is a run that finished by itself
+		// between the read above and the write's own: its child has then
+		// finished or is finishing, and cancelling a child that is gone does
+		// nothing.
+		if (
+			editorContentSave &&
+			isRunGuardedDocumentType(prior.type) &&
+			prior.status === "GENERATING" &&
+			saved.status === "COMPLETE" &&
+			prior.workflowId
+		) {
+			runInBackground(
+				cancelStalledGenerationRun({
+					documentId: input.id,
+					workflowId: prior.workflowId,
+				}),
+			);
+		}
 
 		// The author asked to finish the document (`completeDraft`). Only a
 		// draft with content qualifies; an explicit status wins, and a revert

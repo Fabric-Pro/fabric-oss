@@ -13,15 +13,6 @@ vi.mock("@repo/config", () => ({
 	},
 }));
 
-vi.mock("@repo/mail", () => ({
-	isMailConfigured: vi.fn().mockReturnValue(true),
-	sendEmail: vi.fn().mockResolvedValue(true),
-}));
-
-vi.mock("../../../../lib/rate-limit", () => ({
-	checkRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
-}));
-
 vi.mock("../../../../orpc/procedures", () => {
 	const chainable: any = {
 		use: () => chainable,
@@ -51,10 +42,17 @@ vi.mock("../../../organizations/lib/membership", () => ({
 }));
 
 import { config } from "@repo/config";
-import { isMailConfigured, sendEmail } from "@repo/mail";
-import { checkRateLimit } from "../../../../lib/rate-limit";
 import { verifyOrganizationMembership } from "../../../organizations/lib/membership";
 import { requestConnectionInputSchema } from "../request-connection";
+
+const decode = (mailto: string) => {
+	const url = new URL(mailto);
+	return {
+		to: decodeURIComponent(url.pathname),
+		subject: url.searchParams.get("subject"),
+		body: url.searchParams.get("body"),
+	};
+};
 
 describe("requestConnectionProcedure", () => {
 	const mockUser = {
@@ -66,17 +64,14 @@ describe("requestConnectionProcedure", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		config.support.email = "support@example.com";
-		vi.mocked(isMailConfigured).mockReturnValue(true);
-		vi.mocked(sendEmail).mockResolvedValue(true);
-		vi.mocked(checkRateLimit).mockResolvedValue({ allowed: true } as any);
 		vi.mocked(verifyOrganizationMembership).mockResolvedValue({
 			organization: { id: "org-1", name: "Example Organization" } as any,
 			role: "member",
 		});
 	});
 
-	it("sends request email with user details and organization name on valid submission", async () => {
-		const result = await handlers.requestConnection({
+	it("returns a mailto to support@example.com with subject and body containing details", async () => {
+		const result = (await handlers.requestConnection({
 			input: {
 				type: "mcp",
 				name: "Custom Postgres MCP",
@@ -87,27 +82,24 @@ describe("requestConnectionProcedure", () => {
 				user: mockUser,
 				session: { activeOrganizationId: "org-1" },
 			},
-		});
+		})) as { mailto: string };
 
-		expect(result).toEqual({ success: true });
-		expect(sendEmail).toHaveBeenCalledWith({
-			to: "support@example.com",
-			replyTo: "alex@example.com",
-			subject: "Connection request: Custom Postgres MCP",
-			text: [
-				"Requested by: Alex Developer <alex@example.com>",
-				"Organization: Example Organization",
-				"Type: MCP",
-				"Name: Custom Postgres MCP",
-				"",
-				"--- Notes (written by the requester) ---",
-				"Need internal database querying capability",
-			].join("\n"),
-		});
+		const decoded = decode(result.mailto);
+		expect(decoded.to).toBe("support@example.com");
+		expect(decoded.subject).toBe("Connection request: Custom Postgres MCP");
+		expect(decoded.body).toContain(
+			"Requested by: Alex Developer <alex@example.com>",
+		);
+		expect(decoded.body).toContain("Organization: Example Organization");
+		expect(decoded.body).toContain("Type: MCP");
+		expect(decoded.body).toContain("Name: Custom Postgres MCP");
+		expect(decoded.body).toContain(
+			"Need internal database querying capability",
+		);
 	});
 
 	it("formats '(none)' when notes are omitted", async () => {
-		await handlers.requestConnection({
+		const result = (await handlers.requestConnection({
 			input: {
 				type: "integration",
 				name: "Linear",
@@ -117,18 +109,11 @@ describe("requestConnectionProcedure", () => {
 				user: mockUser,
 				session: { activeOrganizationId: "org-1" },
 			},
-		});
+		})) as { mailto: string };
 
-		expect(sendEmail).toHaveBeenCalledWith(
-			expect.objectContaining({
-				subject: "Connection request: Linear",
-				text: expect.stringContaining(
-					["--- Notes (written by the requester) ---", "(none)"].join(
-						"\n",
-					),
-				),
-			}),
-		);
+		const decoded = decode(result.mailto);
+		expect(decoded.subject).toBe("Connection request: Linear");
+		expect(decoded.body).toContain("Notes:\r\n(none)");
 	});
 
 	it("sanitizes any line breaks or control characters in user.name and organization name", async () => {
@@ -140,7 +125,7 @@ describe("requestConnectionProcedure", () => {
 			role: "member",
 		});
 
-		await handlers.requestConnection({
+		const result = (await handlers.requestConnection({
 			input: {
 				type: "mcp",
 				name: "Postgres MCP",
@@ -153,14 +138,14 @@ describe("requestConnectionProcedure", () => {
 				},
 				session: { activeOrganizationId: "org-1" },
 			},
-		});
+		})) as { mailto: string };
 
-		expect(sendEmail).toHaveBeenCalledWith(
-			expect.objectContaining({
-				text: expect.stringContaining(
-					"Requested by: Alex Developer Staff Lead <alex@example.com>\nOrganization: Example Organization Corp",
-				),
-			}),
+		const decoded = decode(result.mailto);
+		expect(decoded.body).toContain(
+			"Requested by: Alex Developer Staff Lead <alex@example.com>",
+		);
+		expect(decoded.body).toContain(
+			"Organization: Example Organization Corp",
 		);
 	});
 
@@ -203,7 +188,7 @@ describe("requestConnectionProcedure", () => {
 		expect(validSingleLine.success).toBe(true);
 	});
 
-	it("rejects when the user is not a member of the organization without reaching rate limit or email", async () => {
+	it("rejects when the user is not a member of the organization", async () => {
 		vi.mocked(verifyOrganizationMembership).mockResolvedValueOnce(null);
 
 		await expect(
@@ -222,128 +207,64 @@ describe("requestConnectionProcedure", () => {
 			code: "FORBIDDEN",
 			message: "You are not a member of this organization",
 		});
-
-		expect(checkRateLimit).not.toHaveBeenCalled();
-		expect(sendEmail).not.toHaveBeenCalled();
 	});
 
-	it("rejects with PRECONDITION_FAILED when support email is missing", async () => {
+	it("returns { mailto: null } when support email is missing", async () => {
 		config.support.email = "";
 
-		await expect(
-			handlers.requestConnection({
-				input: {
-					type: "mcp",
-					name: "Redis MCP",
-					organizationId: "org-1",
-				},
-				context: {
-					user: mockUser,
-					session: { activeOrganizationId: "org-1" },
-				},
-			}),
-		).rejects.toMatchObject({
-			code: "PRECONDITION_FAILED",
-			message: "Connection requests are not available",
+		const result = await handlers.requestConnection({
+			input: {
+				type: "mcp",
+				name: "Redis MCP",
+				organizationId: "org-1",
+			},
+			context: {
+				user: mockUser,
+				session: { activeOrganizationId: "org-1" },
+			},
 		});
 
-		expect(sendEmail).not.toHaveBeenCalled();
+		expect(result).toEqual({ mailto: null });
 	});
 
-	it("rejects with PRECONDITION_FAILED when mail provider is not configured", async () => {
-		vi.mocked(isMailConfigured).mockReturnValueOnce(false);
+	it("shortens notes that would make the draft too long", async () => {
+		const result = (await handlers.requestConnection({
+			input: {
+				type: "mcp",
+				name: "Postgres MCP",
+				notes: "é".repeat(1000),
+				organizationId: "org-1",
+			},
+			context: {
+				user: mockUser,
+				session: { activeOrganizationId: "org-1" },
+			},
+		})) as { mailto: string };
 
-		await expect(
-			handlers.requestConnection({
-				input: {
-					type: "mcp",
-					name: "Redis MCP",
-					organizationId: "org-1",
-				},
-				context: {
-					user: mockUser,
-					session: { activeOrganizationId: "org-1" },
-				},
-			}),
-		).rejects.toMatchObject({
-			code: "PRECONDITION_FAILED",
-			message: "Connection requests are not available",
-		});
-
-		expect(sendEmail).not.toHaveBeenCalled();
+		expect(result.mailto.length).toBeLessThanOrEqual(1800);
+		const { body } = decode(result.mailto);
+		expect(body).toContain(
+			"Requested by: Alex Developer <alex@example.com>",
+		);
+		expect(body).toContain("Organization: Example Organization");
+		expect(body).toContain("…");
 	});
 
-	it("rejects when rate limit is exceeded", async () => {
-		vi.mocked(checkRateLimit).mockResolvedValueOnce({
-			allowed: false,
-			statusCode: 429,
-		} as any);
+	it("does not split an emoji when shortening notes", async () => {
+		const result = (await handlers.requestConnection({
+			input: {
+				type: "mcp",
+				name: "Postgres MCP",
+				notes: "😀".repeat(500),
+				organizationId: "org-1",
+			},
+			context: {
+				user: mockUser,
+				session: { activeOrganizationId: "org-1" },
+			},
+		})) as { mailto: string };
 
-		await expect(
-			handlers.requestConnection({
-				input: {
-					type: "mcp",
-					name: "Redis MCP",
-					organizationId: "org-1",
-				},
-				context: {
-					user: mockUser,
-					session: { activeOrganizationId: "org-1" },
-				},
-			}),
-		).rejects.toMatchObject({
-			code: "TOO_MANY_REQUESTS",
-			message: "Too many requests. Please try again later.",
-		});
-
-		expect(sendEmail).not.toHaveBeenCalled();
-	});
-
-	it("rejects with SERVICE_UNAVAILABLE when rate limit service returns 503", async () => {
-		vi.mocked(checkRateLimit).mockResolvedValueOnce({
-			allowed: false,
-			statusCode: 503,
-		} as any);
-
-		await expect(
-			handlers.requestConnection({
-				input: {
-					type: "mcp",
-					name: "Redis MCP",
-					organizationId: "org-1",
-				},
-				context: {
-					user: mockUser,
-					session: { activeOrganizationId: "org-1" },
-				},
-			}),
-		).rejects.toMatchObject({
-			code: "SERVICE_UNAVAILABLE",
-			message:
-				"Requests are temporarily unavailable. Please try again later.",
-		});
-
-		expect(sendEmail).not.toHaveBeenCalled();
-	});
-
-	it("throws INTERNAL_SERVER_ERROR when sendEmail returns false", async () => {
-		vi.mocked(sendEmail).mockResolvedValueOnce(false);
-
-		await expect(
-			handlers.requestConnection({
-				input: {
-					type: "mcp",
-					name: "Redis MCP",
-					organizationId: "org-1",
-				},
-				context: {
-					user: mockUser,
-					session: { activeOrganizationId: "org-1" },
-				},
-			}),
-		).rejects.toMatchObject({
-			code: "INTERNAL_SERVER_ERROR",
-			message: "The request could not be sent",
-		});
+		expect(result.mailto.length).toBeLessThanOrEqual(1800);
+		expect(decode(result.mailto).body).toContain("Requested by:");
 	});
 });

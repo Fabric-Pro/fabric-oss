@@ -1,4 +1,5 @@
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
+import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 
 /**
  * Embeddings made to index or search tools are tool-search spend unless the
@@ -6,5 +7,5 @@ import type { TenantContext } from "@repo/rag/lib/embedding/types";
  * untagged AI Usage row.
  */
 export function toolSearchUsage(context: TenantContext): TenantContext {
-	return { ...context, featureKey: context.featureKey ?? "tool-search" };
+	return withDefaultFeature(context, "tool-search");
 }

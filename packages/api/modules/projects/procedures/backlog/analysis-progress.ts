@@ -100,6 +100,7 @@ export const analysisProgressProcedure = tenantProtectedProcedure
 						// here — dropping it would silently lose the note for
 						// exactly the fast runs most likely to have no logs.
 						logContextNote: result.logContextNote,
+						pmContextNote: result.pmContextNote,
 					},
 					proposal: result.proposal ?? null,
 				};
@@ -162,7 +163,7 @@ export const analysisProgressProcedure = tenantProtectedProcedure
 					// fall through with whatever `message` we already have.
 				}
 
-				// No `logContextNote` here, and it is not an oversight: this
+				// No `logContextNote` or `pmContextNote` here, and it is not an oversight: this
 				// branch is reached only when the workflow ended in a hard
 				// terminal state (FAILED / TERMINATED), which means it THREW
 				// rather than returning. The note lived in workflow state that

@@ -419,6 +419,21 @@ describe("sprint story review", () => {
 		});
 	});
 
+	it("names who a story was picked for and says a first capture has nothing to compare with", async () => {
+		const first = await executeAdoStoryReviewStep(params());
+		const html = first.output?.html ?? "";
+		expect(html).toContain("assigned: member@example.com");
+		expect(html).not.toContain("assigned: unassigned");
+		expect(html).toContain("No earlier capture to compare with yet.");
+		expect(html).not.toContain("No changes since the last capture.");
+
+		useBaseline(first.output?.cache);
+		const second = await executeAdoStoryReviewStep(params());
+		expect(second.output?.html).toContain(
+			"No changes since the last capture.",
+		);
+	});
+
 	it("updates workload and discovery observations without invalidating unchanged requirements and comments", async () => {
 		const first = await executeAdoStoryReviewStep(params());
 		useBaseline(first.output?.cache);

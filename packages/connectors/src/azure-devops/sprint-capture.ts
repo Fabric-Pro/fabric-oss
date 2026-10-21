@@ -119,21 +119,23 @@ export async function captureAzureDevOpsSprintStories(
 		const projectPath = pathSegment(project.id);
 		const sourceUrl = (id: number) =>
 			`https://dev.azure.com/${pathSegment(target.organization)}/${projectPath}/_workitems/edit/${id}`;
-		if (
-			assignee.mode === "current" &&
-			selection.assignmentFields.includes("Custom.Engineer")
-		) {
-			const field = await read(
-				`${projectPath}/_apis/wit/fields/Custom.Engineer`,
-				{},
-			);
-			if (field.referenceName !== "Custom.Engineer") {
-				throw new AzureDevOpsProjectReadError("invalid_response");
-			}
-			if (field.isIdentity !== true || field.isDeleted === true) {
-				throw new AzureDevOpsProjectReadError(
-					"unsupported_current_predicate",
+		const personFields = selection.assignmentFields.filter(
+			(field) => field !== "System.AssignedTo",
+		);
+		if (assignee.mode === "current") {
+			for (const name of personFields) {
+				const field = await read(
+					`${projectPath}/_apis/wit/fields/${pathSegment(name)}`,
+					{},
 				);
+				if (field.referenceName !== name) {
+					throw new AzureDevOpsProjectReadError("invalid_response");
+				}
+				if (field.isIdentity !== true || field.isDeleted === true) {
+					throw new AzureDevOpsProjectReadError(
+						"unsupported_current_predicate",
+					);
+				}
 			}
 		}
 		const principal =
@@ -319,21 +321,25 @@ export async function captureAzureDevOpsSprintStories(
 			const state = stringField(fields["System.State"]);
 			const iterationPath = stringField(fields["System.IterationPath"]);
 			const owner = assignedTo(fields["System.AssignedTo"]);
-			const engineerValue = fields["Custom.Engineer"];
-			const engineer =
-				typeof engineerValue === "string"
-					? stringField(engineerValue)
-					: assignedTo(engineerValue);
+			const person = (name: string) => {
+				const value = fields[name];
+				return typeof value === "string"
+					? stringField(value)
+					: assignedTo(value);
+			};
+			const engineer = personFields[0] ? person(personFields[0]) : null;
 			const matchedAssignmentFields =
 				assignee.mode === "current"
 					? null
 					: selection.assignmentFields.filter((field) => {
-							const identity =
+							const value =
 								field === "System.AssignedTo"
-									? owner?.uniqueName
-									: typeof engineer === "string"
-										? engineer
-										: engineer?.uniqueName;
+									? owner
+									: person(field);
+							const identity =
+								typeof value === "string"
+									? value
+									: value?.uniqueName;
 							return (
 								identity?.toLowerCase() ===
 								assignee.uniqueName.toLowerCase()

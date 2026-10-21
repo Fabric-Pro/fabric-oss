@@ -1511,6 +1511,100 @@ describe("DocumentEditorPage — document nudges", () => {
 	});
 });
 
+/**
+ * A run steps the version after its COMPLETE save and sends no nudge for it,
+ * and the editor stops polling at COMPLETE, so the page asks again for a
+ * while for the header's number (Fizzy #2946).
+ */
+describe("DocumentEditorPage — the version step after a run", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	/** Renders the page on this answer, then takes over the clock. */
+	async function renderOn(overrides: Record<string, unknown>) {
+		fixtures.document = proposal(overrides);
+		renderPage();
+		await pageReady();
+		vi.useFakeTimers({
+			toFake: [
+				"setTimeout",
+				"clearTimeout",
+				"setInterval",
+				"clearInterval",
+				"Date",
+			],
+		});
+	}
+
+	/** `serverReports` on the faked clock. */
+	async function serverAnswers(overrides: Record<string, unknown>) {
+		fixtures.document = proposal(overrides);
+		await act(async () => {
+			client.setQueryData(DOCUMENT_KEY, { document: fixtures.document });
+			await vi.advanceTimersByTimeAsync(0);
+		});
+	}
+
+	async function wait(ms: number) {
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(ms);
+		});
+	}
+
+	const reads = () => fixtures.api.getDocument.mock.calls.length;
+
+	it("asks again 3s after the run ends, then wider apart, and stops once the stepped version arrives", async () => {
+		await renderOn({
+			status: "GENERATING",
+			generationStartedAt: new Date().toISOString(),
+		});
+		await serverAnswers({ status: "COMPLETE", version: 2 });
+		const before = reads();
+
+		await wait(3000);
+		expect(reads()).toBe(before + 1);
+		fixtures.document = proposal({ status: "COMPLETE", version: 3 });
+		await wait(6000);
+		expect(reads()).toBe(before + 2);
+		expect(
+			(
+				client.getQueryData(DOCUMENT_KEY) as {
+					document: { version: number };
+				}
+			).document.version,
+		).toBe(3);
+
+		await wait(30_000);
+		expect(reads()).toBe(before + 2);
+	});
+
+	// The step waits for the run's decision pre-check, up to two minutes.
+	it("gives up 150s after the run ended when no version step comes", async () => {
+		await renderOn({
+			status: "GENERATING",
+			generationStartedAt: new Date().toISOString(),
+		});
+		await serverAnswers({ status: "COMPLETE", version: 2 });
+		const before = reads();
+
+		await wait(140_000);
+		expect(reads()).toBe(before + 7);
+		await wait(30_000);
+		expect(reads()).toBe(before + 8);
+		await wait(120_000);
+		expect(reads()).toBe(before + 8);
+	});
+
+	it("does not poll a document that was COMPLETE from the start", async () => {
+		await renderOn({ status: "COMPLETE", version: 2 });
+		const before = reads();
+
+		await wait(60_000);
+		expect(reads()).toBe(before);
+	});
+});
+
 describe("DocumentEditorPage — Internal Analysis tab indicator", () => {
 	async function analysisTab() {
 		renderPage();

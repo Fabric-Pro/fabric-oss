@@ -53,7 +53,13 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Editor } from "@tiptap/core";
 import type { ReactNode } from "react";
@@ -98,6 +104,8 @@ const harness = await vi.hoisted(async () => {
 		TabContext: React.createContext<Tab | null>(null),
 		flags: {} as Record<string, boolean>,
 		tabByClient: new Map<unknown, Tab>(),
+		/** How long into a pause in typing the editor autosaves. */
+		autosave: { delayMs: 10_000 },
 		/** The stale rule's and the election's waits, shortened. */
 		timings: {
 			observationGapMs: 60,
@@ -128,6 +136,8 @@ const server = {
 	version: 7,
 	status: "COMPLETE",
 	type: "PROPOSAL",
+	/** The latest run's identity, as the row names it. */
+	generationStartedAt: null as string | null,
 	/** Write at once, answer when a test releases the answer. */
 	holdAnswers: false,
 	held: [] as Array<() => void>,
@@ -172,7 +182,7 @@ function serverDocument() {
 			version: server.version,
 			status: server.status,
 			contentHash: hashOf(server.content),
-			generationStartedAt: null,
+			generationStartedAt: server.generationStartedAt,
 			updatedAt: null,
 		},
 	};
@@ -268,10 +278,10 @@ async function fakeMutation(
 		case "projects.documents.generate":
 			return generate.result;
 		case "projects.documents.rejectRegeneration":
-			// Rewinds the row to the body and version before the run; its
-			// answer, like the real one, names no body identity the editor
-			// should trust. With `rejectError` it is refused instead, and
-			// nothing is rewound.
+			// Rewinds the row to the body and version before the run, and
+			// answers with that body and its identity, as the real one does.
+			// With `rejectError` it is refused instead, and nothing is
+			// rewound.
 			return answerOrHold(() => {
 				if (server.rejectError) {
 					throw server.rejectError;
@@ -280,12 +290,7 @@ async function fakeMutation(
 					server.content = server.beforeRun.content;
 					server.version = server.beforeRun.version;
 				}
-				return {
-					document: {
-						...serverDocument().document,
-						contentHash: "embed-owned-column",
-					},
-				};
+				return serverDocument();
 			});
 		default:
 			return cannedResponseFor(path, tab);
@@ -420,6 +425,13 @@ vi.mock(
 		ROOM_CONVERGENCE_TIMINGS: harness.timings,
 	}),
 );
+
+vi.mock("@saas/projects/lib/document-save-input", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@saas/projects/lib/document-save-input")
+	>()),
+	DOCUMENT_AUTOSAVE_TIMINGS: harness.autosave,
+}));
 
 // ---- TipTap: a real editor, built from what the component passes, so the
 // collaborative one binds to the tab's document.
@@ -587,7 +599,9 @@ vi.mock("@saas/agents/hooks/useDefaultMcpInlineRender", () => ({
 	useDefaultMcpInlineRender: vi.fn(),
 }));
 vi.mock("@saas/agents/hooks/useFabricMention", () => ({
-	useFabricMention: () => ({ handleInputChange: vi.fn() }),
+	useFabricMention: () => ({
+		handleInputChange: (value: string) => ({ consumed: false, value }),
+	}),
 }));
 vi.mock("@saas/shared/components/copilot/useClarifyingQuestions", () => ({
 	useClarifyingQuestions: vi.fn(),
@@ -660,8 +674,10 @@ import {
 	writeConvergenceClaim,
 	writeRoomStamp,
 } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
+import { transactionTouches } from "@saas/projects/components/proposal-artifact/room-convergence-helpers";
 import { fromMarkdown } from "@saas/projects/lib/diff-utils";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
+import { ROOM_BODY_FRAGMENT } from "@saas/projects/lib/room-body-fragment";
 import { createCollaborativeExtensions } from "@saas/projects/lib/tiptap-extensions";
 import { toast } from "sonner";
 
@@ -1007,6 +1023,31 @@ function savedBodyViewText(tab: Tab): string {
 	return editor ? (getEditorMarkdownForSave(editor) ?? "") : "";
 }
 
+/** The raw markdown view, toggled as its keyboard shortcut does. */
+async function toggleRawView() {
+	await act(async () => {
+		window.dispatchEvent(
+			new KeyboardEvent("keydown", {
+				key: "V",
+				ctrlKey: true,
+				shiftKey: true,
+			}),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	});
+	await settle(50);
+}
+
+function rawTextarea(tab: Tab): HTMLTextAreaElement {
+	const area = [
+		...(tab.view?.container.querySelectorAll("textarea") ?? []),
+	].find((element) => element.value.includes("## Scope"));
+	if (!area) {
+		throw new Error(`${tab.name} shows no raw markdown`);
+	}
+	return area;
+}
+
 function offerBackCalls() {
 	return vi
 		.mocked(toast.warning)
@@ -1022,12 +1063,14 @@ beforeEach(() => {
 	harness.agentState = {};
 	harness.routerPush = vi.fn();
 	Object.assign(harness.timings, SHORT_TIMINGS);
+	harness.autosave.delayMs = 10_000;
 	saveCalls.length = 0;
 	harness.versionHistoryProps = {};
 	server.content = BODY_A;
 	server.version = 7;
 	server.status = "COMPLETE";
 	server.type = "PROPOSAL";
+	server.generationStartedAt = null;
 	server.holdAnswers = false;
 	server.held = [];
 	server.requireBase = false;
@@ -1167,13 +1210,64 @@ describe("the room at the end of a run (Fizzy #2946)", () => {
 		expect(offerBackCalls()).toHaveLength(0);
 	});
 
-	it("a hidden starter whose review frame never lands still ends on the run's body, through convergence", async () => {
-		await persistRoom(BODY_A, savedStamp());
-		const starter = await openTab("starter");
+	/**
+	 * Types two characters at the end and deletes them again: Save is on in
+	 * between, and off after only if the editor's saved body is what it
+	 * holds.
+	 */
+	async function typeAndDeleteBack(tab: Tab) {
+		const editor = mainEditor(tab) as Editor;
+		const at = editor.state.doc.content.size - 1;
+		await act(async () => {
+			editor.commands.insertContentAt(at, " x");
+		});
+		await settle(220);
+		expect(saveButton(tab)).not.toBeDisabled();
+		await act(async () => {
+			editor.commands.deleteRange({ from: at, to: at + 2 });
+		});
+		await settle(220);
+	}
+
+	/** Whether this tab, and not another, draws the saved body. */
+	function drawsSavedBody(tab: Tab): boolean {
+		return (
+			tab.view?.container.querySelector(
+				'[data-testid="room-saved-body"]',
+			) != null
+		);
+	}
+
+	/** A run the starter began ends on BODY_B, at version 7 still. */
+	async function runEndsOnBody(starter: Tab, ...others: Tab[]) {
 		await startRunFromChat(starter);
 		server.status = "GENERATING";
-		await nudge(starter);
+		await nudge(starter, ...others);
+		await settle(30);
+		server.content = BODY_B;
+		server.status = "COMPLETE";
+		await nudge(starter, ...others);
+	}
 
+	it("a background starter whose frames are held still puts the run's body into the room at once: neither tab hides its editor behind the saved body", async () => {
+		// Production waits: a convergence would take seconds.
+		Object.assign(harness.timings, {
+			observationGapMs: 3000,
+			claimSettleMs: 1500,
+			fallThroughMs: 10_000,
+		});
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		await startRunFromChat(starter);
+		server.status = "GENERATING";
+		await nudge(starter, follower);
+		await settle(30);
+
+		// A background tab: frames wait until it is shown again.
 		const heldFrames: FrameRequestCallback[] = [];
 		vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
 			heldFrames.push(cb);
@@ -1181,41 +1275,868 @@ describe("the room at the end of a run (Fizzy #2946)", () => {
 		});
 		server.content = BODY_B;
 		server.status = "COMPLETE";
+		await nudge(starter, follower);
+
+		await waitFor(
+			() => {
+				expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+				expect(editorBody(starter)).toContain("rewritten by the run");
+				expect(editorBody(follower)).toContain("rewritten by the run");
+			},
+			{ timeout: 500 },
+		);
+		for (let look = 0; look < 6; look += 1) {
+			expect(drawsSavedBody(starter)).toBe(false);
+			expect(drawsSavedBody(follower)).toBe(false);
+			await settle(100);
+		}
+		expect(readConvergenceClaim(room.doc)).toBeNull();
+		expect(occurrences(await roomBody(), "rewritten by the run")).toBe(1);
+		expect(saveCalls).toEqual([]);
+	});
+
+	/**
+	 * Steps through the end of a run in production waits and lists every
+	 * moment a tab showed the previous body in an editor that takes input, or
+	 * had Save on, until the room holds `marker` under the saved stamp.
+	 */
+	async function watchRunEnd(tabs: Tab[], marker: string) {
+		const STEP_MS = 250;
+		const violations: string[] = [];
+		const converged = () =>
+			readRoomStamp(room.doc)?.contentHash === hashOf(server.content) &&
+			tabs.every(
+				(tab) =>
+					!drawsSavedBody(tab) && editorBody(tab).includes(marker),
+			);
+		for (let at = 0; at <= 20_000; at += STEP_MS) {
+			for (const tab of tabs) {
+				const editorHidden =
+					roomEditorContent(tab)?.className.includes("hidden") ??
+					true;
+				const previousBody = !editorBody(tab).includes(marker);
+				const editable = mainEditor(tab)?.isEditable === true;
+				const saveOff = saveButton(tab).hasAttribute("disabled");
+				if ((!editorHidden && previousBody && editable) || !saveOff) {
+					violations.push(
+						`${at} ms ${tab.name}: ${previousBody ? "previous" : "run's"} body${editable ? ", editable" : ""}; Save ${saveOff ? "off" : "on"}`,
+					);
+				}
+			}
+			if (converged()) {
+				break;
+			}
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(STEP_MS);
+			});
+		}
+		return { violations, converged: converged() };
+	}
+
+	const BODY_C =
+		"## Scope\n\nPhase one, then two, rewritten by a later run.\n\n## Pricing\n\nA fixed fee per phase.";
+
+	/**
+	 * A later run that no open tab started — a colleague whose tab is closed,
+	 * the API, the MCP gateway, a batch: the open tabs only hear that the
+	 * document generates, then that it is complete on BODY_C.
+	 */
+	async function laterRunStartsOutside(...tabs: Tab[]) {
+		server.generationStartedAt = new Date(
+			Date.now() + 60_000,
+		).toISOString();
+		server.status = "GENERATING";
+		await nudge(...tabs);
+		// A closed review stops counting as open a second later.
+		await settle(1100);
+		await nudge(...tabs);
+		await settle(30);
+	}
+
+	it("a run started outside the open tabs, while one tab still holds the review of an earlier run, never leaves the previous body editable when it ends", async () => {
+		// Production waits: a convergence would take seconds.
+		Object.assign(harness.timings, {
+			observationGapMs: 3000,
+			claimSettleMs: 1500,
+			fallThroughMs: 10_000,
+		});
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", {
+			clientId: 20,
+			attachToServerRun: true,
+		});
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		server.generationStartedAt = new Date().toISOString();
+		await runEndsOnBody(starter, follower);
+		server.version = 8;
+		await nudge(starter, follower);
+		await waitFor(() => {
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+
+		// The starter leaves its review open; a later run starts elsewhere.
+		// The review no longer describes the document, so it closes, and the
+		// starter follows the later run like the follower does (Fizzy #2946).
+		await laterRunStartsOutside(starter, follower);
+		expect(
+			starter.view?.queryByTestId("regeneration-confirm-modal"),
+		).toBeNull();
+		expect(vi.mocked(toast.info)).toHaveBeenCalledWith(
+			"reviewSupersededByRun",
+		);
+		expect(starter.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"attached",
+		);
+		expect(follower.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"attached",
+		);
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		server.content = BODY_C;
+		server.status = "COMPLETE";
+		await nudge(starter, follower);
+		const { violations, converged } = await watchRunEnd(
+			[starter, follower],
+			"rewritten by a later run",
+		);
+		vi.useRealTimers();
+
+		expect(violations).toEqual([]);
+		expect(converged).toBe(true);
+		// One editor wrote the run's body with its stamp: no second look, no
+		// claim, no save.
+		expect(readConvergenceClaim(room.doc)).toBeNull();
+		expect(occurrences(await roomBody(), "rewritten by a later run")).toBe(
+			1,
+		);
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("an attached tab writes the body of a run started outside the open tabs even when the tab holding an earlier run's review learns of that run only as it ends", async () => {
+		Object.assign(harness.timings, {
+			observationGapMs: 3000,
+			claimSettleMs: 1500,
+			fallThroughMs: 10_000,
+		});
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", {
+			clientId: 20,
+			attachToServerRun: true,
+		});
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		server.generationStartedAt = new Date().toISOString();
+		await runEndsOnBody(starter, follower);
+		server.version = 8;
+		await nudge(starter, follower);
+		await waitFor(() => {
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+
+		// Only the follower hears that the later run started.
+		await laterRunStartsOutside(follower);
+		expect(
+			starter.view?.queryByTestId("regeneration-confirm-modal"),
+		).not.toBeNull();
+		expect(starter.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"started",
+		);
+		expect(follower.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"attached",
+		);
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		server.content = BODY_C;
+		server.status = "COMPLETE";
+		await nudge(starter, follower);
+		const { violations, converged } = await watchRunEnd(
+			[starter, follower],
+			"rewritten by a later run",
+		);
+		vi.useRealTimers();
+
+		expect(violations).toEqual([]);
+		expect(converged).toBe(true);
+		expect(readConvergenceClaim(room.doc)).toBeNull();
+		expect(occurrences(await roomBody(), "rewritten by a later run")).toBe(
+			1,
+		);
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("a starter whose page has not read its run's identity yet still writes that run's body alone, even when a follower reads the end first and the room relays late", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		// An earlier run's identity, all the starter's page has read.
+		server.generationStartedAt = "2026-10-21T09:00:00.000Z";
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		await startRunFromChat(starter);
+		server.generationStartedAt = new Date().toISOString();
+		server.status = "GENERATING";
+		await nudge(follower);
+		await settle(30);
+		expect(follower.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"attached",
+		);
+
+		server.content = BODY_B;
+		server.status = "COMPLETE";
+		room.paused = true;
+		await nudge(follower);
+		await settle(50);
 		await nudge(starter);
 		await waitFor(() => {
 			expect(
 				starter.view?.queryByTestId("regeneration-confirm-modal"),
 			).not.toBeNull();
 		});
-		expect(heldFrames.length).toBeGreaterThan(0);
+		await settle(50);
+		await resume();
+		await settle(100);
 
+		expect(occurrences(await roomBody(), "rewritten by the run")).toBe(1);
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("without the room's stamps, a tab that does not follow runs keeps the review of an earlier run until a later run's body arrives, then shows that body", async () => {
+		harness.flags = { DOCUMENT_ROOM_CONVERGENCE: false };
+		await persistRoom(BODY_A, null);
+		const starter = await openTab("starter");
+		server.generationStartedAt = new Date().toISOString();
+		await runEndsOnBody(starter);
+		await waitFor(() => {
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+		});
+
+		// Closing it now would leave the earlier body on screen: nothing
+		// brings this editor the later run's body.
+		await laterRunStartsOutside(starter);
+		expect(
+			starter.view?.queryByTestId("regeneration-confirm-modal"),
+		).not.toBeNull();
+
+		server.content = BODY_C;
+		server.status = "COMPLETE";
+		await nudge(starter);
+		await waitFor(() => {
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).toBeNull();
+			expect(editorBody(starter)).toContain("rewritten by a later run");
+		});
+		expect(vi.mocked(toast.info)).toHaveBeenCalledWith("reviewSuperseded");
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("a tab alone with the review of an earlier run follows a run started elsewhere and puts its body into the room when it ends", async () => {
+		Object.assign(harness.timings, {
+			observationGapMs: 3000,
+			claimSettleMs: 1500,
+			fallThroughMs: 10_000,
+		});
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { attachToServerRun: true });
+		server.generationStartedAt = new Date().toISOString();
+		await runEndsOnBody(starter);
+		await waitFor(() => {
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+		});
+
+		await laterRunStartsOutside(starter);
+		expect(
+			starter.view?.queryByTestId("regeneration-confirm-modal"),
+		).toBeNull();
+		expect(starter.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+			"attached",
+		);
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+		server.content = BODY_C;
+		server.status = "COMPLETE";
+		await nudge(starter);
+		const { violations, converged } = await watchRunEnd(
+			[starter],
+			"rewritten by a later run",
+		);
+		vi.useRealTimers();
+
+		expect(violations).toEqual([]);
+		expect(converged).toBe(true);
+		expect(readConvergenceClaim(room.doc)).toBeNull();
+		expect(occurrences(await roomBody(), "rewritten by a later run")).toBe(
+			1,
+		);
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("an attached follower that typed nothing keeps Save off and never autosaves once the run's body lands, whether the version step is announced or not; nor does the starter after Accept", async () => {
+		harness.autosave.delayMs = 300;
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		await runEndsOnBody(starter, follower);
+		await waitFor(() => {
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+		await settle(200);
+		expect(saveButton(follower)).toHaveAccessibleName(
+			"Document saved, no changes to save",
+		);
+		expect(saveButton(follower)).toBeDisabled();
+
+		// The run's version step, which nothing announces.
+		server.version = 8;
+		await settle(700);
+		expect(saveButton(follower)).toBeDisabled();
+		expect(saveCalls).toEqual([]);
+
+		// Something else announces a change later: the stamp moves.
+		await nudge(starter, follower);
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+		await settle(700);
+		expect(saveButton(follower)).toBeDisabled();
+		expect(saveCalls).toEqual([]);
+
+		await act(async () => {
+			within(
+				starter.view?.getByTestId(
+					"regeneration-confirm-modal",
+				) as HTMLElement,
+			)
+				.getByRole("button", { name: "Accept" })
+				.click();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(1500);
+		expect(saveButton(starter)).toHaveAccessibleName(
+			"Document saved, no changes to save",
+		);
+		expect(saveButton(follower)).toBeDisabled();
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("an attached follower takes the run's body as its saved body: typing and deleting it back turns Save off again", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		await runEndsOnBody(starter, follower);
+		await waitFor(() => {
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+		await settle(200);
+
+		await typeAndDeleteBack(follower);
+		expect(editorBody(follower)).toBe(editorBody(starter));
+		expect(saveButton(follower)).toBeDisabled();
+	});
+
+	it("an attached follower takes the run's body as its saved body when the version step's stamp reaches the room before it looks", async () => {
+		const { starter, follower } = await reviewWithFollower({
+			content: BODY_A,
+			version: 7,
+		});
+
+		await typeAndDeleteBack(follower);
+		expect(editorBody(follower)).toBe(editorBody(starter));
+		expect(saveButton(follower)).toBeDisabled();
+	});
+
+	it("the run's unannounced version step moves the room's stamp at once, without a second look or a claim", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		await runEndsOnBody(starter, follower);
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+		await settle(100);
+		// A second look would take five seconds.
+		harness.timings.observationGapMs = 5000;
+
+		server.version = 8;
+		await nudge(follower);
 		await waitFor(
 			() => {
 				expect(readRoomStamp(room.doc)).toEqual(savedStamp());
-				expect(editorBody(starter)).toContain("rewritten by the run");
+			},
+			{ timeout: 500 },
+		);
+		expect(readConvergenceClaim(room.doc)).toBeNull();
+		expect(drawsSavedBody(follower)).toBe(false);
+		expect(saveCalls).toEqual([]);
+	});
+
+	/**
+	 * The starter reviews the run's BODY_B at version 8 and an attached
+	 * follower holds it; the rewind goes back to `beforeRun`.
+	 */
+	async function reviewWithFollower(beforeRun: {
+		content: string;
+		version: number;
+	}) {
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		server.beforeRun = beforeRun;
+		await runEndsOnBody(starter, follower);
+		server.version = 8;
+		await nudge(starter, follower);
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+		await settle(200);
+		return { starter, follower };
+	}
+
+	async function clickReject(tab: Tab) {
+		await act(async () => {
+			within(
+				tab.view?.getByTestId(
+					"regeneration-confirm-modal",
+				) as HTMLElement,
+			)
+				.getByRole("button", { name: "Reject" })
+				.click();
+			// The dialog closes on a short delay before it rejects.
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		});
+	}
+
+	/** Room transactions that changed the body without its stamp. */
+	function watchUnstampedBodyWrites(): Y.Transaction[] {
+		const unstamped: Y.Transaction[] = [];
+		const meta = room.doc.getMap(ROOM_META_MAP);
+		const body = room.doc.getXmlFragment(ROOM_BODY_FRAGMENT);
+		room.doc.on("afterTransaction", (transaction: Y.Transaction) => {
+			if (
+				transactionTouches(transaction, body) &&
+				!transaction.changed
+					.get(meta as unknown as Y.AbstractType<Y.YEvent<any>>)
+					?.has("stamp")
+			) {
+				unstamped.push(transaction);
+			}
+		});
+		return unstamped;
+	}
+
+	it("a Reject leaves the room alone until the server answers, then puts the rewound body in with its stamp, and no one saves", async () => {
+		harness.autosave.delayMs = 300;
+		const { starter, follower } = await reviewWithFollower({
+			content: BODY_A,
+			version: 7,
+		});
+		const unstamped = watchUnstampedBodyWrites();
+		server.holdAnswers = true;
+		await clickReject(starter);
+
+		expect(server.held).toHaveLength(1);
+		expect(await roomBody()).toContain("rewritten by the run");
+		expect(readRoomStamp(room.doc)).toEqual({
+			version: 8,
+			contentHash: hashOf(BODY_B),
+		});
+		expect(editorBody(follower)).toContain("rewritten by the run");
+		expect(saveButton(follower)).toBeDisabled();
+
+		server.holdAnswers = false;
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual({
+				version: 7,
+				contentHash: hashOf(BODY_A),
+			});
+		});
+		const held = await roomBody();
+		expect(occurrences(held, "Phase one, then two.")).toBe(1);
+		expect(held).not.toContain("rewritten by the run");
+		expect(unstamped).toEqual([]);
+		await waitFor(() => {
+			expect(editorBody(follower)).toContain("Phase one, then two.");
+		});
+
+		await nudge(starter, follower);
+		await settle(700);
+		expect(saveButton(follower)).toBeDisabled();
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_A);
+	});
+
+	it("a Reject the server rewinds to a body other than the one the editor remembered ends the room on the server's body, under its stamp, and nothing writes the remembered one", async () => {
+		harness.autosave.delayMs = 300;
+		const BODY_C =
+			"## Scope\n\nPhase one, then two, as saved before the run.\n\n## Pricing\n\nA fixed fee.";
+		const { starter, follower } = await reviewWithFollower({
+			content: BODY_C,
+			version: 7,
+		});
+		await clickReject(starter);
+
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual({
+				version: 7,
+				contentHash: hashOf(BODY_C),
+			});
+		});
+		expect(await roomBody()).toContain("as saved before the run");
+		await waitFor(() => {
+			expect(editorBody(starter)).toContain("as saved before the run");
+			expect(editorBody(follower)).toContain("as saved before the run");
+		});
+
+		await nudge(starter, follower);
+		await settle(700);
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_C);
+		expect(server.version).toBe(7);
+		expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+	});
+
+	it("a Reject's answer leaves the room alone when a colleague's save moved it after the rewind: the colleague's body stays, under its stamp", async () => {
+		const BODY_C =
+			"## Scope\n\nPhase one, saved by a colleague after the rewind.\n\n## Pricing\n\nA fixed fee.";
+		const { starter, follower } = await reviewWithFollower({
+			content: BODY_A,
+			version: 7,
+		});
+		// Only the answer may move the room here, not a later look at it.
+		harness.timings.observationGapMs = 5000;
+		server.holdAnswers = true;
+		await clickReject(starter);
+		expect(server.held).toHaveLength(1);
+		expect(server.content).toBe(BODY_A);
+
+		// The rewind is done; a colleague's save lands before its answer,
+		// and the colleague's editor puts it into the room with its stamp.
+		server.content = BODY_C;
+		server.version = 8;
+		await act(async () => {
+			await persistRoom(BODY_C, savedStamp());
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(editorBody(starter)).toContain("saved by a colleague");
+		});
+
+		server.holdAnswers = false;
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(100);
+
+		expect(readRoomStamp(room.doc)).toEqual({
+			version: 8,
+			contentHash: hashOf(BODY_C),
+		});
+		const held = await roomBody();
+		expect(occurrences(held, "saved by a colleague")).toBe(1);
+		expect(held).not.toContain("Phase one, then two.");
+		expect(editorBody(starter)).toContain("saved by a colleague");
+		expect(editorBody(follower)).toContain("saved by a colleague");
+		expect(starter.awareness.own[ROOM_SAVE_AWARENESS_FIELD]).toBeNull();
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_C);
+	});
+
+	it("a Reject the server refuses as stale leaves the room to the stale rule: it ends on the newer saved body, and a colleague's unsaved typing is offered back", async () => {
+		const BODY_C =
+			"## Scope\n\nPhase one, written outside the room.\n\n## Pricing\n\nA fixed fee.";
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
+		});
+		server.beforeRun = { content: BODY_A, version: 7 };
+		await runEndsOnBody(starter, follower);
+		await waitFor(() => {
+			expect(editorBody(follower)).toContain("rewritten by the run");
+		});
+		await settle(200);
+		harness.autosave.delayMs = 60_000;
+		await type(follower, " Typed by the follower.");
+		// A write from outside the room that nobody announced yet.
+		server.content = BODY_C;
+		server.version = 8;
+		server.rejectError = Object.assign(new Error("stale"), {
+			code: "CONFLICT",
+			data: { code: "REJECT_REVIEW_STALE" },
+		});
+
+		await clickReject(starter);
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("rejectReviewStale");
+		});
+		await waitFor(
+			() => {
+				expect(readRoomStamp(room.doc)).toEqual({
+					version: 8,
+					contentHash: hashOf(BODY_C),
+				});
 			},
 			{ timeout: 3000 },
 		);
+		await settle(200);
+		expect(offerBackCalls()).toHaveLength(1);
+		const held = await roomBody();
+		expect(occurrences(held, "written outside the room")).toBe(1);
+		expect(held).not.toContain("rewritten by the run");
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_C);
+	});
 
-		// Once the room's body has been read back, typing resumes.
+	it("a review a newer saved body superseded closes in the room without writing anything: the stale rule brings the room to the newer body", async () => {
+		const BODY_C =
+			"## Scope\n\nPhase one, rewritten by a second run.\n\n## Pricing\n\nA fixed fee.";
+		const { starter, follower } = await reviewWithFollower({
+			content: BODY_A,
+			version: 7,
+		});
+		const unstamped = watchUnstampedBodyWrites();
+
+		server.content = BODY_C;
+		server.version = 9;
+		await nudge(starter, follower);
 		await waitFor(() => {
-			expect(readConvergenceClaim(room.doc)?.settled).toBe("verified");
-			expect(mainEditor(starter)?.isEditable).toBe(true);
+			expect(
+				starter.view?.queryByTestId("regeneration-confirm-modal"),
+			).toBeNull();
 		});
-		await type(starter, " Typed after the update.");
+		expect(toast.info).toHaveBeenCalledWith("reviewSuperseded");
+		await waitFor(
+			() => {
+				expect(readRoomStamp(room.doc)).toEqual({
+					version: 9,
+					contentHash: hashOf(BODY_C),
+				});
+			},
+			{ timeout: 3000 },
+		);
+		await settle(100);
+		expect(occurrences(await roomBody(), "rewritten by a second run")).toBe(
+			1,
+		);
+		expect(editorBody(starter)).toContain("rewritten by a second run");
+		expect(editorBody(follower)).toContain("rewritten by a second run");
+		expect(unstamped).toEqual([]);
+		expect(saveCalls).toEqual([]);
+	});
 
-		// The frame lands late, over a room that holds the body already, and
-		// leaves what was typed on it.
-		await act(async () => {
-			for (const frame of heldFrames.splice(0)) {
-				frame(performance.now());
-			}
+	it("an editor mounted after the review opened leaves a room that already holds the reviewed body, and a colleague's typing on it, alone", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const starter = await openTab("starter", { clientId: 20 });
+		const follower = await openTab("follower", {
+			clientId: 30,
+			attachToServerRun: true,
 		});
+		await startRunFromChat(starter);
+		server.status = "GENERATING";
+		await nudge(starter, follower);
+		await settle(30);
+
+		// The starter's room drops before the run ends: no editor of its
+		// is on screen when its review opens.
+		starter.synced = false;
+		rerender(starter);
+		await settle(20);
+		expect(mainEditor(starter)).toBeNull();
+		server.content = BODY_B;
+		server.status = "COMPLETE";
+		await nudge(starter, follower);
+		await waitFor(
+			() => {
+				expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+				expect(editorBody(follower)).toContain("rewritten by the run");
+			},
+			{ timeout: 3000 },
+		);
+		await settle(200);
+		harness.autosave.delayMs = 60_000;
+		await type(follower, " Typed by the follower.");
+
+		// The starter's room is back while its review is open.
+		starter.synced = true;
+		rerender(starter);
+		await waitFor(() => {
+			expect(mainEditor(starter)).not.toBeNull();
+		});
+		await settle(100);
+
+		expect(
+			starter.view?.queryByTestId("regeneration-confirm-modal"),
+		).not.toBeNull();
+		expect(editorBody(starter)).toContain("Typed by the follower.");
+		expect(editorBody(follower)).toContain("Typed by the follower.");
 		const held = await roomBody();
 		expect(occurrences(held, "rewritten by the run")).toBe(1);
-		expect(held).toContain("Typed after the update.");
-		expect(editorBody(starter)).toContain("Typed after the update.");
+		expect(held).toContain("Typed by the follower.");
 		expect(saveCalls).toEqual([]);
+	});
+});
+
+describe("a tab that typed nothing in a room (Fizzy #2946)", () => {
+	it("stays saved and never autosaves while a colleague types into the room", async () => {
+		harness.autosave.delayMs = 300;
+		await persistRoom(BODY_A, savedStamp());
+		const typist = await openTab("typist", { clientId: 10 });
+		const watcher = await openTab("watcher", { clientId: 20 });
+
+		await type(typist, " Typed by a colleague.");
+		await waitFor(() => {
+			expect(editorBody(watcher)).toContain("Typed by a colleague.");
+		});
+		await settle(50);
+		expect(saveButton(watcher)).toBeDisabled();
+
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		await settle(700);
+		expect(saveCalls.map((call) => call.tab)).toEqual(["typist"]);
+		expect(saveButton(watcher)).toBeDisabled();
+	});
+
+	it("counts an edit in the raw view as typing: a saved body the room brings in does not replace it", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		await toggleRawView();
+		const edited = `${rawTextarea(tab).value}\n\nEdited in the raw view.`;
+		await act(async () => {
+			fireEvent.change(rawTextarea(tab), { target: { value: edited } });
+		});
+		await settle(50);
+		expect(saveButton(tab)).not.toBeDisabled();
+
+		// The saved document's unannounced version step, which an editor
+		// with nothing typed takes as its saved body.
+		server.version = 8;
+		await nudge(tab);
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+		await settle(100);
+
+		expect(rawTextarea(tab).value).toContain("Edited in the raw view.");
+		expect(saveButton(tab)).not.toBeDisabled();
+	});
+
+	it("offers back the raw view's edits when the room is brought to a newer saved body, and keeps them there, unsaved", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		await toggleRawView();
+		const edited = `${rawTextarea(tab).value}\n\nEdited in the raw view.`;
+		await act(async () => {
+			fireEvent.change(rawTextarea(tab), { target: { value: edited } });
+		});
+		await settle(50);
+
+		// A write from outside the room: the room is behind it.
+		server.content = BODY_B;
+		server.version = 8;
+		await nudge(tab);
+		await waitFor(
+			() => {
+				expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+			},
+			{ timeout: 3000 },
+		);
+		await settle(100);
+
+		expect(offerBackCalls()).toHaveLength(1);
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(window.navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+		const options = offerBackCalls()[0]?.[1] as {
+			action: { onClick: () => void };
+		};
+		options.action.onClick();
+		expect(writeText).toHaveBeenCalledWith(
+			expect.stringContaining("Edited in the raw view."),
+		);
+		expect(rawTextarea(tab).value).toContain("Edited in the raw view.");
+		expect(saveButton(tab)).not.toBeDisabled();
+		expect(await roomBody()).toContain("rewritten by the run");
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("a trip to the raw view and back with no edit is no typing: a colleague's text stays theirs to save", async () => {
+		harness.autosave.delayMs = 300;
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		// A colleague's typing reaches the room; their editor saves it.
+		await act(async () => {
+			await persistRoom(`${BODY_A} Typed by a colleague.`, null);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain("Typed by a colleague.");
+		});
+
+		await toggleRawView();
+		expect(rawTextarea(tab).value).toContain("Typed by a colleague.");
+		await toggleRawView();
+		expect(editorBody(tab)).toContain("Typed by a colleague.");
+		await settle(700);
+
+		expect(saveButton(tab)).toBeDisabled();
+		expect(saveCalls).toEqual([]);
+		expect(await roomBody()).toContain("Typed by a colleague.");
+	});
+
+	it("the single-user editor still autosaves its typing", async () => {
+		vi.stubEnv("NEXT_PUBLIC_ENABLE_COLLABORATION", "false");
+		harness.autosave.delayMs = 300;
+		const tab = await openTab("solo");
+		await type(tab, " Typed alone.");
+		expect(saveButton(tab)).not.toBeDisabled();
+
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]?.content).toContain("Typed alone.");
 	});
 });
 
@@ -1848,15 +2769,26 @@ describe("a room nobody kept up (Fizzy #2946)", () => {
 		await persistRoom(BODY_A, { version: 7, contentHash: hashOf(BODY_A) });
 		server.content = BODY_B;
 		server.version = 8;
-		// Room for a look at the screen before the second observation.
+		// Room for a look at the screen before the second observation, and
+		// while the room is replaced.
 		harness.timings.observationGapMs = 400;
+		harness.timings.claimSettleMs = 300;
 
 		const tab = await openTab("member");
-		// Until the room is brought up, the saved body is what shows.
-		expect(showsSavedBody(tab)).toBe(true);
+		// The first look only checks: the editor stays on screen, and saves
+		// wait.
+		expect(showsSavedBody(tab)).toBe(false);
+		expect(roomEditorContent(tab)?.className).not.toContain("hidden");
+		expect(within(tab.syncSlot).getByText("updating")).toBeInTheDocument();
+		// Once the room is being brought up, the saved body is what shows.
+		await waitFor(
+			() => {
+				expect(showsSavedBody(tab)).toBe(true);
+			},
+			{ timeout: 3000 },
+		);
 		expect(savedBodyViewText(tab)).toContain("rewritten by the run");
 		expect(roomEditorContent(tab)?.className).toContain("hidden");
-		expect(within(tab.syncSlot).getByText("updating")).toBeInTheDocument();
 
 		await waitFor(
 			() => {
@@ -2893,6 +3825,106 @@ describe("an assistant proposal accepted in a room (Fizzy #2946)", () => {
 		expect(offerBackCalls()).toHaveLength(0);
 	});
 
+	it("whose save fails stays unsaved in the editor that accepted it, which saves it later", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		// The dirty check the editor scheduled while it opened has run, so
+		// only the accept itself can say the accepted text is unsaved.
+		await settle(200);
+		server.failNext = new Error("Service unavailable");
+
+		const respond = await acceptProposal(
+			tab,
+			`${BODY_A}\n\nAn accepted paragraph.`,
+		);
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		await settle(300);
+		expect(server.content).toBe(BODY_A);
+		expect(editorBody(tab)).toContain("An accepted paragraph.");
+		await waitFor(
+			() => {
+				expect(saveButton(tab)).toHaveAccessibleName("Save document");
+				expect(saveButton(tab)).not.toBeDisabled();
+			},
+			{ timeout: 3000 },
+		);
+
+		await clickSave(tab);
+		await waitFor(() => {
+			expect(server.content).toContain("An accepted paragraph.");
+		});
+		expect(saveCalls[1]).toMatchObject({
+			expectedVersion: 7,
+			expectedContentHash: hashOf(BODY_A),
+		});
+	});
+
+	it("is saved once when the assistant goes on to its next turn while that save is in flight", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		await settle(200);
+		server.holdAnswers = true;
+
+		await acceptProposal(tab, `${BODY_A}\n\nAn accepted paragraph.`);
+		await waitFor(() => {
+			expect(server.held).toHaveLength(1);
+		});
+		// The assistant answers the accept and starts its next turn.
+		harness.chatLoading = true;
+		rerender(tab);
+		await settle(50);
+		server.holdAnswers = false;
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(300);
+
+		expect(saveCalls).toHaveLength(1);
+		expect(server.content).toContain("An accepted paragraph.");
+	});
+
+	it("whose save fails after the editor showed that save's optimistic answer stays unsaved past the autosave delay, and is saved on leaving the page", async () => {
+		harness.autosave.delayMs = 300;
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		await settle(200);
+		server.failNext = new Error("Service unavailable");
+		server.holdAnswers = true;
+
+		await acceptProposal(tab, `${BODY_A}\n\nAn accepted paragraph.`);
+		await waitFor(() => {
+			expect(server.held).toHaveLength(1);
+		});
+		// The editor renders the save's optimistic answer before the failure
+		// arrives.
+		await settle(100);
+		server.holdAnswers = false;
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(server.content).toBe(BODY_A);
+		await settle(500);
+		expect(saveButton(tab)).toHaveAccessibleName("Save document");
+		expect(saveCalls).toHaveLength(1);
+
+		await act(async () => {
+			tab.view?.unmount();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(server.content).toContain("An accepted paragraph.");
+		});
+	});
+
 	it("in a room without a stamp yet, is not sent: it stays in the editor, unsaved, and the editor says it is updating to the latest version", async () => {
 		// A room from before the stamp, still being looked at: it takes its
 		// stamp only after the observation gap.
@@ -3056,45 +4088,6 @@ describe("rejecting a regeneration in a room (Fizzy #2946)", () => {
 		});
 	}
 
-	/**
-	 * Reject, held, and an autosave of typing done once the review closed,
-	 * held behind it: the Reject's answer then comes while the autosave is
-	 * in flight.
-	 */
-	async function rejectAnsweredDuringAutosave(tab: Tab) {
-		await reviewRun(tab);
-		server.rejectError = noPriorVersion();
-		server.holdAnswers = true;
-		await reject(tab);
-		await waitFor(() => {
-			expect(editorBody(tab)).toContain("Phase one, then two.");
-		});
-		// The review winds down a second after it closes.
-		await settle(1200);
-		vi.useFakeTimers({
-			toFake: ["setTimeout", "clearTimeout"],
-			shouldAdvanceTime: true,
-		});
-		await type(tab, " Typed after the reject.");
-		await act(async () => {
-			await vi.advanceTimersByTimeAsync(10_500);
-		});
-		await waitFor(() => {
-			expect(saveCalls).toHaveLength(1);
-		});
-		expect(saveCalls[0]).toMatchObject({
-			expectedVersion: 8,
-			expectedContentHash: hashOf(BODY_B),
-		});
-		expect(saveCalls[0]?.content).toContain("Typed after the reject.");
-		expect(server.held).toHaveLength(2);
-
-		// The Reject's answer: nothing to rewind to, so the earlier body is
-		// to be saved over the regenerated one.
-		await answerOldest();
-		await settle(50);
-	}
-
 	it("says the regeneration was rejected only once the server has rewound it", async () => {
 		await persistRoom(BODY_A, savedStamp());
 		const tab = await openTab("starter");
@@ -3136,48 +4129,129 @@ describe("rejecting a regeneration in a room (Fizzy #2946)", () => {
 		expect(server.content).toBe(BODY_B);
 	});
 
-	it("with nothing to rewind to, the earlier body waits for the autosave in flight and goes from the base its answer produced; Save reads Saving meanwhile", async () => {
+	it("keeps the editor read-only through a sync loss while the Reject is unanswered, and offers back what still reached the editor before the rewind replaces it", async () => {
 		await persistRoom(BODY_A, savedStamp());
 		const tab = await openTab("starter");
-		await rejectAnsweredDuringAutosave(tab);
+		server.beforeRun = { content: BODY_A, version: 7 };
+		await reviewRun(tab);
+		server.holdAnswers = true;
+		await reject(tab);
+		expect(server.held).toHaveLength(1);
 
-		// The earlier body waits: only the autosave has gone.
-		expect(saveCalls).toHaveLength(1);
-		expect(saveButton(tab)).toHaveAccessibleName("Saving");
+		// The room drops and comes back while the Reject is out.
+		tab.synced = false;
+		rerender(tab);
+		await settle(20);
+		expect(mainEditor(tab)).toBeNull();
+		tab.synced = true;
+		rerender(tab);
+		await waitFor(() => {
+			expect(mainEditor(tab)).not.toBeNull();
+		});
+		// Past the review's own wind-down.
+		await settle(1200);
+		expect(mainEditor(tab)?.isEditable).toBe(false);
+		expect(saveButton(tab)).toBeDisabled();
 
-		// The autosave's answer: the earlier body goes now, its own answer
-		// held. The autosave's answer does not say the regeneration was
-		// rejected.
+		// Typing that reached the editor anyway is not dropped.
+		await act(async () => {
+			mainEditor(tab)?.setEditable(true);
+		});
+		await type(tab, " Typed while the Reject was out.");
+
 		await answerOldest();
 		await waitFor(() => {
-			expect(saveCalls).toHaveLength(2);
+			expect(readRoomStamp(room.doc)).toEqual({
+				version: 7,
+				contentHash: hashOf(BODY_A),
+			});
 		});
-		expect(saveCalls[1]).toMatchObject({
-			content: BODY_A,
-			skipVersionBump: true,
-			expectedVersion: 9,
-			expectedContentHash: hashOf(String(saveCalls[0]?.content)),
+		expect(offerBackCalls()).toHaveLength(1);
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(window.navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
 		});
-		await settle(50);
-		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+		const options = offerBackCalls()[0]?.[1] as {
+			action: { onClick: () => void };
+		};
+		options.action.onClick();
+		expect(writeText).toHaveBeenCalledWith(
+			expect.stringContaining("Typed while the Reject was out."),
+		);
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(true);
+		});
+		expect(saveCalls).toEqual([]);
+	});
 
-		// Its answer: said once.
+	it("keeps the editor read-only while the Reject is unanswered, and gives it back once the answer is applied", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		server.beforeRun = { content: BODY_A, version: 7 };
+		await reviewRun(tab);
+		server.holdAnswers = true;
+
+		await reject(tab);
+		// Past the review's own wind-down.
+		await settle(1200);
+		expect(server.held).toHaveLength(1);
+		expect(mainEditor(tab)?.isEditable).toBe(false);
+		expect(saveButton(tab)).toBeDisabled();
+
+		await answerOldest();
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual({
+				version: 7,
+				contentHash: hashOf(BODY_A),
+			});
+		});
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(true);
+		});
+		expect(editorBody(tab)).toContain("Phase one, then two.");
+	});
+
+	it("with nothing to rewind to, the earlier body is not saved over a colleague's save that landed while the Reject was unanswered: the review is said to be stale and the colleague's text stays", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		const colleague = await openTab("colleague");
+		await reviewRun(tab);
+		server.rejectError = noPriorVersion();
+		server.holdAnswers = true;
+		await reject(tab);
+		expect(server.held).toHaveLength(1);
+
+		// The colleague saves meanwhile; its answer comes first and moves
+		// the room's stamp.
+		await type(colleague, " Saved by a colleague.");
+		await clickSave(colleague);
+		await waitFor(() => {
+			expect(server.held).toHaveLength(2);
+		});
+		await act(async () => {
+			server.held.splice(1, 1)[0]?.();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+
+		// The Reject's answer: nothing to rewind to.
 		server.holdAnswers = false;
 		await answerOldest();
-		vi.useRealTimers();
 		await waitFor(() => {
-			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+			expect(toast.error).toHaveBeenCalledWith("rejectReviewStale");
 		});
-		expect(
-			vi
-				.mocked(toast.info)
-				.mock.calls.filter(
-					([message]) => message === "regenerationRejected",
-				),
-		).toHaveLength(1);
-		expect(server.content).toBe(BODY_A);
+		await settle(100);
+		expect(saveCalls.map((call) => call.tab)).toEqual(["colleague"]);
 		expect(server.version).toBe(9);
-		expect(toast.error).not.toHaveBeenCalled();
+		expect(server.content).toContain("Saved by a colleague.");
+		expect(await roomBody()).toContain("Saved by a colleague.");
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(true);
+		});
 	});
 
 	it("with nothing to rewind to, says the regeneration was rejected only once the earlier body's save has landed", async () => {
@@ -3257,30 +4331,6 @@ describe("rejecting a regeneration in a room (Fizzy #2946)", () => {
 		expect(readRoomStamp(room.doc)).toBeNull();
 		expect(saveCalls).toEqual([]);
 		expect(server.content).toBe(BODY_B);
-		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
-	});
-
-	it("with nothing to rewind to, the earlier body is dropped when the autosave it waited for fails: it stays unsaved in the editor", async () => {
-		await persistRoom(BODY_A, savedStamp());
-		const tab = await openTab("starter");
-		// The autosave the earlier body will wait for is refused.
-		server.failNext = new Error("Service unavailable");
-		await rejectAnsweredDuringAutosave(tab);
-		expect(saveCalls).toHaveLength(1);
-
-		server.holdAnswers = false;
-		await answerOldest();
-		await waitFor(() => {
-			expect(toast.error).toHaveBeenCalledWith("failed");
-		});
-		await settle(50);
-		vi.useRealTimers();
-		expect(saveCalls).toHaveLength(1);
-		expect(server.content).toBe(BODY_B);
-		expect(server.version).toBe(8);
-		expect(editorBody(tab)).toContain("Phase one, then two.");
-		expect(editorBody(tab)).toContain("Typed after the reject.");
-		expect(saveButton(tab)).toHaveAccessibleName("Save document");
 		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
 	});
 });
@@ -3504,6 +4554,229 @@ describe("a save refused because a generation run holds the document (Fizzy #294
 		});
 		expect(saveCalls).toHaveLength(1);
 		expect(editorBody(tab)).toContain("Typed over a moved base.");
+	});
+});
+
+describe("a regeneration's review in the single-user editor, with the room flag on (Fizzy #2946)", () => {
+	const BODY_C =
+		"## Scope\n\nPhase one, written after the review opened.\n\n## Pricing\n\nA fixed fee.";
+
+	/** A run this editor started ends on BODY_B at version 8; its review is open. */
+	async function soloReview(): Promise<Tab> {
+		vi.stubEnv("NEXT_PUBLIC_ENABLE_COLLABORATION", "false");
+		const tab = await openTab("solo");
+		await act(async () => {
+			tab.actions.get("regenerate_document")?.renderAndWaitForResponse({
+				args: { prompt: "Rewrite it" },
+				respond: vi.fn(),
+				status: "executing",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		server.status = "GENERATING";
+		await nudge(tab);
+		server.content = BODY_B;
+		server.version = 8;
+		server.status = "COMPLETE";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+			expect(editorBody(tab)).toContain("rewritten by the run");
+		});
+		return tab;
+	}
+
+	it("a review a newer saved body superseded closes onto that body, which the next save names as its base", async () => {
+		const tab = await soloReview();
+
+		server.content = BODY_C;
+		server.version = 9;
+		await nudge(tab);
+		await waitFor(() => {
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).toBeNull();
+		});
+		expect(toast.info).toHaveBeenCalledWith("reviewSuperseded");
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain(
+				"written after the review opened",
+			);
+		});
+		expect(editorBody(tab)).not.toContain("rewritten by the run");
+		// The review winds down a second after it closes.
+		await settle(1200);
+		expect(saveButton(tab)).toBeDisabled();
+
+		await type(tab, " Typed after.");
+		await clickSave(tab);
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]).toMatchObject({
+			expectedVersion: 9,
+			expectedContentHash: hashOf(BODY_C),
+		});
+		expect(saveCalls[0]?.content).toContain(
+			"written after the review opened",
+		);
+		expect(saveCalls[0]?.content).toContain("Typed after.");
+		await waitFor(() => {
+			expect(server.content).toContain("Typed after.");
+		});
+	});
+
+	async function clickSoloReject(tab: Tab) {
+		await act(async () => {
+			within(
+				tab.view?.getByTestId(
+					"regeneration-confirm-modal",
+				) as HTMLElement,
+			)
+				.getByRole("button", { name: "Reject" })
+				.click();
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		});
+	}
+
+	it("ignores the view shortcut while the Reject is unanswered, keeping the raw view's edits", async () => {
+		server.beforeRun = { content: BODY_A, version: 7 };
+		const tab = await soloReview();
+		await toggleRawView();
+		const edited = `${rawTextarea(tab).value}\n\nEdited in the raw view.`;
+		await act(async () => {
+			fireEvent.change(rawTextarea(tab), { target: { value: edited } });
+		});
+		server.holdAnswers = true;
+		await clickSoloReject(tab);
+		await settle(1200);
+		expect(server.held).toHaveLength(1);
+
+		await toggleRawView();
+		expect(rawTextarea(tab).value).toContain("Edited in the raw view.");
+		expect(editorBody(tab)).not.toContain("Edited in the raw view.");
+
+		await act(async () => {
+			server.held.shift()?.();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+		});
+		await settle(50);
+		expect(rawTextarea(tab).value).toContain("Edited in the raw view.");
+		expect(saveButton(tab)).not.toBeDisabled();
+	});
+
+	it("keeps the editor read-only while the Reject is unanswered", async () => {
+		server.beforeRun = { content: BODY_A, version: 7 };
+		const tab = await soloReview();
+		server.holdAnswers = true;
+
+		await clickSoloReject(tab);
+		await settle(1200);
+		expect(server.held).toHaveLength(1);
+		expect(mainEditor(tab)?.isEditable).toBe(false);
+		expect(saveButton(tab)).toBeDisabled();
+
+		await act(async () => {
+			server.held.shift()?.();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(true);
+		});
+		expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+	});
+
+	it("offers back text typed after the Reject went before a stale refusal brings in the newer saved body", async () => {
+		const tab = await soloReview();
+		server.rejectError = Object.assign(new Error("stale"), {
+			code: "CONFLICT",
+			data: { code: "REJECT_REVIEW_STALE" },
+		});
+		server.holdAnswers = true;
+		await clickSoloReject(tab);
+		await settle(1200);
+		// The editor is read-only meanwhile; typing that still reached it
+		// is not dropped.
+		await act(async () => {
+			mainEditor(tab)?.setEditable(true);
+		});
+		await type(tab, " Typed while the Reject was out.");
+		server.content = BODY_C;
+		server.version = 9;
+
+		await act(async () => {
+			server.held.shift()?.();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("rejectReviewStale");
+		});
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain(
+				"written after the review opened",
+			);
+		});
+		expect(offerBackCalls()).toHaveLength(1);
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(window.navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+		const options = offerBackCalls()[0]?.[1] as {
+			action: { onClick: () => void };
+		};
+		options.action.onClick();
+		expect(writeText).toHaveBeenCalledWith(
+			expect.stringContaining("Typed while the Reject was out."),
+		);
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("a Reject the server rewinds to a body other than the one the editor remembered ends on the server's body, saved", async () => {
+		server.beforeRun = { content: BODY_C, version: 7 };
+		const tab = await soloReview();
+
+		await act(async () => {
+			within(
+				tab.view?.getByTestId(
+					"regeneration-confirm-modal",
+				) as HTMLElement,
+			)
+				.getByRole("button", { name: "Reject" })
+				.click();
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		});
+		await waitFor(() => {
+			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+		});
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain(
+				"written after the review opened",
+			);
+		});
+		// The rewind is the choice's own doing, not a newer write.
+		expect(toast.info).not.toHaveBeenCalledWith("reviewSuperseded");
+		expect(editorBody(tab)).not.toContain("Phase one, then two.");
+		await settle(1200);
+		expect(saveButton(tab)).toBeDisabled();
+
+		await type(tab, " Typed after.");
+		await clickSave(tab);
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]).toMatchObject({
+			expectedVersion: 7,
+			expectedContentHash: hashOf(BODY_C),
+		});
+		expect(saveCalls[0]?.content).toContain(
+			"written after the review opened",
+		);
 	});
 });
 

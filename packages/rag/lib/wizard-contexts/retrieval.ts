@@ -69,6 +69,7 @@ export async function retrieveWizardContexts(
 			{
 				userId,
 				organizationId: organizationId ?? undefined,
+				featureKey: "knowledge-search",
 				tags: ["rag-query", "wizard-context"],
 			},
 			providerConfig,

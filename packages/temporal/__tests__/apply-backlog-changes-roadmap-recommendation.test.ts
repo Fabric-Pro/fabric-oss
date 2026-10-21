@@ -76,9 +76,9 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("@temporalio/activity", () => ({
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
 	heartbeat: vi.fn(),
-	ApplicationFailure: { nonRetryable: (m: string) => new Error(m) },
 }));
 
 import {

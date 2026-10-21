@@ -302,6 +302,7 @@ export async function processCompanySource(
 			{
 				userId,
 				organizationId,
+				featureKey: "knowledge-index",
 				tags: ["company-context", "rag-embedding"],
 				// The organization's model, resolved as `model` was.
 				...COMPANY_EMBEDDING_RESOLUTION,

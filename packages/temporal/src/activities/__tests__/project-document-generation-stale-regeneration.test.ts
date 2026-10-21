@@ -146,6 +146,7 @@ vi.mock("../lib/activity-logger", () => ({
 }));
 
 // Import AFTER mocks
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import {
 	createDocumentVersion,
@@ -381,6 +382,67 @@ describe("saveProjectDocument — slot-free save is unchanged", () => {
 		});
 		expect(mocks.transaction).not.toHaveBeenCalled();
 		expect(mocks.projectDocument.updateMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("saveProjectDocument — word count", () => {
+	// A body whose diagram, stat tiles and image are not prose: the run's save
+	// counts it the way an editor save, a rewind and a restore do, so Reject
+	// does not change the count of an unchanged body (Fizzy #2946).
+	const WITH_BLOCKS = `# Proposal
+
+Phase one covers discovery.
+
+\`\`\`mermaid
+flowchart LR
+  Discovery --> Delivery
+\`\`\`
+
+\`\`\`stat-tiles
+- value: 12 weeks
+  label: Delivery window
+\`\`\`
+
+![Delivery plan](https://example.com/plan.png)
+`;
+	const PROSE_WORDS = countDocumentWords(WITH_BLOCKS);
+
+	it("counts the prose only, as every other writer of the document does", async () => {
+		mocks.projectDocument.findUnique.mockResolvedValue({
+			status: "GENERATING",
+			content: "# Old",
+			version: 3,
+		});
+
+		await saveProjectDocument("doc-1", WITH_BLOCKS, "user-1");
+
+		expect(PROSE_WORDS).toBe(6);
+		expect(PROSE_WORDS).toBeLessThan(
+			WITH_BLOCKS.split(/\s+/).filter(Boolean).length,
+		);
+		expect(mocks.projectDocument.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ wordCount: PROSE_WORDS }),
+			}),
+		);
+	});
+
+	it("counts the same under the generation baseline", async () => {
+		mocks.tx.projectDocument.findUnique.mockResolvedValue({
+			status: "GENERATING",
+			content: SLOTTED,
+			version: 3,
+		});
+
+		await saveProjectDocument("doc-1", WITH_BLOCKS, "user-1", {
+			baselineVersion: 3,
+		});
+
+		expect(mocks.tx.projectDocument.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ wordCount: PROSE_WORDS }),
+			}),
+		);
 	});
 });
 

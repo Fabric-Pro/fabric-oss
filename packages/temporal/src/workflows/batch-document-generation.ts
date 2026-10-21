@@ -38,6 +38,7 @@ import { PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE } from "../task-queues"
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
 import {
+	BULK_DOCUMENT_HELD_PATCH,
 	type BulkRunInputExtras,
 	claimBulkRunResume,
 	pauseBulkRun,
@@ -268,6 +269,12 @@ export async function batchDocumentGenerationWorkflow(
 		doc: (typeof input.documents)[number],
 	): Promise<void> {
 		const childWorkflowId = `${workflowId}-child-${doc.id}`;
+		// Declared outside the `try` so the FAILED write in the catch can be
+		// scoped to the attempt too. Only where a value lives changes, never
+		// which commands run.
+		let attempt:
+			| Awaited<ReturnType<typeof updateProjectDocumentStatus>>
+			| undefined;
 
 		try {
 			// Update status to GENERATING. This starts the document's attempt
@@ -276,11 +283,45 @@ export async function batchDocumentGenerationWorkflow(
 			// a newer generation claimed the document is then superseded
 			// instead of taking it back. A result recorded before the activity
 			// returned one gives the child today's input.
-			const attempt = await updateProjectDocumentStatus({
+			//
+			// The write lands only while this run still holds the document
+			// (Fizzy #2946): the row this batch created, or the one its pause
+			// queued for this resume, or this document's own child after a
+			// retried write. A person's save, a newer generation or a Cancel
+			// since then keeps the row as it is. Replay-safe without
+			// `patched()`: the same activity at the same point, and only its
+			// input gains the hold, which replay does not compare.
+			attempt = await updateProjectDocumentStatus({
 				documentId: doc.id,
 				status: "GENERATING",
 				progress: 0,
+				heldBy: {
+					kind: "DOCUMENT_BATCH",
+					childWorkflowId,
+					...(input.resumeOf && { resumeOf: input.resumeOf }),
+				},
 			});
+
+			// The run no longer holds the document: it is left to whoever
+			// took it, with no child, no evaluation and no COMPLETE write, and
+			// no result either way, since it is neither this run's success
+			// nor its failure. `patched()` is REQUIRED: the skip removes
+			// those commands from a path recorded histories took. It is
+			// evaluated first, so every new history records the marker
+			// whatever the write returned. The skip keys on `held === false`
+			// alone, a value only an activity of this release returns: a
+			// result recorded before it (`undefined`, or the attempt alone)
+			// carries on exactly as it did.
+			if (patched(BULK_DOCUMENT_HELD_PATCH) && attempt?.held === false) {
+				log.info(
+					"Document no longer held by this batch; left as it is",
+					{
+						documentId: doc.id,
+						documentType: doc.type,
+					},
+				);
+				return;
+			}
 
 			log.info("Starting child workflow for document", {
 				documentId: doc.id,
@@ -386,6 +427,13 @@ export async function batchDocumentGenerationWorkflow(
 			// until its next progress report puts GENERATING back. Replay-safe
 			// without `patched()`: the same activity at the same point, and a
 			// result recorded without the token gives today's input.
+			//
+			// Every other child's write is scoped to the attempt its
+			// GENERATING write started (Fizzy #2946): a newer generation that
+			// restamped the attempt, or the watchdog that failed the row,
+			// keeps what it wrote. The same replay argument holds, and a
+			// GENERATING result recorded without the attempt gives today's
+			// input.
 			await updateProjectDocumentStatus({
 				documentId: doc.id,
 				status: "COMPLETE",
@@ -393,6 +441,10 @@ export async function batchDocumentGenerationWorkflow(
 				...(childResult.liveRunId !== undefined && {
 					liveRunId: childResult.liveRunId,
 				}),
+				...(childResult.liveRunId === undefined &&
+					attempt?.generationStartedAt && {
+						generationStartedAt: attempt.generationStartedAt,
+					}),
 			});
 
 			log.info("Document generated successfully", {
@@ -445,6 +497,13 @@ export async function batchDocumentGenerationWorkflow(
 				// its run token, and the write lands only while that run still
 				// owns the document. Same replay argument as the COMPLETE
 				// write: a failure recorded without it gives today's input.
+				//
+				// Without a token the write is scoped to the attempt, as the
+				// COMPLETE write is (Fizzy #2946): a child cancelled or failed
+				// after a person's save, a newer generation or the watchdog
+				// took the document leaves it as they left it. Unset when the
+				// GENERATING write itself failed or recorded no attempt:
+				// today's write.
 				const liveRunId = liveRunIdOfGenerationFailure(error);
 				await updateProjectDocumentStatus({
 					documentId: doc.id,
@@ -452,6 +511,10 @@ export async function batchDocumentGenerationWorkflow(
 					progress: 0,
 					error: errorMessage,
 					...(liveRunId !== undefined && { liveRunId }),
+					...(liveRunId === undefined &&
+						attempt?.generationStartedAt && {
+							generationStartedAt: attempt.generationStartedAt,
+						}),
 				});
 			}
 
@@ -563,7 +626,12 @@ export async function batchDocumentGenerationWorkflow(
 			};
 		} catch (error) {
 			// The pause cap, or a run cancelled meanwhile: the documents
-			// still waiting fail with the reason.
+			// still waiting fail with the reason. Each write lands only while
+			// this run still holds the document (Fizzy #2946), queued for the
+			// resume the failed pause meant or still under this run: one a
+			// person saved, or a newer generation took, keeps its state.
+			// Replay-safe without `patched()`: the same activity per document,
+			// and only its input gains the hold.
 			const message =
 				error instanceof Error ? error.message : "Unknown error";
 			for (const doc of pendingDocs) {
@@ -572,6 +640,10 @@ export async function batchDocumentGenerationWorkflow(
 					status: "FAILED",
 					progress: 0,
 					error: message,
+					heldByPause: {
+						kind: "DOCUMENT_BATCH",
+						...(input.resumeOf && { resumeOf: input.resumeOf }),
+					},
 				});
 				results.push({
 					documentId: doc.id,

@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
 	messages: [] as unknown[],
 	actions: new Map<string, any>(),
 	setState: vi.fn(),
+	agent: { state: {} as Record<string, unknown>, setState: vi.fn() },
 	start: vi.fn(),
 	poll: vi.fn(),
 	apply: vi.fn(),
@@ -30,6 +31,9 @@ vi.mock("@copilotkit/react-core", () => ({
 		h.actions.set(action.name, action);
 	},
 	useCopilotChatInternal: () => ({ messages: h.messages }),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useAgent: () => ({ agent: h.agent }),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: ({ children }: { children?: ReactNode }) => (
@@ -657,6 +661,26 @@ it("renders why log context was unavailable next to the review", async () => {
 		screen.getByText("Log context unavailable for this request."),
 	).toBeInTheDocument();
 });
+
+it.each(["complete", "fetching_pm"])(
+	"renders why PM context was unavailable while %s",
+	async (status) => {
+		h.poll.mockResolvedValue({
+			progress: {
+				status,
+				pmContextNote: "PM context unavailable for this request.",
+			},
+			proposal,
+		});
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		expect(
+			screen.getByText("PM context unavailable for this request."),
+		).toBeInTheDocument();
+	},
+);
 
 it("keeps apply failures in the card instead of importing disappearing toasts", async () => {
 	const { readFileSync } = await import("node:fs");
@@ -1451,3 +1475,44 @@ it.each(["applying", "done-approved"])(
 		controller.stop();
 	},
 );
+
+it("seeds the project and integration context into the agent before the first run (Fizzy #3102)", () => {
+	h.agent.setState.mockClear();
+	mountChat();
+	expect(h.agent.setState).toHaveBeenCalledWith(
+		expect.objectContaining({
+			projectId: "example-project",
+			projectName: "Example",
+			hasTeamsIntegration: true,
+			backlogSummary: "",
+		}),
+	);
+});
+
+it("re-seeds a registered agent that replaces the provisional one, keeping its live state (Fizzy #3102)", () => {
+	const provisional = h.agent;
+	const registered = {
+		state: {
+			retryCount: 2,
+			reasoningByTurn: { "turn-1": "example reasoning" },
+			error: "example error",
+		} as Record<string, unknown>,
+		setState: vi.fn(),
+	};
+	try {
+		const chat = mountChat();
+		h.agent = registered;
+		chat.refresh();
+		expect(registered.setState).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: "example-project",
+				hasTeamsIntegration: true,
+				retryCount: 2,
+				reasoningByTurn: { "turn-1": "example reasoning" },
+				error: "example error",
+			}),
+		);
+	} finally {
+		h.agent = provisional;
+	}
+});

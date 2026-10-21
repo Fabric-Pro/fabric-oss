@@ -2570,7 +2570,7 @@
 				"title": "Connect a shared ChatGPT plan account",
 				"description": "The Fabric CLI asked to connect a ChatGPT account that {organization} shares. Approve it here, then sign in to ChatGPT in the browser window the CLI opens — with the account the organization should share, not your own. Fabric stores the sign-in encrypted; admins choose which work it serves in the organization's AI providers settings.",
 				"notAllowed": "You can connect a shared ChatGPT plan account only to an organization you administer, with ChatGPT plan pooling enabled.",
-				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt --org <slug> --shared` again.",
+				"invalidLink": "This link is missing its CLI details. Run `fabric connect chatgpt --shared` again with `--org` set to your organization's slug.",
 				"returnToTerminal": "Approved. The Fabric CLI now opens ChatGPT in your browser — sign in with the account {organization} should share, not your own. Your terminal says when it is connected."
 			},
 			"sharedFallback": {
@@ -3132,7 +3132,7 @@
 				"source": "Source",
 				"manual": "Manual",
 				"webhook": "Webhook",
-				"webhookHint": "You will receive a secret once. Send observations with Authorization: Bearer <secret>.",
+				"webhookHint": "You will receive a secret once. Send observations with the header Authorization: Bearer followed by the secret.",
 				"cancel": "Cancel",
 				"save": "Save metric",
 				"loading": "Loading metrics…",
@@ -4016,7 +4016,7 @@
 					"featureLabel": "Feature",
 					"repositoryLabel": "Repository",
 					"noRepository": "No repository connected",
-					"branchHint": "Work lands on a fabric-spike/<run> branch; product code paths are not modified.",
+					"branchHint": "Work lands on a new fabric-spike/ branch for this run; product code paths are not modified.",
 					"repositoryRequiredTitle": "Repository required",
 					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
 					"providerHintTitle": "Runs on Background Agents",
@@ -6896,11 +6896,11 @@
 			"pluginReport": {
 				"title": "{count, plural, one {# file is} other {# files are}} not delivered to coding tools",
 				"truncated": "Showing the first {shown} of {total, plural, one {# file} other {# files}}. The other files follow the same rules.",
-				"layoutHint": "Coding tools load skills/<name>/SKILL.md, agents/<name>.md, commands/ and rules/<name>.md, and one memory file: CLAUDE.md or AGENTS.md. The same folders under .claude/ work too.",
+				"layoutHint": "Coding tools load a folder with a SKILL.md for each skill under skills/, markdown files under agents/ and rules/, commands/, and one memory file: CLAUDE.md or AGENTS.md. The same folders under .claude/ work too.",
 				"reasons": {
 					"outside-plugin-folders": "Not in skills/, agents/, commands/ or rules/, and not CLAUDE.md or AGENTS.md.",
-					"skill-needs-folder": "A skill is a folder: skills/<name>/SKILL.md.",
-					"agent-must-be-markdown-file": "An agent is one markdown file directly in agents/: agents/<name>.md.",
+					"skill-needs-folder": "A skill is a folder with a SKILL.md inside, such as skills/review/SKILL.md.",
+					"agent-must-be-markdown-file": "An agent is one markdown file directly in agents/, such as agents/reviewer.md.",
 					"rule-must-be-markdown": "A rule is a markdown file under rules/.",
 					"not-text": "This is not a text file.",
 					"always-on-shadowed": "The other memory file is used: CLAUDE.md for Claude Code, AGENTS.md for Codex."
@@ -8519,6 +8519,9 @@
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
 			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
+			"rejectReviewStale": "This document changed after this review opened, so nothing was reverted. The latest version is kept.",
+			"reviewSuperseded": "This document changed after the regenerated version was shown for review, so the review was closed. The latest version is kept.",
+			"reviewSupersededByRun": "A new generation of this document has started, so the review of the earlier one was closed and nothing was changed.",
 			"regenerationAccepted": "The regenerated version was accepted.",
 			"regenerationRejected": "The regenerated version was rejected. The document is back on its previous version."
 		},

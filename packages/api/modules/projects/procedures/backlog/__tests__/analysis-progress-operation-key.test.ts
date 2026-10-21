@@ -68,3 +68,22 @@ describe("analysis progress operation-key ownership", () => {
 		expect(h.handle).not.toHaveBeenCalled();
 	});
 });
+
+it("carries the PM note from progress and from a completed result fallback", async () => {
+	const note = "Couldn't read your PM board.";
+	const input = {
+		projectId: "example-project",
+		workflowId: backlogAnalysisWorkflowId(
+			"example-project",
+			"example-flow",
+		),
+	};
+	h.query.mockResolvedValue({ status: "complete", pmContextNote: note });
+	expect((await h.handler({ input })).progress.pmContextNote).toBe(note);
+	h.query.mockRejectedValue(new Error("Query unavailable"));
+	h.handle.mockReturnValue({
+		query: h.query,
+		result: vi.fn(async () => ({ success: true, pmContextNote: note })),
+	});
+	expect((await h.handler({ input })).progress.pmContextNote).toBe(note);
+});

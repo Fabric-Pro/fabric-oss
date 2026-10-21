@@ -111,3 +111,72 @@ describe("parseListResponse externalId mapping", () => {
 		expect(items[0].title).toBe("Legacy shape");
 	});
 });
+
+describe("parseListResponse provider envelopes", () => {
+	it("reads GitHub issues without id or url", () => {
+		expect(
+			parseListResponse({
+				issues: [
+					{ number: 42, title: "Example issue", body: "Issue body" },
+				],
+			}),
+		).toMatchObject([
+			{ id: "42", title: "Example issue", description: "Issue body" },
+		]);
+	});
+	it("reads ClickUp tasks", () => {
+		expect(
+			parseListResponse({
+				tasks: [
+					{
+						id: "abc",
+						name: "Example task",
+						url: "https://example.com/tasks/abc",
+					},
+				],
+			}),
+		).toMatchObject([
+			{
+				id: "abc",
+				title: "Example task",
+				url: "https://example.com/tasks/abc",
+			},
+		]);
+	});
+	it.each([
+		"Example description",
+		{
+			type: "doc",
+			version: 1,
+			content: [
+				{
+					type: "paragraph",
+					content: [{ type: "text", text: "Example description" }],
+				},
+			],
+		},
+	])("reads Rovo Jira fields and description %j", (description) => {
+		expect(
+			parseListResponse({
+				data: {
+					issues: [
+						{
+							id: "10001",
+							key: "EX-1",
+							fields: {
+								summary: "Example Jira issue",
+								description,
+							},
+						},
+					],
+				},
+			}),
+		).toMatchObject([
+			{
+				id: "10001",
+				title: "Example Jira issue",
+				description: "Example description",
+			},
+		]);
+	});
+});

@@ -18,6 +18,7 @@ type UpdatedDoc = { id: string; version: number; content: string };
 const docFindUniqueMock = vi.fn();
 const versionFindFirstMock = vi.fn();
 const versionDeleteMock = vi.fn();
+const versionCreateMock = vi.fn();
 const docUpdateMock = vi.fn();
 const docUpdateManyMock = vi.fn();
 const docFindUniqueOrThrowMock = vi.fn();
@@ -36,6 +37,7 @@ const transactionMock = vi.fn(async (callback: (tx: unknown) => unknown) => {
 		documentVersion: {
 			findFirst: versionFindFirstMock,
 			delete: versionDeleteMock,
+			create: versionCreateMock,
 		},
 	};
 	return await callback(tx);
@@ -45,13 +47,26 @@ vi.mock("../prisma/client", () => ({
 	db: {
 		$transaction: (callback: (tx: unknown) => unknown) =>
 			transactionMock(callback),
+		// The reads `updateDocument` and `restoreDocumentVersion` make before
+		// their transaction, for the word-count comparison below.
+		projectDocument: {
+			findUnique: (...args: unknown[]) => docFindUniqueMock(...args),
+		},
+		documentVersion: {
+			findFirst: (...args: unknown[]) => versionFindFirstMock(...args),
+		},
 	},
 }));
 
+import { contentIdentity } from "@repo/utils/content-identity";
 import {
+	countDocumentWords,
 	DocumentGenerationInProgressError,
+	DocumentRegenerationReviewStaleError,
 	DocumentVersionConflictError,
 	rejectDocumentRegeneration,
+	restoreDocumentVersion,
+	updateDocument,
 } from "../prisma/queries/projects/documents";
 
 describe("rejectDocumentRegeneration", () => {
@@ -59,6 +74,7 @@ describe("rejectDocumentRegeneration", () => {
 		docFindUniqueMock.mockReset();
 		versionFindFirstMock.mockReset();
 		versionDeleteMock.mockReset();
+		versionCreateMock.mockReset();
 		docUpdateMock.mockReset();
 		docUpdateManyMock.mockReset();
 		docFindUniqueOrThrowMock.mockReset();
@@ -99,11 +115,13 @@ describe("rejectDocumentRegeneration", () => {
 			version: previous.version,
 			content: previous.content,
 		};
-		docUpdateMock.mockResolvedValue(updated);
+		docUpdateManyMock.mockResolvedValue({ count: 1 });
+		docFindUniqueOrThrowMock.mockResolvedValue(updated);
 
 		const result = await rejectDocumentRegeneration("doc-1", {
 			userId: "user-1",
 			organizationId: "org-1",
+			expectedVersion: 2,
 		});
 
 		// Phantom row removed.
@@ -112,14 +130,11 @@ describe("rejectDocumentRegeneration", () => {
 			where: { id: "ver-2" },
 		});
 
-		// Live doc rewound to prior content + version, with wordCount recomputed
-		// from the reverted content (4 words: OLD pre-regen content → 3 tokens
-		// after split, but the helper uses countDocumentWords which strips
-		// fences/images and then counts whitespace tokens; here that's just
-		// the plain split).
-		expect(docUpdateMock).toHaveBeenCalledTimes(1);
-		const updateArgs = docUpdateMock.mock.calls[0]?.[0] as {
-			where: { id: string };
+		// Live doc rewound to prior content + version, with wordCount recounted
+		// from the reverted content by the counter every save uses.
+		expect(docUpdateManyMock).toHaveBeenCalledTimes(1);
+		const updateArgs = docUpdateManyMock.mock.calls[0]?.[0] as {
+			where: Record<string, unknown>;
 			data: {
 				content: string;
 				version: number;
@@ -127,12 +142,17 @@ describe("rejectDocumentRegeneration", () => {
 				lastEditedBy: string;
 			};
 		};
-		expect(updateArgs.where).toEqual({ id: "doc-1" });
+		// Conditioned on the reviewed version and the body read.
+		expect(updateArgs.where).toEqual({
+			id: "doc-1",
+			version: 2,
+			content: newContent,
+		});
 		expect(updateArgs.data.content).toBe(previous.content);
 		expect(updateArgs.data.version).toBe(1);
 		expect(updateArgs.data.lastEditedBy).toBe("user-1");
 		expect(updateArgs.data.wordCount).toBe(
-			previous.content.split(/\s+/).filter((w) => w.length > 0).length,
+			countDocumentWords(previous.content),
 		);
 
 		// All ops happen inside a single transaction.
@@ -159,7 +179,10 @@ describe("rejectDocumentRegeneration", () => {
 			.mockResolvedValueOnce(null); // no row with version < 1
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 1,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		// Nothing should have been deleted or updated.
@@ -184,7 +207,10 @@ describe("rejectDocumentRegeneration", () => {
 		});
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 5,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		// We bail before looking up the previous row or mutating anything.
@@ -213,7 +239,10 @@ describe("rejectDocumentRegeneration", () => {
 		});
 
 		await expect(
-			rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+			rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			}),
 		).rejects.toThrow("NO_PRIOR_VERSION");
 
 		expect(versionFindFirstMock).toHaveBeenCalledTimes(1);
@@ -225,7 +254,10 @@ describe("rejectDocumentRegeneration", () => {
 		docFindUniqueMock.mockResolvedValue(null);
 
 		await expect(
-			rejectDocumentRegeneration("missing-doc", { userId: "user-1" }),
+			rejectDocumentRegeneration("missing-doc", {
+				userId: "user-1",
+				expectedVersion: 2,
+			}),
 		).rejects.toThrow("Document not found");
 
 		expect(versionFindFirstMock).not.toHaveBeenCalled();
@@ -272,7 +304,10 @@ describe("rejectDocumentRegeneration", () => {
 				content: OLD,
 			});
 
-			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
 
 			expect(docFindUniqueMock).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -290,7 +325,10 @@ describe("rejectDocumentRegeneration", () => {
 				armRegenState(status);
 
 				await expect(
-					rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+					}),
 				).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 				expect(versionDeleteMock).not.toHaveBeenCalled();
 				expect(docUpdateMock).not.toHaveBeenCalled();
@@ -309,6 +347,7 @@ describe("rejectDocumentRegeneration", () => {
 
 			const result = await rejectDocumentRegeneration("doc-1", {
 				userId: "user-1",
+				expectedVersion: 2,
 			});
 
 			expect(docUpdateMock).not.toHaveBeenCalled();
@@ -335,7 +374,10 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
 			).rejects.toBeInstanceOf(DocumentGenerationInProgressError);
 			expect(docFindUniqueOrThrowMock).not.toHaveBeenCalled();
 		});
@@ -349,24 +391,463 @@ describe("rejectDocumentRegeneration", () => {
 			});
 
 			await expect(
-				rejectDocumentRegeneration("doc-1", { userId: "user-1" }),
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
 			).rejects.toBeInstanceOf(DocumentVersionConflictError);
 		});
 
-		it("keeps the unguarded rewind for a non-Proposal document, even under a run", async () => {
+		it("does not refuse a non-Proposal document under a run, but still conditions its rewind on the reviewed version and body", async () => {
 			armRegenState("GENERATING", "PRD");
-			docUpdateMock.mockResolvedValue({
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
 				id: "doc-1",
 				version: 1,
 				content: OLD,
 			});
 
-			await rejectDocumentRegeneration("doc-1", { userId: "user-1" });
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
 
-			expect(docUpdateManyMock).not.toHaveBeenCalled();
-			expect(docUpdateMock).toHaveBeenCalledWith(
-				expect.objectContaining({ where: { id: "doc-1" } }),
+			expect(docUpdateMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: { id: "doc-1", version: 2, content: NEW },
+				}),
 			);
+		});
+	});
+
+	/**
+	 * A review dialog can stay open while a newer run (or a save) writes the
+	 * document. A Reject from that stale review must not rewind the newer
+	 * write or delete its version row (Fizzy #2946).
+	 */
+	describe("refusing a Reject from a stale review", () => {
+		const RUN_ONE = "Body from the first run";
+		const RUN_TWO = "Body from the second run";
+		// The first run produced v2; a second run has since written v3.
+		const armNewerRun = () => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 3,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PROPOSAL",
+			});
+			versionFindFirstMock
+				.mockResolvedValueOnce({
+					id: "ver-3",
+					version: 3,
+					content: RUN_TWO,
+				})
+				.mockResolvedValueOnce({
+					id: "ver-2",
+					version: 2,
+					content: RUN_ONE,
+				});
+		};
+
+		it("refuses when the document moved past the reviewed version, deleting and writing nothing", async () => {
+			armNewerRun();
+
+			const attempt = rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+			});
+
+			await expect(attempt).rejects.toBeInstanceOf(
+				DocumentRegenerationReviewStaleError,
+			);
+			await expect(attempt).rejects.toMatchObject({
+				reviewedVersion: 2,
+				actualVersion: 3,
+			});
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("refuses a non-Proposal document the same way", async () => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 3,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PRD",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("refuses when the body changed at the reviewed version", async () => {
+			// A run's final save writes its body before the version moves.
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 2,
+				content: RUN_TWO,
+				status: "COMPLETE",
+				type: "PROPOSAL",
+			});
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		it("rewinds the reviewed body after its version step landed", async () => {
+			// The review opened between the run's final save (its body at the
+			// old version 2) and the step to version 3.
+			armNewerRun();
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
+
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 2,
+				expectedContentHash: contentIdentity(RUN_TWO),
+			});
+
+			expect(versionDeleteMock).toHaveBeenCalledWith({
+				where: { id: "ver-3" },
+			});
+			expect(docUpdateManyMock).toHaveBeenCalledWith(
+				expect.objectContaining({
+					where: expect.objectContaining({
+						version: 3,
+						content: RUN_TWO,
+					}),
+				}),
+			);
+		});
+
+		it("refuses a newer body at a higher version even with the reviewed version's identity", async () => {
+			armNewerRun();
+
+			await expect(
+				rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+				}),
+			).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+			expect(versionDeleteMock).not.toHaveBeenCalled();
+			expect(docUpdateManyMock).not.toHaveBeenCalled();
+		});
+
+		describe("binding the Reject to the reviewed run", () => {
+			const REVIEWED_RUN = new Date("2026-10-01T09:00:00.000Z");
+			const NEWER_RUN = new Date("2026-10-01T10:00:00.000Z");
+			const armDocument = (row: {
+				version: number;
+				content: string;
+				generationStartedAt: Date | null;
+			}) => {
+				docFindUniqueMock.mockResolvedValueOnce({
+					id: "doc-1",
+					status: "COMPLETE",
+					type: "PROPOSAL",
+					...row,
+				});
+				versionFindFirstMock
+					.mockResolvedValueOnce({
+						id: `ver-${row.version}`,
+						version: row.version,
+						content: row.content,
+					})
+					.mockResolvedValueOnce({
+						id: "ver-prior",
+						version: row.version - 1,
+						content: "Body before the reviewed run",
+					});
+			};
+
+			it("refuses a newer run that produced the same body, deleting nothing", async () => {
+				// The reviewed run wrote RUN_ONE at v2; a second run produced
+				// the very same body and stepped to v3 under its own identity.
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: NEWER_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedContentHash: contentIdentity(RUN_ONE),
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+				expect(docUpdateManyMock).not.toHaveBeenCalled();
+			});
+
+			it("refuses a save followed by a restore of the reviewed body, deleting nothing", async () => {
+				// Reviewed at v2; a colleague saved X (v3), then restored the
+				// reviewed body (v4). Same body, same run, two steps on.
+				armDocument({
+					version: 4,
+					content: RUN_ONE,
+					generationStartedAt: REVIEWED_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedContentHash: contentIdentity(RUN_ONE),
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+				expect(docUpdateManyMock).not.toHaveBeenCalled();
+			});
+
+			it("refuses a version step without the body's identity", async () => {
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: REVIEWED_RUN,
+				});
+
+				await expect(
+					rejectDocumentRegeneration("doc-1", {
+						userId: "user-1",
+						expectedVersion: 2,
+						expectedGenerationStartedAt: REVIEWED_RUN,
+					}),
+				).rejects.toBeInstanceOf(DocumentRegenerationReviewStaleError);
+				expect(versionDeleteMock).not.toHaveBeenCalled();
+			});
+
+			it("rewinds after the reviewed run's own version step", async () => {
+				armDocument({
+					version: 3,
+					content: RUN_ONE,
+					generationStartedAt: new Date(REVIEWED_RUN.getTime()),
+				});
+				docUpdateManyMock.mockResolvedValue({ count: 1 });
+				docFindUniqueOrThrowMock.mockResolvedValue({
+					id: "doc-1",
+					version: 2,
+					content: "Body before the reviewed run",
+				});
+
+				await rejectDocumentRegeneration("doc-1", {
+					userId: "user-1",
+					expectedVersion: 2,
+					expectedContentHash: contentIdentity(RUN_ONE),
+					expectedGenerationStartedAt: REVIEWED_RUN,
+				});
+
+				expect(versionDeleteMock).toHaveBeenCalledWith({
+					where: { id: "ver-3" },
+				});
+				expect(docUpdateManyMock).toHaveBeenCalledWith(
+					expect.objectContaining({
+						where: expect.objectContaining({
+							version: 3,
+							content: RUN_ONE,
+						}),
+					}),
+				);
+			});
+		});
+
+		it("rewinds when the document is still the reviewed version and body", async () => {
+			armNewerRun();
+			docUpdateManyMock.mockResolvedValue({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValue({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
+
+			const result = await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(RUN_TWO),
+			});
+
+			expect(versionDeleteMock).toHaveBeenCalledWith({
+				where: { id: "ver-3" },
+			});
+			expect(result).toEqual({
+				id: "doc-1",
+				version: 2,
+				content: RUN_ONE,
+			});
+		});
+	});
+
+	/**
+	 * A body rewound to v5 must show the word count it had when an ordinary
+	 * save wrote it at v5 (Fizzy #2946). The version row stores no count, so
+	 * the rewind recounts the restored body, and only the one shared counter
+	 * keeps the two equal. The body carries what that counter leaves out —
+	 * a diagram and a stat-tile fence, an image — so a rewind or a restore
+	 * that split the raw markdown would count more and fail here.
+	 */
+	describe("word count of the rewound body", () => {
+		const SAVED = [
+			"# Proposal for Example Org",
+			"",
+			"Prepared for **Example Org** by the delivery team.",
+			"",
+			"## Scope",
+			"",
+			"- Nightly ingestion from the CRM",
+			"- Dashboards for **finance** and operations",
+			"  1. Executive overview",
+			"",
+			"See the [terms](https://example.com/terms).",
+			"",
+			"| Phase | Weeks |",
+			"|-------|------:|",
+			"| Discovery | 2 |",
+			"| Build | 8 |",
+			"",
+			"```mermaid",
+			"gantt",
+			"  title Delivery plan",
+			"  Discovery :a1, 2026-01-05, 2w",
+			"```",
+			"",
+			"```stat-tiles",
+			"Weeks: 10",
+			"Teams: 3",
+			"```",
+			"",
+			"![Architecture overview](https://example.com/diagram.png)",
+		].join("\n");
+		const BEFORE = "# Proposal for Example Org\n\nFirst draft.";
+		const REGENERATED = "# Proposal for Example Org\n\nRegenerated body.";
+		const rawTokens = SAVED.split(/\s+/).filter((w) => w.length > 0).length;
+
+		const lastWrittenWordCount = () =>
+			(
+				docUpdateManyMock.mock.calls.at(-1)?.[0] as {
+					data: { wordCount: number };
+				}
+			).data.wordCount;
+
+		// The editor's save of SAVED over v4, as a collaborative room sends
+		// it: the base's version and body identity.
+		const saveAtV5 = async () => {
+			docFindUniqueMock.mockResolvedValueOnce({
+				id: "doc-1",
+				type: "PROPOSAL",
+				status: "COMPLETE",
+				version: 4,
+				content: BEFORE,
+				lastEditedBy: "user-1",
+			});
+			versionFindFirstMock.mockResolvedValueOnce({ id: "ver-4" });
+			docUpdateManyMock.mockResolvedValueOnce({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 5,
+				content: SAVED,
+			});
+			await updateDocument("doc-1", {
+				content: SAVED,
+				userId: "user-1",
+				organizationId: "example-org",
+				expectedVersion: 4,
+				expectedContentHash: contentIdentity(BEFORE),
+			});
+			return lastWrittenWordCount();
+		};
+
+		// The regeneration that followed: v6 holds its body, v5 the saved one.
+		const regeneratedAtV6 = {
+			id: "doc-1",
+			type: "PROPOSAL",
+			status: "COMPLETE",
+			version: 6,
+			content: REGENERATED,
+			lastEditedBy: "user-1",
+			generationStartedAt: null,
+		};
+
+		it("writes the word count the ordinary save wrote for the same body", async () => {
+			const saved = await saveAtV5();
+
+			docFindUniqueMock.mockResolvedValueOnce(regeneratedAtV6);
+			versionFindFirstMock
+				.mockResolvedValueOnce({
+					id: "ver-6",
+					version: 6,
+					content: REGENERATED,
+				})
+				.mockResolvedValueOnce({ version: 5, content: SAVED });
+			docUpdateManyMock.mockResolvedValueOnce({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 5,
+				content: SAVED,
+			});
+			await rejectDocumentRegeneration("doc-1", {
+				userId: "user-1",
+				organizationId: "example-org",
+				expectedVersion: 6,
+			});
+			// The save's write, then the rewind's own.
+			expect(docUpdateManyMock).toHaveBeenCalledTimes(2);
+			const rewound = lastWrittenWordCount();
+
+			expect(rewound).toBe(saved);
+			expect(rewound).toBe(countDocumentWords(SAVED));
+			expect(rewound).toBeLessThan(rawTokens);
+		});
+
+		it("writes the same word count when the body is restored instead", async () => {
+			const saved = await saveAtV5();
+
+			versionFindFirstMock
+				.mockResolvedValueOnce({
+					id: "ver-5",
+					version: 5,
+					content: SAVED,
+				})
+				.mockResolvedValueOnce({ id: "ver-6" });
+			docFindUniqueMock.mockResolvedValueOnce(regeneratedAtV6);
+			docUpdateManyMock.mockResolvedValueOnce({ count: 1 });
+			docFindUniqueOrThrowMock.mockResolvedValueOnce({
+				id: "doc-1",
+				version: 7,
+				content: SAVED,
+			});
+			await restoreDocumentVersion("doc-1", 5, "user-1", {
+				userId: "user-1",
+				organizationId: "example-org",
+			});
+			expect(docUpdateManyMock).toHaveBeenCalledTimes(2);
+			const restored = lastWrittenWordCount();
+
+			expect(restored).toBe(saved);
+			expect(restored).toBeLessThan(rawTokens);
 		});
 	});
 });

@@ -13,6 +13,7 @@
  * The other boundaries are mocked as in `runtime-tools-wiring.test.ts`.
  */
 
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { CancelledFailure } from "@temporalio/common";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DirectChatWorkflowInput } from "../../../types";
@@ -311,6 +312,24 @@ describe("direct chat: a cancelled activity", () => {
 		});
 
 		await expect(runTurn()).rejects.toBeInstanceOf(CancelledFailure);
+	});
+
+	it("reports cancellation when a limit refusal is thrown after Stop", async () => {
+		state.respond = () => {
+			state.activity.abort(new CancelledFailure("CANCELLED"));
+			throw new AiUsageLimitExceededError({
+				message:
+					"AI usage limit exceeded: example-limit (TOKENS, MONTHLY)",
+				limitId: "example-limit",
+				dimension: "TOKENS",
+				window: "MONTHLY",
+				used: 100n,
+				max: 100n,
+				manageLimitsUrl: "https://example.com/limits",
+			});
+		};
+		await expect(runTurn()).rejects.toBeInstanceOf(CancelledFailure);
+		expect(state.recordAggregateUsage).not.toHaveBeenCalled();
 	});
 
 	it("control: a turn nobody cancels answers as before, with the live signal attached", async () => {

@@ -33,7 +33,9 @@
  *     generating run that wrote within the last ten minutes. A save over a
  *     generating run silent for longer goes through, with a warning — also
  *     once an attached run this editor followed goes silent;
- *   - the Reject fallback never saves an empty body.
+ *   - the Reject fallback never saves an empty body;
+ *   - a review a newer saved body superseded closes without writing, and a
+ *     Reject names the run it reviewed, so the server can refuse a stale one.
  *
  * Harness copied from `DocumentEditor.accept-version-guard.test.tsx`, with
  * the collaboration hook reading a sync flag a test can drop and restore,
@@ -81,6 +83,10 @@ const generate = {
 let rejectFindsNoPriorVersion = false;
 /** `documents.rejectRegeneration` finds a newer generation run holding the document. */
 let rejectFindsRunLive = false;
+/** `documents.rejectRegeneration` finds the document moved past the reviewed run. */
+let rejectFindsReviewStale = false;
+/** Every `documents.rejectRegeneration` request. */
+const rejectCalls: Array<Record<string, unknown>> = [];
 
 function serverDocument() {
 	return {
@@ -132,6 +138,13 @@ async function fakeMutation(
 			}
 			return generate.result;
 		case "projects.documents.rejectRegeneration":
+			rejectCalls.push({ ...vars });
+			if (rejectFindsReviewStale) {
+				throw Object.assign(new Error("The document changed"), {
+					code: "CONFLICT",
+					data: { code: "REJECT_REVIEW_STALE" },
+				});
+			}
 			if (rejectFindsRunLive) {
 				throw Object.assign(new Error("A generation run is writing"), {
 					code: "CONFLICT",
@@ -693,6 +706,8 @@ beforeEach(() => {
 	generate.error = null;
 	rejectFindsNoPriorVersion = false;
 	rejectFindsRunLive = false;
+	rejectFindsReviewStale = false;
+	rejectCalls.length = 0;
 	artifactMode = false;
 	collab.isConnected = true;
 	collab.isSynced = true;
@@ -826,7 +841,7 @@ describe("DocumentEditor — a sync-loss remount in the middle of a run (Fizzy #
 		expect(saveCalls).toEqual([]);
 	});
 
-	it("a frame the review held back lands in the editor on screen when it fires", async () => {
+	it("the review's body lands in the editor on screen without waiting for a frame a hidden tab holds back", async () => {
 		joinRoom(3, {});
 		const view = await mount(STORED);
 		await startRunFromChat(view.rerender);
@@ -844,19 +859,35 @@ describe("DocumentEditor — a sync-loss remount in the middle of a run (Fizzy #
 			status: "COMPLETE",
 		});
 		expect(reviewModal()).toBeInTheDocument();
-		expect(heldFrames.length).toBeGreaterThan(0);
+		await flush();
 
-		// Meanwhile the room drops and the editor is rebuilt.
+		// Every editor in the room waits behind the saved body for it
+		// meanwhile, so it goes in right after the render (Fizzy #2946).
+		expect(getEditorMarkdownForSave(view.editor)).toContain("regenerated");
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("an editor mounted after the review opened, while the room was away, takes the review's body", async () => {
+		joinRoom(3, {});
+		const view = await mount(STORED);
+		await startRunFromChat(view.rerender);
+		await serverReports(view.rerender, { status: "GENERATING" });
+
+		// The room drops before the run ends: no editor is on screen when
+		// the review opens.
 		await dropSync(view.rerender);
 		view.editor.destroy();
-		const remounted = await restoreSync(view.rerender, STORED);
-
-		await act(async () => {
-			for (const frame of heldFrames.splice(0)) {
-				frame(performance.now());
-			}
+		await serverReports(view.rerender, {
+			content: REGENERATED,
+			version: 8,
+			status: "COMPLETE",
 		});
 
+		// The room is back with its previous body, behind the dialog.
+		const remounted = await restoreSync(view.rerender, STORED);
+		await flush();
+
+		expect(reviewModal()).toBeInTheDocument();
 		expect(getEditorMarkdownForSave(remounted)).toContain("regenerated");
 		expect(saveCalls).toEqual([]);
 	});
@@ -1294,5 +1325,213 @@ describe("DocumentEditor — the Reject fallback (Fizzy #2946)", () => {
 		expect(saveCalls).toEqual([]);
 		expect(server.content).toBe(REGENERATED);
 		expect(getEditorMarkdownForSave(view.editor)).toContain("regenerated");
+	});
+});
+
+/**
+ * A review dialog left open while a newer run (or a save) wrote the document
+ * (Fizzy #2946): its Reject reverted the newer write and deleted its version.
+ */
+describe("DocumentEditor — a review a newer write superseded (Fizzy #2946)", () => {
+	const SECOND_RUN = STORED.replace(
+		"Phase one",
+		"Phase one, rewritten by a second run",
+	);
+
+	async function reviewFirstRun() {
+		const view = await mount(STORED);
+		await startRunFromChat(view.rerender);
+		await serverReports(view.rerender, { status: "GENERATING" });
+		await serverReports(view.rerender, {
+			content: REGENERATED,
+			version: 8,
+			status: "COMPLETE",
+		});
+		await view.findByTestId("regeneration-confirm-modal");
+		await nextFrames();
+		return view;
+	}
+
+	async function clickReject() {
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+		});
+		await waitFor(
+			() => {
+				expect(reviewModal()).not.toBeInTheDocument();
+			},
+			{ timeout: 3000 },
+		);
+		await nextFrames();
+		await flush();
+	}
+
+	it("names the reviewed run's version with its Reject", async () => {
+		await reviewFirstRun();
+
+		await clickReject();
+
+		await waitFor(() => {
+			expect(rejectCalls).toHaveLength(1);
+		});
+		expect(rejectCalls[0]).toMatchObject({ expectedVersion: 8 });
+		// The server named no run identity, so none is sent.
+		expect(rejectCalls[0]).not.toHaveProperty(
+			"expectedGenerationStartedAt",
+		);
+	});
+
+	it("names the reviewed run itself with its Reject: the run identity the review opened with", async () => {
+		const view = await mount(STORED);
+		await startRunFromChat(view.rerender);
+		const startedAt = "2026-10-19T11:58:00.000Z";
+		await serverReports(view.rerender, {
+			status: "GENERATING",
+			generationStartedAt: startedAt,
+		});
+		await serverReports(view.rerender, {
+			content: REGENERATED,
+			version: 8,
+			status: "COMPLETE",
+		});
+		await view.findByTestId("regeneration-confirm-modal");
+		await nextFrames();
+
+		await clickReject();
+
+		await waitFor(() => {
+			expect(rejectCalls).toHaveLength(1);
+		});
+		expect(rejectCalls[0]).toMatchObject({
+			expectedVersion: 8,
+			expectedGenerationStartedAt: startedAt,
+		});
+	});
+
+	it("closes the review once a newer saved body arrives, sending and saving nothing", async () => {
+		const view = await reviewFirstRun();
+
+		await serverReports(view.rerender, {
+			content: SECOND_RUN,
+			version: 9,
+			status: "COMPLETE",
+		});
+
+		await waitFor(() => {
+			expect(reviewModal()).not.toBeInTheDocument();
+		});
+		expect(toast.info).toHaveBeenCalledWith("reviewSuperseded");
+		await nextFrames();
+		await flush();
+		expect(rejectCalls).toEqual([]);
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(SECOND_RUN);
+		// Outside a stamped room nothing else would bring the editor to the
+		// newer body: the close puts it there, so the older reviewed body is
+		// not left on screen to edit and save over it.
+		await waitFor(() => {
+			expect(getEditorMarkdownForSave(view.editor)).toContain(
+				"rewritten by a second run",
+			);
+		});
+		expect(getEditorMarkdownForSave(view.editor)).not.toContain(
+			"regenerated",
+		);
+		// The review winds down a second after it closes.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 1200));
+		});
+		await act(async () => {
+			view.editor.commands.insertContentAt(
+				view.editor.state.doc.content.size,
+				"<p>One more line.</p>",
+			);
+			latestEditorOptions.onUpdate?.({ editor: view.editor });
+		});
+		// The dirty check is debounced.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+		});
+		await act(async () => {
+			fireEvent.click(saveButton());
+		});
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]?.content).toContain("rewritten by a second run");
+		expect(saveCalls[0]?.content).toContain("One more line.");
+		expect(saveCalls[0]?.content).not.toContain("regenerated");
+	});
+
+	it("a Reject clicked just before a newer saved body closes the review is never sent", async () => {
+		const view = await reviewFirstRun();
+
+		// The choice lands after the dialog's short closing delay; the newer
+		// body closes the review inside it.
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+		});
+		await serverReports(view.rerender, {
+			content: SECOND_RUN,
+			version: 9,
+			status: "COMPLETE",
+		});
+		await waitFor(() => {
+			expect(reviewModal()).not.toBeInTheDocument();
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+		});
+		await flush();
+
+		expect(toast.info).toHaveBeenCalledWith("reviewSuperseded");
+		expect(toast.info).not.toHaveBeenCalledWith("rejectReviewStale");
+		expect(rejectCalls).toEqual([]);
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(saveCalls).toEqual([]);
+		expect(getEditorMarkdownForSave(view.editor)).toContain(
+			"rewritten by a second run",
+		);
+	});
+
+	it("keeps the review open through the run's own version step, and its Reject names the new version", async () => {
+		const view = await reviewFirstRun();
+
+		await serverReports(view.rerender, { version: 9, status: "COMPLETE" });
+
+		expect(reviewModal()).toBeInTheDocument();
+		expect(toast.info).not.toHaveBeenCalledWith("reviewSuperseded");
+
+		await clickReject();
+
+		await waitFor(() => {
+			expect(rejectCalls).toHaveLength(1);
+		});
+		expect(rejectCalls[0]).toMatchObject({ expectedVersion: 9 });
+	});
+
+	it("a Reject the server refuses as stale says so, saves nothing, and brings the editor to the newer saved body", async () => {
+		rejectFindsReviewStale = true;
+		const view = await reviewFirstRun();
+		// The second run's write the dialog has not heard of yet.
+		server.content = SECOND_RUN;
+		server.version = 9;
+
+		await clickReject();
+
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("rejectReviewStale");
+		});
+		expect(rejectCalls).toHaveLength(1);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+		await waitFor(() => {
+			expect(getEditorMarkdownForSave(view.editor)).toContain(
+				"rewritten by a second run",
+			);
+		});
+		await nextFrames();
+		await flush();
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(SECOND_RUN);
 	});
 });

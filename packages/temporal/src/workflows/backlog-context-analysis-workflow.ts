@@ -44,6 +44,10 @@ import type { fetchPMWorkItemsByType as FetchPMWorkItemsByTypeFn } from "../acti
 // mirrors PR2's (`scheduleToCloseTimeout` is the worker-outage cap;
 // `startToClose` is the single-attempt bound).
 import type * as postOperationResultModule from "../activities/post-operation-result";
+import {
+	pmBoardContextNote,
+	pmBoardReadError,
+} from "../lib/pm-board-read-error";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
 import { BACKLOG_ANALYSIS_CANCELLED_TYPE } from "./backlog-constants";
 import { unwrapPmSyncError } from "./pm-sync-error-unwrap";
@@ -117,6 +121,7 @@ export interface BacklogContextAnalysisProgress {
 	 * so nothing changes for anyone while the flag is off.
 	 */
 	logContextNote?: string;
+	pmContextNote?: string;
 }
 
 export interface BacklogContextAnalysisOutput {
@@ -125,6 +130,7 @@ export interface BacklogContextAnalysisOutput {
 	error?: string;
 	/** See `BacklogContextAnalysisProgress.logContextNote`. */
 	logContextNote?: string;
+	pmContextNote?: string;
 	/**
 	 * Set when the run stopped before the model rather than proposing from
 	 * nothing (Fizzy #2260). Carries the reason, so the client can say what
@@ -877,6 +883,15 @@ export async function backlogContextAnalysisWorkflow(
 				});
 				pmWorkItems = pmResult;
 				pmToolType = pmResult.detectedType;
+				if (pmResult.readStatus === "failed") {
+					progress.pmContextNote = pmBoardContextNote(
+						pmToolType,
+						pmResult.readErrorKind,
+					);
+				} else if (pmResult.readStatus === "no-columns") {
+					progress.pmContextNote =
+						"Your Fizzy board has no workflow columns, so no cards were read. Cards in triage aren't included.";
+				}
 				log.info("Fetched PM work items", {
 					epics: pmResult.epics.length,
 					features: pmResult.features.length,
@@ -884,6 +899,10 @@ export async function backlogContextAnalysisWorkflow(
 					detectedType: pmToolType,
 				});
 			} catch (error) {
+				progress.pmContextNote = pmBoardContextNote(
+					undefined,
+					pmBoardReadError(error),
+				);
 				log.warn("Failed to fetch PM work items, continuing", {
 					error:
 						error instanceof Error ? error.message : String(error),
@@ -1096,6 +1115,9 @@ export async function backlogContextAnalysisWorkflow(
 			// FR3: carried onto the terminal result too, not just progress —
 			// a client that polls only after completion still learns why logs
 			// were or were not part of the analysis.
+			...(progress.pmContextNote
+				? { pmContextNote: progress.pmContextNote }
+				: {}),
 			...(progress.logContextNote
 				? { logContextNote: progress.logContextNote }
 				: {}),

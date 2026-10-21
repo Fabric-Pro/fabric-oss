@@ -370,6 +370,7 @@ async function searchWorkspaceDocs(options: {
 		conversationId: options.conversationId,
 		userId: options.userId,
 		organizationId: options.organizationId,
+		featureKey: "knowledge-search",
 		tags: ["rag-query", "workspace-search"],
 	});
 

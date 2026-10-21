@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getProjectRagSettings: vi.fn(),
+	searchSimilarEpisodes: vi.fn(),
 	searchSimilarProjectContexts: vi.fn(),
 	dbContextFindMany: vi.fn(),
 	enrichContextsWithRoleTags: vi.fn(),
@@ -39,7 +40,7 @@ vi.mock("@repo/rag", () => ({
 	embedProjectDocument: vi.fn(),
 	reembedProjectDocument: vi.fn(),
 	deleteStaleDocumentEmbeddingChunks: vi.fn(),
-	searchSimilarEpisodes: vi.fn().mockResolvedValue([]),
+	searchSimilarEpisodes: mocks.searchSimilarEpisodes,
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -76,11 +77,15 @@ vi.mock("../lib/activity-logger", () => ({
 }));
 
 // Import AFTER mocks
-import { retrieveProjectContexts } from "../project-document-generation";
+import {
+	retrieveAndFormatEpisodicMemory,
+	retrieveProjectContexts,
+} from "../project-document-generation";
 
 describe("retrieveProjectContexts activity roleTag string formatting", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.searchSimilarEpisodes.mockResolvedValue([]);
 		mocks.getProjectRagSettings.mockResolvedValue({
 			topK: 10,
 			similarityThreshold: 0.5,
@@ -169,4 +174,17 @@ describe("retrieveProjectContexts activity roleTag string formatting", () => {
 		);
 		expect(resultStrings[0]).not.toContain("---");
 	});
+});
+
+it("keeps the legacy episodic activity empty without searching or resolving settings", async () => {
+	vi.clearAllMocks();
+	const result = await retrieveAndFormatEpisodicMemory({
+		projectId: "example-project",
+		userId: "example-user",
+		organizationId: "example-org",
+		query: "example query",
+	});
+	expect(result).toEqual({ formattedContext: "", episodeCount: 0 });
+	expect(mocks.getProjectRagSettings).not.toHaveBeenCalled();
+	expect(mocks.searchSimilarEpisodes).not.toHaveBeenCalled();
 });

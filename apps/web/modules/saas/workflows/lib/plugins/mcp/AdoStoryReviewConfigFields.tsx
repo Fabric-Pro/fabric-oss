@@ -80,7 +80,7 @@ export function AdoStoryReviewConfigFields({
 		],
 		[
 			"assignmentFields",
-			"Assignment fields (System.AssignedTo or Custom.Engineer, one per line)",
+			"Assignment fields (any field reference name, e.g. System.AssignedTo or Custom.BEEngineer, one per line)",
 			2,
 		],
 		["assignedItemTypes", "Assigned task types (one per line)", 3],
@@ -147,8 +147,8 @@ export function AdoStoryReviewConfigFields({
 						use the Work item types field below. Parent sources must
 						be among the assigned task types. Context includes
 						immediate child and Related items with their comments.
-						If Custom.Engineer does not support @Me, select an exact
-						ADO member unique name.
+						If an assignment field does not support @Me, select an
+						exact ADO member unique name.
 					</p>
 					{sprintFields.map(([key, label, rows]) => (
 						<div className="space-y-2" key={key}>

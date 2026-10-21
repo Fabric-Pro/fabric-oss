@@ -18,6 +18,8 @@
  *   pnpm --filter @repo/temporal exec vitest run __tests__/analyze-context-routing.test.ts
  */
 
+import { logger } from "@repo/logs";
+import { asSchema } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
@@ -47,7 +49,15 @@ vi.mock("@repo/ai", () => ({
 	getAIDecisionModelWithMetadata: mocks.getAIDecisionModelWithMetadata,
 }));
 
-vi.mock("@temporalio/activity", () => ({ heartbeat: mocks.heartbeat }));
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
+	heartbeat: mocks.heartbeat,
+	Context: {
+		current: () => ({
+			info: { workflowExecution: { workflowId: "example-workflow" } },
+		}),
+	},
+}));
 
 vi.mock("@repo/database", () => ({
 	db: {
@@ -147,7 +157,439 @@ beforeEach(() => {
 	});
 });
 
+function modelResponse(value: unknown) {
+	mocks.generateObject.mockImplementation(async ({ schema }) => {
+		const parsed = await asSchema(schema).validate?.(value);
+		if (!parsed?.success) {
+			throw parsed?.error ?? new Error("No schema validator");
+		}
+		return { object: parsed.value, usage: {} };
+	});
+}
+
 describe("allowRouting wiring", () => {
+	it("warns about discarded elements when the whole response fails validation", async () => {
+		modelResponse({
+			summary: 42,
+			changes: [CAPTURED_CREATE, { type: "feature", action: "create" }],
+		});
+		await expect(
+			analyzeContextAndPropose({
+				...BASE_INPUT,
+				deferDecisionPrecheck: true,
+			}),
+		).rejects.toThrow();
+		expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+			"[Backlog Analysis] Discarded malformed changes from the model response",
+			{
+				discarded: 1,
+				kept: 1,
+				details: [
+					{
+						index: 1,
+						action: "create",
+						type: "feature",
+						issues: "title:invalid_type:undefined",
+					},
+				],
+			},
+		);
+	});
+
+	it("excludes parse-time and unresolved-title update discards from create-only retry notes", async () => {
+		modelResponse({
+			summary: "Captured",
+			changes: [
+				CAPTURED_CREATE,
+				{ ...CAPTURED_CREATE, action: "update", priority: 42 },
+				{
+					type: "feature",
+					action: "update",
+					existingIdentifier: "F-999",
+				},
+			],
+		});
+		const proposal = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			deferDecisionPrecheck: true,
+		});
+		expect(proposal.summary).toBe("Captured");
+		expect(proposal.changes).toEqual([CAPTURED_CREATE]);
+		expect(logger.warn).toHaveBeenCalledWith(
+			"[Backlog Analysis] Discarded malformed changes from the model response",
+			expect.objectContaining({
+				discarded: 2,
+				kept: 1,
+				details: [
+					expect.objectContaining({ index: 1, action: "update" }),
+					expect.objectContaining({
+						index: 2,
+						action: "update",
+						issues: "title:missing_unresolved_target:undefined",
+					}),
+				],
+			}),
+		);
+	});
+
+	it.each([2, 12])(
+		"counts only retryable create discards despite %s policy-rejected updates",
+		async (count) => {
+			modelResponse({
+				summary: "Captured",
+				changes: [
+					CAPTURED_CREATE,
+					...Array.from({ length: count }, () => ({
+						...CAPTURED_CREATE,
+						action: "update",
+						priority: 42,
+					})),
+					{ type: "bug", action: "create" },
+				],
+			});
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				deferDecisionPrecheck: true,
+			});
+			expect(proposal.summary).toBe(
+				"Captured\n\n1 proposed change(s) could not be read from the AI response and were left out.",
+			);
+			expect(logger.warn).toHaveBeenCalledWith(
+				"[Backlog Analysis] Discarded malformed changes from the model response",
+				expect.objectContaining({ discarded: count + 1, kept: 1 }),
+			);
+		},
+	);
+
+	it.each(
+		[true, false].flatMap((allowUpdates) =>
+			["", "  "].map((summary) => ({ allowUpdates, summary })),
+		),
+	)(
+		"preserves blank-summary behavior for allowUpdates=$allowUpdates, summary=$summary",
+		async ({ allowUpdates, summary }) => {
+			modelResponse({
+				summary,
+				changes: [
+					CAPTURED_CREATE,
+					{ type: "bug", action: "create" },
+					{
+						type: "feature",
+						action: "update",
+						existingIdentifier: "F-999",
+					},
+				],
+			});
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				allowUpdates,
+				deferDecisionPrecheck: true,
+			});
+			expect(proposal.summary).toBe(
+				allowUpdates
+					? "Analysis complete. 1 change(s) proposed.\n\n2 proposed change(s) could not be read from the AI response and were left out. Run the analysis again to retry them."
+					: summary,
+			);
+			expect(logger.warn).toHaveBeenCalledWith(
+				"[Backlog Analysis] Discarded malformed changes from the model response",
+				expect.objectContaining({ discarded: 2, kept: 1 }),
+			);
+		},
+	);
+
+	it("logs one aggregate fill count across reference strategies", async () => {
+		const target = {
+			...BACKLOG.stories[0],
+			id: "ckaaaaaaaaaaaaaaaaaaaaaaa",
+			externalId: "external-1",
+		};
+		modelResponse({
+			changes: [
+				{ type: "feature", action: "update", existingId: target.id },
+				{
+					type: "bug",
+					action: "update",
+					existingIdentifier: target.identifier,
+				},
+				{
+					type: "feature",
+					action: "update",
+					existingExternalId: target.externalId,
+				},
+			],
+		});
+		const proposal = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			existingBacklog: { stories: [target] },
+			allowUpdates: true,
+			deferDecisionPrecheck: true,
+		});
+		expect(proposal.changes).toHaveLength(3);
+		const fills = vi
+			.mocked(logger.info)
+			.mock.calls.filter(
+				([message]) =>
+					message ===
+					"[Backlog Analysis] Filled unchanged update titles from backlog targets",
+			);
+		expect(fills).toEqual([
+			[
+				"[Backlog Analysis] Filled unchanged update titles from backlog targets",
+				{
+					count: 3,
+					resolvedBy: { id: 1, identifier: 1, externalId: 1 },
+				},
+			],
+		]);
+	});
+
+	it.each(
+		["id", "identifier", "externalId"].flatMap((resolvedBy) =>
+			[undefined, null, { to: null }].map((title) => ({
+				resolvedBy,
+				title,
+			})),
+		),
+	)(
+		"fills omitted title $title by $resolvedBy before routing and structure preservation",
+		async ({ resolvedBy, title }) => {
+			const target = {
+				...BACKLOG.stories[0],
+				id: "ckaaaaaaaaaaaaaaaaaaaaaaa",
+				externalId: "external-1",
+			};
+			const reference =
+				resolvedBy === "id"
+					? { existingId: target.id }
+					: resolvedBy === "identifier"
+						? { existingIdentifier: target.identifier }
+						: { existingExternalId: target.externalId };
+			const change = {
+				...CAPTURED_CREATE,
+				action: "update",
+				...reference,
+				title,
+			};
+			modelResponse({ summary: "Updates", changes: [change] });
+			mocks.findManyUserStory.mockResolvedValue([
+				{ ...target, kind: "FEATURE", acceptanceCriteria: null },
+			]);
+			mocks.routeActionItems.mockImplementation(async ({ changes }) => {
+				expect(changes).toHaveLength(1);
+				expect(changes[0].title).toEqual({
+					from: target.title,
+					to: target.title,
+				});
+				return { changes, enriched: 0 };
+			});
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				existingBacklog: { ...BACKLOG, stories: [target] },
+				allowUpdates: true,
+				allowRouting: true,
+				deferDecisionPrecheck: true,
+			});
+			expect(proposal.changes).toHaveLength(1);
+			expect(proposal.changes[0]).toMatchObject({
+				action: "update",
+				title: { from: target.title, to: target.title },
+				targetResolution: { status: "resolved" },
+				structurePreserved: true,
+			});
+			expect(mocks.reanalyzeBodyByKind).toHaveBeenCalledOnce();
+			expect(logger.info).toHaveBeenCalledWith(
+				"[Backlog Analysis] Filled unchanged update titles from backlog targets",
+				{ count: 1, resolvedBy: { [resolvedBy]: 1 } },
+			);
+			expect(logger.warn).not.toHaveBeenCalledWith(
+				"[Backlog Analysis] Discarded malformed changes from the model response",
+				expect.anything(),
+			);
+		},
+	);
+
+	it.each([
+		"no reference",
+		"unknown identifier",
+		"empty snapshot",
+		"empty target title",
+	])(
+		"drops title-less updates with %s without demoting them",
+		async (scenario) => {
+			modelResponse({
+				summary: "Updates",
+				changes: [
+					CAPTURED_CREATE,
+					{
+						type: "feature",
+						action: "update",
+						...(scenario === "no reference"
+							? {}
+							: {
+									existingIdentifier:
+										scenario === "unknown identifier"
+											? "F-999"
+											: "F-12",
+								}),
+					},
+				],
+			});
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				existingBacklog:
+					scenario === "empty snapshot"
+						? { stories: [] }
+						: scenario === "empty target title"
+							? {
+									...BACKLOG,
+									stories: [
+										{ ...BACKLOG.stories[0], title: "" },
+									],
+								}
+							: BACKLOG,
+				allowUpdates: true,
+				deferDecisionPrecheck: true,
+			});
+			expect(proposal.changes).toEqual([CAPTURED_CREATE]);
+			expect(proposal.summary).toContain(
+				"1 proposed change(s) could not be read",
+			);
+			expect(logger.warn).toHaveBeenCalledWith(
+				"[Backlog Analysis] Discarded malformed changes from the model response",
+				{
+					discarded: 1,
+					kept: 1,
+					details: [
+						{
+							index: 1,
+							action: "update",
+							type: "feature",
+							issues: "title:missing_unresolved_target:undefined",
+						},
+					],
+				},
+			);
+			expect(mocks.reanalyzeBodyByKind).not.toHaveBeenCalled();
+		},
+	);
+
+	it("combines parse discards and unresolved titles with original response indices and preserves a blank summary's count", async () => {
+		modelResponse({
+			summary: " ",
+			changes: [
+				CAPTURED_CREATE,
+				{
+					type: "feature",
+					action: "update",
+					existingIdentifier: "F-999",
+				},
+				{ type: "bug", action: "create" },
+				{ ...CAPTURED_CREATE, title: { to: "Another item" } },
+			],
+		});
+		const proposal = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			allowUpdates: true,
+			deferDecisionPrecheck: true,
+		});
+		expect(proposal.summary).toBe(
+			"Analysis complete. 2 change(s) proposed.\n\n2 proposed change(s) could not be read from the AI response and were left out. Run the analysis again to retry them.",
+		);
+		expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
+			"[Backlog Analysis] Discarded malformed changes from the model response",
+			{
+				discarded: 2,
+				kept: 2,
+				details: [
+					{
+						index: 1,
+						action: "update",
+						type: "feature",
+						issues: "title:missing_unresolved_target:undefined",
+					},
+					{
+						index: 2,
+						action: "create",
+						type: "bug",
+						issues: "title:invalid_type:undefined",
+					},
+				],
+			},
+		);
+	});
+
+	it("preserves a real update title without filling it", async () => {
+		const title = {
+			from: "Export throttling",
+			to: "Improved export throttling",
+		};
+		modelResponse({
+			summary: "Updates",
+			changes: [
+				{
+					...CAPTURED_CREATE,
+					action: "update",
+					existingIdentifier: "F-12",
+					title,
+				},
+			],
+		});
+		const proposal = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			allowUpdates: true,
+			deferDecisionPrecheck: true,
+		});
+		expect(proposal.changes[0]?.title).toEqual(title);
+		expect(proposal.summary).toBe("Updates");
+		expect(logger.info).not.toHaveBeenCalledWith(
+			"[Backlog Analysis] Filled unchanged update titles from backlog targets",
+			expect.anything(),
+		);
+	});
+
+	it("does not share discard counts between successive activity calls", async () => {
+		modelResponse({ summary: "Partial", changes: [null, CAPTURED_CREATE] });
+		const partial = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			deferDecisionPrecheck: true,
+		});
+		modelResponse({ summary: "Clean", changes: [CAPTURED_CREATE] });
+		const clean = await analyzeContextAndPropose({
+			...BASE_INPUT,
+			deferDecisionPrecheck: true,
+		});
+		expect(partial.summary).toContain(
+			"1 proposed change(s) could not be read",
+		);
+		expect(clean.summary).toBe("Clean");
+	});
+
+	it.each([false, true])(
+		"retains the discarded-change summary note with routing %s",
+		async (allowRouting) => {
+			modelResponse({
+				summary: "Capture export improvements.",
+				changes: [
+					CAPTURED_CREATE,
+					{ type: "feature", action: "create", title: null },
+				],
+			});
+			mocks.routeActionItems.mockImplementation(async ({ changes }) => ({
+				changes,
+				enriched: 0,
+			}));
+			const proposal = await analyzeContextAndPropose({
+				...BASE_INPUT,
+				allowRouting,
+				deferDecisionPrecheck: true,
+			});
+			expect(proposal.changes).toHaveLength(1);
+			expect(proposal.summary).toBe(
+				"Capture export improvements.\n\n1 proposed change(s) could not be read from the AI response and were left out.",
+			);
+		},
+	);
+
 	it.each([undefined, false])(
 		"does not run routing when allowRouting is %s",
 		async (allowRouting) => {

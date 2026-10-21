@@ -16,7 +16,7 @@
  * are duck-typed via `{ message, cause }`, matching how `unwrapPmSyncError`
  * is tested in `pm-sync-error-unwrap.test.ts`.
  */
-import { CancelledFailure } from "@temporalio/workflow";
+import { ApplicationFailure, CancelledFailure } from "@temporalio/workflow";
 import { describe, expect, it } from "vitest";
 import {
 	extractMeaningfulErrorMessage,
@@ -91,6 +91,17 @@ describe("extractMeaningfulErrorMessage", () => {
 		const result = extractMeaningfulErrorMessage(node);
 		expect(result).not.toBe("Activity task failed");
 		expect(result.length).toBeLessThanOrEqual(500);
+	});
+
+	it("preserves the empty ApplicationFailure message fallback", () => {
+		expect(
+			extractMeaningfulErrorMessage(
+				ApplicationFailure.create({
+					message: "",
+					type: "ExampleFailure",
+				}),
+			),
+		).toBe("");
 	});
 
 	it("truncates to 500 chars", () => {

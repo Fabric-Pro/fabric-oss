@@ -43,18 +43,26 @@ export function RequestConnectionDialog() {
 				notes: notes.trim() || undefined,
 				organizationId: organizationId ?? null,
 			}),
-		onSuccess: () => {
+		onSuccess: ({ mailto }) => {
 			setOpen(false);
 			setType("");
 			setName("");
 			setNotes("");
-			toast.success("Request received", {
-				description:
-					"Thank you. Your request has been submitted and will be reviewed by our team.",
-			});
+			if (mailto) {
+				// Assign rather than window.open: a mailto goes to the OS mail
+				// handler and the page stays put; window.open leaves a blank tab.
+				window.location.href = mailto;
+				toast.success("Opening your email app", {
+					description: "Your request is ready to send.",
+				});
+			} else {
+				toast.info(
+					"Connection requests aren't set up on this Fabric deployment.",
+				);
+			}
 		},
 		onError: () => {
-			toast.error("We couldn't send your request. Please try again.");
+			toast.error("We couldn't prepare your request. Please try again.");
 		},
 	});
 
@@ -69,7 +77,8 @@ export function RequestConnectionDialog() {
 				<DialogHeader>
 					<DialogTitle>Request a connection</DialogTitle>
 					<DialogDescription>
-						Tell us which integration or MCP server you need.
+						Tell us which integration or MCP server you need. We'll
+						open an email for you to send.
 					</DialogDescription>
 				</DialogHeader>
 				<form
@@ -148,7 +157,7 @@ export function RequestConnectionDialog() {
 							disabled={!canSubmit}
 							loading={request.isPending}
 						>
-							Submit request
+							Open email draft
 						</Button>
 					</DialogFooter>
 				</form>

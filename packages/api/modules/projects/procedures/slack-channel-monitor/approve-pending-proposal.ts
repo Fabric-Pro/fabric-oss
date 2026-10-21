@@ -49,6 +49,10 @@ import {
 	recordDecisionOverridesAccepted,
 } from "../../lib/decision-override-audit";
 import { enqueuePmSync } from "../../lib/enqueue-pm-sync";
+import {
+	type ChangeItem,
+	changeItemSchema,
+} from "../backlog/change-item-schema";
 import { backlogApplyWorkflowId } from "../backlog/workflow-id";
 
 /**
@@ -73,83 +77,6 @@ import { backlogApplyWorkflowId } from "../backlog/workflow-id";
  *     terminal state on completion.
  *   - Any CREATE errors → FAILED with `applyError` populated.
  */
-
-const changeItemSchema = z.object({
-	type: z.enum(["epic", "feature", "story", "bug"]),
-	action: z.enum(["create", "update"]),
-	existingId: z.string().nullable().optional(),
-	existingIdentifier: z.string().nullable().optional(),
-	existingExternalId: z.string().nullable().optional(),
-	title: z.object({
-		from: z.string().nullable().optional(),
-		to: z.string(),
-	}),
-	description: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	acceptanceCriteria: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	priority: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	size: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	parentEpicIdentifier: z.string().nullable().optional(),
-	parentFeatureIdentifier: z.string().nullable().optional(),
-	parentEpicTitle: z.string().nullable().optional(),
-	parentFeatureTitle: z.string().nullable().optional(),
-	// Annotation, not payload — same reasoning as `backlog/apply-changes.ts`.
-	// These rows come from the same analyzer, which is allowed to return a
-	// change without either field.
-	reasoning: z.string().nullable().optional(),
-	sourceContext: z
-		.enum([
-			"teams_messages",
-			"meeting_transcript",
-			"notion_page",
-			"slack_messages",
-			"multiple",
-		])
-		.nullable()
-		.optional(),
-	/**
-	 * Inline PM override of the AI classifier's kind decision. When set, the
-	 * approve handler passes `kind` + `skipClassifier: true` to
-	 * createStoryFromProposal so the classifier is bypassed and the user's
-	 * choice wins. Only meaningful for `action: "create"` rows where the
-	 * analyzer proposed feature/story/bug — epics ignore this field.
-	 */
-	kindOverride: z.enum(["BUG", "FEATURE"]).nullable().optional(),
-	/**
-	 * Set by the review UI when this CREATE's body was already drafted through
-	 * the kind-appropriate prompt at review time (lazy draft on open). When true,
-	 * the approve handler persists the proposed body verbatim (skipDrafting) and
-	 * does NOT re-draft from the thread transcript — carrying `needsMoreInfo`.
-	 */
-	predrafted: z.boolean().nullable().optional(),
-	/** Bug triage flag captured by the review-time draft (paired with predrafted). */
-	needsMoreInfo: z.boolean().nullable().optional(),
-});
-
-type ChangeItem = z.infer<typeof changeItemSchema>;
 
 // ---------------------------------------------------------------------------
 // Helpers

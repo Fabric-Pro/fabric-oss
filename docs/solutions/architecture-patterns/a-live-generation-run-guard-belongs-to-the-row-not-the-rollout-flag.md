@@ -1,7 +1,7 @@
 ---
 title: "A live generation run's write guard belongs to the row, not to the rollout flag"
 date: 2026-10-20
-last_updated: 2026-10-20
+last_updated: 2026-10-21
 category: architecture-patterns
 module: project-documents generation
 problem_type: architecture_pattern
@@ -87,6 +87,14 @@ The collaborative editor needed the same discipline on the client:
   stale room through one claimed applier, and offer replaced unsaved text
   back once. TipTap's Collaboration binds the `"default"` fragment; checking
   `"prosemirror"` for emptiness re-seeds a full room.
+- **A role published in the room names what it is for.** "I started the
+  run" stayed published through the review of that run, and the review
+  outlived it: a newer run started by the API ended with every tab deferring
+  to the reviewer, nobody writing the body, and the slower stale-room
+  fallback showing the previous body for seconds. Publish the run's
+  identity (`generationStartedAt`) beside the role, let a follower ignore a
+  role for another run — the reviewer may not have heard of the newer run
+  yet — and close a review as soon as the document names a newer run.
 
 ## Why This Matters
 

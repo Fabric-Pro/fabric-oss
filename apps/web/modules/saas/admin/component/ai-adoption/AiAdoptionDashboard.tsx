@@ -522,9 +522,12 @@ const FEATURE_LABELS: Record<string, string> = {
 	"scheduled-agent-task": "Scheduled agent tasks",
 	workspace: "Workspaces",
 	workflow: "Workflow model steps",
-	// Most embeddings still carry no feature key, and they are usually the
-	// bulk of the rows. Naming them keeps the genuine "not tagged yet" bucket
-	// meaningful.
+	"knowledge-index": "Knowledge indexing (embeddings)",
+	"knowledge-search": "Knowledge search (embeddings)",
+	"decision-precheck": "Decision pre-check",
+	// Embeddings recorded before their call sites named a feature carry no
+	// key, and they are usually the bulk of those rows. Naming them keeps the
+	// genuine "not tagged yet" bucket meaningful.
 	__embeddings__: "Embeddings (RAG indexing)",
 };
 

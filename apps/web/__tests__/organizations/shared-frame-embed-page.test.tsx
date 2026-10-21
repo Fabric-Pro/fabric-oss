@@ -33,13 +33,12 @@ const renderPage = () =>
 	});
 
 describe("public frame embeds", () => {
-	it("always isolates legacy loose frames, even without a project or surface", async () => {
+	it("keeps the scripts of a loose frame, even without a project or surface", async () => {
 		const element = await renderPage();
 
 		expect(mocks.getFrame).toHaveBeenCalledWith("example-token");
 		expect(element.props).toMatchObject({
 			embedded: true,
-			strictSandbox: true,
 			allowScripts: true,
 		});
 	});
@@ -56,7 +55,6 @@ describe("public frame embeds", () => {
 		});
 
 		expect((await renderPage()).props).toMatchObject({
-			strictSandbox: true,
 			allowScripts: false,
 		});
 	});

@@ -40,6 +40,7 @@ import {
 import { documentEvalWorkflow } from "./document-eval";
 import { documentGenerationChildWorkflow } from "./document-generation-child";
 import {
+	BULK_DOCUMENT_HELD_PATCH,
 	type BulkRunInputExtras,
 	claimBulkRunResume,
 	pauseBulkRun,
@@ -189,6 +190,12 @@ interface SetupPauseProgress {
 	documentIds?: string[];
 	/** Documents that ended either way: never generated again. */
 	finishedDocumentIds?: string[];
+	/**
+	 * Of those, the ones the setup left because it no longer held them
+	 * (Fizzy #2946): neither generated nor failed. Absent when there are
+	 * none, and on every progress saved before the field existed.
+	 */
+	skippedDocumentIds?: string[];
 }
 
 /** The `agentId` of the setup's run row (`PROJECT_SETUP_AGENT_ID`). */
@@ -886,6 +893,15 @@ export async function existingProjectSetupWorkflow(
 		const finishedDocumentIds: string[] = [
 			...(progress.finishedDocumentIds ?? []),
 		];
+		// The documents the setup skipped because someone else held them
+		// (Fizzy #2946), carried across a pause like the two lists above:
+		// they are not failures, so they stay out of the all-failed verdict.
+		// Filled only by the skip below, which runs only behind its
+		// `patched()`, so every history recorded before it sees an empty
+		// list and today's verdict.
+		const skippedDocumentIds: string[] = [
+			...(progress.skippedDocumentIds ?? []),
+		];
 		// Set when a document's child paused for a plan reset: every
 		// document from there on waits for the setup's resume.
 		let pause: ChatGptPlanPause | null = null;
@@ -904,16 +920,57 @@ export async function existingProjectSetupWorkflow(
 				documentType: doc.type,
 			});
 
+			const childWorkflowId = `${workflowId}-doc-${doc.id}`;
+			// Declared outside the `try` so the FAILED write in the catch can
+			// be scoped to the attempt too. Only where a value lives changes,
+			// never which commands run.
+			let attempt:
+				| Awaited<ReturnType<typeof updateProjectDocumentStatus>>
+				| undefined;
+
 			try {
 				// Update status. It starts the document's attempt, as the batch
 				// parent's does (Fizzy #2801): its identity scopes a coordinated
 				// Proposal child's takeover, and a previous run's ownership ends.
-				const attempt = await updateProjectDocumentStatus({
+				//
+				// Only while this setup still holds the document, as in the
+				// batch parent (Fizzy #2946): the row it created, the one its
+				// pause queued for this resume, or this document's own child
+				// after a retried write. Same replay argument: only the input
+				// gains the hold.
+				attempt = await updateProjectDocumentStatus({
 					documentId: doc.id,
 					status: "GENERATING",
 					progress: 5,
 					startsAttempt: true,
+					heldBy: {
+						kind: "PROJECT_SETUP",
+						childWorkflowId,
+						...(input.resumeOf && { resumeOf: input.resumeOf }),
+					},
 				});
+
+				// No longer this setup's: the document ends for this run, as a
+				// superseded one does, and is never generated again on a
+				// resume, but it is not one this run generated. `patched()` is
+				// REQUIRED: the skip removes the child, its evaluation and the
+				// COMPLETE write from a path recorded histories took. Evaluated
+				// first, as in the batch parent, and keyed on `held === false`
+				// alone: only this release's activity reports it, while a
+				// result recorded before (`undefined` before Fizzy #2801, or
+				// the attempt alone) carries on as it did.
+				if (
+					patched(BULK_DOCUMENT_HELD_PATCH) &&
+					attempt?.held === false
+				) {
+					log.info(
+						"Document no longer held by this setup; left as it is",
+						{ documentId: doc.id, documentType: doc.type },
+					);
+					finishedDocumentIds.push(doc.id);
+					skippedDocumentIds.push(doc.id);
+					continue;
+				}
 
 				// Execute child workflow — NO directContext, always use RAG
 				// Each previous document is already embedded, so RAG context grows
@@ -921,7 +978,7 @@ export async function existingProjectSetupWorkflow(
 				const childResult = await executeChild(
 					documentGenerationChildWorkflow,
 					{
-						workflowId: `${workflowId}-doc-${doc.id}`,
+						workflowId: childWorkflowId,
 						args: [
 							{
 								projectId,
@@ -957,7 +1014,8 @@ export async function existingProjectSetupWorkflow(
 				// Mark complete — under a coordinated Proposal child's run
 				// token when it hands one back (Fizzy #2801), so a newer
 				// generation that took the document over keeps its status.
-				// Same replay argument as the batch parent.
+				// Same replay argument as the batch parent. Every other child's
+				// write is scoped to the attempt, as there (Fizzy #2946).
 				await updateProjectDocumentStatus({
 					documentId: doc.id,
 					status: "COMPLETE",
@@ -965,6 +1023,10 @@ export async function existingProjectSetupWorkflow(
 					...(childResult.liveRunId !== undefined && {
 						liveRunId: childResult.liveRunId,
 					}),
+					...(childResult.liveRunId === undefined &&
+						attempt?.generationStartedAt && {
+							generationStartedAt: attempt.generationStartedAt,
+						}),
 				});
 
 				documentIds.push(doc.id);
@@ -1046,7 +1108,10 @@ export async function existingProjectSetupWorkflow(
 
 				try {
 					// Guarded by a coordinated Proposal child's run token
-					// when its failure carries one, as in the batch parent.
+					// when its failure carries one, as in the batch parent;
+					// otherwise scoped to the attempt when the GENERATING
+					// write recorded one (Fizzy #2946). Only the input of the
+					// same activity changes.
 					const liveRunId = liveRunIdOfGenerationFailure(docError);
 					await updateProjectDocumentStatus({
 						documentId: doc.id,
@@ -1054,6 +1119,11 @@ export async function existingProjectSetupWorkflow(
 						progress: 0,
 						error: errorMessage,
 						...(liveRunId !== undefined && { liveRunId }),
+						...(liveRunId === undefined &&
+							attempt?.generationStartedAt && {
+								generationStartedAt:
+									attempt.generationStartedAt,
+							}),
 					});
 				} catch {
 					// Best effort
@@ -1073,12 +1143,19 @@ export async function existingProjectSetupWorkflow(
 						documents,
 						documentIds,
 						finishedDocumentIds,
+						// Unset when nothing was skipped: today's progress.
+						...(skippedDocumentIds.length > 0 && {
+							skippedDocumentIds,
+						}),
 					},
 					pendingDocs.map((doc) => doc.id),
 				);
 			} catch (error) {
 				// The pause cap, or a run cancelled meanwhile: the documents
-				// still waiting fail with the reason.
+				// still waiting fail with the reason, only while this setup
+				// still holds them (Fizzy #2946), as in the batch parent.
+				// Replay-safe without `patched()`: only the input gains the
+				// hold.
 				const message =
 					error instanceof Error ? error.message : "Unknown error";
 				for (const doc of pendingDocs) {
@@ -1087,14 +1164,26 @@ export async function existingProjectSetupWorkflow(
 						status: "FAILED",
 						progress: 0,
 						error: message,
+						heldByPause: {
+							kind: "PROJECT_SETUP",
+							...(input.resumeOf && { resumeOf: input.resumeOf }),
+						},
 					});
 					finishedDocumentIds.push(doc.id);
 				}
 			}
 		}
 
-		// Step final: Update project status
-		const allFailed = documentIds.length === 0 && documents.length > 0;
+		// Step final: Update project status. A setup fails only when it
+		// generated nothing of what it could have: the documents it skipped
+		// because someone else held them (Fizzy #2946) failed nothing, so a
+		// setup that skipped them all completes. Replay-safe without
+		// `patched()`: the verdict is only an argument of the two status
+		// writes and the return value, never which commands run, and a
+		// history recorded before the skip has no skipped document.
+		const allFailed =
+			documentIds.length === 0 &&
+			documents.length > skippedDocumentIds.length;
 		await updateProjectCodeAnalysisStatus({
 			projectId,
 			status: allFailed ? "FAILED" : "COMPLETED",
@@ -1116,11 +1205,17 @@ export async function existingProjectSetupWorkflow(
 			projectId,
 			totalDocuments: documents.length,
 			successCount: documentIds.length,
-			failedCount: documents.length - documentIds.length,
+			skippedCount: skippedDocumentIds.length,
+			failedCount:
+				documents.length -
+				documentIds.length -
+				skippedDocumentIds.length,
 		});
 
 		return {
-			success: documentIds.length > 0 || documents.length === 0,
+			// The same verdict: `documentIds.length > 0 || documents.length
+			// === 0` before any document could be skipped.
+			success: !allFailed,
 			documentIds,
 			analysisContextId,
 			backlogContextId,

@@ -147,6 +147,22 @@ describe("resolveRuntimeAuthority", () => {
 		expect(reason).not.toContain("exactly this call and nothing else");
 	});
 
+	it("lists every step a workflow call would save below the question", () => {
+		const reason = runtimeAuthorityApprovalReason({
+			...request,
+			providerDisplayName: "Fabric",
+			toolName: "fabric_create_workflow",
+			grantScope: "call",
+			callSummary: "preset.name: Weekly digest",
+			callDetails:
+				"Steps:\n1. Schedule (trigger)\n2. Fetch (http-request)",
+		});
+
+		expect(reason).toContain(
+			"any other change asks again.\n\nSteps:\n1. Schedule (trigger)\n2. Fetch (http-request)",
+		);
+	});
+
 	it("leaves the arguments out of a one-call approval that has none to show", () => {
 		const reason = runtimeAuthorityApprovalReason({
 			...request,

@@ -215,6 +215,11 @@ Which provider an embedding actually runs on is a resolution, not a stored value
 
 Designation is read from the tenant alone. Inside an organization a member's personal designation is never consulted, which is why the remedy for a missing one is not always the reader's to carry out.
 
+### Search provider
+An external web service an organization connects with its own key, for web search and for reading pages. Distinct from an AI provider: it fetches and searches the web, it does not generate or embed.
+
+Not every search provider can read a page, and only one that can lets a website be added as context; crawling a whole path prefix takes a narrower set still. A provider counts only while it is switched on and holds a key, so an organization whose providers only search, or whose page-reader is switched off, has providers connected and still cannot add a link. Connecting one takes an organization admin or owner; any member who may add context may hit the gap without being able to close it.
+
 ## Feature specs
 
 ### Clean Spec

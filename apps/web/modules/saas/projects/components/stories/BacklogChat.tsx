@@ -1,6 +1,7 @@
 "use client";
 
 import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
+import { useAgent } from "@copilotkit/react-core/v2";
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import { CopilotAssistantMessageForBacklogUpdater } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
@@ -297,10 +298,9 @@ export function BacklogChat({
 		return backlogConversationCreatingRef.current;
 	};
 
-	// Sync agent state with CopilotKit
-	useCoAgent<BacklogUpdaterState>({
-		name: "backlog_updater",
-		initialState: {
+	// Project and integration context the agent's system prompt is built from.
+	const agentContext = useMemo(
+		() => ({
 			projectId,
 			projectName,
 			organizationId: organizationId ?? undefined,
@@ -310,6 +310,25 @@ export function BacklogChat({
 			hasPMTool,
 			pmToolName,
 			backlogSummary,
+		}),
+		[
+			projectId,
+			projectName,
+			organizationId,
+			hasTeamsIntegration,
+			hasSlackIntegration,
+			hasNotionIntegration,
+			hasPMTool,
+			pmToolName,
+			backlogSummary,
+		],
+	);
+
+	// Sync agent state with CopilotKit
+	useCoAgent<BacklogUpdaterState>({
+		name: "backlog_updater",
+		initialState: {
+			...agentContext,
 			analysisStatus: undefined,
 			lastProposalSummary: undefined,
 			error: undefined,
@@ -323,6 +342,27 @@ export function BacklogChat({
 			reasoningByTurn: {},
 		},
 	});
+
+	// useCoAgent applies initialState from its onRunInitialized hook, after
+	// AG-UI has already copied the agent's state into the run input, so a
+	// first message can reach the agent with empty state. With no Teams
+	// integration in its prompt the agent answers in text instead of showing
+	// the conversation selector, which is one cause of the second-click
+	// symptom in Fizzy #3102. Seed the state from an effect, so it is in place
+	// before a run the user starts, and again when the provider swaps its
+	// provisional agent for the registered one or the context changes.
+	const { agent: backlogAgent } = useAgent({
+		agentId: "backlog_updater",
+		updates: [],
+	});
+	useEffect(() => {
+		backlogAgent.setState({
+			retryCount: 0,
+			reasoningByTurn: {},
+			...backlogAgent.state,
+			...agentContext,
+		});
+	}, [backlogAgent, agentContext]);
 
 	const reviewSettingsRef = useRef<ReviewSettings>({
 		projectId,

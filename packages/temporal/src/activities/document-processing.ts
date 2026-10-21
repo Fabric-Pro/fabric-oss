@@ -206,6 +206,7 @@ export async function generateChunkEmbeddings(
 			{
 				userId,
 				organizationId,
+				featureKey: "knowledge-index",
 				tags: ["rag-embedding", "document-processing"],
 			},
 			providerConfig,
@@ -402,6 +403,7 @@ export async function processAndStoreChunks(
 				{
 					userId,
 					organizationId,
+					featureKey: "knowledge-index",
 					tags: ["rag-embedding", "document-processing"],
 				},
 				providerConfig,
@@ -575,6 +577,7 @@ export async function chunkAndStoreWebContent(input: {
 		{
 			userId,
 			organizationId,
+			featureKey: "knowledge-index",
 			tags: ["rag-embedding", "browser-extraction"],
 		},
 		providerConfig,

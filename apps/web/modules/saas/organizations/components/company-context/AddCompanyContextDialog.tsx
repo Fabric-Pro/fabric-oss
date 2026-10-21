@@ -78,6 +78,9 @@ export function AddCompanyContextDialog({
 		open,
 		organizationId,
 		organizationSlug,
+		// Only admins and owners reach this dialog, and they can connect a
+		// search provider.
+		canManageSearchProviders: true,
 		// The category only feeds the project readiness checklist.
 		requireKnowledgeBaseCategory: false,
 		// Nothing re-fetches a company website when a Proposal or Business

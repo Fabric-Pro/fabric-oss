@@ -83,11 +83,22 @@ function WorkflowDraftRows({ draft }: { draft: WorkflowDraft }) {
 						</span>
 					) : null}
 				</Row>
-			) : draft.steps.length > 0 ? (
+			) : null}
+			{draft.steps.length > 0 ? (
 				<Row label="Steps">
-					<ol className="list-decimal pl-4">
+					<ol className="list-decimal space-y-1.5 pl-4">
 						{draft.steps.map((step, index) => (
-							<li key={`${step.type}-${index}`}>{step.label}</li>
+							<li key={`${step.type}-${index}`}>
+								<span>{step.label}</span>{" "}
+								<span className="font-mono text-xs text-muted-foreground">
+									{step.type}
+								</span>
+								{step.settings ? (
+									<span className="mt-0.5 block break-all font-mono text-xs text-muted-foreground">
+										{step.settings}
+									</span>
+								) : null}
+							</li>
 						))}
 					</ol>
 				</Row>

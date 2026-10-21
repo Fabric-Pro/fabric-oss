@@ -238,6 +238,21 @@ const DOCUMENT_POLL_MAX_MS = 30_000;
  */
 const DOCUMENT_POLL_CEILING_MS = GENERATION_RUN_SILENCE_CEILING_MS;
 
+/**
+ * The base cadence doubled on the elapsed wait, so the schedule matches what a
+ * doubling-per-poll backoff would have produced: 3s, 6s, 12s, 24s, then the
+ * ceiling from roughly the first minute onward.
+ */
+function widenedPollInterval(elapsed: number): number {
+	const doublings = Math.floor(
+		Math.log2(Math.max(0, elapsed) / DOCUMENT_POLL_BASE_MS + 1),
+	);
+	return Math.min(
+		DOCUMENT_POLL_BASE_MS * 2 ** doublings,
+		DOCUMENT_POLL_MAX_MS,
+	);
+}
+
 export type PollableDocument = {
 	status: string;
 	generationStartedAt?: Date | string | null;
@@ -273,17 +288,7 @@ export function getDocumentPollInterval(
 	now: number = Date.now(),
 ): number | false {
 	if (status === "QUEUED") {
-		// Doubling on the elapsed wait, so the schedule matches what a
-		// doubling-per-poll backoff would have produced: 3s, 6s, 12s, 24s,
-		// then the ceiling from roughly the first minute onward.
-		const elapsed = Math.max(0, now - since);
-		const doublings = Math.floor(
-			Math.log2(elapsed / DOCUMENT_POLL_BASE_MS + 1),
-		);
-		return Math.min(
-			DOCUMENT_POLL_BASE_MS * 2 ** doublings,
-			DOCUMENT_POLL_MAX_MS,
-		);
+		return widenedPollInterval(now - since);
 	}
 	if (status === "GENERATING") {
 		return now - since > DOCUMENT_POLL_CEILING_MS
@@ -318,6 +323,79 @@ export function getDocumentsPollInterval(
 		}
 	}
 	return interval;
+}
+
+/**
+ * How long after a run is seen to end the document is still asked about while
+ * its version step has not shown up. The step follows the run's best-effort
+ * decision pre-check, which the workflow gives up to two minutes.
+ */
+const VERSION_STEP_WAIT_MS = 150_000;
+
+/** What `getVersionStepPollInterval` remembers between two answers. */
+export type VersionStepWatch = {
+	/** Whether the last answer showed a run under way. */
+	running: boolean;
+	/** When an answer first showed the run COMPLETE, or `null` if none did. */
+	endedAt: number | null;
+	/** The version the run was seen at, then the one its COMPLETE answer carried. */
+	endedVersion: number;
+};
+
+/**
+ * The cadence for a document whose run has just ended, or `false` to stop
+ * asking (Fizzy #2946). A run saves its final body at the version it started
+ * from and steps the version in a separate write that sends no nudge, and a
+ * COMPLETE document is not polled, so the page header kept the old number until
+ * some later change. For a while after an answer first shows the run
+ * COMPLETE, the document is asked about again — from the base cadence,
+ * widening as a queued wait does — until an answer carries a later version,
+ * the run is under way again, or `VERSION_STEP_WAIT_MS` pass. A step that
+ * never comes — it failed, or the document changed after the run's save —
+ * costs eight requests.
+ *
+ * Only the end of a run this watch saw under way counts: a document COMPLETE
+ * from the first answer, or a run that ends FAILED, is not asked about. The
+ * same answer gives the same result however often it is asked, as React Query
+ * evaluates its `refetchInterval` on every update of the query.
+ */
+export function getVersionStepPollInterval(
+	watch: VersionStepWatch | undefined,
+	document: { status: string; version?: number | null } | undefined,
+	now: number = Date.now(),
+): { watch: VersionStepWatch; interval: number | false } {
+	const status = document?.status ?? "";
+	const version = document?.version ?? 0;
+	if (isDocumentGenerationRunning(status)) {
+		return {
+			watch: { running: true, endedAt: null, endedVersion: version },
+			interval: false,
+		};
+	}
+	// The run saved at the version it ran at; an answer past that already
+	// carries the step.
+	if (
+		status === "COMPLETE" &&
+		watch?.running &&
+		version <= watch.endedVersion
+	) {
+		return {
+			watch: { running: false, endedAt: now, endedVersion: version },
+			interval: DOCUMENT_POLL_BASE_MS,
+		};
+	}
+	if (
+		status === "COMPLETE" &&
+		watch?.endedAt != null &&
+		version <= watch.endedVersion &&
+		now - watch.endedAt < VERSION_STEP_WAIT_MS
+	) {
+		return { watch, interval: widenedPollInterval(now - watch.endedAt) };
+	}
+	return {
+		watch: { running: false, endedAt: null, endedVersion: version },
+		interval: false,
+	};
 }
 
 /**

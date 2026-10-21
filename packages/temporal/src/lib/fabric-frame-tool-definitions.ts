@@ -74,7 +74,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_create_frame",
 		description:
-			"Creates html/json/mermaid/markdown blocks. surface=artifact uses projectId (defaults to current project); workspace creates an organization Workspace. No network; scripts act as viewer via window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'). Discover schemas via fabric_list_page_tools; declare calls in runtimeTools. PRIVATE is owner-only outside projects, retaining linked project members. Artifact/Workspace defaults grant project/organization access; shareOnCreate adds an allowed public link. Create only when requested; chat renders ```mermaid directly.",
+			"Creates html/json/mermaid/markdown blocks. surface=artifact uses projectId (default current project); workspace = org Workspace. Html: a designed page (inline <style>, light/dark, tiles/cards/tables, SVG charts); no network. Scripts act as viewer: window.fabric.call(tool, args)->Promise, fabric.openAgent(prompt), fabric.navigate('/app/...'); discover via fabric_list_page_tools, declare in runtimeTools. PRIVATE: owner-only outside projects, keeps linked project members. Artifact/Workspace grant project/organization access; shareOnCreate adds an allowed public link. Create only when asked; chat renders ```mermaid directly.",
 		inputSchema: {
 			type: "object",
 			properties: {

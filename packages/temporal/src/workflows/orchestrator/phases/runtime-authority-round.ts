@@ -63,7 +63,7 @@ export function runtimeAuthorityApprovalReason(
 				request.toolName === "fabric_create_workflow"
 					? "Approving creates the workflow and also lets this conversation publish that workflow and run it once now; any other change asks again."
 					: "Approving runs exactly this call and nothing else; the next one asks again."
-			}`;
+			}${request.callDetails ? `\n\n${request.callDetails}` : ""}`;
 		case "tool":
 			return `HIGH RISK: Allow "${request.toolName}" for this conversation? Approving lets this conversation run "${request.toolName}" in ${request.providerDisplayName} until the grant expires. Other changes still ask.`;
 		case undefined:

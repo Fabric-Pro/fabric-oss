@@ -250,7 +250,11 @@ export async function ingestOAuthIntegrationToolsActivity(
 		// Generate embeddings for all tools
 		const embeddingResult = await generateEmbeddings(
 			toolDescriptions,
-			{ userId: effectiveUserId, organizationId: effectiveOrgId },
+			{
+				userId: effectiveUserId,
+				organizationId: effectiveOrgId,
+				featureKey: "tool-search",
+			},
 			providerConfig,
 		);
 
@@ -522,7 +526,11 @@ export async function ingestOAuthServerActivity(
 		// Generate embedding for server description
 		const embeddingResult = await generateEmbeddings(
 			[searchableText],
-			{ userId: effectiveUserId, organizationId: effectiveOrgId },
+			{
+				userId: effectiveUserId,
+				organizationId: effectiveOrgId,
+				featureKey: "tool-search",
+			},
 			providerConfig,
 		);
 

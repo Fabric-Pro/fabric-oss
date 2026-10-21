@@ -2,66 +2,15 @@
  * Smoke tests for the Slack approve-pending-proposal input schema — covers
  * the kindOverride safety-net field added by the AI Update type-selector PR.
  *
- * Mirrors the Teams approve schema test (the two procedures share the same
- * change-item shape). Lives here so a Slack-only schema drift (e.g., dropping
- * `slack_messages` from sourceContext) fails noisily.
+ * Parses through the shared `changeItemSchema` the procedure imports, so a
+ * change to that schema (e.g., dropping `slack_messages` from sourceContext)
+ * fails here. The procedure-level parse is covered in
+ * `approve-pending-proposal-pm-sync.test.ts`.
  */
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-
-const changeItemSchema = z.object({
-	type: z.enum(["epic", "feature", "story", "bug"]),
-	action: z.enum(["create", "update"]),
-	existingId: z.string().nullable().optional(),
-	existingIdentifier: z.string().nullable().optional(),
-	existingExternalId: z.string().nullable().optional(),
-	title: z.object({
-		from: z.string().nullable().optional(),
-		to: z.string(),
-	}),
-	description: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	acceptanceCriteria: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	priority: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	size: z
-		.object({
-			from: z.string().nullable().optional(),
-			to: z.string(),
-		})
-		.nullable()
-		.optional(),
-	parentEpicIdentifier: z.string().nullable().optional(),
-	parentFeatureIdentifier: z.string().nullable().optional(),
-	parentEpicTitle: z.string().nullable().optional(),
-	parentFeatureTitle: z.string().nullable().optional(),
-	reasoning: z.string(),
-	sourceContext: z.enum([
-		"teams_messages",
-		"meeting_transcript",
-		"notion_page",
-		"slack_messages",
-		"multiple",
-	]),
-	kindOverride: z.enum(["BUG", "FEATURE"]).nullable().optional(),
-});
+import { changeItemSchema } from "../../backlog/change-item-schema";
 
 const baseCreate = {
 	type: "bug" as const,

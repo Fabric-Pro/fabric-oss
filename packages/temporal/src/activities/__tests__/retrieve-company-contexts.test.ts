@@ -476,6 +476,8 @@ describe("retrieveProjectContexts — company context", () => {
 				).toHaveBeenCalledWith({
 					userId: USER,
 					organizationId: inputOrganizationId,
+					projectId: PROPOSAL.projectId,
+					featureKey: "document-generation",
 				});
 				expect(vendorEntries(result)).toHaveLength(1);
 			},

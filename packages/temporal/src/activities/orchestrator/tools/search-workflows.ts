@@ -13,6 +13,7 @@ import type { TenantContext } from "@repo/rag/lib/embedding/types";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { secondaryUsageFields } from "../../../workflows/orchestrator/usage-attribution";
 import { cosineSimilarity } from "./capability-embeddings";
+import { toolSearchUsage } from "./tool-search-usage";
 import type {
 	SearchAvailableWorkflowsInput,
 	SearchAvailableWorkflowsOutput,
@@ -126,7 +127,7 @@ export async function searchAvailableWorkflows(
 		// Credentials are fetched internally by generateEmbedding()
 		const result = await generateEmbedding(
 			input.query,
-			tenantContext,
+			toolSearchUsage(tenantContext),
 			undefined,
 		);
 		queryEmbedding = result.embedding;
@@ -157,7 +158,7 @@ export async function searchAvailableWorkflows(
 			// Credentials are fetched internally by generateEmbeddings()
 			const results = await generateEmbeddings(
 				workflowTexts,
-				tenantContext,
+				toolSearchUsage(tenantContext),
 				undefined,
 			);
 			workflowEmbeddings = results.embeddings;

@@ -12,6 +12,7 @@ import {
 	incrementOrganizationSearchProviderUsage,
 	incrementUserSearchProviderUsage,
 } from "@repo/database";
+import { withDefaultFeature } from "@repo/rag/lib/embedding/usage";
 import { createProvider, type WebSearchResult } from "@repo/search";
 import { uploadFile } from "@repo/storage";
 import { getBaseUrl } from "@repo/utils";
@@ -425,12 +426,18 @@ export async function createCodeSearchTool(
 				);
 
 				const query = args.query;
-				const embeddingResult = await generateEmbedding(query, {
-					conversationId: context.usageConversationId,
-					userId,
-					organizationId,
-					...secondaryUsageFields(context),
-				});
+				const embeddingResult = await generateEmbedding(
+					query,
+					withDefaultFeature(
+						{
+							conversationId: context.usageConversationId,
+							userId,
+							organizationId,
+							...secondaryUsageFields(context),
+						},
+						"code-index",
+					),
+				);
 				const collectionName = await ensureCollection(
 					"project-contexts",
 					organizationId,

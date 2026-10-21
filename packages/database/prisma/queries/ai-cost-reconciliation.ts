@@ -13,10 +13,21 @@
  * adjusting those by the reconciliation delta is a separate refinement.
  */
 import { db } from "../client";
+import { readProviderRowCredentials } from "./ai-gateway";
 
 export interface PendingGatewayCostRow {
 	id: string;
 	gatewayGenerationId: string;
+	/** The provider config whose key made the call; null for the platform key. */
+	providerConfigId: string | null;
+}
+
+/** The stored credential of a gateway provider config, still encrypted. */
+export interface GatewayCostLookupCredential {
+	provider: string;
+	apiKey: string | null;
+	clientId: string | null;
+	encryptedClientSecret: string | null;
 }
 
 /**
@@ -35,13 +46,56 @@ export async function getPendingGatewayCostRows(params: {
 			gatewayGenerationId: { not: null },
 			createdAt: { gte: cutoff },
 		},
-		select: { id: true, gatewayGenerationId: true },
+		select: { id: true, gatewayGenerationId: true, providerConfigId: true },
 		orderBy: { createdAt: "asc" },
 		take: params.limit,
 	});
 	return rows.filter(
 		(r): r is PendingGatewayCostRow => r.gatewayGenerationId !== null,
 	);
+}
+
+/**
+ * The credential each gateway provider config holds, by config id, for looking
+ * up the cost of calls it made. A generation is visible only to the gateway
+ * account that ran it, so a tenant's own key (organization or personal) must be
+ * used for its rows; the platform key cannot see them.
+ */
+export async function getGatewayCostLookupCredentials(
+	configIds: readonly string[],
+): Promise<Map<string, GatewayCostLookupCredential>> {
+	if (configIds.length === 0) {
+		return new Map();
+	}
+	const where = {
+		id: { in: [...configIds] },
+		provider: "VERCEL_GATEWAY" as const,
+	};
+	const select = {
+		id: true,
+		provider: true,
+		encryptedApiKey: true,
+		clientId: true,
+		encryptedClientSecret: true,
+		config: true,
+	} as const;
+	const [organizationRows, userRows] = await Promise.all([
+		db.cloudProviderConfig.findMany({ where, select }),
+		db.userCloudProviderConfig.findMany({ where, select }),
+	]);
+	const credentials = new Map<string, GatewayCostLookupCredential>();
+	for (const row of [...organizationRows, ...userRows]) {
+		const { apiKey, hasCredentials } = readProviderRowCredentials(row);
+		if (hasCredentials) {
+			credentials.set(row.id, {
+				provider: row.provider,
+				apiKey,
+				clientId: row.clientId,
+				encryptedClientSecret: row.encryptedClientSecret,
+			});
+		}
+	}
+	return credentials;
 }
 
 /**

@@ -1021,6 +1021,58 @@ export const PM_ITEM_FIELDS: string[] = [
 	"summary",
 ];
 
+// ADO: workItems/value/workItemRefs; generic: items/data/results;
+// Fizzy: cards; GitHub/Jira: issues; ClickUp: tasks.
+// The old parsers differed on items/cards precedence; no known provider returns both.
+export const PM_LIST_ARRAY_KEYS = [
+	"workItems",
+	"value",
+	"workItemRefs",
+	"items",
+	"cards",
+	"issues",
+	"tasks",
+	"data",
+	"results",
+] as const;
+
+/** Extract a PM list and its owning envelope, including one Rovo data-object layer. */
+export function extractPMListArray(data: unknown):
+	| {
+			items: unknown[];
+			envelope: Record<string, unknown> | null;
+	  }
+	| undefined {
+	if (Array.isArray(data)) {
+		return { items: data, envelope: null };
+	}
+	if (!data || typeof data !== "object") {
+		return undefined;
+	}
+	const envelope = data as Record<string, unknown>;
+	for (const key of PM_LIST_ARRAY_KEYS) {
+		if (Array.isArray(envelope[key])) {
+			return { items: envelope[key], envelope };
+		}
+	}
+	const inner = envelope.data;
+	if (
+		inner &&
+		typeof inner === "object" &&
+		!Array.isArray(inner) &&
+		(Object.getPrototypeOf(inner) === Object.prototype ||
+			Object.getPrototypeOf(inner) === null)
+	) {
+		const nested = inner as Record<string, unknown>;
+		for (const key of PM_LIST_ARRAY_KEYS) {
+			if (Array.isArray(nested[key])) {
+				return { items: nested[key], envelope: nested };
+			}
+		}
+	}
+	return undefined;
+}
+
 /**
  * Rovo v2 wraps tool results as `{ data: { … } }`. Returns the inner object
  * when none of `fields` is set at the top level, otherwise `value` unchanged.

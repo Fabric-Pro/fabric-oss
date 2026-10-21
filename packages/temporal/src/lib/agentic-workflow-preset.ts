@@ -24,11 +24,11 @@ import {
 	PUBLISH_FRAME_NODE_TYPE,
 } from "./workflow-node-types";
 
+export { FRAME_SURFACES, type FrameSurface } from "@repo/utils/frame-surfaces";
 export {
 	AGENT_TASK_NODE_TYPE,
 	PUBLISH_FRAME_NODE_TYPE,
 } from "./workflow-node-types";
-export { FRAME_SURFACES, type FrameSurface } from "@repo/utils/frame-surfaces";
 
 export const TRIGGER_NODE_TYPE = "trigger";
 
@@ -244,7 +244,67 @@ export interface GraphFacts {
 		outputFormat: string | null;
 	} | null;
 	publish: { title: string | null; projectId: string | null } | null;
-	steps: Array<{ type: string; label: string }>;
+	steps: Array<{ type: string; label: string; settings: string | null }>;
+}
+
+const STEP_SETTING_CHARS = 160;
+const STEP_SETTINGS_CHARS = 900;
+/** Settings whose value is a credential: named on the card, never shown. */
+const SECRET_SETTING =
+	/(?:^|\.)(?:authorization|cookie|credentials?|[\w-]*(?:secret|password|token|api[-_]?key))$/i;
+
+/**
+ * A step's own settings in plain text: every scalar or list of scalars in its
+ * config, and in each object one level down (`sprintContext.iterationPaths`),
+ * each value shortened. A label is the author's word for a step, and the author
+ * may be a model that read something nobody vetted, so what a person approves
+ * has to show what each step does: the URL it calls, the tool it runs with
+ * which arguments, who it writes to, whose work it reads.
+ */
+function stepSettings(config: Record<string, unknown>): string | null {
+	const shorten = (text: string) =>
+		text.length > STEP_SETTING_CHARS
+			? `${text.slice(0, STEP_SETTING_CHARS)}…`
+			: text;
+	const parts: string[] = [];
+	const add = (key: string, value: unknown, depth: number) => {
+		if (
+			depth === 0 &&
+			typeof value === "object" &&
+			value !== null &&
+			!Array.isArray(value)
+		) {
+			for (const [child, entry] of Object.entries(value)) {
+				add(`${key}.${child}`, entry, 1);
+			}
+			return;
+		}
+		const values = Array.isArray(value) ? value : [value];
+		if (
+			values.length === 0 ||
+			!values.every(
+				(item) =>
+					typeof item === "string" ||
+					typeof item === "number" ||
+					typeof item === "boolean",
+			)
+		) {
+			return;
+		}
+		parts.push(
+			`${key}: ${SECRET_SETTING.test(key) ? "(hidden)" : shorten(values.map(String).join(", "))}`,
+		);
+	};
+	for (const [key, value] of Object.entries(config)) {
+		add(key, value, 0);
+	}
+	const text = parts.join(" · ");
+	if (!text) {
+		return null;
+	}
+	return text.length > STEP_SETTINGS_CHARS
+		? `${text.slice(0, STEP_SETTINGS_CHARS)}…`
+		: text;
 }
 
 /**
@@ -265,8 +325,12 @@ export function readGraphFacts(nodes: unknown): GraphFacts {
 	};
 	for (const node of storedNodes(nodes)) {
 		const type = node.type ?? "unknown";
-		facts.steps.push({ type, label: stepLabel(node) });
 		const config = configOf(node);
+		facts.steps.push({
+			type,
+			label: stepLabel(node),
+			settings: stepSettings(config),
+		});
 		if (type === AGENT_TASK_NODE_TYPE && facts.agent === null) {
 			facts.agent = {
 				prompt: stringOrNull(config.prompt),
@@ -282,6 +346,61 @@ export function readGraphFacts(nodes: unknown): GraphFacts {
 		}
 	}
 	return facts;
+}
+
+const APPROVAL_PROMPT_CHARS = 1_000;
+
+/**
+ * What a create or update call would save, for an approval that sees only the
+ * call's arguments: the Orchestrator asks before the tool runs, so unlike the
+ * Direct chat it has no draft to show. Lists every step with its settings and
+ * the agent's prompt; null when the call carries no graph (a patch that only
+ * renames, for one).
+ */
+export function describeWorkflowCall(
+	args: Record<string, unknown> | undefined,
+): string | null {
+	const nodes = Array.isArray(args?.nodes)
+		? args.nodes
+		: presetNodes(args?.preset);
+	if (!nodes) {
+		return null;
+	}
+	const facts = readGraphFacts(nodes);
+	if (facts.steps.length === 0) {
+		return null;
+	}
+	const lines = [
+		"Steps:",
+		...facts.steps.map(
+			(step, index) =>
+				`${index + 1}. ${step.label} (${step.type})${step.settings ? `: ${step.settings}` : ""}`,
+		),
+	];
+	const prompt = facts.agent?.prompt;
+	if (prompt) {
+		lines.push(
+			"",
+			"Agent prompt:",
+			prompt.length > APPROVAL_PROMPT_CHARS
+				? `${prompt.slice(0, APPROVAL_PROMPT_CHARS)}…`
+				: prompt,
+		);
+	}
+	return lines.join("\n");
+}
+
+/** The graph a `preset` builds, filled in the way the create command fills it. */
+function presetNodes(preset: unknown): PresetGraphNode[] | null {
+	const parsed = PresetCreateArgsSchema.safeParse(preset);
+	if (!parsed.success) {
+		return null;
+	}
+	const { mcpServers: _, ...fields } = parsed.data;
+	return buildAgentTaskToFramePreset({
+		...fields,
+		outputTitle: fields.outputTitle ?? fields.name,
+	}).nodes;
 }
 
 // ─── Patching a stored graph ─────────────────────────────────────────────────
@@ -481,7 +600,13 @@ export const WorkflowDraftSchema = z.object({
 	project: z.object({ id: z.string(), name: z.string() }).nullable(),
 	outputTitle: z.string().nullable(),
 	outputFormat: z.string().nullable(),
-	steps: z.array(z.object({ type: z.string(), label: z.string() })),
+	steps: z.array(
+		z.object({
+			type: z.string(),
+			label: z.string(),
+			settings: z.string().nullable(),
+		}),
+	),
 	problems: z.array(z.string()),
 });
 export type WorkflowDraft = z.infer<typeof WorkflowDraftSchema>;

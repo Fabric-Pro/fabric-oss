@@ -74,6 +74,11 @@ interface RoomConvergenceOptions {
 	adoptSavedBody: (markdown: string, stamp: RoomStamp) => void;
 	/** Offers text the room is about to lose back to this person, once. */
 	offerBack: (text: string) => void;
+	/**
+	 * What this person has typed here, as it would be offered back: the raw
+	 * view's text while it holds edits of its own. The editor's when absent.
+	 */
+	readLocalText?: () => string | null;
 }
 
 interface RoomConvergenceMemo {
@@ -99,6 +104,12 @@ interface RoomConvergenceMemo {
 	adoptedFor: string | null;
 	/** A convergence this editor saw under way, before it was read back. */
 	witnessedFor: string | null;
+	/**
+	 * The stamp of the last saved body another editor put into the room
+	 * together with its stamp — a run's review, a rewind, a convergence —
+	 * moved on with that body's later versions.
+	 */
+	serverBody: RoomStamp | null;
 	offeredFor: string | null;
 	/** The saved document as this editor last saw the room hold it. */
 	inSyncAt: RoomStamp | null;
@@ -181,6 +192,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		recheckApplied: false,
 		adoptedFor: null,
 		witnessedFor: null,
+		serverBody: null,
 		offeredFor: null,
 		inSyncAt: null,
 		roomAheadFetch: null,
@@ -234,7 +246,9 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		if (!roomWasUnstamped && !o.hasLocalTyping()) {
 			return;
 		}
-		const text = getEditorMarkdownForSave(o.editor);
+		const text = o.readLocalText
+			? o.readLocalText()
+			: getEditorMarkdownForSave(o.editor);
 		if (!text?.trim()) {
 			return;
 		}
@@ -417,6 +431,16 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 					// watched: nothing in this editor is unsaved any more.
 					memo.adoptedFor = key;
 					o.adoptSavedBody(savedBody, saved);
+				} else if (
+					sameRoomStamp(memo.serverBody, saved) &&
+					memo.adoptedFor !== key &&
+					!o.hasLocalTyping()
+				) {
+					// Another editor put this saved body into the room with its
+					// stamp — a run's review, a rewind — with no convergence
+					// to watch: it is this editor's saved body too.
+					memo.adoptedFor = key;
+					o.adoptSavedBody(savedBody, saved);
 				}
 				setStatus("inSync");
 				return;
@@ -448,6 +472,36 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 			// The claimant went quiet before it read its body back: the
 			// body is checked here, as for a stale room.
 		} else if (!sameRoomStamp(stamp, saved)) {
+			if (
+				stamp &&
+				stamp.contentHash === saved.contentHash &&
+				stamp.version < saved.version &&
+				o.canEdit === true
+			) {
+				// The same body at a later version — a run's version step,
+				// which no one announces: the room holds the saved body
+				// already, so its stamp moves at once, with nothing to look
+				// at twice and nothing to claim. A claim for it not yet
+				// verified is.
+				if (claimForSaved && claimForSaved.settled !== "verified") {
+					writeConvergenceClaim(room, {
+						...claimForSaved,
+						settled: "verified",
+					});
+				}
+				writeRoomStamp(room, saved);
+				resetWaiting(memo);
+				memo.inSyncAt = saved;
+				memo.roomAheadFetch = null;
+				memo.peerHoldSince = null;
+				if (!o.hasLocalTyping()) {
+					memo.adoptedFor = roomStampKey(saved);
+					o.adoptSavedBody(savedBody, saved);
+				}
+				clearTimer();
+				setStatus("inSync");
+				return;
+			}
 			const roomAheadFetch = memo.roomAheadFetch;
 			if (
 				stamp &&
@@ -700,10 +754,23 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 			if (!metaKeys?.has("stamp")) {
 				return;
 			}
+			const target = readRoomStamp(ydoc);
 			if (!transactionTouches(transaction, body)) {
+				// Only the stamp moved: the same body at a later version is
+				// still the saved body another editor put in.
+				const known = memoRef.current.serverBody;
+				if (target && known?.contentHash === target.contentHash) {
+					memoRef.current.serverBody = target;
+				}
 				return;
 			}
-			const target = readRoomStamp(ydoc);
+			// A body that came with its stamp is a saved one, whether a
+			// convergence claimed it or not (a run's review claims nothing):
+			// this editor takes it as its saved body once its own copy of
+			// the document names it too.
+			if (target) {
+				memoRef.current.serverBody = target;
+			}
 			const claim = readConvergenceClaim(ydoc);
 			if (!target || !claim || !sameRoomStamp(claim.target, target)) {
 				return;

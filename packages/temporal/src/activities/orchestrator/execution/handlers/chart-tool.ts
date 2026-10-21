@@ -15,29 +15,13 @@ import { tool } from "@repo/ai";
 import { z } from "zod";
 
 /**
- * Chart artifact storage for current execution
- */
-let currentChartArtifacts: ChartArtifact[] = [];
-
-/**
- * Get all chart artifacts generated during execution
- */
-export function getChartArtifacts(): ChartArtifact[] {
-	return [...currentChartArtifacts];
-}
-
-/**
- * Clear chart artifacts (call at start of new execution)
- */
-export function clearChartArtifacts(): void {
-	currentChartArtifacts = [];
-}
-
-/**
  * Check if a similar chart already exists (same type, same title, similar data)
  */
-function isDuplicateChart(newChart: ChartArtifact): boolean {
-	return currentChartArtifacts.some((existing) => {
+function isDuplicateChart(
+	artifacts: ChartArtifact[],
+	newChart: ChartArtifact,
+): boolean {
+	return artifacts.some((existing) => {
 		if (existing.chartType !== newChart.chartType) {
 			return false;
 		}
@@ -217,9 +201,10 @@ const chartToolSchema = z.object({
 type ChartToolInput = z.infer<typeof chartToolSchema>;
 
 /**
- * Create the chart tool for the orchestrator
+ * Create the chart tool for the orchestrator. Charts it creates are appended
+ * to `artifacts`, which the caller owns.
  */
-export function createChartTool() {
+export function createChartTool(artifacts: ChartArtifact[]) {
 	return tool({
 		description: [
 			"Creates interactive charts from data. Pass RAW data from API responses - the tool handles aggregation.",
@@ -276,7 +261,7 @@ export function createChartTool() {
 			});
 
 			// Check for duplicate charts
-			if (isDuplicateChart(artifact)) {
+			if (isDuplicateChart(artifacts, artifact)) {
 				console.log(
 					`[ChartTool] Skipping duplicate chart: ${input.title}`,
 				);
@@ -289,7 +274,7 @@ export function createChartTool() {
 			}
 
 			// Store the artifact
-			currentChartArtifacts.push(artifact);
+			artifacts.push(artifact);
 
 			// Return success with details
 			return JSON.stringify({
@@ -307,10 +292,14 @@ export function createChartTool() {
 }
 
 /**
- * Get the chart tool as a record for merging with other tools
+ * Create the chart tool for one step, as a record for merging with other
+ * tools. Each call gets its own artifact list, so steps running at the same
+ * time on one worker never see each other's charts (Fizzy #3191).
  */
-export function getChartToolRecord(): Record<string, unknown> {
+export function createStepChartTools() {
+	const artifacts: ChartArtifact[] = [];
 	return {
-		create_chart: createChartTool(),
+		tools: { create_chart: createChartTool(artifacts) },
+		getArtifacts: (): ChartArtifact[] => [...artifacts],
 	};
 }

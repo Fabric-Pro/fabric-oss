@@ -50,6 +50,18 @@ export interface BulkRunInputExtras {
 export const BULK_RUN_PAUSE_FAILED_TYPE = "BulkRunPauseFailed";
 
 /**
+ * Gates a bulk parent's skip of a document its run no longer holds (Fizzy
+ * #2946). The batch and the setup start each document with a GENERATING
+ * write that lands only while the row is still theirs: a person's save, a
+ * newer generation, the watchdog or a Cancel may have taken it since the
+ * run created or queued it. When that write reports `held: false`, the
+ * parent starts no child and writes nothing more to the document. Skipping
+ * removes the child, its evaluation and the COMPLETE write from the command
+ * stream, so the branch needs `patched()`: one marker for both parents.
+ */
+export const BULK_DOCUMENT_HELD_PATCH = "bulk-document-held-guard-v1";
+
+/**
  * A resume run takes its row back. `claimed: false` means a Cancel, the other
  * resume or the sweep got there first, and the run should end quietly.
  */

@@ -295,6 +295,7 @@ export const semanticSearchProcedure = tenantProtectedProcedure
 				userId: user.id,
 				organizationId: organizationId ?? undefined,
 				projectId: input.projectId,
+				featureKey: "knowledge-search",
 			});
 			embeddings = batch.embeddings;
 			model = batch.model;

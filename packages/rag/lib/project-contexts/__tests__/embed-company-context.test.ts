@@ -185,6 +185,7 @@ describe("embedCompanyContext", () => {
 		expect(mocks.generateEmbeddings).toHaveBeenCalledWith([SHORT], {
 			userId: "user-1",
 			organizationId: ORG,
+			featureKey: "knowledge-index",
 			tags: ["company-context", "text"],
 			organizationOnly: true,
 		});
@@ -405,6 +406,7 @@ describe("embedProjectContext is unchanged", () => {
 				userId: "user-1",
 				organizationId: ORG,
 				projectId: "proj-1",
+				featureKey: "knowledge-index",
 				tags: ["project-context", "text"],
 			},
 			{ apiKey: "key" },
@@ -454,6 +456,7 @@ describe("embedProjectContext is unchanged", () => {
 					organizationId: ORG,
 					projectId: "proj-1",
 					tags: ["project-context", "text", "chunk-0"],
+					featureKey: "knowledge-index",
 				},
 				{ apiKey: "key" },
 			],
@@ -464,6 +467,7 @@ describe("embedProjectContext is unchanged", () => {
 					organizationId: ORG,
 					projectId: "proj-1",
 					tags: ["project-context", "text", "chunk-1"],
+					featureKey: "knowledge-index",
 				},
 				{ apiKey: "key" },
 			],

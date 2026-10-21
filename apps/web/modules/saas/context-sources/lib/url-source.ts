@@ -489,3 +489,45 @@ export function pickPreferredProvider<
 	}
 	return null;
 }
+
+/** Providers that only search, named the way the settings page names them. */
+const SEARCH_ONLY_DISPLAY_NAMES: Record<string, string> = {
+	parallel: PROVIDER_DISPLAY_NAMES.parallel,
+	youtube: "YouTube",
+};
+
+/**
+ * Why no provider can read pages, when keys are saved: scrape-capable
+ * providers that are switched off, and providers that are on but only search.
+ * The notice names them instead of claiming nothing is configured. A row
+ * without a key is not connected and counts for neither.
+ */
+export function describeUnusableProviders(
+	providers: {
+		providerName: string;
+		enabled: boolean;
+		maskedApiKey: string | null;
+	}[],
+): {
+	disabledScrapeProviders: UrlSourceProviderName[];
+	searchOnlyProviders: string[];
+} {
+	const disabledScrapeProviders: UrlSourceProviderName[] = [];
+	const searchOnlyProviders: string[] = [];
+	for (const provider of providers) {
+		if (!provider.maskedApiKey) {
+			continue;
+		}
+		if (isScrapeCapable(provider.providerName)) {
+			if (!provider.enabled) {
+				disabledScrapeProviders.push(provider.providerName);
+			}
+		} else if (provider.enabled) {
+			searchOnlyProviders.push(
+				SEARCH_ONLY_DISPLAY_NAMES[provider.providerName] ??
+					provider.providerName,
+			);
+		}
+	}
+	return { disabledScrapeProviders, searchOnlyProviders };
+}

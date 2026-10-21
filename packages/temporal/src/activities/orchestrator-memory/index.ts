@@ -290,6 +290,7 @@ export async function searchEpisodicMemoryActivity(
 		// Generate embedding for the query
 		const embeddingModel = await getAIEmbeddingModel({
 			userId,
+			featureKey: "chat-agent",
 			...secondaryUsageFields(input),
 			organizationId: organizationId ?? undefined,
 		});
@@ -370,6 +371,7 @@ export async function createEpisodicMemoryActivity(
 		const embeddingText = `${input.title}\n\n${input.summary}\n\nTopics: ${input.keyTopics.join(", ")}`;
 		const embeddingModel = await getAIEmbeddingModel({
 			userId: input.userId,
+			featureKey: "chat-agent",
 			...secondaryUsageFields(input),
 			organizationId: input.organizationId || undefined,
 		});

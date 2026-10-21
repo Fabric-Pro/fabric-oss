@@ -1,0 +1,437 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"type": "object",
+	"properties": {
+		"areas": {
+			"default": [],
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"prefix": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					}
+				},
+				"required": ["prefix", "title"],
+				"additionalProperties": false
+			}
+		},
+		"items": {
+			"default": [],
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"sourceRef": {
+						"type": "string"
+					},
+					"title": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"dependsOnRefs": {
+						"default": [],
+						"type": "array",
+						"items": {
+							"type": "string"
+						}
+					}
+				},
+				"required": ["sourceRef"],
+				"additionalProperties": false
+			}
+		},
+		"proposal": {
+			"type": "object",
+			"properties": {
+				"summary": {
+					"default": "",
+					"description": "High-level summary of all proposed changes",
+					"type": "string"
+				},
+				"contextSummary": {
+					"default": "",
+					"description": "Summary of the context sources analyzed (what was discussed, decided, etc.)",
+					"type": "string"
+				},
+				"changes": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"type": {
+								"type": "string",
+								"enum": ["epic", "feature", "bug"]
+							},
+							"action": {
+								"type": "string",
+								"enum": ["create", "update"]
+							},
+							"existingId": {
+								"description": "Fabric DB ID of the existing item (for updates)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"existingIdentifier": {
+								"description": "Fabric identifier like EPIC-001, FEAT-002, F-003 (for updates)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"existingExternalId": {
+								"description": "External PM tool ID (for updates)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"title": {
+								"type": "object",
+								"properties": {
+									"from": {
+										"description": "Current title (for updates)",
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"to": {
+										"type": "string",
+										"description": "New or updated title"
+									}
+								},
+								"required": ["to"],
+								"additionalProperties": false
+							},
+							"description": {
+								"type": "object",
+								"properties": {
+									"from": {
+										"description": "Current description",
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"to": {
+										"type": "string",
+										"description": "New or updated description"
+									}
+								},
+								"required": ["to"],
+								"additionalProperties": false
+							},
+							"acceptanceCriteria": {
+								"type": "object",
+								"properties": {
+									"from": {
+										"description": "Current acceptance criteria",
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"to": {
+										"type": "string",
+										"description": "New or updated acceptance criteria"
+									}
+								},
+								"required": ["to"],
+								"additionalProperties": false
+							},
+							"priority": {
+								"type": "object",
+								"properties": {
+									"from": {
+										"description": "Current value",
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"to": {
+										"type": "string",
+										"description": "Priority: P0_CRITICAL, P1_HIGH, P2_MEDIUM, or P3_LOW"
+									}
+								},
+								"required": ["to"],
+								"additionalProperties": false
+							},
+							"size": {
+								"type": "object",
+								"properties": {
+									"from": {
+										"description": "Current value",
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"to": {
+										"type": "string",
+										"description": "Size estimate: XS, S, M, L, or XL"
+									}
+								},
+								"required": ["to"],
+								"additionalProperties": false
+							},
+							"parentEpicIdentifier": {
+								"description": "Identifier of the parent epic (e.g. EPIC-001) for features",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"parentFeatureIdentifier": {
+								"description": "Identifier of the parent feature (e.g. FEAT-001) for stories",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"parentEpicTitle": {
+								"description": "Title of the parent epic (used when creating new epics inline)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"parentFeatureTitle": {
+								"description": "Title of the parent feature (used when creating new features inline)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"reasoning": {
+								"description": "Why this change is proposed, referencing specific context",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"sourceContext": {
+								"description": "Which context source(s) informed this change (e.g. teams_messages, meeting_transcript, notion_page, or multiple)",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"sourceRef": {
+								"description": "Customer's own line id from the scope document (e.g. VIS-02). Not a PM-tool id.",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"labels": {
+								"description": "Labels to apply on create, e.g. [\"phase:1\", \"area:VIS\"]",
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"sourceDependencyRaw": {
+								"description": "Raw dependency cell from the source table, e.g. P1–2",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"dependsOnRefs": {
+								"description": "Explicit prerequisite line ids named in the document, e.g. [INT-01, INT-02]",
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"dependsOnPhases": {
+								"description": "Phase horizons this item depends on, e.g. [\"1\",\"2\"]",
+								"anyOf": [
+									{
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"sourceChangeKey": {
+								"description": "Stable idempotency key for this change: the context id and the sourceRef joined by a colon",
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"deliveryTrack": {
+								"description": "Delivery track preset, when the source states one",
+								"anyOf": [
+									{
+										"type": "string",
+										"enum": [
+											"SPIKE",
+											"DISCOVERY",
+											"SPECIFY",
+											"DEFER"
+										]
+									},
+									{
+										"type": "null"
+									}
+								]
+							}
+						},
+						"required": ["type", "action", "title"],
+						"additionalProperties": false
+					}
+				},
+				"visionSuggestions": {
+					"description": "Explore mode only: purpose / core actions / cycle inferred from the conversation",
+					"anyOf": [
+						{
+							"type": "object",
+							"properties": {
+								"purpose": {
+									"description": "One sentence: what the product is for",
+									"anyOf": [
+										{
+											"type": "string"
+										},
+										{
+											"type": "null"
+										}
+									]
+								},
+								"coreActions": {
+									"description": "2–5 verbs: the core actions a user takes",
+									"anyOf": [
+										{
+											"type": "array",
+											"items": {
+												"type": "string"
+											}
+										},
+										{
+											"type": "null"
+										}
+									]
+								},
+								"cycle": {
+									"description": "The repeating loop the product supports (e.g. plan → build → review)",
+									"anyOf": [
+										{
+											"type": "string"
+										},
+										{
+											"type": "null"
+										}
+									]
+								}
+							},
+							"additionalProperties": false
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["changes"],
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false
+}

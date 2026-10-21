@@ -391,6 +391,11 @@ describe("existingProjectSetupWorkflow", () => {
 			status: "GENERATING",
 			progress: 5,
 			startsAttempt: true,
+			// Only while the setup still holds the document (Fizzy #2946).
+			heldBy: {
+				kind: "PROJECT_SETUP",
+				childWorkflowId: "wf-parent-doc-doc-proposal",
+			},
 		});
 		expect(childInputOf("doc-proposal")).toMatchObject({
 			generationStartedAt: "2026-10-08T09:10:00.000Z",

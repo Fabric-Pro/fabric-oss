@@ -69,6 +69,7 @@ import {
 	COMMON_ID_FIELDS,
 	COMMON_URL_FIELDS,
 	decryptApiKey,
+	extractPMListArray,
 	extractWebUrlFromLinks,
 	findBacklogsListTool,
 	getBaseUrl,
@@ -91,6 +92,10 @@ import {
 	assertPayloadWithinLimit,
 	PAYLOAD_HARD_LIMIT_BYTES,
 } from "../../lib/payload-size-guard";
+import {
+	type PMBoardReadErrorKind,
+	pmBoardReadError,
+} from "../../lib/pm-board-read-error";
 import { withHeartbeatTicker } from "../lib/activity-liveness";
 import { jobHeartbeat } from "../lib/job-progress";
 import { executeMcpTool } from "../orchestrator/execution/execute-mcp-tool";
@@ -5096,6 +5101,8 @@ export interface ListWorkItemsResult {
 	total?: number;
 	/** Whether there are more pages available. */
 	hasNextPage: boolean;
+	/** False when the listing is unrecognised or a single-page tool omitted further results. */
+	listingComplete?: boolean;
 	/** IDs that were requested but could not be fetched (tool error or exception). */
 	failedIds?: string[];
 	/**
@@ -6026,6 +6033,15 @@ export async function listWorkItemsFromPM(input: {
 	}
 
 	const listTool = capabilities.taskList;
+	// Cursor tokens are not mapped to numbered pages. Callers may still request
+	// page 2 based on the provider total, so stop before repeating the first page.
+	if (
+		page > 1 &&
+		(listTool.paginationInfo.style === "cursor" ||
+			listTool.paginationInfo.style === "none")
+	) {
+		return { items: [], hasNextPage: false };
+	}
 
 	// Fizzy fallback: if account_slug is missing, fetch from get_accounts or get_identity
 	// (for projects created before additionalContext was saved, or when PM settings lack account context)
@@ -6201,7 +6217,7 @@ export async function listWorkItemsFromPM(input: {
 	}
 
 	// Inject pagination params into the request based on the detected style.
-	// cursor style is not mapped to numbered pages — fall back to in-memory pagination.
+	// Cursor tokens are not mapped to numbered pages; cursor tools return only their first response.
 	const { paginationInfo } = listTool;
 	if (paginationInfo.style === "offset-page") {
 		if (paginationInfo.pageParam) {
@@ -6218,7 +6234,7 @@ export async function listWorkItemsFromPM(input: {
 			listArgs[paginationInfo.pageSizeParam] = pageSize;
 		}
 	}
-	// "cursor" and "none" styles: no pagination params added; in-memory fallback applied after parsing.
+	// "cursor" and "none" styles: no pagination params added; numbered requests after page 1 return empty.
 
 	const result = await executeMcpTool({
 		pmTarget: { additionalContext },
@@ -6279,24 +6295,16 @@ export async function listWorkItemsFromPM(input: {
 		}
 	}
 
-	// Extract array: workItems, value, workItemRefs (ADO), cards (Fizzy), items, data, or direct array
-	// Also try to extract total count from common pagination envelope fields.
-	let arr: unknown[] = [];
+	const extracted = extractPMListArray(data);
+	if (!extracted) {
+		logger.warn("[List Work Items] Unrecognized PM listing response", {
+			keys: data && typeof data === "object" ? Object.keys(data) : [],
+		});
+	}
+	const arr = extracted?.items ?? [];
 	let responseTotal: number | undefined;
-	if (Array.isArray(data)) {
-		arr = data;
-	} else if (data && typeof data === "object") {
-		const d = data as Record<string, unknown>;
-		arr =
-			(Array.isArray(d.workItems) ? d.workItems : null) ??
-			(Array.isArray(d.value) ? d.value : null) ??
-			(Array.isArray(d.workItemRefs) ? d.workItemRefs : null) ??
-			(Array.isArray(d.cards) ? d.cards : null) ??
-			(Array.isArray(d.items) ? d.items : null) ??
-			(Array.isArray(d.data) ? d.data : null) ??
-			(Array.isArray(d.results) ? d.results : null) ??
-			[];
-
+	const d = extracted?.envelope;
+	if (d) {
 		// Parse total from envelope: total | totalCount | total_count | meta.total | pagination.total
 		// NOTE: d.count intentionally excluded — many APIs use "count" to mean items returned
 		// in this page, not the total dataset size, which would break hasNextPage detection.
@@ -6355,9 +6363,15 @@ export async function listWorkItemsFromPM(input: {
 		let url: string | null | undefined;
 
 		if (fields) {
-			title = (fields["System.Title"] ?? fields["System.Name"]) as string;
+			title = (fields["System.Title"] ??
+				fields["System.Name"] ??
+				fields.summary) as string;
 			description = (fields["System.Description"] ??
-				fields["System.History"]) as string | null | undefined;
+				fields["System.History"] ??
+				descriptionToText(fields.description)) as
+				| string
+				| null
+				| undefined;
 		}
 		if (!title) {
 			title = (rec.title ??
@@ -6655,8 +6669,9 @@ export async function listWorkItemsFromPM(input: {
 		}
 	}
 
-	// For tools without native pagination (style "none" or "cursor"), the full result
-	// is returned in one call. For paginated calls the PM tool already scoped the page.
+	// For tools without numbered pagination (style "none" or "cursor"), only the
+	// first response is returned; cursor traversal is not implemented.
+	// For paginated calls the PM tool already scoped the page.
 	//
 	// PM tools may silently cap page size below what we requested (e.g. Fizzy
 	// returns max ~15 items even when we ask for 100). Two strategies:
@@ -6667,10 +6682,22 @@ export async function listWorkItemsFromPM(input: {
 	//    long as the page returned any items. This costs one extra empty-page
 	//    call at the end but guarantees we collect all items regardless of
 	//    the tool's internal page-size cap.
+	const pageInfo = d?.pageInfo;
+	const listingComplete =
+		!extracted ||
+		((paginationInfo.style === "cursor" ||
+			paginationInfo.style === "none") &&
+			((responseTotal != null && responseTotal > items.length) ||
+				(pageInfo != null &&
+					typeof pageInfo === "object" &&
+					(pageInfo as Record<string, unknown>).hasNextPage ===
+						true)))
+			? false
+			: undefined;
 	const itemsFetchedSoFar = (page - 1) * items.length + items.length;
 	const hasNextPage =
 		paginationInfo.style === "none" || paginationInfo.style === "cursor"
-			? false // in-memory pagination handled by the caller
+			? false // numbered page requests stop before another tool call
 			: responseTotal != null
 				? items.length > 0 && itemsFetchedSoFar < responseTotal
 				: items.length > 0; // no total available — keep going until an empty page
@@ -6715,6 +6742,7 @@ export async function listWorkItemsFromPM(input: {
 		items: boundedItems,
 		total: responseTotal,
 		hasNextPage,
+		...(listingComplete === false ? { listingComplete } : {}),
 		availableWorkItemTypes,
 		availableStates,
 	};
@@ -7963,8 +7991,14 @@ export async function fetchPMItemsByIds(input: {
  */
 const FIZZY_COLUMN_PAGE_CAP = 50;
 
+export type FizzyBoardCardsRead =
+	| { kind: "ok"; result: ListWorkItemsResult }
+	| { kind: "no-columns" }
+	| { kind: "unavailable"; reason: string }
+	| { kind: "failed"; errorKind: PMBoardReadErrorKind };
+
 /**
- * Fetch ALL cards from a Fizzy board using the per-column strategy.
+ * Fetch workflow-column cards from a Fizzy board using the per-column strategy.
  *
  * `fizzy_get_cards` returns ONE page per call. Since fizzy-mcp 1.1.0 that is
  * a `{cards, page, total_count, has_more, next_page}` envelope whose page size
@@ -8011,7 +8045,14 @@ const FIZZY_COLUMN_PAGE_CAP = 50;
  * byte-identical to before and a fizzy-mcp deployment predating the
  * projection is unaffected.
  */
-export async function listAllFizzyCards(input: {
+export async function listAllFizzyCards(
+	input: Parameters<typeof readFizzyBoardCards>[0],
+): Promise<ListWorkItemsResult | null> {
+	const read = await readFizzyBoardCards(input);
+	return read.kind === "ok" ? read.result : null;
+}
+
+export async function readFizzyBoardCards(input: {
 	mcpConfigId: string | null;
 	mcpServerId?: string;
 	containerId: string;
@@ -8020,7 +8061,7 @@ export async function listAllFizzyCards(input: {
 	organizationId?: string;
 	capabilities: PMToolCapabilities;
 	fields?: "summary" | "full";
-}): Promise<ListWorkItemsResult | null> {
+}): Promise<FizzyBoardCardsRead> {
 	const {
 		mcpConfigId: maybeMcpConfigId,
 		containerId,
@@ -8039,7 +8080,10 @@ export async function listAllFizzyCards(input: {
 		logger.warn(
 			"[listAllFizzyCards] mcpConfigId is null; Fizzy-style listing requires MCP",
 		);
-		return null;
+		return {
+			kind: "unavailable",
+			reason: "Fizzy MCP configuration is unavailable.",
+		};
 	}
 	const mcpConfigId = maybeMcpConfigId;
 
@@ -8118,7 +8162,10 @@ export async function listAllFizzyCards(input: {
 			logger.warn(
 				"[listAllFizzyCards] Could not resolve account_slug, falling back to generic",
 			);
-			return null;
+			return {
+				kind: "unavailable",
+				reason: "Fizzy account could not be resolved.",
+			};
 		}
 	}
 
@@ -8135,7 +8182,10 @@ export async function listAllFizzyCards(input: {
 			"[listAllFizzyCards] Required Fizzy tools not found, falling back to generic",
 			{ getColumnsTool, getCardsTool },
 		);
-		return null;
+		return {
+			kind: "unavailable",
+			reason: "Required Fizzy tools are unavailable.",
+		};
 	}
 
 	try {
@@ -8153,16 +8203,19 @@ export async function listAllFizzyCards(input: {
 			logger.warn(
 				"[listAllFizzyCards] get_columns call failed, falling back to generic",
 			);
-			return null;
+			return {
+				kind: "failed",
+				errorKind: pmBoardReadError(columnsResult),
+			};
 		}
 
 		// Parse columns response (MCP content wrapper → array of { id, name })
-		const columns = parseFizzyColumnsResponse(columnsResult.output);
+		const columns = parseFizzyColumnsResponse(columnsResult.output, true);
 		if (columns.length === 0) {
 			logger.warn("[listAllFizzyCards] No columns found for board", {
 				boardId: containerId,
 			});
-			return null;
+			return { kind: "no-columns" };
 		}
 
 		logger.info("[listAllFizzyCards] Fetching cards per column", {
@@ -8222,7 +8275,8 @@ export async function listAllFizzyCards(input: {
 						// A failed call used to skip the column, which is the
 						// same short-board outcome as a lost page: the pull's
 						// orphan cleanup deletes that column's stories. Fail the
-						// listing so the caller falls back instead.
+						// listing so legacy callers can fall back and hierarchy reads
+						// can report failure.
 						const detail =
 							cardsResult.output &&
 							typeof cardsResult.output === "object" &&
@@ -8233,6 +8287,7 @@ export async function listAllFizzyCards(input: {
 								: "unknown error";
 						throw new Error(
 							`PM tool failed to list cards for a column (page ${pagesForColumn}): ${detail}`,
+							{ cause: cardsResult },
 						);
 					}
 
@@ -8302,8 +8357,8 @@ export async function listAllFizzyCards(input: {
 				// A column that cannot be read is NOT an empty column. Letting
 				// the listing continue would return a short board, and a full
 				// pull deletes the stories of every card missing from it. Fail
-				// the whole listing so the caller falls back or surfaces an
-				// error instead of quietly dropping a column's worth of cards.
+				// the whole listing so legacy callers can fall back and the
+				// hierarchy fetcher can report a failed read.
 				logger.error(
 					"[listAllFizzyCards] Failed to fetch cards for column",
 					{
@@ -8366,18 +8421,21 @@ export async function listAllFizzyCards(input: {
 		);
 
 		return {
-			items: boundedCards,
-			total: allCards.length,
-			hasNextPage: false,
-			availableWorkItemTypes,
-			availableStates,
+			kind: "ok",
+			result: {
+				items: boundedCards,
+				total: allCards.length,
+				hasNextPage: false,
+				availableWorkItemTypes,
+				availableStates,
+			},
 		};
 	} catch (error) {
 		logger.warn(
 			"[listAllFizzyCards] Per-column fetch failed, falling back to generic",
 			{ error: error instanceof Error ? error.message : String(error) },
 		);
-		return null;
+		return { kind: "failed", errorKind: pmBoardReadError(error) };
 	}
 }
 
@@ -8386,6 +8444,7 @@ export async function listAllFizzyCards(input: {
  */
 function parseFizzyColumnsResponse(
 	output: unknown,
+	strict = false,
 ): Array<{ id: string; name: string }> {
 	let data: unknown = output;
 
@@ -8399,6 +8458,9 @@ function parseFizzyColumnsResponse(
 				try {
 					data = JSON.parse(textItem.text);
 				} catch {
+					if (strict) {
+						throw new Error("Unreadable Fizzy columns response.");
+					}
 					return [];
 				}
 			}
@@ -8406,6 +8468,14 @@ function parseFizzyColumnsResponse(
 	}
 
 	if (!Array.isArray(data)) {
+		// Strict callers report "no columns" to the user, so only a parsed
+		// empty array may mean that; any other shape is a failed read.
+		if (strict) {
+			logger.warn("[listAllFizzyCards] Unrecognized columns response", {
+				keys: data && typeof data === "object" ? Object.keys(data) : [],
+			});
+			throw new Error("Unreadable Fizzy columns response.");
+		}
 		return [];
 	}
 

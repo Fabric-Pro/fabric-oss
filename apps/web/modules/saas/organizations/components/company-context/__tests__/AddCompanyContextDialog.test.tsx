@@ -93,6 +93,24 @@ vi.mock("sonner", () => ({
 	},
 }));
 
+// Only an organization admin or owner ever sees this dialog —
+// `CompanyContextList` renders it for `canEdit` alone — so that is the
+// viewer's standing in the organization the page is for.
+vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
+	useActiveOrganization: () => ({
+		activeOrganization: {
+			id: "org-1",
+			slug: "example-org",
+			name: "Example Org",
+			members: [{ userId: "user-admin", role: "admin" }],
+		},
+		activeOrganizationUserRole: "admin",
+		isOrganizationAdmin: true,
+		loaded: true,
+		isResolvingOrganization: false,
+	}),
+}));
+
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { AddCompanyContextDialog } from "../AddCompanyContextDialog";
 import { companyContextSubmitAdapter } from "../company-context-adapter";
@@ -224,6 +242,25 @@ describe("AddCompanyContextDialog — tabs", () => {
 			"Weekly",
 			"Monthly",
 		]);
+	});
+
+	it("links the admin to the organization's search provider settings when no provider can scrape (Fizzy #3068)", async () => {
+		state.getOrganizationProviders.mockResolvedValue([]);
+		const user = userEvent.setup();
+		renderDialog();
+
+		await user.click(screen.getByRole("tab", { name: "tabs.link" }));
+
+		await waitFor(() =>
+			expect(
+				screen
+					.queryAllByRole("link")
+					.map((link) => link.getAttribute("href"))
+					.filter((href) =>
+						href?.includes("settings/search-providers"),
+					),
+			).toEqual(["/app/example-org/settings/search-providers"]),
+		);
 	});
 
 	it("refuses a Live link before calling the company procedure", async () => {

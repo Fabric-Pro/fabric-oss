@@ -75,16 +75,59 @@ function diffField(toDescription: string, fromDescription = "Current value") {
 	);
 }
 
+type TitleClassification =
+	| { kind: "changed"; title: { from?: string | null; to: string } }
+	| { kind: "unchanged"; from?: string }
+	| { kind: "invalid" };
+
+/** Single source of truth for title "unchanged" handling. */
+function classifyTitle(value: unknown): TitleClassification {
+	if (value === undefined || value === null) {
+		return { kind: "unchanged" };
+	}
+	if (typeof value === "string") {
+		return value.trim()
+			? { kind: "changed", title: { to: value } }
+			: { kind: "unchanged" };
+	}
+	if (typeof value !== "object" || Array.isArray(value)) {
+		return { kind: "invalid" };
+	}
+	const { from, to } = value as Record<string, unknown>;
+	if (
+		to === undefined ||
+		to === null ||
+		(typeof to === "string" && !to.trim())
+	) {
+		return {
+			kind: "unchanged",
+			...(typeof from === "string" && from.trim() ? { from } : {}),
+		};
+	}
+	if (
+		typeof to !== "string" ||
+		(from !== undefined && from !== null && typeof from !== "string")
+	) {
+		return { kind: "invalid" };
+	}
+	return {
+		kind: "changed",
+		title: { ...(from !== undefined ? { from } : {}), to },
+	};
+}
+
 /**
- * One proposed change, as the model is asked to produce it.
+ * One proposed change, including the annotations stamped on it after
+ * generation. The model is asked for `backlogGenerationItemSchema` below,
+ * which omits those annotations.
  *
  * Named, exported and reused so the array can validate ELEMENT-WISE (see
  * `dropUnusableChanges`) and so callers can introspect one change without
  * reaching through the array wrapper.
  */
 export const backlogChangeItemSchema = z.object({
-	// This is the analyzer's GENERATION output schema (used by
-	// `generateObject` below). Fabric supports two work-item types —
+	// The generation schema below derives from this full item schema.
+	// Fabric supports two work-item types —
 	// "feature" and "bug" — so "story" is intentionally absent: the
 	// model cannot emit a User Story. ("epic" stays only as an input
 	// the apply activity normalizes to "feature"; the Epic/Feature
@@ -111,7 +154,12 @@ export const backlogChangeItemSchema = z.object({
 		.nullable()
 		.optional()
 		.describe("External PM tool ID (for updates)"),
-	title: diffField("New or updated title", "Current title (for updates)"),
+	title: diffField(
+		"New or updated title",
+		"Current title (for updates)",
+	).refine((title) => classifyTitle(title).kind === "changed", {
+		path: ["to"],
+	}),
 	description: diffField(
 		"New or updated description",
 		"Current description",
@@ -271,6 +319,13 @@ export const backlogChangeItemSchema = z.object({
 		.describe(
 			"Post-generation safe-hold flag for the structure-preserving update pass. Never set by the analyzer.",
 		),
+	bodyMergeDeferred: z
+		.boolean()
+		.optional()
+		.describe(
+			"Post-generation flag: analysis ran out of merge time; the proposed body will be merged at approval. Not set by the analyzer.",
+		),
+
 	/**
 	 * Set AFTER generation by the analysis-time structure-preserving pass
 	 * when it has already merged this update's body. The apply activity
@@ -358,6 +413,18 @@ export const backlogChangeItemSchema = z.object({
 		),
 });
 
+/** Fields stamped after generation are excluded so Zod strips model-emitted values. */
+const backlogGenerationItemSchema = backlogChangeItemSchema.omit({
+	kindOverride: true,
+	targetResolution: true,
+	bodyMergeFallback: true,
+	bodyMergeDeferred: true,
+	structurePreserved: true,
+	predrafted: true,
+	needsMoreInfo: true,
+	routing: true,
+});
+
 /**
  * Fizzy #2395: accept a `changes` the model handed back double-encoded.
  *
@@ -389,6 +456,98 @@ function coerceChangesArray(value: unknown): unknown[] | undefined {
 	return Array.isArray(parsed) ? parsed : undefined;
 }
 
+const optionalDiffFields = [
+	"description",
+	"acceptanceCriteria",
+	"priority",
+	"size",
+] as const;
+
+function isUnchangedOptionalDiff(value: unknown): boolean {
+	return (
+		value === null ||
+		(typeof value === "object" &&
+			value !== null &&
+			!Array.isArray(value) &&
+			(!("to" in value) || value.to === null))
+	);
+}
+
+/**
+ * 21 Oct 2026: null diff fields can discard otherwise usable updates. Normalize
+ * before element validation so absent optional fields stay absent in Zod 4,
+ * rather than returning undefined into a required preprocess output schema.
+ */
+function normalizeUnchangedDiffs(
+	entry: unknown,
+	recovered: Record<string, number>,
+): unknown {
+	if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+		return entry;
+	}
+	const normalized = { ...entry } as Record<string, unknown>;
+	for (const field of optionalDiffFields) {
+		if (isUnchangedOptionalDiff(normalized[field])) {
+			delete normalized[field];
+			recovered[field] = (recovered[field] ?? 0) + 1;
+		}
+	}
+	return normalized;
+}
+
+/** Type name (never the value) found at `path`, for the discard log. */
+function describeReceivedType(root: unknown, path: PropertyKey[]): string {
+	let value: unknown = root;
+	for (const key of path) {
+		if (!value || typeof value !== "object") {
+			return "undefined";
+		}
+		value = (value as Record<PropertyKey, unknown>)[key];
+	}
+	if (value === null) {
+		return "null";
+	}
+	return Array.isArray(value) ? "array" : typeof value;
+}
+
+type DiscardDetail = {
+	index: number;
+	action: "create" | "update" | null;
+	type: "epic" | "feature" | "bug" | null;
+	// Type names only; values and Zod messages can contain customer content.
+	issues: string;
+};
+
+type GenerationParseReport = {
+	discarded: number;
+	discardedUpdates: number;
+	details: DiscardDetail[];
+	accepted: {
+		index: number;
+		titleReceivedType: string;
+		pendingTitleFrom?: string;
+	}[];
+};
+
+const pendingTitleItemSchema = backlogGenerationItemSchema.extend({
+	title: backlogGenerationItemSchema.shape.title.optional(),
+});
+
+function logDiscardedChanges(report: GenerationParseReport, kept: number) {
+	if (report.discarded > 0) {
+		logger.warn(
+			"[Backlog Analysis] Discarded malformed changes from the model response",
+			{
+				discarded: report.discarded,
+				kept,
+				details: report.details
+					.sort((a, b) => a.index - b.index)
+					.slice(0, 10),
+			},
+		);
+	}
+}
+
 /**
  * Drop the changes the model malformed; keep the ones it got right.
  *
@@ -410,7 +569,11 @@ function coerceChangesArray(value: unknown): unknown[] | undefined {
  * wholesale generation failure, and quietly reporting 'nothing proposed' would
  * hide it; only individual elements are salvageable.
  */
-function dropUnusableChanges(value: unknown): unknown {
+function dropUnusableChanges(
+	value: unknown,
+	onDiscarded?: (report: GenerationParseReport) => void,
+	allowPendingTitles = false,
+): unknown {
 	const changes = coerceChangesArray(value);
 	if (changes === undefined) {
 		// Not our problem to fix — let the array schema reject it.
@@ -427,20 +590,109 @@ function dropUnusableChanges(value: unknown): unknown {
 		);
 	}
 
-	const usable = changes.filter(
-		(entry) => backlogChangeItemSchema.safeParse(entry).success,
-	);
+	const recovered: Record<string, number> = {};
+	const usable = [];
+	const details: DiscardDetail[] = [];
+	const accepted: GenerationParseReport["accepted"] = [];
+	let discardedUpdates = 0;
+	for (const [index, entry] of changes.entries()) {
+		const normalized = normalizeUnchangedDiffs(entry, recovered);
+		const fields =
+			normalized &&
+			typeof normalized === "object" &&
+			!Array.isArray(normalized)
+				? (normalized as Record<string, unknown>)
+				: undefined;
+		const title = classifyTitle(fields?.title);
+		const canDeferTitle =
+			allowPendingTitles &&
+			fields?.action === "update" &&
+			title.kind === "unchanged";
+		if (fields && title.kind === "changed") {
+			fields.title = title.title;
+		} else if (
+			fields &&
+			allowPendingTitles &&
+			title.kind === "unchanged" &&
+			title.from &&
+			fields.action === "create"
+		) {
+			fields.title = { from: title.from, to: title.from };
+		}
+		const parsed = canDeferTitle
+			? pendingTitleItemSchema.safeParse({
+					...fields,
+					title: undefined,
+				})
+			: backlogGenerationItemSchema.safeParse(normalized);
+		if (
+			!parsed.success &&
+			entry !== null &&
+			typeof entry === "object" &&
+			"action" in entry &&
+			entry.action === "update"
+		) {
+			discardedUpdates++;
+		}
+		if (parsed.success) {
+			if (
+				allowPendingTitles &&
+				title.kind === "unchanged" &&
+				title.from
+			) {
+				recovered.title = (recovered.title ?? 0) + 1;
+			}
+			usable.push(parsed.data);
+			accepted.push({
+				index,
+				titleReceivedType: describeReceivedType(entry, ["title"]),
+				...(canDeferTitle && title.kind === "unchanged" && title.from
+					? { pendingTitleFrom: title.from }
+					: {}),
+			});
+		} else if (details.length < 10) {
+			const fields = entry && typeof entry === "object" ? entry : {};
+			details.push({
+				index,
+				action:
+					"action" in fields &&
+					(fields.action === "create" || fields.action === "update")
+						? fields.action
+						: null,
+				type:
+					"type" in fields &&
+					(fields.type === "epic" ||
+						fields.type === "feature" ||
+						fields.type === "bug")
+						? fields.type
+						: null,
+				issues: parsed.error.issues
+					.slice(0, 5)
+					.map(
+						({ path, code }) =>
+							`${path.map(String).join(".")}:${code}:${describeReceivedType(normalized, path)}`,
+					)
+					.join(", "),
+			});
+		}
+	}
 
-	if (usable.length !== changes.length) {
-		// Never silent: the operator log is the only place a dropped change is
-		// visible, since the user just sees a smaller (but valid) proposal.
-		logger.warn(
-			"[Backlog Analysis] Discarded malformed changes from the model response",
-			{
-				discarded: changes.length - usable.length,
-				kept: usable.length,
-			},
+	if (Object.keys(recovered).length > 0) {
+		logger.info(
+			"[Backlog Analysis] Normalized unchanged diff fields from the model response",
+			recovered,
 		);
+	}
+	const report = {
+		discarded: changes.length - usable.length,
+		discardedUpdates,
+		details,
+		accepted,
+	};
+	if (onDiscarded) {
+		onDiscarded(report);
+	} else {
+		logDiscardedChanges(report, usable.length);
 	}
 
 	return usable;
@@ -450,7 +702,7 @@ function dropUnusableChanges(value: unknown): unknown {
  * Change proposal schema for generateObject.
  * Defines the structured output the LLM must produce.
  */
-export const ChangeProposalSchema = z.object({
+const proposalObjectSchema = z.object({
 	summary: z
 		.string()
 		.optional()
@@ -463,10 +715,7 @@ export const ChangeProposalSchema = z.object({
 		.describe(
 			"Summary of the context sources analyzed (what was discussed, decided, etc.)",
 		),
-	changes: z.preprocess(
-		dropUnusableChanges,
-		z.array(backlogChangeItemSchema),
-	),
+	changes: z.array(backlogGenerationItemSchema),
 	// -------------------------------------------------------------------
 	// Explore intake (plan Slice 6). Only populated in explore mode; the
 	// reviewer applies it to the project's vision fields by hand.
@@ -498,6 +747,114 @@ export const ChangeProposalSchema = z.object({
 		),
 });
 
+/** Shared consumers retain required titles and do not receive activity retry notes. */
+export const ChangeProposalSchema = z.preprocess((value) => {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return value;
+	}
+	const proposal = value as Record<string, unknown>;
+	return { ...proposal, changes: dropUnusableChanges(proposal.changes) };
+}, proposalObjectSchema);
+
+const generationProposalObjectSchema = proposalObjectSchema.extend({
+	changes: z.array(pendingTitleItemSchema),
+});
+type GenerationProposal = z.infer<typeof generationProposalObjectSchema>;
+
+/**
+ * 21 Oct 2026 local gpt-6.1-sol runs omitted titles on unchanged updates.
+ * Advertise the strict schema through Standard Schema's JSON converter while
+ * allowing pending titles only in this activity's runtime validator. Its output
+ * must pass fillMissingUpdateTitles before becoming a downstream ChangeProposal.
+ */
+export function createChangeProposalSchema(options: {
+	onDiscarded: (report: GenerationParseReport) => void;
+}) {
+	const runtimeSchema = z.preprocess((value) => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			return value;
+		}
+		const proposal = value as Record<string, unknown>;
+		return {
+			...proposal,
+			changes: dropUnusableChanges(
+				proposal.changes,
+				options.onDiscarded,
+				true,
+			),
+		};
+	}, generationProposalObjectSchema);
+	return {
+		"~standard": {
+			version: 1 as const,
+			vendor: "fabric",
+			jsonSchema: ChangeProposalSchema["~standard"].jsonSchema,
+			validate(
+				value: unknown,
+			): { value: GenerationProposal } | { issues: z.core.$ZodIssue[] } {
+				const parsed = runtimeSchema.safeParse(value);
+				return parsed.success
+					? { value: parsed.data }
+					: { issues: parsed.error.issues };
+			},
+		},
+	};
+}
+
+export function fillMissingUpdateTitles(
+	generated: GenerationProposal,
+	stories: ResolvableBacklogItem[] | undefined,
+	report: GenerationParseReport,
+): ChangeProposal {
+	const changes: ChangeProposal["changes"] = [];
+	const resolvedBy: Partial<
+		Record<"id" | "identifier" | "externalId" | "title", number>
+	> = {};
+	let filled = 0;
+	for (const [position, change] of generated.changes.entries()) {
+		if (change.title) {
+			changes.push({ ...change, title: change.title });
+			continue;
+		}
+		const target =
+			change.action === "update" && stories
+				? resolveBacklogUpdateTarget(stories, change)
+				: { status: "unresolved" as const };
+		if (target.status === "resolved" && target.title.trim()) {
+			changes.push({
+				...change,
+				title: { from: target.title, to: target.title },
+			});
+			filled++;
+			resolvedBy[target.resolvedBy] =
+				(resolvedBy[target.resolvedBy] ?? 0) + 1;
+		} else if (report.accepted[position]?.pendingTitleFrom) {
+			const from = report.accepted[position].pendingTitleFrom;
+			changes.push({ ...change, title: { from, to: from } });
+		} else {
+			report.discarded++;
+			if (change.action === "update") {
+				report.discardedUpdates++;
+			}
+			const accepted = report.accepted[position];
+			report.details.push({
+				index: accepted?.index ?? position,
+				action: change.action,
+				type: change.type,
+				issues: `title:missing_unresolved_target:${accepted?.titleReceivedType ?? "undefined"}`,
+			});
+		}
+	}
+	if (filled > 0) {
+		logger.info(
+			"[Backlog Analysis] Filled unchanged update titles from backlog targets",
+			{ count: filled, resolvedBy },
+		);
+	}
+	logDiscardedChanges(report, changes.length);
+	return { ...generated, changes };
+}
+
 /**
  * A generated change proposal plus the async decision pre-check result. The
  * pre-check field is a POST-hoc type intersection, deliberately NOT part of
@@ -508,7 +865,11 @@ export const ChangeProposalSchema = z.object({
  * workflow result before a row exists; the monitor paths fold them into
  * `sourceMetadata.decisionPrecheck`.
  */
-export type ChangeProposal = z.infer<typeof ChangeProposalSchema> & {
+export type ChangeProposal = Omit<
+	z.infer<typeof ChangeProposalSchema>,
+	"changes"
+> & {
+	changes: z.infer<typeof backlogChangeItemSchema>[];
 	decisionConflicts?: DecisionPrecheckResult;
 };
 export type VisionSuggestions = NonNullable<
@@ -2123,17 +2484,15 @@ function auditState(
  * loads the item's TRUE current kind + body and re-derives the body via the
  * kind-appropriate re-analysis prompt (`reanalyzeBodyByKind`), so the proposed
  * `to` preserves the existing structure and applies only targeted edits. The
- * review diff and the saved body then match and stay type-correct (bugs stay
- * bugs, features stay features).
+ * review diff for a completed merge matches the saved body and stays
+ * type-correct (bugs stay bugs, features stay features).
  *
- * SAFETY ("safe-hold"): `reanalyzeBodyByKind` never throws and never returns a
- * destructive rewrite — on any problem it signals `fallbackUsed`, and here we
- * keep the existing body unchanged (neutralize the body diff so apply skips it)
- * and stamp `bodyMergeFallback` so the reviewer sees the description was held
- * as-is. Title/priority/size edits are preserved either way.
+ * Genuine merge fallbacks neutralize the body diff and stamp
+ * `bodyMergeFallback`. Aborted and unstarted merges keep the proposed diff
+ * and receive `bodyMergeDeferred` so reviewers know apply will merge it.
+ * Title/priority/size edits are preserved in both cases.
  *
- * Only invoked for `allowUpdates` flows; monitored channels (create-only) never
- * reach this. Mutates and returns the `changes` array.
+ * Invoked for updates and routed enrichments. Mutates and returns `changes`.
  */
 export async function structurePreserveUpdates(params: {
 	changes: ChangeProposal["changes"];
@@ -2141,9 +2500,16 @@ export async function structurePreserveUpdates(params: {
 	userId: string;
 	organizationId?: string;
 	connectedContext?: string;
+	abortSignal?: AbortSignal;
 }): Promise<ChangeProposal["changes"]> {
-	const { changes, projectId, userId, organizationId, connectedContext } =
-		params;
+	const {
+		changes,
+		projectId,
+		userId,
+		organizationId,
+		connectedContext,
+		abortSignal,
+	} = params;
 
 	// Resolved updates that actually propose a body change.
 	const targets = changes.filter(
@@ -2182,7 +2548,11 @@ export async function structurePreserveUpdates(params: {
 	type Change = ChangeProposal["changes"][number];
 	type Item = (typeof items)[number];
 
-	const counters = { merged: 0, heldBack: 0 };
+	const counters = { merged: 0, heldBack: 0, deferredToApply: 0 };
+	const defer = (change: Change) => {
+		change.bodyMergeDeferred = true;
+		counters.deferredToApply++;
+	};
 
 	// Safe-hold: keep the existing body. Neutralize the body diff so apply skips
 	// description/AC writes; title/priority/size still apply.
@@ -2211,6 +2581,10 @@ export async function structurePreserveUpdates(params: {
 		if (!item) {
 			return;
 		}
+		if (abortSignal?.aborted) {
+			defer(change);
+			return;
+		}
 
 		// Capture whether the analyzer actually proposed a DESCRIPTION change
 		// before we mutate anything, so an AC-only update never silently picks up
@@ -2230,6 +2604,7 @@ export async function structurePreserveUpdates(params: {
 			.join("\n\n");
 
 		const result = await reanalyzeBodyByKind({
+			abortSignal,
 			kind: item.kind,
 			title: item.title,
 			identifier: item.identifier,
@@ -2242,6 +2617,10 @@ export async function structurePreserveUpdates(params: {
 			projectId,
 		});
 
+		if (result.fallbackReason === "aborted") {
+			defer(change);
+			return;
+		}
 		if (result.fallbackUsed) {
 			safeHold(change, item);
 			return;
@@ -2300,10 +2679,31 @@ export async function structurePreserveUpdates(params: {
 	}
 
 	for (let i = 0; i < toProcess.length; i += CONCURRENCY) {
+		if (abortSignal?.aborted) {
+			for (const change of toProcess.slice(i)) {
+				if (change.existingId && byId.has(change.existingId)) {
+					defer(change);
+				}
+			}
+			break;
+		}
 		heartbeat(`structurePreserveUpdates: ${i}/${toProcess.length}`);
-		await Promise.all(toProcess.slice(i, i + CONCURRENCY).map(mergeOne));
+		await withHeartbeatKeepalive(
+			{ stage: "structure-preserving-analysis", batch: i },
+			() =>
+				Promise.all(toProcess.slice(i, i + CONCURRENCY).map(mergeOne)),
+		);
 	}
 
+	if (abortSignal?.aborted) {
+		logger.warn(
+			"[Backlog Analysis] structure-preserving merge pass cut short; deferred to apply",
+			{
+				projectId,
+				...counters,
+			},
+		);
+	}
 	logger.info(
 		"[Backlog Analysis] Structure-preserving update pass complete",
 		{
@@ -2326,7 +2726,7 @@ export async function structurePreserveUpdates(params: {
  * structured change proposals using LLM.
  *
  * Uses resolveModelWithCredentials for COMPLEX task type, then calls
- * generateObject with a Zod schema for structured output.
+ * generateObject with a runtime validator and the shared structured-output schema.
  */
 export async function analyzeContextAndPropose(
 	input: AnalyzeContextInput,
@@ -2412,8 +2812,19 @@ export async function analyzeContextAndPropose(
 	// and re-throw a typed ApplicationFailure the workflow unwraps for the user.
 	const analysisStart = Date.now();
 	let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+	let parseReport: GenerationParseReport = {
+		discarded: 0,
+		discardedUpdates: 0,
+		details: [],
+		accepted: [],
+	};
+	const generationSchema = createChangeProposalSchema({
+		onDiscarded: (report) => {
+			parseReport = report;
+		},
+	});
 	let result: Awaited<
-		ReturnType<typeof generateObject<typeof ChangeProposalSchema>>
+		ReturnType<typeof generateObject<typeof generationSchema>>
 	>;
 	try {
 		// Resolve AI model via centralized entry point
@@ -2470,7 +2881,7 @@ export async function analyzeContextAndPropose(
 		}
 		result = await generateObject({
 			model,
-			schema: ChangeProposalSchema,
+			schema: generationSchema,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 			// Bug #1681: ChangeProposalSchema has many optional fields. The
@@ -2497,6 +2908,7 @@ export async function analyzeContextAndPropose(
 			projectId,
 		});
 	} catch (error) {
+		logDiscardedChanges(parseReport, parseReport.accepted.length);
 		// Preserve the guard's actionable message through the workflow's cause-chain unwrap.
 		if (
 			error instanceof ApplicationFailure &&
@@ -2557,7 +2969,11 @@ export async function analyzeContextAndPropose(
 		}
 	}
 
-	const proposal: ChangeProposal = result.object;
+	const proposal = fillMissingUpdateTitles(
+		result.object,
+		existingBacklog?.stories,
+		parseReport,
+	);
 
 	// Capture-as-is enforcement: when the monitored-channel flow disabled
 	// updates (`allowUpdates: false`), drop any `action: "update"` the model
@@ -2639,13 +3055,19 @@ export async function analyzeContextAndPropose(
 		(allowUpdates || routedEnrichCount > 0) &&
 		existingBacklog?.stories != null
 	) {
-		proposal.changes = await structurePreserveUpdates({
-			changes: proposal.changes,
-			projectId,
-			userId,
-			organizationId,
-			connectedContext: fetchedContext.ragContext,
-		});
+		const mergeScope = createMergeDeadlineScope();
+		try {
+			proposal.changes = await structurePreserveUpdates({
+				abortSignal: mergeScope.signal,
+				changes: proposal.changes,
+				projectId,
+				userId,
+				organizationId,
+				connectedContext: fetchedContext.ragContext,
+			});
+		} finally {
+			mergeScope.dispose();
+		}
 	}
 
 	if (allowRouting) {
@@ -2697,6 +3119,23 @@ export async function analyzeContextAndPropose(
 		}
 	}
 
+	// Policy-rejected updates cannot be recovered by retrying create-only flows.
+	const retryableDiscards =
+		parseReport.discarded -
+		(allowUpdates ? 0 : parseReport.discardedUpdates);
+	// Blank monitor summaries must reach their content-title fallback unchanged.
+	if (
+		retryableDiscards > 0 &&
+		(allowUpdates || proposal.summary.trim().length > 0)
+	) {
+		const summary = proposal.summary.trim()
+			? proposal.summary
+			: `Analysis complete. ${proposal.changes.length} change(s) proposed.`;
+		const retryInstruction = allowUpdates
+			? " Run the analysis again to retry them."
+			: "";
+		proposal.summary = `${summary}\n\n${retryableDiscards} proposed change(s) could not be read from the AI response and were left out.${retryInstruction}`;
+	}
 	return proposal;
 }
 
@@ -2840,6 +3279,65 @@ async function withHeartbeatKeepalive<T>(
 	}
 }
 
+// Leave 30s for the default 20s decision pre-check plus bookkeeping and return.
+// When analysis is nested in auto-analyze-meeting-transcript, analyze-slack-thread,
+// analyze-channel-messages or analyze-chat-messages, this is the outer activity's
+// deadline; the margin does not cover that caller's remaining work.
+const MERGE_DEADLINE_MARGIN_MS = 30_000;
+
+export function createMergeDeadlineScope(options?: {
+	deadlineMs: number;
+	now?: () => number;
+	cancellationSignal?: AbortSignal;
+}): { signal: AbortSignal | undefined; dispose: () => void } {
+	let deadlineMs = options?.deadlineMs;
+	let cancellationSignal = options?.cancellationSignal;
+	if (!options) {
+		try {
+			const context = Context.current();
+			// In activity SDK 1.23 this is the earliest available attempt timestamp,
+			// so the merge budget errs early.
+			deadlineMs =
+				context.info.currentAttemptScheduledTimestampMs +
+				context.info.startToCloseTimeoutMs;
+			cancellationSignal = context.cancellationSignal;
+		} catch {
+			return { signal: undefined, dispose: () => {} };
+		}
+	}
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const dispose = () => {
+		clearTimeout(timer);
+		cancellationSignal?.removeEventListener("abort", cancel);
+	};
+	const abort = (reason: unknown) => {
+		controller.abort(reason);
+		dispose();
+	};
+	const cancel = () => abort(cancellationSignal?.reason);
+	const remaining =
+		(deadlineMs ?? 0) -
+		(options?.now ?? Date.now)() -
+		MERGE_DEADLINE_MARGIN_MS;
+	if (cancellationSignal?.aborted) {
+		cancel();
+	} else {
+		cancellationSignal?.addEventListener("abort", cancel, { once: true });
+		if (Number.isFinite(deadlineMs)) {
+			if (remaining <= 0) {
+				abort(new Error("Merge deadline reached"));
+			} else {
+				timer = setTimeout(
+					() => abort(new Error("Merge deadline reached")),
+					remaining,
+				);
+			}
+		}
+	}
+	return { signal: controller.signal, dispose };
+}
+
 /**
  * This attempt's cancellation signal, or undefined outside an activity (unit
  * tests), where cancellation never occurs.
@@ -2856,9 +3354,8 @@ function currentCancellationSignal(): AbortSignal | undefined {
  * Throw when Temporal has cancelled this attempt. A heartbeat-timed-out
  * attempt is not killed: it keeps running beside the retry, so without this
  * check both would walk the same changes and the stale one would redo LLM
- * drafts the retry is already doing. Checked BETWEEN changes only, so a change
- * is never left half-applied; what already applied is recorded and the live
- * attempt skips it.
+ * drafts the retry is already doing. Checked between changes and after an
+ * update merge, before writes; completed changes remain recorded for retries.
  */
 function throwIfApplyCancelled(signal: AbortSignal | undefined): void {
 	if (!signal?.aborted) {
@@ -2867,6 +3364,21 @@ function throwIfApplyCancelled(signal: AbortSignal | undefined): void {
 	throw signal.reason instanceof CancelledFailure
 		? signal.reason
 		: new CancelledFailure("Apply attempt cancelled between changes");
+}
+
+function throwIfApplyStopped(
+	mergeSignal: AbortSignal | undefined,
+	cancellationSignal: AbortSignal | undefined,
+): void {
+	throwIfApplyCancelled(cancellationSignal);
+	if (mergeSignal?.aborted) {
+		throw ApplicationFailure.create({
+			message:
+				"Apply merge time budget exhausted; retry to finish remaining changes",
+			type: "ApplyMergeDeadline",
+			nonRetryable: false,
+		});
+	}
 }
 
 /**
@@ -2892,6 +3404,21 @@ function throwIfApplyCancelled(signal: AbortSignal | undefined): void {
  */
 export async function applyBacklogChanges(
 	input: ApplyBacklogChangesInput,
+): Promise<ApplyBacklogChangesResult> {
+	const mergeScope = createMergeDeadlineScope();
+	try {
+		return await applyBacklogChangesWithMergeSignal(
+			input,
+			mergeScope.signal,
+		);
+	} finally {
+		mergeScope.dispose();
+	}
+}
+
+async function applyBacklogChangesWithMergeSignal(
+	input: ApplyBacklogChangesInput,
+	mergeSignal: AbortSignal | undefined,
 ): Promise<ApplyBacklogChangesResult> {
 	const {
 		projectId,
@@ -3573,7 +4100,7 @@ export async function applyBacklogChanges(
 
 	const cancellationSignal = currentCancellationSignal();
 	for (const { change, originalIndex } of indexedChanges) {
-		throwIfApplyCancelled(cancellationSignal);
+		throwIfApplyStopped(mergeSignal, cancellationSignal);
 		// Liveness signal — the per-change work now includes a classifier LLM
 		// call and (for bugs) a drafting LLM call inside createStoryFromProposal,
 		// so each iteration can take several seconds. Without a heartbeat the
@@ -3913,15 +4440,10 @@ export async function applyBacklogChanges(
 					? change.acceptanceCriteria?.to
 					: undefined;
 
-				// Apply-time structure-preserving merge — the GUARANTEED choke
-				// point. The analysis-time pass already merged + flagged
-				// (`structurePreserved`) updates that went through
-				// analyzeContextAndPropose. Proposals that bypassed analysis (e.g.
-				// the chat agent's "skip analysis" shortcut) arrive unflagged —
-				// merge them here so EVERY update body is structure-preserving and
-				// type-aware regardless of origin. Skipped when already merged (no
-				// double LLM call → no cost on the analysis path) and when there is
-				// no body change. `reanalyzeBodyByKind` never throws.
+				// Merge updates that bypassed analysis or were deferred there.
+				// Completed analysis merges skip this call. A genuine fallback keeps
+				// the existing body; cancellation or deadline throws before this
+				// change writes or records completion, leaving it retryable.
 				if (
 					(proposedDescription || proposedAcceptanceCriteria) &&
 					!change.structurePreserved &&
@@ -3939,18 +4461,25 @@ export async function applyBacklogChanges(
 					]
 						.filter(Boolean)
 						.join("\n\n");
-					const merged = await reanalyzeBodyByKind({
-						kind: existingRow.kind,
-						title: existingRow.title,
-						identifier: existingRow.identifier,
-						existingDescription: existingRow.description ?? "",
-						existingAcceptanceCriteria:
-							existingRow.acceptanceCriteria,
-						newInfo,
-						userId,
-						organizationId,
-						projectId,
-					});
+					const merged = await withHeartbeatKeepalive(
+						{ stage: "structure-preserving-apply", itemId },
+						() =>
+							reanalyzeBodyByKind({
+								abortSignal: mergeSignal,
+								kind: existingRow.kind,
+								title: existingRow.title,
+								identifier: existingRow.identifier,
+								existingDescription:
+									existingRow.description ?? "",
+								existingAcceptanceCriteria:
+									existingRow.acceptanceCriteria,
+								newInfo,
+								userId,
+								organizationId,
+								projectId,
+							}),
+					);
+					throwIfApplyStopped(mergeSignal, cancellationSignal);
 					if (merged.fallbackUsed) {
 						// Safe-hold: keep the existing body unchanged.
 						nextDescription = undefined;
@@ -4092,6 +4621,13 @@ export async function applyBacklogChanges(
 				});
 			}
 		} catch (error) {
+			if (
+				error instanceof CancelledFailure ||
+				(error instanceof ApplicationFailure &&
+					error.type === "ApplyMergeDeadline")
+			) {
+				throw error;
+			}
 			creationRefusal ??= findAiConfigurationRefusal(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);

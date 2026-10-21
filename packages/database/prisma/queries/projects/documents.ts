@@ -9,6 +9,7 @@ import {
 	isAiRefreshAuthor,
 	resolveDocumentVersionAuthor,
 } from "@repo/utils/document-version-author";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	isGenerationRunStillWriting,
 	isRunGuardedDocumentType,
@@ -58,23 +59,8 @@ export class IntegrationContractStatusManagedError extends Error {
 	}
 }
 
-/**
- * Count meaningful prose words in document content.
- * Strips mermaid blocks, code blocks, image references, and base64 data URLs
- * before counting so that non-prose content does not inflate the word count.
- */
-export function countDocumentWords(content: string): number {
-	let cleaned = content;
-	// 1. Strip fenced code blocks (including mermaid diagrams)
-	cleaned = cleaned.replace(/```[\s\S]*?```/g, "");
-	// 2. Strip image references: ![alt](src) and HTML <img> tags
-	cleaned = cleaned.replace(/!\[[^\]]*\]\([^)]*\)/g, "");
-	cleaned = cleaned.replace(/<img\s[^>]*\/>/g, "");
-	// 3. Strip any remaining base64 data URLs
-	cleaned = cleaned.replace(/data:[a-z/]+;base64,[A-Za-z0-9+/=]+/g, "");
-	// 4. Split on whitespace and count non-empty tokens
-	return cleaned.split(/\s+/).filter((w) => w.length > 0).length;
-}
+// Lives in `@repo/utils` so the generation activity counts with it too.
+export { countDocumentWords };
 
 /**
  * Sanitize content for PostgreSQL UTF8 encoding
@@ -413,6 +399,26 @@ export class DocumentGenerationInProgressError extends Error {
 			`Document ${documentId} is being written by a generation run; the update was not applied.`,
 		);
 		this.name = "DocumentGenerationInProgressError";
+	}
+}
+
+/**
+ * Thrown by `rejectDocumentRegeneration` when the document is no longer the
+ * body the caller reviewed: a newer run, a restore or a colleague's save
+ * moved its version or changed its body after the review opened (Fizzy
+ * #2946). Rewinding then would revert that newer write and delete its
+ * version row instead of the reviewed run's, so nothing was written.
+ */
+export class DocumentRegenerationReviewStaleError extends Error {
+	constructor(
+		readonly documentId: string,
+		readonly reviewedVersion: number,
+		readonly actualVersion: number,
+	) {
+		super(
+			`Document ${documentId} is no longer the reviewed regeneration (reviewed version ${reviewedVersion}, now ${actualVersion}); nothing was reverted.`,
+		);
+		this.name = "DocumentRegenerationReviewStaleError";
 	}
 }
 
@@ -1045,18 +1051,41 @@ export async function restoreDocumentVersion(
  * preceding the latest row (e.g. first-ever generation). Callers should
  * fall back to the old skipVersionBump path in that case.
  *
- * A Proposal's rewind is refused with `DocumentGenerationInProgressError`
+ * The caller names the regeneration it reviewed (Fizzy #2946):
+ * `expectedVersion`, the version the review saw, and when known
+ * `expectedContentHash`, the `contentIdentity` of the reviewed body, and
+ * `expectedGenerationStartedAt`, the reviewed run's identity (dispatch stamps
+ * a fresh one on every run). A document that is no longer the reviewed run —
+ * a newer run, a restore or a save landed after the review opened — is
+ * refused with `DocumentRegenerationReviewStaleError` before anything is
+ * deleted: otherwise the rewind would revert the newer write and delete its
+ * version row. Content alone cannot prove that: a newer run can produce the
+ * same body, and a colleague can save something else and then restore the
+ * reviewed body. So the run identity must match, the version may be at most
+ * the reviewed run's own version step ahead, and the body must match. The rewind's WHERE carries the version and body
+ * read here for every document type, so a write landing in between is
+ * refused by the database too, and the transaction, the version-row delete
+ * included, rolls back (`DocumentVersionConflictError`).
+ *
+ * A Proposal's rewind is also refused with `DocumentGenerationInProgressError`
  * while a generation run holds the document (QUEUED or GENERATING), the same
- * default `updateDocument` applies (Fizzy #2946): at the read, and again in
- * the rewind's WHERE, which also carries the version and body read here, so
- * a run queued (or any write landing) in between is refused by the database
- * and the transaction, the version-row delete included, rolls back.
+ * default `updateDocument` applies: at the read, and again in the rewind's
+ * WHERE.
  */
 export async function rejectDocumentRegeneration(
 	documentId: string,
 	options: {
 		userId: string;
 		organizationId?: string | null;
+		/** The version the reviewed regeneration produced. */
+		expectedVersion: number;
+		/** `contentIdentity` of the reviewed regeneration's body, when known. */
+		expectedContentHash?: string;
+		/**
+		 * The reviewed run's `generationStartedAt`, when known: what names
+		 * the run, since a newer run can write the very same body.
+		 */
+		expectedGenerationStartedAt?: Date;
 	},
 ): Promise<{ id: string; version: number; content: string }> {
 	return await db.$transaction(async (tx) => {
@@ -1068,6 +1097,7 @@ export async function rejectDocumentRegeneration(
 				content: true,
 				status: true,
 				type: true,
+				generationStartedAt: true,
 			},
 		});
 		if (!doc) {
@@ -1076,6 +1106,38 @@ export async function rejectDocumentRegeneration(
 		const refuseUnderRun = isRunGuardedDocumentType(doc.type);
 		if (refuseUnderRun && GENERATION_RUN_STATUSES.includes(doc.status)) {
 			throw new DocumentGenerationInProgressError(documentId);
+		}
+		// The document must still be the reviewed run (Fizzy #2946):
+		//  - the same run: a newer run stamps a fresh `generationStartedAt`,
+		//    and can produce the very same body;
+		//  - at most that run's own version step ahead: a review can open
+		//    between the run's final save, which writes the body at the old
+		//    version, and the single step after it. Only a body identity
+		//    proves the step changed nothing, so without one the version
+		//    must be exactly the reviewed one;
+		//  - the same body, when its identity was sent. Together with the
+		//    version window this refuses a colleague's save followed by a
+		//    restore of the reviewed body (two steps).
+		const expectedStartedAt = options.expectedGenerationStartedAt;
+		const sameRun =
+			expectedStartedAt === undefined ||
+			(doc.generationStartedAt !== null &&
+				doc.generationStartedAt.getTime() ===
+					expectedStartedAt.getTime());
+		const versionStep = doc.version - options.expectedVersion;
+		const reviewStale =
+			!sameRun ||
+			(options.expectedContentHash !== undefined
+				? versionStep < 0 ||
+					versionStep > 1 ||
+					contentIdentity(doc.content) !== options.expectedContentHash
+				: versionStep !== 0);
+		if (reviewStale) {
+			throw new DocumentRegenerationReviewStaleError(
+				documentId,
+				options.expectedVersion,
+				doc.version,
+			);
 		}
 
 		const latest = await tx.documentVersion.findFirst({
@@ -1118,45 +1180,45 @@ export async function rejectDocumentRegeneration(
 			wordCount: countDocumentWords(previous.content),
 			lastEditedBy: options.userId,
 		};
-		if (refuseUnderRun) {
-			const { count } = await tx.projectDocument.updateMany({
-				where: {
-					id: documentId,
-					version: doc.version,
-					content: doc.content,
-					status: { notIn: GENERATION_RUN_STATUSES },
-				},
-				data: rewind,
-			});
-			if (count !== 1) {
-				const actual = await tx.projectDocument.findUnique({
-					where: { id: documentId },
-					select: { version: true, status: true },
-				});
-				if (actual && GENERATION_RUN_STATUSES.includes(actual.status)) {
-					throw new DocumentGenerationInProgressError(documentId);
-				}
-				const actualVersion = actual?.version ?? -1;
-				throw new DocumentVersionConflictError(
-					documentId,
-					doc.version,
-					actualVersion,
-					actualVersion === doc.version ? "content" : "version",
-				);
-			}
-			return await tx.projectDocument.findUniqueOrThrow({
-				where: { id: documentId },
-				select: { id: true, version: true, content: true },
-			});
-		}
-
-		const updated = await tx.projectDocument.update({
-			where: { id: documentId },
+		// Conditioned on the version and body read here, which are the
+		// reviewed run's (checked above), for every type: a write landing in
+		// between is never rewound. Only a Proposal also refuses under a live
+		// run.
+		const { count } = await tx.projectDocument.updateMany({
+			where: {
+				id: documentId,
+				version: doc.version,
+				content: doc.content,
+				...(refuseUnderRun
+					? { status: { notIn: GENERATION_RUN_STATUSES } }
+					: {}),
+			},
 			data: rewind,
+		});
+		if (count !== 1) {
+			const actual = await tx.projectDocument.findUnique({
+				where: { id: documentId },
+				select: { version: true, status: true },
+			});
+			if (
+				refuseUnderRun &&
+				actual &&
+				GENERATION_RUN_STATUSES.includes(actual.status)
+			) {
+				throw new DocumentGenerationInProgressError(documentId);
+			}
+			const actualVersion = actual?.version ?? -1;
+			throw new DocumentVersionConflictError(
+				documentId,
+				doc.version,
+				actualVersion,
+				actualVersion === doc.version ? "content" : "version",
+			);
+		}
+		return await tx.projectDocument.findUniqueOrThrow({
+			where: { id: documentId },
 			select: { id: true, version: true, content: true },
 		});
-
-		return updated;
 	});
 }
 

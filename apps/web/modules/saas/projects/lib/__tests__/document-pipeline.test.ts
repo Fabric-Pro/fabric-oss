@@ -10,9 +10,11 @@ import {
 	getDocumentPollInterval,
 	getDocumentStatusView,
 	getPipelineDocuments,
+	getVersionStepPollInterval,
 	isDocumentGenerationRunning,
 	isDocumentInFlight,
 	type PipelineDocument,
+	type VersionStepWatch,
 } from "../document-pipeline";
 
 function doc(
@@ -320,5 +322,121 @@ describe("a run still writing: the poll and the shared rule agree", () => {
 		expect(
 			getDocumentPollInterval("GENERATING", NOW - CEILING - 1, NOW),
 		).toBe(false);
+	});
+});
+
+/**
+ * A run's version step comes after its COMPLETE save and sends no nudge, so
+ * the document is asked about again for a while after the run ends
+ * (Fizzy #2946).
+ */
+describe("getVersionStepPollInterval", () => {
+	const T0 = Date.parse("2026-10-20T12:00:00.000Z");
+
+	/** Feeds the answers in order, each at its time, as the query sees them. */
+	function replay(answers: Array<[number, string, number]>) {
+		let watch: VersionStepWatch | undefined;
+		return answers.map(([at, status, version]) => {
+			const next = getVersionStepPollInterval(
+				watch,
+				{ status, version },
+				T0 + at,
+			);
+			watch = next.watch;
+			return next.interval;
+		});
+	}
+
+	it("keeps asking after a run ends, from 3s and widening, until a later version arrives", () => {
+		expect(
+			replay([
+				[0, "GENERATING", 2],
+				[1000, "COMPLETE", 2],
+				[4000, "COMPLETE", 2],
+				[10_000, "COMPLETE", 3],
+				[13_000, "COMPLETE", 3],
+			]),
+		).toEqual([false, 3000, 6000, false, false]);
+	});
+
+	// The version step waits for the run's decision pre-check, which may
+	// take up to two minutes.
+	it("gives up 150s after the run ended when no later version comes", () => {
+		expect(
+			replay([
+				[0, "QUEUED", 2],
+				[1000, "COMPLETE", 2],
+				[4000, "COMPLETE", 2],
+				[10_000, "COMPLETE", 2],
+				[22_000, "COMPLETE", 2],
+				[46_000, "COMPLETE", 2],
+				[150_999, "COMPLETE", 2],
+				[151_000, "COMPLETE", 2],
+				[154_000, "COMPLETE", 2],
+			]),
+		).toEqual([
+			false,
+			3000,
+			6000,
+			12_000,
+			24_000,
+			30_000,
+			30_000,
+			false,
+			false,
+		]);
+	});
+
+	it("does not ask when the answer that shows the run COMPLETE already carries its step", () => {
+		expect(
+			replay([
+				[0, "GENERATING", 2],
+				[3000, "COMPLETE", 3],
+				[6000, "COMPLETE", 3],
+			]),
+		).toEqual([false, false, false]);
+	});
+
+	it("does not ask about a document COMPLETE from its first answer", () => {
+		expect(
+			replay([
+				[0, "COMPLETE", 2],
+				[3000, "COMPLETE", 2],
+			]),
+		).toEqual([false, false]);
+		expect(getVersionStepPollInterval(undefined, undefined, T0)).toEqual(
+			expect.objectContaining({ interval: false }),
+		);
+	});
+
+	it("stops when the run is under way again, or ends FAILED", () => {
+		expect(
+			replay([
+				[0, "GENERATING", 2],
+				[1000, "COMPLETE", 2],
+				[2000, "GENERATING", 2],
+				[3000, "FAILED", 2],
+				[6000, "FAILED", 2],
+			]),
+		).toEqual([false, 3000, false, false, false]);
+	});
+
+	it("answers the same answer alike however often it is asked", () => {
+		const running = getVersionStepPollInterval(
+			undefined,
+			{ status: "GENERATING", version: 2 },
+			T0,
+		).watch;
+		const ended = getVersionStepPollInterval(
+			running,
+			{ status: "COMPLETE", version: 2 },
+			T0 + 1000,
+		);
+		const again = getVersionStepPollInterval(
+			ended.watch,
+			{ status: "COMPLETE", version: 2 },
+			T0 + 1000,
+		);
+		expect(again).toEqual(ended);
 	});
 });

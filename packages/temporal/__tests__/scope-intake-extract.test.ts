@@ -9,7 +9,9 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { asSchema } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import scopeIntakeJsonSchema from "./fixtures/scope-intake-chunk-json-schema.json";
 
 const { generateObjectMock } = vi.hoisted(() => ({
 	generateObjectMock: vi.fn(),
@@ -58,6 +60,7 @@ import {
 	parseDependencyPhases,
 	prePassScopeDocument,
 	SCOPE_ID_REGEX,
+	ScopeLlmChunkSchema,
 	UNTRUSTED_BLOCK_END,
 	UNTRUSTED_BLOCK_START,
 } from "../src/activities/scope-intake";
@@ -237,6 +240,35 @@ describe("scope intake — deterministic pre-pass (Heritage fixture)", () => {
 });
 
 describe("scope intake — helpers", () => {
+	it("matches the stored scope-intake model schema", async () => {
+		expect(await asSchema(ScopeLlmChunkSchema).jsonSchema).toEqual(
+			scopeIntakeJsonSchema,
+		);
+	});
+
+	it("keeps proposal parsing strict for title-less updates and does not add an analysis retry note", () => {
+		const parsed = ScopeLlmChunkSchema.parse({
+			proposal: {
+				summary: "Scope import",
+				changes: [
+					{
+						type: "feature",
+						action: "update",
+						existingIdentifier: "F-12",
+					},
+					{
+						type: "feature",
+						action: "create",
+						title: "Valid scope item",
+					},
+				],
+			},
+		});
+		expect(parsed.proposal?.changes).toHaveLength(1);
+		expect(parsed.proposal?.changes[0]?.title.to).toBe("Valid scope item");
+		expect(parsed.proposal?.summary).toBe("Scope import");
+	});
+
 	it("parseDependencyPhases handles singles, ranges and dashes", () => {
 		expect(parseDependencyPhases("P1")).toEqual(["1"]);
 		expect(parseDependencyPhases("P1–2")).toEqual(["1", "2"]);

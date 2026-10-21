@@ -104,3 +104,10 @@ export function isGenerationRunStillWriting(
 		GENERATION_RUN_SILENCE_CEILING_MS
 	);
 }
+
+/**
+ * Error code for a regeneration Reject refused because the document moved past
+ * the reviewed run (a newer run, a restore or a save), so a stale review never
+ * reverts a newer write or deletes its version.
+ */
+export const REJECT_REVIEW_STALE = "REJECT_REVIEW_STALE";
