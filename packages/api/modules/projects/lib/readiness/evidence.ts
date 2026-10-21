@@ -421,8 +421,8 @@ export async function gatherReadinessEvidence(
 		// Only documents that are active AND usable — plus the one case where a
 		// transient status hides a document the project genuinely has.
 		//
-		// Regeneration mutates the SAME row: `markDocumentGenerationStarted`
-		// writes it GENERATING, and a run that fails leaves it FAILED. Keying
+		// Regeneration mutates the SAME row: the dispatch marks it QUEUED, the
+		// run moves it to GENERATING, and a run that fails leaves it FAILED. Keying
 		// only on status therefore dropped a long-satisfied PRD the moment its
 		// owner hit Refresh, and left it dropped once the run failed — the
 		// checklist offering "Create PRD" beside a Documents tab plainly showing

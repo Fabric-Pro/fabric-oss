@@ -28,6 +28,11 @@ import { getBaseUrl } from "@repo/utils";
 import { Context, heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../lib/redis-publisher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
+import {
+	type UsageOrigin,
+	secondaryUsageFields,
+	usageOriginFields,
+} from "../../workflows/orchestrator/usage-attribution";
 import { getAgentMemoryTools } from "../agent-memory";
 import { createRunAgentTool } from "../agentic-loop";
 import { buildProviderOptions } from "../direct-chat/build-provider-options";
@@ -368,6 +373,9 @@ export async function executeAgentTurn(
 				projectId,
 				input.workspaceIds,
 				conversationId,
+				input.frameId || input.workflowExecutionId
+					? usageOriginFields(input)
+					: undefined,
 			);
 			for (const [name, def] of Object.entries(builtInTools)) {
 				tools[name] = def;
@@ -784,12 +792,14 @@ async function loadBuiltInToolsForAgent(
 	projectId?: string,
 	workspaceIds?: string[],
 	usageConversationId?: string,
+	usageOrigin?: UsageOrigin,
 ): Promise<Record<string, unknown>> {
 	const fabricToolIds = new Set(
 		mapBuiltInKeysToFabricToolIds(builtInToolNames),
 	);
 	const tools = await createBuiltInTools({
 		usageConversationId,
+		...(usageOrigin ? { usageOrigin } : {}),
 		userId,
 		organizationId,
 		projectId,
@@ -810,6 +820,7 @@ async function loadBuiltInToolsForAgent(
 				organizationId,
 				[],
 				usageConversationId,
+				usageOrigin,
 			);
 		}
 
@@ -904,6 +915,10 @@ async function loadBuiltInToolsForAgent(
 						userId,
 						organizationId,
 						projectId,
+						...secondaryUsageFields({
+							usageConversationId,
+							usageOrigin,
+						}),
 					});
 
 					return result.success
@@ -936,6 +951,10 @@ async function loadBuiltInToolsForAgent(
 						userId,
 						organizationId,
 						projectId,
+						...secondaryUsageFields({
+							usageConversationId,
+							usageOrigin,
+						}),
 					});
 
 					return result.success
@@ -971,6 +990,7 @@ async function loadBuiltInToolsForAgent(
 					const { uploadFile } = await import("@repo/storage");
 					const speech = await synthesizeToolSpeech({
 						usageConversationId,
+						...(usageOrigin ? { usageOrigin } : {}),
 						userId,
 						organizationId,
 						text: ttsText,
@@ -1103,6 +1123,7 @@ async function loadBuiltInToolsForAgent(
 
 					const imageResult = await generateImageActivity({
 						usageConversationId,
+						...(usageOrigin ? { usageOrigin } : {}),
 						prompt,
 						provider,
 						aspectRatio: (args.aspectRatio as string) || "1:1",

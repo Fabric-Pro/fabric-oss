@@ -339,22 +339,81 @@ describe("backlog-updater chatNode analysis failure tool binding", () => {
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(bindToolsMock).not.toHaveBeenCalled();
 	});
-	it.each([
-		new ToolMessage({
-			name: "analyze_backlog",
-			content: "Analysis complete.",
-			tool_call_id: "example-call",
-		}),
-		new ToolMessage({
-			name: "another_tool",
-			content: "Analysis error: unavailable",
-			tool_call_id: "example-call",
-		}),
-		new HumanMessage("Analysis error: unavailable"),
-	])("binds tools for other messages: %j", async (message) => {
-		await run([new HumanMessage("Analyze"), message]);
+
+	it("preserves tools for a named unrelated tool result", async () => {
+		await run([
+			new HumanMessage("Analyze"),
+			new ToolMessage({
+				name: "another_tool",
+				content: "Analysis error: unavailable",
+				tool_call_id: "example-call",
+			}),
+		]);
 		expect(bindToolsMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledOnce();
+	});
+	it("binds tools for a genuine new human message", async () => {
+		await run([
+			new HumanMessage("Analyze"),
+			new HumanMessage("Analysis error: unavailable"),
+		]);
+		expect(bindToolsMock).toHaveBeenCalledOnce();
+		expect(invokeMock).toHaveBeenCalledOnce();
+	});
+
+	// Staging shape: the assistant turn arrives with no content and no
+	// tool_calls, and the tool result has no name.
+	it.each([
+		{
+			label: "a selection result by its shape",
+			assistant: new AIMessage(""),
+			content: JSON.stringify({
+				selectedMeetings: [
+					{
+						joinUrl: "https://example.com/meet/1",
+						startTime: "2026-01-01T00:00:00Z",
+					},
+				],
+				selectedChannels: [],
+				daysBack: 30,
+			}),
+			expected: "[Result from select_review_sources]",
+		},
+		{
+			label: "a Notion result by its shape",
+			assistant: new AIMessage(""),
+			content: JSON.stringify({ pageIds: [], mcpConfigId: "" }),
+			expected: "[Result from select_notion_pages]",
+		},
+		{
+			label: "a result by its matching assistant tool call",
+			assistant: new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "example-call",
+						name: "select_review_sources",
+						args: {},
+					},
+				],
+			}),
+			content: "Selection cancelled",
+			expected: "[Result from select_review_sources]",
+		},
+		{
+			label: "other unnamed results as unknown",
+			assistant: new AIMessage(""),
+			content: "Done",
+			expected: "[Result from unknown_tool]",
+		},
+	])("names $label", async ({ assistant, content, expected }) => {
+		await run([
+			new HumanMessage("Update the backlog from my meetings"),
+			assistant,
+			new ToolMessage({ content, tool_call_id: "example-call" }),
+		]);
+		const sent = invokeMock.mock.calls[0][0].at(-1).content as string;
+		expect(sent).toContain(`${expected}: ${content}`);
 	});
 	it("binds tools again when a new user turn follows an analysis error", async () => {
 		await run([
@@ -368,3 +427,156 @@ describe("backlog-updater chatNode analysis failure tool binding", () => {
 		expect(bindToolsMock).toHaveBeenCalledOnce();
 	});
 });
+
+describe("app-owned flow continuations", () => {
+	beforeEach(() => {
+		invokeMock.mockReset();
+		bindToolsMock.mockClear();
+	});
+	it.each([
+		"select_review_sources",
+		"select_notion_pages",
+		"analyze_backlog",
+		"review_backlog_changes",
+		"apply_backlog_changes",
+		undefined,
+	])(
+		"does not bind or emit tools after %s even when the model ignores bindings",
+		async (name) => {
+			invokeMock.mockResolvedValue(
+				new AIMessage({
+					content: "Status",
+					tool_calls: [
+						{ id: "wrong-call", name: "analyze_backlog", args: {} },
+					],
+					additional_kwargs: { tool_calls: [{ id: "wrong-call" }] },
+				}),
+			);
+			const result = await chatNode({
+				...baseState,
+				tools: [{ name: "analyze_backlog", parameters: {} }],
+				messages: [
+					new HumanMessage("Review"),
+					new AIMessage(""),
+					new ToolMessage({
+						name,
+						content: "Done",
+						tool_call_id: "example-call",
+					}),
+				],
+			} as never);
+			expect(bindToolsMock).not.toHaveBeenCalled();
+			const last = (result.update as any).messages.at(-1);
+			expect(last.tool_calls ?? []).toEqual([]);
+			expect(last.additional_kwargs?.tool_calls).toBeUndefined();
+		},
+	);
+});
+
+it.each(["selecting", "analyzing", "reviewing", "applying"])(
+	"restores entry tools for a genuine request despite stale mirror phase %s",
+	async (phase) => {
+		invokeMock.mockReset().mockResolvedValue(
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "example-new-call",
+						name: "analyze_backlog",
+						args: {},
+						type: "tool_call",
+					},
+				],
+			}),
+		);
+		bindToolsMock.mockClear();
+		const result = await chatNode({
+			...baseState,
+			flow: {
+				version: 1,
+				sessionId: "example-session",
+				messageId: "example-old",
+				flowId: "example-flow",
+				sourcePlan: [],
+				intakeMode: "standard",
+				phase,
+			},
+			messages: [
+				new ToolMessage({
+					content: "Previous analysis complete",
+					name: "analyze_backlog",
+					tool_call_id: "example-old-call",
+				}),
+				new HumanMessage({
+					id: "example-new-message",
+					content: "Another genuine request",
+				}),
+			],
+			tools: [{ name: "analyze_backlog", parameters: {} }],
+		} as never);
+		expect(bindToolsMock).toHaveBeenCalledTimes(1);
+		const reply = (result.update as any).messages.at(-1);
+		expect(reply.tool_calls).toEqual([
+			{
+				id: "example-new-call",
+				name: "analyze_backlog",
+				args: {},
+				type: "tool_call",
+			},
+		]);
+		expect(reply.content).toBe("");
+	},
+);
+
+it.each([
+	{
+		content: [],
+		expected:
+			"The application is managing this request. Use the existing card for progress and review.",
+	},
+	{
+		content: [
+			{
+				type: "tool_use",
+				id: "example-call",
+				name: "analyze_backlog",
+				input: {},
+			},
+		],
+		expected:
+			"The application is managing this request. Use the existing card for progress and review.",
+	},
+	{
+		content: [
+			{ type: "text", text: "Existing card" },
+			{
+				type: "tool_use",
+				id: "example-call",
+				name: "analyze_backlog",
+				input: {},
+			},
+		],
+		expected: [{ type: "text", text: "Existing card" }],
+	},
+])(
+	"strips array tool content and retains a useful reply: %j",
+	async ({ content, expected }) => {
+		invokeMock
+			.mockReset()
+			.mockResolvedValue(new AIMessage({ content } as never));
+		const result = await chatNode({
+			...baseState,
+			messages: [
+				new HumanMessage("Review"),
+				new ToolMessage({
+					name: "analyze_backlog",
+					content: "Managed by app",
+					tool_call_id: "example-call",
+				}),
+			],
+		} as never);
+		expect((result.update as any).messages.at(-1).content).toEqual(
+			expected,
+		);
+	},
+);

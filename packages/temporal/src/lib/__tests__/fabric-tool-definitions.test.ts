@@ -145,9 +145,12 @@ describe("Fabric's tool definitions", () => {
 			"fabric_page_configure_story_review",
 			"fabric_page_get_review_options",
 			"fabric_page_get_story_review",
+			"fabric_page_get_workflow",
 			"fabric_page_list_story_review_runs",
+			"fabric_page_list_workflow_runs",
 			"fabric_page_read_connected",
 			"fabric_page_run_story_review",
+			"fabric_page_run_workflow",
 		]);
 		const chat = FABRIC_CHAT_TOOL_DEFINITIONS.map((tool) => tool.name);
 		for (const tool of pageOnly) {
@@ -166,6 +169,7 @@ describe("Fabric's tool definitions", () => {
 		);
 
 		expect(writes.map((tool) => tool.name).sort()).toEqual([
+			"fabric_bind_workspace_workflow",
 			"fabric_create_workflow",
 			"fabric_execute_workflow",
 			"fabric_pause_workflow",
@@ -219,6 +223,7 @@ describe("Fabric's tool definitions", () => {
 			.map((tool) => [tool.name, tool.confirm]);
 
 		expect(asking).toEqual([
+			["fabric_page_run_workflow", "always"],
 			["fabric_page_run_story_review", "always"],
 			["fabric_page_configure_story_review", "always"],
 			["fabric_page_data_delete", "always"],

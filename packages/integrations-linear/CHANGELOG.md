@@ -1,5 +1,12 @@
 # @fabricorg/integrations-linear
 
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [cf12607]
+  - @fabricorg/sdk@0.7.0
+
 ## 0.1.12
 
 ### Patch Changes

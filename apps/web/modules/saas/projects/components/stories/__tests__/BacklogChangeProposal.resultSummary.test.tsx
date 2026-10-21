@@ -286,3 +286,78 @@ describe("BacklogChangeProposal — per-item result summary", () => {
 		expect(screen.getByText(/Unlinked feature/)).toBeInTheDocument();
 	});
 });
+
+describe("controller-owned approval rendering", () => {
+	const base = {
+		summary: "Example proposal",
+		contextSummary: "Example context",
+		changes: [buildChange()],
+		hasPMTool: false,
+		onApprove: vi.fn(),
+		onReject: vi.fn(),
+	};
+	it("restores pending progress when the approved card remounts", () => {
+		const props = {
+			...base,
+			approval: { state: "approved" as const, count: 1 },
+			applyProgressMsg: "Applying example item",
+		};
+		const first = render(<BacklogChangeProposal {...props} />);
+		first.unmount();
+		render(<BacklogChangeProposal {...props} />);
+		expect(screen.getByText("Applying example item")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /apply selected/i }),
+		).not.toBeInTheDocument();
+	});
+	it("restores a failed result as an error rather than pending progress", () => {
+		render(
+			<BacklogChangeProposal
+				{...base}
+				approval={{ state: "approved", count: 1 }}
+				applyProgressMsg=""
+				applyResult={{
+					status: "failed",
+					createdCount: 0,
+					updatedCount: 0,
+					failedCount: 1,
+					batchTotal: 1,
+					syncedToPM: false,
+					items: [],
+					message:
+						"Example poll error. Open Review proposals to retry.",
+				}}
+			/>,
+		);
+		expect(screen.getByText(/Example poll error/)).toBeInTheDocument();
+		expect(screen.queryByText("Applying changes:")).not.toBeInTheDocument();
+		expect(
+			screen.getByText(/Example poll error/).parentElement?.className,
+		).toContain("red");
+	});
+	it("keeps approval actionable when the controller returns to reviewing", async () => {
+		const approve = vi.fn();
+		const view = render(
+			<BacklogChangeProposal
+				{...base}
+				approval={{ state: "reviewing", count: 0 }}
+				onApprove={approve}
+			/>,
+		);
+		const user = userEvent.setup();
+		await user.click(
+			screen.getByRole("button", { name: /apply selected/i }),
+		);
+		view.rerender(
+			<BacklogChangeProposal
+				{...base}
+				approval={{ state: "reviewing", count: 0 }}
+				onApprove={approve}
+			/>,
+		);
+		await user.click(
+			screen.getByRole("button", { name: /apply selected/i }),
+		);
+		expect(approve).toHaveBeenCalledTimes(2);
+	});
+});

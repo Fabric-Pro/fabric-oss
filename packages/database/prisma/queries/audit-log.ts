@@ -930,6 +930,26 @@ export function __setAuditCountersForTest(
 	auditCounters = counters ?? noopCounters;
 }
 
+/**
+ * Receives each fire-and-forget audit write, already guarded by the failure
+ * handler. A serverless host freezes the function once the response is sent,
+ * so a bare `void` write is suspended mid-query and fails minutes later on a
+ * dead connection. The API bootstrap installs a scheduler that extends the
+ * request's lifetime until the write settles. Long-lived processes (Temporal)
+ * keep the default, where the already-running promise simply completes.
+ */
+type AuditWriteScheduler = (write: Promise<void>) => void;
+
+const detachedAuditWrite: AuditWriteScheduler = () => undefined;
+
+let scheduleAuditWrite: AuditWriteScheduler = detachedAuditWrite;
+
+export function setAuditWriteScheduler(
+	scheduler: AuditWriteScheduler | null,
+): void {
+	scheduleAuditWrite = scheduler ?? detachedAuditWrite;
+}
+
 // ============================================================================
 // Legacy-event mapping (fallback path)
 // ============================================================================
@@ -1128,7 +1148,9 @@ export function onAuditWriteFailure(
  * originating action.
  */
 export function recordAudit(input: RecordAuditInput): void {
-	void writeAuditRow(input).catch((err) => onAuditWriteFailure(input, err));
+	scheduleAuditWrite(
+		writeAuditRow(input).catch((err) => onAuditWriteFailure(input, err)),
+	);
 }
 
 /**

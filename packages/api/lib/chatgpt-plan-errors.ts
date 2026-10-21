@@ -12,16 +12,7 @@ import {
 	CHATGPT_PLAN_RECONNECT_REQUIRED_MESSAGE,
 	ChatGptPlanAuthError,
 } from "@repo/ai/lib/chatgpt-plan/oauth";
-
-function resetPhrase(resetAt: Date | null, now: number): string {
-	if (!resetAt) {
-		return "Wait for its limit to reset, then try again.";
-	}
-	const minutes = Math.max(1, Math.ceil((resetAt.getTime() - now) / 60_000));
-	return minutes < 60
-		? `It resets in about ${minutes} min.`
-		: `It resets in about ${Math.round(minutes / 60)} h.`;
-}
+import { resetPhrase } from "@repo/temporal/ai-configuration-refusal";
 
 /** Whether `error` is a ChatGPT plan refusal this module maps. */
 export function isChatGptPlanRefusal(error: unknown): boolean {

@@ -18,7 +18,10 @@ import {
 import { logger } from "@repo/logs";
 import { contentIdentity } from "@repo/utils/content-identity";
 import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
-import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
+import {
+	isGenerationRunStillWriting,
+	isRunGuardedDocumentType,
+} from "@repo/utils/generation-run-guard";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../lib/document-side-effects";
 import { fanOut } from "../../../lib/notification-service";
@@ -138,6 +141,9 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 				status: true,
 				type: true,
 				version: true,
+				// The run's clock, to tell a live run from a stalled one.
+				generationStartedAt: true,
+				updatedAt: true,
 				// The owning organization, for the base requirement below:
 				// never the session's.
 				project: { select: { organizationId: true } },
@@ -172,24 +178,33 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// A Proposal's status belongs to its generation run while the run is
-		// queued or writing (Fizzy #2946): moving it on would
-		// end the run's hold on the body, so a later write from any surface
-		// would pass, and the run's own final save would land on a status it
-		// did not expect. No editor save sends a status (an explicit Save and
+		// A Proposal's body and status belong to its generation run while the
+		// run is queued or writing (Fizzy #2946), and `updateDocument` refuses
+		// every content or status write under a run by default, at its read
+		// and again in its WHERE. The editor's plain content save is the one
+		// exemption (`allowDuringLiveRun`, below), and only over a run that
+		// has stalled: a run the server still lists as generating but that
+		// has not written for the silence ceiling must not block the editor's
+		// save. Nothing tells the editor's request apart from any other
+		// caller's, so the row decides, by the rule the editor itself stops
+		// treating a run as writing by (`isGenerationRunStillWriting`), and a
+		// content save under a live run is refused for every caller.
+		// Everything else is refused here first, so it is answered before any
+		// work: a status change (moving it on would end the run's hold on the
+		// body, and the run's own final save would land on a status it did not
+		// expect; no editor save sends a status, since an explicit Save and
 		// Mark as complete send `completeDraft`, which touches only a draft),
-		// so a status change under a run is refused, here and again by the
-		// write itself. Content saves keep their own rules below: a run the
-		// server still lists as generating but that stopped writing must not
-		// block the editor's save. The one content save that is refused is the
-		// Reject fallback (`skipVersionBump`): it rewinds the body to the one
-		// from before the last run, which a newer run queued since owns.
-		// Decided by type, not by the rollout gate: a run keeps writing when
-		// the gate is turned off mid-run.
+		// and the Reject fallback (`skipVersionBump`), which rewinds the body
+		// to the one from before the last run, which a newer run queued since
+		// owns. Decided by type, not by the rollout gate: a run keeps writing
+		// when the gate is turned off mid-run.
+		const editorContentSave =
+			input.content !== undefined &&
+			input.status === undefined &&
+			input.skipVersionBump !== true;
 		const refuseUnderRun =
-			(input.status !== undefined ||
-				(input.skipVersionBump === true &&
-					input.content !== undefined)) &&
+			(input.content !== undefined || input.status !== undefined) &&
+			!(editorContentSave && !isGenerationRunStillWriting(prior)) &&
 			isRunGuardedDocumentType(prior.type);
 		const generationInProgress = () =>
 			new ORPCError("CONFLICT", {
@@ -275,7 +290,12 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			...(input.expectedContentHash !== undefined
 				? { expectedContentHash: input.expectedContentHash }
 				: {}),
-			...(refuseUnderRun ? { refuseWhileGenerating: true } : {}),
+			// The editor's plain content save may write over a stalled run;
+			// the write judges the run again at its own read. Every other
+			// content or status write keeps the live-run refusal.
+			...(editorContentSave
+				? { allowDuringLiveRun: "editor-content-save" as const }
+				: {}),
 		}).catch((error: unknown) => {
 			// The query layer is the last line of defence for contract status
 			// (a completion may land between the pre-read above and its own
@@ -290,9 +310,9 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			if (error instanceof DocumentGenerationInProgressError) {
 				throw generationInProgress();
 			}
-			// Reachable only with a base, or for a status write guarded
-			// against a run: someone saved between the caller's read and this
-			// write, and nothing was written.
+			// Reachable only with a base, or for a Proposal's status write or
+			// rewind, which is guarded against a run: someone saved between the
+			// caller's read and this write, and nothing was written.
 			if (error instanceof DocumentVersionConflictError) {
 				throw new ORPCError("CONFLICT", {
 					message:

@@ -18,6 +18,10 @@ import {
 	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
 	PUBLISH_FRAME_NODE_TYPE,
+	NATIVE_PLATFORM_READ_NODE_TYPE,
+	SCRIPT_TRANSFORM_NODE_TYPE,
+	WORKSPACE_DATA_READ_NODE_TYPE,
+	WORKSPACE_DATA_WRITE_NODE_TYPE,
 } from "../../lib/workflow-node-types";
 import {
 	EXTERNAL_WRITE_NODE_TYPES,
@@ -52,6 +56,30 @@ interface StepRegistryEntry {
  * 3. Add an entry here mapping the node type to the step
  */
 export const stepRegistry: Record<string, StepRegistryEntry> = {
+	[NATIVE_PLATFORM_READ_NODE_TYPE]: {
+		name: "Native Platform Read",
+		load: async () =>
+			(await import("./steps/native-platform-read"))
+				.executeNativePlatformReadStep,
+	},
+	[WORKSPACE_DATA_READ_NODE_TYPE]: {
+		name: "Read Workspace Data",
+		load: async () =>
+			(await import("./steps/workspace-data-read"))
+				.executeWorkspaceDataReadStep,
+	},
+	[WORKSPACE_DATA_WRITE_NODE_TYPE]: {
+		name: "Write Workspace Data",
+		load: async () =>
+			(await import("./steps/workspace-data-write"))
+				.executeWorkspaceDataWriteStep,
+	},
+	[SCRIPT_TRANSFORM_NODE_TYPE]: {
+		name: "Script Transform",
+		load: async () =>
+			(await import("./steps/script-transform"))
+				.executeScriptTransformStep,
+	},
 	// Core steps
 	trigger: {
 		name: "Trigger",

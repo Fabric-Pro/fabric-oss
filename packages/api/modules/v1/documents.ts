@@ -642,8 +642,8 @@ export function registerDocumentRoutes(
 							}
 						: {}),
 				// A run queued after the read above is refused by the write
-				// itself, not only by the status check on that read.
-				...(runGuarded ? { refuseWhileGenerating: true } : {}),
+				// itself too: `updateDocument` refuses a Proposal's content
+				// and status writes under a run by default.
 			});
 		} catch (error) {
 			// Last line of defence in the query layer (a completion may land

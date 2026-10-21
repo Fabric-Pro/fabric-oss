@@ -10,17 +10,22 @@ import {
 	MIN_SCHEDULE_INTERVAL_MINUTES,
 	type PublishFrameNodeConfig,
 	PublishFrameNodeConfigSchema,
+	TRIGGER_NODE_TYPE,
 } from "@repo/temporal/agentic-workflow-preset";
-import {
-	ADO_STORY_REVIEW_NODE_TYPE,
-	AGENT_TASK_NODE_TYPE,
-	PUBLISH_FRAME_NODE_TYPE,
-} from "@repo/temporal/workflow-node-types";
+import { workflowNativePlatformReadProblems } from "@repo/temporal/native-platform-read-config";
 import {
 	findScheduleCron,
 	findScheduleTimezone,
 	isValidScheduleTimeZone,
 } from "@repo/temporal/workflow-builder-schedule";
+import {
+	ADO_STORY_REVIEW_NODE_TYPE,
+	AGENT_TASK_NODE_TYPE,
+	NATIVE_PLATFORM_READ_NODE_TYPE,
+	PUBLISH_FRAME_NODE_TYPE,
+} from "@repo/temporal/workflow-node-types";
+import { workflowWorkspaceDataProblems } from "@repo/temporal/workspace-data-config";
+import { workflowScriptProblems } from "@repo/temporal/workspace-script-config";
 import { adoStoryReviewPublishProblems } from "./ado-story-review-publish-validation";
 import { minimumCronIntervalMinutes } from "./cron-interval";
 
@@ -72,6 +77,39 @@ function parseConfig<Config>(
 		problems.push(`${nodeName(node)}: ${field} — ${issue.message}`);
 	}
 	return null;
+}
+
+function hasText(value: unknown): boolean {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/**
+ * A Schedule trigger without a cron saves and publishes as a manual workflow,
+ * so a misnamed field (`cron` for `scheduleCron`) would drop the schedule
+ * without a word.
+ */
+function scheduleTriggerProblems(nodes: unknown[]): string[] {
+	const problems: string[] = [];
+	for (const node of nodes as GraphNode[]) {
+		const config = node?.data?.config;
+		if (node?.type !== TRIGGER_NODE_TYPE || !isRecord(config)) {
+			continue;
+		}
+		if (
+			String(config.triggerType ?? "").toLowerCase() === "schedule" &&
+			!hasText(config.scheduleCron) &&
+			!hasText(config.scheduleExpression)
+		) {
+			problems.push(
+				`${nodeName(node)}: a schedule trigger keeps its cron in \`scheduleCron\` and its time zone in \`scheduleTimezone\`. This one has no \`scheduleCron\`, so it would never run on a schedule.`,
+			);
+		}
+	}
+	return problems;
 }
 
 function scheduleTimezoneProblems(nodes: unknown[]): string[] {
@@ -280,7 +318,13 @@ export async function findAgenticPublishProblems(input: {
 		return { problems: [], mcpServers: [] };
 	}
 	const nodes: unknown[] = input.nodes;
-	const problems = scheduleTimezoneProblems(nodes);
+	const problems = [
+		...scheduleTriggerProblems(nodes),
+		...scheduleTimezoneProblems(nodes),
+		...workflowScriptProblems(nodes),
+		...workflowWorkspaceDataProblems(nodes),
+		...workflowNativePlatformReadProblems(nodes),
+	];
 
 	const agents: ParsedNode<AgentTaskNodeConfig>[] = [];
 	const publishers: ParsedNode<PublishFrameNodeConfig>[] = [];
@@ -288,6 +332,11 @@ export async function findAgenticPublishProblems(input: {
 	let hasAgentTask = false;
 	let hasReview = false;
 	for (const node of nodes as GraphNode[]) {
+		if (node?.type === NATIVE_PLATFORM_READ_NODE_TYPE && !input.projectId) {
+			problems.push(
+				`${nodeName(node)}: native reads require a workflow project`,
+			);
+		}
 		if (node?.type === AGENT_TASK_NODE_TYPE) {
 			hasAgentTask = true;
 			const parsed = parseConfig(

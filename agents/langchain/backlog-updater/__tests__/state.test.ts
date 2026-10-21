@@ -56,3 +56,24 @@ describe("BacklogUpdaterStateAnnotation — reasoningByTurn", () => {
 		);
 	});
 });
+
+it("round-trips Slack and analysis state through extraction and LangGraph", async () => {
+	const { StateGraph, START, END } = await import("@langchain/langgraph");
+	const { extractState } = await import("../invoke-agent");
+	const extracted = extractState({
+		state: {
+			hasSlackIntegration: true,
+			analysisStatus: "complete",
+			lastProposalSummary: "Ready",
+		},
+	});
+	const graph = new StateGraph(BacklogUpdaterStateAnnotation)
+		.addNode("context", (state) => ({ projectId: state.projectId }))
+		.addEdge(START, "context")
+		.addEdge("context", END)
+		.compile();
+	const result = await graph.invoke({ ...extracted, messages: [] });
+	expect(result.hasSlackIntegration).toBe(true);
+	expect(result.analysisStatus).toBe("complete");
+	expect(result.lastProposalSummary).toBe("Ready");
+});

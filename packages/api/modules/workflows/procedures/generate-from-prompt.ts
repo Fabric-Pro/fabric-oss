@@ -147,6 +147,23 @@ Available node types with their required configuration fields:
       - mode: "new-version" (one frame, a new version each run) | "new-frame" (default "new-version")
     - outputs: { frameId: string, title: string, url: string }
 
+14. script-transform
+    - Write a JavaScript or TypeScript async function body for a provider-neutral JSON transformation. No network, packages, secrets or persistence.
+    - config: { code: "return { total: inputs['$source'].items.length };", language: "javascript" | "typescript", timeout: 1000-10000 (default 5000) }
+    - inputs contains prior outputs by their labels and $nodeId. Never interpolate data into source code.
+    - Optional inputKeys: nonempty unique top-level input-name array, maximum 32 keys of 256 characters each; select before the 64 KiB input limit. Missing names fail; omitted means all inputs. No alias renaming.
+    - The second argument execution contains trusted executionId, workflowId, version and triggerType from the owned execution row. Use execution.triggerType === "SCHEDULE" for scheduled-only baseline updates; do not trust inputs.source. Never put execution metadata in editable config.
+    - outputs: { result: JSON value, logs: bounded stdout/stderr entries }; use {{NodeLabel.result}} in subsequent MCP, AI, condition or publish steps.
+    - Publish the complete graph before running scripts. Use configured connection steps to fetch data and AI steps for inference.
+
+15. native-platform-read
+    - Deterministic registered Fabric read, not an agent turn. No credentials or arbitrary gateway tools.
+    - config: { toolName: literal registered read-only name, arguments: JSON text or complete object reference such as "{{Prepare arguments.result}}" }
+    - Registered names: fabric_get_project_pm_connection, fabric_list_project_pm_members, fabric_list_project_pm_work_item_types, fabric_get_project_work_item_counts, fabric_list_project_pm_assigned_items, fabric_get_project_pm_item_snapshots. Discover exact input schemas before using them. Current readers support ADO; no hierarchy traversal.
+    - The server supplies the workflow's non-null projectId and rechecks the owner's current permission and connection. Conflicting project IDs, authority fields and unresolved references fail. Publish the complete graph first.
+    - outputs: { result: raw reader JSON }. Keep status, complete, cursor, unreadIds and resultTruncated signals; delivery success does not imply a complete capture. Maximum 128 KiB. Select smaller batches and script inputKeys for the script's separate 64 KiB input limit.
+    - Compose native read -> script-transform -> condition -> AI -> Workspace data write/publish. Author comparison and reuse rules in the script; no provider-specific review algorithm is required.
+
 Variable References - IMPORTANT:
 - Use {{NodeLabel.field}} to reference outputs from previous nodes
 - The NodeLabel is the label shown in the node (e.g., "Generate Text", "MCP Tool", "Firecrawl Search")

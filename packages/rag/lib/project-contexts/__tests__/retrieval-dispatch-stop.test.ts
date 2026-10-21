@@ -86,6 +86,7 @@ describe("retrieveProjectContexts failures", () => {
 			conversationId: "turn-conversation",
 			projectId: "origin-project",
 			frameId: "origin-frame",
+			workflowExecutionId: "origin-execution",
 			featureKey: "chat-agent" as const,
 		};
 		await retrieveProjectContexts({ ...OPTIONS, usageOrigin });

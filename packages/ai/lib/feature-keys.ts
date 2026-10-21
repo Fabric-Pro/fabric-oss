@@ -89,6 +89,12 @@ export const AI_FEATURE_KEYS = [
 	 */
 	"code-index",
 	/**
+	 * Tool search embeddings: the tool catalogue the orchestrator indexes and
+	 * the queries `search_tools` embeds to pick tools for a turn. Tagged so
+	 * the catalogue's re-index is not an untagged embedding row.
+	 */
+	"tool-search",
+	/**
 	 * The `fabric_text_to_speech` tool, wherever it runs: chat, agent turns
 	 * and orchestrator workflow steps.
 	 */

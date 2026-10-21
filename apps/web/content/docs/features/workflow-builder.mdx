@@ -1,6 +1,8 @@
 ---
 title: Workflow Builder
 description: Build automations on a visual canvas — triggers, AI, conditions and 27 connected services, executed durably.
+audience: Organization members building and maintaining workflows
+owner: Platform team
 ---
 
 The Workflow Builder is a visual canvas for automations. You place nodes, connect them,
@@ -119,14 +121,45 @@ removes it when you unpublish, pause or archive the workflow.
 | Node | What it does |
 |---|---|
 | **Trigger** | Start of the graph; carries the trigger type and the cron expression |
-| **HTTP Request** | Call any URL with `GET`, `POST`, `PUT`, `PATCH` or `DELETE`, with your own headers and body |
+| **HTTP Request** | Send `GET`, `POST`, `PUT`, `PATCH` or `DELETE` to a configured endpoint with your own headers and body |
 | **Condition** | Evaluate an expression and continue down the `true` or the `false` edge |
+| **Script Transform** | Run JavaScript or TypeScript that transforms earlier results and returns JSON |
+| **Native Platform Read** | Read project data through one of the registered Fabric read-only tools |
+| **Read Workspace Data** | Read a saved JSON record from a Workspace connected to this workflow |
+| **Write Workspace Data** | Save JSON when the record still has the version you read |
+
+### Custom logic and saved Workspace data
+
+Ask Fabric Agent to write a **Script Transform** for your own comparison, calculation or
+reporting rules. Select the node to inspect and edit its code, language, response deadline
+and optional input keys. The script receives earlier node results as `inputs` and trusted
+run metadata as `execution`, then returns JSON in `result`. It cannot access your
+credentials or make network requests. Put service reads and AI calls in separate nodes.
+
+**Native Platform Read** offers a fixed list of registered reads. Select a tool and supply
+its JSON arguments. Fabric supplies the workflow's project and checks the owner's current
+access on each run. Incomplete results retain their completeness and pagination details;
+your script must account for them before presenting a total.
+
+Use **Read Workspace Data** and **Write Workspace Data** to keep settings, comparison
+baselines or cached results between runs. Choose a collection, key and scope. **Shared**
+records are available to people who can use the page; **Workflow owner's private data**
+uses the owner's personal record scope. These nodes require a published workflow connected
+to a Workspace you own in the same project. Ask Fabric Agent to make that connection.
+
+Pass the read node's `version` to **Expected version** on the write node. Version `0`
+creates a record only if it is absent. A concurrent change refuses the write. If a write's
+response is lost, read the record before deciding whether to repeat it.
+
+A change-review workflow can read a previous baseline, compare the latest source data in
+a script, and use a **Condition** to reuse its saved analysis when the relevant fields
+have not changed. Tell Fabric Agent which fields count as a change and whether a manual
+run should force fresh analysis. These are rules you define for that workflow.
 
 ### Integration actions
 
-The palette carries **55 integration actions** on top of the three core nodes. An action
-appears only when Fabric ships an executor for it, so the palette never offers a node
-that nothing can run — you still have to connect the service it uses.
+The palette also contains actions for connected services. Each listed action has a Fabric
+executor. Connect the service it uses before running it.
 
 #### AI
 

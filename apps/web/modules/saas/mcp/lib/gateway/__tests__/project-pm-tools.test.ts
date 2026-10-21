@@ -1,4 +1,5 @@
 import { AzureDevOpsProjectReadError } from "@repo/connectors";
+import { readProjectPmTool } from "@repo/temporal/project-pm-service";
 import {
 	ASKS_ONCE,
 	TAINTING_TOOLS,
@@ -15,7 +16,7 @@ const mocks = vi.hoisted(() => ({
 	access: vi.fn(),
 	deleted: vi.fn(),
 }));
-vi.mock("@repo/api/modules/projects/lib/project-pm-read", () => ({
+vi.mock("@repo/mcp/lib/project-pm-read", () => ({
 	resolveProjectPmRead: mocks.resolve,
 }));
 vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
@@ -114,6 +115,26 @@ beforeEach(() => {
 });
 
 describe("project PM gateway tools", () => {
+	it("keeps the public adapter's raw data identical to the shared read service", async () => {
+		const call = {
+			name: "fabric_list_project_pm_members",
+			input: { projectId: "project-1" },
+		} as const;
+		const shared = await readProjectPmTool(call, {
+			userId: session.userId,
+			organizationId: "org-1",
+		});
+		const publicResult = await executePlatformTool(
+			call.name,
+			call.input,
+			session,
+		);
+		expect(shared.success).toBe(true);
+		if (shared.success) {
+			expect(payload(publicResult)).toEqual(shared.result);
+		}
+		expect(JSON.stringify(publicResult)).not.toContain(connection.pat);
+	});
 	it("offers the same read-only declaration schemas used by the runtime", () => {
 		for (const name of names) {
 			expect(

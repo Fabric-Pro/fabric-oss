@@ -1046,7 +1046,7 @@ export async function backlogContextAnalysisWorkflow(
 		// not regress here.
 		//
 		// `operationKey` uses `workflowInfo().workflowId` (server-side
-		// `backlog-analysis-${projectId}-${Date.now()}` from the route)
+		// a timestamped or operation-key-derived id from the route)
 		// which Temporal preserves across workflow retries. Stable dedup.
 		// =====================================================================
 		if (conversationId) {

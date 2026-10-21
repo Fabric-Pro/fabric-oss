@@ -195,7 +195,7 @@ overrides:
   "deepmerge-ts": "^8.0.2"
   "toml": "^4.3.0"
   "linkify-it": "^5.0.1"
-  "vite@^7.0.0": "^7.3.6"
+  "vite@^7.0.0": "^7.3.7"
   "brace-expansion@^1.0.0": "^1.1.20"
   "brace-expansion@^2.0.0": "^2.1.6"
   "brace-expansion@^5.0.0": "^5.0.11"

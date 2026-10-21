@@ -37,6 +37,11 @@ import {
 } from "./page-story-review";
 import { noInput, pageTool, refuse } from "./page-store";
 import {
+	handleGetWorkspaceWorkflow,
+	handleListWorkspaceWorkflowRuns,
+	handleRunWorkspaceWorkflow,
+} from "./page-workflows";
+import {
 	type PlatformToolHandler,
 	type ToolFamily,
 	toolFamily,
@@ -113,6 +118,9 @@ export function createPageTools(): ToolFamily {
 	return toolFamily(
 		FABRIC_PAGE_TOOL_DEFINITIONS,
 		new Map<string, PlatformToolHandler>([
+			["fabric_page_get_workflow", handleGetWorkspaceWorkflow],
+			["fabric_page_run_workflow", handleRunWorkspaceWorkflow],
+			["fabric_page_list_workflow_runs", handleListWorkspaceWorkflowRuns],
 			["fabric_page_get_story_review", handleGetStoryReview],
 			["fabric_page_configure_story_review", handleConfigureStoryReview],
 			["fabric_page_run_story_review", handleRunStoryReview],

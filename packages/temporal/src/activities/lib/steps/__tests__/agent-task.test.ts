@@ -135,6 +135,16 @@ describe("executeAgentTaskStep - agent turn input", () => {
 		expect(executeAgentTurn.mock.calls[0][0].model).toBeUndefined();
 	});
 
+	it("passes the bound Workspace origin to the agent's model usage", async () => {
+		await executeAgentTaskStep(params({ frameId: "workspace" }));
+		expect(executeAgentTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				workflowExecutionId: "exec-1",
+				frameId: "workspace",
+			}),
+		);
+	});
+
 	it("falls back to default instructions that forbid asking questions and distrust upstream data", async () => {
 		await executeAgentTaskStep(
 			params({ inputs: { Trigger: { source: "schedule" } } }),

@@ -93,7 +93,12 @@ beforeEach(() => {
 
 const CASES: Array<{
 	name: string;
-	run: (extra: { conversationId?: string }) => Promise<unknown>;
+	run: (extra: {
+		conversationId?: string;
+		projectId?: string;
+		frameId?: string;
+		workflowExecutionId?: string;
+	}) => Promise<unknown>;
 	mock: ReturnType<typeof vi.fn>;
 }> = [
 	{
@@ -178,6 +183,16 @@ describe("Fabric AI activities — usage attribution", () => {
 		it(`${name} adds no conversation without one`, async () => {
 			await run({});
 			expect(userContextOf(mock)).not.toHaveProperty("conversationId");
+		});
+
+		it(`${name} carries the workflow and Workspace without changing the operation`, async () => {
+			const origin = {
+				projectId: "origin-project",
+				frameId: "origin-frame",
+				workflowExecutionId: "origin-execution",
+			};
+			await run(origin);
+			expect(userContextOf(mock)).toMatchObject({ ...BASE, ...origin });
 		});
 	}
 });

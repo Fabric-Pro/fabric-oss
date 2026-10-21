@@ -58,6 +58,7 @@ export interface TenantContext {
 	/** Conversation served by this embedding call, supplied by its caller. */
 	conversationId?: string;
 	frameId?: string;
+	workflowExecutionId?: string;
 	/** User ID for usage tracking and cost attribution */
 	userId?: string;
 	/** Organization ID for usage tracking and cost attribution */

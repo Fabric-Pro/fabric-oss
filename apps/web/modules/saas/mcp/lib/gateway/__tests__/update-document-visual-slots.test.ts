@@ -695,11 +695,14 @@ describe("fabric_update_document honours a base", () => {
 				data: {
 					content?: string;
 					status?: string;
-					refuseWhileGenerating?: boolean;
+					allowDuringLiveRun?: string;
 				},
 			) => {
+				// The stored row is a Proposal: the query refuses its content
+				// and status writes under a run unless the write is exempt.
 				if (
-					data.refuseWhileGenerating &&
+					(data.content !== undefined || data.status !== undefined) &&
+					data.allowDuringLiveRun === undefined &&
 					(storedStatus === "QUEUED" || storedStatus === "GENERATING")
 				) {
 					throw new DocumentGenerationInProgressError();
@@ -737,7 +740,7 @@ describe("fabric_update_document honours a base", () => {
 		expect(written).toEqual([]);
 	});
 
-	it("asks a status-only write to refuse a run queued after the read", async () => {
+	it("leaves a status-only write to the write's refusal of a run queued after the read", async () => {
 		const { DocumentGenerationInProgressError } = await import(
 			"@repo/database"
 		);
@@ -754,7 +757,8 @@ describe("fabric_update_document honours a base", () => {
 		);
 
 		expect(writeOptions().status).toBe("COMPLETE");
-		expect(writeOptions().refuseWhileGenerating).toBe(true);
+		// Never exempt: the query refuses it under a run by default.
+		expect(writeOptions()).not.toHaveProperty("allowDuringLiveRun");
 		// A status-only write carries no body, so it names no body base.
 		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
 		expect(result.isError).toBe(true);
@@ -777,11 +781,11 @@ describe("fabric_update_document honours a base", () => {
 		);
 
 		expect(result.isError).toBeUndefined();
-		expect(writeOptions()).not.toHaveProperty("refuseWhileGenerating");
+		expect(writeOptions().status).toBe("COMPLETE");
 		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
 	});
 
-	it("asks the write to refuse a run queued after the read, and reports it as a live run", async () => {
+	it("reports the write's refusal of a run queued after the read as a live run", async () => {
 		const { DocumentGenerationInProgressError } = await import(
 			"@repo/database"
 		);
@@ -797,7 +801,7 @@ describe("fabric_update_document honours a base", () => {
 			session,
 		);
 
-		expect(writeOptions().refuseWhileGenerating).toBe(true);
+		expect(writeOptions()).not.toHaveProperty("allowDuringLiveRun");
 		expect(result.isError).toBe(true);
 		expect(JSON.stringify(result)).toMatch(
 			/generation run is writing this document/,
@@ -821,7 +825,6 @@ describe("fabric_update_document honours a base", () => {
 		expect(writeOptions().expectedContentHash).toBe(
 			contentIdentity(STORED_WITHOUT_SLOT),
 		);
-		expect(writeOptions().refuseWhileGenerating).toBe(true);
 	});
 
 	it("guards a client-document Proposal write without a base by the body it read", async () => {
@@ -880,7 +883,6 @@ describe("fabric_update_document honours a base", () => {
 		expect(result.isError).toBeUndefined();
 		expect(writeOptions()).not.toHaveProperty("expectedVersion");
 		expect(writeOptions()).not.toHaveProperty("expectedContentHash");
-		expect(writeOptions()).not.toHaveProperty("refuseWhileGenerating");
 		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
 		expect(written).toEqual(["# Edited"]);
 	});

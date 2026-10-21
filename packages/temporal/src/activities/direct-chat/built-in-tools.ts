@@ -20,9 +20,14 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { z } from "zod";
+import { aiConfigurationRefusalMessage } from "../../lib/ai-configuration-refusal";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import { COMPANY_CONTEXT_SEARCH_TOOL_NAME } from "../../workflows/orchestrator/company-context-tool-schemas";
+import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../../workflows/orchestrator/usage-attribution";
 import { resolveSearchProviderForTenant } from "../lib/get-search-provider";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
@@ -79,8 +84,7 @@ export function buildStoryUrl(args: {
 		: `${base}/app/projects/${args.projectId}/stories/${args.storyId}`;
 }
 
-interface BuiltInToolContext {
-	usageConversationId?: string;
+interface BuiltInToolContext extends SecondaryUsageInput {
 	userId: string;
 	organizationId?: string;
 	workspaceIds?: string[];
@@ -425,6 +429,7 @@ export async function createCodeSearchTool(
 					conversationId: context.usageConversationId,
 					userId,
 					organizationId,
+					...secondaryUsageFields(context),
 				});
 				const collectionName = await ensureCollection(
 					"project-contexts",
@@ -690,6 +695,7 @@ export async function createFabricTool(
 						userId,
 						organizationId,
 						projectId,
+						...secondaryUsageFields(context),
 					});
 
 					return result.success
@@ -723,6 +729,7 @@ export async function createFabricTool(
 						userId,
 						organizationId,
 						projectId,
+						...secondaryUsageFields(context),
 					});
 
 					return result.success
@@ -762,7 +769,12 @@ export async function createFabricTool(
 						typeof args.minSimilarity === "number"
 							? args.minSimilarity
 							: undefined,
-						{ usageConversationId: context.usageConversationId },
+						{
+							usageConversationId: context.usageConversationId,
+							...(context.usageOrigin
+								? { usageOrigin: context.usageOrigin }
+								: {}),
+						},
 					);
 
 					return {
@@ -798,7 +810,12 @@ export async function createFabricTool(
 						undefined,
 						typeof args.topK === "number" ? args.topK : 20,
 						undefined,
-						{ usageConversationId: context.usageConversationId },
+						{
+							usageConversationId: context.usageConversationId,
+							...(context.usageOrigin
+								? { usageOrigin: context.usageOrigin }
+								: {}),
+						},
 					);
 
 					return {
@@ -832,7 +849,12 @@ export async function createFabricTool(
 						userId,
 						organizationId,
 						typeof args.topK === "number" ? args.topK : undefined,
-						{ usageConversationId: context.usageConversationId },
+						{
+							usageConversationId: context.usageConversationId,
+							...(context.usageOrigin
+								? { usageOrigin: context.usageOrigin }
+								: {}),
+						},
 					);
 
 					return {
@@ -1444,9 +1466,10 @@ export async function createFabricTool(
 						logger.error("fabric_create_story failed", error);
 						return {
 							error:
-								error instanceof Error
+								aiConfigurationRefusalMessage(error) ??
+								(error instanceof Error
 									? error.message
-									: "Failed to create story.",
+									: "Failed to create story."),
 						};
 					}
 				},
@@ -1546,6 +1569,9 @@ export async function createFabricTool(
 
 					const imageResult = await generateImageActivity({
 						usageConversationId: context.usageConversationId,
+						...(context.usageOrigin
+							? { usageOrigin: context.usageOrigin }
+							: {}),
 						prompt,
 						provider:
 							(args.provider as "gateway" | "fal" | "gemini") ||
@@ -1607,6 +1633,9 @@ export async function createFabricTool(
 
 					const speech = await synthesizeToolSpeech({
 						usageConversationId: context.usageConversationId,
+						...(context.usageOrigin
+							? { usageOrigin: context.usageOrigin }
+							: {}),
 						userId,
 						organizationId,
 						text,
@@ -1689,6 +1718,9 @@ export async function createBuiltInTools(
 				tools,
 				await createFabricTool(toolId, {
 					usageConversationId: options.usageConversationId,
+					...(options.usageOrigin
+						? { usageOrigin: options.usageOrigin }
+						: {}),
 					userId,
 					organizationId,
 					workspaceIds,
@@ -1709,6 +1741,9 @@ export async function createBuiltInTools(
 			tools,
 			await createFabricTool("project_rag_query", {
 				usageConversationId: options.usageConversationId,
+				...(options.usageOrigin
+					? { usageOrigin: options.usageOrigin }
+					: {}),
 				userId,
 				organizationId,
 				workspaceIds,
@@ -1773,6 +1808,9 @@ export async function createBuiltInTools(
 			}),
 			await createCodeSearchTool({
 				usageConversationId: options.usageConversationId,
+				...(options.usageOrigin
+					? { usageOrigin: options.usageOrigin }
+					: {}),
 				userId,
 				organizationId,
 				workspaceIds,
@@ -1792,6 +1830,9 @@ export async function createBuiltInTools(
 			tools,
 			await createFabricTool(toolId, {
 				usageConversationId: options.usageConversationId,
+				...(options.usageOrigin
+					? { usageOrigin: options.usageOrigin }
+					: {}),
 				userId,
 				organizationId,
 				workspaceIds,

@@ -18,7 +18,7 @@ import { isBacklogAnalysisWorkflowIdFor } from "./workflow-id";
  * plus a binding check: the caller-supplied `workflowId` must name THAT
  * project. Both are needed — project access alone would let a user read any
  * other project's proposal by guessing its workflow id, which embeds only the
- * project and a timestamp (security review of Fizzy #1234).
+ * project and a timestamp or hashed operation key (security review of Fizzy #1234).
  */
 export const analysisProgressProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))

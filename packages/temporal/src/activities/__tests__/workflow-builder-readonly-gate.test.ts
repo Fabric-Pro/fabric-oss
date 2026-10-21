@@ -159,6 +159,23 @@ describe("executeWorkflowNode read-only gate", () => {
 		expect(result.success).toBe(true);
 		expect(executeStep).toHaveBeenCalledOnce();
 	});
+
+	it("forwards the server-derived Workspace origin to the step", async () => {
+		await executeWorkflowNode(
+			nodeParams({
+				nodeType: "ai-generate-text",
+				nodeConfig: { aiPrompt: "Summarise the findings" },
+				frameId: "workspace",
+			}),
+		);
+		expect(executeStep).toHaveBeenCalledWith(
+			"ai-generate-text",
+			expect.objectContaining({
+				frameId: "workspace",
+				executionId: "exec-1",
+			}),
+		);
+	});
 });
 
 describe("EXTERNAL_WRITE_NODE_TYPES", () => {

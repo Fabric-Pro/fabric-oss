@@ -384,7 +384,7 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 	};
 }
 
-type ApplyResult = {
+export type ApplyResult = {
 	status: "success" | "failed";
 	createdCount: number;
 	updatedCount: number;
@@ -471,6 +471,8 @@ type Props = {
 	 * the AI Update sidebar (transient chat proposals).
 	 */
 	proposalId?: string;
+	/** Optional session-owned approval state; other consumers keep local resolution. */
+	approval?: { state: "reviewing" | "approved"; count: number };
 	/** Progress message shown while apply workflow is running. */
 	applyProgressMsg?: string;
 	/**
@@ -674,6 +676,7 @@ export function BacklogChangeProposal({
 	projectId,
 	organizationId,
 	proposalId,
+	approval,
 	applyProgressMsg,
 	onCancelApply,
 	applyResult,
@@ -793,11 +796,19 @@ export function BacklogChangeProposal({
 	// approvals default to Fabric-only; the AI Update flow omits the prop and
 	// keeps the pre-checked behavior when a PM tool is connected.
 	const [syncToPM, setSyncToPM] = useState(defaultSyncToPM ?? hasPMTool);
-	const [resolved, setResolved] = useState<
+	const [localResolved, setResolved] = useState<
 		"approved" | "rejected" | "backlog" | null
 	>(null);
-	const [approvedCount, setApprovedCount] = useState(0);
-	const [totalCount, setTotalCount] = useState(0);
+	const [localApprovedCount, setApprovedCount] = useState(0);
+	const [localTotalCount, setTotalCount] = useState(0);
+	const resolved = approval
+		? approval.state === "approved"
+			? "approved"
+			: null
+		: localResolved;
+	const approvedCount = approval?.count ?? localApprovedCount;
+	const totalCount = approval ? changes.length : localTotalCount;
+
 	const [conflictsByIndex, setConflictsByIndex] = useState<
 		Record<number, PmConflictPreview>
 	>({});

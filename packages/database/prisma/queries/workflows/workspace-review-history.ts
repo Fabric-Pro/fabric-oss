@@ -1,7 +1,7 @@
 import { db, type Prisma, type WorkflowExecution } from "../../client";
 import {
 	assertWorkspaceWorkflowBindingWithin,
-	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
 } from "./workspace-workflow-binding";
 
 export type WorkspaceReviewHistoryRow = Pick<
@@ -18,7 +18,7 @@ const REVIEW_SUMMARY_MAX_BYTES = 16_384;
 
 /** Fetch at most 21 rows, each with at most 16 KiB of review JSON and a 128-character frame ID. */
 export async function listWorkspaceReviewHistory(options: {
-	binding: WorkspaceWorkflowBindingGuard;
+	binding: WorkspaceWorkflowRowGuard;
 	nodeId: string;
 	limit: number;
 	offset: number;

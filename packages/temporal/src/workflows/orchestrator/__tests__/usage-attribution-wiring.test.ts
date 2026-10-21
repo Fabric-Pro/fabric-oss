@@ -154,6 +154,7 @@ it("secondary accounting origin never falls back to retrieval or binding ids", (
 			conversationId: "turn-conversation",
 			projectId: "origin-project",
 			frameId: "origin-frame",
+			workflowExecutionId: "origin-execution",
 			featureKey: "chat-agent" as const,
 		},
 	};

@@ -5,11 +5,7 @@
 
 import type { ToolCallResult } from "./types";
 
-export function jsonResult(data: unknown): ToolCallResult {
-	return {
-		content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-	};
-}
+export { jsonResult } from "@repo/mcp/lib/json-result";
 
 /**
  * An error a caller can read: what happened, and any `extra` fields to act on,

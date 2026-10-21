@@ -20,6 +20,7 @@ const store = vi.hoisted(() => ({
 	failFrameUpdate: false,
 	transactions: 0,
 	directHistoryWrites: 0,
+	beforeTransaction: undefined as (() => void) | undefined,
 }));
 
 vi.mock("../prisma/client", async (importOriginal) => {
@@ -27,8 +28,8 @@ vi.mock("../prisma/client", async (importOriginal) => {
 
 	function frameTable(frames: Row[]) {
 		return {
-			findFirst: async ({ where }: { where: Row }) =>
-				frames.find((row) =>
+			findFirst: async ({ where }: { where: Row }) => {
+				const found = frames.find((row) =>
 					Object.entries(where).every(([key, condition]) =>
 						key === "fileType" || key === "projectId"
 							? condition === undefined ||
@@ -38,7 +39,9 @@ vi.mock("../prisma/client", async (importOriginal) => {
 								row[key] === condition
 							: (row[key] ?? null) === (condition ?? null),
 					),
-				) ?? null,
+				);
+				return found ? { ...found } : null;
+			},
 			update: async ({
 				where,
 				data,
@@ -81,9 +84,11 @@ vi.mock("../prisma/client", async (importOriginal) => {
 				body: (tx: Record<string, unknown>) => Promise<T>,
 			): Promise<T> => {
 				store.transactions += 1;
+				store.beforeTransaction?.();
 				const stagedHistory: Row[] = [];
 				const stagedFrames = store.frames.map((row) => ({ ...row }));
 				const tx = {
+					$queryRaw: async () => [],
 					frameEditHistory: {
 						create: async ({ data }: { data: Row }) => {
 							const entry = {
@@ -174,9 +179,58 @@ beforeEach(() => {
 	store.failFrameUpdate = false;
 	store.transactions = 0;
 	store.directHistoryWrites = 0;
+	store.beforeTransaction = undefined;
 });
 
 describe("updateFrame and the history of the page", () => {
+	it("does not resurrect a binding revoked between the initial read and surface write", async () => {
+		store.frames[0].metadata = {
+			surface: "workspace",
+			workflowBindings: {
+				version: 1,
+				workflows: [{ workflowId: "workflow-1" }],
+			},
+		};
+		store.beforeTransaction = () => {
+			store.frames[0].metadata = {
+				surface: "workspace",
+				workflowBindings: { version: 1, workflows: [] },
+				concurrent: true,
+			};
+		};
+		await updateFrame({
+			id: "frame-1",
+			userId: USER,
+			organizationId: ORG,
+			surface: "workspace",
+		});
+		expect(store.frames[0].metadata).toEqual({
+			surface: "workspace",
+			workflowBindings: { version: 1, workflows: [] },
+			concurrent: true,
+		});
+	});
+
+	it("drops bindings when a Workspace leaves its surface", async () => {
+		store.frames[0].metadata = {
+			surface: "workspace",
+			workflowBindings: {
+				version: 1,
+				workflows: [{ workflowId: "workflow-1" }],
+			},
+			retained: true,
+		};
+		await updateFrame({
+			id: "frame-1",
+			userId: USER,
+			organizationId: ORG,
+			surface: "artifact",
+		});
+		expect(store.frames[0].metadata).toEqual({
+			surface: "artifact",
+			retained: true,
+		});
+	});
 	it("writes exactly one history row for one changed update, holding the page it replaced", async () => {
 		const before = store.frames[0].content;
 

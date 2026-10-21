@@ -20,7 +20,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	recordAuditMock: vi.fn(),
 	setAuditCountersMock: vi.fn(),
+	setAuditWriteSchedulerMock: vi.fn(),
 	setPrismaQueryObserverMock: vi.fn(),
+	runInBackgroundMock: vi.fn(),
 	auditWriteFailuresIncMock: vi.fn(),
 	auditWritesTotalIncMock: vi.fn(),
 	getTrustedClientIpMock: vi.fn(),
@@ -29,6 +31,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	recordAudit: mocks.recordAuditMock,
 	setAuditCounters: mocks.setAuditCountersMock,
+	setAuditWriteScheduler: mocks.setAuditWriteSchedulerMock,
 	setPrismaQueryObserver: mocks.setPrismaQueryObserverMock,
 	// `db` is imported by the module under test. A getter that throws would be
 	// closer to production, but nothing here touches it and the real client
@@ -39,6 +42,10 @@ vi.mock("@repo/database", () => ({
 vi.mock("@repo/observability", () => ({
 	auditWriteFailures: { inc: mocks.auditWriteFailuresIncMock },
 	auditWritesTotal: { inc: mocks.auditWritesTotalIncMock },
+}));
+
+vi.mock("../../modules/weave/lib/run-in-background", () => ({
+	runInBackground: mocks.runInBackgroundMock,
 }));
 
 vi.mock("@repo/auth/lib/client-ip", () => ({
@@ -55,6 +62,7 @@ import {
 beforeEach(() => {
 	mocks.recordAuditMock.mockReset();
 	mocks.setAuditCountersMock.mockReset();
+	mocks.setAuditWriteSchedulerMock.mockReset();
 	mocks.setPrismaQueryObserverMock.mockReset();
 	mocks.auditWriteFailuresIncMock.mockReset();
 	mocks.auditWritesTotalIncMock.mockReset();
@@ -400,5 +408,13 @@ describe("wireAuditObservability", () => {
 			category: "auth",
 			outcome: "success",
 		});
+	});
+
+	it("schedules fire-and-forget audit writes to outlive the response", () => {
+		wireAuditObservability();
+
+		expect(mocks.setAuditWriteSchedulerMock).toHaveBeenCalledWith(
+			mocks.runInBackgroundMock,
+		);
 	});
 });

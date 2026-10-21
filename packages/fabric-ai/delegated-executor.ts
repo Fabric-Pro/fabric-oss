@@ -20,6 +20,7 @@
  */
 
 import {
+	type AIOperationContext,
 	getAIModelWithMetadata,
 	getSystemRAGProviderConfig,
 	logModelUsageAsync,
@@ -112,7 +113,8 @@ function getTaskTypeForPattern(pattern: FabricPattern): string {
 /**
  * User context for model resolution
  */
-interface UserContext {
+interface UserContext
+	extends Pick<AIOperationContext, "frameId" | "workflowExecutionId"> {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
@@ -208,6 +210,18 @@ export async function executePatternDelegated(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.projectId
+						? { projectId: userContext.projectId }
+						: {}),
+					...(userContext.frameId
+						? { frameId: userContext.frameId }
+						: {}),
+					...(userContext.workflowExecutionId
+						? {
+								workflowExecutionId:
+									userContext.workflowExecutionId,
+							}
+						: {}),
 					...(userContext.conversationId
 						? { conversationId: userContext.conversationId }
 						: {}),
@@ -456,6 +470,18 @@ export async function* executePatternDelegatedStream(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.projectId
+						? { projectId: userContext.projectId }
+						: {}),
+					...(userContext.frameId
+						? { frameId: userContext.frameId }
+						: {}),
+					...(userContext.workflowExecutionId
+						? {
+								workflowExecutionId:
+									userContext.workflowExecutionId,
+							}
+						: {}),
 					...(userContext.conversationId
 						? { conversationId: userContext.conversationId }
 						: {}),

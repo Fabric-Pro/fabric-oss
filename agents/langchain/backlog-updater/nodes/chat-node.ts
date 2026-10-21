@@ -85,50 +85,103 @@ const TERMINAL_TOOLS = new Set([
 ]);
 
 function isAfterTerminalTool(messages: BaseMessage[]): boolean {
-	if (!messages || messages.length < 2) {
+	const last = messages.at(-1);
+	if (!last || getMessageType(last) !== "tool") {
 		return false;
 	}
-
-	const lastMsg = messages[messages.length - 1];
-	const secondLastMsg = messages[messages.length - 2];
-
-	if (getMessageType(lastMsg) !== "tool") {
-		return false;
-	}
-
-	if (getMessageType(secondLastMsg) !== "ai") {
-		return false;
-	}
-
-	const toolCalls =
-		(secondLastMsg as any).tool_calls || (secondLastMsg as any).toolCalls;
-	if (!toolCalls || toolCalls.length === 0) {
-		return false;
-	}
-
-	return toolCalls.some((tc: any) => {
-		const name = tc.name || tc.function?.name;
-		return TERMINAL_TOOLS.has(name);
-	});
+	const content = typeof last.content === "string" ? last.content : "";
+	return TERMINAL_TOOLS.has(
+		resolveToolResultName(last, messages.slice(0, -1), content),
+	);
 }
 
-// Browser producer: analysisFailureMessage in apps/web/modules/saas/projects/lib/backlog-analysis-sources.ts.
-const ANALYSIS_FAILURE_PREFIX = "Analysis error:";
-
-function isAfterAnalysisFailure(messages: BaseMessage[]): boolean {
-	const lastMessage = messages.at(-1);
-	if (!lastMessage || getMessageType(lastMessage) !== "tool") {
-		return false;
+/** Unnamed tool results suppress entry until the next genuine human turn. */
+const FLOW_STEP_TOOLS = new Set([
+	"select_review_sources",
+	"select_notion_pages",
+	"analyze_backlog",
+	...TERMINAL_TOOLS,
+]);
+function isFlowContinuation(messages: BaseMessage[]): boolean {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		const type = getMessageType(message);
+		if (type === "human") {
+			return false;
+		}
+		if (type === "tool") {
+			const content =
+				typeof message.content === "string" ? message.content : "";
+			const name = resolveToolResultName(
+				message,
+				messages.slice(0, index),
+				content,
+			);
+			if (name === "unknown_tool" || FLOW_STEP_TOOLS.has(name)) {
+				return true;
+			}
+		}
 	}
-	// Use the result's own name: incoming assistant tool_calls may be absent.
-	// unified-server.ts currently drops tool-result names while normalizing.
-	// For unnamed results, the browser's specific failure prefix identifies this path.
-	const toolName = lastMessage.name;
-	return (
-		(!toolName || toolName === "analyze_backlog") &&
-		typeof lastMessage.content === "string" &&
-		lastMessage.content.startsWith(ANALYSIS_FAILURE_PREFIX)
-	);
+	return false;
+}
+
+/**
+ * Name a tool result for the model. AG-UI tool messages carry only a
+ * toolCallId, and CopilotKit can send the assistant turn without its
+ * tool_calls, so a selector result can arrive unnamed. Labelled
+ * "unknown_tool", the model read the selection as values the user typed and
+ * opened the selector again instead of calling analyze_backlog.
+ */
+function resolveToolResultName(
+	msg: BaseMessage,
+	earlier: BaseMessage[],
+	content: string,
+): string {
+	const ownName = (msg as any).name;
+	if (typeof ownName === "string" && ownName.length > 0) {
+		return ownName;
+	}
+
+	const toolCallId = (msg as any).tool_call_id || (msg as any).toolCallId;
+	if (toolCallId) {
+		for (const prior of earlier) {
+			if (getMessageType(prior) !== "ai") {
+				continue;
+			}
+			const calls = [
+				...((prior as any).tool_calls ||
+					(prior as any).toolCalls ||
+					[]),
+				...((prior as any).additional_kwargs?.tool_calls || []),
+			];
+			for (const call of calls) {
+				const callName = call?.name || call?.function?.name;
+				if (call?.id === toolCallId && typeof callName === "string") {
+					return callName;
+				}
+			}
+		}
+	}
+
+	// Last resort: the selector results have distinctive shapes
+	// (BacklogChat.tsx select_review_sources and select_notion_pages).
+	try {
+		const parsed = JSON.parse(content);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			if (
+				Array.isArray(parsed.selectedMeetings) &&
+				Array.isArray(parsed.selectedChannels)
+			) {
+				return "select_review_sources";
+			}
+			if (Array.isArray(parsed.pageIds) && "mcpConfigId" in parsed) {
+				return "select_notion_pages";
+			}
+		}
+	} catch {
+		// Not JSON: leave it unnamed.
+	}
+	return "unknown_tool";
 }
 
 /**
@@ -146,7 +199,7 @@ function isAfterAnalysisFailure(messages: BaseMessage[]): boolean {
 function sanitizeMessagesForModel(messages: BaseMessage[]): BaseMessage[] {
 	const result: BaseMessage[] = [];
 
-	for (const msg of messages) {
+	for (const [index, msg] of messages.entries()) {
 		const msgType = getMessageType(msg);
 
 		// Remove system messages (we prepend our own)
@@ -158,11 +211,15 @@ function sanitizeMessagesForModel(messages: BaseMessage[]): BaseMessage[] {
 		// knows what the user selected/confirmed (e.g. selected meetings).
 		// Include the tool name so the model can determine the next step.
 		if (msgType === "tool") {
-			const toolName = (msg as any).name || "unknown_tool";
 			const content =
 				typeof msg.content === "string"
 					? msg.content
 					: JSON.stringify(msg.content || "");
+			const toolName = resolveToolResultName(
+				msg,
+				messages.slice(0, index),
+				content,
+			);
 			if (content.trim().length > 0) {
 				const toolResultMsg = new HumanMessage({
 					content: `[Result from ${toolName}]: ${content}`,
@@ -353,12 +410,8 @@ export async function chatNode(
 		const copilotKitTools = state.tools || [];
 
 		let modelToInvoke: any;
-		const afterAnalysisFailure = isAfterAnalysisFailure(state.messages);
-		if (
-			!afterAnalysisFailure &&
-			copilotKitTools.length > 0 &&
-			model.bindTools
-		) {
+		const afterFlowStep = isFlowContinuation(state.messages);
+		if (!afterFlowStep && copilotKitTools.length > 0 && model.bindTools) {
 			modelToInvoke = model.bindTools(copilotKitTools, {
 				parallel_tool_calls: false,
 			} as Record<string, unknown>);
@@ -366,10 +419,10 @@ export async function chatNode(
 				toolCount: copilotKitTools.length,
 			});
 		} else {
-			// An analysis failure or no available tools selects text-only chat mode
+			// Flow results select text-only chat mode; browser callbacks advance the flow.
 			modelToInvoke = model;
 			logger.info("[Backlog Updater] Using chat mode", {
-				afterAnalysisFailure,
+				afterFlowStep,
 			});
 		}
 
@@ -422,6 +475,37 @@ export async function chatNode(
 				textLength: entry?.text.length ?? 0,
 				durationMs: entry?.durationMs ?? 0,
 			});
+		}
+
+		// A provider or test model may emit calls despite having no tools bound.
+		// Only updates are emitted by unified-server; remove calls before dispatch.
+		if (afterFlowStep) {
+			response.tool_calls = [];
+			if (Array.isArray(response.content)) {
+				response.content = response.content.filter(
+					(part: { type?: string }) =>
+						![
+							"tool_use",
+							"tool_call",
+							"function_call",
+							"server_tool_use",
+						].includes(part.type ?? ""),
+				);
+			}
+			if (
+				!response.content ||
+				(Array.isArray(response.content) &&
+					response.content.length === 0) ||
+				(typeof response.content === "string" &&
+					!response.content.trim())
+			) {
+				response.content =
+					"The application is managing this request. Use the existing card for progress and review.";
+			}
+			response.invalid_tool_calls = [];
+			if (response.additional_kwargs) {
+				delete response.additional_kwargs.tool_calls;
+			}
 		}
 
 		// Return updated state with the model's response

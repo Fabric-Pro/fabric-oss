@@ -89,6 +89,26 @@ export interface FabricProject {
 }
 
 // ---- Documents ----
+export type FabricDocumentStatus =
+	| "DRAFT"
+	| "QUEUED"
+	| "GENERATING"
+	| "IN_PROGRESS"
+	| "REVIEW"
+	| "COMPLETE"
+	| "FAILED";
+
+/**
+ * The statuses a caller may set on create or update. QUEUED and GENERATING
+ * belong to generation runs: the server refuses either with 400
+ * `DOCUMENT_STATUS_GENERATION_OWNED`. Both still work as a list filter and
+ * still come back on reads.
+ */
+export type FabricDocumentWriteStatus = Exclude<
+	FabricDocumentStatus,
+	"QUEUED" | "GENERATING"
+>;
+
 export interface FabricDocumentSummary {
 	id: string;
 	projectId: string;
@@ -102,14 +122,7 @@ export interface FabricDocumentSummary {
 		| "USER_STORY"
 		| "API_SPEC";
 	title: string;
-	status:
-		| "DRAFT"
-		| "QUEUED"
-		| "GENERATING"
-		| "IN_PROGRESS"
-		| "REVIEW"
-		| "COMPLETE"
-		| "FAILED";
+	status: FabricDocumentStatus;
 	version: number;
 	wordCount: number | null;
 	createdAt: string;
@@ -118,6 +131,12 @@ export interface FabricDocumentSummary {
 
 export interface FabricDocument extends FabricDocumentSummary {
 	content: string;
+	/**
+	 * The identity of `content`: with `version`, the base this read saw.
+	 * Send both back as `expectedContentHash` and `expectedVersion` on
+	 * `updateDocument` so a save made since this read is not overwritten.
+	 */
+	contentHash: string;
 }
 
 // ---- Features ----

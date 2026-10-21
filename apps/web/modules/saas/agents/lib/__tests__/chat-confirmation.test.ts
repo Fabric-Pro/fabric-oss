@@ -143,6 +143,9 @@ describe("the words around a request", () => {
 		expect(describeToolPhrase("fabric_page_file_upload")).toBe(
 			"upload a file to this page",
 		);
+		expect(describeToolPhrase("fabric_page_run_workflow")).toBe(
+			"run its workflow",
+		);
 		expect(describeToolPhrase("fabric_share_page")).toBe("share page");
 		expect(describeToolPhrase("")).toBe("run action");
 	});

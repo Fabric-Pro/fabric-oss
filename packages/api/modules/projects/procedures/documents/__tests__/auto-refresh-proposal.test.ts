@@ -13,7 +13,9 @@
  *     N and can sit unread for days. If the document has moved since, applying
  *     it would silently revert whoever edited in between — so the write is
  *     guarded by `expectedVersion` and a lost race reports `stale` instead of
- *     overwriting (or 500ing).
+ *     overwriting (or 500ing). The body it was drafted from is checked too,
+ *     when the proposal recorded it: a body saved at the same version is as
+ *     stale as a newer version.
  *   - ACCEPT RE-EMBEDS. Skipping the side effects would leave Qdrant answering
  *     searches from the pre-refresh body.
  *
@@ -24,6 +26,7 @@
  * real `resolveFlag` behind the `isFeatureEnabled` mock.
  */
 
+import { contentIdentity } from "@repo/utils/content-identity";
 import {
 	type FeatureFlagKey,
 	resolveFlag,
@@ -42,6 +45,7 @@ const {
 			readonly documentId: string,
 			readonly expectedVersion: number,
 			readonly actualVersion: number,
+			readonly reason: "version" | "content" = "version",
 		) {
 			super(
 				`Document ${documentId} moved from version ${expectedVersion} to ${actualVersion}.`,
@@ -182,6 +186,7 @@ function makeSettings(overrides: Record<string, unknown> = {}) {
 		pendingSummary: "Updated the success metrics section.",
 		pendingProposedAt: PROPOSED_AT,
 		pendingBaselineVersion: 3,
+		pendingBaselineContentHash: contentIdentity("# PRD\n\nThe v3 body."),
 		lastRefreshedAt: PROPOSED_AT,
 		lastRefreshStatus: "PROPOSED",
 		lastRefreshSummary: "Updated the success metrics section.",
@@ -328,6 +333,164 @@ describe("applyDocumentAutoRefreshProposalProcedure — the stale proposal", () 
 	});
 });
 
+describe("applyDocumentAutoRefreshProposalProcedure — the body the proposal was drafted from", () => {
+	const DRAFTED_FROM = "# PRD\n\nThe body the refresh read.";
+	const REWRITTEN = "# PRD\n\nA body saved since, at the same version.";
+
+	/**
+	 * `updateDocument` as the real one judges a base: the version, then the
+	 * body's identity when one is named. A fake rather than a canned
+	 * rejection, so a handler that stops naming the body writes over the
+	 * rewritten one here instead of reporting it stale.
+	 */
+	function storedAt(version: number, content: string) {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ version, content }),
+		);
+		mocks.updateDocument.mockImplementation(
+			async (
+				id: string,
+				payload: {
+					expectedVersion?: number;
+					expectedContentHash?: string;
+				},
+			) => {
+				if (
+					payload.expectedVersion !== undefined &&
+					payload.expectedVersion !== version
+				) {
+					throw new DocumentVersionConflictError(
+						id,
+						payload.expectedVersion,
+						version,
+					);
+				}
+				if (
+					payload.expectedContentHash !== undefined &&
+					payload.expectedContentHash !== contentIdentity(content)
+				) {
+					throw new DocumentVersionConflictError(
+						id,
+						payload.expectedVersion ?? version,
+						version,
+						"content",
+					);
+				}
+				return makeDocument({ version: version + 1 });
+			},
+		);
+	}
+
+	it("reports stale and writes nothing when the body changed at the same version", async () => {
+		// A Proposal run's final save writes its body at the old version, so
+		// the version the proposal names still matches; only the body shows
+		// the document moved under it.
+		storedAt(3, REWRITTEN);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({
+				pendingBaselineVersion: 3,
+				pendingBaselineContentHash: contentIdentity(DRAFTED_FROM),
+			}),
+		);
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			DOCUMENT_ID,
+			expect.objectContaining({
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(DRAFTED_FROM),
+			}),
+		);
+		expect(result).toEqual({ applied: false, reason: "stale" });
+		// The dead proposal goes, as for a newer version...
+		expect(mocks.clearRefreshProposal).toHaveBeenCalledWith(DOCUMENT_ID);
+		// ...and nothing was written, so nothing is re-embedded.
+		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+	});
+
+	it("applies when the body is still the one it was drafted from", async () => {
+		storedAt(3, DRAFTED_FROM);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({
+				pendingBaselineVersion: 3,
+				pendingBaselineContentHash: contentIdentity(DRAFTED_FROM),
+			}),
+		);
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
+		expect(result).toEqual({ applied: true, version: 4 });
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			DOCUMENT_ID,
+			expect.objectContaining({
+				expectedVersion: 3,
+				expectedContentHash: contentIdentity(DRAFTED_FROM),
+			}),
+		);
+		expect(mocks.clearRefreshProposal).toHaveBeenCalledWith(DOCUMENT_ID);
+		expect(mocks.applyDocumentUpdateSideEffects).toHaveBeenCalledTimes(1);
+	});
+
+	// Stored before the body was recorded, a proposal names only a version,
+	// and the version alone does not name a body: a generation run saves its
+	// body at the old version and moves the version at a later step, so a
+	// version-only Accept in between writes over the body the run produced.
+	// Such a proposal fails closed, for every document type.
+	it.each(["PRD", "PROPOSAL"])(
+		"reports a %s proposal stored without a body hash as stale, writing nothing",
+		async (type) => {
+			// The version still matches: the run's body is saved and its
+			// version step has not landed yet.
+			storedAt(3, REWRITTEN);
+			mocks.getDocumentById.mockResolvedValue(
+				makeDocument({
+					type,
+					status: "COMPLETE",
+					version: 3,
+					content: REWRITTEN,
+				}),
+			);
+			mocks.getAutoRefreshSettings.mockResolvedValue(
+				makeSettings({
+					pendingBaselineVersion: 3,
+					pendingBaselineContentHash: null,
+				}),
+			);
+
+			const result = await applyHandler({
+				input: input(),
+				context: ctx(),
+			});
+
+			expect(result).toEqual({ applied: false, reason: "stale" });
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			// The dead proposal goes, so it cannot be accepted later.
+			expect(mocks.clearRefreshProposal).toHaveBeenCalledWith(
+				DOCUMENT_ID,
+			);
+			expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+		},
+	);
+
+	it("still reports a newer version as stale for a proposal stored without a body hash", async () => {
+		storedAt(5, DRAFTED_FROM);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({
+				pendingBaselineVersion: 3,
+				pendingBaselineContentHash: null,
+			}),
+		);
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
+		expect(result).toEqual({ applied: false, reason: "stale" });
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+		expect(mocks.clearRefreshProposal).toHaveBeenCalledWith(DOCUMENT_ID);
+		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+	});
+});
+
 describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run", () => {
 	const proposal = (status: string) =>
 		makeDocument({
@@ -361,6 +524,9 @@ describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run",
 		},
 	);
 
+	// The write refuses a run queued after this read on its own: the
+	// query's default for a Proposal's content write, which an accept never
+	// opts out of.
 	it("applies a finished Proposal through the guarded write, without consulting the Proposal gate", async () => {
 		mocks.getDocumentById.mockResolvedValue(proposal("COMPLETE"));
 
@@ -369,10 +535,10 @@ describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run",
 		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
 		expect(mocks.updateDocument).toHaveBeenCalledWith(
 			DOCUMENT_ID,
-			expect.objectContaining({
-				expectedVersion: 3,
-				refuseWhileGenerating: true,
-			}),
+			expect.objectContaining({ expectedVersion: 3 }),
+		);
+		expect(mocks.updateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 		expect(result).toEqual({ applied: true, version: 4 });
 	});
@@ -393,18 +559,15 @@ describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run",
 		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
 	});
 
-	it("leaves a document that is not a Proposal free of the run guard", async () => {
+	it("applies a document that is not a Proposal even while it is generating", async () => {
 		mocks.getDocumentById.mockResolvedValue(
 			makeDocument({ status: "GENERATING" }),
 		);
 
-		await applyHandler({ input: input(), context: ctx() });
+		const result = await applyHandler({ input: input(), context: ctx() });
 
-		const [, payload] = mocks.updateDocument.mock.calls[0] as [
-			string,
-			Record<string, unknown>,
-		];
-		expect(payload.refuseWhileGenerating).toBeUndefined();
+		expect(mocks.updateDocument).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ applied: true, version: 4 });
 	});
 });
 

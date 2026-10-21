@@ -145,6 +145,61 @@ describe("a call a page makes", () => {
 		},
 	);
 
+	it.each([
+		"fabric_page_get_workflow",
+		"fabric_page_run_workflow",
+		"fabric_page_list_workflow_runs",
+	])(
+		"isolates declared generic workflow controls %s to their Workspace",
+		async (tool) => {
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId: "project-1", runtimeTools: [tool] }),
+			);
+			expect(
+				await checkPageCall(
+					"page-1",
+					tool,
+					{ workflowId: "workflow-1" },
+					viewer,
+				),
+			).toEqual({
+				ok: true,
+				args: { workflowId: "workflow-1", frameId: "page-1" },
+				pageProjectId: "project-1",
+			});
+			expect(
+				refusalOf(
+					await checkPageCall(
+						"page-1",
+						tool,
+						{ frameId: "other-page" },
+						viewer,
+					),
+				).reason,
+			).toBe("other_page");
+			mocks.getAccessibleFrameById.mockResolvedValue(
+				pageRecord({ projectId: "project-1", runtimeTools: [] }),
+			);
+			expect(
+				refusalOf(await checkPageCall("page-1", tool, {}, viewer))
+					.reason,
+			).toBe("tool_not_declared");
+		},
+	);
+
+	it("refuses binding from a page even if a declaration was forged", async () => {
+		expect(
+			refusalOf(
+				await checkPageCall(
+					"page-1",
+					"fabric_bind_workspace_workflow",
+					{},
+					viewer,
+				),
+			).reason,
+		).toBe("tool_not_for_pages");
+	});
+
 	it("defaults declared project arguments without adding them to strict page-review calls", async () => {
 		mocks.getAccessibleFrameById.mockResolvedValue(
 			pageRecord({

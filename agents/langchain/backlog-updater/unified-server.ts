@@ -17,6 +17,7 @@ import {
 } from "@repo/agent-core";
 import { backlogUpdaterGraph } from "./agent.js";
 import { createInvokeAgent, extractState } from "./invoke-agent.js";
+import { normalizeMessages } from "./normalize-messages";
 import { DEFAULT_RECURSION_LIMIT } from "./utils";
 
 // Configuration
@@ -142,50 +143,7 @@ const { app, start } = createUnifiedServer(
 		// Normalize CopilotKit messages to LangChain format
 		// CopilotKit sends tool results as { type: "tool", toolCallId: "..." }
 		// but LangGraph expects { role: "tool", tool_call_id: "..." }
-		const normalizedMessages = input.messages.map((msg: any) => {
-			// Tool result messages: CopilotKit uses type="tool", LangGraph needs role="tool"
-			if (msg.type === "tool" || msg.role === "tool") {
-				return {
-					role: "tool" as const,
-					content:
-						typeof msg.content === "string"
-							? msg.content
-							: JSON.stringify(msg.content),
-					tool_call_id: msg.toolCallId || msg.tool_call_id || msg.id,
-				};
-			}
-			// AI messages with tool_calls: normalize tool_calls format
-			if (
-				msg.role === "assistant" &&
-				msg.tool_calls &&
-				Array.isArray(msg.tool_calls)
-			) {
-				return {
-					role: "assistant" as const,
-					content: msg.content || "",
-					tool_calls: msg.tool_calls.map((tc: any) => ({
-						id: tc.id,
-						name: tc.name || tc.function?.name,
-						args:
-							tc.args ||
-							(typeof tc.function?.arguments === "string"
-								? JSON.parse(tc.function.arguments)
-								: tc.function?.arguments) ||
-							{},
-						type: "tool_call" as const,
-					})),
-				};
-			}
-			// Human/user messages
-			const role =
-				msg.role ||
-				(msg.type === "human"
-					? "user"
-					: msg.type === "ai"
-						? "assistant"
-						: "user");
-			return { ...msg, role };
-		});
+		const normalizedMessages = normalizeMessages(input.messages);
 
 		console.log("[UnifiedServer] Streaming backlog_updater with:", {
 			projectId: agentState.projectId,

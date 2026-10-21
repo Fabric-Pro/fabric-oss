@@ -1,6 +1,8 @@
 ---
 title: Workflow-Builder
 description: Automatisierungen auf einem visuellen Canvas bauen — Trigger, KI, Bedingungen und 27 angebundene Dienste, dauerhaft ausgeführt.
+audience: Organisationsmitglieder, die Workflows erstellen und pflegen
+owner: Platform team
 ---
 
 Der Workflow-Builder ist ein visueller Canvas für Automatisierungen. Sie platzieren
@@ -126,15 +128,51 @@ archivieren.
 | Knoten | Funktion |
 |---|---|
 | **Trigger** | Beginn des Graphen; trägt Trigger-Art und Cron-Ausdruck |
-| **HTTP Request** | Beliebige URL mit `GET`, `POST`, `PUT`, `PATCH` oder `DELETE` aufrufen, mit eigenen Headern und Body |
+| **HTTP Request** | `GET`, `POST`, `PUT`, `PATCH` oder `DELETE` mit eigenen Headern und Body an einen eingerichteten Endpunkt senden |
 | **Condition** | Einen Ausdruck auswerten und über die `true`- oder die `false`-Kante weiterlaufen |
+| **Script Transform** | Ergebnisse vorheriger Knoten mit JavaScript oder TypeScript verarbeiten und JSON zurückgeben |
+| **Native Platform Read** | Projektdaten über eines der registrierten Fabric-Tools mit Lesezugriff abrufen |
+| **Read Workspace Data** | Einen gespeicherten JSON-Datensatz aus einem verbundenen Workspace lesen |
+| **Write Workspace Data** | JSON speichern, wenn der Datensatz noch die zuvor gelesene Version hat |
+
+### Eigene Logik und gespeicherte Workspace-Daten
+
+Bitten Sie Fabric Agent, einen **Script Transform** für Ihre Vergleichs-, Berechnungs- oder
+Berichtsregeln zu schreiben. Öffnen Sie den Knoten, um Code, Sprache, Antwortfrist und
+optionale Eingabeschlüssel zu prüfen und zu ändern. Das Skript erhält vorherige Ergebnisse
+als `inputs` und vertrauenswürdige Laufdaten als `execution`. Es gibt JSON in `result`
+zurück. Es hat keinen Zugriff auf Zugangsdaten und kann keine Netzwerkanfragen senden.
+Verwenden Sie für Dienstabfragen und KI-Aufrufe eigene Knoten.
+
+**Native Platform Read** bietet eine feste Auswahl registrierter Lesezugriffe. Wählen Sie
+ein Tool und geben Sie seine JSON-Argumente an. Fabric setzt das Projekt des Workflows
+ein und prüft bei jedem Lauf die aktuellen Berechtigungen des Besitzers. Unvollständige
+Ergebnisse behalten ihre Angaben zur Vollständigkeit und Paginierung. Ihr Skript muss
+diese berücksichtigen, bevor es eine Gesamtzahl anzeigt.
+
+Mit **Read Workspace Data** und **Write Workspace Data** speichern Sie Einstellungen,
+Vergleichsstände oder Ergebnisse zwischen Läufen. Wählen Sie Collection, Schlüssel und
+Bereich. **Shared** speichert Datensätze für Personen, die die Seite verwenden können.
+**Workflow owner's private data** verwendet den persönlichen Datenbereich des Besitzers.
+Diese Knoten erfordern einen veröffentlichten Workflow, der mit einem Workspace desselben
+Projekts verbunden ist. Beide müssen Ihnen gehören. Bitten Sie Fabric Agent, diese
+Verbindung herzustellen.
+
+Übergeben Sie die `version` des Leseknotens an **Expected version** des Schreibknotens.
+Version `0` erstellt den Datensatz nur, wenn er noch nicht existiert. Eine zwischenzeitliche
+Änderung verhindert das Schreiben. Geht die Antwort auf einen Schreibvorgang verloren,
+lesen Sie den Datensatz, bevor Sie über eine Wiederholung entscheiden.
+
+Ein Änderungsbericht kann den vorherigen Vergleichsstand lesen, aktuelle Quelldaten in
+einem Skript vergleichen und mit **Condition** die gespeicherte Analyse wiederverwenden,
+wenn die relevanten Felder unverändert sind. Beschreiben Sie Fabric Agent, welche Felder
+als Änderung gelten und ob ein manueller Lauf eine neue Analyse erzwingen soll. Sie legen
+diese Regeln für Ihren Workflow fest.
 
 ### Integrationsaktionen
 
-Die Palette umfasst **55 Integrationsaktionen** zusätzlich zu den drei Kernknoten. Eine
-Aktion erscheint nur, wenn Fabric einen Executor dafür mitbringt — die Palette bietet also
-keinen Knoten an, den nichts ausführen kann. Den genutzten Dienst müssen Sie trotzdem
-selbst verbinden.
+Die Palette enthält außerdem Aktionen für angebundene Dienste. Für jede aufgeführte Aktion
+gibt es einen Fabric-Executor. Verbinden Sie den jeweiligen Dienst vor dem ersten Lauf.
 
 #### AI
 

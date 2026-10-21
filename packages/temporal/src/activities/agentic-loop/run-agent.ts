@@ -25,6 +25,11 @@ import { getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";
 import { generateText, isStepCount, type ModelMessage, tool } from "ai";
 import { z } from "zod";
+import {
+	type SecondaryUsageInput,
+	type UsageOrigin,
+	secondaryUsageFields,
+} from "../../workflows/orchestrator/usage-attribution";
 import { loadMcpToolsForAgent } from "../agent-execution-core";
 import {
 	agentToolAbortSignal,
@@ -38,8 +43,7 @@ import { makeToolLoopPrepareStep } from "./step-cache-breakpoint";
 
 export type RunAgentMode = "delegate" | "inline";
 
-export interface RunAgentInput {
-	usageConversationId?: string;
+export interface RunAgentInput extends SecondaryUsageInput {
 	/** ID of the agent to run */
 	agentId: string;
 	/** Goal/task for the sub-agent */
@@ -140,6 +144,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 		mcpConfigIds = [],
 		timeoutMs = DEFAULT_TIMEOUT_MS,
 		usageConversationId,
+		usageOrigin,
 	} = input;
 
 	// ==========================================================================
@@ -270,6 +275,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 				timeoutMs,
 				startTime,
 				usageConversationId,
+				usageOrigin,
 			);
 		}
 		return await executeInlineMode(
@@ -284,6 +290,7 @@ export async function runAgent(input: RunAgentInput): Promise<RunAgentOutput> {
 			timeoutMs,
 			startTime,
 			usageConversationId,
+			usageOrigin,
 		);
 	} catch (error) {
 		return {
@@ -325,6 +332,7 @@ async function executeDelegateMode(
 	timeoutMs: number,
 	startTime: number,
 	usageConversationId?: string,
+	usageOrigin?: UsageOrigin,
 ): Promise<RunAgentOutput> {
 	// Build system prompt
 	const systemPrompt = DELEGATE_SYSTEM_PROMPT.replace("{goal}", goal).replace(
@@ -335,7 +343,12 @@ async function executeDelegateMode(
 	// Get AI model
 	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
-		{ userId, organizationId, conversationId: usageConversationId },
+		{
+			userId,
+			organizationId,
+			conversationId: usageConversationId,
+			...secondaryUsageFields({ usageOrigin }),
+		},
 	);
 
 	// Build tools for sub-agent (excluding run_agent to current agent)
@@ -346,6 +359,7 @@ async function executeDelegateMode(
 		organizationId,
 		mcpConfigIds,
 		usageConversationId,
+		usageOrigin,
 	);
 
 	// Execute with timeout
@@ -423,11 +437,17 @@ async function executeInlineMode(
 	timeoutMs: number,
 	startTime: number,
 	usageConversationId?: string,
+	usageOrigin?: UsageOrigin,
 ): Promise<RunAgentOutput> {
 	// Get AI model
 	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "TOOL_CALLING" },
-		{ userId, organizationId, conversationId: usageConversationId },
+		{
+			userId,
+			organizationId,
+			conversationId: usageConversationId,
+			...secondaryUsageFields({ usageOrigin }),
+		},
 	);
 
 	// Build tools
@@ -438,6 +458,7 @@ async function executeInlineMode(
 		organizationId,
 		mcpConfigIds,
 		usageConversationId,
+		usageOrigin,
 	);
 
 	// Append the delegation request to parent messages
@@ -510,6 +531,7 @@ async function buildSubAgentTools(
 	organizationId: string | undefined,
 	mcpConfigIds: string[],
 	usageConversationId?: string,
+	usageOrigin?: UsageOrigin,
 ) {
 	const tools: Record<string, any> = {};
 	let toolSources: Record<
@@ -526,6 +548,7 @@ async function buildSubAgentTools(
 			organizationId,
 			mcpConfigIds,
 			usageConversationId,
+			usageOrigin,
 		);
 	}
 
@@ -556,6 +579,7 @@ export function createRunAgentTool(
 	organizationId: string | undefined,
 	mcpConfigIds: string[],
 	usageConversationId?: string,
+	usageOrigin?: UsageOrigin,
 ) {
 	const inputSchema = z.object({
 		agentId: z.string().describe("ID of the agent to run"),
@@ -585,6 +609,7 @@ Max delegation depth: ${MAX_RECURSION_DEPTH - currentDepth} more levels allowed.
 			const { agentId, goal, context, mode } = params;
 			const result = await runAgent({
 				usageConversationId,
+				...(usageOrigin ? { usageOrigin } : {}),
 				agentId,
 				goal,
 				context,

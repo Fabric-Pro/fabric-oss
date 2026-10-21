@@ -133,6 +133,49 @@ describe("graphs without agentic nodes", () => {
 });
 
 describe("node config", () => {
+	it("refuses unsupported native tools and configurable authority before publication", async () => {
+		for (const config of [
+			{ toolName: "fabric_delete_frame", arguments: "{}" },
+			{
+				toolName: "fabric_get_project_pm_connection",
+				arguments: "{}",
+				userId: "other-owner",
+			},
+		]) {
+			expect(
+				await check(
+					[
+						{
+							id: "native",
+							type: "native-platform-read",
+							data: { config },
+						},
+					],
+					{ projectId: "project" },
+				),
+			).toEqual([
+				expect.stringContaining("invalid native read configuration"),
+			]);
+		}
+	});
+	it("requires a project for a native read and accepts a valid project graph", async () => {
+		const nodes = [
+			{
+				id: "native",
+				type: "native-platform-read",
+				data: {
+					config: {
+						toolName: "fabric_get_project_pm_connection",
+						arguments: "{}",
+					},
+				},
+			},
+		];
+		expect(await check(nodes)).toEqual([
+			"native: native reads require a workflow project",
+		]);
+		expect(await check(nodes, { projectId: "project" })).toEqual([]);
+	});
 	it("holds each node to its schema", async () => {
 		const problems = await check([
 			trigger(),
@@ -197,6 +240,42 @@ describe("schedule interval", () => {
 	it("does not require a schedule: a manually started agent task has no interval", async () => {
 		expect(
 			await check([trigger({ triggerType: "manual" }), agentTask()]),
+		).toEqual([]);
+	});
+});
+
+describe("schedule trigger", () => {
+	it("refuses a schedule trigger whose cron sits under another name, which would never be scheduled", async () => {
+		const problems = await check([
+			trigger({
+				triggerType: "SCHEDULE",
+				scheduleCron: undefined,
+				cron: "0 9 * * *",
+				timezone: "Europe/Berlin",
+			}),
+		]);
+
+		expect(problems).toHaveLength(1);
+		expect(problems[0]).toContain("Schedule:");
+		expect(problems[0]).toContain("`scheduleCron`");
+	});
+
+	it("accepts the legacy scheduleExpression field the schedule also reads", async () => {
+		expect(
+			await check([
+				trigger({
+					scheduleCron: undefined,
+					scheduleExpression: "0 9 * * 1",
+				}),
+			]),
+		).toEqual([]);
+	});
+
+	it("leaves a manual trigger without a cron alone", async () => {
+		expect(
+			await check([
+				trigger({ triggerType: "manual", scheduleCron: undefined }),
+			]),
 		).toEqual([]);
 	});
 });

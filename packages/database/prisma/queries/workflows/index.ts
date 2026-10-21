@@ -10,3 +10,5 @@ export * from "./integrations";
 export * from "./workflows";
 export * from "./workspace-review-history";
 export * from "./workspace-workflow-binding";
+export * from "./workspace-workflow-data";
+export * from "./workspace-workflows";

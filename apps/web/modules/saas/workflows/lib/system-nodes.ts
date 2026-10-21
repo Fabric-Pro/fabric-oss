@@ -3,8 +3,8 @@
  * plugin, so they have nowhere else to be declared.
  *
  * Everything else in the palette is derived from the plugin registry (see
- * `node-definitions.ts`). Keep this list minimal: a node belongs here only if
- * it needs no credentials and no external service.
+ * `node-definitions.ts`). Keep this list for Fabric-owned actions; native
+ * reads use registered platform tools and their existing connection checks.
  *
  * Deliberately NOT here: `browser-*`, `hybrid-step` and `fabric-enrichment`.
  * They have executors but are driven by the hybrid/browser execution paths
@@ -19,8 +19,73 @@ import {
 	PUBLISH_FRAME_NODE_LABEL,
 	PUBLISH_FRAME_NODE_TYPE,
 } from "@repo/temporal/agentic-workflow-preset";
+import { SCRIPT_TRANSFORM_NODE_TYPE } from "@repo/temporal/workflow-node-types";
+import { NATIVE_PLATFORM_READ_NODE } from "./native-platform-read-node";
 import { listTimeZoneOptions } from "./time-zones";
 import type { NodeTypeDefinition } from "./types";
+import { WORKSPACE_DATA_NODES } from "./workspace-data-nodes";
+
+const SCRIPT_TRANSFORM_NODE: NodeTypeDefinition = {
+	type: SCRIPT_TRANSFORM_NODE_TYPE,
+	label: "Script Transform",
+	description:
+		"Transform JSON with your own JavaScript or TypeScript in an isolated runtime",
+	icon: "Wrench",
+	category: "Developer",
+	defaultData: {
+		label: "Script Transform",
+		config: {
+			code: "return { ...inputs };",
+			language: "javascript",
+			timeout: 5000,
+		},
+	},
+	execution: {
+		stepImportPath: "script-transform",
+		stepFunction: "executeScriptTransformStep",
+	},
+	configFields: [
+		{
+			name: "code",
+			label: "Code (async function body)",
+			type: "textarea",
+			required: true,
+			description:
+				"Read previous outputs through inputs['$nodeId'] or inputs['Node label'] and return JSON. Data is passed separately: do not interpolate it into code. No network, credentials, packages or persistence. Publish the complete graph before running scripts.",
+		},
+		{
+			name: "language",
+			label: "Language",
+			type: "select",
+			required: true,
+			options: [
+				{ value: "javascript", label: "JavaScript" },
+				{ value: "typescript", label: "TypeScript" },
+			],
+		},
+		{
+			name: "inputKeys",
+			label: "Input keys (optional JSON array)",
+			type: "textarea",
+			placeholder: '["$source", "$previous"]',
+			description:
+				"Select existing top-level input names to avoid passing duplicate aliases. Leave blank to pass all inputs. Selected JSON must fit within 64 KiB.",
+		},
+		{
+			name: "timeout",
+			label: "Response deadline (milliseconds, 1000–10000)",
+			type: "number",
+			required: true,
+		},
+	],
+	outputFields: [
+		{ field: "result", description: "Returned JSON value" },
+		{
+			field: "logs",
+			description: "Captured stdout and stderr, up to 16 KiB",
+		},
+	],
+};
 
 export const SYSTEM_NODES: NodeTypeDefinition[] = [
 	{
@@ -260,6 +325,9 @@ export const SYSTEM_NODES: NodeTypeDefinition[] = [
 			},
 		],
 	},
+	SCRIPT_TRANSFORM_NODE,
+	...WORKSPACE_DATA_NODES,
+	NATIVE_PLATFORM_READ_NODE,
 ];
 
 /** Node types that are system nodes rather than plugin actions. */

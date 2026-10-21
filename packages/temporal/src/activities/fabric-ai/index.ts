@@ -42,15 +42,13 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import {
+	type UsageOrigin,
+	usageOriginFields,
+} from "../../workflows/orchestrator/usage-attribution";
 
-/** The `conversationId` spread for a pattern's user context; empty without one. */
-function conversationIdOf(input: {
-	conversationId?: string;
-}): { conversationId: string } | Record<string, never> {
-	return input.conversationId ? { conversationId: input.conversationId } : {};
-}
-
-export interface ExecuteFabricPatternInput {
+export interface ExecuteFabricPatternInput
+	extends Pick<UsageOrigin, "frameId" | "workflowExecutionId"> {
 	pattern: FabricPattern;
 	input: string;
 	/** User ID for model resolution (required for hybrid/delegated modes) */
@@ -106,7 +104,8 @@ export interface ExtractYouTubeTranscriptOutput {
 	durationMs: number;
 }
 
-export interface AnalyzeYouTubeVideoInput {
+export interface AnalyzeYouTubeVideoInput
+	extends Pick<UsageOrigin, "frameId" | "workflowExecutionId"> {
 	url: string;
 	pattern?: FabricPattern;
 	/** User ID for model resolution (required for hybrid/delegated modes) */
@@ -182,7 +181,7 @@ export async function executeFabricPattern(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
-						...conversationIdOf(input),
+						...usageOriginFields(input),
 					}
 				: undefined,
 			// Vendor/model for full mode
@@ -317,7 +316,7 @@ export async function analyzeYouTubeVideo(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
-						...conversationIdOf(input),
+						...usageOriginFields(input),
 					}
 				: undefined,
 			vendor: input.vendor,
@@ -425,7 +424,8 @@ export async function checkFabricHealth(): Promise<{
 // Audio/Video Transcription Activities
 // ============================================================================
 
-export interface TranscribeAudioInput {
+export interface TranscribeAudioInput
+	extends Pick<UsageOrigin, "projectId" | "frameId" | "workflowExecutionId"> {
 	/** Base64-encoded file content */
 	fileContentBase64: string;
 	/** Original file name (for extension detection) */
@@ -511,7 +511,7 @@ export async function transcribeAudioActivity(
 				? {
 						userId: input.userId,
 						organizationId: input.organizationId,
-						...conversationIdOf(input),
+						...usageOriginFields(input),
 					}
 				: undefined,
 		});
@@ -584,7 +584,7 @@ export async function transcribeAndAnalyzeActivity(
 				? {
 						userId: input.userId,
 						organizationId: input.organizationId,
-						...conversationIdOf(input),
+						...usageOriginFields(input),
 					}
 				: undefined,
 		});
@@ -642,7 +642,8 @@ export interface ScrapeUrlOutput {
 	durationMs: number;
 }
 
-export interface ScrapeAndAnalyzeInput {
+export interface ScrapeAndAnalyzeInput
+	extends Pick<UsageOrigin, "frameId" | "workflowExecutionId"> {
 	/** URL to scrape */
 	url: string;
 	/** Pattern to execute on the scraped content */
@@ -696,7 +697,8 @@ export interface SearchWebOutput {
 	durationMs: number;
 }
 
-export interface SearchAndAnalyzeInput {
+export interface SearchAndAnalyzeInput
+	extends Pick<UsageOrigin, "frameId" | "workflowExecutionId"> {
 	/** Search question/query */
 	question: string;
 	/** Pattern to execute on the search results */
@@ -961,7 +963,7 @@ export async function scrapeAndAnalyzeActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
-				...conversationIdOf(input),
+				...usageOriginFields(input),
 			},
 			temperature: input.temperature,
 		});
@@ -1170,7 +1172,7 @@ export async function searchAndAnalyzeActivity(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
-				...conversationIdOf(input),
+				...usageOriginFields(input),
 			},
 			temperature: input.temperature,
 		});

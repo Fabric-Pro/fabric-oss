@@ -4154,10 +4154,16 @@ model DocumentAutoRefreshSettings {
   // accept or reject. `pendingBaselineVersion` is what the proposal was built
   // from — accepting it re-runs the same compare-and-set, so a proposal that has
   // been overtaken by a human edit cannot be applied blind.
-  pendingContent         String?   @db.Text
-  pendingSummary         String?   @db.Text
-  pendingProposedAt      DateTime?
-  pendingBaselineVersion Int?
+  // `pendingBaselineContentHash` is the body half of that baseline
+  // (`contentIdentity` of the body the model read): the version alone does not
+  // name a body, because a Proposal run's final save writes its body at the old
+  // version (Fizzy #2946). Null on a proposal stored before it was recorded,
+  // which keeps the version-only check.
+  pendingContent             String?   @db.Text
+  pendingSummary             String?   @db.Text
+  pendingProposedAt          DateTime?
+  pendingBaselineVersion     Int?
+  pendingBaselineContentHash String?
 
   createdByUserId String
 

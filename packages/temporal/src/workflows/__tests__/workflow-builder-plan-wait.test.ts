@@ -18,6 +18,7 @@ import {
 	type WorkflowBundleWithSourceMap,
 } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { providedWorkflowGraph } from "../../../__tests__/test-helpers/workflow-builder-graph";
 
 const WORKFLOW_PATH = resolve(__dirname, "..", "workflow-builder-execution.ts");
 const HOUR = 60 * 60_000;
@@ -46,6 +47,7 @@ async function run(nodeType: string, attempts: Array<() => NodeResult>) {
 		taskQueue,
 		workflowBundle: bundle,
 		activities: {
+			getWorkflowDefinition: providedWorkflowGraph,
 			executeWorkflowNode: async () => {
 				const attempt = attempts[calls++];
 				if (!attempt) {

@@ -1,3 +1,4 @@
+import { aiConfigurationRefusalMessage } from "../../lib/ai-configuration-refusal";
 import { isDatabaseError, prismaErrorCode } from "../../lib/database-error";
 
 export { isDatabaseError, prismaErrorCode } from "../../lib/database-error";
@@ -16,7 +17,7 @@ export function describeSyncErrorForUser(error: unknown): string {
 		const code = prismaErrorCode(error);
 		return code ? `database error ${code}` : "database error";
 	}
-	return describeOrphanCause(error);
+	return aiConfigurationRefusalMessage(error) ?? describeOrphanCause(error);
 }
 
 export function redactDatabaseErrorText(

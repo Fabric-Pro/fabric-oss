@@ -202,6 +202,21 @@ beforeEach(() => {
 });
 
 describe("revertFrameToVersion", () => {
+	it("does not restore a revoked row-metadata workflow grant from document history", async () => {
+		const workflowBindings = { version: 1, workflows: [] };
+		store.frames[0].metadata = { surface: "workspace", workflowBindings };
+		const historical = JSON.parse(BEFORE_FIRST_EDIT);
+		historical.metadata.workflowBindings = {
+			version: 1,
+			workflows: [{ workflowId: "historic-workflow" }],
+		};
+		store.history[0].contentSnapshot = JSON.stringify(historical);
+		await revertFrameToVersion(input);
+		expect(store.frames[0].metadata).toEqual({
+			surface: "workspace",
+			workflowBindings,
+		});
+	});
 	it("restores the content the chosen version held", async () => {
 		const result = await revertFrameToVersion(input);
 

@@ -9,6 +9,7 @@
  * among the attached project's own indexes.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UsageOrigin } from "../../../workflows/orchestrator/usage-attribution";
 
 const h = vi.hoisted(() => ({
 	getProjectCodeIndexes: vi.fn(),
@@ -62,6 +63,7 @@ type CodeSearchTool = {
 async function buildTool(
 	preferredRepositoryUrl?: string,
 	liveRepositoryReads?: boolean,
+	usageOrigin?: UsageOrigin,
 ) {
 	const tools = await createCodeSearchTool({
 		userId: "u1",
@@ -69,6 +71,7 @@ async function buildTool(
 		projectId: "p1",
 		preferredRepositoryUrl,
 		liveRepositoryReads,
+		...(usageOrigin ? { usageOrigin } : {}),
 	});
 	return tools.code_search as CodeSearchTool;
 }
@@ -109,6 +112,25 @@ beforeEach(() => {
 });
 
 describe("code_search repository scope", () => {
+	it("attributes embeddings to the parent run without changing the search project", async () => {
+		const { generateEmbedding } = await import("@repo/rag/lib/embedding");
+		const usageOrigin = {
+			projectId: "origin-project",
+			frameId: "origin-frame",
+			workflowExecutionId: "origin-execution",
+		};
+		const tool = await buildTool(undefined, undefined, usageOrigin);
+		await tool.execute({ query: "auth" });
+		expect(generateEmbedding).toHaveBeenCalledWith(
+			"auth",
+			expect.objectContaining(usageOrigin),
+		);
+		expect(lastQueryMust()).toContainEqual({
+			key: "projectId",
+			match: { value: "p1" },
+		});
+		expect(h.getProjectCodeIndexes).toHaveBeenCalledWith("p1");
+	});
 	it("lists the project's indexed repositories in its description", async () => {
 		const tool = await buildTool();
 		expect(tool.description).toContain("example-org/web-app [Primary]");

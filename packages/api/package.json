@@ -35,6 +35,7 @@
 		"@repo/payments": "workspace:*",
 		"@repo/permissions": "workspace:*",
 		"@repo/rag": "workspace:*",
+		"@repo/sandbox": "workspace:*",
 		"@repo/search": "workspace:*",
 		"@repo/storage": "workspace:*",
 		"@repo/temporal": "workspace:*",
@@ -72,6 +73,6 @@
 		"test:watch": "vitest",
 		"type-check": "tsgo --noEmit"
 	},
-	"version": "0.0.17",
+	"version": "0.0.18",
 	"license": "Apache-2.0"
 }

@@ -52,7 +52,7 @@ function validateSprintCapture(
 			capture.discoveryComplete &&
 			capture.requirementsAsOf !== null &&
 			capture.unreadItemIds.length === 0,
-		"Sprint graph capture is incomplete; narrow the exact iterations, assigned types or context relations and retry. No reviews were generated.",
+		`Sprint graph capture is incomplete; narrow the exact iterations, assigned types or context relations and retry. No reviews were generated. Capture reason: ${capture.incompleteReason ?? "unknown"}.`,
 	);
 	const requirementsAsOf = z
 		.string()

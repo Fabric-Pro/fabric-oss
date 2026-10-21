@@ -78,7 +78,10 @@ vi.mock("../src/lib/classify-work-item", () => ({
 	classifyWorkItem: mocks.classifyWorkItem,
 }));
 
-import { createStoryFromProposal } from "../src/lib/create-story-from-proposal";
+import {
+	createStoryFromProposal,
+	draftBodyByKind,
+} from "../src/lib/create-story-from-proposal";
 
 const BASE_PARAMS = {
 	projectId: "proj-1",
@@ -207,5 +210,63 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 		expect(call.source).toBe("AI_UPDATE");
 		expect(call).not.toHaveProperty("aiRecommendationBatchId");
 		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("AI configuration refusals", () => {
+	it.each([
+		["ChatGptPlanAuthError", "model", false],
+		["ChatGptPlanAuthError", "retry", false],
+		["AiUsageLimitExceededError", "generate", false],
+		["ChatGptPlanModelNotServedError", "generate", false],
+		["SubscriptionPlanExhaustedError", "generate", false],
+		["ChatGptPlanAuthError", "cause", true],
+	] as const)(
+		"refuses %s from %s (required=%s) before persistence",
+		async (name, source, required) => {
+			mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_CLEAN_SPEC);
+			const refusal = Object.assign(new Error("configuration refused"), {
+				name,
+			});
+			const thrown =
+				source === "retry"
+					? { name: "AI_RetryError", lastError: refusal }
+					: source === "cause"
+						? new Error("wrapper", { cause: refusal })
+						: refusal;
+			if (source === "model") {
+				mocks.getAIModelWithMetadata.mockRejectedValueOnce(thrown);
+			} else {
+				mocks.generateObject.mockRejectedValueOnce(thrown);
+			}
+			await expect(
+				createStoryFromProposal({
+					...BASE_PARAMS,
+					requireCleanSpec: required,
+				}),
+			).rejects.toBe(refusal);
+			expect(mocks.createStory).not.toHaveBeenCalled();
+		},
+	);
+	it("keeps the review-time raw body on a configuration refusal", async () => {
+		mocks.getBoundPromptForAgent.mockResolvedValue(BOUND_CLEAN_SPEC);
+		mocks.generateObject.mockRejectedValueOnce(
+			Object.assign(new Error("refused"), {
+				name: "ChatGptPlanAuthError",
+			}),
+		);
+		await expect(
+			draftBodyByKind({
+				projectId: "proj-1",
+				organizationId: "org-1",
+				userId: "user-1",
+				kind: "FEATURE",
+				title: "Saved searches",
+				description: "Original body",
+			}),
+		).resolves.toMatchObject({
+			description: "Original body",
+			aiDrafted: false,
+		});
 	});
 });

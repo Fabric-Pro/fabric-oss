@@ -28,6 +28,11 @@ import {
 	SheetHeader,
 	SheetTitle,
 } from "@ui/components/sheet";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	ArrowLeftRight,
@@ -38,10 +43,20 @@ import {
 	RotateCcwIcon,
 	SparklesIcon,
 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useTranslations } from "next-intl";
+import type { ReactElement } from "react";
+import { useCallback, useId, useState } from "react";
 import { toast } from "sonner";
+import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
 import { VersionAuthorBadge } from "./VersionAuthorBadge";
 import { VersionDiffViewer } from "./VersionDiffViewer";
+
+/**
+ * Why Restore is closed off right now (Fizzy #2946): a generation run is
+ * queued or writing the document, which refuses the restore anyway, or this
+ * tab's own regeneration is under way or waiting for its review.
+ */
+export type RestoreBlockedReason = "runLive" | "regenerating";
 
 interface DocumentVersionHistoryProps {
 	open: boolean;
@@ -55,6 +70,11 @@ interface DocumentVersionHistoryProps {
 		restoredContent: string,
 		restoredVersion?: number,
 	) => void;
+	/**
+	 * Set while Restore would be refused or would race the tab's own
+	 * regeneration: every Restore control is disabled and says why.
+	 */
+	restoreBlockedReason?: RestoreBlockedReason | null;
 }
 
 interface DocumentVersion {
@@ -86,6 +106,35 @@ interface DocumentVersion {
 	} | null;
 }
 
+/**
+ * A Restore control that is closed off says why (Fizzy #2946). The button
+ * is `aria-disabled`, not `disabled`, as in DownloadAllContextsButton: it
+ * stays focusable and keeps its pointer events, so the tooltip hangs on the
+ * button itself, a keyboard or screen-reader user reaches it as the one tab
+ * stop and hears the reason it is described by, and its handler refuses the
+ * press. With nothing blocking it, the control renders as it always did.
+ */
+function RestoreBlockedTooltip({
+	text,
+	children,
+}: {
+	text: string | null;
+	children: ReactElement;
+}) {
+	if (text === null) {
+		return children;
+	}
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipContent>{text}</TooltipContent>
+		</Tooltip>
+	);
+}
+
+/** How a closed-off Restore looks, now that `disabled` no longer dims it. */
+const RESTORE_BLOCKED_CLASS = "cursor-not-allowed opacity-50";
+
 export function DocumentVersionHistory({
 	open,
 	onOpenChange,
@@ -94,8 +143,23 @@ export function DocumentVersionHistory({
 	currentVersion,
 	currentContent,
 	onVersionRestored,
+	restoreBlockedReason = null,
 }: DocumentVersionHistoryProps) {
 	const { organizationId } = useOrganizationContext();
+	const t = useTranslations("projects.versionHistory");
+	const tRefusal = useTranslations("projects.documentWriteRefusal");
+	// The sentence every disabled Restore control is described by. Only
+	// Restore's refusal and this reason are translated; the rest of the
+	// panel's copy is unchanged.
+	const restoreBlockedText =
+		restoreBlockedReason === "runLive"
+			? t("restoreBlocked.runLive")
+			: restoreBlockedReason === "regenerating"
+				? t("restoreBlocked.regenerating")
+				: null;
+	const restoreBlocked = restoreBlockedText !== null;
+	const rowRestoreBlockedId = useId();
+	const dialogRestoreBlockedId = useId();
 	const [restoreTarget, setRestoreTarget] = useState<DocumentVersion | null>(
 		null,
 	);
@@ -123,14 +187,24 @@ export function DocumentVersionHistory({
 
 	// Restore mutation - no global callbacks; each call site provides its own
 	// onSuccess to avoid duplicate toasts and stale restoreTarget reads.
+	// A refusal is said in the reader's words, never the server's (Fizzy
+	// #2946). One a run or another write explains also refetches the
+	// document, so the editor catches up with what refused it.
 	const restoreMutation = useMutation(
 		orpc.projects.documents.versions.restore.mutationOptions({
 			onError: (error) => {
-				toast.error(
-					error instanceof Error
-						? error.message
-						: "Failed to restore version",
-				);
+				const refusal = describeDocumentWriteRefusal(error, tRefusal);
+				toast.error(refusal.message);
+				if (
+					refusal.kind === "runLive" ||
+					refusal.kind === "changedMeanwhile"
+				) {
+					queryClient.invalidateQueries({
+						queryKey: orpc.projects.documents.get.queryKey({
+							input: { id: documentId, projectId },
+						}),
+					});
+				}
 			},
 		}),
 	);
@@ -139,13 +213,21 @@ export function DocumentVersionHistory({
 	const handleRestoreClick = useCallback(
 		(e: React.MouseEvent, version: DocumentVersion) => {
 			e.stopPropagation(); // Prevent row click (which opens diff viewer)
+			// A closed-off Restore stays pressable (`aria-disabled`), so
+			// the press is refused here, by mouse or by keyboard alike.
+			if (restoreBlockedReason) {
+				return;
+			}
 			setRestoreTarget(version);
 			setRestoreConfirmOpen(true);
 		},
-		[],
+		[restoreBlockedReason],
 	);
 
 	const handleRestoreConfirm = useCallback(() => {
+		if (restoreBlockedReason) {
+			return;
+		}
 		if (restoreTarget) {
 			restoreMutation.mutate(
 				{
@@ -188,6 +270,7 @@ export function DocumentVersionHistory({
 			);
 		}
 	}, [
+		restoreBlockedReason,
 		restoreTarget,
 		restoreMutation,
 		projectId,
@@ -209,6 +292,9 @@ export function DocumentVersionHistory({
 
 	// Restore from diff viewer — uses per-call onSuccess to avoid stale state
 	const handleDiffViewerRestore = useCallback(() => {
+		if (restoreBlockedReason) {
+			return;
+		}
 		if (diffVersion) {
 			restoreMutation.mutate(
 				{
@@ -247,6 +333,7 @@ export function DocumentVersionHistory({
 			);
 		}
 	}, [
+		restoreBlockedReason,
 		diffVersion,
 		restoreMutation,
 		projectId,
@@ -313,6 +400,11 @@ export function DocumentVersionHistory({
 							Click a version to compare with current document
 						</SheetDescription>
 					</SheetHeader>
+					{restoreBlockedText !== null && (
+						<span id={rowRestoreBlockedId} className="sr-only">
+							{restoreBlockedText}
+						</span>
+					)}
 
 					<div className="mt-6">
 						{isLoading ? (
@@ -415,20 +507,57 @@ export function DocumentVersionHistory({
 																<ArrowLeftRight className="h-3 w-3" />
 																Compare
 															</span>
-															<Button
-																variant="ghost"
-																size="sm"
-																className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-																onClick={(e) =>
-																	handleRestoreClick(
-																		e,
-																		version,
-																	)
+															<RestoreBlockedTooltip
+																text={
+																	restoreBlockedText
 																}
 															>
-																<RotateCcwIcon className="h-3.5 w-3.5 mr-1" />
-																Restore
-															</Button>
+																<Button
+																	variant="ghost"
+																	size="sm"
+																	className={cn(
+																		"h-7 px-2 text-xs text-muted-foreground hover:text-foreground",
+																		restoreBlocked &&
+																			RESTORE_BLOCKED_CLASS,
+																	)}
+																	aria-disabled={
+																		restoreBlocked ||
+																		undefined
+																	}
+																	aria-describedby={
+																		restoreBlocked
+																			? rowRestoreBlockedId
+																			: undefined
+																	}
+																	onClick={(
+																		e,
+																	) =>
+																		handleRestoreClick(
+																			e,
+																			version,
+																		)
+																	}
+																	// Enter or Space on Restore is
+																	// Restore's, never the row's
+																	// Compare: the row would take
+																	// the key and cancel the press.
+																	onKeyDown={(
+																		e,
+																	) => {
+																		if (
+																			e.key ===
+																				"Enter" ||
+																			e.key ===
+																				" "
+																		) {
+																			e.stopPropagation();
+																		}
+																	}}
+																>
+																	<RotateCcwIcon className="h-3.5 w-3.5 mr-1" />
+																	Restore
+																</Button>
+															</RestoreBlockedTooltip>
 														</div>
 													</div>
 
@@ -538,17 +667,35 @@ export function DocumentVersionHistory({
 						>
 							Cancel
 						</Button>
-						<Button
-							onClick={handleRestoreConfirm}
-							disabled={restoreMutation.isPending}
-						>
-							{restoreMutation.isPending && (
-								<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
-							)}
-							<RotateCcwIcon className="mr-2 h-4 w-4" />
-							Restore
-						</Button>
+						<RestoreBlockedTooltip text={restoreBlockedText}>
+							<Button
+								onClick={handleRestoreConfirm}
+								disabled={restoreMutation.isPending}
+								aria-disabled={restoreBlocked || undefined}
+								aria-describedby={
+									restoreBlocked
+										? dialogRestoreBlockedId
+										: undefined
+								}
+								className={
+									restoreBlocked
+										? RESTORE_BLOCKED_CLASS
+										: undefined
+								}
+							>
+								{restoreMutation.isPending && (
+									<Loader2Icon className="mr-2 h-4 w-4 animate-spin" />
+								)}
+								<RotateCcwIcon className="mr-2 h-4 w-4" />
+								Restore
+							</Button>
+						</RestoreBlockedTooltip>
 					</DialogFooter>
+					{restoreBlockedText !== null && (
+						<span id={dialogRestoreBlockedId} className="sr-only">
+							{restoreBlockedText}
+						</span>
+					)}
 				</DialogContent>
 			</Dialog>
 
@@ -562,6 +709,7 @@ export function DocumentVersionHistory({
 					currentVersion={currentVersion}
 					onRestore={handleDiffViewerRestore}
 					isRestoring={restoreMutation.isPending}
+					restoreDisabledReason={restoreBlockedText}
 				/>
 			)}
 		</>

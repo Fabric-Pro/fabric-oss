@@ -147,7 +147,10 @@ export class PageRecordBusyError extends Error {
  * trips, so these let a few dozen racing writers each finish in turn and still
  * end a stuck one.
  */
-const PAGE_WRITE_TRANSACTION = { maxWait: 10_000, timeout: 10_000 } as const;
+export const PAGE_WRITE_TRANSACTION = {
+	maxWait: 10_000,
+	timeout: 10_000,
+} as const;
 
 function errorCode(error: unknown): unknown {
 	return typeof error === "object" && error !== null && "code" in error
@@ -161,7 +164,7 @@ function errorCode(error: unknown): unknown {
  * written nothing; a page deleted while its writer queued (P2003, the foreign
  * key) is a page that is no longer there.
  */
-function translateWriteFailure(error: unknown): never {
+export function translatePageRecordWriteFailure(error: unknown): never {
 	switch (errorCode(error)) {
 		case "P2028":
 			throw new PageRecordBusyError();
@@ -366,17 +369,26 @@ export async function listPageRecords(input: {
 	};
 }
 
-export async function getPageRecord(input: {
+export interface GetPageRecordInput {
 	frameId: string;
 	organizationId: string;
 	viewerUserId: string;
 	collection: string;
 	key: string;
 	scope: PageRecordScope;
-}): Promise<PageRecordView | null> {
+}
+
+export async function getPageRecord(input: GetPageRecordInput) {
+	return getPageRecordWithin(db, input);
+}
+
+export async function getPageRecordWithin(
+	client: Pick<Prisma.TransactionClient, "framePageRecord" | "user">,
+	input: GetPageRecordInput,
+): Promise<PageRecordView | null> {
 	assertCollectionName(input.collection);
 	assertUserId(input.viewerUserId);
-	const row = await db.framePageRecord.findFirst({
+	const row = await client.framePageRecord.findFirst({
 		where: {
 			frameId: input.frameId,
 			organizationId: input.organizationId,
@@ -388,7 +400,7 @@ export async function getPageRecord(input: {
 	if (!row) {
 		return null;
 	}
-	const [view] = await viewsOf(db, [row]);
+	const [view] = await viewsOf(client, [row]);
 	return view ?? null;
 }
 
@@ -397,7 +409,7 @@ export async function getPageRecord(input: {
  * queue on an advisory lock, so the limits hold and an `expectedVersion` is
  * checked against the row the write replaces.
  */
-export async function setPageRecords(input: {
+export interface SetPageRecordsInput {
 	frameId: string;
 	organizationId: string;
 	actorUserId: string;
@@ -405,7 +417,21 @@ export async function setPageRecords(input: {
 	records: PageRecordWrite[];
 	/** Only the host's own tools pass this, for `$files` and `$comments`. */
 	allowReserved?: boolean;
-}): Promise<{ records: PageRecordView[] }> {
+}
+
+export async function setPageRecords(input: SetPageRecordsInput) {
+	return db
+		.$transaction(
+			(tx) => setPageRecordsWithin(tx, input),
+			PAGE_WRITE_TRANSACTION,
+		)
+		.catch(translatePageRecordWriteFailure);
+}
+
+export async function setPageRecordsWithin(
+	tx: Prisma.TransactionClient,
+	input: SetPageRecordsInput,
+): Promise<{ records: PageRecordView[] }> {
 	assertWritableCollection(input.collection, input.allowReserved);
 	assertUserId(input.actorUserId);
 	if (input.records.length === 0) {
@@ -457,131 +483,117 @@ export async function setPageRecords(input: {
 		};
 	});
 
-	const saved = await db
-		.$transaction(async (tx) => {
-			await tx.$executeRaw`SELECT pg_advisory_xact_lock(${PAGE_RECORD_ADVISORY_CLASS}::int, ${advisoryObjectKey(`page:${input.frameId}`)}::int)`;
+	await tx.$executeRaw`SELECT pg_advisory_xact_lock(${PAGE_RECORD_ADVISORY_CLASS}::int, ${advisoryObjectKey(`page:${input.frameId}`)}::int)`;
 
-			const frame = await tx.agentWorkspaceFile.findFirst({
-				where: {
-					id: input.frameId,
-					organizationId: input.organizationId,
-				},
-				select: { id: true },
-			});
-			if (!frame) {
-				throw new PageRecordInputError(
-					"frame_not_found",
-					"Page not found",
-				);
-			}
+	const frame = await tx.agentWorkspaceFile.findFirst({
+		where: {
+			id: input.frameId,
+			organizationId: input.organizationId,
+		},
+		select: { id: true },
+	});
+	if (!frame) {
+		throw new PageRecordInputError("frame_not_found", "Page not found");
+	}
 
-			const existing = await tx.framePageRecord.findMany({
-				where: {
-					frameId: input.frameId,
-					organizationId: input.organizationId,
-					collection: input.collection,
-					OR: writes.map((w) => ({
-						ownerUserId: w.ownerUserId,
-						key: w.key,
-					})),
-				},
-				select: {
-					id: true,
-					key: true,
-					ownerUserId: true,
-					version: true,
-					size: true,
-				},
+	const existing = await tx.framePageRecord.findMany({
+		where: {
+			frameId: input.frameId,
+			organizationId: input.organizationId,
+			collection: input.collection,
+			OR: writes.map((w) => ({
+				ownerUserId: w.ownerUserId,
+				key: w.key,
+			})),
+		},
+		select: {
+			id: true,
+			key: true,
+			ownerUserId: true,
+			version: true,
+			size: true,
+		},
+	});
+	const existingBy = new Map(
+		existing.map((row) => [`${row.ownerUserId}\u0000${row.key}`, row]),
+	);
+
+	let addedRecords = 0;
+	let addedBytes = 0;
+	for (const write of writes) {
+		const current = existingBy.get(
+			`${write.ownerUserId}\u0000${write.key}`,
+		);
+		if (
+			write.expectedVersion !== undefined &&
+			write.expectedVersion !== (current?.version ?? 0)
+		) {
+			throw new PageRecordVersionConflictError({
+				collection: input.collection,
+				key: write.key,
+				scope: write.scope,
+				expectedVersion: write.expectedVersion,
+				currentVersion: current?.version ?? 0,
 			});
-			const existingBy = new Map(
-				existing.map((row) => [
-					`${row.ownerUserId}\u0000${row.key}`,
-					row,
-				]),
+		}
+		addedRecords += current ? 0 : 1;
+		addedBytes += write.size - (current?.size ?? 0);
+	}
+
+	if (addedRecords > 0 || addedBytes > 0) {
+		const usage = await pageUsage(tx, input);
+		if (
+			addedRecords > 0 &&
+			usage.records + addedRecords > PAGE_RECORD_LIMITS.maxRecordsPerPage
+		) {
+			throw new PageRecordLimitError(
+				"records",
+				PAGE_RECORD_LIMITS.maxRecordsPerPage,
 			);
+		}
+		if (
+			addedBytes > 0 &&
+			usage.bytes + addedBytes > PAGE_RECORD_LIMITS.maxBytesPerPage
+		) {
+			throw new PageRecordLimitError(
+				"page_bytes",
+				PAGE_RECORD_LIMITS.maxBytesPerPage,
+			);
+		}
+	}
 
-			let addedRecords = 0;
-			let addedBytes = 0;
-			for (const write of writes) {
-				const current = existingBy.get(
-					`${write.ownerUserId}\u0000${write.key}`,
-				);
-				if (
-					write.expectedVersion !== undefined &&
-					write.expectedVersion !== (current?.version ?? 0)
-				) {
-					throw new PageRecordVersionConflictError({
-						collection: input.collection,
-						key: write.key,
-						scope: write.scope,
-						expectedVersion: write.expectedVersion,
-						currentVersion: current?.version ?? 0,
-					});
-				}
-				addedRecords += current ? 0 : 1;
-				addedBytes += write.size - (current?.size ?? 0);
-			}
-
-			if (addedRecords > 0 || addedBytes > 0) {
-				const usage = await pageUsage(tx, input);
-				if (
-					addedRecords > 0 &&
-					usage.records + addedRecords >
-						PAGE_RECORD_LIMITS.maxRecordsPerPage
-				) {
-					throw new PageRecordLimitError(
-						"records",
-						PAGE_RECORD_LIMITS.maxRecordsPerPage,
-					);
-				}
-				if (
-					addedBytes > 0 &&
-					usage.bytes + addedBytes >
-						PAGE_RECORD_LIMITS.maxBytesPerPage
-				) {
-					throw new PageRecordLimitError(
-						"page_bytes",
-						PAGE_RECORD_LIMITS.maxBytesPerPage,
-					);
-				}
-			}
-
-			const saved = [];
-			for (const write of writes) {
-				const current = existingBy.get(
-					`${write.ownerUserId}\u0000${write.key}`,
-				);
-				saved.push(
-					current
-						? await tx.framePageRecord.update({
-								where: { id: current.id },
-								data: {
-									value: write.value,
-									size: write.size,
-									version: { increment: 1 },
-									updatedBy: input.actorUserId,
-								},
-							})
-						: await tx.framePageRecord.create({
-								data: {
-									frameId: input.frameId,
-									organizationId: input.organizationId,
-									collection: input.collection,
-									key: write.key,
-									ownerUserId: write.ownerUserId,
-									value: write.value,
-									size: write.size,
-									createdBy: input.actorUserId,
-									updatedBy: input.actorUserId,
-								},
-							}),
-				);
-			}
-			return saved;
-		}, PAGE_WRITE_TRANSACTION)
-		.catch(translateWriteFailure);
-
-	return { records: await viewsOf(db, saved) };
+	const saved = [];
+	for (const write of writes) {
+		const current = existingBy.get(
+			`${write.ownerUserId}\u0000${write.key}`,
+		);
+		saved.push(
+			current
+				? await tx.framePageRecord.update({
+						where: { id: current.id },
+						data: {
+							value: write.value,
+							size: write.size,
+							version: { increment: 1 },
+							updatedBy: input.actorUserId,
+						},
+					})
+				: await tx.framePageRecord.create({
+						data: {
+							frameId: input.frameId,
+							organizationId: input.organizationId,
+							collection: input.collection,
+							key: write.key,
+							ownerUserId: write.ownerUserId,
+							value: write.value,
+							size: write.size,
+							createdBy: input.actorUserId,
+							updatedBy: input.actorUserId,
+						},
+					}),
+		);
+	}
+	return { records: await viewsOf(tx, saved) };
 }
 
 /**

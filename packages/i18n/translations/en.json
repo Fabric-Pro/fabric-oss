@@ -3779,7 +3779,11 @@
 				"action": "Mark as complete",
 				"completed": "Document marked as complete",
 				"notDraft": "Nothing was changed — the document is no longer a draft with content",
-				"failed": "Failed to mark the document as complete: {message}"
+				"failed": "The document could not be marked as complete. Try again."
+			},
+			"setActive": {
+				"updated": "Active document updated",
+				"failed": "Could not update the active document. Try again."
 			},
 			"featuresDeprecation": {
 				"badge": "Deprecated",
@@ -4099,7 +4103,7 @@
 				"descriptionPlaceholderBug": "Describe what's broken...",
 				"titleGenerating": "Generating title…",
 				"titleGenerated": "Title generated.",
-				"titleGenerationFailed": "Title generation failed — a placeholder title has been assigned.",
+				"creationFailed": "Could not create work item. Try again.",
 				"titleInsufficient": "Description was short — using placeholder title. You can edit it any time.",
 				"checkFailedToastLine": "Could not check this against existing items.",
 				"duplicateWarning": {
@@ -8514,7 +8518,9 @@
 			},
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
-			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed."
+			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
+			"regenerationAccepted": "The regenerated version was accepted.",
+			"regenerationRejected": "The regenerated version was rejected. The document is back on its previous version."
 		},
 		"documentEditorRoom": {
 			"updating": "Updating to the latest version…",
@@ -8530,6 +8536,35 @@
 				"copy": "Copy my unsaved text",
 				"copied": "Your unsaved text was copied to the clipboard.",
 				"copyFailed": "Your text could not be copied to the clipboard."
+			}
+		},
+		"documentWriteRefusal": {
+			"runLive": "A generation run is writing this document. Try again when it finishes.",
+			"changedMeanwhile": "Someone changed this document meanwhile. Reload to see the latest version, then try again.",
+			"baseRequired": "This page is out of date. Reload it to keep editing.",
+			"statusGenerationOwned": "That status is set only by a generation run.",
+			"failed": "The document could not be changed. Try again."
+		},
+		"versionHistory": {
+			"restoreBlocked": {
+				"runLive": "Restore is unavailable while a generation run is queued or writing this document. It becomes available again when the run finishes.",
+				"regenerating": "Restore is unavailable while a regeneration started here is in progress or waiting for your review. It becomes available again once that is done."
+			}
+		},
+		"updateWithContext": {
+			"readFailed": "Couldn't read the document content. Try again or reload the page.",
+			"syncing": "The document is still syncing with the latest saved version. Try again in a moment.",
+			"noUpdates": "No updates found — the document already reflects the latest context.",
+			"previewFailed": "Couldn't fetch the latest context. Try again.",
+			"modelCallFailed": "The AI model call failed, so no update was drafted. This is not a problem with your AI settings: try again, and if it keeps happening, check the AI provider's status.",
+			"aiProviderMissing": "No AI provider is set up for this organization. An organization admin can add one in AI settings; then try again.",
+			"documentTooLarge": "The document is too large for the AI model's output limit, so the update could not be completed. Try a model with a larger output limit, or split the document.",
+			"confirmReadFailed": "Couldn't read the document content from the editor — nothing was saved. Copy any unsaved work and reload the page.",
+			"notApplied": "No changes were applied — the document already matches.",
+			"applied": "Document updated with latest context — saved as v{version}",
+			"loadingStage": {
+				"scanning": "Scanning project context",
+				"drafting": "AI reviewing and drafting updates"
 			}
 		},
 		"planPause": {

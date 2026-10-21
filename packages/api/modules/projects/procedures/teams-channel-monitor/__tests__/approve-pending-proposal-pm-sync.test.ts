@@ -571,6 +571,31 @@ describe("approvePendingProposal (Teams) — source link on the created work ite
 describe("approval failure messages", () => {
 	it.each([
 		[
+			Object.assign(new Error("raw provider auth detail"), {
+				name: "ChatGptPlanAuthError",
+			}),
+			"Your ChatGPT connection needs to be reconnected. Reconnect it, or switch this organization to organization API billing.",
+		],
+		[
+			Object.assign(new Error("raw usage detail"), {
+				name: "SubscriptionPlanExhaustedError",
+			}),
+			"Your ChatGPT plan has no usage left. Wait for its limit to reset, then try again.",
+		],
+		[
+			Object.assign(new Error("Choose another model in settings."), {
+				name: "ChatGptPlanModelNotServedError",
+			}),
+			"Choose another model in settings.",
+		],
+		[
+			Object.assign(new Error("Raise the AI usage limit in settings."), {
+				name: "AiUsageLimitExceededError",
+			}),
+			"Raise the AI usage limit in settings.",
+		],
+
+		[
 			Object.assign(
 				new Error(
 					"Invalid `prisma.story.update()` invocation in /app/x.ts: Timed out fetching a new connection from the connection pool",
@@ -709,4 +734,43 @@ describe("approval workflow start failure messages", () => {
 			}
 		},
 	);
+});
+
+it("returns earlier created IDs when a later create is refused", async () => {
+	const changes = [
+		CHANGE_BUG,
+		{ ...CHANGE_BUG, title: { to: "Second bug" } },
+		{ ...CHANGE_BUG, title: { to: "Third bug" } },
+	];
+	mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+		makeProposalRow({ changes }),
+	);
+	mocks.createStoryFromProposal
+		.mockResolvedValueOnce({
+			story: { id: "first-story", identifier: "F-001", kind: "BUG" },
+			aiDrafted: true,
+		})
+		.mockRejectedValueOnce(
+			Object.assign(new Error("raw auth detail"), {
+				name: "ChatGptPlanAuthError",
+			}),
+		);
+	const log = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		const result = (await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: changes,
+				syncToPM: false,
+			},
+			context: APPROVAL_CTX,
+		})) as { status: string; createdStoryIds: string[] };
+		expect(result.status).toBe("failed");
+		expect(result.createdStoryIds).toEqual(["first-story"]);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(2);
+	} finally {
+		log.mockRestore();
+	}
 });

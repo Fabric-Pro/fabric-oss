@@ -513,6 +513,7 @@ const FEATURE_LABELS: Record<string, string> = {
 	"chat-agent": "Chat agents",
 	"glossy-edition": "Glossy Version Export",
 	"code-index": "Code index (embeddings)",
+	"tool-search": "Tool search (embeddings)",
 	"text-to-speech": "Text to speech",
 	transcription: "Transcription",
 	"delivery-track": "Delivery track classification",

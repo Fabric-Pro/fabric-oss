@@ -1,5 +1,17 @@
 # @repo/api
 
+## 0.0.18
+
+### Patch Changes
+
+- Updated dependencies [cf12607]
+  - @fabricorg/sdk@0.7.0
+  - @fabricorg/integrations-github@0.1.13
+  - @fabricorg/integrations-gmail@0.1.13
+  - @fabricorg/integrations-linear@0.1.13
+  - @fabricorg/integrations-notion@0.1.13
+  - @fabricorg/integrations-slack@0.1.13
+
 ## 0.0.17
 
 ### Patch Changes

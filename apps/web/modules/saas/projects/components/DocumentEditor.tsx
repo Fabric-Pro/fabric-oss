@@ -10,6 +10,11 @@ import {
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
 import {
+	DOCUMENT_GENERATION_IN_PROGRESS,
+	isGenerationRunStillWriting,
+	isRunGuardedDocumentType,
+} from "@repo/utils/generation-run-guard";
+import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
@@ -104,7 +109,6 @@ import { useDiffPreview } from "../hooks/use-diff-view-mode";
 import { useCollaborativeEditor } from "../hooks/useCollaborativeEditor";
 import { useDocumentAssistantHistoryRealtimeSync } from "../hooks/useDocumentAssistantHistory";
 import { useDocumentAssistantHistoryEnabled } from "../hooks/useDocumentAssistantHistoryEnabled";
-import { validateBacklogAnalysisSources } from "../lib/backlog-analysis-sources";
 import {
 	isEmptyExtractionAgainstBaseline,
 	isNoOpProposedContent,
@@ -129,6 +133,7 @@ import {
 	type DocumentSaveBase,
 	isSaveBaseRequiredRefusal,
 } from "../lib/document-save-input";
+import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
 import { getEditorMarkdownForSave } from "../lib/editor-markdown-save";
 import { extractMentionIdsFromHtml } from "../lib/extract-mention-ids";
 import {
@@ -201,7 +206,20 @@ import {
 	SlashCommandsExtension,
 	setSlashCommandImageUploadHandler,
 } from "./SlashCommands";
-import { MeetingSelector } from "./stories/MeetingSelector";
+import { genuineUserMessage } from "./stories/backlog-flow-controller";
+import {
+	isMeetingNotesTranscriptResult,
+	MEETING_NOTES_SKIPPED_NONE_RESULT,
+	MEETING_NOTES_SKIPPED_TOO_MANY_RESULT,
+	MEETING_NOTES_TRANSCRIPT_MARKER,
+	MeetingNotesFlow,
+	MeetingNotesFlowCard,
+} from "./stories/MeetingNotesFlow";
+
+export {
+	MEETING_NOTES_SKIPPED_NONE_RESULT,
+	MEETING_NOTES_SKIPPED_TOO_MANY_RESULT,
+} from "./stories/MeetingNotesFlow";
 
 // Non-collaborative extensions (matches document-generator pattern)
 // Uses advanced extensions for proper diff highlighting support (<em> and <s> tags).
@@ -241,11 +259,6 @@ type EditorContentArg = Parameters<
  *   neither drop a slot nor introduce one.
  */
 type ProgrammaticContentSource = "server" | "assistant";
-
-export const MEETING_NOTES_SKIPPED_NONE_RESULT =
-	"No meetings were selected. Do not fetch meeting notes.";
-export const MEETING_NOTES_SKIPPED_TOO_MANY_RESULT =
-	"At most 10 meetings can be fetched at once. Ask the user to pick fewer meetings.";
 
 interface AssistantApplicationOptions {
 	/**
@@ -1635,6 +1648,7 @@ function DocumentEditorInner({
 	const tTooltips = useTranslations("tooltips.documentEditor");
 	const tRun = useTranslations("projects.documentEditorRun");
 	const tRoom = useTranslations("projects.documentEditorRoom");
+	const tWriteRefusal = useTranslations("projects.documentWriteRefusal");
 	const tRegenerateToast = useTranslations(
 		"projects.documents.regenerateToast",
 	);
@@ -1871,10 +1885,7 @@ function DocumentEditorInner({
 		typeof document?.version === "number" && document?.contentHash
 			? { version: document.version, contentHash: document.contentHash }
 			: null;
-	const confirmedMeetingsRef = useRef<
-		| ReturnType<typeof validateBacklogAnalysisSources>["selectedMeetings"]
-		| null
-	>(null);
+	const [meetingNotesFlow] = useState(() => new MeetingNotesFlow());
 
 	// Safety check: validate collaboration prerequisites
 	// We compute this early but handle it after hooks to maintain consistent hook order
@@ -2028,6 +2039,12 @@ function DocumentEditorInner({
 	 * base the answer produced; `null` when none waits.
 	 */
 	const pendingDirectSaveRef = useRef<(() => void) | null>(null);
+	/**
+	 * What the save sent past `handleSave` that is in flight says once it
+	 * lands, if anything; set when it is sent, so never by the answer of a
+	 * save it waited for, and dropped when it fails.
+	 */
+	const directSaveOnSavedRef = useRef<(() => void) | null>(null);
 	const sendDirectSaveRef = useRef<
 		(request: {
 			build: (
@@ -2035,6 +2052,7 @@ function DocumentEditorInner({
 			) => ReturnType<typeof buildDocumentSaveInput>;
 			confirm: boolean;
 			onUnavailable: () => void;
+			onSaved?: () => void;
 		}) => void
 	>(() => {});
 	// The single-user editor learned from a CONFLICT that the document moved
@@ -2472,19 +2490,16 @@ function DocumentEditorInner({
 	// A run counts as live while the editor still polls it: a wait for
 	// the project's context, or a run that wrote within the last ten
 	// minutes. A run that went silent for longer no longer holds the
-	// document; a save then ends it, and the person is told so.
+	// document; a save then ends it, and the person is told so. The server
+	// judges the editor's save by the same rule, so it refuses exactly the
+	// saves held back here.
 	// A room behind the saved document adds its own reason below, once the
 	// editor exists (see `useRoomConvergence`).
-	const isRunStillWriting =
-		isGenerationRunning &&
-		getDocumentPollInterval(
-			document?.status ?? "",
-			resolveGenerationClock(
-				document?.status,
-				document?.generationStartedAt,
-				document?.updatedAt,
-			),
-		) !== false;
+	const isRunStillWriting = isGenerationRunStillWriting({
+		status: document?.status ?? "",
+		generationStartedAt: document?.generationStartedAt,
+		updatedAt: document?.updatedAt,
+	});
 	const runSaveBlockReason: SaveBlockReason | null = isRegenerating
 		? "regenerating"
 		: showConfirmDialog || isConfirming
@@ -4040,9 +4055,9 @@ function DocumentEditorInner({
 	// spinner the moment one shows up.
 	//
 	// The tricky part is telling a FRESH failure apart from a STALE one. The
-	// generate-document procedure writes GENERATING + clears
+	// generate-document procedure writes QUEUED + clears
 	// `generationError` BEFORE it starts the Temporal workflow (see
-	// `markDocumentGenerationStarted`), so:
+	// `markDocumentGenerationQueued`), so:
 	//   - `regenerationAckAtRef.current` is the instant the mutation that
 	//     kicked off THIS run resolved.
 	//   - Any polled snapshot whose `dataUpdatedAt` is AFTER that instant was
@@ -4752,7 +4767,7 @@ function DocumentEditorInner({
 				} else if (
 					getOrpcCode(error) === "CONFLICT" &&
 					getOrpcErrorData(error).code ===
-						"DOCUMENT_GENERATION_IN_PROGRESS"
+						DOCUMENT_GENERATION_IN_PROGRESS
 				) {
 					// A generation run holds the document (Fizzy #2946): it
 					// queued after the editor last read the document, or the
@@ -4881,7 +4896,12 @@ function DocumentEditorInner({
 							}),
 					});
 				} else {
-					toast.error(`Failed to save document: ${error.message}`);
+					// Any other refusal, in the reader's words, never the
+					// server's (Fizzy #2946).
+					toast.error(
+						describeDocumentWriteRefusal(error, tWriteRefusal)
+							.message,
+					);
 				}
 				setIsSaving(false);
 			},
@@ -4915,6 +4935,11 @@ function DocumentEditorInner({
 						);
 					}
 				}
+				// A save sent past `handleSave` that reports its own landing:
+				// a rejected regeneration's revert (Fizzy #2946).
+				const onSaved = directSaveOnSavedRef.current;
+				directSaveOnSavedRef.current = null;
+				onSaved?.();
 				// The body just saved is the one the editor holds (plus any
 				// typing since, which is local).
 				if (data?.document?.version != null) {
@@ -5043,6 +5068,9 @@ function DocumentEditorInner({
 				isManualSaveRef.current = false;
 				isConfirmSaveRef.current = false;
 				shouldRedirectAfterSaveRef.current = false;
+				// A failed save says nothing of its own landing (a successful
+				// one has already said it).
+				directSaveOnSavedRef.current = null;
 				// The save asked for meanwhile goes now, from the base this
 				// answer produced. After a failure it does not: the failure
 				// was said, and the text stays unsaved in the editor.
@@ -5199,7 +5227,12 @@ function DocumentEditorInner({
 	// one is in flight it waits for that answer (see `pendingDirectSaveRef`),
 	// and its base is resolved when it is sent, so it names the body the
 	// answer produced rather than the one that save replaced.
-	sendDirectSaveRef.current = ({ build, confirm, onUnavailable }) => {
+	sendDirectSaveRef.current = ({
+		build,
+		confirm,
+		onUnavailable,
+		onSaved,
+	}) => {
 		const send = () => {
 			const base = resolveSaveBaseRef.current();
 			if (base === "unavailable") {
@@ -5218,6 +5251,7 @@ function DocumentEditorInner({
 			// Marked only when it is sent, so the answer of the save it
 			// waited for is never reported as its own.
 			isConfirmSaveRef.current = confirm;
+			directSaveOnSavedRef.current = onSaved ?? null;
 			setIsSaving(true);
 			saveMutation.mutate(build(base));
 		};
@@ -5957,23 +5991,51 @@ function DocumentEditorInner({
 
 	// Meeting selection action - shows MeetingSelector inline in chat
 	// Mirrors the pattern from BacklogChat.tsx
+	const fetchConfirmedMeetingNotes = async (
+		selectedMeetings: Array<{ joinUrl: string; startTime?: string }>,
+	) => {
+		const result = await orpcClient.projects.documents.fetchMeetingNotes({
+			projectId,
+			organizationId: organizationId ?? null,
+			selectedMeetings,
+		});
+		const formattedNotes = result.notes
+			.filter((n) => n.content)
+			.map((n) => `## Meeting: ${n.subject}\n\n${n.content}`)
+			.join("\n\n---\n\n");
+		// Keep the instruction short and specific — the system prompt already
+		// has comprehensive editing rules via buildCurrentDocumentSection.
+		// Verbose competing rules confuse the model and cause full rewrites.
+		return [
+			`${MEETING_NOTES_TRANSCRIPT_MARKER} (reference material — extract relevant points only):`,
+			"",
+			formattedNotes,
+			"",
+			"REMINDER: Append a few bullet points to 1-3 existing sections. Do NOT change the document title, type, structure, or rewrite existing text.",
+		].join("\n");
+	};
+
 	useCopilotAction({
 		name: "select_meetings",
 		description:
-			"Show a meeting selector UI for the user to pick meetings. The user selects meetings and confirms. The tool response will contain a 'selectedMeetings' array with objects containing joinUrl and optional startTime. IMPORTANT: When this tool returns selectedMeetings (non-empty array), you MUST immediately call fetchMeetingNotes with those meetings to fetch the transcripts. Do NOT ask the user to choose again — they already chose.",
+			"Show a meeting selector. On confirmation the application fetches transcripts and returns them for document editing; do not call fetchMeetingNotes afterwards.",
 		parameters: [],
-		renderAndWaitForResponse: ({ respond }) => (
-			<MeetingSelector
+		renderAndWaitForResponse: (render) => (
+			<MeetingNotesFlowCard
+				status={render.status}
+				result={
+					"result" in render && typeof render.result === "string"
+						? render.result
+						: undefined
+				}
+				controller={meetingNotesFlow}
+				messageId={
+					genuineUserMessage(internalMessagesForToolCallMatcher)?.id
+				}
 				projectId={projectId}
 				organizationId={organizationId ?? null}
-				onConfirm={(selectedMeetings) => {
-					confirmedMeetingsRef.current = selectedMeetings;
-					respond?.({ selectedMeetings });
-				}}
-				onCancel={() => {
-					confirmedMeetingsRef.current = [];
-					respond?.({ selectedMeetings: [] });
-				}}
+				fetchNotes={fetchConfirmedMeetingNotes}
+				respond={render.respond}
 			/>
 		),
 	});
@@ -5982,7 +6044,7 @@ function DocumentEditorInner({
 	useCopilotAction({
 		name: "fetchMeetingNotes",
 		description:
-			"Fetch meeting transcripts from Microsoft Teams for selected meetings. You MUST call this immediately after select_meetings returns selectedMeetings. Pass the exact selectedMeetings array from the select_meetings result. Returns transcript content. Then call write_document_local to APPEND a few bullet points to 1-3 existing sections. The document type, title, structure, and all existing text MUST stay exactly the same.",
+			"Compatibility read of transcripts fetched by the current meeting selection. Does not start another fetch. Use the transcript text returned by select_meetings to edit the document.",
 		parameters: [
 			{
 				name: "selectedMeetings",
@@ -5996,42 +6058,10 @@ function DocumentEditorInner({
 				required: true,
 			},
 		],
-		handler: async (args) => {
-			const { selectedMeetings } = validateBacklogAnalysisSources({
-				selectedMeetings:
-					Array.isArray(args.selectedMeetings) &&
-					args.selectedMeetings.length > 0
-						? (confirmedMeetingsRef.current ??
-							args.selectedMeetings)
-						: [],
-			});
-			if (selectedMeetings.length === 0) {
-				return MEETING_NOTES_SKIPPED_NONE_RESULT;
-			}
-			if (selectedMeetings.length > 10) {
-				return MEETING_NOTES_SKIPPED_TOO_MANY_RESULT;
-			}
-			const result =
-				await orpcClient.projects.documents.fetchMeetingNotes({
-					projectId,
-					organizationId: organizationId ?? null,
-					selectedMeetings,
-				});
-			const formattedNotes = result.notes
-				.filter((n) => n.content)
-				.map((n) => `## Meeting: ${n.subject}\n\n${n.content}`)
-				.join("\n\n---\n\n");
-			// Keep the instruction short and specific — the system prompt already
-			// has comprehensive editing rules via buildCurrentDocumentSection.
-			// Verbose competing rules confuse the model and cause full rewrites.
-			return [
-				"MEETING TRANSCRIPTS (reference material — extract relevant points only):",
-				"",
-				formattedNotes,
-				"",
-				"REMINDER: Append a few bullet points to 1-3 existing sections. Do NOT change the document title, type, structure, or rewrite existing text.",
-			].join("\n");
-		},
+		handler: async () =>
+			meetingNotesFlow.result(
+				genuineUserMessage(internalMessagesForToolCallMatcher)?.id,
+			),
 		render: ({ status, result }) => {
 			if (
 				status === "complete" &&
@@ -6057,10 +6087,20 @@ function DocumentEditorInner({
 					</div>
 				);
 			}
-			if (status === "complete") {
+			if (
+				status === "complete" &&
+				isMeetingNotesTranscriptResult(result)
+			) {
 				return (
 					<div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/30 text-sm">
 						Meeting notes fetched successfully.
+					</div>
+				);
+			}
+			if (status === "complete") {
+				return (
+					<div className="p-3 rounded-lg bg-muted/50 text-sm text-muted-foreground">
+						No meeting notes were fetched.
 					</div>
 				);
 			}
@@ -7868,7 +7908,9 @@ function DocumentEditorInner({
 												}, 1000);
 
 												toast.success(
-													"Document regeneration accepted!",
+													tRun(
+														"regenerationAccepted",
+													),
 												);
 											});
 										}}
@@ -7923,6 +7965,16 @@ function DocumentEditorInner({
 															null,
 													},
 													{
+														// Said once the server has
+														// rewound the document, never
+														// before it answers (Fizzy #2946).
+														onSuccess: () => {
+															toast.info(
+																tRun(
+																	"regenerationRejected",
+																),
+															);
+														},
 														onError: (error) => {
 															if (roomStampsOn) {
 																publishRoomSaveInFlight(
@@ -7939,7 +7991,10 @@ function DocumentEditorInner({
 																"CONFLICT";
 															if (!isNoPrior) {
 																toast.error(
-																	`Failed to reject regeneration: ${error.message}`,
+																	describeDocumentWriteRefusal(
+																		error,
+																		tWriteRefusal,
+																	).message,
 																);
 																return;
 															}
@@ -7957,7 +8012,7 @@ function DocumentEditorInner({
 																	}
 																)?.data
 																	?.code ===
-																"DOCUMENT_GENERATION_IN_PROGRESS";
+																DOCUMENT_GENERATION_IN_PROGRESS;
 															// Nothing to go back to (Fizzy #2946):
 															// saving an empty body would wipe the
 															// regenerated one for everyone and leave
@@ -8013,7 +8068,9 @@ function DocumentEditorInner({
 															// it replaces is its base
 															// (Fizzy #2946). It waits for a
 															// save in flight, and names the
-															// base that answer produced.
+															// base that answer produced. The
+															// rejection is said once this save
+															// lands; a refused one says why.
 															sendDirectSaveRef.current(
 																{
 																	confirm: false,
@@ -8039,6 +8096,13 @@ function DocumentEditorInner({
 																			toast.error(
 																				tRun(
 																					"saveBlocked.updatingToLatest",
+																				),
+																			),
+																	onSaved:
+																		() =>
+																			toast.info(
+																				tRun(
+																					"regenerationRejected",
 																				),
 																			),
 																},
@@ -8079,10 +8143,6 @@ function DocumentEditorInner({
 												setTimeout(() => {
 													setIsConfirming(false);
 												}, 1000);
-
-												toast.info(
-													"Document regeneration rejected. Reverted to previous version.",
-												);
 											});
 										}}
 									/>
@@ -8381,6 +8441,24 @@ function DocumentEditorInner({
 								currentVersion={document?.version || 1}
 								currentContent={
 									document?.content || currentDocument || ""
+								}
+								// Restore waits for a run (Fizzy #2946): the
+								// server refuses a restore while one holds a
+								// run-guarded document — the ten-minute rule
+								// for a silent run is the editor's, not the
+								// server's — and this tab's own regeneration
+								// or its review owns the body until it ends.
+								restoreBlockedReason={
+									isGenerationRunning &&
+									isRunGuardedDocumentType(
+										document?.type ?? "",
+									)
+										? "runLive"
+										: isRegenerating ||
+												showConfirmDialog ||
+												isConfirming
+											? "regenerating"
+											: null
 								}
 								onVersionRestored={(
 									restoredContent: string,

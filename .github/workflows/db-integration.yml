@@ -588,6 +588,7 @@ jobs:
         run: |
           pnpm --filter @repo/database exec vitest run \
             __tests__/frame-page-records.integration.test.ts \
+            __tests__/workspace-workflow-data.integration.test.ts \
             __tests__/agent-conversation-sharing.integration.test.ts \
             __tests__/organization-purge-agent-files.integration.test.ts \
             --passWithNoTests=false \
@@ -598,9 +599,9 @@ jobs:
         run: |
           node <<'EOF'
           const fs = require("node:fs");
-          // 34: 16 page-record cases, 15 conversation-sharing cases, 3
-          // organization-purge cases.
-          const EXPECTED = 34;
+          // 42: 16 page-record cases, 8 bound workflow-data cases,
+          // 15 conversation-sharing cases, 3 organization-purge cases.
+          const EXPECTED = 42;
           const report = JSON.parse(fs.readFileSync("packages/database/workspace-pages-results.json","utf8"));
           const files = report.testResults?.length ?? 0;
           const total = report.numTotalTests ?? 0;
@@ -608,7 +609,7 @@ jobs:
           const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
           const todo = report.numTodoTests ?? 0;
           console.log(`workspace-pages: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
-          if (files !== 3) { console.error("::error::Expected exactly 3 test files"); process.exit(1); }
+          if (files !== 4) { console.error("::error::Expected exactly 4 test files"); process.exit(1); }
           if (skipped > 0) { console.error("::error::a suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
           if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
           if (total !== EXPECTED || passed !== EXPECTED) {
@@ -949,13 +950,25 @@ jobs:
           const report = JSON.parse(fs.readFileSync("packages/database/workflow-execution-reservation-results.json", "utf8"));
           const files = report.testResults?.length ?? 0;
           const passed = report.numPassedTests ?? 0;
-          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0) + (report.numTodoTests ?? 0);
           console.log(`workflow-execution-reservation-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 5) { console.error("::error::expected exactly 5 test files (workflow-execution-reservation + record-workflow-run-started + write-workflow-run-state + workflow-last-run-backfill + ado-review-baselines)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          // 44: nineteen reservation, seven lastRunAt, seven runtime-state,
+          // 48: twenty-three reservation, seven lastRunAt, seven runtime-state,
           // one backfill and ten ADO baseline projection cases.
-          if (passed !== 44) { console.error(`::error::expected exactly 44 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 48) { console.error(`::error::expected exactly 48 passing tests, got ${passed}`); process.exit(1); }
+          const assertions = (report.testResults ?? []).flatMap((file) => file.assertionResults ?? []);
+          const required = [
+            "refuses a generic unbound grant before creating an execution",
+            "refuses a generic stale-version grant before creating an execution",
+            "refuses a generic stale-timestamp grant before creating an execution",
+            "reserves exactly one keyed execution for a valid generic grant and rejects its revoked replay",
+          ];
+          const missing = required.filter((name) => !assertions.some((test) => test.fullName.includes(name) && test.status === "passed"));
+          if (assertions.some((test) => test.status !== "passed") || missing.length !== 0) {
+            console.error("::error::Workspace grant reservation coverage did not execute completely", { missing });
+            process.exit(1);
+          }
           EOF
 
       - name: Run the conversation turn admission suite against real Postgres

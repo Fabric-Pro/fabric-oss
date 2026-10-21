@@ -11,6 +11,8 @@ type Row = Record<string, unknown> & { id: string };
 
 const table = vi.hoisted(() => ({ rows: new Map<string, Row>() }));
 const providers = vi.hoisted(() => ({ rows: [] as Row[] }));
+/** Project documents, which a paused batch or setup queues for its resume. */
+const documents = vi.hoisted(() => ({ rows: [] as Row[] }));
 
 function matches(row: Row, where: Record<string, unknown>): boolean {
 	return Object.entries(where).every(([key, condition]) => {
@@ -75,6 +77,16 @@ vi.mock("../prisma/client", () => {
 			scanFindingReview: delegate,
 			scanFindingGrouping: delegate,
 			agentTask: delegate,
+			projectDocument: {
+				findMany: async ({
+					where,
+				}: {
+					where: Record<string, unknown>;
+				}) =>
+					documents.rows
+						.filter((row) => matches(row, where))
+						.map((row) => ({ id: row.id })),
+			},
 			cloudProviderConfig: {
 				findMany: async ({
 					where,
@@ -95,6 +107,7 @@ import {
 	cancelPausedBulkRun,
 	claimBulkRunResume,
 	failOverdueBulkRunResumes,
+	getBulkRunPauseStage,
 	organizationHasLlmApiProvider,
 	recordBulkRunPause,
 	revertBulkRunApiOverride,
@@ -145,6 +158,7 @@ function pause(expectedPauseCount: number, resumesAt: Date, now = NOW) {
 beforeEach(() => {
 	notices.stopped.mockClear();
 	table.rows.clear();
+	documents.rows = [];
 });
 
 describe("recordBulkRunPause", () => {
@@ -203,6 +217,242 @@ describe("recordBulkRunPause", () => {
 		await expect(pause(0, new Date(NOW.getTime() + HOUR))).resolves.toEqual(
 			{ status: "gone" },
 		);
+	});
+
+	it("saves a retry's state over the earlier attempt's while the run still waits", async () => {
+		const row = seed();
+		const resumesAt = new Date(NOW.getTime() + 3 * HOUR);
+		await pause(0, resumesAt);
+		const retried: BulkRunResumeState = {
+			...state,
+			progress: { security: { progress: { doneItemKeys: ["a", "b"] } } },
+		};
+
+		await expect(
+			recordBulkRunPause({
+				kind: "PROJECT_SCAN",
+				runId: "scan-1",
+				expectedPauseCount: 0,
+				resumesAt: new Date(NOW.getTime() + 4 * HOUR),
+				resumeState: retried,
+				resumeWorkflowId: "security-scan-scan-1-resume-1",
+			}),
+		).resolves.toEqual({ status: "paused", pauseCount: 1, resumesAt });
+		expect(row).toMatchObject({
+			status: "WAITING_FOR_PLAN",
+			resumesAt,
+			resumeState: retried,
+		});
+	});
+
+	it("answers a retry after a resume took the run back with resumed, and changes nothing", async () => {
+		const approved = seed({
+			status: "PENDING",
+			pauseCount: 1,
+			resumeState: state,
+			apiOverrideAt: NOW,
+			workflowId: "security-scan-scan-1-resume-1-api",
+		});
+		const snapshot = { ...approved };
+
+		await expect(pause(0, new Date(NOW.getTime() + HOUR))).resolves.toEqual(
+			{ status: "resumed", pauseCount: 1 },
+		);
+		expect(approved).toEqual(snapshot);
+
+		seed({ status: "RUNNING", pauseCount: 1, resumeState: state });
+		await expect(pause(0, new Date(NOW.getTime() + HOUR))).resolves.toEqual(
+			{ status: "resumed", pauseCount: 1 },
+		);
+	});
+
+	it("answers a retry after a Cancel of the paused run with gone", async () => {
+		seed({ status: "FAILED", pauseCount: 1, resumeState: state });
+
+		await expect(pause(0, new Date(NOW.getTime() + HOUR))).resolves.toEqual(
+			{ status: "gone" },
+		);
+	});
+});
+
+describe("getBulkRunPauseStage", () => {
+	const stage = () =>
+		getBulkRunPauseStage({
+			kind: "PROJECT_SCAN",
+			runId: "scan-1",
+			expectedPauseCount: 1,
+		});
+
+	it("reads where a run stands for the pause it started at a count", async () => {
+		seed({ status: "RUNNING", pauseCount: 1 });
+		await expect(stage()).resolves.toBe("pausing");
+		seed({ status: "WAITING_FOR_PLAN", pauseCount: 2 });
+		await expect(stage()).resolves.toBe("paused");
+		seed({ status: "PENDING", pauseCount: 2, apiOverrideAt: NOW });
+		await expect(stage()).resolves.toBe("resumed");
+		seed({ status: "COMPLETED", pauseCount: 2 });
+		await expect(stage()).resolves.toBe("resumed");
+		seed({ status: "WAITING_FOR_PLAN", pauseCount: 3 });
+		await expect(stage()).resolves.toBe("resumed");
+		seed({ status: "FAILED", pauseCount: 2 });
+		await expect(stage()).resolves.toBe("gone");
+		seed({ status: "FAILED", pauseCount: 1 });
+		await expect(stage()).resolves.toBe("gone");
+		table.rows.clear();
+		await expect(stage()).resolves.toBe("gone");
+	});
+});
+
+/**
+ * A paused batch or setup resumes only the documents its run still holds
+ * (Fizzy #2946): each waits QUEUED under the scheduled resume, and one that
+ * does not was taken since.
+ */
+describe("the documents a paused batch or setup resumes", () => {
+	const BATCH_BASE = "batch-document-generation-project-1-1";
+	const batchState: BulkRunResumeState = {
+		workflowType: "batchDocumentGenerationWorkflow",
+		taskQueue: "project-documents",
+		workflowIdBase: BATCH_BASE,
+		input: {
+			projectId: "project-1",
+			aiToken: "",
+			documents: [
+				{ id: "doc-2", type: "PROPOSAL" },
+				{ id: "doc-3", type: "PRD" },
+			],
+		},
+		progress: { results: [] },
+	};
+	const queued = (id: string, workflowId: string): Row => ({
+		id,
+		status: "QUEUED",
+		workflowId,
+	});
+	const approve = (kind: "DOCUMENT_BATCH" | "PROJECT_SETUP") =>
+		approveBulkRunApiOverride({
+			kind,
+			runId: "task-1",
+			userId: "user-2",
+			now: NOW,
+		});
+	const documentIds = (saved: unknown) =>
+		(
+			saved as { input: { documents: Array<{ id: string }> } }
+		).input.documents.map((doc) => doc.id);
+
+	it("Run now starts a batch from the documents still queued for its scheduled resume, and saves that list", async () => {
+		const row = seed({
+			id: "task-1",
+			status: "WAITING_FOR_PLAN",
+			pauseCount: 1,
+			resumeState: batchState,
+			resumesAt: NOW,
+		});
+		documents.rows = [
+			queued("doc-2", `${BATCH_BASE}-resume-1`),
+			// Its scheduled resume never started, so a person's generation
+			// of it took the row.
+			queued("doc-3", "project-document-generation-doc-3-4567ef01"),
+		];
+
+		const approved = await approve("DOCUMENT_BATCH");
+
+		expect(documentIds(approved?.resumeState)).toEqual(["doc-2"]);
+		expect(documentIds(row.resumeState)).toEqual(["doc-2"]);
+		expect(row.status).toBe("PENDING");
+	});
+
+	it("Run now marks a setup's document taken since finished, so its resume skips it", async () => {
+		const SETUP_BASE = "existing-setup-project-1-1";
+		const progress = {
+			documents: [
+				{ id: "doc-1", type: "PRD" },
+				{ id: "doc-2", type: "PROPOSAL" },
+				{ id: "doc-3", type: "ARCHITECTURE" },
+			],
+			documentIds: ["doc-1"],
+			finishedDocumentIds: ["doc-1"],
+		};
+		const row = seed({
+			id: "task-1",
+			status: "WAITING_FOR_PLAN",
+			pauseCount: 1,
+			resumeState: {
+				...batchState,
+				workflowType: "existingProjectSetupWorkflow",
+				workflowIdBase: SETUP_BASE,
+				input: { projectId: "project-1", aiToken: "" },
+				progress,
+			},
+			resumesAt: NOW,
+		});
+		documents.rows = [
+			queued("doc-2", "project-document-generation-doc-2-0123abcd"),
+			queued("doc-3", `${SETUP_BASE}-resume-1`),
+		];
+
+		const approved = await approve("PROJECT_SETUP");
+
+		const expected = {
+			...progress,
+			finishedDocumentIds: ["doc-1", "doc-2"],
+		};
+		expect(approved?.resumeState.progress).toEqual(expected);
+		expect((row.resumeState as BulkRunResumeState).progress).toEqual(
+			expected,
+		);
+	});
+
+	it("a failed schedule, a newer generation, the retry, then Run now: Run now starts without the taken document", async () => {
+		const row = seed({ id: "task-1", status: "RUNNING" });
+		const resumesAt = new Date(NOW.getTime() + HOUR);
+		const record = (resumeState: BulkRunResumeState) =>
+			recordBulkRunPause({
+				kind: "DOCUMENT_BATCH",
+				runId: "task-1",
+				expectedPauseCount: 0,
+				resumesAt,
+				resumeState,
+				resumeWorkflowId: `${BATCH_BASE}-resume-1`,
+				now: NOW,
+			});
+		// The first attempt queued both and recorded the pause; its
+		// schedule then failed.
+		await record(batchState);
+		documents.rows = [
+			queued("doc-2", `${BATCH_BASE}-resume-1`),
+			queued("doc-3", "project-document-generation-doc-3-4567ef01"),
+		];
+		// The retry holds doc-2 only.
+		await record({
+			...batchState,
+			input: { ...batchState.input, documents: [{ id: "doc-2" }] },
+		});
+		expect(documentIds(row.resumeState)).toEqual(["doc-2"]);
+
+		const approved = await approve("DOCUMENT_BATCH");
+
+		expect(documentIds(approved?.resumeState)).toEqual(["doc-2"]);
+	});
+
+	it("Run now starts a batch as saved when every document still waits for its resume", async () => {
+		const row = seed({
+			id: "task-1",
+			status: "WAITING_FOR_PLAN",
+			pauseCount: 1,
+			resumeState: batchState,
+			resumesAt: NOW,
+		});
+		documents.rows = [
+			queued("doc-2", `${BATCH_BASE}-resume-1`),
+			queued("doc-3", `${BATCH_BASE}-resume-1`),
+		];
+
+		const approved = await approve("DOCUMENT_BATCH");
+
+		expect(approved?.resumeState).toBe(batchState);
+		expect(row.resumeState).toBe(batchState);
 	});
 });
 

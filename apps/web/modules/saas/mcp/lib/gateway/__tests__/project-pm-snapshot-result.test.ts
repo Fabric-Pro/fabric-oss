@@ -5,7 +5,7 @@ import { jsonResult } from "../tool-results";
 import {
 	boundedProjectPmSnapshots,
 	PROJECT_PM_SNAPSHOT_MAX_BYTES,
-} from "../tools/project-pm-snapshot-result";
+} from "@repo/temporal/project-pm-snapshot-result";
 
 const asOf = "2026-01-01T12:00:00.0001234Z";
 const connection = {

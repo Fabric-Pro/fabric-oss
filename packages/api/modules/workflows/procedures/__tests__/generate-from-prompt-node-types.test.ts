@@ -40,11 +40,15 @@ describe("the allow-list is derived from the prompt", () => {
 	it("teaches the generator the agentic nodes, so it can wire a scheduled agent to a frame", () => {
 		expect(SUPPORTED_GENERATED_NODE_TYPES.has("agent-task")).toBe(true);
 		expect(SUPPORTED_GENERATED_NODE_TYPES.has("publish-frame")).toBe(true);
+		expect(SUPPORTED_GENERATED_NODE_TYPES.has("script-transform")).toBe(
+			true,
+		);
 		expect(
 			collectUnknownNodeTypes([
 				{ id: "t", type: "trigger" },
 				{ id: "a", type: "agent-task" },
 				{ id: "p", type: "publish-frame" },
+				{ id: "s", type: "script-transform" },
 			]),
 		).toEqual([]);
 	});

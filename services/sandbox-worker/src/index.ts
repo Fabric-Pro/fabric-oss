@@ -13,6 +13,11 @@
  */
 
 import { Sandbox } from "@cloudflare/sandbox";
+import {
+	DYNAMIC_CODE_LIMITS,
+	ExecuteCodeRequestSchema,
+	readBoundedJson,
+} from "../../../packages/sandbox/src/dynamic-worker";
 import { verifyAuth } from "./auth";
 import { executeDynamicWorkerCode } from "./dynamic-worker-executor";
 import { SessionDO } from "./SessionDO";
@@ -21,7 +26,6 @@ import type {
 	CreateSessionRequest,
 	Env,
 	ExecRequest,
-	ExecuteCodeRequest,
 	PushRequest,
 	RunClaudeRequest,
 } from "./types";
@@ -55,6 +59,7 @@ export default {
 			return successResponse({
 				status: "healthy",
 				environment: env.ENVIRONMENT,
+				dynamicWorker: Boolean(env.LOADER),
 				timestamp: new Date().toISOString(),
 			});
 		}
@@ -75,33 +80,28 @@ export default {
 		try {
 			// POST /execute - Execute JS/TS in a stateless Dynamic Worker
 			if (url.pathname === "/execute" && request.method === "POST") {
-				const body = (await request.json()) as ExecuteCodeRequest;
-
-				if (!body.code?.trim()) {
+				let body: unknown;
+				try {
+					body = await readBoundedJson(
+						request,
+						DYNAMIC_CODE_LIMITS.requestBytes,
+					);
+				} catch {
 					return errorResponse(
 						"BAD_REQUEST",
-						"code is required",
+						"Invalid or oversized script execution request",
+						400,
+					);
+				}
+				const parsed = ExecuteCodeRequestSchema.safeParse(body);
+				if (!parsed.success) {
+					return errorResponse(
+						"BAD_REQUEST",
+						"Invalid or oversized script execution request",
 						400,
 					);
 				}
 
-				if (
-					body.language !== "javascript" &&
-					body.language !== "typescript"
-				) {
-					return errorResponse(
-						"BAD_REQUEST",
-						"language must be javascript or typescript",
-						400,
-					);
-				}
-
-				// The Dynamic Worker Loader is a closed beta this account is not
-				// allowlisted for, so the binding cannot be declared without
-				// failing every deploy. Refuse with a reason rather than throwing
-				// a binding error: the caller learns the capability is absent,
-				// which is what it already experienced as a 404 from the last
-				// deployable build.
 				if (!env.LOADER) {
 					return errorResponse(
 						"NOT_IMPLEMENTED",
@@ -110,7 +110,7 @@ export default {
 					);
 				}
 
-				const result = await executeDynamicWorkerCode(env, body);
+				const result = await executeDynamicWorkerCode(env, parsed.data);
 				return successResponse(result);
 			}
 

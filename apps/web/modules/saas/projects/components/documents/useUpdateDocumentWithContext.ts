@@ -1,7 +1,9 @@
 "use client";
 
+import { AI_PROVIDER_NOT_CONFIGURED } from "@saas/shared/lib/ai-provider-missing";
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { useEditor } from "@tiptap/react";
+import { useTranslations } from "next-intl";
 import { useCallback, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useElapsedTimer } from "../../hooks/use-elapsed-timer";
@@ -10,6 +12,39 @@ import {
 	isNoOpProposedContent,
 } from "../../lib/confirm-noop-guards";
 import type { DocumentSaveBase } from "../../lib/document-save-input";
+import { describeDocumentWriteRefusal } from "../../lib/document-write-refusal";
+import { getOrpcErrorData } from "../../lib/orpc-error-data";
+
+// ─── Preview failures ─────────────────────────────────────────────────────────
+
+/**
+ * `data.code`s of a preview cut off at the model's output limit and of one
+ * whose model call failed, spelled out from the `documents.updateWithContext`
+ * procedure: the web bundle takes no runtime values from `@repo/api`.
+ */
+const CONTEXT_UPDATE_TRUNCATED = "CONTEXT_UPDATE_TRUNCATED";
+const CONTEXT_UPDATE_FAILED = "CONTEXT_UPDATE_FAILED";
+
+/**
+ * The `projects.updateWithContext` key for a preview failure a person can act
+ * on (Fizzy #2946), read from the error's `data.code`; `null` for any other.
+ * A failed model call is said as one, not as a settings problem: sending
+ * someone to settings that are already right does not get them anywhere.
+ */
+function previewFailureKey(
+	error: unknown,
+): "aiProviderMissing" | "documentTooLarge" | "modelCallFailed" | null {
+	switch (getOrpcErrorData(error).code) {
+		case AI_PROVIDER_NOT_CONFIGURED:
+			return "aiProviderMissing";
+		case CONTEXT_UPDATE_TRUNCATED:
+			return "documentTooLarge";
+		case CONTEXT_UPDATE_FAILED:
+			return "modelCallFailed";
+		default:
+			return null;
+	}
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +100,10 @@ export function useUpdateDocumentWithContext({
 	onSaved,
 	resolveBase,
 }: UseUpdateDocumentWithContextOptions) {
+	// Everything this hook says is in the reader's locale, a refused confirm
+	// included: never the server's English (Fizzy #2946).
+	const t = useTranslations("projects.updateWithContext");
+	const tRefusal = useTranslations("projects.documentWriteRefusal");
 	const [phase, setPhase] = useState<Phase>("idle");
 	const [preview, setPreview] = useState<DocumentContextUpdatePreview | null>(
 		null,
@@ -84,9 +123,7 @@ export function useUpdateDocumentWithContext({
 		// to safely diff against or send to the server. Bail before touching
 		// editor/phase state so the user can just retry.
 		if (baseline === null) {
-			toast.error(
-				"Couldn't read the document content — please try again or reload the page.",
-			);
+			toast.error(t("readFailed"));
 			return;
 		}
 		// The confirm names the base the preview was drafted from. A room
@@ -94,9 +131,7 @@ export function useUpdateDocumentWithContext({
 		// could write over a body saved since: try again once it has one.
 		const base = resolveBase?.();
 		if (base === "unavailable") {
-			toast.info(
-				"The document is still syncing with the latest saved version — try again in a moment.",
-			);
+			toast.info(t("syncing"));
 			return;
 		}
 		previewBaseRef.current = base ?? null;
@@ -142,10 +177,7 @@ export function useUpdateDocumentWithContext({
 			) {
 				editor.setEditable(true);
 				setPhase("idle");
-				toast.info(
-					result.summary ||
-						"No updates found — the document already reflects the latest context.",
-				);
+				toast.info(result.summary || t("noUpdates"));
 				return;
 			}
 
@@ -162,11 +194,19 @@ export function useUpdateDocumentWithContext({
 		} catch (err) {
 			editor.setEditable(true);
 			setPhase("idle");
-			const msg =
-				err instanceof Error
-					? err.message
-					: "Failed to fetch context. Please try again.";
-			toast.error(msg);
+			// No AI provider, a document too large for the model's output, or
+			// a model call that failed is said with what resolves it. A
+			// preview writes nothing, so any other failure is a failure to
+			// draft, not to change the document.
+			const failureKey = previewFailureKey(err);
+			const refusal = describeDocumentWriteRefusal(err, tRefusal);
+			toast.error(
+				failureKey !== null
+					? t(failureKey)
+					: refusal.kind === "failed"
+						? t("previewFailed")
+						: refusal.message,
+			);
 		}
 	}, [
 		editor,
@@ -177,6 +217,8 @@ export function useUpdateDocumentWithContext({
 		fromMarkdown,
 		diffPartialText,
 		resolveBase,
+		t,
+		tRefusal,
 	]);
 
 	const confirm = useCallback(async () => {
@@ -191,9 +233,7 @@ export function useUpdateDocumentWithContext({
 		// Persisting null would write an empty document. Keep the review
 		// recoverable (stay in "diff") and surface an actionable error.
 		if (finalContent === null) {
-			toast.error(
-				"Couldn't read the document content from the editor — nothing was saved. Copy any unsaved work and reload the page.",
-			);
+			toast.error(t("confirmReadFailed"));
 			return;
 		}
 
@@ -204,9 +244,7 @@ export function useUpdateDocumentWithContext({
 		if (
 			isEmptyExtractionAgainstBaseline(finalContent, baselineRef.current)
 		) {
-			toast.error(
-				"Couldn't read the document content from the editor — nothing was saved. Copy any unsaved work and reload the page.",
-			);
+			toast.error(t("confirmReadFailed"));
 			return;
 		}
 
@@ -231,14 +269,13 @@ export function useUpdateDocumentWithContext({
 
 			setPhase("idle");
 			setPreview(null);
+			// The server's summary of a confirm is fixed English, so the
+			// reader's own sentence is shown instead.
 			if (response.applied === false) {
-				toast.info(
-					response.summary ||
-						"No changes were applied — the document already matches.",
-				);
+				toast.info(t("notApplied"));
 			} else {
 				toast.success(
-					`Document updated with latest context — saved as v${response.documentVersion}`,
+					t("applied", { version: response.documentVersion }),
 				);
 			}
 			onSaved(response.documentVersion);
@@ -251,12 +288,11 @@ export function useUpdateDocumentWithContext({
 				// cache refetch above will re-sync the editor on next render.
 			}
 		} catch (err) {
+			// A run writing the document, a save since the preview, or a page
+			// too old to name its base: each is said in the reader's words,
+			// and the review stays open.
 			setPhase("diff");
-			const msg =
-				err instanceof Error
-					? err.message
-					: "Failed to apply changes. Please try again.";
-			toast.error(msg);
+			toast.error(describeDocumentWriteRefusal(err, tRefusal).message);
 		}
 	}, [
 		editor,
@@ -267,6 +303,8 @@ export function useUpdateDocumentWithContext({
 		getEditorMarkdownForSave,
 		fromMarkdown,
 		onSaved,
+		t,
+		tRefusal,
 	]);
 
 	const reject = useCallback(() => {
@@ -291,8 +329,8 @@ export function useUpdateDocumentWithContext({
 	const loadingStage =
 		phase === "loading"
 			? elapsedSeconds < 3
-				? "Scanning project context"
-				: "AI reviewing and drafting updates"
+				? t("loadingStage.scanning")
+				: t("loadingStage.drafting")
 			: null;
 
 	return {

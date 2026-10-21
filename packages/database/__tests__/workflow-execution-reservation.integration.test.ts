@@ -38,7 +38,8 @@ import { listWorkspaceReviewHistory } from "../prisma/queries/workflows/workspac
 import {
 	assertWorkspaceWorkflowBindingWithin,
 	WorkspaceWorkflowBindingConflictError,
-	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
+	type WorkspaceWorkflowRunGuard,
 } from "../prisma/queries/workflows/workspace-workflow-binding";
 
 const IDS = {
@@ -369,6 +370,8 @@ describe.skipIf(!process.env.DATABASE_URL)(
 						userId: IDS.member,
 						projectId: IDS.project,
 						status: "PUBLISHED",
+						version: 1,
+						publishedVersion: 1,
 					},
 				});
 			});
@@ -382,7 +385,7 @@ describe.skipIf(!process.env.DATABASE_URL)(
 				});
 				await fixtures.project.delete({ where: { id: IDS.project } });
 			});
-			async function binding(): Promise<WorkspaceWorkflowBindingGuard> {
+			async function binding(): Promise<WorkspaceWorkflowRowGuard> {
 				const workflow = await fixtures.workflow.findUniqueOrThrow({
 					where: { id: IDS.orgWorkflow },
 				});
@@ -399,10 +402,11 @@ describe.skipIf(!process.env.DATABASE_URL)(
 					workflowUpdatedAt: workflow.updatedAt,
 					frameUpdatedAt: frame.updatedAt,
 					status: workflow.status,
+					requirement: { kind: "row-only" },
 				};
 			}
 			function start(
-				guard: WorkspaceWorkflowBindingGuard,
+				guard: WorkspaceWorkflowRowGuard | WorkspaceWorkflowRunGuard,
 				key = "example-click",
 				limit = 1,
 			) {
@@ -426,6 +430,108 @@ describe.skipIf(!process.env.DATABASE_URL)(
 				await fixtures.agentWorkspaceFile.update({
 					where: { id: IDS.frame },
 					data: { projectId: null, updatedAt: guard.frameUpdatedAt },
+				});
+				await expect(start(guard)).rejects.toBeInstanceOf(
+					WorkspaceWorkflowBindingConflictError,
+				);
+				expect(
+					await fixtures.workflowExecution.count({
+						where: { workflowId: IDS.orgWorkflow },
+					}),
+				).toBe(1);
+			});
+			it.each(["unbound", "stale-version", "stale-timestamp"])(
+				"refuses a generic %s grant before creating an execution",
+				async (change) => {
+					const initial = await binding();
+					const grant = {
+						workflowId: IDS.orgWorkflow,
+						authorizedWorkflowVersion:
+							change === "stale-version" ? 2 : 1,
+						authorizedWorkflowUpdatedAt:
+							change === "stale-timestamp"
+								? new Date(
+										initial.workflowUpdatedAt.getTime() -
+											1000,
+									).toISOString()
+								: initial.workflowUpdatedAt.toISOString(),
+					};
+					await fixtures.agentWorkspaceFile.update({
+						where: { id: IDS.frame },
+						data: {
+							metadata: {
+								surface: "workspace",
+								workflowBindings: {
+									version: 1,
+									workflows:
+										change === "unbound" ? [] : [grant],
+								},
+							},
+						},
+					});
+					const guard = {
+						...(await binding()),
+						requirement: {
+							kind: "bound-run" as const,
+							workflowVersion: 1,
+						},
+					};
+					await expect(start(guard)).rejects.toBeInstanceOf(
+						WorkspaceWorkflowBindingConflictError,
+					);
+					expect(
+						await fixtures.workflowExecution.count({
+							where: { workflowId: IDS.orgWorkflow },
+						}),
+					).toBe(0);
+				},
+			);
+			it("reserves exactly one keyed execution for a valid generic grant and rejects its revoked replay", async () => {
+				const initial = await binding();
+				await fixtures.agentWorkspaceFile.update({
+					where: { id: IDS.frame },
+					data: {
+						metadata: {
+							surface: "workspace",
+							workflowBindings: {
+								version: 1,
+								workflows: [
+									{
+										workflowId: IDS.orgWorkflow,
+										authorizedWorkflowVersion: 1,
+										authorizedWorkflowUpdatedAt:
+											initial.workflowUpdatedAt.toISOString(),
+									},
+								],
+							},
+						},
+					},
+				});
+				const guard = {
+					...(await binding()),
+					requirement: {
+						kind: "bound-run" as const,
+						workflowVersion: 1,
+					},
+				};
+				const results = await Promise.all(
+					Array.from({ length: RACERS }, () => start(guard)),
+				);
+				expect(
+					results.filter((result) => result.outcome === "created"),
+				).toHaveLength(1);
+				expect(
+					results.filter((result) => result.outcome === "existing"),
+				).toHaveLength(RACERS - 1);
+				await fixtures.agentWorkspaceFile.update({
+					where: { id: IDS.frame },
+					data: {
+						metadata: {
+							surface: "workspace",
+							workflowBindings: { version: 1, workflows: [] },
+						},
+						updatedAt: guard.frameUpdatedAt,
+					},
 				});
 				await expect(start(guard)).rejects.toBeInstanceOf(
 					WorkspaceWorkflowBindingConflictError,

@@ -2313,6 +2313,114 @@ describe("the proposal tool's error surface", () => {
 			writeSession,
 		);
 
+	it("shows a plan reconnect refusal through the shared MCP catch", async () => {
+		const { ChatGptPlanAuthError } = await import(
+			"@repo/ai/lib/chatgpt-plan/oauth"
+		);
+		m.getProjectAccessContext.mockRejectedValue(
+			new ChatGptPlanAuthError(
+				"raw provider auth detail",
+				"invalid_grant",
+				true,
+			),
+		);
+		const r = await call();
+		expect(r.isError).toBe(true);
+		expect(JSON.stringify(r.content)).toContain(
+			"Your ChatGPT connection needs to be reconnected",
+		);
+		expect(JSON.stringify(r.content)).not.toContain(
+			"raw provider auth detail",
+		);
+	});
+
+	it.each(["exhausted", "model", "limit", "wrapped-auth", "transient"])(
+		"maps %s at the shared MCP catch",
+		async (kind) => {
+			const { SubscriptionPlanExhaustedError } = await import(
+				"@repo/agent-types/chatgpt-plan-fetch"
+			);
+			const { ChatGptPlanAuthError } = await import(
+				"@repo/ai/lib/chatgpt-plan/oauth"
+			);
+			const { ChatGptPlanModelNotServedError } = await import(
+				"@repo/ai/lib/chatgpt-plan/models"
+			);
+			const { AiUsageLimitExceededError } = await import(
+				"@repo/payments/lib/ai-usage-limit-error"
+			);
+			const cases = {
+				exhausted: [
+					new SubscriptionPlanExhaustedError(
+						"raw provider detail",
+						null,
+					),
+					"Wait for its limit to reset",
+				],
+				model: [
+					new ChatGptPlanModelNotServedError("example-model"),
+					"Choose another model",
+				],
+				limit: [
+					new AiUsageLimitExceededError({
+						message: "Raise the AI usage limit in settings.",
+						limitId: "example-limit",
+						dimension: "TOKENS",
+						window: "DAILY",
+						used: 10n,
+						max: 10n,
+						manageLimitsUrl: "/settings/ai-usage",
+					}),
+					"Raise the AI usage limit",
+				],
+				"wrapped-auth": [
+					{
+						name: "AI_RetryError",
+						lastError: new ChatGptPlanAuthError(
+							"raw provider detail",
+							"invalid_grant",
+							true,
+						),
+					},
+					"Reconnect it",
+				],
+				transient: [
+					new Error("raw provider detail"),
+					"failed because of an internal error",
+				],
+			} as const;
+			const [error, expected] = cases[kind as keyof typeof cases];
+			m.getProjectAccessContext.mockRejectedValue(error);
+			const r = await call();
+			expect(r.isError).toBe(true);
+			expect(JSON.stringify(r.content)).toContain(expected);
+			expect(JSON.stringify(r.content)).not.toContain(
+				"raw provider detail",
+			);
+		},
+	);
+
+	it.each([
+		"ChatGptPlanAuthError",
+		"SubscriptionPlanExhaustedError",
+		"ChatGptPlanModelNotServedError",
+		"AiUsageLimitExceededError",
+	])("shows a name-only %s refusal", async (name) => {
+		const error = Object.assign(
+			new Error("Choose a model or raise the limit."),
+			{ name },
+		);
+		m.getProjectAccessContext.mockRejectedValue(error);
+		const result = await call();
+		const { aiConfigurationRefusalMessage } = await import(
+			"@repo/temporal/ai-configuration-refusal"
+		);
+		expect(JSON.stringify(result.content)).toContain(
+			aiConfigurationRefusalMessage(error),
+		);
+		expect(JSON.stringify(result.content)).not.toContain("internal error");
+	});
+
 	it("does not quote a generic error back to the agent", async () => {
 		const logged = vi
 			.spyOn(console, "error")

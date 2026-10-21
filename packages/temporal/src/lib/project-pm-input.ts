@@ -1,8 +1,8 @@
+import { z } from "zod";
 import {
 	adoStoryReviewConfigFieldsSchema,
 	adoStoryReviewStrictAssigneeSchema,
-} from "@repo/temporal/ado-story-review-config";
-import { z } from "zod";
+} from "./ado-story-review-config";
 
 const project = z.object({ projectId: z.string().min(1).max(128) }).strict();
 const asOf = z.string().max(512).datetime({ offset: true });

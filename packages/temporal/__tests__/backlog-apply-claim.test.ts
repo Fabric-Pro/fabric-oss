@@ -839,3 +839,55 @@ describe("applyBacklogChanges for an Explore proposal", () => {
 		]);
 	});
 });
+
+it("retries only unfinished creates after a configuration refusal", async () => {
+	const changes = [
+		featureChange("First"),
+		featureChange("Second"),
+		featureChange("Third"),
+	];
+	const input = {
+		projectId: "p1",
+		userId: "u1",
+		approvedChanges: changes,
+		existingBacklog: emptyBacklog,
+		proposalId: "prop-1",
+		approvedChangeIndexes: [0, 1, 2],
+	};
+	mocks.createStoryFromProposal
+		.mockResolvedValueOnce({
+			story: {
+				id: "first-story",
+				identifier: "F-001",
+				title: "First",
+				kind: "FEATURE",
+			},
+			aiDrafted: true,
+		})
+		.mockRejectedValueOnce(
+			Object.assign(new Error("raw auth detail"), {
+				name: "ChatGptPlanAuthError",
+			}),
+		);
+	const first = await applyBacklogChanges(input);
+	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(2);
+	expect(first.appliedCount).toBe(1);
+	expect(first.errors).toHaveLength(2);
+	expect(mocks.recordProposalApplication).toHaveBeenCalledTimes(1);
+	expect(mocks.recordProposalApplication.mock.calls[0]?.[1]).toMatchObject({
+		changeIndex: 0,
+	});
+	mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValueOnce([
+		{
+			changeIndex: 0,
+			createdEntityType: "story",
+			createdEntityId: "first-story",
+		},
+	]);
+	mocks.createStoryFromProposal.mockClear();
+	const retry = await applyBacklogChanges(input);
+	expect(retry.skippedAlreadyApplied).toEqual([0]);
+	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(2);
+	expect(retry.errors).toEqual([]);
+	expect(retry.appliedCount).toBe(2);
+});

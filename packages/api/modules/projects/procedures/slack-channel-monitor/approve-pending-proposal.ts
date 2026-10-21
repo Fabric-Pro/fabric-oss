@@ -750,7 +750,8 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				// open). Persist that body verbatim instead of re-drafting from the
 				// thread transcript at approve — that's the "draft right away, not
 				// on ticket creation" behavior. Unopened / bulk-approved creates
-				// fall back to drafting from the transcript as before.
+				// draft from the transcript and analyzer body, retaining the latter
+				// as the fallback if drafting fails.
 				const isPredrafted =
 					change.predrafted === true &&
 					Boolean(
@@ -763,15 +764,14 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					organizationId,
 					createdById: user.id,
 					title: change.title.to,
+					description: change.description?.to,
+					acceptanceCriteria: change.acceptanceCriteria?.to,
 					...(isPredrafted
 						? {
 								kind: predraftKind,
 								skipClassifier: true,
 								skipDrafting: true,
 								bodyAlreadyDrafted: true,
-								description: change.description?.to,
-								acceptanceCriteria:
-									change.acceptanceCriteria?.to,
 								needsMoreInfo:
 									change.needsMoreInfo ?? undefined,
 							}
@@ -1093,7 +1093,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 						? isDatabaseError(err)
 							? describeSyncErrorForUser(err)
 							: redactDatabaseErrorText(
-									err.message,
+									describeSyncErrorForUser(err),
 									unwrapPmSyncError(err).errorClass,
 								)
 						: "Failed to create story from proposal";

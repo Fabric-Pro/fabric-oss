@@ -10,9 +10,9 @@
  * the row QUEUED *after* its start attempt (see `dispatch-document-generation.ts`
  * for why that ordering, not the mark-before-start of issue #720), so a run it
  * loses track of is usually QUEUED; the workflow itself flips that to GENERATING
- * when its dependency wait clears. The separate upload-extraction flow still
- * marks GENERATING up front via `markDocumentGenerationStarted`, because the row
- * exists before there is any run to wait on. This sweep therefore has to cover
+ * when its dependency wait clears. The separate upload-extraction flow creates
+ * its row GENERATING up front (`create-document.ts`), because the row exists
+ * before there is any run to wait on. This sweep therefore has to cover
  * both states rather than assume either one.
  *
  * The dispatch helper already recovers every case it can prove. What it will not

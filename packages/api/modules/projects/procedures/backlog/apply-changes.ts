@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import {
@@ -151,6 +152,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 	.input(
 		z.object({
 			projectId: z.string(),
+			operationKey: z.string().min(1).max(200).optional(),
 			organizationId: z.string().nullable().optional(),
 			approvedChanges: z.array(changeItemSchema),
 			/**
@@ -263,7 +265,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			context.session,
 		);
 
-		if (input.approvedChanges.length === 0) {
+		if (!input.operationKey && input.approvedChanges.length === 0) {
 			return {
 				workflowId: null,
 				message: "No changes to apply",
@@ -303,9 +305,158 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		// Both `organizationId` and `userId` are stamped on the row so
 		// downstream XOR queries (failed-count, retry, dismiss) can filter
 		// `{ organizationId, userId }` exclusively per the standards.
-		const resolvedOrganizationId =
-			organizationId ?? project.organizationId ?? undefined;
+		const resolvedOrganizationId = input.operationKey
+			? (project.organizationId ?? undefined)
+			: (organizationId ?? project.organizationId ?? undefined);
 
+		// The existing primary key fences concurrent row creation; the fingerprint
+		// in sourceMetadata binds retries to the original approved request.
+		if (input.operationKey && input.proposalId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Operation keys apply to new AI Update approvals only.",
+			});
+		}
+		const operationId = input.operationKey
+			? createHash("sha256")
+					.update(
+						JSON.stringify([
+							input.projectId,
+							user.id,
+							input.operationKey,
+						]),
+					)
+					.digest("hex")
+			: undefined;
+		const operationRowId = operationId
+			? `backlog-apply-op-${operationId}`
+			: undefined;
+		const workflowId = backlogApplyWorkflowId(
+			input.projectId,
+			operationId ? `op-${operationId}` : undefined,
+		);
+		const fingerprint = operationId
+			? createHash("sha256")
+					.update(
+						JSON.stringify(
+							{
+								projectId: input.projectId,
+								userId: user.id,
+								organizationId: project.organizationId,
+								approvedChanges: input.approvedChanges,
+								syncToPM: input.syncToPM,
+								pmConfig: input.pmConfig,
+								pmSyncOverrides: input.pmSyncOverrides,
+								conversationId: input.conversationId,
+								messages: input.messages,
+							},
+							(_key, value) =>
+								value &&
+								typeof value === "object" &&
+								!Array.isArray(value)
+									? Object.fromEntries(
+											Object.entries(value).sort(
+												([a], [b]) =>
+													a < b ? -1 : a > b ? 1 : 0,
+											),
+										)
+									: value,
+						),
+					)
+					.digest("hex")
+			: undefined;
+		const assertOperation = (row: {
+			projectId: string;
+			userId: string | null;
+			sourceMetadata: unknown;
+		}) => {
+			if (
+				row.projectId !== input.projectId ||
+				row.userId !== user.id ||
+				(
+					row.sourceMetadata as {
+						applyInputFingerprint?: string;
+					} | null
+				)?.applyInputFingerprint !== fingerprint
+			) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"This apply operation key was already used with different inputs.",
+				});
+			}
+		};
+		const existingWorkflow = async (proposalId: string) => {
+			const client = await getTemporalClient();
+			try {
+				const description = await client.workflow
+					.getHandle(workflowId)
+					.describe();
+				await markProposalApplyDispatched({
+					proposalId,
+					applyWorkflowId: workflowId,
+					mode: "fresh",
+				}).catch(() => 0);
+				return {
+					workflowId,
+					runId: description.runId,
+					proposalId,
+					message: "Backlog apply already started",
+				};
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					error.name === "WorkflowNotFoundError"
+				) {
+					const row = await db.pendingBacklogProposal.findUnique({
+						where: { id: proposalId },
+					});
+					// A durable dispatch stamp (or terminal outcome) outlives Temporal history.
+					// Missing history is not permission to dispatch a completed operation again.
+					if (
+						row?.applyWorkflowId ||
+						(row &&
+							["APPLIED", "FAILED", "REJECTED"].includes(
+								row.status,
+							))
+					) {
+						return {
+							workflowId: row.applyWorkflowId ?? workflowId,
+							proposalId,
+							message:
+								"Backlog apply already dispatched; open Review proposals for its outcome.",
+						};
+					}
+					return undefined;
+				}
+				throw error;
+			}
+		};
+		if (operationRowId) {
+			const existing = await db.pendingBacklogProposal.findUnique({
+				where: { id: operationRowId },
+			});
+			if (existing) {
+				assertOperation(existing);
+				try {
+					const started = await existingWorkflow(existing.id);
+					if (started) {
+						return started;
+					}
+				} catch (_error) {
+					throw new ORPCError("INTERNAL_SERVER_ERROR", {
+						message:
+							"Could not check the existing apply operation. Retry apply.",
+					});
+				}
+			}
+		}
+		if (input.approvedChanges.length === 0) {
+			return {
+				workflowId: null,
+				message: "No changes to apply",
+				proposalId: null,
+			};
+		}
 		// Server-AUTHORITATIVE decision pre-check. The override ledger must not be
 		// suppressible by client input (a forged `ok`, an omitted finding, or the
 		// chat "skip analysis" / fast-apply paths that relay nothing), so we
@@ -354,7 +505,6 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		let keptPositions = input.approvedChanges.map(
 			(_c, position) => position,
 		);
-		const workflowId = backlogApplyWorkflowId(input.projectId);
 
 		if (input.proposalId) {
 			const existing = await getPendingBacklogProposal(input.proposalId);
@@ -444,9 +594,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			proposalId = input.proposalId;
 		} else {
 			try {
-				const proposal = await createPendingBacklogProposal({
+				const proposalData = {
 					projectId: input.projectId,
-					source: "AI_UPDATE_SIDEBAR",
+					source: "AI_UPDATE_SIDEBAR" as const,
 					proposal: {
 						changes: input.approvedChanges,
 					} as unknown as Prisma.InputJsonValue,
@@ -456,6 +606,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 						syncToPM: input.syncToPM,
 						pmConfig: input.pmConfig ?? null,
 						conversationId: input.conversationId ?? null,
+						...(operationId
+							? { applyInputFingerprint: fingerprint }
+							: {}),
 					} as unknown as Prisma.InputJsonValue,
 					// Fold the narrowed pre-check under `sourceMetadata.decisionPrecheck`
 					// (the query merges it) so the review UI + Overrides list read it
@@ -466,9 +619,53 @@ export const applyChangesProcedure = tenantProtectedProcedure
 						: undefined,
 					userId: user.id,
 					organizationId: resolvedOrganizationId,
-				});
+				};
+				const { decisionPrecheck: storedPrecheck, ...createData } =
+					proposalData;
+				const proposal = operationRowId
+					? await db.pendingBacklogProposal
+							.upsert({
+								where: { id: operationRowId },
+								update: {},
+								create: {
+									...createData,
+									id: operationRowId,
+									sourceMetadata: {
+										...(createData.sourceMetadata as Prisma.InputJsonObject),
+										...(storedPrecheck
+											? {
+													decisionPrecheck:
+														storedPrecheck,
+												}
+											: {}),
+									},
+								},
+							})
+							.catch(async (error: unknown) => {
+								// Prisma may emulate an upsert; reconcile a competing insert by its primary key.
+								if (
+									(error as { code?: unknown })?.code ===
+									"P2002"
+								) {
+									const row =
+										await db.pendingBacklogProposal.findUnique(
+											{ where: { id: operationRowId } },
+										);
+									if (row) {
+										return row;
+									}
+								}
+								throw error;
+							})
+					: await createPendingBacklogProposal(proposalData);
+				if (operationRowId) {
+					assertOperation(proposal);
+				}
 				proposalId = proposal.id;
 			} catch (error) {
+				if (error instanceof ORPCError) {
+					throw error;
+				}
 				console.error(
 					"[backlog] apply-changes failed to persist proposal row:",
 					error,
@@ -491,7 +688,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			const createCount = input.approvedChanges.filter(
 				(change) => change.action === "create",
 			).length;
-			await createBacklogUpdateSession({
+			const sessionInput = {
 				projectId: input.projectId,
 				pendingProposalId: proposalId,
 				conversationId: input.conversationId ?? null,
@@ -516,7 +713,29 @@ export const applyChangesProcedure = tenantProtectedProcedure
 						: undefined,
 				userId: user.id,
 				organizationId: resolvedOrganizationId,
-			});
+			};
+			if (operationId) {
+				// Serialize keyed history creation on the durable proposal, before dispatch.
+				// The lock and insert share a transaction, so concurrent deliveries see the winner's session.
+				// FOR NO KEY UPDATE still serializes duplicate deliveries without blocking other
+				// transactions' FK inserts that reference this proposal (FK checks take FOR KEY SHARE).
+				await db.$transaction(
+					async (tx) => {
+						await tx.$queryRaw`SELECT "id" FROM "pending_backlog_proposal" WHERE "id" = ${proposalId} FOR NO KEY UPDATE`;
+						const existing =
+							await tx.backlogUpdateSession.findFirst({
+								where: { pendingProposalId: proposalId },
+								select: { id: true },
+							});
+						if (!existing) {
+							await createBacklogUpdateSession(sessionInput, tx);
+						}
+					},
+					{ timeout: 10000, maxWait: 10000 },
+				);
+			} else {
+				await createBacklogUpdateSession(sessionInput);
+			}
 		} catch {
 			// Non-fatal: a missing session row only affects the history tab.
 		}
@@ -524,11 +743,20 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		try {
 			const client = await getTemporalClient();
 
+			if (operationRowId) {
+				const existing = await existingWorkflow(proposalId);
+				if (existing) {
+					return existing;
+				}
+			}
 			const handle = await client.workflow.start(
 				"backlogApplyChangesWorkflow",
 				withCorrelationMemo({
 					taskQueue: "ai-chat",
 					workflowId,
+					...(operationId
+						? { workflowIdReusePolicy: "REJECT_DUPLICATE" as const }
+						: {}),
 					args: [
 						{
 							projectId: input.projectId,
@@ -615,6 +843,22 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId,
 			};
 		} catch (error) {
+			if (operationRowId) {
+				// Start may have committed before transport failure. Reconcile the
+				// same id; if unknown, retain the row for an identical retry.
+				try {
+					const existing = await existingWorkflow(proposalId);
+					if (existing) {
+						return existing;
+					}
+				} catch {
+					/* The caller can retry this durable operation. */
+				}
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message:
+						"Could not confirm apply dispatch. Retry apply with the same approval.",
+				});
+			}
 			console.error(
 				"[backlog] apply-changes failed to start workflow:",
 				error,

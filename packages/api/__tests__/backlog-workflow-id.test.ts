@@ -113,3 +113,23 @@ describe("backlog-apply workflow ids", () => {
 		}
 	});
 });
+
+it("binds operation-key ids exactly to their project while preserving numeric ids", () => {
+	const id = backlogAnalysisWorkflowId(PROJECT, "example-flow");
+	expect(id).toMatch(/-op-[a-f0-9]{64}$/);
+	expect(id).toBe(backlogAnalysisWorkflowId(PROJECT, "example-flow"));
+	expect(isBacklogAnalysisWorkflowIdFor(id, PROJECT)).toBe(true);
+	expect(isBacklogAnalysisWorkflowIdFor(id, "proj")).toBe(false);
+	expect(isBacklogAnalysisWorkflowIdFor(id, `${PROJECT}-op`)).toBe(false);
+	expect(isBacklogAnalysisWorkflowIdFor(id, "example-other")).toBe(false);
+	expect(isBacklogAnalysisWorkflowIdFor(`${id}x`, PROJECT)).toBe(false);
+});
+
+it("binds keyed apply ids to the exact project, including prefix-sharing ids", () => {
+	const suffix = `op-${"a".repeat(64)}`;
+	const id = `backlog-apply-proj-abc123-${suffix}`;
+	expect(isBacklogApplyWorkflowIdFor(id, "proj-abc123")).toBe(true);
+	expect(isBacklogApplyWorkflowIdFor(id, "proj")).toBe(false);
+	expect(isBacklogApplyWorkflowIdFor(id, "proj-abc123-op")).toBe(false);
+	expect(isBacklogApplyWorkflowIdFor(`${id}x`, "proj-abc123")).toBe(false);
+});

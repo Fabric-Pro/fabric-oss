@@ -373,6 +373,27 @@ describe("update", () => {
 });
 
 describe("publish", () => {
+	it("refuses an invalid native reader before a draft save writes anything", async () => {
+		const error = await refusal(
+			updateWorkflowCommand(actor, {
+				id: "wf-1",
+				nodes: [
+					{
+						id: "native",
+						type: "native-platform-read",
+						data: {
+							config: {
+								toolName: "fabric_delete_frame",
+								arguments: "{}",
+							},
+						},
+					},
+				],
+			}),
+		);
+		expect(error.code).toBe("BAD_REQUEST");
+		expectNoWrite();
+	});
 	it("refuses a graph with an invalid agent step, and writes nothing", async () => {
 		mocks.getWorkflowById.mockResolvedValue(
 			workflow({

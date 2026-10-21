@@ -5,6 +5,15 @@
  */
 
 import * as jose from "jose";
+import { z } from "zod";
+import {
+	DYNAMIC_CODE_LIMITS,
+	ExecuteCodeRequestSchema,
+	ExecuteCodeResponseSchema,
+	readBoundedJson,
+	type ExecuteCodeRequest,
+	type ExecuteCodeResponse,
+} from "./dynamic-worker";
 import type {
 	ApiResponse,
 	ClaudeResult,
@@ -21,6 +30,12 @@ import type {
 	SessionInfo,
 } from "./types";
 import { ExecOptionsSchema } from "./types";
+
+const ExecuteCodeEnvelopeSchema = z.object({
+	success: z.boolean(),
+	data: z.unknown().optional(),
+	error: z.object({ message: z.string().max(4096).optional() }).optional(),
+});
 
 export class SandboxClient {
 	private baseUrl: string;
@@ -96,8 +111,67 @@ export class SandboxClient {
 	}
 
 	/**
-	 * Create a new sandbox session
+	 * Execute a stateless script without opening a container session
 	 */
+	async executeCode(
+		userId: string,
+		organizationId: string | undefined,
+		options: ExecuteCodeRequest,
+	): Promise<ExecuteCodeResponse> {
+		const input = ExecuteCodeRequestSchema.parse(options);
+		let prepared = input;
+		if (input.language === "typescript") {
+			const ts = (await import("typescript")).default;
+			const compiled = ts.transpileModule(
+				`async function __fabricTypedMain(inputs, execution) {\n${input.code}\n}`,
+				{
+					compilerOptions: {
+						target: ts.ScriptTarget.ES2022,
+						module: ts.ModuleKind.ES2022,
+					},
+				},
+			).outputText;
+			prepared = ExecuteCodeRequestSchema.parse({
+				...input,
+				code: `${compiled}\nreturn await __fabricTypedMain(inputs, execution);`,
+				language: "javascript",
+			});
+		}
+		const token = await this.generateToken(userId, organizationId);
+		const controller = new AbortController();
+		const timeoutId = setTimeout(
+			() => controller.abort(),
+			input.timeout + 5000,
+		);
+		try {
+			const response = await fetch(`${this.baseUrl}/execute`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${token}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(prepared),
+				signal: controller.signal,
+			});
+			const payload = await readBoundedJson(
+				response,
+				DYNAMIC_CODE_LIMITS.responseBytes,
+			);
+			const envelope = ExecuteCodeEnvelopeSchema.parse(payload);
+			if (!response.ok || !envelope.success) {
+				throw new Error(
+					envelope.error?.message ??
+						"Dynamic Worker execution failed",
+				);
+			}
+			const result = ExecuteCodeResponseSchema.parse(envelope.data);
+			return { ...result, code: input.code };
+		} finally {
+			clearTimeout(timeoutId);
+		}
+	}
+
+	/** Create a new sandbox session. */
 	async createSession(
 		userId: string,
 		organizationId: string | undefined,

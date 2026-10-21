@@ -20,6 +20,10 @@ import {
 	rethrowIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import {
+	type SecondaryUsageInput,
+	secondaryUsageFields,
+} from "../workflows/orchestrator/usage-attribution";
+import {
 	activityAbortSignal,
 	assertTurnDispatchable,
 	guardTurnImageModel,
@@ -29,9 +33,7 @@ import {
 	throwIfTurnStopped,
 } from "./orchestrator/turn-dispatch";
 
-export interface ImageGenerationParams {
-	/** Conversation served by this image request, supplied by its caller. */
-	usageConversationId?: string;
+export interface ImageGenerationParams extends SecondaryUsageInput {
 	prompt: string;
 	provider: "gateway" | "fal" | "gemini";
 	aspectRatio?: string;
@@ -207,6 +209,7 @@ export async function generateImageActivity(
 		userId,
 		organizationId,
 		params.usageConversationId,
+		params.usageOrigin,
 	);
 	return result;
 }
@@ -236,12 +239,14 @@ function logImageGenerationUsage(
 	userId: string,
 	organizationId?: string,
 	conversationId?: string,
+	usageOrigin?: SecondaryUsageInput["usageOrigin"],
 ): void {
 	try {
 		logAiUsageAsync({
 			userId,
 			organizationId,
 			conversationId,
+			...secondaryUsageFields({ usageOrigin }),
 			// The provider enum has no values for the FAL or Google-AI-Studio
 			// image APIs; their model string carries the real identity, so they
 			// land under CUSTOM rather than a misattributed provider.

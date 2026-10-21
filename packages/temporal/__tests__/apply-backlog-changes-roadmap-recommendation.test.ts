@@ -277,3 +277,29 @@ describe("applyBacklogChanges — ROADMAP_RECOMMENDATION source", () => {
 		expect(mocks.appendAppliedChangeIndexes).not.toHaveBeenCalled();
 	});
 });
+
+it("records a duplicate recommendation as resolved after an earlier refusal", async () => {
+	mocks.createStoryFromProposal.mockRejectedValueOnce(
+		Object.assign(new Error("raw auth detail"), {
+			name: "ChatGptPlanAuthError",
+		}),
+	);
+	const result = await apply(
+		[createChange("Saved searches"), createChange("Audit log")],
+		{
+			approvedChangeIndexes: [4, 9],
+			existingBacklog: {
+				stories: [
+					{ id: "s-old", identifier: "F-001", title: "Audit log" },
+				],
+			},
+		},
+	);
+	expect(result.skippedDuplicates).toHaveLength(1);
+	expect(result.errors).toHaveLength(1);
+	expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
+		"batch-1",
+		[9],
+	);
+	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+});

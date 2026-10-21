@@ -432,7 +432,7 @@ export type DocumentVersionScalarFieldEnum = z.infer<typeof DocumentVersionScala
 
 // File: DocumentAutoRefreshSettingsScalarFieldEnum.schema.ts
 
-export const DocumentAutoRefreshSettingsScalarFieldEnumSchema = z.enum(['id', 'documentId', 'projectId', 'enabled', 'cadence', 'deployPendingSince', 'autoApply', 'pendingContent', 'pendingSummary', 'pendingProposedAt', 'pendingBaselineVersion', 'createdByUserId', 'lastRefreshedAt', 'lastAttemptAt', 'lastRefreshStatus', 'lastRefreshSummary', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
+export const DocumentAutoRefreshSettingsScalarFieldEnumSchema = z.enum(['id', 'documentId', 'projectId', 'enabled', 'cadence', 'deployPendingSince', 'autoApply', 'pendingContent', 'pendingSummary', 'pendingProposedAt', 'pendingBaselineVersion', 'pendingBaselineContentHash', 'createdByUserId', 'lastRefreshedAt', 'lastAttemptAt', 'lastRefreshStatus', 'lastRefreshSummary', 'createdAt', 'updatedAt', 'userId', 'organizationId'])
 
 export type DocumentAutoRefreshSettingsScalarFieldEnum = z.infer<typeof DocumentAutoRefreshSettingsScalarFieldEnumSchema>;
 
@@ -5698,6 +5698,7 @@ export const DocumentAutoRefreshSettingsSchema = z.object({
   pendingSummary: z.string().nullish(),
   pendingProposedAt: z.date().nullish(),
   pendingBaselineVersion: z.number().int().nullish(),
+  pendingBaselineContentHash: z.string().nullish(),
   createdByUserId: z.string(),
   lastRefreshedAt: z.date().nullish(),
   lastAttemptAt: z.date().nullish(),

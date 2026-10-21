@@ -1607,8 +1607,12 @@ export async function executePlatformTool(
 		// else (a database, storage or network failure) names internals that
 		// are not the caller's to see, so it gets one generic sentence and the
 		// detail stays in the server log above.
+		const { aiConfigurationRefusalMessage } = await import(
+			"@repo/temporal/ai-configuration-refusal"
+		);
 		return errorResult(
-			instructionRefusalMessage(error) ??
+			aiConfigurationRefusalMessage(error) ??
+				instructionRefusalMessage(error) ??
 				`${toolName} failed because of an internal error. Nothing was confirmed; try again.`,
 		);
 	}
@@ -4203,8 +4207,8 @@ async function handleUpdateDocument(
 					? { expectedContentHash: contentIdentity(doc.content) }
 					: {}),
 			// A run queued after the read above is refused by the write
-			// itself, not only by the status check on that read.
-			...(runGuarded ? { refuseWhileGenerating: true } : {}),
+			// itself too: `updateDocument` refuses a Proposal's content and
+			// status writes under a run by default.
 		});
 	} catch (error) {
 		// Last line of defence in the query layer (a completion may land

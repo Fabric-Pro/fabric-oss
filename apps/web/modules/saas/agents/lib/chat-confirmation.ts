@@ -84,6 +84,7 @@ const ACTION_PHRASES: Record<string, string> = {
 	fabric_page_file_delete: "delete a file from this page",
 	fabric_page_comment_add: "add a comment",
 	fabric_page_ask: "ask the AI a question",
+	fabric_page_run_workflow: "run its workflow",
 	fabric_page_read_connected: "read from your connected account",
 };
 

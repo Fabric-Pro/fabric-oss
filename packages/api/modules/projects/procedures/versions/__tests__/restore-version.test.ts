@@ -177,7 +177,7 @@ describe("restoreVersionProcedure", () => {
 		expect(mockEmitDocumentChange).not.toHaveBeenCalled();
 	});
 
-	it("restores a document that is not a Proposal without the live-run guard", async () => {
+	it("restores a document that is not a Proposal even while it is generating", async () => {
 		vi.mocked(getDocumentById).mockResolvedValue({
 			id: "doc-1",
 			projectId: "p1",
@@ -188,13 +188,10 @@ describe("restoreVersionProcedure", () => {
 
 		await handler({ input, context: ctx });
 
-		expect(restoreDocumentVersion).toHaveBeenCalledWith(
-			"doc-1",
-			2,
-			"u1",
-			{ userId: "u1", organizationId: "org-1" },
-			{},
-		);
+		expect(restoreDocumentVersion).toHaveBeenCalledWith("doc-1", 2, "u1", {
+			userId: "u1",
+			organizationId: "org-1",
+		});
 	});
 });
 
@@ -237,7 +234,9 @@ describe("restoreVersionProcedure on a Proposal", () => {
 		},
 	);
 
-	it("guards a finished Proposal's restore with the Proposal gate off, without consulting it", async () => {
+	// The restore's write refuses a run queued after this read on its own:
+	// the query's default for a Proposal's content write, with no option.
+	it("restores a finished Proposal with the Proposal gate off, without consulting it", async () => {
 		vi.mocked(isProposalClientDocument).mockResolvedValue(false);
 		vi.mocked(getDocumentById).mockResolvedValue(
 			proposal("COMPLETE") as never,
@@ -246,29 +245,23 @@ describe("restoreVersionProcedure on a Proposal", () => {
 		await handler({ input, context: ctx });
 
 		expect(isProposalClientDocument).not.toHaveBeenCalled();
-		expect(restoreDocumentVersion).toHaveBeenCalledWith(
-			"doc-1",
-			2,
-			"u1",
-			{ userId: "u1", organizationId: "org-1" },
-			{ refuseWhileGenerating: true },
-		);
+		expect(restoreDocumentVersion).toHaveBeenCalledWith("doc-1", 2, "u1", {
+			userId: "u1",
+			organizationId: "org-1",
+		});
 	});
 
-	it("restores a finished Proposal through the guarded write", async () => {
+	it("restores a finished Proposal and tells open editors", async () => {
 		vi.mocked(getDocumentById).mockResolvedValue(
 			proposal("COMPLETE") as never,
 		);
 
 		await handler({ input, context: ctx });
 
-		expect(restoreDocumentVersion).toHaveBeenCalledWith(
-			"doc-1",
-			2,
-			"u1",
-			{ userId: "u1", organizationId: "org-1" },
-			{ refuseWhileGenerating: true },
-		);
+		expect(restoreDocumentVersion).toHaveBeenCalledWith("doc-1", 2, "u1", {
+			userId: "u1",
+			organizationId: "org-1",
+		});
 		expect(mockEmitDocumentChange).toHaveBeenCalledTimes(1);
 	});
 

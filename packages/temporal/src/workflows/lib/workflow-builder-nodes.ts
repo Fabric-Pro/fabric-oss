@@ -11,6 +11,7 @@
 import {
 	ADO_STORY_REVIEW_NODE_TYPE,
 	AGENT_TASK_NODE_TYPE,
+	WORKSPACE_DATA_WRITE_NODE_TYPE,
 } from "../../lib/workflow-node-types";
 
 /**
@@ -100,6 +101,8 @@ export function isExternalWriteNodeType(nodeType: string): boolean {
  * smaller harm than a duplicated write. `agent-task` is included for the same
  * reason, and because a retry would spend a second full agent run. Story
  * review also disables retries because its model call may already be billed.
+ * Workspace record writes use compare-and-set and are reconciled by reading
+ * after an unknown result, rather than retrying an already committed write.
  */
 export function isNonRetryableNodeType(nodeType: string): boolean {
 	const resolved = resolveNodeType(nodeType);
@@ -107,6 +110,7 @@ export function isNonRetryableNodeType(nodeType: string): boolean {
 		resolved === "mcp-tool" ||
 		resolved === AGENT_TASK_NODE_TYPE ||
 		resolved === ADO_STORY_REVIEW_NODE_TYPE ||
+		resolved === WORKSPACE_DATA_WRITE_NODE_TYPE ||
 		EXTERNAL_WRITE_NODE_TYPES.has(resolved)
 	);
 }

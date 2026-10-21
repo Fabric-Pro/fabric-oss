@@ -90,6 +90,7 @@ describe("conversation attribution", () => {
 				...CODE_INDEX,
 				conversationId: "conversation-example",
 				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
 			};
 			if (kind === "single") {
 				await generateEmbedding("query", context);
@@ -104,6 +105,7 @@ describe("conversation attribution", () => {
 				getAIEmbeddingModelWithMetadataMock.mock.calls[0][0],
 			).toMatchObject({
 				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
 				projectId: "proj-1",
 				featureKey: "code-index",
 			});
@@ -114,5 +116,8 @@ describe("conversation attribution", () => {
 		expect(
 			getAIEmbeddingModelWithMetadataMock.mock.calls[0][0].conversationId,
 		).toBeUndefined();
+		expect(
+			getAIEmbeddingModelWithMetadataMock.mock.calls[0][0],
+		).not.toHaveProperty("workflowExecutionId");
 	});
 });

@@ -7,6 +7,7 @@
  * current permission itself.
  */
 
+import { isDeepStrictEqual } from "node:util";
 import {
 	canEditProject,
 	canRunOrganizationWorkflows,
@@ -15,7 +16,9 @@ import {
 	listWorkflowExecutions,
 	type Prisma,
 	type WorkflowExecution,
-	type WorkspaceWorkflowBindingGuard,
+	type WorkspaceWorkflowRowGuard,
+	type WorkspaceWorkflowRunGuard,
+	workspaceWorkflowRunProvenanceSchema,
 } from "@repo/database";
 import { workspaceStoryReviewRunBindingSchema } from "@repo/temporal/ado-story-review-config";
 import {
@@ -41,6 +44,19 @@ import { validateWorkflowBeforeExecution } from "./workflow-validation";
  * that a key the client accidentally reuses tomorrow starts a fresh run.
  */
 const EXECUTION_IDEMPOTENCY_WINDOW_MS = 5 * 60_000;
+
+type WorkspaceLaunch =
+	| {
+			kind: "story-review";
+			binding: WorkspaceWorkflowRowGuard;
+			nodeId: string;
+			forceReview: boolean;
+	  }
+	| {
+			kind: "workflow";
+			binding: WorkspaceWorkflowRunGuard;
+			inputsFingerprint: string;
+	  };
 
 interface StartWorkflowExecutionInput {
 	workflowId: string;
@@ -69,10 +85,63 @@ interface StartWorkflowExecutionInput {
 	/** Recorded on the execution row so the run history says who started it. */
 	source?: string;
 	/** Internal controller binding, never accepted as page arguments. */
-	workspaceReview?: {
-		binding: WorkspaceWorkflowBindingGuard;
-		nodeId: string;
+	workspaceLaunch?: WorkspaceLaunch;
+}
+
+function workspaceLaunchMetadata(
+	actor: WorkflowActor,
+	workflow: { id: string; projectId: string | null },
+	launch: WorkspaceLaunch,
+) {
+	const { binding } = launch;
+	if (
+		binding.userId !== actor.userId ||
+		binding.organizationId !== actor.organizationId ||
+		binding.workflowId !== workflow.id ||
+		binding.projectId !== workflow.projectId
+	) {
+		throw new WorkflowCommandError(
+			"BAD_REQUEST",
+			"The internal Workspace binding does not match this workflow request.",
+		);
+	}
+	const identity = {
+		version: 1,
+		workflowId: binding.workflowId,
+		workspaceFrameId: binding.workspaceFrameId,
+		projectId: binding.projectId,
+		workflowUpdatedAt: binding.workflowUpdatedAt.toISOString(),
+		frameUpdatedAt: binding.frameUpdatedAt.toISOString(),
 	};
+	switch (launch.kind) {
+		case "story-review":
+			return {
+				source: "workspace-story-review",
+				workspaceReviewBinding:
+					workspaceStoryReviewRunBindingSchema.parse({
+						...identity,
+						kind: "workspace-story-review",
+						nodeId: launch.nodeId,
+						forceReview: launch.forceReview,
+					}),
+			};
+		case "workflow":
+			return {
+				source: "workspace-workflow",
+				workspaceWorkflowBinding:
+					workspaceWorkflowRunProvenanceSchema.parse({
+						...identity,
+						kind: "workspace-workflow",
+						workflowVersion:
+							launch.binding.requirement.workflowVersion,
+						inputsFingerprint: launch.inputsFingerprint,
+					}),
+			};
+		default: {
+			const exhaustive: never = launch;
+			throw new Error(`Unsupported Workspace launch: ${exhaustive}`);
+		}
+	}
 }
 
 type StartWorkflowExecutionOutcome =
@@ -104,6 +173,16 @@ export async function startWorkflowExecutionCommand(
 		refusal:
 			"You do not have permission to run workflows in this organization",
 	});
+	const launchMetadata = input.workspaceLaunch
+		? workspaceLaunchMetadata(actor, workflow, input.workspaceLaunch)
+		: {};
+	const triggerData =
+		input.workspaceLaunch?.kind === "story-review"
+			? {
+					...input.triggerData,
+					forceReview: input.workspaceLaunch.forceReview,
+				}
+			: input.triggerData;
 
 	if (
 		input.confirmedProjectId &&
@@ -155,31 +234,12 @@ export async function startWorkflowExecutionCommand(
 	// even when the tenant is at its cap — the case where the first request
 	// started the last permitted run and lost its response.
 	const triggerInput = {
-		triggerData: input.triggerData,
+		triggerData,
 		variables: input.variables,
 		...(input.source ? { source: input.source } : {}),
-		...(input.workspaceReview
-			? {
-					source: "workspace-story-review",
-					workspaceReviewBinding:
-						workspaceStoryReviewRunBindingSchema.parse({
-							kind: "workspace-story-review",
-							version: 1,
-							workflowId: input.workflowId,
-							workspaceFrameId:
-								input.workspaceReview.binding.workspaceFrameId,
-							projectId: input.workspaceReview.binding.projectId,
-							nodeId: input.workspaceReview.nodeId,
-							workflowUpdatedAt:
-								input.workspaceReview.binding.workflowUpdatedAt.toISOString(),
-							frameUpdatedAt:
-								input.workspaceReview.binding.frameUpdatedAt.toISOString(),
-							forceReview:
-								input.triggerData?.forceReview ?? false,
-						}),
-				}
-			: {}),
+		...launchMetadata,
 	};
+	const workspaceBinding = input.workspaceLaunch?.binding;
 	let execution: WorkflowExecution;
 	if (input.idempotencyKey) {
 		const result = await createWorkflowExecutionIdempotent({
@@ -195,9 +255,7 @@ export async function startWorkflowExecutionCommand(
 			idempotencyKey: input.idempotencyKey,
 			windowMs: EXECUTION_IDEMPOTENCY_WINDOW_MS,
 			limit: await resolveExecutionConcurrencyLimit(actor.organizationId),
-			...(input.workspaceReview
-				? { workspaceBinding: input.workspaceReview.binding }
-				: {}),
+			...(workspaceBinding ? { workspaceBinding } : {}),
 		});
 		if (result.outcome === "limit-reached") {
 			throw new WorkflowCommandError(
@@ -207,6 +265,22 @@ export async function startWorkflowExecutionCommand(
 		}
 		if (result.outcome === "existing") {
 			const existing = result.execution;
+			const stored = existing.triggerInput;
+			if (
+				input.workspaceLaunch &&
+				(!stored ||
+					typeof stored !== "object" ||
+					Array.isArray(stored) ||
+					Object.entries(launchMetadata).some(
+						([key, value]) =>
+							!isDeepStrictEqual(stored[key], value),
+					))
+			) {
+				throw new WorkflowCommandError(
+					"CONFLICT",
+					"This idempotency key belongs to a different Workspace request. Read its run before starting another.",
+				);
+			}
 			// A PENDING row with no run id has no confirmed start: the first
 			// request may still be between its insert and its engine start, or
 			// its start was unconfirmed. Reporting that as "started" told the
@@ -238,9 +312,7 @@ export async function startWorkflowExecutionCommand(
 		const reservation = await createExecutionWithinConcurrencyCap({
 			userId: actor.userId,
 			organizationId: actor.organizationId,
-			...(input.workspaceReview
-				? { workspaceBinding: input.workspaceReview.binding }
-				: {}),
+			...(workspaceBinding ? { workspaceBinding } : {}),
 			data: {
 				workflowId: input.workflowId,
 				version: workflow.version,
@@ -268,7 +340,7 @@ export async function startWorkflowExecutionCommand(
 			// nodes/edges are passed inline (the workflow only loads the row
 			// when they are not)
 			projectId: workflow.projectId ?? undefined,
-			triggerData: input.triggerData,
+			triggerData,
 			variables: input.variables,
 			// Current nodes/edges if provided (unsaved changes). The caller's
 			// schema bounds their size and count, not their shape; the

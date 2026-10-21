@@ -2867,7 +2867,11 @@
 				"action": "Als abgeschlossen markieren",
 				"completed": "Dokument als abgeschlossen markiert",
 				"notDraft": "Es wurde nichts geändert — das Dokument ist kein Entwurf mit Inhalt mehr",
-				"failed": "Das Dokument konnte nicht als abgeschlossen markiert werden: {message}"
+				"failed": "Das Dokument konnte nicht als abgeschlossen markiert werden. Versuchen Sie es erneut."
+			},
+			"setActive": {
+				"updated": "Aktives Dokument aktualisiert",
+				"failed": "Das aktive Dokument konnte nicht aktualisiert werden. Versuchen Sie es erneut."
 			}
 		},
 		"sharedWithMe": {
@@ -3539,7 +3543,7 @@
 				"descriptionPlaceholderBug": "Beschreibe den Fehler...",
 				"titleGenerating": "Titel wird generiert…",
 				"titleGenerated": "Titel generiert.",
-				"titleGenerationFailed": "Title generation failed — a placeholder title has been assigned.",
+				"creationFailed": "Das Arbeitselement konnte nicht erstellt werden. Bitte versuche es erneut.",
 				"titleInsufficient": "Description was short — using placeholder title. You can edit it any time.",
 				"attachments": {
 					"dropHint": "Drop images here",
@@ -5899,7 +5903,9 @@
 			},
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
-			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert."
+			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
+			"regenerationAccepted": "Die neu generierte Version wurde übernommen.",
+			"regenerationRejected": "Die neu generierte Version wurde verworfen. Das Dokument wurde auf die vorherige Version zurückgesetzt."
 		},
 		"documentEditorRoom": {
 			"updating": "Wird auf die neueste Version aktualisiert …",
@@ -5915,6 +5921,35 @@
 				"copy": "Meinen ungespeicherten Text kopieren",
 				"copied": "Ihr ungespeicherter Text wurde in die Zwischenablage kopiert.",
 				"copyFailed": "Ihr Text konnte nicht in die Zwischenablage kopiert werden."
+			}
+		},
+		"documentWriteRefusal": {
+			"runLive": "Ein Generierungslauf schreibt gerade dieses Dokument. Versuchen Sie es erneut, sobald er fertig ist.",
+			"changedMeanwhile": "Jemand hat dieses Dokument inzwischen geändert. Laden Sie die neueste Version und versuchen Sie es erneut.",
+			"baseRequired": "Diese Seite ist nicht mehr aktuell. Laden Sie sie neu, um weiter zu bearbeiten.",
+			"statusGenerationOwned": "Dieser Status wird nur von einem Generierungslauf gesetzt.",
+			"failed": "Das Dokument konnte nicht geändert werden. Versuchen Sie es erneut."
+		},
+		"versionHistory": {
+			"restoreBlocked": {
+				"runLive": "Die Wiederherstellung ist nicht verfügbar, solange ein Generierungslauf für dieses Dokument wartet oder es schreibt. Sie ist wieder verfügbar, sobald der Lauf abgeschlossen ist.",
+				"regenerating": "Die Wiederherstellung ist nicht verfügbar, solange eine hier gestartete Regenerierung läuft oder auf Ihre Prüfung wartet. Danach ist sie wieder verfügbar."
+			}
+		},
+		"updateWithContext": {
+			"readFailed": "Der Dokumentinhalt konnte nicht gelesen werden. Versuchen Sie es erneut oder laden Sie die Seite neu.",
+			"syncing": "Das Dokument wird noch mit der zuletzt gespeicherten Version abgeglichen. Versuchen Sie es gleich noch einmal.",
+			"noUpdates": "Keine Aktualisierungen gefunden — das Dokument spiegelt bereits den neuesten Kontext wider.",
+			"previewFailed": "Der neueste Kontext konnte nicht abgerufen werden. Versuchen Sie es erneut.",
+			"modelCallFailed": "Der Aufruf des KI-Modells ist fehlgeschlagen, daher wurde keine Aktualisierung entworfen. Das liegt nicht an Ihren KI-Einstellungen: Versuchen Sie es erneut, und prüfen Sie den Status des KI-Anbieters, falls es weiterhin passiert.",
+			"aiProviderMissing": "Für diese Organisation ist kein KI-Anbieter eingerichtet. Ein Organisationsadministrator kann in den KI-Einstellungen einen hinzufügen; versuchen Sie es danach erneut.",
+			"documentTooLarge": "Das Dokument ist zu groß für das Ausgabelimit des KI-Modells, daher konnte die Aktualisierung nicht abgeschlossen werden. Verwenden Sie ein Modell mit einem höheren Ausgabelimit oder teilen Sie das Dokument auf.",
+			"confirmReadFailed": "Der Dokumentinhalt konnte nicht aus dem Editor gelesen werden — es wurde nichts gespeichert. Kopieren Sie ungespeicherte Änderungen und laden Sie die Seite neu.",
+			"notApplied": "Es wurden keine Änderungen übernommen — das Dokument ist bereits auf dem neuesten Stand.",
+			"applied": "Dokument mit dem neuesten Kontext aktualisiert — als v{version} gespeichert",
+			"loadingStage": {
+				"scanning": "Projektkontext wird durchsucht",
+				"drafting": "KI prüft und entwirft Aktualisierungen"
 			}
 		},
 		"planPause": {

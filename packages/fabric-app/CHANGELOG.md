@@ -1,5 +1,29 @@
 # fabric-app
 
+## 1.16.26
+
+### Patch Changes
+
+- cf12607: Read Azure DevOps sprint relationships separately from selected work-item fields so sprint reviews can capture linked requirements without an invalid provider request.
+- cf12607: Features and bugs created by approving Teams, meeting, or Slack proposals now retain the proposal description and acceptance criteria when AI drafting fails.
+- cf12607: Keep fire-and-forget audit writes alive until they finish, so rejected and failed requests are no longer missing from the audit log.
+- cf12607: Roadmap AI Updates now runs source selection, analysis and review in order once per request, preventing repeated analyses and reopened source selectors.
+- cf12607: Roadmap AI Updates start the analysis after you confirm meetings or channels, instead of showing the source selector again.
+- cf12607: Updates the Markdown renderer to markdown-it 14.3.3, which fixes a high-severity security advisory.
+- cf12607: Update the Markdown parser to 14.3.3 to prevent excessive CPU use when rendering malformed multiline link definitions.
+- cf12607: Add a Native Platform Read workflow step that reuses registered project readers with current access checks and published configuration, allowing authored scripts to process their structured results.
+- cf12607: Carry the parent Workspace and workflow execution into AI Usage attribution for nested agent tools, embeddings, image generation, speech, transcription, and in-process pattern model calls.
+- cf12607: Update Vite and launch-editor to patched releases that validate Windows editor paths before launching them.
+- cf12607: Add workflow steps for reading and writing Workspace JSON data with current binding checks and versioned writes.
+- cf12607: Creating a feature or bug now tells you to reconnect your ChatGPT plan, wait for its usage to reset, choose a supported model, or raise an AI usage limit instead of saving it without its AI-drafted specification.
+- cf12607: Document writes that a running generation would overwrite are now refused by default, an open client Proposal or shared editor learns at once when someone else starts a generation, version restores wait for a running generation to finish, accepting a stored refresh proposal is refused when the document changed since it was drafted, pausing a document batch or project setup no longer reopens documents someone has since saved or another run has taken, and refused saves, restores and updates explain why in the reader's language.
+- cf12607: Update the Python agent certificate bundle to remove the compromised emSign roots identified in GHSA-6q48-6c7w-9gw2.
+- cf12607: Workflows refuse a schedule trigger with no `scheduleCron` instead of publishing it as a schedule that never fires.
+- cf12607: AI Usage now tags tool-search embeddings, including the tool catalogue's re-index, instead of listing them as untagged rows.
+- cf12607: Let Fabric Agent write JavaScript and TypeScript transformation steps for published Workspace workflows, with bounded JSON inputs and outputs and isolated execution without network access.
+- cf12607: Allow Workspace owners to confirm published workflows in the same project and use generic run and history controls. Keep bindings in trusted server metadata, reject stale or unpublished changes, and preserve request idempotency and project access checks.
+- cf12607: The Agent now builds Workspace Run buttons that pass the required timestamps, and publishes and rebinds in the same turn as a workflow edit.
+
 ## 1.16.25
 
 ### Patch Changes

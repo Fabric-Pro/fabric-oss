@@ -38,7 +38,18 @@ vi.mock("@copilotkit/react-core", () => ({
 		registeredActions.set(action.name, { handler: action.handler });
 	},
 	// BacklogChat reads the live chat through CopilotChatSessionProvider.
-	useCopilotChatInternal: () => ({ messages: [] }),
+	useCopilotChatInternal: () => ({
+		messages: [
+			{
+				role: "user",
+				id: "example-request",
+				content:
+					projectState.engagementProfile === "EXPLORE"
+						? "Small lenders want faster intake."
+						: "Review the last sprint.",
+			},
+		],
+	}),
 }));
 
 vi.mock("@copilotkit/react-ui", () => ({
@@ -95,7 +106,7 @@ import type { EngagementProfile } from "@repo/database";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { BacklogChat } from "../BacklogChat";
 
-function renderChat() {
+function renderChat(hasSlackIntegration = false) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -109,7 +120,7 @@ function renderChat() {
 						projectState.engagementProfile as EngagementProfile
 					}
 					hasTeamsIntegration={false}
-					hasSlackIntegration={false}
+					hasSlackIntegration={hasSlackIntegration}
 					hasNotionIntegration={false}
 					hasPMTool={false}
 					backlogSummary="0 features"
@@ -163,7 +174,7 @@ describe("BacklogChat explore intake", () => {
 			userPrompt: "Small lenders want faster intake.",
 		});
 
-		expect(startAnalysis).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
 		expect(startAnalysis.mock.calls[0]?.[0]).toMatchObject({
 			projectId: "p1",
 			organizationId: "org-1",
@@ -174,7 +185,7 @@ describe("BacklogChat explore intake", () => {
 
 	it("keeps the standard chat and omits intakeMode for non-EXPLORE profiles", async () => {
 		projectState.engagementProfile = "GOVERNED";
-		renderChat();
+		renderChat(true);
 
 		await waitFor(() => {
 			expect(screen.getByTestId("chat-title")).toHaveTextContent(
@@ -184,14 +195,14 @@ describe("BacklogChat explore intake", () => {
 		// Give the project query a tick to settle so the mode is final.
 		await waitFor(() => {
 			expect(screen.getByTestId("chat-initial")).toHaveTextContent(
-				"Connect Teams, Slack, or Notion",
+				"Slack",
 			);
 		});
 
 		const analyze = registeredActions.get("analyze_backlog");
 		await analyze?.handler?.({ userPrompt: "Review the last sprint." });
 
-		expect(startAnalysis).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(startAnalysis).toHaveBeenCalledTimes(1));
 		const input = startAnalysis.mock.calls[0]?.[0] as Record<
 			string,
 			unknown
@@ -199,4 +210,15 @@ describe("BacklogChat explore intake", () => {
 		expect(input.intakeMode).toBeUndefined();
 		expect(input.userPrompt).toBe("Review the last sprint.");
 	});
+});
+
+it("refuses a standard source-free analysis and suggests connecting integrations", async () => {
+	startAnalysis.mockClear();
+	projectState.engagementProfile = "GOVERNED";
+	renderChat();
+	const result = await registeredActions
+		.get("analyze_backlog")
+		?.handler?.({ userPrompt: "Review backlog" });
+	expect(result).toMatch(/Connect Teams, Slack, or Notion/);
+	expect(startAnalysis).not.toHaveBeenCalled();
 });

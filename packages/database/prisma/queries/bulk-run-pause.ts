@@ -16,6 +16,10 @@ import {
 	LLM_PROVIDER_PURPOSE_FILTER,
 	readProviderRowCredentials,
 } from "./ai-gateway";
+import {
+	bulkRunResumeDocumentIds,
+	withoutResumeDocuments,
+} from "./bulk-run-resume-documents";
 import { notifyBulkRunPlanStopped } from "./chatgpt-plan-work-notifications";
 
 export type BulkRunKind =
@@ -109,15 +113,66 @@ function rowsOfKind(kind: BulkRunKind): Record<string, unknown> {
 export type RecordBulkRunPauseResult =
 	| { status: "paused"; pauseCount: number; resumesAt: Date }
 	| { status: "cap"; pauseCount: number }
+	| { status: "resumed"; pauseCount: number }
 	| { status: "gone" };
+
+/**
+ * Where a run stands for the pause it started at `expectedPauseCount`:
+ * `pausing` before that pause is recorded, `paused` once it is and the run
+ * waits, `resumed` once a resume (the scheduled one or Run now) took the run
+ * back, or a later pause of it, and `gone` when the run was cancelled, failed
+ * or deleted. Only a retried pause activity ever reads a stage past `pausing`.
+ */
+export type BulkRunPauseStage = "pausing" | "paused" | "resumed" | "gone";
+
+function pauseStageOf(
+	row: Record<string, unknown> | null,
+	expectedPauseCount: number,
+): BulkRunPauseStage {
+	if (!row) {
+		return "gone";
+	}
+	const pauseCount = row.pauseCount as number;
+	if (pauseCount === expectedPauseCount) {
+		return row.status === "PENDING" || row.status === "RUNNING"
+			? "pausing"
+			: "gone";
+	}
+	if (pauseCount < expectedPauseCount || row.status === "FAILED") {
+		return "gone";
+	}
+	return pauseCount === expectedPauseCount + 1 &&
+		row.status === BULK_RUN_WAITING_STATUS
+		? "paused"
+		: "resumed";
+}
+
+/** The run's {@link BulkRunPauseStage} for the pause it started at `expectedPauseCount`. */
+export async function getBulkRunPauseStage(args: {
+	kind: BulkRunKind;
+	runId: string;
+	expectedPauseCount: number;
+}): Promise<BulkRunPauseStage> {
+	const row = await delegate(args.kind).findUnique({
+		where: { id: args.runId },
+		select: { status: true, pauseCount: true },
+	});
+	return pauseStageOf(row, args.expectedPauseCount);
+}
 
 /**
  * Pause a running run until `resumesAt`, keeping `resumeState`. A compare-
  * and-set on the pause count the run started with, so a retried write finds
  * its own earlier one and answers with it. `cap` when the run already paused
  * {@link BULK_RUN_MAX_PAUSES} times or would resume more than
- * {@link BULK_RUN_MAX_PAUSED_MS} after its first pause; `gone` when the row
+ * {@link BULK_RUN_MAX_PAUSED_MS} after its first pause; `resumed` when a
+ * retry finds the pause already taken back by a resume; `gone` when the row
  * is no longer this run's (deleted, or cancelled meanwhile).
+ *
+ * A retry that finds the run still waiting saves its own `resumeState` over
+ * the earlier attempt's: the documents a batch or setup still holds can
+ * change between attempts (Fizzy #2946), and the retry's set is the one it
+ * schedules the resume with, so Run now reads the same list.
  */
 export async function recordBulkRunPause(args: {
 	kind: BulkRunKind;
@@ -140,20 +195,43 @@ export async function recordBulkRunPause(args: {
 			resumesAt: true,
 		},
 	});
-	if (!row) {
+	const stage = pauseStageOf(row, args.expectedPauseCount);
+	const savedResumesAt = row?.resumesAt;
+	if (stage === "paused" && savedResumesAt instanceof Date) {
+		const { count } = await rows.updateMany({
+			where: {
+				id: args.runId,
+				pauseCount: args.expectedPauseCount + 1,
+				status: BULK_RUN_WAITING_STATUS,
+			},
+			data: {
+				resumeState:
+					args.resumeState as unknown as Prisma.InputJsonValue,
+			},
+		});
+		if (count === 1) {
+			return {
+				status: "paused",
+				pauseCount: args.expectedPauseCount + 1,
+				resumesAt: savedResumesAt,
+			};
+		}
+		// A resume or a Cancel took the row between the read and the write.
+		const moved = await rows.findUnique({
+			where: { id: args.runId },
+			select: { status: true, pauseCount: true },
+		});
+		return pauseStageOf(moved, args.expectedPauseCount) === "resumed"
+			? { status: "resumed", pauseCount: moved?.pauseCount as number }
+			: { status: "gone" };
+	}
+	if (stage === "resumed") {
+		return { status: "resumed", pauseCount: row?.pauseCount as number };
+	}
+	if (!row || stage !== "pausing") {
 		return { status: "gone" };
 	}
 	const pauseCount = row.pauseCount as number;
-	if (
-		pauseCount === args.expectedPauseCount + 1 &&
-		row.status === BULK_RUN_WAITING_STATUS &&
-		row.resumesAt instanceof Date
-	) {
-		return { status: "paused", pauseCount, resumesAt: row.resumesAt };
-	}
-	if (pauseCount !== args.expectedPauseCount) {
-		return { status: "gone" };
-	}
 	const firstPausedAt =
 		row.firstPausedAt instanceof Date ? row.firstPausedAt : now;
 	if (
@@ -229,9 +307,43 @@ export async function claimBulkRunResume(args: {
 }
 
 /**
+ * The saved state of a paused batch or setup, without the documents its run
+ * no longer holds (Fizzy #2946): every document it holds waits QUEUED under
+ * its scheduled resume, and one that does not was taken since, by a newer
+ * generation that found that resume never started. Other kinds' state as
+ * saved.
+ */
+async function resumeStateOfHeldDocuments(
+	kind: BulkRunKind,
+	state: BulkRunResumeState,
+	scheduledWorkflowId: string,
+): Promise<BulkRunResumeState> {
+	const documentIds = bulkRunResumeDocumentIds(kind, state);
+	if (documentIds.length === 0) {
+		return state;
+	}
+	const queued = await db.projectDocument.findMany({
+		where: {
+			id: { in: documentIds },
+			status: "QUEUED",
+			workflowId: scheduledWorkflowId,
+		},
+		select: { id: true },
+	});
+	const held = new Set(queued.map((doc) => doc.id));
+	const released = new Set(documentIds.filter((id) => !held.has(id)));
+	return released.size === 0
+		? state
+		: { ...state, ...withoutResumeDocuments(kind, state, released) };
+}
+
+/**
  * "Run now on API billing": a paused run leaves the wait for a resume that
  * starts at once and may use the organization's provider. Returns what that
  * resume starts from, or null when the run is no longer paused.
+ *
+ * A batch or setup starts from the documents its run still holds, saved in
+ * the same write, so its resume reads the same list from the row.
  */
 export async function approveBulkRunApiOverride(args: {
 	kind: BulkRunKind;
@@ -263,10 +375,19 @@ export async function approveBulkRunApiOverride(args: {
 		return null;
 	}
 	const pauseCount = row.pauseCount as number;
-	const resumeState = row.resumeState as BulkRunResumeState;
+	const savedState = row.resumeState as BulkRunResumeState;
 	const workflowId = bulkRunApiResumeWorkflowId(
-		resumeState.workflowIdBase,
+		savedState.workflowIdBase,
 		pauseCount,
+	);
+	const scheduledWorkflowId = bulkRunResumeWorkflowId(
+		savedState.workflowIdBase,
+		pauseCount,
+	);
+	const resumeState = await resumeStateOfHeldDocuments(
+		args.kind,
+		savedState,
+		scheduledWorkflowId,
 	);
 	const { count } = await rows.updateMany({
 		where: {
@@ -281,6 +402,9 @@ export async function approveBulkRunApiOverride(args: {
 			apiOverrideByUserId: args.userId,
 			workflowId,
 			...startedNow(args.kind, now),
+			...(resumeState !== savedState && {
+				resumeState: resumeState as unknown as Prisma.InputJsonValue,
+			}),
 		},
 	});
 	return count === 1
@@ -288,10 +412,7 @@ export async function approveBulkRunApiOverride(args: {
 				pauseCount,
 				resumeState,
 				workflowId,
-				scheduledWorkflowId: bulkRunResumeWorkflowId(
-					resumeState.workflowIdBase,
-					pauseCount,
-				),
+				scheduledWorkflowId,
 				resumesAt: row.resumesAt instanceof Date ? row.resumesAt : null,
 			}
 		: null;

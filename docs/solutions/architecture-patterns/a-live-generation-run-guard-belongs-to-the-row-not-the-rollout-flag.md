@@ -1,6 +1,7 @@
 ---
 title: "A live generation run's write guard belongs to the row, not to the rollout flag"
 date: 2026-10-20
+last_updated: 2026-10-20
 category: architecture-patterns
 module: project-documents generation
 problem_type: architecture_pattern
@@ -43,11 +44,16 @@ writing.
    started under the flag outlives a flag change. One pure predicate
    (`isRunGuardedDocumentType` in `@repo/utils/generation-run-guard`) is
    shared by the API, the MCP gateway and the Temporal worker.
-2. **Refuse at the read, then again in the write's condition.** Each guarded
-   writer refuses with `DOCUMENT_GENERATION_IN_PROGRESS` when it reads a live
-   status, and passes `refuseWhileGenerating` so `updateDocument` adds
-   `status NOT IN (QUEUED, GENERATING)` to its atomic `UPDATE ... WHERE`. A
-   run queued between the read and the write is still refused.
+2. **Refuse at the read, then again in the write's condition, by default.**
+   `updateDocument` (and the restore and reject queries) refuse a content or
+   status write to a run-guarded document while it is `QUEUED` or `GENERATING`
+   with `DOCUMENT_GENERATION_IN_PROGRESS`, and add `status NOT IN (QUEUED,
+   GENERATING)` to the guarded `UPDATE ... WHERE`, so a run queued between the
+   read and the write is still refused. No caller flag turns this on; the only
+   opt-out, `allowDuringLiveRun: "editor-content-save"`, is honoured only for
+   the editor's plain content save, which keeps its own ten-minute rule.
+   Title-only writes stay open. A new writer is guarded without knowing about
+   it, which is what six review rounds of one-writer-at-a-time fixes argued for.
 3. **Guard on the body, not only the version.** A writer that read the body
    names `{expectedVersion, expectedContentHash}`; the hash catches a run's
    body saved at the same version. A scheduled job that applies itself takes
@@ -117,10 +123,10 @@ const guarded = isRunGuardedDocumentType(document.type);
 if (guarded && (document.status === "QUEUED" || document.status === "GENERATING")) {
 	return propose(); // keep the result, write nothing
 }
+// The live-run refusal is the query's default for a Proposal.
 await updateDocument(id, { content }, {
 	expectedVersion,
 	expectedContentHash: baselineContentHash,
-	refuseWhileGenerating: guarded,
 });
 ```
 

@@ -88,6 +88,8 @@ describe("the catalogue's gateway tools", () => {
 			"fabric_list_page_tools",
 		],
 		["connected servers integrations", "fabric_list_connected_servers"],
+		["bind workspace workflow", "fabric_bind_workspace_workflow"],
+		["unbind workspace workflow", "fabric_bind_workspace_workflow"],
 		[
 			"ADO connected project management binding",
 			"fabric_get_project_pm_connection",

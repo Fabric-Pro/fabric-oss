@@ -53,7 +53,9 @@ function attemptStillCurrent(
  * dispatch stamped it, the takeover happens only while the document still
  * carries that identity: a late or retried plan of an attempt that a newer
  * request replaced is `superseded` and writes nothing (a document that no
- * longer exists answers the same). Without it, for runs started with no
+ * longer exists answers the same), and so is the plan of an attempt whose
+ * document is no longer queued or generating, such as one a person's save
+ * over the stalled run ended. Without it, for runs started with no
  * attempt identity, the takeover is unconditional, as it always was, and
  * throws when the document no longer exists.
  */
@@ -78,6 +80,10 @@ export async function resetLiveSections(input: {
 		where: {
 			id: input.documentId,
 			generationStartedAt: input.generationStartedAt,
+			// A run that stalled before its plan, and whose document a person
+			// has since saved over (which ends the run), must not take the
+			// finished document back when it wakes.
+			status: { in: ["QUEUED", "GENERATING"] },
 		},
 		data,
 	});

@@ -48,7 +48,11 @@ export interface ProjectContextRetrievalOptions {
 	conversationId?: string;
 	usageOrigin?: Pick<
 		TenantContext,
-		"projectId" | "conversationId" | "frameId" | "featureKey"
+		| "projectId"
+		| "conversationId"
+		| "frameId"
+		| "featureKey"
+		| "workflowExecutionId"
 	>;
 	projectId: string;
 	query: string;

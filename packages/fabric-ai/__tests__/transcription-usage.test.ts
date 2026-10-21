@@ -62,6 +62,46 @@ describe("transcribeAudio — usage marker (Fizzy #1894)", () => {
 		getSystemRAGProviderConfig.mockReset();
 	});
 
+	it.each([true, false])(
+		"retains the Workspace origin on transcription success=%s",
+		async (success) => {
+			if (success) {
+				vi.mocked(transcribe).mockResolvedValue({
+					text: "hello",
+					language: "en",
+					durationInSeconds: 1,
+					segments: [],
+					warnings: [],
+					responses: [],
+					providerMetadata: {},
+				} as never);
+			} else {
+				vi.mocked(transcribe).mockRejectedValue(
+					new Error("provider-example"),
+				);
+			}
+			const origin = {
+				projectId: "project-example",
+				frameId: "frame-example",
+				workflowExecutionId: "execution-example",
+			};
+			await transcribeAudio(AUDIO, "meeting.mp3", {
+				userContext: {
+					userId: "user-example",
+					organizationId: "org-example",
+					...origin,
+				},
+			});
+			expect(logAiUsageAsync).toHaveBeenCalledOnce();
+			expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+				...origin,
+				success,
+				featureKey: "transcription",
+				jobType: "transcription",
+			});
+		},
+	);
+
 	it("writes a success marker for a hybrid-mode transcription", async () => {
 		vi.mocked(transcribe).mockResolvedValue({
 			text: "hello world",

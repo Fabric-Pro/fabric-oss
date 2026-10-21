@@ -13,7 +13,11 @@
  * 3. Execute with user's AI provider via @repo/ai
  */
 
-import { getAIModelWithMetadata, logModelUsageAsync } from "@repo/ai";
+import {
+	type AIOperationContext,
+	getAIModelWithMetadata,
+	logModelUsageAsync,
+} from "@repo/ai";
 import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { generateText, streamText } from "ai";
@@ -124,7 +128,8 @@ function getTaskTypeForPattern(pattern: FabricPattern): string {
 /**
  * User context for model resolution
  */
-export interface UserContext {
+export interface UserContext
+	extends Pick<AIOperationContext, "frameId" | "workflowExecutionId"> {
 	userId: string;
 	organizationId?: string;
 	projectId?: string;
@@ -349,6 +354,18 @@ export async function executePatternHybrid(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.projectId
+						? { projectId: userContext.projectId }
+						: {}),
+					...(userContext.frameId
+						? { frameId: userContext.frameId }
+						: {}),
+					...(userContext.workflowExecutionId
+						? {
+								workflowExecutionId:
+									userContext.workflowExecutionId,
+							}
+						: {}),
 					...(userContext.conversationId
 						? { conversationId: userContext.conversationId }
 						: {}),
@@ -486,6 +503,18 @@ export async function* executePatternHybridStream(
 				{
 					userId: userContext.userId,
 					organizationId: userContext.organizationId,
+					...(userContext.projectId
+						? { projectId: userContext.projectId }
+						: {}),
+					...(userContext.frameId
+						? { frameId: userContext.frameId }
+						: {}),
+					...(userContext.workflowExecutionId
+						? {
+								workflowExecutionId:
+									userContext.workflowExecutionId,
+							}
+						: {}),
 					...(userContext.conversationId
 						? { conversationId: userContext.conversationId }
 						: {}),

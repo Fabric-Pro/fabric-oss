@@ -39,6 +39,7 @@ import {
 	heartbeat,
 } from "@temporalio/activity";
 import { z } from "zod";
+import { findAiConfigurationRefusal } from "../../lib/ai-configuration-refusal";
 import { classifyBacklogAnalysisError } from "../../lib/classify-analysis-error";
 import { createStoryFromProposal } from "../../lib/create-story-from-proposal";
 import { runDecisionPrecheck } from "../../lib/decision-precheck";
@@ -3135,6 +3136,7 @@ export async function applyBacklogChanges(
 	const createdItems: ApplyBacklogChangesResult["createdItems"] = [];
 	const updatedItems: ApplyBacklogChangesResult["updatedItems"] = [];
 	const errors: ApplyBacklogChangesResult["errors"] = [];
+	let creationRefusal: Error | null = null;
 	const skippedDuplicates: ApplyBacklogChangesResult["skippedDuplicates"] =
 		[];
 	const convertedToCreate: ApplyBacklogChangesResult["convertedToCreate"] =
@@ -3464,6 +3466,10 @@ export async function applyBacklogChanges(
 			}
 		} else {
 			try {
+				// Also gates updates redirected to creates. A later apply run starts fresh.
+				if (creationRefusal) {
+					throw creationRefusal;
+				}
 				({ story } = await withHeartbeatKeepalive(
 					{ stage: "create-leaf", changeIndex: originalIndex },
 					() => createStoryFromProposal(createParams),
@@ -4086,6 +4092,7 @@ export async function applyBacklogChanges(
 				});
 			}
 		} catch (error) {
+			creationRefusal ??= findAiConfigurationRefusal(error);
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			logger.error("[Backlog Apply] Failed to apply change", {

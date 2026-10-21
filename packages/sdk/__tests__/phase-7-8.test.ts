@@ -14,7 +14,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createFabric, type FabricClient } from "../src/index.js";
+import {
+	createFabric,
+	DOCUMENT_ERROR_CODES,
+	type FabricClient,
+	FabricError,
+} from "../src/index.js";
 
 interface CapturedRequest {
 	url: string;
@@ -26,9 +31,12 @@ interface CapturedRequest {
 function buildClient({
 	responseBody = {},
 	status = 200,
+	rawBody,
 }: {
 	responseBody?: unknown;
 	status?: number;
+	/** The whole response body, sent as is instead of `{ data: responseBody }`. */
+	rawBody?: unknown;
 } = {}): { client: FabricClient; captured: CapturedRequest[] } {
 	const captured: CapturedRequest[] = [];
 	const stub: typeof fetch = async (input, init) => {
@@ -51,7 +59,7 @@ function buildClient({
 			body: init?.body ? JSON.parse(init.body as string) : null,
 			headers,
 		});
-		return new Response(JSON.stringify({ data: responseBody }), {
+		return new Response(JSON.stringify(rawBody ?? { data: responseBody }), {
 			status,
 			headers: { "Content-Type": "application/json" },
 		});
@@ -251,6 +259,8 @@ describe("Phase 7b — workspaces.query", () => {
 // ---------------------------------------------------------------------------
 // Phase 8 — Documents
 // ---------------------------------------------------------------------------
+const STUB_CONTENT_HASH = "c".repeat(64);
+
 describe("Phase 8 — projects.*Document methods", () => {
 	let client: FabricClient;
 	let captured: CapturedRequest[];
@@ -263,6 +273,7 @@ describe("Phase 8 — projects.*Document methods", () => {
 				type: "PRD",
 				title: "Stub",
 				content: "# stub",
+				contentHash: STUB_CONTENT_HASH,
 				status: "DRAFT",
 				version: 1,
 				wordCount: 1,
@@ -325,6 +336,62 @@ describe("Phase 8 — projects.*Document methods", () => {
 		expect(req.url).toBe("https://test.fabric/api/v1/documents/doc_1");
 		expect(req.body).toEqual({ title: "Renamed", status: "COMPLETE" });
 	});
+
+	it("getDocument returns the body's contentHash, the base to send back", async () => {
+		const doc = await client.projects.getDocument("doc_1");
+		expect(doc.version).toBe(1);
+		expect(doc.contentHash).toBe(STUB_CONTENT_HASH);
+	});
+
+	it("updateDocument sends the base it read as expectedVersion and expectedContentHash in the body", async () => {
+		const read = await client.projects.getDocument("doc_1");
+		await client.projects.updateDocument("doc_1", {
+			content: "# edited",
+			expectedVersion: read.version,
+			expectedContentHash: read.contentHash,
+			org: "acme",
+		});
+		const req = lastRequest(captured);
+		expect(req.method).toBe("PATCH");
+		expect(req.url).toBe(
+			"https://test.fabric/api/v1/documents/doc_1?org=acme",
+		);
+		expect(req.body).toEqual({
+			content: "# edited",
+			expectedVersion: 1,
+			expectedContentHash: STUB_CONTENT_HASH,
+		});
+	});
+
+	it.each([
+		[409, "DOCUMENT_VERSION_CONFLICT"],
+		[409, "DOCUMENT_GENERATION_IN_PROGRESS"],
+		[400, "DOCUMENT_STATUS_GENERATION_OWNED"],
+		[409, "INTEGRATION_CONTRACT_STATUS_MANAGED"],
+	] as const)(
+		"updateDocument surfaces a %i %s as a FabricError carrying the exported code",
+		async (status, code) => {
+			const { client: refusing } = buildClient({
+				status,
+				rawBody: { error: { message: "Refused", code } },
+			});
+
+			const error = await refusing.projects
+				.updateDocument("doc_1", {
+					content: "# edited",
+					expectedVersion: 1,
+					expectedContentHash: STUB_CONTENT_HASH,
+				})
+				.catch((e: unknown) => e);
+
+			expect(error).toBeInstanceOf(FabricError);
+			expect((error as FabricError).status).toBe(status);
+			expect((error as FabricError).code).toBe(
+				DOCUMENT_ERROR_CODES[code],
+			);
+			expect((error as FabricError).message).toBe("Refused");
+		},
+	);
 
 	it("withOrg() bound clone injects ?org= on document list", async () => {
 		await client.withOrg("acme").projects.listDocuments("proj_1");

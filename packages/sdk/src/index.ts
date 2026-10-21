@@ -271,18 +271,21 @@ export type {
 	SubmitMemoryWriteInput,
 	SubmittedMemoryWrite,
 } from "./resources/memory.js";
-export type {
-	CreateDocumentOptions,
-	CreateFeatureOptions,
-	CreateProjectOptions,
-	FabricDocumentStatus,
-	FabricDocumentType,
-	ListDocumentsOptions,
-	ListFeaturesOptions,
-	ListProjectsOptions,
-	UpdateDocumentOptions,
-	UpdateFeatureOptions,
-	UpdateProjectOptions,
+export {
+	type CreateDocumentOptions,
+	type CreateFeatureOptions,
+	type CreateProjectOptions,
+	DOCUMENT_ERROR_CODES,
+	type FabricDocumentErrorCode,
+	type FabricDocumentStatus,
+	type FabricDocumentType,
+	type FabricDocumentWriteStatus,
+	type ListDocumentsOptions,
+	type ListFeaturesOptions,
+	type ListProjectsOptions,
+	type UpdateDocumentOptions,
+	type UpdateFeatureOptions,
+	type UpdateProjectOptions,
 } from "./resources/projects.js";
 export type {
 	CreatePromptOptions,

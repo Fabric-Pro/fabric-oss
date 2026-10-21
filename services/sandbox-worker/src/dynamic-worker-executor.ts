@@ -1,181 +1,134 @@
-import type { Env, ExecuteCodeRequest, ExecuteCodeResponse } from "./types";
+import {
+	DYNAMIC_CODE_LIMITS,
+	ExecuteCodeRequestSchema,
+	ExecuteCodeResponseSchema,
+	readBoundedJson,
+	type DynamicCodeLoader,
+	type ExecuteCodeRequest,
+	type ExecuteCodeResponse,
+} from "../../../packages/sandbox/src/dynamic-worker";
 
-/**
- * The TypeScript compiler, loaded on first use rather than at module init.
- *
- * `typescript` is a Node library: importing it runs `getNodeSystem()`, which
- * touches `__filename`. That identifier does not exist in the Workers runtime,
- * so a top-level import made the uploaded script throw during validation —
- * "Uncaught ReferenceError: __filename is not defined" — and no deploy could
- * succeed, whatever else was in the bundle.
- *
- * Deferring it means the reference is only evaluated if somebody actually
- * transpiles TypeScript, which only `/execute` does, and `/execute` refuses
- * before reaching here unless the Dynamic Worker Loader binding exists.
- */
-async function typescriptCompiler() {
-	return (await import("typescript")).default;
-}
-
-function buildModuleSource(code: string): string {
+function moduleSource(code: string): string {
 	return `
-const formatValue = (value) => {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-};
-
+const encode = new TextEncoder();
+const stringify = JSON.stringify.bind(JSON);
 export default {
-  async run(env) {
+  async fetch(request) {
+    const { inputs, execution } = await request.json();
     const logs = [];
-    const originalConsole = globalThis.console;
+    let logBytes = 0;
     const capture = (type, args) => {
-      logs.push({ type, text: args.map(formatValue).join(" ") });
+      if (logs.length >= ${DYNAMIC_CODE_LIMITS.logEntries}) return;
+      const text = args.map(value => typeof value === "string" ? value : stringify(value)).join(" ").slice(0, 1024);
+      const bytes = encode.encode(text).byteLength;
+      if (logBytes + bytes > ${DYNAMIC_CODE_LIMITS.logBytes}) return;
+      logBytes += bytes;
+      logs.push({ type, text });
     };
-
     globalThis.console = {
-      ...originalConsole,
       log: (...args) => capture("stdout", args),
       info: (...args) => capture("stdout", args),
+      debug: (...args) => capture("stdout", args),
       warn: (...args) => capture("stderr", args),
       error: (...args) => capture("stderr", args),
     };
-
     try {
-      async function __fabricUserMain(env) {
+      async function userMain(inputs, execution) {
 ${code}
       }
-
-      const value = await __fabricUserMain(env);
-      return { logs, value };
+      const value = await userMain(inputs, execution);
+      const results = [{ type: "json", json: value }];
+      const serialized = stringify(results);
+      if (value === undefined || encode.encode(serialized).byteLength > ${DYNAMIC_CODE_LIMITS.outputBytes}) {
+        throw new Error("Script must return a JSON value of at most 64 KiB");
+      }
+      return Response.json({ logs, results });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      logs.push({ type: "stderr", text: message });
-      return { logs, error: message };
-    } finally {
-      globalThis.console = originalConsole;
+      return Response.json({ logs, error: String(error instanceof Error ? error.message : error).slice(0, 1000) });
     }
   }
-};
-`;
-}
-
-async function transpileSource(
-	code: string,
-	language: ExecuteCodeRequest["language"],
-): Promise<string> {
-	if (language === "javascript") {
-		return buildModuleSource(code);
-	}
-
-	const ts = await typescriptCompiler();
-	return ts.transpileModule(buildModuleSource(code), {
-		compilerOptions: {
-			target: ts.ScriptTarget.ES2022,
-			module: ts.ModuleKind.ES2022,
-		},
-	}).outputText;
-}
-
-function toResultPayload(
-	request: ExecuteCodeRequest,
-	startedAt: number,
-	runResult: unknown,
-): ExecuteCodeResponse {
-	const executionTime = Date.now() - startedAt;
-	const payload =
-		runResult && typeof runResult === "object"
-			? (runResult as {
-					logs?: Array<{ type: "stdout" | "stderr"; text: string }>;
-					value?: unknown;
-					error?: string;
-				})
-			: {};
-
-	const results =
-		payload.value === undefined
-			? undefined
-			: typeof payload.value === "string"
-				? [{ type: "text" as const, text: payload.value }]
-				: [{ type: "json" as const, json: payload.value }];
-
-	return {
-		code: request.code,
-		logs: payload.logs ?? [],
-		results,
-		error: payload.error,
-		executionCount: 1,
-		executionTime,
-	};
+};`;
 }
 
 export async function executeDynamicWorkerCode(
-	env: Env,
+	env: { LOADER?: DynamicCodeLoader },
 	request: ExecuteCodeRequest,
 ): Promise<ExecuteCodeResponse> {
-	const startedAt = Date.now();
-	const moduleSource = await transpileSource(request.code, request.language);
-
-	// The route guards this too; keeping the check here means the executor cannot
-	// be called into a null binding from a future caller that forgets to.
+	const input = ExecuteCodeRequestSchema.parse(request);
 	const loader = env.LOADER;
 	if (!loader) {
 		throw new Error(
 			"Dynamic Worker Loader binding is not available in this deployment.",
 		);
 	}
-
+	if (input.language !== "javascript") {
+		throw new Error(
+			"TypeScript must be compiled by the authenticated server client before execution",
+		);
+	}
+	const startedAt = Date.now();
+	const source = moduleSource(input.code);
 	const worker = loader.load({
 		compatibilityDate: "2026-03-24",
-		mainModule: "agent.js",
-		modules: {
-			"agent.js": moduleSource,
-		},
-		env: {
-			METADATA: {
-				language: request.language,
-				timeout: request.timeout ?? 30000,
-			},
-		},
+		mainModule: "script.js",
+		modules: { "script.js": source },
+		env: {},
 		globalOutbound: null,
+		limits: { cpuMs: DYNAMIC_CODE_LIMITS.cpuMs, subRequests: 0 },
 	});
-
-	const timeout = request.timeout ?? 30000;
-	const timeoutPromise = new Promise<never>((_, reject) => {
-		setTimeout(
-			() => reject(new Error(`Execution timed out after ${timeout}ms`)),
-			timeout,
-		);
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	// This bounds response waiting. CPU termination is enforced by the loader limits.
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			controller.abort();
+			reject(new Error("Script response deadline exceeded"));
+		}, input.timeout);
 	});
-
-	const runPromise = worker.getEntrypoint().run({
-		timeout,
-	});
-
 	try {
-		const runResult = await Promise.race([runPromise, timeoutPromise]);
-		return toResultPayload(request, startedAt, runResult);
+		const run = async () => {
+			const response = await worker.getEntrypoint().fetch(
+				new Request("https://script.invalid/", {
+					method: "POST",
+					body: JSON.stringify({
+						inputs: input.inputs,
+						execution: input.execution,
+					}),
+					signal: controller.signal,
+				}),
+			);
+			const payload = await readBoundedJson(
+				response,
+				DYNAMIC_CODE_LIMITS.responseBytes,
+			);
+			if (
+				!response.ok ||
+				!payload ||
+				typeof payload !== "object" ||
+				Array.isArray(payload)
+			) {
+				throw new Error("Invalid script response");
+			}
+			return ExecuteCodeResponseSchema.parse({
+				...payload,
+				code: input.code,
+				executionCount: 1,
+				executionTime: Date.now() - startedAt,
+			});
+		};
+		return await Promise.race([run(), deadline]);
 	} catch (error) {
 		return {
-			code: request.code,
-			logs: [
-				{
-					type: "stderr",
-					text:
-						error instanceof Error
-							? error.message
-							: "Dynamic Worker execution failed",
-				},
-			],
+			code: input.code,
+			logs: [],
 			error:
 				error instanceof Error
-					? error.message
-					: "Dynamic Worker execution failed",
+					? error.message.slice(0, 1000)
+					: "Script execution failed",
 			executionCount: 1,
 			executionTime: Date.now() - startedAt,
 		};
+	} finally {
+		clearTimeout(timer);
 	}
 }

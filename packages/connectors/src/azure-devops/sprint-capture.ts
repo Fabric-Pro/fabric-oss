@@ -182,6 +182,14 @@ export async function captureAzureDevOpsSprintStories(
 			}
 		}
 		const watermark = dateField(requirementsAsOf);
+		const selectedFields = [
+			...new Set([
+				...metadataFields,
+				"System.IterationPath",
+				...selection.assignmentFields,
+				...config.requirementFields,
+			]),
+		];
 		const items = new Map<number, Record<string, unknown>>();
 		async function assertCurrentProject(ids: readonly number[]) {
 			if (ids.length === 0) {
@@ -211,20 +219,45 @@ export async function captureAzureDevOpsSprintStories(
 			await assertCurrentProject(missing);
 			const body = await read(`${projectPath}/_apis/wit/workitems`, {
 				ids: missing.join(","),
-				fields: [
-					...new Set([
-						...metadataFields,
-						"System.IterationPath",
-						...selection.assignmentFields,
-						...config.requirementFields,
-					]),
-				].join(","),
+				fields: selectedFields.join(","),
+				asOf: watermark,
+				errorPolicy: "Fail",
+			});
+			const selectedItems = validateItems(body, missing, project.name);
+			// Azure DevOps rejects fields and $expand on the same request.
+			const expanded = await read(`${projectPath}/_apis/wit/workitems`, {
+				ids: missing.join(","),
 				asOf: watermark,
 				$expand: "relations",
 				errorPolicy: "Fail",
 			});
-			for (const item of validateItems(body, missing, project.name)) {
-				items.set(itemId(item.id), item);
+			const expandedItems = new Map(
+				validateItems(expanded, missing, project.name).map((item) => [
+					itemId(item.id),
+					item,
+				]),
+			);
+			for (const item of selectedItems) {
+				const id = itemId(item.id);
+				const linkedItem = expandedItems.get(id);
+				if (
+					!linkedItem ||
+					positiveInteger(item.rev) !==
+						positiveInteger(linkedItem.rev)
+				) {
+					throw new AzureDevOpsProjectReadError("invalid_response");
+				}
+				const fields = record(item.fields);
+				items.set(id, {
+					id,
+					rev: item.rev,
+					fields: Object.fromEntries(
+						selectedFields
+							.filter((name) => Object.hasOwn(fields, name))
+							.map((name) => [name, fields[name]]),
+					),
+					relations: linkedItem.relations,
+				});
 			}
 		}
 		function getItem(id: number) {

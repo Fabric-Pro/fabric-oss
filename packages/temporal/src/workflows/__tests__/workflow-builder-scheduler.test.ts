@@ -19,17 +19,18 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { providedWorkflowGraph } from "../../../__tests__/test-helpers/workflow-builder-graph";
 
-const { patches, nodeMock, updateStatus, createLog, sleepMock } = vi.hoisted(
-	() => ({
+const { patches, nodeMock, updateStatus, createLog, sleepMock, getDefinition } =
+	vi.hoisted(() => ({
 		/** Patch ids that read as NOT present — i.e. the pre-patch replay path. */
 		patches: { disabled: new Set<string>() },
 		nodeMock: vi.fn(),
 		updateStatus: vi.fn(),
 		createLog: vi.fn(),
+		getDefinition: vi.fn(),
 		sleepMock: vi.fn(async () => undefined),
-	}),
-);
+	}));
 
 const PARALLEL_WALK = "workflow-builder-parallel-walk-v1";
 const REQUEUE_GUARD = "builder-requeue-guard";
@@ -46,7 +47,7 @@ vi.mock("@temporalio/workflow", () => ({
 		executeWorkflowNode: nodeMock,
 		updateWorkflowExecutionStatus: updateStatus,
 		createWorkflowExecutionLog: createLog,
-		getWorkflowDefinition: vi.fn(),
+		getWorkflowDefinition: getDefinition,
 		validateWorkflowGraph: vi.fn(),
 		preflightValidation: vi.fn(),
 		createApprovalRequest: vi.fn(),
@@ -123,6 +124,7 @@ function skippedLogs() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	getDefinition.mockImplementation(providedWorkflowGraph);
 	patches.disabled = new Set();
 	nodeMock.mockResolvedValue({ success: true, output: {} });
 	updateStatus.mockResolvedValue(undefined);
@@ -130,6 +132,12 @@ beforeEach(() => {
 });
 
 describe("wave scheduler (patched)", () => {
+	it("retains the historical inline graph path when its definition patch is absent", async () => {
+		patches.disabled.add("builder-published-execution-graph-v1");
+		const result = await run(diamond.nodes, diamond.edges);
+		expect(result.status).toBe("COMPLETED");
+		expect(getDefinition).not.toHaveBeenCalled();
+	});
 	it("runs independent branches concurrently", async () => {
 		// Resolve B and C only once both have been entered — this deadlocks
 		// unless they are genuinely in flight at the same time.

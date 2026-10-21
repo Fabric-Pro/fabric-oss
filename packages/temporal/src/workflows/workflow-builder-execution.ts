@@ -171,8 +171,35 @@ export async function workflowBuilderExecutionWorkflow(
 		let nodes: WorkflowNode[];
 		let edges: WorkflowEdge[];
 		let projectId = input.projectId;
+		let usageFrameId: string | undefined;
 
-		if (input.nodes && input.edges) {
+		if (patched("builder-published-execution-graph-v1")) {
+			const workflow = await getWorkflowDefinition({
+				workflowId: input.workflowId,
+				userId: input.userId,
+				organizationId: input.organizationId,
+				executionId: input.executionId,
+				...(input.nodes && input.edges
+					? { override: { nodes: input.nodes, edges: input.edges } }
+					: {}),
+			});
+			nodes = (workflow.nodes as WorkflowNode[]) || [];
+			edges = (workflow.edges as WorkflowEdge[]) || [];
+			projectId = workflow.projectId ?? undefined;
+			usageFrameId = workflow.usageFrameId;
+			if (
+				workflow.variables &&
+				typeof workflow.variables === "object" &&
+				!Array.isArray(workflow.variables)
+			) {
+				Object.assign(
+					variables,
+					workflow.variables,
+					input.variables,
+					input.triggerData,
+				);
+			}
+		} else if (input.nodes && input.edges) {
 			// Use the nodes/edges provided in the input (current UI state)
 			nodes = input.nodes;
 			edges = input.edges;
@@ -458,6 +485,7 @@ export async function workflowBuilderExecutionWorkflow(
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId,
+						...(usageFrameId ? { frameId: usageFrameId } : {}),
 					}),
 				{
 					organizationId: input.organizationId,

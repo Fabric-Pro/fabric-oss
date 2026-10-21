@@ -3,7 +3,7 @@ import type { UsageLoggingContext } from "@repo/ai/lib/usage-logging-middleware"
 
 export type UsageOrigin = Pick<
 	UsageLoggingContext,
-	"conversationId" | "frameId" | "projectId"
+	"conversationId" | "frameId" | "projectId" | "workflowExecutionId"
 > & { featureKey?: AiFeatureKey };
 
 export interface SecondaryUsageInput {
@@ -30,6 +30,7 @@ export function usageOriginFields(input: {
 	usageFrameId?: string;
 	frameId?: string;
 	projectId?: string;
+	workflowExecutionId?: string;
 }): UsageOrigin {
 	const frameId = input.usageFrameId ?? input.frameId;
 	return {
@@ -38,5 +39,8 @@ export function usageOriginFields(input: {
 			: {}),
 		...(frameId ? { frameId } : {}),
 		...(input.projectId ? { projectId: input.projectId } : {}),
+		...(input.workflowExecutionId
+			? { workflowExecutionId: input.workflowExecutionId }
+			: {}),
 	};
 }

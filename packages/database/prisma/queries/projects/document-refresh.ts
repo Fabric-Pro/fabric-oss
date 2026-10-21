@@ -354,6 +354,10 @@ export async function markDocumentsPendingDeploy(input: {
  * mode. The cycle is complete (the model looked, and produced something), so
  * `lastRefreshedAt` advances: a proposal that nobody acts on must not cause the
  * document to be re-generated, and re-billed, every six hours forever.
+ *
+ * The baseline is both halves of the body the model read: its version and
+ * its `contentIdentity`. Accepting checks both, because a Proposal run's final
+ * save writes its body at the old version (Fizzy #2946).
  */
 export async function storeRefreshProposal(
 	documentId: string,
@@ -362,6 +366,7 @@ export async function storeRefreshProposal(
 		content: string;
 		summary: string;
 		baselineVersion: number;
+		baselineContentHash: string;
 	},
 ) {
 	return db.documentAutoRefreshSettings.update({
@@ -371,6 +376,7 @@ export async function storeRefreshProposal(
 			pendingSummary: proposal.summary,
 			pendingProposedAt: proposal.when,
 			pendingBaselineVersion: proposal.baselineVersion,
+			pendingBaselineContentHash: proposal.baselineContentHash,
 			lastRefreshedAt: proposal.when,
 			lastRefreshStatus: "PROPOSED",
 			lastRefreshSummary: proposal.summary,
@@ -387,6 +393,7 @@ export async function clearRefreshProposal(documentId: string) {
 			pendingSummary: null,
 			pendingProposedAt: null,
 			pendingBaselineVersion: null,
+			pendingBaselineContentHash: null,
 		},
 	});
 }

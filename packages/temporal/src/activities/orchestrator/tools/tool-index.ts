@@ -34,6 +34,7 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../../lib/fabric-gateway-tools";
+import { toolSearchUsage } from "./tool-search-usage";
 
 // =============================================================================
 // Turned-off MCP configs
@@ -770,7 +771,10 @@ export class ToolIndex {
 	): Promise<ToolSearchResult[]> {
 		// Generate query embedding - tenantContext is used internally to resolve
 		// embedding model and API key via getAIEmbeddingModelWithMetadata()
-		const result = await generateEmbedding(query, options.tenantContext);
+		const result = await generateEmbedding(
+			query,
+			toolSearchUsage(options.tenantContext),
+		);
 
 		// Search Qdrant. The enabled lists and the turned-off configs are
 		// applied to what comes back, so ask for a wider pool than `limit`:
@@ -1799,7 +1803,10 @@ export class ToolIndex {
 		try {
 			// Batch generate embeddings (more efficient)
 			// tenantContext is used internally to resolve embedding model and API key
-			const result = await generateEmbeddings(texts, tenantContext);
+			const result = await generateEmbeddings(
+				texts,
+				toolSearchUsage(tenantContext),
+			);
 
 			// Assign embeddings to entries
 			for (let i = 0; i < entries.length; i++) {

@@ -254,6 +254,9 @@ describe("updateDocumentProcedure — optional expectedVersion guard", () => {
 			userId: "actor_1",
 			organizationId: "org_1",
 			skipVersionBump: undefined,
+			// The editor's plain content save is the one write exempt from
+			// the query's live-run refusal (Fizzy #2946).
+			allowDuringLiveRun: "editor-content-save",
 		});
 	});
 
@@ -692,7 +695,7 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		},
 	);
 
-	it("asks a finished Proposal's status change to refuse a run queued after the read with the gate off", async () => {
+	it("leaves a finished Proposal's status change to the write's live-run refusal with the gate off", async () => {
 		mockIsProposalClientDocument.mockResolvedValue(false);
 		mockIsFeatureEnabled.mockResolvedValue(false);
 		mockProjectDocumentFindUnique.mockResolvedValue(
@@ -705,13 +708,18 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		});
 		await flushPromises();
 
-		expect(mockUpdateDocument).toHaveBeenCalledWith(
-			"doc_1",
-			expect.objectContaining({ refuseWhileGenerating: true }),
+		// The query refuses a status write under a run by default; the
+		// procedure must not exempt it.
+		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
+		expect(mockUpdateDocument.mock.calls[0][1]).toMatchObject({
+			status: "COMPLETE",
+		});
+		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 	});
 
-	it("asks the write to refuse a run queued after the read, and maps it to the live-run code", async () => {
+	it("maps the write's refusal of a run queued after the read to the live-run code", async () => {
 		mockProjectDocumentFindUnique.mockResolvedValue(
 			proposalPrior("REVIEW"),
 		);
@@ -729,10 +737,10 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 
 		expect(mockUpdateDocument).toHaveBeenCalledWith(
 			"doc_1",
-			expect.objectContaining({
-				status: "COMPLETE",
-				refuseWhileGenerating: true,
-			}),
+			expect.objectContaining({ status: "COMPLETE" }),
+		);
+		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 		expect(error).toMatchObject({
 			code: "CONFLICT",
@@ -741,26 +749,164 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		expect(mockApplySideEffects).not.toHaveBeenCalled();
 	});
 
-	it("leaves the editor's content save under a run to its base, as a stalled run must not block it", async () => {
+	// The editor's opt-out cannot be told apart from any other caller's
+	// content save, so the row decides: only a run silent past the ten-minute
+	// ceiling the editor itself stops treating as writing may be written over.
+	const writtenAgo = (ms: number) => new Date(Date.now() - ms);
+	const STALLED_FOR_MS = 11 * 60 * 1000;
+
+	it.each([
+		["QUEUED", "with a base", 0, true],
+		["QUEUED", "without a base", 60 * 60 * 1000, false],
+		["GENERATING", "with a base", 0, true],
+		["GENERATING", "without a base", 9 * 60 * 1000, false],
+	])(
+		"refuses a content-only save while the run is %s and still writing (%s), and writes nothing",
+		async (status, _label, silentForMs, withBase) => {
+			mockProjectDocumentFindUnique.mockResolvedValue({
+				...proposalPrior(status as string),
+				updatedAt: writtenAgo(silentForMs as number),
+			});
+
+			const error = await (
+				handlers.updateDocument({
+					input: {
+						...input,
+						...(withBase
+							? {
+									expectedVersion: 3,
+									expectedContentHash: "c".repeat(64),
+								}
+							: {}),
+					},
+					context: ctx,
+				}) as Promise<unknown>
+			).catch((e: unknown) => e);
+			await flushPromises();
+
+			// The live-run code, ahead of the base requirement: a save
+			// without a base is told a run holds the document, not to reload.
+			expect(error).toMatchObject({
+				code: "CONFLICT",
+				data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
+			});
+			expect(mockUpdateDocument).not.toHaveBeenCalled();
+			expect(mockApplySideEffects).not.toHaveBeenCalled();
+		},
+	);
+
+	it("reads the run's clock with the document", async () => {
 		mockProjectDocumentFindUnique.mockResolvedValue(
-			proposalPrior("GENERATING"),
+			proposalPrior("COMPLETE"),
 		);
+
+		await handlers.updateDocument({
+			input: { projectId: "proj_1", id: "doc_1", title: "Renamed" },
+			context: ctx,
+		});
+
+		expect(mockProjectDocumentFindUnique).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: expect.objectContaining({
+					status: true,
+					generationStartedAt: true,
+					updatedAt: true,
+				}),
+			}),
+		);
+	});
+
+	it("exempts the editor's content save over a stalled run from the live-run refusal, as a stalled run must not block it", async () => {
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			...proposalPrior("GENERATING"),
+			updatedAt: writtenAgo(STALLED_FOR_MS),
+		});
 
 		await handlers.updateDocument({
 			input: {
 				...input,
 				expectedVersion: 3,
 				expectedContentHash: "c".repeat(64),
+				completeDraft: true,
 			},
 			context: ctx,
 		});
 		await flushPromises();
 
 		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
-		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
-			"refuseWhileGenerating",
+		expect(mockUpdateDocument.mock.calls[0][1]).toMatchObject({
+			expectedVersion: 3,
+			expectedContentHash: "c".repeat(64),
+			allowDuringLiveRun: "editor-content-save",
+		});
+	});
+
+	it("answers a save that ended a stalled run with the completed document, and nudges the other tabs", async () => {
+		mockProjectDocumentFindUnique.mockResolvedValue({
+			...proposalPrior("GENERATING"),
+			updatedAt: writtenAgo(STALLED_FOR_MS),
+		});
+		// The write ended the run: the row it returns is COMPLETE.
+		mockUpdateDocument.mockResolvedValue({
+			id: "doc_1",
+			title: "Proposal",
+			type: "PROPOSAL",
+			content: SLOTTED,
+			version: 4,
+			status: "COMPLETE",
+		});
+
+		const result = (await handlers.updateDocument({
+			input: {
+				...input,
+				expectedVersion: 3,
+				expectedContentHash: "c".repeat(64),
+			},
+			context: ctx,
+		})) as { document: { status: string; version: number } };
+		await flushPromises();
+
+		// The editor takes COMPLETE from this answer into its cache, so it
+		// stops treating the document as held by a run.
+		expect(result.document).toMatchObject({
+			status: "COMPLETE",
+			version: 4,
+		});
+		// The `document_change` nudge and the re-embed of a COMPLETE body.
+		expect(mockApplySideEffects).toHaveBeenCalledWith(
+			expect.objectContaining({
+				document: expect.objectContaining({ status: "COMPLETE" }),
+				skipEmbed: false,
+			}),
 		);
 	});
+
+	it.each([
+		["a title-only save", { title: "Renamed" }],
+		["a completeDraft-only save", { completeDraft: true }],
+	])(
+		"lets %s through under a run with no exemption, as the query never refuses it",
+		async (_label, write) => {
+			mockProjectDocumentFindUnique.mockResolvedValue(
+				proposalPrior("GENERATING"),
+			);
+
+			await handlers.updateDocument({
+				input: { projectId: "proj_1", id: "doc_1", ...write },
+				context: ctx,
+			});
+			await flushPromises();
+
+			expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
+			expect(mockUpdateDocument.mock.calls[0][1]).toMatchObject({
+				content: undefined,
+				status: undefined,
+			});
+			expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+				"allowDuringLiveRun",
+			);
+		},
+	);
 
 	it.each(["QUEUED", "GENERATING"])(
 		"refuses the Reject fallback's rewind while the run is %s, writing nothing",
@@ -790,7 +936,7 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		},
 	);
 
-	it("asks the Reject fallback's rewind after a finished run to refuse a run queued in between", async () => {
+	it("leaves the Reject fallback's rewind after a finished run to the write's live-run refusal", async () => {
 		mockProjectDocumentFindUnique.mockResolvedValue(
 			proposalPrior("COMPLETE"),
 		);
@@ -808,10 +954,10 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 
 		expect(mockUpdateDocument).toHaveBeenCalledWith(
 			"doc_1",
-			expect.objectContaining({
-				skipVersionBump: true,
-				refuseWhileGenerating: true,
-			}),
+			expect.objectContaining({ skipVersionBump: true }),
+		);
+		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
+			"allowDuringLiveRun",
 		);
 	});
 
@@ -827,9 +973,10 @@ describe("updateDocumentProcedure — a Proposal's status under a run", () => {
 		});
 		await flushPromises();
 
+		// Not refused here: the query's live-run refusal is for Proposals.
 		expect(mockUpdateDocument).toHaveBeenCalledTimes(1);
-		expect(mockUpdateDocument.mock.calls[0][1]).not.toHaveProperty(
-			"refuseWhileGenerating",
-		);
+		expect(mockUpdateDocument.mock.calls[0][1]).toMatchObject({
+			status: "COMPLETE",
+		});
 	});
 });

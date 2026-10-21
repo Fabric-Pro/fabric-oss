@@ -113,6 +113,8 @@ const harness = await vi.hoisted(async () => {
 		routerPush: (() => {}) as (url: string) => void,
 		/** What the editor handed the context-update hook last. */
 		contextUpdateOptions: {} as Record<string, any>,
+		/** What the editor handed the version history last. */
+		versionHistoryProps: {} as Record<string, any>,
 	};
 });
 
@@ -125,6 +127,7 @@ const server = {
 	content: "",
 	version: 7,
 	status: "COMPLETE",
+	type: "PROPOSAL",
 	/** Write at once, answer when a test releases the answer. */
 	holdAnswers: false,
 	held: [] as Array<() => void>,
@@ -132,6 +135,8 @@ const server = {
 	requireBase: false,
 	/** What a rejected regeneration rewinds the row to. */
 	beforeRun: null as { content: string; version: number } | null,
+	/** A rejected regeneration fails with this error, rewinding nothing. */
+	rejectError: null as Error | null,
 	/** The next save fails with this error, writing nothing. */
 	failNext: null as Error | null,
 	/** The project query answers only once this settles. */
@@ -162,7 +167,7 @@ function serverDocument() {
 		document: {
 			id: "doc-1",
 			title: "Example proposal",
-			type: "PROPOSAL",
+			type: server.type,
 			content: server.content,
 			version: server.version,
 			status: server.status,
@@ -210,6 +215,14 @@ async function fakeUpdate(vars: Record<string, unknown>, tab?: Tab) {
 		}
 		return { ...serverDocument(), contentUnchanged: unchanged };
 	};
+	return answerOrHold(answer);
+}
+
+/**
+ * Runs a write at once; with `holdAnswers` its answer — or its error —
+ * reaches the editor only when a test releases it.
+ */
+function answerOrHold(answer: () => unknown): unknown {
 	if (!server.holdAnswers) {
 		return answer();
 	}
@@ -257,17 +270,23 @@ async function fakeMutation(
 		case "projects.documents.rejectRegeneration":
 			// Rewinds the row to the body and version before the run; its
 			// answer, like the real one, names no body identity the editor
-			// should trust.
-			if (server.beforeRun) {
-				server.content = server.beforeRun.content;
-				server.version = server.beforeRun.version;
-			}
-			return {
-				document: {
-					...serverDocument().document,
-					contentHash: "embed-owned-column",
-				},
-			};
+			// should trust. With `rejectError` it is refused instead, and
+			// nothing is rewound.
+			return answerOrHold(() => {
+				if (server.rejectError) {
+					throw server.rejectError;
+				}
+				if (server.beforeRun) {
+					server.content = server.beforeRun.content;
+					server.version = server.beforeRun.version;
+				}
+				return {
+					document: {
+						...serverDocument().document,
+						contentHash: "embed-owned-column",
+					},
+				};
+			});
 		default:
 			return cannedResponseFor(path, tab);
 	}
@@ -479,7 +498,10 @@ vi.mock("@saas/projects/components/DocumentTocRail", () => ({
 	DocumentTocRail: () => null,
 }));
 vi.mock("@saas/projects/components/DocumentVersionHistory", () => ({
-	DocumentVersionHistory: () => null,
+	DocumentVersionHistory: (props: Record<string, any>) => {
+		harness.versionHistoryProps = props;
+		return null;
+	},
 }));
 vi.mock("@saas/projects/components/DiffReviewBar", () => ({
 	DiffReviewBar: () => null,
@@ -630,6 +652,7 @@ import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
 import {
 	GENERATION_RUN_AWARENESS_FIELD,
 	isRoomBodyEmpty,
+	ROOM_META_MAP,
 	ROOM_PEER_AWARENESS_FIELD,
 	ROOM_SAVE_AWARENESS_FIELD,
 	readConvergenceClaim,
@@ -1000,13 +1023,16 @@ beforeEach(() => {
 	harness.routerPush = vi.fn();
 	Object.assign(harness.timings, SHORT_TIMINGS);
 	saveCalls.length = 0;
+	harness.versionHistoryProps = {};
 	server.content = BODY_A;
 	server.version = 7;
 	server.status = "COMPLETE";
+	server.type = "PROPOSAL";
 	server.holdAnswers = false;
 	server.held = [];
 	server.requireBase = false;
 	server.beforeRun = null;
+	server.rejectError = null;
 	server.failNext = null;
 	server.projectGate = null;
 	resetRoom();
@@ -2619,11 +2645,13 @@ describe("one save at a time, when things go wrong (Fizzy #2946)", () => {
 
 		server.holdAnswers = false;
 		await answerHeld();
+		// In the reader's words, never the server's (Fizzy #2946).
 		await waitFor(() => {
-			expect(toast.error).toHaveBeenCalledWith(
-				"Failed to save document: Service unavailable",
-			);
+			expect(toast.error).toHaveBeenCalledWith("failed");
 		});
+		expect(toast.error).not.toHaveBeenCalledWith(
+			expect.stringContaining("Service unavailable"),
+		);
 		await settle(50);
 		expect(saveCalls).toHaveLength(1);
 		expect(server.version).toBe(7);
@@ -2767,6 +2795,129 @@ describe("one save at a time, when things go wrong (Fizzy #2946)", () => {
 	});
 });
 
+describe("an assistant proposal accepted in a room (Fizzy #2946)", () => {
+	/** The autosave, ten seconds into the pause after an edit, held. */
+	async function autosaveInFlight(tab: Tab, text: string) {
+		await type(tab, text);
+		server.holdAnswers = true;
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10_500);
+		});
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+	}
+
+	async function answerHeld() {
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	}
+
+	/** The assistant proposes `proposed`, and the person accepts it. */
+	async function acceptProposal(tab: Tab, proposed: string) {
+		harness.agentState = { document: proposed };
+		rerender(tab);
+		await settle(20);
+		const respond = vi.fn();
+		let card: any;
+		await act(async () => {
+			card = tab.actions
+				.get("confirm_changes")
+				?.renderAndWaitForResponse({
+					args: {},
+					respond,
+					status: "executing",
+				});
+			await Promise.resolve();
+		});
+		await settle(50);
+		await act(async () => {
+			card?.props.onConfirm();
+		});
+		await settle(50);
+		return respond;
+	}
+
+	it("during the autosave, is saved after that answer, from the room's stamp the answer produced", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout"],
+			shouldAdvanceTime: true,
+		});
+		await autosaveInFlight(tab, " First edit.");
+		expect(saveCalls[0]).toMatchObject({
+			expectedVersion: 7,
+			expectedContentHash: hashOf(BODY_A),
+		});
+
+		const respond = await acceptProposal(
+			tab,
+			`${editorBody(tab)}\n\nAn accepted paragraph.`,
+		);
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toHaveLength(1);
+
+		server.holdAnswers = false;
+		await answerHeld();
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(2);
+		});
+		vi.useRealTimers();
+		const firstAnswer = {
+			version: 8,
+			contentHash: hashOf(String(saveCalls[0]?.content)),
+		};
+		expect(saveCalls[1]).toMatchObject({
+			expectedVersion: firstAnswer.version,
+			expectedContentHash: firstAnswer.contentHash,
+		});
+		expect(saveCalls[1]?.content).toContain("An accepted paragraph.");
+		await waitFor(() => {
+			expect(server.content).toContain("An accepted paragraph.");
+		});
+		expect(server.version).toBe(9);
+		await waitFor(() => {
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+		// One report, for the accept's own save; no conflict.
+		expect(toast.success).toHaveBeenCalledTimes(1);
+		expect(toast.success).toHaveBeenCalledWith(
+			"Changes applied — saved as v9",
+		);
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(offerBackCalls()).toHaveLength(0);
+	});
+
+	it("in a room without a stamp yet, is not sent: it stays in the editor, unsaved, and the editor says it is updating to the latest version", async () => {
+		// A room from before the stamp, still being looked at: it takes its
+		// stamp only after the observation gap.
+		await persistRoom(BODY_A, null);
+		harness.timings.observationGapMs = 60_000;
+		const tab = await openTab("tab");
+		expect(readRoomStamp(room.doc)).toBeNull();
+
+		const respond = await acceptProposal(
+			tab,
+			`${BODY_A}\n\nAn accepted paragraph.`,
+		);
+		await settle(50);
+
+		expect(readRoomStamp(room.doc)).toBeNull();
+		expect(toast.info).toHaveBeenCalledWith("saveBlocked.updatingToLatest");
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_A);
+		expect(editorBody(tab)).toContain("An accepted paragraph.");
+		expect(toast.success).not.toHaveBeenCalled();
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+});
+
 describe("an update using context (Fizzy #2946)", () => {
 	function updateUsingContext(tab: Tab): HTMLButtonElement | null {
 		return (tab.view
@@ -2799,6 +2950,403 @@ describe("an update using context (Fizzy #2946)", () => {
 		await waitFor(() => {
 			expect(updateUsingContext(during)).toBeDisabled();
 		});
+	});
+
+	it("cannot be started from the narrow layout's menu while a run is generating the document", async () => {
+		const user = userEvent.setup();
+		/** The menu's item, once the menu is open. */
+		async function menuItem(tab: Tab): Promise<HTMLElement> {
+			await user.click(
+				(tab.view as ReturnType<typeof render>).getByRole("button", {
+					name: "More document actions",
+				}),
+			);
+			return waitFor(() => {
+				const item = [
+					...window.document.body.querySelectorAll<HTMLElement>(
+						'[role="menuitem"]',
+					),
+				].find((element) =>
+					/Update\s+using\s+context/.test(element.textContent ?? ""),
+				);
+				expect(item).toBeDefined();
+				return item as HTMLElement;
+			});
+		}
+
+		await persistRoom(BODY_A, savedStamp());
+		const idle = await openTab("idle");
+		expect(await menuItem(idle)).not.toHaveAttribute("aria-disabled");
+		idle.view?.unmount();
+		idle.view = null;
+		room.tabs.splice(room.tabs.indexOf(idle), 1);
+
+		server.status = "GENERATING";
+		const during = await openTab("during");
+		expect(await menuItem(during)).toHaveAttribute("aria-disabled", "true");
+	});
+});
+
+describe("rejecting a regeneration in a room (Fizzy #2946)", () => {
+	async function startRunFromChat(tab: Tab) {
+		await act(async () => {
+			tab.actions.get("regenerate_document")?.renderAndWaitForResponse({
+				args: { prompt: "Rewrite it" },
+				respond: vi.fn(),
+				status: "executing",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	}
+
+	/** A run this tab started ends on BODY_B at version 8; its review is open. */
+	async function reviewRun(tab: Tab) {
+		await startRunFromChat(tab);
+		server.status = "GENERATING";
+		await nudge(tab);
+		server.content = BODY_B;
+		server.version = 8;
+		server.status = "COMPLETE";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+		});
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain("rewritten by the run");
+			expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+		});
+	}
+
+	/** Reject, then the dialog's closing delay and the review's own wind-down. */
+	async function reject(tab: Tab) {
+		await act(async () => {
+			within(
+				tab.view?.getByTestId(
+					"regeneration-confirm-modal",
+				) as HTMLElement,
+			)
+				.getByRole("button", { name: "Reject" })
+				.click();
+			await new Promise((resolve) => setTimeout(resolve, 900));
+		});
+		await waitFor(() => {
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).toBeNull();
+		});
+	}
+
+	/** The server finds no earlier version to rewind to. */
+	function noPriorVersion() {
+		return Object.assign(
+			new Error(
+				"This document has no prior version to revert to. The current content is still in place.",
+			),
+			{ code: "CONFLICT" },
+		);
+	}
+
+	/** Answers the oldest held write, and only it. */
+	async function answerOldest() {
+		await act(async () => {
+			server.held.shift()?.();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+	}
+
+	/**
+	 * Reject, held, and an autosave of typing done once the review closed,
+	 * held behind it: the Reject's answer then comes while the autosave is
+	 * in flight.
+	 */
+	async function rejectAnsweredDuringAutosave(tab: Tab) {
+		await reviewRun(tab);
+		server.rejectError = noPriorVersion();
+		server.holdAnswers = true;
+		await reject(tab);
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain("Phase one, then two.");
+		});
+		// The review winds down a second after it closes.
+		await settle(1200);
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout"],
+			shouldAdvanceTime: true,
+		});
+		await type(tab, " Typed after the reject.");
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10_500);
+		});
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]).toMatchObject({
+			expectedVersion: 8,
+			expectedContentHash: hashOf(BODY_B),
+		});
+		expect(saveCalls[0]?.content).toContain("Typed after the reject.");
+		expect(server.held).toHaveLength(2);
+
+		// The Reject's answer: nothing to rewind to, so the earlier body is
+		// to be saved over the regenerated one.
+		await answerOldest();
+		await settle(50);
+	}
+
+	it("says the regeneration was rejected only once the server has rewound it", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		server.beforeRun = { content: BODY_A, version: 7 };
+		await reviewRun(tab);
+		server.holdAnswers = true;
+
+		await reject(tab);
+		await settle(50);
+		expect(server.held).toHaveLength(1);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+
+		await answerOldest();
+		await waitFor(() => {
+			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+		});
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(saveCalls).toEqual([]);
+	});
+
+	it("a Reject the server refuses says why in the reader's words, and never that it was rejected", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		await reviewRun(tab);
+		server.rejectError = Object.assign(new Error("Database unavailable"), {
+			code: "INTERNAL_SERVER_ERROR",
+		});
+
+		await reject(tab);
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("failed");
+		});
+		await settle(50);
+		expect(toast.error).not.toHaveBeenCalledWith(
+			expect.stringContaining("Database unavailable"),
+		);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_B);
+	});
+
+	it("with nothing to rewind to, the earlier body waits for the autosave in flight and goes from the base its answer produced; Save reads Saving meanwhile", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		await rejectAnsweredDuringAutosave(tab);
+
+		// The earlier body waits: only the autosave has gone.
+		expect(saveCalls).toHaveLength(1);
+		expect(saveButton(tab)).toHaveAccessibleName("Saving");
+
+		// The autosave's answer: the earlier body goes now, its own answer
+		// held. The autosave's answer does not say the regeneration was
+		// rejected.
+		await answerOldest();
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(2);
+		});
+		expect(saveCalls[1]).toMatchObject({
+			content: BODY_A,
+			skipVersionBump: true,
+			expectedVersion: 9,
+			expectedContentHash: hashOf(String(saveCalls[0]?.content)),
+		});
+		await settle(50);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+
+		// Its answer: said once.
+		server.holdAnswers = false;
+		await answerOldest();
+		vi.useRealTimers();
+		await waitFor(() => {
+			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+		});
+		expect(
+			vi
+				.mocked(toast.info)
+				.mock.calls.filter(
+					([message]) => message === "regenerationRejected",
+				),
+		).toHaveLength(1);
+		expect(server.content).toBe(BODY_A);
+		expect(server.version).toBe(9);
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
+	it("with nothing to rewind to, says the regeneration was rejected only once the earlier body's save has landed", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		await reviewRun(tab);
+		server.rejectError = noPriorVersion();
+		server.holdAnswers = true;
+		await reject(tab);
+		expect(server.held).toHaveLength(1);
+
+		// The Reject's answer: nothing to rewind to. The earlier body goes,
+		// from the run's stamp, and its answer is held.
+		await answerOldest();
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+		expect(saveCalls[0]).toMatchObject({
+			content: BODY_A,
+			skipVersionBump: true,
+			expectedVersion: 8,
+			expectedContentHash: hashOf(BODY_B),
+		});
+		await settle(50);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+
+		await answerOldest();
+		await waitFor(() => {
+			expect(toast.info).toHaveBeenCalledWith("regenerationRejected");
+		});
+		expect(server.content).toBe(BODY_A);
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
+	it("with nothing to rewind to, a refused save of the earlier body says why, and never that the regeneration was rejected", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		await reviewRun(tab);
+		server.rejectError = noPriorVersion();
+		server.failNext = new Error("Service unavailable");
+
+		await reject(tab);
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("failed");
+		});
+		await settle(50);
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({
+			content: BODY_A,
+			skipVersionBump: true,
+		});
+		expect(server.content).toBe(BODY_B);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+	});
+
+	it("with nothing to rewind to, in a room without a stamp, sends nothing and says the editor is updating to the latest version", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		await reviewRun(tab);
+		// The room loses its stamp, and is looked at again only after the
+		// observation gap.
+		harness.timings.observationGapMs = 60_000;
+		await act(async () => {
+			room.doc.getMap(ROOM_META_MAP).delete("stamp");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(readRoomStamp(tab.doc)).toBeNull();
+		server.rejectError = noPriorVersion();
+
+		await reject(tab);
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith(
+				"saveBlocked.updatingToLatest",
+			);
+		});
+		await settle(50);
+		expect(readRoomStamp(room.doc)).toBeNull();
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(BODY_B);
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+	});
+
+	it("with nothing to rewind to, the earlier body is dropped when the autosave it waited for fails: it stays unsaved in the editor", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("starter");
+		// The autosave the earlier body will wait for is refused.
+		server.failNext = new Error("Service unavailable");
+		await rejectAnsweredDuringAutosave(tab);
+		expect(saveCalls).toHaveLength(1);
+
+		server.holdAnswers = false;
+		await answerOldest();
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("failed");
+		});
+		await settle(50);
+		vi.useRealTimers();
+		expect(saveCalls).toHaveLength(1);
+		expect(server.content).toBe(BODY_B);
+		expect(server.version).toBe(8);
+		expect(editorBody(tab)).toContain("Phase one, then two.");
+		expect(editorBody(tab)).toContain("Typed after the reject.");
+		expect(saveButton(tab)).toHaveAccessibleName("Save document");
+		expect(toast.info).not.toHaveBeenCalledWith("regenerationRejected");
+	});
+});
+
+describe("restoring a version while a run holds the document (Fizzy #2946)", () => {
+	it("is refused for a run on a run-guarded document, and for this tab's regeneration and its review; not otherwise", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		expect(harness.versionHistoryProps.restoreBlockedReason).toBeNull();
+
+		// A run started elsewhere on a Proposal.
+		server.status = "GENERATING";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(harness.versionHistoryProps.restoreBlockedReason).toBe(
+				"runLive",
+			);
+		});
+		server.status = "COMPLETE";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(harness.versionHistoryProps.restoreBlockedReason).toBeNull();
+		});
+
+		// This tab's own run, and then its review.
+		await act(async () => {
+			tab.actions.get("regenerate_document")?.renderAndWaitForResponse({
+				args: { prompt: "Rewrite it" },
+				respond: vi.fn(),
+				status: "executing",
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(harness.versionHistoryProps.restoreBlockedReason).toBe(
+				"regenerating",
+			);
+		});
+		server.status = "GENERATING";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(harness.versionHistoryProps.restoreBlockedReason).toBe(
+				"runLive",
+			);
+		});
+		server.content = BODY_B;
+		server.version = 8;
+		server.status = "COMPLETE";
+		await nudge(tab);
+		await waitFor(() => {
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).not.toBeNull();
+		});
+		expect(harness.versionHistoryProps.restoreBlockedReason).toBe(
+			"regenerating",
+		);
+	});
+
+	it("is not refused for a run on a document type the server does not guard", async () => {
+		server.type = "PRD";
+		await persistRoom(BODY_A, savedStamp());
+		server.status = "GENERATING";
+		await openTab("tab");
+		await settle(50);
+		expect(harness.versionHistoryProps.restoreBlockedReason).toBeNull();
 	});
 });
 

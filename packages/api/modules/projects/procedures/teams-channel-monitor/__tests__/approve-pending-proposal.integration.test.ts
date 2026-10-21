@@ -87,6 +87,9 @@ vi.mock("@repo/database", () => ({
 	markPendingProposalRejected: mocks.markPendingProposalRejected,
 	db: {
 		project: { findUnique: mocks.projectFindUnique },
+		projectMeetingTranscript: {
+			findFirst: vi.fn().mockResolvedValue(null),
+		},
 		feature: { findFirst: mocks.featureFindFirst },
 		// Empty existing-stories result → no title collisions, so the new
 		// `buildBacklogDedupGuard` helper (called at the top of the
@@ -472,6 +475,50 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 // Cases
 // ---------------------------------------------------------------------------
+
+describe("approvePendingProposal (Teams) — drafting fallback body", () => {
+	it.each(["TEAMS_CHANNEL", "MONITORED_MEETING"] as const)(
+		"%s: forwards the analyzer body for non-predrafted creates",
+		async (source) => {
+			const change = {
+				...APPROVAL_INPUT.approvedChanges[0],
+				description: {
+					to: "Restore image uploads after a failed attempt.",
+				},
+				acceptanceCriteria: {
+					to: "A second upload succeeds without reloading.",
+				},
+			};
+			const proposal = makeProposalRow({});
+			mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+				...proposal,
+				source: source,
+				proposal: { changes: [change] },
+				sourceMetadata: {
+					...proposal.sourceMetadata,
+					transcript:
+						"Image uploads fail until the page is reloaded.",
+				},
+			});
+
+			await handlers.approve?.({
+				input: { ...APPROVAL_INPUT, approvedChanges: [change] },
+				context: APPROVAL_CTX,
+			});
+
+			expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
+			const args = mocks.createStoryFromProposal.mock.calls[0]?.[0];
+			expect(args).toMatchObject({
+				description: "Restore image uploads after a failed attempt.",
+				acceptanceCriteria:
+					"A second upload succeeds without reloading.",
+				additionalContext:
+					"Image uploads fail until the page is reloaded.",
+			});
+			expect(args).not.toHaveProperty("skipDrafting");
+		},
+	);
+});
 
 describe("approvePendingProposal (Teams) — chat-thread attachments wiring", () => {
 	it("case 1: happy 2-image approval calls orchestrator + persists empty-warnings ledger + uses URL builder", async () => {

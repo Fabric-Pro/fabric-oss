@@ -139,6 +139,12 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 		keywords:
 			"edit the workflow, change the schedule, update the workflow, reschedule, change what it does, change the prompt",
 	},
+	fabric_bind_workspace_workflow: {
+		when: "To let an owned Workspace control an existing workflow in the same project, or revoke that binding; the person approves it first.",
+		how: "Read both current timestamps before binding or unbinding. Binding requires published, unchanged workflow settings; revocation also works after the workflow is paused or edited.",
+		keywords:
+			"bind workspace workflow, attach workflow to workspace, unbind workspace workflow, confirm workflow version, revoke workspace workflow",
+	},
 	fabric_publish_workflow: {
 		when: "To put a draft workflow live; the person approves it first.",
 		keywords:
